@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, type ChangeEvent } from 'react';
 import type { ProfileVFS } from '../../scripting/vfs/ProfileVFS';
 import type { OutputFontSource } from '../../storage';
 import { Button } from './Button';
+import { FileSourceButton, type PickedFile } from './FileSourceButton';
 import { Input } from './Input';
 import {
     ensureFontAvailable,
@@ -399,24 +400,25 @@ function VfsTab({ value, onChange, vfs }: VfsTabProps) {
 
     const dir = `${vfs.profilePath}/${FONTS_DIR}`;
 
-    const handleUpload = (e: ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-        e.target.value = '';
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = () => {
-            try {
-                if (!vfs.exists(dir)) vfs.mkdir(dir);
-                const path = `${dir}/${file.name}`;
-                vfs.writeBinaryFile(path, new Uint8Array(reader.result as ArrayBuffer));
+    const handleAddFont = async (picked: PickedFile[]) => {
+        const first = picked[0];
+        if (!first) return;
+        try {
+            // A font already under fonts/ is selected where it lies — copying it
+            // onto itself would only produce a duplicate entry.
+            if (first.vfsPath && first.vfsPath.startsWith(`${dir}/`)) {
+                setSelected(first.vfsPath);
                 setFiles(listFontFiles(vfs));
-                setSelected(path);
-            } catch (err) {
-                setStatus({ ok: false, msg: err instanceof Error ? err.message : String(err) });
+                return;
             }
-        };
-        reader.onerror = () => setStatus({ ok: false, msg: 'Failed to read file.' });
-        reader.readAsArrayBuffer(file);
+            if (!vfs.exists(dir)) vfs.mkdir(dir);
+            const path = `${dir}/${first.file.name}`;
+            vfs.writeBinaryFile(path, new Uint8Array(await first.file.arrayBuffer()));
+            setFiles(listFontFiles(vfs));
+            setSelected(path);
+        } catch (err) {
+            setStatus({ ok: false, msg: err instanceof Error ? err.message : String(err) });
+        }
     };
 
     const handleApply = async () => {
@@ -441,15 +443,15 @@ function VfsTab({ value, onChange, vfs }: VfsTabProps) {
                 Font files live under <code>{FONTS_DIR}/</code> in your profile (.ttf/.otf/.woff/.woff2).
             </p>
             <div className="font-picker__row">
-                <Button variant="ghost" size="sm" onClick={() => fileInputRef.current?.click()}>
-                    Upload font…
-                </Button>
-                <input
-                    ref={fileInputRef}
-                    type="file"
+                <FileSourceButton
+                    vfs={vfs}
+                    variant="ghost"
+                    label="Add font…"
                     accept=".ttf,.otf,.woff,.woff2,.ttc"
-                    style={{ display: 'none' }}
-                    onChange={handleUpload}
+                    pickerTitle="Pick a font from profile files"
+                    location={dir}
+                    onPick={files => void handleAddFont(files)}
+                    onError={msg => setStatus({ ok: false, msg })}
                 />
             </div>
             <div className="font-picker__list">

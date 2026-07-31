@@ -111,7 +111,7 @@ export function ContentLayout({
     const contentPool = windows.map(w => createPortal(
         w.kind === 'text' ? <TextPanel id={w.id} title={w.title} manager={manager} labels={session.labels} cmdLines={session.cmdLines} scrollBoxes={session.scrollBoxes} fontSize={w.fontSize} fontFamily={w.fontFamily} wrapAt={w.wrapAt} wrapIndent={w.wrapIndent} wrapHangingIndent={w.wrapHangingIndent} backgroundColor={w.backgroundColor} backgroundImage={w.backgroundImage} cmdLineEnabled={w.cmdLineEnabled} cmdLineStyleSheet={w.cmdLineStyleSheet} cmdLineValue={w.cmdLineValue} cmdLineValueSeq={w.cmdLineValueSeq} />
       : w.kind === 'html' ? <HtmlPanel id={w.id} manager={manager} labels={session.labels} cmdLines={session.cmdLines} scrollBoxes={session.scrollBoxes} backgroundColor={w.backgroundColor} backgroundImage={w.backgroundImage} cmdLineEnabled={w.cmdLineEnabled} cmdLineStyleSheet={w.cmdLineStyleSheet} cmdLineValue={w.cmdLineValue} cmdLineValueSeq={w.cmdLineValueSeq} />
-      : <MapPanel id={w.id} manager={manager} connectionId={connectionId} />,
+      : <MapPanel id={w.id} manager={manager} connectionId={connectionId} vfs={vfs} />,
         manager.getOrCreatePortalTarget(w.id),
         w.id,
     ));

@@ -10,6 +10,8 @@ import { MudletHighlightOverlay } from '../../../map/MudletHighlightOverlay';
 import { MapSelectionOverlay } from '../../../map/MapSelectionOverlay';
 import { useAppStore, selectProfileField, MAP_INFO_BG_DEFAULT, type MapperSettings, type MapInfoBgColor } from '../../../storage';
 import { MapEditorModal } from '../../MapEditorModal';
+import { useFileSource, type PickedFile } from '../../components';
+import type { ProfileVFS } from '../../../scripting/vfs/ProfileVFS';
 import { QT_OBJECT_NAMES } from '../../labels/qtCss';
 
 
@@ -96,9 +98,11 @@ interface MapPanelProps {
     id: string;
     manager: WindowManager;
     connectionId: string;
+    /** Lets "Load map…" read a .dat/.xml the profile already holds. */
+    vfs?: ProfileVFS | null;
 }
 
-export function MapPanel({ id, manager, connectionId }: MapPanelProps) {
+export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const rendererRef = useRef<MapRenderer | null>(null);
     const readerRef = useRef<MudixMapReader | null>(null);
@@ -114,7 +118,6 @@ export function MapPanel({ id, manager, connectionId }: MapPanelProps) {
     const dropdownRef = useRef<HTMLDivElement>(null);
     const levelDropdownRef = useRef<HTMLDivElement>(null);
     const menuRef = useRef<HTMLDivElement>(null);
-    const fileInputRef = useRef<HTMLInputElement>(null);
     const [status, setStatus] = useState<MapStatus>('loading');
     const [errorMsg, setErrorMsg] = useState('');
     // Latest level-of-detail decision from the renderer. Null until the first
@@ -1144,8 +1147,8 @@ export function MapPanel({ id, manager, connectionId }: MapPanelProps) {
         return () => { manager.onMmpMapLocationChanged = undefined; };
     }, [manager]);
 
-    const handleFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
+    const handleMapFile = useCallback(async (picked: PickedFile[]) => {
+        const file = picked[0]?.file;
         if (!file) return;
         setStatus('loading');
         try {
@@ -1170,6 +1173,16 @@ export function MapPanel({ id, manager, connectionId }: MapPanelProps) {
             setStatus('error');
         }
     }, [manager]);
+
+    // Maps often arrive inside a package or get downloaded into the profile, so
+    // "Load map…" offers the profile's own files alongside a local upload.
+    const mapSource = useFileSource({
+        vfs,
+        accept: '.dat,.xml',
+        pickerTitle: 'Load map from profile files',
+        onPick: handleMapFile,
+        onError: msg => { setErrorMsg(msg); setStatus('error'); },
+    });
 
     const selectArea = useCallback((id: number) => {
         const renderer = rendererRef.current;
@@ -1293,7 +1306,7 @@ export function MapPanel({ id, manager, connectionId }: MapPanelProps) {
             {lodNotice && (
                 <div className="map-lod-badge" title={lodNotice.detail}>{lodNotice.label}</div>
             )}
-            <input ref={fileInputRef} type="file" accept=".dat,.xml" onChange={handleFileChange} hidden />
+            {mapSource.elements}
             <div className="map-panel-bottom">
             {panelToggle}
             {panelVisible && (
@@ -1380,7 +1393,7 @@ export function MapPanel({ id, manager, connectionId }: MapPanelProps) {
                         <div className="map-hamburger-menu">
                             <button
                                 className="map-hamburger-item"
-                                onMouseDown={() => { setMenuOpen(false); fileInputRef.current?.click(); }}
+                                onMouseDown={e => { setMenuOpen(false); mapSource.open(e.currentTarget); }}
                             >
                                 Load map…
                             </button>
@@ -1480,10 +1493,9 @@ export function MapPanel({ id, manager, connectionId }: MapPanelProps) {
             )}
             {status === 'empty' && (
                 <div className="map-overlay">
-                    <label className="map-load-btn">
+                    <button className="map-load-btn" onClick={e => mapSource.open(e.currentTarget)}>
                         Load Mudlet Map
-                        <input type="file" accept=".dat,.xml" onChange={handleFileChange} hidden />
-                    </label>
+                    </button>
                     {mmpMapUrl && (
                         <button className="map-load-btn" onClick={() => manager.onDownloadMap?.()}>
                             Download map from game
@@ -1495,10 +1507,9 @@ export function MapPanel({ id, manager, connectionId }: MapPanelProps) {
             {status === 'error' && (
                 <div className="map-overlay map-overlay-error">
                     <span>Failed to load map: {errorMsg}</span>
-                    <label className="map-load-btn">
+                    <button className="map-load-btn" onClick={e => mapSource.open(e.currentTarget)}>
                         Try another file
-                        <input type="file" accept=".dat,.xml" onChange={handleFileChange} hidden />
-                    </label>
+                    </button>
                 </div>
             )}
             {contextMenu && createPortal(

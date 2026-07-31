@@ -1,0 +1,194 @@
+/* ── Package exporter ─────────────────────────────────────────────────────── */
+
+.resizable-modal__body.pkg-export {
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px 14px;
+    overflow: hidden;
+}
+
+.pkg-export__cols {
+    flex: 1;
+    display: flex;
+    gap: 14px;
+    min-height: 0;
+}
+
+.pkg-export__meta {
+    flex: 0 0 300px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+
+.pkg-export__row { display: flex; gap: 8px; }
+.pkg-export__row .field { flex: 1; min-width: 0; }
+
+.pkg-export__textarea {
+    min-height: 60px;
+    resize: vertical;
+    font-family: inherit;
+    line-height: 1.4;
+}
+
+.pkg-export__files {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border);
+}
+
+.pkg-export__files-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--text-dim);
+}
+
+.pkg-export__icon-name,
+.pkg-export__file {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    min-width: 0;
+}
+.pkg-export__icon-name > span,
+.pkg-export__file > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pkg-export__file { cursor: pointer; padding: 1px 0; }
+.pkg-export__file input { accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+
+.pkg-export__file-list {
+    display: flex;
+    flex-direction: column;
+    max-height: 130px;
+    overflow-y: auto;
+}
+
+.pkg-export__muted { color: var(--text-dim); font-family: inherit; font-size: 11px; line-height: 1.4; }
+
+.pkg-export__remove {
+    margin-left: auto;
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    padding: 0 4px;
+}
+.pkg-export__remove:hover { color: var(--danger); }
+
+.pkg-export__items {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    gap: 6px;
+}
+
+.pkg-export__items-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.pkg-export__items-title { flex: 1; font-size: 12px; color: var(--text-dim); }
+
+.pkg-export__tree {
+    flex: 1;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 0;
+}
+
+.pkg-export__cat-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border-hi);
+}
+.pkg-export__cat + .pkg-export__cat .pkg-export__cat-head { margin-top: 6px; }
+.pkg-export__cat-name { font-weight: 600; }
+.pkg-export__cat-count { margin-left: auto; font-family: var(--font-mono); }
+
+.pkg-export__link {
+    background: none;
+    border: none;
+    color: var(--accent);
+    cursor: pointer;
+    font-size: 11px;
+    padding: 0 2px;
+}
+.pkg-export__link:hover { text-decoration: underline; }
+
+.pkg-export__cat-empty {
+    padding: 3px 10px 3px 24px;
+    font-size: 11px;
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+.pkg-export__node {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    user-select: none;
+}
+.pkg-export__node:hover { background: var(--hover-bg); }
+.pkg-export__node input { accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+.pkg-export__node--group .pkg-export__node-name { font-weight: 600; }
+.pkg-export__node-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pkg-export__node-pkg {
+    margin-left: auto;
+    font-size: 10px;
+    font-family: var(--font-mono);
+    color: var(--text-dim);
+    flex-shrink: 0;
+}
+
+.pkg-export__status { margin: 0; font-size: 12px; color: var(--text-dim); }
+.pkg-export__status--ok { color: var(--accent); }
+.pkg-export__status--error { color: var(--danger); }
+
+.pkg-export__actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+}
+.pkg-export__hint {
+    flex: 1;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Phones: the modal is fullscreen, so stack the metadata over the item tree
+   instead of squeezing two columns into ~360px. */
+@media (max-width: 600px) {
+    .pkg-export__cols { flex-direction: column; overflow-y: auto; }
+    .pkg-export__meta { flex: 0 0 auto; overflow: visible; }
+    .pkg-export__items { min-height: 240px; }
+}

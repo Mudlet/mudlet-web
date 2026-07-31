@@ -2919,12 +2919,27 @@ body.is-sorting {
     padding: 24px 0;
 }
 
-/* invokeFileDialog picker (FilePickerModal) — tree fills the modal body,
-   footer reuses the merge-modal button styles. */
+/* VFS picker (invokeFileDialog + the "from profile files" buttons) — tree fills
+   the modal body, footer reuses the merge-modal button styles. */
+
+/* Above every app modal layer — .modal (51), the settings font-picker overlay
+   (60) and its modal (61): this picker is always opened from inside one of
+   them, so it has to paint over the dialog that opened it. It stays below the
+   confirm dialog (200) and context menus (9999). */
+.resizable-modal.vfs-picker-modal { z-index: 70; }
+
 .picker-tree-panel {
     flex: 1;
     overflow-y: auto;
     padding: 2px 0;
+}
+
+/* Multi-select rows (mode="files"). */
+.vfs-check {
+    accent-color: var(--accent);
+    cursor: pointer;
+    flex-shrink: 0;
+    margin: 0 2px 0 0;
 }
 
 .picker-path {

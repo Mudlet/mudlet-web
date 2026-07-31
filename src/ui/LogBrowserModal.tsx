@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
 import { ResizableModal } from './ResizableModal';
-import { Button, useConfirm } from './components';
+import { Button, FileSourceButton, useConfirm, type PickedFile } from './components';
+import type { ProfileVFS } from '../scripting/vfs/ProfileVFS';
 import { useAppStore } from '../storage';
 import {
     clearAllLogs,
@@ -24,6 +25,8 @@ import {
 interface LogBrowserModalProps {
     connectionId: string;
     connectionName: string;
+    /** Lets "Import…" read a log export the profile already holds. */
+    vfs?: ProfileVFS | null;
     onClose: () => void;
 }
 
@@ -56,7 +59,7 @@ function sessionLabel(s: LogSession): string {
 
 const ROW_OVERSCAN = 12;
 
-export function LogBrowserModal({ connectionId, connectionName, onClose }: LogBrowserModalProps) {
+export function LogBrowserModal({ connectionId, connectionName, vfs = null, onClose }: LogBrowserModalProps) {
     const confirm = useConfirm();
     const savedBounds = useAppStore(s => s.connectionModalBounds[connectionId]?.['logs']);
     const saveModalBounds = useAppStore(s => s.saveModalBounds);
@@ -333,20 +336,20 @@ export function LogBrowserModal({ connectionId, connectionName, onClose }: LogBr
                         </Button>
                     </div>
                     <div className="lb-action-row">
-                        <Button size="sm" variant="ghost" onClick={() => fileInputRef.current?.click()}>Import…</Button>
+                        <FileSourceButton
+                            size="sm"
+                            variant="ghost"
+                            vfs={vfs}
+                            label="Import…"
+                            accept="application/json,.json"
+                            pickerTitle="Import log export from profile files"
+                            onPick={(picked: PickedFile[]) => {
+                                const first = picked[0];
+                                if (first) void handleImport(first.file);
+                            }}
+                        />
                         <Button size="sm" variant="ghost" onClick={() => void handleClearAll()}>Clear all</Button>
                     </div>
-                    <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept="application/json,.json"
-                        style={{ display: 'none' }}
-                        onChange={e => {
-                            const f = e.target.files?.[0];
-                            e.target.value = '';
-                            if (f) void handleImport(f);
-                        }}
-                    />
                 </div>
             </div>
 

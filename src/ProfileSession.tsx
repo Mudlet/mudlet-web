@@ -1013,6 +1013,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                 <LogBrowserModal
                     connectionId={connection.id}
                     connectionName={connection.name}
+                    vfs={vfs}
                     onClose={() => setLogsOpen(false)}
                 />
             )}

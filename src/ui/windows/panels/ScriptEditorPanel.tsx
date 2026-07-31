@@ -1,6 +1,6 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Braces, Clock, Filter, Folder, FolderOpen, FolderPlus, Keyboard, MousePointerClick, Package, Shuffle, FileCode2, Trash2, Zap } from 'lucide-react';
-import { Button, Input, ContextMenu, useConfirm } from '../../components';
+import { Button, Input, ContextMenu, FileSourceButton, useConfirm, type PickedFile } from '../../components';
 import { VariablesView } from './VariablesView';
 import { useAppStore, useProfileField } from '../../../storage';
 import { isPackageRemovable } from '../../../branding';
@@ -12,8 +12,8 @@ import type { ProfileVFS } from '../../../scripting/vfs/ProfileVFS';
 import type { ScriptingEngine } from '../../../scripting/ScriptingEngine';
 import { LuaEditor } from './LuaEditor';
 import { installModuleFromVfsPath, installPackageFromBytes, installPackageFromFile, uninstallPackageFiles } from '../../../import/packageInstaller';
-import { VfsModulePickerModal } from './VfsModulePickerModal';
 import { PackageRepositoryModal } from './PackageRepositoryModal';
+import { PackageExportModal, type ExportCategory } from './PackageExportModal';
 import type { PackageRepoEntry } from '../../../import/packageRepository';
 import { DEFAULT_PROXY_URL } from '../../../storage';
 import { renderMarkdown } from '../../markdown';
@@ -719,11 +719,12 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     const installPackage   = useAppStore(s => s.installPackage);
     const uninstallPackage = useAppStore(s => s.uninstallPackage);
 
-    const importFileRef = useRef<HTMLInputElement>(null);
-    const importModuleRef = useRef<HTMLInputElement>(null);
     const [importError, setImportError] = useState<string | null>(null);
-    const [showVfsPicker, setShowVfsPicker] = useState(false);
     const [showRepository, setShowRepository] = useState(false);
+    const [showExport, setShowExport] = useState(false);
+    /** Set when the exporter is opened from a right-click in the tree: that item
+     *  and its subtree start out checked, as in Mudlet. */
+    const [exportPreselect, setExportPreselect] = useState<{ category: ExportCategory; id: string } | null>(null);
     const updatePackageManifest = useAppStore(s => s.updatePackageManifest);
     // Read fresh on every install so live edits to the proxy URL take effect.
     const proxyUrlGetter = useCallback(() => {
@@ -732,13 +733,13 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         return c?.proxyUrl?.trim() || state.client.userProxyUrl || DEFAULT_PROXY_URL;
     }, [connectionId]);
 
-    const importAs = useCallback(async (file: File, kind: 'package' | 'module') => {
+    const importAs = useCallback(async (file: File, kind: 'package' | 'module', sourcePath?: string) => {
         if (!vfs) {
             setImportError('VFS not ready — wait for the profile to finish loading');
             return;
         }
         try {
-            const { manifest, data } = await installPackageFromFile(file, vfs, { kind });
+            const { manifest, data } = await installPackageFromFile(file, vfs, { kind, ...(sourcePath ? { sourcePath } : {}) });
             // installPackage commits the new scripts to the store; the
             // engine's store subscription synchronously loads them into Lua
             // before this call returns. By the time notifyPackageInstalled
@@ -777,18 +778,12 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         if (data.warnings.length > 0) setUnreadErrors(prev => prev + data.warnings.length);
     }, [connectionId, installPackage, scriptingEngineRef, vfs]);
 
-    const handleImportFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-        e.target.value = '';
-        await importAs(file, 'package');
-    }, [importAs]);
-
-    const handleImportModule = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-        e.target.value = '';
-        await importAs(file, 'module');
+    const handleImportFile = useCallback(async (picked: PickedFile[]) => {
+        const first = picked[0];
+        if (!first) return;
+        // A VFS pick carries its path so the installer can tell that the archive
+        // already lives inside the package dir it is about to unpack into.
+        await importAs(first.file, 'package', first.vfsPath);
     }, [importAs]);
 
     const handleImportModuleFromVfs = useCallback((absolutePath: string) => {
@@ -814,6 +809,16 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
             setImportError(err instanceof Error ? err.message : String(err));
         }
     }, [connectionId, installPackage, scriptingEngineRef, vfs]);
+
+    /** Modules picked from the profile are referenced in place (a plain XML stays
+     *  the source of truth at the path the user chose); an upload from the
+     *  computer has to be copied into the VFS first. */
+    const handleImportModulePick = useCallback(async (picked: PickedFile[]) => {
+        const first = picked[0];
+        if (!first) return;
+        if (first.vfsPath) handleImportModuleFromVfs(first.vfsPath);
+        else await importAs(first.file, 'module');
+    }, [handleImportModuleFromVfs, importAs]);
 
     const handleSyncModule = useCallback(async (moduleName: string) => {
         const engine = scriptingEngineRef?.current;
@@ -1545,21 +1550,21 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                     )}
                 </button>
             </div>
-            <input ref={importFileRef} type="file" accept=".xml,.mpackage,.zip" style={{ display: 'none' }} onChange={handleImportFile} />
-            <input ref={importModuleRef} type="file" accept=".xml,.mpackage,.zip" style={{ display: 'none' }} onChange={handleImportModule} />
-            {showVfsPicker && vfs && (
-                <VfsModulePickerModal
-                    vfs={vfs}
-                    onClose={() => setShowVfsPicker(false)}
-                    onPick={handleImportModuleFromVfs}
-                />
-            )}
             {showRepository && (
                 <PackageRepositoryModal
                     installedNames={new Set(packages.map(p => p.name))}
                     proxyUrl={proxyUrlGetter()}
                     onClose={() => setShowRepository(false)}
                     onInstall={handleInstallFromRepository}
+                />
+            )}
+            {showExport && (
+                <PackageExportModal
+                    connectionId={connectionId}
+                    vfs={vfs}
+                    preselect={exportPreselect}
+                    onClose={() => { setShowExport(false); setExportPreselect(null); }}
+                    onExported={text => setLogs(prev => [...prev, { text, level: 'info', timestamp: new Date() }])}
                 />
             )}
 
@@ -1661,30 +1666,29 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                         </span>
                         <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                             {importError && <span className="script-editor__import-error" title={importError}>Import failed: {importError}</span>}
+                            <FileSourceButton
+                                vfs={vfs}
+                                label="Import Package…"
+                                accept=".xml,.mpackage,.zip"
+                                pickerTitle="Import package from profile files"
+                                title="Import a Mudlet package (.mpackage / .zip / .xml) from your computer or from this profile's files"
+                                onPick={files => void handleImportFile(files)}
+                            />
+                            <FileSourceButton
+                                vfs={vfs}
+                                label="Import Module…"
+                                accept=".xml,.mpackage,.zip"
+                                pickerTitle="Import module from profile files"
+                                title="Import as module — the on-disk XML is the source of truth and is reloaded on every profile open. A module picked from this profile is referenced in place."
+                                onPick={files => void handleImportModulePick(files)}
+                            />
                             <Button
                                 variant="secondary"
                                 size="sm"
-                                onClick={() => importFileRef.current?.click()}
-                                title="Import Mudlet package (.mpackage / .zip / .xml)"
+                                onClick={() => { setExportPreselect(null); setShowExport(true); }}
+                                title="Bundle scripts, aliases, triggers, timers, keys, buttons and files into a .mpackage"
                             >
-                                Import Package…
-                            </Button>
-                            <Button
-                                variant="secondary"
-                                size="sm"
-                                onClick={() => importModuleRef.current?.click()}
-                                title="Import as module — the on-disk XML is the source of truth and is reloaded on every profile open"
-                            >
-                                Import Module…
-                            </Button>
-                            <Button
-                                variant="secondary"
-                                size="sm"
-                                onClick={() => setShowVfsPicker(true)}
-                                disabled={!vfs}
-                                title="Import a module from a file already inside the profile's VFS — plain XML files are referenced in place"
-                            >
-                                Module from VFS…
+                                Export Package…
                             </Button>
                             <Button variant="primary" size="sm" onClick={() => setShowRepository(true)} disabled={!vfs}>
                                 Browse Repository…
@@ -2345,6 +2349,17 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                 <ContextMenu x={ctxMenu.x} y={ctxMenu.y} onClose={() => setCtxMenu(null)}>
                     {ctxMenu.targetId !== null && (
                         <>
+                            <button
+                                className="ctx-menu__item"
+                                onClick={() => {
+                                    setExportPreselect({ category: category as ExportCategory, id: ctxMenu.targetId! });
+                                    setShowExport(true);
+                                    setCtxMenu(null);
+                                }}
+                            >
+                                <Package size={13} strokeWidth={1.6} />
+                                Export as Package…
+                            </button>
                             <button
                                 className="ctx-menu__item ctx-menu__item--danger"
                                 onClick={() => handleContextDelete(ctxMenu.targetId!)}
