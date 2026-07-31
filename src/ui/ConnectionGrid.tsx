@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { FolderSymlink, Trash2 } from 'lucide-react';
+import { FolderSymlink, Lock, Trash2 } from 'lucide-react';
 import { Button } from './components';
 import { connectionDisplayAddr, type MudConnection } from '../storage';
 
@@ -56,6 +56,9 @@ interface Props {
     connecting: boolean;
     connectingId: string | null;
     editingId: string | null;
+    /** Ids already open in another browser tab — one tab per profile, so these
+     *  can't be opened here until that tab releases them. */
+    openIds: Set<string>;
     onConnect: (c: MudConnection) => void;
     onOpen: (c: MudConnection) => void;
     onEdit: (c: MudConnection) => void;
@@ -76,7 +79,7 @@ interface DragState {
  *  into a floating clone, opens a dashed placeholder at the target slot, and
  *  slides the remaining tiles into their new positions with a FLIP animation. */
 export function ConnectionGrid({
-    connections, connecting, connectingId, editingId,
+    connections, connecting, connectingId, editingId, openIds,
     onConnect, onOpen, onEdit, onDelete, onReorder, onAddClick,
 }: Props) {
     const [order, setOrder] = useState<string[]>(() => connections.map(c => c.id));
@@ -233,44 +236,66 @@ export function ConnectionGrid({
         window.addEventListener('pointerup', up);
     };
 
-    const tileInner = (c: MudConnection) => (
-        <>
-            <div className="connection-tile__header">
-                <ProfileAvatar name={c.name} icon={c.icon} />
-                <Button
-                    variant="primary"
-                    className="connection-tile__connect"
-                    onClick={() => onConnect(c)}
-                    disabled={connecting}
-                >
-                    {connectingId === c.id ? 'Connecting…' : 'Connect'}
-                </Button>
-            </div>
-            <div className="connection-tile__body">
-                <span className="connection-name connection-tile__name">
-                    {c.name}
-                    {c.mudletLinked && (
-                        <FolderSymlink size={13} style={{ opacity: 0.65, flexShrink: 0 }} aria-label="Linked Mudlet folder">
-                            <title>Linked Mudlet folder — source of truth on disk</title>
-                        </FolderSymlink>
+    // A profile open in another tab can't be opened here (one tab per profile —
+    // see profileLock.ts), so say so on the tile and take its actions out of
+    // reach rather than letting the click land on the "waiting for the other
+    // tab" screen. Edit/Delete stay enabled: they touch the connection record in
+    // localStorage, not the locked profile storage.
+    const tileInner = (c: MudConnection) => {
+        const elsewhere = openIds.has(c.id);
+        const busyTitle = `${c.name} is already open in another tab`;
+        return (
+            <>
+                <div className="connection-tile__header">
+                    <ProfileAvatar name={c.name} icon={c.icon} />
+                    <Button
+                        variant="primary"
+                        className="connection-tile__connect"
+                        onClick={() => onConnect(c)}
+                        disabled={connecting || elsewhere}
+                        title={elsewhere ? busyTitle : undefined}
+                    >
+                        {connectingId === c.id ? 'Connecting…' : 'Connect'}
+                    </Button>
+                </div>
+                <div className="connection-tile__body">
+                    <span className="connection-name connection-tile__name">
+                        {c.name}
+                        {c.mudletLinked && (
+                            <FolderSymlink size={13} style={{ opacity: 0.65, flexShrink: 0 }} aria-label="Linked Mudlet folder">
+                                <title>Linked Mudlet folder — source of truth on disk</title>
+                            </FolderSymlink>
+                        )}
+                    </span>
+                    <span className="connection-addr">{connectionDisplayAddr(c)}</span>
+                    {elsewhere && (
+                        <span className="connection-tile__elsewhere" title={busyTitle}>
+                            <Lock size={11} aria-hidden="true" />
+                            Already open in another tab
+                        </span>
                     )}
-                </span>
-                <span className="connection-addr">{connectionDisplayAddr(c)}</span>
-            </div>
-            <div className="connection-tile__actions">
-                <Button variant="secondary" size="sm" onClick={() => onOpen(c)} disabled={connecting} title="Open profile offline">
-                    Open
-                </Button>
-                <span className="connection-tile__actions-spacer" />
-                <Button variant="icon" size="sm" onClick={() => onEdit(c)} disabled={connecting} aria-label="Edit connection" title="Edit">
-                    ✎
-                </Button>
-                <Button variant="icon" size="sm" onClick={() => onDelete(c)} disabled={connecting} aria-label="Delete connection" title="Delete">
-                    <Trash2 size={14} />
-                </Button>
-            </div>
-        </>
-    );
+                </div>
+                <div className="connection-tile__actions">
+                    <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => onOpen(c)}
+                        disabled={connecting || elsewhere}
+                        title={elsewhere ? busyTitle : 'Open profile offline'}
+                    >
+                        Open
+                    </Button>
+                    <span className="connection-tile__actions-spacer" />
+                    <Button variant="icon" size="sm" onClick={() => onEdit(c)} disabled={connecting} aria-label="Edit connection" title="Edit">
+                        ✎
+                    </Button>
+                    <Button variant="icon" size="sm" onClick={() => onDelete(c)} disabled={connecting} aria-label="Delete connection" title="Delete">
+                        <Trash2 size={14} />
+                    </Button>
+                </div>
+            </>
+        );
+    };
 
     const dragging = draggingId ? byId.get(draggingId) : undefined;
 
@@ -287,6 +312,7 @@ export function ConnectionGrid({
                         className={
                             'connection-tile' +
                             (isDragged ? ' connection-tile--placeholder' : '') +
+                            (openIds.has(c.id) ? ' connection-tile--elsewhere' : '') +
                             (editingId === c.id ? ' connection-card--editing' : '')
                         }
                         style={isDragged && dragRef.current ? { height: dragRef.current.height } : undefined}

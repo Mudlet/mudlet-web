@@ -3,6 +3,7 @@ import { Info } from 'lucide-react';
 import { Button, useConfirm } from './components';
 import { ConnectionFormModal } from './ConnectionFormModal';
 import { ConnectionGrid } from './ConnectionGrid';
+import { useOpenProfiles } from './useOpenProfiles';
 import { AboutModal } from './AboutModal';
 import { ProfileExportModal } from './ProfileExportModal';
 import { useAppStore, type MudConnection } from '../storage';
@@ -28,6 +29,10 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
     const confirm = useConfirm();
     const reorderConnections = useAppStore(s => s.reorderConnections);
     const brand = getBrand();
+    // Which profiles other tabs currently hold open, so the grid can mark them
+    // instead of letting a click land on the "waiting for the other tab" screen.
+    // Paused mid-connect: the grid is about to be replaced by the session.
+    const openIds = useOpenProfiles(!connecting);
     // null = editor closed; { connection: null } = add a new one; { connection: c } = edit c.
     const [editor, setEditor] = useState<{ connection: MudConnection | null } | null>(null);
     const [aboutOpen, setAboutOpen] = useState(false);
@@ -146,6 +151,7 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
                     connecting={connecting}
                     connectingId={connectingId}
                     editingId={editor?.connection?.id ?? null}
+                    openIds={openIds}
                     onConnect={onConnect}
                     onOpen={onOpen}
                     onEdit={(c) => setEditor({ connection: c })}
