@@ -15,6 +15,8 @@ interface OutputContextMenuProps {
     onCopy: () => void;
     onCopyHtml: () => void;
     onCopyImage: () => void;
+    /** Opens the find bar — only the main console passes this. */
+    onFind?: () => void;
     /** Timestamp toggle — only the main console passes these. */
     showTimestamps?: boolean;
     onToggleTimestamps?: () => void;
@@ -31,6 +33,7 @@ export function OutputContextMenu({
     onCopy,
     onCopyHtml,
     onCopyImage,
+    onFind,
     showTimestamps,
     onToggleTimestamps,
     extraItems,
@@ -71,6 +74,17 @@ export function OutputContextMenu({
                 <span className="ctx-menu__check" />
                 Copy as image
             </button>
+
+            {onFind && (
+                <>
+                    <div className="ctx-menu__sep" />
+                    <button className="ctx-menu__item" type="button" onClick={run(onFind)}>
+                        <span className="ctx-menu__check" />
+                        Find…
+                        <span className="ctx-menu__shortcut">Ctrl+F</span>
+                    </button>
+                </>
+            )}
 
             {onToggleTimestamps && (
                 <>

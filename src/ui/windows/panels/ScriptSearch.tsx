@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom';
 import { CaseSensitive, ChevronDown, ChevronRight, Clock, Folder, Keyboard, MousePointerClick, Regex, Search, Shuffle, FileCode2, Zap } from 'lucide-react';
 import { useAppStore } from '../../../storage';
 import type { AliasNode, ButtonNode, KeyNode, ScriptNode, TimerNode, TriggerNode, TriggerPattern } from '../../../storage/schema';
+import { buildMatcher, type MatchRange, type SearchMatcher } from '../../search/matcher';
+import { useDebounced } from '../../search/useDebounced';
 import './ScriptSearch.css';
 
 export type EditCategory = 'scripts' | 'aliases' | 'triggers' | 'timers' | 'keys' | 'buttons';
@@ -34,53 +36,6 @@ function formatKeyCombo(key: string, modifiers: string[]): string {
 }
 
 // ── Matching ────────────────────────────────────────────────────────────────
-
-type MatchRange = [number, number];
-
-interface SearchMatcher {
-    valid: boolean;
-    ranges: (s: string) => MatchRange[];
-}
-
-const NO_RANGES: MatchRange[] = [];
-
-/** Compile a search bar query into a matcher honouring the case / regex flags. */
-function buildMatcher(pattern: string, matchCase: boolean, useRegex: boolean): SearchMatcher {
-    if (!pattern) return { valid: true, ranges: () => NO_RANGES };
-    if (useRegex) {
-        let re: RegExp;
-        try {
-            re = new RegExp(pattern, matchCase ? 'g' : 'gi');
-        } catch {
-            return { valid: false, ranges: () => NO_RANGES };
-        }
-        return {
-            valid: true,
-            ranges: (s) => {
-                const out: MatchRange[] = [];
-                re.lastIndex = 0;
-                let m: RegExpExecArray | null;
-                while ((m = re.exec(s)) !== null) {
-                    out.push([m.index, m.index + m[0].length]);
-                    if (m[0].length === 0) re.lastIndex++; // never spin on a zero-width match
-                }
-                return out;
-            },
-        };
-    }
-    const needle = matchCase ? pattern : pattern.toLowerCase();
-    return {
-        valid: true,
-        ranges: (s) => {
-            const hay = matchCase ? s : s.toLowerCase();
-            const out: MatchRange[] = [];
-            for (let i = hay.indexOf(needle); i !== -1; i = hay.indexOf(needle, i + needle.length)) {
-                out.push([i, i + needle.length]);
-            }
-            return out;
-        },
-    };
-}
 
 interface SearchOccurrence {
     meta: string;
@@ -148,17 +103,6 @@ function ItemIcon({ category, isGroup }: { category: EditCategory; isGroup: bool
     if (isGroup) return <Folder size={13} strokeWidth={1.6} className="script-search__icon-folder" />;
     const Icon = CATEGORY_ICON[category];
     return <Icon size={13} strokeWidth={1.6} className="script-search__icon-type" />;
-}
-
-/** Return `value` delayed by `delay` ms — collapses bursts of keystrokes so the
- *  expensive scan over every node's code body runs at most once per pause. */
-function useDebounced<T>(value: T, delay: number): T {
-    const [debounced, setDebounced] = useState(value);
-    useEffect(() => {
-        const id = setTimeout(() => setDebounced(value), delay);
-        return () => clearTimeout(id);
-    }, [value, delay]);
-    return debounced;
 }
 
 // Virtualised results list: every row (group head or occurrence) is laid out at

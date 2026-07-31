@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import type { MudSession } from '../../mud/MudSession';
 import { useStickyOutput, DEFAULT_STICKY_LINES } from '../../hooks/useOutput';
 import { useAppStore, useProfileField, useConnectionId } from '../../storage';
 import { StickyOutputPanel } from './StickyOutputPanel';
+import { OutputSearchBar } from './OutputSearchBar';
 import type { OutputMenuExtraItem } from './OutputContextMenu';
 import { ScreenReaderLog } from './ScreenReaderLog';
 import { CaretReviewPanel } from './CaretReviewPanel';
@@ -37,10 +38,56 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
     const borderColor = useProfileField('outputBorderColor');
     const patchConnectionProfile = useAppStore(s => s.patchConnectionProfile);
 
-    const { outputRef, sentinelRef, stickyAreaRef, isSplitView, scrollToBottom } =
+    const { outputRef, sentinelRef, stickyAreaRef, isSplitView, scrollToBottom, controls } =
         useStickyOutput(session.events, { stickyLines, showTimestamps });
     const viewportRef = useRef<HTMLDivElement>(null);
     const overlayHostRef = useRef<HTMLDivElement>(null);
+    const [searchOpen, setSearchOpen] = useState(false);
+    // Bumped on every Ctrl+F so a second press re-focuses and re-seeds the
+    // already-open bar instead of being a no-op.
+    const [searchFocusNonce, setSearchFocusNonce] = useState(0);
+
+    // The split-view panel shows cloned lines, so search highlights only appear
+    // there if it is rebuilt from the freshly marked originals. No-op when the
+    // player is scrolled to the bottom and the panel is hidden.
+    const isSplitViewRef = useRef(isSplitView);
+    isSplitViewRef.current = isSplitView;
+    const refreshSticky = useCallback(() => {
+        if (isSplitViewRef.current) controls?.populateStickyArea();
+    }, [controls]);
+
+    const openSearch = useCallback(() => {
+        setSearchOpen(true);
+        setSearchFocusNonce(n => n + 1);
+    }, []);
+
+    // Ctrl/Cmd+F opens the find bar. Capture phase, like the quick-open palette
+    // in ProfileSession, so it wins over the browser's own find. Skipped while
+    // typing in a textarea or code editor, which own their own find.
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+            // Match the physical key as well as the character. On a non-Latin
+            // layout (Cyrillic, Greek) Ctrl+F reports `key` as that layout's
+            // letter, and synthetic events may carry no `key` at all — either
+            // way `code` still identifies the F key, so a layout switch does
+            // not silently hand the shortcut back to the browser's own find.
+            if (e.code !== 'KeyF' && e.key !== 'f' && e.key !== 'F') return;
+            const target = e.target as HTMLElement | null;
+            // The command line is itself a textarea and holds focus almost all
+            // the time, so "focus is in a textarea" cannot mean "leave Ctrl+F
+            // alone" — that hands the shortcut straight back to the browser.
+            // Only a real code editor (the Lua script editor, contentEditable)
+            // or some other textarea keeps it.
+            if (target?.isContentEditable) return;
+            if (target instanceof HTMLTextAreaElement && !target.classList.contains('command-input')) return;
+            e.preventDefault();
+            e.stopPropagation();
+            openSearch();
+        };
+        document.addEventListener('keydown', onKey, true);
+        return () => document.removeEventListener('keydown', onKey, true);
+    }, [openSearch]);
 
     // Mudlet addMouseEvent: custom entries folded into the output right-click
     // menu. Evaluated lazily when the menu opens (the registry can change).
@@ -93,6 +140,7 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
                     foreground={outputForeground}
                     showTimestamps={showTimestamps}
                     onToggleTimestamps={() => connectionId && patchConnectionProfile(connectionId, { showTimestamps: !showTimestamps })}
+                    onFind={openSearch}
                     getMenuExtraItems={getMenuExtraItems}
                     commandInputRef={commandInputRef}
                     fontSize={fontSize}
@@ -101,6 +149,16 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
                     wrapHangingIndent={wrapHangingIndent}
                 />
                 <CaretReviewPanel session={session} commandInputRef={commandInputRef} />
+                {searchOpen && (
+                    <OutputSearchBar
+                        session={session}
+                        outputRef={outputRef}
+                        focusNonce={searchFocusNonce}
+                        onClose={() => setSearchOpen(false)}
+                        refreshSticky={refreshSticky}
+                        commandInputRef={commandInputRef}
+                    />
+                )}
             </div>
             <ScreenReaderLog session={session} />
             {/* Establishes a stacking context (see .main-overlay-root in App.css) so

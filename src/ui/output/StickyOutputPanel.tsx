@@ -23,6 +23,8 @@ interface StickyOutputPanelProps {
     foreground?: string;
     showTimestamps?: boolean;
     onToggleTimestamps?: () => void;
+    /** Opens the find bar from the right-click menu — main console only. */
+    onFind?: () => void;
     /** Script-provided right-click entries (Mudlet addMouseEvent), evaluated
      *  lazily when the menu opens since the registry can change. */
     getMenuExtraItems?: () => OutputMenuExtraItem[];
@@ -39,7 +41,7 @@ export function StickyOutputPanel({
     outputRef, sentinelRef, stickyAreaRef,
     isSplitView, scrollToBottom,
     background, backgroundExtra, foreground, showTimestamps, onToggleTimestamps,
-    getMenuExtraItems,
+    onFind, getMenuExtraItems,
     commandInputRef, className, fontSize, fontFamily, wrapAt, wrapIndent, wrapHangingIndent,
 }: StickyOutputPanelProps) {
     const [stickyHeight, setStickyHeight] = useState(DEFAULT_STICKY_HEIGHT);
@@ -210,6 +212,7 @@ export function StickyOutputPanel({
                     onCopy={() => runCopyAction(copySelectionText)}
                     onCopyHtml={() => runCopyAction(copySelectionAsHtml)}
                     onCopyImage={() => runCopyAction(copySelectionAsImage)}
+                    onFind={onFind}
                     showTimestamps={showTimestamps ?? false}
                     onToggleTimestamps={onToggleTimestamps}
                     extraItems={contextMenu.extraItems}

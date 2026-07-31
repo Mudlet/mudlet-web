@@ -67,6 +67,14 @@
     font-size: 11px;
 }
 
+/* Right-aligned keyboard hint, e.g. "Ctrl+F" on the Find entry. */
+.ctx-menu__shortcut {
+    margin-left: auto;
+    padding-left: 18px;
+    color: var(--text-dim);
+    font-size: 11px;
+}
+
 .ctx-menu__empty {
     padding: 6px 12px;
     font-size: 12px;

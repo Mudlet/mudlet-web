@@ -1,0 +1,130 @@
+/* Find-in-output bar — floats over the top-right of the console, browser-style.
+   Above the overlay widgets (.main-overlay-root, z-index 30) and the caret
+   review panel (40) so a Geyser label can never bury the search box. */
+.output-search {
+    position: absolute;
+    top: 6px;
+    right: 12px;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    font-family: var(--font-ui), sans-serif;
+}
+
+.output-search__bar {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0 3px 0 7px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-surface);
+    box-shadow: var(--shadow-float, 0 4px 14px rgba(0, 0, 0, 0.35));
+}
+
+.output-search__bar:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+.output-search__bar--invalid,
+.output-search__bar--invalid:focus-within {
+    border-color: var(--danger, #e05a5a);
+    box-shadow: none;
+}
+
+.output-search__bar-icon {
+    flex-shrink: 0;
+    color: var(--text-dim);
+}
+
+.output-search__input {
+    width: 170px;
+    min-width: 0;
+    border: none;
+    background: none;
+    outline: none;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 12px;
+    padding: 6px 2px;
+}
+
+.output-search__input::placeholder {
+    color: var(--text-dim);
+}
+
+.output-search__count {
+    flex-shrink: 0;
+    min-width: 42px;
+    padding: 0 4px;
+    text-align: right;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+
+.output-search__count--invalid {
+    color: var(--danger, #e05a5a);
+}
+
+.output-search__nav,
+.output-search__toggle,
+.output-search__close {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+
+.output-search__nav:hover:not(:disabled),
+.output-search__toggle:hover,
+.output-search__close:hover {
+    color: var(--text);
+    background: color-mix(in srgb, var(--bg) 70%, transparent);
+}
+
+.output-search__nav:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
+.output-search__toggle--on {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+}
+
+/* Separator before the close button. */
+.output-search__close {
+    margin-left: 2px;
+    border-left: 1px solid var(--border);
+    border-radius: 0 4px 4px 0;
+    padding-left: 1px;
+}
+
+/* ── Hit tinting ──────────────────────────────────────────────────────────
+   Applied by wrapping rendered text in <mark> (see outputSearch.ts), so the
+   line's own ANSI colours still show through. `color: inherit` keeps them —
+   a bare <mark> would force the UA's black-on-yellow. */
+mark.output-search-hit {
+    color: inherit;
+    background: color-mix(in srgb, var(--accent, #4a9eff) 45%, transparent);
+    border-radius: 2px;
+    padding: 0;
+}
+
+mark.output-search-hit--current {
+    background: var(--accent, #4a9eff);
+    color: var(--bg, #10131a);
+    box-shadow: 0 0 0 1px var(--accent, #4a9eff);
+}
