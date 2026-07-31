@@ -2031,26 +2031,17 @@ body.is-sorting {
     border-top: 1px solid var(--border);
     box-shadow: inset 0 -1px 0 var(--border-hi);
     flex-shrink: 0;
-}
-
-/* Holds the control bar plus Mudlet's collapse arrow, which mapper.ui nests as
-   the bar's *sibling* rather than its child (so collapsing the bar via a package
-   stylesheet leaves the arrow). Positioned so the arrow can anchor to whatever
-   height the bar currently has. */
-.map-panel-bottom {
-    position: relative;
-    flex-shrink: 0;
+    /* Matches the expanded bar (28px hamburger + 4px padding either side), so
+       collapsing to just the arrow doesn't move the arrow. */
+    min-height: 36px;
 }
 
 /* Mudlet's dlgMapper collapse arrow (mapper.ui: toolButton_togglePanel) — shows
-   and hides the control bar. Floats just above the bar, over the canvas, and
-   drops to the panel's bottom edge when the bar is hidden or collapsed to 0px. */
+   and hides the control bar's contents. Pinned to the right end of the bar, and
+   the bar stays mounted while collapsed, so the arrow sits in the same spot in
+   both states instead of hopping by the bar's height. */
 .map-panel-toggle {
-    position: absolute;
-    right: 8px;
-    bottom: 100%;
-    margin-bottom: 4px;
-    z-index: 2;
+    flex-shrink: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -2061,18 +2052,50 @@ body.is-sorting {
     font-size: 10px;
     line-height: 1;
     cursor: pointer;
-    /* Sits over the map canvas, not the app chrome, so it takes the same fixed
-       dark treatment as .map-info / .map-lod-badge to stay legible. */
+    background: var(--bg-glass);
+    border: 1px solid var(--border);
+    box-shadow: inset 0 1px 0 var(--border-hi);
+    color: var(--text-dim);
+    transition: border-color 0.15s, color 0.15s;
+}
+
+/* Collapsed, the bar keeps its box — same padding, same min-height — but lifts
+   out of the flow and drops its chrome, so the map gets the space back and the
+   arrow lands on exactly the pixel it occupied while the bar was open. */
+.map-panel-toolbar--collapsed {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    background: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    border-top: none;
+    box-shadow: none;
+    pointer-events: none;
+}
+
+/* Now over the map canvas rather than the app chrome, so the arrow takes the
+   same fixed dark treatment as .map-info / .map-lod-badge to stay legible. */
+.map-panel-toolbar--collapsed > .map-panel-toggle {
+    margin-left: auto;
+    pointer-events: auto;
     background: rgba(12, 12, 12, 0.72);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
-    border: 1px solid #383838;
+    border-color: #383838;
+    box-shadow: none;
     color: #b0b0b0;
 }
 
-.map-panel-toggle:hover {
+.map-panel-toolbar--collapsed > .map-panel-toggle:hover {
     background: rgba(12, 12, 12, 0.9);
+    border-color: #383838;
     color: #e8e8e8;
+}
+
+.map-panel-toggle:hover {
+    border-color: var(--accent-dim);
+    color: var(--accent);
 }
 
 .map-area-dropdown {

@@ -1268,11 +1268,11 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
     })();
 
     // Mudlet's dlgMapper collapse arrow (mapper.ui: toolButton_togglePanel).
-    // A *sibling* of the control bar, not a child — that's how mapper.ui nests
-    // them, so a package stylesheet that collapses `widget_panel` alone still
-    // leaves a way to bring the bar back (and one that wants the arrow gone too
-    // targets `toolButton_togglePanel`, as Mudlet packages do). Floated just
-    // above the bar, so it tracks whatever height the bar currently has.
+    // Lives at the right end of the control bar, and the bar itself stays
+    // mounted when collapsed (as a bare strip holding just the arrow) so the
+    // arrow doesn't jump as the bar's contents come and go. That does mean a
+    // package stylesheet hiding `widget_panel` takes the arrow with it —
+    // deliberate: a hidden bar shouldn't leave a control floating on the map.
     const panelToggle = (
         <button
             className="map-panel-toggle"
@@ -1307,10 +1307,11 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
                 <div className="map-lod-badge" title={lodNotice.detail}>{lodNotice.label}</div>
             )}
             {mapSource.elements}
-            <div className="map-panel-bottom">
-            {panelToggle}
-            {panelVisible && (
-            <div className="map-panel-toolbar" data-qt-object={QT_OBJECT_NAMES.mapperPanel}>
+            <div
+                className={`map-panel-toolbar${panelVisible ? '' : ' map-panel-toolbar--collapsed'}`}
+                data-qt-object={QT_OBJECT_NAMES.mapperPanel}
+            >
+            {panelVisible && (<>
                 {status === 'ready' && areas.length > 1 && (
                     <div className="map-area-dropdown" ref={dropdownRef} data-qt-object={QT_OBJECT_NAMES.mapperAreaSelector}>
                         <button
@@ -1426,8 +1427,9 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
                         </div>
                     )}
                 </div>
-            </div>
+            </>
             )}
+            {panelToggle}
             </div>
             {menuOpen && infoOverlaysOpen && createPortal(
                 <div
