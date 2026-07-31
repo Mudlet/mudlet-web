@@ -707,10 +707,28 @@ export class ScriptingAPI {
         // Same for blankLinesBehaviour (how empty server lines render).
         const persistedBlank = parseBlankLinesBehaviour(this.configBag().blankLinesBehaviour);
         if (persistedBlank) session.blankLinesBehaviour = persistedBlank;
-        // Same for the per-origin media mute gates (muteMediaAPI / muteMediaGame).
+        // Same for the per-origin media mute gates (muteMediaAPI / muteMediaGame),
+        // which additionally track the persisted bag for as long as the session
+        // lives: unlike `setConfig`, the Settings UI writes straight to the store,
+        // so without this the toggles wouldn't bite until a reload.
+        this.syncMediaMuteFromConfig();
+        this.apiUnsubs.push(useAppStore.subscribe((state, prev) => {
+            const next = state.connectionProfile[this.connectionId]?.config;
+            if (next === prev.connectionProfile[this.connectionId]?.config) return;
+            this.syncMediaMuteFromConfig();
+        }));
+    }
+
+    /** Push the persisted `muteMediaAPI` / `muteMediaGame` gates onto the live
+     *  sound and video managers. Both setters no-op when already in the wanted
+     *  state, so this is cheap to call on every config-bag change. */
+    private syncMediaMuteFromConfig(): void {
         const bag = this.configBag();
-        session.sounds.setOriginMuted('api', configBool(bag.muteMediaAPI ?? false));
-        session.sounds.setOriginMuted('game', configBool(bag.muteMediaGame ?? false));
+        for (const [origin, key] of [['api', 'muteMediaAPI'], ['game', 'muteMediaGame']] as const) {
+            const muted = configBool(bag[key] ?? false);
+            this.session.sounds.setOriginMuted(origin, muted);
+            this.session.videos.setOriginMuted(origin, muted);
+        }
     }
 
     /** Bind the engine backing this API. Called once by ScriptingEngine during
@@ -1205,19 +1223,23 @@ export class ScriptingAPI {
                 return true;
             }
             // Live per-origin media mute gates, persisted so they survive a
-            // reload (re-applied in the constructor). 'api' silences script
-            // playback (playSoundFile/playMusicFile); 'game' silences server
-            // media (MSP / GMCP). Muting a live track keeps it playing silently;
+            // reload (re-applied in the constructor, and re-synced whenever the
+            // Settings UI writes the same bag keys). 'api' silences script
+            // playback (playSoundFile/playMusicFile/playVideoFile); 'game'
+            // silences server media (MSP, MXP <SOUND>/<MUSIC>, and GMCP
+            // Client.Media). Muting a live track keeps it playing silently;
             // unmuting restores it mid-track.
             case 'muteMediaAPI': {
                 const muted = configBool(value);
                 this.session.sounds.setOriginMuted('api', muted);
+                this.session.videos.setOriginMuted('api', muted);
                 this.patchConfigBag('muteMediaAPI', muted);
                 return true;
             }
             case 'muteMediaGame': {
                 const muted = configBool(value);
                 this.session.sounds.setOriginMuted('game', muted);
+                this.session.videos.setOriginMuted('game', muted);
                 this.patchConfigBag('muteMediaGame', muted);
                 return true;
             }

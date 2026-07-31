@@ -154,6 +154,7 @@ export function installVideoBindings({ lua, api }: BindingContext): void {
             width: strOpt(o.width),
             height: strOpt(o.height),
             caption: strOpt(o.caption),
+            origin: 'api',
         });
     });
     // loadVideoFile(name) | ({name=...}) — preload/cache so the first

@@ -166,15 +166,19 @@ describe('setConfig / getConfig', () => {
         expect(h.session.windows.isVisible('map')).toBe(false);
     });
 
-    it('routes muteMediaAPI / muteMediaGame to the SoundManager per origin', () => {
+    it('routes muteMediaAPI / muteMediaGame to the Sound and Video managers per origin', () => {
         // Defaults: both origins audible.
         expect(h.run('return getConfig("muteMediaAPI")')).toBe(false);
         expect(h.run('return getConfig("muteMediaGame")')).toBe(false);
 
-        // Muting the API origin gates only 'api' on the live SoundManager...
+        // Muting the API origin gates only 'api' on the live managers. Mudlet's
+        // setMediaPlayersMuted leaves mediaType unset, which resolves to the
+        // combined sound+music+video lists — so video rides the same gate.
         expect(h.run('return setConfig("muteMediaAPI", true)')).toBe(true);
         expect(h.session.sounds.isOriginMuted('api')).toBe(true);
+        expect(h.session.videos.isOriginMuted('api')).toBe(true);
         expect(h.session.sounds.isOriginMuted('game')).toBe(false);
+        expect(h.session.videos.isOriginMuted('game')).toBe(false);
         expect(h.run('return getConfig("muteMediaAPI")')).toBe(true);
         // ...and persists to the config bag so it survives a reload.
         expect(useAppStore.getState().connectionProfile[CONN]?.config?.muteMediaAPI).toBe(true);
@@ -182,14 +186,40 @@ describe('setConfig / getConfig', () => {
         // The game origin is independent.
         expect(h.run('return setConfig("muteMediaGame", true)')).toBe(true);
         expect(h.session.sounds.isOriginMuted('game')).toBe(true);
+        expect(h.session.videos.isOriginMuted('game')).toBe(true);
         expect(h.run('return getConfig("muteMediaGame")')).toBe(true);
 
         // Unmuting flips it back live.
         h.run('setConfig("muteMediaAPI", false)');
         expect(h.session.sounds.isOriginMuted('api')).toBe(false);
+        expect(h.session.videos.isOriginMuted('api')).toBe(false);
         expect(h.run('return getConfig("muteMediaAPI")')).toBe(false);
         h.run('setConfig("muteMediaGame", false)');
         expect(h.session.sounds.isOriginMuted('game')).toBe(false);
+        expect(h.session.videos.isOriginMuted('game')).toBe(false);
+    });
+
+    // The Settings modal writes the config bag directly (patchConfig) rather
+    // than going through setConfig, so the gates have to track the store — the
+    // toggles would otherwise not bite until a reload.
+    it('applies a config-bag write from the Settings UI to the live managers', () => {
+        const patch = (bag: Record<string, unknown>) => {
+            const prev = useAppStore.getState().connectionProfile[CONN]?.config ?? {};
+            useAppStore.getState().patchConnectionProfile(CONN, { config: { ...prev, ...bag } });
+        };
+
+        // "Mute all media" writes both keys at once, the way the derived row does.
+        patch({ muteMediaAPI: true, muteMediaGame: true });
+        expect(h.session.sounds.isOriginMuted('api')).toBe(true);
+        expect(h.session.sounds.isOriginMuted('game')).toBe(true);
+        expect(h.session.videos.isOriginMuted('api')).toBe(true);
+        expect(h.session.videos.isOriginMuted('game')).toBe(true);
+        // getConfig reads the live manager, so Lua sees the UI's change too.
+        expect(h.run('return getConfig("muteMediaGame")')).toBe(true);
+
+        patch({ muteMediaAPI: false, muteMediaGame: false });
+        expect(h.session.sounds.isOriginMuted('api')).toBe(false);
+        expect(h.session.videos.isOriginMuted('game')).toBe(false);
     });
 
     it('round-trips commandLineHistorySaveSize as a number (default 500)', () => {

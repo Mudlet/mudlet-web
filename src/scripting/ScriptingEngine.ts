@@ -1575,6 +1575,17 @@ export class ScriptingEngine implements EngineHost {
      */
     private async handleClientMedia(action: string, value: unknown): Promise<void> {
         const debug = debugGmcpEnabled();
+        // Per-profile opt-out (undefined/true = allowed), Mudlet's
+        // mAcceptServerMedia. Bail before anything is resolved or downloaded —
+        // this is a hard block, not the `game` mute gate (which still fetches
+        // and plays, silently). Mudlet drops the message just as early, in
+        // cTelnet::setGMCPVariables and again atop TMedia::parseGMCP, and it
+        // still advertises "Client.Media 1" in Core.Supports.Set either way,
+        // so MudClient's handshake stays untouched.
+        if (useAppStore.getState().connectionProfile[this.connectionId]?.allowServerMedia === false) {
+            if (debug) console.debug(`[mudix.gmcp] media ${action} ignored (disabled in settings)`);
+            return;
+        }
         const obj: Record<string, unknown> =
             value && typeof value === 'object' && !Array.isArray(value)
                 ? (value as Record<string, unknown>)

@@ -129,6 +129,16 @@ export interface ProfileSettings {
      *  installed automatically). Disable to ignore those requests. Per-profile
      *  so each MUD is trusted independently. */
     allowMudPackageInstall?: boolean;
+    /** When true (default — treat `undefined` as true), MUDs may drive playback
+     *  through the GMCP `Client.Media` messages (MCMP): files named by the
+     *  server are downloaded into the profile's `media/` folder and played.
+     *  Disable to ignore those messages outright — nothing is fetched and
+     *  nothing plays, which is what separates this from `muteMediaGame` (that
+     *  one still downloads and plays, just silently). Mudlet's
+     *  `mAcceptServerMedia` / "Allow server to download and play media", and
+     *  like Mudlet it gates GMCP only — MSP has its own switch in
+     *  `protocols.msp`. Per-profile, so each MUD is trusted independently. */
+    allowServerMedia?: boolean;
     /** When true (default), a server that advertises a TLS port via MSSP prompts
      *  once to switch to it. Declining sets this false so the offer never
      *  reappears for this profile. Mudlet calls it `mAskTlsAvailable`

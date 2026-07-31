@@ -9,6 +9,7 @@
 // stopVideos pauses + removes them.
 
 import type { MediaCaptionInfo } from '../sound/closedCaption';
+import type { MediaOrigin } from '../sound/SoundManager';
 
 type LoaderFn = (path: string) => Promise<ArrayBuffer | null>;
 
@@ -23,12 +24,17 @@ export interface PlayVideoOptions {
     height?: string;
     /** Optional closed-caption text (Mudlet's media `caption`). */
     caption?: string;
+    /** Which mute gate governs this playback. Default 'api' — the only way to
+     *  reach a video today is Lua's `playVideoFile`, but GMCP `Client.Media`
+     *  defines a video type, so the gate is parameterised like the sounds'. */
+    origin?: MediaOrigin;
 }
 
 interface ActiveVideo {
     name: string;
     /** Original path/URL the video was played from (for getPlayingVideos). */
     path: string;
+    origin: MediaOrigin;
     element: HTMLVideoElement;
     objectUrl: string | null;
 }
@@ -41,6 +47,14 @@ export class VideoManager {
     private active = new Map<string, ActiveVideo>();
     /** Buffers fetched ahead of play via loadVideoFile, keyed by VFS path. */
     private prefetched = new Map<string, ArrayBuffer>();
+    /**
+     * Per-origin mute gates, the video half of {@link SoundManager}'s. A muted
+     * origin's videos keep playing (picture and position both advance) with the
+     * element muted, and new ones start muted — nothing is stopped, so unmuting
+     * restores audio mid-clip. `volume` is left alone so `getPlayingVideos`
+     * still reports what the script asked for.
+     */
+    private muted: Record<MediaOrigin, boolean> = { api: false, game: false };
     /** Fires when a video ends naturally or is stopped — mirrors Mudlet's
      *  sysMediaFinished. */
     onEnded: ((name: string, path: string) => void) | null = null;
@@ -54,6 +68,20 @@ export class VideoManager {
 
     setMountPoint(fn: (() => HTMLElement | null) | null): void {
         this.getMount = fn;
+    }
+
+    /** Mudlet `muteMediaAPI` / `muteMediaGame`, applied to video playback. See
+     *  {@link muted}; the sound-side twin is `SoundManager.setOriginMuted`. */
+    setOriginMuted(origin: MediaOrigin, muted: boolean): void {
+        if (this.muted[origin] === muted) return;
+        this.muted[origin] = muted;
+        for (const v of this.active.values()) {
+            if (v.origin === origin) v.element.muted = muted;
+        }
+    }
+
+    isOriginMuted(origin: MediaOrigin): boolean {
+        return this.muted[origin];
     }
 
     /**
@@ -77,6 +105,7 @@ export class VideoManager {
         const mount = this.getMount?.() ?? null;
         if (!mount) return false;
         const name = opts.name || path.split(/[/\\]/).pop() || path;
+        const origin: MediaOrigin = opts.origin ?? 'api';
         this.stopByName(name);
 
         let src: string;
@@ -98,6 +127,8 @@ export class VideoManager {
         el.playsInline = true;
         el.loop = (opts.loops ?? 1) < 0;
         el.volume = Math.max(0, Math.min(1, (opts.volume ?? 50) / 100));
+        // A muted origin plays silently from the start; unmuting later restores it.
+        el.muted = this.muted[origin];
         el.style.position = 'absolute';
         el.style.top = '0';
         el.style.left = '0';
@@ -108,7 +139,7 @@ export class VideoManager {
         el.style.background = 'transparent';
         el.style.pointerEvents = 'none';
 
-        const entry: ActiveVideo = { name, path, element: el, objectUrl };
+        const entry: ActiveVideo = { name, path, origin, element: el, objectUrl };
         el.addEventListener('ended', () => {
             // For finite loops > 1, replay manually until counter exhausts.
             const desired = opts.loops ?? 1;

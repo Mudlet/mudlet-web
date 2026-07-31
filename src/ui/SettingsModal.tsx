@@ -56,12 +56,13 @@ function hexToRgb(s: string): { r: number; g: number; b: number } | null {
 // Theme options come from the active brand (stock themes plus/minus the
 // brand's own — see getThemeChoices), so they're resolved at render time.
 
-type SettingsTab = 'general' | 'appearance' | 'input' | 'accessibility' | 'colors' | 'network' | 'mapper';
+type SettingsTab = 'general' | 'appearance' | 'input' | 'media' | 'accessibility' | 'colors' | 'network' | 'mapper';
 
 const TABS: { value: SettingsTab; label: string }[] = [
     { value: 'general',       label: 'General' },
     { value: 'appearance',    label: 'Appearance' },
     { value: 'input',         label: 'Input' },
+    { value: 'media',         label: 'Media' },
     { value: 'accessibility', label: 'Accessibility' },
     { value: 'colors',        label: 'Colors' },
     { value: 'network',       label: 'Network' },
@@ -117,6 +118,10 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     const notificationsEnabled = useAppStore(s => s.client.notificationsEnabled);
     const patchClient = useAppStore(s => s.patchClient);
     const mudPackageInstallEnabled = allowMudPackageInstall !== false;
+    // Mudlet's mAcceptServerMedia ("Allow server to download and play media").
+    // Same undefined-means-true shape as allowMudPackageInstall above.
+    const allowServerMedia = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'allowServerMedia') : undefined));
+    const serverMediaEnabled = allowServerMedia !== false;
     // Mudlet's checkBox_askTlsAvailable. Defaults on, and is switched off for
     // good when the user declines an MSSP secure-port offer.
     const askTlsAvailableSetting = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'askTlsAvailable') : undefined));
@@ -205,6 +210,12 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     // ScreenReaderLog component reads the same key.
     const announceIncomingText = (config?.announceIncomingText as boolean | undefined) ?? true;
     const enableClosedCaption = (config?.enableClosedCaption as boolean | undefined) ?? false;
+    // Mudlet's three mute actions. The two stored keys are the same ones Lua's
+    // setConfig writes; "mute all media" is derived (both on) rather than stored,
+    // exactly as Mudlet derives its toolbar state from mMuteAPI && mMuteGame.
+    const muteMediaAPI = (config?.muteMediaAPI as boolean | undefined) ?? false;
+    const muteMediaGame = (config?.muteMediaGame as boolean | undefined) ?? false;
+    const muteAllMedia = muteMediaAPI && muteMediaGame;
     const advertiseScreenReader = (config?.advertiseScreenReader as boolean | undefined) ?? false;
     const rawCaretShortcut = config?.caretShortcut;
     const caretShortcut: CaretShortcut =
@@ -1076,6 +1087,88 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                                         <option key={opt.value} value={opt.value}>{opt.label}</option>
                                     ))}
                                 </select>
+                            </div>
+                        </section>
+                    )}
+                    {activeTab === 'media' && connectionId && (
+                        <section className="settings-section">
+                            <div className="settings-row">
+                                <span className="settings-label" id="allow-server-media-label">
+                                    Allow server to download and play media
+                                    <HelpTip label="About server media">
+                                        Let the MUD drive playback over GMCP
+                                        <code> Client.Media</code> (MCMP): files it names are
+                                        downloaded into this profile's <code>media/</code> folder
+                                        and played (Mudlet's <code>mAcceptServerMedia</code>).
+                                        Turning this off ignores those messages outright — nothing
+                                        is fetched and nothing plays, unlike muting below, which
+                                        still downloads and plays silently. Needs GMCP enabled in
+                                        the protocols. MSP has its own switch under General. On by
+                                        default.
+                                    </HelpTip>
+                                </span>
+                                <Toggle
+                                    id="allow-server-media"
+                                    aria-labelledby="allow-server-media-label"
+                                    checked={serverMediaEnabled}
+                                    onChange={next => patchProfile({ allowServerMedia: next })}
+                                />
+                            </div>
+                            <div className="settings-row">
+                                <span className="settings-label" id="mute-all-media-label">
+                                    Mute all media
+                                    <HelpTip label="About muting all media">
+                                        Silence every sound, music track, and video — both the ones
+                                        your own triggers and scripts start and the ones the game
+                                        sends (Mudlet's <strong>Mute all media</strong>). This is
+                                        just the two switches below moving together; it's on only
+                                        while both are. Muting doesn't stop anything — a track keeps
+                                        playing silently and comes back mid-track when you unmute.
+                                    </HelpTip>
+                                </span>
+                                <Toggle
+                                    id="mute-all-media"
+                                    aria-labelledby="mute-all-media-label"
+                                    checked={muteAllMedia}
+                                    onChange={next => patchConfig({ muteMediaAPI: next, muteMediaGame: next })}
+                                />
+                            </div>
+                            <div className="settings-row">
+                                <span className="settings-label" id="mute-media-api-label">
+                                    Mute sounds from Mudlet (triggers, scripts, etc.)
+                                    <HelpTip label="About muting script sounds">
+                                        Silence media started by your own profile —
+                                        <code> playSoundFile</code>, <code>playMusicFile</code>, and
+                                        <code> playVideoFile</code> (Mudlet's
+                                        <code> muteMediaAPI</code>). Leaves the game's own sounds
+                                        alone. Off by default.
+                                    </HelpTip>
+                                </span>
+                                <Toggle
+                                    id="mute-media-api"
+                                    aria-labelledby="mute-media-api-label"
+                                    checked={muteMediaAPI}
+                                    onChange={next => patchConfig({ muteMediaAPI: next })}
+                                />
+                            </div>
+                            <div className="settings-row">
+                                <span className="settings-label" id="mute-media-game-label">
+                                    Mute sounds from the game (MCMP, MSP)
+                                    <HelpTip label="About muting game sounds">
+                                        Silence media the server asks for: MSP
+                                        <code> !!SOUND</code>/<code>!!MUSIC</code> tags, the MXP
+                                        <code> &lt;SOUND&gt;</code>/<code>&lt;MUSIC&gt;</code> tags,
+                                        and MCMP — the GMCP <code>Client.Media</code> messages
+                                        (Mudlet's <code>muteMediaGame</code>). Leaves your own
+                                        scripts' sounds alone. Off by default.
+                                    </HelpTip>
+                                </span>
+                                <Toggle
+                                    id="mute-media-game"
+                                    aria-labelledby="mute-media-game-label"
+                                    checked={muteMediaGame}
+                                    onChange={next => patchConfig({ muteMediaGame: next })}
+                                />
                             </div>
                         </section>
                     )}
