@@ -20,8 +20,8 @@ jobs:
     name: Unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: yarn
@@ -33,19 +33,41 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: yarn
       - run: yarn install --frozen-lockfile
-      - run: yarn playwright install --with-deps chromium
+      # Cache the downloaded Chromium binary keyed on the installed Playwright
+      # version — a cache miss (version bump or first run) redownloads, a hit
+      # restores it from ~/.cache/ms-playwright and skips the browser download.
+      - name: Resolve Playwright version
+        id: playwright-version
+        run: echo "version=$(node -p "require('./node_modules/@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ steps.playwright-version.outputs.version }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+      # On a cache hit the browser is already present, so only the OS-level
+      # dependencies (not covered by the cache) need installing; on a miss we
+      # pull down the browser and its deps together.
+      - name: Install Playwright browser (cache miss)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: yarn playwright install --with-deps chromium
+      - name: Install Playwright system deps (cache hit)
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: yarn playwright install-deps chromium
       # `yarn playwright test` on purpose, not `yarn test:e2e`: the latter's
       # pretest hook regenerates e2e/busted.manifest.json, which would double the
       # run time and silently paper over drift. The committed manifest is the
       # contract here — busted.spec.ts's drift guard fails if it went stale.
       - run: yarn playwright test
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-report
@@ -56,14 +78,14 @@ jobs:
     name: Build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: yarn
       - run: yarn install --frozen-lockfile
       - run: yarn build
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: dist
 
