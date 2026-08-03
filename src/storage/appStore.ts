@@ -156,7 +156,12 @@ export const useAppStore = create<AppStore>()(
             ...APP_DEFAULTS,
             addConnection: data => {
                 const id = crypto.randomUUID();
-                set(s => ({ connections: [...s.connections, { ...data, id }] }));
+                // createdAt is stamped here and only here: its absence is the
+                // marker for "profile predates the field" that stockDefaults
+                // reads to keep the starter UI off established profiles. An
+                // explicit createdAt in `data` (profile import/copy) wins.
+                const createdAt = data.createdAt ?? new Date().toISOString();
+                set(s => ({ connections: [...s.connections, { ...data, createdAt, id }] }));
                 return id;
             },
             updateConnection: (id, data) => set(s => ({

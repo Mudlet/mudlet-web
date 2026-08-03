@@ -55,7 +55,7 @@ export class HttpService {
         try {
             body = this.bodyForUpload(data, file);
         } catch (err) {
-            this.emit('sysPostHttpError', [errorMessage(err), url]);
+            this.emitLater('sysPostHttpError', [errorMessage(err), url]);
             return;
         }
         void this.runRequest('POST', url, body, headers, 'sysPostHttpDone', 'sysPostHttpError');
@@ -66,7 +66,7 @@ export class HttpService {
         try {
             body = this.bodyForUpload(data, file);
         } catch (err) {
-            this.emit('sysPutHttpError', [errorMessage(err), url]);
+            this.emitLater('sysPutHttpError', [errorMessage(err), url]);
             return;
         }
         void this.runRequest('PUT', url, body, headers, 'sysPutHttpDone', 'sysPutHttpError');
@@ -81,7 +81,7 @@ export class HttpService {
         try {
             body = this.bodyForUpload(data, file);
         } catch (err) {
-            this.emit('sysCustomHttpError', [errorMessage(err), url, method]);
+            this.emitLater('sysCustomHttpError', [errorMessage(err), url, method]);
             return;
         }
         void this.runRequest(method, url, body, headers, 'sysCustomHttpDone', 'sysCustomHttpError', [method], [method]);
@@ -143,6 +143,21 @@ export class HttpService {
             off += c.byteLength;
         }
         return merged;
+    }
+
+    /**
+     * Emit on a later turn of the event loop.
+     *
+     * Every other emit here fires from an async continuation, so it is already
+     * off the call that started the request. These three are the exception:
+     * building the upload body is synchronous, so its failure would otherwise
+     * emit — and therefore dispatch Lua event handlers — while still inside the
+     * `__postHTTP` binding that Lua itself called. Re-entering the Lua state
+     * mid-call crashes wasmoon outright ("memory access out of bounds"), taking
+     * the whole runtime with it rather than failing one call.
+     */
+    private emitLater(event: string, args: unknown[]): void {
+        queueMicrotask(() => this.emit(event, args));
     }
 
     private bodyForUpload(data: string | null, file: string | undefined): BodyInit | undefined {

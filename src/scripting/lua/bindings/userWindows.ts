@@ -190,10 +190,19 @@ export function installUserWindowBindings({
             ? [a as string, b, c, d, e, f]
             : [undefined, a, b, c, d, e];
         if (typeof name !== 'string' || !name) return false;
+        // Mudlet reuses a scroll box that already carries this name — it moves
+        // and resizes the existing one instead of creating a second or failing
+        // (createMiniConsole behaves the same way, and the Bridge.lua wrapper
+        // turns the reuse into Mudlet's `false, "... moving/resizing ..."`).
+        if (api.scrollBoxes.has(name)) {
+            api.scrollBoxes.move(name, Math.trunc(Number(x)), Math.trunc(Number(y)));
+            api.scrollBoxes.resize(name, Math.trunc(Number(w)), Math.trunc(Number(h)));
+            return true;
+        }
         return api.scrollBoxes.create(name, {
             parent: parent && parent !== 'main' ? parent : 'main',
-            x: Number(x), y: Number(y),
-            width: Number(w), height: Number(h),
+            x: Math.trunc(Number(x)), y: Math.trunc(Number(y)),
+            width: Math.trunc(Number(w)), height: Math.trunc(Number(h)),
         });
     });
     // Mudlet deleteScrollBox(name) → bool. Destroys a scroll box created via

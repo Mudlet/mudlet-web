@@ -8,6 +8,8 @@ import {
     connectionHost,
     ensureDefaultPackages,
     IRE_MAPPER_GAMES,
+    GAMES_WITH_OWN_UI,
+    isNewProfile,
 } from '../../src/import/defaultPackages';
 import { installPackageFromBytes } from '../../src/import/packageInstaller';
 import { useAppStore } from '../../src/storage/appStore';
@@ -50,10 +52,15 @@ const ARCHIVE_PATHS: Record<string, string> = {
     'run-lua-code.mpackage': 'src/import/defaults/run-lua-code.mpackage',
     'generic_mapper.mpackage': 'src/scripting/lua/mudlet-lua/generic-mapper/generic_mapper.mpackage',
     'mudlet-mapper.xml': 'src/import/defaults/mudlet-mapper.xml',
+    'mudlet-base-ui.mpackage': 'src/scripting/lua/mudlet-lua/base-ui/mudlet-base-ui.mpackage',
 };
 
-/** What a profile on `host` ends up with. */
-const namesFor = (host?: string) => stockDefaults(host).map(d => d.name);
+/** What a profile on `host` ends up with. Defaults to a newly-created profile —
+ *  the `createdAt` stamp addConnection writes — so the mapper/run-lua-code cases
+ *  below aren't quietly also asserting the starter-UI gate. */
+const NEW_PROFILE = { createdAt: '2026-08-02T00:00:00.000Z' };
+const namesFor = (host?: string, conn: { createdAt?: string } = NEW_PROFILE) =>
+    stockDefaults(host, conn).map(d => d.name);
 
 describe('default packages', () => {
     it('always ships exactly one mapper, so the map follows the player', () => {
@@ -108,7 +115,7 @@ describe('default packages', () => {
 
         it('installs the stock defaults when the brand has no opinion', () => {
             expect(resolveDefaultPackages(undefined, 'elephant.org').map(d => d.name))
-                .toEqual(['run-lua-code', 'generic_mapper']);
+                .toEqual(['run-lua-code', 'generic_mapper', 'mudlet-base-ui']);
         });
 
         it('installs nothing for an empty brand list', () => {
@@ -133,7 +140,53 @@ describe('default packages', () => {
         for (const host of [undefined, 'stickmud.com', 'elephant.org']) {
             for (const def of stockDefaults(host)) expect(ALL_DEFAULTS).toContain(def);
         }
-        expect(ALL_DEFAULTS.map(d => d.name)).toEqual(['run-lua-code', 'mudlet-mapper', 'generic_mapper']);
+        expect(ALL_DEFAULTS.map(d => d.name))
+            .toEqual(['run-lua-code', 'mudlet-mapper', 'generic_mapper', 'mudlet-base-ui']);
+    });
+
+    describe('starter UI', () => {
+        // Mirrors mudlet.cpp: appended unless TGameDetails flags the game as
+        // providing its own interface via its bundled loader.
+        it('ships on games that provide no interface of their own', () => {
+            for (const host of ['elephant.org', 'alteraeon.com', 'stickmud.com', undefined]) {
+                expect(namesFor(host), `host ${host}`).toContain('mudlet-base-ui');
+            }
+        });
+
+        it('stands aside for games whose own loader installs a full UI', () => {
+            for (const host of GAMES_WITH_OWN_UI) {
+                expect(namesFor(host), `host ${host}`).not.toContain('mudlet-base-ui');
+            }
+        });
+
+        it('stays off profiles that predate the createdAt stamp', () => {
+            // No stamp = the profile existed before the starter UI did, so
+            // someone may already have a layout. Mudix's stand-in for Mudlet's
+            // experiencedMudletPlayer() check. Everything else still installs.
+            const established = namesFor('elephant.org', {});
+            expect(established).not.toContain('mudlet-base-ui');
+            expect(established).toEqual(['run-lua-code', 'generic_mapper']);
+        });
+
+        it('treats a profile with no connection record as new', () => {
+            // Tooling and previews pass nothing; there's no layout at risk.
+            expect(stockDefaults('elephant.org').map(d => d.name)).toContain('mudlet-base-ui');
+            expect(isNewProfile(undefined)).toBe(true);
+            expect(isNewProfile({ createdAt: '2026-01-01T00:00:00.000Z' })).toBe(true);
+            expect(isNewProfile({})).toBe(false);
+        });
+
+        it('skips a game reached under an alternate hostname', () => {
+            // TGameDetails matches alternateHostUrls too, so MorgenGrauen's four
+            // hostnames must all suppress it — not just its canonical one.
+            expect(namesFor('mud.morgengrauen.info')).not.toContain('mudlet-base-ui');
+            expect(namesFor('mg.mud.de')).not.toContain('mudlet-base-ui');
+        });
+
+        it('matches those hosts case-insensitively', () => {
+            expect(namesFor(connectionHost({ mode: 'mud', host: 'Medievia.COM' })))
+                .not.toContain('mudlet-base-ui');
+        });
     });
 
     for (const def of ALL_DEFAULTS) {

@@ -245,9 +245,12 @@ end
 -- missing/unreadable or an unrecognised format). JS returns a 0-indexed [w, h]
 -- array, or false on the miss case.
 function getImageSize(path)
+    if path == "" then
+        return nil, "image location cannot be an empty string"
+    end
     local t = __getImageSize(path)
     if type(t) == 'table' then return t[0], t[1] end
-    return nil
+    return nil, "couldn't retrieve image size, is the location '" .. tostring(path) .. "' correct?"
 end
 
 -- Mudlet getConsoleBufferSize([consoleName]) → linesLimit, sizeOfBatchDeletion.
@@ -328,6 +331,11 @@ end
 -- Mudlet getLabelSizeHint(name) → width, height, or (nil, errMsg) when the
 -- label doesn't exist. JS returns a 0-indexed [w, h] array or false.
 function getLabelSizeHint(name)
+    -- An empty name is a different mistake from a name that matched nothing,
+    -- and Mudlet says so — UI_spec asserts both wordings.
+    if name == "" then
+        return nil, "label name cannot be an empty string"
+    end
     local t = __getLabelSizeHint(name)
     if not t then
         return nil, "label '" .. tostring(name) .. "' does not exist"
@@ -370,21 +378,32 @@ function setFontSize(a, b)
     end
     if __setFontSize(a, b) then return true end
     local name = (type(a) == 'string') and a or 'main'
-    return nil, "setFontSize: window \"" .. tostring(name) .. "\" not found or invalid size"
+    return nil, "window \"" .. tostring(name) .. "\" not found"
 end
 
 function getFontSize(a)
     local v = __getFontSize(a)
     if v == nil then
-        return nil, "getFontSize: window \"" .. tostring(a) .. "\" not found"
+        return nil, "window \"" .. tostring(a) .. "\" not found"
     end
     return v
 end
 
 function setFont(a, b)
-    if __setFont(a, b) then return true end
+    -- setFont([window,] font) — the font is the last argument either way.
+    local font = (b ~= nil) and b or a
     local name = (b ~= nil) and a or 'main'
-    return nil, "setFont: window \"" .. tostring(name) .. "\" not found"
+    -- The font is checked against the database before the window is, because a
+    -- name the renderer can't resolve would otherwise be accepted and silently
+    -- fall back to whatever the browser picks.
+    if font == "" then
+        return nil, "font must not be empty"
+    end
+    if type(font) == 'string' and not getAvailableFonts()[font] then
+        return nil, "font '" .. font .. "' is not available"
+    end
+    if __setFont(a, b) then return true end
+    return nil, "window \"" .. tostring(name) .. "\" not found"
 end
 
 -- Mudlet setMiniConsoleFontSize(name, size). Mudlet returns (nil, "setting
@@ -401,7 +420,7 @@ end
 function getFont(a)
     local v = __getFont(a)
     if v == nil then
-        return nil, "getFont: window \"" .. tostring(a) .. "\" not found"
+        return nil, "window \"" .. tostring(a) .. "\" not found"
     end
     return v
 end
@@ -421,12 +440,256 @@ function calcFontSize(a, b)
     return t[0], t[1]
 end
 
+-- A handful of setters that took whatever they were given. Mudlet reads each
+-- through getVerifiedNumber/getVerifiedString and raises, so a typo fails at the
+-- call instead of quietly writing a NaN border or the string "table".
+do
+    local function requireNumber(fn, who)
+        return function(v, ...)
+            if type(v) ~= 'number' then
+                error(who .. ": bad argument #1 type (number expected, got "
+                    .. type(v) .. "!)", 2)
+            end
+            return fn(v, ...)
+        end
+    end
+    setBorderTop    = requireNumber(setBorderTop,    "setBorderTop")
+    setBorderBottom = requireNumber(setBorderBottom, "setBorderBottom")
+    setBorderLeft   = requireNumber(setBorderLeft,   "setBorderLeft")
+    setBorderRight  = requireNumber(setBorderRight,  "setBorderRight")
+
+    -- Numbers are accepted the way Mudlet's lua_isstring accepts them (Lua
+    -- coerces), and nil keeps clearing the clipboard — mudix chose that so a
+    -- script never blows up on a browser without a clipboard API. Anything else
+    -- is a genuine type mistake.
+    local _rawSetClipboardText = setClipboardText
+    function setClipboardText(text)
+        local t = type(text)
+        if t ~= 'string' and t ~= 'number' and t ~= 'nil' then
+            error("setClipboardText: bad argument #1 type (string expected, got "
+                .. t .. "!)", 2)
+        end
+        return _rawSetClipboardText(text)
+    end
+
+    -- getColumnCount / getRowCount answer 0 for a console that isn't there,
+    -- which a caller can't tell from a genuinely empty one.
+    local function countGuard(fn)
+        return function(win, ...)
+            if win ~= nil and win ~= 'main' and __windowType(win) == nil then
+                return nil, 'window "' .. tostring(win) .. '" not found'
+            end
+            return fn(win, ...)
+        end
+    end
+    getColumnCount = countGuard(getColumnCount)
+    getRowCount    = countGuard(getRowCount)
+end
+
+-- Mudlet timeStampsEnabled(window) / enableTimeStamps(window) /
+-- disableTimeStamps(window). Both setters refuse a no-op: asking for a state the
+-- console is already in reports back rather than silently succeeding, so a
+-- script can tell whether it was the one that changed it.
+do
+    function timeStampsEnabled(windowName)
+        local v = __timeStampsEnabled(windowName)
+        if v == nil then
+            return nil, 'window "' .. tostring(windowName) .. '" not found'
+        end
+        return v
+    end
+
+    local function timeStampSetter(want, who, already)
+        return function(windowName)
+            local current = __timeStampsEnabled(windowName)
+            if current == nil then
+                return nil, 'window "' .. tostring(windowName) .. '" not found'
+            end
+            if current == want then
+                return nil, who .. ": timestamps were " .. already .. " for '"
+                    .. tostring(windowName) .. "'"
+            end
+            __setTimeStamps(windowName, want)
+            return true
+        end
+    end
+    -- The enable-path wording is Mudlet's own and reads backwards ("were not
+    -- enabled" when they in fact already are); its spec asserts only the shape,
+    -- with a note that the wording should change, so it is mirrored as-is.
+    enableTimeStamps  = timeStampSetter(true,  "enableTimeStamps",  "not enabled")
+    disableTimeStamps = timeStampSetter(false, "disableTimeStamps", "not disabled")
+end
+
+-- Mudlet echoUserWindow(windowName, text) — the older name for echo(name, text),
+-- kept because packages written against it are still in circulation. It targets
+-- labels and miniconsoles alike, which is exactly what echo already does.
+function echoUserWindow(windowName, text)
+    return echo(windowName, text)
+end
+
+-- addMouseEvent / removeMouseEvent, setWindow, and the user-window title and
+-- stylesheet setters all report their misses as (nil, message) rather than a
+-- bare false. Each wording is Mudlet's own — note "user window name" for the
+-- title but "userwindow name" for the stylesheet, which UI_spec pins verbatim.
+do
+    local _rawAddMouseEvent = addMouseEvent
+    function addMouseEvent(uniqueName, ...)
+        if getMouseEvents()[uniqueName] ~= nil then
+            return nil, "mouse event '" .. tostring(uniqueName) .. "' already exists"
+        end
+        _rawAddMouseEvent(uniqueName, ...)
+        return true
+    end
+
+    local _rawRemoveMouseEvent = removeMouseEvent
+    function removeMouseEvent(uniqueName)
+        if getMouseEvents()[uniqueName] == nil then
+            return nil, "mouse event '" .. tostring(uniqueName) .. "' does not exist"
+        end
+        _rawRemoveMouseEvent(uniqueName)
+        return true
+    end
+
+    -- setWindow(parentWindow, element, x, y, show) — the parent is checked
+    -- first, matching the order Mudlet resolves them in. Only the "no such
+    -- name" cases become (nil, message); the raw result is passed straight
+    -- through otherwise, because it still says false for moves that exist but
+    -- are illegal (reparenting a userwindow, or making a cycle).
+    local _rawSetWindow = setWindow
+    function setWindow(parent, element, ...)
+        if parent ~= 'main' and __windowType(parent) == nil then
+            return nil, "window '" .. tostring(parent) .. "' not found"
+        end
+        if __windowType(element) == nil then
+            return nil, "element '" .. tostring(element) .. "' not found"
+        end
+        return _rawSetWindow(parent, element, ...)
+    end
+
+    local function userWindowGuard(fn, message)
+        return function(name, ...)
+            if __windowType(name) ~= 'userwindow' then
+                return nil, (message:gsub("%%s", tostring(name)))
+            end
+            fn(name, ...)
+            return true
+        end
+    end
+    setUserWindowTitle      = userWindowGuard(setUserWindowTitle,      "user window name '%s' not found")
+    setUserWindowStyleSheet = userWindowGuard(setUserWindowStyleSheet, "userwindow name '%s' not found")
+end
+
+-- setCommandForegroundColor / setCommandBackgroundColor([window,] r, g, b [, a]).
+-- Mudlet names the offending channel in the range error, and reports a window it
+-- can't resolve the same way setBackgroundColor does.
+do
+    local CHANNEL_NAMES = { "red", "green", "blue", "alpha" }
+    local function cmdColorGuard(fn)
+        return function(...)
+            local args = { ... }
+            local hasWindow = type(args[1]) == 'string'
+            if hasWindow and args[1] ~= 'main' and __windowType(args[1]) == nil then
+                return nil, "window/label '" .. args[1] .. "' not found"
+            end
+            local first = hasWindow and 2 or 1
+            for i = 1, 4 do
+                local v = args[first + i - 1]
+                if v ~= nil then
+                    local n = tonumber(v)
+                    if n == nil or n < 0 or n > 255 then
+                        return nil, CHANNEL_NAMES[i] .. " value " .. tostring(v)
+                            .. " needs to be between 0-255"
+                    end
+                end
+            end
+            return fn(...)
+        end
+    end
+    setCommandForegroundColor = cmdColorGuard(setCommandForegroundColor)
+    setCommandBackgroundColor = cmdColorGuard(setCommandBackgroundColor)
+end
+
+-- These four all require a window name — a missing or non-string one is an
+-- error, while a name that resolves to no widget is silently ignored.
+--
+-- They differ in what they hand back: showWindow reports a boolean, but
+-- moveWindow, resizeWindow and hideWindow return *nothing at all* — not even
+-- nil, which `select("#", ...)` can tell apart and UI_spec checks.
+do
+    local function named(fn, who, void)
+        return function(name, ...)
+            if type(name) ~= 'string' then
+                error(who .. ": bad argument #1 type (window name as string expected, got "
+                    .. type(name) .. "!)", 2)
+            end
+            if void then
+                fn(name, ...)
+                return
+            end
+            return fn(name, ...)
+        end
+    end
+    moveWindow   = named(moveWindow,   "moveWindow",   true)
+    resizeWindow = named(resizeWindow, "resizeWindow", true)
+    hideWindow   = named(hideWindow,   "hideWindow",   true)
+    showWindow   = named(showWindow,   "showWindow")
+end
+
+-- Mudlet pasteWindow(windowName) — paste the last copy() into a *named*
+-- console. Same operation as paste(name); it exists separately in Mudlet
+-- because the window name is required rather than optional, so a missing or
+-- mistyped one is a hard error instead of silently hitting the main window.
+function pasteWindow(windowName)
+    if type(windowName) ~= 'string' then
+        error("pasteWindow: bad argument #1 type (window name as string expected, got "
+            .. type(windowName) .. "!)", 2)
+    end
+    return paste(windowName)
+end
+
 -- Mudlet removeCommandLineMenuEvent([cmdLineName,] uniqueName) → true on
 -- success, (false, errMsg) when no entry exists with that uniqueName.
 function removeCommandLineMenuEvent(a, b)
     if __removeCommandLineMenuEvent(a, b) then return true end
     local name = (b ~= nil) and b or a
-    return false, "no command-line menu event named \"" .. tostring(name) .. "\""
+    return false, "removeCommandLineMenuEvent: cannot remove '" .. tostring(name)
+        .. "', menu item does not exist"
+end
+
+-- enable/disableCommandLine and the 3-argument addCommandLineMenuEvent all name
+-- a command line, and all three answer a name that isn't one with (nil,
+-- message). The main command bar is a separate refusal: Mudlet won't let a
+-- script hide the thing the player types into.
+do
+    local MAIN = "this function is not permitted on the main command line"
+    local function missingCmdLine(name)
+        if __windowType(name) == 'commandline' then return nil end
+        return 'command line "' .. tostring(name) .. '" not found'
+    end
+
+    local function visibilityGuard(fn)
+        return function(name, ...)
+            if name == nil or name == 'main' then return nil, MAIN end
+            local err = missingCmdLine(name)
+            if err then return nil, err end
+            fn(name, ...)
+            return true
+        end
+    end
+    enableCommandLine  = visibilityGuard(enableCommandLine)
+    disableCommandLine = visibilityGuard(disableCommandLine)
+
+    local _rawAddMenuEvent = addCommandLineMenuEvent
+    function addCommandLineMenuEvent(a, b, c)
+        -- Only the three-argument form names a command line; the two-argument
+        -- one targets the main bar and has no name to check.
+        if c ~= nil then
+            local err = missingCmdLine(a)
+            if err then return nil, err end
+        end
+        if _rawAddMenuEvent(a, b, c) then return true end
+        return false, "addCommandLineMenuEvent: could not add the menu item"
+    end
 end
 
 -- Mudlet getBackgroundColor([windowName]) → r, g, b, a on success;
@@ -453,14 +716,86 @@ function windowType(name)
     return k
 end
 
--- Mudlet getScript(name [, pos]) → code, count. Returns the source of the
--- pos-th (1-indexed) script named `name` and how many scripts share that name.
--- Falls back to ("", 0) when none exist so appendScript()'s concatenation is
--- safe.
+-- Mudlet getScript(name [, pos]) → code, id. Returns the source of the pos-th
+-- (1-indexed) script named `name` and that script's own numeric id. A miss —
+-- unknown name, or a position outside 1..count — answers (-1, message), which
+-- is what makes appendScript fail loudly on a name that doesn't exist instead
+-- of concatenating onto nothing.
+-- Mudlet enableScript(name) / disableScript(name) → true, or (nil, message)
+-- when nothing of that name exists. Both act on EVERY script sharing the name,
+-- not just the first.
+do
+    local function toggle(raw, who)
+        return function(name)
+            if type(name) ~= 'string' then
+                error(who .. ": bad argument #1 type (script name as string expected, got "
+                    .. type(name) .. "!)", 2)
+            end
+            if not raw(name) then
+                return nil, who .. ': no script named "' .. name .. '" found'
+            end
+            return true
+        end
+    end
+    enableScript = toggle(__enableScript, "enableScript")
+    disableScript = toggle(__disableScript, "disableScript")
+end
+
+-- Mudlet setScript(name, luaCode [, pos]) → the id of the script it replaced.
+-- Everything is checked before the store is touched, and the new body is run as
+-- it is installed; if running it raises, the previous source goes back so a bad
+-- edit can't leave a script half-replaced.
+do
+    local _raw = setScript
+    function setScript(name, code, pos)
+        if type(name) ~= 'string' or name == '' then
+            error("setScript: bad argument #1 type (script name as string expected, got "
+                .. (name == '' and 'empty string' or type(name)) .. "!)", 2)
+        end
+        if type(code) ~= 'string' then
+            error("setScript: bad argument #2 type (lua code as string expected, got "
+                .. type(code) .. "!)", 2)
+        end
+        if pos ~= nil and type(pos) ~= 'number' then
+            error("setScript: bad argument #3 type (script position as number expected, got "
+                .. type(pos) .. "!)", 2)
+        end
+        pos = pos or 1
+        local compiled, cerr = loadstring(code)
+        if not compiled then
+            error('setScript: unable to compile "' .. code .. '", reason: ' .. tostring(cerr), 2)
+        end
+        -- Read the old body first: it is both the existence check (a miss
+        -- answers -1) and the rollback copy.
+        local previous = __getScript(name, pos)
+        if previous == nil then
+            error('setScript: script "' .. name .. '" at position ' .. pos .. ' not found', 2)
+        end
+        local id = _raw(name, code, pos)
+        local ok, rerr = pcall(compiled)
+        if not ok then
+            _raw(name, previous.code, pos)
+            error("setScript: the new script body raised when it was run: " .. tostring(rerr), 2)
+        end
+        return id
+    end
+end
+
 function getScript(name, pos)
+    if type(name) ~= 'string' then
+        error("getScript: bad argument #1 type (script name as string expected, got "
+            .. type(name) .. "!)", 2)
+    end
+    if pos ~= nil and type(pos) ~= 'number' then
+        error("getScript: bad argument #2 type (script position as number expected, got "
+            .. type(pos) .. "!)", 2)
+    end
+    pos = pos or 1
     local r = __getScript(name, pos)
-    if r == nil then return "", 0 end
-    return r.code, r.count
+    if r == nil then
+        return -1, 'script "' .. name .. '" at position ' .. pos .. ' not found'
+    end
+    return r.code, r.id
 end
 
 -- Mudlet getCurrentLine([window]) → line text, or (nil, errMsg) when the named
@@ -880,7 +1215,7 @@ end
 function deleteLabel(name)
     __mwGeo[name] = nil   -- drop cached geometry so a recycled name re-applies fresh
     if __deleteLabel(name) then return true end
-    return false, "label \"" .. tostring(name) .. "\" does not exist"
+    return false, "label name '" .. tostring(name) .. "' not found"
 end
 
 -- deleteMiniConsole/deleteCommandLine/deleteScrollBox mirror deleteLabel: true on
@@ -908,10 +1243,173 @@ end
 -- empty name or a label that doesn't exist.
 function setLabelStyleSheet(name, css)
     if name == "" then
-        return nil, "setLabelStyleSheet: a label name cannot have an empty string as the name"
+        return nil, "a label name cannot have an empty string as the name"
     end
     if __setLabelStyleSheet(name, css) then return true end
-    return nil, "setLabelStyleSheet: label name '" .. tostring(name) .. "' not found"
+    return nil, "label name '" .. tostring(name) .. "' not found"
+end
+
+-- The label functions all report a miss as (nil, message), but Mudlet's wordings
+-- genuinely differ between them — "label '%s' does not exist" for the readback
+-- pair, "label name '%s' not found" for the setters, "label '%s' not found" for
+-- the link-style trio. UI_spec asserts each verbatim, so they are grouped by
+-- wording here rather than funnelled through one message.
+-- Name collisions across the widget namespace. Labels, miniconsoles, user
+-- windows, scroll boxes and command lines all share one set of names in Mudlet,
+-- and each creator reports a clash its own way: createLabel refuses outright and
+-- leaves the existing label untouched, while createMiniConsole/createScrollBox
+-- move and resize what is already there and say so. UI_spec asserts each
+-- wording, and that a refused createLabel really did not move anything.
+do
+    local _rawCreateLabel = createLabel
+    function createLabel(...)
+        local a = { ... }
+        -- Two leading strings mean the parented form, which shifts every
+        -- coordinate one place right — hence the two argument-number bases.
+        local parented = type(a[1]) == 'string' and type(a[2]) == 'string'
+        local name = parented and a[2] or a[1]
+        local base = parented and 3 or 2
+        local labels = { "x-coordinate", "y-coordinate", "width", "height" }
+        for i = 1, 4 do
+            local v = a[base + i - 1]
+            if type(v) ~= 'number' then
+                error("createLabel: bad argument #" .. (base + i - 1) .. " type (label "
+                    .. labels[i] .. " as number expected, got " .. type(v) .. "!)", 2)
+            end
+        end
+        local kind = __windowType(name)
+        if kind == 'label' then
+            return false, "label '" .. tostring(name) .. "' already exists"
+        end
+        if kind == 'miniconsole' or kind == 'userwindow' then
+            return false, "a miniconsole/userwindow with the name '" .. tostring(name)
+                .. "' already exists"
+        end
+        return _rawCreateLabel(...)
+    end
+
+    -- These two are not refusals: the existing widget IS moved and resized, and
+    -- the false is only how Mudlet says "I reused what was there".
+    local function reuseReporter(raw, kind, noun)
+        return function(...)
+            local a = { ... }
+            local parented = type(a[1]) == 'string' and type(a[2]) == 'string'
+            local name = parented and a[2] or a[1]
+            local existed = __windowType(name) == kind
+            local r = raw(...)
+            if existed then
+                return false, noun .. " '" .. tostring(name) .. "' already exists, moving/resizing '"
+                    .. tostring(name) .. "'"
+            end
+            return r
+        end
+    end
+    createMiniConsole = reuseReporter(createMiniConsole, 'miniconsole', 'miniconsole')
+    createScrollBox   = reuseReporter(createScrollBox,   'scrollbox',   'scrollBox')
+
+    local _rawOpenUserWindow = openUserWindow
+    function openUserWindow(name, ...)
+        if __windowType(name) == 'label' then
+            return nil, "label with the name '" .. tostring(name) .. "' already exists"
+        end
+        return _rawOpenUserWindow(name, ...)
+    end
+
+    -- Both take the widget name as argument #1 and have nothing sensible to do
+    -- without it.
+    local function requireName(raw, who)
+        return function(name, ...)
+            if type(name) ~= 'string' then
+                error(who .. ": bad argument #1 type (name as string expected, got "
+                    .. type(name) .. "!)", 2)
+            end
+            return raw(name, ...)
+        end
+    end
+    createTextEdit    = requireName(createTextEdit,    "createTextEdit")
+    createCommandLine = requireName(createCommandLine, "createCommandLine")
+end
+
+-- Mudlet setTextFormat(window, r1,g1,b1, r2,g2,b2, bold, underline, italics
+-- [, strikeout [, overline [, reverse [, blinkMode]]]]).
+--
+-- Everything is validated before the console is touched. Mudlet #9576 was
+-- exactly this function building its objects first and validating after, so a
+-- rejected call leaked them; UI_spec asserts both the messages and that nothing
+-- was left behind. Note the odd one out: an unknown window reports **false**
+-- here, not the nil the rest of the UI API uses.
+do
+    local _raw = setTextFormat
+    local function checkNumber(v, argN)
+        if type(v) ~= 'number' then
+            error("setTextFormat: bad argument #" .. argN .. " type (number expected, got "
+                .. type(v) .. "!)", 3)
+        end
+    end
+    local function checkFlag(v, argN)
+        if type(v) ~= 'boolean' and type(v) ~= 'number' then
+            error("setTextFormat: bad argument #" .. argN .. " type (boolean expected, got "
+                .. type(v) .. "!)", 3)
+        end
+    end
+    function setTextFormat(win, ...)
+        local a = { ... }
+        -- #2..#7 are the two colour triples, #8..#10 the required attributes.
+        for i = 1, 6 do checkNumber(a[i], i + 1) end
+        for i = 7, 9 do checkFlag(a[i], i + 1) end
+        -- #11..#13 are optional attributes, #14 the optional blink mode.
+        for i = 10, 12 do
+            if a[i] ~= nil then checkFlag(a[i], i + 1) end
+        end
+        local blink = a[13]
+        if blink ~= nil then
+            if type(blink) ~= 'string' then
+                error("setTextFormat: bad argument #14 type (string expected, got "
+                    .. type(blink) .. "!)", 2)
+            end
+            if blink ~= 'none' and blink ~= 'slow' and blink ~= 'fast' then
+                return nil, 'blink mode must be "none", "slow", or "fast", got "' .. blink .. '"'
+            end
+        end
+        if win ~= nil and win ~= 'main' and __windowType(win) == nil then
+            return false, "window '" .. tostring(win) .. "' does not exist"
+        end
+        return _raw(win, ...)
+    end
+end
+
+-- Existence is checked with __windowType rather than by trusting each binding's
+-- return value: several of these answer nothing at all on success (JS `void`
+-- arrives as nil), so "falsy" cannot distinguish "worked" from "no such label".
+__mudix_label_missing = function(name, message)
+    if name == "" then return "label name cannot be an empty string" end
+    if __windowType(name) == 'label' then return nil end
+    return (message:gsub("%%s", tostring(name)))
+end
+
+do
+    local function labelGuard(fn, message)
+        return function(name, ...)
+            local err = __mudix_label_missing(name, message)
+            if err then return nil, err end
+            fn(name, ...)
+            return true
+        end
+    end
+    setLabelToolTip   = labelGuard(setLabelToolTip,   "label name '%s' not found")
+    setLabelCursor    = labelGuard(setLabelCursor,    "label name '%s' not found")
+    setLinkStyle      = labelGuard(setLinkStyle,      "label '%s' not found")
+    resetLinkStyle    = labelGuard(resetLinkStyle,    "label '%s' not found")
+    clearVisitedLinks = labelGuard(clearVisitedLinks, "label '%s' not found")
+
+    -- getLabelStyleSheet answers "" for a label that exists but has no CSS, so
+    -- the miss has to be told apart by asking whether the label is there.
+    local _rawGetLabelStyleSheet = getLabelStyleSheet
+    function getLabelStyleSheet(name)
+        local err = __mudix_label_missing(name, "label '%s' does not exist")
+        if err then return nil, err end
+        return _rawGetLabelStyleSheet(name)
+    end
 end
 
 -- ── Text edit widgets (Mudlet createTextEdit) ─────────────────────────────
@@ -920,7 +1418,7 @@ end
 -- named text edit doesn't exist. The __* primitives return value-or-false.
 function deleteTextEdit(name)
     if __deleteTextEdit(name) then return true end
-    return false, "deleteTextEdit: text edit '" .. tostring(name) .. "' does not exist"
+    return false, "text edit name '" .. tostring(name) .. "' not found"
 end
 
 function getTextEditText(name)
@@ -968,6 +1466,25 @@ end
 -- Optional headers table: absent/nil is fine, anything else must be a table of
 -- string→string. Wording is Mudlet's verbatim — Networking_spec asserts the
 -- whole message for customHTTP, including the "as a table" article.
+-- Flatten a validated headers table to "k\1v\1k\1v" for the JS side.
+--
+-- The bindings used to receive the Lua table itself and read it with wasmoon's
+-- `$detach`, which traps the whole runtime ("memory access out of bounds") on
+-- some call shapes — notably postHTTP with the optional upload-file argument
+-- present. Handing over a flat string keeps table traversal on the Lua side,
+-- where it is just `pairs`, and matches how the rest of this bridge moves
+-- structured values across the boundary. Nil headers stay nil.
+function __mudix_headers_to_string(headers)
+    if headers == nil then return nil end
+    local parts = {}
+    for k, v in pairs(headers) do
+        parts[#parts + 1] = k
+        parts[#parts + 1] = v
+    end
+    if #parts == 0 then return nil end
+    return table.concat(parts, "\1")
+end
+
 function __mudix_check_headers(headers, funcName, index)
     if headers == nil then return end
     if type(headers) ~= 'table' then
@@ -1116,8 +1633,17 @@ function getHTTP(url, headers)
     __mudix_check_headers(headers, "getHTTP", 2)
     local err = __mudix_http_url_error(url, "getHTTP")
     if err then return nil, err end
-    __getHTTP(url, headers)
+    __getHTTP(url, __mudix_headers_to_string(headers))
     return true, url
+end
+
+-- Mudlet opens the upload file before issuing the request and reports
+-- (nil, "<fn>: couldn't open ...") when it can't — no request, no error event.
+local function __mudix_upload_error(file, who)
+    if file == nil then return nil end
+    local reason = __mudix_upload_file_error(file)
+    if reason then return who .. ": " .. reason end
+    return nil
 end
 
 function postHTTP(data, url, headers, file)
@@ -1126,7 +1652,9 @@ function postHTTP(data, url, headers, file)
     __mudix_check_headers(headers, "postHTTP", 3)
     local err = __mudix_http_url_error(url, "postHTTP")
     if err then return nil, err end
-    __postHTTP(data, url, headers, file)
+    local ferr = __mudix_upload_error(file, "postHTTP")
+    if ferr then return nil, ferr end
+    __postHTTP(data, url, __mudix_headers_to_string(headers), file)
     return true, url
 end
 
@@ -1136,7 +1664,9 @@ function putHTTP(data, url, headers, file)
     __mudix_check_headers(headers, "putHTTP", 3)
     local err = __mudix_http_url_error(url, "putHTTP")
     if err then return nil, err end
-    __putHTTP(data, url, headers, file)
+    local ferr = __mudix_upload_error(file, "putHTTP")
+    if ferr then return nil, ferr end
+    __putHTTP(data, url, __mudix_headers_to_string(headers), file)
     return true, url
 end
 
@@ -1145,7 +1675,7 @@ function deleteHTTP(url, headers)
     __mudix_check_headers(headers, "deleteHTTP", 2)
     local err = __mudix_http_url_error(url, "deleteHTTP")
     if err then return nil, err end
-    __deleteHTTP(url, headers)
+    __deleteHTTP(url, __mudix_headers_to_string(headers))
     return true, url
 end
 
@@ -1162,7 +1692,9 @@ function customHTTP(method, data, url, headers, file)
     end
     local err = __mudix_http_url_error(url, "customHTTP")
     if err then return nil, err end
-    __customHTTP(method, data, url, headers, file)
+    local ferr = __mudix_upload_error(file, "customHTTP")
+    if ferr then return nil, ferr end
+    __customHTTP(method, data, url, __mudix_headers_to_string(headers), file)
     return true, url
 end
 
@@ -2056,8 +2588,52 @@ do
         if type(seconds) ~= 'number' then
             error("tempTimer: bad argument #1 type (number expected, got " .. type(seconds) .. "!)")
         end
-        return _raw(seconds, __mudix_register_cb(__mudix_to_fn(fn, "tempTimer", 2)), repeating or false)
+        if repeating ~= nil and type(repeating) ~= 'boolean' then
+            error("tempTimer: bad argument #3 type (boolean expected, got "
+                .. type(repeating) .. "!)")
+        end
+        -- A code string that doesn't compile is a *reported* failure here, not a
+        -- raised one: Mudlet hands back (-1, message) so a script can react to a
+        -- bad body it built at runtime. Every other bad argument still raises.
+        local body = fn
+        if type(fn) == 'string' then
+            local compiled, err = loadstring(fn)
+            if not compiled then
+                return -1, "tempTimer: failed to compile the code string: " .. tostring(err)
+            end
+            body = compiled
+        end
+        return _raw(seconds, __mudix_register_cb(__mudix_to_fn(body, "tempTimer", 2)),
+            repeating or false)
     end
+end
+
+-- killTimer / enableTimer / disableTimer are plain JS globals that coerce
+-- whatever they are handed. Mudlet reads each argument with getVerifiedString
+-- and raises when it is missing or the wrong type, so a typo'd call fails loudly
+-- instead of silently reporting "no such timer".
+do
+    local _rawKill = killTimer
+    local _rawEnable = enableTimer
+    local _rawDisable = disableTimer
+    function killTimer(idOrName)
+        if type(idOrName) ~= 'number' and type(idOrName) ~= 'string' then
+            error("killTimer: bad argument #1 type (timerID as number or timer name as"
+                .. " string expected, got " .. type(idOrName) .. "!)", 2)
+        end
+        return _rawKill(idOrName)
+    end
+    local function named(raw, who)
+        return function(name)
+            if type(name) ~= 'string' then
+                error(who .. ": bad argument #1 type (timer name as string expected, got "
+                    .. type(name) .. "!)", 2)
+            end
+            return raw(name)
+        end
+    end
+    enableTimer = named(_rawEnable, "enableTimer")
+    disableTimer = named(_rawDisable, "disableTimer")
 end
 
 do
@@ -2156,9 +2732,25 @@ end
 do
     local _raw = __mudix_permScript
     function permScript(name, parent, code)
-        return __mudix_perm_result(
-            _raw(tostring(name or ""), tostring(parent or ""), tostring(code or "")),
+        code = tostring(code or "")
+        -- A script's body runs as it is compiled into the tree, so both a body
+        -- that won't parse AND one that raises on the way in fail creation
+        -- outright — nothing is added in either case.
+        local compiled, cerr = loadstring(code)
+        if not compiled then
+            error('permScript: cannot create script (unable to compile "' .. code
+                .. '", reason: ' .. tostring(cerr) .. ')', 2)
+        end
+        local id = __mudix_perm_result(
+            _raw(tostring(name or ""), tostring(parent or ""), code),
             "permScript", "script", parent)
+        local ok, rerr = pcall(compiled)
+        if not ok then
+            __mudix_removeScriptById(id)
+            error("permScript: cannot create script (the body raised when it was run: "
+                .. tostring(rerr) .. ")", 2)
+        end
+        return id
     end
 end
 
@@ -2264,8 +2856,25 @@ end
 do
     local _raw = __mudix_permTimer
     function permTimer(name, parent, delay, code)
+        -- Mudlet reads the interval with getVerifiedDouble and runs the body
+        -- through reportInvalidLuaCodeParam before creating anything, so a
+        -- missing interval or a body that won't compile raises rather than
+        -- leaving a dead timer in the tree.
+        if type(delay) ~= 'number' then
+            error("permTimer: bad argument #3 type (time in seconds as number expected, got "
+                .. type(delay) .. "!)", 2)
+        end
+        if type(code) ~= 'string' then
+            error("permTimer: bad argument #4 type (lua code as string expected, got "
+                .. type(code) .. "!)", 2)
+        end
+        local compiled, cerr = loadstring(code)
+        if not compiled then
+            error("permTimer: cannot create timer (unable to compile \"" .. code
+                .. "\", reason: " .. tostring(cerr) .. ")", 2)
+        end
         return __mudix_perm_result(
-            _raw(tostring(name or ""), tostring(parent or ""), tonumber(delay) or 0, tostring(code or "")),
+            _raw(tostring(name or ""), tostring(parent or ""), delay, code),
             "permTimer", "timer", parent)
     end
 end
@@ -2507,6 +3116,25 @@ do
     local _wheel = __mudix_setLabelWheelCallback
     function setLabelWheelCallback(name, fn, ...)
         return bind(name, "setLabelWheelCallback", fn, _wheel, ...)
+    end
+end
+
+-- The same (nil, message) contract the other label functions get, applied here
+-- rather than beside them because these are defined further down the file — the
+-- guard has to wrap a function that already exists. `bind` raises on a badly
+-- typed callback before this is reached, so the type errors keep their wording.
+do
+    for _, setter in ipairs({
+        "setLabelClickCallback", "setLabelDoubleClickCallback", "setLabelReleaseCallback",
+        "setLabelMoveCallback", "setLabelWheelCallback", "setLabelOnEnter", "setLabelOnLeave",
+    }) do
+        local raw = _G[setter]
+        _G[setter] = function(name, ...)
+            local err = __mudix_label_missing(name, "label name '%s' not found")
+            if err then return nil, err end
+            raw(name, ...)
+            return true
+        end
     end
 end
 
@@ -2963,6 +3591,29 @@ do
     end
 end
 
+-- pauseSounds / pauseMusic take no arguments or a filter *table* in Mudlet
+-- (TLuaInterpreterMedia.cpp), and reject anything else with this exact wording.
+-- The JS primitives underneath take an optional channel string instead, so the
+-- table's `tag` — Mudlet's channel field — is what gets handed down.
+do
+    local _rawPauseSounds = pauseSounds
+    local _rawPauseMusic = pauseMusic
+    local function pause(raw, who, opts)
+        if opts == nil then
+            raw()
+            return true
+        end
+        if type(opts) ~= 'table' then
+            error(who .. ": needs to be a table", 2)
+        end
+        __mudix_check_media_table(opts, who)
+        raw(opts.tag)
+        return true
+    end
+    function pauseSounds(opts) return pause(_rawPauseSounds, "pauseSounds", opts) end
+    function pauseMusic(opts) return pause(_rawPauseMusic, "pauseMusic", opts) end
+end
+
 function getPlayingSounds(a, b, c)
     local filter
     if type(a) == 'table' then
@@ -3351,6 +4002,74 @@ function ttsGetQueue(index)
     return __tts_to_list(__ttsGetQueue())
 end
 
+-- Mudlet validates the TTS arguments itself and distinguishes two failure kinds:
+-- a wrongly *typed* argument is a script bug and raises, while text that is
+-- merely empty is a no-op that reports back as (nil, reason). Keeping both here
+-- rather than in the JS bindings means the messages read the same as the rest of
+-- the Lua API surface.
+local function __tts_check(who, argN, value, expected)
+    if type(value) ~= expected then
+        error(who .. ": bad argument #" .. argN .. " type ("
+            .. expected .. " expected, got " .. type(value) .. "!)")
+    end
+end
+
+-- Mudlet ttsSpeak(text) / ttsQueue(text[, index]) → speak now / append to the
+-- queue. Whitespace-only text is skipped rather than spoken: an empty utterance
+-- would still occupy the engine and delay everything queued behind it.
+local function __tts_say(who, raw, text, index)
+    __tts_check(who, 1, text, "string")
+    if text:match("^%s*$") then
+        return nil, who .. ": skipped empty text to speak (TTS)"
+    end
+    if index ~= nil then
+        __tts_check(who, 2, index, "number")
+        return raw(text, index)
+    end
+    return raw(text)
+end
+
+function ttsSpeak(text) return __tts_say("ttsSpeak", __ttsSpeak, text) end
+function ttsQueue(text, index) return __tts_say("ttsQueue", __ttsQueue, text, index) end
+
+-- Mudlet ttsClearQueue([index]) → drop one queued line, or the whole queue. An
+-- out-of-range index removes nothing and says so, rather than silently doing
+-- what "clear everything" would have done.
+function ttsClearQueue(index)
+    if index == nil then return __ttsClearQueue() end
+    __tts_check("ttsClearQueue", 1, index, "number")
+    if __ttsClearQueue(index) == false then
+        return nil, "index " .. index .. " out of bounds for queue size "
+            .. #__tts_to_list(__ttsGetQueue())
+    end
+    return true
+end
+
+function ttsSetVoiceByName(name)
+    __tts_check("ttsSetVoiceByName", 1, name, "string")
+    return __ttsSetVoiceByName(name)
+end
+
+function ttsSetVoiceByIndex(index)
+    __tts_check("ttsSetVoiceByIndex", 1, index, "number")
+    return __ttsSetVoiceByIndex(index)
+end
+
+function ttsSetRate(rate)
+    __tts_check("ttsSetRate", 1, rate, "number")
+    return __ttsSetRate(rate)
+end
+
+function ttsSetPitch(pitch)
+    __tts_check("ttsSetPitch", 1, pitch, "number")
+    return __ttsSetPitch(pitch)
+end
+
+function ttsSetVolume(volume)
+    __tts_check("ttsSetVolume", 1, volume, "number")
+    return __ttsSetVolume(volume)
+end
+
 -- Mudlet ttsGetCurrentLine() → the text being spoken, or (nil, reason) when the
 -- engine is idle or errored.
 function ttsGetCurrentLine()
@@ -3615,9 +4334,44 @@ do
     isAnsiFgColor = ansiGuard(isAnsiFgColor, "isAnsiFgColor")
     isAnsiBgColor = ansiGuard(isAnsiBgColor, "isAnsiBgColor")
 
-    -- The main console's scrollbar is not script-controllable in Mudlet either.
+    -- Every scroll API answers an unknown window the same way: (nil, message).
+    -- Naming a console that isn't there is a script bug, and returning a bare
+    -- false (or worse, silently succeeding) hides it — UI_spec asserts the
+    -- message verbatim for all nine of them.
+    local function missingWindow(win)
+        if win == nil or win == 'main' then return nil end
+        if __windowType(win) ~= nil then return nil end
+        return 'window "' .. tostring(win) .. '" not found'
+    end
+    local function knownWindowGuard(fn, discardResult)
+        return function(win, ...)
+            local err = missingWindow(win)
+            if err then return nil, err end
+            if discardResult then
+                fn(win, ...)
+                -- The scrollbar toggles report nothing at all on success, so
+                -- select('#', ...) has to be 0 — returning the binding's own
+                -- nil would make it 1.
+                return
+            end
+            return fn(win, ...)
+        end
+    end
+    scrollingActive            = knownWindowGuard(scrollingActive)
+    getScroll                  = knownWindowGuard(getScroll)
+    scrollTo                   = knownWindowGuard(scrollTo)
+    disableScrollBar           = knownWindowGuard(disableScrollBar, true)
+    enableScrollBar            = knownWindowGuard(enableScrollBar, true)
+    disableHorizontalScrollBar = knownWindowGuard(disableHorizontalScrollBar, true)
+    enableHorizontalScrollBar  = knownWindowGuard(enableHorizontalScrollBar, true)
+
+    -- The main console's scrollbar is not script-controllable in Mudlet either,
+    -- so enable/disableScrolling keep that extra rejection on top of the
+    -- unknown-window check.
     local function scrollGuard(fn)
         return function(win, ...)
+            local err = missingWindow(win)
+            if err then return nil, err end
             if win == nil or win == 'main' then
                 return nil, "scrolling cannot be enabled/disabled for the 'main' window"
             end
@@ -4230,8 +4984,17 @@ do
                 .. " string expected, got " .. type(idOrName) .. "!", 2)
         end
         local v = _raw(idOrName)
-        if v == nil or v == -1 then
+        -- Mudlet's two sentinels, kept apart because the messages differ and
+        -- scripts match on them: -1 means the timer is there but not running,
+        -- -2 means nothing of that id/name exists.
+        if v == -1 then
             return nil, "remainingTime: timer is inactive or expired"
+        end
+        if v == nil or v == -2 then
+            if type(idOrName) == 'number' then
+                return nil, "remainingTime: number " .. idOrName .. " is not a valid timerID"
+            end
+            return nil, "remainingTime: timer named '" .. idOrName .. "' not found"
         end
         return v
     end

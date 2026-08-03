@@ -451,6 +451,12 @@ export class WindowManager {
 
     registerTextPanel(id: string, controls: OutputRendererControls, element: HTMLElement): void {
         this.controls.set(id, controls);
+        // A timestamp preference set while the panel was unmounted applies now.
+        const queuedTimestamps = this.pendingTimestamps.get(id);
+        if (queuedTimestamps !== undefined) {
+            controls.setTimestampVisibility(queuedTimestamps);
+            this.pendingTimestamps.delete(id);
+        }
         const win = this.windows.get(id);
         if (win?.pendingText.length) {
             // Drive the renderer's partial-completion path by tagging completed
@@ -1570,6 +1576,53 @@ export class WindowManager {
         return true;
     }
 
+    /**
+     * Mudlet `timeStampsEnabled(window)` — whether the console is showing its
+     * timestamp column. Null when the window has no renderer registered, which
+     * is how the Lua wrapper tells a missing window from one that simply has
+     * timestamps off. Pre-mount, a queued preference wins over the default.
+     */
+    timeStampsEnabled(id: string): boolean | null {
+        const queued = this.pendingTimestamps.get(id);
+        if (queued !== undefined) return queued;
+        const ctrl = this.controls.get(id);
+        if (ctrl) return ctrl.areTimestampsVisible();
+        // A console whose panel hasn't mounted yet still exists and still has
+        // an answer — timestamps start off. Only a name that belongs to no
+        // window at all is unanswerable, which is what null means here.
+        if (id === 'main' || this.windows.has(id)) return false;
+        return null;
+    }
+
+    /**
+     * Mudlet `enable/disableTimeStamps(window)`. The renderer owns the column,
+     * but a script can ask for it before the panel has mounted — openUserWindow
+     * followed immediately by enableTimeStamps — so the preference is queued and
+     * applied by registerTextPanel. False when the window doesn't exist at all.
+     */
+    setTimeStamps(id: string, visible: boolean): boolean {
+        const ctrl = this.controls.get(id);
+        if (ctrl) {
+            ctrl.setTimestampVisibility(visible);
+            this.pendingTimestamps.delete(id);
+            return true;
+        }
+        if (!this.windows.has(id)) return false;
+        this.pendingTimestamps.set(id, visible);
+        return true;
+    }
+
+    /** Timestamp preference asked for before the panel mounted. */
+    private readonly pendingTimestamps = new Map<string, boolean>();
+
+    /** Mudlet `scrollingActive(window)` — whether scrollback is currently
+     *  allowed. Always true for `'main'`, which setScrollingEnabled refuses to
+     *  change, and true for any console nobody has called disableScrolling on. */
+    isScrollingEnabled(id: string): boolean {
+        if (id === 'main') return true;
+        return this.scrollState.get(id)?.scrollingEnabled ?? DEFAULT_SCROLL_STATE.scrollingEnabled;
+    }
+
     /** Buffer-line index of the topmost visible line in `id`'s wrapper. In tail
      *  mode returns the last line number (matching Mudlet's mCursorY behaviour at
      *  the end of the buffer). Returns 0 if the element is unmounted or empty.
@@ -1578,6 +1631,15 @@ export class WindowManager {
      *  is `position: relative` — child offsetTop is relative to *that*, not to the
      *  scroll-container `.output-wrapper`, so the rectangles are the unambiguous
      *  way to relate child position to the scroll viewport. */
+    /** Whether `id`'s wrapper is mounted with laid-out lines, i.e. whether
+     *  {@link getScrollLine}'s measurement means anything. A console whose panel
+     *  isn't on screen yet measures as 0, which is indistinguishable from being
+     *  genuinely scrolled to the top. */
+    canMeasureScroll(id: string): boolean {
+        const el = this.elements.get(id);
+        return !!el && this.lineElements(el).length > 0;
+    }
+
     getScrollLine(id: string): number {
         const el = this.elements.get(id);
         if (!el) return 0;
@@ -1744,6 +1806,28 @@ export class WindowManager {
         const win = this.windows.get(id);
         if (!win) return false;
         win.cmdLineStyleSheet = qss && qss.trim() ? qss : undefined;
+        this.notify();
+        return true;
+    }
+
+    /**
+     * Mudlet setCommandForegroundColor / setCommandBackgroundColor for a named
+     * window. Mudlet styles a per-window command line through QSS, so the colour
+     * is patched into the same `cmdLineStyleSheet` a script could have set by
+     * hand rather than kept as a parallel piece of state. False when the window
+     * doesn't exist.
+     */
+    setCmdLineColor(id: string, property: 'color' | 'background-color',
+                    r: number, g: number, b: number, a: number): boolean {
+        const win = this.windows.get(id);
+        if (!win) return false;
+        const decl = `${property}: rgba(${r}, ${g}, ${b}, ${a});`;
+        const current = win.cmdLineStyleSheet ?? '';
+        // Anchored so "background-color" can't be hit when patching "color".
+        const existing = new RegExp(`(^|[;\\s])${property}\\s*:[^;]*;`, 'g');
+        win.cmdLineStyleSheet = existing.test(current)
+            ? current.replace(existing, (_m, lead: string) => `${lead}${decl}`)
+            : `${current}${current && !current.endsWith('\n') ? '\n' : ''}${decl}`;
         this.notify();
         return true;
     }

@@ -184,6 +184,12 @@ const UNIVERSAL_FONT_DEFAULTS: readonly string[] = [
 let localFontsCache: string[] | null = null;
 let localFontsPrimePromise: Promise<void> | null = null;
 
+/** The family consoles actually render in when the profile sets none — the
+ *  bundled face App.css applies (picked to match Mudlet's default look). Mudlet
+ *  always reports a concrete family from getFont, never an empty string, and
+ *  UI_spec checks that what comes back is a real name. */
+export const DEFAULT_OUTPUT_FONT_FAMILY = 'Bitstream Vera Sans Mono';
+
 export function getUniversalDefaultFonts(): readonly string[] {
     return UNIVERSAL_FONT_DEFAULTS;
 }

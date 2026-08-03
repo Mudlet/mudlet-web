@@ -48,7 +48,9 @@
     "pretest:e2e": "npm run gen:busted-manifest",
     "test:e2e": "playwright test",
     "gen:busted-manifest": "playwright test -c playwright.manifest.config.ts",
-    "sync:mudlet-specs": "node scripts/sync-mudlet-specs.mjs"
+    "busted:failures": "playwright test -c playwright.failures.config.ts",
+    "sync:mudlet-specs": "node scripts/sync-mudlet-specs.mjs",
+    "sync:mudlet-lua": "node scripts/sync-mudlet-lua.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.1",

@@ -24,8 +24,13 @@ export class TimerEngine {
      *  share a name; we keep id as the canonical handle and build a separate
      *  name → id index for Mudlet's name-based lookups. */
     private readonly perm = new Map<string, TimerEntry>();
-    /** Name → first matching id, used by remainingTime / kill-by-name. */
+    /** Name → first matching id, used by remainingTime / kill-by-name. Only
+     *  holds *armed* timers, since that is what loadPerm builds handles for. */
     private readonly permNameToId = new Map<string, string>();
+    /** Every stored permanent timer name, armed or not. remainingTime needs it
+     *  to tell "exists but inactive" (-1) from "no such timer" (-2): a disabled
+     *  timer has no handle, so its absence from `perm` proves nothing. */
+    private readonly knownPermNames = new Set<string>();
     private nextId = 1;
 
     /** Number of live session-scoped temp timers (Mudlet `getProfileStats` temp count). */
@@ -36,23 +41,30 @@ export class TimerEngine {
     addTemp(seconds: number, fn: TempFn, repeat = false): number {
         const id = this.nextId++;
         const intervalMs = seconds * 1000;
-        const start = Date.now();
-        if (repeat) {
-            const handle = setInterval(fn, intervalMs) as unknown as ReturnType<typeof setTimeout>;
-            this.temp.set(id, { handle, repeat: true, start, intervalMs, fire: fn });
-        } else {
-            const handle = setTimeout(() => {
-                this.temp.delete(id);
-                fn();
-            }, intervalMs);
-            this.temp.set(id, { handle, repeat: false, start, intervalMs, fire: fn });
-        }
+        // A repeating timer is a self-rescheduling setTimeout chain, not a
+        // setInterval. pumpDue has to be able to fire a tick early and leave the
+        // timer correctly armed for the next one, which setInterval cannot
+        // express: its own pending tick would still land and double-fire.
+        // Re-arm BEFORE running the body. A repeating timer that kills itself
+        // from inside its own callback has to stay dead, and killTimer can only
+        // clear a handle that already exists — re-arming afterwards would
+        // resurrect it.
+        const fire = (): void => {
+            if (repeat) arm();
+            else this.temp.delete(id);
+            fn();
+        };
+        const arm = (): void => {
+            const handle = setTimeout(fire, intervalMs);
+            this.temp.set(id, { handle, repeat, start: Date.now(), intervalMs, fire });
+        };
+        arm();
         return id;
     }
 
     /**
-     * Fire every one-shot timer that has come due, without waiting for the
-     * event loop to deliver its setTimeout.
+     * Fire every timer that has come due, without waiting for the event loop to
+     * deliver its setTimeout.
      *
      * This exists for `waitForEvent`, the busted-only helper Mudlet implements
      * by spinning a nested QEventLoop. A browser can't re-enter its event loop,
@@ -60,10 +72,10 @@ export class TimerEngine {
      * deadlock; pumping the due timers by hand is the equivalent of Qt draining
      * its timer queue inside that nested loop.
      *
-     * Repeating timers are deliberately skipped: their setInterval is still
-     * armed, and firing them here would double-fire each tick. A repeat timer
-     * therefore misses ticks across a synchronous wait — the same thing that
-     * happens whenever the main thread is busy.
+     * Repeating timers are pumped too — Mudlet's own specs wait on a repeat
+     * tick, so skipping them made every such wait time out. That works because
+     * a repeat is a self-rescheduling setTimeout (see addTemp): the pending
+     * tick is cancelled and re-armed rather than left to land a second time.
      *
      * Returns the number of timers fired.
      */
@@ -72,10 +84,12 @@ export class TimerEngine {
         // Snapshot first: a callback can add or kill timers, and mutating the
         // map underneath a live iteration would skip or revisit entries.
         const due: Array<() => void> = [];
-        for (const [id, entry] of this.temp) {
-            if (entry.repeat || now < entry.start + entry.intervalMs) continue;
+        for (const [, entry] of this.temp) {
+            if (now < entry.start + entry.intervalMs) continue;
+            // Cancel the pending timeout and let `fire` do the bookkeeping — it
+            // retires a one-shot and re-arms a repeat, so a repeating timer ends
+            // up correctly scheduled for its next tick instead of double-firing.
             clearTimeout(entry.handle);
-            this.temp.delete(id);
             due.push(entry.fire);
         }
         for (const [id, entry] of this.perm) {
@@ -89,11 +103,24 @@ export class TimerEngine {
         return fired;
     }
 
+    /**
+     * Whether a temporary timer with this id is still live.
+     *
+     * Backs `exists(id, "timer")` / `isActive(id, "timer")`. Temp timers aren't
+     * in the store and — unlike temp triggers and aliases — aren't tracked in
+     * LuaRuntime's tempIds either, so this map is the only thing that knows.
+     * There is no enable/disable for a temporary timer: it is live until it
+     * fires or is killed, so existence and activity are the same question.
+     */
+    hasTemp(id: number): boolean {
+        return this.temp.has(id);
+    }
+
     killTimer(id: number): boolean {
         const entry = this.temp.get(id);
         if (!entry) return false;
-        if (entry.repeat) clearInterval(entry.handle as unknown as number);
-        else clearTimeout(entry.handle);
+        // Every temp timer is a setTimeout now, repeating ones included.
+        clearTimeout(entry.handle);
         this.temp.delete(id);
         return true;
     }
@@ -114,6 +141,8 @@ export class TimerEngine {
 
     loadPerm(timers: TimerNode[], executeFn: ExecuteFn): void {
         const enabledIds = buildEffectivelyEnabledIds(timers);
+        this.knownPermNames.clear();
+        for (const t of timers) if (!t.isGroup) this.knownPermNames.add(t.name);
         const nextIds = new Set<string>();
         const nextDesc = new Map<string, string>();
         const nextNames = new Map<string, string>();
@@ -190,13 +219,18 @@ export class TimerEngine {
      * Mudlet `remainingTime(idOrName)` — seconds until the next fire. For
      * non-repeating timers, returns the time left before the one and only
      * fire. For repeating timers, returns the time until the next tick.
-     * Returns -1 if no live timer matches (Mudlet's miss sentinel).
+     * Mirrors Mudlet's two miss sentinels, which the Lua wrapper turns into
+     * different messages: **-1** the timer exists but isn't running (a perm
+     * timer starts inactive), **-2** nothing of that id or name exists at all.
      *   - Numeric arg: looks up tempTimer ids only.
-     *   - String arg: looks up permanent timer names; falls back to the stored
-     *     TimerNode id when the string is a uuid that no name matched.
+     *   - String arg: permanent timer names (or a raw uuid), then temp ids —
+     *     a temporary timer's "name" is the number tempTimer handed back, so
+     *     remainingTime(tostring(id)) has to resolve the same timer as
+     *     remainingTime(id).
      */
     remainingTime(idOrName: number | string): number {
         let entry: TimerEntry | undefined;
+        let known = false;
         if (typeof idOrName === 'number') {
             entry = this.temp.get(idOrName);
         } else {
@@ -206,8 +240,13 @@ export class TimerEngine {
                 const id = this.permNameToId.get(idOrName);
                 entry = id ? this.perm.get(id) : undefined;
             }
+            if (!entry && /^\d+$/.test(idOrName)) entry = this.temp.get(Number(idOrName));
+            // A disabled perm timer has no live handle (loadPerm only arms
+            // enabled ones), so "no entry" alone can't tell missing from
+            // inactive — the stored node list is what knows the name exists.
+            if (!entry) known = this.permNameToId.has(idOrName) || this.knownPermNames.has(idOrName);
         }
-        if (!entry) return -1;
+        if (!entry) return known ? -1 : -2;
         const elapsed = Date.now() - entry.start;
         const ms = entry.repeat
             ? entry.intervalMs - (elapsed % entry.intervalMs)
@@ -222,6 +261,7 @@ export class TimerEngine {
         }
         this.perm.clear();
         this.permNameToId.clear();
+        this.knownPermNames.clear();
         this.prevDesc.clear();
     }
 

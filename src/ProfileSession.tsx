@@ -14,6 +14,9 @@ import { CharLoginModal } from './ui/CharLoginModal';
 import { TlsUpgradeModal } from './ui/TlsUpgradeModal';
 import { TlsAlertBanner } from './ui/TlsAlertBanner';
 import { applyMsspVariable, emptyMsspTlsFacts, shouldOfferTlsUpgrade } from './mud/protocol/msspTls';
+import {
+    CHAR_LOGIN_SILENT_DROP_MESSAGE, charLoginFailureMessage, decideCharLoginRequest,
+} from './mud/protocol/charLoginFlow';
 import { describeCertCode } from './mud/protocol/tlsCodes';
 import type { TlsStatus } from './mud/events';
 import { QuickOpenPalette } from './ui/QuickOpenPalette';
@@ -116,6 +119,19 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // once per menu step) — without this the form would keep re-appearing over
     // the very prompts the user chose to answer by hand. Reset on each connect.
     const gmcpLoginDeclined = useRef(false);
+    // The account last handed to the server this connection (typed or auto-sent),
+    // so a rejected attempt can re-open the popup on the account the player
+    // actually used. Without it the retry form is prefilled from storage — which
+    // is empty whenever "remember" was off — and they retype everything. The
+    // password is deliberately not kept: it was just rejected, so the retry form
+    // opens with it blank and the cursor already in that field.
+    const lastLoginAttempt = useRef<{ account: string; remember: boolean } | null>(null);
+    // Set while credentials are in flight and the server has said nothing back.
+    // Cleared by a Char.Login.Result, by any server output (a game that lets us
+    // in starts talking immediately), and by a disconnect the player asked for.
+    // Still set at a disconnect ⇒ the game hung up on the login without a word,
+    // which is worth saying out loud — see CHAR_LOGIN_SILENT_DROP_MESSAGE.
+    const charLoginUnanswered = useRef(false);
     // Fallback timer for MUDs that never send IAC GA/EOR around their login
     // prompt (e.g. plain FluffOS/LPMud bare-telnet banners) — see the
     // text-login auto-fill effect below.
@@ -445,53 +461,74 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         const unsub7 = session.events.on('charLogin.request', (methods) => {
             // GMCP login takes over — disarm the text-login state machine.
             autoLoginStage.current = 'idle';
-            // We only implement the password-credentials method; if the server
-            // offers only other methods (e.g. OAuth), decline so it falls back to
-            // its text login rather than showing a form we can't fulfil.
-            if (methods.length > 0 && !methods.includes('password-credentials')) {
-                session.sendCharLoginCredentials();
-                return;
-            }
-            // The user already chose to log in by hand. Keep declining — the
-            // server withholds its next prompt until it hears back — but don't
-            // reopen the form on top of the text login.
-            if (gmcpLoginDeclined.current) {
-                session.sendCharLoginCredentials();
-                return;
-            }
-            // If credentials are saved, send them straight away — no popup. The
-            // guard stops wrong saved credentials from looping; a failure
-            // (charLogin.result below) re-opens the popup prefilled for a retry.
             // In-memory credentials (branded login form) win over the stored
             // per-profile ones; branded builds never store any.
             const mem = getSessionCredentials(connection.id);
             const conn = useAppStore.getState().connections.find(c => c.id === connection.id);
-            const account = mem ? mem.account : conn?.charLoginAccount;
-            const password = mem ? mem.password : conn?.charLoginPassword;
-            if (account && password && !gmcpAutoTried.current) {
-                gmcpAutoTried.current = true;
-                session.sendCharLoginCredentials(account, password);
+            const action = decideCharLoginRequest({
+                methods,
+                declined: gmcpLoginDeclined.current,
+                attempted: gmcpAutoTried.current,
+                account: mem ? mem.account : conn?.charLoginAccount,
+                password: mem ? mem.password : conn?.charLoginPassword,
+            });
+            if (action.kind === 'decline') {
+                session.sendCharLoginCredentials();
                 return;
             }
-            setCharLogin({});
+            if (action.kind === 'autofill') {
+                gmcpAutoTried.current = true;
+                lastLoginAttempt.current = { account: action.account, remember: !mem };
+                charLoginUnanswered.current = true;
+                session.sendCharLoginCredentials(action.account, action.password);
+                return;
+            }
+            // Servers re-send Char.Login.Default to ask again after rejecting an
+            // attempt. If the popup is already up showing that rejection, keep it
+            // — replacing the state with a blank one wipes the message and the
+            // player is left staring at an unexplained second form.
+            setCharLogin(prev => prev ?? {});
         });
         // Char.Login.Result: on failure re-open the popup with the server's
         // message; on success the popup was already dismissed on submit. Once the
         // user has opted into the text login, the outcome is theirs to read in the
         // output — a failure there must not resurrect the form.
         const unsub8 = session.events.on('charLogin.result', (result) => {
+            charLoginUnanswered.current = false;
             if (result.success) { setCharLogin(null); return; }
+            // Report the failure in the output too, the way Mudlet does
+            // (GMCPAuthenticator::handleAuthResult). The popup is not a reliable
+            // place for it on its own: a server that rejects a login commonly
+            // drops the connection straight after, which tears the popup down,
+            // and a server doing GMCP login withholds its text output — so
+            // without this the attempt fails with nothing on screen at all.
+            postLoginMessage(charLoginFailureMessage(result.message));
             if (gmcpLoginDeclined.current) return;
-            setCharLogin({ error: result.message || 'Login failed.' });
+            setCharLogin(prev => ({ ...prev, error: result.message || 'Login failed.' }));
         });
-        // A reconnect/disconnect invalidates any pending login prompt.
-        const unsub9 = session.events.on('client.disconnect', () => setCharLogin(null));
+        // A reconnect/disconnect invalidates any pending login prompt — and if
+        // the credentials we sent are still unanswered, this drop *is* the
+        // game's answer. Say so before the popup goes, or the attempt ends as an
+        // unexplained disconnect (measured on Achaea; see the message's docs).
+        const unsub9 = session.events.on('client.disconnect', () => {
+            if (charLoginUnanswered.current) {
+                charLoginUnanswered.current = false;
+                postLoginMessage(CHAR_LOGIN_SILENT_DROP_MESSAGE);
+            }
+            setCharLogin(null);
+        });
+        // Any server output means the game is still talking to us, so the login
+        // was not answered with a silent hangup — whatever happens later is a
+        // normal disconnect.
+        const unsub11 = session.events.on('flushLines', () => {
+            charLoginUnanswered.current = false;
+        });
         // Lua invokeFileDialog: queue the request; the FilePickerModal below
         // shows the head of the queue and resolves it via onPick.
         const unsub10 = session.events.on('script.filedialog', (request: FileDialogRequest) => {
             setFileDialogs(prev => [...prev, request]);
         });
-        return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub6(); unsub7(); unsub8(); unsub9(); unsub10(); };
+        return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub6(); unsub7(); unsub8(); unsub9(); unsub10(); unsub11(); };
     }, [session]);
 
     // MSSP-advertised secure port, plus the outcome of any TLS handshake.
@@ -581,6 +618,12 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             'script',
             Date.now(),
         );
+    };
+
+    /** Console notice about a GMCP Char.Login outcome, in Mudlet's house style
+     *  (`[ WARN ]  - Could not log in to the game…`). */
+    const postLoginMessage = (text: string) => {
+        session.events.emit('message', `\x1b[33m[ WARN ]  - ${text}\x1b[0m`, 'script', Date.now());
     };
 
     /** Console notice about the secure connection, in Mudlet's house style —
@@ -697,6 +740,8 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         const onConnect = () => {
             gmcpAutoTried.current = false;
             gmcpLoginDeclined.current = false;
+            lastLoginAttempt.current = null;
+            charLoginUnanswered.current = false;
             clearNameFallback();
             const { account, password } = readCreds();
             autoLoginStage.current = account && password ? 'name' : 'idle';
@@ -806,7 +851,9 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         };
     }, [session, connection.id, saveWindowHint, saveDockExtents, engineRef]);
 
-    const handleDisconnect = () => disconnect();
+    // Hanging up on ourselves is not the game refusing the login, so drop the
+    // "unanswered credentials" latch before the disconnect event fires.
+    const handleDisconnect = () => { charLoginUnanswered.current = false; disconnect(); };
     // Reads the store rather than the `connection` snapshot, so a reconnect after
     // a TLS upgrade dials the new secure port instead of the original one.
     const handleReconnect  = () => redialFromStore();
@@ -1060,8 +1107,15 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                 <CharLoginModal
                     connectionName={connection.name}
                     error={charLogin.error}
-                    initialAccount={getSessionCredentials(connection.id)?.account ?? charLoginAccount}
-                    initialPassword={getSessionCredentials(connection.id)?.password ?? charLoginPassword}
+                    // On a retry, prefill from the attempt the server just
+                    // rejected rather than from storage (which holds nothing when
+                    // "remember" was off) — and blank the password, so the field
+                    // that most likely needs fixing is the one that takes focus.
+                    initialAccount={lastLoginAttempt.current?.account
+                        ?? getSessionCredentials(connection.id)?.account ?? charLoginAccount}
+                    initialPassword={lastLoginAttempt.current
+                        ? '' : (getSessionCredentials(connection.id)?.password ?? charLoginPassword)}
+                    initialRemember={lastLoginAttempt.current?.remember}
                     allowRemember={!isBrandedMode()}
                     restoreFocusTo={() => commandInputRef.current}
                     onSubmit={(account, password, remember) => {
@@ -1069,6 +1123,13 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                         // failure re-opens the popup via the charLogin.result
                         // handler with the server's message.
                         setCharLogin(null);
+                        // We have now spent this connection's one automatic
+                        // attempt. A Char.Login.Default that arrives after this
+                        // (servers re-ask after rejecting) must raise the form
+                        // again rather than silently replay what just failed.
+                        gmcpAutoTried.current = true;
+                        lastLoginAttempt.current = { account, remember };
+                        charLoginUnanswered.current = true;
                         if (isBrandedMode()) {
                             // Branded builds never persist credentials — keep
                             // them in memory for this page's reconnects only.

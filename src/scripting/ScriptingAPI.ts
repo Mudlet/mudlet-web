@@ -33,7 +33,9 @@ import {
     getRegisteredFontFamilies,
     getCachedLocalFonts,
     primeLocalFontsCache,
+    DEFAULT_OUTPUT_FONT_FAMILY,
 } from '../utils/fontLoader';
+import { isQtResourcePath, qtResourceUrl } from '../assets/qt-resources';
 import { ProfilesPresence } from './profilesPresence';
 import { MapStore } from '../map/MapStore';
 import { type EngineHost, NULL_ENGINE_HOST } from './EngineHost';
@@ -451,7 +453,12 @@ class ScriptingLabelsAPI {
     has(name: string): boolean { return this.manager.has(name); }
     /** Read-only state for the geometry/visibility/text getters. */
     get(name: string) { return this.manager.get(name); }
-    destroy(name: string): boolean { return this.manager.destroy(name); }
+    destroy(name: string): boolean {
+        // Drop the authored CSS with the label, so a later label reusing the
+        // name doesn't inherit the old one's stylesheet through getStyleSheet.
+        this.authoredCss.delete(name);
+        return this.manager.destroy(name);
+    }
     move(name: string, x: number, y: number): boolean {
         return this.manager.move(name, x, y);
     }
@@ -478,11 +485,22 @@ class ScriptingLabelsAPI {
     }
     setStyleSheet(name: string, css: string): boolean {
         const rewrite = this.cssRewriter();
-        return this.manager.setStyleSheet(name, rewrite(css));
+        const ok = this.manager.setStyleSheet(name, rewrite(css));
+        // Remember what the script actually wrote. The rewritten form is an
+        // implementation detail of serving profile files over HTTP — a script
+        // that sets `url(/tmp/x.png)` and reads it back must not be handed
+        // `url("/__vfs/<id>/tmp/x.png")`, which is neither what it set nor a
+        // path it could set. GeyserLabel_spec pins the round trip.
+        if (ok) this.authoredCss.set(name, css);
+        return ok;
     }
     getStyleSheet(name: string): string | undefined {
-        return this.manager.getStyleSheet(name);
+        const stored = this.manager.getStyleSheet(name);
+        if (stored === undefined) return undefined;
+        return this.authoredCss.get(name) ?? stored;
     }
+    /** Pre-rewrite CSS per label, keyed by name — see {@link setStyleSheet}. */
+    private readonly authoredCss = new Map<string, string>();
     setLinkStyle(name: string, color: string, visitedColor: string, underline: boolean): boolean {
         return this.manager.setLinkStyle(name, color, visitedColor, underline);
     }
@@ -1814,10 +1832,17 @@ export class ScriptingAPI {
         return this.host.setScriptByName(name, code, pos);
     }
 
-    /** Mudlet `getScript(name [, pos]) → code, count`. Returns the source of the
-     *  pos-th (1-indexed) script named `name` and how many scripts share that
-     *  name. Returns null when none exist (Bridge.lua surfaces "", 0). */
-    getScript(name: string, pos: number): { code: string; count: number } | null {
+    /** Removes the script with this numeric id. Backs permScript's rollback
+     *  when the new body raises as it is run. True when one was removed. */
+    removeScriptById(id: number): boolean {
+        return this.host.removeScriptById(id);
+    }
+
+    /** Mudlet `getScript(name [, pos]) → code, id`. Returns the source of the
+     *  pos-th (1-indexed) script named `name` together with that script's own
+     *  numeric id. Null when no script sits at that position, which Bridge.lua
+     *  surfaces as Mudlet's `(-1, "script ... at position ... not found")`. */
+    getScript(name: string, pos: number): { code: string; id: number } | null {
         return this.host.getScriptByName(name, pos);
     }
 
@@ -2783,13 +2808,17 @@ export class ScriptingAPI {
         return this.getConsole(windowName)?.getLine() ?? '';
     }
 
-    // Mudlet line-index APIs are 0-indexed: getLineNumber() == cursor.y(),
-    // getLastLineNumber() == size - 1. getLineCount(), however, is the line
-    // *count* (size), one more than getLastLineNumber — so a buffer-scan loop
-    // `for i = getLineCount() - 1, 0, -1` starts on the last line. Console's
-    // getLineCount() returns size-1 (the last index, used by internal callers),
-    // so the Lua-facing count adds one. Missing windows report -1 (Mudlet's "no
-    // such window" sentinel).
+    // Mudlet line-index APIs are 0-indexed: getLineNumber() == cursor.y() and
+    // getLastLineNumber() == size - 1, where `size` counts the always-open line
+    // Mudlet's buffer keeps past the last complete one. getLineCount() is the
+    // count of *complete* lines, so it comes out one lower — which is why the
+    // two are equal rather than off by one, and why a buffer-scan loop
+    // `for i = getLineCount() - 1, 0, -1` starts on the last complete line.
+    //
+    // mudix's history holds only complete lines, so Console.getLineCount()
+    // (history.length - 1) is the last complete index and both Lua-facing
+    // numbers add one to reach Mudlet's convention. Missing windows report -1
+    // (Mudlet's "no such window" sentinel).
     getLineNumber(windowName?: string): number {
         return this.getConsole(windowName)?.getLineNumber() ?? -1;
     }
@@ -2800,7 +2829,8 @@ export class ScriptingAPI {
     }
 
     getLastLineNumber(windowName?: string): number {
-        return this.getConsole(windowName)?.getLineCount() ?? -1;
+        const con = this.getConsole(windowName);
+        return con ? con.getLineCount() + 1 : -1;
     }
 
     // ── Scrolling / scrollbars ────────────────────────────────────────────────
@@ -2829,10 +2859,37 @@ export class ScriptingAPI {
         return this.session.windows.setScrollingEnabled(windowName ?? 'main', true);
     }
 
+    /** Mudlet `timeStampsEnabled(window)` — whether the console shows its
+     *  timestamp column. Null when no such window exists. */
+    timeStampsEnabled(windowName: string): boolean | null {
+        return this.session.windows.timeStampsEnabled(windowName);
+    }
+
+    /** Mudlet `enableTimeStamps(window)` / `disableTimeStamps(window)`. False
+     *  when no such window exists. */
+    setTimeStamps(windowName: string, visible: boolean): boolean {
+        return this.session.windows.setTimeStamps(windowName, visible);
+    }
+
+    /** Mudlet `scrollingActive([window])` — whether the user can scroll back in
+     *  this console. True unless disableScrolling was called on it; the main
+     *  window is always scrollable. */
+    scrollingActive(windowName?: string): boolean {
+        return this.session.windows.isScrollingEnabled(windowName ?? 'main');
+    }
+
     /** Mudlet getScroll — 0-indexed buffer line at the top of the viewport. In
      *  tail mode reports the last line (Mudlet's mCursorY behaviour at end). */
     getScroll(windowName?: string): number {
-        return this.session.windows.getScrollLine(windowName ?? 'main');
+        const name = windowName ?? 'main';
+        // getScrollLine measures the DOM, and a console whose panel hasn't been
+        // laid out measures as 0 — which would claim a 30-line buffer is
+        // scrolled to the very top. Nothing has scrolled it, so it is at the
+        // tail: report the last line, the same answer tail mode gives.
+        if (!this.session.windows.canMeasureScroll(name)) {
+            return Math.max(0, this.getLastLineNumber(name));
+        }
+        return this.session.windows.getScrollLine(name);
     }
 
     /** Mudlet scrollTo. With no line (or a line past end), resume tail mode.
@@ -3582,7 +3639,9 @@ export class ScriptingAPI {
      * the CommandBar reads the `inputBackground` profile field as a CSS color.
      */
     setCommandBackgroundColor(r: number, g: number, b: number, a = 255, name?: string): boolean {
-        if (name && name !== 'main') return false;
+        if (name && name !== 'main') {
+            return this.session.windows.setCmdLineColor(name, 'background-color', r, g, b, a);
+        }
         useAppStore.getState().patchConnectionProfile(this.connectionId, {
             inputBackground: rgbaCss(r, g, b, a),
         });
@@ -3591,7 +3650,9 @@ export class ScriptingAPI {
 
     /** Mudlet setCommandForegroundColor — recolors the command bar text. */
     setCommandForegroundColor(r: number, g: number, b: number, a = 255, name?: string): boolean {
-        if (name && name !== 'main') return false;
+        if (name && name !== 'main') {
+            return this.session.windows.setCmdLineColor(name, 'color', r, g, b, a);
+        }
         useAppStore.getState().patchConnectionProfile(this.connectionId, {
             inputForeground: rgbaCss(r, g, b, a),
         });
@@ -4556,6 +4617,9 @@ export class ScriptingAPI {
      *  Absolute http(s):/data:/blob: URIs pass through untouched. */
     private resolveImageUrl(path: string): string {
         if (!path) return path;
+        // Qt resource, not a VFS path — resolved directly so this works even
+        // where no CSS rewriter is bound.
+        if (isQtResourcePath(path)) return qtResourceUrl(path) ?? path;
         const escaped = path.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
         const wrapped = `url("${escaped}")`;
         const rewritten = this.host.rewriteCss(wrapped);
@@ -4728,13 +4792,16 @@ export class ScriptingAPI {
      * the named window doesn't exist.
      */
     getFont(win?: string): string | null {
-        if (!win || win === 'main') {
-            return selectProfileField(useAppStore.getState(), this.connectionId, 'outputFont')?.family ?? '';
-        }
+        // Falls back to the family the console is really drawn in rather than
+        // "": Mudlet's Qt font always has a concrete name, and a script that
+        // reads the font to restore it later needs something it can pass back
+        // to setFont.
+        const configured = (): string =>
+            selectProfileField(useAppStore.getState(), this.connectionId, 'outputFont')?.family
+            || DEFAULT_OUTPUT_FONT_FAMILY;
+        if (!win || win === 'main') return configured();
         if (!this.session.windows.has(win)) return null;
-        const own = this.session.windows.getFont(win);
-        if (own != null) return own;
-        return selectProfileField(useAppStore.getState(), this.connectionId, 'outputFont')?.family ?? '';
+        return this.session.windows.getFont(win) ?? configured();
     }
 
     /**

@@ -9,6 +9,9 @@ import runLuaCodeUrl from './defaults/run-lua-code.mpackage?url';
 // Vendored mirror of Mudlet's `src/mudlet-lua/lua/generic-mapper/`. Externalized
 // in the library build too, and copied by scripts/copy-lib-assets.mjs.
 import genericMapperUrl from '../scripting/lua/mudlet-lua/generic-mapper/generic_mapper.mpackage?url';
+// Mudlet's starter interface, from the same vendored mirror. Externalized in the
+// library build and copied by scripts/copy-lib-assets.mjs, like the mapper.
+import baseUiUrl from '../scripting/lua/mudlet-lua/base-ui/mudlet-base-ui.mpackage?url';
 // Vendored copy of Mudlet's `src/mudlet-mapper.xml` (a Qt resource at its src
 // root, so there's no directory layout to mirror — it lives with the other
 // default-package assets). Plain XML, not a zip: the installer parses it into
@@ -39,7 +42,17 @@ const MUDLET_MAPPER: DefaultPackage = {
  *  profiles that already have the old one — safe because the mapper keeps its
  *  state in `<profile>/map downloads/`, outside the package dir a reinstall wipes. */
 const GENERIC_MAPPER: DefaultPackage = {
-    name: 'generic_mapper', filename: 'generic_mapper.mpackage', url: genericMapperUrl, version: '2.1.8',
+    name: 'generic_mapper', filename: 'generic_mapper.mpackage', url: genericMapperUrl, version: '2.1.9',
+};
+
+/** Mudlet's starter interface: an adjustable dock with the map, tabbed chat and
+ *  gauges, built only from what the game actually sends (GMCP/MSDP/prompt
+ *  scraping) — nothing appears until there's something to show. `baseui hide`
+ *  removes it and is remembered, and it stands aside on its own when a game
+ *  pushes a GUI via `Client.GUI`. `version` is declared for the same reason the
+ *  mapper's is: so a bumped archive reaches profiles that have the old one. */
+const BASE_UI: DefaultPackage = {
+    name: 'mudlet-base-ui', filename: 'mudlet-base-ui.mpackage', url: baseUiUrl, version: '1.0.0',
 };
 
 /**
@@ -51,8 +64,22 @@ export const IRE_MAPPER_GAMES = [
     'imperian.com', 'starmourn.com', 'stickmud.com',
 ];
 
+/**
+ * Games whose own bundled loader installs a full interface, so the starter UI is
+ * not preinstalled for them — it would only fight the game's GUI for the same
+ * screen space. Mirrors the `providesOwnUi` entries of `TGameDetails.h`'s
+ * `scmDefaultGames`, including each game's `alternateHostUrls`.
+ */
+export const GAMES_WITH_OWN_UI = [
+    'carrionfields.net',    // CF-loader installs CFGUI
+    'medievia.com',         // MedBootstrap installs MedUI
+    'icesus.org',           // icesus-loader installs Icesus' own interface
+    // mg-loader installs MorgenGrauen's own interface:
+    'mud.morgengrauen.info', 'mg.mud.de', 'mg.morgengrauen.info', 'morgengrauen.info',
+];
+
 /** Every bundled default, whatever the host — for tests and tooling. */
-export const ALL_DEFAULTS: DefaultPackage[] = [RUN_LUA_CODE, MUDLET_MAPPER, GENERIC_MAPPER];
+export const ALL_DEFAULTS: DefaultPackage[] = [RUN_LUA_CODE, MUDLET_MAPPER, GENERIC_MAPPER, BASE_UI];
 
 /**
  * The stock defaults for a profile on `host`.
@@ -66,10 +93,36 @@ export const ALL_DEFAULTS: DefaultPackage[] = [RUN_LUA_CODE, MUDLET_MAPPER, GENE
  * Exactly one mapper, always. `centerview()` is the only thing that moves the
  * map view and only a mapper calls it, so a profile with no mapper never follows
  * the player — and two mappers would both fire on the same movement.
+ *
+ * The starter UI is the one conditional pick: Mudlet skips it for players who
+ * aren't new (`experiencedMudletPlayer()` — any profile folder older than six
+ * months) because "veterans will have their own layouts already", and for games
+ * whose own loader installs a full interface. mudix has no profile-age signal to
+ * mirror the first, so `createdAt` stands in for it — see {@link isNewProfile}.
  */
-export function stockDefaults(host?: string): DefaultPackage[] {
+export function stockDefaults(host?: string, conn?: { createdAt?: string }): DefaultPackage[] {
     const isIreMapperGame = !!host && IRE_MAPPER_GAMES.some(g => g.toLowerCase() === host);
-    return [RUN_LUA_CODE, isIreMapperGame ? MUDLET_MAPPER : GENERIC_MAPPER];
+    const packages = [RUN_LUA_CODE, isIreMapperGame ? MUDLET_MAPPER : GENERIC_MAPPER];
+    const gameHasOwnUi = !!host && GAMES_WITH_OWN_UI.some(g => g === host);
+    if (isNewProfile(conn) && !gameHasOwnUi) packages.push(BASE_UI);
+    return packages;
+}
+
+/**
+ * Whether a profile is new enough to be offered the starter UI.
+ *
+ * `addConnection` stamps `createdAt` on every profile it creates, so a profile
+ * without one was made before the field existed — i.e. someone has already been
+ * using it, quite possibly with a layout of their own. That's mudix's stand-in
+ * for Mudlet's "no profile folder older than six months" check: it errs the safe
+ * way, since dropping a dock, gauges and a chat window onto an established
+ * profile is far more disruptive than withholding them from a new one.
+ *
+ * No profile at all (tooling, a preview, `stockDefaults()` with no argument)
+ * counts as new — nothing established is at risk.
+ */
+export function isNewProfile(conn?: { createdAt?: string }): boolean {
+    return !conn || conn.createdAt !== undefined;
 }
 
 /** A default or brand package as the install loop sees it. */
@@ -82,8 +135,12 @@ export type InstallablePackage = DefaultPackage & { removable?: boolean };
  * them — `[]` preinstalls nothing, and a brand shipping its own mapper simply
  * doesn't list ours. Unset means no opinion: the stock defaults for this game.
  */
-export function resolveDefaultPackages(brandPackages: InstallablePackage[] | undefined, host?: string): InstallablePackage[] {
-    return brandPackages ?? stockDefaults(host);
+export function resolveDefaultPackages(
+    brandPackages: InstallablePackage[] | undefined,
+    host?: string,
+    conn?: { createdAt?: string },
+): InstallablePackage[] {
+    return brandPackages ?? stockDefaults(host, conn);
 }
 
 /** Hostname `stockDefaults` matches its game lists against, lowercased. */
@@ -142,7 +199,7 @@ export async function ensureDefaultPackages(connectionId: string, vfs: ProfileVF
     const removedByUser = new Set(state.connectionProfile[connectionId]?.uninstalledPackages ?? []);
     // BrandPackage is shape-compatible with DefaultPackage, plus `removable`.
     const host = connectionHost(conn);
-    const defaults = resolveDefaultPackages(getBrand().packages, host);
+    const defaults = resolveDefaultPackages(getBrand().packages, host, conn);
     const installed: string[] = [];
     for (const def of defaults) {
         const current = installedPackages.find(p => p.name === def.name);

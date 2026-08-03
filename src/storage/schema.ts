@@ -50,6 +50,13 @@ export interface MudConnection {
      *  already ship them — Mudlet installs those only into brand-new profiles, so
      *  their absence in an imported profile is a real choice, not a gap to fill. */
     mudletImported?: boolean;
+    /** ISO timestamp stamped by `addConnection` when the profile is created.
+     *  **Absent means the profile predates this field**, which is exactly what
+     *  it's for: it stands in for Mudlet's `experiencedMudletPlayer()` (any
+     *  profile folder older than 6 months) so the starter UI only reaches
+     *  profiles created after it shipped, and never lands on top of a layout
+     *  someone already built. See `stockDefaults`. */
+    createdAt?: string;
     /** Connect to the game over TLS — Mudlet's `mSslTsl` / the connection
      *  dialog's "secure connection" checkbox. Meaningful in `mud` (proxy) mode
      *  only: the browser cannot wrap a raw socket itself, so the proxy performs

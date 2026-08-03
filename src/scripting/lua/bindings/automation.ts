@@ -12,23 +12,17 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
     // ── Script enable/disable ─────────────────────────────────────────────
     // Mudlet looks scripts up by name; toggling the flag cascades the
     // store subscription which loads/unloads Lua handlers synchronously.
-    // Mudlet `enableScript(name)` / `disableScript(name)` raise on miss
-    // instead of silently returning false — scripts that depend on a
-    // particular package being present prefer the loud failure.
-    lua.global.set('enableScript', (name: unknown) => {
-        const n = String(name ?? '');
-        if (!api.enableScript(n)) {
-            throw new Error(`enableScript: no script named "${n}"`);
-        }
-        return true;
-    });
-    lua.global.set('disableScript', (name: unknown) => {
-        const n = String(name ?? '');
-        if (!api.disableScript(n)) {
-            throw new Error(`disableScript: no script named "${n}"`);
-        }
-        return true;
-    });
+    // Mudlet `enableScript(name)` / `disableScript(name)`. A missing name is a
+    // caller bug and raises (in the Bridge.lua wrapper), but a name that simply
+    // matches nothing answers (nil, message) — Other_spec pins that split, and
+    // it lets a script probe for an optional package without pcall.
+    lua.global.set('__enableScript', (name: unknown) => api.enableScript(String(name ?? '')));
+    lua.global.set('__disableScript', (name: unknown) => api.disableScript(String(name ?? '')));
+    // Rollback hook for permScript: a body that raises as it is compiled in
+    // must leave nothing behind, and Mudlet deletes the half-built TScript for
+    // exactly that reason. Takes the numeric id permScript just returned so it
+    // can only ever remove the one it created, never a same-named sibling.
+    lua.global.set('__mudix_removeScriptById', (id: unknown) => api.removeScriptById(Number(id)));
     // Mudlet permScript(name, parent, luaCode) — creates a persisted script
     // under an existing script group (parent="" → root). Returns the new
     // script's id (UUID string) or -1 on failure. The Bridge.lua wrapper

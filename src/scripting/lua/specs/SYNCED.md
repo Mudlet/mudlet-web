@@ -6,11 +6,11 @@ every failing spec is a genuine mudix↔Mudlet parity gap, and re-syncing is a
 clean copy + diff.
 
 - Upstream: https://github.com/Mudlet/Mudlet/tree/development/src/mudlet-lua/tests
-- Synced from commit: `dae8e9f440eb1b76f2c5295d7a1d483b5577e861` (development, 2026-07-30)
+- Synced from commit: `3bd0e173c71717df038f1e23d23e4f1bff1a4b15` (development, 2026-08-02)
 
 ## Files
 
-All 26 `*_spec.lua` files from Mudlet's tests directory are synced verbatim. The
+All 33 `*_spec.lua` files from Mudlet's tests directory are synced verbatim. The
 live pass/fail scoreboard (and which are asserted green) lives in
 `docs/busted-e2e-plan.md`; `e2e/busted.spec.ts` runs them against the real app.
 

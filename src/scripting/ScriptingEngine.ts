@@ -1841,17 +1841,25 @@ export class ScriptingEngine implements EngineHost {
     }
 
     /**
-     * Toggle a script's enabled flag by name (Mudlet enableScript/disableScript).
+     * Toggle scripts' enabled flag by name (Mudlet enableScript/disableScript).
      * The store subscription picks up the change synchronously and either loads
      * or unloads handlers in the runtime.
+     *
+     * Every script sharing the name flips, not just the first — same rule as
+     * {@link toggleTriggerByName}, and Other_spec pins it. Names are not unique
+     * in the tree, so stopping at the first match would leave duplicates in a
+     * state the caller never asked for and `isActive(name)` would disagree with
+     * `exists(name)`.
      */
     toggleScriptByName(name: string, enabled: boolean): boolean {
         const store = useAppStore.getState();
         const scripts = store.connectionScripts[this.connectionId] ?? [];
-        const target = scripts.find(s => s.name === name);
-        if (!target) return false;
-        if (target.enabled === enabled) return true;
-        store.updateScript(this.connectionId, target.id, { enabled });
+        const targets = scripts.filter(s => s.name === name);
+        if (targets.length === 0) return false;
+        for (const target of targets) {
+            if (target.enabled === enabled) continue;
+            store.updateScript(this.connectionId, target.id, { enabled });
+        }
         return true;
     }
 
@@ -2000,9 +2008,13 @@ export class ScriptingEngine implements EngineHost {
             // engine, which owns their ids. Mudlet's exists() counts both.
             if (this.runtimes.lua?.tempItemExists(wanted, type)) return 1;
             if ((type === 'key' || type === 'keybind') && this.api.keys.hasTemp(wanted)) return 1;
+            if (type === 'timer' && this.api.timers.hasTemp(wanted)) return 1;
             return 0;
         }
         const name = String(nameOrId);
+        // A temporary timer's name IS the id tempTimer returned, so a numeric
+        // string has to resolve the same one the number does.
+        if (type === 'timer' && /^\d+$/.test(name) && this.api.timers.hasTemp(Number(name))) return 1;
         return list.filter(i => i.name === name).length;
     }
 
@@ -2043,9 +2055,13 @@ export class ScriptingEngine implements EngineHost {
             if (this.runtimes.lua?.tempItemExists(nameOrId, type)) {
                 return this.runtimes.lua.tempItemEnabled(nameOrId) ? 1 : 0;
             }
+            // A live temporary timer is by definition active — there is no
+            // enable/disable for one, only kill (see TimerEngine.hasTemp).
+            if (type === 'timer' && this.api.timers.hasTemp(nameOrId)) return 1;
             return 0;
         }
         const name = String(nameOrId);
+        if (type === 'timer' && /^\d+$/.test(name) && this.api.timers.hasTemp(Number(name))) return 1;
         return list.filter(i => i.name === name && isOn(i)).length;
     }
 
@@ -2203,8 +2219,12 @@ export class ScriptingEngine implements EngineHost {
         }
         const uuid = store.addScript(this.connectionId, {
             name,
-            enabled: true,
-            isGroup: false,
+            // Inactive on creation and a folder when there is no body, matching
+            // permTimer above and Mudlet's own startPermScript. permGroup(name,
+            // "script") is exactly the empty-code call, so this is what makes
+            // script groups groups.
+            enabled: false,
+            isGroup: code === '',
             parentId,
             code,
             language: 'lua',
@@ -2349,8 +2369,15 @@ export class ScriptingEngine implements EngineHost {
         const seconds = Number.isFinite(delay) && delay > 0 ? delay : 0;
         const uuid = store.addTimer(this.connectionId, {
             name,
-            enabled: true,
-            isGroup: false,
+            // Created inactive, as in Mudlet: startPermTimer ends with
+            // setIsActive(false), so a script has to enableTimer() it before it
+            // ever fires. Other_spec pins this — a fresh permTimer must report
+            // isActive == 0 and must not tick until enabled.
+            enabled: false,
+            // Mudlet: setIsFolder(timeout == 0 && function.isEmpty()). No
+            // interval and no body means the caller wanted a group, which is
+            // exactly how permGroup(name, "timer") is built on top of this.
+            isGroup: seconds === 0 && code === '',
             parentId,
             seconds,
             code,
@@ -2512,29 +2539,42 @@ export class ScriptingEngine implements EngineHost {
         const store = useAppStore.getState();
         const scripts = store.connectionScripts[this.connectionId] ?? [];
         const matches = scripts.filter(s => s.name === name);
-        const index = Math.max(1, Math.floor(pos)) - 1;
+        // 1-based, and position 0 is a miss rather than a clamp — same rule as
+        // getScriptByName.
+        const index = Math.floor(pos) - 1;
+        if (index < 0 || index >= matches.length) return -1;
         const target = matches[index];
-        if (!target) return -1;
         store.updateScript(this.connectionId, target.id, { code });
         return this.numericIdFor(target.id);
     }
 
     /**
-     * Mudlet `getScript(name [, pos]) → code, count`. Returns the source of the
-     * pos-th (1-indexed; default 1) script named `name` and how many scripts
-     * share that name. Returns null when none match — the Bridge.lua wrapper
-     * turns that into ("", 0).
+     * Mudlet `getScript(name [, pos]) → code, id`. Returns the source of the
+     * pos-th (1-indexed; default 1) script named `name` and that script's own
+     * numeric id. Null when nothing sits at that position — the Bridge.lua
+     * wrapper turns that into Mudlet's (-1, message).
      */
-    getScriptByName(name: string, pos: number): { code: string; count: number } | null {
+    removeScriptById(id: number): boolean {
+        const store = useAppStore.getState();
+        const scripts = store.connectionScripts[this.connectionId] ?? [];
+        const target = scripts.find(s => this.uuidToNumericId.get(s.id) === id);
+        if (!target) return false;
+        store.removeScript(this.connectionId, target.id);
+        return true;
+    }
+
+    getScriptByName(name: string, pos: number): { code: string; id: number } | null {
         if (!name) return null;
         const store = useAppStore.getState();
         const scripts = store.connectionScripts[this.connectionId] ?? [];
         const matches = scripts.filter(s => s.name === name);
-        if (matches.length === 0) return null;
-        const index = Math.max(1, Math.floor(pos)) - 1;
+        // Mudlet checks `pos >= 1 && pos <= size` and reports a miss otherwise,
+        // so position 0 is a miss rather than being clamped up to the first
+        // script — positions are 1-based and Other_spec pins that.
+        const index = Math.floor(pos) - 1;
+        if (index < 0 || index >= matches.length) return null;
         const target = matches[index];
-        if (!target) return null;
-        return { code: target.code ?? '', count: matches.length };
+        return { code: target.code ?? '', id: this.numericIdFor(target.id) };
     }
 
     /**

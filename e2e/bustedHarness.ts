@@ -80,6 +80,14 @@ export async function seedProfile(page: Page): Promise<void> {
                     name: 'Mudlet self-test',
                     mode: 'websocket',
                     url: 'ws://127.0.0.1:1/',
+                    // Seeding localStorage directly bypasses addConnection, which
+                    // is what normally stamps this. Without it the profile reads
+                    // as pre-existing and stockDefaults withholds the starter UI
+                    // (see isNewProfile) — and UI_spec is Mudlet's test suite for
+                    // that very package, so every BaseUI.* test would fail on a
+                    // missing global. Mudlet runs its suite on a fresh profile;
+                    // this keeps ours equivalent.
+                    createdAt: new Date().toISOString(),
                 }],
                 connectionTriggers: {
                     'mudlet-self-test': [

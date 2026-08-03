@@ -5,10 +5,7 @@
 mudlet = mudlet or {}
 mudlet.supports = {
   coroutines = true,
-  -- MMCP (peer-to-peer chat over direct TCP) can't run in a browser tab — the
-  -- mmcp.* table is bound as no-op stubs (Bridge.lua), but feature-detecting
-  -- scripts must see it as unsupported so they skip it.
-  mmcp = false,
+  mmcp = true,
   namedPatterns = true,
   osVersion = true
 }
@@ -938,18 +935,15 @@ do
   -- name: The name of the event that was fired.
   -- ...:  All arguments passed to the raised event.
   function dispatchEventToFunctions(event, ...)
-    -- mudix: __mudix_pcall_co (Bridge.lua) instead of pcall so handlers can
-    -- suspend via invokeFileDialog — Lua 5.1 can't yield across pcall's C frame.
-    local protect = __mudix_pcall_co or pcall
     if handlers[event] then
       for _, func in pairs(handlers[event]) do
-        local success, error = protect(func, event, ...)
+        local success, error = pcall(func, event, ...)
         if not success then showHandlerError(event, error) end
       end
     end
     if handlers["*"] then
       for _, func in pairs(handlers["*"]) do
-        local success, error = protect(func, event, ...)
+        local success, error = pcall(func, event, ...)
         if not success then showHandlerError(event, error) end
       end
     end

@@ -993,8 +993,14 @@ describe('Mudlet-API batch — Lua bindings', () => {
     expect(env.run('return #getPausedMusic()')).toBe(0);
   });
 
-  it('pauseMusic is callable with and without a channel', () => {
-    expect(() => env.run('pauseMusic(); pauseMusic("ambient")')).not.toThrow();
+  it('pauseMusic takes no arguments or a filter table, never a bare channel', () => {
+    // Mudlet's signature (TLuaInterpreterMedia.cpp): pauseSounds/pauseMusic
+    // accept nothing or a table, and reject anything else. mudix used to take a
+    // bare channel string; Media_spec pins the upstream contract, so the string
+    // form is gone rather than quietly accepted alongside it.
+    expect(() => env.run('pauseMusic(); pauseMusic({tag = "ambient"})')).not.toThrow();
+    expect(() => env.run('pauseMusic("ambient")')).toThrow(/needs to be a table/);
+    expect(() => env.run('pauseSounds(5)')).toThrow(/needs to be a table/);
   });
 
   it('getProfileStats returns a fully-populated zeroed table', () => {

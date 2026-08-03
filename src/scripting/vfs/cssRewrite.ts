@@ -1,5 +1,6 @@
 import type { ProfileVFS } from './ProfileVFS';
 import { vfsUrlFor } from './vfsBridge';
+import { isQtResourcePath, qtResourceUrl } from '../../assets/qt-resources';
 
 // Match url(<ref>) where <ref> is unquoted, single-quoted, or double-quoted.
 // The CSS spec allows whitespace around the ref but no balanced parens inside,
@@ -21,6 +22,9 @@ export function vfsRefToUrl(ref: string, connectionId: string, vfs: ProfileVFS):
     const trimmed = ref.trim();
     if (!trimmed) return null;
     if (PASSTHROUGH_PREFIX.test(trimmed)) return null;
+    // `:/…` is Mudlet's Qt resource bundle, not the profile VFS — resolving it
+    // as a VFS path would produce a /__vfs/ URL for a file that was never there.
+    if (isQtResourcePath(trimmed)) return qtResourceUrl(trimmed);
     const resolved = vfs.resolvePath(trimmed);
     const profilePrefix = `${vfs.profilePath}/`;
     const within = resolved.startsWith(profilePrefix)

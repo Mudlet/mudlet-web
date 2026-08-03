@@ -102,8 +102,15 @@ export function installTextEditBindings({ lua, api, channel }: BindingContext): 
         if (api.scrollBoxes.has(name)) return api.scrollBoxes.show(name);
         return api.windows.show(name);
     });
+    // Geometry crosses into Mudlet as C++ ints, so a fractional pixel is
+    // truncated there before any widget sees it. Geyser routinely produces
+    // fractions — a "20%" constraint on a 632px window is 126.4, and an HBox
+    // splitting a remainder lands on 200.00000000000099 — and its own specs
+    // assert the floored value. Doing the same here keeps the readback honest
+    // and stops float dust accumulating across repeated re-layouts.
+    const px = (v: unknown): number => Math.trunc(Number(v));
     lua.global.set('moveWindow', (name: string, x: unknown, y: unknown) => {
-        const xn = Number(x), yn = Number(y);
+        const xn = px(x), yn = px(y);
         if (api.labels.has(name)) api.labels.move(name, xn, yn);
         else if (api.cmdLines.has(name)) api.cmdLines.move(name, xn, yn);
         else if (api.textEdits.has(name)) api.textEdits.move(name, xn, yn);
@@ -111,7 +118,7 @@ export function installTextEditBindings({ lua, api, channel }: BindingContext): 
         else if (api.windows.has(name)) api.windows.move(name, xn, yn);
     });
     lua.global.set('resizeWindow', (name: string, w: unknown, h: unknown) => {
-        const wn = Number(w), hn = Number(h);
+        const wn = px(w), hn = px(h);
         if (api.labels.has(name)) api.labels.resize(name, wn, hn);
         else if (api.cmdLines.has(name)) api.cmdLines.resize(name, wn, hn);
         else if (api.textEdits.has(name)) api.textEdits.resize(name, wn, hn);

@@ -192,22 +192,25 @@ export function installVideoBindings({ lua, api }: BindingContext): void {
  * no-op dummy stubs.
  */
 export function installTtsBindings({ lua }: BindingContext, tts: TtsManager): void {
-    lua.global.set('ttsSpeak', (text: unknown) => { tts.speak(String(text ?? '')); });
-    lua.global.set('ttsQueue', (text: unknown, index?: unknown) => {
+    // Raw primitives; the Mudlet-shaped ttsSpeak/ttsQueue/ttsClearQueue globals
+    // wrap these in Bridge.lua, where argument validation and the (nil, message)
+    // returns live — same split as __ttsGetQueue/ttsGetQueue below.
+    lua.global.set('__ttsSpeak', (text: unknown) => { tts.speak(String(text ?? '')); });
+    lua.global.set('__ttsQueue', (text: unknown, index?: unknown) => {
         tts.queue(String(text ?? ''), index === undefined ? undefined : Number(index));
     });
-    lua.global.set('ttsClearQueue', (index?: unknown) =>
+    lua.global.set('__ttsClearQueue', (index?: unknown) =>
         tts.clearQueue(index === undefined ? undefined : Number(index)));
     lua.global.set('ttsPause', () => { tts.pause(); });
     lua.global.set('ttsResume', () => { tts.resume(); });
     lua.global.set('ttsSkip', () => { tts.skip(); });
     lua.global.set('ttsGetState', () => tts.getState());
     lua.global.set('ttsGetCurrentVoice', () => tts.getCurrentVoice());
-    lua.global.set('ttsSetVoiceByName', (name: unknown) => tts.setVoiceByName(String(name ?? '')));
-    lua.global.set('ttsSetVoiceByIndex', (index: unknown) => tts.setVoiceByIndex(Number(index)));
-    lua.global.set('ttsSetRate', (rate: unknown) => { tts.setRate(Number(rate)); });
-    lua.global.set('ttsSetPitch', (pitch: unknown) => { tts.setPitch(Number(pitch)); });
-    lua.global.set('ttsSetVolume', (volume: unknown) => { tts.setVolume(Number(volume)); });
+    lua.global.set('__ttsSetVoiceByName', (name: unknown) => tts.setVoiceByName(String(name ?? '')));
+    lua.global.set('__ttsSetVoiceByIndex', (index: unknown) => tts.setVoiceByIndex(Number(index)));
+    lua.global.set('__ttsSetRate', (rate: unknown) => { tts.setRate(Number(rate)); });
+    lua.global.set('__ttsSetPitch', (pitch: unknown) => { tts.setPitch(Number(pitch)); });
+    lua.global.set('__ttsSetVolume', (volume: unknown) => { tts.setVolume(Number(volume)); });
     lua.global.set('ttsGetRate', () => tts.getRate());
     lua.global.set('ttsGetPitch', () => tts.getPitch());
     lua.global.set('ttsGetVolume', () => tts.getVolume());

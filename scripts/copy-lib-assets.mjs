@@ -5,16 +5,19 @@
 //   Vite. Rollup rewrites those specifiers relative to the output root, so each
 //   file has to land at the same path under dist-lib that it has under src.
 import { copyFileSync, cpSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 
-const GENERIC_MAPPER_DIR = 'scripting/lua/mudlet-lua/generic-mapper';
+// defaultPackages.ts entries that live in the vendored mudlet-lua mirror rather
+// than in import/defaults/ — each keeps its source-relative path under dist-lib.
+const VENDORED_MPACKAGES = [
+    'scripting/lua/mudlet-lua/generic-mapper/generic_mapper.mpackage',
+    'scripting/lua/mudlet-lua/base-ui/mudlet-base-ui.mpackage',
+];
 
 mkdirSync('dist-lib/import/defaults', { recursive: true });
-mkdirSync(`dist-lib/${GENERIC_MAPPER_DIR}`, { recursive: true });
 copyFileSync('public/vfs-sw.js', 'dist-lib/vfs-sw.js');
-// Both are defaultPackages.ts entries; generic_mapper is imported from the
-// vendored mudlet-lua mirror rather than copied into import/defaults/.
 cpSync('src/import/defaults', 'dist-lib/import/defaults', { recursive: true });
-copyFileSync(
-    `src/${GENERIC_MAPPER_DIR}/generic_mapper.mpackage`,
-    `dist-lib/${GENERIC_MAPPER_DIR}/generic_mapper.mpackage`,
-);
+for (const rel of VENDORED_MPACKAGES) {
+    mkdirSync(`dist-lib/${dirname(rel)}`, { recursive: true });
+    copyFileSync(`src/${rel}`, `dist-lib/${rel}`);
+}

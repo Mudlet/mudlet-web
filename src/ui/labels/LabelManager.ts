@@ -130,6 +130,40 @@ function safeCoord(n: number): number {
 }
 
 /**
+ * Natural size of a label's HTML, measured off-screen.
+ *
+ * Backs getSizeHint when the label has no element in the document — a script
+ * that creates a label and asks for its hint in one chunk runs entirely before
+ * React paints. The probe is absolutely positioned with no width, so it
+ * shrink-to-fits its content, which is exactly what a size hint is. Any font
+ * declarations from the label's own stylesheet are applied so the metrics match
+ * what will actually be drawn.
+ *
+ * Null when there is nothing to measure or no DOM at all.
+ */
+function measureHtmlContent(html: string, styleSheet?: string): { width: number; height: number } | null {
+    if (typeof document === 'undefined' || !document.body || !html) return null;
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:absolute;left:-99999px;top:0;'
+        + 'visibility:hidden;width:auto;height:auto;white-space:pre-wrap;';
+    for (const prop of ['font-family', 'font-size', 'font-weight', 'font-style'] as const) {
+        const found = styleSheet?.match(new RegExp(`(?:^|[;\\s])${prop}\\s*:\\s*([^;]+)`, 'i'));
+        if (found) probe.style.setProperty(prop, found[1].trim());
+    }
+    // The 4px QTextDocument margin every label:echo() renders with (see the
+    // .label-doc wrapper in LabelOverlay) belongs in the hint too.
+    probe.innerHTML = `<div style="margin:4px">${html}</div>`;
+    document.body.appendChild(probe);
+    try {
+        const rect = probe.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return null;
+        return { width: Math.ceil(rect.width), height: Math.ceil(rect.height) };
+    } finally {
+        probe.remove();
+    }
+}
+
+/**
  * Run `fn` on the next animation frame, falling back to a macrotask where
  * rAF doesn't exist (tests, SSR). Deliberately not a microtask: notifications
  * can cascade — a listener may resize a label and notify again — and the
@@ -270,7 +304,44 @@ export class LabelManager {
             const el = document.querySelector(
                 `[data-mudix-label="${cssEscape(name)}"]`,
             ) as HTMLElement | null;
-            if (el) return { width: el.scrollWidth, height: el.scrollHeight };
+            if (el) {
+                // Qt's sizeHint is what the widget *wants*, so it has to be able
+                // to come out smaller than the widget currently is. scrollWidth
+                // can't: it is the box width whenever the content is narrower,
+                // which made every hint exactly the label's own size. A Range
+                // over the contents measures the laid-out text itself.
+                // Range over the *inline* content: `.label-doc` is a block, so
+                // ranging over the outer element just re-measures the box. Its
+                // children are the text and spans echo() produced, whose client
+                // rects are the actual laid-out extent.
+                const doc = el.querySelector('.label-doc');
+                const range = document.createRange();
+                range.selectNodeContents(doc ?? el);
+                const rect = range.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                    // Padding and border belong to the hint — Qt includes the
+                    // widget's own chrome around the content it sizes for.
+                    const style = getComputedStyle(el);
+                    const pad = (...vals: string[]): number =>
+                        vals.reduce((n, v) => n + (parseFloat(v) || 0), 0);
+                    return {
+                        width: Math.ceil(rect.width + pad(
+                            style.paddingLeft, style.paddingRight,
+                            style.borderLeftWidth, style.borderRightWidth)),
+                        height: Math.ceil(rect.height + pad(
+                            style.paddingTop, style.paddingBottom,
+                            style.borderTopWidth, style.borderBottomWidth)),
+                    };
+                }
+                return { width: el.scrollWidth, height: el.scrollHeight };
+            }
+            // No mounted element: a label created and measured inside one
+            // synchronous script chunk hasn't been through React yet. Falling
+            // back to the label's own size would make the hint meaningless — it
+            // would always report exactly the box we were asked to size — so
+            // measure the same HTML in a detached, unconstrained probe instead.
+            const measured = measureHtmlContent(lbl.html, lbl.styleSheet);
+            if (measured) return measured;
         }
         return { width: lbl.width, height: lbl.height };
     }
@@ -336,9 +407,11 @@ export class LabelManager {
         // plain fill color when there's no stylesheet to patch.
         if (lbl.styleSheet) {
             lbl.styleSheet = patchStyleSheetBackgroundColor(lbl.styleSheet, r, g, b, a);
-        } else {
-            lbl.backgroundColor = { r, g, b, a };
         }
+        // Recorded either way, not just on the no-stylesheet branch: this field
+        // is what getBackgroundColor answers with, and a label that happened to
+        // carry a stylesheet used to report the colour it had *before* the call.
+        lbl.backgroundColor = { r, g, b, a };
         // Mudlet implicitly enables fill when the user sets a bg color.
         lbl.fillBackground = true;
         this.notify(lbl.parent);

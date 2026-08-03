@@ -44,6 +44,9 @@ Thumbs.db
 /playwright-report/
 /blob-report/
 /playwright/.cache/
+# Scratch output of `yarn busted:failures` — a snapshot of one run, meant for
+# diffing against the next one locally, not for committing.
+/e2e/busted-failures.json
 
 .idea
 .claude

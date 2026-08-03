@@ -78,14 +78,23 @@ export function installCommandLineBindings({ lua, api, channel, emitEvent }: Bin
     // doesn't (yet) gate the main cmd bar this way — calling with no name
     // or "main" is a no-op that returns true so scripts targeting the main
     // bar don't crash.
+    // Mudlet's enable/disableCommandLine change *visibility* — UI_spec asserts
+    // windowVisible() flips — so an overlay command line is shown/hidden as well
+    // as made inert. Doing only the latter left a dead input box on screen.
     lua.global.set('enableCommandLine', (name?: unknown) => {
         if (typeof name !== 'string' || !name || name === 'main') return true;
-        if (api.cmdLines.has(name)) return api.cmdLines.enable(name);
+        if (api.cmdLines.has(name)) {
+            api.cmdLines.enable(name);
+            return api.cmdLines.show(name);
+        }
         return api.windows.enableCommandLine(name);
     });
     lua.global.set('disableCommandLine', (name?: unknown) => {
         if (typeof name !== 'string' || !name || name === 'main') return true;
-        if (api.cmdLines.has(name)) return api.cmdLines.disable(name);
+        if (api.cmdLines.has(name)) {
+            api.cmdLines.disable(name);
+            return api.cmdLines.hide(name);
+        }
         return api.windows.disableCommandLine(name);
     });
     // Mudlet setCmdLineStyleSheet(name, css). Routes the QSS string to the
@@ -128,11 +137,15 @@ export function installCommandLineBindings({ lua, api, channel, emitEvent }: Bin
     ) => {
         // 2 args: (menuLabel, eventName).
         // 3 args: (cmdLineName, menuLabel, eventName) — drop cmdLineName.
+        // `== null` rather than `!== undefined`: a Lua nil handed over the
+        // wasmoon boundary is not reliably `undefined`, and reading it as a
+        // present third argument shifted everything one place, registering an
+        // entry with an empty event name (which `add` then refused).
         let menuLabel: unknown, eventName: unknown;
-        if (c !== undefined) {
-            menuLabel = b; eventName = c;
-        } else {
+        if (c == null) {
             menuLabel = a; eventName = b;
+        } else {
+            menuLabel = b; eventName = c;
         }
         return api.cmdLineMenu.add(
             String(menuLabel ?? ''),
@@ -143,7 +156,8 @@ export function installCommandLineBindings({ lua, api, channel, emitEvent }: Bin
     // (false, errMsg) when the entry doesn't exist. The optional leading
     // cmdLineName arg is accepted for parity and ignored.
     lua.global.set('__removeCommandLineMenuEvent', (a: unknown, b?: unknown) => {
-        const uniqueName = b !== undefined ? b : a;
+        // Same nil-vs-undefined trap as addCommandLineMenuEvent above.
+        const uniqueName = b == null ? a : b;
         return api.cmdLineMenu.remove(String(uniqueName ?? ''));
     });
     // Mudlet shape: { [uniqueName] = { event, display } }

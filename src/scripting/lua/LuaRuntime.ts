@@ -21,6 +21,7 @@ import YAJL_LUA from './Yajl.lua?raw';
 import {setupRex} from './rex';
 import {setupYajl, type LuaValueTransform} from './yajl';
 import {parseImageSize} from './imageSize';
+import {isQtResourcePath, qtResourceBytes} from '../../assets/qt-resources';
 import {getSqliteClient, sqliteReady} from '../../db/sqliteClient';
 import {QT_CURSOR_NAME_TO_INT, QT_CURSOR_TO_CSS} from '../../ui/labels/cursorShapes';
 import {qtKeyToDomCode, qtModifiersToList, domCodeToQtKey, listToQtModifiers} from '../../mud/keybindings/qtKeys';
@@ -95,15 +96,24 @@ const bustedSpecVfsPaths = (): string[] =>
 // own props (alive/thread/ref/pointer) and the proxy `get` handler tries to
 // .bind() the boolean, which throws. $detach(DictType.Object=1) materializes
 // the actual Lua keys into a plain object.
+/**
+ * HTTP headers as sent over from Bridge.lua: a flat "k\1v\1k\1v" string, or nil
+ * when there are none.
+ *
+ * Deliberately *not* a Lua table. Reading one here meant wasmoon's `$detach`,
+ * which traps the whole runtime with "memory access out of bounds" on some call
+ * shapes — `postHTTP(data, url, headers, file)` with the optional file argument
+ * present was one, so every upload with headers took the Lua state down. The
+ * table is walked on the Lua side now (see `__mudix_headers_to_string`), where
+ * it is an ordinary `pairs` loop.
+ */
 function luaTableToHeaders(h: unknown): Record<string, string> | undefined {
-    if (!h || typeof h !== 'object') return undefined;
-    const proxy = h as { $detach?: (dt: number) => Record<string, unknown> };
-    const obj = typeof proxy.$detach === 'function' ? proxy.$detach(1) : (h as Record<string, unknown>);
+    if (typeof h !== 'string' || !h) return undefined;
+    const parts = h.split('');
     const out: Record<string, string> = {};
-    for (const k of Object.keys(obj)) {
-        const v = obj[k];
-        if (v != null) out[k] = String(v);
-    }
+    // Trailing odd element would mean a key with no value — drop it rather than
+    // sending a header whose value is "undefined".
+    for (let i = 0; i + 1 < parts.length; i += 2) out[parts[i]] = parts[i + 1];
     return Object.keys(out).length ? out : undefined;
 }
 
@@ -609,10 +619,18 @@ export class LuaRuntime implements IScriptingRuntime {
         // new Image()). Returns a 0-indexed [w, h] array; Bridge.lua unpacks it.
         this.lua.global.set('__getImageSize', (path: unknown) => {
             const p = String(path ?? '');
-            if (!p || !this.vfs) return false;
-            let bytes: Uint8Array;
-            try { bytes = this.vfs.readBinaryFile(p); }
-            catch { return false; }
+            if (!p) return false;
+            let bytes: Uint8Array | null;
+            if (isQtResourcePath(p)) {
+                // `:/…` addresses Mudlet's compiled-in Qt resources, not the
+                // profile VFS — see src/assets/qt-resources.
+                bytes = qtResourceBytes(p);
+            } else {
+                if (!this.vfs) return false;
+                try { bytes = this.vfs.readBinaryFile(p); }
+                catch { return false; }
+            }
+            if (!bytes) return false;
             const size = parseImageSize(bytes);
             return size ? [size.width, size.height] : false;
         });
@@ -668,8 +686,12 @@ export class LuaRuntime implements IScriptingRuntime {
             const clickThrough = boolArg(args[i + 6], 'createLabel', hasWindow ? 8 : 7, true);
             return this.api.labels.create(name, {
                 parent: window === 'main' ? 'main' : window,
-                x: Number(args[i + 1]), y: Number(args[i + 2]),
-                width: Number(args[i + 3]), height: Number(args[i + 4]),
+                // Truncated to whole pixels, as the C++ int parameters do in
+                // Mudlet. Geyser hands over fractions routinely — a "20%"
+                // constraint on a 632px window is 126.4 — and its own specs
+                // assert the floored value comes back out of getWindowGeometry.
+                x: Math.trunc(Number(args[i + 1])), y: Math.trunc(Number(args[i + 2])),
+                width: Math.trunc(Number(args[i + 3])), height: Math.trunc(Number(args[i + 4])),
                 fillBackground: fill,
                 clickThrough,
             });
@@ -1613,6 +1635,25 @@ export class LuaRuntime implements IScriptingRuntime {
                 return e instanceof Error ? e.message : 'malformed url';
             }
         });
+        // Mudlet opens the upload file before issuing the request and reports
+        // (nil, "couldn't open '<path>'...") when it can't, without emitting an
+        // error event (TLuaInterpreter.cpp, performHttpRequest). Checking here
+        // rather than in HttpService matters for more than parity: the failure
+        // there surfaced as a *synchronous* emit from inside a Lua→JS call,
+        // which re-enters the Lua state mid-call and takes the whole runtime
+        // down with a wasm "memory access out of bounds".
+        this.lua.global.set('__mudix_upload_file_error', (file: unknown) => {
+            const path = String(file ?? '');
+            if (!path) return false;
+            if (!this.vfs) return 'no profile VFS available for file upload';
+            // exists(), not a trial read: the body gets read for real moments
+            // later, and an upload is exactly the case where reading twice is
+            // worth avoiding. A path that exists but still can't be read falls
+            // through to HttpService's (now deferred) error event.
+            return this.vfs.exists(path)
+                ? false
+                : `couldn't open '${path}', is the location correct and do you have permissions to it?`;
+        });
         this.lua.global.set('__downloadFile', (saveTo: unknown, url: unknown) => {
             this.http.downloadFile(String(saveTo ?? ''), String(url ?? ''));
         });
@@ -1721,6 +1762,7 @@ export class LuaRuntime implements IScriptingRuntime {
             'lpeg-register',
         );
         this.exec(LUAGLOBAL, 'LuaGlobal');
+        this.installMudletLuaOverrides();
         this.installFastColorEcho();
         this.setupAnsiColorTable();
         // Record the default namespace so the Variables view can hide built-ins.
@@ -1728,6 +1770,38 @@ export class LuaRuntime implements IScriptingRuntime {
         this.exec(CAPTURE_BASELINE_LUA, 'baseline-globals');
 
         if (BUSTED_ENABLED) this.setupBustedBridge();
+    }
+
+    // The two places the browser can't match Mudlet's own Lua, fixed up from the
+    // outside so the vendored mudlet-lua/ tree stays a verbatim mirror of
+    // upstream — same tactic as installFastColorEcho below, and the reason
+    // re-syncing that tree can't silently drop a mudix change. Runs immediately
+    // after LuaGlobal.lua, before any user script can observe either global.
+    // See src/scripting/lua/mudlet-lua/SYNCED.md.
+    private installMudletLuaOverrides(): void {
+        this.exec(
+            `-- MMCP is peer-to-peer chat over a direct TCP socket, which a browser tab
+-- can't open. mmcp.* IS bound, as no-op stubs (Bridge.lua), so feature-detecting
+-- scripts have to see it unsupported here or they'll happily call into them.
+if mudlet and mudlet.supports then mudlet.supports.mmcp = false end
+
+-- Other.lua's dispatchEventToFunctions guards every handler with pcall, and Lua
+-- 5.1 cannot yield across pcall's C frame: an event handler that suspends on
+-- invokeFileDialog dies there with "attempt to yield across metamethod/C-call
+-- boundary". Swapping just THAT function's environment re-points its \`pcall\` at
+-- the coroutine-aware Bridge.lua version, while every other global it reads
+-- (showHandlerError, pairs, ...) falls through to _G untouched. Rebuilding the
+-- closure instead would mean recreating \`handlers\`, a local upvalue of the
+-- do-block Other.lua defines it in.
+if __mudix_pcall_co and type(dispatchEventToFunctions) == 'function' then
+  setfenv(dispatchEventToFunctions, setmetatable(
+    { pcall = __mudix_pcall_co },
+    -- __newindex too: a proxy env that only forwards reads would quietly
+    -- swallow a global write, should upstream ever add one.
+    { __index = _G, __newindex = _G }))
+end`,
+            'mudlet-lua-overrides',
+        );
     }
 
     // Shadow the shared `xEcho` dispatcher (not decho/cecho/hecho themselves) so

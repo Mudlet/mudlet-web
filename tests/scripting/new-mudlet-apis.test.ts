@@ -69,8 +69,12 @@ describe('addMouseEvent / getMouseEvents / removeMouseEvent', () => {
 
   it('registers, lists, refuses duplicates, and removes entries', () => {
     expect(rt.run('return addMouseEvent("m1", "onM1", "Do M1", "tip")')).toBe(true);
-    // Duplicate uniqueName is refused.
-    expect(rt.run('return addMouseEvent("m1", "other")')).toBe(false);
+    // Duplicate uniqueName is refused, with the reason — UI_spec pins the
+    // wording, and a bare false left a script guessing.
+    expect(rt.run(`
+      local ok, err = addMouseEvent("m1", "other")
+      return tostring(ok) .. "|" .. tostring(err)
+    `)).toBe("nil|mouse event 'm1' already exists");
     expect(rt.run('return getMouseEvents().m1["event name"]')).toBe('onM1');
     expect(rt.run('return getMouseEvents().m1["display name"]')).toBe('Do M1');
     expect(rt.run('return getMouseEvents().m1["tooltip text"]')).toBe('tip');
@@ -153,11 +157,16 @@ describe('setLinkStyle / resetLinkStyle', () => {
   beforeAll(async () => { rt = await createTestRuntime(); });
   afterAll(() => rt.dispose());
 
-  it('applies + clears on an existing label, false on a missing one', () => {
+  it('applies + clears on an existing label, reports a missing one', () => {
     rt.run('createLabel("lbl1", 0, 0, 50, 20, 1)');
     expect(rt.run('return setLinkStyle("lbl1", "#ff0000", "#00ff00", true)')).toBe(true);
     expect(rt.run('return resetLinkStyle("lbl1")')).toBe(true);
-    expect(rt.run('return setLinkStyle("nolabel", "#fff", "#000")')).toBe(false);
+    // A miss is (nil, message), not a bare false — UI_spec asserts the wording,
+    // and a bare false gave a script no way to say what went wrong.
+    expect(rt.run(`
+      local ok, err = setLinkStyle("nolabel", "#fff", "#000")
+      return tostring(ok) .. "|" .. tostring(err)
+    `)).toBe("nil|label 'nolabel' not found");
   });
 });
 
@@ -211,8 +220,17 @@ describe('setWindow (element reparenting)', () => {
   });
 
   it('rejects an unknown target window and an unknown element', () => {
-    expect(rt.run('return setWindow("sw_nope", "sw_lbl")')).toBe(false);
-    expect(rt.run('return setWindow("sw_uw", "sw_no_such_element")')).toBe(false);
+    // A name that matches nothing is (nil, message) — the two cases are worded
+    // differently so a script can tell which half of the call was wrong. An
+    // illegal-but-real move still returns a bare false (see the next test).
+    expect(rt.run(`
+      local ok, err = setWindow("sw_nope", "sw_lbl")
+      return tostring(ok) .. "|" .. tostring(err)
+    `)).toBe("nil|window 'sw_nope' not found");
+    expect(rt.run(`
+      local ok, err = setWindow("sw_uw", "sw_no_such_element")
+      return tostring(ok) .. "|" .. tostring(err)
+    `)).toBe("nil|element 'sw_no_such_element' not found");
   });
 
   it('reparents a miniconsole but refuses a userwindow base', () => {

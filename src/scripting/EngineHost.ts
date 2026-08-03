@@ -154,7 +154,9 @@ export interface EngineHost {
     getButtonStateByName(name: string): boolean | null;
     setButtonStyleSheetByName(name: string, css: string): boolean;
     setScriptByName(name: string, code: string, pos: number): number;
-    getScriptByName(name: string, pos: number): { code: string; count: number } | null;
+    getScriptByName(name: string, pos: number): { code: string; id: number } | null;
+    /** Remove the script with this numeric id; true when one was removed. */
+    removeScriptById(id: number): boolean;
     /** Mudlet's killTimer/killAlias/killTrigger/killKey by permanent-item name. */
     killByName(kind: 'timer' | 'alias' | 'trigger' | 'key', name: string): boolean;
 
@@ -248,6 +250,7 @@ export const NULL_ENGINE_HOST: EngineHost = Object.freeze({
     setButtonStyleSheetByName: () => false,
     setScriptByName: () => -1,
     getScriptByName: () => null,
+    removeScriptById: () => false,
     killByName: () => false,
 
     resetProfile: () => {},

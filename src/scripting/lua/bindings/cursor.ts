@@ -40,6 +40,14 @@ export function installCursorBindings({ lua, api }: BindingContext): void {
     lua.global.set('enableHorizontalScrollBar',  (win?: unknown) => api.enableHorizontalScrollBar(scrollWin(win)));
     lua.global.set('disableScrolling',           (win?: unknown) => api.disableScrolling(scrollWin(win)));
     lua.global.set('enableScrolling',            (win?: unknown) => api.enableScrolling(scrollWin(win)));
+    lua.global.set('scrollingActive', (win?: unknown) => api.scrollingActive(scrollWin(win)));
+    // Mudlet enable/disableTimeStamps(window) + timeStampsEnabled(window). The
+    // renderer already draws the column (the main output's context menu toggles
+    // the same thing) — these just drive it per console from a script.
+    lua.global.set('__timeStampsEnabled', (win?: unknown) =>
+        api.timeStampsEnabled(typeof win === 'string' ? win : 'main'));
+    lua.global.set('__setTimeStamps', (win: unknown, visible: unknown) =>
+        api.setTimeStamps(typeof win === 'string' ? win : 'main', !!visible));
     // Mudlet getScroll([windowName]) — buffer line index at viewport top.
     lua.global.set('getScroll', (win?: unknown) => api.getScroll(scrollWin(win)));
     // Mudlet scrollTo([windowName,] [lineNumber]). With no line (or no args)
