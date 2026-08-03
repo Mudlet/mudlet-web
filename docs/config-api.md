@@ -16,6 +16,7 @@ Lua: setConfig("enableMSDP", true) / getConfig("enableMSDP")
         → ProfileSettings field  (protocols / mapper / autoClearInput)
         → MudSession.echoSentText (live)
         → ProfileSettings.mapperPanelVisible  (mapperPanelVisible, live)
+        → MapStore  (showMapInfo / hideMapInfo, live)
         → ProfileSettings.config bag  (persist-only + UI-consumed keys)
 ```
 
@@ -72,6 +73,7 @@ Mudlet); the rest are live.
 | `blankLinesBehaviour` | How empty server lines render in the main output (`'show'` / `'hide'` / `'replacewithspace'`). Stored live in `MudSession.blankLinesBehaviour` and read per-line by `ScriptingEngine.processFlushBatch`: `show` (default) renders the blank line as-is, `hide` suppresses it entirely, `replacewithspace` renders it as a single space (Mudlet's screen-reader workaround for QTBUG-105035 — see `TBuffer.cpp`). Scoped to `mud`-typed output, so echoes/errors are unaffected (matching Mudlet's TBuffer-only handling). An unknown mode string is rejected (`setConfig`→`false`). Persisted to the `config` bag and re-applied on profile load (`ScriptingAPI` constructor). **Mudlet Web note:** `show` already pads an empty line to `&nbsp;` so it keeps its height, so `show` and `replacewithspace` look near-identical in Mudlet Web; `hide` is the visibly distinct mode. |
 | `mapperPanelVisible` | Shows (`true`) or hides (`false`) the map widget's **control bar** — area picker, z-level buttons, options menu — leaving the map itself alone. Mudlet's `Host::mShowPanel` / `dlgMapper::slot_setMapperPanelVisible`, which hides `dlgMapper`'s `widget_panel`; the map *window* is `openMapWidget`/`closeMapWidget`, a separate thing. Backed by `ProfileSettings.mapperPanelVisible` (default `true`), so it persists per profile like Mudlet's profile-XML `mShowPanel` and applies to every map panel of that profile. Also toggled by the collapse arrow `MapPanel` draws over the map — which stays visible when the bar is hidden, so a script can't lock the controls away. |
 | `muteMediaAPI` | Mutes media triggered by the scripting API (`playSoundFile` / `playMusicFile` / `playVideoFile`). Forwarded to `SoundManager.setOriginMuted('api', …)` **and** `VideoManager.setOriginMuted('api', …)`: currently-playing API sources are silenced in place (gain → 0 / `<video>.muted`, position keeps advancing) and new API sources start silent; unmuting restores audibility mid-track — mirroring Mudlet toggling `QAudioOutput::setMuted` on the live `MediaProtocolAPI` players. Persisted to the `config` bag, re-applied on profile load, and re-synced whenever the bag changes (`ScriptingAPI.syncMediaMuteFromConfig`, subscribed in the constructor) so the Settings-modal toggle takes effect live. `getConfig` reports the live `SoundManager.isOriginMuted('api')`. |
+| `showMapInfo` / `hideMapInfo` | Switch a `registerMapInfo` map-info overlay on/off **by label** (`setConfig("showMapInfo", "Short")`). **Set-only** — Mudlet has no `getConfig` counterpart, so `getConfig("showMapInfo")` reports an invalid option, and neither key appears in the no-arg dump. Routed to `MapStore.showMapInfo`/`.hideMapInfo`. Unlike `enableMapInfo(label)`, an unregistered label is **not** an error: Mudlet inserts the name straight into the `Host::mMapInfoContributors` set without consulting the contributor registry, so `setConfig` always returns `true` and the overlay lights up if and when something registers under that label. `MapStore` keeps that half of Mudlet's model in a `pendingMapInfoEnabled` set (it hangs `enabled` off the contributor itself). The set also outlives Lua teardown — an enabled script contributor parks its label there in `clearMapInfoContributors` so a reloaded script's re-registration comes back on, matching the host-level lifetime of Mudlet's set — while `killMapInfo` drops it, matching `removeContributor`. **Deviation:** Mudlet guards the whole branch on a live mapper widget and treats the key as unknown when there is none; Mudlet Web's `MapStore` always exists on the `WindowManager`, so the write lands whether or not a map panel is open. |
 | `muteMediaGame` | Same as `muteMediaAPI` but for server-driven media — MSP `!!SOUND`/`!!MUSIC`, the MXP `<SOUND>`/`<MUSIC>` tags (which route through the same `handleMspCommand`), and MCMP, i.e. GMCP `Client.Media` (Mudlet's `MediaProtocolMSP`/`MediaProtocolGMCP`). Forwarded to `SoundManager.setOriginMuted('game', …)` and `VideoManager.setOriginMuted('game', …)`; the MSP and `Client.Media` dispatches in `ScriptingEngine` tag their plays with `origin: 'game'`. |
 
 The Settings modal's **Media** tab exposes both, plus a derived **Mute all
@@ -104,6 +106,7 @@ real behaviour:
 | `fixUnnecessaryLinebreaks` | When `true` (default `false`) and the session is GA-driven, strips a single spurious leading newline from the start of each GA-terminated data block — Mudlet's "Fix unnecessary linebreaks on GA servers" (`mUSE_IRE_DRIVER_BUGFIX`, `cTelnet::gotPrompt`), for IRE-style servers that prepend a stray `<LF>` to every transmission. ANSI SGR escapes at the block start are skipped before the newline check. Forwarded to `MudClient.setFixUnnecessaryLinebreaks` via `MudSession`. **Deviation:** the very first transmission (before the first GA latches GA-driver mode) keeps its leading newline, since Mudlet Web emits whole lines eagerly and can't tell the session is GA-driven until that GA arrives. | `ProfileSession` → `MudSession` → `MudClient` |
 | `enableBlinkText` | When `true`, ANSI blink (SGR 5/6) renders as a smooth opacity pulse; when `false` (default — matching Mudlet) blinking text is shown in italics instead. `FormatState.toHtml` always emits the `ansi-slow-blink`/`ansi-rapid-blink` classes; the effect toggles a `blink-text-enabled` class on the document root, and `App.css` picks the pulse-vs-italic presentation from it (so it covers the main output, user windows, and mini-consoles alike). | `ProfileSession` → `<html>` class → `App.css` |
 | `announceIncomingText` | When `true` (default), mirrors MUD output to an off-screen `role="log" aria-live="polite"` region so a screen reader (NVDA, JAWS, VoiceOver, Orca) narrates each new line. | `ScreenReaderLog` |
+| `f3SearchEnabled` | When `true` (default `false` — matching Mudlet), turns buffer search into a screen-reader flow: `F3`/`Shift+F3` reach it **with the find bar closed** (opening it), only the current hit stays tinted, focus parks on that hit, and the **whole matched line** is announced through a polite live region owned by the bar. Ported from `TConsole::setF3SearchEnabled` + `focusOnSearchResultAndAnnounce`, which creates the two `QShortcut`s, calls `clearSearchHighlights()` per search, moves its caret onto the hit, and `mudlet::announce()`s the buffer line. **Mudlet Web notes:** (1) Mudlet's search box lives permanently in the console toolbar, so its `F3` always has a target; ours is a transient overlay, which is why the key summons it. (2) Consequently the key is gated **only** at that bar-closed entry point — `F3` still steps an already-open bar with the setting off, so enabling a default-false key adds reach instead of taking a working shortcut away. (3) Announcing deliberately does **not** go through `ScreenReaderLog`: that region mirrors game output and is silenced by `announceIncomingText`, but a search result has to be spoken either way. (4) Focus lands on the current `<mark>` (`tabIndex = -1`, so it never joins the tab order) rather than opening `CaretReviewPanel` — a background rescan unwraps that very mark, so `paint` notices it held focus and hands it to the replacement. Announcing fires on an explicit step only, never on the query-change scan, which would otherwise rip focus out of the box after the first character typed. | `OutputArea` → `OutputSearchBar` / `outputSearch.ts` |
 | `caretShortcut` | `'none'` (default) / `'tab'` / `'ctrltab'` / `'f6'`. The key that opens a keyboard-navigable, `role="document"` mirror of the scrollback (Mudlet's caret mode) for character/word/line screen-reader review; the same key (or `Esc`) returns to the command line. | `CaretReviewPanel` / `caretMode.ts` |
 | `enableClosedCaption` | When `true` (default `false`), prints a short text line in the output whenever a sound, music track, or video starts or stops (Mudlet's `TMedia::printClosedCaption` format), for users who can't hear game audio. | `ScriptingEngine` (fed by `SoundManager`/`VideoManager` lifecycle hooks) |
 | `advertiseScreenReader` | When `true` (default `false`), reports screen-reader use to the server via the MTTS SCREEN READER bit (TTYPE cycle) and the NEW-ENVIRON `SCREEN_READER` capability variable — some MUDs adjust output (e.g. trim ASCII art, add extra room-description detail) when this is set. Negotiation only runs at connect time, so a change takes effect on the **next connect** (like the protocol toggles in group 1). | `ProfileSession` → `MudSession` → `MudClient` → `TelnetNegotiator` → `computeMtts`/`buildNewEnvironVars` |
@@ -119,8 +122,7 @@ below). String keys with an `enum` reject out-of-range writes (`setConfig`
 returns `false`).
 
 `ambiguousEAsianWidthCharacters` (`auto`/`wide`/`narrow`), `askTlsAvailable`,
-`compactInputLine`,
-`editorAutoComplete`, `f3SearchEnabled`,
+`compactInputLine`, `editorAutoComplete`,
 `inputLineStrictUnixEndings`, `logInHTML`,
 `promptForMXPProcessorOn`, `promptForVersionInTTYPE`, `show3dMapView`,
 `showRoomIdsOnMap`, `showUpperLowerLevels`,
@@ -128,9 +130,9 @@ returns `false`).
 
 (`commandLineHistorySaveSize`, `showTabConnectionIndicators`,
 `fixUnnecessaryLinebreaks`, `enableBlinkText`, `announceIncomingText`,
-`caretShortcut`, `enableClosedCaption`, `advertiseScreenReader`, and
-`controlCharacterHandling` also live in the `config` bag but are now consumed
-by the UI — see group 2a.)
+`f3SearchEnabled`, `caretShortcut`, `enableClosedCaption`,
+`advertiseScreenReader`, and `controlCharacterHandling` also live in the
+`config` bag but are now consumed by the UI — see group 2a.)
 
 ### 4. Read-only
 
@@ -195,9 +197,22 @@ through the translation.
 
 ## Value coercion
 
+`ScriptingAPI.configKeyKind(key)` reports which value type an option takes —
+`'bool'`, `'num'`, `'str'`, `'any'`, `'readonly'`, or `null` for an unknown key.
+The `Bridge.lua` wrapper needs it to tell Mudlet's **raise-on-wrong-type** apart
+from its **`(nil, errMsg)` refuse-on-bad-value**: Mudlet reads each option with a
+`getVerified*` helper, so a value of the wrong type raises while a value that is
+merely out of range returns. `'any'` is for keys that legitimately take more than
+one type and vet the value themselves — `showSentText` (its legacy boolean
+alongside the three-mode enum) and `mapInfoColor` (an `{r,g,b[,a]}` table).
+
 - **Booleans** (`configBool`): real booleans pass through; the strings
   `false`/`0`/`no`/`off` (any case) read as `false`; any other non-nil value is
   truthy. Matches how Lua scripts pass flags.
+- **Strings**: a non-string raises, mirroring `getVerifiedString`. That covers
+  the enum keys (`blankLinesBehaviour`, `caretShortcut`,
+  `controlCharacterHandling`, `ambiguousEAsianWidthCharacters`) and the two
+  map-info labels — an out-of-range *string* is still the refusal case below.
 - **Numbers**: `Number(value)`; mapper sizes additionally require finite `> 0`
   (an out-of-range mapper size is ignored, but `setConfig` still returns `true`
   — Mudlet accepts any positive int there without clamping).
@@ -211,20 +226,63 @@ group 3 to group 1/2 as the underlying feature lands:
 
 - **Rendering:** `ambiguousEAsianWidthCharacters`.
 - **Input line / editor:** `compactInputLine`, `inputLineStrictUnixEndings`,
-  `editorAutoComplete`, `f3SearchEnabled`.
+  `editorAutoComplete`.
 - **Telnet edge switches:** `askTlsAvailable`, `specialForceGAOff`,
   `versionInTTYPE`, `promptForVersionInTTYPE`, `promptForMXPProcessorOn`.
 - **Map:** `show3dMapView` (no 3D renderer), `showRoomIdsOnMap`,
   `showUpperLowerLevels`.
 - **Misc UI / logging:** `logInHTML`.
 
+## Keys Mudlet has that Mudlet Web does not
+
+Mudlet's own list is 60 `setConfig` keys plus `logDirectory` (get-only). These
+are the ones with no key at all here — `getConfig` reports them as invalid and
+`setConfig` refuses, rather than round-tripping like group 3:
+
+- `ircHostName`, `ircHostPort`, `ircHostSecure`, `ircNickName`, `ircPassword`,
+  `ircChannels` — **not applicable.** They configure Mudlet's built-in Qt IRC
+  client (`dlgIRC`); Mudlet Web has no IRC client, so there is nothing to
+  configure. Not planned. They are also absent from the `Other.lua` dump list,
+  so they cost nothing there.
+- `undoServerWrap`, `undoServerWrapWidth` — **wanted, not started.** Mudlet's
+  re-joining of lines the *game* wrapped, so triggers see whole lines and
+  wrapping follows the window instead (`TBuffer.cpp`: `endsAtServerWrapColumn`,
+  `looksLikeWrappedProse`, a flush timer for the trailing segment, and the
+  `recordLineLengthForWrapDetection` auto-detect that offers a clickable
+  `echoLink` once a stable wrap column shows up). Width clamps to 20–500. Would
+  belong in `LineAssembler` / `ScriptingEngine.processFlushBatch`. These two
+  *are* in the `Other.lua` dump list, so until they land the no-arg
+  `getConfig()` returns 49 keys where Mudlet returns 51 (a `nil` result simply
+  doesn't get stored in the table).
+
 ## Tests
 
 `tests/scripting/config-api.test.ts` drives the Lua globals end-to-end:
 structured routing into `protocols`/`mapper`/`autoClearInput`, inverse
 `specialForce*Off` flags, live `showSentText` echo suppression, enum rejection,
-read-only keys, unknown-key handling, and the `Other.lua` table / no-arg-dump
-forms.
+read-only keys, unknown-key handling, `showMapInfo`/`hideMapInfo` (including the
+pending-label and teardown-survival paths), and the `Other.lua` table /
+no-arg-dump forms.
+
+`tests/ui/outputSearch.test.ts` covers the DOM-level halves of
+`f3SearchEnabled` — `searchStepDirection` (the shared F3 predicate),
+`matchLineText` (announce the whole line, minus the timestamp column),
+`focusCurrentHit`, and `shouldCloseSearchOnEscape` (see below). The React wiring
+has no unit coverage (this repo has no component-test harness) and was verified
+in the running app instead.
+
+> **Not a config key, fixed alongside:** Escape used to close the find bar only
+> while focus was in the find box itself, so the common case — reading results
+> with focus back in the command line — left the bar stuck open. The bar now
+> also listens on the document in the **bubble** phase, gated by
+> `shouldCloseSearchOnEscape`: it skips an already-`defaultPrevented` event
+> (which is how it layers under `CommandBar`, which preventDefaults Escape only
+> while an autocomplete ghost shows — first press dismisses the ghost, second
+> closes the bar) and requires the origin to be inside `.app`, the
+> profile-session shell. Modals stop propagation on their own node and
+> `CaretReviewPanel` uses capture + `stopImmediatePropagation`, so neither ever
+> reaches the listener; floating script windows portal to `<body>` as
+> `.floating-window-root`, outside `.app`, so they keep their own Escape.
 
 ## Adding a new config key
 
@@ -234,7 +292,9 @@ forms.
 2. **No backing yet?** Add it to `CONFIG_PERSIST_ONLY` with its `type`
    (+ `enum` if applicable) and a sensible default, and list it under
    "Not implemented" here.
-3. If Mudlet treats it as read-only, add it to the read-only `case` arm.
+3. Add it to `configKeyKind` unless `CONFIG_PERSIST_ONLY` already covers it —
+   check which `getVerified*` helper Mudlet reads the value with, and match it.
+   If Mudlet treats the key as read-only, use the read-only `case` arm instead.
 4. Extend `tests/scripting/config-api.test.ts`.
 
 > The completion catalogue already lists `getConfig` / `setConfig` generically

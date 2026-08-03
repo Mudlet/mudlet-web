@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { buildMatcher } from '../../src/ui/search/matcher';
 import {
-    scanOutput, applyHighlights, clearHighlights,
-    findMatchIndex, indexNearViewport, seedFromSelection,
-    HIT_CLASS, CURRENT_HIT_CLASS,
+    scanOutput, applyHighlights, clearHighlights, focusCurrentHit,
+    findMatchIndex, indexNearViewport, matchLineText, searchStepDirection,
+    seedFromSelection, shouldCloseSearchOnEscape, HIT_CLASS, CURRENT_HIT_CLASS,
 } from '../../src/ui/output/outputSearch';
 
 let container: HTMLElement;
@@ -270,6 +270,130 @@ describe('seedFromSelection', () => {
         sel.removeAllRanges();
         sel.addRange(range);
         expect(seedFromSelection(container)).toBe('');
+    });
+});
+
+describe('shouldCloseSearchOnEscape', () => {
+    /** Dispatch a real Escape from `target` so `e.target` is set by the DOM,
+     *  the way the document listener sees it. */
+    function escapeFrom(target: HTMLElement, init: KeyboardEventInit = {}): KeyboardEvent {
+        const e = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, ...init });
+        target.dispatchEvent(e);
+        return e;
+    }
+
+    /** An element nested inside the profile-session shell, mirroring the real
+     *  chain (e.g. `.app > .mudix-toolbar > .toolbar-actions > button`). */
+    function inApp(...classes: string[]): HTMLElement {
+        const app = document.createElement('div');
+        app.className = 'app';
+        document.body.appendChild(app);
+        let node = app;
+        for (const c of classes) {
+            const child = document.createElement('div');
+            child.className = c;
+            node.appendChild(child);
+            node = child;
+        }
+        return node;
+    }
+
+    /** Portaled to <body>, the way FloatingWindowLayer renders script windows. */
+    function portaled(className: string): HTMLElement {
+        const el = document.createElement('div');
+        el.className = className;
+        document.body.appendChild(el);
+        return el;
+    }
+
+    it('closes from anywhere in the session shell', () => {
+        expect(shouldCloseSearchOnEscape(escapeFrom(inApp('command-input')))).toBe(true);
+        expect(shouldCloseSearchOnEscape(escapeFrom(inApp('main-viewport', 'output-area-content')))).toBe(true);
+        // The toolbar counts too — closing a modal returns focus to the button
+        // that opened it, and Escape from there should still dismiss the bar.
+        expect(shouldCloseSearchOnEscape(escapeFrom(inApp('mudix-toolbar', 'toolbar-actions')))).toBe(true);
+    });
+
+    it('closes when nothing more specific holds focus', () => {
+        expect(shouldCloseSearchOnEscape(escapeFrom(document.body))).toBe(true);
+    });
+
+    it('ignores any other key', () => {
+        expect(shouldCloseSearchOnEscape(escapeFrom(document.body, { key: 'Enter' }))).toBe(false);
+    });
+
+    it('defers to a handler that already acted on the key', () => {
+        // CommandBar preventDefaults Escape while an autocomplete ghost shows,
+        // so that press dismisses the ghost and only the next one closes the bar.
+        const cmd = inApp('command-input');
+        cmd.addEventListener('keydown', e => e.preventDefault());
+        expect(shouldCloseSearchOnEscape(escapeFrom(cmd))).toBe(false);
+    });
+
+    it('leaves Escape alone in a floating window, which portals outside .app', () => {
+        expect(shouldCloseSearchOnEscape(escapeFrom(portaled('floating-window-root')))).toBe(false);
+    });
+});
+
+describe('searchStepDirection', () => {
+    const key = (init: KeyboardEventInit & { key: string }) => new KeyboardEvent('keydown', init);
+
+    it('reads F3 as forwards and Shift+F3 as backwards', () => {
+        expect(searchStepDirection(key({ key: 'F3' }))).toBe(1);
+        expect(searchStepDirection(key({ key: 'F3', shiftKey: true }))).toBe(-1);
+    });
+
+    it('ignores any other key', () => {
+        expect(searchStepDirection(key({ key: 'F4' }))).toBeNull();
+        expect(searchStepDirection(key({ key: 'f' }))).toBeNull();
+    });
+
+    it('leaves Ctrl / Alt / Cmd + F3 to the browser and the OS', () => {
+        expect(searchStepDirection(key({ key: 'F3', ctrlKey: true }))).toBeNull();
+        expect(searchStepDirection(key({ key: 'F3', altKey: true }))).toBeNull();
+        expect(searchStepDirection(key({ key: 'F3', metaKey: true }))).toBeNull();
+        // ...including in combination with the Shift that would step backwards.
+        expect(searchStepDirection(key({ key: 'F3', shiftKey: true, ctrlKey: true }))).toBeNull();
+    });
+});
+
+// Both helpers exist for Mudlet's f3SearchEnabled accessibility mode, which
+// announces each hit and parks its caret on it (focusOnSearchResultAndAnnounce).
+describe('matchLineText', () => {
+    it('returns the whole rendered line, not just the matched fragment', () => {
+        addLine('A <span>rusty</span> key lies here.');
+        const [match] = search('rusty');
+        expect(matchLineText(match)).toBe('A rusty key lies here.');
+    });
+
+    it('excludes the timestamp column', () => {
+        addLine('rusty', '09:41:00.000');
+        expect(matchLineText(search('rusty')[0])).toBe('rusty');
+    });
+});
+
+describe('focusCurrentHit', () => {
+    it('focuses the current hit and leaves the others alone', () => {
+        addLine('rusty one');
+        addLine('rusty two');
+        const found = search('rusty');
+        applyHighlights(found, 1);
+
+        expect(focusCurrentHit(container)).toBe(true);
+        const current = container.querySelector<HTMLElement>(`mark.${CURRENT_HIT_CLASS}`);
+        expect(document.activeElement).toBe(current);
+        // Programmatically focusable only — it must not join the tab order,
+        // and only the current hit is made focusable at all. (Checked via the
+        // attribute: `.tabIndex` reads -1 for any element without one.)
+        expect(current?.getAttribute('tabindex')).toBe('-1');
+        expect(marks().filter(m => m.hasAttribute('tabindex'))).toHaveLength(1);
+    });
+
+    it('reports false when nothing is currently highlighted', () => {
+        addLine('rusty one');
+        // Tinted, but with the current index out of range — no current hit.
+        applyHighlights(search('rusty'), 5);
+        expect(focusCurrentHit(container)).toBe(false);
     });
 });
 

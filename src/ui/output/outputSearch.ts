@@ -150,6 +150,81 @@ export function applyHighlights(matches: OutputMatch[], currentIndex: number): v
     }
 }
 
+/**
+ * Whether an Escape that reached the document should close the find bar.
+ *
+ * The bar's own input handles Escape directly, but the player usually leaves
+ * focus in the command line while reading results, and there Escape did nothing
+ * — the bar just stayed up. So the bar also listens on the document, in the
+ * BUBBLE phase, and defers to everything with a better claim on the key:
+ *
+ *  - `defaultPrevented` — someone already acted on it. Covers the bar's own
+ *    input, and layers correctly under CommandBar, which preventDefaults
+ *    Escape only while an autocomplete ghost is showing: first Escape dismisses
+ *    the ghost, a second one closes the bar.
+ *  - Modals (`useModalFocus`) stopPropagation on their own node, and
+ *    CaretReviewPanel uses capture + stopImmediatePropagation while focused, so
+ *    neither ever reaches a document bubble listener in the first place.
+ *  - The origin is then required to be inside `.app`, the profile-session shell
+ *    that owns the bar — toolbar, output, command line, docked panels. Floating
+ *    script windows portal to `<body>` instead (`.floating-window-root`), so
+ *    they fall outside it structurally and keep their own Escape.
+ *
+ * Pure apart from reading the event's target, so it is unit-testable.
+ */
+export function shouldCloseSearchOnEscape(e: KeyboardEvent): boolean {
+    if (e.key !== 'Escape' || e.defaultPrevented) return false;
+    const target = e.target;
+    // No element target (focus on <body>, or a synthetic event) means nothing
+    // more specific owns the key — the bar is the only thing open to close.
+    if (!(target instanceof HTMLElement) || target === document.body) return true;
+    return !!target.closest('.app');
+}
+
+/**
+ * Which way `e` steps through search results — `1` for F3, `-1` for Shift+F3,
+ * or null when it isn't the search-step key at all. Mudlet's binding
+ * (`TConsole::setF3SearchEnabled` wires F3 to slot_searchBufferDown and
+ * Shift+F3 to slot_searchBufferUp).
+ *
+ * Any other modifier disqualifies it, so Ctrl+F3 / Alt+F3 / Cmd+F3 stay
+ * available to the browser and the OS. Pure — reads only `key` and the modifier
+ * flags — and shared by the bar (which steps) and the output area (which opens
+ * the bar when it's closed), so the two can never drift apart.
+ */
+export function searchStepDirection(e: KeyboardEvent): -1 | 1 | null {
+    if (e.key !== 'F3' || e.ctrlKey || e.metaKey || e.altKey) return null;
+    return e.shiftKey ? -1 : 1;
+}
+
+/**
+ * The rendered text of a whole matched line, for announcing a hit to a screen
+ * reader. Mudlet's `focusOnSearchResultAndAnnounce` speaks the entire buffer
+ * line rather than the matched fragment, so a listener hears the hit in context.
+ * Excludes the timestamp column, like {@link scanOutput}.
+ */
+export function matchLineText(match: OutputMatch): string {
+    return contentOf(match.line)?.textContent ?? '';
+}
+
+/**
+ * Park keyboard focus on the current hit so a screen reader's virtual cursor
+ * lands *on* the match in the live output — the reachable half of Mudlet's
+ * `focusOnSearchResultAndAnnounce`, which moves its caret to the found column.
+ *
+ * The mark is made programmatically focusable (`tabIndex = -1`), so it takes
+ * focus without joining the tab order. Scrolling is suppressed: `revealLine`
+ * has already centred the line, and the browser's own focus scroll would
+ * fight it. Returns false when there is no current hit to focus.
+ */
+export function focusCurrentHit(container: HTMLElement): boolean {
+    const mark = container.querySelector<HTMLElement>(`mark.${CURRENT_HIT_CLASS}`);
+    if (!mark) return false;
+    mark.tabIndex = -1;
+    mark.focus({ preventScroll: true });
+    return true;
+}
+
 /** Unwrap every mark this module added, restoring the pristine rendered line.
  *  `normalize()` re-merges the text nodes `splitText` created so a subsequent
  *  scan sees the same node layout it started with. */

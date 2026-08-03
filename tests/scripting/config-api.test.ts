@@ -323,6 +323,82 @@ describe('setConfig / getConfig', () => {
         expect(() => h.run('return setConfig("mapInfoColor", "nope")')).toThrow();
     });
 
+    // Mudlet's showMapInfo/hideMapInfo insert/remove a label in the enabled-set
+    // (Host::mMapInfoContributors) without consulting the contributor registry,
+    // so they always succeed and are set-only. See docs/config-api.md.
+    describe('showMapInfo / hideMapInfo', () => {
+        const enabled = (label: string) =>
+            h.session.windows.mapStore.getMapInfoContributors()
+                .find(c => c.label === label)?.enabled;
+
+        it('toggles a registered contributor by label', () => {
+            // Built-in seeding: "Full" on, "Short" off.
+            expect(enabled('Short')).toBe(false);
+            expect(h.run('return setConfig("showMapInfo", "Short")')).toBe(true);
+            expect(enabled('Short')).toBe(true);
+            expect(h.run('return setConfig("hideMapInfo", "Short")')).toBe(true);
+            expect(enabled('Short')).toBe(false);
+        });
+
+        it('accepts a label nothing has registered yet and applies it on register', () => {
+            // Unlike enableMapInfo, an unknown label is not an error...
+            expect(h.run('return setConfig("showMapInfo", "Pending")')).toBe(true);
+            expect(h.run('return enableMapInfo("Pending")')).toBeNull();
+            // ...and the overlay comes up enabled the moment it registers.
+            h.run('registerMapInfo("Pending", function() return "x" end)');
+            expect(enabled('Pending')).toBe(true);
+            h.run('killMapInfo("Pending")');
+        });
+
+        it('cancels a pending enable when hidden before the contributor exists', () => {
+            h.run('setConfig("showMapInfo", "Later")');
+            expect(h.run('return setConfig("hideMapInfo", "Later")')).toBe(true);
+            h.run('registerMapInfo("Later", function() return "x" end)');
+            expect(enabled('Later')).toBe(false);
+            h.run('killMapInfo("Later")');
+        });
+
+        it('forgets the enabled state when the contributor is killed', () => {
+            h.run('registerMapInfo("Doomed", function() return "x" end)');
+            h.run('setConfig("showMapInfo", "Doomed")');
+            expect(enabled('Doomed')).toBe(true);
+            h.run('killMapInfo("Doomed")');
+            // A later registration under the same label starts off, matching
+            // Mudlet's removeContributor dropping the name from the set.
+            h.run('registerMapInfo("Doomed", function() return "x" end)');
+            expect(enabled('Doomed')).toBe(false);
+            h.run('killMapInfo("Doomed")');
+        });
+
+        // Mudlet's enabled set lives on the Host and is untouched by script
+        // teardown, so an overlay that was on comes back on when the reloaded
+        // script re-registers it.
+        it('survives a Lua teardown that sweeps the contributor away', () => {
+            const store = h.session.windows.mapStore;
+            h.run('registerMapInfo("Reloaded", function() return "x" end)');
+            h.run('setConfig("showMapInfo", "Reloaded")');
+            store.clearMapInfoContributors();
+            expect(enabled('Reloaded')).toBeUndefined();
+            h.run('registerMapInfo("Reloaded", function() return "x" end)');
+            expect(enabled('Reloaded')).toBe(true);
+            h.run('killMapInfo("Reloaded")');
+            // Built-ins are native, so teardown leaves them (and their state) be.
+            expect(enabled('Full')).toBe(true);
+        });
+
+        it('is set-only — getConfig reports both as invalid options', () => {
+            expect(h.run('return getConfig("showMapInfo")')).toBeNull();
+            expect(h.run('return getConfig("hideMapInfo")')).toBeNull();
+        });
+
+        it('raises on a non-string label (Mudlet getVerifiedString)', () => {
+            expect(() => h.run('return setConfig("showMapInfo", 42)')).toThrow();
+            expect(() => h.run('return setConfig("hideMapInfo", true)')).toThrow();
+            // ...as do the other string-typed options.
+            expect(() => h.run('return setConfig("blankLinesBehaviour", 1)')).toThrow();
+        });
+    });
+
     it('supports the Other.lua table form and no-arg dump', () => {
         h.run('setConfig({ enableGMCP = false, f3SearchEnabled = true })');
         expect(h.run('return getConfig("enableGMCP")')).toBe(false);

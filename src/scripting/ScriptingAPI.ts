@@ -1126,9 +1126,10 @@ export class ScriptingAPI {
      * of the two applies before it calls through, and only the type is knowable
      * ahead of the call.
      *
-     * `'readonly'` keys exist for `getConfig` but refuse every write.
+     * `'readonly'` keys exist for `getConfig` but refuse every write; `'any'`
+     * keys take more than one value type and vet the value themselves.
      */
-    configKeyKind(key: string): 'bool' | 'num' | 'str' | 'readonly' | null {
+    configKeyKind(key: string): 'bool' | 'num' | 'str' | 'any' | 'readonly' | null {
         switch (key) {
             case 'enableGMCP': case 'enableMSDP': case 'enableMSP': case 'enableMSSP':
             case 'enableMTTS': case 'enableMXP': case 'enableMNES':
@@ -1142,11 +1143,17 @@ export class ScriptingAPI {
                 return 'bool';
             case 'mapRoomSize': case 'mapExitSize':
                 return 'num';
+            case 'blankLinesBehaviour':
+            // Set-only in Mudlet: they name a map-info overlay to switch on/off
+            // and have no getConfig counterpart, so getConfig reports them as
+            // invalid while setConfig accepts them.
+            case 'showMapInfo': case 'hideMapInfo':
+                return 'str';
             // showSentText still accepts its legacy boolean alongside the enum,
             // and mapInfoColor takes a table, so neither can be type-checked up
             // front — they validate their own value and report it as a refusal.
-            case 'showSentText': case 'blankLinesBehaviour': case 'mapInfoColor':
-                return 'str';
+            case 'showSentText': case 'mapInfoColor':
+                return 'any';
             case 'logDirectory':
                 return 'readonly';
             case 'specialForceMXPProcessorOn':
@@ -1220,6 +1227,15 @@ export class ScriptingAPI {
                 return true;
             case 'mapShowRoomBorders': this.setMapperField('borders', configBool(value)); return true;
             case 'mapShowGrid':        this.setMapperField('gridEnabled', configBool(value)); return true;
+            // Switch a registerMapInfo overlay on/off by label. Mudlet reports
+            // success for any label — including one nothing has registered yet —
+            // so these never refuse. **Deviation:** Mudlet guards the whole
+            // branch on a live mapper widget and treats the key as unknown when
+            // there is none; Mudlet Web's MapStore is always present on the
+            // WindowManager, so the write lands whether or not a map panel is
+            // open (and is visible the moment one is).
+            case 'showMapInfo': this.map.showMapInfo(String(value ?? '')); return true;
+            case 'hideMapInfo': this.map.hideMapInfo(String(value ?? '')); return true;
             case 'mapInfoColor': {
                 const rgba = parseMapInfoColor(value);
                 if (!rgba) return false;

@@ -4,9 +4,9 @@ import { CaseSensitive, ChevronDown, ChevronUp, Regex, Search, X } from 'lucide-
 import { buildMatcher } from '../search/matcher';
 import { useDebounced } from '../search/useDebounced';
 import {
-    applyHighlights, clearHighlights, findMatchIndex,
-    indexNearViewport, revealLine, scanOutput, seedFromSelection,
-    type OutputMatch,
+    applyHighlights, clearHighlights, findMatchIndex, focusCurrentHit,
+    indexNearViewport, matchLineText, revealLine, scanOutput, searchStepDirection,
+    seedFromSelection, shouldCloseSearchOnEscape, type OutputMatch,
 } from './outputSearch';
 import type { MudSession } from '../../mud/MudSession';
 import './OutputSearchBar.css';
@@ -25,6 +25,11 @@ interface OutputSearchBarProps {
     refreshSticky?: () => void;
     /** Focus target once the bar closes, so the player can keep typing. */
     commandInputRef?: React.RefObject<HTMLInputElement | HTMLTextAreaElement | null>;
+    /** Mudlet's `f3SearchEnabled` — the accessibility mode for buffer search.
+     *  Turns each step into a screen-reader event: only the current hit stays
+     *  tinted, focus parks on it, and the whole matched line is announced.
+     *  See docs/config-api.md. */
+    a11ySearch?: boolean;
 }
 
 /** Long enough to swallow a burst of typing, short enough that the count feels
@@ -33,6 +38,7 @@ const RESCAN_DELAY = 120;
 
 export function OutputSearchBar({
     session, outputRef, focusNonce, onClose, refreshSticky, commandInputRef,
+    a11ySearch = false,
 }: OutputSearchBarProps) {
     const [query, setQuery] = useState('');
     const [matchCase, setMatchCase] = useState(false);
@@ -40,6 +46,11 @@ export function OutputSearchBar({
     const [matches, setMatches] = useState<OutputMatch[]>([]);
     const [index, setIndex] = useState(-1);
     const inputRef = useRef<HTMLInputElement>(null);
+    // What the polite live region below the bar is currently saying. Only set on
+    // an explicit step, so typing a query doesn't narrate every intermediate
+    // result — Mudlet likewise announces from slot_searchBufferUp/Down, i.e. on
+    // a search action rather than on every keystroke.
+    const [announcement, setAnnouncement] = useState('');
 
     // Read inside the rescan effect without making it a dependency — a rescan
     // triggered by new MUD output must not also re-run when the index moves.
@@ -65,16 +76,32 @@ export function OutputSearchBar({
 
     /** Re-tint the output for `next`, optionally scrolling to the current hit.
      *  Highlighting and revealing are separate because a rescan caused by
-     *  incoming output must not yank the view away from what's being read. */
-    const paint = useCallback((next: OutputMatch[], nextIndex: number, reveal: boolean) => {
+     *  incoming output must not yank the view away from what's being read.
+     *
+     *  `takeFocus` parks focus on the current hit, and is passed only by an
+     *  explicit step: doing it on the query-change scan would rip focus out of
+     *  the box after the first character typed. In a11y mode only the current
+     *  hit is tinted, mirroring the `clearSearchHighlights()` Mudlet runs at the
+     *  top of each search when f3SearchEnabled is on. */
+    const paint = useCallback((
+        next: OutputMatch[], nextIndex: number, reveal: boolean, takeFocus = false,
+    ) => {
         const container = outputRef.current;
         if (!container) return;
+        // clearHighlights unwraps the very mark that may hold focus, which would
+        // drop the screen reader's cursor to <body> on every background rescan.
+        // Noting it here lets us hand focus back to the new one below.
+        const active = document.activeElement;
+        const hadHitFocus = a11ySearch && active instanceof HTMLElement
+            && active.tagName === 'MARK' && container.contains(active);
         clearHighlights(container);
-        applyHighlights(next, nextIndex);
-        const current = next[nextIndex];
+        const current = next[nextIndex] ?? null;
+        if (a11ySearch) applyHighlights(current ? [current] : [], 0);
+        else applyHighlights(next, nextIndex);
         if (reveal && current) revealLine(container, current.line);
+        if ((takeFocus || hadHitFocus) && current) focusCurrentHit(container);
         refreshSticky?.();
-    }, [outputRef, refreshSticky]);
+    }, [outputRef, refreshSticky, a11ySearch]);
 
     // Query / flags changed: rescan from scratch and jump to the hit nearest
     // whatever the player is currently looking at.
@@ -130,8 +157,15 @@ export function OutputSearchBar({
         const base = index === -1 ? (delta > 0 ? -1 : 0) : index;
         const next = (base + delta + matches.length) % matches.length;
         setIndex(next);
-        paint(matches, next, true);
-    }, [matches, index, paint]);
+        paint(matches, next, true, a11ySearch);
+        // Mudlet speaks the whole found line, not the matched fragment. Re-set
+        // an identical string with a trailing space so landing on the same text
+        // twice still reads as a change to the live region.
+        if (a11ySearch) {
+            const text = matchLineText(matches[next]);
+            setAnnouncement(prev => (prev === text ? `${text} ` : text));
+        }
+    }, [matches, index, paint, a11ySearch]);
 
     const close = useCallback(() => {
         onClose();
@@ -150,15 +184,32 @@ export function OutputSearchBar({
 
     // F3 / Shift+F3 walk results even when focus has gone back to the command
     // line — Mudlet's binding, and it keeps the bar useful without stealing it.
+    // Unconditional: f3SearchEnabled gates the *bar-closed* entry point in
+    // OutputArea, so turning it on adds reach rather than taking this away.
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
-            if (e.key !== 'F3' || e.ctrlKey || e.metaKey || e.altKey) return;
+            const direction = searchStepDirection(e);
+            if (direction === null) return;
             e.preventDefault();
-            step(e.shiftKey ? -1 : 1);
+            step(direction);
         };
         document.addEventListener('keydown', onKey, true);
         return () => document.removeEventListener('keydown', onKey, true);
     }, [step]);
+
+    // Escape closes the bar from the command line and the output too, not only
+    // from the find box — see shouldCloseSearchOnEscape for who gets to keep the
+    // key. Bubble phase on purpose: anything with a stronger claim has already
+    // stopped propagation or preventDefaulted by the time this runs.
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if (!shouldCloseSearchOnEscape(e)) return;
+            e.preventDefault();
+            close();
+        };
+        document.addEventListener('keydown', onKey);
+        return () => document.removeEventListener('keydown', onKey);
+    }, [close]);
 
     const invalid = !matcher.valid;
     const status = invalid
@@ -237,6 +288,22 @@ export function OutputSearchBar({
                     <X size={14} strokeWidth={1.8} />
                 </button>
             </div>
+            {/* Mudlet's f3SearchEnabled announces each hit through the platform
+                accessibility layer (mudlet::announce). The web equivalent is a
+                polite live region of our own — deliberately not ScreenReaderLog,
+                which mirrors game output and is silenced by announceIncomingText;
+                a search result must be spoken either way. Rendered only in a11y
+                mode so it never joins the a11y tree otherwise. */}
+            {a11ySearch && (
+                <div
+                    className="output-search__announcer"
+                    role="status"
+                    aria-live="polite"
+                    aria-atomic="true"
+                >
+                    {announcement}
+                </div>
+            )}
         </div>
     );
 }

@@ -5,6 +5,7 @@ import { useStickyOutput, DEFAULT_STICKY_LINES } from '../../hooks/useOutput';
 import { useAppStore, useProfileField, useConnectionId } from '../../storage';
 import { StickyOutputPanel } from './StickyOutputPanel';
 import { OutputSearchBar } from './OutputSearchBar';
+import { searchStepDirection } from './outputSearch';
 import type { OutputMenuExtraItem } from './OutputContextMenu';
 import { ScreenReaderLog } from './ScreenReaderLog';
 import { CaretReviewPanel } from './CaretReviewPanel';
@@ -37,6 +38,10 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
     const borders = useProfileField('outputBorders');
     const borderColor = useProfileField('outputBorderColor');
     const patchConnectionProfile = useAppStore(s => s.patchConnectionProfile);
+    // Mudlet's f3SearchEnabled — the accessibility mode for buffer search. See
+    // the F3 effect below and OutputSearchBar's `a11ySearch` prop.
+    const config = useProfileField('config');
+    const a11ySearch = (config?.f3SearchEnabled as boolean | undefined) ?? false;
 
     const { outputRef, sentinelRef, stickyAreaRef, isSplitView, scrollToBottom, controls } =
         useStickyOutput(session.events, { stickyLines, showTimestamps });
@@ -88,6 +93,31 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
         document.addEventListener('keydown', onKey, true);
         return () => document.removeEventListener('keydown', onKey, true);
     }, [openSearch]);
+
+    // Mudlet's f3SearchEnabled: F3 / Shift+F3 reach buffer search even when the
+    // find bar is closed. Mudlet's search box lives permanently in the console
+    // toolbar, so its F3 always has something to drive; ours is a transient
+    // overlay, so the key has to summon it first. Once open, the bar owns F3
+    // (its own capture-phase handler steps through the results) — hence the
+    // early-out on `searchOpenRef`, read through a ref so this listener does not
+    // resubscribe on every open/close.
+    //
+    // With the setting off, F3 still steps an already-open bar; only this
+    // bar-closed entry point is gated, so turning the default-false key on adds
+    // reach rather than taking a working shortcut away.
+    const searchOpenRef = useRef(searchOpen);
+    searchOpenRef.current = searchOpen;
+    useEffect(() => {
+        if (!a11ySearch) return;
+        const onKey = (e: KeyboardEvent) => {
+            if (searchStepDirection(e) === null) return;
+            if (searchOpenRef.current) return;
+            e.preventDefault();
+            openSearch();
+        };
+        document.addEventListener('keydown', onKey, true);
+        return () => document.removeEventListener('keydown', onKey, true);
+    }, [a11ySearch, openSearch]);
 
     // Mudlet addMouseEvent: custom entries folded into the output right-click
     // menu. Evaluated lazily when the menu opens (the registry can change).
@@ -157,6 +187,7 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
                         onClose={() => setSearchOpen(false)}
                         refreshSticky={refreshSticky}
                         commandInputRef={commandInputRef}
+                        a11ySearch={a11ySearch}
                     />
                 )}
             </div>

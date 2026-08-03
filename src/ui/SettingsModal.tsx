@@ -217,6 +217,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     const muteMediaGame = (config?.muteMediaGame as boolean | undefined) ?? false;
     const muteAllMedia = muteMediaAPI && muteMediaGame;
     const advertiseScreenReader = (config?.advertiseScreenReader as boolean | undefined) ?? false;
+    const f3SearchEnabled = (config?.f3SearchEnabled as boolean | undefined) ?? false;
     const rawCaretShortcut = config?.caretShortcut;
     const caretShortcut: CaretShortcut =
         rawCaretShortcut === 'tab' || rawCaretShortcut === 'ctrltab' || rawCaretShortcut === 'f6'
@@ -1216,6 +1217,27 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                                         <option key={opt.value} value={opt.value}>{opt.label}</option>
                                     ))}
                                 </select>
+                            </div>
+                            <div className="settings-row">
+                                <span className="settings-label" id="f3-search-enabled-label">
+                                    F3 searches the output
+                                    <HelpTip label="About F3 search">
+                                        Make <code>F3</code> and <code>Shift+F3</code> jump to the
+                                        next and previous match in the scrollback (Mudlet's
+                                        <code> f3SearchEnabled</code>), opening the find bar if it
+                                        isn't already up. Each hit is announced to your screen
+                                        reader in full, takes keyboard focus, and is the only one
+                                        highlighted, so results are easy to follow one at a time.
+                                        Off by default — <code>F3</code> still steps through
+                                        results whenever the find bar is open.
+                                    </HelpTip>
+                                </span>
+                                <Toggle
+                                    id="f3-search-enabled"
+                                    aria-labelledby="f3-search-enabled-label"
+                                    checked={f3SearchEnabled}
+                                    onChange={next => patchConfig({ f3SearchEnabled: next })}
+                                />
                             </div>
                             <div className="settings-row">
                                 <label className="settings-label" htmlFor="control-character-handling">

@@ -532,6 +532,16 @@ export class MapStore {
     // entries in registration order (Mudlet behaves the same). Seeded in the
     // constructor with the two built-in contributors ("Short", "Full").
     private mapInfoContributors: MapInfoContributor[] = [];
+    // Labels that are switched *on* but have no contributor registered under them
+    // right now. Mudlet models the enabled set as a plain QSet<QString> of names
+    // (Host::mMapInfoContributors) kept entirely separate from the contributor
+    // registry, so `setConfig("showMapInfo", label)` may name something that has
+    // not been registered yet — and it takes effect the moment it is. mudix hangs
+    // `enabled` off the contributor itself, so this set carries the other half of
+    // Mudlet's model: names waiting for a contributor. It also survives Lua
+    // teardown (see clearMapInfoContributors), matching the host-level lifetime
+    // of Mudlet's set.
+    private pendingMapInfoEnabled = new Set<string>();
     // Native evaluators for the built-in contributors, keyed by label. Read by
     // evaluateMapInfos when a contributor is `builtin` — they don't go through
     // the Lua evaluator, so they keep working with no scripts loaded.
@@ -2787,7 +2797,10 @@ export class MapStore {
             this.builtinMapInfo.delete(label);
             this.mapInfoContributors[idx] = { label, callbackId, enabled: this.mapInfoContributors[idx].enabled };
         } else {
-            this.mapInfoContributors.push({ label, callbackId, enabled: false });
+            // A label switched on before anything claimed it (showMapInfo, or an
+            // enabled contributor that a Lua teardown swept away) starts enabled.
+            // Set.delete reports whether it was pending, and consumes it.
+            this.mapInfoContributors.push({ label, callbackId, enabled: this.pendingMapInfoEnabled.delete(label) });
         }
         this.notify();
         return { prevCallbackId: prev };
@@ -2804,6 +2817,10 @@ export class MapStore {
         if (this.mapInfoContributors[idx].builtin) return { callbackId: null, removed: false };
         const cb = this.mapInfoContributors[idx].callbackId;
         this.mapInfoContributors.splice(idx, 1);
+        // Mudlet's removeContributor drops the name from the enabled set too, so
+        // killing a contributor forgets that it was on rather than re-enabling a
+        // later registration under the same label.
+        this.pendingMapInfoEnabled.delete(label);
         this.notify();
         return { callbackId: cb, removed: true };
     }
@@ -2824,6 +2841,25 @@ export class MapStore {
         c.enabled = false;
         this.notify();
         return true;
+    }
+
+    /** Mudlet `setConfig("showMapInfo", label)` — switch a map-info overlay on.
+     *  Unlike `enableMapInfo`, an unknown label is *not* an error: Mudlet inserts
+     *  the name straight into `mMapInfoContributors` without consulting the
+     *  registry, so the overlay lights up if and when something registers under
+     *  that label. Always succeeds, matching setConfig's unconditional success. */
+    showMapInfo(label: string): void {
+        if (this.enableMapInfo(label)) return;
+        if (this.pendingMapInfoEnabled.has(label)) return;
+        this.pendingMapInfoEnabled.add(label);
+    }
+
+    /** Mudlet `setConfig("hideMapInfo", label)` — switch a map-info overlay off.
+     *  Clears a pending enable as well, so hiding a label that was turned on
+     *  before its contributor existed actually cancels it. */
+    hideMapInfo(label: string): void {
+        this.pendingMapInfoEnabled.delete(label);
+        this.disableMapInfo(label);
     }
 
     /** Snapshot for tests / debug. The panel goes through evaluateMapInfos. */
@@ -2865,6 +2901,12 @@ export class MapStore {
      *  and script reloads. */
     clearMapInfoContributors(): void {
         const before = this.mapInfoContributors.length;
+        // Mudlet's enabled set is host-level and untouched by script teardown, so
+        // a contributor that was on comes back on when the reloaded script
+        // re-registers it. Parking the label in the pending set reproduces that.
+        for (const c of this.mapInfoContributors) {
+            if (!c.builtin && c.enabled) this.pendingMapInfoEnabled.add(c.label);
+        }
         this.mapInfoContributors = this.mapInfoContributors.filter(c => c.builtin);
         if (this.mapInfoContributors.length !== before) this.notify();
     }

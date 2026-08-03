@@ -4125,6 +4125,14 @@ do
             error("setConfig: bad argument #2 type (value as number expected, got "
                 .. type(value) .. "!)", 2)
         end
+        -- Mudlet reads every string option with getVerifiedString, which raises
+        -- on a non-string; an out-of-range *string* is the (nil, errMsg) case
+        -- below. Keys taking more than one type report kind 'any' and vet
+        -- themselves.
+        if kind == 'str' and type(value) ~= 'string' then
+            error("setConfig: bad argument #2 type (value as string expected, got "
+                .. type(value) .. "!)", 2)
+        end
         if key == "mapInfoColor" then
             if type(value) ~= "table" then
                 error("setConfig: bad argument #2 type (value as table expected, got "

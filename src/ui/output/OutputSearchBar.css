@@ -128,3 +128,29 @@ mark.output-search-hit--current {
     color: var(--bg, #10131a);
     box-shadow: 0 0 0 1px var(--accent, #4a9eff);
 }
+
+/* In f3SearchEnabled mode the current hit takes focus so a screen reader's
+   cursor lands on it (focusCurrentHit). The UA focus ring is redundant on top
+   of the already-solid current-hit fill, and clashes with it — the outline
+   below is drawn outside the mark so both stay legible. */
+mark.output-search-hit--current:focus,
+mark.output-search-hit--current:focus-visible {
+    outline: 2px solid var(--fg, #e6e6e6);
+    outline-offset: 1px;
+}
+
+/* The live region backing f3SearchEnabled's per-hit announcement. Visually
+   hidden but reachable by assistive tech — the standard clip pattern, matching
+   ScreenReaderLog's inline styles. */
+.output-search__announcer {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    border: 0;
+    white-space: nowrap;
+}
