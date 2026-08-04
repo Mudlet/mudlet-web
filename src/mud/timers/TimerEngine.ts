@@ -16,6 +16,13 @@ interface TimerEntry {
     /** What the timer runs when it comes due. Held so {@link pumpDue} can fire a
      *  timer without going through the (blocked) event loop. */
     fire: () => void;
+    /** Killed, but not yet reaped. Mudlet frees a killed timer in the deferred
+     *  cleanup its unit runs at the end of a line, not at the kill itself, so
+     *  until then the timer is still *findable* while no longer running:
+     *  `exists` says 1, `isActive` says 0, `remainingTime` reports it inactive
+     *  rather than unknown, and a second `killTimer` has a corpse to find and
+     *  so answers false. See {@link reapKilled}. */
+    dead?: boolean;
 }
 
 export class TimerEngine {
@@ -33,9 +40,12 @@ export class TimerEngine {
     private readonly knownPermNames = new Set<string>();
     private nextId = 1;
 
-    /** Number of live session-scoped temp timers (Mudlet `getProfileStats` temp count). */
+    /** Number of live session-scoped temp timers (Mudlet `getProfileStats` temp
+     *  count). Killed-but-unreaped timers are not live and don't count. */
     get tempCount(): number {
-        return this.temp.size;
+        let n = 0;
+        for (const entry of this.temp.values()) if (!entry.dead) n++;
+        return n;
     }
 
     addTemp(seconds: number, fn: TempFn, repeat = false): number {
@@ -85,7 +95,7 @@ export class TimerEngine {
         // map underneath a live iteration would skip or revisit entries.
         const due: Array<() => void> = [];
         for (const [, entry] of this.temp) {
-            if (now < entry.start + entry.intervalMs) continue;
+            if (entry.dead || now < entry.start + entry.intervalMs) continue;
             // Cancel the pending timeout and let `fire` do the bookkeeping — it
             // retires a one-shot and re-arms a repeat, so a repeating timer ends
             // up correctly scheduled for its next tick instead of double-firing.
@@ -104,25 +114,43 @@ export class TimerEngine {
     }
 
     /**
-     * Whether a temporary timer with this id is still live.
+     * Whether a temporary timer with this id is still present.
      *
-     * Backs `exists(id, "timer")` / `isActive(id, "timer")`. Temp timers aren't
-     * in the store and — unlike temp triggers and aliases — aren't tracked in
-     * LuaRuntime's tempIds either, so this map is the only thing that knows.
-     * There is no enable/disable for a temporary timer: it is live until it
-     * fires or is killed, so existence and activity are the same question.
+     * Backs `exists(id, "timer")`. Temp timers aren't in the store and — unlike
+     * temp triggers and aliases — aren't tracked in LuaRuntime's tempIds either,
+     * so this map is the only thing that knows.
+     *
+     * There is no enable/disable for a temporary timer, so this used to answer
+     * `isActive` too. A killed one splits the two apart: it is still present
+     * here until the reap, but no longer running — see {@link tempIsActive}.
      */
     hasTemp(id: number): boolean {
         return this.temp.has(id);
     }
 
+    /** Whether a temporary timer is present *and* still running — `isActive(id,
+     *  "timer")`. False for one killed since the last reap. */
+    tempIsActive(id: number): boolean {
+        const entry = this.temp.get(id);
+        return !!entry && !entry.dead;
+    }
+
     killTimer(id: number): boolean {
         const entry = this.temp.get(id);
-        if (!entry) return false;
+        // Nothing there, or a corpse waiting to be reaped: either way this call
+        // achieved nothing and has to say so.
+        if (!entry || entry.dead) return false;
         // Every temp timer is a setTimeout now, repeating ones included.
         clearTimeout(entry.handle);
-        this.temp.delete(id);
+        // Marked rather than dropped — see TimerEntry.dead. reapKilled() frees it.
+        entry.dead = true;
         return true;
+    }
+
+    /** Free every timer killed since the last call. Runs once per processed line
+     *  batch, mirroring the deferred cleanup Mudlet's TTimerUnit does. */
+    reapKilled(): void {
+        for (const [id, entry] of this.temp) if (entry.dead) this.temp.delete(id);
     }
 
     /**
@@ -247,6 +275,10 @@ export class TimerEngine {
             if (!entry) known = this.permNameToId.has(idOrName) || this.knownPermNames.has(idOrName);
         }
         if (!entry) return known ? -1 : -2;
+        // A killed timer is still present until the reap, but it is stopped — so
+        // it reports as inactive, not as an unknown id. That distinction is what
+        // tells a caller the timer it just killed is really the one it found.
+        if (entry.dead) return -1;
         const elapsed = Date.now() - entry.start;
         const ms = entry.repeat
             ? entry.intervalMs - (elapsed % entry.intervalMs)

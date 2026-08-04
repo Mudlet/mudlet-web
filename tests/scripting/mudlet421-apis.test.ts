@@ -48,8 +48,18 @@ describe('Mudlet 4.21 API additions', () => {
       // Lua nil round-trips to JS as null through doStringSync.
       expect(env.run('return getDiscordDetail()')).toBeNull();
     });
-    it('spawn returns false', () => {
-      expect(env.run('return spawn("ls")')).toBe(false);
+    it('spawn validates its arguments, then reports the start failure', () => {
+      // Not a stub any more: a browser tab has no subprocesses, so every call
+      // fails — but it fails the way Mudlet's TForkedProcess does, because a
+      // no-op returning false told the caller a process had started when none
+      // had. Argument checking runs first and in Mudlet's order; the upstream
+      // Spawn_spec pins the exact messages.
+      expect(env.run('local ok, e = pcall(spawn, "ls") return e'))
+        .toBe('Need read function and process name as parameters.');
+      expect(env.run('local ok, e = pcall(spawn, "ls", "arg") return e'))
+        .toBe('Need read function as first parameter.');
+      expect(env.run('local ok, e = pcall(spawn, function() end, "ls") return e'))
+        .toContain("Failed to start process 'ls'");
     });
     it('spellCheckWord treats every word as correct', () => {
       expect(env.run('return spellCheckWord("qwerty")')).toBe(true);

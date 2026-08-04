@@ -328,7 +328,15 @@ export class LuaRuntime implements IScriptingRuntime {
     //  backs enableTrigger/disableTrigger/isActive with a numeric id —
     // Mudlet toggles temp items exactly like saved ones, so the dispatch checks
     // it before firing.
-    private readonly tempIds = new Map<number, { kill: () => void; type: 'alias' | 'trigger'; enabled: boolean }>();
+    /** Script-created temp aliases/triggers by id. `dead` marks one killed but
+     *  not yet reaped: Mudlet frees a killed unit in the deferred cleanup it
+     *  runs at the end of a line, not at the kill, so until then it is still
+     *  findable while no longer firing — `exists` says 1, `isActive` says 0, and
+     *  a second kill finds a corpse and answers false. {@link reapKilledTempItems}
+     *  does the freeing. */
+    private readonly tempIds = new Map<number, {
+        kill: () => void; type: 'alias' | 'trigger'; enabled: boolean; dead?: boolean;
+    }>();
     private nextTempId = 1;
     // Tracks label callback ids per slot so re-binds can free the prior Lua-
     // registry slot via __mudix_unregister_cb (avoids the leak the audit flagged
@@ -966,8 +974,8 @@ export class LuaRuntime implements IScriptingRuntime {
 
         // Warning-emitting no-op stubs for Mudlet APIs with no meaningful browser
         // implementation: Discord Rich Presence (needs the Discord SDK), the IRC
-        // client (a separate external service), process spawning (no subprocess
-        // in the sandbox) and Hunspell spell-check (no dictionary engine). These
+        // client (a separate external service) and Hunspell spell-check (no
+        // dictionary engine). These
         // must be *bound* — not left nil — so an imported Mudlet package that
         // touches one on load doesn't die with "attempt to call a nil value".
         // Each logs once and returns the value the real function would on a
@@ -992,8 +1000,10 @@ export class LuaRuntime implements IScriptingRuntime {
             // Spell-check dictionary mutators — no Hunspell.
             'addWordToDictionary', 'removeWordFromDictionary',
         ].forEach(name => registerStub(name));
-        // Stubs whose real counterpart returns a non-nil value.
-        registerStub('spawn', false);
+        // Stubs whose real counterpart returns a non-nil value. `spawn` is NOT
+        // among them: it raises Mudlet's real "failed to start" error instead,
+        // from Bridge.lua — a no-op returning false claimed a process had
+        // started. Covered by the upstream Spawn_spec.
         registerStub('spellCheckWord', true);          // treat every word as correct
         registerStub('spellSuggestWord', emptyTable);  // no suggestions
         registerStub('getDictionaryWordList', emptyTable);
@@ -1374,9 +1384,7 @@ export class LuaRuntime implements IScriptingRuntime {
         });
         this.lua.global.set('killAlias', (idOrName: number | string) => {
             if (typeof idOrName === 'string') return this.api.killByName('alias', idOrName);
-            const entry = this.tempIds.get(idOrName);
-            if (!entry) return false;
-            entry.kill(); this.tempIds.delete(idOrName); return true;
+            return this.killTempItem(idOrName, 'alias');
         });
 
         // ── Triggers ──────────────────────────────────────────────────────────
@@ -1472,9 +1480,7 @@ export class LuaRuntime implements IScriptingRuntime {
         });
         this.lua.global.set('killTrigger', (idOrName: number | string) => {
             if (typeof idOrName === 'string') return this.api.killByName('trigger', idOrName);
-            const entry = this.tempIds.get(idOrName);
-            if (!entry) return false;
-            entry.kill(); this.tempIds.delete(idOrName); return true;
+            return this.killTempItem(idOrName, 'trigger');
         });
 
         // ── Keys ──────────────────────────────────────────────────────────────
@@ -1897,11 +1903,49 @@ end`,
         return this.tempIds.get(id)?.type === type;
     }
 
+    /**
+     * killAlias/killTrigger with a numeric id, for a script-created item.
+     *
+     * The item is unsubscribed and its callback released straight away — it must
+     * not fire again, including later in the very line pass that killed it — but
+     * the entry stays in the map, marked dead, until {@link reapKilledTempItems}.
+     * That is Mudlet's deferred cleanup: until the line ends, the corpse is still
+     * findable, which is what lets a second kill report `false` rather than
+     * mistaking the id for one that never existed.
+     */
+    private killTempItem(id: number, type: 'alias' | 'trigger'): boolean {
+        const entry = this.tempIds.get(id);
+        if (!entry || entry.type !== type || entry.dead) return false;
+        entry.kill();
+        entry.enabled = false;
+        entry.dead = true;
+        // kill() removes the entry (that is how expiry retires an item), so put
+        // the corpse back for the reap to find.
+        this.tempIds.set(id, entry);
+        return true;
+    }
+
+    /**
+     * Free every temp alias/trigger killed since the last call, or only those of
+     * `type` when given.
+     *
+     * Mudlet cleans up per unit, at the end of whatever pass that unit runs:
+     * aliases when nested expandAlias processing unwinds, triggers when the line
+     * finishes. Passing the type keeps those independent, so an alias pass can't
+     * reap a trigger the current line is still walking past.
+     */
+    reapKilledTempItems(type?: 'alias' | 'trigger'): void {
+        for (const [id, entry] of this.tempIds) {
+            if (entry.dead && (type === undefined || entry.type === type)) this.tempIds.delete(id);
+        }
+    }
+
     /** enableTrigger/disableTrigger/enableAlias/disableAlias with a numeric id.
-     *  False when no temp item of that id is live. */
+     *  False when no temp item of that id is live — a killed one is still
+     *  findable until the reap, but re-enabling it would resurrect it. */
     setTempItemEnabled(id: number, enabled: boolean): boolean {
         const entry = this.tempIds.get(id);
-        if (!entry) return false;
+        if (!entry || entry.dead) return false;
         entry.enabled = enabled;
         return true;
     }

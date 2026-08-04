@@ -33,6 +33,11 @@ interface TempKey {
     /** Temp keys can be toggled by id, exactly like permanent ones — Mudlet's
      *  enableKey/disableKey and isActive() see no difference between them. */
     enabled: boolean;
+    /** Killed, but not yet reaped. Mudlet frees a killed key in the deferred
+     *  cleanup its unit runs at the end of a line, so until then the key is
+     *  still findable while no longer firing: `exists` says 1, `isActive` says
+     *  0, and a second `killKey` finds a corpse and answers false. */
+    dead?: boolean;
 }
 
 export class KeyEngine {
@@ -42,9 +47,12 @@ export class KeyEngine {
 
     // ── Temp keybindings (session-scoped, created by scripts) ─────────────────
 
-    /** Number of live session-scoped temp keys (Mudlet `getProfileStats` temp count). */
+    /** Number of live session-scoped temp keys (Mudlet `getProfileStats` temp
+     *  count). Killed-but-unreaped keys are not live and don't count. */
     get tempCount(): number {
-        return this.temp.size;
+        let n = 0;
+        for (const t of this.temp.values()) if (!t.dead) n++;
+        return n;
     }
 
     addTemp(key: string, modifiers: string[], fn: TempFn, qt?: { keyCode: number; modifier: number }): number {
@@ -62,7 +70,9 @@ export class KeyEngine {
     /** enableKey/disableKey with a numeric id. False when no temp key matches. */
     setTempEnabled(id: number, enabled: boolean): boolean {
         const t = this.temp.get(id);
-        if (!t) return false;
+        // A killed key is still findable until the reap, but re-enabling it
+        // would resurrect something the caller already destroyed.
+        if (!t || t.dead) return false;
         t.enabled = enabled;
         return true;
     }
@@ -75,7 +85,11 @@ export class KeyEngine {
     getKeyCode(idOrName: number | string): KeyCodeInfo | null {
         if (typeof idOrName === 'number') {
             const t = this.temp.get(idOrName);
-            if (!t) return null;
+            // A killed key is still findable until the reap, but it must not
+            // answer for an id any more: temp ids and the numeric ids permanent
+            // keys are handed share a counter space, so a corpse left sitting
+            // here would shadow a permanent key that happens to match.
+            if (!t || t.dead) return null;
             return {
                 keyCode: t.qtKey ?? (typeof t.key === 'string' ? domCodeToQtKey(t.key) ?? 0 : t.key),
                 modifiers: t.qtModifier ?? listToQtModifiers(t.modifiers),
@@ -87,9 +101,21 @@ export class KeyEngine {
     }
 
     killKey(id: number): boolean {
-        const had = this.temp.has(id);
-        this.temp.delete(id);
-        return had;
+        const t = this.temp.get(id);
+        // Nothing there, or a corpse waiting to be reaped: either way this call
+        // achieved nothing and has to say so.
+        if (!t || t.dead) return false;
+        // Marked rather than dropped — see TempKey.dead. reapKilled() frees it.
+        // `enabled` goes too, so isActive() and processTemp() both stand down.
+        t.dead = true;
+        t.enabled = false;
+        return true;
+    }
+
+    /** Free every key killed since the last call. Runs once per processed line
+     *  batch, mirroring the deferred cleanup Mudlet's TKeyUnit does. */
+    reapKilled(): void {
+        for (const [id, t] of this.temp) if (t.dead) this.temp.delete(id);
     }
 
     processTemp(event: KeyboardEvent): boolean {

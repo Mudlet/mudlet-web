@@ -2579,6 +2579,18 @@ function __mudix_to_fn(v, who, argN)
     error(who .. ": bad argument #" .. argN .. " type (function or string expected, got " .. type(v) .. "!)")
 end
 
+-- Mudlet's timerDelayFits (TLuaInterpreterMudletObjects.cpp): a timer delay has
+-- to survive the trip through the 24 hour clock. A negative delay would silently
+-- give a timer firing almost a day later, and a whole-day one no interval at all
+-- — firing every event loop turn, were it repeating. It is the *rounded*
+-- milliseconds that are bounded, not the delay: 86399.9995s is under the day yet
+-- rounds up onto it. Written so a NaN delay is rejected too (every comparison
+-- against NaN is false, so `msec >= 0` fails).
+local function timerDelayFits(time)
+    local msec = math.floor(time * 1000.0 + 0.5)
+    return msec >= 0 and msec < 86400000
+end
+
 do
     local _raw = __mudix_tempTimer
     function tempTimer(seconds, fn, repeating)
@@ -2587,6 +2599,10 @@ do
         -- relies on this ordering to surface the right "#N" in its own error.
         if type(seconds) ~= 'number' then
             error("tempTimer: bad argument #1 type (number expected, got " .. type(seconds) .. "!)")
+        end
+        if not timerDelayFits(seconds) then
+            error("tempTimer: bad argument #1 value (time in seconds must be at least 0 and less"
+                .. " than 86400, got " .. string.format("%f", seconds) .. ")")
         end
         if repeating ~= nil and type(repeating) ~= 'boolean' then
             error("tempTimer: bad argument #3 type (boolean expected, got "
@@ -2747,8 +2763,16 @@ do
         local ok, rerr = pcall(compiled)
         if not ok then
             __mudix_removeScriptById(id)
+            -- `error({...})` leaves a non-string on the stack, and tostring()ing
+            -- it yields "table: 0x…", naming an address instead of the problem.
+            -- Mudlet describes the object instead (TLuaInterpreter.cpp), and
+            -- treats a number as a message because lua_isstring coerces one.
+            local reason = rerr
+            if type(reason) ~= 'string' and type(reason) ~= 'number' then
+                reason = "error object is a " .. type(reason) .. " value"
+            end
             error("permScript: cannot create script (the body raised when it was run: "
-                .. tostring(rerr) .. ")", 2)
+                .. tostring(reason) .. ")", 2)
         end
         return id
     end
@@ -2863,6 +2887,10 @@ do
         if type(delay) ~= 'number' then
             error("permTimer: bad argument #3 type (time in seconds as number expected, got "
                 .. type(delay) .. "!)", 2)
+        end
+        if not timerDelayFits(delay) then
+            error("permTimer: bad argument #3 value (time in seconds must be at least 0 and less"
+                .. " than 86400, got " .. string.format("%f", delay) .. ")", 2)
         end
         if type(code) ~= 'string' then
             error("permTimer: bad argument #4 type (lua code as string expected, got "
@@ -5048,4 +5076,32 @@ do
             zLevel = info.zLevel,
         }
     end
+end
+
+-- Mudlet spawn(readFunction, processName [, arguments...]) — TForkedProcess.cpp's
+-- startProcess. A browser tab has no subprocesses, so the start step always
+-- fails; the argument checking ahead of it is real and mirrors Mudlet's order
+-- exactly, so the failure a script sees is the one it would see for any binary
+-- that won't launch. This used to be a silent no-op stub returning false, which
+-- told a caller its process had started when nothing had.
+function spawn(...)
+    local n = select('#', ...)
+    local argv = {...}
+    if n < 2 then
+        error("Need read function and process name as parameters.", 0)
+    end
+    if type(argv[1]) ~= 'function' then
+        error("Need read function as first parameter.", 0)
+    end
+    -- luaL_checkstring on every argument from the program name onwards, which is
+    -- why a number is accepted here: Lua coerces it, so Mudlet does too.
+    for i = 2, n do
+        local t = type(argv[i])
+        if t ~= 'string' and t ~= 'number' then
+            error("bad argument #" .. i .. " to 'spawn' (string expected, got " .. t .. ")", 0)
+        end
+    end
+    local cwd = (type(getMudletHomeDir) == 'function' and getMudletHomeDir()) or "/"
+    error("Failed to start process '" .. tostring(argv[2]) .. "': the web client cannot start"
+        .. " processes. Working directory: '" .. tostring(cwd) .. "'. PATH: ''", 0)
 end

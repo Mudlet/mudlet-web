@@ -2088,13 +2088,15 @@ export class ScriptingEngine implements EngineHost {
             if (this.runtimes.lua?.tempItemExists(nameOrId, type)) {
                 return this.runtimes.lua.tempItemEnabled(nameOrId) ? 1 : 0;
             }
-            // A live temporary timer is by definition active — there is no
-            // enable/disable for one, only kill (see TimerEngine.hasTemp).
-            if (type === 'timer' && this.api.timers.hasTemp(nameOrId)) return 1;
+            // A running temporary timer is by definition active — there is no
+            // enable/disable for one, only kill. A killed one is still *present*
+            // until the reap, though, so this asks whether it is still running
+            // rather than whether it can be found (see TimerEngine.tempIsActive).
+            if (type === 'timer' && this.api.timers.tempIsActive(nameOrId)) return 1;
             return 0;
         }
         const name = String(nameOrId);
-        if (type === 'timer' && /^\d+$/.test(name) && this.api.timers.hasTemp(Number(name))) return 1;
+        if (type === 'timer' && /^\d+$/.test(name) && this.api.timers.tempIsActive(Number(name))) return 1;
         return list.filter(i => i.name === name && isOn(i)).length;
     }
 
@@ -2703,6 +2705,23 @@ export class ScriptingEngine implements EngineHost {
 
     /** Run input through aliases. Returns true if an alias matched (caller should not send). */
     processInput(text: string): boolean {
+        // Mudlet's AliasUnit::mProcessingDepth. An alias handler can call
+        // expandAlias, re-entering this with an outer pass still walking the
+        // alias list, so a killed alias is only freed once every nested pass has
+        // unwound — freeing it at depth > 0 would pull it out from under the
+        // walk. Killing already unsubscribed it, so it cannot fire meanwhile.
+        this.aliasDepth++;
+        try {
+            return this.processInputPass(text);
+        } finally {
+            if (--this.aliasDepth === 0) this.runtimes.lua?.reapKilledTempItems('alias');
+        }
+    }
+
+    /** Nesting depth of {@link processInput} — see the note there. */
+    private aliasDepth = 0;
+
+    private processInputPass(text: string): boolean {
         // setCmdLineAction takes the whole Enter event; aliases and the MUD
         // send are bypassed when an action is installed (matches Mudlet — the
         // script owns the command bar end-to-end). Errors in the action are
@@ -3353,6 +3372,23 @@ export class ScriptingEngine implements EngineHost {
                 this.api.flushDeferredEcho();
             }
         }
+        this.reapKilledTempItems();
+    }
+
+    /**
+     * Free everything killed while this batch was processed.
+     *
+     * Mudlet's alias/trigger/timer/key units each defer freeing a killed item to
+     * the end of the line that killed it, rather than dropping it at the kill.
+     * That is what makes a killed item still findable for the rest of the pass —
+     * `exists` finds it, `isActive` says 0, and a second kill can tell "already
+     * dead" (false) from "never existed" (also false, but for the other reason).
+     * Nothing can fire in the meantime: killing unsubscribes immediately.
+     */
+    private reapKilledTempItems(): void {
+        this.runtimes.lua?.reapKilledTempItems();
+        this.api.timers.reapKilled();
+        this.api.keys.reapKilled();
     }
 
     /**

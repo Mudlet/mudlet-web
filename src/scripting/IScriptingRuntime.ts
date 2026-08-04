@@ -100,6 +100,11 @@ export interface IScriptingRuntime {
     /** enable/disable a live temp item by id — backs enableTrigger/disableTrigger
      *  (and the alias pair) when handed the numeric id rather than a name. */
     setTempItemEnabled(id: number, enabled: boolean): boolean;
+    /** Free every temp item killed since the last call, or only those of `type`.
+     *  A killed item stops firing immediately but stays findable until here,
+     *  which is Mudlet's deferred per-unit cleanup: aliases are reaped when
+     *  nested alias processing unwinds, triggers when the line batch finishes. */
+    reapKilledTempItems(type?: 'alias' | 'trigger'): void;
     /** Rebuild saved Lua globals (a Mudlet `<VariablePackage>` tree) into `_G`. */
     restoreVariables(vars: MudletVariable[]): void;
     /** Snapshot the save-listed globals out of `_G` into a variable tree. */
