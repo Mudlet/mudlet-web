@@ -1,4 +1,4 @@
-import { GMCP_COMMAND_CODE, GMCP_IAC, GMCP_SB, GMCP_SE, TELNET_OPTION_REGEX } from "./constants";
+import { GMCP_COMMAND_CODE, GMCP_IAC, GMCP_SB, GMCP_SE, TELNET_EOR, TELNET_GA, TELNET_OPTION_REGEX } from "./constants";
 
 export interface GmcpEnvelope {
     path: string;
@@ -11,7 +11,19 @@ const CLIENT_GUI_MODULE = "client.gui";
 
 export type TelnetOptionHandler = (data: string) => string;
 
-export const createTelnetOptionParser = (onSubnegotiation: (data: string) => void): TelnetOptionHandler => {
+export const createTelnetOptionParser = (
+    onSubnegotiation: (data: string) => void,
+    opts: {
+        /** When true, an inbound IAC GA / IAC EOR is replaced by a newline
+         *  rather than stripped — Mudlet's `mFORCE_GA_OFF` behaviour
+         *  (`cTelnet::processSocketData` pushes `'\n'` in place of the marker
+         *  instead of treating it as a prompt). Doing the substitution here,
+         *  inside the sequence parser, keeps it positional: the newline lands
+         *  exactly where the marker was, and a `\xFF\xF9` byte pair inside a
+         *  subnegotiation payload is never mistaken for one. */
+        promptMarkerAsNewline?: boolean;
+    } = {},
+): TelnetOptionHandler => {
     return (optionData: string) => {
         // Only IAC SB … IAC SE carries a payload to extract; every other matched
         // sequence (2-byte commands like GA/EOR/NOP, 3-byte WILL/WONT/DO/DONT)
@@ -20,6 +32,10 @@ export const createTelnetOptionParser = (onSubnegotiation: (data: string) => voi
         // matched at their true 2- or 3-byte width.
         if (optionData.charCodeAt(1) === GMCP_SB.charCodeAt(0)) {
             onSubnegotiation(optionData.substring(2, optionData.length - 2));
+            return "";
+        }
+        if (opts.promptMarkerAsNewline && (optionData === TELNET_GA || optionData === TELNET_EOR)) {
+            return "\n";
         }
         return "";
     };

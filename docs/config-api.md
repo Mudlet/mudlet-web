@@ -13,7 +13,8 @@ Lua: setConfig("enableMSDP", true) / getConfig("enableMSDP")
   → Other.lua wrappers (table form, no-arg "dump all")     src/scripting/lua/mudlet-lua/Other.lua
     → base globals  setConfig / getConfig                   src/scripting/lua/LuaRuntime.ts
       → ScriptingAPI.setConfig / .getConfig (registry)      src/scripting/ScriptingAPI.ts
-        → ProfileSettings field  (protocols / mapper / autoClearInput)
+        → ProfileSettings field  (protocols / mapper / autoClearInput /
+                                  askTlsAvailable)
         → MudSession.echoSentText (live)
         → ProfileSettings.mapperPanelVisible  (mapperPanelVisible, live)
         → MapStore  (showMapInfo / hideMapInfo, live)
@@ -58,6 +59,7 @@ Mudlet); the rest are live.
 | `specialForceCompressionOff` | `!protocols.mccp` | inverse flag — forces MCCP (option 86) off |
 | `forceNewEnvironNegotiationOff` | `!(protocols.mnes \|\| protocols.newEnviron)` | inverse flag — disables both option-39 variants |
 | `autoClearInputLine` | `autoClearInput` | live |
+| `askTlsAvailable` | `askTlsAvailable` | live — whether an MSSP-advertised TLS port still earns a "switch to the secure port?" offer (Mudlet `Host::mAskTlsAvailable`). A **typed field, not a config-bag key**: the offer logic (`shouldOfferTlsUpgrade`) and the Settings → Network checkbox both read it, and declining an offer — or reverting a failed upgrade — clears it, so a script writing the bag instead would have been silently inert. Default `true`. |
 | `mapRoomSize` | `mapper.roomSize` | positive number only; **unit-translated** — see [Map size units](#map-size-units) |
 | `mapExitSize` | `mapper.lineWidth` | positive number only; **unit-translated** — see [Map size units](#map-size-units) |
 | `mapRoundRooms` | `mapper.roomShape` | `true`→`roundedRectangle`, else `rectangle` |
@@ -110,6 +112,11 @@ real behaviour:
 | `caretShortcut` | `'none'` (default) / `'tab'` / `'ctrltab'` / `'f6'`. The key that opens a keyboard-navigable, `role="document"` mirror of the scrollback (Mudlet's caret mode) for character/word/line screen-reader review; the same key (or `Esc`) returns to the command line. | `CaretReviewPanel` / `caretMode.ts` |
 | `enableClosedCaption` | When `true` (default `false`), prints a short text line in the output whenever a sound, music track, or video starts or stops (Mudlet's `TMedia::printClosedCaption` format), for users who can't hear game audio. | `ScriptingEngine` (fed by `SoundManager`/`VideoManager` lifecycle hooks) |
 | `advertiseScreenReader` | When `true` (default `false`), reports screen-reader use to the server via the MTTS SCREEN READER bit (TTYPE cycle) and the NEW-ENVIRON `SCREEN_READER` capability variable — some MUDs adjust output (e.g. trim ASCII art, add extra room-description detail) when this is set. Negotiation only runs at connect time, so a change takes effect on the **next connect** (like the protocol toggles in group 1). | `ProfileSession` → `MudSession` → `MudClient` → `TelnetNegotiator` → `computeMtts`/`buildNewEnvironVars` |
+| `inputLineStrictUnixEndings` | When `true` (default `false`), a submitted command is terminated with a bare `\n` instead of the telnet-standard `\r\n` — Mudlet's `mUSE_UNIX_EOL`, which `cTelnet::sendData` reads per send to decide whether to append the CR. Some Unix-y servers treat the stray CR as part of the command. Live: the next command uses the new terminator. | `ProfileSession` → `MudSession` → `MudClient.send` |
+| `specialForceGAOff` | When `true` (default `false`), an inbound `IAC GA` / `IAC EOR` stops meaning "prompt": the session never latches into GA-driven mode, no `prompt` event fires, and the marker becomes a plain newline in the data stream — matching the `else` branch of Mudlet's `mFORCE_GA_OFF` handling in `cTelnet::processSocketData`. For servers whose GA placement is wrong often enough that prompt detection does more harm than good. The newline substitution happens **inside the telnet sequence parser** (`createTelnetOptionParser`), so it lands exactly where the marker was and a `\xFF\xF9` byte pair inside a subnegotiation payload is never mistaken for one. Read once per connect (Mudlet snapshots the flag in `connectIt`; here a fresh `MudClient` is built per dial), so a change applies on the **next connect**. | `ProfileSession` → `MudSession` → `MudClient` |
+| `versionInTTYPE` | When `true` (default `false`), the first TTYPE cycle value carries our version after the client name (`MUDLET-WEB 1.2.3`); the terminal-type and MTTS steps are untouched (`ctelnet.cpp` case 0). Off by default because the period is not a legal TTYPE character per RFC 1091 — Mudlet stopped sending it in 2024 — but servers running KaVir's protocol snippet parse a decimal version out of it and cap colour support at 16 without one. Negotiation runs at connect, so a change applies on the **next connect**. | `ProfileSession` → `MudSession` → `TelnetNegotiator.handleTtypeSubneg` |
+| `promptForVersionInTTYPE` | Latch (default `false`) recording that the **KaVir auto-detect** has already had its say for this profile. `TelnetNegotiator` keeps a rolling window of the last 8 options the server sent a WILL/DO for (Mudlet's `mNegotiationOrder`); when it equals `[24, 31, 42, 69, 70, 200, 90, 91]` — the `expectedOrderForKaVirHandler` fingerprint — it raises `kavir.detected` once per connection. `ProfileSession` then sets this latch **and** `versionInTTYPE`, prints Mudlet's info message, and redials (TTYPE is only negotiated at connect, so using the setting means reconnecting — Mudlet's `autoEnableTTYPEVersion` does the same). Once latched the detector is disabled, so a user who turns `versionInTTYPE` back off is not overridden every connect. | `TelnetNegotiator` → `kavir.detected` → `ProfileSession` |
+| `promptForMXPProcessorOn` | Latch (default `false`) recording that the **in-band MXP auto-detect** has fired for this profile. mudix already started MXP on an `ESC[<n>z` from a server that skipped the option-91 handshake; what this adds is the rest of Mudlet's `autoEnableMXPProcessor` — it now also forces the MXP processor on, which **locks the parser into secure mode**. That matters: such servers are IRE-style and never send mode switches, so in open mode every `<SEND>`/`<A>`/definition tag was being discarded as unsafe. Sets this latch and `specialForceMXPProcessorOn`, and prints Mudlet's info message. A later detection while already forced on is a silent re-initialisation (re-apply the lock, no message), matching `trackMXPElementDetection`. The gate on whether an in-band sequence may still auto-start MXP is Mudlet's `mForceMXPProcessorOn \|\| !mPromptedForMXPProcessorOn`, evaluated at connect — so turning `specialForceMXPProcessorOn` off after the fact sticks. | `TelnetNegotiator` → `mxp.negotiated(false)` → `ScriptingEngine.autoEnableMxpProcessor` |
 | `controlCharacterHandling` | `'asis'` (default) / `'oem'` / `'picture'` — ported from Mudlet's `TTextEdit::replaceControlCharacterWith_Picture`/`_OEMFont`. `asis` renders control bytes invisibly (unchanged from before); `picture` maps codes 0-31/127 onto the Unicode Control Pictures block (e.g. ESC→␛); `oem` maps them onto CP437-style decorative glyphs (♥♦♣♠…). Tabs expand to the next 8-column tab stop in `asis`/`picture` (this also **fixes** a pre-existing bug where a raw tab rendered as an invisible zero-width box); `oem` mode does not tab-stop-expand, matching Mudlet. Applied on every render via a module-level mode (`src/mud/text/controlCharacterMode.ts`) kept in sync by `MudSession.setControlCharacterMode` — so it covers the main console, script/mini-console windows, and session logging alike. **Known gap:** a mode change repaints new output immediately but does not retroactively re-render already-displayed scrollback (Mudlet forces a full `refreshView()`; Mudlet Web has no equivalent bulk-repaint hook yet). | `ProfileSession` → `MudSession` → `FormatState`/`cellRender` |
 
 ### 3. Persist-only — round-trips but **not yet enforced**
@@ -121,18 +128,18 @@ act on them yet**. Each needs a real feature behind it (see "Not implemented"
 below). String keys with an `enum` reject out-of-range writes (`setConfig`
 returns `false`).
 
-`ambiguousEAsianWidthCharacters` (`auto`/`wide`/`narrow`), `askTlsAvailable`,
-`compactInputLine`, `editorAutoComplete`,
-`inputLineStrictUnixEndings`, `logInHTML`,
-`promptForMXPProcessorOn`, `promptForVersionInTTYPE`, `show3dMapView`,
-`showRoomIdsOnMap`, `showUpperLowerLevels`,
-`specialForceGAOff`, `versionInTTYPE`.
+`ambiguousEAsianWidthCharacters` (`auto`/`wide`/`narrow`), `compactInputLine`,
+`editorAutoComplete`, `logInHTML`, `show3dMapView`, `showRoomIdsOnMap`,
+`showUpperLowerLevels`.
 
 (`commandLineHistorySaveSize`, `showTabConnectionIndicators`,
 `fixUnnecessaryLinebreaks`, `enableBlinkText`, `announceIncomingText`,
 `f3SearchEnabled`, `caretShortcut`, `enableClosedCaption`,
-`advertiseScreenReader`, and `controlCharacterHandling` also live in the
-`config` bag but are now consumed by the UI — see group 2a.)
+`advertiseScreenReader`, `controlCharacterHandling`,
+`inputLineStrictUnixEndings`, `specialForceGAOff`, `versionInTTYPE`,
+`promptForVersionInTTYPE`, and `promptForMXPProcessorOn` also live in the
+`config` bag but are now consumed by the UI / telnet layer — see group 2a.
+`askTlsAvailable` moved out of the bag entirely — see group 1.)
 
 ### 4. Read-only
 
@@ -141,7 +148,21 @@ returns `false`).
 | Config key | `getConfig` returns |
 |---|---|
 | `logDirectory` | `/profiles/<connectionId>/log` (Mudlet Web logs to IndexedDB, not a real folder) |
-| `specialForceMXPProcessorOn` | stored bool or `false` |
+
+`logDirectory` is the only read-only key. (`specialForceMXPProcessorOn` used to
+be listed here, but it has always been writable in `setConfig` — Mudlet drives it
+from both `dlgProfilePreferences` and `setConfig` — so it belongs in group 2.)
+
+> **`specialForceMXPProcessorOn` is applied at connect**, in `ScriptingEngine`'s
+> `client.connect` handler — deliberately, and in that order: `mxp.reset()` runs
+> first and clears the secure-mode lock the flag implies, so re-applying it has
+> to come after. Reading it at connect rather than on write matches Mudlet, whose
+> preferences row carries *"Please reconnect to your game for the change to take
+> effect"*, and it is also what restores the value across a profile load — nothing
+> else pushes it onto the parser. `setConfig` additionally applies it immediately,
+> so a script sees its own write take effect without reconnecting; the Settings
+> checkbox writes the bag directly and therefore needs the reconnect, exactly as
+> Mudlet's does.
 
 ## Map size units
 
@@ -225,12 +246,12 @@ These round-trip through `get`/`set` but have no behavior yet. Promote them from
 group 3 to group 1/2 as the underlying feature lands:
 
 - **Rendering:** `ambiguousEAsianWidthCharacters`.
-- **Input line / editor:** `compactInputLine`, `inputLineStrictUnixEndings`,
-  `editorAutoComplete`.
-- **Telnet edge switches:** `askTlsAvailable`, `specialForceGAOff`,
-  `versionInTTYPE`, `promptForVersionInTTYPE`, `promptForMXPProcessorOn`.
+- **Input line / editor:** `compactInputLine`, `editorAutoComplete`.
 - **Map:** `show3dMapView` (no 3D renderer), `showRoomIdsOnMap`,
-  `showUpperLowerLevels`.
+  `showUpperLowerLevels` — the first has no 3D renderer at all; the other two
+  need renderer support that `mudlet-map-renderer` 2.6.1 does not expose
+  (no room-id labels, no dimmed z±1 planes), so they are blocked upstream
+  rather than merely unwired.
 - **Misc UI / logging:** `logInHTML`.
 
 ## Keys Mudlet has that Mudlet Web does not
@@ -258,11 +279,61 @@ are the ones with no key at all here — `getConfig` reports them as invalid and
 ## Tests
 
 `tests/scripting/config-api.test.ts` drives the Lua globals end-to-end:
-structured routing into `protocols`/`mapper`/`autoClearInput`, inverse
-`specialForce*Off` flags, live `showSentText` echo suppression, enum rejection,
-read-only keys, unknown-key handling, `showMapInfo`/`hideMapInfo` (including the
-pending-label and teardown-survival paths), and the `Other.lua` table /
-no-arg-dump forms.
+structured routing into `protocols`/`mapper`/`autoClearInput`/`askTlsAvailable`,
+inverse `specialForce*Off` flags, live `showSentText` echo suppression, enum
+rejection, read-only keys, unknown-key handling, `showMapInfo`/`hideMapInfo`
+(including the pending-label and teardown-survival paths), and the `Other.lua`
+table / no-arg-dump forms. The `askTlsAvailable` cases also assert the *negative*
+— that the value does **not** land in the `config` bag — since writing the wrong
+slot is exactly how that key was inert before.
+
+`tests/mud/connection/specialOptionsConfig.test.ts` covers what the five
+telnet-layer keys actually do on the wire, driving `MudClient` directly (through
+a mock WebSocket, since option negotiation only runs on real socket frames —
+`feedTelnet` goes straight to the text pipeline): CRLF vs bare-LF command
+terminators and the live setter, `IAC GA`/`IAC EOR` becoming an in-place newline
+with no `prompt` event (including that a `\xFF\xF9` pair inside a subnegotiation
+payload is left alone), the TTYPE cycle carrying the version at step 0 only, the
+KaVir fingerprint matching on the trailing window and firing once per connection
+— and not at all when reordered, interrupted, or already latched — and the
+in-band MXP gate under each combination of `promptForMXPProcessorOn` /
+`specialForceMXPProcessorOn`.
+
+`tests/scripting/force-mxp-processor.test.ts` pins the connect-time application
+of `specialForceMXPProcessorOn`: unset stays off, a persisted `true` turns the
+processor on, a bag write made after construction is picked up on the *next*
+connect (not live — Mudlet requires the reconnect too), clearing the key turns it
+back off, and the secure-mode lock survives the per-connect `mxp.reset()`.
+
+The two auto-detects' *reactions* (the store writes, the console message, the
+redial) live in `ProfileSession` and `ScriptingEngine.autoEnableMxpProcessor`;
+the React half has no unit coverage (this repo has no component-test harness).
+
+## Settings UI coverage
+
+Which keys get a row is decided by **Mudlet's** `profile_preferences.ui`, not by
+what happens to be implementable — a key Mudlet exposes gets a row, one it
+doesn't (`promptForVersionInTTYPE`, `promptForMXPProcessorOn` — both
+profile-XML-only latches there) does not.
+
+mudix has no *Special Options* tab and doesn't need one. That Mudlet tab holds
+five controls; the first, "Force compression off", is already mudix's positive
+`MCCP` protocol toggle on **General**, and the other three interact with the
+protocol switches beside it — Mudlet's own `mForceMXPProcessorOn` tooltip even
+sends the user to "Choose protocols section of the General tab". So they live
+there, above the existing "Protocol changes take effect the next time you
+connect" hint (mudix's equivalent of `need_reconnect_for_specialoption`).
+
+| Key | mudix tab | Mudlet home |
+|---|---|---|
+| `specialForceGAOff` | General | Special Options |
+| `versionInTTYPE` | General | Special Options |
+| `specialForceMXPProcessorOn` | General | Special Options |
+| `inputLineStrictUnixEndings` | Input | `groupBox_input` (`USE_UNIX_EOL`) |
+| `blankLinesBehaviour` | Accessibility | `tab_accessibility` |
+
+The remaining group-3 keys have no row on purpose: a toggle that round-trips but
+changes nothing is worse than no toggle. Add the row when the behaviour lands.
 
 `tests/ui/outputSearch.test.ts` covers the DOM-level halves of
 `f3SearchEnabled` — `searchStepDirection` (the shared F3 predicate),
@@ -296,6 +367,20 @@ in the running app instead.
    check which `getVerified*` helper Mudlet reads the value with, and match it.
    If Mudlet treats the key as read-only, use the read-only `case` arm instead.
 4. Extend `tests/scripting/config-api.test.ts`.
+
+> **Check the default against Mudlet's header, not against what feels right.**
+> A persist-only key's default is invisible until something reads it, so a wrong
+> one sits there harmlessly and then changes behaviour the day the key is wired
+> up. `versionInTTYPE` defaulted to `true` here while Mudlet's `mVersionInTTYPE`
+> is `false` (Host.h) — inert for as long as nothing acted on it, and a
+> version string sent to every server the moment something did.
+>
+> **A key with a real backing field must route to that field.** If the setting
+> already exists as a typed `ProfileSettings` member — because the Settings UI or
+> some subsystem reads it — then adding it to `CONFIG_PERSIST_ONLY` gives it a
+> *second, unread* home in the `config` bag, and `get`/`set` will round-trip
+> perfectly while doing nothing. That is what happened to `askTlsAvailable`.
+> Before adding a bag entry, grep `storage/schema.ts` for the name.
 
 > The completion catalogue already lists `getConfig` / `setConfig` generically
 > (`luaCompletions.ts`); individual keys are not separate completions.

@@ -445,6 +445,39 @@ export class MudSession {
         this.client?.setFixUnnecessaryLinebreaks(enabled);
     }
 
+    /** Mudlet `setConfig("inputLineStrictUnixEndings", …)`. Live — the next
+     *  command submitted uses the new line terminator. */
+    setInputLineStrictUnixEndings(enabled: boolean): void {
+        this.options.inputLineStrictUnixEndings = enabled;
+        this.client?.setInputLineStrictUnixEndings(enabled);
+    }
+
+    /** Mudlet `setConfig("specialForceGAOff", …)`. Stored only — Mudlet snapshots
+     *  `mFORCE_GA_OFF` into cTelnet at connect time, and a MudClient likewise
+     *  reads it once at construction, so this takes effect on the next dial. */
+    setSpecialForceGAOff(enabled: boolean): void {
+        this.options.specialForceGAOff = enabled;
+    }
+
+    /** Mudlet `setConfig("versionInTTYPE", …)` / `("promptForVersionInTTYPE", …)`.
+     *  Stored only: TTYPE is negotiated at connect, so both take effect on the
+     *  next dial — the same reconnect requirement Mudlet's own auto-detect works
+     *  around by redialing for you. */
+    setVersionInTTYPE(enabled: boolean, prompted?: boolean): void {
+        this.options.versionInTTYPE = enabled;
+        if (prompted !== undefined) this.options.promptForVersionInTTYPE = prompted;
+    }
+
+    /** Mudlet `setConfig("promptForMXPProcessorOn", …)` / `("specialForceMXPProcessorOn", …)`.
+     *  Stored only — together they gate whether an in-band `ESC[<n>z` may still
+     *  auto-start MXP, which the negotiator decides at connect. The *parser*
+     *  side of `specialForceMXPProcessorOn` is applied live by ScriptingEngine;
+     *  this is just the detection gate. */
+    setMxpProcessorFlags(prompted: boolean, forced: boolean): void {
+        this.options.promptForMXPProcessorOn = prompted;
+        this.options.specialForceMXPProcessorOn = forced;
+    }
+
     /** Mudlet `setConfig("controlCharacterHandling", …)`. Applies immediately —
      *  every console/text window re-renders control characters (and tab-stops)
      *  under the new mode on their next paint. */

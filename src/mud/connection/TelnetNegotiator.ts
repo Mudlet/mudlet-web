@@ -36,7 +36,7 @@ import {
     TTYPE_WILL,
     type MnesVar,
 } from "../protocol";
-import { CLIENT_NAME, TERMINAL_TYPE } from "../../version";
+import { CLIENT_NAME, CLIENT_VERSION, TERMINAL_TYPE } from "../../version";
 import type { MudClientEvents } from "../events";
 import { debugMspEnabled, debugTelnetEnabled } from "./telnetDebug";
 
@@ -57,6 +57,19 @@ const HARDCODED = new Set<number>([
     OPT_ECHO, OPT_SGA, OPT_TTYPE_NUM, OPT_EOR, OPT_NAWS, OPT_LINEMODE, OPT_NEW_ENVIRON_NUM,
     OPT_CHARSET_NUM, OPT_MSDP, OPT_MSSP, OPT_MCCP1, OPT_MCCP2, OPT_MSP, OPT_MXP, OPT_GMCP,
 ]);
+
+/** The exact sequence of options a server running KaVir's protocol snippet
+ *  offers/requests, in order (`expectedOrderForKaVirHandler`, ctelnet.cpp).
+ *  Such a server parses a decimal version out of the TTYPE client-name reply
+ *  and silently caps colour support at 16 without one, so matching this order
+ *  is Mudlet's cue to switch `versionInTTYPE` on. ATCP (200) is in the middle:
+ *  the snippet offers it even though mudix doesn't speak it, and the whole
+ *  point of the fingerprint is that it is *this* list in *this* order — so it
+ *  is spelled out here rather than derived from the options we handle. */
+const OPT_ATCP_NUM = 200;
+const KAVIR_NEGOTIATION_ORDER: readonly number[] = [
+    OPT_TTYPE_NUM, OPT_NAWS, OPT_CHARSET_NUM, OPT_MSDP, OPT_MSSP, OPT_ATCP_NUM, OPT_MSP, OPT_MXP,
+];
 
 /** In-band MXP line-mode sequence `ESC[<n>z` (n optional). Its presence means
  *  the server is speaking MXP even if it skipped the telnet option-91 handshake.
@@ -81,6 +94,25 @@ export interface TelnetNegotiatorFlags {
      *  key. Default false; some MUDs adjust their output (e.g. suppress ASCII
      *  art, add extra room-description detail) when this is set. */
     screenReaderAdvertised: boolean;
+    /** Whether the first TTYPE cycle value carries our version after the client
+     *  name — Mudlet's `versionInTTYPE` config key (`mVersionInTTYPE`). Default
+     *  false: RFC 1091 doesn't permit the period, so Mudlet stopped sending it
+     *  in 2024. Servers running KaVir's protocol snippet want it anyway (without
+     *  a version they assume 1.0 and cap colour support at 16), which is what
+     *  the KaVir auto-detect below turns it on for. */
+    versionInTTYPE: boolean;
+    /** Whether this profile has already been through the KaVir auto-detect —
+     *  Mudlet's `promptForVersionInTTYPE` config key (`mPromptedForVersionInTTYPE`).
+     *  When true the detector below is disabled, so a user who turned
+     *  `versionInTTYPE` back off is not overridden on every reconnect. */
+    versionInTTYPEPrompted: boolean;
+    /** Whether an in-band `ESC[<n>z` may still auto-start MXP on a server that
+     *  never negotiated telnet option 91. Mudlet gates its equivalent scan on
+     *  `mForceMXPProcessorOn || !mPromptedForMXPProcessorOn`
+     *  (`cTelnet::gotRest`): once the auto-detect has fired for a profile, only
+     *  the forced-on state keeps it live — so a user who then turns
+     *  `specialForceMXPProcessorOn` off is not re-overridden every connect. */
+    mxpInBandDetectionEnabled: boolean;
 }
 
 export interface TelnetNegotiatorHooks {
@@ -94,6 +126,10 @@ export interface TelnetNegotiatorHooks {
     /** Current inbound encoding (IANA label) — drives the MTTS UTF-8 bit and
      *  the MNES/NEW-ENVIRON CHARSET variable. */
     getEncoding(): string;
+    /** The server's option-negotiation order matched KaVir's protocol snippet —
+     *  it wants a version in our TTYPE reply. Fired at most once per connection;
+     *  the owner turns `versionInTTYPE` on and redials. */
+    onKaVirProtocolDetected(): void;
 }
 
 /**
@@ -138,6 +174,15 @@ export class TelnetNegotiator {
      *  telnet handshake, so the in-band signal is the reliable trigger. Reset on
      *  each connect(). */
     private mxpStarted = false;
+    /** Rolling window of the last {@link KAVIR_NEGOTIATION_ORDER}`.length`
+     *  options the server sent us a WILL/DO for, oldest first — Mudlet's
+     *  `mNegotiationOrder`. Compared against the KaVir fingerprint after each
+     *  push. Reset on each connect(). */
+    private negotiationOrder: number[] = [];
+    /** Latches once the KaVir fingerprint has matched this connection, so the
+     *  detector fires the hook at most once even though a server may keep
+     *  re-offering options. */
+    private kaVirDetected = false;
     /** True once we've sent IAC WILL NAWS this session (proactively on connect,
      *  or in response to a server-initiated IAC DO NAWS), so we don't re-offer. */
     private nawsWillSent = false;
@@ -176,6 +221,8 @@ export class TelnetNegotiator {
         this.nawsNegotiated = false;
         this.mspNegotiated = false;
         this.serverRequestedSGA = false;
+        this.negotiationOrder = [];
+        this.kaVirDetected = false;
     }
 
     /** Whether MSP was actually negotiated with the server this connection —
@@ -282,7 +329,8 @@ export class TelnetNegotiator {
             i += 2; // 2-byte command (GA, EOR, NOP, …) — nothing to negotiate
         }
 
-        if (this.flags.mxpEnabled && !this.mxpStarted && MXP_LINE_MODE_RE.test(buf)) {
+        if (this.flags.mxpEnabled && this.flags.mxpInBandDetectionEnabled
+            && !this.mxpStarted && MXP_LINE_MODE_RE.test(buf)) {
             // No telnet handshake, but the server is emitting MXP line-mode
             // sequences (ESC[<n>z) — it's speaking MXP. Turn parsing on now,
             // before this frame's text is rendered, so the very lines carrying
@@ -299,6 +347,7 @@ export class TelnetNegotiator {
      *  supported-options registry answers every occurrence; anything left is
      *  surfaced as a `telnet.event`. */
     private handleNegotiationCommand(cmd: number, opt: number): void {
+        this.trackKaVirNegotiation(cmd, opt);
         if (HARDCODED.has(opt)) {
             if (this.frameSeen.has(opt)) return;
             this.frameSeen.add(opt);
@@ -311,6 +360,25 @@ export class TelnetNegotiator {
             return;
         }
         this.emitTelnetEvent(cmd, opt);
+    }
+
+    /** Mudlet `cTelnet::trackKaVirNegotiation`. Records the option of each
+     *  inbound WILL/DO in a rolling window and fires the hook the first time the
+     *  window equals the KaVir fingerprint. Recording happens before the
+     *  per-frame response dedupe, so the order seen here is the order the server
+     *  actually sent — the same thing Mudlet feeds its own tracker from
+     *  `processTelnetCommand`. */
+    private trackKaVirNegotiation(cmd: number, opt: number): void {
+        if (this.kaVirDetected || this.flags.versionInTTYPEPrompted) return;
+        if (cmd !== WILL && cmd !== DO) return;
+        this.negotiationOrder.push(opt);
+        if (this.negotiationOrder.length > KAVIR_NEGOTIATION_ORDER.length) {
+            this.negotiationOrder.shift();
+        }
+        if (this.negotiationOrder.length !== KAVIR_NEGOTIATION_ORDER.length) return;
+        if (!this.negotiationOrder.every((o, i) => o === KAVIR_NEGOTIATION_ORDER[i])) return;
+        this.kaVirDetected = true;
+        this.hooks.onKaVirProtocolDetected();
     }
 
     private respondToKnownOption(cmd: number, opt: number): void {
@@ -536,7 +604,10 @@ export class TelnetNegotiator {
             tls: this.flags.secureTransport,
             screenReader: this.flags.screenReaderAdvertised,
         });
-        const cycle = [CLIENT_NAME, TERMINAL_TYPE, `MTTS ${mtts}`];
+        // `mVersionInTTYPE`: append our version to the client-name step only —
+        // the terminal-type and MTTS steps are unchanged (ctelnet.cpp case 0).
+        const clientName = this.flags.versionInTTYPE ? `${CLIENT_NAME} ${CLIENT_VERSION}` : CLIENT_NAME;
+        const cycle = [clientName, TERMINAL_TYPE, `MTTS ${mtts}`];
         const value = cycle[Math.min(this.ttypeStep, cycle.length - 1)];
         if (this.ttypeStep < cycle.length - 1) this.ttypeStep++;
         this.hooks.sendRaw(GMCP_IAC + GMCP_SB + OPT_TTYPE + TTYPE_IS + value + GMCP_IAC + GMCP_SE);

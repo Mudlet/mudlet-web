@@ -233,6 +233,29 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // so it's on the session's options before autoConnect dials, and re-applied
     // live whenever the config bag changes.
     session.setFixUnnecessaryLinebreaks((profileConfig?.fixUnnecessaryLinebreaks as boolean | undefined) ?? false);
+    // Mudlet's `inputLineStrictUnixEndings` (config bag) — submit commands with a
+    // bare LF instead of CRLF. Live, like Mudlet's per-send read of mUSE_UNIX_EOL.
+    session.setInputLineStrictUnixEndings((profileConfig?.inputLineStrictUnixEndings as boolean | undefined) ?? false);
+    // Mudlet's `specialForceGAOff` (config bag) — stop treating IAC GA/EOR as a
+    // prompt marker. Read once per connect (see MudSession.setSpecialForceGAOff),
+    // so like the protocol toggles this applies on the next dial.
+    session.setSpecialForceGAOff((profileConfig?.specialForceGAOff as boolean | undefined) ?? false);
+    // Mudlet's `versionInTTYPE` / `promptForVersionInTTYPE` (config bag) — carry
+    // our version in the TTYPE client-name reply, and the latch recording that
+    // the KaVir auto-detect below has already had its say. Negotiation runs at
+    // connect, so both apply on the next dial.
+    session.setVersionInTTYPE(
+        (profileConfig?.versionInTTYPE as boolean | undefined) ?? false,
+        (profileConfig?.promptForVersionInTTYPE as boolean | undefined) ?? false,
+    );
+    // Mudlet's `promptForMXPProcessorOn` / `specialForceMXPProcessorOn` (config
+    // bag) — the gate on whether an in-band ESC[<n>z from a server that skipped
+    // the option-91 handshake may still auto-start MXP. Read at connect by the
+    // negotiator.
+    session.setMxpProcessorFlags(
+        (profileConfig?.promptForMXPProcessorOn as boolean | undefined) ?? false,
+        (profileConfig?.specialForceMXPProcessorOn as boolean | undefined) ?? false,
+    );
     // Mudlet's `controlCharacterHandling` (config bag) — how control characters
     // (and tabs) render across the console/text windows. Applied on every
     // render like the flags above, so a Lua setConfig() or a Settings change
@@ -241,6 +264,14 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     const controlCharacterHandling: ControlCharacterMode =
         rawControlCharacterHandling === 'oem' || rawControlCharacterHandling === 'picture' ? rawControlCharacterHandling : 'asis';
     session.setControlCharacterMode(controlCharacterHandling);
+    // Mudlet's `blankLinesBehaviour` (config bag) — how empty game lines render.
+    // ScriptingAPI seeds this from the bag once at construction, which covers a
+    // reload but not a later edit; re-applying it here on every render is what
+    // makes the Settings-modal select take effect without one. `setConfig` writes
+    // the session directly, so that path never depended on this.
+    const rawBlankLines = profileConfig?.blankLinesBehaviour;
+    session.blankLinesBehaviour =
+        rawBlankLines === 'hide' || rawBlankLines === 'replacewithspace' ? rawBlankLines : 'show';
 
     const { engineRef } = useEngines(session, true, connection, vfs);
 
@@ -600,6 +631,31 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         return () => { t1(); t2(); t3(); t4(); t5(); t6(); };
     }, [session, connection]);
 
+    // KaVir protocol-handler detection. Mirrors Mudlet's autoEnableTTYPEVersion:
+    // the server's option-negotiation order fingerprints KaVir's snippet, which
+    // parses a decimal version out of the TTYPE client-name reply and quietly
+    // caps us at 16 colours without one. TTYPE is only negotiated at connect, so
+    // — like Mudlet — turning the setting on means redialing to use it. The
+    // `promptForVersionInTTYPE` latch is written first so this happens once per
+    // profile and the reconnect can't re-trigger it.
+    useEffect(() => {
+        return session.events.on('kavir.detected', () => {
+            const bag = useAppStore.getState().connectionProfile[connection.id]?.config ?? {};
+            if (bag.promptForVersionInTTYPE) return;
+            useAppStore.getState().patchConnectionProfile(connection.id, {
+                config: { ...bag, promptForVersionInTTYPE: true, versionInTTYPE: true },
+            });
+            session.setVersionInTTYPE(true, true);
+            postKaVirMessage(
+                'This game appears to use KaVir\'s protocol handler, which works best when the client '
+                + 'reports its version number during connection. Version reporting in terminal type has '
+                + 'been automatically enabled for improved colour support. Reconnecting…',
+            );
+            disconnect();
+            redialFromStore();
+        });
+    }, [session, connection.id]);
+
     // Replay state → toolbar. Playback can start outside the UI too (Lua
     // loadReplay), so both controls track the session's events rather than
     // local click handlers.
@@ -624,6 +680,13 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
      *  (`[ WARN ]  - Could not log in to the game…`). */
     const postLoginMessage = (text: string) => {
         session.events.emit('message', `\x1b[33m[ WARN ]  - ${text}\x1b[0m`, 'script', Date.now());
+    };
+
+    /** Console notice from the KaVir TTYPE-version auto-detect, in Mudlet's
+     *  house style. (The MXP auto-detect posts its own, from ScriptingEngine —
+     *  that one is raised where the MXP processor lives.) */
+    const postKaVirMessage = (text: string) => {
+        session.events.emit('message', `\x1b[36m[ INFO ]\x1b[0m  - ${text}`, 'script', Date.now());
     };
 
     /** Console notice about the secure connection, in Mudlet's house style —

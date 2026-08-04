@@ -175,6 +175,13 @@ export type MudClientEvents = {
      *  a line-based client, can't drive well. Lets scripts / the UI warn the
      *  user that input may not behave as expected. */
     'charmode.detected': void;
+    /** The server's telnet option-negotiation order matched KaVir's protocol
+     *  snippet (Mudlet `cTelnet::trackKaVirNegotiation`). Such servers read a
+     *  decimal version out of our TTYPE client-name reply and fall back to 16
+     *  colours without one, so the owner switches `versionInTTYPE` on and
+     *  redials. Fires at most once per connection, and never once the profile's
+     *  `promptForVersionInTTYPE` latch is set. */
+    'kavir.detected': void;
 } & Record<string, any>;
 
 export type MudEvents = MudClientEvents & {

@@ -180,7 +180,6 @@ const CONFIG_PERSIST_ONLY: Record<string, {
     // screen reader. Gating this on a default-false key would silently mute that
     // path, so it stays on unless the user explicitly disables it.
     announceIncomingText:           { type: 'bool', default: true },
-    askTlsAvailable:                { type: 'bool', default: true },
     caretShortcut:                  { type: 'str',  default: 'none', enum: ['none', 'tab', 'ctrltab', 'f6'] },
     commandLineHistorySaveSize:     { type: 'num',  default: 500 },
     compactInputLine:               { type: 'bool', default: false },
@@ -199,7 +198,11 @@ const CONFIG_PERSIST_ONLY: Record<string, {
     showTabConnectionIndicators:    { type: 'bool', default: true },
     showUpperLowerLevels:           { type: 'bool', default: true },
     specialForceGAOff:              { type: 'bool', default: false },
-    versionInTTYPE:                 { type: 'bool', default: true },
+    // False, matching Mudlet's `mVersionInTTYPE` (Host.h): a period is not a
+    // legal TTYPE character per RFC 1091, so Mudlet stopped sending the version
+    // by default in 2024. The KaVir auto-detect turns it on for the servers that
+    // actually want it — see ProfileSession's `kavir.detected` handler.
+    versionInTTYPE:                 { type: 'bool', default: false },
 };
 
 /** Format an epoch-ms timestamp as Mudlet's "hh:mm:ss.zzz" (local time). */
@@ -1078,6 +1081,11 @@ export class ScriptingAPI {
             // structured — input line
             case 'autoClearInputLine':
                 return selectProfileField(useAppStore.getState(), this.connectionId, 'autoClearInput') ?? false;
+            // structured — MSSP secure-port offer (Mudlet Host::mAskTlsAvailable).
+            // A typed field rather than a config-bag key: the offer logic and the
+            // Settings checkbox both read it, and declining the offer clears it.
+            case 'askTlsAvailable':
+                return selectProfileField(useAppStore.getState(), this.connectionId, 'askTlsAvailable') ?? true;
             // structured — mapper
             // Mudlet's getConfig reports the *internal* doubles (host.mRoomSize /
             // host.mLineSize), not the spin-box scale its setConfig takes — see
@@ -1137,7 +1145,8 @@ export class ScriptingAPI {
             case 'enableCHARSET': case 'enableNAWS':
             case 'specialForceMxpNegotiationOff': case 'specialForceCharsetNegotiationOff':
             case 'specialForceCompressionOff': case 'forceNewEnvironNegotiationOff':
-            case 'autoClearInputLine': case 'mapRoundRooms': case 'mapShowRoomBorders':
+            case 'autoClearInputLine': case 'askTlsAvailable':
+            case 'mapRoundRooms': case 'mapShowRoomBorders':
             case 'mapShowGrid': case 'muteMediaAPI': case 'muteMediaGame':
             case 'mapperPanelVisible':
                 return 'bool';
@@ -1192,6 +1201,12 @@ export class ScriptingAPI {
                 return true;
             case 'autoClearInputLine':
                 useAppStore.getState().patchConnectionProfile(this.connectionId, { autoClearInput: configBool(value) });
+                return true;
+            // Whether an MSSP-advertised TLS port still earns a "switch to the
+            // secure port?" offer. Declining the offer (or reverting a failed
+            // upgrade) clears the same field, so a script can re-arm it.
+            case 'askTlsAvailable':
+                useAppStore.getState().patchConnectionProfile(this.connectionId, { askTlsAvailable: configBool(value) });
                 return true;
             // Mudlet's setConfig for these two routes through the *preferences*
             // slots, so the accepted values are the spin-box scale, not the

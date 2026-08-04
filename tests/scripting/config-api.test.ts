@@ -399,6 +399,54 @@ describe('setConfig / getConfig', () => {
         });
     });
 
+    // askTlsAvailable is a typed ProfileSettings field, not a config-bag key:
+    // the MSSP secure-port offer and the Settings checkbox both read it, and
+    // declining the offer clears it. Routing it into the bag instead made the
+    // key inert in both directions.
+    it('routes askTlsAvailable to the typed profile field', () => {
+        // Default is "still ask" even before anything has written the field.
+        expect(h.run('return getConfig("askTlsAvailable")')).toBe(true);
+
+        expect(h.run('return setConfig("askTlsAvailable", false)')).toBe(true);
+        expect(useAppStore.getState().connectionProfile[CONN]?.askTlsAvailable).toBe(false);
+        expect(h.run('return getConfig("askTlsAvailable")')).toBe(false);
+        // Not the config bag — that slot is what nothing reads.
+        expect(useAppStore.getState().connectionProfile[CONN]?.config?.askTlsAvailable).toBeUndefined();
+
+        // A script can re-arm the offer after the user declined it.
+        h.run('setConfig("askTlsAvailable", true)');
+        expect(useAppStore.getState().connectionProfile[CONN]?.askTlsAvailable).toBe(true);
+    });
+
+    // Reads back a decline made through the UI rather than through setConfig.
+    it('reflects an externally-cleared askTlsAvailable', () => {
+        useAppStore.getState().patchConnectionProfile(CONN, { askTlsAvailable: false });
+        expect(h.run('return getConfig("askTlsAvailable")')).toBe(false);
+        useAppStore.getState().patchConnectionProfile(CONN, { askTlsAvailable: true });
+    });
+
+    // The telnet-layer keys stay in the config bag (ProfileSession feeds them to
+    // MudSession from there). What matters at this level is that they round-trip
+    // and land in the slot ProfileSession reads; the wire behaviour each one
+    // drives is covered by tests/mud/connection/specialOptionsConfig.test.ts.
+    it('round-trips the special telnet options into the config bag', () => {
+        const bag = () => useAppStore.getState().connectionProfile[CONN]?.config ?? {};
+        for (const key of [
+            'inputLineStrictUnixEndings',
+            'specialForceGAOff',
+            'versionInTTYPE',
+            'promptForVersionInTTYPE',
+            'promptForMXPProcessorOn',
+        ]) {
+            expect(h.run(`return getConfig("${key}")`)).toBe(false);
+            expect(h.run(`return setConfig("${key}", true)`)).toBe(true);
+            expect(h.run(`return getConfig("${key}")`)).toBe(true);
+            expect(bag()[key]).toBe(true);
+            h.run(`setConfig("${key}", false)`);
+            expect(h.run(`return getConfig("${key}")`)).toBe(false);
+        }
+    });
+
     it('supports the Other.lua table form and no-arg dump', () => {
         h.run('setConfig({ enableGMCP = false, f3SearchEnabled = true })');
         expect(h.run('return getConfig("enableGMCP")')).toBe(false);

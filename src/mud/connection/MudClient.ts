@@ -132,6 +132,44 @@ export interface MudClientOptions {
      *  of each GA-terminated data block — the IRE-server bug Mudlet patches in
      *  `cTelnet::gotPrompt`. See LineAssembler. */
     fixUnnecessaryLinebreaks?: boolean;
+    /** Mudlet's `setConfig("inputLineStrictUnixEndings", …)` (host flag
+     *  `mUSE_UNIX_EOL`). Default false. When true a submitted command is
+     *  terminated with a bare `\n` instead of the telnet-standard `\r\n`
+     *  (`cTelnet::sendData` appends the CR only when the flag is off) — some
+     *  Unix-y servers treat the CR as part of the command. */
+    inputLineStrictUnixEndings?: boolean;
+    /** Mudlet's `setConfig("specialForceGAOff", …)` (host flag `mFORCE_GA_OFF`).
+     *  Default false. When true an inbound IAC GA / IAC EOR is *not* treated as
+     *  a prompt marker: the session never latches into GA-driven mode and the
+     *  marker becomes a plain newline in the data stream, exactly as
+     *  `cTelnet::processSocketData` does in its `else` branch. For servers whose
+     *  GA placement is wrong often enough that prompt detection does more harm
+     *  than good. Read once per connect (Mudlet snapshots it in `connectIt`), so
+     *  a mid-session change applies on the next dial. */
+    specialForceGAOff?: boolean;
+    /** Mudlet's `setConfig("promptForVersionInTTYPE", …)` (host flag
+     *  `mPromptedForVersionInTTYPE`). Default false. Latches once the KaVir
+     *  auto-detect has had its say for this profile, so a user who then turns
+     *  `versionInTTYPE` back off isn't overridden on the next connect. */
+    promptForVersionInTTYPE?: boolean;
+    /** Mudlet's `setConfig("promptForMXPProcessorOn", …)` (host flag
+     *  `mPromptedForMXPProcessorOn`). Default false. Latches once the in-band
+     *  MXP auto-detect has fired for this profile; together with
+     *  `specialForceMXPProcessorOn` it decides whether an `ESC[<n>z` from a
+     *  server that never negotiated option 91 may still start MXP. */
+    promptForMXPProcessorOn?: boolean;
+    /** Mudlet's `setConfig("specialForceMXPProcessorOn", …)` (host flag
+     *  `mForceMXPProcessorOn`). Default false. Only consulted here for the
+     *  in-band-detection gate above — the parser-side effect lives in
+     *  ScriptingEngine, which owns the MXP processor. */
+    specialForceMXPProcessorOn?: boolean;
+    /** Mudlet's `setConfig("versionInTTYPE", …)` (host flag `mVersionInTTYPE`).
+     *  Default false. When true the first TTYPE cycle value carries our version
+     *  after the client name (`MUDLET-WEB 1.2.3`). Off by default because the
+     *  period is not a legal TTYPE character per RFC 1091 — but servers running
+     *  KaVir's protocol snippet parse a version out of it and fall back to 16
+     *  colours without one, so it's opt-in rather than absent. */
+    versionInTTYPE?: boolean;
     /** WebSocket subprotocols to advertise in the opening handshake's
      *  `Sec-WebSocket-Protocol` header (RFC 6455), in preference order — the
      *  server selects at most one. Mutually-exclusive stream *modes*, not layers:
@@ -227,6 +265,16 @@ export class MudClient {
     private readonly mspParser = new MspParser();
     /** WebSocket subprotocols advertised on connect (see MudClientOptions). */
     private readonly subprotocols: string[];
+    /** Mudlet `mUSE_UNIX_EOL` — terminate submitted commands with a bare `\n`.
+     *  Read on every send, so a change applies to the next command (Mudlet reads
+     *  the host flag in `sendData` too). */
+    private strictUnixEndings: boolean;
+    /** Mudlet `mFORCE_GA_OFF` — see MudClientOptions.specialForceGAOff. Mudlet
+     *  snapshots the host flag into cTelnet at `connectIt`, so a mid-session
+     *  change is deliberately not retroactive. Here that falls out for free:
+     *  MudSession builds a fresh MudClient per connect from its stored options,
+     *  so this is fixed for the life of the connection. */
+    private readonly forceGaOff: boolean;
 
     constructor(
         {
@@ -248,6 +296,12 @@ export class MudClient {
             screenReaderAdvertised = false,
             nawsEnabled = true,
             fixUnnecessaryLinebreaks = false,
+            inputLineStrictUnixEndings = false,
+            specialForceGAOff = false,
+            versionInTTYPE = false,
+            promptForVersionInTTYPE = false,
+            promptForMXPProcessorOn = false,
+            specialForceMXPProcessorOn = false,
             subprotocols = [],
         }: MudClientOptions,
         eventBus: EventBus<MudClientEvents>,
@@ -258,6 +312,8 @@ export class MudClient {
         this.chunkProcessor = chunkProcessor ?? createPassthroughProcessor();
         this.mspEnabled = mspEnabled;
         this.subprotocols = subprotocols;
+        this.strictUnixEndings = inputLineStrictUnixEndings;
+        this.forceGaOff = specialForceGAOff;
 
         this.assembler = new LineAssembler(
             {
@@ -291,6 +347,9 @@ export class MudClient {
                 // whether the proxy↔game leg is encrypted.
                 secureTransport: secureTransport ?? /^wss:/i.test(url),
                 screenReaderAdvertised,
+                versionInTTYPE,
+                versionInTTYPEPrompted: promptForVersionInTTYPE,
+                mxpInBandDetectionEnabled: specialForceMXPProcessorOn || !promptForMXPProcessorOn,
             },
             eventBus,
             {
@@ -298,6 +357,7 @@ export class MudClient {
                 onGmcpNegotiated: () => this.sendGmcpHandshake(),
                 onCharsetNegotiated: () => this.charsetHandler.sendRequest(),
                 getEncoding: () => this.codec.encoding,
+                onKaVirProtocolDetected: () => this.eventBus.emit('kavir.detected'),
             },
         );
 
@@ -353,7 +413,7 @@ export class MudClient {
             else if (code === MSP_COMMAND_CODE) this.handleMspSubneg(subneg);
             else if (code === MXP_COMMAND_CODE) this.negotiator.handleMxpSubneg();
             else if (code === NEW_ENVIRON_COMMAND_CODE) this.negotiator.handleNewEnvironSubneg(subneg);
-        });
+        }, { promptMarkerAsNewline: specialForceGAOff });
         this.mccpHandler = new MccpHandler((data) => this.sendRaw(data));
         this.mccpHandler.enabled = mccpEnabled;
 
@@ -397,6 +457,13 @@ export class MudClient {
      *  next GA-driven block; never retroactive. */
     setFixUnnecessaryLinebreaks(enabled: boolean): void {
         this.assembler.setFixUnnecessaryLinebreaks(enabled);
+    }
+
+    /** Mudlet `setConfig("inputLineStrictUnixEndings", …)`. Live: `cTelnet::
+     *  sendData` reads the host flag per send, so the next command submitted
+     *  uses the new terminator. */
+    setInputLineStrictUnixEndings(enabled: boolean): void {
+        this.strictUnixEndings = enabled;
     }
 
     /** Mudlet `addSupportedTelnetOption(option)`. See TelnetNegotiator. */
@@ -659,7 +726,10 @@ export class MudClient {
             this.eventBus.emit('socket.outgoing', message);
         }
         try {
-            this.sendBytes(this.codec.encodeOutgoing(message + "\r\n"));
+            // `cTelnet::sendData`: the CR is appended only when mUSE_UNIX_EOL is
+            // off, so strict-Unix mode submits the bare LF telnet would normally
+            // pair it with.
+            this.sendBytes(this.codec.encodeOutgoing(message + (this.strictUnixEndings ? "\n" : "\r\n")));
         } catch (error) {
             console.error('Error sending message:', error);
             this.eventBus.emit('error', error);
@@ -918,7 +988,13 @@ export class MudClient {
             processable = data.substring(0, incompleteAt);
         }
 
-        const hasPrompt = processable.includes(TELNET_GA) || processable.includes(TELNET_EOR);
+        // `mFORCE_GA_OFF`: the marker is still received, but it stops meaning
+        // "prompt". The session never latches into GA-driven mode, and the
+        // option parser has already turned the marker into a newline in the
+        // sanitized text (see createTelnetOptionParser), matching the `'\n'`
+        // Mudlet pushes in the else branch of its GA handling.
+        const hasPrompt = !this.forceGaOff
+            && (processable.includes(TELNET_GA) || processable.includes(TELNET_EOR));
         const sanitized = stripTelnetSequences(processable, this.telnetOptionHandler).replace(/\r/g, '');
         const decodedRaw = this.codec.decode(sanitized);
         // MSP in-band parsing: strip `!!SOUND(...)` / `!!MUSIC(...)` triplets

@@ -5,7 +5,7 @@ import { getThemeChoices } from '../branding';
 import { useModalFocus } from './components/useModalFocus';
 import { DEFAULT_ANSI_PALETTE } from '../mud/text/colors';
 import { DEFAULT_HISTORY_SAVE_SIZE, MAX_HISTORY } from './commandHistory';
-import type { ShowSentTextMode, ControlCharacterMode } from '../mud/MudSession';
+import type { ShowSentTextMode, ControlCharacterMode, BlankLinesBehaviour } from '../mud/MudSession';
 
 const SHOW_SENT_TEXT_OPTIONS: { value: ShowSentTextMode; label: string }[] = [
     { value: 'script', label: 'Let scripts decide' },
@@ -92,6 +92,14 @@ const CONTROL_CHARACTER_OPTIONS: { value: ControlCharacterMode; label: string }[
     { value: 'asis',    label: 'Nothing' },
     { value: 'picture', label: 'Unicode control pictures' },
     { value: 'oem',     label: 'CP437 (OEM font)-like' },
+];
+
+// Wording follows Mudlet's comboBox_blankLinesBehaviour, which sits on the same
+// Accessibility tab there.
+const BLANK_LINES_OPTIONS: { value: BlankLinesBehaviour; label: string }[] = [
+    { value: 'show',             label: 'Show them' },
+    { value: 'hide',             label: 'Hide them' },
+    { value: 'replacewithspace', label: 'Replace with a space' },
 ];
 
 interface SettingsModalProps {
@@ -228,6 +236,15 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
         rawControlCharacterHandling === 'oem' || rawControlCharacterHandling === 'picture'
             ? rawControlCharacterHandling
             : 'asis';
+    const rawBlankLines = config?.blankLinesBehaviour;
+    const blankLinesBehaviour: BlankLinesBehaviour =
+        rawBlankLines === 'hide' || rawBlankLines === 'replacewithspace' ? rawBlankLines : 'show';
+    // Mudlet's Special Options tab, minus the compression toggle mudix already
+    // carries as the positive MCCP protocol switch above.
+    const inputLineStrictUnixEndings = (config?.inputLineStrictUnixEndings as boolean | undefined) ?? false;
+    const specialForceGAOff = (config?.specialForceGAOff as boolean | undefined) ?? false;
+    const versionInTTYPE = (config?.versionInTTYPE as boolean | undefined) ?? false;
+    const specialForceMXPProcessorOn = (config?.specialForceMXPProcessorOn as boolean | undefined) ?? false;
     // showSentText is stored as a mode string; legacy profiles may hold a boolean
     // (false ≙ never, true/unset ≙ script).
     const rawShowSentText = config?.showSentText;
@@ -713,6 +730,73 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                                     ))}
                                 </div>
                             </div>
+                            {/* Mudlet's "Special Options" tab — workarounds for older game
+                                drivers. mudix folds them in here rather than adding a tab of
+                                its own: the first member of that group, "Force compression
+                                off", is already the MCCP toggle above, and all three below
+                                interact with the protocol switches they now sit beside.
+                                (Mudlet's own MXP tooltip sends you to this very section.) */}
+                            <div className="settings-row">
+                                <span className="settings-label" id="special-force-ga-off-label">
+                                    Force telnet GA signal interpretation off
+                                    <HelpTip label="About forcing GA off">
+                                        Stop treating the telnet <code>GA</code>/<code>EOR</code> marker as
+                                        an end-of-prompt signal (Mudlet's <code>specialForceGAOff</code>).
+                                        Normally the first such marker switches mudix into GA-driven prompt
+                                        mode, where the marker — not a newline — is what ends a prompt line.
+                                        A few older drivers emit it in the wrong places, which chops output
+                                        into odd fragments; with this on the marker just becomes a line
+                                        break. Off by default.
+                                    </HelpTip>
+                                </span>
+                                <Toggle
+                                    id="special-force-ga-off"
+                                    aria-labelledby="special-force-ga-off-label"
+                                    checked={specialForceGAOff}
+                                    onChange={next => patchConfig({ specialForceGAOff: next })}
+                                />
+                            </div>
+                            <div className="settings-row">
+                                <span className="settings-label" id="version-in-ttype-label">
+                                    Send version in terminal type
+                                    <HelpTip label="About sending the version in TTYPE">
+                                        Send our version number alongside the client name during telnet
+                                        TTYPE negotiation (Mudlet's <code>versionInTTYPE</code>). Off by
+                                        default, because the period it contains is not a legal TTYPE
+                                        character per RFC 1091 — Mudlet stopped sending it in 2024. Servers
+                                        running KaVir's protocol snippet read a version out of that field
+                                        and fall back to 16 colours without one, so mudix detects those
+                                        servers and turns this on for you.
+                                    </HelpTip>
+                                </span>
+                                <Toggle
+                                    id="version-in-ttype"
+                                    aria-labelledby="version-in-ttype-label"
+                                    checked={versionInTTYPE}
+                                    onChange={next => patchConfig({ versionInTTYPE: next })}
+                                />
+                            </div>
+                            <div className="settings-row">
+                                <span className="settings-label" id="force-mxp-processor-label">
+                                    Force MXP processing on
+                                    <HelpTip label="About forcing the MXP processor on">
+                                        Run the MXP parser even on servers that never negotiate telnet
+                                        option 91 (Mudlet's <code>specialForceMXPProcessorOn</code>). Also
+                                        locks the parser into secure mode, which such servers need — they
+                                        send secure tags like <code>&lt;SEND&gt;</code> without ever
+                                        switching mode, and those are discarded otherwise. To turn MXP off
+                                        entirely, leave this off and also switch off <strong>MXP</strong>
+                                        above. Off by default; mudix turns it on automatically when it sees
+                                        in-band MXP.
+                                    </HelpTip>
+                                </span>
+                                <Toggle
+                                    id="force-mxp-processor"
+                                    aria-labelledby="force-mxp-processor-label"
+                                    checked={specialForceMXPProcessorOn}
+                                    onChange={next => patchConfig({ specialForceMXPProcessorOn: next })}
+                                />
+                            </div>
                             <p className="settings-hint">
                                 Protocol changes take effect the next time you connect.
                             </p>
@@ -1089,6 +1173,24 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                                     ))}
                                 </select>
                             </div>
+                            <div className="settings-row">
+                                <span className="settings-label" id="strict-unix-endings-label">
+                                    Strict UNIX line endings
+                                    <HelpTip label="About strict UNIX line endings">
+                                        End each command you send with a bare line feed instead of the
+                                        telnet-standard carriage return + line feed (Mudlet's
+                                        <code> inputLineStrictUnixEndings</code>). For old UNIX servers
+                                        that can't handle Windows line endings and treat the stray
+                                        carriage return as part of the command. Off by default.
+                                    </HelpTip>
+                                </span>
+                                <Toggle
+                                    id="strict-unix-endings"
+                                    aria-labelledby="strict-unix-endings-label"
+                                    checked={inputLineStrictUnixEndings}
+                                    onChange={next => patchConfig({ inputLineStrictUnixEndings: next })}
+                                />
+                            </div>
                         </section>
                     )}
                     {activeTab === 'media' && connectionId && (
@@ -1261,6 +1363,30 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                                     onChange={e => patchConfig({ controlCharacterHandling: e.target.value as ControlCharacterMode })}
                                 >
                                     {CONTROL_CHARACTER_OPTIONS.map(opt => (
+                                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div className="settings-row">
+                                <label className="settings-label" htmlFor="blank-lines-behaviour">
+                                    When the game sends blank lines
+                                    <HelpTip label="About blank lines from the game">
+                                        What to do with empty lines the game sends (Mudlet's
+                                        <code> blankLinesBehaviour</code>). <strong>Show them</strong>
+                                        renders them as-is. <strong>Hide them</strong> drops them
+                                        entirely. <strong>Replace with a space</strong> is Mudlet's
+                                        screen-reader workaround — some readers skip a truly empty line
+                                        but announce one holding a space. Only lines from the game are
+                                        affected, not echoes or client messages.
+                                    </HelpTip>
+                                </label>
+                                <select
+                                    id="blank-lines-behaviour"
+                                    className="settings-select"
+                                    value={blankLinesBehaviour}
+                                    onChange={e => patchConfig({ blankLinesBehaviour: e.target.value as BlankLinesBehaviour })}
+                                >
+                                    {BLANK_LINES_OPTIONS.map(opt => (
                                         <option key={opt.value} value={opt.value}>{opt.label}</option>
                                     ))}
                                 </select>

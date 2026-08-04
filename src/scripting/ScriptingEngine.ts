@@ -1982,6 +1982,39 @@ export class ScriptingEngine implements EngineHost {
         this.mxp.lockSecureMode(on);
     }
 
+    /** Mudlet `cTelnet::autoEnableMXPProcessor`. Runs when MXP started from an
+     *  in-band `ESC[<n>z` rather than a telnet option-91 handshake: such servers
+     *  are IRE-style and never send mode switches, they just emit secure tags —
+     *  so without the secure-mode lock every `<SEND>`/`<A>`/definition tag would
+     *  be discarded as unsafe. The `promptForMXPProcessorOn` latch records that
+     *  this profile has been auto-enabled once, which is what lets a user turn
+     *  `specialForceMXPProcessorOn` back off without being overridden on the
+     *  next connect (the gate lives in MudClient → TelnetNegotiator).
+     *
+     *  A second detection while already forced on is a *re-initialisation* (a
+     *  server re-announcing MXP after e.g. `config mxp on`): re-apply the lock,
+     *  but stay silent — Mudlet returns before its postMessage there. */
+    private autoEnableMxpProcessor(): void {
+        // The bag always holds a real boolean here: setConfig coerces a 'bool'
+        // key before storing, and the write below sets it literally.
+        const alreadyPrompted =
+            useAppStore.getState().connectionProfile[this.connectionId]?.config?.promptForMXPProcessorOn === true;
+        this.setForceMxpProcessorOn(true);
+        if (alreadyPrompted) return;
+        const bag = useAppStore.getState().connectionProfile[this.connectionId]?.config ?? {};
+        useAppStore.getState().patchConnectionProfile(this.connectionId, {
+            config: { ...bag, promptForMXPProcessorOn: true, specialForceMXPProcessorOn: true },
+        });
+        this.session.events.emit(
+            'message',
+            '\x1b[36m[ INFO ]\x1b[0m  - This game appears to support MXP (Mud eXtension Protocol), but has not '
+            + 'turned it on properly. MXP processing has been automatically enabled for clickable links, room '
+            + 'info, and richer interactions. You can disable this in Settings → Protocols.',
+            'script',
+            Date.now(),
+        );
+    }
+
     existsByName(nameOrId: string | number, type: string): number {
         const store = useAppStore.getState();
         const id = this.connectionId;
@@ -3496,6 +3529,17 @@ export class ScriptingEngine implements EngineHost {
                 this.mxp.reset();
                 this.mxpActive = false;
                 this.mxpHandshakeEnabled = false;
+                // Re-apply the persisted "force MXP processing on" preference —
+                // `mxp.reset()` above has just cleared the secure-mode lock it
+                // implies. Connect is deliberately the only place this is read:
+                // Mudlet applies `mForceMXPProcessorOn` from its preferences the
+                // same way, which is why that row carries a "Please reconnect to
+                // your game for the change to take effect" note. It also covers
+                // profile load, where nothing else pushes the value onto the
+                // parser, and the in-band auto-detect, which persists the key.
+                this.setForceMxpProcessorOn(
+                    useAppStore.getState().connectionProfile[this.connectionId]?.config?.specialForceMXPProcessorOn === true,
+                );
                 // mudix's native `connect` plus the Mudlet-standard name — the
                 // bundled generic mapper and ported scripts register a
                 // sysConnectionEvent handler, so both must fire.
@@ -3622,6 +3666,7 @@ export class ScriptingEngine implements EngineHost {
                 // Only a real option-91 handshake authorizes sending the
                 // <SUPPORTS>/<VERSION> replies (see ScriptingAPI / event doc).
                 if (viaTelnet) this.mxpHandshakeEnabled = true;
+                else this.autoEnableMxpProcessor();
                 if (!this.mxpNegotiated) {
                     this.mxpNegotiated = true;
                     this.emit('sysProtocolEnabled', ['MXP']);
