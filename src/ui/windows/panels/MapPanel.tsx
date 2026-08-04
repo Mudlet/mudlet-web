@@ -742,6 +742,9 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
         applyMapperSettings(renderer.settings, mapper);
         renderer.refresh();
         renderer.updateBackground();
+        // The position marker is an overlay, not part of the room scene, so
+        // refresh() alone leaves it drawn with the previous playerMarker style.
+        renderer.refreshCurrentRoomOverlay();
     }, [mapper]);
 
     // Boot path: ScriptingEngine and this panel both call bootstrapMap; the

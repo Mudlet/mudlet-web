@@ -422,6 +422,44 @@ export interface MapperSettings {
      *  until you zoom in further. Measured against what the current viewport
      *  materialises, not the whole level. */
     lodHitTestBudget?: number;
+    /** renderer.settings.playerMarker — styling for the ring drawn on the
+     *  player's room. */
+    playerMarker?: PlayerMarkerSettings;
+}
+
+/** Styling for the player-position marker — the ring the renderer draws on
+ *  whichever room `updatePositionMarker()` was last given.
+ *
+ *  Mirrors the renderer's `PlayerMarkerStyle` one field at a time, except for
+ *  the dash pattern: the renderer takes a `number[]`, but a pair of scalars
+ *  patches independently and survives the JSON round-trip more simply, so
+ *  {@link dashLength}/{@link dashGap} are recombined into `[len, gap]` in
+ *  applyMapperSettings. Every field is optional — unset ones fall through to
+ *  the renderer's own createSettings() defaults. */
+export interface PlayerMarkerSettings {
+    /** Outline colour, hex (#rrggbb). */
+    strokeColor?: string;
+    /** Outline opacity, 0..1. */
+    strokeAlpha?: number;
+    /** Fill colour, hex (#rrggbb). Only visible when {@link fillAlpha} > 0. */
+    fillColor?: string;
+    /** Fill opacity, 0..1. 0 leaves the marker a hollow ring. */
+    fillAlpha?: number;
+    /** Outline thickness in map units (roughly 0.01–0.3). */
+    strokeWidth?: number;
+    /** Multiplier on `roomSize`. 1.0 makes the marker exactly room-sized;
+     *  the renderer's default (1.7) rings the room from outside. */
+    sizeFactor?: number;
+    /** Dash length in map units — only drawn when {@link dashEnabled}. */
+    dashLength?: number;
+    /** Gap between dashes in map units — only drawn when {@link dashEnabled}. */
+    dashGap?: number;
+    /** Dash the outline instead of drawing it solid. */
+    dashEnabled?: boolean;
+    /** Follow {@link MapperSettings.roomShape} instead of always drawing a
+     *  circle. Rectangle/rounded-rectangle rooms only; a circle room is
+     *  already a circle. */
+    matchRoomShape?: boolean;
 }
 
 /** Mirrors the renderer's createSettings() defaults so the Settings modal can
@@ -429,6 +467,19 @@ export interface MapperSettings {
  *  undefined. MapPanel itself does NOT use these — it only forwards fields
  *  that the user has actually set, so the renderer's own defaults stay in
  *  charge for anything untouched. */
+export const PLAYER_MARKER_DEFAULTS: Required<PlayerMarkerSettings> = {
+    strokeColor: '#00e5b2',
+    strokeAlpha: 1,
+    fillColor: '#00e5b2',
+    fillAlpha: 0,
+    strokeWidth: 0.1,
+    sizeFactor: 1.7,
+    dashLength: 0.05,
+    dashGap: 0.05,
+    dashEnabled: true,
+    matchRoomShape: false,
+};
+
 export const MAPPER_DEFAULTS: Required<MapperSettings> = {
     roomSize: 0.6,
     roomShape: 'rectangle',
@@ -444,6 +495,7 @@ export const MAPPER_DEFAULTS: Required<MapperSettings> = {
     lodRoomBudget: 16000,
     lodExitBudget: 12000,
     lodHitTestBudget: 10000,
+    playerMarker: PLAYER_MARKER_DEFAULTS,
 };
 
 /** RGBA channels (0..255) for the map-info widget background. Stored in the

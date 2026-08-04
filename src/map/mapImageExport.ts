@@ -2,7 +2,10 @@ import { MapRenderer, createSettings, PngBytesExporter } from 'mudlet-map-render
 import type { RoomLens, Settings as MapRendererSettings } from 'mudlet-map-renderer';
 import { MudixMapReader } from './MudixMapReader';
 import type { MapStore } from './MapStore';
-import type { MapperSettings } from '../storage';
+// Pulled straight from the schema module rather than the ../storage barrel:
+// the barrel also re-exports the Zustand store, and this file is loaded by the
+// headless export path where dragging that in would be a needless cycle risk.
+import { PLAYER_MARKER_DEFAULTS, type MapperSettings } from '../storage/schema';
 
 /**
  * Copy user-set fields from MapperSettings onto a live renderer settings
@@ -41,6 +44,32 @@ export function applyMapperSettings(target: MapRendererSettings, mapper: MapperS
     if (mapper.lineWidth !== undefined) target.lineWidth = mapper.lineWidth;
     if (mapper.lineColor !== undefined) target.lineColor = mapper.lineColor;
     if (mapper.gridEnabled !== undefined) target.gridEnabled = mapper.gridEnabled;
+
+    // playerMarker is a nested object rather than a flat key, so copy it before
+    // writing: createSettings() hands out a fresh one per renderer, but this
+    // function also runs against a live renderer's settings on every profile
+    // change, and replacing the object wholesale keeps that assignment atomic.
+    const pm = mapper.playerMarker;
+    if (pm) {
+        const marker = { ...target.playerMarker };
+        if (pm.strokeColor !== undefined) marker.strokeColor = pm.strokeColor;
+        if (pm.strokeAlpha !== undefined) marker.strokeAlpha = pm.strokeAlpha;
+        if (pm.fillColor !== undefined) marker.fillColor = pm.fillColor;
+        if (pm.fillAlpha !== undefined) marker.fillAlpha = pm.fillAlpha;
+        if (pm.strokeWidth !== undefined) marker.strokeWidth = pm.strokeWidth;
+        if (pm.sizeFactor !== undefined) marker.sizeFactor = pm.sizeFactor;
+        if (pm.dashEnabled !== undefined) marker.dashEnabled = pm.dashEnabled;
+        if (pm.matchRoomShape !== undefined) marker.matchRoomShape = pm.matchRoomShape;
+        // The two halves patch independently in the UI, so rebuild the pair
+        // whenever either is set and let the other fall back to the default.
+        if (pm.dashLength !== undefined || pm.dashGap !== undefined) {
+            marker.dash = [
+                pm.dashLength ?? PLAYER_MARKER_DEFAULTS.dashLength,
+                pm.dashGap ?? PLAYER_MARKER_DEFAULTS.dashGap,
+            ];
+        }
+        target.playerMarker = marker;
+    }
 }
 
 /**

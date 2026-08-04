@@ -1,5 +1,6 @@
 import { Fragment, useState } from 'react';
-import { useAppStore, selectProfileField, MAPPER_DEFAULTS, MAP_INFO_BG_DEFAULT, PROTOCOL_DEFAULTS, WS_SUBPROTOCOL_CHOICES, type Theme, type OutputFontSource, type ProfileSettings, type MapperSettings, type MapInfoBgColor, type ProtocolSettings } from '../storage';
+import { useAppStore, selectProfileField, MAPPER_DEFAULTS, PLAYER_MARKER_DEFAULTS, MAP_INFO_BG_DEFAULT, PROTOCOL_DEFAULTS, WS_SUBPROTOCOL_CHOICES, type Theme, type OutputFontSource, type ProfileSettings, type MapperSettings, type PlayerMarkerSettings, type MapInfoBgColor, type ProtocolSettings } from '../storage';
+import { PlayerMarkerPreview } from './PlayerMarkerPreview';
 import { Input, FontPicker, Toggle, HelpTip, Button } from './components';
 import { getThemeChoices } from '../branding';
 import { useModalFocus } from './components/useModalFocus';
@@ -204,6 +205,18 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     const mapperLineColor = mapper?.lineColor ?? MAPPER_DEFAULTS.lineColor;
     const mapperGridEnabled = mapper?.gridEnabled ?? MAPPER_DEFAULTS.gridEnabled;
     const mapperLodEnabled = mapper?.lodEnabled ?? MAPPER_DEFAULTS.lodEnabled;
+    const marker = mapper?.playerMarker;
+    const markerStrokeColor = marker?.strokeColor ?? PLAYER_MARKER_DEFAULTS.strokeColor;
+    const markerStrokeAlpha = marker?.strokeAlpha ?? PLAYER_MARKER_DEFAULTS.strokeAlpha;
+    const markerFillColor = marker?.fillColor ?? PLAYER_MARKER_DEFAULTS.fillColor;
+    const markerFillAlpha = marker?.fillAlpha ?? PLAYER_MARKER_DEFAULTS.fillAlpha;
+    const markerStrokeWidth = marker?.strokeWidth ?? PLAYER_MARKER_DEFAULTS.strokeWidth;
+    const markerSizeFactor = marker?.sizeFactor ?? PLAYER_MARKER_DEFAULTS.sizeFactor;
+    const markerDashLength = marker?.dashLength ?? PLAYER_MARKER_DEFAULTS.dashLength;
+    const markerDashGap = marker?.dashGap ?? PLAYER_MARKER_DEFAULTS.dashGap;
+    const markerDashEnabled = marker?.dashEnabled ?? PLAYER_MARKER_DEFAULTS.dashEnabled;
+    const markerMatchRoomShape = marker?.matchRoomShape ?? PLAYER_MARKER_DEFAULTS.matchRoomShape;
+    const markerCustomised = marker !== undefined && Object.keys(marker).length > 0;
     const config = useAppStore(s => selectProfileField(s, connectionId, 'config'));
     const mapInfoColor = (config?.mapInfoColor as MapInfoBgColor | undefined) ?? MAP_INFO_BG_DEFAULT;
     const rawHistorySaveSize = config?.commandLineHistorySaveSize;
@@ -278,6 +291,11 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     // one field doesn't wipe siblings.
     const patchMapper = (patch: Partial<MapperSettings>) => {
         patchProfile({ mapper: { ...(mapper ?? {}), ...patch } });
+    };
+    // playerMarker nests one level deeper, so it needs its own merge for the
+    // same reason — dragging the size slider must not clear the colours.
+    const patchMarker = (patch: Partial<PlayerMarkerSettings>) => {
+        patchMapper({ playerMarker: { ...(marker ?? {}), ...patch } });
     };
     // Merge into the Mudlet-compatible `config` bag (same slot ScriptingAPI's
     // setConfig writes), so the Settings UI and Lua setConfig stay in sync.
@@ -1795,6 +1813,105 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                                     <span className="settings-mapinfo-bg__alpha-readout">{Math.round((mapInfoColor.a / 255) * 100)}%</span>
                                 </div>
                             </div>
+                            <div className="settings-marker-head">
+                                <span className="settings-label">
+                                    Player marker
+                                    <HelpTip label="About the player marker">
+                                        The ring drawn on the room you are currently in.
+                                        Only a mapper script tells the map which room that
+                                        is — with no mapper installed, nothing is marked.
+                                    </HelpTip>
+                                </span>
+                                {markerCustomised && (
+                                    <Button
+                                        variant="ghost"
+                                        onClick={() => patchMapper({ playerMarker: undefined })}
+                                        title="Restore the default marker"
+                                    >
+                                        Reset
+                                    </Button>
+                                )}
+                            </div>
+                            <div className="settings-marker">
+                                <div className="settings-marker__controls">
+                                    <MarkerRange
+                                        id="marker-size"
+                                        label="Size"
+                                        min={0.4} max={3} step={0.05}
+                                        value={markerSizeFactor}
+                                        readout={`${markerSizeFactor.toFixed(2)}×`}
+                                        onChange={v => patchMarker({ sizeFactor: v })}
+                                    />
+                                    <MarkerRange
+                                        id="marker-stroke-width"
+                                        label="Thickness"
+                                        min={0.01} max={0.3} step={0.005}
+                                        value={markerStrokeWidth}
+                                        readout={markerStrokeWidth.toFixed(3)}
+                                        onChange={v => patchMarker({ strokeWidth: v })}
+                                    />
+                                    <MarkerColorRow
+                                        id="marker-stroke"
+                                        label="Outline"
+                                        color={markerStrokeColor}
+                                        alpha={markerStrokeAlpha}
+                                        onColor={v => patchMarker({ strokeColor: v })}
+                                        onAlpha={v => patchMarker({ strokeAlpha: v })}
+                                    />
+                                    <MarkerColorRow
+                                        id="marker-fill"
+                                        label="Fill"
+                                        color={markerFillColor}
+                                        alpha={markerFillAlpha}
+                                        onColor={v => patchMarker({ fillColor: v })}
+                                        onAlpha={v => patchMarker({ fillAlpha: v })}
+                                    />
+                                    <div className="settings-row">
+                                        <span className="settings-label" id="marker-dash-label">Dashed outline</span>
+                                        <Toggle
+                                            id="marker-dash"
+                                            aria-labelledby="marker-dash-label"
+                                            checked={markerDashEnabled}
+                                            onChange={next => patchMarker({ dashEnabled: next })}
+                                        />
+                                    </div>
+                                    <MarkerRange
+                                        id="marker-dash-length"
+                                        label="Dash"
+                                        min={0.01} max={0.5} step={0.01}
+                                        value={markerDashLength}
+                                        readout={markerDashLength.toFixed(2)}
+                                        disabled={!markerDashEnabled}
+                                        onChange={v => patchMarker({ dashLength: v })}
+                                    />
+                                    <MarkerRange
+                                        id="marker-dash-gap"
+                                        label="Gap"
+                                        min={0.01} max={0.5} step={0.01}
+                                        value={markerDashGap}
+                                        readout={markerDashGap.toFixed(2)}
+                                        disabled={!markerDashEnabled}
+                                        onChange={v => patchMarker({ dashGap: v })}
+                                    />
+                                    <div className="settings-row">
+                                        <span className="settings-label" id="marker-match-shape-label">
+                                            Match room shape
+                                            <HelpTip label="About matching room shape">
+                                                Draw the marker as the room shape set above
+                                                instead of always as a circle. Has no effect
+                                                while rooms are already circles.
+                                            </HelpTip>
+                                        </span>
+                                        <Toggle
+                                            id="marker-match-shape"
+                                            aria-labelledby="marker-match-shape-label"
+                                            checked={markerMatchRoomShape}
+                                            onChange={next => patchMarker({ matchRoomShape: next })}
+                                        />
+                                    </div>
+                                </div>
+                                <PlayerMarkerPreview mapper={mapper} />
+                            </div>
                         </section>
                     )}
                 </div>
@@ -1814,6 +1931,89 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                 </>
             )}
         </>
+    );
+}
+
+interface MarkerRangeProps {
+    id: string;
+    label: string;
+    min: number;
+    max: number;
+    step: number;
+    value: number;
+    /** Pre-formatted display of `value` — the unit differs per control (a
+     *  multiplier, a raw map-unit length), so the caller decides. */
+    readout: string;
+    disabled?: boolean;
+    onChange: (next: number) => void;
+}
+
+/** Slider + readout for one numeric player-marker field. Commits on every
+ *  input event rather than on blur (the pattern the text-entry mapper fields
+ *  use) because the point of these is to drag them and watch the preview. */
+function MarkerRange({ id, label, min, max, step, value, readout, disabled, onChange }: MarkerRangeProps) {
+    return (
+        <div className="settings-row">
+            <label className="settings-label" htmlFor={id}>{label}</label>
+            <input
+                id={id}
+                type="range"
+                className="settings-marker__range"
+                min={min}
+                max={max}
+                step={step}
+                value={value}
+                disabled={disabled}
+                onChange={e => onChange(Number(e.target.value))}
+            />
+            <span className="settings-marker__readout">{readout}</span>
+        </div>
+    );
+}
+
+interface MarkerColorRowProps {
+    id: string;
+    label: string;
+    color: string;
+    /** 0..1, matching the renderer's alpha fields. */
+    alpha: number;
+    onColor: (next: string) => void;
+    onAlpha: (next: number) => void;
+}
+
+/** Colour swatch + opacity slider. The swatch previews the colour at its
+ *  actual alpha, so a fully transparent fill reads as transparent here rather
+ *  than as a solid block that disagrees with the map. */
+function MarkerColorRow({ id, label, color, alpha, onColor, onAlpha }: MarkerColorRowProps) {
+    const rgb = hexToRgb(color);
+    const fill = rgb ? `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})` : color;
+    return (
+        <div className="settings-row">
+            <span className="settings-label" id={`${id}-label`}>{label}</span>
+            <div className="settings-marker__color" aria-labelledby={`${id}-label`}>
+                <label className="settings-ansi-swatch__bar" title={label} aria-label={label}>
+                    <input
+                        type="color"
+                        value={color}
+                        onChange={e => onColor(e.target.value)}
+                        aria-label={`${label} color`}
+                    />
+                    <span className="settings-ansi-swatch__fill settings-marker__swatch" style={{ background: fill }} />
+                </label>
+                <input
+                    type="range"
+                    className="settings-marker__range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={alpha}
+                    onChange={e => onAlpha(Number(e.target.value))}
+                    aria-label={`${label} opacity`}
+                    title="Opacity"
+                />
+                <span className="settings-marker__readout">{Math.round(alpha * 100)}%</span>
+            </div>
+        </div>
     );
 }
 

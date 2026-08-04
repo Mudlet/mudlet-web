@@ -4104,6 +4104,96 @@ body.is-sorting {
     font-size: 12px;
 }
 
+/* Player marker: a column of controls with the live map preview beside it, so
+   a change and its result are in the same glance. */
+.settings-marker-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 4px;
+}
+
+.settings-marker {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+}
+
+.settings-marker__controls {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.settings-marker__color {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.settings-marker__color .settings-ansi-swatch__bar {
+    flex: 0 0 44px;
+}
+
+/* The swatch previews its colour at the chosen alpha, so it needs a checker
+   behind it — otherwise a transparent fill reads as whatever the panel
+   background happens to be. */
+.settings-marker__swatch {
+    background-image:
+        linear-gradient(45deg, var(--border) 25%, transparent 25%),
+        linear-gradient(-45deg, var(--border) 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, var(--border) 75%),
+        linear-gradient(-45deg, transparent 75%, var(--border) 75%);
+    background-size: 8px 8px;
+    background-position: 0 0, 0 4px, 4px -4px, -4px 0;
+}
+
+.settings-marker__range {
+    flex: 1 1 auto;
+    min-width: 0;
+    accent-color: var(--accent);
+}
+
+.settings-marker__range:disabled {
+    opacity: 0.45;
+}
+
+.settings-marker__readout {
+    flex: 0 0 auto;
+    min-width: 42px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-dim);
+    font-size: 12px;
+}
+
+.marker-preview {
+    flex: 0 0 180px;
+    height: 180px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+    /* Display-only: the renderer attaches pan/zoom handlers to its container,
+       and a preview that drifts when you brush past it is just confusing. */
+    pointer-events: none;
+}
+
+@media (max-width: 640px) {
+    .settings-marker {
+        flex-direction: column;
+    }
+
+    .marker-preview {
+        flex: 0 0 auto;
+        width: 100%;
+    }
+}
+
 .settings-ansi-header {
     display: flex;
     align-items: center;
