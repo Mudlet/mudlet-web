@@ -2,21 +2,32 @@ import type { ProfileVFS } from '../scripting/vfs/ProfileVFS';
 import { useAppStore } from '../storage/appStore';
 import { getBrand } from '../branding';
 import { installPackageFromBytes } from './packageInstaller';
-// In the library build this import is external (vite.lib.config.ts) and the
-// file ships in dist-lib, so the consumer's Vite emits it as a real asset —
-// otherwise lib mode would inline it as a ~150 kB base64 data URI.
-import runLuaCodeUrl from './defaults/run-lua-code.mpackage?url';
-// Vendored mirror of Mudlet's `src/mudlet-lua/lua/generic-mapper/`. Externalized
-// in the library build too, and copied by scripts/copy-lib-assets.mjs.
-import genericMapperUrl from '../scripting/lua/mudlet-lua/generic-mapper/generic_mapper.mpackage?url';
-// Mudlet's starter interface, from the same vendored mirror. Externalized in the
-// library build and copied by scripts/copy-lib-assets.mjs, like the mapper.
-import baseUiUrl from '../scripting/lua/mudlet-lua/base-ui/mudlet-base-ui.mpackage?url';
-// Vendored copy of Mudlet's `src/mudlet-mapper.xml` (a Qt resource at its src
-// root, so there's no directory layout to mirror — it lives with the other
-// default-package assets). Plain XML, not a zip: the installer parses it into
-// tree nodes and writes nothing to the VFS.
+// `./defaults/` is a vendored mirror of Mudlet's `src/packages/` — every package
+// it preinstalls, one directory each, holding the `.mpackage` archive and the
+// sources it was built from (see scripts/sync-mudlet-lua.mjs). Vendoring is not
+// preinstalling: what a profile actually gets is decided below, and only the
+// archives imported here reach a build at all.
+//
+// These imports stay external in the library build (vite.lib.config.ts matches
+// `/import/defaults/`) and ship in dist-lib, so the consumer's Vite emits them as
+// real assets — lib mode would otherwise inline each as a base64 data URI, and
+// mudlet-mapper.xml alone is ~490 kB. scripts/copy-lib-assets.mjs puts them there.
+import runLuaCodeUrl from './defaults/run-lua-code/run-lua-code.mpackage?url';
+import genericMapperUrl from './defaults/generic_mapper/generic_mapper.mpackage?url';
+// Mudlet's starter interface.
+import baseUiUrl from './defaults/mudlet-base-ui/mudlet-base-ui.mpackage?url';
+// The IRE mapper: the one preinstalled package Mudlet doesn't keep in
+// `src/packages/` — upstream publishes it as a bare `src/mudlet-mapper.xml`, so
+// the sync pulls it in from the repo root and drops it here loose. Plain XML,
+// not a zip: the installer parses it into tree nodes and writes nothing to the VFS.
 import mudletMapperUrl from './defaults/mudlet-mapper.xml?url';
+// Mudlet preinstalls gui-drop as `gui-drop.mpackage`; we install the loose
+// `gui-drop.xml` beside it. Identical content (the archive adds only config.lua
+// and an icon), but a `.mpackage` is a zip the sync script must round-trip
+// byte-for-byte, so a fix inside one can't be carried as a patch — and this one
+// needs a patch until Mudlet/Mudlet#9628 lands. See
+// scripts/mudlet-lua-patches/packages/gui-drop/.
+import guiDropUrl from './defaults/gui-drop/gui-drop.xml?url';
 
 interface DefaultPackage {
     /** Must match the manifest name produced by installPackageFromBytes. */
@@ -55,6 +66,16 @@ const BASE_UI: DefaultPackage = {
     name: 'mudlet-base-ui', filename: 'mudlet-base-ui.mpackage', url: baseUiUrl, version: '1.0.0',
 };
 
+/** Drop an image file onto a console and it becomes a Geyser label inside an
+ *  Adjustable.Container, positioned where it landed; the package then writes a
+ *  `GUIDropManager` script node that recreates it on the next profile open.
+ *  Inert until something is actually dropped. No `version`: a plain XML has no
+ *  config.lua, so the manifest carries none and declaring one here would make
+ *  every profile open see a mismatch and reinstall. */
+const GUI_DROP: DefaultPackage = {
+    name: 'gui-drop', filename: 'gui-drop.xml', url: guiDropUrl,
+};
+
 /**
  * Games that get the IRE mapper instead of the generic one — verbatim from the
  * `mudlet-mapper.xml` row of `defaultScripts` in mudlet.cpp.
@@ -79,7 +100,7 @@ export const GAMES_WITH_OWN_UI = [
 ];
 
 /** Every bundled default, whatever the host — for tests and tooling. */
-export const ALL_DEFAULTS: DefaultPackage[] = [RUN_LUA_CODE, MUDLET_MAPPER, GENERIC_MAPPER, BASE_UI];
+export const ALL_DEFAULTS: DefaultPackage[] = [RUN_LUA_CODE, MUDLET_MAPPER, GENERIC_MAPPER, GUI_DROP, BASE_UI];
 
 /**
  * The stock defaults for a profile on `host`.
@@ -102,7 +123,7 @@ export const ALL_DEFAULTS: DefaultPackage[] = [RUN_LUA_CODE, MUDLET_MAPPER, GENE
  */
 export function stockDefaults(host?: string, conn?: { createdAt?: string }): DefaultPackage[] {
     const isIreMapperGame = !!host && IRE_MAPPER_GAMES.some(g => g.toLowerCase() === host);
-    const packages = [RUN_LUA_CODE, isIreMapperGame ? MUDLET_MAPPER : GENERIC_MAPPER];
+    const packages = [RUN_LUA_CODE, isIreMapperGame ? MUDLET_MAPPER : GENERIC_MAPPER, GUI_DROP];
     const gameHasOwnUi = !!host && GAMES_WITH_OWN_UI.some(g => g === host);
     if (isNewProfile(conn) && !gameHasOwnUi) packages.push(BASE_UI);
     return packages;

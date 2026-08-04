@@ -1,16 +1,21 @@
-// Re-sync the bundled Mudlet Lua tree (`src/scripting/lua/mudlet-lua/`) from
-// upstream Mudlet.
+// Re-sync the vendored Mudlet trees from upstream Mudlet.
+//
+// Two upstream directories are mirrored, because Mudlet keeps two kinds of thing
+// mudix needs (see ROOTS below):
+//
+//   src/mudlet-lua/lua  →  src/scripting/lua/mudlet-lua   the Lua runtime tree
+//   src/packages        →  src/import/defaults            the preinstalled packages
 //
 // Sibling of sync-mudlet-specs.mjs, but with one structural difference: the spec
-// corpus is a pure mirror, and this tree is not. mudix has to diverge from
+// corpus is a pure mirror, and these trees are not. mudix has to diverge from
 // upstream in a handful of places (no MMCP in a browser tab, a coroutine-aware
 // pcall for invokeFileDialog, …). Rather than let those edits sit in the tree as
 // invisible drift, every one of them lives as a patch file under
-// `scripts/mudlet-lua-patches/`, and this script does:
+// `scripts/mudlet-lua-patches/<root>/`, and this script does:
 //
 //   copy upstream verbatim  →  re-apply each patch  →  report what moved
 //
-// So the vendored tree stays reconstructible from (upstream commit + patches),
+// So the vendored trees stay reconstructible from (upstream commit + patches),
 // and `git diff` after a sync shows exactly what Mudlet changed. A patch that no
 // longer applies is a hard failure, not a silent skip — see --make-patch.
 //
@@ -20,48 +25,70 @@
 //   yarn sync:mudlet-lua --from E:/Code/Mudlet [--fetch]   # local checkout
 //   yarn sync:mudlet-lua --make-patch geyser/GeyserMiniConsole.lua
 //                                          # record the working tree's local edit
+//                                          # (prefix `packages:` to disambiguate)
 //
-// Nothing downstream needs maintenance: LuaRuntime.ts globs the whole tree into
-// the /lua/ VFS namespace, so a brand-new upstream file is dofile()-able on its
-// own. Two things are NOT automatic and the report says so: a new preinstalled
-// package has to be wired into defaultPackages.ts, and `.mpackage` files reached
-// by `?url` import need a line in scripts/copy-lib-assets.mjs.
+// Nothing downstream needs maintenance for the Lua tree: LuaRuntime.ts globs it
+// into the /lua/ VFS namespace, so a brand-new upstream file is dofile()-able on
+// its own. The packages tree is the opposite — vendoring a package does NOT
+// preinstall it. Which packages a profile gets is decided entirely by
+// src/import/defaultPackages.ts, and an archive reached from there by a `?url`
+// import also needs a line in scripts/copy-lib-assets.mjs. The report says so.
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, readdirSync, rmSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO = 'Mudlet/Mudlet';
-const UPSTREAM_DIR = 'src/mudlet-lua/lua';
 const REPO_ROOT = fileURLToPath(new URL('../', import.meta.url));
-const DEST_REL = 'src/scripting/lua/mudlet-lua';
-const DEST_DIR = `${REPO_ROOT}${DEST_REL}/`;
 const PATCH_DIR = fileURLToPath(new URL('../scripts/mudlet-lua-patches/', import.meta.url));
-const SYNCED_MD = `${DEST_DIR}SYNCED.md`;
+const SYNCED_MD = `${REPO_ROOT}src/scripting/lua/mudlet-lua/SYNCED.md`;
 
-// Upstream files that live outside UPSTREAM_DIR but belong in the vendored tree.
-// Mudlet keeps the Lua translation catalogue with the other translations and
-// loads it from a resource path; mudix serves it from the same /lua/ VFS the
-// rest of the tree uses, so LuaGlobal's loadTranslations() finds it in place.
-const EXTRA_FILES = {
-    'translations/lua/mudlet-lua.json': 'translations/mudlet-lua.json',
-};
-
-// Upstream paths deliberately not vendored. A trailing `/` means "prefix".
-// Anything not listed here is mirrored, so a genuinely new upstream file shows
-// up as `Added` rather than being silently dropped.
-const EXCLUDE = [
-    ['.gitignore', 'repo housekeeping, not runtime'],
-    ['CoreMudlet.lua', 'LuaDoc-only stub body wrapped in `if false then` — never executes'],
-    ['config.ld', 'LDoc generator config'],
-    ['ldoc.css', 'LDoc generator stylesheet'],
-];
-
-// Files that live in the vendored tree but have no upstream counterpart, so the
-// "gone upstream → delete" sweep has to leave them alone.
-const LOCAL_ONLY = [
-    'SYNCED.md',
-    '3rdparty/lulpeg.lua',
+/**
+ * The vendored trees. Each mirrors one upstream directory:
+ *
+ * - `name`      short label; also the patch subdirectory and the report heading.
+ * - `upstream`  source directory in the Mudlet repo.
+ * - `dest`      destination, relative to this repo's root.
+ * - `extra`     upstream files from *outside* `upstream` that belong in the tree,
+ *               as `upstream repo path → dest-relative path`.
+ * - `exclude`   upstream paths deliberately not vendored, with the reason. A
+ *               trailing `/` means "prefix". Anything not listed is mirrored, so
+ *               a genuinely new upstream file shows up as `Added` rather than
+ *               being silently dropped.
+ * - `localOnly` files in the tree with no upstream counterpart, which the
+ *               "gone upstream → delete" sweep has to leave alone.
+ */
+const ROOTS = [
+    {
+        name: 'lua',
+        upstream: 'src/mudlet-lua/lua',
+        dest: 'src/scripting/lua/mudlet-lua',
+        // Mudlet keeps the Lua translation catalogue with the other translations
+        // and loads it from a resource path; mudix serves it from the same /lua/
+        // VFS the rest of the tree uses, so LuaGlobal's loadTranslations() finds
+        // it in place.
+        extra: { 'translations/lua/mudlet-lua.json': 'translations/mudlet-lua.json' },
+        exclude: [
+            ['.gitignore', 'repo housekeeping, not runtime'],
+            ['CoreMudlet.lua', 'LuaDoc-only stub body wrapped in `if false then` — never executes'],
+            ['config.ld', 'LDoc generator config'],
+            ['ldoc.css', 'LDoc generator stylesheet'],
+        ],
+        localOnly: ['SYNCED.md', '3rdparty/lulpeg.lua'],
+    },
+    {
+        name: 'packages',
+        upstream: 'src/packages',
+        dest: 'src/import/defaults',
+        // The IRE mapper is the one preinstalled package Mudlet does not keep in
+        // src/packages: upstream publishes it as a bare XML that a workflow syncs
+        // in, so it sits at the repo root instead.
+        extra: { 'src/mudlet-mapper.xml': 'mudlet-mapper.xml' },
+        exclude: [
+            ['README.md', 'documents Mudlet\'s own preinstall rules (mudlet.qrc, setupPreInstallPackages) — mudix decides in defaultPackages.ts'],
+        ],
+        localOnly: [],
+    },
 ];
 
 // Only these get CRLF→LF normalisation; `.mpackage` is a zip and must round-trip
@@ -93,14 +120,16 @@ function die(msg) {
 const lf = (buf) => Buffer.from(buf.toString('utf8').replace(/\r\n/g, '\n'), 'utf8');
 const normalise = (rel, buf) => (TEXT_EXT.test(rel) ? lf(buf) : buf);
 
-// The vendored tree is written LF regardless of platform, and the patches are
+// The vendored trees are written LF regardless of platform, and the patches are
 // LF. A checkout with core.autocrlf=true would otherwise have git diff/apply
 // convert underneath us and produce CRLF patch bodies that then fail to apply.
 const gitLf = (args, options) =>
     execFileSync('git', ['-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', ...args], options);
 
-const isExcluded = (rel) =>
-    EXCLUDE.some(([p]) => (p.endsWith('/') ? rel.startsWith(p) : rel === p));
+const isExcluded = (root, rel) =>
+    root.exclude.some(([p]) => (p.endsWith('/') ? rel.startsWith(p) : rel === p));
+
+const destDir = (root) => `${REPO_ROOT}${root.dest}/`;
 
 // ── sources ──────────────────────────────────────────────────────────────────
 // Each source resolves `ref` to a concrete commit up front and reads every file
@@ -125,17 +154,14 @@ function localSource(repoPath) {
     }
     if (!sha) die(`ref "${ref}" not found in ${repoPath} (try --fetch)`);
 
-    const tree = gitText('ls-tree', '-r', '--name-only', sha, `${UPSTREAM_DIR}/`)
-        .split('\n')
-        .map(p => p.slice(UPSTREAM_DIR.length + 1))
-        .filter(Boolean);
-    if (tree.length === 0) die(`nothing under ${UPSTREAM_DIR} at ${sha.slice(0, 8)}`);
-
     return {
         origin: repoPath,
         sha,
         date: gitText('log', '-1', '--format=%cs', sha),
-        tree,
+        list: (dir) => gitText('ls-tree', '-r', '--name-only', sha, '--', dir)
+            .split('\n')
+            .map(p => p.slice(dir.length + 1))
+            .filter(Boolean),
         read: (upstreamPath) => git('show', `${sha}:${upstreamPath}`),
     };
 }
@@ -159,27 +185,28 @@ async function githubSource() {
     console.log(`Resolving ${REPO}@${ref} …`);
     const commit = await api(`https://api.github.com/repos/${REPO}/commits/${encodeURIComponent(ref)}`);
     const sha = commit.sha;
-
-    // Walk down to UPSTREAM_DIR one tree at a time, then list that subtree
-    // recursively. Asking for the *root* tree with ?recursive=1 would work too,
-    // but Mudlet is large enough that the response can come back `truncated`.
-    let treeSha = commit.commit.tree.sha;
-    for (const segment of UPSTREAM_DIR.split('/')) {
-        const node = (await api(`https://api.github.com/repos/${REPO}/git/trees/${treeSha}`))
-            .tree.find(e => e.path === segment && e.type === 'tree');
-        if (!node) die(`${UPSTREAM_DIR} not found at ${sha.slice(0, 8)}`);
-        treeSha = node.sha;
-    }
-    const listing = await api(`https://api.github.com/repos/${REPO}/git/trees/${treeSha}?recursive=1`);
-    if (listing.truncated) die(`${UPSTREAM_DIR} listing truncated by GitHub — use --from <checkout>`);
-    const tree = listing.tree.filter(e => e.type === 'blob').map(e => e.path);
-    if (tree.length === 0) die(`nothing under ${UPSTREAM_DIR} at ${sha.slice(0, 8)}`);
+    const rootTree = commit.commit.tree.sha;
 
     return {
         origin: `https://github.com/${REPO}`,
         sha,
         date: (commit.commit?.committer?.date ?? '').slice(0, 10),
-        tree,
+        // Walk down to `dir` one tree at a time, then list that subtree
+        // recursively. Asking for the *root* tree with ?recursive=1 would work
+        // too, but Mudlet is large enough that the response can come back
+        // `truncated`.
+        list: async (dir) => {
+            let treeSha = rootTree;
+            for (const segment of dir.split('/')) {
+                const node = (await api(`https://api.github.com/repos/${REPO}/git/trees/${treeSha}`))
+                    .tree.find(e => e.path === segment && e.type === 'tree');
+                if (!node) die(`${dir} not found at ${sha.slice(0, 8)}`);
+                treeSha = node.sha;
+            }
+            const listing = await api(`https://api.github.com/repos/${REPO}/git/trees/${treeSha}?recursive=1`);
+            if (listing.truncated) die(`${dir} listing truncated by GitHub — use --from <checkout>`);
+            return listing.tree.filter(e => e.type === 'blob').map(e => e.path);
+        },
         read: async (upstreamPath) => {
             const url = `https://raw.githubusercontent.com/${REPO}/${sha}/${upstreamPath}`;
             const res = await fetch(url);
@@ -191,12 +218,31 @@ async function githubSource() {
 
 const source = localRepo ? localSource(localRepo) : await githubSource();
 
+// ── plan ─────────────────────────────────────────────────────────────────────
 // dest-relative path → upstream repo path, for everything we intend to vendor.
-const wanted = new Map();
-for (const rel of source.tree.sort()) {
-    if (!isExcluded(rel)) wanted.set(rel, `${UPSTREAM_DIR}/${rel}`);
+const plans = [];
+for (const root of ROOTS) {
+    const tree = await source.list(root.upstream);
+    if (tree.length === 0) die(`nothing under ${root.upstream} at ${source.sha.slice(0, 8)}`);
+    const wanted = new Map();
+    for (const rel of tree.sort()) if (!isExcluded(root, rel)) wanted.set(rel, `${root.upstream}/${rel}`);
+    for (const [upstreamPath, rel] of Object.entries(root.extra)) wanted.set(rel, upstreamPath);
+    plans.push({ root, tree, wanted });
 }
-for (const [upstreamPath, rel] of Object.entries(EXTRA_FILES)) wanted.set(rel, upstreamPath);
+
+const walk = (dir, prefix = '') => readdirSync(dir, { withFileTypes: true }).flatMap(e =>
+    e.isDirectory() ? walk(`${dir}${e.name}/`, `${prefix}${e.name}/`) : [`${prefix}${e.name}`]);
+
+// dest-relative path → .patch file, per root. The copy loop needs it to know
+// which files it is about to overwrite with a pristine version that a patch will
+// then re-diverge.
+const patchesFor = (root) => {
+    let files;
+    try { files = walk(`${PATCH_DIR}${root.name}/`).filter(p => p.endsWith('.patch')).sort(); }
+    catch { return new Map(); }
+    return new Map(files.map(p => [p.replace(/\.patch$/, ''), `${root.name}/${p}`]));
+};
+const patchCount = ROOTS.reduce((n, root) => n + patchesFor(root).size, 0);
 
 // ── --make-patch ─────────────────────────────────────────────────────────────
 // Records the difference between pristine upstream and whatever is in the
@@ -205,25 +251,34 @@ for (const [upstreamPath, rel] of Object.entries(EXTRA_FILES)) wanted.set(rel, u
 // re-record. Patch paths are written relative to the vendored tree; the sync
 // re-roots them with `git apply --directory`.
 if (makePatch) {
-    const rel = makePatch.replace(/\\/g, '/').replace(/^\.?\//, '');
-    const upstreamPath = wanted.get(rel);
-    if (!upstreamPath) die(`"${rel}" is not a vendored upstream file`);
+    // `<root>:<rel>` pins the tree explicitly; a bare `<rel>` is looked up in all
+    // of them, which is unambiguous in practice — the Lua tree and the package
+    // tree share no filenames.
+    const [pinned, bare] = makePatch.includes(':')
+        ? [makePatch.slice(0, makePatch.indexOf(':')), makePatch.slice(makePatch.indexOf(':') + 1)]
+        : [null, makePatch];
+    const rel = bare.replace(/\\/g, '/').replace(/^\.?\//, '');
+    const hits = plans.filter(p => (!pinned || p.root.name === pinned) && p.wanted.has(rel));
+    if (hits.length === 0) die(`"${makePatch}" is not a vendored upstream file`);
+    if (hits.length > 1) die(`"${rel}" exists in ${hits.map(h => h.root.name).join(' and ')} — prefix it, e.g. ${hits[0].root.name}:${rel}`);
+    const { root, wanted } = hits[0];
+    const dest = destDir(root);
 
     // Both sides go through tmp files normalised to LF. The working-tree copy
     // needs it as much as the download does: on a core.autocrlf=true checkout
     // every vendored file comes back CRLF, and diffing that against LF upstream
     // reports the whole file as changed.
-    const tmpA = `${DEST_DIR}${rel}.upstream.tmp`;
-    const tmpB = `${DEST_DIR}${rel}.local.tmp`;
+    const tmpA = `${dest}${rel}.upstream.tmp`;
+    const tmpB = `${dest}${rel}.local.tmp`;
     mkdirSync(dirname(tmpA), { recursive: true });
-    writeFileSync(tmpA, lf(await source.read(upstreamPath)));
-    writeFileSync(tmpB, lf(readFileSync(`${DEST_DIR}${rel}`)));
+    writeFileSync(tmpA, lf(await source.read(wanted.get(rel))));
+    writeFileSync(tmpB, lf(readFileSync(`${dest}${rel}`)));
 
     let patch = '';
     try {
         // --no-index always exits 1 when there is a difference; 0 means identical.
         gitLf(['diff', '--no-index', '--', `${rel}.upstream.tmp`, `${rel}.local.tmp`],
-            { cwd: DEST_DIR, maxBuffer: 1 << 28 });
+            { cwd: dest, maxBuffer: 1 << 28 });
     } catch (e) {
         patch = (e.stdout ?? Buffer.alloc(0)).toString('utf8');
         if (!patch) { die(`git diff failed for ${rel}`); }
@@ -239,65 +294,19 @@ if (makePatch) {
         .replace(new RegExp(`${esc}\\.(upstream|local)\\.tmp`, 'g'), rel)
         .replace(/\r\n/g, '\n');
 
-    const dest = `${PATCH_DIR}${rel}.patch`;
-    mkdirSync(dirname(dest), { recursive: true });
-    writeFileSync(dest, patch);
-    console.log(`Wrote scripts/mudlet-lua-patches/${rel}.patch (${patch.split('\n').length} lines)`);
+    const out = `${PATCH_DIR}${root.name}/${rel}.patch`;
+    mkdirSync(dirname(out), { recursive: true });
+    writeFileSync(out, patch);
+    console.log(`Wrote scripts/mudlet-lua-patches/${root.name}/${rel}.patch (${patch.split('\n').length} lines)`);
     console.log('Recorded against upstream '
         + `${source.sha.slice(0, 8)} — re-run the sync to confirm it applies cleanly.`);
     process.exit(0);
 }
 
 // ── sync ─────────────────────────────────────────────────────────────────────
+const vendoredCount = plans.reduce((n, p) => n + p.wanted.size, 0);
 console.log(`Source: ${source.origin} @ ${source.sha.slice(0, 8)} (${source.date}), `
-    + `${wanted.size} vendored file(s)\n`);
-
-const walk = (dir, prefix = '') => readdirSync(dir, { withFileTypes: true }).flatMap(e =>
-    e.isDirectory() ? walk(`${dir}${e.name}/`, `${prefix}${e.name}/`) : [`${prefix}${e.name}`]);
-
-mkdirSync(DEST_DIR, { recursive: true });
-const leftover = new Set(walk(DEST_DIR).filter(p => !LOCAL_ONLY.includes(p)));
-
-// dest-relative path → .patch file, so the copy loop knows which files it is
-// about to overwrite with a pristine version that a patch will then re-diverge.
-const patchFiles = (() => {
-    try { return walk(PATCH_DIR).filter(p => p.endsWith('.patch')).sort(); }
-    catch { return []; }
-})();
-const patchFor = new Map(patchFiles.map(p => [p.replace(/\.patch$/, ''), p]));
-
-const added = [], updated = [], unchanged = [];
-// Patched files are copied like any other but their verdict is deferred: the
-// copy resets them to upstream, so judging them here would report every one as
-// "Updated" on every run. Settled after the patches go back on.
-const beforeCopy = new Map();
-for (const [rel, upstreamPath] of [...wanted].sort()) {
-    const next = normalise(rel, await source.read(upstreamPath));
-    const dest = `${DEST_DIR}${rel}`;
-    let prev = null;
-    try { prev = normalise(rel, readFileSync(dest)); } catch { /* new file */ }
-
-    const write = () => {
-        if (dryRun) return;
-        mkdirSync(dirname(dest), { recursive: true });
-        writeFileSync(dest, next);
-    };
-    if (patchFor.has(rel)) {
-        beforeCopy.set(rel, prev);
-        write();
-    } else if (prev && prev.equals(next)) {
-        unchanged.push(rel);
-    } else {
-        (prev ? updated : added).push(prev ? `${rel} (${sizeDelta(rel, prev, next)})` : rel);
-        write();
-    }
-    leftover.delete(rel);
-}
-
-// Left over locally = gone upstream (or newly excluded). Deleted by default: the
-// tree is a mirror, and a file Mudlet retired shouldn't keep loading here.
-const removed = [...leftover].sort();
-if (!dryRun && !keepRemoved) for (const rel of removed) rmSync(`${DEST_DIR}${rel}`);
+    + `${vendoredCount} vendored file(s) across ${plans.length} tree(s)\n`);
 
 function sizeDelta(rel, prev, next) {
     if (!TEXT_EXT.test(rel)) return `${next.length - prev.length} bytes`;
@@ -305,44 +314,87 @@ function sizeDelta(rel, prev, next) {
     return d === 0 ? 'edited' : d > 0 ? `+${d} lines` : `${d} lines`;
 }
 
-// ── patches ──────────────────────────────────────────────────────────────────
-// Applied after the copy, in sorted order, straight onto the freshly-written
-// upstream files. `git apply` is exact-context by default; -C1 relaxes it enough
-// to survive an unrelated edit landing next door, which is the common case.
-const patched = [], failed = [], stale = [];
-for (const [rel, patchRel] of patchFor) {
-    if (!wanted.has(rel)) { stale.push(rel); continue; }
-    if (dryRun) { patched.push(`${rel} (not applied — dry run)`); continue; }
+const reports = [];
+for (const { root, tree, wanted } of plans) {
+    const dest = destDir(root);
+    const patchFor = patchesFor(root);
+    const added = [], updated = [], unchanged = [];
 
-    // `git apply` resolves patch paths against the top of the work tree, not the
-    // cwd — running it from DEST_DIR makes it look for `Other.lua` at the repo
-    // root, not find it, and print "Skipped patch" while *exiting 0*. So run
-    // from the root with --directory, and confirm the file actually moved rather
-    // than trusting the exit code.
-    const path = `${PATCH_DIR}${patchRel}`;
-    const before = readFileSync(`${DEST_DIR}${rel}`);
-    let applied = false;
-    for (const extra of [[], ['-C1']]) {
-        try {
-            gitLf(['apply', ...extra, `--directory=${DEST_REL}`, '--', path],
-                { cwd: REPO_ROOT, stdio: 'pipe' });
-        } catch { continue; /* try the next strictness level */ }
-        if (readFileSync(`${DEST_DIR}${rel}`).equals(before)) continue;
-        applied = true;
-        patched.push(extra.length ? `${rel} (fuzzy, -C1)` : rel);
-        break;
+    mkdirSync(dest, { recursive: true });
+    const leftover = new Set(walk(dest).filter(p => !root.localOnly.includes(p)));
+
+    // Patched files are copied like any other but their verdict is deferred: the
+    // copy resets them to upstream, so judging them here would report every one
+    // as "Updated" on every run. Settled after the patches go back on.
+    const beforeCopy = new Map();
+    for (const [rel, upstreamPath] of [...wanted].sort()) {
+        const next = normalise(rel, await source.read(upstreamPath));
+        const target = `${dest}${rel}`;
+        let prev = null;
+        try { prev = normalise(rel, readFileSync(target)); } catch { /* new file */ }
+
+        const write = () => {
+            if (dryRun) return;
+            mkdirSync(dirname(target), { recursive: true });
+            writeFileSync(target, next);
+        };
+        if (patchFor.has(rel)) {
+            beforeCopy.set(rel, prev);
+            write();
+        } else if (prev && prev.equals(next)) {
+            unchanged.push(rel);
+        } else {
+            (prev ? updated : added).push(prev ? `${rel} (${sizeDelta(rel, prev, next)})` : rel);
+            write();
+        }
+        leftover.delete(rel);
     }
-    if (!applied) failed.push(rel);
-}
 
-// Deferred verdicts: compare the patched result against what was there before
-// the copy. "Unchanged" here means the vendored file is byte-identical to what
-// it was, which is the only reading that stays true across repeated syncs.
-for (const [rel, prev] of beforeCopy) {
-    const next = dryRun ? null : normalise(rel, readFileSync(`${DEST_DIR}${rel}`));
-    if (!prev) added.push(`${rel} (patched)`);
-    else if (dryRun || prev.equals(next)) unchanged.push(rel);
-    else updated.push(`${rel} (${sizeDelta(rel, prev, next)}, after patch)`);
+    // Left over locally = gone upstream (or newly excluded). Deleted by default:
+    // the tree is a mirror, and a file Mudlet retired shouldn't keep loading here.
+    const removed = [...leftover].sort();
+    if (!dryRun && !keepRemoved) for (const rel of removed) rmSync(`${dest}${rel}`);
+
+    // Applied after the copy, in sorted order, straight onto the freshly-written
+    // upstream files. `git apply` is exact-context by default; -C1 relaxes it
+    // enough to survive an unrelated edit landing next door, the common case.
+    const patched = [], failed = [], stale = [];
+    for (const [rel, patchRel] of patchFor) {
+        if (!wanted.has(rel)) { stale.push(`${root.name}/${rel}`); continue; }
+        if (dryRun) { patched.push(`${rel} (not applied — dry run)`); continue; }
+
+        // `git apply` resolves patch paths against the top of the work tree, not
+        // the cwd — running it from `dest` makes it look for `Other.lua` at the
+        // repo root, not find it, and print "Skipped patch" while *exiting 0*. So
+        // run from the root with --directory, and confirm the file actually moved
+        // rather than trusting the exit code.
+        const path = `${PATCH_DIR}${patchRel}`;
+        const before = readFileSync(`${dest}${rel}`);
+        let applied = false;
+        for (const extra of [[], ['-C1']]) {
+            try {
+                gitLf(['apply', ...extra, `--directory=${root.dest}`, '--', path],
+                    { cwd: REPO_ROOT, stdio: 'pipe' });
+            } catch { continue; /* try the next strictness level */ }
+            if (readFileSync(`${dest}${rel}`).equals(before)) continue;
+            applied = true;
+            patched.push(extra.length ? `${rel} (fuzzy, -C1)` : rel);
+            break;
+        }
+        if (!applied) failed.push(`${root.name}/${rel}`);
+    }
+
+    // Deferred verdicts: compare the patched result against what was there before
+    // the copy. "Unchanged" here means the vendored file is byte-identical to
+    // what it was, which is the only reading that stays true across repeated syncs.
+    for (const [rel, prev] of beforeCopy) {
+        const next = dryRun ? null : normalise(rel, readFileSync(`${dest}${rel}`));
+        if (!prev) added.push(`${rel} (patched)`);
+        else if (dryRun || prev.equals(next)) unchanged.push(rel);
+        else updated.push(`${rel} (${sizeDelta(rel, prev, next)}, after patch)`);
+    }
+
+    reports.push({ root, tree, added, updated, removed, patched, failed, stale, unchanged });
 }
 
 // ── SYNCED.md ────────────────────────────────────────────────────────────────
@@ -350,6 +402,7 @@ if (!dryRun) {
     let md = null;
     try { md = readFileSync(SYNCED_MD, 'utf8'); } catch { /* first run */ }
     if (md) {
+        const localOnlyCount = ROOTS.reduce((n, r) => n + r.localOnly.length, 0);
         // Checked per-line rather than by comparing the whole file: when the
         // header already reads correctly the rewrite is a no-op, and that must
         // not look like "the pattern stopped matching".
@@ -360,8 +413,8 @@ if (!dryRun) {
                 `- Synced from commit: \`${source.sha}\` `
                 + `(${source.sha.startsWith(ref) ? '' : `${ref}, `}${source.date})`],
             [/^- Vendored files: \d+.*$/m,
-                `- Vendored files: ${wanted.size} (plus ${LOCAL_ONLY.length} mudix-only, `
-                + `${patchFiles.length} patched)`],
+                `- Vendored files: ${vendoredCount} (plus ${localOnlyCount} mudix-only, `
+                + `${patchCount} patched)`],
         ];
         let next = md;
         for (const [pattern, line] of rewrites) {
@@ -378,23 +431,30 @@ if (!dryRun) {
 // ── report ───────────────────────────────────────────────────────────────────
 const list = (label, items) => {
     if (!items.length) return;
-    console.log(`${label} (${items.length}):`);
-    for (const i of items) console.log(`  ${i}`);
+    console.log(`  ${label} (${items.length}):`);
+    for (const i of items) console.log(`    ${i}`);
 };
-list('Added', added);
-list('Updated', updated);
-list(keepRemoved ? 'Gone upstream (kept)' : 'Removed', removed);
-list('Patched', patched);
-list('Skipped (excluded)', source.tree.filter(isExcluded).sort()
-    .map(p => `${p} — ${EXCLUDE.find(([e]) => (e.endsWith('/') ? p.startsWith(e) : p === e))[1]}`));
-console.log(`Unchanged: ${unchanged.length}`);
+let changed = 0, movedPackages = false;
+for (const r of reports) {
+    console.log(`${r.root.upstream} → ${r.root.dest}`);
+    list('Added', r.added);
+    list('Updated', r.updated);
+    list(keepRemoved ? 'Gone upstream (kept)' : 'Removed', r.removed);
+    list('Patched', r.patched);
+    list('Skipped (excluded)', r.tree.filter(rel => isExcluded(r.root, rel)).sort()
+        .map(rel => `${rel} — ${r.root.exclude.find(([e]) => (e.endsWith('/') ? rel.startsWith(e) : rel === e))[1]}`));
+    console.log(`  Unchanged: ${r.unchanged.length}\n`);
+    changed += r.added.length + r.updated.length + r.removed.length;
+    if (r.root.name === 'packages' && [...r.added, ...r.updated, ...r.removed].length) movedPackages = true;
+}
 
+const stale = reports.flatMap(r => r.stale);
 if (stale.length) {
-    console.warn('\n! Patches with no upstream file (excluded or retired) — delete them:');
+    console.warn('! Patches with no upstream file (excluded or retired) — delete them:');
     for (const rel of stale) console.warn(`    scripts/mudlet-lua-patches/${rel}.patch`);
 }
 
-const changed = added.length + updated.length + removed.length;
+const failed = reports.flatMap(r => r.failed);
 if (failed.length) {
     console.error('\n! Patches that no longer apply — the file is now pristine upstream,');
     console.error('  so the mudix change it carried is GONE from the tree:');
@@ -404,22 +464,23 @@ if (failed.length) {
     process.exit(1);
 }
 if (dryRun) {
-    console.log(`\nDry run — nothing written. ${changed} file(s) would change, `
-        + `${patchFiles.length} patch(es) would be re-applied.`);
+    console.log(`Dry run — nothing written. ${changed} file(s) would change, `
+        + `${patchCount} patch(es) would be re-applied.`);
 } else if (changed) {
-    console.log('\nNext:');
-    console.log('  git diff -- src/scripting/lua/mudlet-lua   # review what Mudlet changed');
+    console.log('Next:');
+    console.log('  git diff -- src/scripting/lua/mudlet-lua src/import/defaults   # what Mudlet changed');
     console.log('  yarn test                                  # unit suite');
     console.log('  yarn test:e2e                              # busted corpus against the real app');
-    // The one coupling the tree can't express: defaultPackages.ts pins
-    // generic_mapper's version so a bumped archive reinstalls over the old copy,
-    // and there's a test asserting the two agree.
-    if ([...added, ...updated].some(a => a.includes('.mpackage'))) {
-        console.log('  ! an .mpackage moved — check src/import/defaultPackages.ts: a bumped');
+    // The couplings the trees can't express. Vendoring a package is not
+    // preinstalling it: defaultPackages.ts decides that, pins the archive version
+    // so a bumped one reinstalls over the old copy, and there's a test asserting
+    // the two agree.
+    if (movedPackages) {
+        console.log('  ! a default package moved — check src/import/defaultPackages.ts: a bumped');
         console.log('    archive needs its declared `version` bumped to match, and a NEW');
         console.log('    preinstalled package needs wiring in (exactly one mapper may be');
         console.log('    default — see CLAUDE.md) plus a line in scripts/copy-lib-assets.mjs.');
     }
 } else {
-    console.log('\nAlready up to date.');
+    console.log('Already up to date.');
 }
