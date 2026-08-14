@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { MAP_WIDGET_ID } from './ui/windows/types';
 import { useMudSession } from './hooks/useMudSession';
 import { useEngines } from './hooks/useEngines';
 import { Toolbar } from './ui/Toolbar';
@@ -982,10 +983,10 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     };
 
     const handleOpenMap = () => {
-        if (session.windows.isVisible('map')) {
-            session.windows.hide('map');
+        if (session.windows.isVisible(MAP_WIDGET_ID)) {
+            session.windows.hide(MAP_WIDGET_ID);
         } else {
-            session.windows.open('map', { kind: 'map', title: 'Map', position: 'right', autoOpen: true });
+            session.windows.open(MAP_WIDGET_ID, { kind: 'map', title: 'Map', position: 'right', autoOpen: true });
         }
     };
 

@@ -19,6 +19,48 @@ export interface DragState {
  *  otherwise. See MxpFrameManager. */
 export interface MxpTabPage { id: string; title: string }
 
+/**
+ * Prefix for windows the *client* owns, as opposed to ones a script names
+ * (openUserWindow / createMiniConsole / createMapper) or a server names (MXP
+ * `<FRAME>`). Neither of those can produce a `:`, so the id spaces cannot meet.
+ *
+ * Without it they share one namespace, and `WindowManager.open` reuses an
+ * existing id whatever its `kind` — so a script or a MUD naming a window `map`
+ * silently seizes the toolbar's mapper: text writes no-op against a map panel,
+ * `closeUserWindow` destroys the mapper, and the Map button toggles the
+ * script's window. eden ships an MXP frame called `map`, so this is not
+ * hypothetical.
+ */
+const CLIENT_WINDOW_PREFIX = 'sys:';
+
+/** The dockable map widget — the toolbar's Map button and Lua openMapWidget. */
+export const MAP_WIDGET_ID = `${CLIENT_WINDOW_PREFIX}map`;
+
+/** The embedded mapper created by Lua createMapper / Geyser.Mapper. */
+export const MAPPER_WIDGET_ID = `${CLIENT_WINDOW_PREFIX}mapper`;
+
+/** Window id backing secondary map views (Lua createMapView). */
+export function mapViewWindowId(viewId: number): string {
+    return `${CLIENT_WINDOW_PREFIX}mapView${viewId}`;
+}
+
+export const MAP_VIEW_ID_RE = new RegExp(`^${CLIENT_WINDOW_PREFIX}mapView(\\d+)$`);
+
+/**
+ * Saved window hints predate the prefix, so a profile stored the map widget's
+ * geometry under the bare `map`. Rename it on load, or every existing profile
+ * loses its Map position, size and dock side. Bare `mapper`/`mapViewN` need no
+ * migration: neither is ever restored from a hint.
+ */
+export function migrateClientWindowHints(
+    hints: Record<string, WindowOpenOptions>,
+): Record<string, WindowOpenOptions> {
+    const legacy = hints.map;
+    if (!legacy || hints[MAP_WIDGET_ID]) return hints;
+    const { map: _dropped, ...rest } = hints;
+    return { ...rest, [MAP_WIDGET_ID]: legacy };
+}
+
 export interface WindowOpenOptions {
     title?: string;
     kind?: 'text' | 'html' | 'map';

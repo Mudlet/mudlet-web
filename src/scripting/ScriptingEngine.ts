@@ -1,4 +1,5 @@
 import type {MudSession, ScriptLogSource, ScriptLogSourceKind} from '../mud/MudSession';
+import { MAP_WIDGET_ID } from '../ui/windows/types';
 import { qtModifiersToList } from '../mud/keybindings/qtKeys';
 import type {AliasEngine, AliasNode} from '../mud/aliases/AliasEngine';
 import {TriggerEngine, type TriggerNode} from '../mud/triggers/TriggerEngine';
@@ -568,7 +569,7 @@ export class ScriptingEngine implements EngineHost {
             // map is already visible at connection time.
             this.raiseEvent('sysLoadEvent');
             if (mapLoaded) this.raiseEvent('sysMapLoadEvent');
-            if (this.api.windows.isVisible('map')) this.mapOpen.notify();
+            if (this.api.windows.isVisible(MAP_WIDGET_ID)) this.mapOpen.notify();
             // Default/brand packages installed just above never go through
             // installPackageFromVfsPath, so notifyPackageInstalled was never
             // called for them — fire it now that their own scripts are loaded

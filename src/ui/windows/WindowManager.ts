@@ -2,6 +2,7 @@ import { type OutputRendererControls } from '../output/OutputRenderer';
 import type { Console } from '../../mud/text/Console';
 import type { AnsiAwareBuffer } from '../../mud/text/FormatState';
 import type { DockSide, MxpTabPage, WindowHandle, WindowOpenOptions, ScriptWindowRenderData } from './types';
+import { MAP_VIEW_ID_RE, mapViewWindowId, migrateClientWindowHints } from './types';
 import { MapStore } from '../../map/MapStore';
 import { parseXmlMap } from '../../map/xmlMapImport';
 import { exportAreaImage } from '../../map/mapImageExport';
@@ -280,7 +281,8 @@ export class WindowManager {
     }
 
     setWindowHints(hints: Record<string, WindowOpenOptions>): void {
-        this.windowHints = hints;
+        this.windowHints = migrateClientWindowHints(hints);
+        hints = this.windowHints;
         // Auto-restore windows that were open when the connection was last closed.
         for (const [id, hint] of Object.entries(hints)) {
             if (hint.autoOpen && !this.windows.has(id)) {
@@ -982,8 +984,8 @@ export class WindowManager {
     /** View ids start at 1 — Mudlet treats 0 as "no view". */
     private nextMapViewId = 1;
 
-    /** The window id backing a map view. */
-    private static mapViewWindowId(viewId: number): string { return `mapView${viewId}`; }
+    /** The window id backing a map view. Reserved to the client — see types.ts. */
+    private static mapViewWindowId(viewId: number): string { return mapViewWindowId(viewId); }
 
     /**
      * Mudlet `createMapView([areaID])` — open a secondary map window. Returns
@@ -1048,7 +1050,7 @@ export class WindowManager {
      *  than the primary mapper. Undefined for the primary one, which follows the
      *  player as before. */
     mapViewAreaFor(windowId: string): number | undefined {
-        const m = /^mapView(\d+)$/.exec(windowId);
+        const m = MAP_VIEW_ID_RE.exec(windowId);
         if (!m) return undefined;
         return this.mapViews.get(Number(m[1]))?.areaId;
     }
@@ -1056,7 +1058,7 @@ export class WindowManager {
     /** Record what a mounted secondary view is actually showing, so
      *  getMapViewInfo reports the live state rather than the creation-time one. */
     noteMapViewState(windowId: string, state: { areaId?: number; zoom?: number; zLevel?: number; centeredRoomId?: number }): void {
-        const m = /^mapView(\d+)$/.exec(windowId);
+        const m = MAP_VIEW_ID_RE.exec(windowId);
         if (!m) return;
         const v = this.mapViews.get(Number(m[1]));
         if (!v) return;
@@ -2383,7 +2385,7 @@ export class WindowManager {
         // A secondary map view closed from its own titlebar (rather than
         // through closeMapView) must leave the registry too, or getMapViewIds
         // would keep reporting a window that is gone.
-        const viewMatch = /^mapView(\d+)$/.exec(id);
+        const viewMatch = MAP_VIEW_ID_RE.exec(id);
         if (viewMatch) this.mapViews.delete(Number(viewMatch[1]));
         this.onWindowClosed?.(id);
         this.notify();
@@ -2578,7 +2580,7 @@ export class WindowManager {
         // floating window rather than restoring wherever the last one was
         // docked. Skipping the hint covers the layout snapshot too, which is
         // built from the same cache.
-        if (/^mapView\d+$/.test(id)) return;
+        if (MAP_VIEW_ID_RE.test(id)) return;
         const hint: WindowOpenOptions = {
             x: win.x, y: win.y, width: win.width, height: win.height,
             kind:      win.kind,

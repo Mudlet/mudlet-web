@@ -1,4 +1,5 @@
 import type { BindingContext } from './context';
+import { MAP_WIDGET_ID } from '../../../ui/windows/types';
 
 /** Mudlet's single-letter docking-area codes → the side names WindowManager
  *  docks against. Anything unrecognised falls back to 'right', matching how
@@ -68,7 +69,7 @@ export function installUserWindowBindings({
         // 2- or 4-arg numeric form: floating at (x, y[, w, h])
         if (typeof a === 'number' && typeof b === 'number') {
             const hasSize = c !== undefined && d !== undefined;
-            api.windows.open('map', {
+            api.windows.open(MAP_WIDGET_ID, {
                 kind: 'map',
                 title: 'Map',
                 autoDock: false,
@@ -81,7 +82,7 @@ export function installUserWindowBindings({
         }
         // 0-arg: restore saved layout, fall back to right dock
         if (a === undefined || a === null) {
-            api.windows.open('map', {
+            api.windows.open(MAP_WIDGET_ID, {
                 kind: 'map',
                 title: 'Map',
                 dockingArea: 'right',
@@ -91,7 +92,7 @@ export function installUserWindowBindings({
         // 1-arg: dockingArea string
         const area = String(a);
         if (area === 'f') {
-            api.windows.open('map', {
+            api.windows.open(MAP_WIDGET_ID, {
                 kind: 'map',
                 title: 'Map',
                 autoDock: false,
@@ -99,7 +100,7 @@ export function installUserWindowBindings({
             });
             return true;
         }
-        api.windows.open('map', {
+        api.windows.open(MAP_WIDGET_ID, {
             kind: 'map',
             title: 'Map',
             ignoreHint: true,
@@ -111,8 +112,8 @@ export function installUserWindowBindings({
     // (id `map`, opened by `openMapWidget`). Returns false when no map
     // widget is currently open — Mudlet warns/returns nil in that case.
     lua.global.set('closeMapWidget', () => {
-        if (!api.windows.has('map')) return false;
-        api.windows.close('map');
+        if (!api.windows.has(MAP_WIDGET_ID)) return false;
+        api.windows.close(MAP_WIDGET_ID);
         return true;
     });
     // Mudlet clearUserWindow([name]) — defaults to clearing the main

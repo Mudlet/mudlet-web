@@ -7,6 +7,7 @@ import { classifyReservedKey, formatKeyCombo, reservedKeyNote } from '../mud/key
 import { CLIENT_VERSION } from '../version';
 import { getBrand } from '../branding';
 import type { WindowHandle, WindowOpenOptions } from '../ui/windows/types';
+import { MAP_WIDGET_ID, MAPPER_WIDGET_ID } from '../ui/windows/types';
 import type { LabelManager, LabelCreateOptions, LabelMouseEvent, LabelWheelEvent } from '../ui/labels/LabelManager';
 import { classifyLabelLink } from '../ui/labels/labelLinks';
 import { decodeGif, decodeAnimatedImage, sniffDecodableImage, supportsImageDecoder, MoviePlayer } from '../ui/labels/gifMovie';
@@ -3174,7 +3175,7 @@ export class ScriptingAPI {
      */
     setMapWindowTitle(title: string): boolean {
         const t = title && title.length ? title : undefined;
-        return this.session.windows.setTitle('map', t);
+        return this.session.windows.setTitle(MAP_WIDGET_ID, t);
     }
 
     /**
@@ -3527,13 +3528,14 @@ export class ScriptingAPI {
      * Mudlet `createMapper([parent,] x, y, width, height)`. Creates a positioned
      * mapper widget inside the given parent (defaults to `main`), or repositions
      * it if it already exists. Singleton: Mudlet allows only one in-console
-     * mapper at a time, so we reuse a fixed id (`mapper`) — distinct from the
-     * dockable map widget opened by `openMapWidget` (id `map`). Both render the
-     * same MapStore and stay in sync. Returns true on success.
+     * mapper at a time, so we reuse a fixed id — distinct from the dockable map
+     * widget opened by `openMapWidget`. Both are client-owned ids (see
+     * MAPPER_WIDGET_ID) so a script or a MUD cannot name a window over them.
+     * Both render the same MapStore and stay in sync. Returns true on success.
      */
     createMapper(x: number, y: number, width: number, height: number, parent?: string): boolean {
         const wm = this.session.windows;
-        const id = 'mapper';
+        const id = MAPPER_WIDGET_ID;
         if (!wm.has(id)) {
             wm.open(id, {
                 kind: 'map',
