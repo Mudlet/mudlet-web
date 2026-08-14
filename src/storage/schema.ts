@@ -553,6 +553,18 @@ export interface PackageManifest {
     xmlVfsPath?: string;
     /** Source filename (e.g. "GenericMapper.mpackage"), useful for display. */
     sourceFile?: string;
+    /**
+     * Exactly what the package's `config.lua` declared, keys lower-cased,
+     * unmapped and unaugmented.
+     *
+     * This is what `getPackageInfo`/`getModuleInfo` answer with, so it has to
+     * stay the package author's own set: Mudlet reports what the manifest said
+     * and nothing more, which means a package that shipped no config.lua has no
+     * info at all rather than a table of things mudix worked out for itself
+     * (the derived name, the install timestamp). Absent when there was no
+     * config.lua to read.
+     */
+    declaredInfo?: Record<string, string>;
     /** When the package was installed via a remote URL (e.g. a `Client.GUI`
      *  GMCP message), records the originating URL so subsequent install
      *  requests for the same URL can be deduplicated against this manifest

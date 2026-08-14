@@ -917,19 +917,13 @@ export class ScriptingEngine implements EngineHost {
     /** Manifest's standard info fields as a string→string map (Mudlet's
      *  config.lua-derived package info keys). Empty values are omitted. */
     private manifestInfoBase(pkg: PackageManifest): Record<string, string> {
-        const base: Record<string, string> = {};
-        const put = (k: string, v: unknown) => {
-            if (v !== undefined && v !== null && v !== '') base[k] = String(v);
-        };
-        put('name', pkg.name);
-        put('title', pkg.title);
-        put('author', pkg.author);
-        put('version', pkg.version);
-        put('description', pkg.description);
-        put('created', pkg.created);
-        put('icon', pkg.icon);
-        put('installed', pkg.installedAt);
-        return base;
+        // The package author's own declaration, verbatim — see
+        // PackageManifest.declaredInfo. This used to synthesise a table from
+        // whatever the manifest happened to hold, which meant every package
+        // reported an `installed` timestamp and a derived `name` that its
+        // config.lua never mentioned, and a package with no config.lua reported
+        // a full table where Mudlet reports nothing at all.
+        return { ...(pkg.declaredInfo ?? {}) };
     }
 
     /** Overlay the in-memory custom fields for `name` onto `base` (mutates). */
@@ -1475,6 +1469,18 @@ export class ScriptingEngine implements EngineHost {
             const buf = builtin ?? vfs.readBinaryFile(path);
             const filename = path.split('/').pop() || path;
             const { manifest, data } = installPackageFromBytes(filename, buf, vfs, { sourcePath: path });
+            // Refused, not replaced. Mudlet cleans up what it unpacked and says
+            // so rather than reinstalling over the top, because a second install
+            // would silently discard whatever the user had changed in the first
+            // — and a script looping over a package list would do it repeatedly.
+            // (Modules are the exception and uninstall themselves first, which
+            // is why this guard is here and not in installModule.)
+            if (this.getPackageNames().includes(manifest.name)) {
+                uninstallPackageFiles(manifest, vfs);
+                const error = `package ${manifest.name} is already installed`;
+                this.api.printError(`[installPackage] ${error}`);
+                return { ok: false, error };
+            }
             useAppStore.getState().installPackage(this.connectionId, manifest, data);
             this.notifyPackageInstalled(manifest.name);
             void vfs.flush();

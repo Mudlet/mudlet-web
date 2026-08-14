@@ -103,7 +103,17 @@ export function installPackageFromBytes(
         catch { throw new Error('could not unzip package'); }
         // Pick the first .xml at any depth — Mudlet places it at the root of the archive.
         const xmlEntry = Object.keys(entries).find(isXmlEntry);
-        if (!xmlEntry) throw new Error(`No XML file found inside ${filename}`);
+        // Mudlet's wording: an archive that unpacked fine but held nothing it could
+        // install is a different complaint from one that would not unpack.
+        //
+        // The directory goes with it. A refused install must leave the profile
+        // exactly as it found it, or the next attempt sees a folder for a package
+        // that was never installed — and `getMudletHomeDir()/<name>` existing is
+        // how scripts (and the uninstaller) decide a package has files.
+        if (!xmlEntry) {
+            if (!sourceInsidePkgDir) { try { vfs.rmdir(pkgDir); } catch { /* nothing to undo */ } }
+            throw new Error(`no package found in ${filename}`);
+        }
         xmlContent = strFromU8(entries[xmlEntry]);
         xmlRelPath = xmlEntry;
 
@@ -209,6 +219,11 @@ function readConfigLua(entries: Record<string, Uint8Array>): Partial<PackageMani
     const cfgKey = Object.keys(entries).find(k => /(?:^|\/)config\.lua$/i.test(k));
     if (!cfgKey) return {};
     const out: Partial<PackageManifest> = {};
+    // Kept verbatim alongside the mapped fields, because getPackageInfo answers
+    // with what config.lua declared and nothing else — not the name we derived,
+    // not when we installed it. A package without a config.lua therefore has no
+    // info at all, which is exactly what Mudlet reports for one.
+    const declared: Record<string, string> = {};
     const text = strFromU8(entries[cfgKey]);
 
     const keyRe = /^[ \t]*(\w+)[ \t]*=[ \t]*/gm;
@@ -220,6 +235,7 @@ function readConfigLua(entries: Record<string, Uint8Array>): Partial<PackageMani
 
         const key = m[1].toLowerCase();
         const val = parsed.value;
+        declared[key] = val;
         if      (key === 'mpackage' || key === 'name' || key === 'package') out.name = val || out.name;
         else if (key === 'version')                                         out.version = val;
         else if (key === 'author')                                          out.author = val;
@@ -228,6 +244,7 @@ function readConfigLua(entries: Record<string, Uint8Array>): Partial<PackageMani
         else if (key === 'icon')                                            out.icon = val;
         else if (key === 'created')                                         out.created = val;
     }
+    if (Object.keys(declared).length) out.declaredInfo = declared;
     return out;
 }
 
