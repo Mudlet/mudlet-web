@@ -32,6 +32,7 @@ test('report busted failures', async ({ page }) => {
 
     await seedProfile(page);
     const all: (BustedFailure & { spec: string })[] = [];
+    const allPending: { spec: string; name: string; message?: string }[] = [];
     const perSpec: { spec: string; passed: number; failed: number; errors: number; pending: number }[] = [];
 
     for (const spec of specs) {
@@ -40,6 +41,7 @@ test('report busted failures', async ({ page }) => {
             const r = await runSpec(page, spec);
             perSpec.push({ spec, passed: r.passed, failed: r.failed, errors: r.errors, pending: r.pending });
             for (const f of r.failures) all.push({ ...f, spec });
+            for (const t of r.tests) if (t.status === 'pending') allPending.push({ ...t, spec });
         } catch (err) {
             // A spec can take the Lua state down with it rather than failing an
             // assertion — a wasm "memory access out of bounds" aborts the whole
@@ -101,8 +103,21 @@ test('report busted failures', async ({ page }) => {
             + 'they may now pass; check e2e/knownDivergences.ts');
     }
 
+    // Pending reasons, grouped. A skip is only informative if you can see why:
+    // "fixture server not running" is a gap in the harness worth closing, while
+    // "peer-to-peer TCP" is something this client can never do, and the two are
+    // indistinguishable from a count. Written to the JSON rather than printed —
+    // there are a couple of hundred, and the console output is for failures.
+    const pendingByReason: Record<string, string[]> = {};
+    for (const p of allPending) {
+        (pendingByReason[p.message || '(no reason given)'] ??= []).push(`${p.spec}: ${p.name}`);
+    }
+    const pendingSummary = Object.entries(pendingByReason)
+        .map(([reason, tests]) => ({ reason, count: tests.length, tests }))
+        .sort((a, b) => b.count - a.count);
+
     // eslint-disable-next-line no-console
     console.log(lines.join('\n'));
     fs.writeFileSync(fs.realpathSync(new URL('.', OUT)) + '/busted-failures.json',
-        JSON.stringify({ perSpec, failures: all }, null, 2) + '\n');
+        JSON.stringify({ perSpec, failures: all, pending: pendingSummary }, null, 2) + '\n');
 });

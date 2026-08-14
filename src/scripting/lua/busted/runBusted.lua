@@ -107,6 +107,16 @@ return function(specPaths)
     }
   end)
 
+  -- pending("reason") throws a pending object that busted.safe turns into a
+  -- { 'pending', 'it' } publish carrying the message. The { 'test', 'end' }
+  -- handler below is only told the status, so without this the reason — the
+  -- only thing that says whether a skip is an unconfigured fixture or something
+  -- this client can never do — was dropped on the floor.
+  local pendingReason = {}
+  busted.subscribe({ 'pending', 'it' }, function(element, _parent, message)
+    pendingReason[element] = message and tostring(message) or ''
+  end)
+
   busted.subscribe({ 'test', 'end' }, function(element, parent, status)
     results.total = results.total + 1
     local message
@@ -114,6 +124,8 @@ return function(specPaths)
       results.passed = results.passed + 1
     elseif status == 'pending' then
       results.pending = results.pending + 1
+      message = pendingReason[element]
+      pendingReason[element] = nil
     else
       results.failed = results.failed + 1
       local info = pending[element] or {

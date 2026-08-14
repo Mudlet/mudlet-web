@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { ALL_SPECS, loadManifest, specResults } from './bustedHarness';
-import { KNOWN_DIVERGENCES, knownDivergence } from './knownDivergences';
+import { KNOWN_DIVERGENCES, UNSUPPORTED_AREAS, knownDivergence } from './knownDivergences';
 
 // Mudlet's busted *_spec.lua suite, run against the real mudix app in a browser.
 // This is the single path for the whole corpus: because the live app wires the
@@ -80,6 +80,28 @@ test.describe('manifest drift guard', () => {
 // a stale line makes that account wrong. Checked against the manifest rather than
 // a live run so it costs nothing (the manifest is the committed it() set, and the
 // drift guard above already proves it matches reality).
+// ── Unsupported areas still skip for the reason we recorded ─────────────────
+// A whole area that cannot run here skips rather than fails, which makes it look
+// exactly like an area whose fixture we simply have not started. The entry in
+// knownDivergences.ts is what tells those apart — so it has to keep matching
+// something. When it stops, either upstream rewrote the gate or the capability
+// arrived, and both are worth a look rather than a silently wrong note.
+test.describe('unsupported areas', () => {
+    for (const area of UNSUPPORTED_AREAS) {
+        test(`${area.area} still skips for the recorded reason`, async ({ page }) => {
+            const r = await specResults(page, area.spec);
+            const matching = r.tests.filter(t =>
+                t.status === 'pending' && (t.message ?? '').includes(area.pendingReason));
+            expect(
+                matching.length,
+                `No ${area.spec} test skips with "${area.pendingReason}" any more. Either the capability `
+                + `arrived or upstream changed the gate — update or remove this entry in `
+                + `e2e/knownDivergences.ts rather than leaving it describing something that no longer happens.`,
+            ).toBeGreaterThan(0);
+        });
+    }
+});
+
 test('known divergences all name a live spec', () => {
     const manifest = loadManifest();
     const dead: string[] = [];

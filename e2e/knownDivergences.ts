@@ -68,3 +68,71 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
 export function knownDivergence(spec: string, name: string): KnownDivergence | undefined {
     return KNOWN_DIVERGENCES[spec]?.find(d => d.name === name);
 }
+
+/**
+ * Whole areas of the corpus that can never run here, as opposed to the
+ * individual assertions above.
+ *
+ * These do not *fail* — the specs detect their own missing fixture and call
+ * `pending()`, so they skip. That makes them indistinguishable, from a count,
+ * from the skips that are merely unconfigured: "no HTTP fixture server" is a gap
+ * in our harness worth closing, while "no peer-to-peer TCP" is a fact about
+ * browsers. Recording them here is what tells the two apart, so nobody spends a
+ * day trying to light up a section that cannot be lit.
+ *
+ * `pendingReason` is a substring of the skip message the corpus actually emits
+ * today. A guard in busted.spec.ts asserts each one still matches at least one
+ * pending test — if upstream rewrites the gate, or mudix somehow grows the
+ * feature, the marker stops matching and the entry gets revisited rather than
+ * quietly describing a world that no longer exists.
+ *
+ * Not listed, because they are implemented rather than absent: the IRC *actions*
+ * (openIRC/sendIrc/restartIrc) refuse with Mudlet's own "no client" answers and
+ * their specs pass, and the IRC *settings* are ordinary profile data that
+ * round-trips. Discord is likewise only half-absent — the API now answers every
+ * gated call with Mudlet's "Discord API is not available" denial, which is what
+ * the Networking_spec contract block asserts, and that block passes. Only the
+ * presence traffic itself, below, is out of reach.
+ */
+export interface UnsupportedArea {
+    /** Human name for the capability. */
+    area: string;
+    /** Spec whose pending tests this covers. */
+    spec: string;
+    /** Substring of the pending message that identifies a skip as this area's. */
+    pendingReason: string;
+    /** Roughly how many tests this accounts for, as of the last review. */
+    approxTests: number;
+    reason: string;
+}
+
+export const UNSUPPORTED_AREAS: UnsupportedArea[] = [
+    {
+        area: 'Discord Rich Presence (the IPC traffic)',
+        spec: 'Discord',
+        pendingReason: 'MUDLET_TEST_DISCORD_CAPTURE_FILE is not set',
+        approxTests: 49,
+        reason:
+            'Rich presence is delivered over a local IPC socket to the Discord desktop app — a named pipe on '
+            + 'Windows, a unix socket elsewhere. A browser tab can open neither, and no web API substitutes: '
+            + 'Discord exposes no browser-reachable endpoint for presence. So the whole spec, which asserts '
+            + 'against frames captured from a fake Discord IPC server, has nothing to talk to and never will. '
+            + 'What IS reachable is the API contract that sits in front of it, and that part is implemented: '
+            + 'every gated function answers (nil, "Discord API is not available"), the same denial Mudlet gives '
+            + 'when discord-rpc fails to load, and Networking_spec asserts it.',
+    },
+    {
+        area: 'MMCP (MudMaster Chat Protocol)',
+        spec: 'Networking',
+        pendingReason: 'MMCP peer fixture not running',
+        approxTests: 44,
+        reason:
+            'MMCP is peer-to-peer chat between clients over direct TCP: each client both dials others and '
+            + 'LISTENS on a port of its own. A browser tab cannot open a raw TCP socket, and certainly cannot '
+            + 'accept an inbound connection — the proxy that carries the game connection is a tunnel to one '
+            + 'known host, not a way to be dialed. Starting the peer fixture would not help: the specs would '
+            + 'stop skipping and start failing. mudix binds mmcp.* as stubs that report an empty peer list (the '
+            + 'true state of a client nobody can reach) and sets mudlet.supports.mmcp = false so feature-testing '
+            + 'scripts route around it.',
+    },
+];

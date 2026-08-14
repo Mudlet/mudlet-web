@@ -1777,6 +1777,36 @@ function connectToServer(host, port, save)
     return __mudix_connectToServer(host, port, save)
 end
 
+-- ── Discord Rich Presence ──────────────────────────────────────────────────
+-- Discord's rich presence rides a local IPC socket (a named pipe on Windows, a
+-- unix socket elsewhere) to the Discord desktop app. A browser tab cannot open
+-- one, so the API is permanently unavailable here — which is a state Mudlet
+-- already has a contract for: when discord-rpc will not load,
+-- TLuaInterpreter::discordApiEnabled denies every gated call with
+-- (nil, "Discord API is not available").
+--
+-- Answering that rather than a bare nil is the whole point. A script calling
+-- getDiscordState() and getting nil cannot tell "no state has been set" from
+-- "there is no Discord here"; Mudlet's own contract distinguishes them, and
+-- every script that feature-tests Discord reads the second return to do it.
+do
+    local DENIAL = "Discord API is not available"
+    -- Exactly Mudlet's gated set (TLuaInterpreterDiscord.cpp): every function
+    -- that routes through discordApiEnabled(). setDiscordGameUrl is deliberately
+    -- absent — Mudlet does not gate it, and it writes ordinary profile data.
+    for _, name in ipairs({
+        "usingMudletsDiscordID", "getDiscordDetail", "getDiscordLargeIcon",
+        "getDiscordLargeIconText", "getDiscordParty", "getDiscordSmallIcon",
+        "getDiscordSmallIconText", "getDiscordState", "getDiscordTimeStamps",
+        "resetDiscordData", "setDiscordApplicationID", "setDiscordDetail",
+        "setDiscordElapsedStartTime", "setDiscordGame", "setDiscordLargeIcon",
+        "setDiscordLargeIconText", "setDiscordParty", "setDiscordRemainingEndTime",
+        "setDiscordSmallIcon", "setDiscordSmallIconText", "setDiscordState",
+    }) do
+        _G[name] = function() return nil, DENIAL end
+    end
+end
+
 -- setDiscordGameUrl sets the profile's invite-button url. mudix has no Discord
 -- integration so the action itself is a no-op stub, but the argument contract is
 -- still observable, and scripts feature-test with it.
