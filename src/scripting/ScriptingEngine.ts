@@ -1001,7 +1001,7 @@ export class ScriptingEngine implements EngineHost {
             return { ok: false, error };
         }
         try {
-            const { manifest, data } = installModuleFromVfsPath(path, vfs);
+            const { manifest, data } = installModuleFromVfsPath(path, vfs, p => this.runtimes.lua?.readBuiltinBytes?.(p) ?? null);
             useAppStore.getState().installPackage(this.connectionId, manifest, data);
             this.notifyPackageInstalled(manifest.name);
             this.raiseEvent('sysInstallModule', [manifest.name]);

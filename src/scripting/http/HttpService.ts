@@ -23,6 +23,8 @@ type VFSGetter = () => ProfileVFS | null;
 type ProxyUrlGetter = () => string | undefined;
 /** Runs `fn` off the current call stack. See {@link HttpService.emitLater}. */
 type DeferFn = (fn: () => void) => void;
+/** Bytes behind a path in a read-only bundled namespace, or null. */
+type LocalReader = (path: string) => Uint8Array | null;
 
 // A 1KB/sec download still emits ~10 progress events per second at 100ms;
 // a 10MB/sec stream coalesces into the same cadence rather than firing
@@ -41,14 +43,26 @@ export class HttpService {
         private readonly vfsGetter: VFSGetter,
         private readonly proxyUrlGetter: ProxyUrlGetter = () => undefined,
         private readonly defer: DeferFn = fn => queueMicrotask(fn),
+        /** Consulted before the profile VFS when serving a `file:` URL, so a
+         *  bundled path resolves the same way Lua's io.open resolves it. */
+        private readonly localReader: LocalReader = () => null,
     ) {}
 
     downloadFile(saveTo: string, url: string): void {
+        const scheme = explicitScheme(url);
+        // `file:` means the local filesystem, and here that is the VFS. Qt's
+        // network manager serves these too, so scripts (and Mudlet's own specs)
+        // use them to install a package that is already on disk without going
+        // near the network. fetch() cannot: a page served over http may not read
+        // file: URLs. Copying through the VFS is what the URL actually asks for.
+        if (scheme === 'file') {
+            this.copyLocalFile(saveTo, url);
+            return;
+        }
         // A scheme the browser cannot fetch is refused here rather than left to
         // fetch(): its rejection is indistinguishable from a CORS failure, so
         // the proxy fallback would try the whole thing a second time before
         // reporting an error that never named the real problem.
-        const scheme = explicitScheme(url);
         if (scheme && scheme !== 'http' && scheme !== 'https') {
             this.emitLater('sysDownloadError',
                 [`'${scheme}' urls cannot be downloaded, only http and https`, saveTo, url]);
@@ -98,6 +112,39 @@ export class HttpService {
             return;
         }
         void this.runRequest(method, url, body, headers, 'sysCustomHttpDone', 'sysCustomHttpError', [method], [method]);
+    }
+
+    /**
+     * Serve a `file:` URL out of the VFS, reporting through the same
+     * sysDownloadDone/sysDownloadError a network download would.
+     *
+     * The path is the URL's own, percent-decoded — `file:///lua/x` reads
+     * `/lua/x`, which may be the read-only bundled namespace as readily as the
+     * profile, exactly as Lua's io.open sees both.
+     */
+    private copyLocalFile(saveTo: string, url: string): void {
+        this.defer(() => {
+            let path: string;
+            try { path = decodeURIComponent(url.trim().replace(/^file:\/\//i, '')); }
+            catch { path = url.trim().replace(/^file:\/\//i, ''); }
+
+            const vfs = this.vfsGetter();
+            if (!vfs) return this.emit('sysDownloadError', ['no profile VFS available', saveTo, url]);
+
+            let data: Uint8Array | null = this.localReader(path);
+            if (!data) {
+                try { data = vfs.exists(path) ? vfs.readBinaryFile(path) : null; }
+                catch { data = null; }
+            }
+            if (!data) return this.emit('sysDownloadError', [`could not open file '${path}`, saveTo, url]);
+
+            try { vfs.writeBinaryFile(saveTo, data); }
+            catch (err) {
+                return this.emit('sysDownloadError',
+                    [`save to '${saveTo}' failed: ${errorMessage(err)}`, saveTo, url]);
+            }
+            this.emit('sysDownloadDone', [saveTo, data.byteLength, '']);
+        });
     }
 
     private async runDownload(saveTo: string, url: string): Promise<void> {

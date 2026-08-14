@@ -279,12 +279,24 @@ export function reloadModuleFromVfs(manifest: PackageManifest, vfs: ProfileVFS):
  *
  * Throws on read/parse failures.
  */
-export function installModuleFromVfsPath(absolutePath: string, vfs: ProfileVFS): InstallResult {
-    if (!vfs.exists(absolutePath)) throw new Error(`File not found: ${absolutePath}`);
+export function installModuleFromVfsPath(
+    absolutePath: string,
+    vfs: ProfileVFS,
+    /** Consulted first, so a module under the read-only /lua/ namespace installs
+     *  as readily as one in the profile — see LuaRuntime.readBuiltinBytes. */
+    readBuiltin: (path: string) => Uint8Array | null = () => null,
+): InstallResult {
+    if (!absolutePath) throw new Error('no package file was actually given');
+    const builtin = readBuiltin(absolutePath);
+    // Mudlet's wording (Host::installPackage), which verboseModuleInstall prints
+    // verbatim — ours said "File not found", which is the same fact in a shape
+    // no script matching on Mudlet's text would recognise.
+    if (!builtin && !vfs.exists(absolutePath)) throw new Error(`could not open file '${absolutePath}`);
     const filename = absolutePath.substring(absolutePath.lastIndexOf('/') + 1) || 'module';
-    const buf = vfs.readBinaryFile(absolutePath);
+    const buf = builtin ?? vfs.readBinaryFile(absolutePath);
 
-    if (looksLikeZip(buf)) {
+    if (archiveExtension.test(filename)) {
+        if (!looksLikeZip(buf)) throw new Error('could not unzip package');
         // Zips always go through the unzip-into-pkgDir flow; the user's source archive
         // stays where it was but isn't part of the module's reload path.
         return installPackageFromBytes(filename, buf, vfs, { kind: 'module', sourcePath: absolutePath });

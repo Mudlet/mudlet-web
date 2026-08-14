@@ -43,7 +43,11 @@ export function installPackageBindings({ lua, api }: BindingContext): void {
         api.uninstallModule(String(name ?? '')));
     // Mudlet `reloadModule(name)` doesn't return anything; we still flag
     // failures via the printError call inside ScriptingEngine.
-    lua.global.set('reloadModule', (name: unknown) => {
+    // Returns nothing at all, on either branch — a reload that found no such
+    // module is not an error worth a value, and a spec counts the returns.
+    // wasmoon turns a JS `undefined` into a single nil rather than no value, so
+    // the Bridge.lua wrapper is what actually drops it.
+    lua.global.set('__reloadModule', (name: unknown) => {
         api.reloadModule(String(name ?? ''));
     });
     lua.global.set('__mudix_syncModule', (name: unknown) => {

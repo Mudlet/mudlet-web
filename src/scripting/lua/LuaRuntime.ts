@@ -1724,6 +1724,7 @@ export class LuaRuntime implements IScriptingRuntime {
             // microtask queue, but it does keep pumping timers, so this is the
             // one deferral such a script can still observe.
             fn => { this.api.timers.addTemp(0, fn); },
+            path => this.readBuiltinBytes(path),
         );
         // Mudlet HTTP APIs all return (true, url) immediately and then surface
         // success/error via sysXxxHttp* events. The JS bindings below just kick

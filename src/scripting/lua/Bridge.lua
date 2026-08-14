@@ -369,6 +369,13 @@ function getTimestamp(a, b)
     return v
 end
 
+-- Mudlet reloadModule(name) answers with nothing whatsoever, installed or not.
+-- The bare call is what drops wasmoon's nil: `return __reloadModule(name)` would
+-- forward it as a value.
+function reloadModule(name)
+    __reloadModule(name)
+end
+
 -- Mudlet getModulePath(name) / getModulePriority(name) → the value, or
 -- (nil, "module doesn't exist") — a value failure, not a raise (the setters
 -- do raise). The __ bindings hand back nil for the miss.
@@ -2366,11 +2373,16 @@ end
 -- called with one argument, or a single string when called with a key.
 -- Mudlet exposes a fixed set of keys (author, title, description, version,
 -- created, package); we forward whatever the manifest carries.
+-- A module nobody installed is an empty table, not nil, and a field it does not
+-- carry is the empty string — the same shape getPackageInfo answers with, and
+-- what a caller indexing the result straight away needs so that a typo'd name
+-- reads as "nothing set" rather than crashing on a nil index.
 function getModuleInfo(name, key)
-    local info = __getModuleInfo(name)
-    if info == nil then return nil end
+    local info = __getModuleInfo(name) or {}
     if key == nil then return info end
-    return info[key]
+    local v = info[key]
+    if v == nil then return "" end
+    return v
 end
 
 -- Mudlet getPackageInfo(name [, key]) — returns the merged info table (manifest
