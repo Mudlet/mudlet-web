@@ -115,6 +115,15 @@ export async function seedProfile(page: Page): Promise<void> {
                         isGroup: false, parentId: null, code: '', language: 'lua',
                     }],
                 },
+                // The fixture above comes FROM run-tests, so the package has to
+                // be on the installed list as well: Mudlet runs this suite with
+                // run-tests installed, and Package_spec checks getPackages() by
+                // looking for it. Seeding the items without the manifest left
+                // the profile in a state Mudlet never has — items belonging to a
+                // package that is not installed.
+                connectionPackages: {
+                    'mudlet-self-test': [{ name: 'run-tests' }],
+                },
             },
         }));
     });

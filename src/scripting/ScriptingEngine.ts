@@ -850,6 +850,12 @@ export class ScriptingEngine implements EngineHost {
         }
         try {
             const data = reloadModuleFromVfs(pkg, vfs);
+            // A reload re-reads the module from disk, so anything a script had
+            // set on it since the last one is gone — that is the point of asking
+            // for a reload. Keeping the overrides meant getModuleInfo went on
+            // reporting a title the script had replaced, from a config.lua that
+            // no longer said it.
+            this.moduleInfoOverrides.delete(moduleName);
             useAppStore.getState().installPackage(id, pkg, data);
             this.raiseEvent('sysReadModuleEvent', [moduleName]);
             return true;
@@ -897,6 +903,28 @@ export class ScriptingEngine implements EngineHost {
     getModuleNames(): string[] {
         const packages = useAppStore.getState().connectionPackages[this.connectionId] ?? [];
         return packages.filter(p => p.kind === 'module').map(p => p.name);
+    }
+
+    /**
+     * Write every module flagged to sync back out to its own file.
+     *
+     * Called by saveProfile, which is the only moment it happens — and the
+     * moment it has to: a module shared between profiles carries this one's
+     * edits to the others through its file, so a save that skipped this left
+     * them in our store alone, to be lost the next time another profile read
+     * the module back.
+     *
+     * Fire-and-forget per module, like syncModule itself: the write is async,
+     * and a save reports on what it started rather than waiting.
+     */
+    saveSyncedModules(): void {
+        for (const name of this.getModuleNames()) {
+            if (!this.getModuleInfo(name)?.sync) continue;
+            this.syncModuleToFile(name).catch(err => {
+                const msg = err instanceof Error ? err.message : String(err);
+                this.api.printError(`[saveProfile] sync failed for module "${name}": ${msg}`);
+            });
+        }
     }
 
     /** Snapshot of a module's manifest, or null if not installed / not a module. */
@@ -1414,10 +1442,16 @@ export class ScriptingEngine implements EngineHost {
      * loads the new scripts synchronously inside that commit, so by the time
      * this method runs the package's event handlers are already registered.
      */
-    notifyPackageInstalled(packageName: string): void {
+    notifyPackageInstalled(packageName: string, fileName?: string): void {
         this.flushPendingApplies();
+        // sysInstall carries the name; the detailed event carries the file it
+        // came from as well (Host::installPackage raises both). A handler that
+        // reacts to an install often wants the source — to read the archive's
+        // own resources, or to tell the user where it came from — and had no way
+        // to get it. Omitted rather than sent empty when unknown, which is the
+        // case for the packages seeded on profile open.
         this.raiseEvent('sysInstall', [packageName]);
-        this.raiseEvent('sysInstallPackage', [packageName]);
+        this.raiseEvent('sysInstallPackage', fileName ? [packageName, fileName] : [packageName]);
     }
 
     /**
@@ -1509,7 +1543,7 @@ export class ScriptingEngine implements EngineHost {
                 return { ok: false, error };
             }
             useAppStore.getState().installPackage(this.connectionId, manifest, data);
-            this.notifyPackageInstalled(manifest.name);
+            this.notifyPackageInstalled(manifest.name, path);
             void vfs.flush();
             return { ok: true, error: null };
         } catch (err) {

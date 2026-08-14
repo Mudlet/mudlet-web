@@ -1511,6 +1511,9 @@ export class ScriptingAPI {
     installModule(path: string): InstallOutcome { return this.host.installModuleFromPath(path); }
     uninstallModule(name: string): boolean { return this.host.uninstallModuleByName(name); }
     syncModule(name: string): Promise<void> { return this.host.syncModuleToFile(name); }
+    /** Write every module flagged to sync back out to its own file. Called by
+     *  saveProfile — see the note there. */
+    saveSyncedModules(): void { this.host.saveSyncedModules(); }
     reloadModule(name: string): boolean { return this.host.reloadModuleFromFile(name); }
     enableModuleSync(name: string): void { this.host.setModuleSync(name, true); }
     disableModuleSync(name: string): void { this.host.setModuleSync(name, false); }

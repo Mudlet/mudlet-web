@@ -78,6 +78,8 @@ export interface EngineHost {
     installModuleFromPath(path: string): InstallOutcome;
     uninstallModuleByName(name: string): boolean;
     syncModuleToFile(name: string): Promise<void>;
+    /** Write every module flagged to sync back out to its own file. */
+    saveSyncedModules(): void;
     reloadModuleFromFile(name: string): boolean;
     setModuleSync(name: string, sync: boolean): void;
     getModuleSync(name: string): boolean;
@@ -231,6 +233,7 @@ export const NULL_ENGINE_HOST: EngineHost = Object.freeze({
     installModuleFromPath: () => ({ ok: false, error: 'no module installer available' }),
     uninstallModuleByName: () => false,
     syncModuleToFile: () => Promise.resolve(),
+    saveSyncedModules: () => {},
     reloadModuleFromFile: () => false,
     setModuleSync: () => {},
     getModuleSync: () => false,

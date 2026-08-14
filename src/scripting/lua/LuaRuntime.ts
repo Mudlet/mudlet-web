@@ -1426,6 +1426,12 @@ export class LuaRuntime implements IScriptingRuntime {
             const vfs = this.vfs;
             if (!vfs) return [false, 'saveProfile: no profile VFS available'];
             const path = vfs.profilePath ?? '';
+            // A save writes every synced module back out to its own file. That
+            // is what "sync" means and the only moment it happens: a module
+            // shared between profiles carries this profile's edits to the others
+            // through its file, and without this the edits lived only in our
+            // store and were lost the moment another profile reloaded it.
+            this.api.saveSyncedModules();
             vfs.flush().catch(err => {
                 const msg = err instanceof Error ? err.message : String(err);
                 console.warn('[saveProfile] vfs flush failed:', err);
