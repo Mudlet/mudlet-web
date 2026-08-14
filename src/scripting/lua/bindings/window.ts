@@ -14,6 +14,20 @@ export function installWindowBindings({ lua, api, channel }: BindingContext): vo
     // __getUserWindowSize returns null when the window doesn't exist so
     // Bridge.lua can shape it as (nil, errMsg) (Mudlet miss-shape).
     lua.global.set('__getMainWindowSize', () => api.getMainWindowSize());
+    /**
+     * Mudlet `setMainWindowSize(width, height)` resizes the application window.
+     * A browser tab cannot resize itself — `window.resizeTo` is refused for
+     * anything the script did not open — so this reports the attempt and changes
+     * nothing.
+     *
+     * Bound rather than left out: Bridge.lua wraps it for its argument contract
+     * and captured a nil, so every call died on "attempt to call upvalue" rather
+     * than doing nothing. Doing nothing is the honest answer, and callers that
+     * measure afterwards (Mudlet's own specs among them) see the size did not
+     * move and take the "this display does not honour a resize" path a tiling
+     * window manager would put them on.
+     */
+    lua.global.set('setMainWindowSize', () => true);
     lua.global.set('__getMousePosition', () => api.getMousePosition());
     lua.global.set('__getUserWindowSize', (name: unknown) => {
         const n = String(name ?? '');
