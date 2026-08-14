@@ -150,6 +150,7 @@ export function installPackageFromBytes(
         ...manifestExtras,
         ...(xmlRelPath ? { xmlPath: xmlRelPath } : {}),
         sourceFile: filename,
+        ...(opts.sourcePath ? { sourcePath: opts.sourcePath } : {}),
         installedAt: new Date().toISOString(),
         ...(kind === 'module' ? { kind: 'module' as const, sync: false } : {}),
     };
@@ -255,7 +256,15 @@ function readConfigLua(entries: Record<string, Uint8Array>): Partial<PackageMani
  * silently destroyed when they remove the module from the app.
  */
 export async function uninstallPackageFiles(manifest: PackageManifest, vfs: ProfileVFS): Promise<void> {
-    if (manifest.kind === 'module') return;
+    // A module installed from a file the user chose keeps that file: `xmlVfsPath`
+    // means it is referenced where it lies, and deleting it would destroy the
+    // user's own source because they removed the module from the app. A module
+    // installed from an archive is different — the directory is ours, unpacked
+    // by the install, and Mudlet takes it away again. Blanket-exempting every
+    // module (as this did) left those directories behind for good: nothing else
+    // ever removes them, and a later install of the same name then found a
+    // folder for a module that was not installed.
+    if (manifest.kind === 'module' && manifest.xmlVfsPath) return;
     const pkgDir = `${vfs.profilePath}/${manifest.name}`;
     if (vfs.exists(pkgDir)) vfs.rmdir(pkgDir);
     await vfs.flush();

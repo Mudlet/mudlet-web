@@ -553,6 +553,11 @@ export interface PackageManifest {
     xmlVfsPath?: string;
     /** Source filename (e.g. "GenericMapper.mpackage"), useful for display. */
     sourceFile?: string;
+    /** Absolute VFS path the install was given, when it came from one. This is
+     *  what `getModulePath` answers with: the file the user picked, not whatever
+     *  was unpacked out of it — a script uses it to reinstall, or to point the
+     *  user back at their own file, and neither works with an internal path. */
+    sourcePath?: string;
     /**
      * Exactly what the package's `config.lua` declared, keys lower-cased,
      * unmapped and unaugmented.

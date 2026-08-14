@@ -972,6 +972,12 @@ export class ScriptingEngine implements EngineHost {
     getModulePath(moduleName: string): string | null {
         const pkg = this.findManifest(moduleName);
         if (pkg?.kind !== 'module') return null;
+        // The file the module was installed FROM, which for an archive is the
+        // .mpackage the user picked — not the XML we unpacked out of it. Mudlet
+        // records the install argument and answers with that; a script uses it
+        // to reinstall or to point the user back at their own file, and an
+        // internal path inside our unpack directory is no use for either.
+        if (pkg.sourcePath) return pkg.sourcePath;
         if (pkg.xmlVfsPath) return pkg.xmlVfsPath;
         const vfs = this.vfs;
         if (!vfs || !pkg.xmlPath) return null;
@@ -996,6 +1002,15 @@ export class ScriptingEngine implements EngineHost {
         }
         try {
             const { manifest, data } = installModuleFromVfsPath(path, vfs, p => this.runtimes.lua?.readBuiltinBytes?.(p) ?? null);
+            // Refused rather than reinstalled, like a package — and for the
+            // stronger reason: a module carries the user's own edits back out to
+            // its file, so installing over one would discard work that exists
+            // nowhere else.
+            if (this.getModuleNames().includes(manifest.name)) {
+                const error = `module ${manifest.name} is already installed`;
+                this.api.printError(`[installModule] ${error}`);
+                return { ok: false, error };
+            }
             useAppStore.getState().installPackage(this.connectionId, manifest, data);
             this.notifyPackageInstalled(manifest.name);
             this.raiseEvent('sysInstallModule', [manifest.name]);
@@ -1239,15 +1254,27 @@ export class ScriptingEngine implements EngineHost {
 
     /** Names of every package installed in this profile. */
     getPackageNames(): string[] {
-        return (useAppStore.getState().connectionPackages[this.connectionId] ?? []).map(p => p.name);
+        // Packages only. Mudlet keeps modules in a list of their own and
+        // getPackages() does not see them — a module is a shared thing the user
+        // syncs between profiles, a package is installed into one, and a script
+        // deciding whether to install something has to be able to tell them
+        // apart. Listing both meant installPackage refused a name that was only
+        // ever installed as a module.
+        return (useAppStore.getState().connectionPackages[this.connectionId] ?? [])
+            .filter(p => p.kind !== 'module')
+            .map(p => p.name);
     }
 
-    /** Module manifest fields as a flat record, with Lua-set overrides applied. */
+    /** What the module's config.lua declared, with Lua-set overrides applied.
+     *  The same contract as getPackageInfo — see manifestInfoBase. This used to
+     *  hand back the whole manifest, so callers saw mudix's own bookkeeping
+     *  (installedAt, sourceFile, and latterly declaredInfo itself) alongside the
+     *  fields the module author actually wrote. */
     getModuleInfoRecord(name: string): Record<string, unknown> | null {
         const info = this.getModuleInfo(name);
         if (!info) return null;
-        const rec = info as unknown as Record<string, unknown>;
-        this.applyInfoOverrides(rec as Record<string, string>, this.moduleInfoOverrides, name);
+        const rec: Record<string, string> = this.manifestInfoBase(info);
+        this.applyInfoOverrides(rec, this.moduleInfoOverrides, name);
         return rec;
     }
 
