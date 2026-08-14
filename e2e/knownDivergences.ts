@@ -48,6 +48,38 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
                 + 'the same reason.',
         },
     ],
+    Media: (() => {
+        // Three specs that need an utterance to FINISH. Everything up to that
+        // point works and is asserted by the specs around these — the state goes
+        // to speaking, the text is reported, the queue advances on demand.
+        //
+        // What cannot happen is the ending. Web Speech reports completion by
+        // firing `end` on the utterance, and a browser delivers that through the
+        // event loop — which a busted run, being one synchronous call, is
+        // sitting on top of. Every other queue a spec waits on turned out to be
+        // one mudix owns and could therefore pump by hand: its own timers, its
+        // own replay scheduler, its own unzip. This one belongs to the platform,
+        // and no amount of pumping reaches it.
+        //
+        // Recorded rather than worked around because the alternative is inventing
+        // an ending: a watchdog that declares the utterance over after an
+        // estimated duration would make these pass while telling every script a
+        // time that has nothing to do with when the speech actually stopped.
+        // (There is a real argument for such a watchdog — Chrome is known to drop
+        // `end` for long utterances, which leaves the queue wedged for good — but
+        // that is a fix for that bug, not for this, and it should be built and
+        // judged as one.)
+        const reason =
+            'Needs the utterance to finish. Web Speech reports that by firing `end` through the '
+            + "browser's event loop, which a synchronous busted run is sitting on top of — unlike the "
+            + 'timer, replay and unzip queues, it is not one mudix owns and can pump by hand. Everything '
+            + 'before the ending is implemented and is asserted by the neighbouring specs.';
+        return [
+            'Tests the text-to-speech Lua API / Tests the text-to-speech family / ttsSpeak speaks the text and reports it until the engine goes ready again',
+            'Tests the text-to-speech Lua API / Tests the text-to-speech family / ttsPause holds the utterance and ttsResume runs it to the end',
+            'Tests the text-to-speech Lua API / Tests the text-to-speech family / a queued line starts speaking when the current one ends',
+        ].map(name => ({ name, reason }));
+    })(),
     Miscallaneous: [
         {
             name: 'Tests C++ functions in the Miscallaneous category / Tests the functionality of getProfiles / lists a profile that is not loaded',

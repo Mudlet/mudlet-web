@@ -267,6 +267,13 @@ export class TtsManager {
             if (voice) u.voice = voice;
         }
 
+        // Left in as a re-affirmation only. The state is set below, when the
+        // utterance is handed over, because that is when Mudlet reports it:
+        // QTextToSpeech::say() leaves the engine Speaking by the time it
+        // returns, and a script doing `ttsSpeak(x); ttsGetState()` expects to be
+        // told what it just started. Waiting for the browser's asynchronous
+        // onstart meant the answer was still "ready", and on a machine with no
+        // audio device the event may never arrive at all.
         u.onstart = () => {
             if (gen !== this.gen) return;
             this.setState('ttsSpeechStarted', text);
@@ -297,11 +304,23 @@ export class TtsManager {
         };
 
         this.synth.speak(u);
+        this.setState('ttsSpeechStarted', text);
     }
 
     private setState(state: TtsState, text?: string): void {
-        if (state === this.state) return;
+        // Started repeats when the text changes: speaking over an utterance that
+        // is still running starts a *different* one, and a handler tracking what
+        // is being said has to hear about it. Every other state is a transition,
+        // and repeating those would be noise.
+        const repeated = state === this.state
+            && !(state === 'ttsSpeechStarted' && text !== undefined && text !== this.lastStarted);
+        if (repeated) return;
         this.state = state;
+        if (state === 'ttsSpeechStarted') this.lastStarted = text;
         this.emit(state, text !== undefined ? [text] : []);
     }
+
+    /** Text of the most recent ttsSpeechStarted, so speaking over a running
+     *  utterance can tell a genuinely new one from a repeat. */
+    private lastStarted: string | undefined;
 }
