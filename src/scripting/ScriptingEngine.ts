@@ -1452,13 +1452,22 @@ export class ScriptingEngine implements EngineHost {
             this.api.printError(`[installPackage] ${error}`);
             return { ok: false, error };
         }
+        // Mudlet's own wordings (Host::installPackage), because scripts read
+        // them: verbosePackageInstall prints the reason, and the corpus asserts
+        // each one. An empty path is its own complaint — it means the caller
+        // built the path wrong, not that a file is missing.
+        if (!path) {
+            const error = 'no package file was actually given';
+            this.api.printError(`[installPackage] ${error}`);
+            return { ok: false, error };
+        }
         // A path may name the read-only /lua/ namespace rather than the profile:
         // that is where the spec corpus keeps its fixture packages, and Lua's own
         // io.open sees both. Checked first so a builtin cannot be shadowed by a
         // profile file of the same name.
         const builtin = this.runtimes.lua?.readBuiltinBytes?.(path) ?? null;
         if (!builtin && !vfs.exists(path)) {
-            const error = `file not found: ${path}`;
+            const error = `could not open file '${path}`;
             this.api.printError(`[installPackage] ${error}`);
             return { ok: false, error };
         }

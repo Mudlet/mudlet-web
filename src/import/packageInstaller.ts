@@ -26,6 +26,10 @@ export interface InstallOptions {
 
 const ZIP_MAGIC = [0x50, 0x4b, 0x03, 0x04]; // "PK\x03\x04" — local file header
 
+/** Mudlet accepts both, and treats the name — not the content — as the claim
+ *  about what the file is. */
+const archiveExtension = /\.(mpackage|zip)$/i;
+
 function looksLikeZip(buf: Uint8Array): boolean {
     if (buf.length < 4) return false;
     return ZIP_MAGIC.every((b, i) => buf[i] === b);
@@ -85,10 +89,18 @@ export function installPackageFromBytes(
     let xmlRelPath: string | undefined;
     let manifestExtras: Partial<PackageManifest> = {};
 
-    if (looksLikeZip(buf)) {
+    // The extension decides, as it does in Mudlet: a .mpackage/.zip is unpacked,
+    // and anything else is read as a plain package XML. Sniffing the bytes
+    // instead meant a .mpackage that was not a zip quietly fell through to the
+    // XML reader and failed with a parse error about markup the caller never
+    // wrote — where Mudlet says the one thing that is actually true of it.
+    if (archiveExtension.test(filename)) {
+        if (!looksLikeZip(buf)) throw new Error('could not unzip package');
         vfs.mkdir(pkgDir);
 
-        const entries = unzipSync(buf);
+        let entries: Record<string, Uint8Array>;
+        try { entries = unzipSync(buf); }
+        catch { throw new Error('could not unzip package'); }
         // Pick the first .xml at any depth — Mudlet places it at the root of the archive.
         const xmlEntry = Object.keys(entries).find(isXmlEntry);
         if (!xmlEntry) throw new Error(`No XML file found inside ${filename}`);

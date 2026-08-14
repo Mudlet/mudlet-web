@@ -384,6 +384,39 @@ function getModulePriority(name)
     return v
 end
 
+-- Module sync + priority. Each JS binding hands back the refusal as a string, or
+-- nil when it went through, because a JS function cannot itself return Lua's
+-- (nil, msg) pair — the shaping has to happen on this side.
+--
+-- The two wordings are Mudlet's own and are not interchangeable: the sync
+-- functions route through Host::changeModuleSync ("module name '<x>' not
+-- found"), while the priority setter reports the same miss the way its getter
+-- does ("module doesn't exist"). Scripts match on these.
+function enableModuleSync(name)
+    local err = __enableModuleSync(name)
+    if err then return nil, "enableModuleSync: " .. err end
+    return true
+end
+
+function disableModuleSync(name)
+    local err = __disableModuleSync(name)
+    if err then return nil, "disableModuleSync: " .. err end
+    return true
+end
+
+function getModuleSync(name)
+    local err = __getModuleSyncDenial(name)
+    if err then return nil, "getModuleSync: " .. err end
+    return __getModuleSyncValue(name) and true or false
+end
+
+-- Answers nothing at all when it works: Mudlet pushes no value, and a spec
+-- counts the returns. Only the refusal has anything to say.
+function setModulePriority(name, priority)
+    local err = __setModulePriority(name, priority)
+    if err then return nil, "setModulePriority: module doesn't exist" end
+end
+
 -- Mudlet getLabelSizeHint(name) → width, height, or (nil, errMsg) when the
 -- label doesn't exist. JS returns a 0-indexed [w, h] array or false.
 function getLabelSizeHint(name)
@@ -6160,6 +6193,66 @@ do
                 .. type(name) .. "!)", 2)
         end
         return _rawRaiseGlobalEvent(...)
+    end
+end
+
+-- ── Package/module argument contracts ──────────────────────────────────────
+-- Every one of these takes a name or a path, and each used to answer a wrong
+-- type the same way it answers a name that simply is not installed — so a script
+-- that passed a table by mistake was told "no such module" and went looking for
+-- the module. Mudlet raises on the type and reports the miss separately, which
+-- is the difference between a typo in your code and a typo in your data.
+--
+-- Applied here, at the end, so each wraps the function's final definition
+-- whatever else in this file has already re-wrapped it.
+do
+    local function guardName(fn, who, what)
+        return function(name, ...)
+            __mudix_check_string(name, who, 1, what)
+            return fn(name, ...)
+        end
+    end
+    -- name plus an optional field: the field is only checked when given, since
+    -- calling with just the name asks for the whole table.
+    local function guardNameAndKey(fn, who, what)
+        return function(name, key, ...)
+            __mudix_check_string(name, who, 1, what)
+            if key ~= nil then __mudix_check_string(key, who, 2, "field name") end
+            return fn(name, key, ...)
+        end
+    end
+    local function guardNameKeyValue(fn, who, what)
+        return function(name, key, value, ...)
+            __mudix_check_string(name, who, 1, what)
+            __mudix_check_string(key, who, 2, "field name")
+            __mudix_check_string(value, who, 3, "value")
+            return fn(name, key, value, ...)
+        end
+    end
+
+    uninstallPackage  = guardName(uninstallPackage,  "uninstallPackage",  "package name")
+    installModule     = guardName(installModule,     "installModule",     "module location")
+    uninstallModule   = guardName(uninstallModule,   "uninstallModule",   "module name")
+    reloadModule      = guardName(reloadModule,      "reloadModule",      "module name")
+    enableModuleSync  = guardName(enableModuleSync,  "enableModuleSync",  "module name")
+    disableModuleSync = guardName(disableModuleSync, "disableModuleSync", "module name")
+    getModuleSync     = guardName(getModuleSync,     "getModuleSync",     "module name")
+    getModulePath     = guardName(getModulePath,     "getModulePath",     "module name")
+    getModulePriority = guardName(getModulePriority, "getModulePriority", "module name")
+
+    getPackageInfo = guardNameAndKey(getPackageInfo, "getPackageInfo", "package name")
+    getModuleInfo  = guardNameAndKey(getModuleInfo,  "getModuleInfo",  "module name")
+
+    setPackageInfo = guardNameKeyValue(setPackageInfo, "setPackageInfo", "package name")
+    setModuleInfo  = guardNameKeyValue(setModuleInfo,  "setModuleInfo",  "module name")
+
+    do
+        local _raw = setModulePriority
+        function setModulePriority(name, priority, ...)
+            __mudix_check_string(name, "setModulePriority", 1, "module name")
+            __mudix_check_number(priority, "setModulePriority", 2, "priority")
+            return _raw(name, priority, ...)
+        end
     end
 end
 

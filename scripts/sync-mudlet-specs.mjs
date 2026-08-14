@@ -43,7 +43,11 @@ const IGNORED = new Set([
     '.busted', 'README.md',
     'fixtures/packages/README.md', 'fixtures/packages/build-fixtures.sh',
 ]);
-const wanted = (p) => !IGNORED.has(p) && !p.startsWith('fixtures/packages/sources/');
+// `fixtures/packages/sources/` is the unpacked form of the archives beside it —
+// what build-fixtures.sh zips. It was skipped while Package_spec could not run
+// at all; it is needed now, because one fixture (the XML-only package) has no
+// archive and the spec installs that file directly.
+const wanted = (p) => !IGNORED.has(p);
 
 /** Only text files get CRLF→LF normalisation; a `.mpackage` is a zip and has to
  *  round-trip byte-for-byte. */

@@ -54,36 +54,38 @@ export function installPackageBindings({ lua, api }: BindingContext): void {
     });
     // Mudlet `enableModuleSync(name)` / `disableModuleSync(name)` → true on
     // success, (nil, errMsg) when the name isn't an installed module.
-    const requireModule = (name: string, who: string): void => {
-        const info = api.getModuleInfo(name);
-        if (!info) throw new Error(`${who}: "${name}" is not an installed module`);
+    //
+    // Reported, not raised. These all route through Host::changeModuleSync,
+    // whose refusal reaches Lua via warnArgumentValue — so an unknown module is
+    // a value the caller can branch on, not an error that unwinds the script.
+    // Raising instead (as this used to) meant a script asking about a module the
+    // user had not installed died on the spot; the two messages are Mudlet's own,
+    // and callers do read them.
+    //
+    // Returned as a JS Error for the Bridge.lua wrapper to shape, since a JS
+    // binding cannot itself return Lua's (nil, msg) pair — see moduleDenial.
+    const moduleDenial = (name: string): string | null => {
+        if (name === '') return 'module name cannot be an empty string';
+        if (!api.getModuleInfo(name)) return `module name '${name}' not found`;
+        return null;
     };
-    lua.global.set('enableModuleSync', (name: unknown) => {
+    lua.global.set('__enableModuleSync', (name: unknown) => {
         const n = String(name ?? '');
-        requireModule(n, 'enableModuleSync');
-        api.enableModuleSync(n);
-        return true;
+        return moduleDenial(n) ?? (api.enableModuleSync(n), null);
     });
-    lua.global.set('disableModuleSync', (name: unknown) => {
+    lua.global.set('__disableModuleSync', (name: unknown) => {
         const n = String(name ?? '');
-        requireModule(n, 'disableModuleSync');
-        api.disableModuleSync(n);
-        return true;
+        return moduleDenial(n) ?? (api.disableModuleSync(n), null);
     });
-    // Mudlet `getModuleSync(name)` → bool. Unknown modules raise.
-    lua.global.set('getModuleSync', (name: unknown) => {
+    lua.global.set('__getModuleSyncDenial', (name: unknown) => moduleDenial(String(name ?? '')));
+    lua.global.set('__getModuleSyncValue', (name: unknown) => api.getModuleSync(String(name ?? '')));
+    lua.global.set('__setModulePriority', (name: unknown, priority: unknown) => {
         const n = String(name ?? '');
-        requireModule(n, 'getModuleSync');
-        return api.getModuleSync(n);
-    });
-    // Mudlet setModulePriority / getModulePriority both raise on unknown
-    // module name — quiet defaults would mask typos.
-    lua.global.set('setModulePriority', (name: unknown, priority: unknown) => {
-        const n = String(name ?? '');
-        requireModule(n, 'setModulePriority');
+        const denial = moduleDenial(n);
+        if (denial) return denial;
         const p = Math.trunc(Number(priority ?? 0));
         api.setModulePriority(n, Number.isFinite(p) ? p : 0);
-        return true;
+        return null;
     });
     // getModulePriority reports an unknown module as a VALUE failure
     // (warnArgumentValue) rather than raising, unlike its setter; the null is

@@ -2001,6 +2001,32 @@ if __mudix_pcall_co and type(dispatchEventToFunctions) == 'function' then
     -- __newindex too: a proxy env that only forwards reads would quietly
     -- swallow a global write, should upstream ever add one.
     { __index = _G, __newindex = _G }))
+end
+
+-- Replace the placeholder mudlet.Locale with the real catalogue.
+--
+-- LuaGlobalSetup.lua has to define one before the bundle loads, because
+-- LuaGlobal.lua reads it on the way in. What it defines is hand-written English
+-- approximations — and every caller does \`mudlet.Locale = mudlet.Locale or
+-- loadTranslations("Mudlet")\`, so a placeholder that is merely truthy stops the
+-- real file from ever being read. Scripts then saw wordings that exist nowhere
+-- in Mudlet ("Package X installed." for "Package 'X' installed successfully.").
+-- The catalogue is vendored beside the Lua tree; load it now that io is up.
+--
+-- Anything the catalogue does not carry is kept: prefixError has no Lua entry,
+-- because Mudlet emits that prefix from C++.
+-- pcall-guarded: this reaches the filesystem, and the placeholder is a perfectly
+-- serviceable fallback where there is no readable one (a runtime built over a
+-- partial VFS stub, as the unit tests do). A missing catalogue must not take
+-- the whole runtime down over some console wording.
+if type(loadTranslations) == 'function' then
+  local ok, loaded = pcall(loadTranslations, "Mudlet")
+  if ok and type(loaded) == 'table' then
+    for key, value in pairs(mudlet.Locale or {}) do
+      if loaded[key] == nil then loaded[key] = value end
+    end
+    mudlet.Locale = loaded
+  end
 end`,
             'mudlet-lua-overrides',
         );
