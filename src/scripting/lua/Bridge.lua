@@ -1894,8 +1894,17 @@ local function __mudix_upload_error(file, who)
     return nil
 end
 
+-- The data argument may be nil when a file is being uploaded instead: the file's
+-- contents ARE the body then, and demanding a string as well would mean passing
+-- one that is thrown away. Mudlet allows it, and a caller uploading a file has
+-- nothing sensible to put there.
+function __mudix_check_upload_data(data, who, what, file)
+    if data == nil and type(file) == 'string' and file ~= '' then return end
+    __mudix_check_string(data, who, 1, what)
+end
+
 function postHTTP(data, url, headers, file)
-    __mudix_check_string(data, "postHTTP", 1, "post data")
+    __mudix_check_upload_data(data, "postHTTP", "post data", file)
     __mudix_check_string(url, "postHTTP", 2, "remote url")
     __mudix_check_headers(headers, "postHTTP", 3)
     local err = __mudix_http_url_error(url, "postHTTP")
@@ -1907,7 +1916,7 @@ function postHTTP(data, url, headers, file)
 end
 
 function putHTTP(data, url, headers, file)
-    __mudix_check_string(data, "putHTTP", 1, "put data")
+    __mudix_check_upload_data(data, "putHTTP", "put data", file)
     __mudix_check_string(url, "putHTTP", 2, "remote url")
     __mudix_check_headers(headers, "putHTTP", 3)
     local err = __mudix_http_url_error(url, "putHTTP")

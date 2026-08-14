@@ -38,6 +38,21 @@ export class HttpService {
     // proxy without paying for a doomed direct attempt every call.
     private readonly proxiedOrigins = new Set<string>();
 
+    /**
+     * The response record Mudlet hands to every HTTP event as its last argument:
+     * `{ headers = {...}, cookies = {...} }`. Scripts read it to branch on what
+     * came back — a content type, a rate-limit header — and we were passing an
+     * empty string, so `response.headers` was an index into nothing.
+     *
+     * `cookies` is always empty, and has to be: a browser never exposes
+     * `Set-Cookie` to script, cross-origin or not. It is still present, because
+     * the shape is the contract — a script doing `response.cookies["session"]`
+     * should read nil, not fail on indexing a missing table.
+     */
+    private responseRecord(headers: Headers): Record<string, unknown> {
+        return { headers: Object.fromEntries(headers.entries()), cookies: {} };
+    }
+
     constructor(
         private readonly emit: EmitFn,
         private readonly vfsGetter: VFSGetter,
@@ -143,7 +158,9 @@ export class HttpService {
                 return this.emit('sysDownloadError',
                     [`save to '${saveTo}' failed: ${errorMessage(err)}`, saveTo, url]);
             }
-            this.emit('sysDownloadDone', [saveTo, data.byteLength, '']);
+            // Empty headers: a file: copy never spoke HTTP. Still a record, so a
+            // handler can index it without knowing which kind of URL it got.
+            this.emit('sysDownloadDone', [saveTo, data.byteLength, { headers: {}, cookies: {} }]);
         });
     }
 
@@ -165,10 +182,10 @@ export class HttpService {
             this.emit('sysDownloadError', [`save to '${saveTo}' failed: ${errorMessage(err)}`, saveTo, url]);
             return;
         }
-        // Mudlet's third arg is the raw HTTP response body. We already wrote
-        // it to disk; passing the bytes back as a Lua string would double the
-        // memory pressure for a large download, so we send an empty string.
-        this.emit('sysDownloadDone', [saveTo, data.byteLength, '']);
+        // The third argument is the response record, not the body: the bytes are
+        // already on disk, and handing them back as a Lua string would double the
+        // memory cost of every large download for nothing.
+        this.emit('sysDownloadDone', [saveTo, data.byteLength, this.responseRecord(res.headers)]);
     }
 
     private async readWithProgress(res: Response, url: string): Promise<Uint8Array> {
@@ -257,7 +274,7 @@ export class HttpService {
                 this.emit(errorEvent, [`HTTP ${res.status} ${res.statusText}`, url, ...extraErrorArgs]);
                 return;
             }
-            this.emit(doneEvent, [url, text, ...extraDoneArgs]);
+            this.emit(doneEvent, [url, text, this.responseRecord(res.headers), ...extraDoneArgs]);
         } catch (err) {
             this.emit(errorEvent, [errorMessage(err), url, ...extraErrorArgs]);
         }

@@ -154,6 +154,25 @@ export const UNSUPPORTED_AREAS: UnsupportedArea[] = [
             + 'when discord-rpc fails to load, and Networking_spec asserts it.',
     },
     {
+        area: 'HTTP requests that wait for their own response',
+        spec: 'Networking',
+        pendingReason: 'MUDLET_TEST_HTTP_PORT is not set',
+        approxTests: 21,
+        reason:
+            'These skip for a reason that reads as fixable and is not: starting the fixture server does not '
+            + 'unblock them. A spec issues a request and then waits for the event reporting it, but the whole '
+            + 'busted run is one synchronous call sitting on top of the browser event loop — so the fetch can '
+            + 'never settle while the spec waits, and the event never arrives. The pump that stands in for the '
+            + 'event loop drives the queues mudix owns (its timers, its replay scheduler, its unzip); a network '
+            + 'round-trip is not one of them. It was tried: a fixture server, mounted same-origin on the dev '
+            + 'server so even Set-Cookie would have been readable, changed nothing. Making them run needs a '
+            + 'second, synchronous transport (XMLHttpRequest with async=false) — and then the specs would '
+            + 'exercise that transport rather than the fetch path every real caller takes, which is not testing '
+            + 'mudix but a shim written to satisfy the tests. What these specs would have checked — the response '
+            + 'record on each event, and a nil upload body when a file is given — is covered instead by '
+            + 'tests/scripting/httpResponseRecord.test.ts and httpFileUpload.test.ts, against the real path.',
+    },
+    {
         area: 'MMCP (MudMaster Chat Protocol)',
         spec: 'Networking',
         pendingReason: 'MMCP peer fixture not running',

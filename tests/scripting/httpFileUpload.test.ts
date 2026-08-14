@@ -88,4 +88,27 @@ describe('HTTP upload with an unreadable file', () => {
     it('leaves the runtime usable after an upload', () => {
         expect(t.run("return 1 + 1")).toBe(2);
     });
+
+    // The file's contents ARE the body when one is uploaded, so demanding a data
+    // string as well means passing one that is thrown away. Mudlet allows nil
+    // there; we refused it with "post data as string expected, got nil".
+    it('accepts a nil data argument when a file is supplied', () => {
+        stub.writeBinaryFile('/profiles/test/only-file.txt', new TextEncoder().encode('body from the file'));
+        for (const fn of ['postHTTP', 'putHTTP']) {
+            const out = call(`${fn}(nil, "http://localhost/", {}, getMudletHomeDir() .. "/only-file.txt")`);
+            expect(out, fn).toBe('true|http://localhost/');
+        }
+    });
+
+    // Still refused when there is no file to stand in for it — that call has no
+    // body at all, and the type error is the right answer. A raise, not a
+    // returned refusal, so this one needs its own pcall rather than `call`.
+    it('still refuses a nil data argument with no file', () => {
+        const err = String(t.run(`
+            local ok, err = pcall(postHTTP, nil, "http://localhost/", {})
+            return tostring(ok) .. "|" .. tostring(err)
+        `));
+        expect(err).toMatch(/^false\|/);
+        expect(err).toContain('postHTTP: bad argument #1 type');
+    });
 });
