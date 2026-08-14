@@ -1,0 +1,8 @@
+# A Mudlet package archive is a zip, and a map file is a binary blob. Git's
+# content sniffing gets this right for most of them, but not for the busted
+# fixture that is deliberately *not* a zip — that one looks like text, and a
+# CRLF checkout on Windows would rewrite the very bytes the fixture exists to
+# hand the installer. The sync scripts round-trip these byte-for-byte; say so
+# here too, or git undoes that on the way out of the repo.
+*.mpackage binary
+*.dat binary

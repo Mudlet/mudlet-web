@@ -63,7 +63,7 @@ const GENERIC_MAPPER: DefaultPackage = {
  *  pushes a GUI via `Client.GUI`. `version` is declared for the same reason the
  *  mapper's is: so a bumped archive reaches profiles that have the old one. */
 const BASE_UI: DefaultPackage = {
-    name: 'mudlet-base-ui', filename: 'mudlet-base-ui.mpackage', url: baseUiUrl, version: '1.0.0',
+    name: 'mudlet-base-ui', filename: 'mudlet-base-ui.mpackage', url: baseUiUrl, version: '1.3.0',
 };
 
 /** Drop an image file onto a console and it becomes a Geyser label inside an

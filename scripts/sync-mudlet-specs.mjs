@@ -13,6 +13,12 @@
 //   yarn sync:mudlet-specs --ref v4.20.0   # any branch/tag/sha
 //   yarn sync:mudlet-specs --from E:/Code/Mudlet [--fetch]   # local checkout
 //
+// The corpus is not only the specs: several read fixtures that ship beside
+// them (a map to import, packages to install), and a spec without its fixture
+// fails on a missing file rather than on a parity gap. So everything under the
+// upstream tests directory comes across except the files that only mean
+// something to Mudlet's own runner — see IGNORED below.
+//
 // Nothing downstream needs maintenance: bustedHarness.ts discovers specs from
 // disk and LuaRuntime.ts bundles them with import.meta.glob, so a brand-new
 // `Foo_spec.lua` shows up in the e2e suite on its own. The per-it() manifest
@@ -26,6 +32,22 @@ const REPO = 'Mudlet/Mudlet';
 const UPSTREAM_DIR = 'src/mudlet-lua/tests';
 const SPECS_DIR = fileURLToPath(new URL('../src/scripting/lua/specs/', import.meta.url));
 const SYNCED_MD = `${SPECS_DIR}SYNCED.md`;
+
+/**
+ * Upstream files that are Mudlet-runner housekeeping rather than corpus: its
+ * busted config, the readmes, and the shell script that rebuilds the package
+ * fixtures from `sources/` (which mudix has no use for either — the built
+ * archives are what the specs install).
+ */
+const IGNORED = new Set([
+    '.busted', 'README.md',
+    'fixtures/packages/README.md', 'fixtures/packages/build-fixtures.sh',
+]);
+const wanted = (p) => !IGNORED.has(p) && !p.startsWith('fixtures/packages/sources/');
+
+/** Only text files get CRLF→LF normalisation; a `.mpackage` is a zip and has to
+ *  round-trip byte-for-byte. */
+const TEXT_EXT = /\.(lua|xml|json|md|txt)$/i;
 
 // ── args ─────────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -80,9 +102,9 @@ function localSource(repoPath) {
     const files = gitText('ls-tree', '-r', '--name-only', sha, `${UPSTREAM_DIR}/`)
         .split('\n')
         .map(p => p.slice(UPSTREAM_DIR.length + 1))
-        .filter(p => p.endsWith('_spec.lua'))
+        .filter(wanted)
         .sort();
-    if (files.length === 0) die(`no *_spec.lua under ${UPSTREAM_DIR} at ${sha.slice(0, 8)}`);
+    if (files.length === 0) die(`nothing under ${UPSTREAM_DIR} at ${sha.slice(0, 8)}`);
 
     return {
         origin: repoPath, sha, date, files,
@@ -110,12 +132,23 @@ async function githubSource() {
     const commit = await api(`https://api.github.com/repos/${REPO}/commits/${encodeURIComponent(ref)}`);
     const sha = commit.sha;
     const date = (commit.commit?.committer?.date ?? '').slice(0, 10);
-    const tree = await api(`https://api.github.com/repos/${REPO}/contents/${UPSTREAM_DIR}?ref=${sha}`);
-    const files = tree
-        .filter(e => e.type === 'file' && e.name.endsWith('_spec.lua'))
-        .map(e => e.name)
+    // Walk down to the tests directory one tree at a time, then list that
+    // subtree recursively — the fixtures live in subdirectories, which the flat
+    // /contents listing would not reach.
+    let treeSha = commit.commit.tree.sha;
+    for (const segment of UPSTREAM_DIR.split('/')) {
+        const node = (await api(`https://api.github.com/repos/${REPO}/git/trees/${treeSha}`))
+            .tree.find(e => e.path === segment && e.type === 'tree');
+        if (!node) die(`${UPSTREAM_DIR} not found at ${sha.slice(0, 8)}`);
+        treeSha = node.sha;
+    }
+    const listing = await api(`https://api.github.com/repos/${REPO}/git/trees/${treeSha}?recursive=1`);
+    if (listing.truncated) die(`${UPSTREAM_DIR} listing truncated by GitHub — use --from <checkout>`);
+    const files = listing.tree
+        .filter(e => e.type === 'blob' && wanted(e.path))
+        .map(e => e.path)
         .sort();
-    if (files.length === 0) die(`no *_spec.lua under ${UPSTREAM_DIR} at ${sha.slice(0, 8)}`);
+    if (files.length === 0) die(`nothing under ${UPSTREAM_DIR} at ${sha.slice(0, 8)}`);
 
     return {
         origin: `https://github.com/${REPO}`, sha, date, files,
@@ -131,23 +164,31 @@ async function githubSource() {
 // ── sync ─────────────────────────────────────────────────────────────────────
 const source = localRepo ? localSource(localRepo) : await githubSource();
 console.log(`Source: ${source.origin} @ ${source.sha.slice(0, 8)} (${source.date}), `
-    + `${source.files.length} spec file(s)\n`);
+    + `${source.files.length} file(s)\n`);
 
 mkdirSync(SPECS_DIR, { recursive: true });
-const localFiles = new Set(readdirSync(SPECS_DIR).filter(f => f.endsWith('_spec.lua')));
+// Recursive, because the fixtures sit in subdirectories. SYNCED.md is mudix's
+// own and is never a candidate for the "gone upstream" sweep below.
+const walk = (dir, prefix = '') => readdirSync(dir, { withFileTypes: true }).flatMap(e =>
+    e.isDirectory() ? walk(`${dir}${e.name}/`, `${prefix}${e.name}/`) : [`${prefix}${e.name}`]);
+const localFiles = new Set(walk(SPECS_DIR).filter(f => f !== 'SYNCED.md'));
 
 const added = [], updated = [], unchanged = [];
 for (const name of source.files) {
-    const next = lf(await source.read(name));
+    const norm = (buf) => (TEXT_EXT.test(name) ? lf(buf) : buf);
+    const next = norm(await source.read(name));
     const dest = `${SPECS_DIR}${name}`;
     let prev = null;
-    try { prev = lf(readFileSync(dest)); } catch { /* new file */ }
+    try { prev = norm(readFileSync(dest)); } catch { /* new file */ }
 
     if (prev && prev.equals(next)) {
         unchanged.push(name);
     } else {
         (prev ? updated : added).push(prev ? `${name} (${sizeDelta(prev, next)})` : name);
-        if (!dryRun) writeFileSync(dest, next);
+        if (!dryRun) {
+            mkdirSync(dest.slice(0, dest.lastIndexOf('/')), { recursive: true });
+            writeFileSync(dest, next);
+        }
     }
     localFiles.delete(name);
 }
@@ -172,7 +213,7 @@ if (!dryRun) {
         )
         .replace(
             /^All \d+ `\*_spec\.lua` files/m,
-            `All ${source.files.length} \`*_spec.lua\` files`,
+            `All ${source.files.filter(f => f.endsWith('_spec.lua')).length} \`*_spec.lua\` files`,
         );
     if (next === md && (updated.length || added.length || removed.length)) {
         console.warn('! SYNCED.md header not recognised — update the commit hash by hand.\n');

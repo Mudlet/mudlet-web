@@ -6,13 +6,22 @@ every failing spec is a genuine mudix↔Mudlet parity gap, and re-syncing is a
 clean copy + diff.
 
 - Upstream: https://github.com/Mudlet/Mudlet/tree/development/src/mudlet-lua/tests
-- Synced from commit: `e52432fe5fb43413f4ed4ca7547a4c42bbb6e2bc` (development, 2026-08-04)
+- Synced from commit: `5c7157a024c30a07d6d8abeeee1dfcc903d3e358` (development, 2026-08-14)
 
 ## Files
 
-All 34 `*_spec.lua` files from Mudlet's tests directory are synced verbatim. The
-live pass/fail scoreboard (and which are asserted green) lives in
-`docs/busted-e2e-plan.md`; `e2e/busted.spec.ts` runs them against the real app.
+All 41 `*_spec.lua` files from Mudlet's tests directory are synced verbatim,
+together with the `fixtures/` several of them read — a map to import, packages
+to install. A spec without its fixture fails on a missing file rather than on a
+parity gap, so the fixtures are as much part of the corpus as the specs.
+`LuaRuntime.ts` serves both at `/lua/specs/…`, which is where a spec's
+`debug.getinfo(1, "S").source` points it.
+
+Not copied: `.busted`, the readmes, and `fixtures/packages/sources/` with its
+`build-fixtures.sh` — those rebuild the package archives, and it is the built
+archives the specs install.
+
+`e2e/busted.spec.ts` runs the corpus against the real app.
 
 ## Re-syncing
 
