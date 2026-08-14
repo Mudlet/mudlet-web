@@ -14,6 +14,11 @@ export interface DragState {
     splitBefore?: boolean;
 }
 
+/** One page of an MXP `<FRAME>` tab strip. `id` is the frame whose console the
+ *  tab shows — the host frame itself for the first page, a `DOCK`ed child
+ *  otherwise. See MxpFrameManager. */
+export interface MxpTabPage { id: string; title: string }
+
 export interface WindowOpenOptions {
     title?: string;
     kind?: 'text' | 'html' | 'map';
@@ -49,6 +54,10 @@ export interface WindowOpenOptions {
     fontSize?: number;
     /** Output font family override (Mudlet setFont). */
     fontFamily?: string;
+    /** Rendered row height in px, overriding the stylesheet's line-height. Set
+     *  for MXP frames so a box of N rows really holds N rows. See
+     *  WindowManager.setLineHeight. */
+    lineHeight?: number;
     /** Character-column wrap width (Mudlet setWindowWrap). 0/undefined disables. */
     wrapAt?: number;
     /** Indent (in characters) of newline-started lines (Mudlet setWindowWrapIndent). */
@@ -99,6 +108,8 @@ export interface ScriptWindowRenderData {
     splitFlex?: number;
     fontSize?: number;
     fontFamily?: string;
+    /** See WindowOpenOptions.lineHeight. */
+    lineHeight?: number;
     wrapAt?: number;
     wrapIndent?: number;
     wrapHangingIndent?: number;
@@ -131,4 +142,9 @@ export interface ScriptWindowRenderData {
      *  still trigger React's seed effect (otherwise printCmdLine('x') after a
      *  user types 'x' would do nothing). */
     cmdLineValueSeq?: number;
+    /** MXP `<FRAME TITLE=…>` tab strip rendered as this window's chrome. Absent
+     *  for every other window; set only by MxpFrameManager. */
+    frameTabs?: { pages: MxpTabPage[]; active: string };
+    /** True for a console backing an MXP `<FRAME>` — draws the frame border. */
+    isMxpFrame?: boolean;
 }

@@ -3292,14 +3292,20 @@ export class ScriptingEngine implements EngineHost {
                                 blankRenders: multiLine ? true : line === '',
                             });
                         }
-                        // MXP <FRAME> creates/closes a mini-console; <DEST> writes
+                        // MXP <FRAME> creates/closes a frame console; <DEST> writes
                         // redirected text into it. A redirect to a frame that
                         // doesn't exist falls back to inline main rendering (the
                         // parser already pulled it out of the main line), matching
                         // Mudlet's degradation when setMxpDestination fails.
-                        if (r.frames) for (const f of r.frames) this.api.mxpFrame(f.name, f.attrs);
+                        if (r.frames) for (const f of r.frames) this.api.mxpFrame(f.name, f.attrs, f.dest);
                         if (r.redirects) for (const rd of r.redirects) {
                             const fbuf = new AnsiAwareBuffer(rd.segments);
+                            // A <SEND>/<A> inside the <DEST> is offset into the
+                            // redirected text, not the main line, so it has to be
+                            // wired onto the frame's own buffer — otherwise the
+                            // frame renders underlined text that does nothing.
+                            this.wireMxpLinks(fbuf, rd.links);
+                            this.wireOsc8Links(fbuf);
                             if (!this.api.mxpWriteToFrame(rd.frame, fbuf, rd.eof)) {
                                 units.push({ plain: rd.plain, buffer: fbuf, outputLine: rd.plain, blankRenders: rd.plain === '' });
                             }
@@ -3565,6 +3571,10 @@ export class ScriptingEngine implements EngineHost {
                 this.mxp.reset();
                 this.mxpActive = false;
                 this.mxpHandshakeEnabled = false;
+                // Frames belong to the session that declared them, so the new
+                // one starts from an unsplit main window (Mudlet resets its
+                // TMxpFrameManager on connect for the same reason).
+                this.api.mxpResetFrames();
                 // Re-apply the persisted "force MXP processing on" preference —
                 // `mxp.reset()` above has just cleared the secure-mode lock it
                 // implies. Connect is deliberately the only place this is read:

@@ -18,9 +18,16 @@ interface OutputAreaProps {
     session: MudSession;
     stickyLines?: number;
     commandInputRef?: React.RefObject<HTMLInputElement | HTMLTextAreaElement | null>;
+    /** Extra insets claimed by edge-aligned MXP `<FRAME>`s, on top of the
+     *  profile's setBorder* sizes. Mudlet keeps the two apart the same way
+     *  (Host::mUserBorders + mMxpBorders) so a server layout and a script never
+     *  clobber each other's borders. */
+    mxpBorders?: { top: number; right: number; bottom: number; left: number };
 }
 
-export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, commandInputRef }: OutputAreaProps) {
+const NO_MXP_BORDERS = { top: 0, right: 0, bottom: 0, left: 0 };
+
+export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, commandInputRef, mxpBorders = NO_MXP_BORDERS }: OutputAreaProps) {
     const connectionId = useConnectionId();
     const outputBackgroundString = useProfileField('outputBackground');
     const outputBackgroundColor = useProfileField('outputBackgroundColor');
@@ -146,11 +153,14 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
 
     // Mudlet setBorderTop/Bottom/Left/Right insets the console; labels still
     // own the full main-viewport so they can be placed in the carved area.
+    // MXP frames add their own insets on top, so a server that tiles frames
+    // against the edges pushes the console out of their way instead of having
+    // them paint over it.
     const contentStyle: React.CSSProperties = {
-        paddingTop: borders?.top || undefined,
-        paddingRight: borders?.right || undefined,
-        paddingBottom: borders?.bottom || undefined,
-        paddingLeft: borders?.left || undefined,
+        paddingTop: (borders?.top ?? 0) + mxpBorders.top || undefined,
+        paddingRight: (borders?.right ?? 0) + mxpBorders.right || undefined,
+        paddingBottom: (borders?.bottom ?? 0) + mxpBorders.bottom || undefined,
+        paddingLeft: (borders?.left ?? 0) + mxpBorders.left || undefined,
         background: borderColor
             ? `rgba(${borderColor.r}, ${borderColor.g}, ${borderColor.b}, ${borderColor.a / 255})`
             : undefined,

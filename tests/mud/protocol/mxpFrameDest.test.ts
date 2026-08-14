@@ -35,6 +35,12 @@ describe('MxpParser — FRAME (Mudlet 4.21)', () => {
     expect(r.frames?.[0]).toEqual({ name: 'Chat', attrs: { NAME: 'Chat', FLOATING: 'true' } });
   });
 
+  it('records the open DEST so a nested FRAME lays out inside it', () => {
+    const { parser } = makeParser();
+    const r = parser.parseLine(`${SECURE}<frame Col align=left width=200><dest Col><frame Map align=top height=150></dest>`);
+    expect(r.frames?.map(f => [f.name, f.dest])).toEqual([['Col', undefined], ['Map', 'Col']]);
+  });
+
   it('ignores a nameless FRAME', () => {
     const { parser } = makeParser();
     const r = parser.parseLine(`${SECURE}<frame>`);
@@ -83,6 +89,29 @@ describe('MxpParser — DEST (Mudlet 4.21)', () => {
     const r2 = parser.parseLine(`line two</dest>after`);
     expect(r2.redirects?.[0]).toMatchObject({ frame: 'Log', plain: 'line two', eol: false });
     expect(r2.plain).toBe('after');
+  });
+
+  // A <SEND> inside a <DEST> spans the redirected text, not the main line, so
+  // its offsets have to travel with the redirect — measured against the main
+  // line they cover nothing and the link is dropped, leaving dead underlined
+  // text in the frame.
+  it('carries SEND links inside a DEST on the redirect, offset into its own text', () => {
+    const { parser } = makeParser();
+    const r = parser.parseLine(`${SECURE}main <dest Surrounding>a well <send href="get well" hint="pick it up">Get</send></dest>`);
+    expect(r.links).toEqual([]);
+    const rd = r.redirects![0];
+    expect(rd.plain).toBe('a well Get');
+    expect(rd.links).toEqual([
+      { start: 7, end: 10, kind: 'command', payload: 'get well', hint: 'pick it up' },
+    ]);
+    expect(rd.plain.slice(rd.links[0].start, rd.links[0].end)).toBe('Get');
+  });
+
+  it('keeps main-line and redirected links in their own buckets', () => {
+    const { parser } = makeParser();
+    const r = parser.parseLine(`${SECURE}<send look>Look</send> <dest Log><send north>N</send></dest> tail`);
+    expect(r.links).toMatchObject([{ payload: 'look' }]);
+    expect(r.redirects?.[0].links).toMatchObject([{ payload: 'north', start: 0, end: 1 }]);
   });
 
   it('renders a nameless DEST inline (no redirect)', () => {

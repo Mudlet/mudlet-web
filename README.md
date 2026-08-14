@@ -145,6 +145,8 @@ Lua scripts and packages that Mudlet Web merely *runs* (your profile scripts, in
 
 Mudlet Web also bundles **Bitstream Vera Sans Mono** (`src/assets/fonts/bitstream-vera-sans-mono/`) as the default console output and command-line font, matching Mudlet's own default console typeface. It's under the separate, permissive [Bitstream Vera license](src/assets/fonts/bitstream-vera-sans-mono/COPYRIGHT.TXT) (free redistribution and embedding; just don't sell the font standalone or rename a modified copy while keeping "Bitstream"/"Vera" in the name).
 
+**Ubuntu** and **Ubuntu Mono** (`src/assets/fonts/ubuntu/`, regular/bold/italic/bold-italic each) are bundled for the same reason: Mudlet registers both families into Qt's font database at startup, so packages written for Mudlet — including the bundled `mudlet-base-ui` — ask for them by name for labels, headers, and miniconsole stylesheets. They're under the [Ubuntu Font Licence 1.0](src/assets/fonts/ubuntu/LICENCE.txt) (free redistribution and embedding; modified copies must be renamed).
+
 <div align="center">
 <sub>Built with React, TypeScript, and a lot of WebAssembly. Happy MUDding. 🐉</sub>
 </div>

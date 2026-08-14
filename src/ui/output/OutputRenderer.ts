@@ -156,6 +156,12 @@ type OutputHandlerOptions = {
     maxElements?: number | (() => number);
     trimSlack?: number;
     suppressSplitView?: (durationMs: number) => void;
+    /** Whether new output should scroll the view to the tail. True for a
+     *  scrollback; false for a console the writer rewrites wholesale — an MXP
+     *  frame written with `<DEST … EOF>` — where following the tail makes the
+     *  content slide as a multi-flush redraw lands. Read live on every write, so
+     *  a console can become top-anchored after it is already mounted. */
+    followTail?: () => boolean;
     /** Called once the cursor ops are ready; wire them to ScriptingAPI/session. */
     onCursorReady?: (ops: CursorOps) => void;
 };
@@ -242,9 +248,15 @@ export function setupOutputRenderer(
         maxElements = 1000,
         trimSlack = 100,
         suppressSplitView,
+        followTail,
         onCursorReady,
     }: OutputHandlerOptions,
 ): OutputRendererControls {
+    /** Scroll to the newest line, unless this console is pinned to the top. */
+    const scrollToTail = () => {
+        if (followTail && !followTail()) return;
+        outputWrapper.scrollTop = outputWrapper.scrollHeight;
+    };
     let timestampsVisible = false;
 
     // ── Trigger cursor ────────────────────────────────────────────────────────
@@ -398,7 +410,7 @@ export function setupOutputRenderer(
             deletedPrev = null;
         }
         if (!isSplitView()) {
-            requestAnimationFrame(() => { outputWrapper.scrollTop = outputWrapper.scrollHeight; });
+            requestAnimationFrame(scrollToTail);
         }
     }
 
@@ -445,7 +457,7 @@ export function setupOutputRenderer(
                 updateElementContent(partialLineEl, message);
                 if (partialStickyEl) updateElementContent(partialStickyEl, message);
                 if (!isSplitView()) {
-                    requestAnimationFrame(() => { outputWrapper.scrollTop = outputWrapper.scrollHeight; });
+                    requestAnimationFrame(scrollToTail);
                 }
             } else {
                 const wrapper = createMessageWrapper(message, 'script', timestampValue);
@@ -464,7 +476,7 @@ export function setupOutputRenderer(
                     }
                 } else {
                     suppressSplitView?.(250);
-                    requestAnimationFrame(() => { outputWrapper.scrollTop = outputWrapper.scrollHeight; });
+                    requestAnimationFrame(scrollToTail);
                 }
             }
             return;
@@ -484,7 +496,7 @@ export function setupOutputRenderer(
             partialStickyEl = null;
             if (!isSplitView()) {
                 suppressSplitView?.(250);
-                requestAnimationFrame(() => { outputWrapper.scrollTop = outputWrapper.scrollHeight; });
+                requestAnimationFrame(scrollToTail);
             }
             return;
         }
@@ -530,9 +542,7 @@ export function setupOutputRenderer(
             if (suppressSplitView) {
                 suppressSplitView(250);
             }
-            requestAnimationFrame(() => {
-                outputWrapper.scrollTop = outputWrapper.scrollHeight;
-            });
+            requestAnimationFrame(scrollToTail);
         }
     };
 

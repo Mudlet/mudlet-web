@@ -23,6 +23,8 @@ interface TextPanelProps {
     scrollBoxes?: ScrollBoxManager;
     fontSize?: number;
     fontFamily?: string;
+    /** Rendered row height in px (MXP frames). See WindowManager.setLineHeight. */
+    lineHeight?: number;
     wrapAt?: number;
     wrapIndent?: number;
     wrapHangingIndent?: number;
@@ -34,10 +36,15 @@ interface TextPanelProps {
     cmdLineValueSeq?: number;
 }
 
-export function TextPanel({ id, title, manager, labels, cmdLines, scrollBoxes, fontSize, fontFamily, wrapAt, wrapIndent, wrapHangingIndent, backgroundColor, backgroundImage, cmdLineEnabled, cmdLineStyleSheet, cmdLineValue, cmdLineValueSeq }: TextPanelProps) {
+export function TextPanel({ id, title, manager, labels, cmdLines, scrollBoxes, fontSize, fontFamily, lineHeight, wrapAt, wrapIndent, wrapHangingIndent, backgroundColor, backgroundImage, cmdLineEnabled, cmdLineStyleSheet, cmdLineValue, cmdLineValueSeq }: TextPanelProps) {
     const viewportRef = useRef<HTMLDivElement>(null);
     const { outputRef, sentinelRef, stickyAreaRef, isSplitView, scrollToBottom, controls } =
-        useStickyOutput(null, { stickyLines: 50 });
+        useStickyOutput(null, {
+            stickyLines: 50,
+            // An MXP frame the server rewrites wholesale is a fixed pane, not a
+            // scrollback: it stays at the first row instead of chasing the tail.
+            followTail: () => !manager.isTopAnchored(id),
+        });
 
     useEffect(() => {
         if (!controls || !outputRef.current || !viewportRef.current) return;
@@ -73,6 +80,7 @@ export function TextPanel({ id, title, manager, labels, cmdLines, scrollBoxes, f
             className="window-text-panel"
             fontSize={fontSize}
             fontFamily={fontFamily}
+            lineHeight={lineHeight}
             wrapAt={wrapAt}
             wrapIndent={wrapIndent}
             wrapHangingIndent={wrapHangingIndent}

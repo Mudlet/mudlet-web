@@ -26,6 +26,7 @@ import { Console } from '../mud/text/Console';
 import { flashTitle } from '../utils/documentTitle';
 import { MspParser } from '../mud/protocol';
 import { StopwatchManager, localStorageStopwatchStore } from './StopwatchManager';
+import { MxpFrameManager } from './MxpFrameManager';
 import { getHeldModifiers } from './heldModifiers';
 import { useAppStore, selectProfileField, connectionUrl, PROTOCOL_DEFAULTS, MAPPER_DEFAULTS, MAP_INFO_BG_DEFAULT, type BooleanProtocolKey, type MapperSettings, type MapInfoBgColor, type MudConnection } from '../storage';
 import {
@@ -284,6 +285,25 @@ if (typeof document !== 'undefined') {
 // context and the answer. Measured over 5000 calls: 207ms → 0.1ms.
 let measureCtx: CanvasRenderingContext2D | null | undefined;
 const measureCache = new Map<string, [number, number]>();
+
+/**
+ * Window id backing an MXP `<FRAME name>`. Frame names come from the server,
+ * while mudix owns window ids of its own — `main`, `map` (the toolbar's
+ * mapper), `mapViewN`. eden calls its minimap frame `map`, which unprefixed
+ * would have the server's frame and the user's map widget fighting over one
+ * window: creating the frame hijacks the mapper's panel (and drops the frame's
+ * text, since a map panel takes no buffer writes), `ACTION=close` deletes the
+ * mapper, and the toolbar's Map button hides the frame. The separator cannot
+ * appear in a frame name (MxpFrameManager's VALID_FRAME_NAME is alphanumerics,
+ * `_` and `-`), so the namespace cannot be reached from the wire either.
+ *
+ * The cost is that a Lua script cannot address a frame by its bare MXP name the
+ * way Mudlet's mSubConsoleMap allows; no mudix API exposes frames to scripts
+ * yet, so nothing depends on that today.
+ */
+function mxpWindowId(name: string): string {
+    return `mxp:${name}`;
+}
 
 function measureMonospaceCell(family: string, size: number): [number, number] {
     const px = size * 4 / 3;
@@ -3309,56 +3329,123 @@ export class ScriptingAPI {
     }
 
     /**
-     * MXP `<FRAME>` (Mudlet 4.21). Maps an MXP frame onto a mini-console — the
-     * browser has no OS-level child/floating windows, so internal, external and
-     * floating frames all become overlay mini-consoles. `attrs` keys are
-     * upper-cased (see `MxpFrameCommand`). `ACTION=close` deletes the frame;
-     * anything else opens it (or repositions it if it already exists). Geometry
-     * (`LEFT`/`TOP`/`WIDTH`/`HEIGHT`) accepts pixels, `N%` of the main window, or
-     * `Nc` character cells.
+     * MXP `<FRAME>` (Mudlet 4.21). All the layout thinking lives in
+     * {@link MxpFrameManager}, a port of Mudlet's TMxpFrameManager — edge tiling
+     * with accumulating borders, `<DEST>`-nested sub-frames, `TITLE` tab headers
+     * and `DOCK` tab groups. This just owns the manager and satisfies its host
+     * interface below. `dest` is the `<DEST>` frame open when the tag was parsed.
      */
-    mxpFrame(name: string, attrs: Record<string, string>): void {
+    mxpFrame(name: string, attrs: Record<string, string>, dest?: string): void {
         if (!name) return;
-        if ((attrs.ACTION ?? '').toLowerCase() === 'close') { this.deleteMiniConsole(name); return; }
-        const [mw, mh] = this.getMainWindowSize();
-        const x = this.parseMxpDim(attrs.LEFT, mw, false) ?? 0;
-        const y = this.parseMxpDim(attrs.TOP, mh, true) ?? 0;
-        const w = this.parseMxpDim(attrs.WIDTH, mw, false) ?? Math.min(400, Math.round(mw * 0.4));
-        const h = this.parseMxpDim(attrs.HEIGHT, mh, true) ?? 120;
-        if (this.session.windows.isMiniConsole(name)) {
-            this.windows.move(name, x, y);
-            this.windows.resize(name, w, h);
-        } else {
-            this.createMiniConsole(name, x, y, w, h);
-        }
+        this.mxpFrames.createFrame(name, attrs, dest);
+    }
+
+    /** Tear every MXP frame down. MXP frames are per-connection state in Mudlet
+     *  (TMxpFrameManager::resetAllFrames), so a reconnect starts from a clean
+     *  main window rather than inheriting the last session's layout. */
+    mxpResetFrames(): void {
+        this.mxpFrames.resetAllFrames();
+        this.mxpReplacedFrames.clear();
     }
 
     /**
-     * Write an MXP `<DEST>` redirected line into a frame's mini-console. Returns
-     * false when no mini-console of that name exists (the caller then renders the
-     * text inline in the main window, matching Mudlet). `eof` clears the frame
-     * first — the status-frame "replace contents" idiom.
+     * Write an MXP `<DEST>` redirected line into a frame's console. Returns
+     * false when no such frame exists (the caller then renders the text inline
+     * in the main window, matching Mudlet). `eof` clears the frame first — the
+     * status-frame "replace contents" idiom.
      */
     mxpWriteToFrame(name: string, buffer: AnsiAwareBuffer, eof: boolean): boolean {
-        if (!this.session.windows.isMiniConsole(name)) return false;
-        if (eof) this.clearWindow(name);
-        this.session.windows.pushBuffer(name, buffer);
+        if (!this.mxpFrames.has(name)) return false;
+        const id = mxpWindowId(name);
+        if (eof) {
+            this.clearWindow(id);
+            if (!this.mxpReplacedFrames.has(name)) {
+                this.mxpReplacedFrames.add(name);
+                this.session.windows.setTopAnchored(id, true);
+            }
+        }
+        this.session.windows.pushBuffer(id, buffer);
+        // A frame the server rewrites wholesale is a pane, not a scrollback, so
+        // hold it at the first row. Such a redraw arrives over several network
+        // flushes (eden sends ~12 map rows across two), and a console that
+        // follows the tail slides as the rows land and snaps back on the next
+        // clear — the "jumping" a fixed pane must not do.
+        if (this.mxpReplacedFrames.has(name)) this.session.windows.scrollToTop(id);
         return true;
     }
 
-    /** Parse an MXP geometry dimension: `N%` → fraction of `ref`, `Nc` → N
-     *  character cells (approximate), bare number → pixels. null when absent. */
-    private parseMxpDim(v: string | undefined, ref: number, vertical: boolean): number | null {
-        if (v == null || v === '') return null;
-        const s = v.trim().toLowerCase();
-        const num = parseFloat(s);
-        if (Number.isNaN(num)) return null;
-        if (s.endsWith('%')) return Math.round((ref * num) / 100);
-        // Character-cell units ('c'); approximate cell metrics good enough for a
-        // status-frame box (mudix doesn't expose the live mono cell size here).
-        if (s.endsWith('c')) return Math.round(num * (vertical ? 16 : 8));
-        return Math.round(num);
-    }
+    /** Frames that have been written with `<DEST … EOF>` at least once, i.e. the
+     *  server treats them as replace-contents panes. Learned rather than
+     *  declared: MXP has no attribute for it. */
+    private readonly mxpReplacedFrames = new Set<string>();
+
+    private readonly mxpFrames = new MxpFrameManager({
+        // Frames tile in the main window minus the Lua borders. A GUI package
+        // that docks a panel to an edge reserves its strip through those —
+        // Geyser's `Adjustable.Container{attached=…}` calls setBorderRight and
+        // friends — so laying frames out against the raw viewport would put a
+        // server's right-hand frame straight on top of the package's panel.
+        // The MXP borders themselves are excluded: MxpFrameManager tracks those.
+        consoleArea: () => {
+            const [w, h] = this.getMainWindowSize();
+            const b = this.getBorderSizes();
+            return {
+                x: b.left,
+                y: b.top,
+                width: Math.max(0, w - b.left - b.right),
+                height: Math.max(0, h - b.top - b.bottom),
+            };
+        },
+        // Matches the row height placeFrameConsole pins the frame's console to,
+        // so `Nc` really is N visible rows.
+        charCellSize: () => {
+            const family = selectProfileField(useAppStore.getState(), this.connectionId, 'outputFont')?.family ?? '';
+            const size = selectProfileField(useAppStore.getState(), this.connectionId, 'fontSize') ?? 12;
+            const [cellW, cellH] = measureMonospaceCell(family, size);
+            return [cellW || 8, cellH || 16];
+        },
+        placeFrameConsole: (name, x, y, width, height, parent) => {
+            const id = mxpWindowId(name);
+            if (this.session.windows.isMiniConsole(id)) {
+                this.windows.move(id, x, y);
+                this.windows.resize(id, width, height);
+            } else {
+                this.createMiniConsole(id, x, y, width, height, parent && mxpWindowId(parent));
+            }
+            this.session.windows.markAsMxpFrame(id);
+            // Mudlet pins each frame console to the main display's font
+            // (TMxpFrameManager: `console->setFontSize(...)`). Without it a frame
+            // asked for `20c` of rows is measured with the main font but rendered
+            // with the panel default, so the rows overflow the box it was given —
+            // which is what puts a scrollbar in a status frame and makes a
+            // redrawn map jump as the console scrolls to the bottom.
+            const font = selectProfileField(useAppStore.getState(), this.connectionId, 'outputFont');
+            const size = selectProfileField(useAppStore.getState(), this.connectionId, 'fontSize') ?? 12;
+            if (font?.family) this.session.windows.setFont(id, font.family);
+            this.session.windows.setFontSize(id, size);
+            // …and to Mudlet's row metric. Consoles normally lay rows out at the
+            // stylesheet's roomier line-height; a frame is a fixed box that has
+            // to hold the rows the server sized it for, so it uses ascent+descent
+            // like TTextEdit::mFontHeight. ~10% tighter, which is the difference
+            // between a map fitting and overflowing by a row.
+            this.session.windows.setLineHeight(id, measureMonospaceCell(font?.family ?? '', size)[1]);
+        },
+        openExternalFrame: (name, title, width, height) => {
+            this.session.windows.open(mxpWindowId(name), {
+                kind: 'text', title, autoDock: false, lockFloating: true, ignoreHint: true, width, height,
+            });
+        },
+        destroyFrameConsole: (name) => this.session.windows.close(mxpWindowId(name)),
+        showFrameConsole: (name) => { this.session.windows.show(mxpWindowId(name)); },
+        raiseFrameConsole: (name) => this.session.windows.bringToFront(mxpWindowId(name)),
+        setFrameScrolling: (name, enabled) => { this.session.windows.setScrollingEnabled(mxpWindowId(name), enabled); },
+        setFrameTabs: (name, pages, active) => this.session.windows.setFrameTabs(
+            mxpWindowId(name),
+            pages.map(p => ({ id: mxpWindowId(p.id), title: p.title })),
+            mxpWindowId(active),
+        ),
+        setMxpBorders: (borders) => this.session.windows.setMxpBorders(borders),
+    });
 
     /**
      * Mudlet `createBuffer(name)`. Registers a named off-screen console for

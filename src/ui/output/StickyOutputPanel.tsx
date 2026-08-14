@@ -32,6 +32,8 @@ interface StickyOutputPanelProps {
     className?: string;
     fontSize?: number;
     fontFamily?: string;
+    /** Rendered row height in px, overriding the stylesheet line-height. */
+    lineHeight?: number;
     wrapAt?: number;
     wrapIndent?: number;
     wrapHangingIndent?: number;
@@ -42,7 +44,7 @@ export function StickyOutputPanel({
     isSplitView, scrollToBottom,
     background, backgroundExtra, foreground, showTimestamps, onToggleTimestamps,
     onFind, getMenuExtraItems,
-    commandInputRef, className, fontSize, fontFamily, wrapAt, wrapIndent, wrapHangingIndent,
+    commandInputRef, className, fontSize, fontFamily, lineHeight, wrapAt, wrapIndent, wrapHangingIndent,
 }: StickyOutputPanelProps) {
     const [stickyHeight, setStickyHeight] = useState(DEFAULT_STICKY_HEIGHT);
     const [contextMenu, setContextMenu] =
@@ -145,12 +147,13 @@ export function StickyOutputPanel({
         ['--wrap-indent' as string]: `${indent - hanging}ch`,
     } : {};
 
-    const wrapStyle: React.CSSProperties | undefined = (background || backgroundExtra || foreground || fontSize || fontFamily || (wrapAt && wrapAt > 0) || indent > 0 || hanging > 0) ? {
+    const wrapStyle: React.CSSProperties | undefined = (background || backgroundExtra || foreground || fontSize || fontFamily || lineHeight || (wrapAt && wrapAt > 0) || indent > 0 || hanging > 0) ? {
         ...(background ? { background } : {}),
         ...(backgroundExtra ?? {}),
         ...(foreground ? { color: foreground } : {}),
         ...(fontSize ? { fontSize: `${fontSize}pt` } : {}),
         ...(fontFamily ? { fontFamily: `${fontFamily}, monospace` } : {}),
+        ...(lineHeight ? { lineHeight: `${lineHeight}px` } : {}),
         ...(wrapAt && wrapAt > 0 ? { ['--wrap-cols' as string]: `${wrapAt}ch` } : {}),
         ...indentStyle,
     } : undefined;

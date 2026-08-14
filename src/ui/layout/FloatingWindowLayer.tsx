@@ -27,6 +27,8 @@ export function FloatingWindowLayer({ windows, manager, onDragStateChange, onTit
             manager={manager}
             isMiniConsole={manager.isMiniConsole(w.id)}
             lockFloating={w.lockFloating}
+            frameTabs={w.frameTabs}
+            isMxpFrame={w.isMxpFrame}
             onFocus={()           => manager.bringToFront(w.id)}
             onMoved={(x, y)       => manager.setPosition(w.id, x, y)}
             onResized={(ww, h)    => manager.setSize(w.id, ww, h)}

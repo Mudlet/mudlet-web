@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef } from 'react';
-import type { DockSide, DragState } from '../windows/types';
+import type { DockSide, DragState, MxpTabPage } from '../windows/types';
 import type { WindowManager } from '../windows/WindowManager';
 import { detectDock } from './dockDetect';
 
@@ -20,6 +20,12 @@ interface ScriptWindowProps {
     /** When true, dragging the titlebar still moves the window but never
      *  enters a dock zone — mirrors Mudlet's openUserWindow(..., autoDock=false). */
     lockFloating?: boolean;
+    /** MXP `<FRAME TITLE=…>` tab strip drawn above the content. The first page
+     *  is this window's own console; the rest are `DOCK`ed frames nested inside
+     *  its viewport. See MxpFrameManager. */
+    frameTabs?: { pages: MxpTabPage[]; active: string };
+    /** Console backing an MXP `<FRAME>` — outlines it, like Mudlet does. */
+    isMxpFrame?: boolean;
     onFocus:            () => void;
     onMoved:            (x: number, y: number) => void;
     onResized:          (w: number, h: number) => void;
@@ -32,7 +38,7 @@ interface ScriptWindowProps {
 export function ScriptWindow({
     id, title, visible,
     x, y, width, height, zIndex,
-    manager, isMiniConsole, lockFloating,
+    manager, isMiniConsole, lockFloating, frameTabs, isMxpFrame,
     onFocus, onMoved, onResized, onDock, onDragStateChange, onTitlebarContextMenu, onHide,
 }: ScriptWindowProps) {
     const windowRef  = useRef<HTMLDivElement>(null);
@@ -191,7 +197,7 @@ export function ScriptWindow({
     return (
         <div
             ref={windowRef}
-            className={`script-window${isMiniConsole ? ' script-window--miniconsole' : ''}`}
+            className={`script-window${isMiniConsole ? ' script-window--miniconsole' : ''}${isMxpFrame ? ' script-window--mxp-frame' : ''}`}
             data-window-id={id}
             style={{ left: x, top: y, width, height, zIndex, display: visible ? 'flex' : 'none' }}
             // Click-to-front applies to real windows only. A mini-console (and
@@ -209,6 +215,22 @@ export function ScriptWindow({
                     <span className="script-window-title">{title}</span>
                     <button className="script-window-btn popout" title="Pop out to a separate window" onClick={() => manager.popOut(id)}>⧉</button>
                     <button className="script-window-btn close" title="Close" onClick={onHide}>×</button>
+                </div>
+            )}
+            {frameTabs && (
+                <div className="mxp-frame-tabs" role="tablist">
+                    {frameTabs.pages.map(page => (
+                        <button
+                            key={page.id}
+                            type="button"
+                            role="tab"
+                            aria-selected={page.id === frameTabs.active}
+                            className={`mxp-frame-tab${page.id === frameTabs.active ? ' active' : ''}`}
+                            onClick={() => manager.selectFrameTab(id, page.id)}
+                        >
+                            {page.title}
+                        </button>
+                    ))}
                 </div>
             )}
             <div className="script-window-content" ref={contentRef} />

@@ -8,6 +8,8 @@ export interface UseStickyOutputOptions {
     maxElements?: number;
     splitViewThreshold?: number;
     showTimestamps?: boolean;
+    /** See OutputHandlerOptions.followTail. Omit for a normal scrollback. */
+    followTail?: () => boolean;
 }
 
 export interface UseStickyOutputResult {
@@ -26,8 +28,14 @@ export function useStickyOutput(
         maxElements = 1000,
         splitViewThreshold = 1,
         showTimestamps = false,
+        followTail,
     }: UseStickyOutputOptions = {},
 ): UseStickyOutputResult {
+    // Held in a ref so the renderer — set up once — always calls through to the
+    // caller's current predicate, and so a changing identity never re-runs the
+    // setup effect (which would tear down and rebuild the console).
+    const followTailRef = useRef(followTail);
+    followTailRef.current = followTail;
     const outputRef = useRef<HTMLDivElement>(null);
     const sentinelRef = useRef<HTMLDivElement>(null);
     const stickyAreaRef = useRef<HTMLDivElement>(null);
@@ -107,6 +115,7 @@ export function useStickyOutput(
             suppressSplitView: (ms) => {
                 suppressUntilRef.current = Date.now() + ms;
             },
+            followTail: () => followTailRef.current?.() ?? true,
         });
         c.setTimestampVisibility(showTimestamps);
         rendererRef.current = c;

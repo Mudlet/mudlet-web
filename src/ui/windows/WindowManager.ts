@@ -1,7 +1,7 @@
 import { type OutputRendererControls } from '../output/OutputRenderer';
 import type { Console } from '../../mud/text/Console';
 import type { AnsiAwareBuffer } from '../../mud/text/FormatState';
-import type { DockSide, WindowHandle, WindowOpenOptions, ScriptWindowRenderData } from './types';
+import type { DockSide, MxpTabPage, WindowHandle, WindowOpenOptions, ScriptWindowRenderData } from './types';
 import { MapStore } from '../../map/MapStore';
 import { parseXmlMap } from '../../map/xmlMapImport';
 import { exportAreaImage } from '../../map/mapImageExport';
@@ -187,6 +187,17 @@ export class WindowManager {
      *  from openUserWindow panels for windowType() reporting. */
     private mainViewportEl: HTMLElement | null = null;
     private readonly miniConsoles  = new Set<string>();
+    /** MXP `<FRAME>` tab strips, keyed by the frame that hosts the strip. Each
+     *  page is another frame's console nested inside this one's viewport, so
+     *  switching tabs just swaps which child is visible. Purely transient — MXP
+     *  frames are torn down on reconnect and never persisted to a layout hint. */
+    private readonly frameTabs = new Map<string, { pages: MxpTabPage[]; active: string }>();
+    /** Consoles backing an MXP `<FRAME>`. They render with a hairline border,
+     *  the way Mudlet outlines every frame container (TMxpFrameManager's
+     *  `1px solid #444444`), so a server's panes read as separate panes. */
+    private readonly mxpFrameIds = new Set<string>();
+    /** See getMxpBorders. */
+    private mxpBorders = { top: 0, right: 0, bottom: 0, left: 0 };
     private consoleRegistry: Map<string, Console> | null = null;
     private windowHints: Record<string, WindowOpenOptions> = {};
     private nextZ       = 10;
@@ -1428,6 +1439,66 @@ export class WindowManager {
         return this.miniConsoles.has(id);
     }
 
+    // ── MXP frame chrome ──────────────────────────────────────────────────────
+
+    /** Flag a console as an MXP frame so it renders with a frame border. Also
+     *  hides its scrollbar: Mudlet's frames are `TConsole::SubConsole`s, which
+     *  start with theirs hidden, and no MXP server ever calls enableScrollBar.
+     *  Idempotent — the layout re-places a frame on every reflow. */
+    markAsMxpFrame(id: string): void {
+        if (this.mxpFrameIds.has(id)) return;
+        this.mxpFrameIds.add(id);
+        this.setScrollBarVisible(id, false);
+        this.notify();
+    }
+
+    /** Install (or replace) an MXP frame's tab strip. An empty `pages` list
+     *  removes it. Pages other than the active one are hidden, which keeps their
+     *  panel mounted — the content pool renders every open window regardless of
+     *  visibility, so a background tab keeps its scrollback. */
+    setFrameTabs(id: string, pages: MxpTabPage[], active: string): void {
+        if (pages.length === 0) {
+            if (!this.frameTabs.delete(id)) return;
+            this.notify();
+            return;
+        }
+        this.frameTabs.set(id, { pages, active });
+        for (const page of pages) {
+            if (page.id === id) continue; // the host frame's own console is always mounted
+            if (page.id === active) this.show(page.id);
+            else                    this.hide(page.id);
+        }
+        this.notify();
+    }
+
+    /** Switch an MXP frame's visible tab. Ignored for an unknown strip or page. */
+    selectFrameTab(id: string, pageId: string): void {
+        const strip = this.frameTabs.get(id);
+        if (!strip || strip.active === pageId) return;
+        if (!strip.pages.some(p => p.id === pageId)) return;
+        this.setFrameTabs(id, strip.pages, pageId);
+    }
+
+    getFrameTabs(id: string): { pages: MxpTabPage[]; active: string } | undefined {
+        return this.frameTabs.get(id);
+    }
+
+    /** Pixel insets MXP frames have carved out of the main console. Kept apart
+     *  from the profile's setBorder* sizes (Mudlet splits them the same way, as
+     *  Host::mUserBorders vs mMxpBorders) so a server layout never overwrites
+     *  what a script or the settings modal set — OutputArea adds the two. */
+    getMxpBorders(): { top: number; right: number; bottom: number; left: number } {
+        return { ...this.mxpBorders };
+    }
+
+    setMxpBorders(borders: { top: number; right: number; bottom: number; left: number }): void {
+        const cur = this.mxpBorders;
+        if (cur.top === borders.top && cur.right === borders.right
+            && cur.bottom === borders.bottom && cur.left === borders.left) return;
+        this.mxpBorders = { ...borders };
+        this.notify();
+    }
+
     getRoomIDbyHash(hash: string): number | undefined {
         return this.mapStore.getRoomIDbyHash(hash);
     }
@@ -1489,6 +1560,43 @@ export class WindowManager {
     getFont(id: string): string | null {
         const win = this.windows.get(id);
         return win?.fontFamily ?? null;
+    }
+
+    /** Pin a console's rendered row height, in px. Consoles normally lay rows
+     *  out at the stylesheet's `line-height`, which is roomier than the type
+     *  itself; an MXP frame instead has to match Mudlet's row metric
+     *  (`TTextEdit::mFontHeight` = ascent + descent), because its whole geometry
+     *  contract is "this many rows fit in this box". Undefined restores the
+     *  stylesheet default. */
+    setLineHeight(id: string, px: number | undefined): boolean {
+        const win = this.windows.get(id);
+        if (!win) return false;
+        win.lineHeight = px !== undefined && Number.isFinite(px) && px > 0 ? px : undefined;
+        this.notify();
+        return true;
+    }
+
+    /** Pin a console back to the first line. Consoles are scrollbacks and follow
+     *  the tail, which is wrong for a pane the server rewrites wholesale: such a
+     *  redraw arrives over several network flushes, so following the tail makes
+     *  the content visibly slide as the rows land, then snap back on the next
+     *  clear. No-op before the panel mounts. */
+    scrollToTop(id: string): void {
+        const el = this.elements.get(id);
+        if (el) el.scrollTop = 0;
+    }
+
+    /** Consoles pinned to their first row rather than following the tail. See
+     *  scrollToTop; TextPanel reads this live through the renderer's followTail. */
+    private readonly topAnchored = new Set<string>();
+
+    setTopAnchored(id: string, anchored: boolean): void {
+        if (anchored) this.topAnchored.add(id);
+        else this.topAnchored.delete(id);
+    }
+
+    isTopAnchored(id: string): boolean {
+        return this.topAnchored.has(id);
     }
 
     /** Mudlet setWindowWrap. 0 (or any non-positive value) clears the override. */
@@ -2267,6 +2375,9 @@ export class WindowManager {
         this.portalTargets.delete(id);
         this.consoleRegistry?.delete(id);
         this.miniConsoles.delete(id);
+        this.frameTabs.delete(id);
+        this.mxpFrameIds.delete(id);
+        this.topAnchored.delete(id);
         this.cmdLineState.delete(id);
         this.cmdLineValueProbes.delete(id);
         // A secondary map view closed from its own titlebar (rather than
@@ -2288,6 +2399,9 @@ export class WindowManager {
         }
         this.windows.clear();
         this.miniConsoles.clear();
+        this.frameTabs.clear();
+        this.mxpFrameIds.clear();
+        this.topAnchored.clear();
         this.cmdLineState.clear();
         this.cmdLineValueProbes.clear();
         this.notify();
@@ -2445,12 +2559,14 @@ export class WindowManager {
 
     private notify(): void {
         const arr = [...this.windows.values()]
-            .map(({ id, title, kind, visible, x, y, width, height, zIndex, docked, dockOrder, dockFlex, dockGroup, tabOrder, splitGroup, splitOrder, splitFlex, fontSize, fontFamily, wrapAt, wrapIndent, wrapHangingIndent, backgroundColor, backgroundImage, parent, lockFloating, poppedOut, cmdLineEnabled, cmdLineStyleSheet, cmdLineValue, cmdLineValueSeq }) => ({
+            .map(({ id, title, kind, visible, x, y, width, height, zIndex, docked, dockOrder, dockFlex, dockGroup, tabOrder, splitGroup, splitOrder, splitFlex, fontSize, fontFamily, lineHeight, wrapAt, wrapIndent, wrapHangingIndent, backgroundColor, backgroundImage, parent, lockFloating, poppedOut, cmdLineEnabled, cmdLineStyleSheet, cmdLineValue, cmdLineValueSeq }) => ({
                 id, title, kind, visible, x, y, width, height, zIndex,
                 docked, dockOrder, dockFlex, dockGroup, tabOrder, splitGroup, splitOrder, splitFlex,
-                fontSize, fontFamily, wrapAt, wrapIndent, wrapHangingIndent, backgroundColor, backgroundImage, parent, lockFloating, poppedOut,
+                fontSize, fontFamily, lineHeight, wrapAt, wrapIndent, wrapHangingIndent, backgroundColor, backgroundImage, parent, lockFloating, poppedOut,
                 cmdLineEnabled, cmdLineStyleSheet, cmdLineValue, cmdLineValueSeq,
                 isActiveTab: dockGroup ? this.activeTabGroups.get(dockGroup) === id : undefined,
+                frameTabs: this.frameTabs.get(id),
+                isMxpFrame: this.mxpFrameIds.has(id) || undefined,
             }))
             .sort((a, b) => a.zIndex - b.zIndex);
         this.onWindowsChange?.(arr, { ...this.dockExtents });

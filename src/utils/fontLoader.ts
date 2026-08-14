@@ -176,7 +176,7 @@ const UNIVERSAL_FONT_DEFAULTS: readonly string[] = [
     'monospace', 'serif', 'sans-serif',
     // Bundled with the app (App.css @font-face) — always available, unlike the
     // rest of this list which just guesses at what the host OS ships.
-    'Bitstream Vera Sans Mono',
+    'Bitstream Vera Sans Mono', 'Ubuntu', 'Ubuntu Mono',
     'Consolas', 'Courier New', 'Menlo', 'Monaco', 'DejaVu Sans Mono', 'Cascadia Code',
     'Arial', 'Helvetica', 'Times New Roman', 'Georgia', 'Verdana', 'Tahoma',
 ];

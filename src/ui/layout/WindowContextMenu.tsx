@@ -11,7 +11,15 @@ interface WindowContextMenuProps {
 }
 
 export function WindowContextMenu({ windows, manager, x, y, onClose }: WindowContextMenuProps) {
-    const sorted = [...windows].sort((a, b) => a.title.localeCompare(b.title));
+    // Real user windows only — what Mudlet's equivalent menu lists. A
+    // mini-console is a script-placed child widget, not something the user
+    // opened and can meaningfully close: Geyser's MiniConsoles (a GUI package
+    // has a dozen), an embedded mapper, and every MXP <FRAME> pane the server
+    // declares. Listing those buries the two or three real windows and offers
+    // toggles that a script or the server immediately undoes.
+    const sorted = windows
+        .filter(w => !manager.isMiniConsole(w.id))
+        .sort((a, b) => a.title.localeCompare(b.title));
 
     return (
         <ContextMenu x={x} y={y} onClose={onClose}>

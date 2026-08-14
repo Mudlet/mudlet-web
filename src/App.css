@@ -38,6 +38,70 @@
     font-display: swap;
 }
 
+/* Ubuntu / Ubuntu Mono — bundled for the same reason as Vera above: Mudlet
+ * registers both families into Qt's font database at startup (src/main.cpp
+ * copies src/fonts/ubuntu-font-family-0.83 into the Mudlet home dir), so
+ * packages written for Mudlet ask for them by name — mudlet-base-ui sets its
+ * whole theme font to "Ubuntu", and "Ubuntu Mono" is a common pick for
+ * miniconsole stylesheets. Without them those labels silently fall back to a
+ * generic sans/mono. Ubuntu Font Licence 1.0, see src/assets/fonts/ubuntu/. */
+@font-face {
+    font-family: 'Ubuntu';
+    src: url('./assets/fonts/ubuntu/Ubuntu-R.ttf') format('truetype');
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: 'Ubuntu';
+    src: url('./assets/fonts/ubuntu/Ubuntu-B.ttf') format('truetype');
+    font-weight: 700;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: 'Ubuntu';
+    src: url('./assets/fonts/ubuntu/Ubuntu-RI.ttf') format('truetype');
+    font-weight: 400;
+    font-style: italic;
+    font-display: swap;
+}
+@font-face {
+    font-family: 'Ubuntu';
+    src: url('./assets/fonts/ubuntu/Ubuntu-BI.ttf') format('truetype');
+    font-weight: 700;
+    font-style: italic;
+    font-display: swap;
+}
+@font-face {
+    font-family: 'Ubuntu Mono';
+    src: url('./assets/fonts/ubuntu/UbuntuMono-R.ttf') format('truetype');
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: 'Ubuntu Mono';
+    src: url('./assets/fonts/ubuntu/UbuntuMono-B.ttf') format('truetype');
+    font-weight: 700;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: 'Ubuntu Mono';
+    src: url('./assets/fonts/ubuntu/UbuntuMono-RI.ttf') format('truetype');
+    font-weight: 400;
+    font-style: italic;
+    font-display: swap;
+}
+@font-face {
+    font-family: 'Ubuntu Mono';
+    src: url('./assets/fonts/ubuntu/UbuntuMono-BI.ttf') format('truetype');
+    font-weight: 700;
+    font-style: italic;
+    font-display: swap;
+}
+
 :root {
     color-scheme: dark;
 

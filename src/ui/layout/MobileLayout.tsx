@@ -50,7 +50,7 @@ export function MobileLayout({ session, manager, windows, stickyLines, commandIn
                     className="main-viewport"
                     style={activePanelId ? { display: 'none' } : undefined}
                 >
-                    <OutputArea session={session} stickyLines={stickyLines} commandInputRef={commandInputRef} />
+                    <OutputArea session={session} stickyLines={stickyLines} commandInputRef={commandInputRef} mxpBorders={manager.getMxpBorders()} />
                 </div>
 
                 {activePanelId && (

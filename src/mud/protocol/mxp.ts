@@ -55,9 +55,16 @@ export interface MxpFrameCommand {
     name: string;
     /** Upper-cased attribute keys → raw string values. Flag attributes
      *  (`INTERNAL`/`EXTERNAL`/`FLOATING`) are present with value `"true"`.
-     *  `ACTION` is `open` (default) / `close` / `redirect`; geometry lives in
-     *  `LEFT`/`TOP`/`WIDTH`/`HEIGHT`. */
+     *  `ACTION` is `open` (default) / `close` / `focus`; geometry lives in
+     *  `ALIGN`/`LEFT`/`TOP`/`WIDTH`/`HEIGHT`. */
     attrs: Record<string, string>;
+    /** Name of the `<DEST>` frame that was open when this tag was seen, if any.
+     *  A `<FRAME>` nested inside a `<DEST>` is laid out *inside* that frame
+     *  rather than against the main window — Mudlet's `mCurrentDestination`
+     *  check in TMxpFrameManager::layoutInternalFrame. The parser batches frames
+     *  and redirects into separate arrays, so the association has to travel with
+     *  the command. */
+    dest?: string;
 }
 
 /** Text the parser redirected into a named frame via `<DEST>…</DEST>`. */
@@ -68,6 +75,9 @@ export interface MxpRedirect {
     segments: BufferSegment[];
     /** Plain text of the redirected run. */
     plain: string;
+    /** Clickable regions inside this run, offset into `plain`. Separate from
+     *  `MxpLineResult.links` because the two index different strings. */
+    links: MxpLink[];
     /** `EOL` attr (or the network line ended mid-DEST): the write is a complete
      *  line. */
     eol: boolean;
@@ -118,8 +128,12 @@ interface OpenTag {
     name: string;
     /** Pen snapshot to restore when this tag closes. */
     closeFmt: FormatStateSnapshot;
-    /** Set for `<SEND>`/`<A>` — accumulates the link target + display range. */
-    link?: { start: number; href?: string; hint?: string; isUrl: boolean };
+    /** Set for `<SEND>`/`<A>` — accumulates the link target + display range.
+     *  `destName` is the `<DEST>` frame that was open when the tag started, and
+     *  names which text sink `start` indexes into: redirected text accrues to
+     *  `destPlain`, so a link inside a `<DEST>` measured against the main line
+     *  would span nothing and be dropped. */
+    link?: { start: number; href?: string; hint?: string; isUrl: boolean; destName: string | null };
     /** Set for `<V name>` — captures the enclosed plain text into `entities`. */
     varName?: string;
     varStart?: number;
@@ -212,9 +226,10 @@ export class MxpParser {
     private redirects: MxpRedirect[] = [];
     /** `<SOUND>`/`<MUSIC>` commands accumulated this line. */
     private sounds: MspCommand[] = [];
-    /** Redirected-text scratch — the current `<DEST>` run's segments/plain. */
+    /** Redirected-text scratch — the current `<DEST>` run's segments/plain/links. */
     private destOut: BufferSegment[] = [];
     private destPlain = "";
+    private destLinks: MxpLink[] = [];
 
     constructor(opts: {
         send: (raw: string) => void;
@@ -264,6 +279,7 @@ export class MxpParser {
         this.sounds = [];
         this.destOut = [];
         this.destPlain = "";
+        this.destLinks = [];
         this.presets.clear();
     }
 
@@ -286,6 +302,7 @@ export class MxpParser {
         // per-line accumulators reset.
         this.destOut = [];
         this.destPlain = "";
+        this.destLinks = [];
 
         this.parseFragment(input, 0);
         this.flushRun();
@@ -295,10 +312,12 @@ export class MxpParser {
         if (this.destName !== null && (this.destOut.length > 0 || this.destPlain.length > 0)) {
             this.redirects.push({
                 frame: this.destName, segments: this.destOut, plain: this.destPlain,
+                links: this.destLinks,
                 eol: true, eof: this.destEof,
             });
             this.destOut = [];
             this.destPlain = "";
+            this.destLinks = [];
             // EOF clears once, on the first write of the block.
             this.destEof = false;
         }
@@ -617,7 +636,9 @@ export class MxpParser {
         for (const [k, v] of named) if (k !== "name") attrs[k.toUpperCase()] = v;
         for (let i = flagStart; i < positional.length; i++) attrs[positional[i].toUpperCase()] = "true";
         attrs.NAME = name;
-        this.frames.push({ name, attrs });
+        const cmd: MxpFrameCommand = { name, attrs };
+        if (this.destName !== null) cmd.dest = this.destName;
+        this.frames.push(cmd);
     }
 
     /** `<DEST name [eol] [eof]>` — start redirecting enclosed text into `name`.
@@ -638,6 +659,7 @@ export class MxpParser {
         this.destEof = flags.has("eof") || named.has("eof");
         this.destOut = [];
         this.destPlain = "";
+        this.destLinks = [];
     }
 
     /** `<SOUND fname [V=vol] [L=loops] [P=priority] [T=type] [U=url]>` and
@@ -676,6 +698,7 @@ export class MxpParser {
         if (this.destOut.length > 0 || this.destPlain.length > 0) {
             this.redirects.push({
                 frame: this.destName, segments: this.destOut, plain: this.destPlain,
+                links: this.destLinks,
                 eol, eof: this.destEof,
             });
         }
@@ -684,6 +707,7 @@ export class MxpParser {
         this.destEof = false;
         this.destOut = [];
         this.destPlain = "";
+        this.destLinks = [];
     }
 
     private openFormat(name: string, mutate: () => void): void {
@@ -715,7 +739,8 @@ export class MxpParser {
         // server set so server-coloured links keep their colour; the engine adds
         // the pointer cursor + click handler.
         this.fmt.underline = true;
-        this.stack.push({ name, closeFmt: before, link: { start: this.plain.length, href, hint, isUrl } });
+        const sink = this.destName === null ? this.plain : this.destPlain;
+        this.stack.push({ name, closeFmt: before, link: { start: sink.length, href, hint, isUrl, destName: this.destName } });
     }
 
     private openVar(varName: string): void {
@@ -746,8 +771,14 @@ export class MxpParser {
     private finalizeTag(tag: OpenTag): void {
         if (tag.colorOverride && this.mxpColorStack.length > 0) this.mxpColorStack.pop();
         if (tag.link) {
-            const end = this.plain.length;
-            const text = this.plain.slice(tag.link.start, end);
+            // Resolve against the sink the link's text actually went into, and
+            // collect it there: a <SEND> inside a <DEST> belongs to that frame's
+            // redirect, not to the main line.
+            const intoDest = tag.link.destName !== null && tag.link.destName === this.destName;
+            const sink = intoDest ? this.destPlain : this.plain;
+            const collect = intoDest ? this.destLinks : this.links;
+            const end = sink.length;
+            const text = sink.slice(tag.link.start, end);
             let payload = tag.link.href;
             if (payload === undefined || payload === "") payload = text;
             else payload = payload.replace(/&text;/gi, text);
@@ -755,7 +786,7 @@ export class MxpParser {
                 const cmds = payload.split("|").map(c => c.trim()).filter(c => c.length > 0);
                 const hintParts = tag.link.hint !== undefined ? tag.link.hint.split("|") : [];
                 if (cmds.length > 1) {
-                    this.links.push({
+                    collect.push({
                         start: tag.link.start, end,
                         kind: tag.link.isUrl ? "url" : "command",
                         payload: cmds[0],
@@ -763,7 +794,7 @@ export class MxpParser {
                         prompts: { cmds, hints: hintParts.slice(1) },
                     });
                 } else {
-                    this.links.push({
+                    collect.push({
                         start: tag.link.start, end,
                         kind: tag.link.isUrl ? "url" : "command",
                         payload: cmds[0] ?? text,

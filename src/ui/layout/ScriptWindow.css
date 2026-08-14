@@ -107,6 +107,54 @@
     position: relative;
 }
 
+/* An MXP <FRAME> console. Mudlet outlines every frame container with a hairline
+   (TMxpFrameManager: `1px solid #444444`), which is what separates a server's
+   panes from each other and from the main console. box-sizing keeps the outline
+   inside the rect the layout allocated. */
+.script-window--mxp-frame {
+    border: 1px solid var(--border);
+    box-sizing: border-box;
+}
+
+/* MXP <FRAME TITLE=…> tab strip. A titled frame always has one — its own page —
+   and <FRAME DOCK=… ALIGN=CLIENT> adds more. The strip is chrome outside
+   .script-window-content, so a frame's nested child consoles (which portal into
+   the content viewport) sit below it without any coordinate fudging. Its height
+   must stay in sync with MXP_TAB_BAR_HEIGHT in MxpFrameManager, which reserves
+   exactly this many pixels when laying the frame out. */
+
+.mxp-frame-tabs {
+    display: flex;
+    align-items: stretch;
+    height: 24px;
+    box-sizing: border-box;
+    flex-shrink: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border);
+}
+
+.mxp-frame-tab {
+    padding: 0 12px;
+    background: none;
+    border: none;
+    border-right: 1px solid var(--border);
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.mxp-frame-tab:hover { color: var(--text); }
+
+.mxp-frame-tab.active {
+    background: var(--hover-bg-strong);
+    color: var(--text);
+}
+
 /* Edge resize handles */
 .script-window-resize-n  { position: absolute; top: 0;    left: 8px;  right: 8px;  height: 5px; cursor: n-resize;  z-index: 10; }
 .script-window-resize-s  { position: absolute; bottom: 0; left: 8px;  right: 8px;  height: 5px; cursor: s-resize;  z-index: 10; }
