@@ -906,3 +906,42 @@ export function connectionSecureTransport(c: MudConnection): boolean {
     if (c.mode === 'mud') return !!c.tls;
     return (c.url ?? '').trim().toLowerCase().startsWith('wss://');
 }
+
+/**
+ * Whether `name` is already some other profile's, ignoring case.
+ *
+ * Case-insensitively, because that is how the scripting API resolves a profile
+ * name (`getProfileInformation("ACHAEA")` finds the Achaea profile — Mudlet
+ * looks the name up as a folder and the platforms it runs on mostly have
+ * case-insensitive ones). Two profiles differing only in case would make those
+ * calls pick between them arbitrarily.
+ *
+ * `exceptId` is the profile being edited, so renaming one to its own name is
+ * not a clash.
+ */
+export function connectionNameTaken(name: string, connections: MudConnection[], exceptId?: string): boolean {
+    const wanted = name.trim().toLowerCase();
+    if (!wanted) return false;
+    return connections.some(c => c.id !== exceptId && c.name.trim().toLowerCase() === wanted);
+}
+
+/**
+ * `name` if no other profile has it, otherwise the first free `name (2)`,
+ * `name (3)`, … — the same shape Mudlet gives a profile copied over an existing
+ * one.
+ *
+ * A last line of defence for the paths that create a profile without a form to
+ * validate: importing a Mudlet folder or zip, seeding a brand's profile, or
+ * starting a bundled game. Those must not fail on a name clash, but they must
+ * not produce two profiles sharing a name either — `getProfiles()` is keyed by
+ * name and would silently return only one of them, and every name-addressed
+ * script API would resolve to whichever came first.
+ */
+export function uniqueConnectionName(name: string, connections: MudConnection[], exceptId?: string): string {
+    const base = name.trim();
+    if (!connectionNameTaken(base, connections, exceptId)) return base;
+    for (let n = 2; ; n++) {
+        const candidate = `${base} (${n})`;
+        if (!connectionNameTaken(candidate, connections, exceptId)) return candidate;
+    }
+}

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { APP_DEFAULTS, type AppSchema, type MudConnection, type AliasNode, type ButtonNode, type KeyNode, type TimerNode, type TriggerNode, type ScriptNode, type ScriptEditorBounds, type ModalBounds, type ClientSettings, type ProfileSettings, type PackageManifest, type WindowLayoutSnapshot, type ProfileVariables } from './schema';
+import { APP_DEFAULTS, type AppSchema, type MudConnection, type AliasNode, type ButtonNode, type KeyNode, type TimerNode, type TriggerNode, type ScriptNode, type ScriptEditorBounds, type ModalBounds, type ClientSettings, type ProfileSettings, type PackageManifest, type WindowLayoutSnapshot, type ProfileVariables, uniqueConnectionName } from './schema';
 import type { MudletVariable } from '../import/mudletVariables';
 import type { MudletImportResult } from '../import/mudletXmlImport';
 import type { WindowOpenOptions } from '../ui/windows/types';
@@ -161,11 +161,25 @@ export const useAppStore = create<AppStore>()(
                 // reads to keep the starter UI off established profiles. An
                 // explicit createdAt in `data` (profile import/copy) wins.
                 const createdAt = data.createdAt ?? new Date().toISOString();
-                set(s => ({ connections: [...s.connections, { ...data, createdAt, id }] }));
+                // Renamed rather than refused: an import or a brand's seeded
+                // profile has no form to send the user back to, and must not
+                // fail on a name clash — but two profiles sharing a name would
+                // collapse to one in getProfiles() and make every name-addressed
+                // script API pick between them arbitrarily. The Add/Edit form
+                // catches a clash before it gets here (see ConnectionFormModal),
+                // so a user typing a name still sees it rather than a rename.
+                set(s => ({
+                    connections: [
+                        ...s.connections,
+                        { ...data, name: uniqueConnectionName(data.name, s.connections), createdAt, id },
+                    ],
+                }));
                 return id;
             },
             updateConnection: (id, data) => set(s => ({
-                connections: s.connections.map(c => c.id === id ? { ...data, id } : c),
+                connections: s.connections.map(c => c.id === id
+                    ? { ...data, name: uniqueConnectionName(data.name, s.connections, id), id }
+                    : c),
             })),
             reorderConnections: orderedIds => set(s => {
                 const byId = new Map(s.connections.map(c => [c.id, c]));
@@ -183,6 +197,12 @@ export const useAppStore = create<AppStore>()(
                 connections: s.connections.map(c => {
                     if (c.id !== id) return c;
                     const next = { ...c, ...patch };
+                    // Only when the patch names one: the usual callers here are
+                    // surgical (icon, login creds) and must not pay for a scan,
+                    // nor be renamed by a field they never touched.
+                    if (patch.name !== undefined) {
+                        next.name = uniqueConnectionName(patch.name, s.connections, id);
+                    }
                     for (const k of Object.keys(patch) as (keyof Omit<MudConnection, 'id'>)[]) {
                         if (patch[k] === undefined) delete next[k];
                     }

@@ -3,7 +3,7 @@ import { Button, Input, FormField, Toggle } from './components';
 import { useModalFocus } from './components/useModalFocus';
 import { ProxyInfoModal } from './ProxyInfoModal';
 import { ProxyWhyModal } from './ProxyWhyModal';
-import { DEFAULT_PROXY_URL, proxyCanInspectCertificates, useAppStore, type ConnectionMode, type MudConnection } from '../storage';
+import { connectionNameTaken, DEFAULT_PROXY_URL, proxyCanInspectCertificates, useAppStore, type ConnectionMode, type MudConnection } from '../storage';
 import { BUNDLED_GAMES, findBundledGame } from '../mud/games/bundledGames';
 
 /** The bundled games worth offering: one with no port is not something this
@@ -107,9 +107,17 @@ export function ConnectionFormModal({ connection, firstConnection, busy, onAdd, 
 
     const ref = useModalFocus<HTMLDivElement>(onClose, { autoFocus: true, closeOnEscape: true });
 
-    const canSubmit = mode === 'mud'
+    // Profile names have to be unique, and the store would otherwise quietly
+    // rename this one to "<name> (2)" — right for an import that has nobody to
+    // ask, wrong for someone typing a name who deserves to be told. Compared
+    // ignoring case because that is how the scripting API resolves a profile
+    // name, so two differing only in case would be indistinguishable to it.
+    const connections = useAppStore(s => s.connections);
+    const nameTaken = connectionNameTaken(name, connections, connection?.id);
+
+    const canSubmit = !nameTaken && (mode === 'mud'
         ? name.trim() !== '' && host.trim() !== ''
-        : name.trim() !== '' && url.trim() !== '';
+        : name.trim() !== '' && url.trim() !== '');
 
     const buildData = (): Omit<MudConnection, 'id'> => {
         const acct = account.trim();
@@ -211,8 +219,15 @@ export function ConnectionFormModal({ connection, firstConnection, busy, onAdd, 
                                 onChange={e => setName(e.target.value)}
                                 placeholder="My MUD"
                                 spellCheck={false}
+                                aria-invalid={nameTaken || undefined}
+                                aria-describedby={nameTaken ? 'cs-name-error' : undefined}
                                 noAutofill
                             />
+                            {nameTaken && (
+                                <div id="cs-name-error" className="field__error" role="alert">
+                                    Another profile is already called “{name.trim()}”.
+                                </div>
+                            )}
                         </FormField>
 
                         <FormField label="Description" htmlFor="cs-description">

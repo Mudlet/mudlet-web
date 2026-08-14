@@ -141,6 +141,19 @@
     user-select: none;
 }
 
+/* Why a field's value was refused, under the input it belongs to. Paired with
+   aria-invalid + aria-describedby on that input, so it is announced rather than
+   only seen. */
+.field__error {
+    font-family: var(--font-ui);
+    font-size: 11px;
+    color: var(--danger, #e06c75);
+}
+
+.field input[aria-invalid='true'] {
+    border-color: var(--danger, #e06c75);
+}
+
 /* ── Checkbox field ─────────────────────────────────────────── */
 .field--check {
     flex-direction: row;
