@@ -1,3 +1,4 @@
+import { ItemIdSequence } from '../ItemIdSequence';
 import type { TimerNode } from '../../storage/schema';
 import { buildEffectivelyEnabledIds } from '../../storage/schema';
 
@@ -38,7 +39,9 @@ export class TimerEngine {
      *  to tell "exists but inactive" (-1) from "no such timer" (-2): a disabled
      *  timer has no handle, so its absence from `perm` proves nothing. */
     private readonly knownPermNames = new Set<string>();
-    private nextId = 1;
+    /** Shared with every other engine in the profile — see ItemIdSequence. */
+    private idSeq = new ItemIdSequence();
+    setIdSequence(seq: ItemIdSequence): void { this.idSeq = seq; }
 
     /** Number of live session-scoped temp timers (Mudlet `getProfileStats` temp
      *  count). Killed-but-unreaped timers are not live and don't count. */
@@ -49,7 +52,7 @@ export class TimerEngine {
     }
 
     addTemp(seconds: number, fn: TempFn, repeat = false): number {
-        const id = this.nextId++;
+        const id = this.idSeq.next();
         const intervalMs = seconds * 1000;
         // A repeating timer is a self-rescheduling setTimeout chain, not a
         // setInterval. pumpDue has to be able to fire a tick early and leave the

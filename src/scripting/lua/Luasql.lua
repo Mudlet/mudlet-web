@@ -112,7 +112,13 @@ local function make_conn(conn_id)
         return __sql_escape(s)
     end
 
+    local closed = false
     function conn:close()
+        -- Closing a connection twice is false, not true: luasql answers that
+        -- way, and db:_closeAll() reads it to name the databases something else
+        -- closed behind its back.
+        if closed then return false end
+        closed = true
         -- Commit rather than drop: closing with work pending should persist it,
         -- which is what a caller that never called commit() expects.
         auto_commit = true

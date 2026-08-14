@@ -199,6 +199,11 @@ export type MudEvents = MudClientEvents & {
     'script.clearcmd': void;
     'script.selectcmd': void;
     'script.cmdlinesuggestions': [items: string[]];
+    /** Words Tab completion must never offer, whatever list they came from. */
+    'script.cmdlineblacklist': [items: string[]];
+    /** Whether the main command bar's history is persisted at all
+     *  (setSaveCommandHistory); the size cap stays a separate setting. */
+    'script.savecommandhistory': [save: boolean];
     'script.openvfs': [path: string];
     /** Fired by ScriptingAPI when Lua calls `invokeFileDialog(...)`. The UI
      *  (ProfileSession) shows the in-app VFS picker and resolves the request

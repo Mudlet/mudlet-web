@@ -1,3 +1,4 @@
+import { ItemIdSequence } from '../ItemIdSequence';
 import type { KeyNode } from '../../storage/schema';
 import { buildEffectivelyEnabledIds } from '../../storage/schema';
 import { domCodeToQtKey, listToQtModifiers } from './qtKeys';
@@ -43,7 +44,9 @@ interface TempKey {
 export class KeyEngine {
     private readonly temp = new Map<number, TempKey>();
     private perm: KeyNode[] = [];
-    private nextId = 1;
+    /** Shared with every other engine in the profile — see ItemIdSequence. */
+    private idSeq = new ItemIdSequence();
+    setIdSequence(seq: ItemIdSequence): void { this.idSeq = seq; }
 
     // ── Temp keybindings (session-scoped, created by scripts) ─────────────────
 
@@ -56,7 +59,7 @@ export class KeyEngine {
     }
 
     addTemp(key: string, modifiers: string[], fn: TempFn, qt?: { keyCode: number; modifier: number }): number {
-        const id = this.nextId++;
+        const id = this.idSeq.next();
         this.temp.set(id, { key, modifiers, fn, qtKey: qt?.keyCode, qtModifier: qt?.modifier, enabled: true });
         return id;
     }

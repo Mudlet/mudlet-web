@@ -1,6 +1,17 @@
 import type { InstallOutcome } from './ScriptingAPI';
 
 /**
+ * The item families the tree-walking APIs accept, lowercased — Mudlet's
+ * "'alias', 'button', 'script', 'keybind', 'timer' or 'trigger'", plus the
+ * 'key' spelling the engine already treats as 'keybind'. Lives here rather than
+ * on the engine so the no-op host below answers the same list: a runtime with no
+ * engine wired has no items, but it still knows what an item type IS, and
+ * reporting a valid type as invalid would send a caller looking for a typo.
+ */
+export const KNOWN_ITEM_TYPES: ReadonlySet<string> = new Set(
+    ['alias', 'button', 'script', 'key', 'keybind', 'timer', 'trigger']);
+
+/**
  * Everything {@link ScriptingAPI} needs from {@link ScriptingEngine}.
  *
  * `ScriptingAPI` is constructed before the engine (the engine takes the API in
@@ -126,7 +137,12 @@ export interface EngineHost {
         id: number,
         type: string,
     ): Array<{ id: number; name: string; node: string; isActive: boolean }> | null;
-    findItemsByName(name: string, type: string, exact: boolean, caseSensitive: boolean): number[];
+    findItemsByName(name: string, type: string, exact: boolean, caseSensitive: boolean): number[] | null;
+    /** Whether `type` names an item family at all. */
+    isKnownItemType(type: string): boolean;
+    /** Next id from the profile's single item-id sequence. Temporary items draw
+     *  from it too, so a temp and a permanent item can never collide. */
+    allocateItemId(): number;
     isAncestorsActiveById(id: number, type: string): boolean | null;
     getProfileStats(): Record<string, unknown>;
 
@@ -230,6 +246,10 @@ export const NULL_ENGINE_HOST: EngineHost = Object.freeze({
     isActiveByName: () => 0,
     ancestorsById: () => null,
     findItemsByName: () => [],
+    isKnownItemType: (type: string) => KNOWN_ITEM_TYPES.has(type.toLowerCase()),
+    // Standalone sequence: with no engine wired there are no permanent items to
+    // collide with, but the ids still have to be distinct from each other.
+    allocateItemId: (() => { let n = 1; return () => n++; })(),
     isAncestorsActiveById: () => null,
     getProfileStats: () => ({}),
 

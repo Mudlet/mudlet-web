@@ -28,6 +28,13 @@ export class SessionLogger {
     private readonly sessionId = crypto.randomUUID();
     private readonly startedAt = Date.now();
     private buffer: LogEntry[] = [];
+    /** Absolute VFS path of the plain-text log, or null when there is no VFS to
+     *  write one into. See {@link openLogFile}. */
+    private logFilePath: string | null = null;
+    /** Lines written to the text log but not yet flushed to the VFS. Kept
+     *  separate from `buffer` (the IndexedDB batch) because the two flush on
+     *  different triggers and the text log has to survive an IDB failure. */
+    private fileBuffer: string[] = [];
     private seq = 0;
     private totalCount = 0;
     private flushTimer: ReturnType<typeof setInterval> | null = null;
@@ -40,6 +47,9 @@ export class SessionLogger {
         private readonly session: MudSession,
         private readonly connectionId: string,
         private readonly connectionName: string,
+        /** Profile filesystem the plain-text log is written into. Optional: the
+         *  IndexedDB record is the primary log and works without one. */
+        private readonly vfs?: { profilePath: string; mkdir(p: string): void; writeFile(p: string, c: string): void; exists(p: string): boolean; readFile(p: string): string } | null,
     ) {}
 
     start(): void {
@@ -48,6 +58,68 @@ export class SessionLogger {
             this.capture(text, type, timestamp);
         });
         this.flushTimer = setInterval(() => { void this.flush(); }, FLUSH_INTERVAL_MS);
+    }
+
+    /** Where this session's plain-text log is being written, or null when the
+     *  file log is off. Backs Mudlet's `startLogging` path return. */
+    get filePath(): string | null {
+        return this.logFilePath;
+    }
+
+    /**
+     * Mudlet's `startLogging(true)` — begin mirroring output to a plain-text
+     * file as well. Deliberately separate from {@link start}: recording to the
+     * log browser is a mudix profile setting that is on by default, whereas
+     * Mudlet's file log is something a player or script asks for. Sharing one
+     * switch would have every profile quietly writing a text file nobody asked
+     * for, and would make `startLogging(true)` report "already on" forever.
+     *
+     * The file is created up front, before any line has arrived, so a script can
+     * hand its path straight to something else. Named as Mudlet names its own:
+     * `<profile>/log/<yyyy-MM-dd#hh-mm-ss>.txt`.
+     */
+    startFileLog(): string | null {
+        if (this.logFilePath) return this.logFilePath;
+        this.openLogFile();
+        return this.logFilePath;
+    }
+
+    /** Stop mirroring to the text file, writing out whatever is buffered. */
+    stopFileLog(): void {
+        this.flushLogFile();
+        this.logFilePath = null;
+    }
+
+    private openLogFile(): void {
+        if (!this.vfs) return;
+        const d = new Date(this.startedAt);
+        const p = (n: number, w = 2) => String(n).padStart(w, '0');
+        const stamp = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+            + `#${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+        const path = `${this.vfs.profilePath}/log/${stamp}.txt`;
+        try {
+            this.vfs.mkdir(`${this.vfs.profilePath}/log`);
+            this.vfs.writeFile(path, '');
+            this.logFilePath = path;
+        } catch (err) {
+            console.warn('[SessionLogger] could not open the log file', err);
+            this.logFilePath = null;
+        }
+    }
+
+    /** Append the buffered plain-text lines to the log file. ZenFS has no
+     *  append mode we can rely on across both backends, so this re-writes the
+     *  file with the new tail — hence the buffering. */
+    private flushLogFile(): void {
+        if (!this.vfs || !this.logFilePath || this.fileBuffer.length === 0) return;
+        const tail = this.fileBuffer.join('');
+        this.fileBuffer = [];
+        try {
+            const existing = this.vfs.exists(this.logFilePath) ? this.vfs.readFile(this.logFilePath) : '';
+            this.vfs.writeFile(this.logFilePath, existing + tail);
+        } catch (err) {
+            console.warn('[SessionLogger] could not write to the log file', err);
+        }
     }
 
     private capture(text?: string | AnsiAwareBuffer, type?: string, timestamp?: number): void {
@@ -67,6 +139,7 @@ export class SessionLogger {
             plain: buffer.text,
         });
         this.totalCount++;
+        if (this.logFilePath) this.fileBuffer.push(buffer.text + '\n');
         if (this.buffer.length >= FLUSH_AT) void this.flush();
     }
 
@@ -81,6 +154,7 @@ export class SessionLogger {
 
     /** Persist any buffered lines and bump the session's end time/count. */
     flush(): Promise<void> {
+        this.flushLogFile();
         this.flushing = this.flushing.then(() => this.doFlush());
         return this.flushing;
     }

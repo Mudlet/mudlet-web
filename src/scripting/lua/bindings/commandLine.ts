@@ -102,12 +102,19 @@ export function installCommandLineBindings({ lua, api, channel, emitEvent }: Bin
     // a no-op returning true (no main-bar QSS hook). The legacy 1-arg form
     // (no name → "" CSS on main bar) is preserved.
     lua.global.set('setCmdLineStyleSheet', (a: unknown, b?: unknown) => {
-        const name = typeof a === 'string' ? a : '';
-        const css = String((b !== undefined ? b : (typeof a === 'string' && b === undefined ? '' : a)) ?? '');
-        if (!name || name === 'main') return true;
+        // One argument is the CSS for the main bar; two name the command line
+        // first. A lone string is therefore CSS, not a name — which is why the
+        // name is only taken when there IS a second argument.
+        const named = b !== undefined;
+        const name = named && typeof a === 'string' ? a : 'main';
+        const css = String((named ? b : a) ?? '');
+        api.noteCmdLineStyleSheet(name, css);
+        if (name === 'main') return true;
         if (api.cmdLines.has(name)) return api.cmdLines.setStyleSheet(name, css);
         return api.windows.setCmdLineStyleSheet(name, css);
     });
+    lua.global.set('__getCmdLineStyleSheet', (name?: unknown) =>
+        api.getCmdLineStyleSheet(typeof name === 'string' ? name : 'main'));
     // Mudlet (add|remove)CmdLineSuggestion([name], suggestion) /
     // clearCmdLineSuggestions([name]). Suggestions feed Tab completion in
     // the command bar (merged with command history). The optional leading
@@ -124,6 +131,29 @@ export function installCommandLineBindings({ lua, api, channel, emitEvent }: Bin
     });
     lua.global.set('clearCmdLineSuggestions', (_name?: string) => {
         api.clearCmdLineSuggestions();
+    });
+
+    // Mudlet (add|remove)CmdLineBlacklist([name], word) / clearCmdLineBlacklist(
+    // [name]). The mirror image of the suggestion list: these words are struck
+    // out of Tab completion whichever list they came from. Same leading-name
+    // handling as above.
+    lua.global.set('__addCmdLineBlacklist', (a: unknown, b?: unknown) => {
+        api.addCmdLineBlacklist(cmdLineSuggestArg(a, b));
+    });
+    lua.global.set('__removeCmdLineBlacklist', (a: unknown, b?: unknown) => {
+        api.removeCmdLineBlacklist(cmdLineSuggestArg(a, b));
+    });
+    lua.global.set('__clearCmdLineBlacklist', (_name?: string) => {
+        api.clearCmdLineBlacklist();
+    });
+
+    // Mudlet get/setSaveCommandHistory([cmdLineName][, save]) — the per-command
+    // -line half of history saving. Bridge.lua owns the argument shapes and the
+    // profile-wide gate; these two just carry the flag.
+    lua.global.set('__getSaveCommandHistory', (name?: unknown) =>
+        api.saveCommandHistoryFor(typeof name === 'string' && name ? name : 'main'));
+    lua.global.set('__setSaveCommandHistory', (name: unknown, save: unknown) => {
+        api.setSaveCommandHistoryFor(typeof name === 'string' && name ? name : 'main', save === true);
     });
 
     // ── Command-line context menu ─────────────────────────────────────────

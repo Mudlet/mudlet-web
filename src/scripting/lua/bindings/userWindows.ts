@@ -66,16 +66,22 @@ export function installUserWindowBindings({
     //   (x, y, w, h)       → floating at given pixel position and size
     // Explicit args override the saved layout hint. Always returns true.
     lua.global.set('openMapWidget', (a?: unknown, b?: unknown, c?: unknown, d?: unknown) => {
-        // 2- or 4-arg numeric form: floating at (x, y[, w, h])
+        // 2- or 4-arg numeric form: floating at (x, y[, w, h]). A negative
+        // coordinate means "leave it where it is" — that is how
+        // resizeMapWidget reaches this call (openMapWidget(-1, -1, w, h)),
+        // asking for a size without naming a position.
         if (typeof a === 'number' && typeof b === 'number') {
             const hasSize = c !== undefined && d !== undefined;
+            const keepPosition = Number(a) < 0 && Number(b) < 0;
             api.windows.open(MAP_WIDGET_ID, {
                 kind: 'map',
-                title: 'Map',
+                // Only names a *new* widget: reopening one keeps the title it
+                // was given, since it is the same dock coming back rather than
+                // a fresh one (Mapper_spec pins that).
+                ...(api.windows.has(MAP_WIDGET_ID) ? {} : { title: 'Map' }),
                 autoDock: false,
                 ignoreHint: true,
-                x: Number(a),
-                y: Number(b),
+                ...(keepPosition ? {} : { x: Number(a), y: Number(b) }),
                 ...(hasSize ? { width: Number(c), height: Number(d) } : {}),
             });
             return true;
@@ -84,7 +90,10 @@ export function installUserWindowBindings({
         if (a === undefined || a === null) {
             api.windows.open(MAP_WIDGET_ID, {
                 kind: 'map',
-                title: 'Map',
+                // Only names a *new* widget: reopening one keeps the title it
+                // was given, since it is the same dock coming back rather than
+                // a fresh one (Mapper_spec pins that).
+                ...(api.windows.has(MAP_WIDGET_ID) ? {} : { title: 'Map' }),
                 dockingArea: 'right',
             });
             return true;
@@ -94,7 +103,10 @@ export function installUserWindowBindings({
         if (area === 'f') {
             api.windows.open(MAP_WIDGET_ID, {
                 kind: 'map',
-                title: 'Map',
+                // Only names a *new* widget: reopening one keeps the title it
+                // was given, since it is the same dock coming back rather than
+                // a fresh one (Mapper_spec pins that).
+                ...(api.windows.has(MAP_WIDGET_ID) ? {} : { title: 'Map' }),
                 autoDock: false,
                 ignoreHint: true,
             });
@@ -108,12 +120,39 @@ export function installUserWindowBindings({
         });
         return true;
     });
-    // Mudlet `closeMapWidget() → true`. Closes the dockable map widget
-    // (id `map`, opened by `openMapWidget`). Returns false when no map
-    // widget is currently open — Mudlet warns/returns nil in that case.
+    // ── Widget state getters (Mudlet 4.21's read-back family) ──────────────
+    // Titles, stylesheets and tooltips could only ever be set; these answer
+    // what they were set to, so a script can restore what it found rather than
+    // guessing. Argument contracts and the (nil, message) shapes live in
+    // Bridge.lua alongside the matching setters'.
+    // The map widget counts as open only while it is showing: closeMapWidget
+    // hides the dock rather than destroying it (so a reopen hands back the same
+    // one, title and all), which means "is there a map window?" is a visibility
+    // question, not a presence one.
+    const mapWidgetOpen = () =>
+        api.windows.has(MAP_WIDGET_ID) && api.windows.isVisible(MAP_WIDGET_ID);
+
+    lua.global.set('__getUserWindowTitle', (name: unknown) =>
+        api.windows.getTitle(String(name ?? '')));
+    lua.global.set('__getUserWindowStyleSheet', (name: unknown) =>
+        api.getUserWindowStyleSheet(String(name ?? '')));
+    lua.global.set('__getScrollBarVisible', (name?: unknown) =>
+        api.windows.scrollBarVisible(typeof name === 'string' && name ? name : 'main'));
+    lua.global.set('__getMapWindowTitle', () => (mapWidgetOpen() ? api.windows.getTitle(MAP_WIDGET_ID) : null));
+    // x, y, width, height as a 0-indexed array; Bridge.lua unpacks it into the
+    // four values Mudlet returns.
+    lua.global.set('__getMapWidgetGeometry', () => {
+        const g = mapWidgetOpen() ? api.windows.getGeometry(MAP_WIDGET_ID) : null;
+        return g ? [g.x, g.y, g.width, g.height] : null;
+    });
+
+    // Mudlet `closeMapWidget() → true`. Hidden, not destroyed: Mudlet closes
+    // the dock widget and keeps it, so a later openMapWidget hands the same one
+    // back — with the title it was given, which a freshly created widget would
+    // have lost. False when no map widget is open to close.
     lua.global.set('closeMapWidget', () => {
-        if (!api.windows.has(MAP_WIDGET_ID)) return false;
-        api.windows.close(MAP_WIDGET_ID);
+        if (!mapWidgetOpen()) return false;
+        api.windows.hide(MAP_WIDGET_ID);
         return true;
     });
     // Mudlet clearUserWindow([name]) — defaults to clearing the main

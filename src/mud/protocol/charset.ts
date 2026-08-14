@@ -68,6 +68,11 @@ const CHARSET_PRIORITY = [
  *  via `getServerEncodingsList()`. Every entry round-trips through
  *  {@link normalizeCharsetName}, so any name here is a valid `setServerEncoding`
  *  argument. ("ASCII" maps to the UTF-8 decoder, which handles it byte-for-byte.) */
+/** What `getServerEncoding()` reports before anything has changed it. UTF-8
+ *  rather than Mudlet's ASCII: the decoder handles ASCII byte-for-byte anyway,
+ *  and a browser stream is far more likely to be UTF-8 than not. */
+export const DEFAULT_SERVER_ENCODING = 'UTF-8';
+
 export const SUPPORTED_SERVER_ENCODINGS: readonly string[] = [
     'ASCII', 'UTF-8',
     'ISO-8859-1', 'ISO-8859-2', 'ISO-8859-3', 'ISO-8859-4', 'ISO-8859-5',

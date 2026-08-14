@@ -116,7 +116,10 @@ describe('setProfileStyleSheet — installs a <style> block in document.head', (
     env.run('setProfileStyleSheet("")');
   });
 
-  it('raises sysAppStyleSheetChange with tag "profile"', () => {
+  // sysAppStyleSheetChange announces an *application*-level change and carries
+  // (tag, profileName). A profile sheet is not an application-level change, so
+  // setProfileStyleSheet raises nothing — UI_spec asserts both halves.
+  it('raises no sysAppStyleSheetChange, unlike setAppStyleSheet', () => {
     // Wire api → runtime event routing exactly as ScriptingEngine does (the
     // bare test runtime doesn't set this up). Restored after the assertion.
     const baseHost = env.api.engineHost;
@@ -125,12 +128,17 @@ describe('setProfileStyleSheet — installs a <style> block in document.head', (
       raiseEvent: (event, args) => env.rt.emitEvent(event, args),
     });
     env.run([
-      'sawCss, sawTag = nil, nil',
-      'registerAnonymousEventHandler("sysAppStyleSheetChange", function(_, css, tag) sawCss = css; sawTag = tag end)',
+      'seen = {}',
+      'registerAnonymousEventHandler("sysAppStyleSheetChange", function(_, tag, profile)',
+      '  seen[#seen + 1] = { tag = tag, profile = profile }',
+      'end)',
       'setProfileStyleSheet(".x { top: 0; }")',
     ].join('\n'));
-    expect(env.run('return sawTag')).toBe('profile');
-    expect(env.run('return sawCss')).toBe('.x { top: 0; }');
+    expect(env.run('return #seen')).toBe(0);
+
+    env.run('setAppStyleSheet(".y { top: 1; }", "theme")');
+    expect(env.run('return #seen')).toBe(1);
+    expect(env.run('return seen[1].tag')).toBe('theme');
     env.api.setHost(baseHost);
   });
 });

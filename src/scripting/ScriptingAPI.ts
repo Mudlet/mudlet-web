@@ -205,6 +205,19 @@ const CONFIG_PERSIST_ONLY: Record<string, {
     // by default in 2024. The KaVir auto-detect turns it on for the servers that
     // actually want it — see ProfileSession's `kavir.detected` handler.
     versionInTTYPE:                 { type: 'bool', default: false },
+    // IRC client settings. mudix has no IRC client (that's a separate service a
+    // browser tab can't reach), but the *configuration* is ordinary profile
+    // data — Mudlet stores it whether or not the client has ever been opened,
+    // and get/setIrcNick and friends read and write exactly this. Defaults are
+    // Mudlet's own (dlgIRC.h), so a profile that has never touched IRC still
+    // answers with something usable.
+    ircNick:                        { type: 'str',  default: 'Mudlet' },
+    ircHost:                        { type: 'str',  default: 'irc.libera.chat' },
+    ircPort:                        { type: 'num',  default: 6667 },
+    ircSecure:                      { type: 'bool', default: false },
+    ircPassword:                    { type: 'str',  default: '' },
+    /** Space-separated, as Mudlet stores it. */
+    ircChannels:                    { type: 'str',  default: '#mudlet' },
 };
 
 /** Format an epoch-ms timestamp as Mudlet's "hh:mm:ss.zzz" (local time). */
@@ -287,6 +300,13 @@ if (typeof document !== 'undefined') {
 let measureCtx: CanvasRenderingContext2D | null | undefined;
 const measureCache = new Map<string, [number, number]>();
 
+/** Mudlet's scrollback floor and ceiling for setConsoleBufferSize. The floor
+ *  keeps a buffer usable; the ceiling is what `useMaximum` asks for — Mudlet
+ *  sizes it off the machine, which a browser tab cannot ask about, so this is a
+ *  fixed generous cap instead. */
+const MIN_CONSOLE_BUFFER_LINES = 100;
+const MAX_CONSOLE_BUFFER_LINES = 1_000_000;
+
 /**
  * Window id backing an MXP `<FRAME name>`. Frame names come from the server,
  * while mudix owns window ids of its own — `main`, `map` (the toolbar's
@@ -352,6 +372,21 @@ class ScriptingWindowsAPI {
 
     setTitle(id: string, title?: string): boolean {
         return this.session.windows.setTitle(id, title);
+    }
+
+    /** Mudlet getUserWindowTitle / getMapWindowTitle — null when no such window. */
+    getTitle(id: string): string | null {
+        return this.session.windows.getTitle(id);
+    }
+
+    /** Mudlet getScrollBarVisible — the enable/disableScrollBar intent. */
+    scrollBarVisible(id: string): boolean {
+        return this.session.windows.scrollBarVisible(id);
+    }
+
+    /** Mudlet getMapWidgetGeometry / getWindowGeometry — null when no such window. */
+    getGeometry(id: string): { x: number; y: number; width: number; height: number } | null {
+        return this.session.windows.getGeometry(id);
     }
 
     focus(id: string): void {
@@ -475,6 +510,9 @@ class ScriptingLabelsAPI {
         return this.manager.create(name, opts);
     }
     has(name: string): boolean { return this.manager.has(name); }
+    /** Whether a movie is installed on this label — the movie functions report
+     *  "no movie here" separately from "no such label". */
+    hasMovie(name: string): boolean { return this.manager.getMovie(name) !== null; }
     /** Read-only state for the geometry/visibility/text getters. */
     get(name: string) { return this.manager.get(name); }
     destroy(name: string): boolean {
@@ -928,19 +966,23 @@ export class ScriptingAPI {
      *  - `description` — the connection record's free-text description.
      * On a duplicate profile name, last-wins (a Lua table can't hold dup keys).
      */
-    getProfiles(): Record<string, { host: string; port: number; loaded: boolean; connected: boolean; description: string }> {
+    getProfiles(): Record<string, { host: string; port: string; loaded: boolean; connected?: boolean; description: string }> {
         const loaded = new Set(this.presence.loadedIds());
-        const out: Record<string, { host: string; port: number; loaded: boolean; connected: boolean; description: string }> = {};
+        const out: Record<string, { host: string; port: string; loaded: boolean; connected?: boolean; description: string }> = {};
         for (const conn of useAppStore.getState().connections) {
             const isLoaded = loaded.has(conn.id);
             const { host, port } = connectionHostPort(conn);
             out[conn.name] = {
                 host,
-                port,
+                // Strings, as Mudlet reports them: the port comes out of the
+                // profile's own text field, and a caller concatenating it into
+                // an address shouldn't have to think about number formatting.
+                port: String(port),
                 loaded: isLoaded,
-                // Gate connected on loaded so a crashed tab's stale presence can't
-                // outlive its (auto-released) lock.
-                connected: isLoaded && this.presence.isConnected(conn.id),
+                // Only a loaded profile has a connection to report on. Gated on
+                // loaded, too, so a crashed tab's stale presence can't outlive
+                // its (auto-released) lock.
+                ...(isLoaded ? { connected: this.presence.isConnected(conn.id) } : {}),
                 description: conn.description ?? '',
             };
         }
@@ -957,8 +999,12 @@ export class ScriptingAPI {
         const lines = [
             `${getBrand().appName} ${CLIENT_VERSION} — web-based MUD client`,
             `Profile: ${this.profileName || '(none)'}`,
-            `Server encoding: ${this.session.getServerEncoding()}`,
             `Platform: ${platform}`,
+            // Mudlet reports both the encoding in use and everything it could be
+            // switched to; a script diagnosing mojibake wants the second list as
+            // much as the first.
+            `Current encoding: "${this.session.getServerEncoding()}"`,
+            `Available encodings: ${this.session.getServerEncodingsList().join(', ')}`,
         ];
         for (const line of lines) this.echo(line + '\n');
     }
@@ -1352,25 +1398,50 @@ export class ScriptingAPI {
         return false;
     }
 
-    /** Mudlet `getProfileInformation()`. Returns the profile's free-text
-     *  description, or "" when unset. (mudix is single-profile, so the optional
-     *  profile-name argument is ignored.) */
-    getProfileInformation(): string {
-        return useAppStore.getState().connections.find(c => c.id === this.connectionId)?.description ?? '';
+    /**
+     * The connection a profile-name argument refers to, or null when no profile
+     * has that name. Matching ignores case, as Mudlet's does: it looks the name
+     * up as a folder, and the platforms it runs on mostly have case-insensitive
+     * ones — so `setProfileInformation(name:upper(), …)` has to find the profile
+     * it already has rather than start a second one beside it.
+     */
+    private connectionByName(profileName?: string): MudConnection | null {
+        if (profileName === undefined) {
+            return useAppStore.getState().connections.find(c => c.id === this.connectionId) ?? null;
+        }
+        const wanted = profileName.toLowerCase();
+        return useAppStore.getState().connections.find(c => c.name.toLowerCase() === wanted) ?? null;
     }
 
-    /** Mudlet `setProfileInformation(text)`. Stores the profile's free-text
+    /** Mudlet `getProfileInformation([profileName])`. The profile's free-text
+     *  description ("" when unset), defaulting to this profile. Returns null for
+     *  a name no profile has. */
+    getProfileInformation(profileName?: string): string | null {
+        const conn = this.connectionByName(profileName);
+        // null means "no such profile"; a profile that simply has no description
+        // yet still answers, with the empty string.
+        return conn ? conn.description ?? '' : null;
+    }
+
+    /** Mudlet `setProfileInformation([profileName,] text)`. Stores the free-text
      *  description on the connection record (also editable from the connection
-     *  screen). Always succeeds for the active profile. */
-    setProfileInformation(text: string): boolean {
-        useAppStore.getState().patchConnection(this.connectionId, { description: String(text ?? '') });
+     *  screen). False for a name no profile has — deliberately a refusal rather
+     *  than a create, since in Mudlet the write goes through a call that makes
+     *  whatever folder it is handed, and a folder there is a profile. */
+    setProfileInformation(text: string, profileName?: string): boolean {
+        const conn = this.connectionByName(profileName);
+        if (!conn) return false;
+        useAppStore.getState().patchConnection(conn.id, { description: String(text ?? '') });
         return true;
     }
 
-    /** Mudlet `clearProfileInformation()`. Resets the profile description to
-     *  an empty string. */
-    clearProfileInformation(): boolean {
-        useAppStore.getState().patchConnection(this.connectionId, { description: '' });
+    /** Mudlet `clearProfileInformation([profileName])`. Empties the description.
+     *  (Mudlet restores the blurb its bundled games ship with; mudix has no
+     *  bundled games — every profile here is one someone made.) */
+    clearProfileInformation(profileName?: string): boolean {
+        const conn = this.connectionByName(profileName);
+        if (!conn) return false;
+        useAppStore.getState().patchConnection(conn.id, { description: '' });
         return true;
     }
 
@@ -1492,8 +1563,39 @@ export class ScriptingAPI {
 
     /** Mudlet `startLogging(state)`. Returns true on success, false when
      *  the toggle isn't wired up yet (e.g. before ProfileSession mounts). */
-    startLogging(enabled: boolean): boolean {
-        return this.loggingToggler?.(enabled) ?? false;
+    /**
+     * Mudlet `startLogging(state)` → (ok, message, path, state). The state code
+     * distinguishes a change from a no-op: 1 started, 0 stopped, -1 already on,
+     * -2 already off; the two "already" cases answer nil rather than true, so a
+     * caller can tell "I turned it on" from "it was on".
+     */
+    startLogging(enabled: boolean): { ok: boolean; message: string; path: string | null; state: number } {
+        const wasOn = !!this.loggingPath();
+        if (wasOn === enabled) {
+            return enabled
+                ? { ok: false, state: -1, path: this.loggingPath(), message: `Main console output is already being logged to file: ${this.loggingPath()}` }
+                : { ok: false, state: -2, path: null, message: 'Main console output was already not being logged to a file.' };
+        }
+        // The path has to be read on the way out for a stop (the logger is gone
+        // afterwards) and on the way in for a start (it doesn't exist yet).
+        const before = this.loggingPath();
+        this.loggingToggler?.(enabled);
+        const path = enabled ? this.loggingPath() : before;
+        return enabled
+            ? { ok: true, state: 1, path, message: `Main console output has started to be logged to file: ${path}` }
+            : { ok: true, state: 0, path, message: `Main console output has stopped being logged to file: ${path}` };
+    }
+
+    /** Where the live logger is writing its text log, or null when logging is
+     *  off. Wired by ProfileSession alongside the toggler. */
+    private loggingPathProvider: (() => string | null) | null = null;
+
+    setLoggingPathProvider(fn: (() => string | null) | null): void {
+        this.loggingPathProvider = fn;
+    }
+
+    private loggingPath(): string | null {
+        return this.loggingPathProvider?.() ?? null;
     }
 
     /** Hook for ProfileSession to forward appendLog text to the live logger. */
@@ -1504,7 +1606,7 @@ export class ScriptingAPI {
     /** Mudlet `appendLog(text)`. Appends a line to the current session log.
      *  No-op (returns false) when logging isn't active. */
     appendLog(text: string): boolean {
-        if (!this.logAppender) return false;
+        if (!this.logAppender || !this.loggingPath()) return false;
         this.logAppender(text);
         return true;
     }
@@ -1722,8 +1824,9 @@ export class ScriptingAPI {
     }
 
     /** Mudlet `findItems(name, type [, exact [, caseSensitive]])`. Numeric ids of
-     *  matching items/groups. Empty when none match or the type is unknown. */
-    findItems(name: string, type: string, exact = true, caseSensitive = true): number[] {
+     *  matching items/groups — empty when none match, null when there is no such
+     *  item family (which the Lua wrapper reports as a bad item type). */
+    findItems(name: string, type: string, exact = true, caseSensitive = true): number[] | null {
         return this.host.findItemsByName(name, type, exact, caseSensitive);
     }
 
@@ -1731,6 +1834,19 @@ export class ScriptingAPI {
      *  enabled; null when no item of that type has the id. */
     isAncestorsActive(id: number, type: string): boolean | null {
         return this.host.isAncestorsActiveById(id, type);
+    }
+
+    /** Next id from the profile's single item-id sequence — see
+     *  ItemIdSequence. Backs the Lua runtime's temporary items. */
+    allocateItemId(): number {
+        return this.host.allocateItemId();
+    }
+
+    /** Whether `type` names an item family at all — the tree-walking APIs
+     *  (findItems, ancestors, isAncestorsActive) all refuse an unknown one, and
+     *  refuse it differently from "nothing matched". */
+    isKnownItemType(type: string): boolean {
+        return this.host.isKnownItemType(type);
     }
 
     /** Mudlet `getProfileStats()`. Per-family total/active counts (+ trigger
@@ -2708,6 +2824,12 @@ export class ScriptingAPI {
      */
     endLine(): void {
         this.lineColorSnapshots.pop();
+        // A line a trigger gagged leaves the buffer as well as the screen.
+        // deleteLine() during trigger processing only marks the line (the
+        // render pass reads the flag), so the buffer kept a line the player
+        // could not see — getLines/getLineCount/the cursor all still counted it,
+        // and `deleteFull()` looked like it had done nothing.
+        if (this.mainConsole.getBuffer()?.deleted) this.mainConsole.deleteLine();
         this.inTriggerProcessing = false;
         this.echoOnMatchedLine = false;
         // NB: the trigger selection is intentionally NOT cleared here. Mudlet
@@ -3009,12 +3131,24 @@ export class ScriptingAPI {
      * Sets the scrollback cap (and the round-tripped batch-deletion size).
      * Returns false when the named console doesn't exist.
      */
-    setConsoleBufferSize(windowName: string | undefined, linesLimit: number, batchSize?: number): boolean {
+    setConsoleBufferSize(
+        windowName: string | undefined,
+        linesLimit: number,
+        batchSize?: number,
+        useMaximum = false,
+    ): boolean {
         const con = this.getConsole(windowName);
         if (!con) return false;
-        if (Number.isFinite(linesLimit) && linesLimit > 0) con.setMaxLines(Math.floor(linesLimit));
+        // Mudlet clamps rather than refuses: a limit under the floor would make
+        // the buffer useless, and a batch that isn't smaller than the limit
+        // would empty it on the first trim.
+        const limit = useMaximum
+            ? MAX_CONSOLE_BUFFER_LINES
+            : Math.max(MIN_CONSOLE_BUFFER_LINES, Math.floor(linesLimit));
+        if (Number.isFinite(limit) && limit > 0) con.setMaxLines(limit);
         if (batchSize !== undefined && Number.isFinite(batchSize) && batchSize > 0) {
-            con.setBatchDeleteSize(Math.floor(batchSize));
+            const batch = batchSize >= limit ? Math.floor(limit / 10) : Math.floor(batchSize);
+            con.setBatchDeleteSize(Math.max(1, batch));
         }
         return true;
     }
@@ -3277,6 +3411,11 @@ export class ScriptingAPI {
 
     clearWindow(name?: string): void {
         if (!name || name === 'main') {
+            // Both halves: the renderer wipes what is on screen, and the buffer
+            // behind it is emptied too. Clearing only the view left getLines /
+            // getLineCount / the cursor reporting lines the player could no
+            // longer see — Mudlet's clearWindow empties the buffer itself.
+            this.mainConsole.clear();
             this.session.events.emit('script.clearwindow');
         } else if (this.buffers.has(name)) {
             // Off-screen buffer: WindowManager.clear no-ops (no panel), so clear
@@ -3323,7 +3462,11 @@ export class ScriptingAPI {
      */
     deleteMiniConsole(name: string): boolean {
         if (!name || name === 'main') return false;
-        if (!this.session.windows.isMiniConsole(name)) return false;
+        // A user window counts: Geyser's UserWindow:delete goes through
+        // MiniConsole.type_delete, which calls this — a user window is a
+        // miniconsole with a dock around it, and refusing here left the window
+        // on screen and still answering windowType() after it was deleted.
+        if (!this.session.windows.isMiniConsole(name) && !this.session.windows.has(name)) return false;
         this.session.windows.close(name);
         this.host.raiseEvent('sysMiniConsoleDeleted', [name]);
         return true;
@@ -3842,6 +3985,58 @@ export class ScriptingAPI {
         this.session.events.emit('script.cmdlinesuggestions', [...this.cmdLineSuggestions]);
     }
 
+    // ── Command-line tab-completion blacklist ────────────────────────────────
+    // Mudlet's addCmdLineBlacklist family. The blacklist is subtractive, and it
+    // applies to every source Tab draws from — buffer words, history and the
+    // suggestions above — not just the ones a script added, which is the point
+    // of it: it's how you stop Tab offering a word the game keeps saying.
+    // Matched case-insensitively, as TCommandLine does.
+    private cmdLineBlacklist = new Set<string>();
+
+    addCmdLineBlacklist(word: string): void {
+        const w = word ?? '';
+        if (!w || this.cmdLineBlacklist.has(w)) return;
+        this.cmdLineBlacklist.add(w);
+        this.emitCmdLineBlacklist();
+    }
+
+    removeCmdLineBlacklist(word: string): void {
+        if (this.cmdLineBlacklist.delete(word ?? '')) this.emitCmdLineBlacklist();
+    }
+
+    clearCmdLineBlacklist(): void {
+        if (this.cmdLineBlacklist.size === 0) return;
+        this.cmdLineBlacklist.clear();
+        this.emitCmdLineBlacklist();
+    }
+
+    getCmdLineBlacklist(): string[] {
+        return [...this.cmdLineBlacklist];
+    }
+
+    private emitCmdLineBlacklist(): void {
+        this.session.events.emit('script.cmdlineblacklist', [...this.cmdLineBlacklist]);
+    }
+
+    // ── Per-command-line history saving ─────────────────────────────────────
+    // Mudlet's TCommandLine::mSaveCommands, reached from Lua as
+    // get/setSaveCommandHistory. It is a second switch *under* the profile-wide
+    // `commandLineHistorySaveSize`: with that at zero nothing is saved at all
+    // and this one is not even consulted. Defaults to on, as Mudlet's does.
+    private saveCommandHistoryFlags = new Map<string, boolean>();
+
+    saveCommandHistoryFor(cmdLineName: string): boolean {
+        return this.saveCommandHistoryFlags.get(cmdLineName) ?? true;
+    }
+
+    setSaveCommandHistoryFor(cmdLineName: string, save: boolean): void {
+        if (this.saveCommandHistoryFor(cmdLineName) === save) return;
+        this.saveCommandHistoryFlags.set(cmdLineName, save);
+        // Only the main bar has a persisted history for the flag to govern; the
+        // rest round-trip the setting and will follow if they ever gain one.
+        if (cmdLineName === 'main') this.session.events.emit('script.savecommandhistory', save);
+    }
+
     /**
      * Mudlet `openUrl(url) → bool`. Opens a URL in a new browser tab. Special
      * case: a `file:` prefix (as in `openUrl("file:" .. getMudletHomeDir())`)
@@ -3948,8 +4143,11 @@ export class ScriptingAPI {
         const key = tag && tag.length > 0 ? tag : 'default';
         const el = this.styleTag('app', key, 'mudixAppStylesheet', key);
         el.textContent = rewriteQtSelectors(css ?? '');
-        // The event carries what the script passed, not the rewrite.
-        this.host.raiseEvent('sysAppStyleSheetChange', [css ?? '', tag ?? '']);
+        // Mudlet's event carries (tag, profileName) — which sheet changed and
+        // whose — not the CSS itself. A handler that wants the text has it
+        // already; what it cannot otherwise know is which of several tagged
+        // sheets moved.
+        this.host.raiseEvent('sysAppStyleSheetChange', [tag ?? '', this.profileName]);
         return true;
     }
 
@@ -3958,21 +4156,47 @@ export class ScriptingAPI {
         const el = this.styleTag('userwindow', name, 'mudixUserwindowStylesheet', name);
         const scope = `[data-mudix-window="${cssEscape(name)}"]`;
         el.textContent = userWindowQssToScopedCss(css ?? '', scope);
+        // Remembered verbatim: the tag holds the *scoped* translation, and a
+        // getter has to answer what the script wrote, not what mudix made of it.
+        this.userWindowCss.set(name, css ?? '');
         return true;
     }
+
+    /** Mudlet `getUserWindowStyleSheet(name)` — the QSS as it was set. */
+    getUserWindowStyleSheet(name: string): string {
+        return this.userWindowCss.get(name) ?? '';
+    }
+
+    private readonly userWindowCss = new Map<string, string>();
+
+    /** Mudlet `getCmdLineStyleSheet([name])`. Same story as above: the command
+     *  line's authored QSS, not the CSS the overlay ends up with. "main" is the
+     *  default and has no widget of its own to read back from. */
+    getCmdLineStyleSheet(name: string): string {
+        return this.cmdLineCss.get(name || 'main') ?? '';
+    }
+
+    noteCmdLineStyleSheet(name: string, css: string): void {
+        this.cmdLineCss.set(name || 'main', css ?? '');
+    }
+
+    private readonly cmdLineCss = new Map<string, string>();
 
     /**
      * Mudlet `setProfileStyleSheet(stylesheet)`. Installs (or replaces) a
      * profile-wide CSS block. In Mudlet this themes the whole profile's
      * widgets; the browser analogue is a single `<style>` tag in document.head,
      * keyed separately from setAppStyleSheet's blocks so the two don't clobber
-     * each other. Raises sysAppStyleSheetChange (tag "profile") for parity with
-     * the app-level setter. Always returns true.
+     * each other. Always returns true.
+     *
+     * Deliberately raises NO sysAppStyleSheetChange: that event announces an
+     * *application*-level change, and a profile sheet is not one. Raising it
+     * here (as mudix used to) told every profile-agnostic theme handler to
+     * re-apply itself over a change that was never theirs.
      */
     setProfileStyleSheet(css: string): boolean {
         const el = this.styleTag('profile', 'default', 'mudixProfileStylesheet', 'true');
         el.textContent = rewriteQtSelectors(css ?? '');
-        this.host.raiseEvent('sysAppStyleSheetChange', [css ?? '', 'profile']);
         return true;
     }
 
@@ -4492,7 +4716,10 @@ export class ScriptingAPI {
      * the same way Mudlet's CONSOLE-only lookup rejects them.
      */
     setMiniConsoleFontSize(name: string, size: number): boolean {
-        if (!name || !this.session.windows.isMiniConsole(name)) return false;
+        // A user window carries a console of its own, so it takes this too —
+        // Geyser.UserWindow:setFontSize goes through here, and refusing left a
+        // window created with `fontSize = 12` showing the profile default.
+        if (!name || !this.session.windows.has(name)) return false;
         if (!Number.isFinite(size) || size < 1 || size > 99) return false;
         return this.session.windows.setFontSize(name, Math.round(size));
     }

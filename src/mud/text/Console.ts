@@ -26,7 +26,11 @@ export class Console {
     // lines it drops at once when the cap is exceeded. mudix evicts lazily down
     // to _maxLines (the observable cap is identical), but we round-trip the
     // value so getConsoleBufferSize reports back what a script set.
-    private _batchDeleteSize = 1000;
+    // Mudlet's own default is a tenth of the line limit, which is also the
+    // value setConsoleBufferSize clamps an over-large batch down to — so a
+    // script that reads the default back and writes it again gets the same
+    // number, rather than watching it change under it.
+    private _batchDeleteSize = 100;
     /** Mudlet `sysBufferShrinkEvent(name, linesRemoved)` hook. Fired by
      *  `evict()` whenever the scrollback cap drops one or more lines from the
      *  head of `history`. Set by the owning session (ScriptingAPI for "main",
@@ -78,7 +82,16 @@ export class Console {
         this.partial.appendBuffer(new AnsiAwareBuffer(text, this.format.toSnapshot()));
 
         if (!this.partial.text.includes('\n')) return;
+        this.promotePartialLines();
+    }
 
+    /**
+     * Move every newline-terminated line out of the in-flight `partial` and
+     * into history, leaving whatever follows the last newline as the new
+     * partial. Shared by `echo` and by `insertText`, which can put a newline
+     * into the line being built just as an echo can.
+     */
+    private promotePartialLines(): void {
         const splits = this.partial.splitLines();
         const endsWithNewline = this.partial.text.endsWith('\n');
         const completeCount = endsWithNewline ? splits.length : splits.length - 1;
@@ -207,12 +220,30 @@ export class Console {
         return this.cursorIdx < 0 || this.cursorIdx >= this.history.length;
     }
 
+    /**
+     * Whether the line under the cursor is the in-flight `partial` — an echo
+     * that hasn't seen its newline yet — rather than a finished history line.
+     *
+     * The distinction matters to every cursor-line operation, not just the
+     * readers: Mudlet's cursor sits on the line being built, so `insertText`,
+     * `replace` and friends have to reach it there. Reading it but not writing
+     * it made `prefix()`/`suffix()` on an unfinished line silent no-ops.
+     */
+    private get onPartialLine(): boolean {
+        return this.followingEnd && this.partial.length > 0;
+    }
+
     getLine(): string {
-        if (this.followingEnd && this.partial.length > 0) return this.partial.text;
-        return this.history[this.cursor]?.text ?? '';
+        return this.currentBuffer()?.text ?? '';
     }
     getBuffer(): AnsiAwareBuffer | null {
-        if (this.followingEnd && this.partial.length > 0) return this.partial;
+        return this.currentBuffer();
+    }
+
+    /** The buffer the cursor is on: the partial when it is following the end,
+     *  otherwise the history line it was parked on. */
+    private currentBuffer(): AnsiAwareBuffer | null {
+        if (this.onPartialLine) return this.partial;
         return this.history[this.cursor] ?? null;
     }
 
@@ -255,12 +286,21 @@ export class Console {
      */
     insertText(text: string, state?: FormatStateSnapshot): boolean {
         const idx = this.cursor;
-        const cur = this.history[idx];
+        const onPartial = this.onPartialLine;
+        const cur = this.currentBuffer();
         if (!cur) return false;
         const col = Math.max(0, Math.min(this.getCursorColumn(), cur.length));
         cur.insert(col, text, state);
         if (!text.includes('\n')) {
             this.cursorCol = col;
+            return true;
+        }
+        // Inserting into the line still being built: the newline finishes it, so
+        // the completed part moves into history and the tail stays partial —
+        // the same promotion `echo` does, and the only way the split can leave
+        // both the buffer and the renderer consistent.
+        if (onPartial) {
+            this.promotePartialLines();
             return true;
         }
         // The current line now carries embedded newlines — split it into separate
@@ -306,13 +346,22 @@ export class Console {
      * Mudlet `moveCursor(x=0, y)` default).
      */
     moveTo(line: number, col: number = 0): boolean {
-        if (this.history.length === 0) return false;
         if (!Number.isFinite(line) || line < 0) return false;
         if (!Number.isFinite(col) || col < 0) return false;
         // A line past the end of the buffer is refused outright rather than
         // clamped — Mudlet's TBuffer::moveCursor returns false for it, and a
         // script that asks for a line that isn't there wants to hear so.
-        if (Math.trunc(line) > this.history.length - 1) return false;
+        //
+        // The bound is `history.length`, not `length - 1`: Mudlet's buffer
+        // always keeps one open line past the last complete one (the line being
+        // built), `getLastLineNumber` counts it, and it is a line to move onto
+        // whether or not anything has been echoed into it yet. Refusing it left
+        // moveCursorDown unable to reach the last line and prefix()/suffix()
+        // unable to sit on an unfinished one. Parking there is "following the
+        // end", which is exactly what `partial` is — and the index is kept
+        // verbatim (as moveToEnd does) so getLineNumber reports the open line
+        // rather than clamping back onto the last complete one.
+        if (Math.trunc(line) > this.history.length) return false;
         this.cursorIdx = Math.trunc(line);
         this.cursorCol = Math.trunc(col);
         return true;
@@ -324,6 +373,7 @@ export class Console {
      * `keepHorizontal` move never reports past the end of a shorter line.
      */
     getCursorColumn(): number {
+        if (this.onPartialLine) return Math.min(this.cursorCol, this.partial.text.length);
         const idx = this.cursor;
         if (idx < 0) return 0;
         const lineLen = this.history[idx]?.text.length ?? 0;
@@ -349,7 +399,12 @@ export class Console {
     // line index -1 to match Mudlet's "no current line" sentinel.
     getLineNumber(): number {
         const len = this.history.length;
-        if (len === 0) return -1;
+        // The line being built is a real line to be on, and it sits after the
+        // finished ones — reporting -1 for it told prefix()/suffix() there was
+        // no current line to move to. An empty buffer with nothing echoed into
+        // that line yet still has Mudlet's "no current line" sentinel.
+        if (len === 0) return this.partial.length > 0 ? 0 : -1;
+        if (this.onPartialLine) return len;
         // Following-end (cursorIdx < 0, after output/echo) reports as the last
         // line. An in-range or past-end cursorIdx is reported verbatim: after
         // deleteLine removes the last line the cursor sits one slot past the end

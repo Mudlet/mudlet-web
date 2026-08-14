@@ -12,6 +12,11 @@ import type { BindingContext } from './context';
  * alse where Mudlet returns nil, which Bridge.lua unpacks into the
  * documented (nil, errMsg) multi-returns).
  */
+/** The Mudlet binary map format versions mudix's reader/writer covers. Outside
+ *  this range a save is refused rather than written in a shape nothing reads. */
+const MIN_MAP_FORMAT = 17;
+const MAX_MAP_FORMAT = 21;
+
 export function installMapBindings({
     lua,
     api,
@@ -24,6 +29,46 @@ export function installMapBindings({
     evaluateMapInfo,
     evaluateExitWeightFilter,
 }: BindingContext): void {
+    // A bare or relative map name resolves against the profile directory, not
+    // against whatever the process's working directory happens to be — a spec
+    // run's is the source tree, and a map saved there is a map nobody finds
+    // again. Absolute paths are left alone.
+    const resolveMapPath = (location: string): string =>
+        location.startsWith('/') ? location : `${vfs?.profilePath ?? ''}/${location}`;
+
+    /** `<profile>/map/<yyyy-MM-dd#hh-mm-ss>map.dat`, the name Mudlet gives a
+     *  save that was not told where to go. */
+    const defaultMapPath = (): string | null => {
+        if (!vfs) return null;
+        const d = new Date();
+        const p = (n: number) => String(n).padStart(2, '0');
+        const stamp = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+            + `#${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+        try { vfs.mkdir(`${vfs.profilePath}/map`); } catch { /* already there */ }
+        return `${vfs.profilePath}/map/${stamp}map.dat`;
+    };
+
+    /** The most recently written map file in the profile's map folder, which is
+     *  what a `loadMap()` with no path restores. Picked by modification time,
+     *  not by name: a save that was told where to go lands here under a name of
+     *  the caller's choosing, and sorting those alphabetically against the
+     *  timestamp names the no-path saves use picks the wrong file. */
+    const newestMapFile = (): string | null => {
+        if (!vfs) return null;
+        const dir = `${vfs.profilePath}/map`;
+        let names: string[];
+        try { names = vfs.readdir(dir).filter(n => n.toLowerCase().endsWith('.dat')); }
+        catch { return null; }
+        let newest: string | null = null;
+        let newestAt = -Infinity;
+        for (const name of names) {
+            const path = `${dir}/${name}`;
+            const at = vfs.stat(path)?.mtime?.getTime() ?? 0;
+            if (at >= newestAt) { newestAt = at; newest = path; }
+        }
+        return newest;
+    };
+
     // ── Map view ──────────────────────────────────────────────────────────
     // Returns a bool; the Bridge.lua `centerview` wrapper turns false into
     // Mudlet's (nil, errMsg) multi-return for an unknown room id.
@@ -69,19 +114,36 @@ export function installMapBindings({
     // Without a path the panel reloads from already-stored bytes. Returns
     // true on success, false if the file is missing, unreadable, or fails
     // to parse.
-    lua.global.set('loadMap', (location?: unknown) => {
+    // Returns true / false for the binary path and, for XML, either true or a
+    // string explaining what went wrong — Bridge.lua turns that string into
+    // Mudlet's (nil, message) pair. XML says more than binary because Mudlet's
+    // XML importer does: a parse failure there is worth a reason.
+    lua.global.set('__loadMap', (location?: unknown, xml?: unknown) => {
         if (typeof location === 'string' && location.length > 0) {
+            const path = resolveMapPath(location);
             if (!vfs) return false;
-            if (location.toLowerCase().endsWith('.xml')) {
-                let text: string;
-                try { text = vfs.readFile(location); }
-                catch { return false; }
-                return api.loadMapXml(text);
+            if (path.toLowerCase().endsWith('.xml')) {
+                // Bridge.lua reads the text and passes it as the second
+                // argument: an XML map can live outside the profile filesystem
+                // — the busted corpus keeps its fixture in the read-only /lua/
+                // namespace — and only Lua's io layer sees both.
+                try {
+                    if (api.loadMapXml(String(xml ?? ''))) return true;
+                } catch { /* reported below */ }
+                return `loadMap: failure to import XML map file "${location}"`;
             }
             let bytes: Uint8Array;
-            try { bytes = vfs.readBinaryFile(location); }
+            try { bytes = vfs.readBinaryFile(path); }
             catch { return false; }
             return api.loadMap(bytes);
+        }
+        // No path: the profile's most recent save, then whatever is already
+        // stored. Mudlet reads the newest file out of the map folder, and a
+        // script that saved without naming a file expects to get that back.
+        const newest = vfs ? newestMapFile() : null;
+        if (newest) {
+            try { return api.loadMap(vfs!.readBinaryFile(newest)); }
+            catch { /* fall through to the stored bytes */ }
         }
         return api.loadMap();
     });
@@ -92,14 +154,25 @@ export function installMapBindings({
     // VFS so external tools (or a future loadMap(path)) can read them
     // back. Returns true on success, false if serialisation fails or the
     // VFS write throws.
-    lua.global.set('saveMap', (location?: unknown) => {
+    lua.global.set('__saveMap', (location?: unknown, formatVersion?: unknown) => {
+        // A format version mudix cannot write is refused flatly, as Mudlet
+        // refuses one outside the range its own writer supports. The bounds are
+        // the binary reader/writer's, not a policy choice.
+        if (formatVersion !== undefined && formatVersion !== null) {
+            const v = Number(formatVersion);
+            if (!Number.isFinite(v) || v < MIN_MAP_FORMAT || v > MAX_MAP_FORMAT) return false;
+        }
         const bytes = api.saveMap();
         if (!bytes) return false;
-        if (typeof location === 'string' && location.length > 0) {
-            if (!vfs) return false;
-            try { vfs.writeBinaryFile(location, bytes); }
-            catch { return false; }
-        }
+        // No location: the profile's own map folder, named for the time of the
+        // save, exactly as Mudlet does it. A script that calls saveMap() with
+        // no arguments expects a file to appear, not just an IndexedDB write.
+        const target = typeof location === 'string' && location.length > 0
+            ? resolveMapPath(location)
+            : defaultMapPath();
+        if (!vfs || !target) return false;
+        try { vfs.writeBinaryFile(target, bytes); }
+        catch { return false; }
         return true;
     });
 
@@ -252,7 +325,13 @@ export function installMapBindings({
         pushJsValue(L, result);
         return 1;
     });
-    lua.global.set('setRoomUserData', (id: number, k: string, v: string)=> api.map.setRoomUserData(id, k, v));
+    // The value is stored as a STRING, whatever Lua passed: Mudlet reads it
+    // with lua_tostring, so `setRoomUserData(id, k, 5)` and a later
+    // getRoomUserData both see "5". Storing the number instead made the pair
+    // asymmetric — bundled Lua writes a bare number here (setRoomNameOffset's
+    // one-value branch) and every reader expects a string back.
+    lua.global.set('setRoomUserData', (id: number, k: string, v: unknown) =>
+        api.map.setRoomUserData(id, k, v == null ? '' : String(v)));
     // Mudlet `getRoomUserDataKeys(id)` → sequential table of keys, or nil
     // when the room doesn't exist. JS hands back an array (wasmoon 0-indexed
     // on the Lua side) or `null` for the miss; Bridge.lua re-indexes to a

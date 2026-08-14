@@ -93,6 +93,9 @@ export interface IScriptingRuntime {
      * (unlike permanent items) don't live in the persisted store.
      */
     tempItemExists(id: number, type: string): boolean;
+    /** A live temp item of `type` carrying this script-supplied name (Mudlet's
+     *  tempComplexRegexTrigger is the one temp API that takes one), or null. */
+    tempItemIdByName(name: string, type: string): number | null;
     /** Publish one use of a server-defined MXP element as `mxp.<element>`. */
     setMxpElement(name: string, attrs: Record<string, string>): void;
     /** Whether a live temp item is enabled — backs `isActive(id, type)`. */

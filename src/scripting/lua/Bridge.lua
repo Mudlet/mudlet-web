@@ -259,6 +259,50 @@ end
 function getConsoleBufferSize(name)
     local t = __getConsoleBufferSize(name)
     if t then return t[0], t[1] end
+    return nil, 'window "' .. tostring(name) .. '" not found'
+end
+
+-- Mudlet setConsoleBufferSize([consoleName,] linesLimit, sizeOfBatchDeletion
+-- [, useMaximum]). The optional leading name shifts every other argument
+-- along, which is why the four-argument form only lines up when a name was
+-- actually given — without one the useMaximum flag would land where the batch
+-- size goes, and be silently used as a number.
+function setConsoleBufferSize(...)
+    local n = select('#', ...)
+    local a, b, c, d = ...
+    local name, lines, batch, useMaximum
+    if type(a) == 'string' then
+        name, lines, batch, useMaximum = a, b, c, d
+    else
+        lines, batch, useMaximum = a, b, c
+        if n > 2 then
+            -- three arguments with no name: the third is where the batch
+            -- deletion size lives, and a boolean is not one.
+            error("setConsoleBufferSize: bad argument #3 type (size of batch deletion as number"
+                .. " expected, got " .. type(c) .. "!)", 2)
+        end
+    end
+    local argOffset = name and 1 or 0
+    if type(lines) ~= 'number' then
+        error("setConsoleBufferSize: bad argument #" .. (1 + argOffset) .. " type (lines limit as"
+            .. " number expected, got " .. type(lines) .. "!)", 2)
+    end
+    if batch ~= nil and type(batch) ~= 'number' then
+        error("setConsoleBufferSize: bad argument #" .. (2 + argOffset) .. " type (size of batch"
+            .. " deletion as number expected, got " .. type(batch) .. "!)", 2)
+    end
+    if useMaximum ~= nil and type(useMaximum) ~= 'boolean' then
+        error("setConsoleBufferSize: bad argument #" .. (3 + argOffset) .. " type (use maximum as"
+            .. " boolean is optional, got " .. type(useMaximum) .. "!)", 2)
+    end
+    if useMaximum and name ~= 'main' then
+        return nil, "useMaximum parameter is only supported for the main console"
+    end
+    if name ~= nil and name ~= 'main' and __windowType(name) == nil then
+        return nil, 'window "' .. tostring(name) .. '" not found'
+    end
+    if __setConsoleBufferSize(name, lines, batch, useMaximum) then return true end
+    return nil, 'window "' .. tostring(name) .. '" not found'
 end
 
 -- Mudlet getConnectionInfo() → host (string), port (number), connected (bool).
@@ -577,6 +621,37 @@ do
     end
     setUserWindowTitle      = userWindowGuard(setUserWindowTitle,      "user window name '%s' not found")
     setUserWindowStyleSheet = userWindowGuard(setUserWindowStyleSheet, "userwindow name '%s' not found")
+
+    -- The read-back half of the pair. Each refuses exactly as its setter does,
+    -- so a script that got past the setter can always get past the getter —
+    -- including the empty-name case, which the two word differently.
+    local function userWindowGetter(fn, who, emptyMessage, message)
+        return function(name)
+            if type(name) ~= 'string' then
+                error(who .. ": bad argument #1 type (window name as string expected, got "
+                    .. type(name) .. "!)", 2)
+            end
+            if name == '' then return nil, emptyMessage end
+            if __windowType(name) ~= 'userwindow' then
+                -- A miniconsole of that name exists but is not a user window;
+                -- saying "not found" would tell a script the name is free.
+                if __windowType(name) ~= nil then
+                    return nil, '"' .. name .. '" is not a user window'
+                end
+                return nil, (message:gsub("%%s", name))
+            end
+            return fn(name)
+        end
+    end
+    getUserWindowTitle = userWindowGetter(__getUserWindowTitle, "getUserWindowTitle",
+        "a user window cannot have an empty string as its name", "user window name '%s' not found")
+    getUserWindowStyleSheet = userWindowGetter(__getUserWindowStyleSheet, "getUserWindowStyleSheet",
+        "a userwindow cannot have an empty string as its name", "userwindow name '%s' not found")
+
+    -- resetUserWindowTitle(name) — back to the generated "<profile> - <name>".
+    function resetUserWindowTitle(name)
+        return setUserWindowTitle(name, nil)
+    end
 end
 
 -- setCommandForegroundColor / setCommandBackgroundColor([window,] r, g, b [, a]).
@@ -662,8 +737,13 @@ end
 -- script hide the thing the player types into.
 do
     local MAIN = "this function is not permitted on the main command line"
+    -- A command line is either one made with createCommandLine, or the one a
+    -- console/user window carries once enableCommandLine has given it one — the
+    -- latter is addressed by the console's own name. Accepting only the first
+    -- made enableCommandLine() refuse the very windows it exists to enable.
     local function missingCmdLine(name)
-        if __windowType(name) == 'commandline' then return nil end
+        local t = __windowType(name)
+        if t == 'commandline' or t == 'miniconsole' or t == 'userwindow' then return nil end
         return 'command line "' .. tostring(name) .. '" not found'
     end
 
@@ -1397,10 +1477,40 @@ do
         end
     end
     setLabelToolTip   = labelGuard(setLabelToolTip,   "label name '%s' not found")
-    setLabelCursor    = labelGuard(setLabelCursor,    "label name '%s' not found")
+    -- The shape must be a number by the time it gets here: GUIUtils.lua's
+    -- wrapper translates a name through mudlet.cursor, and a name that isn't in
+    -- there arrives as nil. Refusing it is the point — silently leaving the
+    -- cursor alone would hide the typo.
+    do
+        local guarded = labelGuard(setLabelCursor, "label name '%s' not found")
+        setLabelCursor = function(name, shape)
+            if type(shape) ~= 'number' then
+                error("setLabelCursor: bad argument #2 type (cursor shape as number expected, got "
+                    .. type(shape) .. "!)", 2)
+            end
+            return guarded(name, shape)
+        end
+    end
     setLinkStyle      = labelGuard(setLinkStyle,      "label '%s' not found")
     resetLinkStyle    = labelGuard(resetLinkStyle,    "label '%s' not found")
     clearVisitedLinks = labelGuard(clearVisitedLinks, "label '%s' not found")
+
+    -- getLabelToolTip: same lookup as the setter, so a label the setter accepts
+    -- always reads back.
+    function getLabelToolTip(name)
+        if type(name) ~= 'string' then
+            error("getLabelToolTip: bad argument #1 type (label name as string expected, got "
+                .. type(name) .. "!)", 2)
+        end
+        local err = __mudix_label_missing(name, "label name '%s' not found")
+        if err then
+            -- the setter's wording for the empty case, which is not the
+            -- "cannot be an empty string" phrasing the shared helper uses
+            if name == '' then return nil, "a label cannot have an empty string as its name" end
+            return nil, err
+        end
+        return __getLabelToolTip(name)
+    end
 
     -- getLabelStyleSheet answers "" for a label that exists but has no CSS, so
     -- the miss has to be told apart by asking whether the label is there.
@@ -1460,6 +1570,13 @@ function __mudix_check_string(value, funcName, index, what)
     if type(value) ~= 'string' then
         error(funcName .. ": bad argument #" .. index .. " type (" .. what
             .. " as string expected, got " .. type(value) .. "!)", 3)
+    end
+end
+
+function __mudix_check_number(value, funcName, index, what)
+    if type(value) ~= 'number' then
+        error(funcName .. ": bad argument #" .. index .. " type (" .. what
+            .. " as number expected, got " .. type(value) .. "!)", 3)
     end
 end
 
@@ -1565,6 +1682,47 @@ function waitForEvent(eventName, timeoutMs)
             .. "ms waiting for event '" .. eventName .. "'"
     end
     return eventName, unpack(slot.args, 1, slot.n)
+end
+
+-- Mudlet pumpEvents([durationMs]) — waitForEvent's sibling for when there is no
+-- named event to wait on: keep delivering queued work for a while. Test-only for
+-- the same reason, and driven the same way (__mudix_pump fires the timers that
+-- have come due, since a browser cannot re-enter its own event loop).
+function pumpEvents(durationMs)
+    if type(__mudix_pump) ~= 'function' then
+        return nil, "pumpEvents: only available in test mode"
+    end
+    local timeout = 50
+    if durationMs ~= nil then
+        if type(durationMs) ~= 'number' then
+            error("pumpEvents: bad argument #1 type (duration in milliseconds as number"
+                .. " is optional, got " .. type(durationMs) .. "!)", 2)
+        end
+        timeout = durationMs
+    end
+    if timeout < 0 then timeout = 0 elseif timeout > 30000 then timeout = 30000 end
+
+    local deadline = __mudix_now() + timeout
+    repeat until __mudix_pump(deadline)
+    return true
+end
+
+-- Mudlet wait(msec) — TLuaInterpreter::Wait, an internal blocking sleep. It
+-- blocks the whole interpreter there (msleep), and does here too: the loop burns
+-- real time without giving the browser its thread back, which is the semantics
+-- the callers rely on. Nothing in mudix's own code calls it; it exists because
+-- Mudlet packages do.
+function wait(...)
+    if select('#', ...) ~= 1 then
+        error("Wait: wrong number of arguments", 0)
+    end
+    local msec = ...
+    if type(msec) ~= 'number' then
+        error("Wait: bad argument #1 type (sleep time in msec as number expected, got "
+            .. type(msec) .. "!)", 2)
+    end
+    local deadline = __mudix_uptime_ms() + math.max(0, msec)
+    while __mudix_uptime_ms() < deadline do end
 end
 
 -- Mudlet receiveMSP(text) — feed an MSP payload as if the server had sent it.
@@ -1968,13 +2126,20 @@ function getProfiles()
     local out = {}
     if type(raw) == 'table' then
         for name, info in pairs(raw) do
+            local loaded = info.loaded and true or false
             out[name] = {
                 host        = info.host or '',
-                port        = info.port or 0,
-                loaded      = info.loaded and true or false,
-                connected   = info.connected and true or false,
+                port        = tostring(info.port or ''),
+                loaded      = loaded,
                 description = info.description or '',
             }
+            -- Set only for a profile that is open: an unloaded one has no
+            -- connection to report on, and a flat false would claim it is open
+            -- and idle. Written as a statement because `loaded and false or nil`
+            -- collapses a legitimate false to nil.
+            if loaded then
+                out[name].connected = info.connected and true or false
+            end
         end
     end
     return out
@@ -2206,6 +2371,17 @@ do
     end
 
     function getTime(asString, format)
+        -- Both arguments are optional, but a wrong type is not the same as an
+        -- absent one: passing a string where the boolean goes used to be read
+        -- as "truthy, so give me a string", quietly ignoring the mistake.
+        if asString ~= nil and type(asString) ~= 'boolean' then
+            error("getTime: bad argument #1 type (return as string as boolean is optional, got "
+                .. type(asString) .. "!)", 2)
+        end
+        if format ~= nil and type(format) ~= 'string' then
+            error("getTime: bad argument #2 type (format as string is optional, got "
+                .. type(format) .. "!)", 2)
+        end
         local t = __getTime()
         if not asString then
             return {
@@ -2214,7 +2390,8 @@ do
                 msec = t.msec,
             }
         end
-        return formatTime(t, format or "hh:mm:ss.zzz")
+        -- Mudlet's documented default is the full stamp, not just the clock.
+        return formatTime(t, format or "yyyy.MM.dd hh:mm:ss.zzz")
     end
 end
 
@@ -2280,7 +2457,7 @@ end
 -- Mudlet registers loadReplay under this legacy name too.
 loadRawFile = loadReplay
 
--- Mudlet setProfileIcon(path) → (true, path) on success, (false, errorMessage)
+-- Mudlet setProfileIcon(path) → (true, path) on success, (nil, errorMessage)
 -- on failure. The JS bridge reads the VFS image and inlines it, returning a
 -- { ok, path } / { ok=false, error } table (it can only push one Lua value);
 -- reshape into the documented multi-return.
@@ -2288,9 +2465,10 @@ function setProfileIcon(path)
     local r = __setProfileIcon(path)
     if type(r) == 'table' then
         if r.ok then return true, r.path end
-        return false, r.error
+        return nil, r.error
     end
-    return r and true or false
+    if r then return true end
+    return nil, "setProfileIcon: could not set the icon"
 end
 
 -- Callback registry: stores Lua functions handed to tempTimer/Alias/Trigger/Key
@@ -2358,6 +2536,17 @@ end
 do
     local SENTINEL = '\1__mudix_file_dialog'
     function invokeFileDialog(fileOrFolder, dialogTitle, dialogLocation)
+        -- Checked before the yield: suspending first would open a picker for a
+        -- call that was never going to be valid, and the error would surface at
+        -- the resume boundary rather than at the caller.
+        if type(fileOrFolder) ~= 'boolean' then
+            error("invokeFileDialog: bad argument #1 type (file or folder as boolean expected, got "
+                .. type(fileOrFolder) .. "!)", 2)
+        end
+        if type(dialogTitle) ~= 'string' then
+            error("invokeFileDialog: bad argument #2 type (dialog title as string expected, got "
+                .. type(dialogTitle) .. "!)", 2)
+        end
         local m, mm, nc = matches, multimatches, namedCaptures
         local path = coroutine.yield(SENTINEL,
             fileOrFolder and true or false,
@@ -2666,20 +2855,28 @@ do
     --   tempExactMatchTrigger(exact, fn[, expirationCount])       — full-line equality
     --   tempBeginOfLineTrigger(prefix, fn[, expirationCount])     — literal prefix (startsWith, not regex ^)
     -- expirationCount: positive N fires N times then auto-kills; -1/0/omitted = unlimited.
+    -- The pattern is checked before the callback is registered: a bad one used
+    -- to reach the engine as `tostring(table)` and install a trigger nobody
+    -- could ever match, instead of telling the caller (IDManager pcalls these
+    -- and reports the failure rather than raising).
     local _sub = __mudix_tempTrigger
     function tempTrigger(pattern, fn, expirationCount)
+        __mudix_check_string(pattern, "tempTrigger", 1, "pattern")
         return _sub(pattern, __mudix_register_cb(__mudix_to_fn(fn, "tempTrigger", 2)), expirationCount)
     end
     local _re = __mudix_tempRegexTrigger
     function tempRegexTrigger(pattern, fn, expirationCount)
+        __mudix_check_string(pattern, "tempRegexTrigger", 1, "pattern")
         return _re(pattern, __mudix_register_cb(__mudix_to_fn(fn, "tempRegexTrigger", 2)), expirationCount)
     end
     local _ex = __mudix_tempExactMatchTrigger
     function tempExactMatchTrigger(pattern, fn, expirationCount)
+        __mudix_check_string(pattern, "tempExactMatchTrigger", 1, "pattern")
         return _ex(pattern, __mudix_register_cb(__mudix_to_fn(fn, "tempExactMatchTrigger", 2)), expirationCount)
     end
     local _bol = __mudix_tempBeginOfLineTrigger
     function tempBeginOfLineTrigger(pattern, fn, expirationCount)
+        __mudix_check_string(pattern, "tempBeginOfLineTrigger", 1, "pattern")
         return _bol(pattern, __mudix_register_cb(__mudix_to_fn(fn, "tempBeginOfLineTrigger", 2)), expirationCount)
     end
     -- tempPromptTrigger(fn[, expirationCount]) — fires whenever the server sends
@@ -3089,7 +3286,12 @@ do
             _killTrigger(registry[name])
             registry[name] = nil
         end
-        local id = __mudix_tempRegexTrigger(regex, __mudix_register_cb(wrapper), tonumber(expireAfter))
+        -- The name goes to the runtime as well as into the registry above:
+        -- exists() and killTrigger() reach a named temporary through it, which
+        -- is the whole point of this being the one temp-trigger API that takes
+        -- a name (Trigger_spec pins a temporary sharing one with a permanent).
+        local id = __mudix_tempRegexTrigger(regex, __mudix_register_cb(wrapper),
+            tonumber(expireAfter), name)
         if type(name) == 'string' and name ~= '' then registry[name] = id end
         return id
     end
@@ -3218,6 +3420,112 @@ do
     end
     function resetCmdLineAction(cmdLineName)
         return _reset(cmdLineName)
+    end
+end
+
+-- ── Command-line mandatory-argument contracts ──────────────────────────────
+-- These five take an optional leading command-line name and a mandatory string
+-- after it, which Mudlet used to locate at lua_gettop(L). With no arguments at
+-- all that index is 0, which Lua 5.1 resolves to the first free stack slot
+-- rather than rejecting — so the type check ran against whatever the previous
+-- call had left there, and a leftover string made the call quietly succeed on
+-- it (upstream #9683). mudix reached the same place from the other direction:
+-- `String(undefined)` put the literal text "undefined" on the command line.
+do
+    local function requireTail(fn, who, what)
+        return function(...)
+            local n = select('#', ...)
+            if n < 1 then
+                error(who .. ": bad argument #1 type (" .. what
+                    .. " as string expected, got no value!)", 2)
+            end
+            local tail = select(n, ...)
+            if type(tail) ~= 'string' and type(tail) ~= 'number' then
+                error(who .. ": bad argument #" .. n .. " type (" .. what
+                    .. " as string expected, got " .. type(tail) .. "!)", 2)
+            end
+            return fn(...)
+        end
+    end
+    addCmdLineSuggestion    = requireTail(addCmdLineSuggestion,    "addCmdLineSuggestion",    "suggestion text")
+    removeCmdLineSuggestion = requireTail(removeCmdLineSuggestion, "removeCmdLineSuggestion", "suggestion text")
+    appendCmdLine           = requireTail(appendCmdLine,           "appendCmdLine",           "text")
+    printCmdLine            = requireTail(printCmdLine,            "printCmdLine",            "text")
+    setCmdLineStyleSheet    = requireTail(setCmdLineStyleSheet,    "setCmdLineStyleSheet",    "style sheet")
+end
+
+-- ── Command-line name contracts ────────────────────────────────────────────
+-- Only a command line made with createCommandLine can carry an action, so the
+-- main bar is refused in the same words as a name that doesn't exist: from a
+-- script's point of view there is no command line by that name to act on. Each
+-- of these used to answer a bare false, which a caller cannot tell from "the
+-- action was already unset".
+do
+    local function namedCmdLine(who, name)
+        if type(name) ~= 'string' then
+            error(who .. ": bad argument #1 type (command line name as string expected, got "
+                .. type(name) .. "!)", 3)
+        end
+        if name == '' then return "command line name cannot be an empty string" end
+        -- Same reach as missingCmdLine above: a console's own command line is
+        -- named for the console, not registered as a command line of its own.
+        local t = __windowType(name)
+        if t ~= 'commandline' and t ~= 'miniconsole' and t ~= 'userwindow' then
+            return "command line name '" .. name .. "' not found"
+        end
+        return nil
+    end
+
+    local _rawSetCmdLineAction = setCmdLineAction
+    function setCmdLineAction(...)
+        local n = select('#', ...)
+        local first = select(1, ...)
+        -- Only the two-argument form names a command line; the one-argument
+        -- form is an action for the main bar and has no name to check.
+        if n >= 2 or type(first) == 'string' then
+            local err = namedCmdLine("setCmdLineAction", first)
+            if err then return nil, err end
+        end
+        return _rawSetCmdLineAction(...)
+    end
+
+    local _rawResetCmdLineAction = resetCmdLineAction
+    function resetCmdLineAction(cmdLineName)
+        local err = namedCmdLine("resetCmdLineAction", cmdLineName)
+        if err then return nil, err end
+        return _rawResetCmdLineAction(cmdLineName)
+    end
+
+    -- clearCmdLineSuggestions reports nothing at all on success (there is no
+    -- getter for a command line's suggestions), so a missing name is the only
+    -- thing it ever has to say.
+    local _rawClearCmdLineSuggestions = clearCmdLineSuggestions
+    function clearCmdLineSuggestions(cmdLineName)
+        if cmdLineName ~= nil and cmdLineName ~= 'main' then
+            -- Double quotes here, single in setCmdLineAction: the two are
+            -- worded differently upstream and the specs assert both verbatim.
+            local err = namedCmdLine("clearCmdLineSuggestions", cmdLineName)
+            if err then
+                return nil, (err:gsub("^command line name '(.*)' not found$",
+                    'command line "%1" not found'))
+            end
+        elseif cmdLineName ~= nil and type(cmdLineName) ~= 'string' then
+            error("clearCmdLineSuggestions: bad argument #1 type (command line name as string"
+                .. " expected, got " .. type(cmdLineName) .. "!)", 2)
+        end
+        _rawClearCmdLineSuggestions(cmdLineName)
+    end
+
+    -- Mudlet selectCmdLineText([cmdLineName]) — select everything typed so the
+    -- next keystroke overtypes it.
+    local _rawSelectCmdLineText = selectCmdLineText
+    function selectCmdLineText(cmdLineName)
+        if cmdLineName ~= nil and cmdLineName ~= 'main' then
+            local err = namedCmdLine("selectCmdLineText", cmdLineName)
+            if err then return nil, err end
+        end
+        _rawSelectCmdLineText(cmdLineName)
+        return true
     end
 end
 
@@ -3376,14 +3684,28 @@ do
         else
             win, cmds, hints = "main", a, b
         end
+        -- Both tables are required and their sizes have to line up, give or
+        -- take one extra hint for the popup's own title. Getting either wrong
+        -- used to build a popup with silently dropped entries.
+        if type(cmds) ~= 'table' then
+            error("setPopup: bad argument #" .. (type(a) == 'string' and 2 or 1)
+                .. " type (command table as table expected, got " .. type(cmds) .. "!)", 2)
+        end
+        if type(hints) ~= 'table' then
+            error("setPopup: bad argument #" .. (type(a) == 'string' and 3 or 2)
+                .. " type (hint table as table expected, got " .. type(hints) .. "!)", 2)
+        end
+        if win ~= 'main' and __windowType(win) == nil then
+            return nil, 'window "' .. tostring(win) .. '" not found'
+        end
+        if #hints ~= #cmds and #hints ~= #cmds + 1 then
+            return nil, "setPopup: command table and hint table sizes do not match up"
+        end
         local cs, hs = {}, {}
-        if type(cmds) == 'table' then
-            for _, x in ipairs(cmds) do cs[#cs+1] = tostring(x) end
-        end
-        if type(hints) == 'table' then
-            for _, x in ipairs(hints) do hs[#hs+1] = tostring(x) end
-        end
-        return _raw(win, table.concat(cs, SEP), table.concat(hs, SEP))
+        for _, x in ipairs(cmds) do cs[#cs+1] = tostring(x) end
+        for _, x in ipairs(hints) do hs[#hs+1] = tostring(x) end
+        if _raw(win, table.concat(cs, SEP), table.concat(hs, SEP)) == false then return false end
+        return true
     end
 end
 
@@ -3489,6 +3811,130 @@ function __mudix_check_media_name(t, funcName)
     end
 end
 
+-- loadSoundFile / loadMusicFile / loadVideoFile are one preload request behind
+-- three names: they share these parsers, each call stamping its own name on
+-- whatever it complains about, so a script is told which load it got wrong.
+-- The table form's `name`/`url` are the only fields a load reads.
+function __mudix_check_media_load_table(t, funcName)
+    for _, field in ipairs({ 'name', 'url' }) do
+        local v = t[field]
+        if v ~= nil and type(v) ~= 'string' then
+            error(funcName .. ": bad argument #1 type (value for " .. field
+                .. " as string expected, got " .. type(v) .. "!)", 3)
+        end
+    end
+    local n = t.name or t.url
+    if type(n) ~= 'string' or n == '' then
+        error(funcName .. ": missing name", 3)
+    end
+end
+
+-- ── Media urls ─────────────────────────────────────────────────────────────
+-- A media request may carry a `url` alongside its name: fetch it into the
+-- profile's media directory, then act on it from there. That is how a server
+-- ships a sound the player doesn't already have, and it is why a load or a play
+-- with a url answers true straight away — the work finishes when the download
+-- does. A url that isn't http(s) is refused by the download itself, as a
+-- sysDownloadError naming the file.
+do
+    local pending = {}
+    local handler
+    -- Registered on first use, not at load: registerAnonymousEventHandler comes
+    -- from the bundled Lua, which loads after this file.
+    local function ensureHandler()
+        if handler then return end
+        handler = registerAnonymousEventHandler("sysDownloadDone", function(_, path)
+            local job = pending[path]
+            if not job then return end
+            pending[path] = nil
+            job.act(job.opts)
+        end, true)
+    end
+
+    -- Returns true when the caller should stop here and let the download
+    -- finish the job.
+    function __mudix_media_deferred(opts, act)
+        if type(opts) ~= 'table' or type(opts.url) ~= 'string' or opts.url == '' then
+            return false
+        end
+        local saveTo = __mudix_media_fetch(opts.name or opts.url, opts.url)
+        if saveTo == nil then return false end
+        ensureHandler()
+        -- The replay drops the url: the file is local by then, and keeping it
+        -- would send the request round the same fetch again.
+        local replay = {}
+        for k, v in pairs(opts) do replay[k] = v end
+        replay.url = nil
+        pending[saveTo] = { act = act, opts = replay }
+        return true
+    end
+end
+
+-- The ordered play form, in Mudlet's argument order:
+--   name [, volume [, fadein [, fadeout [, start [, loops [, key [, tag
+--        [, continue [, url [, finish ]]]]]]]]]]
+-- Every position is checked by the name it carries — a complaint that names
+-- "volume" is far more use than one naming argument #2 — and the four time
+-- fields are refused when negative. Each caller passes its own name through, so
+-- the message names the call that was made and not the parser (upstream #9785,
+-- where every music range error said playSoundFile).
+function __mudix_ordered_play_args(funcName, name, volume, fadein, fadeout, start, loops,
+                                   key, tag, continueFlag, url, finish)
+    local function want(v, field, expected)
+        if v ~= nil and type(v) ~= expected then
+            error(funcName .. ": bad argument type (" .. field .. " as " .. expected
+                .. " expected, got " .. type(v) .. "!)", 3)
+        end
+    end
+    local function range(v, field)
+        if v ~= nil and v < 0 then
+            error(funcName .. ": bad argument range for " .. field
+                .. ", got " .. tostring(v) .. "!", 3)
+        end
+    end
+    want(volume, "volume", 'number')
+    want(fadein, "fadein", 'number')
+    want(fadeout, "fadeout", 'number')
+    want(start, "start", 'number')
+    want(loops, "loops", 'number')
+    want(key, "key", 'string')
+    want(tag, "tag", 'string')
+    want(continueFlag, "continue", 'boolean')
+    want(url, "url", 'string')
+    want(finish, "finish", 'number')
+    range(fadein, "fadein")
+    range(fadeout, "fadeout")
+    range(start, "start")
+    range(finish, "finish")
+    return {
+        name = name, volume = volume, fadein = fadein, fadeout = fadeout,
+        start = start, loops = loops, key = key, tag = tag,
+        ["continue"] = continueFlag, url = url, finish = finish,
+    }
+end
+
+-- Arity matters, as it does for the play family: no arguments at all is a
+-- raise, while an explicit nil (or empty) file name is the softer
+-- (nil, "missing argument 1") return.
+function __mudix_media_load_args(funcName, ...)
+    if select('#', ...) == 0 then
+        error(funcName .. ": need at least one argument", 3)
+    end
+    local a, b = ...
+    if type(a) == 'table' then
+        __mudix_check_media_load_table(a, funcName)
+        return tostring(a.name or a.url or ''), nil
+    end
+    if b ~= nil and type(b) ~= 'string' then
+        error(funcName .. ": bad argument #2 type (url as string expected, got "
+            .. type(b) .. "!)", 3)
+    end
+    if type(a) ~= 'string' or a == '' then
+        return nil, funcName .. ": missing argument 1 (file to load)"
+    end
+    return a, nil
+end
+
 -- Mudlet `playSoundFile`. Accepts either:
 --   playSoundFile(filename [, volume])     -- positional
 --   playSoundFile({name=..., volume=..., fadein=..., fadeout=..., start=...,
@@ -3503,16 +3949,17 @@ function playSoundFile(...)
     if select('#', ...) == 0 then
         error("playSoundFile: need at least one argument", 2)
     end
-    local a, b = ...
+    local a = ...
     if type(a) == 'table' then
         __mudix_check_media_table(a, "playSoundFile")
         __mudix_check_media_name(a, "playSoundFile")
+        if __mudix_media_deferred(a, __playSoundFile) then return true end
         return __playSoundFile(a)
     end
     if type(a) ~= 'string' or a == '' then
         return nil, "playSoundFile: missing argument 1 (file to play)"
     end
-    return __playSoundFile({ name = a, volume = b })
+    return __playSoundFile(__mudix_ordered_play_args("playSoundFile", ...))
 end
 
 -- Mudlet `playVideoFile`. Accepts either:
@@ -3523,6 +3970,7 @@ function playVideoFile(a, b, c)
     if type(a) == 'table' then
         __mudix_check_media_table(a, "playVideoFile")
         __mudix_check_media_name(a, "playVideoFile")
+        if __mudix_media_deferred(a, __playVideoFile) then return true end
         return __playVideoFile(a)
     end
     return __playVideoFile({ name = tostring(a or ''), volume = b, loops = c })
@@ -3533,11 +3981,19 @@ end
 --   loadVideoFile(name)            -- positional
 --   loadVideoFile({name=...})      -- table
 -- name resolves against the profile VFS or may be an http(s):// URL.
-function loadVideoFile(a)
-    if type(a) == 'table' then
-        return __loadVideoFile({ name = tostring(a.name or a.url or '') })
+function loadVideoFile(...)
+    if select('#', ...) == 0 then
+        error("loadVideoFile: need at least one argument", 2)
     end
-    return __loadVideoFile({ name = tostring(a or '') })
+    local a = ...
+    -- The video calls take the table form only; a bare filename is the sound
+    -- and music shape, and accepting it here would quietly preload nothing.
+    if type(a) ~= 'table' then
+        error("loadVideoFile: needs to be a table", 2)
+    end
+    __mudix_check_media_load_table(a, "loadVideoFile")
+    if __mudix_media_deferred(a, __loadVideoFile) then return true end
+    return __loadVideoFile({ name = tostring(a.name or a.url or '') })
 end
 
 -- Mudlet `playMusicFile`. Table-arg only:
@@ -3551,12 +4007,16 @@ function playMusicFile(...)
         error("playMusicFile: need at least one argument", 2)
     end
     local opts = ...
-    if type(opts) ~= 'table' then
+    if type(opts) == 'table' then
+        __mudix_check_media_table(opts, "playMusicFile")
+        __mudix_check_media_name(opts, "playMusicFile")
+        if __mudix_media_deferred(opts, __playMusicFile) then return true end
+        return __playMusicFile(opts)
+    end
+    if type(opts) ~= 'string' or opts == '' then
         return nil, "playMusicFile: missing argument 1 (file to play)"
     end
-    __mudix_check_media_table(opts, "playMusicFile")
-    __mudix_check_media_name(opts, "playMusicFile")
-    return __playMusicFile(opts)
+    return __playMusicFile(__mudix_ordered_play_args("playMusicFile", ...))
 end
 
 -- Mudlet `loadSoundFile`. Preloads a sound so the first playSoundFile has no
@@ -3566,22 +4026,24 @@ end
 -- mudix resolves `name` against the profile VFS (or treats it as a URL); the
 -- optional `url` is accepted for Mudlet compatibility and used only when no
 -- name is supplied.
-function loadSoundFile(a, b)
-    if type(a) == 'table' then
-        return __loadSoundFile({ name = tostring(a.name or a.url or '') })
-    end
-    return __loadSoundFile({ name = tostring(a or b or '') })
+function loadSoundFile(...)
+    local name, err = __mudix_media_load_args("loadSoundFile", ...)
+    if err then return nil, err end
+    local a = ...
+    if type(a) == 'table' and __mudix_media_deferred(a, __loadSoundFile) then return true end
+    return __loadSoundFile({ name = name })
 end
 
 -- Mudlet `loadMusicFile`. Preloads a music track (same decode/cache path as
 -- loadSoundFile — the cache is keyed by path, not by sound/music kind). Accepts:
 --   loadMusicFile(name [, url])            -- positional
 --   loadMusicFile({name=..., url=...})     -- table
-function loadMusicFile(a, b)
-    if type(a) == 'table' then
-        return __loadMusicFile({ name = tostring(a.name or a.url or '') })
-    end
-    return __loadMusicFile({ name = tostring(a or b or '') })
+function loadMusicFile(...)
+    local name, err = __mudix_media_load_args("loadMusicFile", ...)
+    if err then return nil, err end
+    local a = ...
+    if type(a) == 'table' and __mudix_media_deferred(a, __loadMusicFile) then return true end
+    return __loadMusicFile({ name = name })
 end
 
 -- Mudlet `getPlayingSounds([filter])`. Returns a 1-indexed array of currently
@@ -3595,26 +4057,27 @@ end
 do
     local _rawStopSounds = stopSounds
     local _rawStopVideos = stopVideos
-    function stopSounds(opts)
-        if opts ~= nil then
-            if type(opts) ~= 'table' then
-                error("stopSounds: bad argument #1 type (filter as table is optional, got "
-                    .. type(opts) .. "!)", 2)
-            end
+    -- Either form: a filter table, or the ordered
+    -- (name, key, tag [, priority [, fadeaway]]).
+    function stopSounds(opts, key, tag, priority, fadeaway)
+        if opts ~= nil and type(opts) ~= 'table' then
+            __mudix_check_media_filter_args("stopSounds", opts, key, tag, priority, fadeaway)
+        elseif opts ~= nil then
             __mudix_check_media_table(opts, "stopSounds")
         end
         _rawStopSounds()
         return true
     end
+    -- Table form only, like the rest of the video family.
     function stopVideos(opts)
-        if opts ~= nil then
-            if type(opts) ~= 'table' then
-                error("stopVideos: bad argument #1 type (filter as table is optional, got "
-                    .. type(opts) .. "!)", 2)
-            end
-            __mudix_check_media_table(opts, "stopVideos")
-        end
+        __mudix_check_media_filter_table(opts, "stopVideos")
         _rawStopVideos()
+        return true
+    end
+    local _rawPauseVideos = pauseVideos
+    function pauseVideos(opts)
+        __mudix_check_media_filter_table(opts, "pauseVideos")
+        _rawPauseVideos()
         return true
     end
 end
@@ -3642,12 +4105,42 @@ do
     function pauseMusic(opts) return pause(_rawPauseMusic, "pauseMusic", opts) end
 end
 
-function getPlayingSounds(a, b, c)
+-- The query, pause and stop family all take a media filter, and the ones below
+-- take it in the *table* form only — Mudlet refuses anything else with this
+-- exact wording, so a script handed a number gets told rather than quietly
+-- matching everything.
+function __mudix_check_media_filter_table(v, funcName)
+    if v == nil then return end
+    if type(v) ~= 'table' then
+        error(funcName .. ": needs to be a table", 3)
+    end
+    __mudix_check_media_table(v, funcName)
+end
+
+-- The ordered filter form: (name, key, tag [, priority [, fadeaway]]). Each
+-- position is type-checked by the name it carries, so the complaint names the
+-- argument rather than its index.
+function __mudix_check_media_filter_args(funcName, name, key, tag, priority, fadeaway)
+    local function want(v, field, expected)
+        if v ~= nil and type(v) ~= expected then
+            error(funcName .. ": bad argument type (" .. field .. " as " .. expected
+                .. " expected, got " .. type(v) .. "!)", 3)
+        end
+    end
+    want(name, "name", 'string')
+    want(key, "key", 'string')
+    want(tag, "tag", 'string')
+    want(priority, "priority", 'number')
+    want(fadeaway, "fadeaway", 'boolean')
+end
+
+function getPlayingSounds(a, b, c, d)
     local filter
     if type(a) == 'table' then
         __mudix_check_media_table(a, "getPlayingSounds")
         filter = { name = a.name, key = a.key, tag = a.tag }
     else
+        __mudix_check_media_filter_args("getPlayingSounds", a, b, c, d)
         filter = { name = a, key = b, tag = c }
     end
     local raw = __getPlayingSounds(filter)
@@ -3662,11 +4155,13 @@ end
 
 -- Mudlet `getPlayingMusic([filter])`. Same filter/shape as getPlayingSounds
 -- but for the music channel.
-function getPlayingMusic(a, b, c)
+function getPlayingMusic(a, b, c, d)
     local filter
     if type(a) == 'table' then
+        __mudix_check_media_table(a, "getPlayingMusic")
         filter = { name = a.name, key = a.key, tag = a.tag }
     else
+        __mudix_check_media_filter_args("getPlayingMusic", a, b, c, d)
         filter = { name = a, key = b, tag = c }
     end
     local raw = __getPlayingMusic(filter)
@@ -3683,8 +4178,14 @@ end
 -- Audio backend stops rather than pauses sources, so these always return an
 -- empty list (kept for ported-script parity). The filter is accepted and
 -- ignored.
-function getPausedSounds() return {} end
-function getPausedMusic() return {} end
+function getPausedSounds(filter)
+    __mudix_check_media_filter_table(filter, "getPausedSounds")
+    return {}
+end
+function getPausedMusic(filter)
+    __mudix_check_media_filter_table(filter, "getPausedMusic")
+    return {}
+end
 
 -- Mudlet `getPlayingVideos([filter])` / `getPausedVideos([filter])`. Returns a
 -- 1-indexed array of { name=, path=, volume= } for the videos currently in the
@@ -3700,12 +4201,12 @@ local function reindexVideos(raw)
     return out
 end
 function getPlayingVideos(a)
-    local filter = (type(a) == 'table') and { name = a.name } or { name = a }
-    return reindexVideos(__getPlayingVideos(filter))
+    __mudix_check_media_filter_table(a, "getPlayingVideos")
+    return reindexVideos(__getPlayingVideos({ name = a and a.name or nil }))
 end
 function getPausedVideos(a)
-    local filter = (type(a) == 'table') and { name = a.name } or { name = a }
-    return reindexVideos(__getPausedVideos(filter))
+    __mudix_check_media_filter_table(a, "getPausedVideos")
+    return reindexVideos(__getPausedVideos({ name = a and a.name or nil }))
 end
 
 -- Mudlet `ancestors(id, type)`. Re-index the JS 0-indexed array of
@@ -3727,30 +4228,52 @@ function ancestors(id, itemType)
 end
 
 -- Mudlet `findItems(name, type [, exact [, caseSensitive]])`. Both flags default
--- to true (matching Mudlet). Returns a 1-based array of numeric item ids.
+-- to true (matching Mudlet). Returns a 1-based array of numeric item ids, or
+-- (nil, errMsg) for an item type there is no such family for — which is a
+-- caller mistake, and would otherwise be indistinguishable from "nothing
+-- matched".
 function findItems(name, itemType, exact, caseSensitive)
+    __mudix_check_string(name, "findItems", 1, "item name")
+    __mudix_check_string(itemType, "findItems", 2, "item type")
     if exact == nil then exact = true end
     if caseSensitive == nil then caseSensitive = true end
     local raw = __findItems(name, itemType, exact, caseSensitive)
+    if raw == nil then
+        return nil, "findItems: invalid item type '" .. tostring(itemType)
+            .. "' given, it should be one (case insensitive) of: 'alias', 'button',"
+            .. " 'script', 'keybind', 'timer' or 'trigger'"
+    end
     local out = {}
-    if raw then
-        local i = 0
-        while raw[i] ~= nil do
-            out[#out + 1] = raw[i]
-            i = i + 1
-        end
+    local i = 0
+    while raw[i] ~= nil do
+        out[#out + 1] = raw[i]
+        i = i + 1
     end
     return out
 end
 
--- Mudlet `isAncestorsActive(id, type)`. True when every ancestor group is
--- enabled. (false, errMsg) when no item of that type carries the id. A real
--- "an ancestor is disabled" result comes back as false (distinct from the nil
--- miss sentinel).
+-- Mudlet `isAncestorsActive(id, type)`. True when every ancestor group of the
+-- item is enabled. The three ways of getting it wrong are told apart, because a
+-- bare false would read as "an ancestor is disabled" — the one answer that IS a
+-- legitimate false:
+--   * an id that is not a positive integer,
+--   * a type there is no such family for,
+--   * a well-formed id no item of that type carries.
 function isAncestorsActive(id, itemType)
+    __mudix_check_number(id, "isAncestorsActive", 1, "item ID")
+    __mudix_check_string(itemType, "isAncestorsActive", 2, "item type")
+    if id < 1 or id ~= math.floor(id) then
+        return nil, "isAncestorsActive: item ID as " .. tostring(id)
+            .. " does not seem to be parseable as a positive integer"
+    end
+    if not __isKnownItemType(itemType) then
+        return nil, "isAncestorsActive: invalid item type '" .. tostring(itemType)
+            .. "' given, it should be one (case insensitive) of: 'alias', 'button',"
+            .. " 'script', 'keybind', 'timer' or 'trigger'"
+    end
     local raw = __isAncestorsActive(id, itemType)
     if raw == nil then
-        return false, "isAncestorsActive: " .. tostring(itemType) .. " item ID " .. tostring(id) .. " does not exist"
+        return nil, "isAncestorsActive: " .. tostring(itemType) .. " item ID " .. tostring(id) .. " does not exist"
     end
     return raw
 end
@@ -3875,10 +4398,22 @@ end
 -- excluded for geometry/visibility exactly as moveWindow/resizeWindow exclude
 -- it — there is no dock widget behind it to measure.
 
+-- The main window answers to two names: "main" and the empty string, which is
+-- what Mudlet's own window-name argument resolves to when a script leaves it
+-- out of a call that still passes something. Neither is a window in the
+-- registry, so both getters below have to recognise them before the lookup.
+local function __mudix_is_main_window(name)
+    return name == 'main' or name == ''
+end
+
 -- Mudlet getWindowGeometry(name) → x, y, width, height.
 function getWindowGeometry(name)
     if name == nil then
         error('getWindowGeometry: bad argument #1 type (window name as string expected, got nil!)', 2)
+    end
+    if __mudix_is_main_window(name) then
+        local w, h = getMainWindowSize()
+        return 0, 0, w, h
     end
     local g = __getWindowGeometry(name)
     if g == nil then
@@ -3893,6 +4428,9 @@ function windowVisible(name)
     if name == nil then
         error('windowVisible: bad argument #1 type (window name as string expected, got nil!)', 2)
     end
+    -- The main window is always visible: there is no way to hide it, and it is
+    -- the one every other window's visibility is measured against.
+    if __mudix_is_main_window(name) then return true end
     local v = __windowVisible(name)
     if v == nil then
         return nil, 'windowVisible: window "' .. tostring(name) .. '" not found'
@@ -3982,14 +4520,25 @@ end
 -- Mudlet `stopMusic([{name=..., key=..., tag=..., fadeout=...}])`.
 -- With no filters, stops every music track. fadeout (ms) overrides the
 -- per-track fadeout for this stop call.
-function stopMusic(opts)
-    if opts ~= nil then
-        if type(opts) ~= 'table' then
-            error("stopMusic: bad argument #1 type (filter as table is optional, got "
-                .. type(opts) .. "!)", 2)
+-- Either form, as with stopSounds — but the music stop's ordered tail is
+-- (name, key, tag [, fadeaway [, fadeout]]), with no priority: a music track
+-- has no priority to match on.
+function stopMusic(opts, key, tag, fadeaway, fadeout)
+    if opts ~= nil and type(opts) ~= 'table' then
+        __mudix_check_media_filter_args("stopMusic", opts, key, tag, nil, fadeaway)
+        if fadeout ~= nil then
+            if type(fadeout) ~= 'number' then
+                error("stopMusic: bad argument type (fadeout as number expected, got "
+                    .. type(fadeout) .. "!)", 2)
+            end
+            if fadeout < 0 then
+                error("stopMusic: bad argument range for fadeout, got " .. tostring(fadeout) .. "!", 2)
+            end
         end
-        __mudix_check_media_table(opts, "stopMusic")
+        __stopMusic({ name = opts, key = key, tag = tag, fadeout = fadeout })
+        return true
     end
+    if opts ~= nil then __mudix_check_media_table(opts, "stopMusic") end
     __stopMusic(opts)
     return true
 end
@@ -4347,6 +4896,20 @@ do
     moveCursor      = guard(moveCursor, 3)     -- (win, x, y) vs (x, y)
     insertText      = guard(insertText, 2)     -- (win, text) vs (text)
     setWindowWrap   = guard(setWindowWrap, 2)  -- (win, n)    vs (n)
+    -- A window zero columns wide can show nothing, and used to hang Mudlet as
+    -- soon as the next line was displayed in it (upstream #9622). Refused
+    -- outright, leaving the width that was there.
+    do
+        local _rawSetWindowWrap = setWindowWrap
+        function setWindowWrap(...)
+            local n = select('#', ...)
+            local width = select(n, ...)
+            if type(width) == 'number' and width < 1 then
+                return nil, "setWindowWrap: wrap width must be greater than zero"
+            end
+            return _rawSetWindowWrap(...)
+        end
+    end
     setBold         = guard(setBold, 2)        -- (win, bool) vs (bool)
     setLink         = guard(setLink, 3)        -- (win, code, tip) vs (code, tip)
 end
@@ -4374,9 +4937,14 @@ do
     -- Naming a console that isn't there is a script bug, and returning a bare
     -- false (or worse, silently succeeding) hides it — UI_spec asserts the
     -- message verbatim for all nine of them.
+    -- "Window" here means a console: these all reach into a text buffer, and
+    -- the widgets that have none — a scroll box, a label, a command line — are
+    -- as absent to them as a name nobody has used. A scroll box does scroll,
+    -- but with Qt's own bars over whatever it contains, not a console's.
+    local CONSOLE_KINDS = { main = true, miniconsole = true, userwindow = true, buffer = true }
     local function missingWindow(win)
         if win == nil or win == 'main' then return nil end
-        if __windowType(win) ~= nil then return nil end
+        if CONSOLE_KINDS[__windowType(win)] then return nil end
         return 'window "' .. tostring(win) .. '" not found'
     end
     local function knownWindowGuard(fn, discardResult)
@@ -5075,6 +5643,940 @@ do
             zoom = info.zoom,
             zLevel = info.zLevel,
         }
+    end
+end
+
+-- ── Stylesheet and main-window argument contracts ──────────────────────────
+do
+    local _rawSetAppStyleSheet = setAppStyleSheet
+    function setAppStyleSheet(css, tag)
+        __mudix_check_string(css, "setAppStyleSheet", 1, "style sheet")
+        if tag ~= nil and type(tag) ~= 'string' then
+            error("setAppStyleSheet: bad argument #2 type (tag as string is optional, got "
+                .. type(tag) .. "!)", 2)
+        end
+        return _rawSetAppStyleSheet(css, tag)
+    end
+
+    local _rawSetProfileStyleSheet = setProfileStyleSheet
+    function setProfileStyleSheet(css)
+        __mudix_check_string(css, "setProfileStyleSheet", 1, "style sheet")
+        return _rawSetProfileStyleSheet(css)
+    end
+
+    local _rawSetMainWindowSize = setMainWindowSize
+    function setMainWindowSize(width, height)
+        __mudix_check_number(width, "setMainWindowSize", 1, "width")
+        __mudix_check_number(height, "setMainWindowSize", 2, "height")
+        return _rawSetMainWindowSize(width, height)
+    end
+end
+
+-- ── saveMap / loadMap ──────────────────────────────────────────────────────
+-- Both take an optional path. Lua coerces a number to a string, so saveMap(42)
+-- writes a map named "42" — but a table is a mistake and raises, and so does a
+-- format version that is not a number. A save that simply could not be written
+-- answers false rather than raising: it reports success, not an error flag.
+do
+    local function mapPath(who, location, argno)
+        if location == nil then return nil end
+        local t = type(location)
+        if t ~= 'string' and t ~= 'number' then
+            error(who .. ": bad argument #" .. argno .. " type (location as string expected, got "
+                .. t .. "!)", 3)
+        end
+        return tostring(location)
+    end
+
+    function saveMap(location, formatVersion)
+        local path = mapPath("saveMap", location, 1)
+        if formatVersion ~= nil and type(formatVersion) ~= 'number' then
+            error("saveMap: bad argument #2 type (format version as number expected, got "
+                .. type(formatVersion) .. "!)", 2)
+        end
+        return __saveMap(path, formatVersion) and true or false
+    end
+
+    -- The XML importer says why it failed; the binary reader only says whether
+    -- it worked, which is the distinction Mudlet draws too.
+    function loadMap(location)
+        local path = mapPath("loadMap", location, 1)
+        -- The XML text is read here rather than on the JS side: an XML map may
+        -- live outside the profile filesystem (the busted corpus keeps its
+        -- fixture in the read-only /lua/ namespace), and io.open sees both.
+        local xml
+        if path and path:lower():sub(-4) == ".xml" then
+            local f = io.open(path, "r")
+            if not f then
+                return nil, 'loadMap: the file "' .. path .. '" was not found'
+            end
+            xml = f:read("*a")
+            f:close()
+        end
+        local r = __loadMap(path, xml)
+        if type(r) == 'string' then return nil, r end
+        return r and true or false
+    end
+end
+
+-- ── IRC configuration ──────────────────────────────────────────────────────
+-- get/setIrcNick, get/setIrcServer, get/setIrcChannels. mudix has no IRC
+-- client — that is a separate service a browser tab cannot reach — but the
+-- settings are ordinary profile data, and Mudlet stores them whether or not
+-- its client has ever been opened. So these round-trip for real, through the
+-- same config bag getConfig("ircPassword") reads. A script that configures IRC
+-- and reads it back gets its answers; only connecting is unavailable.
+do
+    local function channelList()
+        local out = {}
+        for name in tostring(getConfig("ircChannels") or ""):gmatch("%S+") do
+            out[#out + 1] = name
+        end
+        return out
+    end
+
+    -- The one genuinely unavailable half: there is no client, so nothing is
+    -- connected and nothing can be restarted or sent. Each says so the way
+    -- Mudlet does when its own client isn't up.
+    function getIrcConnectedHost()
+        return false, "no client active"
+    end
+
+    local _rawRestartIrc = restartIrc
+    function restartIrc()
+        _rawRestartIrc()
+        return false
+    end
+
+    local _rawSendIrc = sendIrc
+    function sendIrc(target, message)
+        __mudix_check_string(target, "sendIrc", 1, "target")
+        __mudix_check_string(message, "sendIrc", 2, "message")
+        _rawSendIrc(target, message)
+        return false, "no client active"
+    end
+
+    function getIrcNick()
+        return getConfig("ircNick")
+    end
+
+    function getIrcServer()
+        return getConfig("ircHost"), getConfig("ircPort"), getConfig("ircSecure") and true or false
+    end
+
+    function getIrcChannels()
+        return channelList()
+    end
+
+    function setIrcNick(nick)
+        __mudix_check_string(nick, "setIrcNick", 1, "nick")
+        if nick == "" then return nil, "nick must not be empty" end
+        setConfig("ircNick", nick)
+        return true
+    end
+
+    function setIrcServer(...)
+        local n = select('#', ...)
+        local hostName, port, secure, password = ...
+        __mudix_check_string(hostName, "setIrcServer", 1, "hostname")
+        if hostName == "" then return nil, "hostname must not be empty" end
+        if port ~= nil then
+            if type(port) ~= 'number' then
+                error("setIrcServer: bad argument #2 type (port number {default = 6667} as number"
+                    .. " is optional, got " .. type(port) .. "!)", 2)
+            end
+            if port < 1 or port > 65535 then
+                return nil, "invalid port number " .. tostring(port)
+                    .. " given, if supplied it must be in range 1 to 65535"
+            end
+        else
+            port = 6667
+        end
+        if secure ~= nil and type(secure) ~= 'boolean' then
+            error("setIrcServer: bad argument #3 type (secure {default = false} as boolean is"
+                .. " optional, got " .. type(secure) .. "!)", 2)
+        end
+        -- An omitted password — and a nil one, which every optional argument
+        -- here treats the same way — leaves the stored password alone: a call
+        -- that only changes the host or the port must not drop a credential it
+        -- was never given. Clearing one is asking for it, with "".
+        local passwordGiven = n > 3 and password ~= nil
+        if passwordGiven and type(password) ~= 'string' then
+            error("setIrcServer: bad argument #4 type (server password as string is optional, got "
+                .. type(password) .. "!)", 2)
+        end
+        setConfig("ircHost", hostName)
+        setConfig("ircPort", port)
+        setConfig("ircSecure", secure and true or false)
+        if passwordGiven then setConfig("ircPassword", password) end
+        return true
+    end
+
+    -- A channel name starts with #, & or +, and can hold neither a space nor a
+    -- comma: the stored list is space-joined and the JOIN command comma-joined,
+    -- so a name carrying either came back as two channels (upstream #9789).
+    -- Anything unusable is dropped, and a list with nothing left is refused.
+    function setIrcChannels(channels)
+        if type(channels) ~= 'table' then
+            error("setIrcChannels: bad argument #1 type (channels as table expected, got "
+                .. (channels == nil and 'no value' or type(channels)) .. "!)", 2)
+        end
+        local kept = {}
+        for _, name in pairs(channels) do
+            if type(name) == 'string' and name ~= ''
+                and (name:sub(1, 1) == '#' or name:sub(1, 1) == '&' or name:sub(1, 1) == '+')
+                and not name:find("[%s,]") then
+                kept[#kept + 1] = name
+            end
+        end
+        if #kept == 0 then return nil, "no (valid) channel names provided" end
+        setConfig("ircChannels", table.concat(kept, " "))
+        return true
+    end
+end
+
+-- Mudlet closeUserWindow(name) — hide a user window without deleting it, so
+-- reopening it brings the same dock back. Reports nothing; a name that is not a
+-- user window is simply nothing to close.
+function closeUserWindow(name)
+    __mudix_check_string(name, "closeUserWindow", 1, "name")
+    if __windowType(name) == 'userwindow' then hideWindow(name) end
+end
+
+-- Mudlet setBackgroundImage([window,] path [, mode [, fullWindow]]). GUIUtils'
+-- wrapper translates a mode NAME through mudlet.BgImageMode and passes anything
+-- it doesn't recognise straight through, so a bad name arrives here as a string
+-- and has to be refused. `cover` (mode 5) is a full-window mode: a console is
+-- told so rather than left with a background it did not ask for.
+do
+    local _rawSetBackgroundImage = setBackgroundImage
+    function setBackgroundImage(...)
+        local n = select('#', ...)
+        local args = { ... }
+        local modePos = n
+        if type(args[n]) == 'boolean' then modePos = n - 1 end
+        local mode = args[modePos]
+        -- Only the (window, path, mode[, fullWindow]) form definitely carries a
+        -- mode. Two arguments are ambiguous — (path, mode) and (window, path)
+        -- look alike — and a label's setBackgroundImage(name, path) must not
+        -- have its path read as a mode name.
+        if modePos >= 3 and mode ~= nil then
+            if type(mode) ~= 'number' then
+                error("setBackgroundImage: bad argument #" .. modePos
+                    .. " type (mode as number expected, got " .. type(mode) .. "!)", 2)
+            end
+            local fullWindow = (modePos < n) and args[n] or false
+            local target = (modePos > 2) and args[1] or 'main'
+            if mode == 5 and not fullWindow and target ~= 'main' then
+                return nil, "setBackgroundImage: mode 'cover' is only available for the main window"
+            end
+        end
+        return _rawSetBackgroundImage(...)
+    end
+end
+
+-- ── Widget state getters ───────────────────────────────────────────────────
+-- The read-back half of setCmdLineStyleSheet / enableScrollBar /
+-- setMapWindowTitle / resizeMapWidget: a script that wants to put a widget back
+-- the way it found it has to be able to find out how it was.
+do
+    function getCmdLineStyleSheet(cmdLineName)
+        if cmdLineName ~= nil and cmdLineName ~= 'main' then
+            if __windowType(cmdLineName) ~= 'commandline' then
+                return nil, "command-line name '" .. tostring(cmdLineName) .. "' not found"
+            end
+        end
+        return __getCmdLineStyleSheet(cmdLineName)
+    end
+
+    function getScrollBarVisible(windowName)
+        if windowName ~= nil and windowName ~= 'main' and __windowType(windowName) == nil then
+            return nil, 'window "' .. tostring(windowName) .. '" not found'
+        end
+        return __getScrollBarVisible(windowName)
+    end
+
+    -- The map widget is a single window, so these take no name; both refuse
+    -- when it isn't open rather than answering for a widget that isn't there.
+    function getMapWindowTitle()
+        local title = __getMapWindowTitle()
+        if title == nil then return nil, "no floating/dockable type map window found" end
+        return title
+    end
+
+    -- Mudlet takes the dock position as one of "f" (floating) or "l"/"r"/"t"/
+    -- "b", and refuses anything else rather than quietly picking a side —
+    -- Geyser.Mapper:setDockPosition passes whatever it was handed straight
+    -- through, so this is where a typo has to be caught.
+    local DOCK_POSITIONS = { f = true, l = true, r = true, t = true, b = true }
+    local _rawOpenMapWidget = openMapWidget
+    function openMapWidget(...)
+        local n = select('#', ...)
+        local a = ...
+        if n == 1 and type(a) == 'string' then
+            if not DOCK_POSITIONS[a:lower()] then
+                return nil, "openMapWidget: docking position '" .. a
+                    .. "' is not available, it must be one of 'f', 'l', 'r', 't' or 'b'"
+            end
+        end
+        return _rawOpenMapWidget(...)
+    end
+
+    -- Both refuse a widget that isn't open, in the same words as the getters:
+    -- retitling a map window that was closed used to report success on a
+    -- change nobody could see.
+    local _rawSetMapWindowTitle = setMapWindowTitle
+    function setMapWindowTitle(title)
+        if __getMapWindowTitle() == nil then
+            return nil, "no floating/dockable type map window found"
+        end
+        return _rawSetMapWindowTitle(title) and true or false
+    end
+
+    function resetMapWindowTitle()
+        return setMapWindowTitle("")
+    end
+
+    -- Closing a widget that is already closed is a distinct answer from
+    -- closing one that was open: a script that toggles the map needs to be
+    -- able to tell "I closed it" from "there was nothing to close".
+    local _rawCloseMapWidget = closeMapWidget
+    function closeMapWidget()
+        if _rawCloseMapWidget() then return true end
+        return nil, "map widget already closed"
+    end
+
+    function getMapWidgetGeometry()
+        local g = __getMapWidgetGeometry()
+        if g == nil then return nil, "no floating/dockable type map window found" end
+        return g[0], g[1], g[2], g[3]
+    end
+end
+
+-- ── Label movies ───────────────────────────────────────────────────────────
+-- Mudlet's QMovie family: setMovie / startMovie / pauseMovie / scaleMovie /
+-- setMovieSpeed / setMovieFrame. All six name a label first and refuse the
+-- same three ways, and every refusal used to come back as a bare false — which
+-- a caller cannot tell from "the frame you asked for isn't there", the one
+-- legitimate false (setMovieFrame's). setMovie words its own label lookup
+-- differently from the other five, and upstream's spec pins both.
+do
+    local function checkLabel(who, name)
+        if type(name) ~= 'string' then
+            error(who .. ": bad argument #1 type (label name as string expected, got "
+                .. type(name) .. "!)", 3)
+        end
+        if name == '' then
+            return "label name cannot be an empty string"
+        end
+        return nil
+    end
+
+    local _rawSetMovie = setMovie
+    function setMovie(labelName, path)
+        local err = checkLabel("setMovie", labelName)
+        if err then return nil, err end
+        if type(path) ~= 'string' then
+            error("setMovie: bad argument #2 type (movie path as string expected, got "
+                .. type(path) .. "!)", 2)
+        end
+        if __windowType(labelName) ~= 'label' then
+            return nil, "label '" .. tostring(labelName) .. "' does not exist"
+        end
+        if _rawSetMovie(labelName, path) then return true end
+        return nil, "no valid movie found at '" .. path .. "'"
+    end
+
+    -- The other five share a label lookup, so they share its wording too, and
+    -- each reports "there is no movie here" separately from "there is no label".
+    local function movieGuard(fn, who, checkArg)
+        return function(labelName, ...)
+            local err = checkLabel(who, labelName)
+            if err then return nil, err end
+            if __windowType(labelName) ~= 'label' then
+                return nil, 'label "' .. tostring(labelName) .. '" not found'
+            end
+            if checkArg then
+                local bad = checkArg(who, ...)
+                if bad then error(bad, 2) end
+            end
+            if not __hasMovie(labelName) then
+                return nil, "no movie found at label '" .. tostring(labelName) .. "'"
+            end
+            local r = fn(labelName, ...)
+            -- setMovieFrame's false is a real answer (no such frame); the rest
+            -- only fail for reasons already ruled out above.
+            if r == false then return false end
+            return true
+        end
+    end
+
+    local function numberArg(what)
+        return function(who, v)
+            if type(v) ~= 'number' then
+                return who .. ": bad argument #2 type (" .. what .. " as number expected, got "
+                    .. type(v) .. "!)"
+            end
+        end
+    end
+
+    startMovie    = movieGuard(startMovie, "startMovie")
+    pauseMovie    = movieGuard(pauseMovie, "pauseMovie")
+    setMovieSpeed = movieGuard(setMovieSpeed, "setMovieSpeed", numberArg("speed percentage"))
+    setMovieFrame = movieGuard(setMovieFrame, "setMovieFrame", numberArg("frame number"))
+    scaleMovie    = movieGuard(scaleMovie, "scaleMovie", function(who, v)
+        if v ~= nil and type(v) ~= 'boolean' then
+            return who .. ": bad argument #2 type (autoscale as boolean is optional, got "
+                .. type(v) .. "!)"
+        end
+    end)
+end
+
+-- Mudlet getMudletInfo() prints its diagnostic block and returns nothing at
+-- all; the binding's own `nil` would make select('#', getMudletInfo()) == 1.
+do
+    local _rawGetMudletInfo = getMudletInfo
+    function getMudletInfo()
+        _rawGetMudletInfo()
+    end
+end
+
+-- Mudlet insertHTML(text) — a thin alias for insertText(). The name (and the
+-- wiki) promise the markup is rendered, but upstream hands the text straight
+-- through, so it lands as literal characters; upstream's own spec marks that
+-- pending rather than pinning it as the contract, and mudix matches the
+-- behaviour rather than the name.
+function insertHTML(text)
+    __mudix_check_string(text, "insertHTML", 1, "text")
+    insertText(text)
+end
+
+-- Mudlet getProcessID() — the OS process id, used by scripts that shell out or
+-- name a temp file after the running client. A browser tab has no pid, so this
+-- answers a stable per-tab number instead: unique among the tabs this browser
+-- has open, constant for the life of this one, and positive, which is every
+-- property a script can actually rely on.
+do
+    local id = __mudix_processId()
+    function getProcessID()
+        return id
+    end
+end
+
+-- ── send / raiseGlobalEvent argument contracts ─────────────────────────────
+do
+    -- Mudlet registers send() from its C++ sendRaw(), which is the name its
+    -- own complaints use — so a script grepping for the message finds the same
+    -- text it would on the desktop.
+    local _rawSend = send
+    function send(...)
+        local n = select('#', ...)
+        local text, echo = ...
+        if type(text) ~= 'string' and type(text) ~= 'number' then
+            error("sendRaw: bad argument #1 type (command as string expected, got "
+                .. (n < 1 and 'no value' or type(text)) .. "!)", 2)
+        end
+        if n > 1 and echo ~= nil and type(echo) ~= 'boolean' then
+            error("sendRaw: bad argument #2 type (show on screen as boolean is optional, got "
+                .. type(echo) .. "!)", 2)
+        end
+        return _rawSend(...)
+    end
+
+    -- Consumed by the next send; reports nothing, so a caller cannot mistake a
+    -- return value for confirmation that something was actually blocked.
+    local _rawDeny = denyCurrentSend
+    function denyCurrentSend()
+        _rawDeny()
+    end
+
+    -- The event name is checked before anything is packed, so a refusal cannot
+    -- strand a half-built event.
+    local _rawRaiseGlobalEvent = raiseGlobalEvent
+    function raiseGlobalEvent(...)
+        if select('#', ...) < 1 then
+            error("raiseGlobalEvent: missing argument #1 (eventName as string expected!)", 2)
+        end
+        local name = ...
+        if type(name) ~= 'string' then
+            error("raiseGlobalEvent: bad argument type #1 (boolean, number, string or nil expected, got "
+                .. type(name) .. "!)", 2)
+        end
+        return _rawRaiseGlobalEvent(...)
+    end
+end
+
+-- ── Filesystem-facing argument contracts ───────────────────────────────────
+-- Each of these takes a path and used to shrug a wrong one off as a plain
+-- false, which reads as "the file wasn't there" rather than "you passed a
+-- table". Mudlet raises on the type and reports the miss separately, so a
+-- script can tell the two apart.
+do
+    local _rawAddFileWatch = addFileWatch
+    function addFileWatch(path)
+        __mudix_check_string(path, "addFileWatch", 1, "path")
+        if _rawAddFileWatch(path) then return true end
+        return nil, 'path "' .. tostring(path) .. '" does not exist'
+    end
+
+    -- Plain false for a path nobody is watching: unlike addFileWatch there is
+    -- nothing to explain, and "it wasn't watched" is the answer, not an error.
+    local _rawRemoveFileWatch = removeFileWatch
+    function removeFileWatch(path)
+        __mudix_check_string(path, "removeFileWatch", 1, "path")
+        return _rawRemoveFileWatch(path) and true or false
+    end
+
+    local _rawUnzipAsync = unzipAsync
+    function unzipAsync(zipPath, destination)
+        __mudix_check_string(zipPath, "unzipAsync", 1, "zip file path")
+        __mudix_check_string(destination, "unzipAsync", 2, "extraction path")
+        return _rawUnzipAsync(zipPath, destination)
+    end
+
+    local _rawLoadReplay = loadReplay
+    function loadReplay(fileName)
+        __mudix_check_string(fileName, "loadReplay", 1, "replay file name")
+        if fileName == "" then
+            return nil, "a blank string is not a valid replay file name"
+        end
+        return _rawLoadReplay(fileName)
+    end
+    loadRawFile = loadReplay
+
+    local _rawSetProfileIcon = setProfileIcon
+    function setProfileIcon(path)
+        __mudix_check_string(path, "setProfileIcon", 1, "icon file path")
+        if path == "" then
+            return nil, "a blank string is not a valid icon file path"
+        end
+        return _rawSetProfileIcon(path)
+    end
+end
+
+-- Mudlet setMergeTables(...) takes any number of GMCP module names, and names
+-- each bad one by the position it was passed in.
+do
+    local _rawSetMergeTables = setMergeTables
+    function setMergeTables(...)
+        for i = 1, select('#', ...) do
+            local v = select(i, ...)
+            if type(v) ~= 'string' then
+                error("setMergeTables: bad argument #" .. i .. " type (module name as string expected, got "
+                    .. type(v) .. "!)", 2)
+            end
+        end
+        return _rawSetMergeTables(...)
+    end
+end
+
+-- ── Session logging ────────────────────────────────────────────────────────
+-- Mudlet startLogging(on) → (ok, message, path, state) / appendLog(text).
+-- The state code is what tells a change from a no-op — 1 started, 0 stopped,
+-- -1 already on, -2 already off — and the two "already" cases answer nil, so a
+-- caller can tell "I turned it on" from "it was already on".
+function startLogging(state)
+    if type(state) ~= 'boolean' then
+        error("startLogging: bad argument #1 type (turn logging on/off as boolean expected, got "
+            .. type(state) .. "!)", 2)
+    end
+    local r = __startLogging(state)
+    return (r.ok and true or nil), r.message, r.path, r.state
+end
+
+-- Returns nothing at all, as Mudlet does: whether the text reached a log is not
+-- something the caller is told, only whether logging was on when it asked.
+function appendLog(text)
+    __mudix_check_string(text, "appendLog", 1, "text")
+    __appendLog(text)
+end
+
+-- ── Desktop-facing argument contracts ──────────────────────────────────────
+-- These reach a browser tab, a notification, the physical keyboard or the error
+-- console, so what they do can't be asserted from a script — but what they
+-- refuse can, and Mudlet checks its arguments before it reaches any of them.
+-- A silent no-op on a mistyped argument is the failure mode worth closing here:
+-- it looks like the desktop simply ignored the call.
+do
+    local function typeGuard(fn, who, argno, want, describe)
+        return function(...)
+            local v = select(argno, ...)
+            local t = type(v)
+            -- Lua coerces a number wherever Mudlet uses luaL_checkstring, so a
+            -- string check accepts one too.
+            local ok = (t == want) or (want == 'string' and t == 'number')
+            if not ok then
+                error(who .. ": bad argument #" .. argno .. " type (" .. describe
+                    .. " expected, got " .. (select('#', ...) < argno and 'no value' or t) .. "!)", 2)
+            end
+            return fn(...)
+        end
+    end
+
+    openWebPage = typeGuard(openWebPage, "openWebPage", 1, 'string', 'url as string')
+    showNotification = typeGuard(showNotification, "showNotification", 1, 'string', 'title as string')
+    holdingModifiers = typeGuard(holdingModifiers, "holdingModifiers", 1, 'number', 'modifier as number')
+    -- Innermost guard checks last, so the later argument is wrapped first and a
+    -- call with nothing at all is told about #1 rather than #2.
+    showHandlerError = typeGuard(showHandlerError, "showHandlerError", 2, 'string', 'error message as string')
+    showHandlerError = typeGuard(showHandlerError, "showHandlerError", 1, 'string', 'event name as string')
+
+    -- showNotification's third argument is optional, so it is only type-checked
+    -- when it was actually passed.
+    local _rawShowNotification = showNotification
+    function showNotification(...)
+        if select('#', ...) > 2 then
+            local expiry = select(3, ...)
+            if type(expiry) ~= 'number' then
+                error("showNotification: bad argument #3 type (expiry time as number expected, got "
+                    .. type(expiry) .. "!)", 2)
+            end
+        end
+        return _rawShowNotification(...)
+    end
+end
+
+-- ── Command-line tab-completion blacklist ──────────────────────────────────
+-- Mudlet addCmdLineBlacklist([cmdLineName,] word) / removeCmdLineBlacklist(...) /
+-- clearCmdLineBlacklist([cmdLineName]). The optional leading name works the way
+-- the rest of the command-line family's does; naming one that isn't there is a
+-- refusal, not a silent write to the main bar.
+--
+-- The mandatory word is located at the END of the argument list, which is why
+-- the zero-argument call needs its own check: Mudlet used to read it at
+-- lua_gettop(L), and with no arguments that index is the first free stack slot,
+-- so the type check ran against whatever the previous call had left behind and a
+-- leftover string blacklisted itself (upstream #9683, covered by UI_spec).
+do
+    local function cmdLineMissing(name)
+        if name == nil or name == 'main' then return nil end
+        if __windowType(name) == 'commandline' then return nil end
+        return 'command line "' .. tostring(name) .. '" not found'
+    end
+
+    local function blacklistWord(who, n, a, b)
+        if n < 1 then
+            error(who .. ": bad argument #1 type (suggestion text as string expected, got no value!)", 3)
+        end
+        local word = (n > 1) and b or a
+        local t = type(word)
+        if t ~= 'string' and t ~= 'number' then
+            error(who .. ": bad argument #" .. n .. " type (suggestion text as string expected, got "
+                .. t .. "!)", 3)
+        end
+        return tostring(word), (n > 1) and a or nil
+    end
+
+    function addCmdLineBlacklist(...)
+        local n = select('#', ...)
+        local a, b = ...
+        local word, name = blacklistWord("addCmdLineBlacklist", n, a, b)
+        local err = cmdLineMissing(name)
+        if err then return nil, err end
+        __addCmdLineBlacklist(name, word)
+    end
+
+    function removeCmdLineBlacklist(...)
+        local n = select('#', ...)
+        local a, b = ...
+        local word, name = blacklistWord("removeCmdLineBlacklist", n, a, b)
+        local err = cmdLineMissing(name)
+        if err then return nil, err end
+        __removeCmdLineBlacklist(name, word)
+    end
+
+    function clearCmdLineBlacklist(cmdLineName)
+        local err = cmdLineMissing(cmdLineName)
+        if err then return nil, err end
+        __clearCmdLineBlacklist(cmdLineName)
+    end
+
+    -- Mudlet get/setSaveCommandHistory([cmdLineName][, save]) — whether THIS
+    -- command line's history is written out. The profile-wide
+    -- `commandLineHistorySaveSize` is checked first and short-circuits both:
+    -- at zero nothing is saved anywhere, so the per-line switch is neither read
+    -- nor writable, and both say so in the same words.
+    local GLOBAL_OFF = "disabled by profile global preference"
+
+    local function historyLines()
+        local n = getConfig("commandLineHistorySaveSize")
+        return type(n) == 'number' and n or 0
+    end
+
+    function getSaveCommandHistory(cmdLineName)
+        if historyLines() == 0 then return false, GLOBAL_OFF end
+        local err = cmdLineMissing(cmdLineName)
+        if err then return nil, err end
+        local saving = __getSaveCommandHistory(cmdLineName) and true or false
+        if not saving then return false, "disabled" end
+        return true, "enabled (" .. tostring(historyLines()) .. " lines will be saved)"
+    end
+
+    -- Both defaults sit outside the argument handling: setSaveCommandHistory()
+    -- and setSaveCommandHistory(name) each turn saving ON, so neither belongs
+    -- inside a branch on how many arguments there were.
+    function setSaveCommandHistory(...)
+        if historyLines() == 0 then return nil, GLOBAL_OFF end
+        local n = select('#', ...)
+        local a, b = ...
+        local name, save = nil, true
+        if n > 0 then
+            if type(a) == 'string' then
+                name = a
+                if n > 1 then
+                    if type(b) ~= 'boolean' then
+                        error("setSaveCommandHistory: bad argument #2 type (save command history as"
+                            .. " boolean is optional, got " .. type(b) .. "!)", 2)
+                    end
+                    save = b
+                end
+            elseif type(a) == 'boolean' then
+                save = a
+            else
+                error("setSaveCommandHistory: bad argument #1 type (command line name as string or"
+                    .. " save history as boolean is optional, got " .. type(a) .. "!)", 2)
+            end
+        end
+        local err = cmdLineMissing(name)
+        if err then return nil, err end
+        __setSaveCommandHistory(name, save)
+        return true
+    end
+end
+
+-- Mudlet showUnzipProgress() — an internal hook the package installer used to
+-- call. Upstream emptied it out and kept the name bound so an old package that
+-- still calls it gets told, rather than dying on a nil global.
+function showUnzipProgress()
+    return nil, "removed command, this function is now inactive and does nothing"
+end
+
+-- ── Profile description accessors ──────────────────────────────────────────
+-- Mudlet getProfileInformation([profileName]) / setProfileInformation([profileName,]
+-- text) / clearProfileInformation([profileName]). Each names a profile, defaulting
+-- to this one. The JS side answers nil/false for a name no profile has; the
+-- refusal matters as much as the write, because in Mudlet the setter's write path
+-- creates whatever folder it is handed and a stray folder there reads as a
+-- profile in the connection dialog.
+do
+    local function checkName(who, name, argno)
+        local t = type(name)
+        if t ~= 'nil' and t ~= 'string' then
+            error(who .. ": bad argument #" .. argno .. " type (profile name as string expected, got "
+                .. t .. "!)", 3)
+        end
+        if name == "" then
+            return nil, who .. ": profile name cannot be empty"
+        end
+        return name, nil
+    end
+
+    local function missing(name)
+        return "profile '" .. tostring(name) .. "' does not exist"
+    end
+
+    function getProfileInformation(profileName)
+        local name, err = checkName("getProfileInformation", profileName, 1)
+        if err then return nil, err end
+        local info = __getProfileInformation(name)
+        if info == nil then return nil, missing(profileName) end
+        return info
+    end
+
+    -- One argument is the text for this profile; two name the profile first.
+    -- Mudlet checks the text with getVerifiedString either way, so which
+    -- argument number the complaint cites depends on the form used.
+    function setProfileInformation(...)
+        local n = select('#', ...)
+        local a, b = ...
+        if n < 2 then
+            if type(a) ~= 'string' and type(a) ~= 'number' then
+                error("setProfileInformation: bad argument #1 type (text as string expected, got "
+                    .. type(a) .. "!)", 2)
+            end
+            if __setProfileInformation(tostring(a)) then return true end
+            return nil, missing(getProfileName())
+        end
+        local name, err = checkName("setProfileInformation", a, 1)
+        if err then return nil, err end
+        if type(b) ~= 'string' and type(b) ~= 'number' then
+            error("setProfileInformation: bad argument #2 type (text as string expected, got "
+                .. type(b) .. "!)", 2)
+        end
+        if __setProfileInformation(tostring(b), name) then return true end
+        return nil, missing(a)
+    end
+
+    function clearProfileInformation(profileName)
+        local name, err = checkName("clearProfileInformation", profileName, 1)
+        if err then return nil, err end
+        if __clearProfileInformation(name) then return true end
+        return nil, missing(profileName)
+    end
+end
+
+-- ── User spell-check dictionary ────────────────────────────────────────────
+-- Mudlet keeps two dictionaries: a *system* one (Hunspell plus the downloaded
+-- language files) and a per-profile *user* one the player adds words to. There
+-- is no Hunspell in a browser tab, so the system half stays unavailable and says
+-- so in Mudlet's own words — every caller already has to handle that, since a
+-- desktop Mudlet with no language files installed answers the same way.
+--
+-- The user half is just a word list, so it is real here: stored in the profile
+-- at `profile.dic` in Hunspell's own format (a count line, then one word per
+-- line, sorted) — the same path and format desktop Mudlet uses, so a linked
+-- profile folder round-trips between the two.
+do
+    local SYSTEM_UNAVAILABLE_CHECK = "no main dictionaries found: Mudlet has not been able to find"
+        .. " any dictionary files to use so is unable to check your word"
+    local SYSTEM_UNAVAILABLE_SUGGEST = "no main dictionaries found: Mudlet has not been able to find"
+        .. " any dictionary files to use so is unable to make suggestions for your word"
+
+    local function dictPath()
+        return getMudletHomeDir() .. "/profile.dic"
+    end
+
+    -- → sorted array of words, plus a set for membership. A missing file is an
+    -- empty dictionary, not an error: Mudlet creates it on first use too.
+    local function readDict()
+        local words, set = {}, {}
+        local f = io.open(dictPath(), "r")
+        if not f then return words, set end
+        local first = true
+        for line in f:lines() do
+            -- Hunspell's leading count line is metadata, not a word.
+            if first then
+                first = false
+            else
+                local word = line:gsub("%s+$", "")
+                if word ~= "" and not set[word] then
+                    set[word] = true
+                    words[#words + 1] = word
+                end
+            end
+        end
+        f:close()
+        table.sort(words)
+        return words, set
+    end
+
+    local function writeDict(words)
+        local f = io.open(dictPath(), "w")
+        if not f then return false end
+        f:write(tostring(#words))
+        if #words > 0 then
+            f:write("\n", table.concat(words, "\n"))
+        end
+        f:close()
+        return true
+    end
+
+    -- Mudlet raises on a missing/!string word and on a non-boolean dictionary
+    -- choice, before it looks at either dictionary.
+    local function checkWord(who, word)
+        local t = type(word)
+        if t ~= 'string' and t ~= 'number' then
+            error(who .. ": bad argument #1 type (word as string expected, got " .. t .. "!)", 3)
+        end
+        return tostring(word)
+    end
+
+    local function checkUseUser(who, given, v)
+        if given < 2 then return false end
+        if type(v) ~= 'boolean' then
+            error(who .. ": bad argument #2 type (check profile dictionary as boolean expected, got "
+                .. type(v) .. "!)", 3)
+        end
+        return v
+    end
+
+    function addWordToDictionary(word)
+        local w = checkWord("addWordToDictionary", word)
+        local words, set = readDict()
+        if set[w] then
+            return nil, 'the word "' .. w .. '" already seems to be in the user dictionary'
+        end
+        words[#words + 1] = w
+        table.sort(words)
+        writeDict(words)
+        return true
+    end
+
+    function removeWordFromDictionary(word)
+        local w = checkWord("removeWordFromDictionary", word)
+        local words, set = readDict()
+        if not set[w] then
+            return nil, 'the word "' .. w .. '" does not seem to be in the user dictionary'
+        end
+        local kept = {}
+        for _, entry in ipairs(words) do
+            if entry ~= w then kept[#kept + 1] = entry end
+        end
+        writeDict(kept)
+        return true
+    end
+
+    function getDictionaryWordList()
+        return (readDict())
+    end
+
+    -- Varargs, not named parameters: Mudlet only type-checks argument #2 when it
+    -- was actually passed (`lua_gettop(L) > 1`), so an explicit nil has to read
+    -- as "given" while omitting it reads as "system dictionary".
+    function spellCheckWord(...)
+        local word, useUserDictionary = ...
+        local w = checkWord("spellCheckWord", word)
+        local useUser = checkUseUser("spellCheckWord", select('#', ...), useUserDictionary)
+        if not useUser then
+            return nil, SYSTEM_UNAVAILABLE_CHECK
+        end
+        local _, set = readDict()
+        return set[w] == true
+    end
+
+    -- Hunspell ranks its suggestions by how far they are from the word given;
+    -- over a word list this small, plain Levenshtein does the same job. Anything
+    -- more than two edits away is a different word, not a typo.
+    local function distance(a, b)
+        local la, lb = #a, #b
+        if math.abs(la - lb) > 2 then return 3 end
+        local prev, cur = {}, {}
+        for j = 0, lb do prev[j] = j end
+        for i = 1, la do
+            cur[0] = i
+            local ai = a:sub(i, i)
+            for j = 1, lb do
+                local cost = (ai == b:sub(j, j)) and 0 or 1
+                local min = prev[j] + 1
+                if cur[j - 1] + 1 < min then min = cur[j - 1] + 1 end
+                if prev[j - 1] + cost < min then min = prev[j - 1] + cost end
+                cur[j] = min
+            end
+            prev, cur = cur, prev
+        end
+        return prev[lb]
+    end
+
+    function spellSuggestWord(...)
+        local word, useUserDictionary = ...
+        local w = checkWord("spellSuggestWord", word)
+        local useUser = checkUseUser("spellSuggestWord", select('#', ...), useUserDictionary)
+        if not useUser then
+            return nil, SYSTEM_UNAVAILABLE_SUGGEST
+        end
+        local words = readDict()
+        local scored = {}
+        for _, entry in ipairs(words) do
+            local d = distance(w:lower(), entry:lower())
+            if d > 0 and d <= 2 then scored[#scored + 1] = { word = entry, d = d } end
+        end
+        table.sort(scored, function(x, y)
+            if x.d ~= y.d then return x.d < y.d end
+            return x.word < y.word
+        end)
+        local out = {}
+        for i = 1, math.min(#scored, 10) do out[i] = scored[i].word end
+        return out
     end
 end
 

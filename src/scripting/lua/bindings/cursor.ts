@@ -98,12 +98,16 @@ export function installCursorBindings({ lua, api }: BindingContext): void {
     // Mudlet setConsoleBufferSize([consoleName,] linesLimit, sizeOfBatchDeletion).
     // A leading string is the console name; otherwise the args apply to the
     // main window.
-    lua.global.set('setConsoleBufferSize', (a?: unknown, b?: unknown, c?: unknown) => {
-        if (typeof a === 'string') {
-            return api.setConsoleBufferSize(a, Number(b), c === undefined ? undefined : Number(c));
-        }
-        return api.setConsoleBufferSize(undefined, Number(a), b === undefined ? undefined : Number(b));
-    });
+    // Bridge.lua owns the overload split, the clamping contract and the
+    // (nil, message) shapes; this takes the resolved arguments.
+    lua.global.set('__setConsoleBufferSize', (
+        name?: unknown, lines?: unknown, batch?: unknown, useMaximum?: unknown,
+    ) => api.setConsoleBufferSize(
+        typeof name === 'string' ? name : undefined,
+        Number(lines),
+        batch === undefined || batch === null ? undefined : Number(batch),
+        useMaximum === true,
+    ));
     // getLines([window,] from, to) — JS array crosses wasmoon as a
     // 0-indexed Lua table; the Bridge.lua wrapper rebuilds it as a
     // 1-indexed sequence so `ipairs` works as Mudlet scripts expect.

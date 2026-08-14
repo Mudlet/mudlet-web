@@ -48,22 +48,32 @@ export function loadManifest(): Record<string, string[]> {
 // on every goto, so localStorage is re-seeded on each reopen().
 export async function seedProfile(page: Page): Promise<void> {
     await page.addInitScript(() => {
-        // Mudlet's "self-test" profile ships a predefined nested filter-trigger
-        // group: `^Foo Bar (.*)$` → `^Baz .*$` → `^\S+\s(?<found>Qux)$`, the last
-        // selecting the named capture. UI_spec's "nested triggers" test
-        // (Mudlet #7886) feeds "Foo Bar Baz Qux" and expects getSelection() ==
-        // "Qux". The busted harness otherwise seeds a bare profile, so we
-        // replicate that fixture here. The patterns are anchored and specific, so
-        // they never fire on any other spec's fed text. connectionTriggers isn't
-        // normally in localStorage (it lives in the profile VFS), but a fresh
-        // profile has no VFS data, so the seeded slice hydrates and survives —
-        // PROVIDED the seed carries the CURRENT store version. A lower one sends
-        // it through appStore's migrate, which drops every automation slice on
-        // purpose (they moved into the VFS at v20), and the fixture silently
-        // never arrives. Keep this in step with MUDIX_STORE_VERSION.
-        const t = (id: string, name: string, parentId: string | null, pattern: string, code: string, isFilter: boolean) => ({
-            id, name, enabled: true, isGroup: false, parentId,
-            patterns: [{ text: pattern, type: 'regex' }], code, language: 'lua',
+        // Mudlet drives its suite with the `run-tests` package installed, and
+        // several specs assert against the fixture that package carries rather
+        // than building one: a nested filter-trigger hierarchy (UI_spec's
+        // "nested triggers", Mudlet #7886) and items named for findItems to
+        // search (Miscallaneous_spec). Reproduced here node-for-node from
+        // src/import/defaults/run-tests/run-tests.xml — names, nesting, patterns
+        // and enabled state all matter to some spec.
+        //
+        // Seeded rather than installed on purpose: the package also ships its
+        // own copy of busted plus scripts that run the suite and quit on
+        // sysLoadEvent, which would fight the runner this harness IS. Only the
+        // fixture is wanted, so only the fixture is here.
+        //
+        // connectionTriggers/connectionScripts aren't normally in localStorage
+        // (they live in the profile VFS), but a fresh profile has no VFS data,
+        // so the seeded slices hydrate and survive — PROVIDED the seed carries
+        // the CURRENT store version. A lower one sends it through appStore's
+        // migrate, which drops every automation slice on purpose (they moved
+        // into the VFS at v20), and the fixture silently never arrives. Keep
+        // this in step with MUDIX_STORE_VERSION.
+        const t = (
+            id: string, name: string, parentId: string | null, pattern: string,
+            code: string, isFilter: boolean, isGroup = false,
+        ) => ({
+            id, name, enabled: true, isGroup, parentId,
+            patterns: pattern ? [{ text: pattern, type: 'regex' }] : [], code, language: 'lua',
             fireLength: 0, multipleMatches: false, multiline: false, delta: 0, isFilter,
         });
         localStorage.setItem('mudix_v1', JSON.stringify({
@@ -91,10 +101,19 @@ export async function seedProfile(page: Page): Promise<void> {
                 }],
                 connectionTriggers: {
                     'mudlet-self-test': [
-                        t('st-foobar', 'Foo Bar', null, '^Foo Bar (.*)$', '', true),
-                        t('st-baz', 'Baz', 'st-foobar', '^Baz .*$', '', true),
-                        t('st-qux', 'Qux', 'st-baz', '^\\S+\\s(?<found>Qux)$', 'selectCaptureGroup("found")', false),
+                        t('st-nested', 'Test selectCaptureGroup with nested hierarchy', null, '', '', false, true),
+                        t('st-filter', 'Filter', 'st-nested', '^Foo Bar (Baz Qux)$', '', true, true),
+                        t('st-notfilter', 'Not Filter', 'st-filter', '^Baz Qux$', '', false, true),
+                        t('st-trigger', 'Trigger', 'st-notfilter', '^Baz (Qux)$', 'selectCaptureGroup(2)', false),
                     ],
+                },
+                // Disabled, as it is in the package: findItems only looks at
+                // names, and an enabled script would run its body on load.
+                connectionScripts: {
+                    'mudlet-self-test': [{
+                        id: 'st-test-scripts', name: 'test scripts', enabled: false,
+                        isGroup: false, parentId: null, code: '', language: 'lua',
+                    }],
                 },
             },
         }));

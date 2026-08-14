@@ -36,6 +36,11 @@ function wasmoonWasmFsUrl(): Plugin {
 // loaded from node's filesystem.
 export default defineConfig({
   plugins: [wasmoonWasmFsUrl()],
+  // A Mudlet package archive is a zip, not source — LuaRuntime carries the
+  // busted fixture archives into the VFS with `?inline`, which reaches the
+  // asset pipeline and needs the extension declared. The app build gets this
+  // from the mudix Vite plugin; the test runner doesn't load that plugin.
+  assetsInclude: ['**/*.mpackage'],
   // Same build-time constants the app/lib builds inject, so src/version.ts
   // resolves under test instead of throwing on an undefined global.
   define: buildDefine(),

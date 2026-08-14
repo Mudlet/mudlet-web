@@ -46,7 +46,7 @@ import {
 } from "./telnetDebug";
 
 export type { MudClientEvents } from "../events";
-export { SUPPORTED_SERVER_ENCODINGS } from "../protocol";
+export { SUPPORTED_SERVER_ENCODINGS, DEFAULT_SERVER_ENCODING } from "../protocol";
 
 export interface MudClientOptions {
     url: string;

@@ -138,9 +138,14 @@ describe('setWindowWrap / getWindowWrap (main window)', () => {
     expect(rt.run('return getWindowWrap("main")')).toBe(80);
   });
 
-  it('disables wrap when set back to 0', () => {
-    expect(rt.run('return setWindowWrap("main", 0)')).toBe(true);
-    expect(rt.run('return getWindowWrap("main")')).toBe(0);
+  // A window zero columns wide can show nothing, and used to hang Mudlet as
+  // soon as the next line reached it (upstream #9622), so 0 is refused rather
+  // than taken as "wrapping off" — and the width that was there survives.
+  it('refuses a wrap width below one and keeps the old width', () => {
+    rt.run('setWindowWrap("main", 80)');
+    expect(rt.run('return (setWindowWrap("main", 0))')).toBeNull();
+    expect(rt.run('local _, e = setWindowWrap("main", 0) return e')).toContain('greater than zero');
+    expect(rt.run('return getWindowWrap("main")')).toBe(80);
   });
 
   // Mudlet reports a console call against a window that doesn't exist as

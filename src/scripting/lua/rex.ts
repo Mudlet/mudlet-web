@@ -298,7 +298,8 @@ export async function setupRex(lua: Lua): Promise<void> {
         -- bridge — passing the table itself would silently coerce to a bogus
         -- pattern in PCRE and can spin matchAll until the safety cap fires.
         local function unwrap(p)
-            if type(p) == 'table' and p.__pattern then
+            local t = type(p)
+            if (t == 'table' or t == 'userdata') and p.__pattern then
                 return p.__pattern, p.__flags
             end
             return p, nil
@@ -372,8 +373,14 @@ export async function setupRex(lua: Lua): Promise<void> {
             return _count(subject, p, effFlags(cf, cflags))
         end
 
+        -- A compiled pattern is USERDATA, not a table. The distinction is
+        -- visible: lrexlib hands back userdata, and scripts check for it —
+        -- Mudlet's own starter UI verifies its patterns compiled by asserting
+        -- type(compiled) == "userdata", and treats a table as "this one fell
+        -- back to recompiling per line". newproxy is Lua 5.1's only way to make
+        -- one from Lua; the fields and methods hang off its metatable.
         M.new = function(pattern, flags)
-            return setmetatable({ __pattern = pattern, __flags = flags }, { __index = {
+            local methods = {
                 match  = function(self, subject, init, ef) return M.match(subject, self, init) end,
                 find   = function(self, subject, init, ef) return M.find(subject, self, init)  end,
                 tfind  = function(self, subject, init, ef) return M.tfind(subject, self, init) end,
@@ -381,7 +388,22 @@ export async function setupRex(lua: Lua): Promise<void> {
                 split  = function(self, subject) return M.split(subject, self) end,
                 gmatch = function(self, subject) return M.gmatch(subject, self) end,
                 count  = function(self, subject) return M.count(subject, self) end,
-            }})
+            }
+            local fields = { __pattern = pattern, __flags = flags }
+            local ok, proxy = pcall(newproxy, true)
+            if not ok or proxy == nil then
+                -- No newproxy (a stripped 5.1, or 5.2+): a table still works
+                -- for everything except the type() check.
+                return setmetatable(fields, { __index = methods })
+            end
+            local mt = getmetatable(proxy)
+            mt.__index = function(_, key)
+                local v = fields[key]
+                if v ~= nil then return v end
+                return methods[key]
+            end
+            mt.__tostring = function() return "pcre2 (" .. tostring(pattern) .. ")" end
+            return proxy
         end
 
         package.loaded["rex_pcre2"] = M

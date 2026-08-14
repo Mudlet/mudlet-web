@@ -17,11 +17,17 @@ interface CommandBarProps {
     /** Tab-completion suggestions added via Mudlet's addCmdLineSuggestion API.
      *  Merged ahead of command history (dedup, case-insensitive). */
     suggestions?: string[];
+    /** Words Mudlet's addCmdLineBlacklist API has taken out of Tab completion.
+     *  Subtractive across every source below, not just `suggestions`. */
+    blacklist?: string[];
+    /** Mudlet's per-command-line setSaveCommandHistory. False keeps the history
+     *  for this session but stops persisting it. */
+    saveHistory?: boolean;
     /** Recency-ordered words seen in output, for argument-word Tab completion. */
     bufferWords?: BufferWordIndex | null;
 }
 
-export function CommandBar({ command, onCommandChange, passwordMode, commandInputRef, onSubmit, cmdLineMenu, suggestions, bufferWords }: CommandBarProps) {
+export function CommandBar({ command, onCommandChange, passwordMode, commandInputRef, onSubmit, cmdLineMenu, suggestions, blacklist, saveHistory, bufferWords }: CommandBarProps) {
     const [menu, setMenu] = useState<{ x: number; y: number; items: CmdLineMenuEntry[] } | null>(null);
     const inputBackground = useProfileField('inputBackground');
     const inputForeground = useProfileField('inputForeground');
@@ -38,7 +44,7 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         ? rawSaveSize
         : undefined;
     const connectionId = useConnectionId();
-    const { history, add: pushHistory } = useCommandHistory(connectionId, historySaveSize);
+    const { history, add: pushHistory } = useCommandHistory(connectionId, historySaveSize, saveHistory !== false);
 
     // -1 = "draft" slot (the user's pre-traversal text); otherwise an index
     // into the MRU `history` array.
@@ -324,7 +330,14 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
             const lists = hasPrecedingWord(active.prefix)
                 ? [sugg, words]
                 : [sugg, history, words];
-            cycleWord(active, e.shiftKey ? -1 : 1, lists);
+            // The blacklist subtracts from every list, matched case-insensitively
+            // (TCommandLine::tabComplete does the same) — a word blacklisted once
+            // must not come back via history or the output buffer.
+            const banned = new Set((blacklist ?? []).map(w => w.toLowerCase()));
+            const allowed = banned.size === 0
+                ? lists
+                : lists.map(l => l.filter(w => !banned.has(w.toLowerCase())));
+            cycleWord(active, e.shiftKey ? -1 : 1, allowed);
             return;
         }
 

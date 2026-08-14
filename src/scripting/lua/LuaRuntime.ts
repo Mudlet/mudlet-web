@@ -85,6 +85,16 @@ const BUSTED_FILES = BUSTED_ENABLED
 const SPEC_FILES = BUSTED_ENABLED
     ? (import.meta.glob('./specs/**/*_spec.lua', { query: '?raw', import: 'default', eager: true }) as Record<string, string>)
     : {};
+// The fixtures several specs read (a map to import, packages to install). Split
+// by how they have to be carried: text goes in as a string, but a `.mpackage`
+// is a zip — `?raw` would hand it over as mojibake, so those come across as
+// base64 and are decoded into bytes at mount time.
+const SPEC_TEXT_FIXTURES = BUSTED_ENABLED
+    ? (import.meta.glob('./specs/fixtures/**/*.{xml,lua,json,txt}', { query: '?raw', import: 'default', eager: true }) as Record<string, string>)
+    : {};
+const SPEC_BINARY_FIXTURES = BUSTED_ENABLED
+    ? (import.meta.glob('./specs/fixtures/**/*.mpackage', { query: '?inline', import: 'default', eager: true }) as Record<string, string>)
+    : {};
 
 // VFS spec paths the busted runner can target (e.g. /lua/specs/StringUtils_spec.lua).
 const bustedSpecVfsPaths = (): string[] =>
@@ -336,8 +346,13 @@ export class LuaRuntime implements IScriptingRuntime {
      *  does the freeing. */
     private readonly tempIds = new Map<number, {
         kill: () => void; type: 'alias' | 'trigger'; enabled: boolean; dead?: boolean;
+        /** Mudlet's tempComplexRegexTrigger is the one temporary-trigger API
+         *  that takes a name of its own, and exists()/killTrigger() have to
+         *  reach the item by it. Absent for the rest, which are only ever known
+         *  by the id they were handed. */
+        name?: string;
     }>();
-    private nextTempId = 1;
+
     // Tracks label callback ids per slot so re-binds can free the prior Lua-
     // registry slot via __mudix_unregister_cb (avoids the leak the audit flagged
     // for setLabelClickCallback). Outer key: label name, inner key: slot id
@@ -594,13 +609,17 @@ export class LuaRuntime implements IScriptingRuntime {
         this.lua.global.set('__mudix_config_kind', (key: unknown) =>
             this.api.configKeyKind(String(key ?? '')));
 
-        // Mudlet profile description (single free-text slot). The optional
-        // profile-name argument of the Mudlet overloads is ignored — mudix is
-        // single-profile.
-        this.lua.global.set('getProfileInformation', () => this.api.getProfileInformation());
-        this.lua.global.set('setProfileInformation', (a: unknown, b?: unknown) =>
-            this.api.setProfileInformation(String((b !== undefined ? b : a) ?? '')));
-        this.lua.global.set('clearProfileInformation', () => this.api.clearProfileInformation());
+        // Mudlet profile description (a free-text slot per profile). Each takes
+        // the profile by name, defaulting to this one; a name that matches no
+        // profile answers null/false, which Bridge.lua turns into Mudlet's
+        // (nil, "profile '<name>' does not exist") pair. Argument checking and
+        // that shaping live there — see "Profile description accessors".
+        this.lua.global.set('__getProfileInformation', (name?: unknown) =>
+            this.api.getProfileInformation(name == null ? undefined : String(name)));
+        this.lua.global.set('__setProfileInformation', (text: unknown, name?: unknown) =>
+            this.api.setProfileInformation(String(text ?? ''), name == null ? undefined : String(name)));
+        this.lua.global.set('__clearProfileInformation', (name?: unknown) =>
+            this.api.clearProfileInformation(name == null ? undefined : String(name)));
 
         // Mudlet profile icon (shown on the connection-selection screen).
         // setProfileIcon(path) takes a VFS image path; we read the bytes here and
@@ -612,15 +631,26 @@ export class LuaRuntime implements IScriptingRuntime {
             const p = String(path ?? '');
             if (!p) return { ok: false, error: 'setProfileIcon: no icon path given' };
             if (!this.vfs) return { ok: false, error: 'setProfileIcon: no profile filesystem available' };
+            if (!this.vfs.exists(p)) return { ok: false, error: `setProfileIcon: file "${p}" doesn't exist` };
             let bytes: Uint8Array;
             try { bytes = this.vfs.readBinaryFile(p); }
             catch { return { ok: false, error: `setProfileIcon: cannot read "${p}"` }; }
             const uri = bytesToImageDataUrl(bytes, p);
             if (!this.api.setProfileIcon(uri)) return { ok: false, error: 'setProfileIcon: failed to store icon' };
+            // Also drop a copy where Mudlet keeps its own, so a linked profile
+            // folder carries the icon between the two clients. The store copy
+            // above is what the connection screen renders — it needs the icon
+            // before any profile VFS is mounted.
+            try { this.vfs.writeBinaryFile(`${this.vfs.profilePath}/profileicon`, bytes); }
+            catch { /* the stored icon is the one that matters */ }
             return { ok: true, path: p };
         });
         this.lua.global.set('getProfileIcon', () => this.api.getProfileIcon());
-        this.lua.global.set('resetProfileIcon', () => this.api.resetProfileIcon());
+        this.lua.global.set('resetProfileIcon', () => {
+            try { this.vfs?.deleteFile(`${this.vfs.profilePath}/profileicon`); }
+            catch { /* nothing to take out */ }
+            return this.api.resetProfileIcon();
+        });
 
         // Mudlet getImageSize(path) → width, height (or nil). We parse the
         // dimensions straight out of the VFS file's header (synchronous, unlike
@@ -648,6 +678,27 @@ export class LuaRuntime implements IScriptingRuntime {
         this.lua.global.set('holdingModifiers', (mods: unknown) => this.api.holdingModifiers(Number(mods)));
 
         this.lua.global.set('getEpoch', () => Date.now() / 1000);
+        // Backs getProcessID(). A tab has no OS process of its own, so this is a
+        // per-tab stand-in: stable for the tab's lifetime and distinct from any
+        // other tab's, which is what a script naming a temp file after it needs.
+        // Kept inside int32 for the same reason the clocks above are.
+        this.lua.global.set('__mudix_processId', () => {
+            // Held on the tab, not this runtime: a profile switch rebuilds the
+            // runtime, and a "process id" that changed under a script would be
+            // worse than useless. globalThis rather than window so the node-side
+            // test runtime has somewhere to keep it too.
+            const g = globalThis as unknown as { __mudixProcessId?: number };
+            g.__mudixProcessId ??= 1 + Math.floor(Math.random() * 0x7ffffffe);
+            return g.__mudixProcessId;
+        });
+        // Backs Bridge.lua's `wait()`, which has to burn real time rather than
+        // schedule anything (Mudlet's Wait blocks the interpreter with msleep).
+        // Milliseconds since this runtime was built, NOT epoch ms: wasmoon
+        // truncates to 32-bit signed on the way into Lua, and a raw Date.now()
+        // (~1.79e12) arrives as garbage — the same reason the busted bridge's
+        // __mudix_now is relative. Uptime stays comfortably inside int32.
+        const waitOrigin = Date.now();
+        this.lua.global.set('__mudix_uptime_ms', () => Date.now() - waitOrigin);
 
         // Mudlet getOS() → osName, osVersion, [osType (Linux only)], processor.
         // We sniff the underlying OS so windows/mac-specific scripts behave. JS
@@ -803,6 +854,11 @@ export class LuaRuntime implements IScriptingRuntime {
             if (typeof name !== 'string') return false;
             return this.api.labels.setTooltip(name, undefined);
         });
+        // Mudlet getLabelToolTip(name) — the text only. The setter's optional
+        // duration reaches Qt's tooltip timer, which reinterprets it, so it is
+        // not part of what is read back.
+        this.lua.global.set('__getLabelToolTip', (name: unknown) =>
+            (typeof name === 'string' ? this.api.labels.get(name)?.tooltip ?? '' : ''));
         // Runtime clickthrough toggle. Flips pointer-events live; the click
         // handler set via setLabelClickCallback stays installed either way.
         this.lua.global.set('enableClickthrough', (name: unknown) => {
@@ -906,6 +962,10 @@ export class LuaRuntime implements IScriptingRuntime {
             return typeof name === 'string'
                 && this.api.scaleMovie(name, autoscale === undefined ? true : autoscale !== false);
         });
+        // Whether a label has a movie installed at all — the Bridge.lua wrappers
+        // report that separately from "no such label".
+        this.lua.global.set('__hasMovie', (name: unknown) =>
+            typeof name === 'string' && this.api.labels.hasMovie(name));
 
         // Mudlet setAppStyleSheet(css, [tag]) — install or replace a CSS block
         // in document.head, then raise sysAppStyleSheetChange so theme scripts
@@ -973,9 +1033,8 @@ export class LuaRuntime implements IScriptingRuntime {
         // __mudix_setLabel* primitives above.
 
         // Warning-emitting no-op stubs for Mudlet APIs with no meaningful browser
-        // implementation: Discord Rich Presence (needs the Discord SDK), the IRC
-        // client (a separate external service) and Hunspell spell-check (no
-        // dictionary engine). These
+        // implementation: Discord Rich Presence (needs the Discord SDK) and the
+        // IRC client (a separate external service). These
         // must be *bound* — not left nil — so an imported Mudlet package that
         // touches one on load doesn't die with "attempt to call a nil value".
         // Each logs once and returns the value the real function would on a
@@ -994,23 +1053,20 @@ export class LuaRuntime implements IScriptingRuntime {
             'resetDiscordData',
             'setDiscordApplicationID', 'setDiscordGame', 'setDiscordGameUrl',
             'usingMudletsDiscordID',
-            // IRC client actions — no IRC client in mudix.
+            // IRC client *actions* — there is no IRC client in mudix to open,
+            // restart or talk to. The settings those actions would read are a
+            // different matter and are real; see Bridge.lua.
             'openIRC', 'restartIrc', 'sendIrc',
-            'setIrcChannels', 'setIrcNick', 'setIrcServer',
-            // Spell-check dictionary mutators — no Hunspell.
-            'addWordToDictionary', 'removeWordFromDictionary',
         ].forEach(name => registerStub(name));
         // Stubs whose real counterpart returns a non-nil value. `spawn` is NOT
         // among them: it raises Mudlet's real "failed to start" error instead,
         // from Bridge.lua — a no-op returning false claimed a process had
         // started. Covered by the upstream Spawn_spec.
-        registerStub('spellCheckWord', true);          // treat every word as correct
-        registerStub('spellSuggestWord', emptyTable);  // no suggestions
-        registerStub('getDictionaryWordList', emptyTable);
-        registerStub('getIrcChannels', emptyTable);
+        // Only the *connection* is unavailable: there is no IRC client here, so
+        // nothing is ever connected. The configuration behind it is ordinary
+        // profile data and round-trips for real — see Bridge.lua's "IRC
+        // configuration". registerStub is right for this one alone.
         registerStub('getIrcConnectedHost', '');
-        registerStub('getIrcNick', '');
-        registerStub('getIrcServer', '');
 
         // Mudlet setCmdLineAction([cmdLineName,] fn, [args...]). With no
         // cmdLineName (or "main") the binding targets the single main command
@@ -1101,9 +1157,11 @@ export class LuaRuntime implements IScriptingRuntime {
         // Mudlet `startLogging(state)`. Toggle the persistent session logger
         // for this profile. ProfileSession owns the SessionLogger lifecycle;
         // the API forwards through a registered toggler.
-        this.lua.global.set('startLogging', (state?: unknown) => this.api.startLogging(!!state));
+        // Returns { ok, message, path, state }; the Bridge.lua wrapper spreads
+        // it into Mudlet's four return values and does the argument checking.
+        this.lua.global.set('__startLogging', (state?: unknown) => this.api.startLogging(!!state));
         // Mudlet `appendLog(text)`. Append an arbitrary line to the active log.
-        this.lua.global.set('appendLog', (text?: unknown) => this.api.appendLog(String(text ?? '')));
+        this.lua.global.set('__appendLog', (text?: unknown) => this.api.appendLog(String(text ?? '')));
         // Mudlet `getProfileTabNumber([name])`. Single-profile web app — always 1.
         this.lua.global.set('getProfileTabNumber', (_name?: unknown) => 1);
         // Mudlet `ioprint(...)`. Prints to stdout in desktop Mudlet; in the
@@ -1123,7 +1181,7 @@ export class LuaRuntime implements IScriptingRuntime {
             const wantFg = Number(fg);
             const wantBg = Number(bg);
             const max = (typeof expirationCount === 'number' && expirationCount > 0) ? expirationCount : -1;
-            const id = this.nextTempId++;
+            const id = this.api.allocateItemId();
             let fires = 0;
             let killed = false;
             // Empty-string substring trigger fires once per line; the colour
@@ -1241,7 +1299,7 @@ export class LuaRuntime implements IScriptingRuntime {
             if (!this.vfs) return [false, 'no profile filesystem available'];
             let bytes: Uint8Array;
             try { bytes = this.vfs.readBinaryFile(p); }
-            catch { return [false, `cannot read file "${p}"`]; }
+            catch { return [false, `Cannot read file "${p}"`]; }
             const err = this.api.loadReplay(bytes);
             return err ? [false, `unable to start replay, reason: '${err}'`] : [true, ''];
         });
@@ -1373,7 +1431,7 @@ export class LuaRuntime implements IScriptingRuntime {
 
         // ── Aliases ───────────────────────────────────────────────────────────
         this.lua.global.set('__mudix_tempAlias', (pattern: string, cbId: number) => {
-            const id = this.nextTempId++;
+            const id = this.api.allocateItemId();
             const unsub = this.api.aliases.addTemp(pattern, (m: RegExpMatchArray) => {
                 if (this.tempIds.get(id)?.enabled === false) return;
                 this.setMatches(Array.from(m));
@@ -1383,6 +1441,11 @@ export class LuaRuntime implements IScriptingRuntime {
             return id;
         });
         this.lua.global.set('killAlias', (idOrName: number | string) => {
+            // A temp item named by the script (tempComplexRegexTrigger) is
+            // reachable by that name, and is what Mudlet kills first — only a
+            // permanent item answers a name no temporary one carries.
+            const tempId = this.tempItemId(idOrName, 'alias');
+            if (tempId !== null && this.tempIds.has(tempId)) return this.killTempItem(tempId, 'alias');
             if (typeof idOrName === 'string') return this.api.killByName('alias', idOrName);
             return this.killTempItem(idOrName, 'alias');
         });
@@ -1398,9 +1461,9 @@ export class LuaRuntime implements IScriptingRuntime {
         // to one of the JS bindings below.
         const installTempTrigger = (
             pattern: string, cbId: number, kind: 'regex' | 'substring' | 'startOfLine' | 'exactMatch' | 'prompt',
-            expirationCount: number | undefined, label: string,
+            expirationCount: number | undefined, label: string, name?: string,
         ) => {
-            const id = this.nextTempId++;
+            const id = this.api.allocateItemId();
             const max = (typeof expirationCount === 'number' && expirationCount > 0) ? expirationCount : -1;
             let fires = 0;
             let killed = false;
@@ -1434,13 +1497,14 @@ export class LuaRuntime implements IScriptingRuntime {
                 fires++;
                 if (max > 0 && fires >= max) kill();
             }, kind);
-            this.tempIds.set(id, { kill, type: 'trigger', enabled: true });
+            this.tempIds.set(id, { kill, type: 'trigger', enabled: true, name });
             return id;
         };
         this.lua.global.set('__mudix_tempTrigger', (pattern: string, cbId: number, expirationCount?: number) =>
             installTempTrigger(pattern, cbId, 'substring', expirationCount, 'tempTrigger'));
-        this.lua.global.set('__mudix_tempRegexTrigger', (pattern: string, cbId: number, expirationCount?: number) =>
-            installTempTrigger(pattern, cbId, 'regex', expirationCount, 'tempRegexTrigger'));
+        this.lua.global.set('__mudix_tempRegexTrigger', (pattern: string, cbId: number, expirationCount?: number, name?: unknown) =>
+            installTempTrigger(pattern, cbId, 'regex', expirationCount, 'tempRegexTrigger',
+                typeof name === 'string' && name ? name : undefined));
         this.lua.global.set('__mudix_tempExactMatchTrigger', (pattern: string, cbId: number, expirationCount?: number) =>
             installTempTrigger(pattern, cbId, 'exactMatch', expirationCount, 'tempExactMatchTrigger'));
         this.lua.global.set('__mudix_tempBeginOfLineTrigger', (pattern: string, cbId: number, expirationCount?: number) =>
@@ -1456,7 +1520,7 @@ export class LuaRuntime implements IScriptingRuntime {
         // we mirror it with a `fires` counter so the callback is released after
         // the final fire (or earlier via killTrigger).
         this.lua.global.set('__mudix_tempLineTrigger', (from: unknown, howMany: unknown, cbId: number) => {
-            const id = this.nextTempId++;
+            const id = this.api.allocateItemId();
             const total = Math.max(1, Math.trunc(Number(howMany)) || 1);
             let fires = 0;
             let killed = false;
@@ -1479,6 +1543,11 @@ export class LuaRuntime implements IScriptingRuntime {
             return id;
         });
         this.lua.global.set('killTrigger', (idOrName: number | string) => {
+            // A temp item named by the script (tempComplexRegexTrigger) is
+            // reachable by that name, and is what Mudlet kills first — only a
+            // permanent item answers a name no temporary one carries.
+            const tempId = this.tempItemId(idOrName, 'trigger');
+            if (tempId !== null && this.tempIds.has(tempId)) return this.killTempItem(tempId, 'trigger');
             if (typeof idOrName === 'string') return this.api.killByName('trigger', idOrName);
             return this.killTempItem(idOrName, 'trigger');
         });
@@ -1605,9 +1674,12 @@ export class LuaRuntime implements IScriptingRuntime {
         // value is in ms — convert to seconds for the script side. The cache
         // returns -1 when no measurement has been recorded yet; we propagate
         // that sentinel unchanged.
+        // Zero, not a sentinel, before the first measurement: Mudlet reports
+        // the untouched member, and a script doing arithmetic on the answer
+        // would get a negative latency out of a -1 it never thought to check.
         this.lua.global.set('getNetworkLatency', () => {
             const ms = this.api.getNetworkLatency();
-            return ms < 0 ? -1 : ms / 1000;
+            return ms < 0 ? 0 : ms / 1000;
         });
 
         // ── HTTP / downloads ──────────────────────────────────────────────────
@@ -1703,6 +1775,25 @@ export class LuaRuntime implements IScriptingRuntime {
         // bindings themselves stay free of runtime internals.
         installSoundBindings(bindings);
         installVideoBindings(bindings);
+        // Media that names a `url` is fetched into the profile's media
+        // directory before it can be played from there — how an MSP/GMCP server
+        // ships a sound it doesn't expect the player to already have. Returns
+        // the path the download is landing at (so Bridge.lua can play it when
+        // sysDownloadDone names that path), or null when there is nothing to
+        // fetch: no url, no VFS, or the file is already here.
+        //
+        // A url that isn't http(s) never gets that far — downloadFile reports it
+        // as a sysDownloadError naming the file, which is the same way a script
+        // hears about a 404.
+        this.lua.global.set('__mudix_media_fetch', (name: unknown, url: unknown) => {
+            const file = String(name ?? '').split(/[\\/]/).pop() ?? '';
+            const u = String(url ?? '');
+            if (!file || !u || !this.vfs) return null;
+            const saveTo = `${this.vfs.profilePath}/media/${file}`;
+            if (this.vfs.exists(saveTo)) return null;
+            this.http.downloadFile(saveTo, u);
+            return saveTo;
+        });
         this.tts = new TtsManager((event, args) => this.emitEvent(event, args));
         installTtsBindings(bindings, this.tts);
 
@@ -1717,6 +1808,8 @@ export class LuaRuntime implements IScriptingRuntime {
             if (typeof idOrName === 'string') return this.api.timers.remainingTime(idOrName);
             return -1;
         });
+
+        this.installSafeFunctionTostring();
 
         // Bootstrap chunks run sync — none of them yield. setupRex needs an
         // await for one-time PCRE wasm init; sqliteReady gates the SQL bridge
@@ -1743,6 +1836,17 @@ export class LuaRuntime implements IScriptingRuntime {
         }
         for (const [p, src] of Object.entries(SPEC_FILES)) {
             builtins.set(`/lua/specs/${p.slice('./specs/'.length)}`, src);
+        }
+        for (const [p, src] of Object.entries(SPEC_TEXT_FIXTURES)) {
+            builtins.set(`/lua/specs/${p.slice('./specs/'.length)}`, src);
+        }
+        // Vite hands a `?inline` asset over as a data: URI; the payload after
+        // the comma is the base64 the zip is rebuilt from. atob already yields
+        // the Latin-1 byte-string the VFS stores file bodies as (charCode ===
+        // byte), which is exactly what a binary read needs.
+        for (const [p, uri] of Object.entries(SPEC_BINARY_FIXTURES)) {
+            builtins.set(`/lua/specs/${p.slice('./specs/'.length)}`,
+                atob(uri.slice(uri.indexOf(',') + 1)));
         }
         this.setupVFS(this.vfs, builtins);
         this.exec(VFS_LUA, 'VFS');
@@ -1776,6 +1880,51 @@ export class LuaRuntime implements IScriptingRuntime {
         this.exec(CAPTURE_BASELINE_LUA, 'baseline-globals');
 
         if (BUSTED_ENABLED) this.setupBustedBridge();
+    }
+
+    /**
+     * Make `tostring(someFunction)` safe — and Mudlet-shaped.
+     *
+     * wasmoon pushes every JS function as a C closure and gives it a metatable
+     * carrying `__tostring`/`__index` that dereference the JS value behind it.
+     * But Lua 5.1's `lua_setmetatable` on a non-table, non-userdata value sets
+     * the metatable for that *whole type* (`G(L)->mt[ttype(o)]`), so the last JS
+     * function bound here becomes the metatable of EVERY Lua function. Call
+     * `tostring` on an ordinary one and wasmoon looks up a JS ref that was never
+     * registered, gets `undefined`, and throws `Cannot read properties of
+     * undefined (reading 'toString')` — a JS TypeError, not a Lua error, so it
+     * unwinds straight through `pcall` and out of `doStringSync`, killing the
+     * whole lua_State. `tostring(print)`, `display{f = print}` and Mudlet's own
+     * `printTable` on a table holding a function all hit it.
+     *
+     * The fix replaces the global `tostring` rather than the metamethod: a JS
+     * function pushed later installs a *fresh* metatable and would silently
+     * revert a metamethod patch, whereas nothing rebinds this global. Clearing
+     * the shared metatable for the duration of the call takes Lua's own
+     * `function: 0x…` path — which is what Mudlet prints too, so this also drops
+     * wasmoon's habit of stringifying a bound global into its entire JS source.
+     * Lua 5.1's `print` reads the global at call time, so it follows along.
+     *
+     * Installed after every `global.set` above and before Bridge.lua, so no
+     * bundled or user chunk can capture the unsafe version as an upvalue.
+     */
+    private installSafeFunctionTostring(): void {
+        this.lua.doStringSync(
+            `do
+  local raw = tostring
+  local getmt, setmt = debug.getmetatable, debug.setmetatable
+  function tostring(v)
+    if type(v) ~= 'function' then return raw(v) end
+    local mt = getmt(v)
+    if mt == nil then return raw(v) end
+    setmt(v, nil)
+    local ok, s = pcall(raw, v)
+    setmt(v, mt)
+    if ok then return s end
+    return 'function: (unknown)'
+  end
+end`,
+        );
     }
 
     // The two places the browser can't match Mudlet's own Lua, fixed up from the
@@ -1903,6 +2052,15 @@ end`,
         return this.tempIds.get(id)?.type === type;
     }
 
+    /** A live temp item of `type` carrying this Mudlet-supplied name — how
+     *  exists()/killTrigger() reach a tempComplexRegexTrigger. */
+    tempItemIdByName(name: string, type: string): number | null {
+        for (const [id, entry] of this.tempIds) {
+            if (entry.type === type && !entry.dead && entry.name === name) return id;
+        }
+        return null;
+    }
+
     /**
      * killAlias/killTrigger with a numeric id, for a script-created item.
      *
@@ -1913,6 +2071,15 @@ end`,
      * findable, which is what lets a second kill report `false` rather than
      * mistaking the id for one that never existed.
      */
+    /** Resolve a killTrigger/killAlias argument to a live temp item's id: the
+     *  number itself, or the name a tempComplexRegexTrigger was given. */
+    tempItemId(idOrName: number | string, type: 'alias' | 'trigger'): number | null {
+        if (typeof idOrName === 'number') return idOrName;
+        const byName = this.tempItemIdByName(idOrName, type);
+        if (byName !== null) return byName;
+        return /^d+$/.test(idOrName) ? Number(idOrName) : null;
+    }
+
     private killTempItem(id: number, type: 'alias' | 'trigger'): boolean {
         const entry = this.tempIds.get(id);
         if (!entry || entry.type !== type || entry.dead) return false;

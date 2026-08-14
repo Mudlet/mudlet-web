@@ -302,7 +302,8 @@ function buildMatcher(p: TriggerPattern, register: (re: PcreInstance) => void): 
 
 export class TriggerEngine {
     private readonly temp = new Map<number, TempEntry>();
-    private nextId = 1;
+    /** Key for this engine's own temp map — see PatternEngine.nextInternalId. */
+    private nextInternalId = 1;
     // True while processTemp is iterating. A `line` temp trigger created during
     // a handler (mid-pass) sets skipFirst so it doesn't tick on the line it was
     // created on — `from` then counts from the next line regardless of whether
@@ -395,7 +396,7 @@ export class TriggerEngine {
         fn: TempFn,
         kind: 'regex' | 'substring' | 'startOfLine' | 'exactMatch' | 'prompt' = 'regex',
     ): () => void {
-        const id = this.nextId++;
+        const id = this.nextInternalId++;
         const seq = this.regCounter++;
         if (kind === 'prompt') {
             this.temp.set(id, { kind, fn, seq });
@@ -426,7 +427,7 @@ export class TriggerEngine {
      * for early cancellation.
      */
     addTempLine(from: number, howMany: number, fn: TempFn): () => void {
-        const id = this.nextId++;
+        const id = this.nextInternalId++;
         this.temp.set(id, {
             kind: 'line',
             countdown: Math.max(1, Math.trunc(from) || 1),

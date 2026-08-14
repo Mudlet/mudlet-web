@@ -8,7 +8,7 @@ import { SoundManager } from '../ui/sound/SoundManager';
 import { VideoManager } from '../ui/video/VideoManager';
 import { CmdLineMenuRegistry } from '../ui/CmdLineMenuRegistry';
 import { MouseEventRegistry } from '../ui/MouseEventRegistry';
-import { MudClient, type MudClientOptions, SUPPORTED_SERVER_ENCODINGS } from './connection/MudClient';
+import { MudClient, type MudClientOptions, SUPPORTED_SERVER_ENCODINGS, DEFAULT_SERVER_ENCODING } from './connection/MudClient';
 import { PingTracker } from './connection/PingTracker';
 import { ReplayPlayer } from './replay/ReplayPlayer';
 import { ReplayRecorder } from './replay/ReplayRecorder';
@@ -16,6 +16,7 @@ import { parseReplay, replayDurationMs } from './replay/replayFormat';
 import { type MudClientEvents, type MudEvents, type SessionStatus } from './events';
 import type { Console } from './text/Console';
 import { mxpColor } from './text/colorParsers';
+import { AnsiAwareBuffer } from './text/FormatState';
 import { setControlCharacterMode as setActiveControlCharacterMode, type ControlCharacterMode } from './text/controlCharacterMode';
 
 export type { SessionStatus, MudEvents } from './events';
@@ -70,6 +71,10 @@ export class MudSession {
     private lastUrl: string | null = null;
     private pingTracker: PingTracker | null = null;
     private stateUnsubs: (() => void)[] = [];
+    /** The profile's server encoding, as `getServerEncodingsList()` spells it.
+     *  Lives here rather than on the client so it survives having none — see
+     *  {@link getServerEncoding}. */
+    private serverEncoding: string = DEFAULT_SERVER_ENCODING;
     private _status: SessionStatus = 'disconnected';
     private _ping: number | null = null;
     private _outputReady = false;
@@ -206,7 +211,11 @@ export class MudSession {
             this.events.on('client.disconnect', () => { this.setStatus('disconnected'); this.setPing(null); }),
             this.events.on('error', () => this.setStatus('disconnected')),
             this.events.on('client.error', (message) => this.reportConnectionError(message)),
+            this.events.on('charset.negotiated', (name) => this.noteNegotiatedEncoding(name)),
         ];
+        // Carry the profile's encoding onto the new socket, so a script that set
+        // one before dialing isn't silently overridden by the client default.
+        if (this.serverEncoding !== DEFAULT_SERVER_ENCODING) client.setServerEncoding(this.serverEncoding);
 
         this.setStatus('connecting');
         client.connect();
@@ -228,9 +237,18 @@ export class MudSession {
     echoCommand(text: string): void {
         if (this.showSentText === 'never') return;
         if (!this.client || this.client.shouldEchoCommand()) {
+            const styled = this.styleEchoCommand(text);
+            // Into the buffer as well as onto the screen. Mudlet's echoed
+            // command is part of the console's contents — getLines() and the
+            // cursor APIs see it, and a trigger can match on it — so a version
+            // that only reached the renderer left the model missing lines the
+            // player could plainly read. appendLine (not echo) because the
+            // renderer is driven by the event below: enqueueing it for the
+            // drain path as well would render the command twice.
+            this.consoles.get('main')?.appendLine(new AnsiAwareBuffer(styled));
             // No "> " prefix: Mudlet echoes the bare command, and OutputRenderer
             // appends it inline to the open server prompt line (e.g. "- look").
-            this.events.emit('message', this.styleEchoCommand(text), 'echo', Date.now());
+            this.events.emit('message', styled, 'echo', Date.now());
         }
     }
 
@@ -405,16 +423,37 @@ export class MudSession {
         return true;
     }
 
-    /** Mudlet `getServerEncoding()`. The live client's inbound decoder name;
-     *  'utf-8' when no client is attached. */
+    /**
+     * Mudlet `getServerEncoding()` / `setServerEncoding(name)`.
+     *
+     * The encoding is the profile's, not the socket's: it can be read and
+     * changed with nothing dialed, and the setting carries across a connect.
+     * A live client is told about the change so its decoder follows, and a
+     * CHARSET negotiation writes the agreed name back here — but the client is
+     * not where the answer comes from. It used to be, which made both functions
+     * inert until a connection existed, and the name they reported was the
+     * decoder's IANA spelling ("utf-8") rather than the one the caller chose
+     * ("UTF-8" as `getServerEncodingsList()` spells it).
+     */
     getServerEncoding(): string {
-        return this.client?.getServerEncoding() ?? 'utf-8';
+        return this.serverEncoding;
     }
 
-    /** Mudlet `setServerEncoding(name)`. Returns false when no client is
-     *  attached or the name isn't supported. */
     setServerEncoding(name: string): boolean {
-        return this.client?.setServerEncoding(name) ?? false;
+        const label = String(name ?? '');
+        if (!SUPPORTED_SERVER_ENCODINGS.some(e => e.toLowerCase() === label.toLowerCase())) return false;
+        // A client that refuses it (it decodes, we only label) leaves both sides
+        // as they were, so the caller isn't told a switch happened that didn't.
+        if (this.client && !this.client.setServerEncoding(label)) return false;
+        this.serverEncoding = label;
+        return true;
+    }
+
+    /** Called when CHARSET negotiation settles on a name, so the profile-level
+     *  setting reflects what the connection actually agreed. */
+    noteNegotiatedEncoding(name: string): void {
+        const match = SUPPORTED_SERVER_ENCODINGS.find(e => e.toLowerCase() === name.toLowerCase());
+        this.serverEncoding = match ?? name;
     }
 
     /** Mudlet `getServerEncodingsList()`. The fixed set of encodings mudix can

@@ -1668,6 +1668,19 @@ export class WindowManager {
         this.applyScrollClasses(id);
     }
 
+    /**
+     * Mudlet `getScrollBarVisible([window])`. Reads back the *intent* set by
+     * enable/disableScrollBar rather than whether a gutter is on screen right
+     * now: a console that is hidden still answers for the scroll bar it will
+     * have when shown. Only the main window starts with one — a miniconsole is
+     * created without, as in Mudlet.
+     */
+    scrollBarVisible(id: string): boolean {
+        const s = this.scrollState.get(id);
+        if (s) return s.scrollBarVisible;
+        return id === 'main';
+    }
+
     /** Mudlet enable/disableHorizontalScrollBar — toggle a horizontal scrollbar
      *  on a console wrapper. mudix wraps long lines by default so this is rarely
      *  needed; included for parity. */
@@ -1746,11 +1759,35 @@ export class WindowManager {
      *  isn't on screen yet measures as 0, which is indistinguishable from being
      *  genuinely scrolled to the top. */
     canMeasureScroll(id: string): boolean {
+        // A scripted scrollTo is an answer in its own right, laid-out panel or
+        // not — see scriptScrollLine.
+        if (this.scriptScrollLine.has(id)) return true;
         const el = this.elements.get(id);
         return !!el && this.lineElements(el).length > 0;
     }
 
+    /**
+     * Where `scrollTo` last parked each console, as a buffer line index; absent
+     * means tail mode (or that only the user has scrolled it).
+     *
+     * Mudlet's getScroll/scrollTo are buffer-index operations. mudix measured
+     * the DOM instead, which is fine for a console the player is looking at but
+     * answers nothing useful for one whose panel has not been laid out yet — and
+     * a script that scrolls and reads back in the same breath never gives React
+     * a chance to commit in between. So the scripted position is remembered here
+     * and the measurement is the fallback, not the source of truth.
+     */
+    private readonly scriptScrollLine = new Map<string, number>();
+
+    /** Called when the *user* scrolls a console, so a script's remembered
+     *  position stops overriding what they can see. */
+    noteUserScroll(id: string): void {
+        this.scriptScrollLine.delete(id);
+    }
+
     getScrollLine(id: string): number {
+        const parked = this.scriptScrollLine.get(id);
+        if (parked !== undefined) return parked;
         const el = this.elements.get(id);
         if (!el) return 0;
         const lineEls = this.lineElements(el);
@@ -1772,21 +1809,29 @@ export class WindowManager {
      *  resumes tail mode (scroll-to-bottom); negative values count from the end
      *  (Mudlet semantics). Returns false if the wrapper is not mounted. */
     scrollToLine(id: string, line: number | undefined): boolean {
+        // Line counts come from the buffer, not the DOM: the console may have
+        // 200 lines and no laid-out panel to measure them in.
+        const total = this.consoleRegistry?.get(id)?.getLineCount() ?? -1;
+        const lineCount = total >= 0 ? total + 1 : 0;
         const el = this.elements.get(id);
-        if (!el) return false;
+        if (!el && lineCount === 0) return false;
+
         if (line === undefined) {
-            el.scrollTop = el.scrollHeight;
-            return true;
-        }
-        const lineEls = this.lineElements(el);
-        const total = lineEls.length;
-        if (total === 0) {
-            el.scrollTop = el.scrollHeight;
+            // Tail mode: forget the parked line so the measurement takes over.
+            this.scriptScrollLine.delete(id);
+            if (el) el.scrollTop = el.scrollHeight;
             return true;
         }
         let target = line;
-        if (target < 0) target = Math.max(total + target, 0);
-        if (target >= total - 1) {
+        if (target < 0) target = Math.max(lineCount + target, 0);
+        // Clamped to the last line index, which counts the always-open line the
+        // buffer keeps past the finished ones (as getLastLineNumber does).
+        target = Math.max(0, Math.min(target, lineCount));
+        this.scriptScrollLine.set(id, target);
+
+        const lineEls = el ? this.lineElements(el) : [];
+        if (!el || lineEls.length === 0) return true;
+        if (target >= lineEls.length - 1) {
             el.scrollTop = el.scrollHeight;
             return true;
         }
@@ -2260,6 +2305,20 @@ export class WindowManager {
         const existing = this.windows.get(id);
         if (existing) {
             if (options.title) existing.title = options.title;
+            // Geometry given explicitly applies to a window that is already
+            // open, too. Mudlet's moveMapWidget/resizeMapWidget are openMapWidget
+            // in disguise (see GUIUtils.lua), so a re-open that ignored the
+            // coordinates left both of them doing nothing at all once the map
+            // widget was up. Undocking follows, because a floating position is
+            // meaningless while docked — which is what upstream warns about.
+            if (options.x !== undefined || options.width !== undefined) {
+                if (options.x !== undefined) existing.x = options.x;
+                if (options.y !== undefined) existing.y = options.y;
+                if (options.width !== undefined) existing.width = options.width;
+                if (options.height !== undefined) existing.height = options.height;
+                existing.docked = undefined;
+                this.saveHint(id, existing);
+            }
             existing.visible = true;
             existing.zIndex  = ++this.nextZ;
             this.touchOverlayWindows(existing);
@@ -2498,9 +2557,29 @@ export class WindowManager {
     setTitle(id: string, title?: string): boolean {
         const win = this.windows.get(id);
         if (!win) return false;
-        win.title = title && title.length > 0 ? title : id;
+        win.title = title && title.length > 0 ? title : this.defaultTitle(id);
         this.notify();
         return true;
+    }
+
+    /** Mudlet `getUserWindowTitle(name)` — the header text, whether it was set
+     *  or generated. Null when there is no such window. */
+    getTitle(id: string): string | null {
+        return this.windows.get(id)?.title ?? null;
+    }
+
+    /**
+     * The title a window carries when nobody has set one. Mudlet builds it from
+     * the profile and the window's own name ("<profile> - <window>"), which is
+     * what a player sees on a freshly opened user window; mudix used to fall
+     * back to the bare id, so resetting a title lost the profile half of it.
+     * The profile name is injected by ScriptingAPI — the manager has no other
+     * reason to know it.
+     */
+    profileName = '';
+
+    defaultTitle(id: string): string {
+        return this.profileName ? `${this.profileName} - ${id}` : id;
     }
 
     focus(id: string): void { this.bringToFront(id); }

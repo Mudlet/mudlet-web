@@ -50,11 +50,18 @@ describe('label movie APIs (QMovie family)', () => {
         expect(movie!.gif.plays).toBe(Infinity);
     });
 
+    // Every refusal is (nil, message): a bare false could not be told from
+    // setMovieFrame's legitimate "no such frame" answer, and the reason a movie
+    // was rejected is the whole point of asking.
     it('rejects missing labels, missing files, and non-GIF bytes', () => {
-        expect(rt.run(`return setMovie("noSuchLabel", "${GIF_PATH}")`)).toBe(false);
-        expect(rt.run(`return setMovie("movieLabel", "/nope.gif")`)).toBe(false);
+        expect(rt.run(`return (setMovie("noSuchLabel", "${GIF_PATH}"))`)).toBeNull();
+        expect(rt.run(`local _, e = setMovie("noSuchLabel", "${GIF_PATH}") return e`))
+            .toBe("label 'noSuchLabel' does not exist");
+        expect(rt.run(`return (setMovie("movieLabel", "/nope.gif"))`)).toBeNull();
+        expect(rt.run(`local _, e = setMovie("movieLabel", "/nope.gif") return e`))
+            .toBe("no valid movie found at '/nope.gif'");
         setBytesReader(() => new Uint8Array([1, 2, 3]));
-        expect(rt.run(`return setMovie("movieLabel", "/garbage.bin")`)).toBe(false);
+        expect(rt.run(`return (setMovie("movieLabel", "/garbage.bin"))`)).toBeNull();
         setBytesReader((path) => (path === GIF_PATH ? GIF_BYTES : null));
     });
 
@@ -66,7 +73,7 @@ describe('label movie APIs (QMovie family)', () => {
             0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52,
             0, 0, 0, 5, 0, 0, 0, 7, 8, 6, 0, 0, 0,
         ]));
-        expect(rt.run(`return setMovie("movieLabel", "/anim.png")`)).toBe(false);
+        expect(rt.run(`return (setMovie("movieLabel", "/anim.png"))`)).toBeNull();
         setBytesReader((path) => (path === GIF_PATH ? GIF_BYTES : null));
     });
 
@@ -75,10 +82,13 @@ describe('label movie APIs (QMovie family)', () => {
         expect(rt.session.labels.getMovie('movieLabel')!.isPlaying).toBe(false);
         expect(rt.run(`return startMovie("movieLabel")`)).toBe(true);
         expect(rt.session.labels.getMovie('movieLabel')!.isPlaying).toBe(true);
-        // No movie on the label → false (Mudlet warns "no movie found").
+        // A label with no movie is (nil, "no movie found at label ...") —
+        // distinct from a label that isn't there at all.
         rt.run(`createLabel("bareLabel", 0, 0, 10, 10, 0)`);
-        expect(rt.run(`return pauseMovie("bareLabel")`)).toBe(false);
-        expect(rt.run(`return startMovie("bareLabel")`)).toBe(false);
+        expect(rt.run(`return (pauseMovie("bareLabel"))`)).toBeNull();
+        expect(rt.run(`local _, e = pauseMovie("bareLabel") return e`))
+            .toBe("no movie found at label 'bareLabel'");
+        expect(rt.run(`return (startMovie("bareLabel"))`)).toBeNull();
     });
 
     it('setMovieFrame jumps within bounds, false outside', () => {
@@ -98,7 +108,7 @@ describe('label movie APIs (QMovie family)', () => {
         expect(rt.run(`return scaleMovie("movieLabel", false)`)).toBe(true);
         expect(rt.session.labels.getMovie('movieLabel')!.scale)
             .toEqual({ mode: 'fixed', width: 50, height: 50 });
-        expect(rt.run(`return scaleMovie("bareLabel")`)).toBe(false);
+        expect(rt.run(`return (scaleMovie("bareLabel"))`)).toBeNull();
     });
 
     it('echoing to the label replaces the movie (QLabel setText semantics)', () => {

@@ -18,7 +18,8 @@ import {HyperlinkVisibilityController} from '../mud/text/hyperlinkVisibility';
 import type {MspCommand, MxpLink} from '../mud/protocol';
 import {MxpParser, splitMxpResultLines} from '../mud/protocol';
 import {ScriptingAPI, type InstallOutcome} from './ScriptingAPI';
-import type { EngineHost } from './EngineHost';
+import { KNOWN_ITEM_TYPES, type EngineHost } from './EngineHost';
+import { ItemIdSequence } from '../mud/ItemIdSequence';
 import {formatClosedCaption, type MediaCaptionInfo} from '../ui/sound/closedCaption';
 import type {PlayMusicOptions} from '../ui/sound/SoundManager';
 
@@ -314,11 +315,19 @@ export class ScriptingEngine implements EngineHost {
     // we first hit it so Lua callers see consistent numeric identity (and code
     // doing `tbl[id] = x` doesn't break the way a UUID string would).
     private uuidToNumericId = new Map<string, number>();
-    private nextNumericId = 1;
+    /** The profile's single item-id sequence, shared with every engine and with
+     *  the Lua runtime's temporary items — see {@link ItemIdSequence}. */
+    readonly itemIds = new ItemIdSequence();
     private numericIdFor(uuid: string): number {
         let n = this.uuidToNumericId.get(uuid);
-        if (n === undefined) { n = this.nextNumericId++; this.uuidToNumericId.set(uuid, n); }
+        if (n === undefined) { n = this.itemIds.next(); this.uuidToNumericId.set(uuid, n); }
         return n;
+    }
+
+    /** Hand out the next item id. Backs the Lua runtime's temporary items, so a
+     *  temp and a permanent item can never collide on one number. */
+    allocateItemId(): number {
+        return this.itemIds.next();
     }
 
     constructor(
@@ -343,6 +352,15 @@ export class ScriptingEngine implements EngineHost {
         // profile name; set it before start() awaits bootstrapMap() so the
         // boot-time map load can restore the position.
         session.windows.mapStore.profileName = connectionName;
+        // A user window with no title of its own is headed "<profile> - <name>",
+        // the way Mudlet heads it.
+        session.windows.profileName = connectionName;
+        // One id sequence for the whole profile: a temporary item and a
+        // permanent one must never be handed the same number. Only the engines
+        // that hand an id back to Lua draw from it — the alias and trigger
+        // engines key their temp maps privately (see PatternEngine).
+        timerEngine.setIdSequence(this.itemIds);
+        keyEngine.setIdSequence(this.itemIds);
         this.connectionId = connectionId;
         // Bind the host here rather than after the Lua runtime resolves: the
         // runtime is created asynchronously and executes the whole bundled
@@ -1190,8 +1208,19 @@ export class ScriptingEngine implements EngineHost {
 
     /** Mudlet `expandAlias` — run text through the alias pipeline, sending it
      *  to the MUD when nothing consumes it. */
+    /**
+     * Mudlet `expandAlias(text, echo)`. Splits on the profile's command
+     * separator first, exactly as typing the same line would: the separator is
+     * a property of a *command line*, and expandAlias is "run this as though I
+     * had typed it". Without the split, `expandAlias("a;;b")` looked for one
+     * alias named "a;;b" and, finding none, sent the whole string to the game.
+     */
     expandAlias(text: string, echo: boolean): void {
-        if (!this.processInput(text)) this.api.send(text, echo);
+        const sep = this.api.getCommandSeparator();
+        const parts = sep && text.includes(sep) ? text.split(sep) : [text];
+        for (const part of parts) {
+            if (!this.processInput(part)) this.api.send(part, echo);
+        }
     }
 
     /** Mudlet `reconnect()` — redial the last URL, refused during teardown. */
@@ -2046,10 +2075,23 @@ export class ScriptingEngine implements EngineHost {
             return 0;
         }
         const name = String(nameOrId);
-        // A temporary timer's name IS the id tempTimer returned, so a numeric
-        // string has to resolve the same one the number does.
-        if (type === 'timer' && /^\d+$/.test(name) && this.api.timers.hasTemp(Number(name))) return 1;
-        return list.filter(i => i.name === name).length;
+        // A temporary item's NAME is the id it was handed, so a numeric string
+        // has to resolve the same one the number does — and it counts alongside
+        // any permanent item that happens to share that name, which is exactly
+        // the case Alias_spec/KeyBinds_spec pin: kill the temporary and the
+        // count drops back to the permanent one on its own.
+        let temps = 0;
+        if (/^\d+$/.test(name)) {
+            const asId = Number(name);
+            if (this.runtimes.lua?.tempItemExists(asId, type)) temps++;
+            else if ((type === 'key' || type === 'keybind') && this.api.keys.hasTemp(asId)) temps++;
+            else if (type === 'timer' && this.api.timers.hasTemp(asId)) temps++;
+        } else if (type === 'trigger' || type === 'alias') {
+            // tempComplexRegexTrigger takes a name of its own, so a temporary
+            // item can share one with a permanent item and both must be counted.
+            if (this.runtimes.lua?.tempItemIdByName(name, type) != null) temps++;
+        }
+        return temps + list.filter(i => i.name === name).length;
     }
 
     /**
@@ -2106,6 +2148,10 @@ export class ScriptingEngine implements EngineHost {
      * findItems, isAncestorsActive). Type aliases mirror Mudlet: "key" and
      * "keybind" both target keybindings. Unknown types return an empty list.
      */
+    isKnownItemType(type: string): boolean {
+        return KNOWN_ITEM_TYPES.has(type.toLowerCase());
+    }
+
     private nodeListForType(type: string): BaseTreeNode[] {
         const store = useAppStore.getState();
         const id = this.connectionId;
@@ -2158,7 +2204,10 @@ export class ScriptingEngine implements EngineHost {
      * true) toggles exact vs substring; `caseSensitive` (default true) toggles
      * case folding. Empty array when nothing matches or the type is unknown.
      */
-    findItemsByName(name: string, type: string, exact: boolean, caseSensitive: boolean): number[] {
+    findItemsByName(name: string, type: string, exact: boolean, caseSensitive: boolean): number[] | null {
+        // An unrecognised type is a caller mistake, not "nothing matched": the
+        // Lua wrapper turns null into Mudlet's (nil, "invalid item type ...").
+        if (!KNOWN_ITEM_TYPES.has(type.toLowerCase())) return null;
         const list = this.nodeListForType(type);
         const needle = caseSensitive ? name : name.toLowerCase();
         const out: number[] = [];
@@ -2166,6 +2215,17 @@ export class ScriptingEngine implements EngineHost {
             const hay = caseSensitive ? item.name : item.name.toLowerCase();
             const hit = exact ? hay === needle : hay.includes(needle);
             if (hit) out.push(this.numericIdFor(item.id));
+        }
+        // Temporary items aren't in the store tree, and Mudlet's item unit holds
+        // them alongside the rest — a tempAlias/tempTrigger/tempTimer is named
+        // for the id it was handed out under, so searching by that string finds
+        // it. Same registries `existsByName` consults.
+        const asId = /^\d+$/.test(name) ? Number(name) : null;
+        if (asId !== null && (exact || name.length > 0)) {
+            const isTemp = this.runtimes.lua?.tempItemExists(asId, type)
+                || (type === 'timer' && this.api.timers.hasTemp(asId))
+                || ((type === 'key' || type === 'keybind') && this.api.keys.hasTemp(asId));
+            if (isTemp && !out.includes(asId)) out.push(asId);
         }
         return out;
     }
@@ -2180,7 +2240,14 @@ export class ScriptingEngine implements EngineHost {
         const list = this.nodeListForType(type);
         const byUuid = new Map(list.map(i => [i.id, i]));
         const start = list.find(i => this.uuidToNumericId.get(i.id) === id);
-        if (!start) return null;
+        if (!start) {
+            // A script-created temp item is not in the tree and by construction
+            // sits at the root, so every ancestor of it is trivially enabled.
+            const isTemp = this.runtimes.lua?.tempItemExists(id, type)
+                || (type === 'timer' && this.api.timers.hasTemp(id))
+                || ((type === 'key' || type === 'keybind') && this.api.keys.hasTemp(id));
+            return isTemp ? true : null;
+        }
         let node = start.parentId ? byUuid.get(start.parentId) : undefined;
         while (node) {
             if (!node.enabled) return false;
@@ -2232,7 +2299,11 @@ export class ScriptingEngine implements EngineHost {
             timers: tally(timers, this.timerEngine.tempCount),
             keys: tally(keys, this.keyEngine.tempCount),
             scripts: tally(scripts, 0),
-            gifs: { total: 0, active: 0 },
+            // Every label carrying a movie counts; the ones actually running
+            // count as active too, so pauseMovie/startMovie move the second
+            // number. This is Mudlet's own QMovie tally, and the only way a
+            // script can observe that setMovie took.
+            gifs: this.session.labels.movieStats(),
         };
     }
 
@@ -2806,6 +2877,11 @@ export class ScriptingEngine implements EngineHost {
      *  the actual SessionLogger lifecycle. */
     setLoggingToggler(fn: ((enabled: boolean) => boolean) | null): void {
         this.api.setLoggingToggler(fn);
+    }
+
+    /** Where the live logger is writing, so startLogging can report the file. */
+    setLoggingPathProvider(fn: (() => string | null) | null): void {
+        this.api.setLoggingPathProvider(fn);
     }
 
     /** Mudlet's "Show errors in main console" — when on, script errors are also

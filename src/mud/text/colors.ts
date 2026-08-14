@@ -1,7 +1,13 @@
 import xterm256 from "./xterm256";
 
-const DEFAULT_ANSI_DARK = ["#000000", "#bb0000", "#00bb00", "#bbbb00", "#0000bb", "#bb00bb", "#00bbbb", "#bbbbbb"];
-const DEFAULT_ANSI_BRIGHT = ["#555555", "#ff5555", "#55ff55", "#ffff55", "#5555ff", "#ff55ff", "#55ffff", "#ffffff"];
+// Mudlet's own defaults (Host.h's mBlack/mRed/… QColorConstants), which are
+// also xterm's first sixteen. mudix used to ship a brighter set (#bb0000 and
+// friends), and that put the client at odds with itself: `color_table` — the
+// table Lua scripts read, vendored from Mudlet — says ansi_001 is (128,0,0),
+// while the renderer painted (187,0,0) for the same colour. A profile that has
+// customised its palette is unaffected; these are only the untouched slots.
+const DEFAULT_ANSI_DARK = ["#000000", "#800000", "#008000", "#808000", "#000080", "#800080", "#008080", "#c0c0c0"];
+const DEFAULT_ANSI_BRIGHT = ["#808080", "#ff0000", "#00ff00", "#ffff00", "#0000ff", "#ff00ff", "#00ffff", "#ffffff"];
 
 // Pristine copy of the built-in 256-colour table. `colorCodes.xterm` below is a
 // *copy* so OSC 4 palette redefinition (which mutates it) never corrupts the

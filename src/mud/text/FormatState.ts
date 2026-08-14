@@ -419,7 +419,12 @@ export class FormatState {
 function parseSgrCodes(sequence: string): number[] {
     if (!sequence) return [0];
     return sequence
-        .split(";")
+        // `:` separates the sub-parameters of one parameter (ECMA-48 / ITU
+        // T.416): an extended colour can arrive as `38:5:1` as legitimately as
+        // `38;5;1`, and Mudlet's own cecho2ansi emits the colon form — so a
+        // parser that only split on `;` read the whole thing as one number and
+        // dropped the colour. Flattening both is what every terminal does.
+        .split(/[;:]/)
         .map(part => part.trim())
         .filter(part => part.length > 0)
         .map(part => Number.parseInt(part, 10))

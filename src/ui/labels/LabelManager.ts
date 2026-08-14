@@ -385,6 +385,19 @@ export class LabelManager {
         return this.labels.get(name)?.movie ?? null;
     }
 
+    /** Mudlet's `getProfileStats().gifs`: how many labels carry a movie, and
+     *  how many of those are actually running. Deleting a label takes its movie
+     *  out of both counts, since the label is where a movie lives. */
+    movieStats(): { total: number; active: number } {
+        let total = 0, active = 0;
+        for (const lbl of this.labels.values()) {
+            if (!lbl.movie) continue;
+            total++;
+            if (lbl.movie.isPlaying) active++;
+        }
+        return { total, active };
+    }
+
     /** Mudlet scaleMovie — autoscale tracks the label size (CSS 100%);
      *  autoscale=false freezes the scale at the label's current geometry.
      *  False when the label has no movie (matches Mudlet's warning case). */

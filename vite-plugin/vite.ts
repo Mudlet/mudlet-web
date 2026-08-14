@@ -101,6 +101,12 @@ export default function mudix(): PluginOption[] {
         {
             name: 'mudix:config',
             config: () => ({
+                // A Mudlet package archive is a zip, not source. `?url` imports
+                // get away without this (the explicit query short-circuits
+                // import analysis), but `?inline` — which the busted fixtures
+                // use to carry an archive into the VFS — reaches the asset
+                // pipeline and needs the extension declared.
+                assetsInclude: ['**/*.mpackage'],
                 optimizeDeps: {
                     // 'mudix': the library entry carries relative `?url` asset
                     // imports (external in the lib build); the dep optimizer's

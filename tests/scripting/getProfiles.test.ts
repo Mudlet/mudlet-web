@@ -35,11 +35,12 @@ describe('getProfiles', () => {
 
   it('reports host/port and description from the connection record', () => {
     expect(env.run('return getProfiles().Other.host')).toBe('mud.example.com');
-    expect(env.run('return getProfiles().Other.port')).toBe(4000);
+    // Strings, as Mudlet reports them (Miscallaneous_spec asserts the type).
+    expect(env.run('return getProfiles().Other.port')).toBe('4000');
     expect(env.run('return getProfiles().Other.description')).toBe('A second world');
     // ws-mode active profile: host/port parsed from ws://localhost (ws → :80).
     expect(env.run('return getProfiles().Test.host')).toBe('localhost');
-    expect(env.run('return getProfiles().Test.port')).toBe(80);
+    expect(env.run('return getProfiles().Test.port')).toBe('80');
   });
 
   it('marks the active profile loaded and others not (no Web Locks in node)', () => {
@@ -49,7 +50,9 @@ describe('getProfiles', () => {
 
   it('reports connected=false for a disconnected session', () => {
     expect(env.run('return getProfiles().Test.connected')).toBe(false);
-    expect(env.run('return getProfiles().Other.connected')).toBe(false);
+    // Absent, not false, for a profile that isn't open: only a loaded profile
+    // has a connection to report on (Miscallaneous_spec asserts the nil).
+    expect(env.run('return getProfiles().Other.connected')).toBeNull();
   });
 
   it('setProfileInformation writes the connection description that getProfiles reads', () => {

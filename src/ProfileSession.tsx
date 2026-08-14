@@ -92,6 +92,8 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // onPick fires, so requests queue up and resolve strictly one at a time.
     const [fileDialogs, setFileDialogs] = useState<FileDialogRequest[]>([]);
     const [cmdLineSuggestions, setCmdLineSuggestions] = useState<string[]>([]);
+    const [cmdLineBlacklist, setCmdLineBlacklist] = useState<string[]>([]);
+    const [saveCommandHistory, setSaveCommandHistory] = useState(true);
     const [bufferWords, setBufferWords] = useState<BufferWordIndex | null>(null);
     // Mudlet-format replay: Record button state + the active playback's speed
     // (null while nothing is playing — the toolbar controls only render then).
@@ -376,13 +378,16 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // (wired through ScriptingAPI below) can flip the recorder on/off without
     // racing the effect cleanup.
     const loggerRef = useRef<SessionLogger | null>(null);
+    /** True when the live logger exists only because startLogging(true) asked
+     *  for a file log — so startLogging(false) tears it down again. */
+    const scriptOwnedLogger = useRef(false);
     useEffect(() => {
         if (!loggingEnabled) return;
-        const logger = new SessionLogger(session, connection.id, connection.name);
+        const logger = new SessionLogger(session, connection.id, connection.name, vfs);
         logger.start();
         loggerRef.current = logger;
         return () => { loggerRef.current = null; void logger.stop(); };
-    }, [session, connection.id, connection.name, loggingEnabled]);
+    }, [session, connection.id, connection.name, loggingEnabled, vfs]);
 
     // Mudlet `startLogging(state)` — when true, create a logger on demand;
     // when false, stop any active one. Returns true so scripts can chain
@@ -390,25 +395,51 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     useEffect(() => {
         const engine = engineRef.current;
         if (!engine) return;
+        // Mudlet's startLogging governs the TEXT log only. The log-browser
+        // recording above is a separate, profile-level setting — turning the
+        // file log off must not stop a recording the player asked for, and a
+        // profile that records by default must not read as "already logging".
         engine.setLoggingToggler((enabled: boolean) => {
             if (enabled) {
-                if (loggerRef.current) return true;
-                const l = new SessionLogger(session, connection.id, connection.name);
-                l.start();
-                loggerRef.current = l;
-                return true;
+                let live = loggerRef.current;
+                if (!live) {
+                    // Recording is off for this profile, but a script still gets
+                    // its file log — the logger runs purely to feed it.
+                    live = new SessionLogger(session, connection.id, connection.name, vfs);
+                    live.start();
+                    loggerRef.current = live;
+                    scriptOwnedLogger.current = true;
+                }
+                return live.startFileLog() !== null;
             }
             const live = loggerRef.current;
             if (!live) return true;
-            loggerRef.current = null;
-            void live.stop();
+            live.stopFileLog();
+            if (scriptOwnedLogger.current) {
+                scriptOwnedLogger.current = false;
+                loggerRef.current = null;
+                void live.stop();
+            }
             return true;
         });
-        return () => engine.setLoggingToggler(null);
-    }, [session, connection.id, connection.name, engineRef]);
+        // startLogging reports the file it is writing to, which only the live
+        // logger knows.
+        engine.setLoggingPathProvider(() => loggerRef.current?.filePath ?? null);
+        return () => {
+            engine.setLoggingToggler(null);
+            engine.setLoggingPathProvider(null);
+        };
+    }, [session, connection.id, connection.name, engineRef, vfs]);
 
     // Mudlet `appendLog(text)` → append a line to the live logger, and
     // `closeMudlet()` → disconnect + return to the connection screen.
+    //
+    // `session`/`connection`/`vfs` are dependencies because useEngines builds
+    // the engine from exactly those, and rebuilds it when any changes — and it
+    // does change: `vfs` starts null and arrives once the profile filesystem
+    // mounts. Without them this ran once, on a commit where engineRef was often
+    // still null, and never again — leaving appendLog() and closeMudlet() bound
+    // to nothing for the rest of the session.
     useEffect(() => {
         const engine = engineRef.current;
         if (!engine) return;
@@ -418,7 +449,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             engine.setLogAppender(null);
             engine.setCloseProfileCallback(null);
         };
-    }, [engineRef, onCloseProfile]);
+    }, [engineRef, onCloseProfile, session, connection, vfs]);
 
     // Index words from this session's output for argument-word Tab completion in
     // the command bar. Lives for the session's lifetime; one per connection.
@@ -478,6 +509,12 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         });
         const unsub5 = session.events.on('script.cmdlinesuggestions', (items: string[]) => {
             setCmdLineSuggestions(items);
+        });
+        const unsub5b = session.events.on('script.cmdlineblacklist', (items: string[]) => {
+            setCmdLineBlacklist(items);
+        });
+        const unsub5c = session.events.on('script.savecommandhistory', (save: boolean) => {
+            setSaveCommandHistory(save);
         });
         // Mudlet selectCmdLineText — highlight all text in the command bar so the
         // next keystroke overtypes it (same selectAll behaviour as script.setcmd).
@@ -560,7 +597,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         const unsub10 = session.events.on('script.filedialog', (request: FileDialogRequest) => {
             setFileDialogs(prev => [...prev, request]);
         });
-        return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub6(); unsub7(); unsub8(); unsub9(); unsub10(); unsub11(); };
+        return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub5b(); unsub5c(); unsub6(); unsub7(); unsub8(); unsub9(); unsub10(); unsub11(); };
     }, [session]);
 
     // MSSP-advertised secure port, plus the outcome of any TLS handshake.
@@ -1099,6 +1136,8 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                             onSubmit={handleSend}
                             cmdLineMenu={session.cmdLineMenu}
                             suggestions={cmdLineSuggestions}
+                            blacklist={cmdLineBlacklist}
+                            saveHistory={saveCommandHistory}
                             bufferWords={bufferWords}
                         />
                     }

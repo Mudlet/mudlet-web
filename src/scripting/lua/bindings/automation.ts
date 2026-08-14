@@ -181,6 +181,9 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
         api.ancestors(Number(id), String(type ?? '')) ?? false);
     lua.global.set('__findItems', (name: unknown, type: unknown, exact?: unknown, cs?: unknown) =>
         api.findItems(String(name ?? ''), String(type ?? ''), exact !== false, cs !== false));
+    // Backs the "invalid item type" refusals the tree-walking APIs share, so
+    // each doesn't have to keep its own copy of the family list.
+    lua.global.set('__isKnownItemType', (type: unknown) => api.isKnownItemType(String(type ?? '')));
     lua.global.set('__isAncestorsActive', (id: unknown, type: unknown) => {
         const r = api.isAncestorsActive(Number(id), String(type ?? ''));
         return r === null ? null : r;

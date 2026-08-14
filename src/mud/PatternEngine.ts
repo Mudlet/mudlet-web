@@ -15,7 +15,12 @@ type PatternItem = {
 
 export class PatternEngine<T extends PatternItem> {
     protected readonly temp = new Map<number, { pattern: RegExp; fn: TempFn }>();
-    protected nextId = 1;
+    /** Key for this engine's own temp map. NOT an item id: addTemp hands the
+     *  caller an unsubscribe function, and the id Lua sees is allocated by the
+     *  runtime from the profile's shared sequence. Drawing from that sequence
+     *  here would burn a number per temp item and put permAlias/tempAlias out
+     *  of step (Alias_spec pins the run of ids). */
+    protected nextInternalId = 1;
     protected permCompiled: Array<{ item: T; re: RegExp }> = [];
 
     /** Number of live session-scoped temp items (Mudlet `getProfileStats` temp count). */
@@ -25,7 +30,7 @@ export class PatternEngine<T extends PatternItem> {
 
     addTemp(pattern: string | RegExp, fn: TempFn): () => void {
         const re = typeof pattern === 'string' ? new RegExp(pattern) : pattern;
-        const id = this.nextId++;
+        const id = this.nextInternalId++;
         this.temp.set(id, { pattern: re, fn });
         return () => { this.temp.delete(id); };
     }

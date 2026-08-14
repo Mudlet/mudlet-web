@@ -61,16 +61,32 @@ describe('Mudlet 4.21 API additions', () => {
       expect(env.run('local ok, e = pcall(spawn, function() end, "ls") return e'))
         .toContain("Failed to start process 'ls'");
     });
-    it('spellCheckWord treats every word as correct', () => {
-      expect(env.run('return spellCheckWord("qwerty")')).toBe(true);
+    // The dictionary API is only half a stub now: the *system* dictionary needs
+    // Hunspell and stays unavailable, but the per-profile user dictionary is
+    // just a word list, so it is real (see Bridge.lua's "User spell-check
+    // dictionary"). A desktop Mudlet with no language files installed answers
+    // the system half exactly this way, so callers already handle it.
+    it('spellCheckWord says it has no system dictionary', () => {
+      expect(env.run('return (spellCheckWord("qwerty"))')).toBeNull();
+      expect(env.run('local _, e = spellCheckWord("qwerty") return e'))
+        .toContain('no main dictionaries found');
     });
-    it('spellSuggestWord / getDictionaryWordList return empty tables', () => {
-      expect(env.run('return #spellSuggestWord("qwerty")')).toBe(0);
+    it('spellSuggestWord says the same; getDictionaryWordList reads the profile', () => {
+      expect(env.run('return (spellSuggestWord("qwerty"))')).toBeNull();
       expect(env.run('return type(getDictionaryWordList())')).toBe('table');
     });
-    it('IRC getters return the documented defaults', () => {
-      expect(env.run('return type(getIrcChannels())')).toBe('table');
-      expect(env.run('return getIrcNick()')).toBe('');
+    // The IRC *client* is what mudix hasn't got; the settings behind it are
+    // ordinary profile data and round-trip for real, so the getters answer with
+    // Mudlet's own defaults rather than with nothing.
+    it('IRC getters answer with the configured settings', () => {
+      expect(env.run('return getIrcNick()')).toBe('Mudlet');
+      expect(env.run('return (getIrcServer())')).toBe('irc.libera.chat');
+      expect(env.run('return select(2, getIrcServer())')).toBe(6667);
+      expect(env.run('return table.concat(getIrcChannels(), ",")')).toBe('#mudlet');
+      expect(env.run('setIrcNick("Busted") return getIrcNick()')).toBe('Busted');
+      // Only connecting is unavailable, and it says so.
+      expect(env.run('return (getIrcConnectedHost())')).toBe(false);
+      expect(env.run('return select(2, getIrcConnectedHost())')).toBe('no client active');
     });
   });
 

@@ -947,12 +947,14 @@ describe('Mudlet-API batch — Lua bindings', () => {
     expect(env.run('return (resetProfileIcon())')).toBe(true);
   });
 
-  it('setProfileIcon fails (false, errMsg) with no path or no filesystem', () => {
-    // No path → validation error.
-    expect(env.run('local ok = setProfileIcon(""); return ok')).toBe(false);
-    expect(env.run('local _, err = setProfileIcon(""); return err')).toContain('no icon path');
+  it('setProfileIcon fails (nil, errMsg) with no path or no filesystem', () => {
+    // Blank path → refused before the filesystem is consulted, in Mudlet's
+    // words (Miscallaneous_spec pins the message).
+    expect(env.run('local ok = setProfileIcon(""); return ok')).toBeNull();
+    expect(env.run('local _, err = setProfileIcon(""); return err'))
+      .toBe('a blank string is not a valid icon file path');
     // A path but no VFS (the test runtime is built with vfs=null).
-    expect(env.run('local ok = setProfileIcon("hero.png"); return ok')).toBe(false);
+    expect(env.run('local ok = setProfileIcon("hero.png"); return ok')).toBeNull();
     expect(env.run('local _, err = setProfileIcon("hero.png"); return err')).toContain('no profile filesystem');
   });
 
@@ -960,10 +962,17 @@ describe('Mudlet-API batch — Lua bindings', () => {
     // Inject a fake VFS so the binding's readBinaryFile path runs without IDB.
     const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47]); // "‰PNG" signature bytes
     (env.rt as unknown as { vfs: unknown }).vfs = {
+      profilePath: '/profiles/test',
+      // "missing.png" is absent; everything else reads back the PNG bytes.
+      exists: (p: string) => p !== 'missing.png',
       readBinaryFile: (p: string) => {
         if (p === 'missing.png') throw new Error('ENOENT');
         return png;
       },
+      // setProfileIcon also drops a copy at <profile>/profileicon for a linked
+      // Mudlet folder; the test only cares that it doesn't throw.
+      writeBinaryFile: () => {},
+      deleteFile: () => {},
     };
     expect(env.run('return (setProfileIcon("hero.png"))')).toBe(true);
     expect(env.run('return select(2, setProfileIcon("hero.png"))')).toBe('hero.png');
@@ -971,9 +980,9 @@ describe('Mudlet-API batch — Lua bindings', () => {
     // Extension drives the MIME type.
     env.run('setProfileIcon("hero.svg")');
     expect(env.run('return getProfileIcon()')).toContain('data:image/svg+xml;base64,');
-    // Unreadable file → (false, errMsg); the previous icon is untouched.
-    expect(env.run('local ok = setProfileIcon("missing.png"); return ok')).toBe(false);
-    expect(env.run('local _, err = setProfileIcon("missing.png"); return err')).toContain('cannot read');
+    // Missing file → (nil, errMsg); the previous icon is untouched.
+    expect(env.run('local ok = setProfileIcon("missing.png"); return ok')).toBeNull();
+    expect(env.run('local _, err = setProfileIcon("missing.png"); return err')).toContain("doesn't exist");
     // resetProfileIcon clears back to empty.
     expect(env.run('return (resetProfileIcon())')).toBe(true);
     expect(env.run('return getProfileIcon()')).toBe('');
@@ -1023,7 +1032,14 @@ describe('Mudlet-API batch — Lua bindings', () => {
 
   it('ancestors / isAncestorsActive report the documented miss shape', () => {
     expect(env.run('return (ancestors(123, "trigger"))')).toBe(false);
-    expect(env.run('return (isAncestorsActive(123, "trigger"))')).toBe(false);
+    // nil, not false: for isAncestorsActive false is a real answer ("an
+    // ancestor is disabled"), so the miss has to look different from it.
+    expect(env.run('return (isAncestorsActive(123, "trigger"))')).toBeNull();
+    expect(env.run('local _, err = isAncestorsActive(123, "trigger"); return err'))
+      .toContain('does not exist');
+    // A type there is no family for is told apart from a plain miss.
+    expect(env.run('local _, err = isAncestorsActive(1, "sandwich"); return err'))
+      .toContain("invalid item type 'sandwich' given");
   });
 
   it('setModuleInfo / setPackageInfo are callable (no-op without an install)', () => {
@@ -1219,8 +1235,10 @@ describe('misc forwarders — appendLog / getProfileTabNumber / getProfiles / io
     expect(env.run('return getProfiles().Test.loaded')).toBe(true);
   });
 
-  it('appendLog returns false without an active logger', () => {
-    expect(env.run('return (appendLog("a manual line"))')).toBe(false);
+  it('appendLog reports nothing at all, logger or not', () => {
+    // Mudlet's appendLog returns no values: whether the text reached a log is
+    // not something the caller is told (Miscallaneous_spec asserts the arity).
+    expect(env.run('return select("#", appendLog("a manual line"))')).toBe(0);
   });
 
   it('ioprint / clearVisitedLinks / closeMudlet are callable without throwing', () => {
@@ -1230,13 +1248,17 @@ describe('misc forwarders — appendLog / getProfileTabNumber / getProfiles / io
     expect(() => env.run('closeMudlet()')).not.toThrow();
   });
 
-  it('loadVideoFile is fire-and-forget: accepts URL/VFS/table forms, false on empty', () => {
+  it('loadVideoFile is fire-and-forget and takes the table form only', () => {
     // preload is async, so the binding returns true once the request is
-    // accepted (mirrors playVideoFile); an empty name is rejected.
-    expect(env.run('return (loadVideoFile("https://example.org/clip.mp4"))')).toBe(true);
-    expect(env.run('return (loadVideoFile("clip.mp4"))')).toBe(true);
+    // accepted (mirrors playVideoFile). Unlike its sound and music siblings the
+    // video load has no positional form — a bare filename is refused rather
+    // than quietly preloading nothing (Media_spec pins the message).
     expect(env.run('return (loadVideoFile({name = "https://example.org/x.webm"}))')).toBe(true);
-    expect(env.run('return (loadVideoFile(""))')).toBe(false);
+    expect(env.run('return (loadVideoFile({name = "clip.mp4"}))')).toBe(true);
+    expect(env.run('local ok, e = pcall(loadVideoFile, "clip.mp4") return e'))
+      .toContain('loadVideoFile: needs to be a table');
+    expect(env.run('local ok, e = pcall(loadVideoFile, {}) return e'))
+      .toContain('loadVideoFile: missing name');
   });
 });
 

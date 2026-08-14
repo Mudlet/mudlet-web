@@ -80,12 +80,29 @@ export function scanEscape(text: string, start: number): EscapeScan {
         return { kind: "incomplete", end: n };
     }
 
-    // Short escape — ESC <intermediates 0x20-0x2F> <final 0x30-0x7E>.
-    // Covers charset designation (ESC ( B), RIS (ESC c), keypad modes, etc.
-    let j = start + 1;
-    while (j < n && text.charCodeAt(j) >= 0x20 && text.charCodeAt(j) <= 0x2f) j++;
-    if (j >= n) return { kind: "incomplete", end: n };
-    return { kind: "esc", end: j + 1 };
+    // ISO 2022 character set designation — ESC ( ) * + <designator 0x30-0x7E>.
+    // The byte after the introducer names the set and is consumed with it; but
+    // ONLY a byte in that range can name one, so anything else (an ESC starting
+    // a fresh sequence, a multibyte lead byte, a newline) leaves the escape
+    // behind as a stray and stands as text in its own right.
+    if (next === "(" || next === ")" || next === "*" || next === "+") {
+        const designator = text.charCodeAt(start + 2);
+        if (Number.isNaN(designator)) return { kind: "incomplete", end: n };
+        if (designator >= 0x30 && designator <= 0x7e) return { kind: "esc", end: start + 3 };
+        return { kind: "esc", end: start + 2 };
+    }
+
+    // The complete two-byte escapes games actually send: DECSC, DECRC, RIS and
+    // a stray ST. Only these — any other byte after an ESC is text, and
+    // printing it is no worse than dropping the ESC alone, whereas eating it
+    // loses real output (and would orphan the continuation bytes of a multibyte
+    // character whose lead byte followed the escape).
+    if (next === "7" || next === "8" || next === "c" || next === "\\") {
+        return { kind: "esc", end: start + 2 };
+    }
+
+    // A stray ESC: consumed on its own, leaving whatever followed as text.
+    return { kind: "esc", end: start + 1 };
 }
 
 // ── OSC 8 hyperlink protocol ──────────────────────────────────────────────
