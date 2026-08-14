@@ -5,7 +5,7 @@ import {Lua, LuaReturn, LUA_REGISTRYINDEX, type LuaThread} from 'wasmoon-lua5.1'
 // all Lua scripting. The `?url` import makes Vite copy it into the bundle and
 // hand back a base-aware same-origin URL we pass as `customWasmUri` below.
 import luaWasmUrl from 'wasmoon-lua5.1/dist/liblua5.1.wasm?url';
-import {unzip, strFromU8} from 'fflate';
+import {unzipSync, strFromU8} from 'fflate';
 import type {IScriptingRuntime, CaptureSpan, LuaGlobalEntry} from '../IScriptingRuntime';
 import type {ScriptingAPI} from '../ScriptingAPI';
 import type {ProfileVFS} from '../vfs/ProfileVFS';
@@ -1381,8 +1381,14 @@ export class LuaRuntime implements IScriptingRuntime {
         // sysUnzipError(zipPath, destDir) on failure. fflate's unzip uses Web
         // Workers internally on platforms that support them, falling back to
         // a chunked main-thread decode otherwise.
+        // Answers true and nothing else: the unzip has not happened yet when it
+        // returns, so there is nothing to report but "started". Mudlet pushes the
+        // same true unconditionally (a failure can only be told through the
+        // event), and a script that branches on the return needs it — this used
+        // to return nothing at all, which Lua reads as nil.
         this.lua.global.set('unzipAsync', (zipPath: string, destDir: string) => {
             this.runUnzipAsync(String(zipPath ?? ''), String(destDir ?? ''));
+            return true;
         });
 
         // ── File watches ──────────────────────────────────────────────────────
@@ -2224,6 +2230,10 @@ end`);
         this.lua.global.set('__mudix_pump', (deadlineMs: unknown) => {
             const deadline = clockOrigin + Number(deadlineMs);
             this.api.timers.pumpDue();
+            // Standing in for the event loop means standing in for all of it:
+            // a replay schedules its chunks on plain setTimeouts, which the
+            // blocked loop will never deliver.
+            this.api.pumpReplay();
             if (Date.now() >= deadline) return true;
             // Let real time advance a little so pending timers come due, without
             // overshooting the caller's deadline.
@@ -2444,14 +2454,29 @@ end`);
      */
     private notifyVfsPathChange(changedPath: string): void {
         if (this.watchedPaths.size === 0) return;
-        if (this.watchedPaths.has(changedPath)) {
-            this.emitEvent('sysPathChanged', [changedPath]);
-        }
-        for (const watched of this.watchedPaths) {
-            if (watched !== changedPath && changedPath.startsWith(watched + '/')) {
-                this.emitEvent('sysPathChanged', [watched]);
+        // Deferred, because a watch reports a change it *noticed*, not one it
+        // took part in. Mudlet's QFileSystemWatcher learns about a write after
+        // the writer is done with it, so a script can write a file and only then
+        // start waiting for the notice — which is exactly what the file-watch
+        // spec does, and what any handler that reacts by re-reading the file
+        // needs. Raising it inline from the io.close binding delivered it before
+        // the caller's next statement, so no listener registered afterwards
+        // could ever see it, and any that ran would be re-entering the Lua state
+        // mid-call.
+        //
+        // The watch set is read when the timer fires, not now, so a watch
+        // removed in between correctly reports nothing.
+        this.deferToTimerQueue(() => {
+            if (this.destroyed) return;
+            if (this.watchedPaths.has(changedPath)) {
+                this.emitEvent('sysPathChanged', [changedPath]);
             }
-        }
+            for (const watched of this.watchedPaths) {
+                if (watched !== changedPath && changedPath.startsWith(watched + '/')) {
+                    this.emitEvent('sysPathChanged', [watched]);
+                }
+            }
+        });
     }
 
     private setupVFS(vfs: ProfileVFS | null, builtins = new Map<string, string>()): void {
@@ -3180,23 +3205,50 @@ end`);
      */
     private runUnzipAsync(zipPath: string, destDir: string): void {
         const vfs = this.vfs;
+        // Both events carry the extract location with a trailing separator,
+        // whether or not the caller gave one — Mudlet appends it before the
+        // unzip runs, so every path it reports is the one it actually used.
+        const reported = destDir.endsWith('/') ? destDir : `${destDir}/`;
         const fail = (msg: string) => {
             console.warn('[unzipAsync]', msg);
-            this.emitEvent('sysUnzipError', [zipPath, destDir]);
+            this.emitEvent('sysUnzipError', [zipPath, reported]);
         };
         if (!vfs)         return fail('no profile VFS available');
         if (!zipPath)     return fail('zipPath is required');
         if (!destDir)     return fail('destDir is required');
-        if (!vfs.exists(zipPath)) return fail(`zip not found: ${zipPath}`);
 
+        // A zip may live in the read-only /lua/ namespace rather than the
+        // profile — that is where the spec corpus keeps its fixture archives,
+        // and Lua's own io.open sees both.
         let buf: Uint8Array;
-        try { buf = vfs.readBinaryFile(zipPath); }
-        catch (err) { return fail(`read failed: ${err instanceof Error ? err.message : String(err)}`); }
+        const builtin = this.readBuiltinBytes(zipPath);
+        if (builtin) {
+            buf = builtin;
+        } else {
+            if (!vfs.exists(zipPath)) return fail(`zip not found: ${zipPath}`);
+            try { buf = vfs.readBinaryFile(zipPath); }
+            catch (err) { return fail(`read failed: ${err instanceof Error ? err.message : String(err)}`); }
+        }
 
         const TEXT_EXT = /\.(xml|lua|txt|json|md|css|html|htm|js|csv|ini|cfg|conf|yml|yaml)$/i;
-        unzip(buf, (err, entries) => {
+        // Decoded synchronously, then reported on the timer queue.
+        //
+        // fflate's async unzip hands the work to a Web Worker and delivers the
+        // result through the main thread's event loop — which a script blocked
+        // in waitForEvent/pumpEvents is not running, so the completion could
+        // never arrive and the events this function exists to raise were
+        // unreachable from the very code waiting on them. The archives involved
+        // are packages, which installPackageFromBytes already decodes
+        // synchronously, so this costs nothing that was not already being paid.
+        //
+        // The *events* still arrive later, which is the part of "async" a caller
+        // actually observes: emitting from inside the binding Lua is executing
+        // would re-enter the Lua state mid-call and crash wasmoon.
+        this.deferToTimerQueue(() => {
             if (this.destroyed) return;
-            if (err) return fail(`unzip failed: ${err.message}`);
+            let entries: Record<string, Uint8Array>;
+            try { entries = unzipSync(buf); }
+            catch (err) { return fail(`unzip failed: ${err instanceof Error ? err.message : String(err)}`); }
             try {
                 if (!vfs.exists(destDir)) vfs.mkdir(destDir);
                 for (const [name, data] of Object.entries(entries)) {
@@ -3211,11 +3263,18 @@ end`);
                     else                     vfs.writeBinaryFile(dest, data);
                 }
                 void vfs.flush();
-                this.emitEvent('sysUnzipDone', [zipPath, destDir]);
+                this.emitEvent('sysUnzipDone', [zipPath, reported]);
             } catch (e) {
                 fail(`extract failed: ${e instanceof Error ? e.message : String(e)}`);
             }
         });
+    }
+
+    /** Run `fn` off the current call stack, on the queue a blocked script still
+     *  pumps. See the note in HttpService.emitLater: a microtask would never be
+     *  reached by a script sitting in waitForEvent. */
+    private deferToTimerQueue(fn: () => void): void {
+        this.api.timers.addTemp(0, fn);
     }
 
     setCurrentLine(line: string, _isPrompt: boolean): void {

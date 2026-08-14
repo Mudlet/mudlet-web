@@ -362,6 +362,11 @@ export class MudSession {
     get isReplayRecording(): boolean { return this.replayRecorder !== null; }
     get isReplaying(): boolean { return this.replayPlayer !== null; }
 
+    /** Deliver any replay chunk that has come due. See ReplayPlayer.pumpDue —
+     *  a script standing in for the event loop has to drive this queue too, or a
+     *  replay it started never advances past its first chunk. */
+    pumpReplay(): number { return this.replayPlayer?.pumpDue() ?? 0; }
+
     /** Set the playback speed divisor, clamped to Mudlet's 1..1024 range.
      *  Takes effect from the next chunk of an active replay. */
     setReplaySpeed(speed: number): void {

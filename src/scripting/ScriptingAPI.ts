@@ -888,6 +888,12 @@ export class ScriptingAPI {
         return this.session.loadReplayData(bytes);
     }
 
+    /** Deliver any replay chunk that has come due. Only the busted pump calls
+     *  this — see MudSession.pumpReplay. */
+    pumpReplay(): number {
+        return this.session.pumpReplay();
+    }
+
     /** Mudlet `receiveMSP(text)`. Parses an MSP payload (`!!SOUND(...)` /
      *  `!!MUSIC(...)` tags) as if the server had sent it and dispatches the
      *  resulting sound/music commands through the normal `msp` event path

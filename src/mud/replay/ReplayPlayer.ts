@@ -42,26 +42,67 @@ export class ReplayPlayer {
         }
     }
 
+    /**
+     * Deliver every chunk that has come due, without waiting for its setTimeout.
+     *
+     * The counterpart of TimerEngine.pumpDue, and there for the same caller: a
+     * script blocked in waitForEvent/pumpEvents is not running the event loop,
+     * so the pending timeout below can never land and a replay started from such
+     * a script would sit at chunk zero forever. Mudlet has no equivalent problem
+     * — its nested QEventLoop keeps driving the replay timer along with
+     * everything else — so this is what standing in for that loop costs.
+     *
+     * Returns the number of chunks delivered.
+     */
+    pumpDue(now = Date.now()): number {
+        let fired = 0;
+        // A loop, not a single step: pumping is called at intervals far longer
+        // than the gap between recorded chunks, so several are typically due.
+        while (!this.finished && this.dueAt !== null && now >= this.dueAt) {
+            if (this.timer !== null) {
+                clearTimeout(this.timer);
+                this.timer = null;
+            }
+            this.deliverPending();
+            fired++;
+        }
+        return fired;
+    }
+
+    /** When the pending chunk is due, in epoch ms; null when none is scheduled. */
+    private dueAt: number | null = null;
+
+    /** Feed the chunk at `index` and schedule the one after it. */
+    private deliverPending(): void {
+        const chunk = this.chunks[this.index];
+        this.dueAt = null;
+        if (!chunk) return;
+        this.index++;
+        // A parsing hiccup on one chunk shouldn't kill the rest of the
+        // replay — the live socket path has the same isolation.
+        try {
+            this.callbacks.feed(replayBytesToLatin1(chunk.data));
+        } catch (error) {
+            console.error('Error processing replay chunk:', error);
+        }
+        this.scheduleNext();
+    }
+
     private scheduleNext(): void {
         if (this.finished) return;
         if (this.index >= this.chunks.length) {
             this.finished = true;
+            this.dueAt = null;
             this.callbacks.onDone();
             return;
         }
         const chunk = this.chunks[this.index];
         const speed = Math.max(1, this.callbacks.speed());
+        const delay = chunk.offsetMs / speed;
+        this.dueAt = Date.now() + delay;
         this.timer = setTimeout(() => {
             this.timer = null;
-            this.index++;
-            // A parsing hiccup on one chunk shouldn't kill the rest of the
-            // replay — the live socket path has the same isolation.
-            try {
-                this.callbacks.feed(replayBytesToLatin1(chunk.data));
-            } catch (error) {
-                console.error('Error processing replay chunk:', error);
-            }
-            this.scheduleNext();
-        }, chunk.offsetMs / speed);
+            this.deliverPending();
+        }, delay);
     }
 }
