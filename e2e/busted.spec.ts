@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { ALL_SPECS, loadManifest, specResults } from './bustedHarness';
+import { KNOWN_DIVERGENCES, knownDivergence } from './knownDivergences';
 
 // Mudlet's busted *_spec.lua suite, run against the real mudix app in a browser.
 // This is the single path for the whole corpus: because the live app wires the
@@ -29,6 +30,13 @@ for (const spec of ALL_SPECS) {
             const title = occ === 1 ? name : `${name} (#${occ})`;
 
             test(title, async ({ page }) => {
+                // An assertion mudix deliberately does not satisfy is marked
+                // expected-to-fail rather than skipped, so the day it starts
+                // passing is a red run telling us to delete the entry — see
+                // knownDivergences.ts.
+                const divergence = knownDivergence(spec, name);
+                if (divergence) test.fail(true, `known divergence: ${divergence.reason}`);
+
                 const r = await specResults(page, spec);
                 const t = r.tests.filter(x => x.name === name)[occ - 1];
                 expect(
@@ -63,4 +71,27 @@ test.describe('manifest drift guard', () => {
             expect(r.errors, `${spec}: ${r.errors} error(s) outside any it()`).toBe(0);
         });
     }
+});
+
+// ── Divergence guard: every recorded divergence must still name a live it() ──
+// Without this, an it() renamed or dropped upstream would leave a dead entry in
+// knownDivergences.ts — and dead entries are worse than none: the next person
+// reads the list as the complete account of where mudix differs from Mudlet, and
+// a stale line makes that account wrong. Checked against the manifest rather than
+// a live run so it costs nothing (the manifest is the committed it() set, and the
+// drift guard above already proves it matches reality).
+test('known divergences all name a live spec', () => {
+    const manifest = loadManifest();
+    const dead: string[] = [];
+    for (const [spec, divergences] of Object.entries(KNOWN_DIVERGENCES)) {
+        const names = new Set(manifest[spec] ?? []);
+        for (const d of divergences) {
+            if (!names.has(d.name)) dead.push(`${spec}: "${d.name}"`);
+        }
+    }
+    expect(
+        dead,
+        'knownDivergences.ts names it()s that no longer exist — the spec was renamed or dropped '
+        + 'upstream, so the entry is now hiding nothing and should be removed:\n  ' + dead.join('\n  '),
+    ).toEqual([]);
 });

@@ -1,6 +1,7 @@
 import { test } from '@playwright/test';
 import fs from 'node:fs';
 import { ALL_SPECS, seedProfile, reopen, runSpec, type BustedFailure } from './bustedHarness';
+import { KNOWN_DIVERGENCES, knownDivergence } from './knownDivergences';
 
 // Triage runner for the busted corpus:  `yarn busted:failures [Other,Media]`
 //
@@ -54,13 +55,25 @@ test('report busted failures', async ({ page }) => {
         }
     }
 
+    // Assertions mudix deliberately does not satisfy are separated out rather
+    // than printed as failures: this runner exists to show what is left to fix,
+    // and three permanent entries at the top of every run train the eye to skim
+    // past exactly the section that matters. They are still listed, at the end,
+    // because "we chose this" has to stay visible to be re-litigated.
+    const isDivergence = (f: { spec: string; name: string }) => !!knownDivergence(f.spec, f.name);
+    const real = all.filter(f => !isDivergence(f));
+    const diverged = all.filter(isDivergence);
+
     const lines: string[] = [];
     for (const { spec, passed, failed, errors, pending } of perSpec) {
-        if (!failed && !errors) continue;
-        lines.push(`\n━━ ${spec}_spec — ${failed} failed, ${passed} passed`
+        const specFailures = real.filter(x => x.spec === spec);
+        const specDiverged = failed - specFailures.length;
+        if (!specFailures.length && !errors) continue;
+        lines.push(`\n━━ ${spec}_spec — ${specFailures.length} failed, ${passed} passed`
             + `${errors ? `, ${errors} error(s) outside any it()` : ''}`
-            + `${pending ? `, ${pending} pending` : ''}`);
-        for (const f of all.filter(x => x.spec === spec)) {
+            + `${pending ? `, ${pending} pending` : ''}`
+            + `${specDiverged ? `, ${specDiverged} known divergence(s)` : ''}`);
+        for (const f of specFailures) {
             lines.push(`\n  ✗ ${f.name}`);
             // The message is the whole point of this runner; keep it intact
             // rather than truncating, but drop busted's blank padding lines.
@@ -70,9 +83,23 @@ test('report busted failures', async ({ page }) => {
     const totals = perSpec.reduce((a, s) => ({
         passed: a.passed + s.passed, failed: a.failed + s.failed, errors: a.errors + s.errors,
     }), { passed: 0, failed: 0, errors: 0 });
-    lines.push(`\n━━ TOTAL: ${totals.failed} failed, ${totals.passed} passed`
+    lines.push(`\n━━ TOTAL: ${real.length} failed, ${totals.passed} passed`
         + `${totals.errors ? `, ${totals.errors} error(s) outside any it()` : ''}`
+        + `${diverged.length ? `, ${diverged.length} known divergence(s)` : ''}`
         + ` across ${specs.length} spec(s)`);
+
+    if (diverged.length) {
+        lines.push('\n━━ Known divergences (deliberate — see e2e/knownDivergences.ts)');
+        for (const f of diverged) lines.push(`  · ${f.spec}: ${f.name}`);
+    }
+    // Sanity: every divergence we recorded should be among the failures, or the
+    // entry has gone stale and is masking nothing. busted.spec.ts turns that into
+    // a red run; here it is a line in the report, since this runner is advisory.
+    const recorded = Object.values(KNOWN_DIVERGENCES).reduce((n, d) => n + d.length, 0);
+    if (!filter.length && diverged.length < recorded) {
+        lines.push(`\n  ! ${recorded - diverged.length} recorded divergence(s) did not fail — `
+            + 'they may now pass; check e2e/knownDivergences.ts');
+    }
 
     // eslint-disable-next-line no-console
     console.log(lines.join('\n'));
