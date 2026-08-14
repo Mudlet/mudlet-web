@@ -2290,10 +2290,17 @@ end
 local function installOutcome(r)
     if type(r) == 'table' then
         if r.ok then return true end
-        return false, r.error
+        -- nil, not false: Mudlet refuses through warnArgumentValue, which pushes
+        -- nil + the message. Both are falsy so an `if installPackage(p) then`
+        -- caller could not tell, but the documented contract is nil and scripts
+        -- do test for it — Package_spec probes `installPackage("") == nil` to
+        -- find out whether a profile save is in flight, and read `false` as
+        -- "still saving" forever.
+        return nil, r.error
     end
-    -- Defensive: an unexpected scalar still resolves to a boolean.
-    return r and true or false
+    -- Defensive: an unexpected scalar still resolves to the same shape.
+    if r then return true end
+    return nil
 end
 
 function installPackage(path)

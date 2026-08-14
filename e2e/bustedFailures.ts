@@ -69,7 +69,10 @@ test('report busted failures', async ({ page }) => {
     const lines: string[] = [];
     for (const { spec, passed, failed, errors, pending } of perSpec) {
         const specFailures = real.filter(x => x.spec === spec);
-        const specDiverged = failed - specFailures.length;
+        // Counted, not derived by subtracting from `failed`: `all` also holds the
+        // errors raised outside any it(), which that count does not include, so
+        // the subtraction went negative for a spec that had one.
+        const specDiverged = diverged.filter(x => x.spec === spec).length;
         if (!specFailures.length && !errors) continue;
         lines.push(`\n━━ ${spec}_spec — ${specFailures.length} failed, ${passed} passed`
             + `${errors ? `, ${errors} error(s) outside any it()` : ''}`

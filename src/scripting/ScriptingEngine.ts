@@ -1452,13 +1452,18 @@ export class ScriptingEngine implements EngineHost {
             this.api.printError(`[installPackage] ${error}`);
             return { ok: false, error };
         }
-        if (!vfs.exists(path)) {
+        // A path may name the read-only /lua/ namespace rather than the profile:
+        // that is where the spec corpus keeps its fixture packages, and Lua's own
+        // io.open sees both. Checked first so a builtin cannot be shadowed by a
+        // profile file of the same name.
+        const builtin = this.runtimes.lua?.readBuiltinBytes?.(path) ?? null;
+        if (!builtin && !vfs.exists(path)) {
             const error = `file not found: ${path}`;
             this.api.printError(`[installPackage] ${error}`);
             return { ok: false, error };
         }
         try {
-            const buf = vfs.readBinaryFile(path);
+            const buf = builtin ?? vfs.readBinaryFile(path);
             const filename = path.split('/').pop() || path;
             const { manifest, data } = installPackageFromBytes(filename, buf, vfs, { sourcePath: path });
             useAppStore.getState().installPackage(this.connectionId, manifest, data);

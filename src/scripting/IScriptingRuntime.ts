@@ -58,6 +58,11 @@ export interface IScriptingRuntime {
         fullMatchSpan?: CaptureSpan,
     ): void;
     destroy(): void;
+    /** Bytes behind a path in the runtime's read-only bundled namespace, or null
+     *  when it has none / the path is not one of them. Optional because it is a
+     *  property of how a runtime ships its own library, not of running scripts:
+     *  the Lua runtime serves `/lua/...` this way. */
+    readBuiltinBytes?(path: string): Uint8Array | null;
     setCurrentLine(line: string, isPrompt: boolean): void;
     /**
      * Mirror the last command-bar input into the Lua `command` global, matching

@@ -387,6 +387,27 @@ export class LuaRuntime implements IScriptingRuntime {
     // selectString on currentMatches[0].
     private currentFullMatchSpan: CaptureSpan | null = null;
     private _denyCurrentSend = false;
+
+    /** The read-only `/lua/` namespace: bundled Mudlet Lua, and in busted builds
+     *  the spec corpus and its fixtures. Values are Latin-1 byte-strings. */
+    private builtinFiles = new Map<string, string>();
+
+    /**
+     * Bytes behind a built-in `/lua/` path, or null when the path is not one.
+     *
+     * Lua's own `io.open` reaches these through the VFS shim, but a caller
+     * working in bytes does not: the package installer is handed a path and
+     * reads it through the *profile* VFS, which knows nothing about this
+     * namespace. That is why installing one of the corpus's fixture packages
+     * reported "file not found" for a file Lua could open perfectly well.
+     */
+    readBuiltinBytes(path: string): Uint8Array | null {
+        const body = this.builtinFiles.get(path);
+        if (body === undefined) return null;
+        const bytes = new Uint8Array(body.length);
+        for (let i = 0; i < body.length; i++) bytes[i] = body.charCodeAt(i) & 0xff;
+        return bytes;
+    }
     private destroyed = false;
     // Mudlet addFileWatch / removeFileWatch — set of resolved absolute VFS
     // paths. Mutations through the __vfs_* hooks below call
@@ -1827,23 +1848,34 @@ export class LuaRuntime implements IScriptingRuntime {
         // Built-in Lua files served read-only via the VFS at /lua/<relative-path>.
         // Derived from mudlet-lua/ directory; keys mirror the paths LuaGlobal.lua
         // constructs with luaGlobalPath="/lua" (e.g. /lua/3rdparty/Inspect.lua).
+        // Every builtin is held as a Latin-1 byte-string (charCode === byte),
+        // the same form the VFS stores file bodies in — so a reader never has to
+        // know whether the file behind a /lua/ path was shipped as source text
+        // or as a zip. Text is UTF-8-encoded on the way in; a `?inline` asset is
+        // already bytes once base64-decoded.
+        const asLatin1 = (text: string): string => {
+            const bytes = new TextEncoder().encode(text);
+            let out = '';
+            for (const b of bytes) out += String.fromCharCode(b);
+            return out;
+        };
         const builtins = new Map(
             Object.entries(MUDLET_LUA_FILES).map(([p, src]) => {
                 const rel = p.slice('./mudlet-lua/'.length);
-                return [`/lua/${rel}`, src] as [string, string];
+                return [`/lua/${rel}`, asLatin1(src)] as [string, string];
             })
         );
         // Vendored busted runtime + spec corpus (VITE_BUSTED builds only). Keyed
         // so require() resolves them: /lua/busted/core.lua, /lua/luassert/init.lua,
         // /lua/runBusted.lua, /lua/specs/<Name>_spec.lua, ...
         for (const [p, src] of Object.entries(BUSTED_FILES)) {
-            builtins.set(`/lua/${p.slice('./busted/'.length)}`, src);
+            builtins.set(`/lua/${p.slice('./busted/'.length)}`, asLatin1(src));
         }
         for (const [p, src] of Object.entries(SPEC_FILES)) {
-            builtins.set(`/lua/specs/${p.slice('./specs/'.length)}`, src);
+            builtins.set(`/lua/specs/${p.slice('./specs/'.length)}`, asLatin1(src));
         }
         for (const [p, src] of Object.entries(SPEC_TEXT_FIXTURES)) {
-            builtins.set(`/lua/specs/${p.slice('./specs/'.length)}`, src);
+            builtins.set(`/lua/specs/${p.slice('./specs/'.length)}`, asLatin1(src));
         }
         // Vite hands a `?inline` asset over as a data: URI; the payload after
         // the comma is the base64 the zip is rebuilt from. atob already yields
@@ -1853,6 +1885,10 @@ export class LuaRuntime implements IScriptingRuntime {
             builtins.set(`/lua/specs/${p.slice('./specs/'.length)}`,
                 atob(uri.slice(uri.indexOf(',') + 1)));
         }
+        // Kept so anything reading a /lua/ path from the JS side — the package
+        // installer, which takes bytes rather than going through Lua's io — sees
+        // the same read-only namespace Lua does.
+        this.builtinFiles = builtins;
         this.setupVFS(this.vfs, builtins);
         this.exec(VFS_LUA, 'VFS');
         this.exec(LUA_GLOBAL_SETUP, 'lua-globals-setup');
@@ -2136,6 +2172,32 @@ end`,
         // The mudlet-lua builtins are loaded by explicit dofile('/lua/...') paths,
         // so /lua was never on package.path. busted uses require(), so add it.
         this.lua.doStringSync('package.path = "/lua/?.lua;/lua/?/init.lua;" .. package.path');
+
+        // ── MUDLET_TEST_MODE ──────────────────────────────────────────────────
+        // Mudlet gates its blocking test helpers on this environment variable,
+        // and the corpus reads it as the proxy for "pumpEvents() actually pumps".
+        // Whole blocks check it and return early otherwise — Package_spec's
+        // entire body, UI_spec's toolbar buttons, four Miscallaneous specs that
+        // wait on an event.
+        //
+        // Every one of those needs a working pumpEvents/waitForEvent, which this
+        // build has (see the pump below); what it did not have was a way to SAY
+        // so, because a browser has no environment and os.getenv answered nil to
+        // everything. So they skipped for a reason that was not true here.
+        //
+        // Only this one variable is answered, and only in the busted build. The
+        // others the corpus reads — MUDLET_TEST_HTTP_PORT, the Discord capture
+        // file, the MMCP peer directory — name fixtures that really are absent,
+        // and claiming them would turn honest skips into failures.
+        this.lua.doStringSync(
+            `do
+  local raw = os.getenv
+  function os.getenv(name)
+    if name == 'MUDLET_TEST_MODE' then return '1' end
+    if raw then return raw(name) end
+    return nil
+  end
+end`);
 
         // ── waitForEvent's pump ───────────────────────────────────────────────
         // Mudlet's waitForEvent blocks in a nested QEventLoop, which keeps Qt
@@ -2444,11 +2506,14 @@ end`,
             for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 0xff;
             return bytes;
         };
-        /** Read a file's raw bytes as a Latin-1 byte-string. Builtins are JS
-         *  text — take their UTF-8 bytes so Lua sees what a file would hold. */
+        /** Read a file's raw bytes as a Latin-1 byte-string. Builtins are stored
+         *  in that form already (see the mount loop), so they pass straight
+         *  through — running them back through TextEncoder, as this used to,
+         *  UTF-8-encoded every byte ≥ 0x80 a second time and handed Lua a
+         *  corrupted copy of any binary builtin. */
         const readAsLatin1 = (filename: string): string =>
             builtins.has(filename)
-                ? bytesToLatin1(new TextEncoder().encode(builtins.get(filename)!))
+                ? builtins.get(filename)!
                 : bytesToLatin1(vfs!.readBinaryFile(filename));
 
         this.lua.global.set('__vfs_err__', () => lastError);

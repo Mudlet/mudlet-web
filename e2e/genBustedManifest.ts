@@ -13,6 +13,10 @@ import {
 // whenever the spec corpus is re-synced; the drift guard in busted.spec.ts fails
 // until you do.
 test('generate busted manifest', async ({ page }) => {
+    // The whole corpus runs inside this one test, so it needs the same budget
+    // the triage runner gives itself rather than the default per-test cap.
+    // Package_spec alone takes minutes now that it has a body to run.
+    test.setTimeout(30 * 60_000);
     await seedProfile(page);
     const manifest: Record<string, string[]> = {};
     let totalTests = 0;
