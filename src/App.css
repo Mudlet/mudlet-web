@@ -805,7 +805,13 @@ html, body, #root {
     width: 120px;
     height: 30px;
     border-radius: 4px;
-    object-fit: cover;
+    /* `fill`, not `cover`: Mudlet scales a profile logo to that box with
+       Qt::IgnoreAspectRatio (setupMudProfile/setCustomIcon), so an off-ratio
+       logo is squashed, never cropped. Most bundled logos are already 4:1;
+       the handful that aren't (voidmud 661×97, dragonfire 675×112, fed2
+       340×59, wotmud 449×77, abandonedrealms 140×50) lost a third of
+       themselves to cropping. */
+    object-fit: fill;
     border: 1px solid var(--border);
     box-shadow: inset 0 1px 0 var(--border-hi);
 }
@@ -1051,54 +1057,26 @@ body.is-sorting {
     gap: 12px;
 }
 
-.bundled-games__more {
-    display: flex;
-    justify-content: center;
-    margin-top: 10px;
-}
-
+/* Same card as a saved profile — the logo is the badge in the header, and
+   nothing else on the tile carries the game's artwork. */
 .bundled-game-tile {
-    position: relative;
-    /* The artwork layer sits at z-index -1, so the tile needs its own stacking
-       context or it would slide behind the page background instead. */
-    isolation: isolate;
     overflow: hidden;
     display: flex;
     flex-direction: column;
     gap: 10px;
+    background: var(--bg-glass);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     border: 1px solid var(--border);
+    box-shadow: inset 0 1px 0 var(--border-hi);
     border-radius: var(--radius);
     padding: 12px;
-    background: none;
     transition: border-color 0.15s, box-shadow 0.15s;
-}
-
-/* The game's logo, full-bleed and faint — colour and character behind the text
-   rather than a badge beside it. `--game-icon` is set per tile by
-   BundledGameGrid; where it is unset this declaration is invalid and the layer
-   draws nothing. */
-.bundled-game-tile::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    z-index: -1;
-    background-image: var(--game-icon);
-    background-size: cover;
-    background-position: center;
-    opacity: 0.14;
-    pointer-events: none;
-    transition: opacity 0.15s;
 }
 
 .bundled-game-tile:hover {
     border-color: color-mix(in srgb, var(--accent-dim) 50%, var(--border));
     box-shadow: inset 0 1px 0 var(--border-hi), var(--shadow-card);
-}
-
-/* Brighter under the pointer — the tile the player is considering shows more of
-   the game it belongs to. */
-.bundled-game-tile:hover::before {
-    opacity: 0.28;
 }
 
 .bundled-game-tile__header {
@@ -1120,12 +1098,6 @@ body.is-sorting {
 .bundled-game-tile__name {
     font-size: 14px;
     font-weight: 600;
-}
-
-/* The tile's text sits over artwork rather than a flat panel, so it needs its
-   own separation from whatever happens to be behind it. */
-.bundled-game-tile__body > * {
-    text-shadow: 0 1px 3px var(--bg, rgba(0, 0, 0, 0.75));
 }
 
 .bundled-game-tile__body {

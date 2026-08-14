@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { Button } from './components';
 import { BUNDLED_GAMES, type BundledGame } from '../mud/games/bundledGames';
 import { gameIconUrl } from '../mud/games/gameIcons';
@@ -54,14 +53,9 @@ interface Props {
  * pile of empty profiles a player has to tidy up.
  */
 export function BundledGameGrid({ connections, busy, onPlay }: Props) {
-    const [expanded, setExpanded] = useState(false);
     const taken = new Set(connections.map(c => c.name.toLowerCase()));
     const games = PLAYABLE.filter(g => !taken.has(g.name.toLowerCase()));
     if (games.length === 0) return null;
-
-    // Long list, and it sits under the player's own profiles — those come
-    // first, and the catalogue opens on request.
-    const shown = expanded ? games : games.slice(0, 8);
 
     return (
         <div className="bundled-games">
@@ -70,7 +64,7 @@ export function BundledGameGrid({ connections, busy, onPlay }: Props) {
                 <span className="bundled-games__hint">Pick one to start playing — it becomes a profile</span>
             </div>
             <div className="bundled-games__grid" role="list">
-                {shown.map(game => {
+                {games.map(game => {
                     const icon = gameIconUrl(game);
                     return (
                         <div
@@ -78,13 +72,6 @@ export function BundledGameGrid({ connections, busy, onPlay }: Props) {
                             role="listitem"
                             className="bundled-game-tile"
                             title={game.description || game.name}
-                            // The logo does double duty: the crisp 120×30 badge
-                            // Mudlet draws, and a faint full-bleed wash behind
-                            // the whole tile for the game's colour. A game with
-                            // no vendored icon leaves the property unset, which
-                            // makes the background-image declaration invalid and
-                            // draws nothing — no fallback needed.
-                            style={icon ? ({ '--game-icon': `url("${icon}")` } as React.CSSProperties) : undefined}
                         >
                             <div className="bundled-game-tile__header">
                                 {icon
@@ -123,13 +110,6 @@ export function BundledGameGrid({ connections, busy, onPlay }: Props) {
                     );
                 })}
             </div>
-            {games.length > shown.length && (
-                <div className="bundled-games__more">
-                    <Button variant="secondary" size="sm" onClick={() => setExpanded(true)}>
-                        Show all {games.length} games
-                    </Button>
-                </div>
-            )}
         </div>
     );
 }

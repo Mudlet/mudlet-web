@@ -161,24 +161,9 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
                     onAddClick={() => setEditor({ connection: null })}
                 />
 
-                {/* Only the stock client offers them: a branded build targets
-                    one MUD and has no use for a directory of others. */}
-                {!brand.mud && (
-                    <BundledGameGrid
-                        connections={connections}
-                        busy={connecting || importing}
-                        onPlay={(game) => {
-                            // Playing is what creates the profile — the store has
-                            // it by the time addConnection returns, so the record
-                            // handed to onConnect is the real one.
-                            const id = onAdd(connectionFromGame(game));
-                            const created = useAppStore.getState().connections.find(c => c.id === id);
-                            if (created) onConnect(created);
-                        }}
-                    />
-                )}
-
-                <div className="connection-import-row" style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+                {/* Profile-level actions belong with the profiles, above the
+                    game catalogue rather than below the length of it. */}
+                <div className="connection-import-row" style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
                     {dirPicker && (
                         <Button variant="secondary" size="sm" onClick={handleImportFolder} disabled={connecting || importing}>
                             {importing ? 'Importing…' : 'Import Mudlet folder…'}
@@ -201,10 +186,28 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
                     )}
                 </div>
                 {importError && (
-                    <div className="connection-import-error" style={{ color: 'var(--danger, #e06c75)', fontSize: 12, textAlign: 'center', marginTop: 6 }}>
+                    <div className="connection-import-error" style={{ color: 'var(--danger, #e06c75)', fontSize: 12, textAlign: 'center' }}>
                         Import failed: {importError}
                     </div>
                 )}
+
+                {/* Only the stock client offers them: a branded build targets
+                    one MUD and has no use for a directory of others. */}
+                {!brand.mud && (
+                    <BundledGameGrid
+                        connections={connections}
+                        busy={connecting || importing}
+                        onPlay={(game) => {
+                            // Playing is what creates the profile — the store has
+                            // it by the time addConnection returns, so the record
+                            // handed to onConnect is the real one.
+                            const id = onAdd(connectionFromGame(game));
+                            const created = useAppStore.getState().connections.find(c => c.id === id);
+                            if (created) onConnect(created);
+                        }}
+                    />
+                )}
+
                 <input ref={zipInputRef} type="file" accept=".zip" style={{ display: 'none' }} onChange={handleZipChange} />
             </div>
         </div>
