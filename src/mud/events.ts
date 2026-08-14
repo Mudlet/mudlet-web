@@ -170,10 +170,13 @@ export type MudClientEvents = {
      *  (`'SUPPRESS_GO_AHEAD'` or `'LINEMODE'`). */
     'protocol.rejected': [protocol: string];
     /** Mudlet `sysCharacterModeDetected`. Fires once per connection when the
-     *  server has both asked to suppress go-ahead (IAC WILL SGA) *and* enabled
-     *  server-side echo — the classic character-at-a-time signature that mudix,
-     *  a line-based client, can't drive well. Lets scripts / the UI warn the
-     *  user that input may not behave as expected. */
+     *  server has both asked to suppress go-ahead (IAC WILL SGA) *and* kept
+     *  server-side echo on across a submitted game command — the
+     *  character-at-a-time signature that mudix, a line-based client, can't
+     *  drive well. The three-second delay is what separates it from an ordinary
+     *  password mask, which negotiates the same pair but releases echo as soon
+     *  as the masked line is in. Lets scripts / the UI warn the user that input
+     *  may not behave as expected. */
     'charmode.detected': void;
     /** The server's telnet option-negotiation order matched KaVir's protocol
      *  snippet (Mudlet `cTelnet::trackKaVirNegotiation`). Such servers read a

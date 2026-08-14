@@ -797,7 +797,12 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             const { account } = readCreds();
             if (!account) { autoLoginStage.current = 'idle'; return; }
             autoLoginStage.current = 'password';
-            send(account, true);
+            // Echoed locally (the server echoes a typed name back the same way),
+            // but not a game command: like Mudlet's `sendData(getLogin())` it
+            // must not arm character-at-a-time detection, since the password
+            // prompt it walks into is exactly the ECHO+SGA state that detection
+            // is trying to tell apart from the real thing.
+            send(account, true, false);
             passFallbackTimer.current = window.setTimeout(sendPassword, AUTO_LOGIN_PASSWORD_FALLBACK_MS);
         };
         const onConnect = () => {

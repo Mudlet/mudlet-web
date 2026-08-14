@@ -228,8 +228,12 @@ export class MudClient {
     private readonly negotiator: TelnetNegotiator;
     /** Latches once `sysCharacterModeDetected` has fired for this connection so
      *  the warning isn't repeated. Reset on each connect(). See
-     *  {@link maybeDetectCharacterMode}. */
+     *  {@link checkCharacterModePattern}. */
     private charModeDetected = false;
+    /** Pending character-at-a-time verdict, armed by a submitted game command
+     *  while ECHO+SGA are active and cancelled if the server releases ECHO
+     *  first. Null when nothing is in flight. */
+    private charModeTimer: ReturnType<typeof setTimeout> | null = null;
     /** Byte↔char codec for the session (inbound streaming decoder + outgoing
      *  encoding). Swapped between encodings by the CHARSET handler. */
     private readonly codec = new SessionCodec();
@@ -421,24 +425,52 @@ export class MudClient {
             (data) => this.sendRaw(data),
             (maskInput) => {
                 this.eventBus.emit('telnet.echo', maskInput);
-                // Server echo just committed — if the server also requested SGA
-                // earlier, that's the character-at-a-time signature (echo can
-                // arrive after the SGA WILL, so re-check on this edge too).
-                this.maybeDetectCharacterMode();
+                // The server released ECHO right after the masked line, so this
+                // was a transient password prompt, not character-at-a-time mode:
+                // cancel any pending detection (cTelnet's OPT_ECHO WONT branch).
+                if (!this.echoHandler.serverEchoing) this.cancelCharacterModeDetection();
             },
             () => this.eventBus.emit('telnet.echo.anomaly'),
         );
     }
 
-    /** Mudlet-parity character-at-a-time detection (cTelnet::
-     *  checkCharacterModePattern). When the server has both asked to suppress
-     *  go-ahead (IAC WILL SGA — which we refuse) *and* enabled server-side echo,
-     *  it's driving a character-at-a-time session that mudix, a line-based
-     *  client, can't handle well. Raise `sysCharacterModeDetected` once so the
-     *  UI / scripts can warn the user. Checked on both trigger edges: an SGA
-     *  request arriving while echo is already on, and echo committing while SGA
-     *  was already requested. */
-    private maybeDetectCharacterMode(): void {
+    /** Mudlet-parity character-at-a-time detection (cTelnet::sendData's
+     *  `armCharacterModeDetection`). ECHO+SGA on its own is *not* the signature:
+     *  an ordinary line-mode server masking a password negotiates exactly the
+     *  same pair. The two are told apart by behaviour, so detection is armed
+     *  only by a submitted game command and only decides {@link
+     *  CHARACTER_MODE_DETECT_MS} later — a password mask sends WONT ECHO right
+     *  after the masked line and cancels it first.
+     *
+     *  Re-armed on every game command so the window always measures from the
+     *  most recent submission. */
+    private armCharacterModeDetection(): void {
+        if (this.charModeDetected) return;
+        if (!this.negotiator.sgaRequested || !this.echoHandler.serverEchoing) return;
+        if (this.charModeTimer !== null) clearTimeout(this.charModeTimer);
+        this.charModeTimer = setTimeout(() => {
+            this.charModeTimer = null;
+            this.checkCharacterModePattern();
+        }, CHARACTER_MODE_DETECT_MS);
+    }
+
+    private cancelCharacterModeDetection(): void {
+        if (this.charModeTimer === null) return;
+        clearTimeout(this.charModeTimer);
+        this.charModeTimer = null;
+    }
+
+    /** The armed window elapsed with ECHO+SGA still active — a full input line
+     *  was submitted without the server releasing echo, which a password prompt
+     *  never does. Raise `sysCharacterModeDetected` once per connection so the
+     *  UI / scripts can warn the user.
+     *
+     *  Accepted limitation (same as Mudlet's): this can't tell genuine
+     *  character-at-a-time from the rarer cases of a buggy password prompt that
+     *  never sends WONT ECHO, or a line-mode server using persistent
+     *  server-side echo. We stay in line mode regardless and the message is
+     *  only advisory. */
+    private checkCharacterModePattern(): void {
         if (this.charModeDetected) return;
         if (!this.negotiator.sgaRequested || !this.echoHandler.serverEchoing) return;
         this.charModeDetected = true;
@@ -492,6 +524,7 @@ export class MudClient {
         this.assembler.reset();
         this.negotiator.reset();
         this.charModeDetected = false;
+        this.cancelCharacterModeDetection();
         this.gmcpHelloSent = false;
         // Redialling re-runs the handshake, so the previous verdict is stale.
         this.tlsResolved = false;
@@ -535,9 +568,6 @@ export class MudClient {
                     }
                     this.negotiator.processFrame(data);
                     this.echoHandler.processData(data);
-                    // Catch the case where the SGA request lands in a frame
-                    // after server echo is already committed on.
-                    this.maybeDetectCharacterMode();
                     this.eventBus.emit('socket.incoming', data);
                     try {
                         this.processIncomingData(data);
@@ -574,6 +604,7 @@ export class MudClient {
                 this.pendingSubneg = "";
                 this.mspParser.reset();
                 this.negotiator.clearMspNegotiated();
+                this.cancelCharacterModeDetection();
             };
 
             this.socket.onopen = (event: Event) => {
@@ -690,6 +721,7 @@ export class MudClient {
         this.pendingSubneg = '';
         this.mspParser.reset();
         this.negotiator.clearMspNegotiated();
+        this.cancelCharacterModeDetection();
     }
 
     /** Whether MSP is live on this connection (negotiated, not merely allowed
@@ -718,7 +750,11 @@ export class MudClient {
         return !this.echoHandler.serverEchoing && this.commandEcho;
     }
 
-    send(message: string): void {
+    /** `isGameCommand` mirrors `cTelnet::sendData`'s third argument: only a real
+     *  game command (typed or from a script's `send()`) may arm
+     *  character-at-a-time detection. Credentials and internal protocol replies
+     *  route through here too and must not. */
+    send(message: string, isGameCommand = true): void {
         if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
             return;
         }
@@ -730,6 +766,7 @@ export class MudClient {
             // off, so strict-Unix mode submits the bare LF telnet would normally
             // pair it with.
             this.sendBytes(this.codec.encodeOutgoing(message + (this.strictUnixEndings ? "\n" : "\r\n")));
+            if (isGameCommand) this.armCharacterModeDetection();
         } catch (error) {
             console.error('Error sending message:', error);
             this.eventBus.emit('error', error);
@@ -1066,6 +1103,11 @@ export class MudClient {
  *  greet — but bounded, because on some proxies a rejected certificate produces
  *  no error and no close at all, so silence is the only symptom there is. */
 const TLS_HANDSHAKE_TIMEOUT_MS = 12_000;
+
+/** How long ECHO+SGA must survive a submitted input line before it counts as
+ *  character-at-a-time rather than a password mask — `cTelnet`'s
+ *  CHARACTER_MODE_DETECT. See {@link MudClient.checkCharacterModePattern}. */
+const CHARACTER_MODE_DETECT_MS = 3_000;
 
 /** Recover the game's host/port from a proxy URL, for error messages. Falls
  *  back to empty/0 for a direct websocket URL, which carries neither. */

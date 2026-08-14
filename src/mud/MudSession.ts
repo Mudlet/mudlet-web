@@ -245,10 +245,14 @@ export class MudSession {
         return prefix ? `${prefix}${text}\x1b[0m` : text;
     }
 
-    send(text: string, echo = true): void {
+    /** `isGameCommand` mirrors `cTelnet::sendData`'s flag — see
+     *  {@link MudClient.send}. Everything the player or a script submits is one;
+     *  auto-login credentials are not, so they can't arm character-at-a-time
+     *  detection. */
+    send(text: string, echo = true, isGameCommand = true): void {
         if (this.shouldEchoSentText(echo)) this.echoCommand(text);
         if (!this.client) return;
-        this.client.send(text);
+        this.client.send(text, isGameCommand);
     }
 
     /** Send credentials/secrets that must NEVER be echoed locally — regardless of
@@ -258,7 +262,7 @@ export class MudSession {
      *  take this path instead of relying on the per-call echo flag. */
     sendSecret(text: string): void {
         if (!this.client) return;
-        this.client.send(text);
+        this.client.send(text, false);
     }
 
     sendGmcpRaw(message: string): void {

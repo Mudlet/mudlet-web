@@ -6,7 +6,7 @@ import {
   EOR_WILL, EOR_DO,
   SGA_WILL, SGA_DO, SGA_DONT,
   LINEMODE_WILL, LINEMODE_DO, LINEMODE_DONT, LINEMODE_WONT,
-  ECHO_WILL,
+  ECHO_WILL, ECHO_WONT,
   NEW_ENVIRON_DO, NEW_ENVIRON_WILL, NEW_ENVIRON_WONT,
   OPT_NEW_ENVIRON, NEW_ENVIRON_IS, NEW_ENVIRON_SEND,
   NEW_ENVIRON_VAR, NEW_ENVIRON_USERVAR,
@@ -106,24 +106,64 @@ describe('login-time telnet negotiation replies', () => {
     expect(rejected).toContain('LINEMODE');
   });
 
-  it('raises charmode.detected once when SGA request meets server ECHO', () => {
+  /** Bring a connection into the ECHO+SGA state both a character-at-a-time
+   *  server and an ordinary password prompt produce, with a detection counter
+   *  attached. Echo commits only after the EchoHandler debounce window. */
+  function echoAndSga() {
+    const { client, sock, bus } = connected();
+    let count = 0;
+    bus.on('charmode.detected', () => { count++; });
+    sock.deliver(SGA_WILL);
+    sock.deliver(ECHO_WILL);
+    vi.advanceTimersByTime(600);
+    return { client, sock, bus, detections: () => count };
+  }
+
+  it('raises charmode.detected once when ECHO+SGA outlive a submitted command', () => {
     vi.useFakeTimers();
     try {
-      const { sock, bus } = connected();
-      let count = 0;
-      bus.on('charmode.detected', () => { count++; });
-      // Server asks to suppress go-ahead, then turns on server-side echo — the
-      // classic character-at-a-time signature.
-      sock.deliver(SGA_WILL);
-      // Server echo commits only after the EchoHandler debounce window.
-      sock.deliver(ECHO_WILL);
-      expect(count).toBe(0); // SGA seen, but echo not committed yet
-      vi.advanceTimersByTime(600);
-      expect(count).toBe(1);
+      const { client, detections } = echoAndSga();
+      // The negotiation alone means nothing — a password prompt looks identical.
+      vi.advanceTimersByTime(10_000);
+      expect(detections()).toBe(0);
+
+      client.send('look');
+      vi.advanceTimersByTime(2_900);
+      expect(detections()).toBe(0); // still inside the detection window
+      vi.advanceTimersByTime(200);
+      expect(detections()).toBe(1);
+
       // Idempotent for the rest of the connection.
-      sock.deliver(ECHO_WILL);
-      vi.advanceTimersByTime(600);
-      expect(count).toBe(1);
+      client.send('look');
+      vi.advanceTimersByTime(5_000);
+      expect(detections()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not raise charmode.detected when the server releases ECHO after the line', () => {
+    vi.useFakeTimers();
+    try {
+      const { client, sock, detections } = echoAndSga();
+      client.send('mypassword');
+      // A password mask ends right after the masked line — that WONT ECHO is
+      // what tells it apart from character-at-a-time mode.
+      sock.deliver(ECHO_WONT);
+      vi.advanceTimersByTime(10_000);
+      expect(detections()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not let auto-login credentials arm charmode detection', () => {
+    vi.useFakeTimers();
+    try {
+      const { client, detections } = echoAndSga();
+      client.send('secret', false); // isGameCommand: false — as sendSecret does
+      vi.advanceTimersByTime(10_000);
+      expect(detections()).toBe(0);
     } finally {
       vi.useRealTimers();
     }
