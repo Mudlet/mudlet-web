@@ -43,4 +43,43 @@ describe('moveWindow/resizeWindow Lua-side dedup', () => {
         expect(geo()).toMatchObject({ x: 50, y: 60 });
         dispose();
     });
+
+    // deleteLabel used to be the ONLY place the cache was dropped, so a
+    // miniconsole (or text edit, or command line) recreated under a recycled
+    // name stayed stuck at its creation size for every coordinate it had held
+    // before. Assert the invalidation contract directly on the memo table:
+    // every creator and every deleter has to forget the name.
+    it('forgets cached geometry for every widget family that creates or deletes', async () => {
+        const { run, dispose } = await createTestRuntime();
+        const cached = (name: string) => run(`return __mwGeo[${JSON.stringify(name)}] ~= nil`);
+
+        // `reuseMoves` = calling the creator on a live name repositions the
+        // existing widget. createLabel is the odd one out: it refuses outright
+        // and moves nothing, so keeping the cached entry is correct there.
+        const families = [
+            { create: 'createMiniConsole("w", 0, 0, 10, 10)', del: 'deleteMiniConsole("w")', reuseMoves: true },
+            { create: 'createLabel("w", 0, 0, 10, 10, 1)', del: 'deleteLabel("w")', reuseMoves: false },
+            { create: 'createCommandLine("w", 0, 0, 10, 10)', del: 'deleteCommandLine("w")', reuseMoves: true },
+            { create: 'createTextEdit("w", 0, 0, 10, 10)', del: 'deleteTextEdit("w")', reuseMoves: true },
+        ];
+        for (const { create, del, reuseMoves } of families) {
+            run(create);
+            run('moveWindow("w", 7, 8)');
+            expect(cached('w'), `${create} should cache after a move`).toBe(true);
+            run(del);
+            expect(cached('w'), `${del} must invalidate`).toBe(false);
+
+            if (reuseMoves) {
+                // Creation writes geometry straight to JS behind the cache's
+                // back, so reusing a live name has to invalidate as well.
+                run(create);
+                run('moveWindow("w", 7, 8)');
+                run(create);
+                expect(cached('w'), `${create} must invalidate on reuse`).toBe(false);
+                run(del);
+            }
+        }
+
+        dispose();
+    });
 });

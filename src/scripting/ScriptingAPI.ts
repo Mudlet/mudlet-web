@@ -41,6 +41,7 @@ import { isQtResourcePath, qtResourceUrl } from '../assets/qt-resources';
 import { ProfilesPresence } from './profilesPresence';
 import { MapStore } from '../map/MapStore';
 import { type EngineHost, NULL_ENGINE_HOST } from './EngineHost';
+import { findBundledGame } from '../mud/games/bundledGames';
 
 // Mudlet's TChar always carries baked-in fg/bg colors (the rendered pair), so
 // getFgColor/getBgColor never return "no color" for in-bounds positions. mudix
@@ -1418,9 +1419,20 @@ export class ScriptingAPI {
      *  a name no profile has. */
     getProfileInformation(profileName?: string): string | null {
         const conn = this.connectionByName(profileName);
-        // null means "no such profile"; a profile that simply has no description
-        // yet still answers, with the empty string.
-        return conn ? conn.description ?? '' : null;
+        if (conn) {
+            // A profile that simply has no description of its own still answers
+            // — with the blurb its game ships with, or the empty string.
+            return conn.description ?? findBundledGame(conn.name)?.description ?? '';
+        }
+        // No profile by that name, but the getter still answers for a game
+        // mudix ships in its catalogue: Mudlet reads the description straight
+        // out of TGameDetails, so "Achaea" resolves whether or not anyone has
+        // ever opened an Achaea profile. Only the *writers* refuse it.
+        if (profileName !== undefined) {
+            const game = findBundledGame(profileName);
+            if (game) return game.description;
+        }
+        return null;
     }
 
     /** Mudlet `setProfileInformation([profileName,] text)`. Stores the free-text
@@ -1435,13 +1447,14 @@ export class ScriptingAPI {
         return true;
     }
 
-    /** Mudlet `clearProfileInformation([profileName])`. Empties the description.
-     *  (Mudlet restores the blurb its bundled games ship with; mudix has no
-     *  bundled games — every profile here is one someone made.) */
+    /** Mudlet `clearProfileInformation([profileName])`. Puts the description
+     *  back to what the profile started with: the blurb its game ships with in
+     *  the bundled catalogue, or empty for a profile someone made up. */
     clearProfileInformation(profileName?: string): boolean {
         const conn = this.connectionByName(profileName);
         if (!conn) return false;
-        useAppStore.getState().patchConnection(conn.id, { description: '' });
+        const shipped = findBundledGame(conn.name)?.description ?? '';
+        useAppStore.getState().patchConnection(conn.id, { description: shipped });
         return true;
     }
 
@@ -4427,7 +4440,53 @@ export class ScriptingAPI {
         if (!this.connectionId) return false;
         const snapshot = this.session.windows.captureLayoutSnapshot();
         useAppStore.getState().saveLayoutSnapshot(this.connectionId, snapshot);
+        this.writeWindowLayoutFile(snapshot);
         return true;
+    }
+
+    /** Where Mudlet keeps the window layout: beside the profiles folder, not
+     *  inside one, because the layout is the application's rather than any one
+     *  profile's. Null when there is no VFS to write into. */
+    private windowLayoutPath(): string | null {
+        const dir = this.host.configDirectory();
+        return dir === null ? null : `${dir}/windowLayout.dat`;
+    }
+
+    /**
+     * Mirror the snapshot to `windowLayout.dat`.
+     *
+     * The store is still where a layout survives a reload — this file is the
+     * Mudlet-shaped copy, so a script (or a person poking at the profile
+     * filesystem) finds the layout where Mudlet puts it and can read it. It is
+     * JSON rather than Mudlet's `QMainWindow::saveState` blob: nothing outside
+     * mudix reads it, and those bytes describe Qt dock widgets that have no
+     * counterpart here.
+     */
+    private writeWindowLayoutFile(snapshot: unknown): void {
+        const path = this.windowLayoutPath();
+        if (!path) return;
+        const json = JSON.stringify({ version: 1, snapshot }, null, 0);
+        this.host.writeFileBytes(path, new TextEncoder().encode(json));
+    }
+
+    /** The snapshot in `windowLayout.dat`, or null when there is no readable,
+     *  parsable file — in which case the caller falls back to the store. */
+    private readWindowLayoutFile(): { hints: Record<string, unknown>; dockExtents: Record<string, number> } | null {
+        const path = this.windowLayoutPath();
+        if (!path) return null;
+        const bytes = this.host.readFileBytes(path);
+        if (!bytes) return null;
+        try {
+            const parsed = JSON.parse(new TextDecoder().decode(bytes));
+            const snapshot = parsed?.snapshot;
+            if (!snapshot || typeof snapshot !== 'object' || !snapshot.hints) return null;
+            return snapshot;
+        } catch {
+            // A file some other tool wrote, or a half-written one. The store
+            // still has a layout, and losing it to a bad file would be worse
+            // than ignoring the file.
+            return null;
+        }
     }
 
     /**
@@ -4438,9 +4497,14 @@ export class ScriptingAPI {
      */
     loadWindowLayout(): boolean {
         if (!this.connectionId) return false;
-        const snapshot = useAppStore.getState().connectionLayoutSnapshots[this.connectionId];
+        // The file wins when there is one: it is what a save just wrote, and it
+        // is the copy someone editing the profile filesystem can change. The
+        // store is the fallback — and after a reload, when the layout came back
+        // from localStorage rather than from a save this session, the only copy.
+        const snapshot = this.readWindowLayoutFile()
+            ?? useAppStore.getState().connectionLayoutSnapshots[this.connectionId];
         if (!snapshot) return false;
-        this.session.windows.applyLayoutSnapshot(snapshot);
+        this.session.windows.applyLayoutSnapshot(snapshot as Parameters<typeof this.session.windows.applyLayoutSnapshot>[0]);
         return true;
     }
 

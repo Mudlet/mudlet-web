@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { FolderSymlink, Lock, Trash2 } from 'lucide-react';
 import { Button } from './components';
 import { connectionDisplayAddr, type MudConnection } from '../storage';
+import { gameIconUrl } from '../mud/games/gameIcons';
 
 /** Deterministic background color for a profile's name tile — same name always
  *  yields the same hue, so each profile gets a stable, distinct color. */
@@ -34,8 +35,13 @@ function fitNameFontSize(name: string): number {
  *  (setProfileIcon), otherwise a colored tile with the profile name — matching
  *  Mudlet's behaviour of drawing the name onto profiles without an icon. */
 function ProfileAvatar({ name, icon }: { name: string; icon?: string }) {
-    if (icon) {
-        return <img className="connection-avatar" src={icon} alt="" aria-hidden="true" />;
+    // A profile made from the bundled catalogue keeps its game's logo without
+    // storing one: the icon field holds a data URI (setProfileIcon), and copying
+    // a 100 KB logo into localStorage per profile to draw what the app already
+    // ships would be a poor trade. A custom icon still wins.
+    const src = icon ?? gameIconUrl(name);
+    if (src) {
+        return <img className="connection-avatar" src={src} alt="" aria-hidden="true" />;
     }
     const label = name || '?';
     return (

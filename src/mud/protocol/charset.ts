@@ -31,7 +31,9 @@ export function normalizeCharsetName(raw: string): string | null {
     if (n === 'utf-8' || n === 'utf8') return 'utf-8';
     // US-ASCII is a strict subset of UTF-8, so the UTF-8 decoder handles it byte-for-byte.
     if (n === 'us-ascii' || n === 'ascii') return 'utf-8';
-    const iso = /^iso-?8859-?(\d{1,2})$/.exec(n);
+    // Mudlet spells these with a space ("ISO 8859-2" — see TEncodingTable.cpp),
+    // the wire and IANA with a dash, and both reach here.
+    const iso = /^iso[- ]?8859-?(\d{1,2})$/.exec(n);
     if (iso) {
         // TextDecoder knows iso-8859-{2..16} (and iso-8859-1 via 'latin1').
         const part = parseInt(iso[1], 10);
@@ -73,15 +75,86 @@ const CHARSET_PRIORITY = [
  *  and a browser stream is far more likely to be UTF-8 than not. */
 export const DEFAULT_SERVER_ENCODING = 'UTF-8';
 
+// Spelled exactly as Mudlet spells them (TEncodingTable.cpp and the "ASCII"
+// entry TLuaInterpreter::getServerEncodingsList prepends), space and all: a
+// script or profile that says setServerEncoding("ISO 8859-1") is passing the
+// name Mudlet's own list gave it, and a hyphen here would refuse it.
 export const SUPPORTED_SERVER_ENCODINGS: readonly string[] = [
     'ASCII', 'UTF-8',
-    'ISO-8859-1', 'ISO-8859-2', 'ISO-8859-3', 'ISO-8859-4', 'ISO-8859-5',
-    'ISO-8859-6', 'ISO-8859-7', 'ISO-8859-8', 'ISO-8859-9', 'ISO-8859-10',
-    'ISO-8859-11', 'ISO-8859-13', 'ISO-8859-14', 'ISO-8859-15', 'ISO-8859-16',
+    'ISO 8859-1', 'ISO 8859-2', 'ISO 8859-3', 'ISO 8859-4', 'ISO 8859-5',
+    'ISO 8859-6', 'ISO 8859-7', 'ISO 8859-8', 'ISO 8859-9', 'ISO 8859-10',
+    'ISO 8859-11', 'ISO 8859-13', 'ISO 8859-14', 'ISO 8859-15', 'ISO 8859-16',
     'KOI8-R', 'KOI8-U',
     'WINDOWS-1250', 'WINDOWS-1251', 'WINDOWS-1252', 'WINDOWS-1253', 'WINDOWS-1254',
     'WINDOWS-1255', 'WINDOWS-1256', 'WINDOWS-1257', 'WINDOWS-1258',
 ];
+
+/** The {@link SUPPORTED_SERVER_ENCODINGS} entry a caller's spelling means, or
+ *  null when mudix cannot decode it. Dash/space/case differences are all the
+ *  same encoding — the profile XML, the wire, and Mudlet's own list disagree
+ *  about which to use — so the answer is always the list's own spelling and
+ *  `getServerEncoding()` reports one canonical name whatever was set. */
+export function canonicalServerEncoding(raw: string): string | null {
+    const given = String(raw ?? '').trim();
+    const iana = normalizeCharsetName(given);
+    if (!iana) return null;
+    // ASCII rides the UTF-8 decoder (it is a strict subset), so the two share a
+    // label and only the caller's own word separates them — and ASCII is the
+    // stricter promise, worth keeping rather than widening to UTF-8.
+    if (iana === 'utf-8') return /^(us-)?ascii$/i.test(given) ? 'ASCII' : 'UTF-8';
+    return SUPPORTED_SERVER_ENCODINGS.find(e => normalizeCharsetName(e) === iana) ?? null;
+}
+
+/**
+ * Char → byte for a single-byte encoding, built by decoding every byte value
+ * with the browser's own TextDecoder. That table is the only encoding data a
+ * browser exposes (TextEncoder writes UTF-8 and nothing else), and inverting it
+ * is exact for the single-byte codepages above.
+ */
+const reverseTables = new Map<string, Map<string, number>>();
+
+function reverseTable(ianaLabel: string): Map<string, number> | null {
+    const cached = reverseTables.get(ianaLabel);
+    if (cached) return cached;
+    let decoder: TextDecoder;
+    try { decoder = new TextDecoder(ianaLabel, { fatal: false }); } catch { return null; }
+    const table = new Map<string, number>();
+    const one = new Uint8Array(1);
+    for (let b = 0; b < 0x100; b++) {
+        one[0] = b;
+        const ch = decoder.decode(one);
+        // U+FFFD is what a byte the encoding leaves undefined decodes to. Several
+        // bytes can share it and none of them is a way to *write* a replacement
+        // character, so it must not become one.
+        if (ch.length === 1 && ch !== '�' && !table.has(ch)) table.set(ch, b);
+    }
+    reverseTables.set(ianaLabel, table);
+    return table;
+}
+
+/**
+ * Whether every character of `text` survives a trip to the game under
+ * `serverEncoding` — Mudlet's TEncodingHelper::canEncode, which is what decides
+ * whether a send gets the "unlikely to understand it" warning.
+ *
+ * Anything mudix cannot judge (an unknown label) is called encodable: the point
+ * is to warn about a loss that will certainly happen, not to guess.
+ */
+export function canEncodeForServer(text: string, serverEncoding: string): boolean {
+    const iana = normalizeCharsetName(String(serverEncoding ?? ''));
+    if (!iana) return true;
+    // ASCII decodes through the UTF-8 decoder (it is a strict subset), so the
+    // label — not the decoder — is what says only 0x00..0x7F may be written.
+    if (/^(us-)?ascii$/i.test(String(serverEncoding ?? '').trim())) {
+        for (const ch of text) if ((ch.codePointAt(0) ?? 0) > 0x7f) return false;
+        return true;
+    }
+    if (iana === 'utf-8') return true;
+    const table = reverseTable(iana);
+    if (!table) return true;
+    for (const ch of text) if (!table.has(ch)) return false;
+    return true;
+}
 
 /**
  * Parse an `IAC SB CHARSET REQUEST ...` subnegotiation body (leading byte is
@@ -174,11 +247,14 @@ export class SessionCodec {
 
     /** Convert a user-typed JS string (UTF-16) into the Latin-1 byte-string the
      *  socket layer expects, using the currently negotiated outgoing encoding.
-     *  For UTF-8 we run it through TextEncoder so multi-byte chars survive;
-     *  for other encodings we fall back to a per-char `& 0xff` truncation,
-     *  which is lossless for ASCII and acceptable for Latin-1-family inputs.
-     *  TextEncoder has no API for non-UTF-8 outputs, so a full per-encoding
-     *  outbound table isn't worth the bytes given how rare non-UTF-8 MUDs are. */
+     *  UTF-8 goes through TextEncoder so multi-byte chars survive; every other
+     *  encoding here is single-byte and goes through the inverted decode table,
+     *  which puts the codepage's own byte on the wire. (A plain `& 0xff`
+     *  truncation used to stand in for that, and was right only for the
+     *  Latin-1 range — every Polish, Cyrillic, or Greek character above it went
+     *  out as a byte meaning something else entirely.) A character the codepage
+     *  has no byte for becomes '?', as Qt's encoder does it — and the send path
+     *  warns before it comes to that. */
     encodeOutgoing(text: string): string {
         if (this.currentEncoding === 'utf-8') {
             const bytes = new TextEncoder().encode(text);
@@ -189,7 +265,11 @@ export class SessionCodec {
             }
             return out;
         }
-        return text;
+        const table = reverseTable(this.currentEncoding);
+        if (!table) return text;
+        let out = '';
+        for (const ch of text) out += String.fromCharCode(table.get(ch) ?? 0x3f /* '?' */);
+        return out;
     }
 }
 

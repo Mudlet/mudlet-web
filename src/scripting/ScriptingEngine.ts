@@ -1286,6 +1286,28 @@ export class ScriptingEngine implements EngineHost {
         }
     }
 
+    writeFileBytes(path: string, bytes: Uint8Array): boolean {
+        const v = this.vfs;
+        if (!v) return false;
+        try {
+            v.writeBinaryFile(path, bytes);
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    configDirectory(): string | null {
+        const v = this.vfs;
+        if (!v) return null;
+        // Mudlet works this out the same way round: the profile directory is
+        // <config>/profiles/<name>, so the configuration directory is what is
+        // left when that tail comes off. mudix mounts profiles at
+        // /profiles/<connectionId>, which leaves the VFS root.
+        const dir = v.profilePath.replace(/\/profiles\/[^/]*$/, '');
+        return dir === v.profilePath ? null : dir;
+    }
+
     private createRuntime(vfs: ProfileVFS | null): Promise<IScriptingRuntime> {
         return LuaRuntime.create(this.api, vfs, this.proxyUrlGetter).then(rt => {
             this.runtimes.lua = rt;

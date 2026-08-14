@@ -105,6 +105,17 @@ export interface EngineHost {
      *  Backs synchronous binary consumers such as setMovie's GIF decoder. */
     readFileBytes(path: string): Uint8Array | null;
 
+    /** Write raw bytes into the VFS, creating parent directories. False with no
+     *  VFS or when the write throws. Paths are absolute, so this also reaches
+     *  outside the profile — the shared window layout lives beside the profiles
+     *  folder, not inside one. */
+    writeFileBytes(path: string, bytes: Uint8Array): boolean;
+
+    /** Absolute VFS path of the directory that holds every profile folder —
+     *  Mudlet's configuration directory, where files shared between profiles
+     *  (the window layout) live. Null with no VFS. */
+    configDirectory(): string | null;
+
     // ── Automation tree: enable / disable ────────────────────────────────────
 
     toggleScriptByName(name: string, enabled: boolean): boolean;
@@ -230,6 +241,8 @@ export const NULL_ENGINE_HOST: EngineHost = Object.freeze({
     rewriteCss: (css: string) => css,
     rewriteHtml: (html: string) => html,
     readFileBytes: () => null,
+    writeFileBytes: () => false,
+    configDirectory: () => null,
 
     toggleScriptByName: () => false,
     toggleTriggerByName: () => false,

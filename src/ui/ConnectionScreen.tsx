@@ -3,6 +3,7 @@ import { Info } from 'lucide-react';
 import { Button, useConfirm } from './components';
 import { ConnectionFormModal } from './ConnectionFormModal';
 import { ConnectionGrid } from './ConnectionGrid';
+import { BundledGameGrid, connectionFromGame } from './BundledGameGrid';
 import { useOpenProfiles } from './useOpenProfiles';
 import { AboutModal } from './AboutModal';
 import { ProfileExportModal } from './ProfileExportModal';
@@ -159,6 +160,23 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
                     onReorder={reorderConnections}
                     onAddClick={() => setEditor({ connection: null })}
                 />
+
+                {/* Only the stock client offers them: a branded build targets
+                    one MUD and has no use for a directory of others. */}
+                {!brand.mud && (
+                    <BundledGameGrid
+                        connections={connections}
+                        busy={connecting || importing}
+                        onPlay={(game) => {
+                            // Playing is what creates the profile — the store has
+                            // it by the time addConnection returns, so the record
+                            // handed to onConnect is the real one.
+                            const id = onAdd(connectionFromGame(game));
+                            const created = useAppStore.getState().connections.find(c => c.id === id);
+                            if (created) onConnect(created);
+                        }}
+                    />
+                )}
 
                 <div className="connection-import-row" style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 8, flexWrap: 'wrap' }}>
                     {dirPicker && (

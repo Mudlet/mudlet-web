@@ -21,6 +21,8 @@ import type { ProfileVFS } from '../vfs/ProfileVFS';
 type EmitFn = (event: string, args: unknown[]) => void;
 type VFSGetter = () => ProfileVFS | null;
 type ProxyUrlGetter = () => string | undefined;
+/** Runs `fn` off the current call stack. See {@link HttpService.emitLater}. */
+type DeferFn = (fn: () => void) => void;
 
 // A 1KB/sec download still emits ~10 progress events per second at 100ms;
 // a 10MB/sec stream coalesces into the same cadence rather than firing
@@ -38,9 +40,20 @@ export class HttpService {
         private readonly emit: EmitFn,
         private readonly vfsGetter: VFSGetter,
         private readonly proxyUrlGetter: ProxyUrlGetter = () => undefined,
+        private readonly defer: DeferFn = fn => queueMicrotask(fn),
     ) {}
 
     downloadFile(saveTo: string, url: string): void {
+        // A scheme the browser cannot fetch is refused here rather than left to
+        // fetch(): its rejection is indistinguishable from a CORS failure, so
+        // the proxy fallback would try the whole thing a second time before
+        // reporting an error that never named the real problem.
+        const scheme = explicitScheme(url);
+        if (scheme && scheme !== 'http' && scheme !== 'https') {
+            this.emitLater('sysDownloadError',
+                [`'${scheme}' urls cannot be downloaded, only http and https`, saveTo, url]);
+            return;
+        }
         this.runDownload(saveTo, url).catch(err => {
             this.emit('sysDownloadError', [errorMessage(err), saveTo, url]);
         });
@@ -149,15 +162,21 @@ export class HttpService {
      * Emit on a later turn of the event loop.
      *
      * Every other emit here fires from an async continuation, so it is already
-     * off the call that started the request. These three are the exception:
-     * building the upload body is synchronous, so its failure would otherwise
-     * emit — and therefore dispatch Lua event handlers — while still inside the
-     * `__postHTTP` binding that Lua itself called. Re-entering the Lua state
-     * mid-call crashes wasmoon outright ("memory access out of bounds"), taking
-     * the whole runtime with it rather than failing one call.
+     * off the call that started the request. The synchronous failures are the
+     * exception — building an upload body, or refusing a url scheme outright —
+     * because they would otherwise emit, and therefore dispatch Lua event
+     * handlers, while still inside the `__postHTTP`/`__downloadFile` binding
+     * that Lua itself called. Re-entering the Lua state mid-call crashes
+     * wasmoon outright ("memory access out of bounds"), taking the whole
+     * runtime with it rather than failing one call.
+     *
+     * The caller supplies the deferral so it can pick a queue a script can
+     * actually observe: microtasks are fine in the app, but a synchronous Lua
+     * run (the busted harness) never yields to one, and the runtime hands us
+     * its timer queue instead.
      */
     private emitLater(event: string, args: unknown[]): void {
-        queueMicrotask(() => this.emit(event, args));
+        this.defer(() => this.emit(event, args));
     }
 
     private bodyForUpload(data: string | null, file: string | undefined): BodyInit | undefined {
@@ -232,6 +251,14 @@ function normalizeProxyBase(raw: string | undefined): string | undefined {
 
 function buildProxyUrl(base: string, target: string): string {
     return `${base}/?url=${encodeURIComponent(target)}`;
+}
+
+// The scheme a url states for itself, lower-cased, or null when it names none.
+// A schemeless "example.com/x" is not an error — Mudlet reads it through
+// QUrl::fromUserInput, which means http — so only an explicit one is judged.
+function explicitScheme(url: string): string | null {
+    const m = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(url.trim());
+    return m ? m[1].toLowerCase() : null;
 }
 
 function parseOrigin(url: string): string | null {

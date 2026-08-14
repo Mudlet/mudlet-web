@@ -1692,6 +1692,11 @@ export class LuaRuntime implements IScriptingRuntime {
             (event, args) => this.emitEvent(event, args),
             () => this.vfs,
             this.proxyUrlGetter,
+            // The timer queue rather than a microtask: a script that fires a
+            // request and then blocks (waitForEvent, wait) never yields to the
+            // microtask queue, but it does keep pumping timers, so this is the
+            // one deferral such a script can still observe.
+            fn => { this.api.timers.addTemp(0, fn); },
         );
         // Mudlet HTTP APIs all return (true, url) immediately and then surface
         // success/error via sysXxxHttp* events. The JS bindings below just kick
@@ -3165,9 +3170,16 @@ end`,
     }
 
     dispatchSendRequest(text: string): boolean {
-        this._denyCurrentSend = false;
         this.emitEvent('sysDataSendRequest', [text]);
-        return this._denyCurrentSend;
+        if (!this._denyCurrentSend) return false;
+        // Mudlet's Host::mAllowToSendCommand is consumed by the send it blocks,
+        // never cleared ahead of the event (cTelnet::sendData puts it back only
+        // on the branch that refused). Clearing it first — as this used to —
+        // silently threw away every denyCurrentSend() issued from anywhere but
+        // inside a sysDataSendRequest handler: a key binding or timer that
+        // denied the command about to go out had no effect at all.
+        this._denyCurrentSend = false;
+        return true;
     }
 
     killScriptHandlers(scriptId: string): void {

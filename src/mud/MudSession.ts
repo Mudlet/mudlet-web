@@ -8,7 +8,7 @@ import { SoundManager } from '../ui/sound/SoundManager';
 import { VideoManager } from '../ui/video/VideoManager';
 import { CmdLineMenuRegistry } from '../ui/CmdLineMenuRegistry';
 import { MouseEventRegistry } from '../ui/MouseEventRegistry';
-import { MudClient, type MudClientOptions, SUPPORTED_SERVER_ENCODINGS, DEFAULT_SERVER_ENCODING } from './connection/MudClient';
+import { MudClient, type MudClientOptions, SUPPORTED_SERVER_ENCODINGS, DEFAULT_SERVER_ENCODING, canonicalServerEncoding, canEncodeForServer } from './connection/MudClient';
 import { PingTracker } from './connection/PingTracker';
 import { ReplayPlayer } from './replay/ReplayPlayer';
 import { ReplayRecorder } from './replay/ReplayRecorder';
@@ -269,8 +269,38 @@ export class MudSession {
      *  detection. */
     send(text: string, echo = true, isGameCommand = true): void {
         if (this.shouldEchoSentText(echo)) this.echoCommand(text);
+        this.warnIfUnencodable(text);
         if (!this.client) return;
         this.client.send(text, isGameCommand);
+    }
+
+    /** Mudlet's `mEncodingWarningIssued`: once per encoding, not once per
+     *  command, so a script sending in a loop doesn't paper the screen. Reset by
+     *  {@link setServerEncoding} / {@link noteNegotiatedEncoding}, because the
+     *  new encoding may have no trouble with what the old one couldn't say. */
+    private encodingWarningIssued = false;
+
+    /**
+     * Warn when a command cannot survive the trip to the game — cTelnet::sendData
+     * posts this before sending anyway, and so do we: the server may still make
+     * something of what arrives, and silently dropping the command would be
+     * worse than sending it mangled.
+     *
+     * Warning here rather than in MudClient is deliberate: the encoding belongs
+     * to the profile, not the socket, and a player typing at a client that isn't
+     * connected yet has just as much use for the notice.
+     */
+    private warnIfUnencodable(text: string): void {
+        if (this.encodingWarningIssued || !text) return;
+        if (canEncodeForServer(text, this.serverEncoding)) return;
+        this.encodingWarningIssued = true;
+        const styled = `\x1b[33m[ WARN ]  - Tried to send '${text}' to the game,`
+            + ` but it is unlikely to understand it.\x1b[0m`;
+        // Buffer as well as renderer, for the same reason echoCommand does it:
+        // a line the player can read has to be a line getLines() and the cursor
+        // APIs can see.
+        this.consoles.get('main')?.appendLine(new AnsiAwareBuffer(styled));
+        this.events.emit('message', styled, 'script', Date.now());
     }
 
     /** Send credentials/secrets that must NEVER be echoed locally — regardless of
@@ -440,20 +470,24 @@ export class MudSession {
     }
 
     setServerEncoding(name: string): boolean {
-        const label = String(name ?? '');
-        if (!SUPPORTED_SERVER_ENCODINGS.some(e => e.toLowerCase() === label.toLowerCase())) return false;
+        // Canonical, not verbatim: "ISO 8859-1", "iso-8859-1" and "Latin-1" are
+        // one encoding under three spellings, and getServerEncoding() has to
+        // answer with the one getServerEncodingsList() offered.
+        const label = canonicalServerEncoding(String(name ?? ''));
+        if (!label) return false;
         // A client that refuses it (it decodes, we only label) leaves both sides
         // as they were, so the caller isn't told a switch happened that didn't.
         if (this.client && !this.client.setServerEncoding(label)) return false;
         this.serverEncoding = label;
+        this.encodingWarningIssued = false;
         return true;
     }
 
     /** Called when CHARSET negotiation settles on a name, so the profile-level
      *  setting reflects what the connection actually agreed. */
     noteNegotiatedEncoding(name: string): void {
-        const match = SUPPORTED_SERVER_ENCODINGS.find(e => e.toLowerCase() === name.toLowerCase());
-        this.serverEncoding = match ?? name;
+        this.serverEncoding = canonicalServerEncoding(name) ?? name;
+        this.encodingWarningIssued = false;
     }
 
     /** Mudlet `getServerEncodingsList()`. The fixed set of encodings mudix can

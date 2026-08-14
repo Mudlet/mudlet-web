@@ -14,6 +14,12 @@ and this file is the provenance record for both:
 | `src/mudlet-lua/lua/` | `src/scripting/lua/mudlet-lua/` | this tree — the Lua runtime, served at `/lua/` |
 | `src/packages/` | `src/import/defaults/` | the packages Mudlet preinstalls, one directory each |
 
+A third piece of Mudlet is vendored on its own schedule and by its own script:
+`src/TGameDetails.h` — the catalogue of games Mudlet ships with — becomes
+`src/mud/games/bundledGames.ts` via `node scripts/sync-mudlet-games.mjs`. It is
+separate because it is one C++ header parsed into data rather than files copied,
+and because it moves far less often. Re-run it when the pin below moves.
+
 They were one tree until Mudlet moved every default package into `src/packages/`
 ([#9626](https://github.com/Mudlet/Mudlet/pull/9626)). Note the second is only a
 *supply* of packages: vendoring one does not preinstall it, and nothing there is

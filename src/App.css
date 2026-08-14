@@ -1016,6 +1016,138 @@ body.is-sorting {
     justify-content: center;
 }
 
+/* ── Bundled games ──────────────────────────────────────────────────────────
+   The games Mudlet ships with, offered below the player's own profiles. Quieter
+   than a profile tile on purpose: these are not profiles yet, and the eye should
+   land on the ones that are. */
+.bundled-games {
+    margin-top: 20px;
+}
+
+.bundled-games__header {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+}
+
+.bundled-games__title {
+    font-family: var(--font-ui), sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.bundled-games__hint {
+    font-family: var(--font-ui), sans-serif;
+    font-size: 11px;
+    color: var(--text-dim);
+}
+
+.bundled-games__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+}
+
+.bundled-games__more {
+    display: flex;
+    justify-content: center;
+    margin-top: 10px;
+}
+
+.bundled-game-tile {
+    position: relative;
+    /* The artwork layer sits at z-index -1, so the tile needs its own stacking
+       context or it would slide behind the page background instead. */
+    isolation: isolate;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px;
+    background: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+/* The game's logo, full-bleed and faint — colour and character behind the text
+   rather than a badge beside it. `--game-icon` is set per tile by
+   BundledGameGrid; where it is unset this declaration is invalid and the layer
+   draws nothing. */
+.bundled-game-tile::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    background-image: var(--game-icon);
+    background-size: cover;
+    background-position: center;
+    opacity: 0.14;
+    pointer-events: none;
+    transition: opacity 0.15s;
+}
+
+.bundled-game-tile:hover {
+    border-color: color-mix(in srgb, var(--accent-dim) 50%, var(--border));
+    box-shadow: inset 0 1px 0 var(--border-hi), var(--shadow-card);
+}
+
+/* Brighter under the pointer — the tile the player is considering shows more of
+   the game it belongs to. */
+.bundled-game-tile:hover::before {
+    opacity: 0.28;
+}
+
+.bundled-game-tile__header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+/* A vendored logo keeps the 120×30 Mudlet draws it at (inherited from
+   .connection-avatar). Only the name-tile fallback flexes to fill the row: it
+   has no shrink-to-fit measurement behind it the way a profile tile does. */
+.bundled-game-tile__avatar.connection-avatar--name {
+    width: auto;
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
+}
+
+.bundled-game-tile__name {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+/* The tile's text sits over artwork rather than a flat panel, so it needs its
+   own separation from whatever happens to be behind it. */
+.bundled-game-tile__body > * {
+    text-shadow: 0 1px 3px var(--bg, rgba(0, 0, 0, 0.75));
+}
+
+.bundled-game-tile__body {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+}
+
+/* Two lines of blurb, clipped — the whole description is on the tile's title. */
+.bundled-game-tile__teaser {
+    font-family: var(--font-ui), sans-serif;
+    font-size: 11px;
+    line-height: 1.35;
+    color: var(--text-dim);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
 /* Ghost "add connection" tile that closes out the grid. Dashed outline and
    centered plus keep it visually distinct from the real profile tiles. */
 .connection-tile--add {

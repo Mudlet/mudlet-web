@@ -183,6 +183,18 @@ end
 -- so a cache hit always means the widget is already there. Invalidated on
 -- deleteLabel so a recycled name can never match a stale entry.
 __mwGeo = {}
+
+-- Drop a name's cached geometry. Every call that creates or destroys a widget
+-- has to do this, because both write geometry straight to JS without going
+-- through the cached setters above — leave a stale entry behind and the next
+-- moveWindow/resizeWindow to the widget's *previous* coordinates looks like a
+-- no-op and is skipped, stranding it at whatever size it was created with. That
+-- is not only a delete-then-recreate problem: createMiniConsole on an existing
+-- name repositions it too.
+function __mudix_forget_geometry(name)
+    if type(name) == 'string' then __mwGeo[name] = nil end
+end
+
 do
     local geo = __mwGeo
     local _moveWindow, _resizeWindow = moveWindow, resizeWindow
@@ -1293,7 +1305,7 @@ end
 -- Mudlet deleteLabel(name) → true on success, (false, errMsg) when the label
 -- doesn't exist.
 function deleteLabel(name)
-    __mwGeo[name] = nil   -- drop cached geometry so a recycled name re-applies fresh
+    __mudix_forget_geometry(name)
     if __deleteLabel(name) then return true end
     return false, "label name '" .. tostring(name) .. "' not found"
 end
@@ -1302,11 +1314,13 @@ end
 -- success, (false, errMsg) when the target doesn't exist. The main command line
 -- is protected (Mudlet refuses to delete it).
 function deleteMiniConsole(name)
+    __mudix_forget_geometry(name)
     if __deleteMiniConsole(name) then return true end
     return false, "miniconsole \"" .. tostring(name) .. "\" does not exist"
 end
 
 function deleteCommandLine(name)
+    __mudix_forget_geometry(name)
     if name == "main" then
         return false, "the main command line cannot be deleted"
     end
@@ -1315,6 +1329,7 @@ function deleteCommandLine(name)
 end
 
 function deleteScrollBox(name)
+    __mudix_forget_geometry(name)
     if __deleteScrollBox(name) then return true end
     return false, "scroll box \"" .. tostring(name) .. "\" does not exist"
 end
@@ -1365,6 +1380,7 @@ do
             return false, "a miniconsole/userwindow with the name '" .. tostring(name)
                 .. "' already exists"
         end
+        __mudix_forget_geometry(name)
         return _rawCreateLabel(...)
     end
 
@@ -1376,6 +1392,7 @@ do
             local parented = type(a[1]) == 'string' and type(a[2]) == 'string'
             local name = parented and a[2] or a[1]
             local existed = __windowType(name) == kind
+            __mudix_forget_geometry(name)
             local r = raw(...)
             if existed then
                 return false, noun .. " '" .. tostring(name) .. "' already exists, moving/resizing '"
@@ -1392,6 +1409,7 @@ do
         if __windowType(name) == 'label' then
             return nil, "label with the name '" .. tostring(name) .. "' already exists"
         end
+        __mudix_forget_geometry(name)
         return _rawOpenUserWindow(name, ...)
     end
 
@@ -1403,6 +1421,7 @@ do
                 error(who .. ": bad argument #1 type (name as string expected, got "
                     .. type(name) .. "!)", 2)
             end
+            __mudix_forget_geometry(name)
             return raw(name, ...)
         end
     end
@@ -1527,6 +1546,7 @@ end
 -- (nil, errMsg). The set/property functions → true, or (nil, errMsg) when the
 -- named text edit doesn't exist. The __* primitives return value-or-false.
 function deleteTextEdit(name)
+    __mudix_forget_geometry(name)
     if __deleteTextEdit(name) then return true end
     return false, "text edit name '" .. tostring(name) .. "' not found"
 end
@@ -4811,10 +4831,12 @@ do
         setGroup          = noPeers("setGroup", 2, NO_SUCH),
         disconnect        = noPeers("disconnect", 1, NO_SUCH),
         ignore            = noPeers("ignore", 1, NO_SUCH),
-        accept            = noPeers("accept", 1, NO_SUCH),
-        deny              = noPeers("deny", 1, NO_SUCH),
-        peek              = noPeers("peek", 1, NO_SUCH),
-        request           = noPeers("request", 1, NO_SUCH),
+        -- accept / deny / setDoNotDisturb / startServer / stopServer / request
+        -- / peek are deliberately absent: their registration is commented out in
+        -- Mudlet's TLuaInterpreter.cpp ("Tagging for possible 4.21.1 inclusion"),
+        -- so mmcp.accept is nil there too. Stubbing them would be worse than
+        -- leaving the gap — a package that feature-detects mmcp.accept would
+        -- take a branch real Mudlet never offers it.
         -- An empty peer list is reported as nil, not an empty table.
         getClientList     = function() warnOnce("getClientList") return nil end,
         displayClientList = function() warnOnce("displayClientList") return nil end,
@@ -4846,8 +4868,6 @@ do
             __mudix_mmcp_chat_name = name
             return true
         end,
-        startServer       = function() warnOnce("startServer") return nil, "MMCP is not available in this client" end,
-        stopServer        = function() warnOnce("stopServer") return nil, "MMCP is not available in this client" end,
     }
 end
 -- Local chat name backing mmcp.chatName; defaults to the profile name the way

@@ -29,12 +29,31 @@ export function installMapBindings({
     evaluateMapInfo,
     evaluateExitWeightFilter,
 }: BindingContext): void {
+    // Mudlet's profile always has its map folder — TMap makes it at load, long
+    // before anything saves — and scripts write into it by name on that
+    // assumption. Make it here for the same reason, so a save that names a file
+    // inside it isn't also the call that has to create it.
+    if (vfs) {
+        try { vfs.mkdir(`${vfs.profilePath}/map`); } catch { /* already there */ }
+    }
+
     // A bare or relative map name resolves against the profile directory, not
     // against whatever the process's working directory happens to be — a spec
     // run's is the source tree, and a map saved there is a map nobody finds
     // again. Absolute paths are left alone.
     const resolveMapPath = (location: string): string =>
         location.startsWith('/') ? location : `${vfs?.profilePath ?? ''}/${location}`;
+
+    /** Whether a save can land at `target`. The VFS creates missing parents on
+     *  write, which is convenient everywhere else and wrong here: Mudlet opens
+     *  the file with QFile and a save into a directory that does not exist
+     *  fails, so `saveMap("/nosuchdirectory/x.dat")` has to answer false rather
+     *  than quietly conjure the directory. */
+    const parentExists = (target: string): boolean => {
+        const dir = target.slice(0, target.lastIndexOf('/'));
+        if (!vfs || dir === '') return true;   // writing into the VFS root
+        return vfs.stat(dir)?.type === 'dir';
+    };
 
     /** `<profile>/map/<yyyy-MM-dd#hh-mm-ss>map.dat`, the name Mudlet gives a
      *  save that was not told where to go. */
@@ -171,6 +190,7 @@ export function installMapBindings({
             ? resolveMapPath(location)
             : defaultMapPath();
         if (!vfs || !target) return false;
+        if (!parentExists(target)) return false;
         try { vfs.writeBinaryFile(target, bytes); }
         catch { return false; }
         return true;
