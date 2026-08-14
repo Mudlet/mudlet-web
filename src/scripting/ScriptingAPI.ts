@@ -2000,6 +2000,12 @@ export class ScriptingAPI {
         return this.host.getButtonStateByName(name);
     }
 
+    /** Which of Mudlet's button refusals applies to `name` — see
+     *  ScriptingEngine.buttonKindByName. */
+    buttonKind(name: string): 'missing' | 'plain' | 'pushdown' {
+        return this.host.buttonKindByName(name);
+    }
+
     /** Mudlet `setButtonStyleSheet(name, css)`. Stores a CSS string on the
      *  ButtonNode; the renderer applies it inline. Returns false when not
      *  found. */

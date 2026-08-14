@@ -2629,12 +2629,29 @@ export class ScriptingEngine implements EngineHost {
 
     /** Mudlet `setButtonState(name, state)`. Flips the buttonState on the named
      *  two-state button. */
+    /**
+     * What `name` refers to, so the Lua side can say which of Mudlet's several
+     * refusals applies: no such button, or a button that has no state to set
+     * because it is not a two-state one.
+     */
+    buttonKindByName(name: string): 'missing' | 'plain' | 'pushdown' {
+        const buttons = useAppStore.getState().connectionButtons[this.connectionId] ?? [];
+        const target = buttons.find(b => !b.isGroup && b.name === name);
+        if (!target) return 'missing';
+        return target.isPushDown ? 'pushdown' : 'plain';
+    }
+
+    /** True when the state actually changed. Mudlet answers false for a button
+     *  that was already in the state asked for — "nothing to do" rather than
+     *  "could not do it", which is why the caller can tell them apart only by
+     *  having checked the name first. */
     setButtonStateByName(name: string, state: boolean): boolean {
         if (!name) return false;
         const store = useAppStore.getState();
         const buttons = store.connectionButtons[this.connectionId] ?? [];
         const target = buttons.find(b => !b.isGroup && b.name === name);
         if (!target) return false;
+        if (!!target.buttonState === !!state) return false;
         store.updateButton(this.connectionId, target.id, { buttonState: !!state });
         return true;
     }

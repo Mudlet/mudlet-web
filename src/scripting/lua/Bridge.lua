@@ -6208,6 +6208,95 @@ do
     end
 end
 
+-- ── Button state ───────────────────────────────────────────────────────────
+-- setButtonState/getButtonState take a button by name OR by item ID, and Mudlet
+-- has a different answer for each way of getting it wrong. They are all here
+-- rather than in JS because the wordings are the contract — a script branches on
+-- "is not a push-down button" quite differently from "no button ... found" — and
+-- because only Lua can return the (nil, msg) pair they use to say so.
+--
+-- An item ID never resolves here: mudix identifies stored items by uuid, so a
+-- number can only ever be a miss. The refusal it earns is still Mudlet's, since
+-- a script that kept an ID from somewhere deserves to be told what happened to
+-- it rather than to be handed a nil.
+do
+    local function buttonTarget(who, ref, argIndex)
+        local t = type(ref)
+        if t == 'number' then
+            if ref < 0 then
+                return nil, "item ID as number must be equal or greater than zero, got " .. tostring(ref)
+            end
+            return nil, "no button item with ID " .. string.format("%d", ref) .. " found"
+        end
+        if t ~= 'string' then
+            error(who .. ": bad argument #" .. argIndex .. " type (button name as string or item ID as"
+                .. " number expected, got " .. t .. "!)", 3)
+        end
+        if ref == '' then
+            return nil, "item name must not be an empty string"
+        end
+        local kind = __mudix_button_kind(ref)
+        if kind == 'missing' then
+            return nil, "no button item with name '" .. ref .. "' found"
+        end
+        if kind ~= 'pushdown' then
+            return nil, "item with name '" .. ref .. "' is not a push-down button"
+        end
+        return ref
+    end
+
+    function getButtonState(...)
+        -- With no argument at all this is a different question: Mudlet answers
+        -- the console's own mButtonState, which is 1 or 2 rather than a boolean
+        -- and which only a real click writes. Nothing here can click, so it
+        -- stays at the "not pressed" end.
+        if select('#', ...) == 0 then return 1 end
+        local name, err = buttonTarget("getButtonState", ..., 1)
+        if not name then return nil, err end
+        return __getButtonState(name) and true or false
+    end
+
+    function setButtonState(ref, state, ...)
+        if select('#', ...) > 0 or (state ~= nil and type(state) ~= 'boolean') then
+            error("setButtonState: bad argument #2 type (state as boolean expected, got "
+                .. type(state) .. "!)", 2)
+        end
+        local name, err = buttonTarget("setButtonState", ref, 1)
+        if not name then return nil, err end
+        -- false means "it was already like that", not "that did not work" — the
+        -- caller has already been told the name is good by getting this far.
+        return __setButtonState(name, state and true or false)
+    end
+end
+
+-- ── Button style sheet and toolbar visibility ──────────────────────────────
+-- Same split as the button state above: the type is a raise, the miss is a
+-- reported value, and the wording is the contract.
+do
+    local _rawSetButtonStyleSheet = setButtonStyleSheet
+    function setButtonStyleSheet(name, css)
+        __mudix_check_string(name, "setButtonStyleSheet", 1, "button name")
+        __mudix_check_string(css, "setButtonStyleSheet", 2, "style sheet")
+        if _rawSetButtonStyleSheet(name, css) then return true end
+        return nil, "no button named '" .. name .. "' found"
+    end
+
+    -- Both answer nothing whatsoever, including for a name that matches no
+    -- toolbar: Mudlet walks its toolbar list and simply does nothing when
+    -- nothing matches, so a typo here is silent by design and a return value
+    -- would be inventing a contract upstream does not have.
+    local _rawShowToolBar, _rawHideToolBar = showToolBar, hideToolBar
+    function showToolBar(name)
+        __mudix_check_string(name, "showToolBar", 1, "toolbar name")
+        _rawShowToolBar(name)
+    end
+
+    function hideToolBar(name)
+        __mudix_check_string(name, "hideToolBar", 1, "toolbar name")
+        _rawHideToolBar(name)
+    end
+end
+
 -- ── Package/module argument contracts ──────────────────────────────────────
 -- Every one of these takes a name or a path, and each used to answer a wrong
 -- type the same way it answers a name that simply is not installed — so a script

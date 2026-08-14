@@ -108,9 +108,12 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
             Number(orientation) || 0,
             Number(location) || 0,
         ));
-    lua.global.set('setButtonState', (name: unknown, state: unknown) =>
+    // Bridge.lua owns the argument contract and every refusal wording — see
+    // "Button state" there. These only report what is present.
+    lua.global.set('__mudix_button_kind', (name: unknown) => api.buttonKind(String(name ?? '')));
+    lua.global.set('__setButtonState', (name: unknown, state: unknown) =>
         api.setButtonState(String(name ?? ''), !!state));
-    lua.global.set('getButtonState', (name: unknown) =>
+    lua.global.set('__getButtonState', (name: unknown) =>
         api.getButtonState(String(name ?? '')));
     lua.global.set('setButtonStyleSheet', (name: unknown, css: unknown) =>
         api.setButtonStyleSheet(String(name ?? ''), String(css ?? '')));

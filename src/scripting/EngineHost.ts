@@ -177,8 +177,11 @@ export interface EngineHost {
 
     // ── Buttons & scripts ────────────────────────────────────────────────────
 
+    /** True when the state actually changed; false when it already was that. */
     setButtonStateByName(name: string, state: boolean): boolean;
     getButtonStateByName(name: string): boolean | null;
+    /** Which of Mudlet's button refusals applies to `name`. */
+    buttonKindByName(name: string): 'missing' | 'plain' | 'pushdown';
     setButtonStyleSheetByName(name: string, css: string): boolean;
     setScriptByName(name: string, code: string, pos: number): number;
     getScriptByName(name: string, pos: number): { code: string; id: number } | null;
@@ -280,6 +283,7 @@ export const NULL_ENGINE_HOST: EngineHost = Object.freeze({
 
     setButtonStateByName: () => false,
     getButtonStateByName: () => null,
+    buttonKindByName: () => 'missing' as const,
     setButtonStyleSheetByName: () => false,
     setScriptByName: () => -1,
     getScriptByName: () => null,
