@@ -4,14 +4,6 @@ import { useModalFocus } from './components/useModalFocus';
 import { ProxyInfoModal } from './ProxyInfoModal';
 import { ProxyWhyModal } from './ProxyWhyModal';
 import { connectionNameTaken, DEFAULT_PROXY_URL, proxyCanInspectCertificates, useAppStore, type ConnectionMode, type MudConnection } from '../storage';
-import { BUNDLED_GAMES, findBundledGame } from '../mud/games/bundledGames';
-
-/** The bundled games worth offering: one with no port is not something this
- *  form could dial (Mudlet's tutorial runs against a local stub). Sorted by
- *  name so the list reads as a directory rather than as upstream's file order. */
-const OFFERED_GAMES = BUNDLED_GAMES.filter(g => g.port > 0 && g.hostUrl)
-    .slice()
-    .sort((a, b) => a.name.localeCompare(b.name));
 
 /** Preview of the proxy URL the profile will dial. Mirrors `connectionUrl()` in
  *  storage/schema.ts — keep the two in step. */
@@ -85,25 +77,6 @@ export function ConnectionFormModal({ connection, firstConnection, busy, onAdd, 
 
     const [proxyModalOpen, setProxyModalOpen] = useState(false);
     const [proxyWhyOpen, setProxyWhyOpen] = useState(false);
-    // Which bundled game the fields were last filled from; '' means the user is
-    // typing their own. Only tracked so the picker shows what was chosen — the
-    // fields stay editable afterwards, and nothing re-reads the catalogue.
-    const [game, setGame] = useState('');
-
-    /** Fill the form from Mudlet's bundled catalogue. Everything the entry knows
-     *  is copied in, description included, so the profile starts out looking the
-     *  way it would in Mudlet — and the user can still edit any of it. */
-    const pickGame = (gameName: string) => {
-        setGame(gameName);
-        const picked = findBundledGame(gameName);
-        if (!picked) return;
-        setMode('mud');
-        setName(picked.name);
-        setHost(picked.hostUrl);
-        setPort(String(picked.port));
-        setTls(picked.tlsEnabled);
-        setDescription(picked.description);
-    };
 
     const ref = useModalFocus<HTMLDivElement>(onClose, { autoFocus: true, closeOnEscape: true });
 
@@ -195,22 +168,6 @@ export function ConnectionFormModal({ connection, firstConnection, busy, onAdd, 
                                 WebSocket
                             </button>
                         </div>
-
-                        {!isEditing && (
-                            <FormField label="Game" htmlFor="cs-game">
-                                <select
-                                    id="cs-game"
-                                    className="input"
-                                    value={game}
-                                    onChange={e => pickGame(e.target.value)}
-                                >
-                                    <option value="">Choose a game, or fill in the fields below…</option>
-                                    {OFFERED_GAMES.map(g => (
-                                        <option key={g.name} value={g.name}>{g.name}</option>
-                                    ))}
-                                </select>
-                            </FormField>
-                        )}
 
                         <FormField label="Name" htmlFor="cs-name">
                             <Input
