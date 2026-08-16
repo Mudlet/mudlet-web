@@ -57,6 +57,9 @@ export function installTextEditBindings({ lua, api, channel }: BindingContext): 
     // into the session clipboard for paste()/appendBuffer().
     lua.global.set('copy', (name?: unknown) =>
         api.copy(typeof name === 'string' ? name : undefined));
+    // Mudlet `cut()`. copy() plus the deletion of what was copied. No window
+    // argument in Mudlet — it only ever acts on the main console.
+    lua.global.set('cut', () => api.cut());
     // Mudlet `paste([window])`. Pastes the clipboard at the cursor (or
     // appends at the end when the cursor is on the last line).
     lua.global.set('paste', (name?: unknown) =>

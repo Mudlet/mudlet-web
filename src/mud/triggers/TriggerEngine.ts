@@ -183,6 +183,10 @@ type AndState = {
     startLine: number;
     waitUntilLine: number;
     captures: Capture[][];
+    /** What each condition matched, kept alongside its captures because a
+     *  `multimatches` row leads with the whole match (Mudlet's capture list
+     *  starts at PCRE group 0) before the capture groups. */
+    matchedTexts: string[];
     namedGroups: Array<Record<string, string>>;
 };
 
@@ -241,12 +245,21 @@ function pcreToMatchResult(m: PcreMatch): MatchResult {
     };
 }
 
+// Mudlet compiles every trigger regex with PCRE2_UTF | PCRE2_UCP (TTrigger.cpp),
+// so `\w`/`\d`/`\S` classify by Unicode property rather than by ASCII and a
+// non-Latin line matches the same patterns a Latin one does. The wasm build here
+// takes options as start-of-pattern verbs rather than a flags word; PCRE2 accepts
+// a run of them, so a pattern carrying its own `(*...)` still compiles. Note the
+// library runs in 16-bit mode, which makes UTF mean UTF-16: offsets stay in the
+// code units JS strings are indexed by, so nothing downstream has to convert.
+const UNICODE_VERBS = '(*UTF)(*UCP)';
+
 /**
  * Compile a PCRE pattern. Returns null if compilation fails, with the failure
  * sticky-cached so we don't retry on every match.
  */
 function compilePcre(pattern: string): PcreInstance | null {
-    try { return new PCRE(pattern); }
+    try { return new PCRE(UNICODE_VERBS + pattern); }
     catch { return null; }
 }
 
@@ -527,10 +540,20 @@ export class TriggerEngine {
         const register = (re: PcreInstance) => { instances.push(re); };
         let compiled: CompiledEntry | null = null;
 
+        // Mudlet compacts a blank pattern out of the list as it stores the
+        // trigger (TTrigger::setRegexCodeList), so nothing downstream ever sees
+        // one; a prompt pattern is the single kind that legitimately carries no
+        // text. The OR branch would drop a blank anyway — buildMatcher refuses
+        // it — but an AND trigger would turn it into a condition nothing can
+        // satisfy, and the trigger then silently never fires (Mudlet#9851). The
+        // editor filters blank rows out, so these arrive from a perm*Trigger()
+        // call or a hand-written package XML with an empty <string>.
+        const patterns = item.patterns.filter(p => p.text !== '' || p.type === 'prompt');
+
         if (!item.isGroup && item.multiline) {
             // AND trigger: compile as a sequence of conditions
             const conditions: Array<{ test: Matcher | null; spacer: number }> = [];
-            for (const p of item.patterns) {
+            for (const p of patterns) {
                 if (p.type === 'lineSpacer') {
                     const n = parseInt(p.text, 10);
                     conditions.push({ test: null, spacer: isNaN(n) || n < 1 ? 1 : n });
@@ -547,7 +570,7 @@ export class TriggerEngine {
             const tests: Matcher[] = [];
             let testAll: ((line: string) => MatchResult[]) | null = null;
 
-            for (const pattern of item.patterns) {
+            for (const pattern of patterns) {
                 const test = buildMatcher(pattern, register);
                 if (test) tests.push(test);
 
@@ -876,6 +899,7 @@ export class TriggerEngine {
                 startLine: currentLine,
                 waitUntilLine: currentLine,
                 captures: [result.captures],
+                matchedTexts: [result.matchedText],
                 namedGroups: [result.namedGroups ?? {}],
             };
             this.andStates.set(item.id, state);
@@ -904,6 +928,7 @@ export class TriggerEngine {
             if (!result) break; // didn't match this line
 
             state.captures.push(result.captures);
+            state.matchedTexts.push(result.matchedText);
             state.namedGroups.push(result.namedGroups ?? {});
             state.nextIdx++;
             // try next condition on same line
@@ -918,7 +943,7 @@ export class TriggerEngine {
                 trigger: item,
                 captures: allCaptures,
                 matchedText: '',
-                multimatches: state.captures,
+                multimatches: state.captures.map((c, i) => [state.matchedTexts[i], ...c]),
                 namedGroups: Object.keys(lastNamedGroups).length > 0 ? lastNamedGroups : undefined,
             };
         }

@@ -2513,6 +2513,11 @@ export class ScriptingEngine implements EngineHost {
         const patterns: TriggerNode['patterns'] = isGroup
             ? []
             : patternStrings.map(text => ({ type: kind, text }));
+        // Mudlet's startPerm*Trigger passes `patterns.size() > 1` as the
+        // multiline flag, counting the list as handed in — blank entries are
+        // dropped later, when the trigger stores its patterns, so a two-entry
+        // list with one blank still makes an AND trigger whose captures land in
+        // `multimatches` rather than `matches`.
         const uuid = store.addTrigger(this.connectionId, {
             name,
             enabled: true,
@@ -2523,7 +2528,7 @@ export class ScriptingEngine implements EngineHost {
             language: 'lua',
             fireLength: 0,
             multipleMatches: false,
-            multiline: false,
+            multiline: patternStrings.length > 1,
             delta: 0,
             isFilter: false,
         });

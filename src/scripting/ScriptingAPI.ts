@@ -3660,6 +3660,25 @@ export class ScriptingAPI {
     }
 
     /**
+     * Mudlet `cut()`. `copy()` and then delete what was copied, so the clipboard
+     * holds exactly the text the line lost (TConsole::cut → TBuffer::cut). Takes
+     * no window argument in Mudlet — it always acts on the main console — and is
+     * a no-op without a selection there.
+     */
+    cut(): void {
+        if (!this.selection || !this.selectionMatches('main')) return;
+        const sel = this.selection;
+        this.copy('main');
+        const buf = this.resolveBuffer(sel.windowName);
+        if (!buf) return;
+        const start = Math.max(0, Math.min(sel.start, buf.length));
+        const end = Math.max(start, Math.min(sel.start + sel.length, buf.length));
+        buf.remove([start, end]);
+        this.selection = null;
+        if (!this.inTriggerProcessing) buf.rerender();
+    }
+
+    /**
      * Mudlet `appendBuffer([window])`. Appends the clipboard's rich text (from
      * the last `copy()`) as a new line at the end of the named console's buffer.
      * No-op until something has been copied. Mirrors TConsole::appendBuffer.
@@ -3684,7 +3703,11 @@ export class ScriptingAPI {
         const con = this.outputConsole(windowName);
         const buf = con.getBuffer();
         if (buf && con.getLineNumber() < con.getLineCount()) {
-            const at = Math.max(0, Math.min(con.getCursorColumn(), buf.text.length));
+            const at = con.getCursorColumnRaw();
+            // Past the end of the line, Mudlet's insertInLine pads out to the
+            // cursor (expandLine) rather than clamping back to it, so the pasted
+            // text lands at the column that was asked for.
+            if (at > buf.length) buf.insert(buf.length, ' '.repeat(at - buf.length));
             buf.insertBuffer(at, this.clipboard.clone());
             if (!this.inTriggerProcessing) buf.rerender();
             return;

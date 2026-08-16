@@ -380,6 +380,16 @@ export class Console {
         return Math.min(this.cursorCol, lineLen);
     }
 
+    /**
+     * The column as it was set, unclamped. Mudlet keeps `mUserCursor.x()` raw
+     * and only the operations that write through it decide what a column past
+     * the end of the line means — `paste` pads out to it, which the clamped
+     * reading above cannot express.
+     */
+    getCursorColumnRaw(): number {
+        return this.cursorCol;
+    }
+
     setCursorColumn(col: number): boolean {
         if (!Number.isFinite(col) || col < 0) return false;
         this.cursorCol = Math.trunc(col);

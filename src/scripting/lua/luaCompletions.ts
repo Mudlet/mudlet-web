@@ -292,6 +292,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('createMapper',      '([parent,] x, y, w, h) → bool',        'Create a positioned mapper widget embedded in the main window or a userwindow (shares state with the dock widget). Singleton — calling again repositions it.'),
     fn('createBuffer',    '(name)',        'Create a named off-screen text buffer (like a hidden miniconsole) for formatting/storing rich text'),
     fn('copy',            '([window])',    'Copy the current selection (with formatting) into the clipboard for paste()/appendBuffer()'),
+    fn('cut',             '()',            'Copy the main console\'s current selection into the clipboard and delete it from the line'),
     fn('paste',           '([window])',    'Paste the copied rich text at the cursor (or append at the end of the last line)'),
     fn('appendBuffer',    '([window])',    'Append the copied rich text (see copy) as a new line to a window or buffer'),
     fn('clearVisitedLinks', '()',          'Forget which clickable links have been visited. mudix tracks no visited-link state, so this is a no-op (kept for Mudlet script portability).'),
