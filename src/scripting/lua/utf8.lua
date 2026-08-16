@@ -941,7 +941,27 @@ return matcher
 end
 
 -- string.find
+--
+-- mudix: match/gmatch/gsub below all reach the pattern engine through here, so
+-- this one function is where the native matcher goes in. It answers nil for a
+-- pattern a JS regex cannot express (%b, %f, position captures,
+-- back-references) and the generated matcher below takes those; false is a
+-- genuine no-match. See src/scripting/lua/utf8Patterns.ts.
 local function utf8find(str, regex, init, plain)
+if __mudix_utf8_find and type(str) == 'string' then
+	local found = __mudix_utf8_find(str, regex, init, plain)
+	if found == false then return nil end
+	if found ~= nil then
+		-- A JS array arrives 0-indexed, and no capture is ever nil, so the
+		-- first hole is the end of it.
+		local out, n = {}, 0
+		while found[n] ~= nil do
+			out[n + 1] = found[n]
+			n = n + 1
+		end
+		return unpack(out, 1, n)
+	end
+end
 local matcher = cache[regex] or matcherGenerator(regex, plain)
 return matcher:process(str, init)
 end

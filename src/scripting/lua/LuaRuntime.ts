@@ -10,6 +10,7 @@ import type {IScriptingRuntime, CaptureSpan, LuaGlobalEntry} from '../IScripting
 import type {ScriptingAPI} from '../ScriptingAPI';
 import type {ProfileVFS} from '../vfs/ProfileVFS';
 import UTF8 from './utf8.lua?raw';
+import {findLuaPattern} from './utf8Patterns';
 import VFS_LUA from './VFS.lua?raw';
 import LUAGLOBAL from './LuaGlobal.lua?raw';
 import BRIDGE_LUA from './Bridge.lua?raw';
@@ -1856,6 +1857,7 @@ export class LuaRuntime implements IScriptingRuntime {
         this.lua.doStringSync(BRIDGE_LUA);
         await setupRex(this.lua);
         this.lua.doStringSync(EXEC_LUA);
+        this.installNativeUtf8Find();
         this.execModule(UTF8, 'utf8', 'utf8');
 
         // Built-in Lua files served read-only via the VFS at /lua/<relative-path>.
@@ -3115,6 +3117,30 @@ end`);
     private execModule(code: string, name: string, globalName: string): void {
         const result = this.execInner(code, name);
         if (result !== undefined && result !== null) this.lua.global.set(globalName, result);
+    }
+
+    /**
+     * The native matcher behind `utf8.find`, and so behind `utf8.match`,
+     * `gmatch` and `gsub` — utf8.lua routes all four through one local, which
+     * calls this first and keeps its own matcher for whatever this declines.
+     * See utf8Patterns.ts for why (ASCII-only classes, ~35k VM instructions a
+     * find). Bound before the module loads, though the Lua side looks it up per
+     * call, so a runtime without it still works.
+     *
+     * The result crosses as a flat array — wasmoon hands JS arrays over
+     * 0-indexed — of `start, end, capture…`, or `false` for "no match" as
+     * distinct from nil's "not my pattern, use yours".
+     */
+    private installNativeUtf8Find(): void {
+        this.lua.global.set('__mudix_utf8_find', (
+            subject: unknown, pattern: unknown, init: unknown, plain: unknown,
+        ) => {
+            if (typeof subject !== 'string' || typeof pattern !== 'string') return undefined;
+            const r = findLuaPattern(subject, pattern, init === undefined ? 1 : Number(init), !!plain);
+            if (r.kind === 'unsupported') return undefined;
+            if (r.kind === 'nomatch') return false;
+            return [r.start, r.end, ...r.captures];
+        });
     }
 
     // Mudlet parity (Host::raiseEvent): an event raised while another event is
