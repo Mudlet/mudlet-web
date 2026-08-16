@@ -458,6 +458,16 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "description": "Icesus is a free fantasy text RPG running since 1995. Actively developed, community-run, and full of deep systems.\n\nBuild a character from 27 races and 16 guilds. Fight in tactical party combat, explore the frozen Valley of Aegic, and earn your place in player-driven provinces.\n\nOld-school depth. Modern access. New players welcome.",
         "providesOwnUi": true,
         "iconFile": "icesus_480x120.png"
+    },
+    {
+        "name": "PhoenixMUD",
+        "hostUrl": "phoenixmud.net",
+        "port": 4000,
+        "tlsEnabled": false,
+        "websiteInfo": "<a href='https://phoenixmud.net'>Website</a><br><a href='https://phoenixmud.net/PhoenixMUD.mpackage'>Mudlet package</a>",
+        "icon": ":/icons/phoenixmud_480x120.png",
+        "description": "PhoenixMUD is a free classic DikuMUD, online since 1996. 20,685 rooms across 276 zones, 16 classes and 15 races, and 400+ levels of progression: 1-100 to Hero, then three full remort climbs.\n\nOur official Mudlet package installs itself on connect: GMCP vitals and effects panes, channel routing into chat windows, and an embedded mapper preloaded with the whole world. The browser client adds a World Atlas: a live map with fog-of-war and route-finding.\n\nNo payment of any kind, and character creation is open. Actively developed, with a friendly community that makes room for newcomers. New players welcome.",
+        "iconFile": "phoenixmud_480x120.png"
     }
 ];
 

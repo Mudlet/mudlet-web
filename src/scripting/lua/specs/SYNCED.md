@@ -6,7 +6,7 @@ every failing spec is a genuine mudix↔Mudlet parity gap, and re-syncing is a
 clean copy + diff.
 
 - Upstream: https://github.com/Mudlet/Mudlet/tree/development/src/mudlet-lua/tests
-- Synced from commit: `5c7157a024c30a07d6d8abeeee1dfcc903d3e358` (5c7157a024c30a07d6d8abeeee1dfcc903d3e358, 2026-08-14)
+- Synced from commit: `44d23ebfcb99909352133934efc143262cec666f` (development, 2026-08-15)
 
 ## Files
 
