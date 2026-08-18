@@ -93,7 +93,19 @@ const HIDDEN_FALLBACK_KEY = 'system.fallback_hidden';
 // round-trips with the map file (mirroring Mudlet, where zoom is map data, not
 // client config). It's an ordinary userData key — scripts can read it like any
 // other area user-data entry; getAreaZoom/setAreaZoom are just typed accessors.
-const AREA_ZOOM_KEY = 'system.2DMapZoom';
+//
+// This is Mudlet's OWN key for the same datum: TArea::mLast2DMapZoom only gets
+// a field of its own in map format v21, so a v20 save carries it in area
+// userData under `system.fallback_map2DZoom` (TMap::serialize) and a v17-v20
+// load reads it straight back out (TMap::restore). We write v20, so using the
+// same key means an area's zoom survives a round trip through real Mudlet
+// instead of being a mudix-private annotation.
+//
+// The value is in MUDLET UNITS — how many map units the shorter viewport edge
+// spans (larger = more map on screen = zoomed out) — never the renderer's
+// pixels-per-unit multiplier. Anything crossing into the renderer converts at
+// that boundary (see MapPanel's toRendererZoom).
+const AREA_ZOOM_KEY = 'system.fallback_map2DZoom';
 
 export const DEFAULT_FONT: MudletFont = {
     family: 'Bitstream Vera Sans Mono', style: 'Normal',
@@ -2260,15 +2272,21 @@ export class MapStore {
 
     /**
      * Per-area 2D-map zoom stored in the map file (area userData under
-     * {@link AREA_ZOOM_KEY}). Returns `undefined` when the area is missing or has
-     * no saved zoom (caller falls back to fitArea). Mirrors Mudlet's treatment of
-     * zoom as map data rather than client config.
+     * {@link AREA_ZOOM_KEY}), in Mudlet units. Returns `undefined` when the area
+     * is missing or has no usable saved zoom, in which case the caller opens at
+     * {@link DEFAULT_MAP_ZOOM}. Mirrors Mudlet's treatment of zoom as map data
+     * rather than client config.
+     *
+     * A value below {@link MIN_MAP_ZOOM} is treated as absent, exactly as
+     * TMap::restore does with the same key — it can only come from a corrupt or
+     * foreign write, and honouring it would open the area zoomed in past the
+     * limit the wheel itself enforces.
      */
     getAreaZoom(id: number): number | undefined {
         const raw = this.areas.get(id)?.userData[AREA_ZOOM_KEY];
         if (raw == null) return undefined;
         const z = Number(raw);
-        return Number.isFinite(z) && z > 0 ? z : undefined;
+        return Number.isFinite(z) && z >= MapStore.MIN_MAP_ZOOM ? z : undefined;
     }
 
     /**
@@ -2278,11 +2296,14 @@ export class MapStore {
      * handler calls this on every wheel tick; notifying would rebuild the whole
      * scene on each one. The value persists to IndexedDB the next time the map is
      * serialised (saveMap → toMudletMapForSave). Returns false when the area is
-     * missing or the zoom isn't a positive finite number.
+     * missing or the zoom is below {@link MIN_MAP_ZOOM} — TArea::set2DMapZoom
+     * silently ignores those too, and the floor is what stops a bad reading (a
+     * fit computed against a not-yet-laid-out 0×0 panel, say) from being written
+     * out and then restored on every subsequent open.
      */
     setAreaZoom(id: number, zoom: number): boolean {
         const area = this.areas.get(id);
-        if (!area || !Number.isFinite(zoom) || zoom <= 0) return false;
+        if (!area || !Number.isFinite(zoom) || zoom < MapStore.MIN_MAP_ZOOM) return false;
         area.userData[AREA_ZOOM_KEY] = String(zoom);
         return true;
     }

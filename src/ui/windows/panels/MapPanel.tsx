@@ -5,6 +5,9 @@ import type { AreaExitClickEventDetail, LodEventDetail, RoomClickEventDetail, Ro
 import type { WindowManager, MapControl, MapLoadProgress } from '../WindowManager';
 import type { MapEventEntry, MapInfoResult, MapInfoContributor, MapStore } from '../../../map/MapStore';
 import { MudixMapReader } from '../../../map/MudixMapReader';
+import {
+    MUDLET_MIN_MAP_ZOOM, applyAreaZoom, fitAreaWithHeadroom, toMudletZoom, toRendererZoom,
+} from '../../../map/mapZoom';
 import { applyMapperSettings, exportAreaImage } from '../../../map/mapImageExport';
 import { MudletHighlightOverlay } from '../../../map/MudletHighlightOverlay';
 import { MapSelectionOverlay } from '../../../map/MapSelectionOverlay';
@@ -37,48 +40,30 @@ function centerOnArea(renderer: MapRenderer, mapStore: MapStore): void {
     else renderer.camera.panToMapPoint(0, 0);
 }
 
-/** How far past "the whole area exactly fills the panel" the user may keep
- *  zooming out. The renderer's `fitToMapBounds` ends with `minZoom = zoom`, so
- *  every fitArea() pins the zoom-out floor to that exact fit — the wheel then
- *  stops dead with the area flush against the panel edges, and there's no way
- *  to pull back for context or to see where an area sits relative to its
- *  surroundings. Relaxing the floor afterwards restores that headroom. */
-const ZOOM_OUT_HEADROOM = 4;
-
-/** Fit the area, then relax the floor the fit just pinned (see
- *  {@link ZOOM_OUT_HEADROOM}). Use everywhere instead of `renderer.fitArea()`. */
-function fitAreaWithHeadroom(renderer: MapRenderer): void {
-    renderer.fitArea();
-    renderer.minZoom = renderer.minZoom / ZOOM_OUT_HEADROOM;
-}
-
-/**
- * Open an area at `savedZoom` (or fitted, when there is none), with a zoom-out
- * floor derived from the area's actual extent.
- *
- * The fit runs even when a saved zoom is about to replace it, because fitting
- * is the only thing that derives a floor from how big the area actually is.
- * The camera's own default floor is a fixed 0.05 with no relation to map size —
- * on any map larger than the viewport that sits far *above* the zoom needed to
- * see the whole thing, so restoring a saved zoom without fitting first leaves
- * the wheel pinned at a floor from which the map can never be framed. Every
- * previously-opened profile takes that path, so it is the common case, not the
- * edge one.
- */
-function applyAreaZoom(renderer: MapRenderer, savedZoom: number | null | undefined): void {
-    fitAreaWithHeadroom(renderer);
-    if (savedZoom == null) return;
-    // Never let the floor just derived clamp a view the user actually had.
-    if (savedZoom < renderer.minZoom) renderer.minZoom = savedZoom;
-    renderer.setZoom(savedZoom);
-}
-
-/** Open an area for the first time: apply its saved zoom (or fit when none),
- *  then center on the current room. Mudlet loads the map centered on the player
+/** Open an area for the first time: apply its saved zoom (or Mudlet's default
+ *  when it has none — see {@link applyAreaZoom}), then center on the current
+ *  room. Mudlet loads the map centered on the player
  *  room — or, with no known location, a fallback room it paints the marker on
  *  anyway (room 1, T2DMap::paintEvent / switchArea). When that marker room is in
  *  this area we center on it; otherwise on the area centroid via
  *  {@link centerOnArea}. Shared by the first sync and the late layout re-apply. */
+/**
+ * Push the panel's real pixel size into the renderer's camera, and report
+ * whether the camera now has a usable one.
+ *
+ * The library sizes its Konva stage from a ResizeObserver of its own, but the
+ * *camera* — which every zoom and fit calculation reads — is only updated when
+ * the container emits a `resize` event, so the panel has to say so. Skipping
+ * that leaves a camera reporting 0x0 while the map draws at full size, and
+ * every fit computed against it collapses to the `Math.max(1, width)` floor
+ * inside `computeFitZoom`: a zoom-out limit thousands of map units wide, and a
+ * garbage opening view.
+ */
+function syncCameraSize(renderer: MapRenderer, el: HTMLElement | null): boolean {
+    if (el && el.clientWidth > 0 && el.clientHeight > 0) el.dispatchEvent(new Event('resize'));
+    return toMudletZoom(renderer) != null;
+}
+
 function applyInitialView(renderer: MapRenderer, mapStore: MapStore, areaId: number): void {
     applyAreaZoom(renderer, mapStore.getAreaZoom(areaId));
     const markerRoom = mapStore.getPlayerRoom() ?? mapStore.getFallbackRoomId();
@@ -88,11 +73,6 @@ function applyInitialView(renderer: MapRenderer, mapStore: MapStore, areaId: num
         centerOnArea(renderer, mapStore);
     }
 }
-
-/** Mudlet's hard floor for the 2D map zoom (T2DMap csmMinXYZoom): the shorter
- *  viewport edge may never span fewer than this many map units, i.e. you can't
- *  zoom in any closer. Mirrored here so wheel/pinch zoom obeys the same limit. */
-const MUDLET_MIN_MAP_ZOOM = 3;
 
 interface MapPanelProps {
     id: string;
@@ -223,10 +203,19 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
         // profile. When the zoom actually changes (vs. a pure pan), schedule a
         // debounced background save so it survives a reload — the encode runs in
         // a worker, so frequent saves don't block the main thread.
-        const zoom = renderer.getZoom();
-        const prevZoom = manager.mapStore.getAreaZoom(areaId);
-        manager.mapStore.setAreaZoom(areaId, zoom);
-        if (prevZoom == null || Math.abs(prevZoom - zoom) > 1e-6) manager.scheduleMapSave();
+        //
+        // Stored in Mudlet units (see toMudletZoom) so it restores to the same
+        // view even when the panel is a different size next session, and so it
+        // means the same thing as the value getMapZoom/setMapZoom read and write
+        // through this very slot. Null while the panel has no laid-out size —
+        // there is no view worth recording yet, and writing one would pin the
+        // area to a garbage zoom on every future open.
+        const zoom = toMudletZoom(renderer);
+        if (zoom != null) {
+            const prevZoom = manager.mapStore.getAreaZoom(areaId);
+            manager.mapStore.setAreaZoom(areaId, zoom);
+            if (prevZoom == null || Math.abs(prevZoom - zoom) > 1e-6) manager.scheduleMapSave();
+        }
         const store = useAppStore.getState();
         const existing = store.connectionProfile[connectionId]?.mapViewStates ?? {};
         store.patchConnectionProfile(connectionId, {
@@ -324,6 +313,42 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
             renderer.clearPosition();
         }
     }, [manager]);
+
+    // Apply the opening view as soon as the panel has a laid-out size, retrying
+    // across frames until it does.
+    //
+    // Everything about the opening view is derived from the viewport's shorter
+    // edge, so it cannot be computed before the panel is laid out. The container
+    // ResizeObserver below is the usual signal, but it is not a reliable one on
+    // its own: a floating map window can take its single observed entry while
+    // still 0x0 (the observer is attached from an effect that runs before the
+    // window has been positioned) and never report again, which used to leave
+    // the camera stuck at 0x0 for the life of the panel — map drawn at full size
+    // over a camera that thinks it is a pixel wide. Polling a bounded number of
+    // frames costs nothing once it lands on the first or second one, and does
+    // not depend on which resize notification arrives.
+    const initialViewFrameRef = useRef<number | null>(null);
+    const applyInitialViewWhenSized = useCallback((areaId: number) => {
+        if (initialViewFrameRef.current != null) cancelAnimationFrame(initialViewFrameRef.current);
+        let attempts = 0;
+        const tick = () => {
+            initialViewFrameRef.current = null;
+            const renderer = rendererRef.current;
+            if (!renderer) return;
+            if (syncCameraSize(renderer, containerRef.current)) {
+                applyInitialView(renderer, manager.mapStore, areaId);
+                return;
+            }
+            // ~2s at 60fps. A panel still unsized by then is closed, collapsed,
+            // or on a hidden tab — the ResizeObserver picks it up if it ever
+            // does appear.
+            if (++attempts < 120) initialViewFrameRef.current = requestAnimationFrame(tick);
+        };
+        tick();
+    }, [manager]);
+    useEffect(() => () => {
+        if (initialViewFrameRef.current != null) cancelAnimationFrame(initialViewFrameRef.current);
+    }, []);
 
     // Refresh the live reader from MapStore and pick an area/level to display.
     // Used both on initial sync and on every store-change tick. Returns true
@@ -436,7 +461,7 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
         // user's live zoom and pan.
         if (!needsFitRef.current) {
             needsFitRef.current = true;
-            applyInitialView(renderer, manager.mapStore, restoredArea);
+            applyInitialViewWhenSized(restoredArea);
         }
         setStatus('ready');
         return true;
@@ -665,12 +690,9 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
 
         const onZoom = () => {
             const cam = renderer.camera;
-            const shorter = Math.min(cam.width, cam.height);
-            if (shorter <= 0) { wheelSnap = null; return; }
-            const curZoom = renderer.getZoom();
-            const base = curZoom > 0 ? cam.getScale() / curZoom : 75;
-            const maxRendererZoom = shorter / (base * MUDLET_MIN_MAP_ZOOM);
-            if (curZoom <= maxRendererZoom) { wheelSnap = null; return; }
+            const maxRendererZoom = toRendererZoom(renderer, MUDLET_MIN_MAP_ZOOM);
+            if (maxRendererZoom == null) { wheelSnap = null; return; }
+            if (renderer.getZoom() <= maxRendererZoom) { wheelSnap = null; return; }
             if (wheelSnap) {
                 // Rewind to the pre-tick transform, then redo the zoom clamped
                 // to the cap about the cursor: this pans only for the part of
@@ -1075,38 +1097,19 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
     // re-centers + repaints the same way the resize handler does (the renderer
     // repaints on a camera move, not on setZoom alone).
     //
-    // Zoom is expressed in Mudlet units: the value is the number of map (room)
-    // units visible across the *shorter* edge of the viewport — matching
-    // Mudlet's T2DMap, where the shorter widget edge always spans exactly `zoom`
-    // units (zoom=3 → 3 rooms across, zoom=100 → ~100; larger = more map = zoomed
-    // out). The renderer instead works in pixels-per-room-unit
-    // (camera.getScale() === BASE_SCALE * rendererZoom), so we convert at this
-    // boundary: pxPerUnit = shorterEdge / mudletZoom.
+    // Zoom crosses this boundary in Mudlet units — see map/mapZoom.ts for what
+    // that means and why.
     const mapControlImplRef = useRef<MapControl>({ getZoom: () => null, setZoom: () => {}, redraw: () => {}, exportArea: () => null });
     mapControlImplRef.current = {
         getZoom: () => {
             const renderer = rendererRef.current;
-            if (!renderer) return null;
-            const cam = renderer.camera;
-            const shorter = Math.min(cam.width, cam.height);
-            const scale = cam.getScale(); // pixels per room unit
-            if (shorter <= 0 || scale <= 0) return null;
-            return shorter / scale;
+            return renderer ? toMudletZoom(renderer) : null;
         },
         setZoom: (zoom: number) => {
             const renderer = rendererRef.current;
-            if (!renderer || !Number.isFinite(zoom) || zoom <= 0) return;
-            const cam = renderer.camera;
-            const shorter = Math.min(cam.width, cam.height);
-            if (shorter <= 0) return;
-            // Recover the renderer's pixels-per-unit-at-zoom-1 from the live
-            // camera (getScale() === base * rendererZoom) rather than hardcoding
-            // the library's BASE_SCALE constant, then solve for the rendererZoom
-            // that makes `zoom` room units fill the shorter edge.
-            const curZoom = renderer.getZoom();
-            const base = curZoom > 0 ? cam.getScale() / curZoom : 75;
-            const rendererZoom = shorter / (base * zoom);
-            if (!Number.isFinite(rendererZoom) || rendererZoom <= 0) return;
+            if (!renderer) return;
+            const rendererZoom = toRendererZoom(renderer, zoom);
+            if (rendererZoom == null) return;
             // fitArea pins camera.minZoom to the fit zoom, which would clamp a
             // zoom-out request; lower the floor so an explicit setMapZoom is
             // honored (and the user can wheel back out that far afterwards).

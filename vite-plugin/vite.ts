@@ -101,6 +101,22 @@ export default function mudix(): PluginOption[] {
         {
             name: 'mudix:config',
             config: () => ({
+                resolve: {
+                    // Exactly one React instance, always. `mudlet-map-editor`
+                    // declares react/react-dom as plain *dependencies* (not
+                    // peers), so the moment its range outruns the range the
+                    // app resolved, the package manager nests a second copy
+                    // under the editor. The editor's `App` is then rendered by
+                    // mudix's React while its hooks come from the nested one,
+                    // whose dispatcher is null — "Invalid hook call", and with
+                    // no error boundary above the lazy boundary the throw
+                    // unmounts the whole root, so opening the map editor
+                    // blanked the entire UI in dev and in production alike.
+                    // Deduping is the structural fix: it survives the next
+                    // version skew, and consumers of the library (which
+                    // externalizes react) get it through this plugin too.
+                    dedupe: ['react', 'react-dom'],
+                },
                 // A Mudlet package archive is a zip, not source. `?url` imports
                 // get away without this (the explicit query short-circuits
                 // import analysis), but `?inline` — which the busted fixtures
