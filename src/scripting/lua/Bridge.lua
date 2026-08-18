@@ -1700,6 +1700,28 @@ function __mudix_check_string(value, funcName, index, what)
     return str
 end
 
+-- Mudlet's reportInvalidLuaCodeParam (TLuaInterpreter.cpp): the body of a perm*
+-- object is read with lua_isstring — so a number is an acceptable *argument* —
+-- and is then COMPILED before anything is created. That second half is what
+-- rejects permAlias(name, "", "^x$", 999): not the type, but the fact that "999"
+-- is not a chunk. Checking only the type accepts it and files a dead body under
+-- an alias that can never run, which is precisely the state Mudlet refuses to
+-- leave the tree in. Wording is Mudlet's ("bad argument #N (...)", no `type`
+-- word, and the raw loadstring message after "invalid Lua code: ").
+function __mudix_check_lua_code(value, funcName, index)
+    local str = __mudix_str(value)
+    if str == nil then
+        error(funcName .. ": bad argument #" .. index
+            .. " (lua script as string expected, got " .. type(value) .. "!)", 3)
+    end
+    local compiled, cerr = loadstring(str)
+    if not compiled then
+        error(funcName .. ": bad argument #" .. index
+            .. " (invalid Lua code: " .. tostring(cerr) .. ")", 3)
+    end
+    return str
+end
+
 function __mudix_check_number(value, funcName, index, what)
     local num = tonumber(value)
     if num == nil then
@@ -3285,11 +3307,12 @@ end
 do
     local _raw = __mudix_permAlias
     function permAlias(name, parent, regex, code)
-        -- The pattern and the body are both read with getVerifiedString, so a
-        -- missing or wrongly-typed one raises instead of being tostring()-ed
+        -- The pattern is read with getVerifiedString and the body goes through
+        -- reportInvalidLuaCodeParam, so a missing or wrongly-typed pattern — and
+        -- a body that will not compile — raises instead of being tostring()-ed
         -- into an alias that could never match (or a body of "999").
         regex = __mudix_check_string(regex, "permAlias", 3, "regex")
-        code = __mudix_check_string(code, "permAlias", 4, "lua code")
+        code = __mudix_check_lua_code(code, "permAlias", 4)
         return __mudix_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), regex, code),
             "permAlias", "alias", parent)
@@ -3348,12 +3371,10 @@ do
         else
             modifier, key, code = tonumber(a3) or -1, a4, a5
         end
-        local body = __mudix_str(code)
-        if body == nil then
-            error("permKey: bad argument #" .. (a5 == nil and 4 or 5)
-                .. " type (lua code as string expected, got " .. type(code) .. "!)", 2)
-        end
-        code = body
+        -- Mudlet validates the body at ++argIndex — 4 in the four-argument form,
+        -- 5 once a modifier has consumed argument 3 — and compiles it there, so
+        -- a non-chunk body is refused before the key is created.
+        code = __mudix_check_lua_code(code, "permKey", a5 == nil and 4 or 5)
         return __mudix_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), modifier, key, code),
             "permKey", "key", parent)

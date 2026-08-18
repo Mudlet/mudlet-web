@@ -32,6 +32,7 @@ import { applyAnsiPalette, setServerRedefineColorsAllowed, resetAllPaletteColors
 import type { MudSession, ControlCharacterMode } from './mud/MudSession';
 import type { FileDialogRequest } from './mud/events';
 import { replayFileName } from './mud/replay/replayFormat';
+import { isTextEntryTarget } from './mud/keybindings/keyEventTarget';
 import { FilePickerModal } from './ui/FilePickerModal';
 import type { ProfileVFS } from './scripting/vfs/ProfileVFS';
 
@@ -916,12 +917,13 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         };
     }, [vfs]);
 
-    // Global keydown listener — fires keybindings, but not when focused in a textarea (e.g. script editor).
+    // Global keydown listener — fires keybindings, but not while the user is
+    // typing into a real text field (script editor, modal inputs). The command
+    // line is not one of those: it is a textarea that holds focus all session,
+    // so it has to pass keys through — see isTextEntryTarget.
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            const target = e.target as HTMLElement;
-            if (target.tagName === 'TEXTAREA' || target.isContentEditable) return;
-            if (target.tagName === 'INPUT' && !(target as HTMLInputElement).classList.contains('command-input')) return;
+            if (isTextEntryTarget(e.target)) return;
             if (engineRef.current?.processKey(e)) e.preventDefault();
         };
         document.addEventListener('keydown', handleKeyDown);
