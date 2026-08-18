@@ -1,6 +1,7 @@
 import type {MudSession, ScriptLogSource, ScriptLogSourceKind} from '../mud/MudSession';
 import { MAP_WIDGET_ID } from '../ui/windows/types';
 import { qtModifiersToList } from '../mud/keybindings/qtKeys';
+import { splitCommands } from '../mud/commandSplit';
 import type {AliasEngine, AliasNode} from '../mud/aliases/AliasEngine';
 import {TriggerEngine, type TriggerNode} from '../mud/triggers/TriggerEngine';
 import type {TimerEngine} from '../mud/timers/TimerEngine';
@@ -47,6 +48,7 @@ import {ensureDefaultPackages} from '../import/defaultPackages';
 import {serializeMudletXml, type SerializeInput} from '../import/mudletXmlExport';
 import {isMudletProfileVfs, readNewestParseableXml} from '../import/mudletLink';
 import {buildLinkedWriteback, mudletTimestamp} from '../import/mudletWriteback';
+import {describeThrown} from '../utils/describeThrown';
 
 // Linked-profile write-back. serializeMudletXml now emits Mudlet's exact format
 // (node flags as attributes, correct child elements/order — matched to Mudlet's
@@ -239,7 +241,10 @@ export class ScriptingEngine implements EngineHost {
      *  `mxpHandshakeEnabled`); `api` is read lazily at call time so this
      *  initializer is safe before the constructor body runs. */
     private readonly mxp = new MxpParser({
-        send: (raw) => { if (this.mxpHandshakeEnabled) this.api.send(raw, false); },
+        // sendData, not send: a handshake reply is a protocol string, not a
+        // player command — it must never echo, and it must never be chopped up
+        // by whatever the profile happens to use as a command separator.
+        send: (raw) => { if (this.mxpHandshakeEnabled) this.api.sendData(raw); },
         presets: this.osc8Presets,
         // Mudlet publishes every use of a server-defined element as
         // `mxp.<element>` and raises an event of the same name.
@@ -296,11 +301,14 @@ export class ScriptingEngine implements EngineHost {
     /** For a linked Mudlet profile: the timestamped current/*.xml filename this
      *  session writes back to (created lazily on first write, reused thereafter). */
     private mudletSaveName: string | null = null;
-    // Per-kind default MSP base URL, set by any `!!SOUND`/`!!MUSIC` tag that
-    // carries U=. Lets servers (e.g. Alteraeon) announce their sound pack
-    // location once with `!!SOUND(Off U=https://.../wav_v1/)` and then send
-    // subsequent tags with just the filename.
-    private mspBaseUrl: { sound?: string; music?: string } = {};
+    // Default MSP base URL, set by any `!!SOUND`/`!!MUSIC` tag that carries U=.
+    // Lets servers (e.g. Alteraeon) announce their media location once with
+    // `!!SOUND(Off U=https://.../wav_v1/)` and then send subsequent tags with
+    // just the filename. One value shared by both kinds, mirroring Mudlet's
+    // single `Host::mMediaLocationMSP`: WillowdaleMUD announces its location
+    // with `!!SOUND(Off U=...)` and then plays `!!MUSIC(...)` against it, so a
+    // per-kind split would leave the music with no base URL.
+    private mspBaseUrl?: string;
     // Default media URL for the GMCP media protocol, set by a
     // `Client.Media.Default { "url": ... }` message. Used as the base directory
     // for any subsequent Play/Load whose payload omits its own `url`.
@@ -1122,7 +1130,11 @@ export class ScriptingEngine implements EngineHost {
     private applyTimersFromStore(): void {
         const timers = useAppStore.getState().connectionTimers[this.connectionId] ?? [];
         this.timerEngine.loadPerm(timers, (timer) => {
-            if (timer.command) this.api.send(timer.command, false);
+            // hostSend, not a bare wire send: TTimer::execute calls
+            // Host::send(mCommand) with both defaults, so the command is echoed
+            // under showSentText, split on the command separator, and run
+            // through the aliases like anything else typed.
+            if (timer.command) this.hostSend(timer.command);
             if (timer.code && timer.language === 'lua') {
                 try {
                     this.runtimes.lua?.run(timer.code, `timer "${timer.name}"`);
@@ -1238,26 +1250,65 @@ export class ScriptingEngine implements EngineHost {
         try {
             lua.run(code, 'link');
         } catch (err) {
-            this.api.printError(`[link] ${err instanceof Error ? err.message : String(err)}`);
+            this.api.printError(`[link] ${describeThrown(err, 'link')}`);
         }
         this.api.flushOutput();
     }
 
-    /** Mudlet `expandAlias` — run text through the alias pipeline, sending it
-     *  to the MUD when nothing consumes it. */
     /**
-     * Mudlet `expandAlias(text, echo)`. Splits on the profile's command
-     * separator first, exactly as typing the same line would: the separator is
-     * a property of a *command line*, and expandAlias is "run this as though I
-     * had typed it". Without the split, `expandAlias("a;;b")` looked for one
-     * alias named "a;;b" and, finding none, sent the whole string to the game.
+     * Mudlet `Host::send(cmd, wantPrint, dontExpandAliases = false)` — the one
+     * path every command the player types, and every item's built-in `command`
+     * field, travels down. Three stages, in this order:
+     *
+     *   1. echo the **whole, unsplit** text under the showSentText mode;
+     *   2. split it on the profile's command separator;
+     *   3. run each part through the aliases, and put on the wire whatever no
+     *      alias consumed.
+     *
+     * The order is the point. Echoing before the alias pass is why typing an
+     * alias shows the text you typed even though the alias swallows it — and
+     * why the alias's own command field, arriving back here in turn, is echoed
+     * again as a second line. Splitting after the echo is why `n;;s` echoes as
+     * one line but sends two commands.
+     *
+     * Lua `send()` skips only stage 3 ({@link ScriptingAPI.send}); Mudlet's
+     * `expandAlias(text, echo)` is exactly this function.
      */
-    expandAlias(text: string, echo: boolean): void {
-        const sep = this.api.getCommandSeparator();
-        const parts = sep && text.includes(sep) ? text.split(sep) : [text];
-        for (const part of parts) {
-            if (!this.processInput(part)) this.api.send(part, echo);
+    hostSend(text: string, echo = true): void {
+        // Mudlet has no such cap: an alias whose command field re-matches itself
+        // recurses until the C++ stack gives out. A wedged browser tab is a
+        // worse failure than a refused command, so the chain is cut with an
+        // error the script author can act on.
+        if (this.sendDepth >= ScriptingEngine.MAX_SEND_DEPTH) {
+            this.api.printError(
+                `send: "${text}" expanded more than ${ScriptingEngine.MAX_SEND_DEPTH}`
+                + ` levels deep — stopped, an alias is very likely feeding itself`);
+            return;
         }
+        this.sendDepth++;
+        try {
+            this.session.echoSentCommand(text, echo);
+            const parts = splitCommands(text, this.api.getCommandSeparator());
+            // Nothing but separators (or nothing at all) still reaches the game
+            // as a bare line feed, and never sees the aliases — Mudlet returns
+            // early from its "allow sending blank commands" branch.
+            if (parts.length === 0) { this.api.sendData(''); return; }
+            for (const part of parts) {
+                if (!this.processInput(part)) this.api.sendData(part);
+            }
+        } finally {
+            this.sendDepth--;
+        }
+    }
+
+    /** Nesting depth of {@link hostSend} — see the runaway-alias note there. */
+    private sendDepth = 0;
+    private static readonly MAX_SEND_DEPTH = 25;
+
+    /** Mudlet `expandAlias(text, echo)` — `Host::send` with both defaults, i.e.
+     *  "run this as though I had typed it". */
+    expandAlias(text: string, echo: boolean): void {
+        this.hostSend(text, echo);
     }
 
     /** Mudlet `reconnect()` — redial the last URL, refused during teardown. */
@@ -1360,6 +1411,11 @@ export class ScriptingEngine implements EngineHost {
     private createRuntime(vfs: ProfileVFS | null): Promise<IScriptingRuntime> {
         return LuaRuntime.create(this.api, vfs, this.proxyUrlGetter).then(rt => {
             this.runtimes.lua = rt;
+            // A terminated WASM module can't be revived, and the timer pump is
+            // the only thing that would keep calling into it on its own — every
+            // other caller is driven by MUD output or user input. Stopping it
+            // here is what turns "one error a second forever" into one line.
+            rt.onFatalError = () => { this.timerEngine.destroy(); };
             // Sound loader: absolute URLs hit the network; everything else is
             // resolved against the mounted profile VFS so package-bundled sounds
             // work out of the box.
@@ -1582,12 +1638,10 @@ export class ScriptingEngine implements EngineHost {
 
     private async handleMspCommand(command: MspCommand): Promise<void> {
         const debug = debugMspEnabled();
-        // Any tag carrying U= updates the per-kind default base URL.
-        // Alteraeon (and others) use `!!SOUND(Off U=https://.../wav_v1/)` at
-        // session start to point us at the sound pack, then send subsequent
-        // tags without U=. Track per-kind so sounds/music can come from
-        // different hosts.
-        if (command.url) this.mspBaseUrl[command.kind] = command.url;
+        // Any tag carrying U= updates the default base URL. Alteraeon (and
+        // others) use `!!SOUND(Off U=https://.../wav_v1/)` at session start to
+        // point us at the media location, then send subsequent tags without U=.
+        if (command.url) this.mspBaseUrl = command.url;
         const isOff = command.file === 'Off';
         if (isOff) {
             if (command.kind === 'sound') this.session.sounds.stopSounds();
@@ -1620,10 +1674,31 @@ export class ScriptingEngine implements EngineHost {
      * reloads. Returns null when the file can't be located or fetched.
      */
     private async resolveMspMedia(command: MspCommand): Promise<string | null> {
-        // Per-command U= wins; otherwise use the kind's default set by an
-        // earlier tag (often the Alteraeon-style `Off U=...` boot directive).
-        const baseUrl = command.url ?? this.mspBaseUrl[command.kind];
+        // Per-command U= wins; otherwise use the default set by an earlier tag
+        // (often the Alteraeon-style `Off U=...` boot directive).
+        const baseUrl = command.url ?? this.mspBaseUrl;
         return this.resolveMediaFile(command.file ?? '', baseUrl, '[mudix.msp]', debugMspEnabled());
+    }
+
+    /**
+     * Last-resort media location when a server plays a file without ever
+     * announcing where it lives — neither an MSP `U=` nor a GMCP
+     * `Client.Media.Default { url }`. Mudlet guesses the MUD's own website:
+     * `https://www.<host>/media/` (TMedia::parseUrl). The host is the telnet
+     * host — for a `websocket`-mode profile, the endpoint's hostname — the same
+     * value getConnectionInfo() reports, standing in for Mudlet's `Host::mUrl`.
+     *
+     * The one deviation from Mudlet: it prepends `www.` unconditionally, which
+     * turns an already-qualified `www.example.com` into `www.www.example.com`.
+     * We skip the prefix when the host already carries it. Returns undefined
+     * when there's no host to guess from, so the caller reports "no base URL"
+     * rather than fetching a nonsense URL.
+     */
+    private defaultMediaLocation(): string | undefined {
+        const host = this.api.getConnectionInfo().host.trim();
+        if (!host) return undefined;
+        const qualified = /^www\./i.test(host) ? host : `www.${host}`;
+        return `https://${qualified}/media/`;
     }
 
     /**
@@ -1633,8 +1708,9 @@ export class ScriptingEngine implements EngineHost {
      * protocol (`handleClientMedia`). The whole filename — including any
      * subdirectories — is appended to the base URL and mirrored under `media/`,
      * so the cache layout matches the server's. `..`/`.` segments are rejected
-     * so a hostile server can't escape the cache root. Returns null when the
-     * file can't be located or fetched.
+     * so a hostile server can't escape the cache root. With no base URL at all,
+     * {@link defaultMediaLocation} guesses one from the MUD's host. Returns null
+     * when the file can't be located or fetched.
      */
     private async resolveMediaFile(
         file: string,
@@ -1673,15 +1749,19 @@ export class ScriptingEngine implements EngineHost {
             if (debug) console.debug(`${logPrefix} cache hit ${vfsPath}`);
             return vfsPath;
         }
-        if (!baseUrl) {
+        // No announced location — fall back to the MUD's own website, the way
+        // Mudlet's TMedia::parseUrl does for MSP and GMCP media.
+        const effectiveBase = baseUrl ?? this.defaultMediaLocation();
+        if (!effectiveBase) {
             if (debug) console.debug(`${logPrefix} "${cleanFile}" not in media/ and no base URL`);
             return null;
         }
+        if (!baseUrl && debug) console.debug(`${logPrefix} no announced base URL — guessing ${effectiveBase}`);
         let downloadUrl: string;
         try {
             // URL() treats `base` as a file when it has no trailing slash, so
             // normalise: `http://x/sounds` + `zap.wav` → `http://x/sounds/zap.wav`.
-            const base = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+            const base = effectiveBase.endsWith('/') ? effectiveBase : `${effectiveBase}/`;
             downloadUrl = new URL(cleanFile, base).toString();
         } catch {
             if (debug) console.debug(`${logPrefix} invalid base URL "${baseUrl}"`);
@@ -2893,11 +2973,28 @@ export class ScriptingEngine implements EngineHost {
     get currentVFS(): ProfileVFS | null { return this.vfs; }
 
     /**
-     * Send a command from the command bar. Raises sysDataSendRequest, then either
-     * sends (and echoes locally) or aborts when a handler calls denyCurrentSend().
+     * Submit one line from the command bar — Mudlet's `TCommandLine` calling
+     * `Host::send` per newline-separated line. Echoes it, splits it on the
+     * command separator, runs the parts through the aliases, and sends what
+     * survives (raising sysDataSendRequest per part, so a handler calling
+     * denyCurrentSend() can still abort an individual command).
      */
     sendCommand(text: string): void {
-        this.api.send(text, true);
+        // setCmdLineAction takes the whole Enter event, ahead of everything
+        // else: no echo, no separator split, no aliases, no send — the script
+        // owns the command bar end-to-end. It sits here rather than inside
+        // hostSend because that is where Mudlet puts it (TCommandLine, not
+        // Host::send), so an item's command field or an expandAlias() call
+        // never consults it. Errors in the action are routed through printError
+        // and still consume the input, so the bare text isn't silently sent.
+        const action = this.api.getCmdLineAction();
+        if (action) {
+            try { action(text); }
+            catch (e) { this.api.printError(`[setCmdLineAction] ${e instanceof Error ? e.message : String(e)}`); }
+            this.api.flushOutput();
+            return;
+        }
+        this.hostSend(text);
     }
 
     /** Run input through aliases. Returns true if an alias matched (caller should not send). */
@@ -2919,18 +3016,6 @@ export class ScriptingEngine implements EngineHost {
     private aliasDepth = 0;
 
     private processInputPass(text: string): boolean {
-        // setCmdLineAction takes the whole Enter event; aliases and the MUD
-        // send are bypassed when an action is installed (matches Mudlet — the
-        // script owns the command bar end-to-end). Errors in the action are
-        // routed through printError and still consume the input so the bare
-        // text isn't silently sent.
-        const action = this.api.getCmdLineAction();
-        if (action) {
-            try { action(text); }
-            catch (e) { this.api.printError(`[setCmdLineAction] ${e instanceof Error ? e.message : String(e)}`); }
-            this.api.flushOutput();
-            return true;
-        }
         // Mirror the input into the Lua `command` global before alias matching,
         // matching Mudlet's AliasUnit::processDataStream. Persists between inputs
         // so the stock "Repeat Last Command" key (`send(command)`) works.
@@ -3293,11 +3378,12 @@ export class ScriptingEngine implements EngineHost {
         name: string,
         err: unknown,
     ): void {
-        const msg = err instanceof Error ? err.message : String(err);
+        const prefix = formatErrorPrefix(kind, name);
+        const msg = describeThrown(err, prefix);
         const source: ScriptLogSource = { kind, id, name };
         const line = parseLuaErrorLine(msg);
         if (line !== undefined) source.line = line;
-        this.api.printError(`[${formatErrorPrefix(kind, name)}] ${msg}`, source);
+        this.api.printError(`[${prefix}] ${msg}`, source);
     }
 
     // Mudlet TScript semantics: the body runs at load time (defining e.g.
@@ -3341,7 +3427,10 @@ export class ScriptingEngine implements EngineHost {
                 const idx = Number(d);
                 return idx === 0 ? matches[0] : (matches[idx] ?? '');
             });
-            this.api.send(cmd);
+            // Host::send again — TAlias::execute is no different from the
+            // others, so an alias whose command names another alias chains, and
+            // each expansion is echoed as its own line.
+            this.hostSend(cmd);
         }
         if (alias.code && alias.language === 'lua') {
             try {
@@ -3368,7 +3457,10 @@ export class ScriptingEngine implements EngineHost {
                 const idx = Number(d);
                 return (idx === 0 ? matches[0] : matches[idx]) ?? '';
             });
-            this.api.send(cmd, false);
+            // Echoed, separator-split and alias-expanded like every other item's
+            // built-in command — TTrigger::execute takes both Host::send
+            // defaults.
+            this.hostSend(cmd);
         }
 
         // Built-in highlight
@@ -3406,7 +3498,10 @@ export class ScriptingEngine implements EngineHost {
     }
 
     private executePermKeybinding(binding: KeyNode): void {
-        if (binding.command) this.api.send(binding.command, false);
+        // TKey::execute calls Host::send(mCommand) with both defaults, so the
+        // showSentText mode decides the echo (not the keybinding), and the
+        // command is separator-split and alias-expanded on the way out.
+        if (binding.command) this.hostSend(binding.command);
         if (binding.code && binding.language === 'lua') {
             try {
                 this.runtimes.lua?.run(binding.code, `key "${binding.name}"`);
@@ -3424,7 +3519,9 @@ export class ScriptingEngine implements EngineHost {
     executeButton(button: ButtonNode, nextState: boolean): void {
         const goingDown = button.isPushDown && nextState;
         const cmd = goingDown ? button.commandDown : button.command;
-        if (cmd) this.api.send(cmd, false);
+        // Echoed, split and alias-expanded, matching TAction::execute's
+        // Host::send call.
+        if (cmd) this.hostSend(cmd);
         if (button.code && button.language === 'lua') {
             try {
                 this.runtimes.lua?.run(button.code, `button "${button.name}"`);
@@ -3670,7 +3767,7 @@ export class ScriptingEngine implements EngineHost {
         try {
             this.runtimes.lua?.emitEvent(event, args);
         } catch (err) {
-            this.api.printError(`[event "${event}"] ${err instanceof Error ? err.message : String(err)}`);
+            this.api.printError(`[event "${event}"] ${describeThrown(err, `event "${event}"`)}`);
         }
     }
 

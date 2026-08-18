@@ -1,4 +1,5 @@
 import type { BindingContext } from './context';
+import { describeThrown } from '../../../utils/describeThrown';
 
 /**
  * Error reporting and the send/alias expansion primitives.
@@ -11,8 +12,11 @@ export function installDiagnosticsBindings({ lua, api }: BindingContext): void {
     // ── Error / debug ─────────────────────────────────────────────────────
     // showHandlerError is called by Other.lua's dispatchEventToFunctions when
     // a handler throws — it's a C++ function in Mudlet, bridged here.
+    // Bridge.lua type-guards both arguments, so `error` is a string in every
+    // call that gets this far; describeThrown only matters if that guard is
+    // ever relaxed — a raw object here would print as "[object Object]".
     lua.global.set('showHandlerError', (event: string, error: string) => {
-        api.printError(`[event "${event}"] ${error}`);
+        api.printError(`[event "${event}"] ${describeThrown(error, `event "${event}"`)}`);
     });
     // Mudlet `debugc(content)` and `errorc(content, [debugInfo])` both
     // accept a single content arg (plus an optional debug-info string on

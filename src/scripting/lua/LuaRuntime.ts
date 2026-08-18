@@ -44,6 +44,7 @@ import {installCommandLineBindings} from './bindings/commandLine';
 import {installDiagnosticsBindings} from './bindings/diagnostics';
 import {installSessionBindings} from './bindings/session';
 import {installUserWindowBindings} from './bindings/userWindows';
+import {describeThrown} from '../../utils/describeThrown';
 
 // wasmoon doesn't re-export its opaque lua_State pointer type; derive it from
 // the public API so the raw lua_* bindings (see pushJsValue / registerRawGlobal)
@@ -410,6 +411,28 @@ export class LuaRuntime implements IScriptingRuntime {
         return bytes;
     }
     private destroyed = false;
+    /**
+     * Set once the Lua WASM module has terminated for good — an Emscripten
+     * `ExitStatus` or `WebAssembly.RuntimeError` unwinding out of a call.
+     *
+     * Lua reaches `exit(EXIT_FAILURE)` in `luaD_throw` whenever an error is
+     * raised with no protected frame to catch it: a panic, or an allocation
+     * failure inside a JS-side API call (`lua_newthread`, `lua_pushstring`, …)
+     * that runs on the main state rather than inside a pcall. Emscripten then
+     * latches its own ABORT flag, so every later call into the module throws the
+     * same thing — one identical error per timer tick, forever, with nothing
+     * saying the engine is gone.
+     *
+     * Tracked apart from {@link destroyed} because teardown still has to run:
+     * the JS-side resources (global event channel, TTS, map dispatchers) outlive
+     * the WASM module and must still be released.
+     */
+    private fatal = false;
+    /** Notified once, when {@link fatal} latches. The engine uses it to stop the
+     *  timer pump — the only thing left that would keep calling in. */
+    onFatalError: (() => void) | null = null;
+    /** True once nothing can be executed any more, for either reason. */
+    private get inert(): boolean { return this.destroyed || this.fatal; }
     // Mudlet addFileWatch / removeFileWatch — set of resolved absolute VFS
     // paths. Mutations through the __vfs_* hooks below call
     // notifyVfsPathChange() which fires sysPathChanged. Browser has no native
@@ -2507,7 +2530,7 @@ end`);
         // The watch set is read when the timer fires, not now, so a watch
         // removed in between correctly reports nothing.
         this.deferToTimerQueue(() => {
-            if (this.destroyed) return;
+            if (this.inert) return;
             if (this.watchedPaths.has(changedPath)) {
                 this.emitEvent('sysPathChanged', [changedPath]);
             }
@@ -2928,6 +2951,70 @@ end`);
         this.execInner(code, name);
     }
 
+    // `lua_gc(L, LUA_GCCOUNT, 0)` — Lua-managed memory in KB, one C call.
+    private static readonly LUA_GCCOUNT = 3;
+    // Emscripten builds liblua5.1 as a 32-bit module, so its heap stops dead at
+    // 2 GiB. Crossing it is not survivable: the allocation that fails becomes an
+    // unprotected Lua error, `luaD_throw` calls `exit(EXIT_FAILURE)`, and the VM
+    // is gone for the rest of the session (see markFatal). Nothing reclaims it
+    // at that point, so the only useful move is to say so while there is still
+    // headroom — a profile climbing past half the ceiling is retaining
+    // something, and the number climbing is the evidence for finding what.
+    private static readonly MEMORY_WARN_MB = [512, 1024, 1536];
+    private static readonly MEMORY_SAMPLE_EVERY = 2000;
+    private memoryWarnIndex = 0;
+    private dispatchesSinceMemorySample = 0;
+
+    /** Sample Lua's own memory every few thousand dispatches and warn once per
+     *  threshold crossed. Called from the two execution funnels; the counter
+     *  keeps the `lua_gc` call itself off the hot path. */
+    private checkMemoryPressure(): void {
+        if (this.memoryWarnIndex >= LuaRuntime.MEMORY_WARN_MB.length) return;
+        if (++this.dispatchesSinceMemorySample < LuaRuntime.MEMORY_SAMPLE_EVERY) return;
+        this.dispatchesSinceMemorySample = 0;
+        const mb = this.lua.global.luaApi.lua_gc(
+            this.lua.global.address, LuaRuntime.LUA_GCCOUNT, 0) / 1024;
+        let crossed = -1;
+        while (this.memoryWarnIndex < LuaRuntime.MEMORY_WARN_MB.length
+            && mb >= LuaRuntime.MEMORY_WARN_MB[this.memoryWarnIndex]) {
+            crossed = LuaRuntime.MEMORY_WARN_MB[this.memoryWarnIndex++];
+        }
+        if (crossed < 0) return;
+        this.api.printError(
+            `[scripting] the Lua engine is holding ${Math.round(mb)} MB and cannot grow past `
+            + '2048 MB — scripting stops for the whole session at that point. Something '
+            + 'loaded in this profile is retaining memory; reopening the profile resets it.');
+    }
+
+    /**
+     * Latch a WASM-level termination — see {@link fatal}. Emscripten throws its
+     * `ExitStatus` from the `proc_exit` import (C `exit()`) and a
+     * `WebAssembly.RuntimeError` from `abort()`; either means the module is
+     * gone, not that this one script failed, so the per-entity error report is
+     * wrong and repeating it every tick is worse.
+     *
+     * Returns true when `e` was such a termination, so the caller drops its own
+     * reporting. The one user-facing line is printed here, on the first one.
+     */
+    private markFatal(e: unknown): boolean {
+        const isExit = typeof e === 'object' && e !== null
+            && (e as { name?: unknown }).name === 'ExitStatus';
+        const isAbort = typeof WebAssembly !== 'undefined'
+            && e instanceof WebAssembly.RuntimeError;
+        if (!isExit && !isAbort) return false;
+        if (this.fatal) return true;
+        this.fatal = true;
+        const detail = typeof (e as { message?: unknown }).message === 'string'
+            ? (e as { message: string }).message
+            : describeThrown(e);
+        console.error('[mudix] the Lua WASM module terminated:', e);
+        this.api.printError(
+            `[scripting] the Lua engine stopped (${detail}). Scripts, triggers, `
+            + 'aliases and timers are disabled until this profile is reopened.');
+        this.onFatalError?.();
+        return true;
+    }
+
     // Run a chunk on a fresh thread and return its first return value. The
     // fresh thread isolates the chunk's frame from any caller already
     // mid-execution (e.g. a trigger handler calling expandAlias). The chunk
@@ -2938,7 +3025,22 @@ end`);
     // pop it via global.remove(threadIndex) in finally or the slot leaks and
     // the lua_State stack eventually overflows. close() alone is a JS-side
     // marker only — it does not pop.
+    //
+    // Both halves of execOnThread can hit a dead module — newThread() allocates,
+    // and so does the `finally` that pops it — so the whole thing runs inside
+    // the markFatal guard rather than just the chunk.
     private execInner(code: string, name: string): unknown {
+        if (this.inert) return undefined;
+        this.checkMemoryPressure();
+        try {
+            return this.execOnThread(code, name);
+        } catch (e) {
+            if (this.markFatal(e)) return undefined;
+            throw e;
+        }
+    }
+
+    private execOnThread(code: string, name: string): unknown {
         const g = this.lua.global;
         const t = g.newThread();
         const threadIndex = g.getTop();
@@ -2958,7 +3060,7 @@ end`);
             const top = t.getTop();
             const err = top >= 1 ? t.getValue(1) : null;
             const result = top >= 2 ? t.getValue(2) : undefined;
-            if (err != null) throw new Error(String(err));
+            if (err != null) throw new Error(describeThrown(err));
             return result;
         } finally {
             g.remove(threadIndex);
@@ -2969,6 +3071,19 @@ end`);
     // The chunk's own pcall captures Lua errors; runtime/wasm errors surface
     // as a thrown JS exception that we route to the error console.
     private runChunk(chunk: string, label: string): void {
+        if (this.inert) return;
+        this.checkMemoryPressure();
+        try {
+            this.runChunkOnThread(chunk, label);
+        } catch (e) {
+            // Only a dead module reaches here: runChunkOnThread reports every
+            // ordinary failure itself, and the one throw it can't catch is its
+            // own `finally`.
+            if (!this.markFatal(e)) throw e;
+        }
+    }
+
+    private runChunkOnThread(chunk: string, label: string): void {
         const g = this.lua.global;
         const t = g.newThread();
         const threadIndex = g.getTop();
@@ -2981,7 +3096,8 @@ end`);
             }
             t.assertOk(res.result);
         } catch (e) {
-            this.api.printError(`[${label}] ${e instanceof Error ? e.message : String(e)}`);
+            if (this.markFatal(e)) return;
+            this.api.printError(`[${label}] ${describeThrown(e, label)}`);
         } finally {
             g.remove(threadIndex);
         }
@@ -3053,7 +3169,7 @@ end`);
         this.parkedDialogs.delete(park);
         // After lua_close the thread died with the state — touching it (or
         // unreffing) would poke freed WASM memory.
-        if (this.destroyed) return;
+        if (this.inert) return;
         const t = park.thread;
         let reparked = false;
         try {
@@ -3068,11 +3184,11 @@ end`);
                     // __exec finished after the original exec() caller already
                     // returned — route its (err, result) tuple's error here.
                     const err = t.getTop() >= 1 ? t.getValue(1) : null;
-                    if (err != null) this.api.printError(`[${park.label}] ${String(err)}`);
+                    if (err != null) this.api.printError(`[${park.label}] ${describeThrown(err, park.label)}`);
                 }
             }
         } catch (e) {
-            this.api.printError(`[${park.label}] ${e instanceof Error ? e.message : String(e)}`);
+            this.api.printError(`[${park.label}] ${describeThrown(e, park.label)}`);
         } finally {
             if (!reparked) {
                 this.lua.global.luaApi.luaL_unref(this.lua.global.address, LUA_REGISTRYINDEX, park.ref);
@@ -3091,7 +3207,7 @@ end`);
     // Same as dispatchCb but passes a single argument to the callback. Used by
     // label mouse callbacks to deliver the {button, x, y, ...} event table.
     private dispatchCbWithArg(cbId: number, arg: unknown, label: string): void {
-        if (this.destroyed) return;
+        if (this.inert) return;
         this.lua.global.set('__mudix_cb_arg', arg);
         this.runChunk(`__mudix_dispatch_cb_arg(${cbId})`, label);
         this.api.flushOutput();
@@ -3113,7 +3229,7 @@ end`);
      * the mapper are reported, never thrown at the UI caller.
      */
     startSpeedWalk(from: number, to: number): void {
-        if (this.destroyed) return;
+        if (this.inert) return;
         this.runChunk(`__mudix_start_speedwalk(${Math.trunc(from)}, ${Math.trunc(to)})`,
             'speedwalk');
         this.api.flushOutput();
@@ -3164,12 +3280,12 @@ end`);
         // HTTP callbacks fire from background fetches and may resolve after the
         // owning ScriptingEngine tore us down; emitting on a closed lua_State
         // throws a confusing wasm error. Drop the event silently in that case.
-        if (this.destroyed) return;
+        if (this.inert) return;
         this.pendingEvents.push({ event, args });
         if (this.dispatchingEvent) return;
         this.dispatchingEvent = true;
         try {
-            while (this.pendingEvents.length > 0 && !this.destroyed) {
+            while (this.pendingEvents.length > 0 && !this.inert) {
                 const next = this.pendingEvents.shift()!;
                 this.dispatchEventNow(next.event, next.args);
             }
@@ -3207,7 +3323,7 @@ end`);
     // dotted server key (e.g. "Char.Vitals"); value is the JSON-decoded payload.
     // The leaf is replaced; siblings under shared parents are preserved.
     setGmcpValue(path: string, value: unknown): void {
-        if (this.destroyed || !path) return;
+        if (this.inert || !path) return;
         this.lua.global.set('__mudix_gmcp_path', path);
         // Raw-push the (potentially large, deeply nested) decoded payload instead
         // of wasmoon's generic pushValue, whose ref/unref bookkeeping is O(n²) in
@@ -3223,7 +3339,7 @@ end`);
     // top-level variable name (flat — MSDP nesting lives inside the value, not
     // the key); `value` is the decoded string / array / table.
     setMsdpValue(path: string, value: unknown): void {
-        if (this.destroyed || !path) return;
+        if (this.inert || !path) return;
         this.lua.global.set('__mudix_msdp_path', path);
         // Raw-push the decoded value (see setGmcpValue) to avoid the O(n²)
         // generic pushValue on large nested MSDP tables (issue #2).
@@ -3236,7 +3352,7 @@ end`);
     // Bridges a single MSSP variable into the Lua `mssp` global. `name` is the
     // flat variable name (e.g. "PLAYERS"); `value` is the reported string.
     setMsspValue(name: string, value: string): void {
-        if (this.destroyed || !name) return;
+        if (this.inert || !name) return;
         this.lua.global.set('__mudix_mssp_name', name);
         this.lua.global.set('__mudix_mssp_val', value);
         this.runChunk('__mudix_set_mssp(__mudix_mssp_name, __mudix_mssp_val)', `set-mssp "${name}"`);
@@ -3249,7 +3365,7 @@ end`);
      * it. Values keep their case.
      */
     setMxpElement(name: string, attrs: Record<string, string>): void {
-        if (this.destroyed || !name) return;
+        if (this.inert || !name) return;
         this.lua.global.set('__mudix_mxp_name', name.toLowerCase());
         // Flattened rather than handed over as an object: wasmoon's table proxy
         // is unreliable to iterate from Lua, and the keys are arbitrary server
@@ -3309,7 +3425,7 @@ end`);
         // actually observes: emitting from inside the binding Lua is executing
         // would re-enter the Lua state mid-call and crash wasmoon.
         this.deferToTimerQueue(() => {
-            if (this.destroyed) return;
+            if (this.inert) return;
             let entries: Record<string, Uint8Array>;
             try { entries = unzipSync(buf); }
             catch (err) { return fail(`unzip failed: ${err instanceof Error ? err.message : String(err)}`); }
@@ -3353,7 +3469,7 @@ end`);
     // of alias processing (AliasUnit::processDataStream). It persists between
     // inputs so keys/scripts like the stock "Repeat Last Command" can `send(command)`.
     setCommand(command: string): void {
-        if (this.destroyed) return;
+        if (this.inert) return;
         this.lua.global.set('command', command);
     }
 
@@ -3371,7 +3487,7 @@ end`);
     }
 
     killScriptHandlers(scriptId: string): void {
-        if (this.destroyed) return;
+        if (this.inert) return;
         this.lua.global.set('__mudix_kill_sid', scriptId);
         this.runChunk('__mudix_kill_script_handlers(__mudix_kill_sid)', 'kill-script-handlers');
     }
@@ -3402,7 +3518,7 @@ end`);
         areaId: number,
         displayedAreaId: number,
     ): { text: string; isBold: boolean; isItalic: boolean; color?: { r: number; g: number; b: number } } | null {
-        if (this.destroyed || !cbId) return null;
+        if (this.inert || !cbId) return null;
         const roomArg = roomId == null ? 'nil' : String(roomId | 0);
         this.runChunk(
             `__mudix_dispatch_mapinfo(${cbId}, ${roomArg}, ${selectionSize | 0}, ${areaId | 0}, ${displayedAreaId | 0})`,
@@ -3442,7 +3558,7 @@ end`);
         roomId: number,
         exitCommand: string,
     ): { blocked?: boolean; weightOverride?: number } {
-        if (this.destroyed || !cbId) return {};
+        if (this.inert || !cbId) return {};
         this.lua.global.set('__mudix_ewf_cmd', exitCommand);
         this.runChunk(
             `__mudix_dispatch_exit_weight_filter(${cbId}, ${roomId | 0}, __mudix_ewf_cmd)`,

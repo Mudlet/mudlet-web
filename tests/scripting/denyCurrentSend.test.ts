@@ -26,10 +26,12 @@ describe('denyCurrentSend', () => {
         // forwards — and leave the rest of the null host alone.
         t.api.setHost({ ...t.api.engineHost, dispatchSendRequest: (text: string) => t.rt.dispatchSendRequest(text) });
         // The session has no client, so watch the layer below instead: what
-        // reaches session.send is what would have gone on the wire.
-        const session = t.session as unknown as { send: (text: string, echo?: boolean) => void };
-        const original = session.send.bind(t.session);
-        session.send = (text: string, echo?: boolean) => { sent.push(text); original(text, echo); };
+        // reaches session.sendData — the far side of the deny gate, past the
+        // echo and the command separator split — is what would have gone on the
+        // wire.
+        const session = t.session as unknown as { sendData: (text: string) => void };
+        const original = session.sendData.bind(t.session);
+        session.sendData = (text: string) => { sent.push(text); original(text); };
     });
     afterEach(() => t.dispose());
 

@@ -1,4 +1,5 @@
 import type { MudSession, ScriptLogSource, ShowSentTextMode, BlankLinesBehaviour } from '../mud/MudSession';
+import { splitCommands } from '../mud/commandSplit';
 import type { AliasEngine } from '../mud/aliases/AliasEngine';
 import type { TriggerEngine } from '../mud/triggers/TriggerEngine';
 import type { TimerEngine } from '../mud/timers/TimerEngine';
@@ -692,6 +693,14 @@ export class ScriptingAPI {
     private echoDeferred: AnsiAwareBuffer[] = [];
     private isDeferringEcho = false;
 
+    /** Flip echo deferral, mirroring it onto the session so echoCommand knows
+     *  the in-flight console partial belongs to flushDeferredEcho and must not
+     *  be closed out from under it. */
+    private setDeferringEcho(on: boolean): void {
+        this.isDeferringEcho = on;
+        this.session.scriptEchoDeferred = on;
+    }
+
     // True between beginLine/endLine until the trigger's first echoed `\n`.
     // Mudlet's echo/cecho appends to the matched line at the output cursor (end
     // of line); only a newline advances to a fresh line. While this is set, a
@@ -842,12 +851,30 @@ export class ScriptingAPI {
         this.session.disconnect();
     }
 
+    /**
+     * Mudlet's Lua `send()`, which is C++ `sendRaw` → `Host::send(text,
+     * wantPrint, dontExpandAliases = true)`: the whole text is echoed once under
+     * the showSentText mode, then split on the profile's command separator, and
+     * each part goes to the game **without** passing through the aliases. Item
+     * `command` fields take the alias-expanding path instead —
+     * {@link ScriptingEngine.hostSend}.
+     */
     send(text: string, echo = true): void {
-        // sysDataSendRequest handlers may deny the send. With no engine wired
-        // yet (early init) the no-op host reports "not denied", so this sends
-        // straight through.
+        this.session.echoSentCommand(text, echo);
+        const parts = splitCommands(text, this.getCommandSeparator());
+        // Nothing but separators (or nothing at all) still reaches the game as a
+        // bare line feed — Mudlet's "allow sending blank commands" branch.
+        if (parts.length === 0) { this.sendData(''); return; }
+        for (const part of parts) this.sendData(part);
+    }
+
+    /** The tail of `Host::send`: one already-echoed, already-split command onto
+     *  the wire. Same `sysDataSendRequest` veto as {@link send}, no echo. With
+     *  no engine wired yet (early init) the no-op host reports "not denied", so
+     *  this sends straight through. */
+    sendData(text: string): void {
         if (this.host.dispatchSendRequest(text)) return;
-        this.session.send(text, echo);
+        this.session.sendData(text);
     }
 
     sendGmcp(message: string): void {
@@ -2837,7 +2864,7 @@ export class ScriptingAPI {
         this.mainConsole.appendLine(buffer);
         this.inTriggerProcessing = true;
         this.selection = null;
-        this.isDeferringEcho = true;
+        this.setDeferringEcho(true);
         this.echoOnMatchedLine = true;
         // The trigger cursor sits at the end of the matched line (Mudlet fires
         // before the line's terminator), so a trigger's `cecho("\n text")`
@@ -2924,7 +2951,7 @@ export class ScriptingAPI {
      * the batch keep correct line numbers, unlike the old wholesale `clear()`.
      */
     flushDeferredEcho(): void {
-        this.isDeferringEcho = false;
+        this.setDeferringEcho(false);
         for (const line of this.echoDeferred) {
             this.session.events.emit('message', line, 'trigger-echo');
         }

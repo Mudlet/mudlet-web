@@ -234,10 +234,37 @@ export class MudSession {
         return echo; // 'script'
     }
 
+    /** Set by ScriptingAPI while trigger-mode echo deferral owns the main
+     *  console's in-flight partial line (beginLine → flushDeferredEcho). Read
+     *  by {@link echoCommand}, which must not close a partial the deferral is
+     *  about to emit itself. */
+    scriptEchoDeferred = false;
+
+    /** Host::send's echo stage: print a command the player (or an item acting
+     *  for them) sent, under the showSentText mode. `wantPrint` is the per-call
+     *  flag `script` mode defers to — `always` and `never` overrule it. */
+    echoSentCommand(text: string, wantPrint: boolean): void {
+        if (this.shouldEchoSentText(wantPrint)) this.echoCommand(text);
+    }
+
     echoCommand(text: string): void {
         if (this.showSentText === 'never') return;
         if (!this.client || this.client.shouldEchoCommand()) {
             const styled = this.styleEchoCommand(text);
+            // Close any in-flight script partial (an `echo()` with no trailing
+            // newline) before adding a line of our own. The renderer finalizes
+            // the element showing that partial the moment this non-partial
+            // 'echo' message arrives, but the console would keep accumulating
+            // into the same partial — so the next flushOutput would emit the
+            // whole accumulated line again and everything already on screen
+            // would be drawn a second time, once more per command echoed. An
+            // alias doing `echo("TEST")`, run repeatedly, grew a line of
+            // TESTTESTTEST… that way. Mudlet has no such split: printCommand
+            // writes straight into the buffer line echo() is building.
+            // Skipped while trigger-mode echo deferral owns the partial —
+            // flushDeferredEcho completes and emits it itself, and stealing it
+            // here would drop a trigger's echo off the screen entirely.
+            if (!this.scriptEchoDeferred) this.consoles.get('main')?.completePartialLine();
             // Into the buffer as well as onto the screen. Mudlet's echoed
             // command is part of the console's contents — getLines() and the
             // cursor APIs see it, and a trigger can match on it — so a version
@@ -268,7 +295,23 @@ export class MudSession {
      *  auto-login credentials are not, so they can't arm character-at-a-time
      *  detection. */
     send(text: string, echo = true, isGameCommand = true): void {
-        if (this.shouldEchoSentText(echo)) this.echoCommand(text);
+        this.echoSentCommand(text, echo);
+        this.sendData(text, isGameCommand);
+    }
+
+    /**
+     * `cTelnet::sendData` — put one command on the wire with **no** local echo
+     * under any showSentText mode.
+     *
+     * Mudlet echoes player input exactly once, at the top of `Host::send`,
+     * before the command separator split and before aliases see it (see
+     * {@link ScriptingEngine.hostSend}); the parts that come out the far side
+     * must not echo again. `send(text, false)` cannot express that — `always`
+     * overrides the per-call flag — which is the same reason
+     * {@link sendSecret} exists. Unlike sendSecret this is an ordinary command:
+     * it still warns about text the server encoding can't carry.
+     */
+    sendData(text: string, isGameCommand = true): void {
         this.warnIfUnencodable(text);
         if (!this.client) return;
         this.client.send(text, isGameCommand);

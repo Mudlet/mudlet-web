@@ -149,7 +149,6 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     const ansiPalette = useAppStore(s => selectProfileField(s, connection.id, 'ansiPalette'));
     const serverRedefineColors = useAppStore(s => selectProfileField(s, connection.id, 'serverRedefineColors'));
     const autoClearInput = useAppStore(s => selectProfileField(s, connection.id, 'autoClearInput')) === true;
-    const commandSeparator = useAppStore(s => selectProfileField(s, connection.id, 'commandSeparator')) ?? '';
     const commandEchoForeground = useAppStore(s => selectProfileField(s, connection.id, 'commandEchoForeground'));
     const commandEchoBackground = useAppStore(s => selectProfileField(s, connection.id, 'commandEchoBackground'));
     // Saved GMCP Char.Login credentials (password is plaintext — opt-in only).
@@ -1036,30 +1035,20 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
 
     const handleSend = () => {
         // The command box is multi-line (Ctrl/Shift+Enter stages newlines), so a
-        // single Enter can carry several lines — each line is its own command.
-        // Then Mudlet's command separator expands each line further. Both splits
-        // degenerate to one element for ordinary single-line input, so the common
-        // case is just one pass through the loop.
-        const parts: string[] = [];
+        // single Enter can carry several lines — each line is its own command,
+        // exactly as Mudlet's TCommandLine splits before calling Host::send once
+        // per line. Everything else (the local echo, the command separator
+        // split, the alias pass) belongs to Host::send and lives one level down
+        // in ScriptingEngine.hostSend, because Mudlet echoes the whole line
+        // *before* splitting it and *before* the aliases can swallow it.
         for (const line of command.split('\n')) {
-            if (commandSeparator && line.includes(commandSeparator)) {
-                parts.push(...line.split(commandSeparator));
-            } else {
-                parts.push(line);
-            }
-        }
-        for (const part of parts) {
-            const consumed = engineRef.current?.processInput(part) ?? false;
-            if (consumed) continue;
-            // Routes through ScriptingAPI.send so sysDataSendRequest fires and
-            // denyCurrentSend() can suppress the command. Falls back to the bare
-            // session.send before the engine is ready (offline profile, init race).
             if (engineRef.current) {
-                engineRef.current.sendCommand(part);
+                engineRef.current.sendCommand(line);
             } else {
-                // echo=true lets session.send apply the showSentText mode itself
-                // (avoids a double echo under 'always', which would echo here too).
-                send(part, true);
+                // Before the engine is ready (offline profile, init race) there
+                // is no alias pipeline to run and no separator handling; echo=true
+                // still lets session.send apply the showSentText mode itself.
+                send(line, true);
             }
         }
         lastSentRef.current = command;
