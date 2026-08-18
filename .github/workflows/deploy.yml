@@ -32,6 +32,10 @@ jobs:
     name: E2E (busted)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # Move the browser download out of ~/.cache so actions/cache can reach it
+      # (the cache action only handles paths inside the workspace reliably).
+      PLAYWRIGHT_BROWSERS_PATH: .cache/ms-playwright
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -39,13 +43,33 @@ jobs:
           node-version: 24
           cache: yarn
       - run: yarn install --frozen-lockfile
-      - run: yarn playwright install --with-deps chromium
+      # Key the browser cache on the resolved Playwright version — browser
+      # builds are pinned per Playwright release, so a bump must miss the cache.
+      - name: Resolve Playwright version
+        id: playwright-version
+        run: echo "version=$(node -p "require('./node_modules/@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v5
+        with:
+          path: .cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ steps.playwright-version.outputs.version }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+      - name: Install Playwright browser + system deps
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: yarn playwright install --with-deps chromium
+      # The cache only holds the browser binary; the apt-level libraries it links
+      # against live in the runner image, so they still need installing on a hit.
+      - name: Install Playwright system deps
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: yarn playwright install-deps chromium
       # `yarn playwright test` on purpose, not `yarn test:e2e`: the latter's
       # pretest hook regenerates e2e/busted.manifest.json, which would double the
       # run time and silently paper over drift. The committed manifest is the
       # contract here — busted.spec.ts's drift guard fails if it went stale.
       - run: yarn playwright test
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-report
@@ -63,7 +87,7 @@ jobs:
           cache: yarn
       - run: yarn install --frozen-lockfile
       - run: yarn build
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: dist
 
