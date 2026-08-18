@@ -908,12 +908,9 @@ do
                 .. (newName == '' and 'empty string' or type(name)) .. "!)", 2)
         end
         name = newName
-        local newCode = __mudix_str(code)
-        if newCode == nil then
-            error("setScript: bad argument #2 type (lua code as string expected, got "
-                .. type(code) .. "!)", 2)
-        end
-        code = newCode
+        -- Mudlet checks the body at #2 — before the position at #3 — and the
+        -- check is reportInvalidLuaCodeParam, so it both types and compiles.
+        code = __mudix_check_lua_code(code, "setScript", 2)
         if pos ~= nil then
             local newPos = __mudix_int(pos)
             if newPos == nil then
@@ -923,10 +920,7 @@ do
             pos = newPos
         end
         pos = pos or 1
-        local compiled, cerr = loadstring(code)
-        if not compiled then
-            error('setScript: unable to compile "' .. code .. '", reason: ' .. tostring(cerr), 2)
-        end
+        local compiled = loadstring(code)
         -- Read the old body first: it is both the existence check (a miss
         -- answers -1) and the rollback copy.
         local previous = __getScript(name, pos)
@@ -3191,15 +3185,11 @@ end
 do
     local _raw = __mudix_permScript
     function permScript(name, parent, code)
-        code = tostring(code or "")
         -- A script's body runs as it is compiled into the tree, so both a body
         -- that won't parse AND one that raises on the way in fail creation
         -- outright — nothing is added in either case.
-        local compiled, cerr = loadstring(code)
-        if not compiled then
-            error('permScript: cannot create script (unable to compile "' .. code
-                .. '", reason: ' .. tostring(cerr) .. ')', 2)
-        end
+        code = __mudix_check_lua_code(code, "permScript", 3)
+        local compiled = loadstring(code)
         local id = __mudix_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), code),
             "permScript", "script", parent)
@@ -3338,17 +3328,7 @@ do
             error("permTimer: bad argument #3 value (time in seconds must be at least 0 and less"
                 .. " than 86400, got " .. string.format("%f", delay) .. ")", 2)
         end
-        local body = __mudix_str(code)
-        if body == nil then
-            error("permTimer: bad argument #4 type (lua code as string expected, got "
-                .. type(code) .. "!)", 2)
-        end
-        code = body
-        local compiled, cerr = loadstring(code)
-        if not compiled then
-            error("permTimer: cannot create timer (unable to compile \"" .. code
-                .. "\", reason: " .. tostring(cerr) .. ")", 2)
-        end
+        code = __mudix_check_lua_code(code, "permTimer", 4)
         return __mudix_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), delay, code),
             "permTimer", "timer", parent)
@@ -5372,19 +5352,36 @@ do
 
     -- The perm* trigger constructors take a TABLE of patterns; an empty table is
     -- the documented way to make a group, but a bare string is a type error.
-    local function permPatternGuard(fn, funcName)
-        return function(name, parent, patterns, ...)
+    -- The body then goes through reportInvalidLuaCodeParam at #4, in that order
+    -- (TLuaInterpreterMudletObjects.cpp) — so a trigger whose body is not a
+    -- chunk is refused rather than filed under a pattern it can never answer.
+    -- `what` is Mudlet's own noun for the list, and it is NOT uniform: three of
+    -- these say "sub-strings list" and permExactMatchTrigger says "exact match
+    -- patterns list" (TLuaInterpreterMudletObjects.cpp:1199-1331). Carried
+    -- through verbatim rather than tidied into one phrase, since the message is
+    -- what a script author matches on.
+    local function permPatternGuard(fn, funcName, what)
+        return function(name, parent, patterns, code)
             if type(patterns) ~= 'table' then
-                error(funcName .. ": bad argument #3 type (patterns as table expected, got "
+                error(funcName .. ": bad argument #3 type (" .. what .. " as table expected, got "
                     .. type(patterns) .. "!)", 2)
             end
-            return fn(name, parent, patterns, ...)
+            return fn(name, parent, patterns, __mudix_check_lua_code(code, funcName, 4))
         end
     end
-    permRegexTrigger             = permPatternGuard(permRegexTrigger, "permRegexTrigger")
-    permSubstringTrigger         = permPatternGuard(permSubstringTrigger, "permSubstringTrigger")
-    permBeginOfLineStringTrigger = permPatternGuard(permBeginOfLineStringTrigger, "permBeginOfLineStringTrigger")
-    permExactMatchTrigger        = permPatternGuard(permExactMatchTrigger, "permExactMatchTrigger")
+    permRegexTrigger             = permPatternGuard(permRegexTrigger, "permRegexTrigger", "sub-strings list")
+    permSubstringTrigger         = permPatternGuard(permSubstringTrigger, "permSubstringTrigger", "sub-strings list")
+    permBeginOfLineStringTrigger = permPatternGuard(permBeginOfLineStringTrigger, "permBeginOfLineStringTrigger", "sub-strings list")
+    permExactMatchTrigger        = permPatternGuard(permExactMatchTrigger, "permExactMatchTrigger", "exact match patterns list")
+
+    -- Same check one argument earlier: permPromptTrigger has no pattern list, so
+    -- Mudlet validates its body at #3.
+    do
+        local _raw = permPromptTrigger
+        permPromptTrigger = function(name, parent, code)
+            return _raw(name, parent, __mudix_check_lua_code(code, "permPromptTrigger", 3))
+        end
+    end
 end
 
 do
