@@ -391,11 +391,18 @@ describe('setConfig / getConfig', () => {
             expect(h.run('return getConfig("hideMapInfo")')).toBeNull();
         });
 
-        it('raises on a non-string label (Mudlet getVerifiedString)', () => {
-            expect(() => h.run('return setConfig("showMapInfo", 42)')).toThrow();
+        it('raises on a label that is not string-coercible (Mudlet getVerifiedString)', () => {
+            // getVerifiedString is checkStringArg is lua_isstring, which is TRUE
+            // for a number — Mudlet takes setConfig("showMapInfo", 42) and
+            // registers a contributor called "42". Only a value Lua will not
+            // render as a string is a type error.
             expect(() => h.run('return setConfig("hideMapInfo", true)')).toThrow();
-            // ...as do the other string-typed options.
-            expect(() => h.run('return setConfig("blankLinesBehaviour", 1)')).toThrow();
+            expect(() => h.run('return setConfig("showMapInfo", {})')).toThrow();
+            expect(h.run('return setConfig("showMapInfo", 42)')).toBe(true);
+            h.session.windows.mapStore.clearMapInfoContributors();
+            // An enum key takes the number too, and then rejects "1" the way it
+            // rejects any unknown value: a (nil, errMsg) pair, not a raise.
+            expect(h.run('return (setConfig("blankLinesBehaviour", 1))')).toBeNull();
         });
     });
 

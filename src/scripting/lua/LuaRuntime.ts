@@ -752,10 +752,15 @@ export class LuaRuntime implements IScriptingRuntime {
         // is "0 (transparent) or 1 (filled)", so rejecting numbers breaks
         // gauges and scripts ported from Mudlet. Anything else raises a
         // bad-argument error matching Mudlet's shape.
+        // The number branch is lua_isnumber on Mudlet's side, which is true for a
+        // NUMERIC STRING too — Lua coerces — so "1" is as good a fill flag as 1.
         const boolArg = (v: unknown, who: string, argN: number, optional: boolean): boolean => {
             if (optional && (v === undefined || v === null)) return false;
             if (typeof v === 'boolean') return v;
             if (typeof v === 'number') return v !== 0;
+            if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) {
+                return Number(v) !== 0;
+            }
             throw new Error(`${who}: bad argument #${argN} type (boolean expected, got ${typeof v})`);
         };
         this.lua.global.set('createLabel', (...args: unknown[]) => {
