@@ -88,8 +88,14 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
     const readerRef = useRef<MudixMapReader | null>(null);
     const highlightOverlayRef = useRef<MudletHighlightOverlay | null>(null);
     const selectionOverlayRef = useRef<MapSelectionOverlay | null>(null);
-    const prevWidthRef = useRef<number>(0);
     const needsFitRef = useRef<boolean>(false);
+    // True once the opening view has actually been applied against a laid-out
+    // panel. Distinct from needsFitRef, which flips the moment we *start*
+    // opening: between those two points the camera is still showing the
+    // renderer's default zoom, and persisting that (the resize that sizes the
+    // camera notifies like any other camera move) would record a view the user
+    // never chose and then restore it forever after.
+    const viewAppliedRef = useRef<boolean>(false);
     // Tracks the MapStore.hiddenVersion last applied to the renderer so the
     // store-change subscription can force a renderer.refresh() when the only
     // thing that changed was the hidden-room set — syncFromStore's
@@ -337,6 +343,8 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
             if (!renderer) return;
             if (syncCameraSize(renderer, containerRef.current)) {
                 applyInitialView(renderer, manager.mapStore, areaId);
+                // Only now is there a view worth persisting; see viewAppliedRef.
+                viewAppliedRef.current = true;
                 return;
             }
             // ~2s at 60fps. A panel still unsized by then is closed, collapsed,
@@ -465,7 +473,7 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
         }
         setStatus('ready');
         return true;
-    }, [connectionId, getSavedView, syncPositionMarker, recomputeMapInfos]);
+    }, [connectionId, getSavedView, syncPositionMarker, recomputeMapInfos, applyInitialViewWhenSized]);
 
     // Construct the renderer + live reader exactly once. Subsequent store
     // mutations flow through `reader.refresh()` + `renderer.drawArea(...)` —
@@ -479,6 +487,7 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
         // StrictMode's synthetic session swap in dev) would inherit the previous
         // renderer's "already fitted" flag and open uncentered at (0,0).
         needsFitRef.current = false;
+        viewAppliedRef.current = false;
         setLod(null);
         const reader = new MudixMapReader(manager.mapStore);
         readerRef.current = reader;
@@ -654,7 +663,7 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
         // Persist zoom/pan back to the profile whenever the camera moves.
         // Skipped until syncFromStore has applied saved/initial state so the
         // initial fitArea / restored-zoom doesn't trample a still-loading save.
-        const onCameraChange = () => { if (needsFitRef.current) saveViewStateRef.current(); };
+        const onCameraChange = () => { if (viewAppliedRef.current) saveViewStateRef.current(); };
         renderer.camera.on('change', onCameraChange);
 
         // Enforce Mudlet's zoom-in ceiling: the shorter viewport edge may never
@@ -866,51 +875,63 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
         };
     }, [contextMenu]);
 
-    // Divs don't fire "resize" natively; the renderer needs it to update canvas size.
-    // After the canvas resizes, scale zoom proportionally to preserve visible world bounds
-    // (same behavior as Mudlet: bigger window = zoom in, smaller = zoom out).
+    // Divs don't fire "resize" natively; the renderer needs it to update the
+    // canvas and camera size (see syncCameraSize).
+    //
+    // A resize keeps the Mudlet zoom — how many map units span the shorter edge
+    // — and lets the room pixel size follow the panel, which is what Mudlet does:
+    // T2DMap::paintEvent re-derives `mRoomWidth = widgetWidth / xspan` from the
+    // area's stored xyzoom on every paint and never writes the zoom back, so a
+    // taller panel shows *more* map at the same room size. mudix used to scale
+    // the zoom by the width ratio instead ("preserve the visible world bounds"),
+    // which not only inverted that but silently rewrote the opening view: a
+    // floating map window reaches its final size over several observed frames,
+    // and each one multiplied the zoom that had just been applied.
     useEffect(() => {
         const el = containerRef.current;
         if (!el) return;
-        const ro = new ResizeObserver((entries) => {
-            const newWidth = entries[0].contentRect.width;
+        const ro = new ResizeObserver(() => {
             const renderer = rendererRef.current;
-            if (renderer && prevWidthRef.current > 0 && newWidth > 0) {
-                const scale = newWidth / prevWidthRef.current;
-                const zoom = renderer.getZoom();
-                const bounds = renderer.getViewportBounds();
-                const cx = (bounds.minX + bounds.maxX) / 2;
-                const cy = (bounds.minY + bounds.maxY) / 2;
-                el.dispatchEvent(new Event('resize'));
-                renderer.setZoom(zoom * scale);
-                renderer.camera.panToMapPoint(cx, cy);
-            } else {
-                el.dispatchEvent(new Event('resize'));
-                // First time the canvas reaches non-zero width: re-apply the
-                // initial view. syncFromStore may have already drawn the area
-                // while the container was 0×0, which makes fit/zoom math useless
-                // — redo it now that we have real dimensions. Don't flip
-                // needsFitRef back to false: a later store mutation could then
-                // trigger another saved-state restore and wipe the user's live
-                // zoom.
-                if (renderer && newWidth > 0 && needsFitRef.current) {
+            if (!renderer) return;
+            // Measured against the pre-resize camera, so this is the unit count
+            // the user was looking at; null means the panel had no size at all
+            // and there is no view to preserve yet.
+            const before = toMudletZoom(renderer);
+            const bounds = renderer.getViewportBounds();
+            const cx = (bounds.minX + bounds.maxX) / 2;
+            const cy = (bounds.minY + bounds.maxY) / 2;
+            el.dispatchEvent(new Event('resize'));
+            if (before == null) {
+                // First real layout. syncFromStore may already have drawn the
+                // area while the container was 0×0, which makes fit/zoom math
+                // useless — redo it now that there are real dimensions. Don't
+                // flip needsFitRef back to false: a later store mutation could
+                // then trigger another saved-state restore and wipe the user's
+                // live zoom.
+                if (needsFitRef.current) {
                     const areaId = currentAreaRef.current;
-                    if (areaId != null) applyInitialView(renderer, manager.mapStore, areaId);
+                    if (areaId != null) applyInitialViewWhenSized(areaId);
                     else fitAreaWithHeadroom(renderer);
                 }
+                return;
             }
-            prevWidthRef.current = newWidth;
+            const rendererZoom = toRendererZoom(renderer, before);
+            if (rendererZoom != null) {
+                if (rendererZoom < renderer.minZoom) renderer.minZoom = rendererZoom;
+                renderer.setZoom(rendererZoom);
+            }
+            renderer.camera.panToMapPoint(cx, cy);
         });
         ro.observe(el);
         return () => ro.disconnect();
-    }, [manager]);
+    }, [manager, applyInitialViewWhenSized]);
 
     // Area/level changes don't always move the camera (e.g. level cycling via
     // ▲▼ buttons just redraws the same viewport), so the camera-change handler
     // would miss them. Gate on needsFitRef so we don't save before the first
     // sync has settled on real values.
     useEffect(() => {
-        if (!needsFitRef.current || currentArea == null) return;
+        if (!viewAppliedRef.current || currentArea == null) return;
         saveViewState();
     }, [currentArea, currentLevel, saveViewState]);
 
@@ -1034,6 +1055,7 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
             // a package that loadMap()s its own .dat) leaves us at the area
             // default (0,0) instead of on the player.
             needsFitRef.current = false;
+            viewAppliedRef.current = false;
             return syncFromStore({ fresh: true });
         });
         return () => manager.unregisterMapLoadCallback();
