@@ -1,4 +1,4 @@
-import { type Page } from '@playwright/test';
+import { devices, type Page } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +16,24 @@ export type BustedResults = {
     tests: BustedTest[];
 };
 
+// The browser context every spec runs in — the project's `use` block and the
+// recording sweep alike, from this one definition, because they must not differ.
+//
+// Note what the descriptor decides: its user agent says Windows, so getOS()
+// answers "windows" no matter what the run is really on, and the specs that
+// branch on it assert their Windows side everywhere. Three of them fail the
+// moment a context is created without it — Miscallaneous_spec looks for
+// /proc/<pid> in the profile VFS, expects getWindowsCodepage() to refuse, and
+// GeyserUserWindow_spec expects Qt's dock title bar to cost height. That is
+// pre-existing (every context has always come from this descriptor); it is
+// recorded here because the failure it produces looks like a real parity gap
+// rather than a missing context option.
+export const BUSTED_DEVICE = devices['Desktop Chrome'];
+
+// The same, minus the key that only means something in a `use` block, so it can
+// be handed straight to browser.newContext().
+export const { defaultBrowserType: _defaultBrowserType, ...BUSTED_CONTEXT } = BUSTED_DEVICE;
+
 // The specs directory the runtime bundles via import.meta.glob('./specs/**').
 const SPECS_DIR = fileURLToPath(new URL('../src/scripting/lua/specs/', import.meta.url));
 
@@ -29,6 +47,50 @@ export const ALL_SPECS: string[] = fs.readdirSync(SPECS_DIR)
     .filter(f => f.endsWith('_spec.lua'))
     .map(f => f.slice(0, -'_spec.lua'.length))
     .sort();
+
+// ── Sharding ────────────────────────────────────────────────────────────────
+// BUSTED_SHARD=<n>/<total> restricts a run to a slice of the corpus: it records
+// only those specs and registers only their tests, so N runners each do 1/N of
+// the browser work. That is not what Playwright's own --shard does — it slices
+// the TEST list, and since every one of this suite's tests is an assertion over
+// a recorded spec, each shard would still have to record the whole corpus to
+// have anything to assert. The split has to happen at the spec, so it happens
+// here.
+//
+// Sliced longest-first onto the emptiest shard, weighted by the spec file's
+// size. Cost varies enormously across the corpus (UI_spec alone is 610 it()s),
+// and a round-robin would leave one runner holding it plus its fair share of
+// everything else. Size is the only cost signal available before a spec has ever
+// run, and it tracks it() count closely enough to keep the shards even.
+const shardEnv = process.env.BUSTED_SHARD;
+
+function parseShard(value: string | undefined): { index: number; total: number } | null {
+    if (!value) return null;
+    const match = /^(\d+)\/(\d+)$/.exec(value.trim());
+    const index = Number(match?.[1]);
+    const total = Number(match?.[2]);
+    if (!match || !(total >= 1) || !(index >= 1) || index > total) {
+        throw new Error(`BUSTED_SHARD must look like "2/3", got "${value}"`);
+    }
+    return { index, total };
+}
+
+function shardSpecs(index: number, total: number): string[] {
+    const weight = (spec: string) => fs.statSync(`${SPECS_DIR}${spec}_spec.lua`).size;
+    const load = new Array<number>(total).fill(0);
+    const shards: string[][] = Array.from({ length: total }, () => []);
+    for (const spec of [...ALL_SPECS].sort((a, b) => weight(b) - weight(a))) {
+        const lightest = load.indexOf(Math.min(...load));
+        shards[lightest].push(spec);
+        load[lightest] += weight(spec);
+    }
+    return shards[index - 1].sort();
+}
+
+export const SHARD = parseShard(shardEnv);
+
+/** The specs this run is responsible for: its shard's slice, or all of them. */
+export const SPECS: string[] = SHARD ? shardSpecs(SHARD.index, SHARD.total) : ALL_SPECS;
 
 // Register the non-dialing connection (store v20) for every navigation on this
 // page. The bogus ws URL + the deep-link's withConnect=false keep it from
@@ -138,7 +200,7 @@ export async function seedProfile(page: Page): Promise<void> {
 // seeded nested-trigger fixture below) fail nondeterministically. __mudixBustedReady
 // reports whether sysLoadEvent has fired, which the engine raises only once all
 // of that is in place.
-export async function reopen(page: Page): Promise<void> {
+export async function reopen(page: Page, timeout = READY_TIMEOUT_MS): Promise<void> {
     await page.goto('/?profile=mudlet-self-test');
     await page.waitForFunction(
         () => {
@@ -160,15 +222,25 @@ export async function reopen(page: Page): Promise<void> {
             }
         },
         undefined,
-        { timeout: 90_000, polling: 500 },
+        { timeout, polling: 500 },
     );
 }
 
 // Seed + navigate a fresh page into a ready runtime.
-export async function bootProfile(page: Page): Promise<void> {
+export async function bootProfile(page: Page, timeout?: number): Promise<void> {
     await seedProfile(page);
-    await reopen(page);
+    await reopen(page, timeout);
 }
+
+// How long to wait for a boot before giving up on it. A healthy boot answers in
+// 1–5s; what this really has to survive is the contention of several contexts
+// booting at once, where one can be starved for a good while. It used to be 90s,
+// and that made a lost boot expensive in exactly the wrong way: the recorder
+// retries a spec that fails, so a flake cost the full wait AND the retry — one
+// starved Discord boot turned a 12-spec shard from ~15s into 94s. Fail fast,
+// retry with room to spare (see RETRY_READY_TIMEOUT_MS).
+export const READY_TIMEOUT_MS = 45_000;
+export const RETRY_READY_TIMEOUT_MS = 90_000;
 
 export function runSpec(page: Page, spec: string): Promise<BustedResults> {
     return page.evaluate(

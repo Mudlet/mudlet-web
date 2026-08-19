@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { ALL_SPECS, loadRecordedRun } from './bustedHarness';
+import { SPECS, SHARD, loadRecordedRun } from './bustedHarness';
 import { KNOWN_DIVERGENCES, UNSUPPORTED_AREAS, knownDivergence } from './knownDivergences';
 
 // Mudlet's busted *_spec.lua suite, run against the real mudix app in a browser.
@@ -41,7 +41,7 @@ if (!run) {
         );
     });
 } else {
-    for (const spec of ALL_SPECS) {
+    for (const spec of SPECS) {
         const results = run.results[spec];
         const names = results?.tests.map(t => t.name) ?? [];
 
@@ -95,7 +95,7 @@ if (!run) {
     // capability arrived, and both are worth a look rather than a silently wrong
     // note.
     test.describe('unsupported areas', () => {
-        for (const area of UNSUPPORTED_AREAS) {
+        for (const area of UNSUPPORTED_AREAS.filter(a => SPECS.includes(a.spec))) {
             test(`${area.area} still skips for the recorded reason`, () => {
                 const matching = (run.results[area.spec]?.tests ?? []).filter(t =>
                     t.status === 'pending' && (t.message ?? '').includes(area.pendingReason));
@@ -114,9 +114,13 @@ if (!run) {
     // knownDivergences.ts — and dead entries are worse than none: the next person
     // reads the list as the complete account of where mudix differs from Mudlet, and
     // a stale line makes that account wrong.
-    test('known divergences all name a live spec', () => {
+    test(`known divergences all name a live spec${SHARD ? ` (shard ${SHARD.index}/${SHARD.total})` : ''}`, () => {
         const dead: string[] = [];
         for (const [spec, divergences] of Object.entries(KNOWN_DIVERGENCES)) {
+            // Under BUSTED_SHARD the other shards' specs were never recorded
+            // here, so their divergences have nothing to check against — the
+            // shard that owns the spec is the one that checks it.
+            if (!SPECS.includes(spec)) continue;
             const names = new Set((run.results[spec]?.tests ?? []).map(t => t.name));
             for (const d of divergences) {
                 if (!names.has(d.name)) dead.push(`${spec}: "${d.name}"`);

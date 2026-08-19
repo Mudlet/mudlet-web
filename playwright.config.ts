@@ -1,4 +1,5 @@
-import { defineConfig, devices } from '@playwright/test';
+import { defineConfig } from '@playwright/test';
+import { BUSTED_DEVICE } from './e2e/bustedHarness';
 import { isFresh } from './e2e/bustedRecord';
 
 // Single execution path for Mudlet's busted suite: drive the REAL mudix app in a
@@ -23,7 +24,10 @@ export default defineConfig({
     // they fan out freely and cost milliseconds each. (They used to take a
     // browser context apiece, which was ~60% of the suite's wall clock.)
     fullyParallel: true,
-    workers: '50%',
+    // Half the cores locally; three quarters of the 4-core CI runner, where the
+    // assertion pass is 3320 JSON comparisons and the third worker is free — the
+    // corpus sweep that wants the rest of the machine is already over by then.
+    workers: process.env.CI ? '75%' : '50%',
     forbidOnly: !!process.env.CI,
     retries: 0,
     timeout: 30_000,
@@ -38,7 +42,9 @@ export default defineConfig({
         trace: 'on-first-retry',
     },
     projects: [
-        { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+        // Shared with the recording sweep (see BUSTED_DEVICE): a context built
+        // any other way reports a different OS to the specs.
+        { name: 'chromium', use: { ...BUSTED_DEVICE } },
     ],
     // Only globalSetup needs the app, so a run that reuses its recording (see
     // isFresh: nothing under src/ or e2e/ has changed since) skips the server

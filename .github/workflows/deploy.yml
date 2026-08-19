@@ -29,10 +29,22 @@ jobs:
       - run: yarn test
 
   e2e:
-    name: E2E (busted)
+    # Sharded by SPEC, not by Playwright's --shard. Every test in this suite is an
+    # assertion over a recorded spec, so slicing the test list would leave each
+    # shard still having to record the whole corpus; slicing the corpus is what
+    # actually divides the work. Three ways because the browser sweep IS the job
+    # (97s of a 2m11s run for 41 specs), while the fixed cost a shard cannot
+    # avoid — checkout, install, browser deps, dev server — is around 40s.
+    name: E2E (busted) ${{ matrix.shard }}/3
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      # One shard failing should not hide what the other two found.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     env:
+      BUSTED_SHARD: ${{ matrix.shard }}/3
       # Move the browser download out of ~/.cache so actions/cache can reach it
       # (the cache action only handles paths inside the workspace reliably).
       PLAYWRIGHT_BROWSERS_PATH: .cache/ms-playwright
@@ -64,15 +76,16 @@ jobs:
       - name: Install Playwright system deps
         if: steps.playwright-cache.outputs.cache-hit == 'true'
         run: yarn playwright install-deps chromium
-      # One command records the corpus and asserts it: globalSetup sweeps all 41
-      # specs in the real app, and the test tree is built from that recording (see
-      # playwright.config.ts). Nothing is committed or pre-generated, so there is
-      # no manifest step here and nothing that can go stale between runs.
+      # One command records this shard's specs and asserts them: globalSetup
+      # sweeps them in the real app, and the test tree is built from that
+      # recording (see playwright.config.ts). Nothing is committed or
+      # pre-generated, so there is no manifest step and nothing that can go stale
+      # between runs.
       - run: yarn test:e2e
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.shard }}
           path: playwright-report/
           retention-days: 7
 

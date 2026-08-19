@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-    ALL_SPECS, bootProfile, runSpec, resultsPath, fingerprint,
+    SPECS, SHARD, bootProfile, runSpec, resultsPath, fingerprint, loadRecordedRun, BUSTED_CONTEXT,
+    RETRY_READY_TIMEOUT_MS,
     type BustedResults, type RecordedRun,
 } from './bustedHarness';
 
@@ -27,21 +28,22 @@ import {
 // the Geyser overlay, or the profile VFS — a reload is what resets those). That
 // makes the corpus embarrassingly parallel; the only real limit is CPU, since
 // every context instantiates wasmoon + pcre2 + sqlite WASM and then runs a whole
-// spec. Measured on a 24-thread box: 6 at a time took the corpus from 4m0s to
-// 35s, while 12 starved boots badly enough that the readiness wait timed out.
-// Hence a quarter of the threads — but never fewer than two, since a small CI
-// runner would otherwise record the whole corpus serially, and a context waiting
-// on the app is not using a core anyway.
+// spec. So: one context per core, less one for the dev server and this driver,
+// and never fewer than two. Measured on a 24-thread box, 6 at a time took the
+// corpus from 4m0s to 35s while 12 starved boots badly enough that the readiness
+// wait timed out — hence the ceiling. On the 4-core GitHub runner the same rule
+// gives 3, where 2 spent 97s of a 2m11s job on this sweep.
 const cpus = os.availableParallelism?.() ?? os.cpus().length;
-const CONCURRENCY = Math.max(2, Math.min(6, Math.floor(cpus / 4)));
+const CONCURRENCY = Math.max(2, Math.min(6, cpus - 1));
 
 async function recordSpec(
     browser: import('@playwright/test').Browser, baseURL: string | undefined, spec: string,
+    readyTimeout?: number,
 ): Promise<BustedResults> {
-    const context = await browser.newContext({ baseURL });
+    const context = await browser.newContext({ ...BUSTED_CONTEXT, baseURL });
     try {
         const page = await context.newPage();
-        await bootProfile(page);
+        await bootProfile(page, readyTimeout);
         return await runSpec(page, spec);
     } catch (err) {
         // One spec that cannot even boot must not take the run down with it:
@@ -67,11 +69,11 @@ export default async function record(config: FullConfig): Promise<void> {
     const baseURL = config.projects[0]?.use?.baseURL;
     const browser = await chromium.launch();
     const results: Record<string, BustedResults> = {};
-    const [warmUp, ...rest] = ALL_SPECS;
+    const [warmUp, ...rest] = SPECS;
     const queue = [...rest];
     let done = 0;
     const report = (spec: string) => console.log(
-        `busted: ${String(++done).padStart(2)}/${ALL_SPECS.length} ${spec}`);
+        `busted: ${String(++done).padStart(2)}/${SPECS.length} ${spec}`);
     const started = Date.now();
     try {
         // The first spec goes alone. The dev server is a Vite dev server, which
@@ -95,16 +97,23 @@ export default async function record(config: FullConfig): Promise<void> {
         // that says nothing about mudix, and it would otherwise fail the spec's
         // guard — a red run for a reason no one can act on. A spec that fails
         // this pass too has something real to answer for.
-        for (const spec of ALL_SPECS.filter(s => failedToRecord(results[s]))) {
+        for (const spec of SPECS.filter(s => failedToRecord(results[s]))) {
             console.log(`busted: retrying ${spec} on its own`);
-            results[spec] = await recordSpec(browser, baseURL, spec);
+            results[spec] = await recordSpec(browser, baseURL, spec, RETRY_READY_TIMEOUT_MS);
         }
     } finally {
         await browser.close();
     }
-    const run: RecordedRun = { fingerprint: fingerprint(), results };
+    // Merged, not replaced: under BUSTED_SHARD this run only swept its own slice,
+    // and on one machine (running shards by hand) the other slices' results are
+    // still good — provided they describe the same tree, which is what the
+    // fingerprint check decides.
+    const previous = loadRecordedRun();
+    const kept = previous?.fingerprint === fingerprint() ? previous.results : {};
+    const run: RecordedRun = { fingerprint: fingerprint(), results: { ...kept, ...results } };
     fs.writeFileSync(resultsPath, JSON.stringify(run));
-    console.log(`busted: recorded ${ALL_SPECS.length} specs in ${Math.round((Date.now() - started) / 1000)}s`);
+    console.log(`busted: recorded ${SPECS.length} spec(s)${SHARD ? ` for shard ${SHARD.index}/${SHARD.total}` : ''}`
+        + ` in ${Math.round((Date.now() - started) / 1000)}s`);
 }
 
 // Re-record unless the last recording still describes this working tree.
@@ -118,7 +127,7 @@ export function isFresh(): boolean {
     try {
         const run = JSON.parse(fs.readFileSync(resultsPath, 'utf8')) as RecordedRun;
         return run.fingerprint === fingerprint()
-            && ALL_SPECS.every(spec => run.results[spec] !== undefined);
+            && SPECS.every(spec => run.results[spec] !== undefined);
     } catch {
         return false;
     }
