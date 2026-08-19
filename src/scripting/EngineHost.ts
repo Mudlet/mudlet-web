@@ -1,3 +1,4 @@
+import type { TriggerPattern } from '../storage/schema';
 import type { InstallOutcome } from './ScriptingAPI';
 
 /**
@@ -27,6 +28,20 @@ export const KNOWN_ITEM_TYPES: ReadonlySet<string> = new Set(
  *
  * Members are grouped the way the engine groups them, not alphabetically.
  */
+/** What tempComplexRegexTrigger asks for: a session-scoped trigger carrying
+ *  everything a permanent one can. See ScriptingEngine.createTempComplexTrigger. */
+export interface TempComplexTriggerSpec {
+    name: string;
+    patterns: TriggerPattern[];
+    code: string;
+    multiline: boolean;
+    isFilter: boolean;
+    multipleMatches: boolean;
+    fireLength: number;
+    delta: number;
+    highlight?: { fg?: string; bg?: string };
+}
+
 export interface EngineHost {
     // ── Script execution & input pipeline ────────────────────────────────────
 
@@ -167,6 +182,8 @@ export interface EngineHost {
     createPermScript(name: string, parent: string, code: string): number;
     createPermRegexTrigger(name: string, parent: string, regexes: string[], code: string): number;
     createPermSubstringTrigger(name: string, parent: string, patterns: string[], code: string): number;
+    createTempComplexTrigger(spec: TempComplexTriggerSpec): number;
+    removeTemporaryTriggerById(id: number): boolean;
     createPermBeginOfLineStringTrigger(name: string, parent: string, patterns: string[], code: string): number;
     createPermExactMatchTrigger(name: string, parent: string, patterns: string[], code: string): number;
     createPermPromptTrigger(name: string, parent: string, code: string): number;
@@ -276,6 +293,8 @@ export const NULL_ENGINE_HOST: EngineHost = Object.freeze({
     createPermScript: () => -1,
     createPermRegexTrigger: () => -1,
     createPermSubstringTrigger: () => -1,
+    createTempComplexTrigger: () => -1,
+    removeTemporaryTriggerById: () => false,
     createPermBeginOfLineStringTrigger: () => -1,
     createPermExactMatchTrigger: () => -1,
     createPermPromptTrigger: () => -1,

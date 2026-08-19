@@ -3444,7 +3444,6 @@ end
 -- cover those. A one-time warning is emitted when such a flag is actually
 -- requested, so the gap is visible rather than silent.
 do
-    local registry = {}   -- name -> temp trigger id (named complex triggers)
     local warned = {}     -- de-dupe per-feature unsupported warnings
 
     local function warnOnce(feature)
@@ -3493,51 +3492,50 @@ do
         deselect()
     end
 
-    -- killTrigger(name) must also remove a named temp complex trigger. The
-    -- numeric-id form (and perm triggers by name) still fall through to the
-    -- underlying killTrigger.
-    local _killTrigger = killTrigger
-    function killTrigger(idOrName)
-        if type(idOrName) == 'string' and registry[idOrName] then
-            local id = registry[idOrName]
-            registry[idOrName] = nil
-            return _killTrigger(id)
-        end
-        return _killTrigger(idOrName)
-    end
-
     function tempComplexRegexTrigger(name, regex, code, multiline, fgColor, bgColor,
                                      filter, matchAll, hlFgColor, hlBgColor, soundFile,
                                      fireLength, lineDelta, expireAfter)
         local userFn = __mudix_to_fn(code, "tempComplexRegexTrigger", 3)
         local matchAllOn = tonumber(matchAll) == 1
 
-        if tonumber(multiline) == 1 then warnOnce('multiline') end
-        if tonumber(filter) == 1 then warnOnce('filter') end
+        -- A colour pattern is the one thing here that has no home on the node:
+        -- Mudlet's fgColor/bgColor name colours, and the node's colour patterns
+        -- are ANSI indices. Still the honest thing to say out loud.
         if type(fgColor) == 'string' or type(bgColor) == 'string' then warnOnce('colour pattern (fgColor/bgColor)') end
-        if (tonumber(fireLength) or 0) > 0 then warnOnce('fireLength') end
-        if (tonumber(lineDelta) or 0) > 0 then warnOnce('lineDelta') end
 
         local hasHighlight = type(hlFgColor) == 'string' or type(hlBgColor) == 'string'
         local hasSound = type(soundFile) == 'string' and soundFile ~= ''
-        local wrapper = function(...)
+        local fires, max, id = 0, tonumber(expireAfter)
+        local wrapper = function()
             if hasHighlight then highlight(hlFgColor, hlBgColor, matchAllOn) end
             if hasSound then playSoundFile(soundFile) end
-            return userFn(...)
+            fires = fires + 1
+            -- Spent BEFORE the body runs, so a trigger that re-arms itself from
+            -- its own script does not have the fresh one killed by the count the
+            -- old one ran out of.
+            if max and max > 0 and fires >= max and id then killTrigger(id) end
+            return userFn()
         end
 
-        -- Named trigger: re-calling with an existing name replaces it.
-        if type(name) == 'string' and name ~= '' and registry[name] then
-            _killTrigger(registry[name])
-            registry[name] = nil
+        local patterns = ''
+        if type(regex) == 'string' and regex ~= '' then
+            patterns = 'regex\2' .. regex
         end
-        -- The name goes to the runtime as well as into the registry above:
-        -- exists() and killTrigger() reach a named temporary through it, which
-        -- is the whole point of this being the one temp-trigger API that takes
-        -- a name (Trigger_spec pins a temporary sharing one with a permanent).
-        local id = __mudix_tempRegexTrigger(regex, __mudix_register_cb(wrapper),
-            tonumber(expireAfter), name)
-        if type(name) == 'string' and name ~= '' then registry[name] = id end
+        -- The body is a node's Lua source, so the callback is reached through
+        -- the registry the same way a temp trigger's is. `matches` and
+        -- `multimatches` are globals by then, which is where a Mudlet trigger
+        -- script reads its captures from anyway.
+        local cbId = __mudix_register_cb(wrapper)
+        id = __mudix_tempComplexTrigger(
+            type(name) == 'string' and name or '',
+            patterns,
+            'return __mudix_dispatch_cb(' .. cbId .. ')',
+            tonumber(multiline) == 1,
+            tonumber(filter) == 1,
+            matchAllOn,
+            tonumber(fireLength) or 0,
+            tonumber(lineDelta) or 0,
+            hlFgColor, hlBgColor)
         return id
     end
 end
@@ -5416,16 +5414,24 @@ do
     end
 
     -- tempComplexRegexTrigger(name, pattern, code, multiline, fg, bg, filter,
-    -- matchAll, highlightFg, highlightBg, playSound, fireLength, lineDelta) —
-    -- every argument from #4 on is a numeric flag. Omitted ones stay optional,
-    -- but a value of the wrong type is a type error rather than a silent 0.
+    -- matchAll, highlightFg, highlightBg, playSound, fireLength, lineDelta,
+    -- expireAfter) — the flags are numbers, and a value of the wrong type is a
+    -- type error rather than a silent 0. Omitted ones stay optional.
+    --
+    -- NOT every argument from #4 on, though, which is what this used to demand:
+    -- the two colour patterns, the two highlight colours and the sound file are
+    -- all strings when they are anything at all (a number there means "not
+    -- set", which is how Mudlet tells them apart). Refusing those made the
+    -- highlight and sound arguments unreachable — the code that reads them
+    -- tests for a string, and no call carrying one ever got this far.
+    local COMPLEX_TRIGGER_FLAGS = {[4] = true, [7] = true, [8] = true, [12] = true, [13] = true, [14] = true}
     local _rawTempComplexRegexTrigger = tempComplexRegexTrigger
     tempComplexRegexTrigger = function(...)
         local n = select('#', ...)
         local args = {...}
         for i = 4, n do
             local v = args[i]
-            if v ~= nil then
+            if v ~= nil and COMPLEX_TRIGGER_FLAGS[i] then
                 local num = __mudix_num(v)
                 if num == nil then
                     error("tempComplexRegexTrigger: bad argument #" .. i .. " type (flag as number"

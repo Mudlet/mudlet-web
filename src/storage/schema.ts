@@ -642,6 +642,19 @@ export interface TriggerNode extends BaseNode {
     multiline: boolean;          // AND mode: all patterns must match in sequence
     delta: number;               // 0 = unlimited; N = max lines from first condition match to last
     isFilter: boolean;           // filter chain: pass captured/matched text to children instead of full line
+    /**
+     * Session-scoped: created by `tempComplexRegexTrigger`, which needs a real
+     * trigger node rather than the flat temp-trigger primitive because it can
+     * ask for multiline-AND, a filter chain, a fire length, a line delta — all
+     * of them properties of a node in the tree — and can be named as another
+     * trigger's parent.
+     *
+     * Not persisted (see serializeProfileData), and neither is anything hanging
+     * under it: a permanent trigger parented to a temporary one goes when its
+     * parent does, so saving it would restore a child pointing at a parent that
+     * no longer exists.
+     */
+    temporary?: boolean;
     highlight?: {                // built-in colorization applied to the matched text
         fg?: string;             // hex color e.g. "#ff0000"
         bg?: string;

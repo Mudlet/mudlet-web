@@ -1,3 +1,4 @@
+import type { TriggerPatternType } from '../../../storage/schema';
 import type { BindingContext } from './context';
 
 /**
@@ -37,6 +38,46 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
         const s = String(regexesStr ?? '');
         const regexes = s.length === 0 ? [] : s.split('\x01');
         return api.permRegexTrigger(String(name ?? ''), String(parent ?? ''), regexes, String(code ?? ''));
+    });
+    /**
+     * Mudlet `tempComplexRegexTrigger(...)`, minus the parts Bridge.lua keeps
+     * for itself (the callback, the sound, the expiry count).
+     *
+     * `patternsStr` is `type\x02text` pairs joined by `\x01`, so one call can
+     * carry the regex plus the colour patterns the fgColor/bgColor arguments
+     * ask for — the same flatten/split convention permRegexTrigger uses, with
+     * the pattern kind alongside each entry.
+     */
+    lua.global.set('__mudix_tempComplexTrigger', (
+        name: unknown, patternsStr: unknown, code: unknown,
+        multiline: unknown, isFilter: unknown, multipleMatches: unknown,
+        fireLength: unknown, delta: unknown, hlFg: unknown, hlBg: unknown,
+    ) => {
+        const raw = String(patternsStr ?? '');
+        const patterns = (raw.length === 0 ? [] : raw.split('\x01')).map(entry => {
+            const at = entry.indexOf('\x02');
+            return {
+                type: entry.slice(0, at) as TriggerPatternType,
+                text: entry.slice(at + 1),
+            };
+        });
+        const highlight = (typeof hlFg === 'string' && hlFg) || (typeof hlBg === 'string' && hlBg)
+            ? {
+                fg: typeof hlFg === 'string' && hlFg ? hlFg : undefined,
+                bg: typeof hlBg === 'string' && hlBg ? hlBg : undefined,
+            }
+            : undefined;
+        return api.tempComplexTrigger({
+            name: String(name ?? ''),
+            patterns,
+            code: String(code ?? ''),
+            multiline: !!multiline,
+            isFilter: !!isFilter,
+            multipleMatches: !!multipleMatches,
+            fireLength: Math.max(0, Math.trunc(Number(fireLength)) || 0),
+            delta: Math.max(0, Math.trunc(Number(delta)) || 0),
+            highlight,
+        });
     });
     // Mudlet permSubstringTrigger(name, parent, patterns, luaCode). Same
     // flatten/split convention as permRegexTrigger — Bridge.lua hands a

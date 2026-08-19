@@ -43,7 +43,7 @@ import {
 import { isQtResourcePath, qtResourceUrl } from '../assets/qt-resources';
 import { ProfilesPresence } from './profilesPresence';
 import { MapStore } from '../map/MapStore';
-import { type EngineHost, NULL_ENGINE_HOST } from './EngineHost';
+import { type EngineHost, type TempComplexTriggerSpec, NULL_ENGINE_HOST } from './EngineHost';
 import { findBundledGame } from '../mud/games/bundledGames';
 
 // Mudlet's TChar always carries baked-in fg/bg colors (the rendered pair), so
@@ -1995,6 +1995,17 @@ export class ScriptingAPI {
         return this.host.createPermSubstringTrigger(name, parent, patterns, code);
     }
 
+    /** Mudlet `tempComplexRegexTrigger(...)`. See
+     *  ScriptingEngine.createTempComplexTrigger. */
+    tempComplexTrigger(spec: TempComplexTriggerSpec): number {
+        return this.host.createTempComplexTrigger(spec);
+    }
+
+    /** Remove a temporary trigger by the id its creator returned. */
+    removeTemporaryTrigger(id: number): boolean {
+        return this.host.removeTemporaryTriggerById(id);
+    }
+
     /** Mudlet `permBeginOfLineStringTrigger(name, parent, patterns, luaCode)`.
      *  Same shape as permSubstringTrigger but each pattern matches only when it
      *  appears at the start of the line (`String.prototype.startsWith`, like the
@@ -3058,8 +3069,10 @@ export class ScriptingAPI {
      * (RGB) segments never match a positive index, matching Mudlet's
      * palette-only semantics.
      */
-    currentLineMatchesColor(wantFg: number, wantBg: number): boolean {
-        return this.currentLineColorMatch(wantFg, wantBg) !== null;
+    currentLineMatchesColor(
+        wantFg: number, wantBg: number, window: { start: number; length: number } | null = null,
+    ): boolean {
+        return this.currentLineColorMatch(wantFg, wantBg, window) !== null;
     }
 
     /**
@@ -3072,14 +3085,33 @@ export class ScriptingAPI {
      * may already have recoloured the line, and Mudlet still matches against the
      * colours the server sent.
      */
-    currentLineColorMatch(wantFg: number, wantBg: number): string | null {
+    currentLineColorMatch(
+        wantFg: number, wantBg: number, window: { start: number; length: number } | null = null,
+    ): string | null {
         const snapshot = this.lineColorSnapshots[this.lineColorSnapshots.length - 1];
         if (!snapshot) return null;
+        // `window` narrows the scan to one stretch of the line — a colour
+        // trigger inside a filter chain is only shown what its parent captured,
+        // so a colour elsewhere on the line is not a match for it.
+        const from = window ? window.start : 0;
+        const to = window ? window.start + window.length : Infinity;
         let run: string | null = null;
+        let at = 0;
         for (const seg of snapshot) {
+            const text = seg.text ?? '';
+            const start = Math.max(at, from);
+            const end = Math.min(at + text.length, to);
+            at += text.length;
+            if (end <= start) {
+                // Wholly outside the window: it can neither match nor continue a
+                // run, so a run in progress ends here.
+                if (run !== null) return run;
+                continue;
+            }
+            const visible = text.slice(start - (at - text.length), end - (at - text.length));
             const hit = (wantFg === -1 || seg.fg === wantFg)
                 && (wantBg === -1 || seg.bg === wantBg);
-            if (hit && seg.text) run = (run ?? '') + seg.text;
+            if (hit && visible) run = (run ?? '') + visible;
             else if (run !== null) return run;
         }
         return run;

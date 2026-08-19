@@ -7,7 +7,7 @@ import {TriggerEngine, type TriggerNode} from '../mud/triggers/TriggerEngine';
 import type {TimerEngine} from '../mud/timers/TimerEngine';
 import type {KeyEngine, KeyNode} from '../mud/keybindings/KeyEngine';
 import {findReservedKeybindings, reservedKeyNote} from '../mud/keybindings/browserReservedKeys';
-import type {ButtonNode, ScriptNode} from '../storage/schema';
+import type {ButtonNode, ScriptNode, TriggerPattern} from '../storage/schema';
 import {buildEffectivelyEnabledIds, isEffectivelyEnabled} from '../storage/schema';
 import {useAppStore, connectionUrl} from '../storage';
 import {isPackageRemovable} from '../branding';
@@ -19,7 +19,7 @@ import {HyperlinkVisibilityController} from '../mud/text/hyperlinkVisibility';
 import type {MspCommand, MxpLink} from '../mud/protocol';
 import {MxpParser, splitMxpResultLines} from '../mud/protocol';
 import {ScriptingAPI, type InstallOutcome} from './ScriptingAPI';
-import { KNOWN_ITEM_TYPES, type EngineHost } from './EngineHost';
+import { KNOWN_ITEM_TYPES, type EngineHost, type TempComplexTriggerSpec } from './EngineHost';
 import { ItemIdSequence } from '../mud/ItemIdSequence';
 import {formatClosedCaption, type MediaCaptionInfo} from '../ui/sound/closedCaption';
 import type {PlayMusicOptions} from '../ui/sound/SoundManager';
@@ -1490,17 +1490,23 @@ export class ScriptingEngine implements EngineHost {
             // Perm colorTrigger patterns delegate to the same buffer scan the
             // tempColorTrigger binding uses — both inspect the line that
             // beginLine() just appended to the main console.
-            this.triggerEngine.setColorMatcher((fg, bg) => this.api.currentLineMatchesColor(fg, bg));
+            this.triggerEngine.setColorMatcher((fg, bg, window) => this.api.currentLineMatchesColor(fg, bg, window));
             // The runaway-creation report goes to the main console, where the
             // player is already looking at the line it could not finish.
             this.triggerEngine.setRunawayReporter(text => this.api.postSystemMessage(text));
             // Capture positions are recorded at match time; text a trigger
             // inserts into its own line has to move them with it.
             this.api.setCaptureShiftHook((at, delta) => rt.shiftCaptureSpans(at, delta));
-            // A permanent trigger the engine stops as a runaway is switched
-            // off, not removed: there is no removal API for one.
-            this.triggerEngine.setPermDisabler(nodeId =>
-                useAppStore.getState().updateTrigger(this.connectionId, nodeId, { enabled: false }));
+            // What the engine does to a trigger it stops as a runaway: a
+            // temporary one is removed, a permanent one only switched off —
+            // there being no removal API for one, and the player's own copy
+            // having to survive being stopped.
+            this.triggerEngine.setPermDisabler(nodeId => {
+                const node = (useAppStore.getState().connectionTriggers[this.connectionId] ?? [])
+                    .find(t => t.id === nodeId);
+                if (node?.temporary) this.removeTriggerSubtree(nodeId);
+                else useAppStore.getState().updateTrigger(this.connectionId, nodeId, { enabled: false });
+            });
             return rt;
         }).catch(err => {
             const msg = err instanceof Error ? err.message : String(err);
@@ -2662,6 +2668,83 @@ export class ScriptingEngine implements EngineHost {
         return this.numericIdFor(uuid);
     }
 
+    /**
+     * Mudlet `tempComplexRegexTrigger(...)`. A session-scoped trigger with
+     * everything a permanent one can have — an AND chain across lines, a filter
+     * that hands its captures to children, a fire length, a line delta, colour
+     * patterns — because that is what the call offers and none of it fits the
+     * flat temp-trigger primitive. So it makes a real node, marked temporary so
+     * it is not saved with the profile.
+     *
+     * Calling it again with a name that is already taken does not replace that
+     * trigger — it ADDS to it. Mudlet names the argument "trigger name create
+     * or add to": the new pattern is appended to the ones already there and the
+     * trigger is rebuilt around the longer list, which is how a multiline AND
+     * chain is assembled one condition per call.
+     */
+    createTempComplexTrigger(spec: TempComplexTriggerSpec): number {
+        const store = useAppStore.getState();
+        let patterns = spec.patterns;
+        if (spec.name) {
+            for (const existing of store.connectionTriggers[this.connectionId] ?? []) {
+                if (!existing.temporary || existing.name !== spec.name) continue;
+                patterns = [...existing.patterns, ...patterns];
+                this.removeTriggerSubtree(existing.id);
+            }
+        }
+        const uuid = store.addTrigger(this.connectionId, {
+            name: spec.name,
+            enabled: true,
+            isGroup: false,
+            parentId: null,
+            patterns,
+            code: spec.code,
+            language: 'lua',
+            fireLength: spec.fireLength,
+            multipleMatches: spec.multipleMatches,
+            multiline: spec.multiline,
+            delta: spec.delta,
+            isFilter: spec.isFilter,
+            highlight: spec.highlight,
+            temporary: true,
+        });
+        // Same reason as createPermTrigger: compiled now, so a trigger armed
+        // while a line is being processed can still match that line.
+        this.flushPendingApplies();
+        const created = (useAppStore.getState().connectionTriggers[this.connectionId] ?? [])
+            .find(t => t.id === uuid);
+        if (created) this.triggerEngine.notePermCreated(created, this.rootTriggerOf(created));
+        return this.numericIdFor(uuid);
+    }
+
+    /**
+     * Remove a temporary trigger by the numeric id `tempComplexRegexTrigger`
+     * handed the script. False when that id names no temporary trigger — a
+     * permanent one is refused, as Mudlet's killTrigger refuses it.
+     */
+    removeTemporaryTriggerById(id: number): boolean {
+        const node = (useAppStore.getState().connectionTriggers[this.connectionId] ?? [])
+            .find(t => this.uuidToNumericId.get(t.id) === id);
+        if (!node?.temporary) return false;
+        this.removeTriggerSubtree(node.id);
+        return true;
+    }
+
+    /** Remove a trigger and everything under it. A child outlives its parent
+     *  nowhere in the tree, and a permanent trigger parented to a temporary one
+     *  goes with it — which is the only way it could have been reached. */
+    private removeTriggerSubtree(rootId: string): void {
+        const store = useAppStore.getState();
+        const all = store.connectionTriggers[this.connectionId] ?? [];
+        const doomed = new Set<string>([rootId]);
+        // Parents always precede their children in store order, so one pass down
+        // the list reaches every descendant.
+        for (const node of all) {
+            if (node.parentId && doomed.has(node.parentId)) doomed.add(node.id);
+        }
+        store.removeTriggers(this.connectionId, [...doomed]);
+    }
+
     /** The root ancestor of a trigger node — what a lineage is recorded against. */
     private rootTriggerOf(node: TriggerNode): TriggerNode {
         const all = useAppStore.getState().connectionTriggers[this.connectionId] ?? [];
@@ -3004,9 +3087,19 @@ export class ScriptingEngine implements EngineHost {
         const store = useAppStore.getState();
         const id = this.connectionId;
         switch (kind) {
+            case 'trigger': {
+                // The one temporary item that lives in the tree rather than the
+                // temp registry: tempComplexRegexTrigger needs a real node (see
+                // createTempComplexTrigger), so killing it by name is a tree
+                // removal. Everything else falls through to the refusal below.
+                const doomed = (store.connectionTriggers[id] ?? [])
+                    .filter(t => t.temporary && t.name === name);
+                if (doomed.length === 0) return false;
+                for (const node of doomed) this.removeTriggerSubtree(node.id);
+                return true;
+            }
             case 'timer':
             case 'alias':
-            case 'trigger':
                 // Mudlet's kill* only removes TEMPORARY items — TimerUnit::killTimer,
                 // AliasUnit::killAlias and TriggerUnit::killTrigger each bail out on
                 // a non-temporary match, commented there as "permanent objects cannot

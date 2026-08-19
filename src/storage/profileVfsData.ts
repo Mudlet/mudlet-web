@@ -135,6 +135,33 @@ export function loadProfileData(vfs: ProfileVFS, connectionId: string): void {
     }
 }
 
+/**
+ * The triggers that belong in the saved profile: everything except the
+ * session-scoped ones `tempComplexRegexTrigger` creates, and anything hanging
+ * under them.
+ *
+ * The descendants matter as much as the temporaries themselves. A permanent
+ * trigger can be parented to a temporary one — Mudlet allows it, and its own
+ * specs do it — and that child dies with its parent at the end of the session.
+ * Saving it alone would restore a trigger whose `parentId` names a node that
+ * was never written, leaving it orphaned in the tree.
+ */
+function persistableTriggers(triggers: TriggerNode[]): TriggerNode[] {
+    if (!triggers.some(t => t.temporary)) return triggers;
+    const byId = new Map(triggers.map(t => [t.id, t]));
+    const isTemporary = (node: TriggerNode): boolean => {
+        let cur: TriggerNode | undefined = node;
+        const guard = new Set<string>();
+        while (cur && !guard.has(cur.id)) {
+            if (cur.temporary) return true;
+            guard.add(cur.id);
+            cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+        }
+        return false;
+    };
+    return triggers.filter(t => !isTemporary(t));
+}
+
 /** Serialize a profile's automation + UI slices for `connectionId` from the store. */
 export function serializeProfileData(connectionId: string): string {
     const s = useAppStore.getState();
@@ -142,7 +169,7 @@ export function serializeProfileData(connectionId: string): string {
         version: PROFILE_DATA_VERSION,
         scripts: s.connectionScripts[connectionId] ?? [],
         aliases: s.connectionAliases[connectionId] ?? [],
-        triggers: s.connectionTriggers[connectionId] ?? [],
+        triggers: persistableTriggers(s.connectionTriggers[connectionId] ?? []),
         timers: s.connectionTimers[connectionId] ?? [],
         keybindings: s.connectionKeybindings[connectionId] ?? [],
         buttons: s.connectionButtons[connectionId] ?? [],

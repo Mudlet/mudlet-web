@@ -1644,6 +1644,9 @@ export class LuaRuntime implements IScriptingRuntime {
             const tempId = this.tempItemId(idOrName, 'trigger');
             if (tempId !== null && this.tempIds.has(tempId)) return this.killTempItem(tempId, 'trigger');
             if (typeof idOrName === 'string') return this.api.killByName('trigger', idOrName);
+            // A tempComplexRegexTrigger lives in the tree, not the temp
+            // registry, so its id is a node id — try that before giving up.
+            if (this.api.removeTemporaryTrigger(idOrName)) return true;
             return this.killTempItem(idOrName, 'trigger');
         });
 

@@ -233,7 +233,15 @@ const luaEvalRef: { fn: ((code: string, line: string) => boolean) | null } = { f
  *  AnsiAwareBuffer on the main console (the trigger engine itself only sees
  *  the plain-text line, so the check has to come from outside). Used by the
  *  `colorTrigger` pattern branch — see `buildMatcher`. */
-const colorMatchRef: { fn: ((fg: number, bg: number) => boolean) | null } = { fn: null };
+const colorMatchRef: {
+    fn: ((fg: number, bg: number, window: { start: number; length: number } | null) => boolean) | null;
+} = { fn: null };
+
+/** The stretch of the ORIGINAL line a colour trigger may look at: the whole line
+ *  normally, and only the parent's capture for a child of a filter — a colour
+ *  outside that capture is not the child's to see. Set around each item's tests
+ *  in matchPermEntryOnce, which is the only place that knows the window. */
+const colorWindowRef: { window: { start: number; length: number } | null } = { window: null };
 
 /** Where the same-line runaway report is printed. See setRunawayReporter. */
 const runawayReportRef: { fn: ((text: string) => void) | null } = { fn: null };
@@ -259,6 +267,16 @@ const RUNAWAY_REPORT_INTERVAL_MS = 10000;
  *  default to -1 ("any") when missing or non-numeric. Mudlet uses ANSI
  *  palette indices 0..255 plus -1 for "any". */
 function parseColorPattern(text: string): [number, number] {
+    // Mudlet's own wire form, which is what an imported package or profile
+    // carries: `ANSI_COLORS_F{003}_B{IGNORE}`. IGNORE is "any colour here", the
+    // same as the -1 the plain form uses; DEFAULT means the profile's own
+    // colour, which mudix reads as the palette's 0.
+    const mudlet = /^ANSI_COLORS_F\{(\d+|DEFAULT|IGNORE)\}_B\{(\d+|DEFAULT|IGNORE)\}$/.exec(text.trim());
+    if (mudlet) {
+        const channel = (token: string) =>
+            token === 'IGNORE' ? -1 : token === 'DEFAULT' ? 0 : Math.trunc(Number(token));
+        return [channel(mudlet[1]), channel(mudlet[2])];
+    }
     const parts = text.split(',').map(s => s.trim());
     const fg = parts[0] !== undefined && parts[0] !== '' && Number.isFinite(Number(parts[0])) ? Math.trunc(Number(parts[0])) : -1;
     const bg = parts[1] !== undefined && parts[1] !== '' && Number.isFinite(Number(parts[1])) ? Math.trunc(Number(parts[1])) : -1;
@@ -360,7 +378,8 @@ function buildMatcher(p: TriggerPattern, register: (re: PcreInstance) => void): 
             return (line) => {
                 if (!line) return null;
                 if (!colorMatchRef.fn) return null;
-                return colorMatchRef.fn(fg, bg) ? { captures: [], matchedText: line } : null;
+                return colorMatchRef.fn(fg, bg, colorWindowRef.window)
+                    ? { captures: [], matchedText: line } : null;
             };
         }
         case 'lineSpacer':
@@ -447,10 +466,16 @@ export class TriggerEngine {
     private hasChildren = new Set<string>();
 
     // AND state: per-trigger progress for multiline AND triggers
-    private andStates = new Map<string, AndState>();
+    private andStates = new Map<string, AndState[]>();
+    /** Triggers still firing on their own after completing, and the match they
+     *  re-report while they do. See the fire-length branch in matchPermEntryOnce. */
+    private keepFiring = new Map<string, { until: number; match: TriggerMatch }>();
 
     // Filter state: chainHeadId → last matched/captured text
     private filterActiveText = new Map<string, string>();
+    /** Every offering a filter makes to its children this line: one per
+     *  capture group, or the whole match when it has none. See openChain. */
+    private filterCaptures = new Map<string, { text: string; offset: number }[]>();
     // Parallel to filterActiveText: the offset of that text within the ORIGINAL
     // line. A descendant matching against the filtered text produces spans
     // relative to it, so selectCaptureGroup/selectString need this offset added
@@ -819,8 +844,54 @@ export class TriggerEngine {
         seen: Set<string>,
         out: TriggerMatch[],
     ): void {
+        // A filter offering more than one capture runs everything below it once
+        // per capture — see openChain. The offering is swapped in around each
+        // run so getEffectiveLine/getEffectiveOffset, and everything that reads
+        // them, need know nothing about it.
+        const filterId = this.innermostFilterId(entry.item);
+        const captures = filterId ? this.filterCaptures.get(filterId) : undefined;
+        if (!filterId || !captures || captures.length < 2) {
+            this.matchPermEntryOnce(entry, line, isPrompt, currentLine, seen, out, '');
+            return;
+        }
+        for (let i = 0; i < captures.length; i++) {
+            this.filterActiveText.set(filterId, captures[i].text);
+            this.filterActiveOffset.set(filterId, captures[i].offset);
+            // Each offering is its own pass as far as the once-per-line dedupe
+            // is concerned, or only the first would reach a child.
+            this.matchPermEntryOnce(entry, line, isPrompt, currentLine, seen, out, `#${i}`);
+        }
+        this.filterActiveText.set(filterId, captures[0].text);
+        this.filterActiveOffset.set(filterId, captures[0].offset);
+    }
+
+    /** The nearest filter ancestor of `item`, or null when it has none. */
+    private innermostFilterId(item: TriggerNode): string | null {
+        let parentId = item.parentId;
+        while (parentId) {
+            const parent = this.allById.get(parentId);
+            if (!parent) return null;
+            if (parent.isFilter) return parent.id;
+            parentId = parent.parentId;
+        }
+        return null;
+    }
+
+    private matchPermEntryOnce(
+        entry: CompiledEntry,
+        line: string,
+        isPrompt: boolean,
+        currentLine: number,
+        seen: Set<string>,
+        out: TriggerMatch[],
+        seenSuffix: string,
+    ): void {
         const { item } = entry;
         if (!this.isChainAccessible(item, currentLine)) return;
+        const seenKey = item.id + seenSuffix;
+        // A colour trigger under a filter may only look at the stretch of the
+        // line its parent captured — see colorWindowRef.
+        const previousColorWindow = colorWindowRef.window;
 
         const effectiveLine = this.getEffectiveLine(item, line);
         // Offset of effectiveLine within the original line (non-zero only under a
@@ -828,59 +899,81 @@ export class TriggerEngine {
         // offset itself); pushed matches are re-based onto the original line.
         const effOffset = this.getEffectiveOffset(item);
         const isChainHead = item.isGroup || this.hasChildren.has(item.id);
+        colorWindowRef.window = effectiveLine === line
+            ? null
+            : { start: effOffset, length: effectiveLine.length };
 
-        if (item.isGroup) {
-            // Chain head: match opens the chain for children.
-            if (seen.has(item.id)) return;
-            // Groups are always OR-compiled
-            const orEntry = entry as CompiledOrEntry;
-            let result: MatchResult | null = null;
-            for (const test of orEntry.tests) {
-                result = test(effectiveLine, isPrompt);
-                if (result !== null) break;
-            }
-            if (result !== null) {
-                seen.add(item.id);
-                this.openChain(item, currentLine, result);
-                if (item.code) {
-                    out.push(matchResultToTriggerMatch(item, this.shiftResultSpans(result, effOffset)));
-                }
-            }
-        } else if (entry.kind === 'and') {
-            const r = this.processAndTrigger(entry, effectiveLine, isPrompt, currentLine);
-            if (r) {
-                if (isChainHead) {
-                    this.openChain(item, currentLine, {
-                        captures: r.captures,
-                        matchedText: r.matchedText,
-                    });
-                }
-                out.push(r);
-            }
-        } else {
-            // OR entry (non-group)
-            if (entry.testAll) {
-                let firstResult: MatchResult | null = null;
-                for (const r of entry.testAll(effectiveLine)) {
-                    if (firstResult === null) firstResult = r;
-                    out.push(matchResultToTriggerMatch(item, this.shiftResultSpans(r, effOffset)));
-                }
-                if (firstResult !== null && isChainHead) {
-                    this.openChain(item, currentLine, firstResult);
-                }
-            } else {
-                if (seen.has(item.id)) return;
+        try {
+            if (item.isGroup) {
+                // Chain head: match opens the chain for children.
+                if (seen.has(seenKey)) return;
+                // Groups are always OR-compiled
+                const orEntry = entry as CompiledOrEntry;
                 let result: MatchResult | null = null;
-                for (const test of entry.tests) {
+                for (const test of orEntry.tests) {
                     result = test(effectiveLine, isPrompt);
                     if (result !== null) break;
                 }
                 if (result !== null) {
-                    seen.add(item.id);
-                    if (isChainHead) this.openChain(item, currentLine, result);
-                    out.push(matchResultToTriggerMatch(item, this.shiftResultSpans(result, effOffset)));
+                    seen.add(seenKey);
+                    this.openChain(item, currentLine, result);
+                    if (item.code) {
+                        out.push(matchResultToTriggerMatch(item, this.shiftResultSpans(result, effOffset)));
+                    }
+                }
+            } else if (entry.kind === 'and') {
+                const completed = this.processAndTrigger(entry, effectiveLine, isPrompt, currentLine);
+                for (const r of completed) {
+                    if (isChainHead) {
+                        this.openChain(item, currentLine, {
+                            captures: r.captures,
+                            matchedText: r.matchedText,
+                        });
+                    }
+                    out.push(r);
+                }
+                // A fire length keeps the trigger going for that many more lines —
+                // Mudlet's mKeepFiring, set on every completion and spent one line
+                // at a time. Only a childless trigger re-runs its own script; one
+                // with children is holding the chain open FOR them.
+                const fireLength = item.fireLength ?? 0;
+                if (completed.length > 0 && fireLength > 0 && !this.hasChildren.has(item.id)) {
+                    this.keepFiring.set(item.id, {
+                        until: currentLine + fireLength,
+                        match: completed[completed.length - 1],
+                    });
+                } else if (completed.length === 0) {
+                    const keep = this.keepFiring.get(item.id);
+                    if (keep && currentLine <= keep.until) out.push(keep.match);
+                    else if (keep) this.keepFiring.delete(item.id);
+                }
+            } else {
+                // OR entry (non-group)
+                if (entry.testAll) {
+                    let firstResult: MatchResult | null = null;
+                    for (const r of entry.testAll(effectiveLine)) {
+                        if (firstResult === null) firstResult = r;
+                        out.push(matchResultToTriggerMatch(item, this.shiftResultSpans(r, effOffset)));
+                    }
+                    if (firstResult !== null && isChainHead) {
+                        this.openChain(item, currentLine, firstResult);
+                    }
+                } else {
+                    if (seen.has(seenKey)) return;
+                    let result: MatchResult | null = null;
+                    for (const test of entry.tests) {
+                        result = test(effectiveLine, isPrompt);
+                        if (result !== null) break;
+                    }
+                    if (result !== null) {
+                        seen.add(seenKey);
+                        if (isChainHead) this.openChain(item, currentLine, result);
+                        out.push(matchResultToTriggerMatch(item, this.shiftResultSpans(result, effOffset)));
+                    }
                 }
             }
+        } finally {
+            colorWindowRef.window = previousColorWindow;
         }
     }
 
@@ -1161,7 +1254,7 @@ export class TriggerEngine {
      * `ScriptingAPI.currentLineMatchesColor`. Passing `null` disables every
      * colour trigger (e.g. during runtime teardown).
      */
-    setColorMatcher(fn: ((fg: number, bg: number) => boolean) | null): void {
+    setColorMatcher(fn: ((fg: number, bg: number, window: { start: number; length: number } | null) => boolean) | null): void {
         colorMatchRef.fn = fn;
     }
 
@@ -1179,8 +1272,10 @@ export class TriggerEngine {
         this.chainOpenUntil.clear();
         this.lineCounter = 0;
         this.andStates.clear();
+        this.keepFiring.clear();
         this.filterActiveText.clear();
         this.filterActiveOffset.clear();
+        this.filterCaptures.clear();
         this.hasChildren.clear();
         this.permReg.clear();
         this.unified = [];
@@ -1190,86 +1285,100 @@ export class TriggerEngine {
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
+    /**
+     * Advance every state an AND trigger has in flight against this line, and
+     * report the ones that completed on it.
+     *
+     * States are a LIST, not one: a trigger whose first condition matches twice
+     * before its second ever does has two matches part-way through, and both
+     * complete when that second condition finally arrives. Keeping a single
+     * state let the newer one overwrite the older, so only one ever fired.
+     */
     private processAndTrigger(
         entry: CompiledAndEntry,
         effectiveLine: string,
         isPrompt: boolean,
         currentLine: number,
-    ): TriggerMatch | null {
+    ): TriggerMatch[] {
         const { item, conditions } = entry;
         const delta = item.delta ?? 0;
-        let state = this.andStates.get(item.id);
+        // A state that has waited longer than the trigger's line delta allows is
+        // gone before this line is offered to it.
+        const states = (this.andStates.get(item.id) ?? [])
+            .filter(state => !(delta > 0 && currentLine - state.startLine > delta));
 
-        // Check delta expiry
-        if (state && delta > 0 && currentLine - state.startLine > delta) {
-            this.andStates.delete(item.id);
-            state = undefined;
+        // The first condition matching always starts a state, however many are
+        // already under way — that is what lets two of them complete together.
+        const first = conditions[0];
+        if (first && first.spacer === 0 && first.test) {
+            const opened = first.test(effectiveLine, isPrompt);
+            if (opened) {
+                states.push({
+                    nextIdx: 1,
+                    startLine: currentLine,
+                    waitUntilLine: currentLine,
+                    captures: [opened.captures],
+                    matchedTexts: [opened.matchedText],
+                    namedGroups: [opened.namedGroups ?? {}],
+                });
+            }
         }
 
-        if (!state) {
-            // Try to match conditions[0]
-            const cond0 = conditions[0];
-            if (!cond0 || cond0.spacer > 0) return null; // can't start on a spacer
-            if (!cond0.test) return null;
-            const result = cond0.test(effectiveLine, isPrompt);
-            if (!result) return null;
-            state = {
-                nextIdx: 1,
-                startLine: currentLine,
-                waitUntilLine: currentLine,
-                captures: [result.captures],
-                matchedTexts: [result.matchedText],
-                namedGroups: [result.namedGroups ?? {}],
-            };
-            this.andStates.set(item.id, state);
+        const stillWaiting: AndState[] = [];
+        const fired: TriggerMatch[] = [];
+        for (const state of states) {
+            this.advanceAndState(state, conditions, effectiveLine, isPrompt, currentLine);
+            if (state.nextIdx >= conditions.length) fired.push(this.andMatch(item, state));
+            else stillWaiting.push(state);
         }
+        this.andStates.set(item.id, stillWaiting);
+        return fired;
+    }
 
-        // Try to advance state
+    /** Carry one in-flight state as far through the remaining conditions as this
+     *  line takes it. Several can be satisfied by the same line. */
+    private advanceAndState(
+        state: AndState,
+        conditions: CompiledAndEntry['conditions'],
+        effectiveLine: string,
+        isPrompt: boolean,
+        currentLine: number,
+    ): void {
         while (state.nextIdx < conditions.length) {
             if (currentLine < state.waitUntilLine) break;
-
             const cond = conditions[state.nextIdx];
 
             if (cond.spacer > 0) {
-                // Line spacer: set wait and advance, then break to wait
+                // Line spacer: set the wait and advance, then stop for this line.
                 state.waitUntilLine = currentLine + cond.spacer;
                 state.nextIdx++;
-                break; // must wait
+                break;
             }
-
             if (!cond.test) {
-                // null test (shouldn't happen outside spacer) — skip
+                // A null test outside a spacer should not happen — skip it.
                 state.nextIdx++;
                 continue;
             }
-
             const result = cond.test(effectiveLine, isPrompt);
-            if (!result) break; // didn't match this line
-
+            if (!result) break;
             state.captures.push(result.captures);
             state.matchedTexts.push(result.matchedText);
             state.namedGroups.push(result.namedGroups ?? {});
             state.nextIdx++;
-            // try next condition on same line
         }
+    }
 
-        if (state.nextIdx >= conditions.length) {
-            // All conditions matched — fire
-            this.andStates.delete(item.id);
-            const allCaptures = state.captures.flat();
-            const lastNamedGroups = state.namedGroups[state.namedGroups.length - 1] ?? {};
-            return {
-                trigger: item,
-                captures: allCaptures,
-                matchedText: '',
-                multimatches: state.captures.map((c, i) => [state.matchedTexts[i], ...c]),
-                namedGroups: Object.keys(lastNamedGroups).length > 0 ? lastNamedGroups : undefined,
-            };
-        }
-
-        // Partial match — save state
-        this.andStates.set(item.id, state);
-        return null;
+    /** The match a completed AND state reports: every line's captures, in order,
+     *  as `multimatches`. */
+    private andMatch(item: TriggerNode, state: AndState): TriggerMatch {
+        const lastNamedGroups = state.namedGroups[state.namedGroups.length - 1] ?? {};
+        return {
+            trigger: item,
+            captures: state.captures.flat(),
+            matchedText: '',
+            multimatches: state.captures.map((c, i) => [state.matchedTexts[i], ...c]),
+            namedGroups: Object.keys(lastNamedGroups).length > 0 ? lastNamedGroups : undefined,
+        };
     }
 
     /**
@@ -1280,6 +1389,19 @@ export class TriggerEngine {
     private openChain(item: TriggerNode, currentLine: number, result: { captures: Capture[]; matchedText: string; captureSpans?: CaptureSpan[]; matchStart?: number }): void {
         this.chainOpenUntil.set(item.id, currentLine + (item.fireLength ?? 0));
         if (item.isFilter) {
+            // Every capture is offered to the children, not just the first:
+            // Mudlet's TTrigger::match runs `filter()` once per capture group
+            // when there is more than one, so a parent matching `hit (\\w+) for
+            // (\\d+)` hands its children "orc" and then "12". With no capture
+            // group at all there is one offering, the whole match.
+            const base = this.getEffectiveOffset(item);
+            const captured: { text: string; span?: CaptureSpan }[] = [];
+            result.captures.forEach((text, i) => {
+                if (text !== undefined) captured.push({ text, span: result.captureSpans?.[i] });
+            });
+            this.filterCaptures.set(item.id, captured.length > 0
+                ? captured.map(c => ({ text: c.text, offset: base + (c.span?.start ?? result.matchStart ?? 0) }))
+                : [{ text: result.matchedText, offset: base + (result.matchStart ?? 0) }]);
             this.filterActiveText.set(item.id, result.captures[0] ?? result.matchedText);
             // Where the filtered text starts in the ORIGINAL line: this item's own
             // effective offset, plus where the captured/matched text sits within
