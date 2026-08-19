@@ -12,6 +12,7 @@ import {
     HyperlinkPresetRegistry,
     type HyperlinkConfig,
     type LinkStateStyle,
+    type UnderlineStyle,
 } from "./hyperlinkConfig";
 import { applyVisibility } from "./hyperlinkVisibility";
 import { appendCells, cellsToHtml, columnAfter } from "./cellRender";
@@ -87,6 +88,10 @@ export interface HexColor {
 
 export type FormatColor = IndexedColor | RgbColor | HexColor
 
+/** One SGR parameter: a number, or its sub-parameters when it carried any
+ *  (`4:3` → `[4, 3]`). See {@link parseSgrCodes}. */
+export type SgrParam = number | number[];
+
 export type DimEasing = 'linear' | 'ease' | 'ease-in' | 'ease-out' | 'ease-in-out';
 
 export interface DimEffect {
@@ -102,6 +107,9 @@ export interface FormatStateSnapshot {
     bold?: boolean;
     italic?: boolean;
     underline?: boolean;
+    /** Which underline SGR asked for (`4:1`..`4:5`). Only meaningful while
+     *  `underline` is set; absent means the plain solid one. */
+    underlineStyle?: UnderlineStyle;
     inverse?: boolean;
     strikethrough?: boolean;
     overline?: boolean;
@@ -193,6 +201,7 @@ function cloneState(state?: FormatStateSnapshot): FormatStateSnapshot | undefine
         bold: state.bold,
         italic: state.italic,
         underline: state.underline,
+        underlineStyle: state.underlineStyle,
         inverse: state.inverse,
         strikethrough: state.strikethrough,
         overline: state.overline,
@@ -213,6 +222,7 @@ function statesEqual(a?: FormatStateSnapshot, b?: FormatStateSnapshot): boolean 
         !!a.bold === !!b.bold &&
         !!a.italic === !!b.italic &&
         !!a.underline === !!b.underline &&
+        a.underlineStyle === b.underlineStyle &&
         !!a.inverse === !!b.inverse &&
         !!a.strikethrough === !!b.strikethrough &&
         !!a.overline === !!b.overline &&
@@ -228,11 +238,11 @@ export class FormatState {
 
     static DEFAULT = {}
 
-    foreground?: FormatColor;
     background?: FormatColor;
     bold?: boolean;
     italic?: boolean;
     underline?: boolean;
+    underlineStyle?: UnderlineStyle;
     inverse?: boolean;
     strikethrough?: boolean;
     overline?: boolean;
@@ -241,6 +251,44 @@ export class FormatState {
     dim?: DimEffect;
     hyperlink?: FormatHyperlink;
 
+    // ── the foreground's dark/light pair (Mudlet mForeGroundColor /
+    // mForeGroundColorLight / mIsDefaultColor) ──────────────────────────────
+    //
+    // Bold does not only embolden: on a colour from the 30–37 range it selects
+    // that colour's bright twin, and it does so whichever order the two arrive
+    // in. Resolving the colour the moment its SGR lands cannot express that — a
+    // `\e[31m…\e[1m` would stay dark, and worse, a `\e[39m` (default foreground)
+    // followed by a bold would resurrect the red the reset was meant to end,
+    // which is the bug Mudlet/Mudlet#9466 reported.
+    //
+    // So both variants are kept, plus whether the foreground is currently the
+    // profile default, and `foreground` is recomputed from the three whenever
+    // any of them moves. Consumers keep reading `foreground` and see the colour
+    // already resolved.
+    private fgNormal?: FormatColor;
+    private fgLight?: FormatColor;
+    /** True while the foreground is the profile's own — as it starts, and as
+     *  SGR 0 and SGR 39 leave it. Bold never brightens a default foreground. */
+    private fgIsDefault = true;
+    private _foreground?: FormatColor;
+
+    /** The foreground in force, both variants already resolved. */
+    get foreground(): FormatColor | undefined {
+        return this._foreground;
+    }
+
+    /** Writing the foreground from outside the SGR decoder — `setFgColor`, MXP
+     *  colour attributes, link styling — names one colour and knows nothing of
+     *  the bold pair, so it becomes both variants. Without that a later bold
+     *  would re-resolve to whatever the escape stream had left behind and undo
+     *  the write. */
+    set foreground(color: FormatColor | undefined) {
+        this._foreground = cloneColor(color);
+        this.fgNormal = cloneColor(color);
+        this.fgLight = cloneColor(color);
+        this.fgIsDefault = color === undefined;
+    }
+
     constructor(initial?: FormatStateSnapshot) {
         if (initial) {
             this.applySnapshot(initial);
@@ -248,11 +296,15 @@ export class FormatState {
     }
 
     private applySnapshot(snapshot: FormatStateSnapshot): void {
-        this.foreground = cloneColor(snapshot.foreground);
+        // A snapshot carries only the colour that was in force, so the setter's
+        // rule is the right one: it becomes both variants. Nothing is lost —
+        // whatever bold was doing at the carry point had already chosen it.
+        this.foreground = snapshot.foreground;
         this.background = cloneColor(snapshot.background);
         this.bold = snapshot.bold ? true : undefined;
         this.italic = snapshot.italic ? true : undefined;
         this.underline = snapshot.underline ? true : undefined;
+        this.underlineStyle = snapshot.underline ? snapshot.underlineStyle : undefined;
         this.inverse = snapshot.inverse ? true : undefined;
         this.strikethrough = snapshot.strikethrough ? true : undefined;
         this.overline = snapshot.overline ? true : undefined;
@@ -268,6 +320,7 @@ export class FormatState {
         this.bold = undefined;
         this.italic = undefined;
         this.underline = undefined;
+        this.underlineStyle = undefined;
         this.inverse = undefined;
         this.strikethrough = undefined;
         this.overline = undefined;
@@ -283,6 +336,7 @@ export class FormatState {
             bold: this.bold ? true : undefined,
             italic: this.italic ? true : undefined,
             underline: this.underline ? true : undefined,
+            underlineStyle: this.underline ? this.underlineStyle : undefined,
             inverse: this.inverse ? true : undefined,
             strikethrough: this.strikethrough ? true : undefined,
             overline: this.overline ? true : undefined,
@@ -293,25 +347,36 @@ export class FormatState {
         };
     }
 
-    applySgr(params: number[]): void {
+    applySgr(params: SgrParam[]): void {
         if (params.length === 0) {
             this.reset();
             return;
         }
         for (let i = 0; i < params.length; i += 1) {
-            const code = params[i];
+            const param = params[i];
+            // A parameter with sub-parameters is self-contained — everything it
+            // needs came colon-joined with it, so it never looks ahead.
+            if (Array.isArray(param)) {
+                this.applySgrGroup(param);
+                continue;
+            }
+            const code = param;
             switch (code) {
                 case 0:
                     this.reset();
                     break;
                 case 1:
                     this.bold = true;
+                    this.resolveForeground();
                     break;
                 case 3:
                     this.italic = true;
                     break;
                 case 4:
+                    // The bare SGR 4 is the solid underline, so it replaces any
+                    // style a previous 4:n left rather than keeping it.
                     this.underline = true;
+                    this.underlineStyle = "solid";
                     break;
                 case 5:
                     this.slowBlink = true;
@@ -330,12 +395,14 @@ export class FormatState {
                     break;
                 case 22:
                     this.bold = undefined;
+                    this.resolveForeground();
                     break;
                 case 23:
                     this.italic = undefined;
                     break;
                 case 24:
                     this.underline = undefined;
+                    this.underlineStyle = undefined;
                     break;
                 case 25:
                     this.slowBlink = undefined;
@@ -351,7 +418,13 @@ export class FormatState {
                     this.overline = undefined;
                     break;
                 case 39:
-                    this.foreground = undefined;
+                    // The foreground goes back to the profile default, and both variants
+                    // with it: the colour bold would otherwise brighten is gone, not
+                    // merely covered over.
+                    this.fgNormal = undefined;
+                    this.fgLight = undefined;
+                    this.fgIsDefault = true;
+                    this.resolveForeground();
                     break;
                 case 49:
                     this.background = undefined;
@@ -359,29 +432,39 @@ export class FormatState {
                 case 38:
                 case 48: {
                     const isForeground = code === 38;
-                    const mode = params[i + 1];
-                    if (mode === 5 && typeof params[i + 2] === "number") {
-                        const color: HexColor = {space: "hex", color: colorCodes.xterm[params[i + 2]]};
+                    // The `38;5;n` spelling puts each piece in its own
+                    // parameter, so this reads the ones that follow — and only
+                    // plain numbers count, since a sub-parameter group belongs
+                    // to a parameter of its own.
+                    const at = (n: number): number | undefined => {
+                        const p = params[i + n];
+                        return typeof p === "number" ? p : undefined;
+                    };
+                    const mode = at(1);
+                    const arg1 = at(2);
+                    if (mode === 5 && arg1 !== undefined) {
+                        const color: HexColor = {space: "hex", color: colorCodes.xterm[arg1]};
                         if (isForeground) {
-                            this.foreground = color;
+                            // A colour chosen out of the 256-colour cube names
+                            // itself exactly; there is no brighter twin to pick,
+                            // so bold leaves it alone. Same for 24-bit below.
+                            this.setForeground(color, color);
                         } else {
                             this.background = color;
                         }
                         i += 2;
                     } else if (
-                        mode === 2 &&
-                        typeof params[i + 2] === "number" &&
-                        typeof params[i + 3] === "number" &&
-                        typeof params[i + 4] === "number"
+                        mode === 2 && arg1 !== undefined
+                        && at(3) !== undefined && at(4) !== undefined
                     ) {
                         const color: RgbColor = {
                             space: "rgb",
-                            r: params[i + 2],
-                            g: params[i + 3],
-                            b: params[i + 4],
+                            r: arg1,
+                            g: at(3)!,
+                            b: at(4)!,
                         };
                         if (isForeground) {
-                            this.foreground = color;
+                            this.setForeground(color, color);
                         } else {
                             this.background = color;
                         }
@@ -391,16 +474,20 @@ export class FormatState {
                 }
                 default:
                     if (code >= 30 && code <= 37) {
-                        // Bold persists across SGRs and brightens the 30–37 dark
-                        // palette into 90–97. Polish MUDs (Arkadia, Avalon) draw
-                        // map glyphs as `\e[1;30m+`/`\e[1m...\e[30m+` — both must
-                        // resolve to bright black, not invisible #000000 on a
-                        // black background.
-                        const bright = this.bold || params.includes(1);
-                        const palette = bright ? colorCodes.ansi.bright : colorCodes.ansi.dark;
-                        this.foreground = {space: "hex", color: palette[code - 30]};
+                        // Both variants are recorded, so a bold in this same
+                        // sequence or any later one picks the bright twin.
+                        // Polish MUDs (Arkadia, Avalon) draw map glyphs as
+                        // `\e[1;30m+` and as `\e[1m...\e[30m+`, and both have to
+                        // come out bright black rather than invisible #000000 on
+                        // a black background.
+                        this.setForeground(
+                            {space: "hex", color: colorCodes.ansi.dark[code - 30]},
+                            {space: "hex", color: colorCodes.ansi.bright[code - 30]},
+                        );
                     } else if (code >= 90 && code <= 97) {
-                        this.foreground = {space: "hex", color: colorCodes.ansi.bright[code - 90]};
+                        // Already bright — bold has nothing brighter to reach for.
+                        const bright: HexColor = {space: "hex", color: colorCodes.ansi.bright[code - 90]};
+                        this.setForeground(bright, bright);
                     } else if (code >= 40 && code <= 47) {
                         this.background = {space: "hex", color: colorCodes.ansi.dark[code - 40]};
                     } else if (code >= 100 && code <= 107) {
@@ -411,24 +498,125 @@ export class FormatState {
         }
     }
 
+    /**
+     * Apply one SGR parameter that carried sub-parameters (`4:3`, `38:5:196`).
+     *
+     * Only the underline styles need reading apart from the flat form: an
+     * extended colour means the same written either way, so it is handed back to
+     * the ordinary path with its sub-parameters flattened.
+     */
+    private applySgrGroup(group: number[]): void {
+        if (group[0] === 38 || group[0] === 48) {
+            this.applyExtendedColorGroup(group);
+            return;
+        }
+        if (group[0] !== 4) {
+            this.applySgr(group);
+            return;
+        }
+        // `4:n` picks the underline's style; every style is exclusive, so each
+        // replaces the last rather than adding to it (Mudlet's decodeSGR clears
+        // the three sibling flags on every branch). Anything outside 0..5 is a
+        // style this build does not know, and an unknown decoration is treated
+        // as none rather than drawn as some other one.
+        switch (group[1] ?? 0) {
+            case 1: // single
+            case 2: // double — no such underline here, so it shows as single
+                this.underline = true;
+                this.underlineStyle = "solid";
+                break;
+            case 3:
+                this.underline = true;
+                this.underlineStyle = "wavy";
+                break;
+            case 4:
+                this.underline = true;
+                this.underlineStyle = "dotted";
+                break;
+            case 5:
+                this.underline = true;
+                this.underlineStyle = "dashed";
+                break;
+            default: // 0, and anything unrecognised
+                this.underline = undefined;
+                this.underlineStyle = undefined;
+                break;
+        }
+    }
+
+    /**
+     * `38:…` / `48:…` — an extended colour written with sub-parameters.
+     *
+     * The colon form carries one element the semicolon form does not: a colour
+     * space identifier sits between the `2` and the red component, almost always
+     * empty (`38:2::255:0:0`). So the components are the 4th, 5th and 6th
+     * sub-parameters here where they are the 3rd, 4th and 5th parameters there.
+     * Missing components are zero, as in Mudlet's decodeSGR38.
+     */
+    private applyExtendedColorGroup(group: number[]): void {
+        const isForeground = group[0] === 38;
+        const put = (color: FormatColor) => {
+            if (isForeground) this.setForeground(color, color);
+            else this.background = color;
+        };
+        if (group[1] === 5 && group[2] !== undefined) {
+            put({space: "hex", color: colorCodes.xterm[group[2]]});
+        } else if (group[1] === 2) {
+            put({space: "rgb", r: group[3] ?? 0, g: group[4] ?? 0, b: group[5] ?? 0});
+        }
+    }
+
+    /** Record a foreground and the colour bold should show instead of it, then
+     *  resolve which of the two is in force. Pass the same colour twice when it
+     *  has no brighter twin. */
+    private setForeground(normal: FormatColor, light: FormatColor): void {
+        this.fgNormal = cloneColor(normal);
+        this.fgLight = cloneColor(light);
+        this.fgIsDefault = false;
+        this.resolveForeground();
+    }
+
+    /** Pick the variant the current bold state calls for. Mudlet writes each
+     *  cell as `(!mIsDefaultColor && mBold) ? light : normal` — a default
+     *  foreground stays default however bold the text is. */
+    private resolveForeground(): void {
+        // Straight to the backing field: going through the setter would flatten
+        // the pair this is choosing between.
+        this._foreground = cloneColor(
+            !this.fgIsDefault && this.bold ? this.fgLight : this.fgNormal);
+    }
+
     setHyperlink(link?: FormatHyperlink): void {
         this.hyperlink = link ? {...link} : undefined;
     }
 }
 
-function parseSgrCodes(sequence: string): number[] {
+/**
+ * Split an SGR sequence into its parameters. `;` separates parameters and `:`
+ * their sub-parameters (ECMA-48 / ITU T.416), so a parameter that carries
+ * sub-parameters comes back as an array and a plain one as a number.
+ *
+ * The distinction matters for exactly one reason, but it matters a lot: `4:3` is
+ * a *curly underline*, one parameter with a sub-parameter, while `4;3` is an
+ * underline followed by italics. Flattening both — which mudix did, to make
+ * `38:5:1` work alongside `38;5;1` — turned every styled underline into an
+ * accidental italic. Extended colours still read either form, since applySgr
+ * looks ahead across parameters for the `38;5;n` spelling.
+ */
+export function parseSgrCodes(sequence: string): SgrParam[] {
     if (!sequence) return [0];
-    return sequence
-        // `:` separates the sub-parameters of one parameter (ECMA-48 / ITU
-        // T.416): an extended colour can arrive as `38:5:1` as legitimately as
-        // `38;5;1`, and Mudlet's own cecho2ansi emits the colon form — so a
-        // parser that only split on `;` read the whole thing as one number and
-        // dropped the colour. Flattening both is what every terminal does.
-        .split(/[;:]/)
-        .map(part => part.trim())
-        .filter(part => part.length > 0)
-        .map(part => Number.parseInt(part, 10))
-        .map(num => (Number.isNaN(num) ? 0 : num));
+    const params: SgrParam[] = [];
+    for (const part of sequence.split(';')) {
+        const nums = part
+            .split(':')
+            .map(sub => sub.trim())
+            .map(sub => (sub.length === 0 ? 0 : Number.parseInt(sub, 10)))
+            .map(num => (Number.isNaN(num) ? 0 : num));
+        // A bare `;` (an empty parameter) means 0, the same as writing it out.
+        if (nums.length === 1) params.push(nums[0]);
+        else params.push(nums);
+    }
+    return params;
 }
 
 /** True when a parsed OSC 8 config carries any field worth keeping (so a bare
@@ -1009,8 +1197,11 @@ export class AnsiAwareBuffer {
         if (state.hyperlink?.autoUnderline && !underline) decorations.push("underline");
         if (decorations.length > 0) {
             styles.push(`text-decoration: ${decorations.join(" ")}`);
-            if (overlay?.underlineStyle && overlay.underlineStyle !== "solid") {
-                styles.push(`text-decoration-style: ${overlay.underlineStyle}`);
+            // A link's own style wins over the run's, as every other overlay
+            // field does; with no link it is the SGR `4:n` style that draws.
+            const underlineStyle = overlay?.underlineStyle ?? state.underlineStyle;
+            if (underlineStyle && underlineStyle !== "solid") {
+                styles.push(`text-decoration-style: ${underlineStyle}`);
             }
             if (overlay?.decorationColor) {
                 styles.push(`text-decoration-color: ${this.colorToHex(overlay.decorationColor)}`);

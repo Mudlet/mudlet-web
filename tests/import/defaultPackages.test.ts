@@ -53,7 +53,7 @@ const ARCHIVE_PATHS: Record<string, string> = {
     'generic_mapper.mpackage': 'src/import/defaults/generic_mapper/generic_mapper.mpackage',
     'mudlet-mapper.xml': 'src/import/defaults/mudlet-mapper.xml',
     'mudlet-base-ui.mpackage': 'src/import/defaults/mudlet-base-ui/mudlet-base-ui.mpackage',
-    'gui-drop.xml': 'src/import/defaults/gui-drop/gui-drop.xml',
+    'gui-drop.mpackage': 'src/import/defaults/gui-drop/gui-drop.mpackage',
 };
 
 /** What a profile on `host` ends up with. Defaults to a newly-created profile —

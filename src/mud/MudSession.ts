@@ -17,6 +17,7 @@ import { type MudClientEvents, type MudEvents, type SessionStatus } from './even
 import type { Console } from './text/Console';
 import { mxpColor } from './text/colorParsers';
 import { AnsiAwareBuffer } from './text/FormatState';
+import { SERVER_WRAP_WIDTH_DEFAULT } from './text/serverWrap';
 import { setControlCharacterMode as setActiveControlCharacterMode, type ControlCharacterMode } from './text/controlCharacterMode';
 
 export type { SessionStatus, MudEvents } from './events';
@@ -381,8 +382,17 @@ export class MudSession {
         return this.client?.isSocketUnconnected() ?? true;
     }
 
+    /** Mudlet `feedTelnet(data)`. Injects raw bytes into the inbound pipeline as
+     *  if the server had sent them.
+     *
+     *  Works with no connection, which is the state the API is *for*: Mudlet
+     *  refuses to inject into a live socket (it would interleave with the real
+     *  stream), so every caller — its own test suite included — is offline by
+     *  definition. With no client there is no pipeline to inject into, so this
+     *  borrows the detached one replay playback already builds for the same
+     *  reason: the telnet/ANSI/trigger path needs no socket to run. */
     feedTelnet(data: string): void {
-        this.client?.feedTelnet(data);
+        this.ensureParsingClient().feedTelnet(data);
     }
 
     sendATCP(message: string): boolean {
@@ -448,7 +458,7 @@ export class MudSession {
         if (this.replayPlayer) return 'another one may already be in progress';
         const chunks = parseReplay(bytes);
         if (chunks === null) return 'replay file seems to be corrupt';
-        const client = this.ensureReplayClient();
+        const client = this.ensureParsingClient();
         const durationMs = replayDurationMs(chunks);
         this.replayPlayer = new ReplayPlayer(chunks, {
             speed: () => this._replaySpeed,
@@ -476,12 +486,13 @@ export class MudSession {
         return true;
     }
 
-    /** The client whose parsing pipeline replay chunks feed into. Reuses the
-     *  live client when one exists; otherwise creates a detached MudClient
-     *  that is never connect()ed — the inbound pipeline works without a
-     *  socket, and any replies the replayed IAC traffic provokes are dropped
-     *  by the readyState guards, which is exactly right for playback. */
-    private ensureReplayClient(): MudClient {
+    /** The client whose parsing pipeline injected bytes feed into — replay
+     *  chunks and feedTelnet alike. Reuses the live client when one exists;
+     *  otherwise creates a detached MudClient that is never connect()ed — the
+     *  inbound pipeline works without a socket, and any replies the injected IAC
+     *  traffic provokes are dropped by the readyState guards, which is exactly
+     *  right when nothing is listening for them. */
+    private ensureParsingClient(): MudClient {
         if (!this.client) {
             this.client = new MudClient({ url: '', ...this.options }, this.events as EventBus<MudClientEvents>);
         }
@@ -570,6 +581,35 @@ export class MudSession {
         this.client?.setFixUnnecessaryLinebreaks(enabled);
     }
 
+    /** Mudlet `Host::mUndoServerWrap` / `mUndoServerWrapWidth`, as getConfig
+     *  reads them back. */
+    get undoServerWrap(): boolean {
+        return this.options.undoServerWrap ?? false;
+    }
+
+    get undoServerWrapWidth(): number {
+        return this.options.undoServerWrapWidth ?? SERVER_WRAP_WIDTH_DEFAULT;
+    }
+
+    /** Mudlet `setConfig("undoServerWrap", …)`. Updates the live client and the
+     *  stored options so the setting survives a reconnect. */
+    setUndoServerWrap(enabled: boolean): void {
+        this.options.undoServerWrap = enabled;
+        this.client?.setUndoServerWrap(enabled);
+    }
+
+    /** Mudlet `setConfig("undoServerWrapWidth", …)`. */
+    setUndoServerWrapWidth(width: number): void {
+        this.options.undoServerWrapWidth = width;
+        this.client?.setUndoServerWrapWidth(width);
+    }
+
+    /** Commit a line held for a wrap continuation whose flush delay has passed —
+     *  the busted `pumpEvents` path, which cannot wait for a real timer. */
+    pumpServerWrap(): boolean {
+        return this.client?.pumpServerWrapDue() ?? false;
+    }
+
     /** Mudlet `setConfig("inputLineStrictUnixEndings", …)`. Live — the next
      *  command submitted uses the new line terminator. */
     setInputLineStrictUnixEndings(enabled: boolean): void {
@@ -577,11 +617,13 @@ export class MudSession {
         this.client?.setInputLineStrictUnixEndings(enabled);
     }
 
-    /** Mudlet `setConfig("specialForceGAOff", …)`. Stored only — Mudlet snapshots
-     *  `mFORCE_GA_OFF` into cTelnet at connect time, and a MudClient likewise
-     *  reads it once at construction, so this takes effect on the next dial. */
+    /** Mudlet `setConfig("specialForceGAOff", …)`. Stored for the next dial, and
+     *  applied at once to a client that is not connected — which is the state a
+     *  profile driving `feedTelnet` is in, and the only one where Mudlet lets
+     *  the change land early. See MudClient.setForceGaOff. */
     setSpecialForceGAOff(enabled: boolean): void {
         this.options.specialForceGAOff = enabled;
+        this.client?.setForceGaOff(enabled);
     }
 
     /** Mudlet `setConfig("versionInTTYPE", …)` / `("promptForVersionInTTYPE", …)`.

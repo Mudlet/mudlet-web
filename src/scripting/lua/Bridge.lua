@@ -460,13 +460,11 @@ function getMousePosition()
     return t[0], t[1]
 end
 
--- Mudlet getUserWindowSize(name) → width, height when the window exists, or
--- (nil, errMsg) when it doesn't. JS returns `nil` for the miss case.
+-- Mudlet getUserWindowSize(name) → width, height. Always two numbers: a name
+-- with no user window of its own reports the MAIN window's size, which is what
+-- the dock-registry lookup in TMainConsole::getUserWindowSize falls back to.
 function getUserWindowSize(name)
     local t = __getUserWindowSize(name)
-    if t == nil then
-        return nil, "userwindow \"" .. tostring(name) .. "\" not found"
-    end
     return t[0], t[1]
 end
 
@@ -1067,6 +1065,10 @@ function getTextFormat(windowName)
         blinking = t[8],
         foreground = { t[9], t[10], t[11] },
         background = { t[12], t[13], t[14] },
+        -- What is actually drawn under the character: "none", "solid", "wavy",
+        -- "dotted" or "dashed". Appended after the colours rather than beside
+        -- `underline` so the flat array's existing indices do not shift.
+        underlineStyle = t[15],
     }
 end
 
@@ -1444,6 +1446,18 @@ do
                     .. type(a[base + i - 1]) .. "!)", 2)
             end
             a[base + i - 1] = v
+        end
+        -- The parent has to be a window that can hold a label: a user window or
+        -- a scroll box. Naming anything else used to put the label in the MAIN
+        -- window instead, which is nowhere the caller asked for and left them
+        -- hunting for a label that was on screen all along (Host::createLabel).
+        if parented then
+            local parent = a[1]
+            local parentKind = __windowType(parent)
+            if parent ~= '' and parent ~= 'main'
+                and parentKind ~= 'userwindow' and parentKind ~= 'scrollbox' then
+                return false, "window '" .. tostring(parent) .. "' not found"
+            end
         end
         local kind = __windowType(name)
         if kind == 'label' then
@@ -6507,19 +6521,23 @@ do
         return nil, "no button named '" .. name .. "' found"
     end
 
-    -- Both answer nothing whatsoever, including for a name that matches no
-    -- toolbar: Mudlet walks its toolbar list and simply does nothing when
-    -- nothing matches, so a typo here is silent by design and a return value
-    -- would be inventing a contract upstream does not have.
+    -- Both answer `true` when they moved a toolbar and (nil, errMsg) when they
+    -- did not: a name that is no toolbar, or one that names a floating toolbar,
+    -- which these do not move. (They used to answer nothing at all, so a typo
+    -- was silent — see ActionUnit::setToolBarActive.)
     local _rawShowToolBar, _rawHideToolBar = showToolBar, hideToolBar
     function showToolBar(name)
         name = __mudix_check_string(name, "showToolBar", 1, "toolbar name")
-        _rawShowToolBar(name)
+        local err = _rawShowToolBar(name)
+        if err ~= nil then return nil, err end
+        return true
     end
 
     function hideToolBar(name)
         name = __mudix_check_string(name, "hideToolBar", 1, "toolbar name")
-        _rawHideToolBar(name)
+        local err = _rawHideToolBar(name)
+        if err ~= nil then return nil, err end
+        return true
     end
 end
 

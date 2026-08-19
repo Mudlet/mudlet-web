@@ -81,6 +81,15 @@ const MUDLET_LUA_FILES = import.meta.glob('./mudlet-lua/**/*.{lua,json}', {
 // exposed to the browser as window.__runBusted in flagged builds. See
 // src/scripting/lua/busted/VENDORED.md.
 const BUSTED_ENABLED = !!(import.meta.env as Record<string, unknown>).VITE_BUSTED;
+// Says "this build carries the corpus" the moment the module is imported, long
+// before any profile boots. The harness needs that distinction up front: a
+// non-busted server answers every request perfectly well and simply has no
+// __runBusted, which is indistinguishable from an app that failed to boot — and
+// the recorder reads that as 44 broken specs and retries every one of them.
+// e2e/bustedRecord.ts checks this first and stops with one message instead.
+if (BUSTED_ENABLED && typeof window !== 'undefined') {
+    (window as unknown as { __mudixBustedBuild?: boolean }).__mudixBustedBuild = true;
+}
 const BUSTED_FILES = BUSTED_ENABLED
     ? (import.meta.glob('./busted/**/*.lua', { query: '?raw', import: 'default', eager: true }) as Record<string, string>)
     : {};
@@ -388,6 +397,27 @@ export class LuaRuntime implements IScriptingRuntime {
     // doesn't report a position) — selectCaptureGroup(1) then falls back to
     // selectString on currentMatches[0].
     private currentFullMatchSpan: CaptureSpan | null = null;
+
+    /**
+     * Move the capture positions recorded for the line being processed to
+     * follow `delta` characters inserted at column `at`.
+     *
+     * A trigger that calls `insertText` before its own match and then
+     * `selectCaptureGroup` would otherwise select the text that has slid into
+     * where the capture used to be. A capture that starts at or after the
+     * insert moves whole; one the insert lands inside grows by it.
+     */
+    shiftCaptureSpans(at: number, delta: number): void {
+        if (!delta) return;
+        const shift = (span: CaptureSpan): void => {
+            if (span.start >= at) span.start += delta;
+            else if (at < span.start + span.length) span.length += delta;
+        };
+        if (this.currentFullMatchSpan) shift(this.currentFullMatchSpan);
+        for (const span of this.currentCaptureSpans) shift(span);
+        for (const span of Object.values(this.currentNamedSpans)) shift(span);
+    }
+
     private _denyCurrentSend = false;
 
     /** The read-only `/lua/` namespace: bundled Mudlet Lua, and in busted builds
@@ -1537,6 +1567,9 @@ export class LuaRuntime implements IScriptingRuntime {
                 releaseCb(cbId);
                 this.tempIds.delete(id);
             };
+            // Mudlet names a trigger made by tempTrigger() and friends after its
+            // id, unless the call carried a name of its own — which is what the
+            // runaway report has to print.
             unsub = this.api.triggers.addTemp(pattern, (matches, spans, namedGroups) => {
                 if (killed || this.tempIds.get(id)?.enabled === false) return;
                 const prevSpans = this.currentCaptureSpans;
@@ -1558,7 +1591,7 @@ export class LuaRuntime implements IScriptingRuntime {
                 }
                 fires++;
                 if (max > 0 && fires >= max) kill();
-            }, kind);
+            }, kind, { name: name ?? String(id), onStopped: kill });
             this.tempIds.set(id, { kill, type: 'trigger', enabled: true, name });
             return id;
         };
@@ -2297,6 +2330,9 @@ end`);
             // a replay schedules its chunks on plain setTimeouts, which the
             // blocked loop will never deliver.
             this.api.pumpReplay();
+            // Likewise the line held back for a server-wrap continuation, which
+            // is committed by a 300ms flush timer once the game goes quiet.
+            this.api.pumpServerWrap();
             if (Date.now() >= deadline) return true;
             // Let real time advance a little so pending timers come due, without
             // overshooting the caller's deadline.
@@ -3457,7 +3493,16 @@ end`);
         this.api.timers.addTemp(0, fn);
     }
 
+    /** The line the global `line` currently holds, so a caller can put it back
+     *  after a nested feedTriggers has processed a line of its own. */
+    getCurrentLine(): string {
+        return this.currentLineText;
+    }
+
+    private currentLineText = '';
+
     setCurrentLine(line: string, _isPrompt: boolean): void {
+        this.currentLineText = line;
         // Mudlet exposes the bare ANSI-stripped line as the global `line` so
         // triggers can read it without going through getCurrentLine. The
         // per-line prompt flag now travels on the buffer itself via

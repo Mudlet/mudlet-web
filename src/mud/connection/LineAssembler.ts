@@ -1,4 +1,14 @@
 import { scanEscape } from "../text/ansiEscapes";
+import {
+    SERVER_WRAP_FLUSH_DELAY_MS,
+    SERVER_WRAP_MAX_JOINED_LENGTH,
+    SERVER_WRAP_WIDTH_DEFAULT,
+    endsAtServerWrapColumn,
+    joinWrappedLines,
+    looksLikeWrappedProse,
+    shouldCommitPendingBeforeJoin,
+    visibleText,
+} from "../text/serverWrap";
 
 export const DEFAULT_PROMPT_TIMEOUT_MS = 300;
 
@@ -27,6 +37,11 @@ export interface LineAssemblerCallbacks {
 
 export interface LineAssemblerOptions {
     promptTimeoutMs?: number;
+    /** Mudlet `Host::mUndoServerWrap` — rejoin lines the game hard-wrapped
+     *  itself. Off by default; toggled live via setConfig. */
+    undoServerWrap?: boolean;
+    /** Mudlet `Host::mUndoServerWrapWidth` — the column the game wraps at. */
+    undoServerWrapWidth?: number;
     /** Mudlet `mUSE_IRE_DRIVER_BUGFIX` — strip a spurious leading newline from
      *  GA-driven prompt blocks. Off by default; toggled live via
      *  setFixUnnecessaryLinebreaks (setConfig). */
@@ -67,12 +82,30 @@ export class LineAssembler {
     private atPromptBlockStart = true;
     private fixUnnecessaryLinebreaks: boolean;
 
+    // ── server-wrap join (Mudlet TBuffer::append's mUndoServerWrap block) ────
+    // A whole line the game may only have *appeared* to end, held back until its
+    // continuation arrives to be joined onto it — or until the game goes quiet
+    // and the flush timer commits it alone. Held raw (escapes and all): mudix's
+    // styling is inline, so concatenation carries each half's colour across.
+    private undoServerWrap: boolean;
+    private undoServerWrapWidth: number;
+    private serverWrapPending: string | null = null;
+    /** Visible length of the last *game line* joined into the held text — what
+     *  the next word is measured against, not the whole joined paragraph. */
+    private serverWrapPendingSegmentLength = 0;
+    private serverWrapTimer: number | null = null;
+    /** When the held line falls due, so a blocked event loop can still commit it
+     *  on demand — see {@link pumpServerWrapDue}. */
+    private serverWrapDeadline: number | null = null;
+
     constructor(
         private readonly callbacks: LineAssemblerCallbacks,
         options: LineAssemblerOptions = {},
     ) {
         this.promptTimeoutMs = clampPromptTimeout(options.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS);
         this.fixUnnecessaryLinebreaks = options.fixUnnecessaryLinebreaks ?? false;
+        this.undoServerWrap = options.undoServerWrap ?? false;
+        this.undoServerWrapWidth = options.undoServerWrapWidth ?? SERVER_WRAP_WIDTH_DEFAULT;
     }
 
     /** True once the session has latched into GA-driven prompt mode. */
@@ -94,12 +127,28 @@ export class LineAssembler {
         this.fixUnnecessaryLinebreaks = enabled;
     }
 
+    /** Mudlet `setConfig("undoServerWrap", …)`. Turning it off commits anything
+     *  held on the spot rather than stranding it until the next line. */
+    setUndoServerWrap(enabled: boolean): void {
+        this.undoServerWrap = enabled;
+        if (!enabled) this.commitServerWrapPending(Date.now());
+    }
+
+    /** Mudlet `setConfig("undoServerWrapWidth", …)`. Applies from the next line;
+     *  the held one was already judged against the previous column. */
+    setUndoServerWrapWidth(width: number): void {
+        this.undoServerWrapWidth = width;
+    }
+
     /** Drop all held state (call on connect and after close). */
     reset(): void {
         this.pendingLineTail = "";
         this._gaDriver = false;
         this.atPromptBlockStart = true;
         this.clearTailTimer();
+        this.serverWrapPending = null;
+        this.serverWrapPendingSegmentLength = 0;
+        this.clearServerWrapTimer();
     }
 
     /** Feed one frame's decoded text plus whether the frame carried a prompt
@@ -134,7 +183,7 @@ export class LineAssembler {
             } else {
                 const ready = combined.substring(0, lastNl + 1);
                 this.pendingLineTail = combined.substring(lastNl + 1);
-                this.callbacks.onChunk(ready, ts);
+                this.emitServerLines(ready, ts);
             }
         }
 
@@ -179,7 +228,141 @@ export class LineAssembler {
         // reschedule: a never-completing escape would spin the timer forever;
         // the next inbound frame recombines it).
         if (tail.length === 0) return;
+        // A flushed tail is a prompt, a timer-flushed fragment or the end of the
+        // stream — every one of them a real line boundary, so anything held for
+        // a wrap continuation was a complete line after all and goes first.
+        // (Mudlet reaches the same conclusion from `ch` being '\xff' or '\r'
+        // rather than '\n'.) Without this a prompt is swallowed into the
+        // full-width line above it.
+        this.commitServerWrapPending(ts);
         this.callbacks.onChunk(tail, ts);
+    }
+
+    // ── server-wrap join ────────────────────────────────────────────────────
+
+    /**
+     * Run the whole lines of one ready chunk through the server-wrap join and
+     * emit what comes out. With the option off this is `onChunk(ready)` and
+     * nothing else.
+     *
+     * Mudlet decides this per '\n' inside `TBuffer::append`, gated on the line
+     * having come from the server: everything else (prompts, timer-flushed
+     * fragments, MXP `<br>`, blank lines) is a real boundary. Here the gate is
+     * structural — this is the only path whole server lines take, and
+     * feedTriggers/echoes never reach it.
+     */
+    private emitServerLines(ready: string, ts: number): void {
+        if (!this.undoServerWrap) {
+            this.callbacks.onChunk(ready, ts);
+            return;
+        }
+        // `ready` always ends in '\n', so the split's last element is the empty
+        // string after it rather than a line of its own.
+        const lines = ready.split('\n');
+        lines.pop();
+        let out = '';
+        for (const line of lines) out += this.consumeServerLine(line);
+        if (out.length > 0) this.callbacks.onChunk(out, ts);
+    }
+
+    /**
+     * Offer one whole server line to the join. Returns the text to commit —
+     * newline-terminated lines, or the empty string when the line was held back
+     * for a continuation.
+     */
+    private consumeServerLine(line: string): string {
+        // A blank line is a paragraph break, never a wrap: it ends the held
+        // line and stands on its own. (Mudlet: `!mMudLine.isEmpty()`.)
+        if (line.length === 0) {
+            const pending = this.takeServerWrapPending();
+            return pending === null ? '\n' : pending + '\n\n';
+        }
+
+        const visible = visibleText(line);
+        const proseSegment = looksLikeWrappedProse(visible);
+        let committed = '';
+
+        if (this.serverWrapPending !== null) {
+            const commitFirst = shouldCommitPendingBeforeJoin(visible, proseSegment, {
+                visiblePending: visibleText(this.serverWrapPending),
+                heldSegmentLength: this.serverWrapPendingSegmentLength,
+                width: this.undoServerWrapWidth,
+            });
+            if (commitFirst) committed = this.takeServerWrapPending() + '\n';
+        }
+
+        // Judged before the held line is joined on, deliberately: ending at the
+        // game's wrap column is a property of the segment as the game sent it,
+        // not of the longer line it becomes.
+        const segmentLooksWrapped = endsAtServerWrapColumn(visible.length, this.undoServerWrapWidth)
+            && proseSegment;
+        const segmentLength = visible.length;
+
+        const joined = this.serverWrapPending === null
+            ? line
+            : joinWrappedLines(this.serverWrapPending, line);
+        this.serverWrapPending = null;
+
+        if (segmentLooksWrapped && visibleText(joined).length <= SERVER_WRAP_MAX_JOINED_LENGTH) {
+            this.serverWrapPending = joined;
+            this.serverWrapPendingSegmentLength = segmentLength;
+            this.startServerWrapTimer();
+            return committed;
+        }
+        return committed + joined + '\n';
+    }
+
+    /** Take the held line, if any, and stop its timer. */
+    private takeServerWrapPending(): string | null {
+        if (this.serverWrapPending === null) return null;
+        const pending = this.serverWrapPending;
+        this.serverWrapPending = null;
+        this.serverWrapPendingSegmentLength = 0;
+        this.clearServerWrapTimer();
+        return pending;
+    }
+
+    /** Commit the held line on its own, as its own chunk. */
+    private commitServerWrapPending(ts: number): boolean {
+        const pending = this.takeServerWrapPending();
+        if (pending === null) return false;
+        this.callbacks.onChunk(pending + '\n', ts);
+        return true;
+    }
+
+    /**
+     * Commit a held line whose flush delay has elapsed. The timer below cannot
+     * be relied on alone: a busted run is one synchronous call sitting on top of
+     * the event loop, so no `setTimeout` of ours can fire until it returns. The
+     * spec's `pumpEvents` reaches this instead, exactly as it reaches the Lua
+     * timer queue and the replay player. Returns true when a line was committed.
+     */
+    pumpServerWrapDue(now: number = Date.now()): boolean {
+        if (this.serverWrapDeadline === null || now < this.serverWrapDeadline) return false;
+        if (!this.commitServerWrapPending(now)) return false;
+        // Same tail as the timer's own callback: the committed line is only in
+        // the message buffer until someone flushes it, and no inbound frame is
+        // coming to do that — the game going quiet is the whole premise.
+        this.callbacks.onIdleFlush();
+        return true;
+    }
+
+    private startServerWrapTimer(): void {
+        this.clearServerWrapTimer();
+        this.serverWrapDeadline = Date.now() + SERVER_WRAP_FLUSH_DELAY_MS;
+        this.serverWrapTimer = window.setTimeout(() => {
+            this.serverWrapTimer = null;
+            this.serverWrapDeadline = null;
+            if (this.commitServerWrapPending(Date.now())) this.callbacks.onIdleFlush();
+        }, SERVER_WRAP_FLUSH_DELAY_MS);
+    }
+
+    private clearServerWrapTimer(): void {
+        if (this.serverWrapTimer !== null) {
+            clearTimeout(this.serverWrapTimer);
+            this.serverWrapTimer = null;
+        }
+        this.serverWrapDeadline = null;
     }
 
     private scheduleTailFlush(): void {

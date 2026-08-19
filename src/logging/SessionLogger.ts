@@ -99,7 +99,12 @@ export class SessionLogger {
         const path = `${this.vfs.profilePath}/log/${stamp}.txt`;
         try {
             this.vfs.mkdir(`${this.vfs.profilePath}/log`);
-            this.vfs.writeFile(path, '');
+            // Only create it — never blank one that is already there. The name
+            // carries the second this logger was built, so stopping and
+            // restarting logging inside one session comes back to the same file,
+            // and truncating it would throw away everything the first stretch
+            // had written. Mudlet reopens for append.
+            if (!this.vfs.exists(path)) this.vfs.writeFile(path, '');
             this.logFilePath = path;
         } catch (err) {
             console.warn('[SessionLogger] could not open the log file', err);

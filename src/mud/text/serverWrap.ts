@@ -31,6 +31,18 @@ export const SERVER_WRAP_SLACK = 15;
  *  otherwise swallow a whole screen. Mudlet's `csmServerWrapMaxJoinedLength`. */
 export const SERVER_WRAP_MAX_JOINED_LENGTH = 10000;
 
+/** How much clear room the continuation's first word must have had on the line
+ *  above before that line counts as one the game ended itself. Mudlet's
+ *  `csmServerWrapFitTolerance` — only *clear* room disproves a wrap, because a
+ *  segment inside the join band already sits up to {@link SERVER_WRAP_SLACK}
+ *  short of the column. */
+export const SERVER_WRAP_FIT_TOLERANCE = 8;
+
+/** Longest run of digits a bare list label may carry (`1.`, `12)`, `999.`).
+ *  Mudlet's `csmMaxListNumberDigits`. Bracketed labels are exempt — `[1366]` is
+ *  a label however long it runs, where a bare `1364.` is as likely a price. */
+export const MAX_LIST_NUMBER_DIGITS = 3;
+
 /** How long a held-back line waits for its continuation before being committed
  *  on its own. Mudlet's `csmServerWrapFlushDelayMs`. */
 export const SERVER_WRAP_FLUSH_DELAY_MS = 300;
@@ -112,17 +124,98 @@ export function looksLikeWrappedProse(visible: string): boolean {
 }
 
 /**
+ * Mudlet `TBuffer::startsWithListMarker`. A list entry reads exactly like
+ * wrapped prose — a sentence that can end right at the wrap column — so only its
+ * marker tells a list apart from a paragraph.
+ *
+ * Every form accepted here has to be one the game's own word wrap could not
+ * produce at the start of a continuation. The ambiguous ones are deliberately
+ * left out: a spaced dash opens a continuation whenever the wrap lands on it,
+ * and a parenthesised number is as often an aside as a label, so it is capped at
+ * {@link MAX_LIST_NUMBER_DIGITS} like a bare one. Only `[...]` is exempt from
+ * the cap — nothing writes `[2500]` mid-sentence.
+ *
+ * `visible` must already be ANSI-stripped.
+ */
+export function startsWithListMarker(visible: string): boolean {
+    let start = 0;
+    while (start < visible.length && isSpace(visible[start])) start++;
+    if (start >= visible.length) return false;
+
+    const BULLETS = '*+•·●◦';
+    if (BULLETS.includes(visible[start])) {
+        return start + 1 < visible.length && visible[start + 1] === ' ';
+    }
+
+    const OPENERS = '[(';
+    const CLOSERS = '])';
+    const bracket = OPENERS.indexOf(visible[start]);
+    const numberStart = bracket < 0 ? start : start + 1;
+    let numberEnd = numberStart;
+    while (numberEnd < visible.length && visible[numberEnd] >= '0' && visible[numberEnd] <= '9') numberEnd++;
+    const digits = numberEnd - numberStart;
+    if (!digits || numberEnd >= visible.length) return false;
+
+    const numberFitsAList = digits <= MAX_LIST_NUMBER_DIGITS || visible[start] === '[';
+    const closed = bracket >= 0
+        ? visible[numberEnd] === CLOSERS[bracket]
+        : (visible[numberEnd] === '.' || visible[numberEnd] === ')');
+    return numberFitsAList && closed
+        && numberEnd + 1 < visible.length && visible[numberEnd + 1] === ' ';
+}
+
+/**
+ * Mudlet `TBuffer::pendingLineHadRoomForNextWord`. Word wrap breaks a line for
+ * one reason only: the next word did not fit. So a continuation whose first word
+ * would have gone on the game line above it is not a continuation at all — the
+ * game ended that line itself. Without this, two sentences that each stop short
+ * of the wrap column read exactly like one wrapped paragraph.
+ *
+ * `heldSegmentLength` is the length of the last *game line* joined into the held
+ * text, not of the held text itself: once a paragraph has been joined the held
+ * text is longer than the wrap column, and the line the next word would have
+ * landed on is the one the game last sent.
+ *
+ * Both strings must already be ANSI-stripped.
+ */
+export function pendingLineHadRoomForNextWord(
+    visiblePending: string, heldSegmentLength: number, visibleNext: string, width: number,
+): boolean {
+    let trailingSpaces = 0;
+    while (trailingSpaces < visiblePending.length
+        && isSpace(visiblePending[visiblePending.length - trailingSpaces - 1])) trailingSpaces++;
+    const heldEnd = heldSegmentLength - trailingSpaces;
+
+    let wordStart = 0;
+    while (wordStart < visibleNext.length && isSpace(visibleNext[wordStart])) wordStart++;
+    let wordEnd = wordStart;
+    while (wordEnd < visibleNext.length && !isSpace(visibleNext[wordEnd])) wordEnd++;
+
+    // The word starts past whatever the join will put between the two: the
+    // spaces the game left on either side of the break, or the single one added
+    // for it when the game swallowed it.
+    const separator = Math.max(1, trailingSpaces + wordStart);
+    return heldEnd + separator + (wordEnd - wordStart) + SERVER_WRAP_FIT_TOLERANCE <= width;
+}
+
+/**
  * Mudlet's guard before joining: a genuine continuation of wrapped prose starts
  * with a word — or with the single space some games move the break to instead of
- * swallowing it. *Deeper* indentation, or a segment that isn't prose at all,
- * belongs to centred ASCII art, menu columns or dividers, which means the held
- * line was a complete line after all and must be committed on its own first.
+ * swallowing it. *Deeper* indentation, a segment that isn't prose at all, a list
+ * entry, or a first word that would have fitted on the line above all mean the
+ * held line was complete after all and must be committed on its own first.
  *
  * `visibleNext` must already be ANSI-stripped.
  */
-export function shouldCommitPendingBeforeJoin(visibleNext: string, nextIsProse: boolean): boolean {
+export function shouldCommitPendingBeforeJoin(
+    visibleNext: string,
+    nextIsProse: boolean,
+    fit?: { visiblePending: string; heldSegmentLength: number; width: number },
+): boolean {
     const doubleIndented = isSpace(visibleNext[0] ?? '') && visibleNext.length > 1 && isSpace(visibleNext[1]);
-    return doubleIndented || !nextIsProse;
+    if (doubleIndented || !nextIsProse || startsWithListMarker(visibleNext)) return true;
+    return !!fit && pendingLineHadRoomForNextWord(
+        fit.visiblePending, fit.heldSegmentLength, visibleNext, fit.width);
 }
 
 /**

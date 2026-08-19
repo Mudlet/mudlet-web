@@ -21,11 +21,12 @@
 //
 // Nothing downstream needs maintenance: bustedHarness.ts discovers specs from
 // disk and LuaRuntime.ts bundles them with import.meta.glob, so a brand-new
-// `Foo_spec.lua` shows up in the e2e suite on its own. The per-it() manifest
-// does need regenerating — the drift guard in busted.spec.ts fails until then,
-// and this script says so on exit.
+// `Foo_spec.lua` shows up in the e2e suite on its own, and busted.spec.ts names
+// its it()s from the same run that produced them, so there is no manifest to
+// regenerate. Just run the corpus and triage what a newer Mudlet now expects.
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, readdirSync, rmSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO = 'Mudlet/Mudlet';
@@ -190,7 +191,7 @@ for (const name of source.files) {
     } else {
         (prev ? updated : added).push(prev ? `${name} (${sizeDelta(prev, next)})` : name);
         if (!dryRun) {
-            mkdirSync(dest.slice(0, dest.lastIndexOf('/')), { recursive: true });
+            mkdirSync(dirname(dest), { recursive: true });
             writeFileSync(dest, next);
         }
     }
@@ -213,7 +214,10 @@ if (!dryRun) {
     const next = md
         .replace(
             /^- Synced from commit: .*$/m,
-            `- Synced from commit: \`${source.sha}\` (${ref}, ${source.date})`,
+            // `ref` is dropped when it's just the sha again — pinning by full
+            // sha would otherwise print it twice on the same line.
+            `- Synced from commit: \`${source.sha}\` `
+                + `(${source.sha.startsWith(ref) ? '' : `${ref}, `}${source.date})`,
         )
         .replace(
             /^All \d+ `\*_spec\.lua` files/m,
@@ -241,9 +245,8 @@ if (dryRun) {
     console.log(`\nDry run — nothing written. ${changed} file(s) would change.`);
 } else if (changed) {
     console.log('\nNext:');
-    console.log('  yarn dev:busted            # serve the app with the spec corpus bundled');
-    console.log('  yarn gen:busted-manifest   # re-record the per-it() manifest (drift guard fails until you do)');
-    console.log('  yarn test:e2e              # run the corpus against the real app');
+    console.log('  yarn test:e2e          # run the corpus against the real app (records it first)');
+    console.log('  yarn busted:failures   # re-run just what failed, for triage');
 } else {
     console.log('\nAlready up to date.');
 }

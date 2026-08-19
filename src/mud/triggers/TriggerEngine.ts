@@ -108,15 +108,43 @@ type CompiledAndEntry = {
 
 type CompiledEntry = CompiledOrEntry | CompiledAndEntry;
 
+/** The lineage a trigger created mid-pass belongs to, and how many generations
+ *  deep it sits in it. Absent on a trigger that was not created while a line was
+ *  being processed. See TriggerEngine.addedWhileProcessing. */
+interface SameLineChain {
+    chainId: number;
+    generation: number;
+}
+
 /** A session-scoped temporary trigger. `seq` is its registration order in the
  *  unified list (see TriggerEngine's ordering notes). */
+type TempEntryBase = {
+    fn: TempFn;
+    seq: number;
+    sameLine?: SameLineChain;
+    name?: string;
+    /** Run when the ENGINE stops this trigger of its own accord (a runaway
+     *  lineage), so its owner can tear down what it holds — the Lua callback,
+     *  the id isActive() reads. Not called for an ordinary disposal, where the
+     *  owner is the one doing the stopping. */
+    onStopped?: () => void;
+};
+
+/** What a caller can tell the engine about a temp trigger beyond its pattern. */
+export interface TempOptions {
+    /** As the runaway report names it. Mudlet uses the trigger's id when the
+     *  call carried no name of its own. */
+    name?: string;
+    onStopped?: () => void;
+}
+
 type TempEntry =
-    | { kind: 'regex'; re: PcreInstance; fn: TempFn; seq: number }
-    | { kind: 'substring'; pattern: string; fn: TempFn; seq: number }
-    | { kind: 'startOfLine'; pattern: string; fn: TempFn; seq: number }
-    | { kind: 'exactMatch'; pattern: string; fn: TempFn; seq: number }
-    | { kind: 'prompt'; fn: TempFn; seq: number }
-    | { kind: 'line'; countdown: number; remaining: number; skipFirst: boolean; fn: TempFn; seq: number };
+    | ({ kind: 'regex'; re: PcreInstance } & TempEntryBase)
+    | ({ kind: 'substring'; pattern: string } & TempEntryBase)
+    | ({ kind: 'startOfLine'; pattern: string } & TempEntryBase)
+    | ({ kind: 'exactMatch'; pattern: string } & TempEntryBase)
+    | ({ kind: 'prompt' } & TempEntryBase)
+    | ({ kind: 'line'; countdown: number; remaining: number; skipFirst: boolean } & TempEntryBase);
 
 /**
  * One node in the unified processing list — either a permanent compiled entry
@@ -199,6 +227,21 @@ const luaEvalRef: { fn: ((code: string, line: string) => boolean) | null } = { f
  *  the plain-text line, so the check has to come from outside). Used by the
  *  `colorTrigger` pattern branch — see `buildMatcher`. */
 const colorMatchRef: { fn: ((fg: number, bg: number) => boolean) | null } = { fn: null };
+
+/** Where the same-line runaway report is printed. See setRunawayReporter. */
+const runawayReportRef: { fn: ((text: string) => void) | null } = { fn: null };
+
+/** How many generations one lineage of triggers created while a line is being
+ *  processed may reach before it is stopped. Mudlet's
+ *  `TriggerUnit::scmMaxSameLineGenerations`. */
+const MAX_SAME_LINE_GENERATIONS = 1000;
+
+/** How many triggers created while processing one line are offered that line at
+ *  all, across every lineage. Mudlet's `scmMaxSameLineCreationsPerLine`. */
+const MAX_SAME_LINE_CREATIONS_PER_LINE = 20000;
+
+/** Minimum gap between two runaway reports. */
+const RUNAWAY_REPORT_INTERVAL_MS = 10000;
 
 /** Parse a `"fg,bg"` colour-trigger pattern text into a `[fg, bg]` pair. Both
  *  default to -1 ("any") when missing or non-numeric. Mudlet uses ANSI
@@ -343,6 +386,34 @@ export class TriggerEngine {
     private unified: UnifiedEntry[] = [];
     private orderDirty = true;
 
+    // ── triggers created while a line is being processed ─────────────────────
+    // Mudlet walks its root list live, so a trigger a script arms mid-pass is
+    // reached in the same iteration and gets a shot at the line being processed
+    // — behaviour capture scripts lean on ("match the room title, then arm a
+    // trigger for the line it is on"). mudix iterates a snapshot, so those have
+    // to be collected and offered the line afterwards, which is what
+    // `addedWhileProcessing` is for.
+    //
+    // That opens the door a trigger can walk through forever: one that arms a
+    // copy of itself extends the list in front of the loop and the line never
+    // finishes. Each mid-pass creation therefore joins a *lineage* — the same
+    // one as the trigger whose script created it, one generation on — and a
+    // lineage that reaches MAX_SAME_LINE_GENERATIONS is stopped whole. A script
+    // arming a batch of unrelated triggers makes a generation of one-deep
+    // lineages however big the batch, so it is never mistaken for a runaway.
+    private processingDepth = 0;
+    private addedWhileProcessing: (number | null)[] = [];
+    /** Lineage id → name of the trigger whose script started it, for the report. */
+    private sameLineChainStarters = new Map<number, string>();
+    private lastSameLineChainId = 0;
+    private currentSameLineChainId = 0;
+    private currentSameLineGeneration = 0;
+    /** The name of the trigger whose script is running, for the abort report. */
+    private currentExecutingTriggerName: string | null = null;
+    /** When the runaway report was last posted, so a runaway whose creator
+     *  outlives its line cannot bury the game text. */
+    private lastRunawayReportAt = 0;
+
     // Per-item compile cache. Surviving items between loadPerm calls keep their
     // compiled state (and PCRE instances) here; only items whose signature
     // changed are recompiled, and only items removed entirely have their PCREs
@@ -408,18 +479,21 @@ export class TriggerEngine {
         pattern: string,
         fn: TempFn,
         kind: 'regex' | 'substring' | 'startOfLine' | 'exactMatch' | 'prompt' = 'regex',
+        opts: TempOptions = {},
     ): () => void {
         const id = this.nextInternalId++;
         const seq = this.regCounter++;
+        const { name, onStopped } = opts;
         if (kind === 'prompt') {
-            this.temp.set(id, { kind, fn, seq });
+            this.temp.set(id, { kind, fn, seq, name, onStopped });
         } else if (kind === 'substring' || kind === 'startOfLine' || kind === 'exactMatch') {
-            this.temp.set(id, { kind, pattern, fn, seq });
+            this.temp.set(id, { kind, pattern, fn, seq, name, onStopped });
         } else {
             const re = compilePcre(pattern);
             if (!re) return () => {};
-            this.temp.set(id, { kind: 'regex', re, fn, seq });
+            this.temp.set(id, { kind: 'regex', re, fn, seq, name, onStopped });
         }
+        this.registerSameLineCreation(id);
         this.orderDirty = true;
         return () => {
             const entry = this.temp.get(id);
@@ -441,14 +515,20 @@ export class TriggerEngine {
      */
     addTempLine(from: number, howMany: number, fn: TempFn): () => void {
         const id = this.nextInternalId++;
+        // `from` counts from the line being processed when there is one, and
+        // from the next line otherwise — so a trigger armed mid-pass has one
+        // more line ahead of it than the same call made from a timer. `from = 0`
+        // therefore means "this line", which only a mid-pass call can reach.
+        const ahead = Math.max(0, Math.trunc(from) || 0);
         this.temp.set(id, {
             kind: 'line',
-            countdown: Math.max(1, Math.trunc(from) || 1),
+            countdown: this.processingDepth > 0 ? ahead + 1 : Math.max(1, ahead),
             remaining: Math.max(1, Math.trunc(howMany) || 1),
-            skipFirst: this.inProcessTemp,
+            skipFirst: false,
             fn,
             seq: this.regCounter++,
         });
+        this.registerSameLineCreation(id);
         this.orderDirty = true;
         return () => { this.temp.delete(id); this.orderDirty = true; };
     }
@@ -614,18 +694,48 @@ export class TriggerEngine {
     processTemp(line: string, isPrompt = false): void {
         const prev = this.inProcessTemp;
         this.inProcessTemp = true;
+        this.processingDepth++;
         try {
+            // The map is walked live rather than snapshotted, so a trigger armed
+            // by one of these handlers is reached in this same walk — the
+            // temp-only equivalent of what `process()` needs its
+            // addedWhileProcessing loop for.
             for (const [id, entry] of this.temp) {
                 this.fireTempEntry(id, entry, line, isPrompt);
             }
         } finally {
             this.inProcessTemp = prev;
+            this.endPass();
         }
+    }
+
+    /** Leave a processing pass, and once the outermost one is over, forget the
+     *  lineages it tracked: a trigger that outlives the line it was created on
+     *  is no longer part of one, so what IT creates later starts counting
+     *  afresh. */
+    private endPass(): void {
+        this.processingDepth--;
+        if (this.processingDepth > 0) return;
+        for (const id of this.addedWhileProcessing) {
+            if (id === null) continue;
+            const entry = this.temp.get(id);
+            if (entry) entry.sameLine = undefined;
+        }
+        this.addedWhileProcessing = [];
+        this.sameLineChainStarters.clear();
     }
 
     /** Match + fire a single temp trigger against `line`. Self-expiring `line`
      *  triggers delete themselves (and dirty the unified order) when spent. */
     private fireTempEntry(id: number, entry: TempEntry, line: string, isPrompt: boolean): void {
+        // Named as the trigger whose script is running, and carrying its
+        // lineage, so anything it arms is enrolled behind it rather than
+        // starting a lineage of its own.
+        this.runAsTrigger(entry.name ?? '', entry.sameLine, () =>
+            this.fireTempEntryInner(id, entry, line, isPrompt));
+    }
+
+    private fireTempEntryInner(id: number, entry: TempEntry, line: string, isPrompt: boolean): void {
         if (entry.kind === 'line') {
             // Position-based: skip the creation-line tick, count down `from`,
             // then fire on each of the next `remaining` lines, self-expiring.
@@ -784,6 +894,10 @@ export class TriggerEngine {
         const matches: TriggerMatch[] = [];
         const prev = this.inProcessTemp;
         this.inProcessTemp = true;
+        this.processingDepth++;
+        // Entries below this index belong to an outer (nested feedTriggers) pass
+        // and are already in this pass's snapshot.
+        const firstAddedThisPass = this.addedWhileProcessing.length;
         try {
             for (const u of snapshot) {
                 if (u.kind === 'temp') {
@@ -796,9 +910,129 @@ export class TriggerEngine {
                     for (const m of matches) exec(m);
                 }
             }
+            // Now the triggers armed during that walk, which the snapshot could
+            // not contain. The list grows in front of this loop as they arm
+            // more, so each generation gets its shot at the same line — and the
+            // budget below is the only thing that ends a lineage that keeps
+            // re-creating itself.
+            for (let i = firstAddedThisPass; i < this.addedWhileProcessing.length; i++) {
+                if (i - firstAddedThisPass >= MAX_SAME_LINE_CREATIONS_PER_LINE) {
+                    console.warn(`[TriggerEngine] more than ${MAX_SAME_LINE_CREATIONS_PER_LINE} `
+                        + 'triggers were created while processing one line, so the rest are not being offered it');
+                    break;
+                }
+                const id = this.addedWhileProcessing[i];
+                if (id === null) continue;
+                const entry = this.temp.get(id);
+                if (!entry) continue;
+                const generation = entry.sameLine?.generation ?? 0;
+                if (generation > MAX_SAME_LINE_GENERATIONS) {
+                    // The whole lineage goes, so its remaining members are gone
+                    // by the time this loop reaches them and it trips only once.
+                    this.stopSameLineCreationLoop(entry.sameLine!.chainId);
+                    continue;
+                }
+                this.fireTempEntry(id, entry, line, isPrompt);
+            }
         } finally {
             this.inProcessTemp = prev;
+            this.endPass();
         }
+    }
+
+    /**
+     * Enrol a trigger armed while a line was being processed, so the pass can
+     * offer it that line, and put it in a lineage: the one belonging to the
+     * trigger whose script armed it, a generation on, or a new one when the
+     * script predates the line.
+     */
+    private registerSameLineCreation(id: number): void {
+        if (this.processingDepth === 0) return;
+        const entry = this.temp.get(id);
+        if (!entry) return;
+        let chainId = this.currentSameLineChainId;
+        if (!chainId) {
+            chainId = ++this.lastSameLineChainId;
+            this.sameLineChainStarters.set(chainId, this.currentExecutingTriggerName ?? '');
+        }
+        entry.sameLine = { chainId, generation: this.currentSameLineGeneration + 1 };
+        this.addedWhileProcessing.push(id);
+    }
+
+    /**
+     * Run `fn` as the script of the trigger named `name`, so anything it arms
+     * joins that trigger's lineage rather than starting one of its own.
+     */
+    runAsTrigger<T>(name: string, sameLine: SameLineChain | undefined, fn: () => T): T {
+        const prevName = this.currentExecutingTriggerName;
+        const prevChain = this.currentSameLineChainId;
+        const prevGeneration = this.currentSameLineGeneration;
+        this.currentExecutingTriggerName = name;
+        this.currentSameLineChainId = sameLine?.chainId ?? 0;
+        this.currentSameLineGeneration = sameLine?.generation ?? 0;
+        try {
+            return fn();
+        } finally {
+            this.currentExecutingTriggerName = prevName;
+            this.currentSameLineChainId = prevChain;
+            this.currentSameLineGeneration = prevGeneration;
+        }
+    }
+
+    /**
+     * End a lineage that keeps arming triggers which match the line being
+     * processed. Stopping the pass alone would not do: what it created is still
+     * live, so the next line would start with a budget's worth of them and each
+     * would spawn a budget's worth again. Only this lineage is disowned — a
+     * capture trigger an unrelated script armed on the same line belongs to a
+     * lineage of its own and is left alone.
+     */
+    private stopSameLineCreationLoop(chainId: number): void {
+        let stopped = 0;
+        for (let i = 0; i < this.addedWhileProcessing.length; i++) {
+            const id = this.addedWhileProcessing[i];
+            if (id === null) continue;
+            const entry = this.temp.get(id);
+            if (!entry || entry.sameLine?.chainId !== chainId) continue;
+            // Through the owner as well as the map: what makes a trigger gone
+            // to isActive() and to the Lua callback registry is its owner's
+            // teardown, not this entry disappearing.
+            entry.onStopped?.();
+            if (this.temp.has(id)) {
+                if (entry.kind === 'regex') entry.re.destroy();
+                this.temp.delete(id);
+            }
+            // Nulled rather than spliced out: the loop in process() is walking
+            // this list by index, and shifting entries under it would skip a
+            // trigger's turn at the line.
+            this.addedWhileProcessing[i] = null;
+            stopped++;
+            this.orderDirty = true;
+        }
+        this.reportRunaway(this.sameLineChainStarters.get(chainId) ?? '', stopped);
+    }
+
+    /** Tell the player, at most once every REPORT interval — a runaway whose
+     *  creator outlives the line trips on every matching line, and an unthrottled
+     *  report would bury the game text it is trying to explain. */
+    private reportRunaway(triggerName: string, stopped: number): void {
+        const now = Date.now();
+        if (this.lastRunawayReportAt && now - this.lastRunawayReportAt < RUNAWAY_REPORT_INTERVAL_MS) return;
+        this.lastRunawayReportAt = now;
+        const created = `${stopped} trigger(s) created while processing this line have been stopped: `
+            + 'temporary ones removed, permanent ones switched off until the profile is reloaded.';
+        const who = triggerName ? `trigger '${triggerName}' (or another trigger it creates)` : 'a trigger (or another trigger it creates)';
+        runawayReportRef.fn?.(
+            `[ ERROR ] - Trigger processing stopped to prevent a freeze: ${who} keeps creating new `
+            + 'triggers that match the line being processed, so that line never finishes. '
+            + `${created} Create the trigger once, outside its own script, or give it a pattern `
+            + 'that does not match the line it is created on.');
+    }
+
+    /** Where the runaway report is printed. ScriptingEngine wires this to the
+     *  main console; unset (tests, teardown) the report is dropped. */
+    setRunawayReporter(fn: ((text: string) => void) | null): void {
+        runawayReportRef.fn = fn;
     }
 
     /** Rebuild the merged, path-sorted processing list from the current

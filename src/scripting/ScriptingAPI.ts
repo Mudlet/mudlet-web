@@ -19,8 +19,10 @@ import { TextEditManager } from '../ui/textedit/TextEditManager';
 import { userWindowQssToScopedCss, cssEscape, rewriteQtSelectors } from '../ui/labels/qtCss';
 import { AnsiAwareBuffer, type FormatColor, type FormatStateSnapshot, type FormatHyperlink, type RgbColor } from '../mud/text/FormatState';
 import { classifyHyperlinkUri } from '../mud/text/ansiEscapes';
-import { extractQuery } from '../mud/text/hyperlinkConfig';
+import { extractQuery, type UnderlineStyle } from '../mud/text/hyperlinkConfig';
 import { OscLinkManager } from '../mud/text/oscLinkManager';
+import { SERVER_WRAP_WIDTH_MAX, SERVER_WRAP_WIDTH_MIN } from '../mud/text/serverWrap';
+import { decodeTelnetByteTags } from '../mud/connection/telnetByteTags';
 import { openOsc8Menu } from '../ui/output/osc8Menu';
 import { namedColorToState, dechoToAnsiFast, cechoToAnsiFast, hechoToAnsiFast } from '../mud/text/colorParsers';
 import { colorCodes } from '../mud/text/colors';
@@ -97,6 +99,39 @@ function rgbaCss(r: number, g: number, b: number, a = 255): string {
     const ch = (n: number) => Math.max(0, Math.min(255, Math.round(Number(n) || 0)));
     const alpha = Math.max(0, Math.min(1, (Number(a) || 0) / 255));
     return `rgba(${ch(r)}, ${ch(g)}, ${ch(b)}, ${alpha})`;
+}
+
+/** WCAG relative luminance of an rgb triple, as Mudlet computes it. */
+function relativeLuminance([r, g, b]: [number, number, number]): number {
+    const channel = (v: number) => {
+        const f = v / 255;
+        return f <= 0.03928 ? f / 12.92 : Math.pow((f + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+}
+
+/** WCAG contrast ratio between two rgb triples (1 = identical, 21 = black on white). */
+function contrastRatio(a: [number, number, number], b: [number, number, number]): number {
+    const one = relativeLuminance(a);
+    const other = relativeLuminance(b);
+    return (Math.max(one, other) + 0.05) / (Math.min(one, other) + 0.05);
+}
+
+/** The lighter of the two link blues, for consoles too dark for plain blue. */
+const LINK_BLUE_LIGHT: [number, number, number] = [80, 160, 255];
+const LINK_BLUE: [number, number, number] = [0, 0, 255];
+
+/**
+ * Mudlet `readableLinkColor`. Plain blue is barely legible against the dark
+ * background most profiles use, so whichever of the two link blues stands out
+ * more against this console's background wins. Ties go to plain blue, which is
+ * what a light console keeps.
+ */
+function readableLinkColor(background: [number, number, number]): RgbColor {
+    const [r, g, b] = contrastRatio(LINK_BLUE, background) >= contrastRatio(LINK_BLUE_LIGHT, background)
+        ? LINK_BLUE
+        : LINK_BLUE_LIGHT;
+    return { space: 'rgb', r, g, b };
 }
 
 /** Clamp a numeric value to [0, 255] and round. Used by the map colour APIs. */
@@ -904,7 +939,10 @@ export class ScriptingAPI {
         if (!this.session.isSocketUnconnected()) {
             return 'feedTelnet: refused, telnet connection socket is not in the unconnected state';
         }
-        this.session.feedTelnet(data);
+        // The `<T_IAC><T_GA>`-style placeholders come first: a telnet stream is
+        // made of bytes a Lua string cannot carry comfortably, so Mudlet lets
+        // the data name them. See telnetByteTags.ts.
+        this.session.feedTelnet(decodeTelnetByteTags(data));
         return null;
     }
 
@@ -919,6 +957,13 @@ export class ScriptingAPI {
      *  this — see MudSession.pumpReplay. */
     pumpReplay(): number {
         return this.session.pumpReplay();
+    }
+
+    /** Commit a line held for a server-wrap continuation whose flush delay has
+     *  elapsed. Same reason as {@link pumpReplay}: the busted runner blocks the
+     *  event loop the timer would have fired on. */
+    pumpServerWrap(): boolean {
+        return this.session.pumpServerWrap();
     }
 
     /** Mudlet `receiveMSP(text)`. Parses an MSP payload (`!!SOUND(...)` /
@@ -1212,6 +1257,10 @@ export class ScriptingAPI {
             // window (that's openMapWidget/closeMapWidget). Default true.
             case 'mapperPanelVisible':
                 return selectProfileField(useAppStore.getState(), this.connectionId, 'mapperPanelVisible') ?? true;
+            // live — the join runs in the line assembler, so these read back off
+            // the session rather than the bag
+            case 'undoServerWrap':      return this.session.undoServerWrap;
+            case 'undoServerWrapWidth': return this.session.undoServerWrapWidth;
             case 'muteMediaAPI':       return this.session.sounds.isOriginMuted('api');
             case 'muteMediaGame':      return this.session.sounds.isOriginMuted('game');
             // read-only
@@ -1249,9 +1298,9 @@ export class ScriptingAPI {
             case 'autoClearInputLine': case 'askTlsAvailable':
             case 'mapRoundRooms': case 'mapShowRoomBorders':
             case 'mapShowGrid': case 'muteMediaAPI': case 'muteMediaGame':
-            case 'mapperPanelVisible':
+            case 'mapperPanelVisible': case 'undoServerWrap':
                 return 'bool';
-            case 'mapRoomSize': case 'mapExitSize':
+            case 'mapRoomSize': case 'mapExitSize': case 'undoServerWrapWidth':
                 return 'num';
             case 'blankLinesBehaviour':
             // Set-only in Mudlet: they name a map-info overlay to switch on/off
@@ -1411,6 +1460,31 @@ export class ScriptingAPI {
                 const on = configBool(value);
                 this.host.setForceMxpProcessorOn(on);
                 this.patchConfigBag('specialForceMXPProcessorOn', on);
+                return true;
+            }
+            // Mudlet Host::mFORCE_GA_OFF. Persisted like the rest of its group,
+            // but also pushed at the live client, which takes it only while
+            // unconnected — the state a profile injecting with feedTelnet is in.
+            case 'specialForceGAOff': {
+                const on = configBool(value);
+                this.session.setSpecialForceGAOff(on);
+                this.patchConfigBag('specialForceGAOff', on);
+                return true;
+            }
+            // Mudlet Host::mUndoServerWrap — rejoin the lines the game wrapped
+            // itself. Live: the line assembler judges the next server line under
+            // the new setting, and turning it off commits anything held.
+            case 'undoServerWrap':
+                this.session.setUndoServerWrap(configBool(value));
+                return true;
+            // Out of range is a refusal rather than a clamp, matching Mudlet's
+            // getVerifiedInt bounds check — a width the caller never chose would
+            // leave the join running at a column nothing asked for.
+            case 'undoServerWrapWidth': {
+                const width = Math.trunc(Number(value));
+                if (!Number.isFinite(width)
+                    || width < SERVER_WRAP_WIDTH_MIN || width > SERVER_WRAP_WIDTH_MAX) return false;
+                this.session.setUndoServerWrapWidth(width);
                 return true;
             }
             // read-only keys — present in the catalogue but not writable
@@ -2046,8 +2120,8 @@ export class ScriptingAPI {
     /** Mudlet `showToolBar(name)` / `hideToolBar(name)`. Toggles the toolbar's
      *  effective enabled flag — the existing button bar already gates render
      *  on `isEffectivelyEnabled`, so flipping the group's `enabled` field is
-     *  the show/hide hook. Returns true on success, false when not found. */
-    setToolBarVisibility(name: string, show: boolean): boolean {
+     *  the show/hide hook. Returns null on success, or why nothing moved. */
+    setToolBarVisibility(name: string, show: boolean): string | null {
         return this.host.toggleToolBarByName(name, show);
     }
 
@@ -2166,7 +2240,7 @@ export class ScriptingAPI {
             // Mudlet's TConsole::echoLink default: blue + underline.
             const prevFg = con.format.foreground;
             const prevUnderline = con.format.underline;
-            con.format.foreground = { space: 'rgb', r: 0, g: 0, b: 255 };
+            con.format.foreground = this.linkColor(win);
             con.format.underline = true;
             con.echo(text);
             con.format.foreground = prevFg;
@@ -2372,7 +2446,7 @@ export class ScriptingAPI {
             // Same default as echoLink: Mudlet renders popup links blue + underline.
             const prevFg = con.format.foreground;
             const prevUnderline = con.format.underline;
-            con.format.foreground = { space: 'rgb', r: 0, g: 0, b: 255 };
+            con.format.foreground = this.linkColor(win);
             con.format.underline = true;
             con.echo(text);
             con.format.foreground = prevFg;
@@ -2404,7 +2478,7 @@ export class ScriptingAPI {
             state.hyperlink = this.buildPopupHyperlink(cmds, hints);
             if (!useCurrentFormat) {
                 // Same default as insertLink: blue foreground + underline.
-                state.foreground = { space: 'rgb', r: 0, g: 0, b: 255 };
+                state.foreground = this.linkColor(win);
                 state.underline = true;
             }
             const at = Math.max(0, Math.min(con.getCursorColumn(), buf.text.length));
@@ -2708,9 +2782,31 @@ export class ScriptingAPI {
     private matchesAnsiColor(channel: 'foreground' | 'background', ansiColor: number): boolean {
         const rgb = this.readSelectionColor(channel, undefined);
         if (!rgb) return false;
-        const target = parseHexToRgb(ansiIndexToHex(ansiColor) ?? undefined);
+        const target = this.ansiColorCodeToRgb(channel, ansiColor);
         if (!target) return false;
         return rgb[0] === target[0] && rgb[1] === target[1] && rgb[2] === target[2];
+    }
+
+    /**
+     * The colour one of `isAnsiFgColor`/`isAnsiBgColor`'s 0..16 codes names.
+     *
+     * This is Mudlet's own numbering (`TLuaInterpreterUI.cpp`), and it is not
+     * the ANSI one: 0 is the profile's default, then the eight colours follow in
+     * *light-first* pairs — 1 light black, 2 black, 3 light red, 4 red, and so
+     * on to 15 light white, 16 white. Anything outside 0..16 names no colour;
+     * the Bridge wrapper already refuses those with Mudlet's message, so this
+     * only has to decline to answer.
+     */
+    private ansiColorCodeToRgb(
+        channel: 'foreground' | 'background', code: number,
+    ): [number, number, number] | null {
+        const n = Math.floor(Number(code));
+        if (!Number.isFinite(n) || n < 0 || n > 16) return null;
+        if (n === 0) return this.defaultColorRgb(channel);
+        // 1,3,5… are the light half and 2,4,6… the dark one, both walking the
+        // palette in ANSI order.
+        const palette = n % 2 === 1 ? colorCodes.ansi.bright : colorCodes.ansi.dark;
+        return parseHexToRgb(palette[Math.floor((n - 1) / 2)]);
     }
 
     private readSelectionColor(
@@ -2739,16 +2835,33 @@ export class ScriptingAPI {
     ): [number, number, number] {
         const state = buf.getStateAt(pos);
         const color = channel === 'foreground' ? state?.foreground : state?.background;
-        const rgb = formatColorToRgb(color);
-        if (rgb) return rgb;
+        return formatColorToRgb(color) ?? this.defaultColorRgb(channel);
+    }
+
+    /** The blue a link gets in `windowName` when the caller did not pass a
+     *  format of its own — whichever of Mudlet's two link blues reads better
+     *  against that console's background. */
+    private linkColor(windowName?: string): RgbColor {
+        // A window that has been given a background of its own is judged
+        // against that; everything else against the profile's.
+        const own = windowName !== undefined && windowName !== 'main'
+            ? this.getBackgroundColor(windowName)
+            : null;
+        return readableLinkColor(own
+            ? [own.r, own.g, own.b]
+            : this.defaultColorRgb('background'));
+    }
+
+    /** The profile's own foreground/background — what a cell carrying no colour
+     *  of its own is drawn in, and what `isAnsi*Color(0)` asks about. */
+    private defaultColorRgb(channel: 'foreground' | 'background'): [number, number, number] {
+        const state = useAppStore.getState();
         if (channel === 'background') {
-            const override = selectProfileField(useAppStore.getState(), this.connectionId, 'outputBackgroundColor');
+            const override = selectProfileField(state, this.connectionId, 'outputBackgroundColor');
             if (override) return [override.r, override.g, override.b];
-            const themed = parseHexToRgb(selectProfileField(useAppStore.getState(), this.connectionId, 'outputBackground'));
-            return themed ?? DEFAULT_BG_RGB;
+            return parseHexToRgb(selectProfileField(state, this.connectionId, 'outputBackground')) ?? DEFAULT_BG_RGB;
         }
-        const themed = parseHexToRgb(selectProfileField(useAppStore.getState(), this.connectionId, 'outputForeground'));
-        return themed ?? DEFAULT_FG_RGB;
+        return parseHexToRgb(selectProfileField(state, this.connectionId, 'outputForeground')) ?? DEFAULT_FG_RGB;
     }
 
     /**
@@ -2768,6 +2881,7 @@ export class ScriptingAPI {
         bold: boolean;
         italic: boolean;
         underline: boolean;
+        underlineStyle: UnderlineStyle | 'none';
         strikeout: boolean;
         reverse: boolean;
         overline: boolean;
@@ -2790,15 +2904,34 @@ export class ScriptingAPI {
             buf = con?.getBuffer() ?? null;
             pos = con?.getCursorColumn() ?? 0;
         }
-        if (!buf || buf.length === 0 || pos < 0) return null;
-        if (pos >= buf.length) pos = buf.length - 1; // clamp to the last char
+        // Past the end of the line is "no character there", not the last one:
+        // Mudlet's getTextAttributes reports `x >= lineSize` as an invalid
+        // selection, and a spec reads exactly that back to check the styling
+        // container is no longer than the text it styles. Clamping made a column
+        // one past the end answer for the one before it, which looks the same as
+        // a container running one entry long.
+        if (!buf || buf.length === 0 || pos < 0 || pos >= buf.length) return null;
         const foreground = this.readColorAt(buf, pos, 'foreground');
         const background = this.readColorAt(buf, pos, 'background');
         const state = buf.getStateAt(pos);
+        // A link's own styling adds an underline to the cell without clearing
+        // the one SGR put there, so the cell can carry two at once and only what
+        // the painter draws is the honest answer. Mudlet resolves it in
+        // drawCustomDecorations' order — wavy, then dotted, then dashed, with
+        // the plain underline drawn when none of the three is set.
+        const linkStyle = state?.hyperlink?.config?.style;
+        const underline = !!state?.underline || !!linkStyle?.underline;
+        const styles = [state?.underlineStyle, linkStyle?.underlineStyle];
+        const underlineStyle = !underline ? 'none'
+            : styles.includes('wavy') ? 'wavy'
+            : styles.includes('dotted') ? 'dotted'
+            : styles.includes('dashed') ? 'dashed'
+            : 'solid';
         return {
             bold: !!state?.bold,
             italic: !!state?.italic,
-            underline: !!state?.underline,
+            underline,
+            underlineStyle,
             strikeout: !!state?.strikethrough,
             reverse: !!state?.inverse,
             overline: !!state?.overline,
@@ -2861,8 +2994,12 @@ export class ScriptingAPI {
             bg: ansiPaletteIndex(seg.state?.background),
             text: seg.text ?? '',
         })));
+        // Which line the cursor was on before this one was appended, so a line
+        // fed from inside a trigger can hand the outer pass its own line back.
+        this.outerTriggerLines.push(this.triggerLineDepth > 0 ? this.mainConsole.getLineNumber() : -1);
         this.mainConsole.appendLine(buffer);
         this.inTriggerProcessing = true;
+        this.triggerLineDepth++;
         this.selection = null;
         this.setDeferringEcho(true);
         this.echoOnMatchedLine = true;
@@ -2885,6 +3022,22 @@ export class ScriptingAPI {
         // could not see — getLines/getLineCount/the cursor all still counted it,
         // and `deleteFull()` looked like it had done nothing.
         if (this.mainConsole.getBuffer()?.deleted) this.mainConsole.deleteLine();
+        // A trigger can call feedTriggers, which processes a line of its own
+        // inside this one. Only the OUTERMOST line leaves trigger context —
+        // clearing the flag when a nested line finishes left the rest of the
+        // outer pass running as if no trigger were firing, so every capture
+        // position it went on to select was left unshifted by the text the
+        // nested pass had inserted.
+        this.triggerLineDepth = Math.max(0, this.triggerLineDepth - 1);
+        const outerLine = this.outerTriggerLines.pop() ?? -1;
+        if (this.triggerLineDepth > 0) {
+            // Back to the line the outer pass is still working on. Without this
+            // the cursor is left on the line the nested feed appended, and
+            // everything the outer pass does afterwards — selectString, the
+            // colour calls that follow it — lands on that line instead.
+            if (outerLine >= 0) this.mainConsole.moveTo(outerLine);
+            return;
+        }
         this.inTriggerProcessing = false;
         this.echoOnMatchedLine = false;
         // NB: the trigger selection is intentionally NOT cleared here. Mudlet
@@ -2937,6 +3090,21 @@ export class ScriptingAPI {
      *  no palette colour (RGB or default), which never matches a requested
      *  index. A stack, because a trigger can feedTriggers another line. */
     private lineColorSnapshots: { fg: number; bg: number; text: string }[][] = [];
+    /** How many lines are being processed at once — more than one whenever a
+     *  trigger calls feedTriggers. See beginLine/endLine. */
+    private triggerLineDepth = 0;
+    /** Per nested line, the line the outer pass was on. See beginLine. */
+    private outerTriggerLines: number[] = [];
+
+    /** Told when text is inserted into the line a trigger is matching, so the
+     *  runtime can move the capture positions it recorded at match time —
+     *  otherwise `selectCaptureGroup` after an `insertText` selects the text
+     *  that has since slid to where the capture used to be. */
+    private captureShiftHook: ((at: number, delta: number) => void) | null = null;
+
+    setCaptureShiftHook(fn: ((at: number, delta: number) => void) | null): void {
+        this.captureShiftHook = fn;
+    }
 
     /**
      * Flush echo output collected during the just-processed line's trigger run.
@@ -3201,7 +3369,11 @@ export class ScriptingAPI {
             ? MAX_CONSOLE_BUFFER_LINES
             : Math.max(MIN_CONSOLE_BUFFER_LINES, Math.floor(linesLimit));
         if (Number.isFinite(limit) && limit > 0) con.setMaxLines(limit);
-        if (batchSize !== undefined && Number.isFinite(batchSize) && batchSize > 0) {
+        if (batchSize !== undefined && Number.isFinite(batchSize)) {
+            // A batch of none at all is raised to one line rather than left
+            // alone: trimming pops one line per batch step, so a batch of zero
+            // switches trimming off entirely and lets the buffer grow past the
+            // limit that was just set (Mudlet's TBuffer::setBufferSize).
             const batch = batchSize >= limit ? Math.floor(limit / 10) : Math.floor(batchSize);
             con.setBatchDeleteSize(Math.max(1, batch));
         }
@@ -3308,9 +3480,33 @@ export class ScriptingAPI {
         const v = Math.max(0, Math.round(wrapAt));
         if (!name || name === 'main') {
             useAppStore.getState().patchConnectionProfile(this.connectionId, { outputWrapAt: v > 0 ? v : undefined });
+            this.applyStoredWrap(undefined);
             return true;
         }
-        return this.session.windows.setWrap(name, v);
+        if (!this.session.windows.setWrap(name, v)) return false;
+        this.applyStoredWrap(name);
+        return true;
+    }
+
+    /** Tell the console the width to break stored lines at, so what `getLines`
+     *  reports matches what the window shows. Called whenever the wrap width or
+     *  either indent moves. */
+    private applyStoredWrap(windowName?: string): void {
+        const con = this.getConsole(windowName);
+        if (!con) return;
+        const isMain = !windowName || windowName === 'main';
+        const state = useAppStore.getState();
+        con.setWrapWidth(
+            isMain
+                ? (selectProfileField(state, this.connectionId, 'outputWrapAt') ?? 0)
+                : (this.session.windows.getWrap(windowName!) ?? 0),
+            isMain
+                ? (selectProfileField(state, this.connectionId, 'outputWrapIndent') ?? 0)
+                : this.session.windows.getWrapIndent(windowName!),
+            isMain
+                ? (selectProfileField(state, this.connectionId, 'outputWrapHangingIndent') ?? 0)
+                : this.session.windows.getWrapHangingIndent(windowName!),
+        );
     }
 
     /**
@@ -3337,9 +3533,12 @@ export class ScriptingAPI {
         const v = Math.max(0, Math.round(indent));
         if (!name || name === 'main') {
             useAppStore.getState().patchConnectionProfile(this.connectionId, { outputWrapIndent: v > 0 ? v : undefined });
+            this.applyStoredWrap(undefined);
             return true;
         }
-        return this.session.windows.setWrapIndent(name, v);
+        if (!this.session.windows.setWrapIndent(name, v)) return false;
+        this.applyStoredWrap(name);
+        return true;
     }
 
     /**
@@ -3352,9 +3551,12 @@ export class ScriptingAPI {
         const v = Math.max(0, Math.round(indent));
         if (!name || name === 'main') {
             useAppStore.getState().patchConnectionProfile(this.connectionId, { outputWrapHangingIndent: v > 0 ? v : undefined });
+            this.applyStoredWrap(undefined);
             return true;
         }
-        return this.session.windows.setWrapHangingIndent(name, v);
+        if (!this.session.windows.setWrapHangingIndent(name, v)) return false;
+        this.applyStoredWrap(name);
+        return true;
     }
 
     /**
@@ -3381,9 +3583,15 @@ export class ScriptingAPI {
         const buf = con?.getBuffer();
         if (con && buf) {
             const state = con.format.toSnapshot();
+            // Where the insert lands, read before it happens: the capture
+            // positions this line's trigger recorded have to move with it.
+            const at = con.getCursorColumn();
             // Console.insertText splits on embedded '\n' into new history lines
             // (Mudlet #8945); for the single-line case it inserts in place.
             con.insertText(text, state);
+            if (this.inTriggerProcessing && con === this.mainConsole && !text.includes('\n')) {
+                this.captureShiftHook?.(at, text.length);
+            }
             if (!this.inTriggerProcessing) con.getBuffer()?.rerender();
             return;
         }
@@ -3416,7 +3624,7 @@ export class ScriptingAPI {
                 title: tooltip || undefined,
             };
             if (!useCurrentFormat) {
-                state.foreground = { space: 'rgb', r: 0, g: 0, b: 255 };
+                state.foreground = this.linkColor(windowName);
                 state.underline = true;
             }
             const at = Math.max(0, Math.min(con.getCursorColumn(), buf.text.length));
@@ -5356,6 +5564,14 @@ export class ScriptingAPI {
     /** @deprecated use echo() */
     print(text: string): void {
         this.echo(text);
+    }
+
+    /** Mudlet `Host::postMessage`. Writes a client message onto the main
+     *  console whatever the profile's error-echo preference — this is the
+     *  client telling the player something about the line in front of them,
+     *  not a script's error. */
+    postSystemMessage(text: string): void {
+        this.session.events.emit('message', text, 'error', Date.now());
     }
 
     printError(text: string, source?: ScriptLogSource): void {

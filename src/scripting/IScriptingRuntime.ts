@@ -64,6 +64,9 @@ export interface IScriptingRuntime {
      *  the Lua runtime serves `/lua/...` this way. */
     readBuiltinBytes?(path: string): Uint8Array | null;
     setCurrentLine(line: string, isPrompt: boolean): void;
+    /** The line {@link setCurrentLine} last recorded. The engine reads it back
+     *  to restore the outer line after a nested feedTriggers. */
+    getCurrentLine(): string;
     /**
      * Mirror the last command-bar input into the Lua `command` global, matching
      * Mudlet's AliasUnit::processDataStream. Read by scripts/keys such as the

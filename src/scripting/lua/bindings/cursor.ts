@@ -191,6 +191,7 @@ export function installCursorBindings({ lua, api }: BindingContext): void {
             f.overline, f.concealed, f.alternateFont, f.blinking,
             f.foreground[0], f.foreground[1], f.foreground[2],
             f.background[0], f.background[1], f.background[2],
+            f.underlineStyle,
         ];
     });
 }

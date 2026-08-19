@@ -180,6 +180,11 @@ const BUILTIN_ENTITIES: Record<string, string> = {
 /** Cap on a held partial tag/entity. Beyond this it was never real markup, so it
  *  is flushed as literal text rather than swallowing the rest of the stream. */
 const MAX_PENDING = 256;
+/** An `&` plus characters an entity name may still be made of — Mudlet's
+ *  `isalnum(c) || c == '#' || '.' || '-' || '_' || '&'` (`;` would have ended
+ *  it). ASCII only, deliberately: Mudlet tests raw bytes, so the first byte of a
+ *  non-ASCII character ends a name there too. */
+const ENTITY_NAME_TAIL = /^&[0-9A-Za-z#.\-_&]+$/;
 /** Recursion guard for custom-element template expansion. */
 const MAX_DEPTH = 8;
 
@@ -476,8 +481,17 @@ export class MxpParser {
                         continue;
                     }
                 } else if (semi === -1 && depth === 0) {
+                    // Hold the tail for the next line ONLY while it could still
+                    // become an entity — every character after the `&` one an
+                    // entity name may contain. Mudlet ends a name at the first
+                    // that is not (`TEntityHandler::handle`), and it tests bytes,
+                    // so a space or the first byte of a non-ASCII character both
+                    // end it: `Käse&Brötchen and &Ф too` is a line of text with
+                    // two stray ampersands in it, not an entity spanning into
+                    // the next line. Holding it swallowed the rest of the line
+                    // and glued it to the line after (Mudlet/Mudlet#9439).
                     const rest = text.slice(i);
-                    if (rest.length <= 33 && /^&[#a-zA-Z]/.test(rest)) {
+                    if (rest.length > 1 && rest.length <= 33 && ENTITY_NAME_TAIL.test(rest)) {
                         this.pendingTag = rest;
                         return;
                     }

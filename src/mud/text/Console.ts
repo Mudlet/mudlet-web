@@ -2,6 +2,10 @@ import { FormatState } from './FormatState';
 import { AnsiAwareBuffer } from './FormatState';
 import type { FormatStateSnapshot } from './FormatState';
 
+/** Longest run of characters one echo or insert may add to a line. Mudlet's
+ *  `TBuffer::MAX_CHARACTERS_PER_ECHO`. */
+export const MAX_CHARACTERS_PER_ECHO = 1_000_000;
+
 /**
  * Self-contained text output entity — equivalent of Mudlet's TConsole.
  * Owns format state, line history, and cursor position.
@@ -97,8 +101,10 @@ export class Console {
         const completeCount = endsWithNewline ? splits.length : splits.length - 1;
 
         for (let i = 0; i < completeCount; i++) {
-            this.history.push(splits[i]);
-            this.pending.push(splits[i]);
+            for (const line of this.toStoredLines(splits[i])) {
+                this.history.push(line);
+                this.pending.push(line);
+            }
         }
 
         this.partial = endsWithNewline ? new AnsiAwareBuffer() : splits[splits.length - 1];
@@ -130,8 +136,14 @@ export class Console {
      * `selectCurrentLine` sees the pasted line.
      */
     appendBuffer(buffer: AnsiAwareBuffer): void {
-        this.history.push(buffer);
-        this.pending.push(buffer);
+        // Wrapped as it is stored, exactly as an echo of the same text would be
+        // — Mudlet's appendFormatted() ends in the same wrapLine() call, so a
+        // line that arrives through the clipboard has to lay out like one typed
+        // into the window.
+        for (const line of this.toStoredLines(buffer)) {
+            this.history.push(line);
+            this.pending.push(line);
+        }
         this.cursorIdx = -1;
         this.cursorCol = 0;
         this.evict();
@@ -289,6 +301,11 @@ export class Console {
         const onPartial = this.onPartialLine;
         const cur = this.currentBuffer();
         if (!cur) return false;
+        // One insert is bounded by the same limit the echo path uses (Mudlet's
+        // MAX_CHARACTERS_PER_ECHO, TBuffer::insertInLine): a runaway script
+        // would otherwise spend unbounded memory and layout time on a single
+        // line nobody can read anyway.
+        if (text.length > MAX_CHARACTERS_PER_ECHO) text = text.slice(0, MAX_CHARACTERS_PER_ECHO);
         const col = Math.max(0, Math.min(this.getCursorColumn(), cur.length));
         cur.insert(col, text, state);
         if (!text.includes('\n')) {
@@ -486,6 +503,43 @@ export class Console {
      * every continuation, matching setWindowWrapIndent /
      * setWindowWrapHangingIndent.
      */
+    /**
+     * The wrap this console applies to a line as it is stored — the console's
+     * own `setWindowWrap` width, so a line longer than it becomes several
+     * buffer lines rather than one long one that only *looks* wrapped.
+     *
+     * Off (width 0) unless a script sets one, which is the state nearly every
+     * console is in: the renderer wraps to the panel's real pixel width, and
+     * splitting on a column nobody chose would only fight it. Mudlet always
+     * splits because its buffer IS its layout.
+     */
+    setWrapWidth(width: number, indent = 0, hangingIndent = 0): void {
+        this.wrapWidth = Math.max(0, Math.trunc(width) || 0);
+        this.wrapIndent = Math.max(0, Math.trunc(indent) || 0);
+        this.wrapHangingIndent = Math.max(0, Math.trunc(hangingIndent) || 0);
+    }
+
+    private wrapWidth = 0;
+    private wrapIndent = 0;
+    private wrapHangingIndent = 0;
+
+    /**
+     * Split one completed line to the console's wrap width, newest-last. With no
+     * width set — the usual case — this is the line itself, untouched.
+     */
+    private toStoredLines(buf: AnsiAwareBuffer): AnsiAwareBuffer[] {
+        if (this.wrapWidth <= 0) return [buf];
+        const breaks = wrapBreaks(buf.text, this.wrapWidth, this.wrapIndent, this.wrapHangingIndent);
+        if (breaks.length === 0 && this.wrapIndent <= 0) return [buf];
+        const hang = this.wrapHangingIndent > 0 ? ' '.repeat(this.wrapHangingIndent) : '';
+        for (let i = breaks.length - 1; i >= 0; i--) {
+            const at = breaks[i];
+            buf.insert(buf.text[at] === ' ' ? at + 1 : at, `\n${hang}`);
+        }
+        if (this.wrapIndent > 0) buf.insert(0, ' '.repeat(this.wrapIndent));
+        return buf.splitLines();
+    }
+
     wrapLine(lineNumber: number, wrapAt = 0, indent = 0, hangingIndent = 0): boolean {
         if (!Number.isFinite(lineNumber)) return false;
         const idx = Math.trunc(lineNumber);
@@ -494,23 +548,8 @@ export class Console {
         const width = Math.trunc(wrapAt);
         if (!(width > 0)) { buf.rerender(); return true; }
 
-        // Break positions on the ORIGINAL text; the indents shrink the usable
-        // width but aren't inserted until afterwards, so they're accounted for
-        // here rather than by re-measuring after each edit.
         const text = buf.text;
-        const breaks: number[] = [];
-        let lineStart = 0;
-        let usable = Math.max(1, width - Math.max(0, indent));
-        while (text.length - lineStart > usable) {
-            const limit = lineStart + usable;
-            // Prefer a word boundary, but never break before the line even
-            // starts — a single word longer than the width is split hard.
-            const space = text.lastIndexOf(' ', limit);
-            const at = space > lineStart ? space : limit;
-            breaks.push(at);
-            lineStart = text[at] === ' ' ? at + 1 : at;
-            usable = Math.max(1, width - Math.max(0, hangingIndent));
-        }
+        const breaks = wrapBreaks(text, width, indent, hangingIndent);
         if (breaks.length === 0 && indent <= 0) { buf.rerender(); return true; }
 
         // Applied back-to-front so each insertion leaves the earlier offsets
@@ -530,4 +569,27 @@ export class Console {
         if (this.cursorIdx > idx) this.cursorIdx += lines.length - 1;
         return true;
     }
+}
+
+/**
+ * Where a line has to break to fit `width` columns.
+ *
+ * Positions are on the ORIGINAL text: the indents shrink the usable width but
+ * are not inserted until afterwards, so they are accounted for here rather than
+ * by re-measuring after each edit. A word boundary is preferred, but a single
+ * word longer than the width is split hard — otherwise it could never be placed.
+ */
+function wrapBreaks(text: string, width: number, indent: number, hangingIndent: number): number[] {
+    const breaks: number[] = [];
+    let lineStart = 0;
+    let usable = Math.max(1, width - Math.max(0, indent));
+    while (text.length - lineStart > usable) {
+        const limit = lineStart + usable;
+        const space = text.lastIndexOf(' ', limit);
+        const at = space > lineStart ? space : limit;
+        breaks.push(at);
+        lineStart = text[at] === ' ' ? at + 1 : at;
+        usable = Math.max(1, width - Math.max(0, hangingIndent));
+    }
+    return breaks;
 }

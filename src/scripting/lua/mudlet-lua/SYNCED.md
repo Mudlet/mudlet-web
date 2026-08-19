@@ -27,8 +27,8 @@ bundled unless `src/import/defaultPackages.ts` imports it. That file alone decid
 what a profile gets.
 
 - Upstream: https://github.com/Mudlet/Mudlet/tree/development/src/mudlet-lua/lua
-- Synced from commit: `44d23ebfcb99909352133934efc143262cec666f` (development, 2026-08-15)
-- Vendored files: 83 (plus 2 mudix-only, 1 patched)
+- Synced from commit: `49bf1ce74ec2d5f3e9cf3146678fe97100c6ef20` (2026-08-19)
+- Vendored files: 83 (plus 2 mudix-only)
 
 **Keep this commit and `../specs/SYNCED.md`'s in step.** The specs are Mudlet's
 own tests for exactly this code; running a newer corpus against an older tree
@@ -59,16 +59,17 @@ upstream already defines them.
 
 A package is the one place where "override after loading" isn't available — its
 scripts are installed into the profile, not loaded from this tree — so those do
-take patches. Currently patched:
+take patches, under `scripts/mudlet-lua-patches/packages/`. **Currently none.**
 
-| File | Why |
-|------|-----|
-| `packages/gui-drop/gui-drop.xml` | Dropping an image whose filename starts with a digit generated a script that couldn't compile, losing the drop. Fixed upstream in [Mudlet#9628](https://github.com/Mudlet/Mudlet/pull/9628) — **delete this patch once that lands and is synced**. `tests/import/guiDropNaming.test.ts` fails if the patch goes missing. |
-
-Note the patch applies to `gui-drop.xml`, and `defaultPackages.ts` deliberately
-installs that loose XML rather than `gui-drop.mpackage`: an `.mpackage` is a zip
-the sync must round-trip byte-for-byte, so a patch can't reach inside one. Switch
-the import back to the archive when the fix is upstream.
+The last one was `packages/gui-drop/gui-drop.xml` (a dropped image whose filename
+starts with a digit generated a script that couldn't compile, losing the drop);
+[Mudlet#9628](https://github.com/Mudlet/Mudlet/pull/9628) landed the same fix
+upstream, so the patch went and `defaultPackages.ts` installs the
+`gui-drop.mpackage` archive again rather than the loose XML. That's the general
+shape: a patch can't reach inside an `.mpackage` (the sync must round-trip the
+zip byte-for-byte), so a package needing one is installed from its loose XML
+until upstream takes the fix. `tests/import/guiDropNaming.test.ts` still guards
+the behaviour, reading the naming block out of the vendored package itself.
 
 ## mudix-only files (no upstream counterpart)
 

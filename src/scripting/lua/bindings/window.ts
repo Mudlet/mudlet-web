@@ -31,12 +31,15 @@ export function installWindowBindings({ lua, api, channel }: BindingContext): vo
     lua.global.set('__getMousePosition', () => api.getMousePosition());
     lua.global.set('__getUserWindowSize', (name: unknown) => {
         const n = String(name ?? '');
-        // Mudlet resolves the default/"main" name to the main window, so
-        // Geyser code (e.g. Label:onRightClick) that calls this with a
-        // main-window label's windowname gets the viewport size, not nil.
-        if (!n || n === 'main') return api.getMainWindowSize();
-        if (!api.windows.has(n)) return null;
-        return api.getUserWindowSize(n);
+        // A name with no window of its own answers with the MAIN window's size,
+        // not an error: Mudlet's TMainConsole::getUserWindowSize looks the name
+        // up in the dock registry and returns getMainWindowSize() when it is not
+        // there. Geyser leans on that — a label or container whose window has
+        // gone still needs a box to lay itself out in — and a spec reads it back
+        // to prove a deleted user window left no dock behind. That also covers
+        // the default/"main" name, which never has a dock.
+        if (!n || n === 'main' || !api.windows.has(n)) return api.getMainWindowSize();
+        return api.getUserWindowSize(n) ?? api.getMainWindowSize();
     });
 
     // setFontSize([windowName,] size) / getFontSize([windowName]) — Mudlet

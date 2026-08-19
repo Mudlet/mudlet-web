@@ -2,6 +2,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { unzipSync } from 'fflate';
 import { createTestRuntime, type TestRuntime } from '../createTestRuntime';
 
 /**
@@ -14,21 +15,25 @@ import { createTestRuntime, type TestRuntime } from '../createTestRuntime';
  *
  * Upstream's guard only rewrote names made *entirely* of digits, so
  * `20260803_164803.jpg` — what phone cameras produce — slipped through. mudix
- * carries the fix as scripts/mudlet-lua-patches/packages/gui-drop/, pending
- * Mudlet/Mudlet#9628; drop the patch once that lands upstream.
+ * carried the fix as a patch until Mudlet/Mudlet#9628 landed it upstream; this
+ * stays as the regression guard over the vendored package.
  *
- * The naming block is lifted out of the vendored package itself rather than
- * restated here, so this fails if a re-sync ever loses the patch.
+ * The naming block is lifted out of the vendored package itself — out of the
+ * `.mpackage` defaultPackages.ts actually installs, not the loose XML beside it —
+ * rather than restated here, so this fails if a re-sync ever loses the guard.
  */
-const GUI_DROP_XML = 'src/import/defaults/gui-drop/gui-drop.xml';
+const GUI_DROP_MPACKAGE = 'src/import/defaults/gui-drop/gui-drop.mpackage';
 
 /** The container-name derivation from `GUIDropManager.ImageDrop`, verbatim. */
 function namingBlock(): string {
-    const xml = readFileSync(GUI_DROP_XML, 'utf8');
+    const entries = unzipSync(new Uint8Array(readFileSync(GUI_DROP_MPACKAGE)));
+    const entry = entries['gui-drop.xml'];
+    expect(entry, `gui-drop.xml not found in ${GUI_DROP_MPACKAGE}`).toBeTruthy();
+    const xml = new TextDecoder().decode(entry);
     const start = xml.indexOf('--convert filename to be a feasible variablename');
     const end = xml.indexOf('local labelname', start);
-    expect(start, `naming block not found in ${GUI_DROP_XML}`).toBeGreaterThan(-1);
-    expect(end, `end of naming block not found in ${GUI_DROP_XML}`).toBeGreaterThan(start);
+    expect(start, `naming block not found in ${GUI_DROP_MPACKAGE}`).toBeGreaterThan(-1);
+    expect(end, `end of naming block not found in ${GUI_DROP_MPACKAGE}`).toBeGreaterThan(start);
     // The package is XML, so its Lua arrives entity-encoded.
     return xml.slice(start, end)
         .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');

@@ -125,7 +125,8 @@ export interface EngineHost {
     toggleTimerByName(name: string, enabled: boolean): boolean;
     toggleAliasByName(name: string, enabled: boolean): boolean;
     toggleKeyByName(name: string, enabled: boolean): boolean;
-    toggleToolBarByName(name: string, show: boolean): boolean;
+    /** Null when the toolbar moved, otherwise why it did not. */
+    toggleToolBarByName(name: string, show: boolean): string | null;
     setTriggerStayOpenByName(name: string, lines: number): boolean;
 
     // ── Automation tree: queries ─────────────────────────────────────────────
@@ -255,7 +256,7 @@ export const NULL_ENGINE_HOST: EngineHost = Object.freeze({
     toggleTimerByName: () => false,
     toggleAliasByName: () => false,
     toggleKeyByName: () => false,
-    toggleToolBarByName: () => false,
+    toggleToolBarByName: (name: string) => `toolbar '${name}' not found`,
     setTriggerStayOpenByName: () => false,
 
     keyNodeByNumericId: () => null,

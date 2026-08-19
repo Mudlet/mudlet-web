@@ -21,13 +21,12 @@ import baseUiUrl from './defaults/mudlet-base-ui/mudlet-base-ui.mpackage?url';
 // the sync pulls it in from the repo root and drops it here loose. Plain XML,
 // not a zip: the installer parses it into tree nodes and writes nothing to the VFS.
 import mudletMapperUrl from './defaults/mudlet-mapper.xml?url';
-// Mudlet preinstalls gui-drop as `gui-drop.mpackage`; we install the loose
-// `gui-drop.xml` beside it. Identical content (the archive adds only config.lua
-// and an icon), but a `.mpackage` is a zip the sync script must round-trip
-// byte-for-byte, so a fix inside one can't be carried as a patch — and this one
-// needs a patch until Mudlet/Mudlet#9628 lands. See
-// scripts/mudlet-lua-patches/packages/gui-drop/.
-import guiDropUrl from './defaults/gui-drop/gui-drop.xml?url';
+// Mudlet preinstalls gui-drop as `gui-drop.mpackage`, and so do we. mudix ran
+// off the loose `gui-drop.xml` beside it for a while, because a `.mpackage` is a
+// zip the sync script round-trips byte-for-byte and the digit-prefix fix it
+// needed couldn't be patched inside one; Mudlet/Mudlet#9628 landed that fix
+// upstream, so the archive is back.
+import guiDropUrl from './defaults/gui-drop/gui-drop.mpackage?url';
 
 interface DefaultPackage {
     /** Must match the manifest name produced by installPackageFromBytes. */
@@ -63,17 +62,17 @@ const GENERIC_MAPPER: DefaultPackage = {
  *  pushes a GUI via `Client.GUI`. `version` is declared for the same reason the
  *  mapper's is: so a bumped archive reaches profiles that have the old one. */
 const BASE_UI: DefaultPackage = {
-    name: 'mudlet-base-ui', filename: 'mudlet-base-ui.mpackage', url: baseUiUrl, version: '1.5.0',
+    name: 'mudlet-base-ui', filename: 'mudlet-base-ui.mpackage', url: baseUiUrl, version: '1.6.1',
 };
 
 /** Drop an image file onto a console and it becomes a Geyser label inside an
  *  Adjustable.Container, positioned where it landed; the package then writes a
  *  `GUIDropManager` script node that recreates it on the next profile open.
- *  Inert until something is actually dropped. No `version`: a plain XML has no
- *  config.lua, so the manifest carries none and declaring one here would make
- *  every profile open see a mismatch and reinstall. */
+ *  Inert until something is actually dropped. `version` is declared for the same
+ *  reason the mapper's is — and here it also carries the fixed archive to
+ *  profiles still holding the versionless loose-XML install. */
 const GUI_DROP: DefaultPackage = {
-    name: 'gui-drop', filename: 'gui-drop.xml', url: guiDropUrl,
+    name: 'gui-drop', filename: 'gui-drop.mpackage', url: guiDropUrl, version: '1.2',
 };
 
 /**

@@ -36,6 +36,29 @@ type BaseTreeNode = {
     packageName?: string;
     patterns?: unknown[];
 };
+
+/**
+ * The item a `perm*(name, parent, …)` call should hang its new item under, or
+ * null when nothing carries that name.
+ *
+ * Two things this does NOT do, both deliberate:
+ *
+ * - It does not require a *group*. Mudlet looks the parent up with
+ *   `findTrigger`/`findFirstAlias`/`findFirstTimer`/`findFirstKey`, none of
+ *   which care whether the item is a folder — and a plain trigger with children
+ *   is an ordinary arrangement, since that is what makes it a filter for them.
+ * - It takes the NEWEST namesake, not the oldest. Those lookups go through a
+ *   `QMultiHash`, which answers with the most recently registered value for a
+ *   key, so two same-named parents collect children in the order the specs
+ *   expect: a child created after the second parent lands under that one.
+ *   (`createPermScript` is the exception and resolves its own — see there.)
+ */
+function permParentId(items: readonly BaseTreeNode[], parent: string): string | null {
+    for (let i = items.length - 1; i >= 0; i--) {
+        if (items[i].name === parent) return items[i].id;
+    }
+    return null;
+}
 import {LuaRuntime} from './lua/LuaRuntime';
 import type {IScriptingRuntime, LuaGlobalEntry} from './IScriptingRuntime';
 import {ProfileVFS} from './vfs/ProfileVFS';
@@ -1468,6 +1491,12 @@ export class ScriptingEngine implements EngineHost {
             // tempColorTrigger binding uses — both inspect the line that
             // beginLine() just appended to the main console.
             this.triggerEngine.setColorMatcher((fg, bg) => this.api.currentLineMatchesColor(fg, bg));
+            // The runaway-creation report goes to the main console, where the
+            // player is already looking at the line it could not finish.
+            this.triggerEngine.setRunawayReporter(text => this.api.postSystemMessage(text));
+            // Capture positions are recorded at match time; text a trigger
+            // inserts into its own line has to move them with it.
+            this.api.setCaptureShiftHook((at, delta) => rt.shiftCaptureSpans(at, delta));
             return rt;
         }).catch(err => {
             const msg = err instanceof Error ? err.message : String(err);
@@ -2503,7 +2532,11 @@ export class ScriptingEngine implements EngineHost {
         const scripts = store.connectionScripts[this.connectionId] ?? [];
         let parentId: string | null = null;
         if (parent && parent.length > 0) {
-            const group = scripts.find(s => s.isGroup && s.name === parent);
+            // Scripts are the one family that takes the OLDEST namesake: Mudlet
+            // resolves this one through findItems() and uses `ids.at(0)`, which
+            // is id order, where the other four go through a lookup table that
+            // answers with the newest. See permParentId.
+            const group = scripts.find(s => s.name === parent);
             if (!group) return -1;
             parentId = group.id;
         }
@@ -2583,9 +2616,8 @@ export class ScriptingEngine implements EngineHost {
         const triggers = store.connectionTriggers[this.connectionId] ?? [];
         let parentId: string | null = null;
         if (parent && parent.length > 0) {
-            const group = triggers.find(t => t.isGroup && t.name === parent);
-            if (!group) return -1;
-            parentId = group.id;
+            parentId = permParentId(triggers, parent);
+            if (parentId === null) return -1;
         }
         // A prompt trigger has no text pattern but is never a group; every other
         // kind treats an empty pattern list as a request to create a group.
@@ -2628,9 +2660,8 @@ export class ScriptingEngine implements EngineHost {
         const aliases = store.connectionAliases[this.connectionId] ?? [];
         let parentId: string | null = null;
         if (parent && parent.length > 0) {
-            const group = aliases.find(a => a.isGroup && a.name === parent);
-            if (!group) return -1;
-            parentId = group.id;
+            parentId = permParentId(aliases, parent);
+            if (parentId === null) return -1;
         }
         const uuid = store.addAlias(this.connectionId, {
             name,
@@ -2657,9 +2688,8 @@ export class ScriptingEngine implements EngineHost {
         const timers = store.connectionTimers[this.connectionId] ?? [];
         let parentId: string | null = null;
         if (parent && parent.length > 0) {
-            const group = timers.find(t => t.isGroup && t.name === parent);
-            if (!group) return -1;
-            parentId = group.id;
+            parentId = permParentId(timers, parent);
+            if (parentId === null) return -1;
         }
         const seconds = Number.isFinite(delay) && delay > 0 ? delay : 0;
         const uuid = store.addTimer(this.connectionId, {
@@ -2696,9 +2726,8 @@ export class ScriptingEngine implements EngineHost {
         const keys = store.connectionKeybindings[this.connectionId] ?? [];
         let parentId: string | null = null;
         if (parent && parent.length > 0) {
-            const group = keys.find(k => k.isGroup && k.name === parent);
-            if (!group) return -1;
-            parentId = group.id;
+            parentId = permParentId(keys, parent);
+            if (parentId === null) return -1;
         }
         // Mudlet's permKey overload that creates a group passes modifier=-1
         // with an empty key. Mirror that here so `permGroup("name","key")` lands
@@ -2826,17 +2855,60 @@ export class ScriptingEngine implements EngineHost {
         return true;
     }
 
-    /** Mudlet `showToolBar(name)` / `hideToolBar(name)`. Toggles the toolbar
-     *  group's enabled flag (the ButtonsBar already filters by
-     *  isEffectivelyEnabled, so this is the show/hide hook). */
-    toggleToolBarByName(name: string, show: boolean): boolean {
-        if (!name) return false;
+    /**
+     * Mudlet `showToolBar(name)` / `hideToolBar(name)`. Toggles the toolbar's
+     * own enabled flag — the ButtonsBar filters by isEffectivelyEnabled, so that
+     * is the show/hide hook. Returns null on success, or the reason it moved
+     * nothing (which the Bridge shapes into Mudlet's `(nil, errMsg)`).
+     *
+     * Three rules from `ActionUnit::setToolBarActive`, none of them obvious:
+     *
+     * - A toolbar that came in a package answers to its OWN name, and the
+     *   package's root node is left alone. Reaching a toolbar through its
+     *   package used to be the only way, which meant hiding one hid every bar
+     *   that package installed.
+     * - The package's name still works, and then it moves every toolbar in it.
+     * - A floating toolbar is refused, and says so: these functions dock and
+     *   undock, and a floating bar is not in the docking arrangement at all.
+     *   Reporting it as missing sent scripts looking for a name they had right.
+     */
+    toggleToolBarByName(name: string, show: boolean): string | null {
+        if (!name) return `toolbar '${name}' not found`;
         const store = useAppStore.getState();
         const buttons = store.connectionButtons[this.connectionId] ?? [];
-        const target = buttons.find(b => b.isGroup && b.name === name);
-        if (!target) return false;
-        store.updateButton(this.connectionId, target.id, { enabled: !!show });
-        return true;
+        const dockable = (b: ButtonNode) => b.location !== 'floating';
+        const roots = buttons.filter(b => b.isGroup && b.parentId === null);
+        // An installed package puts its items under a wrapper group of its own
+        // name; a toolbar the profile itself owns is a root.
+        const packageRoots = roots.filter(b => !!b.packageName);
+        const childrenOf = (parent: ButtonNode) => buttons.filter(b => b.parentId === parent.id);
+
+        // Its own name first, whether it is a root of the profile's own or a
+        // toolbar that came inside a package.
+        let targets = roots.filter(b => dockable(b) && !b.packageName && b.name === name);
+        if (targets.length === 0) {
+            targets = packageRoots.flatMap(root =>
+                childrenOf(root).filter(b => dockable(b) && b.name === name));
+        }
+        // Then the name of a package, which covers every toolbar that came in
+        // it. Only the package's own wrapper answers to this — every node in
+        // there carries the package name, and matching on that alone would let
+        // any one of its toolbars stand in for the whole package.
+        if (targets.length === 0) {
+            targets = packageRoots
+                .filter(b => b.name === name)
+                .flatMap(root => childrenOf(root).filter(dockable));
+        }
+        if (targets.length === 0) {
+            const floats = buttons.some(b => b.isGroup && b.name === name && !dockable(b));
+            return floats
+                ? `toolbar '${name}' is set to float, which showToolBar() and hideToolBar() do not move`
+                : `toolbar '${name}' not found`;
+        }
+        for (const target of targets) {
+            store.updateButton(this.connectionId, target.id, { enabled: !!show });
+        }
+        return null;
     }
 
     /**
@@ -3343,6 +3415,8 @@ export class ScriptingEngine implements EngineHost {
         this.runtimes.lua = null;
         this.triggerEngine.setLuaEval(null);
         this.triggerEngine.setColorMatcher(null);
+        this.triggerEngine.setRunawayReporter(null);
+        this.api.setCaptureShiftHook(null);
         // Unbind the host. This does NOT guard against late *Lua* calls —
         // lua_close ran a few lines up. It guards against DOM-side callers
         // that outlive the engine: a rendered line's hyperlink onClick closure
@@ -3733,6 +3807,10 @@ export class ScriptingEngine implements EngineHost {
      * and flushed after all lines in the batch are rendered.
      */
     private processLineTriggers(plain: string, buffer: AnsiAwareBuffer, isPrompt = false): void {
+        // A trigger can call feedTriggers, which lands back here for a line of
+        // its own; the outer line has to be the one `line` names again once that
+        // returns, or the rest of the outer pass reads the fed line instead.
+        const outerLine = this.runtimes.lua?.getCurrentLine();
         this.api.beginLine(buffer, isPrompt);
         try {
             this.runtimes.lua?.setCurrentLine(plain, isPrompt);
@@ -3760,6 +3838,7 @@ export class ScriptingEngine implements EngineHost {
             });
         } finally {
             this.api.endLine();
+            if (outerLine !== undefined) this.runtimes.lua?.setCurrentLine(outerLine, isPrompt);
         }
     }
 

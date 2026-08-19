@@ -132,6 +132,13 @@ export interface MudClientOptions {
      *  of each GA-terminated data block — the IRE-server bug Mudlet patches in
      *  `cTelnet::gotPrompt`. See LineAssembler. */
     fixUnnecessaryLinebreaks?: boolean;
+    /** Mudlet's `Host::mUndoServerWrap` — rejoin the lines the game wrapped
+     *  itself, so triggers and rendering see whole logical lines. Default false.
+     *  See LineAssembler and mud/text/serverWrap.ts. */
+    undoServerWrap?: boolean;
+    /** The column that game wraps at (`Host::mUndoServerWrapWidth`, default 80).
+     *  Only consulted while {@link undoServerWrap} is on. */
+    undoServerWrapWidth?: number;
     /** Mudlet's `setConfig("inputLineStrictUnixEndings", …)` (host flag
      *  `mUSE_UNIX_EOL`). Default false. When true a submitted command is
      *  terminated with a bare `\n` instead of the telnet-standard `\r\n`
@@ -273,12 +280,15 @@ export class MudClient {
      *  Read on every send, so a change applies to the next command (Mudlet reads
      *  the host flag in `sendData` too). */
     private strictUnixEndings: boolean;
-    /** Mudlet `mFORCE_GA_OFF` — see MudClientOptions.specialForceGAOff. Mudlet
-     *  snapshots the host flag into cTelnet at `connectIt`, so a mid-session
-     *  change is deliberately not retroactive. Here that falls out for free:
-     *  MudSession builds a fresh MudClient per connect from its stored options,
-     *  so this is fixed for the life of the connection. */
-    private readonly forceGaOff: boolean;
+    /** Mudlet `mFORCE_GA_OFF` — see MudClientOptions.specialForceGAOff. A live
+     *  session keeps parsing with the value it connected with (Mudlet snapshots
+     *  the host flag into cTelnet at `connectIt`), which here falls out of
+     *  MudSession building a fresh client per connect. An unconnected one takes
+     *  the change straight away — see {@link setForceGaOff}. */
+    private forceGaOff: boolean;
+    /** Handed to the telnet sequence parser and mutated in place, so the parser
+     *  reads the current setting rather than the one it was built with. */
+    private readonly telnetParserOpts = { promptMarkerAsNewline: false };
 
     constructor(
         {
@@ -300,6 +310,8 @@ export class MudClient {
             screenReaderAdvertised = false,
             nawsEnabled = true,
             fixUnnecessaryLinebreaks = false,
+            undoServerWrap = false,
+            undoServerWrapWidth,
             inputLineStrictUnixEndings = false,
             specialForceGAOff = false,
             versionInTTYPE = false,
@@ -318,6 +330,7 @@ export class MudClient {
         this.subprotocols = subprotocols;
         this.strictUnixEndings = inputLineStrictUnixEndings;
         this.forceGaOff = specialForceGAOff;
+        this.telnetParserOpts.promptMarkerAsNewline = specialForceGAOff;
 
         this.assembler = new LineAssembler(
             {
@@ -325,7 +338,7 @@ export class MudClient {
                 onPrompt: () => this.eventBus.emit('prompt'),
                 onIdleFlush: () => this.flushMessageBuffer(),
             },
-            { promptTimeoutMs, fixUnnecessaryLinebreaks },
+            { promptTimeoutMs, fixUnnecessaryLinebreaks, undoServerWrap, undoServerWrapWidth },
         );
 
         this.charsetHandler = new CharsetHandler(this.codec, charsetEnabled, {
@@ -417,7 +430,7 @@ export class MudClient {
             else if (code === MSP_COMMAND_CODE) this.handleMspSubneg(subneg);
             else if (code === MXP_COMMAND_CODE) this.negotiator.handleMxpSubneg();
             else if (code === NEW_ENVIRON_COMMAND_CODE) this.negotiator.handleNewEnvironSubneg(subneg);
-        }, { promptMarkerAsNewline: specialForceGAOff });
+        }, this.telnetParserOpts);
         this.mccpHandler = new MccpHandler((data) => this.sendRaw(data));
         this.mccpHandler.enabled = mccpEnabled;
 
@@ -489,6 +502,36 @@ export class MudClient {
      *  next GA-driven block; never retroactive. */
     setFixUnnecessaryLinebreaks(enabled: boolean): void {
         this.assembler.setFixUnnecessaryLinebreaks(enabled);
+    }
+
+    /**
+     * Mudlet `setConfig("specialForceGAOff", …)`. Only an UNCONNECTED client
+     * takes the change: a live session has to keep parsing telnet the way it
+     * connected, or a GA mid-stream would suddenly mean something else. Mudlet
+     * draws the same line — `cacheHostSettings()` is re-run from setConfig only
+     * while the socket is unconnected, and otherwise at the next connect.
+     */
+    setForceGaOff(enabled: boolean): void {
+        if (!this.isSocketUnconnected()) return;
+        this.forceGaOff = enabled;
+        this.telnetParserOpts.promptMarkerAsNewline = enabled;
+    }
+
+    /** Mudlet `setConfig("undoServerWrap", …)`. Live: the next server line is
+     *  judged under the new setting. */
+    setUndoServerWrap(enabled: boolean): void {
+        this.assembler.setUndoServerWrap(enabled);
+    }
+
+    /** Mudlet `setConfig("undoServerWrapWidth", …)`. */
+    setUndoServerWrapWidth(width: number): void {
+        this.assembler.setUndoServerWrapWidth(width);
+    }
+
+    /** Commit a line held for a wrap continuation whose flush delay has passed.
+     *  See {@link LineAssembler.pumpServerWrapDue}. */
+    pumpServerWrapDue(now?: number): boolean {
+        return this.assembler.pumpServerWrapDue(now);
     }
 
     /** Mudlet `setConfig("inputLineStrictUnixEndings", …)`. Live: `cTelnet::

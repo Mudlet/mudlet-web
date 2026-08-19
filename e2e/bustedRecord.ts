@@ -61,6 +61,43 @@ async function recordSpec(
 
 const failedToRecord = (r: BustedResults) => r.failures.some(f => f.name.endsWith('recording failed'));
 
+// Stop the sweep before it starts if the app being served is not a VITE_BUSTED
+// build, because every symptom downstream of that misreads as something else. A
+// plain `vite` answers on the busted port perfectly well and simply has no
+// __runBusted, so all 44 boots time out at READY_TIMEOUT_MS and then retry at
+// RETRY_READY_TIMEOUT_MS — an hour of waiting that reports itself as 44 broken
+// specs. Which is easy to arrive at by accident: `yarn dev` has no --strictPort,
+// so a second one started while 5173 is taken walks to 5174, and
+// webServer.reuseExistingServer adopts whatever answers there.
+//
+// __mudixBustedBuild is set at LuaRuntime module scope in busted builds, so it
+// is there as soon as the bundle evaluates — no profile, no runtime, no race
+// with a boot that might be slow for honest reasons.
+async function assertBustedServer(
+    browser: import('@playwright/test').Browser, baseURL: string | undefined,
+): Promise<void> {
+    const context = await browser.newContext({ ...BUSTED_CONTEXT, baseURL });
+    try {
+        const page = await context.newPage();
+        await page.goto('/');
+        await page.waitForFunction(
+            () => (window as unknown as { __mudixBustedBuild?: boolean }).__mudixBustedBuild === true,
+            undefined,
+            { timeout: 30_000, polling: 250 },
+        );
+    } catch {
+        throw new Error(
+            `The app at ${baseURL} is not a VITE_BUSTED build, so the spec corpus it is supposed to run `
+            + 'is not in it. Most likely another Vite dev server is already on that port — Playwright '
+            + 'reuses whatever answers there. Stop it and run again:\n'
+            + '  npx kill-port 5174     (or close the stray `yarn dev`)\n'
+            + 'The busted server is started for you; it is `vite --mode busted` (see package.json).',
+        );
+    } finally {
+        await context.close();
+    }
+}
+
 export default async function record(config: FullConfig): Promise<void> {
     if (isFresh()) {
         console.log(`busted: reusing ${path.basename(resultsPath)} (unchanged since it was recorded)`);
@@ -76,6 +113,8 @@ export default async function record(config: FullConfig): Promise<void> {
         `busted: ${String(++done).padStart(2)}/${SPECS.length} ${spec}`);
     const started = Date.now();
     try {
+        await assertBustedServer(browser, baseURL);
+
         // The first spec goes alone. The dev server is a Vite dev server, which
         // transforms the app's modules on demand and does it on one thread, so a
         // cold one meeting six simultaneous first loads serialises them all — and

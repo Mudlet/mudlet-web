@@ -57,6 +57,17 @@ export class SqliteClient {
         // persistence is the snapshot back to the ProfileVFS in setupSqlBridge.
         // We track `path` only to reuse a live handle on reconnect (see above).
         const db = new sqlite3.oo1.DB(':memory:', 'c');
+        // Accept a double-quoted string where no such identifier exists, the way
+        // the SQLite that desktop Mudlet links does. It is a misfeature SQLite
+        // keeps only for compatibility and this build turns off by default — but
+        // turning it off changes what `DB.lua` means, not just what it accepts.
+        // Its table-rebuild path emits `SELECT "_row_id", "name", "desc" FROM
+        // people_bak` naming every column of the NEW schema, including ones the
+        // backup table has not got, and relies on those resolving to string
+        // literals. With DQS off that is a hard error and db:create dies partway
+        // through a migration, having already dropped the table.
+        sqlite3.capi.sqlite3_db_config(db.pointer!, sqlite3.capi.SQLITE_DBCONFIG_DQS_DML, 1, 0);
+        sqlite3.capi.sqlite3_db_config(db.pointer!, sqlite3.capi.SQLITE_DBCONFIG_DQS_DDL, 1, 0);
         if (preload && preload.byteLength > 0) {
             // sqlite3_deserialize takes ownership of the byte buffer once we
             // pass FREEONCLOSE — copy into sqlite-managed memory so the

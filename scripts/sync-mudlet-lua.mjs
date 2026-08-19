@@ -413,8 +413,8 @@ if (!dryRun) {
                 `- Synced from commit: \`${source.sha}\` `
                 + `(${source.sha.startsWith(ref) ? '' : `${ref}, `}${source.date})`],
             [/^- Vendored files: \d+.*$/m,
-                `- Vendored files: ${vendoredCount} (plus ${localOnlyCount} mudix-only, `
-                + `${patchCount} patched)`],
+                `- Vendored files: ${vendoredCount} (plus ${localOnlyCount} mudix-only`
+                + (patchCount ? `, ${patchCount} patched)` : ')')],
         ];
         let next = md;
         for (const [pattern, line] of rewrites) {
