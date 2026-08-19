@@ -57,3 +57,40 @@ describe('parseMudletXml — nested scripts under a non-folder parent', () => {
         expect(dark.code).toContain('register("dark")');
     });
 });
+
+// "No key bound" has three spellings across Mudlet's history: Qt::Key(0),
+// Qt::Key_unknown (0x01ffffff, current), and -1 — the sentinel
+// dlgTriggerEditor stored for a freshly-created key back when mKeyCode was a
+// plain int. TKey::validateKeyBinding treats all three as unset, so an import
+// must import them silently rather than reporting a broken key code. MAG
+// (Mudlet Aardwolf GUI) ships six such keys and warned six times on install.
+describe('parseMudletXml — keys with no binding set', () => {
+    const key = (name: string, code: string) => `
+    <Key isActive="yes" isFolder="no">
+      <name>${name}</name>
+      <packageName/>
+      <script></script>
+      <command></command>
+      <keyCode>${code}</keyCode>
+      <keyModifier>0</keyModifier>
+    </Key>`;
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<MudletPackage version="1.001">
+  <KeyPackage>${key('N', '-1')}${key('S', '0')}${key('U', '33554431')}${key('bound', '78')}${key('weird', '999999')}</KeyPackage>
+</MudletPackage>`;
+
+    it('imports unbound keys with no key and no warning', () => {
+        const { keys, warnings } = parseMudletXml(xml);
+        for (const name of ['N', 'S', 'U']) {
+            expect(keys.find(k => k.name === name)!.key).toBe('');
+        }
+        expect(warnings.filter(w => /"[NSU]"/.test(w))).toEqual([]);
+    });
+
+    it('still maps real key codes and still warns on unmappable ones', () => {
+        const { keys, warnings } = parseMudletXml(xml);
+        expect(keys.find(k => k.name === 'bound')!.key).toBe('KeyN');
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toContain('"weird"');
+    });
+});

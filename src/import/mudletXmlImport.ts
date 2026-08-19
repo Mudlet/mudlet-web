@@ -1,5 +1,5 @@
 import type { AliasNode, ButtonLocation, ButtonNode, ButtonOrientation, KeyNode, ScriptNode, TimerNode, TriggerNode, TriggerPattern, TriggerPatternType } from '../storage/schema';
-import { qtKeyToDomCode, qtModifiersToList } from '../mud/keybindings/qtKeys';
+import { qtKeyToDomCode, qtModifiersToList, QT_KEY_UNKNOWN } from '../mud/keybindings/qtKeys';
 
 // Mudlet triggerType integer → our TriggerPatternType
 const MUDLET_PATTERN_TYPES: TriggerPatternType[] = [
@@ -202,11 +202,16 @@ function parseKeys(els: Element[], parentId: string | null, out: KeyNode[], warn
         const group = isGroup(el);
         const qtKey = parseInt(getText(el, 'keyCode')) || 0;
         const qtMod = parseInt(getText(el, 'keyModifier')) || 0;
+        // "No key bound" has three spellings across Mudlet's history: Qt::Key(0),
+        // Qt::Key_unknown (current), and -1 (the sentinel dlgTriggerEditor used
+        // back when mKeyCode was a plain int). TKey::validateKeyBinding treats
+        // them all as unset, so none of them is a broken import worth warning about.
+        const unbound = qtKey === 0 || qtKey === -1 || qtKey === QT_KEY_UNKNOWN;
         // qtKeyToDomCode returns String(qtKey) as fallback for unmapped codes;
         // valid DOM codes always start with a letter, so the regex separates them.
-        const mapped = qtKey ? qtKeyToDomCode(qtKey, qtMod) : '';
+        const mapped = unbound ? '' : qtKeyToDomCode(qtKey, qtMod);
         const key = /^[A-Za-z]/.test(mapped) ? mapped : '';
-        if (!group && !key && qtKey !== 0) {
+        if (!group && !key && !unbound) {
             warnings.push(`Key "${getText(el, 'name')}": unknown Qt key code ${qtKey} — keybinding imported with no key set`);
         }
         out.push({ id, parentId, isGroup: group, name: getText(el, 'name'), enabled: isYes(el, 'isActive'), key, modifiers: qtModifiersToList(qtMod), code: getText(el, 'script'), language: 'lua', command: getText(el, 'command'), packageName: getText(el, 'packageName') || undefined });

@@ -120,6 +120,9 @@ const QT_KEYPAD_OVERRIDES: Record<number, string> = {
 /** Qt::KeypadModifier — set by Mudlet when a binding came from the numpad. */
 export const QT_KEYPAD_MODIFIER = 0x20000000;
 
+/** Qt::Key_unknown — what Mudlet stores for a key item with nothing bound to it. */
+export const QT_KEY_UNKNOWN = 0x01ffffff;
+
 /**
  * Translate a Qt::Key integer (or already-translated DOM `KeyboardEvent.code`
  * string) into a DOM `KeyboardEvent.code`. Mudlet `tempKey` accepts both;
