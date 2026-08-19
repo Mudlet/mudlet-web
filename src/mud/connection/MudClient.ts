@@ -222,7 +222,9 @@ function bytesToLatin1(bytes: Uint8Array): string {
  * GMCP/MSDP/MSSP subnegotiation streams.
  */
 export class MudClient {
-    private socket!: WebSocket;
+    /** The live WebSocket, or null when there is none — before the first
+     *  connect, and from the moment disconnect() lets go of one. */
+    private socket: WebSocket | null = null;
     private readonly eventBus: EventBus<MudClientEvents>;
     private readonly chunkProcessor: ChunkProcessor;
     private messageBuffer: { text: string; type: string }[] = [];
@@ -656,7 +658,7 @@ export class MudClient {
                 // string when none was negotiated). Lets the UI/logs confirm a
                 // `telnet.mudstandards.org` handshake succeeded vs. fell back.
                 if (this.subprotocols.length > 0) {
-                    const selected = this.socket.protocol;
+                    const selected = this.socket?.protocol ?? '';
                     this.eventBus.emit('client.subprotocol', selected);
                     if (debugTelnetEnabled()) {
                         // eslint-disable-next-line no-console
@@ -757,6 +759,14 @@ export class MudClient {
         socket.onopen = null;
         socket.close();
         this.assembler.flush(Date.now(), true);
+        // Let go of the socket rather than watching it finish closing. Every
+        // handler is off it and the disconnect has already been synthesized, so
+        // nothing here is waiting on the close to complete — but a WebSocket
+        // sits in CLOSING for as long as the other end takes to answer (forever,
+        // for a connect that never landed), and `isSocketUnconnected()` reads
+        // that as still-connected. Qt hands cTelnet the UnconnectedState at
+        // once, which is what makes a disconnect()ed profile injectable again.
+        this.socket = null;
         this.eventBus.emit('client.disconnect');
         this.opened = false;
         this.mccpHandler.reset();
@@ -837,7 +847,9 @@ export class MudClient {
         for (let i = 0; i < payload.length; i++) {
             bytes[i] = payload.charCodeAt(i) & 0xff;
         }
-        this.socket.send(bytes);
+        // Callers already gate on the socket being open; a null one here means
+        // the connection went while the bytes were being built.
+        this.socket?.send(bytes);
     }
 
     sendGmcp(path: string, payload: unknown = {}): void {

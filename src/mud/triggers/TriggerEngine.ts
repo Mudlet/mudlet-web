@@ -108,6 +108,13 @@ type CompiledAndEntry = {
 
 type CompiledEntry = CompiledOrEntry | CompiledAndEntry;
 
+/** A trigger enrolled for the current line because it was created while that
+ *  line was being processed. Permanent triggers are named by their node id and
+ *  temporary ones by their engine id — both can be created from a script. */
+type SameLineEntry =
+    | { kind: 'temp'; id: number }
+    | { kind: 'perm'; id: string };
+
 /** The lineage a trigger created mid-pass belongs to, and how many generations
  *  deep it sits in it. Absent on a trigger that was not created while a line was
  *  being processed. See TriggerEngine.addedWhileProcessing. */
@@ -230,6 +237,11 @@ const colorMatchRef: { fn: ((fg: number, bg: number) => boolean) | null } = { fn
 
 /** Where the same-line runaway report is printed. See setRunawayReporter. */
 const runawayReportRef: { fn: ((text: string) => void) | null } = { fn: null };
+
+/** Switches off a permanent trigger the engine stopped as part of a runaway
+ *  lineage. Wired by ScriptingEngine to the store; unset the stop only reaches
+ *  temporaries. */
+const permDisableRef: { fn: ((nodeId: string) => void) | null } = { fn: null };
 
 /** How many generations one lineage of triggers created while a line is being
  *  processed may reach before it is stopped. Mudlet's
@@ -402,7 +414,9 @@ export class TriggerEngine {
     // arming a batch of unrelated triggers makes a generation of one-deep
     // lineages however big the batch, so it is never mistaken for a runaway.
     private processingDepth = 0;
-    private addedWhileProcessing: (number | null)[] = [];
+    private addedWhileProcessing: (SameLineEntry | null)[] = [];
+    /** Lineage of each permanent ROOT trigger enrolled for the current line. */
+    private permSameLine = new Map<string, SameLineChain>();
     /** Lineage id → name of the trigger whose script started it, for the report. */
     private sameLineChainStarters = new Map<number, string>();
     private lastSameLineChainId = 0;
@@ -716,12 +730,13 @@ export class TriggerEngine {
     private endPass(): void {
         this.processingDepth--;
         if (this.processingDepth > 0) return;
-        for (const id of this.addedWhileProcessing) {
-            if (id === null) continue;
-            const entry = this.temp.get(id);
+        for (const added of this.addedWhileProcessing) {
+            if (added?.kind !== 'temp') continue;
+            const entry = this.temp.get(added.id);
             if (entry) entry.sameLine = undefined;
         }
         this.addedWhileProcessing = [];
+        this.permSameLine.clear();
         this.sameLineChainStarters.clear();
     }
 
@@ -907,7 +922,7 @@ export class TriggerEngine {
                 } else {
                     matches.length = 0;
                     this.matchPermEntry(u.perm, line, isPrompt, currentLine, seen, matches);
-                    for (const m of matches) exec(m);
+                    for (const m of matches) this.execPerm(m, exec);
                 }
             }
             // Now the triggers armed during that walk, which the snapshot could
@@ -921,18 +936,26 @@ export class TriggerEngine {
                         + 'triggers were created while processing one line, so the rest are not being offered it');
                     break;
                 }
-                const id = this.addedWhileProcessing[i];
-                if (id === null) continue;
-                const entry = this.temp.get(id);
-                if (!entry) continue;
-                const generation = entry.sameLine?.generation ?? 0;
-                if (generation > MAX_SAME_LINE_GENERATIONS) {
+                const added = this.addedWhileProcessing[i];
+                if (added === null) continue;
+                const sameLine = this.sameLineOf(added);
+                if (!sameLine) continue;
+                if (sameLine.generation > MAX_SAME_LINE_GENERATIONS) {
                     // The whole lineage goes, so its remaining members are gone
                     // by the time this loop reaches them and it trips only once.
-                    this.stopSameLineCreationLoop(entry.sameLine!.chainId);
+                    this.stopSameLineCreationLoop(sameLine.chainId);
                     continue;
                 }
-                this.fireTempEntry(id, entry, line, isPrompt);
+                if (added.kind === 'temp') {
+                    const entry = this.temp.get(added.id);
+                    if (entry) this.fireTempEntry(added.id, entry, line, isPrompt);
+                    continue;
+                }
+                const perm = this.permCompiled.find(e => e.item.id === added.id);
+                if (!perm) continue;
+                matches.length = 0;
+                this.matchPermEntry(perm, line, isPrompt, currentLine, seen, matches);
+                for (const m of matches) this.execPerm(m, exec);
             }
         } finally {
             this.inProcessTemp = prev;
@@ -950,13 +973,60 @@ export class TriggerEngine {
         if (this.processingDepth === 0) return;
         const entry = this.temp.get(id);
         if (!entry) return;
+        entry.sameLine = this.nextSameLineChain();
+        this.addedWhileProcessing.push({ kind: 'temp', id });
+    }
+
+    /**
+     * The same, for a permanent trigger a script created mid-pass. Only ROOT
+     * triggers carry a lineage: one sitting in a folder creates on the folder's
+     * behalf, and reading the child's own (always empty) lineage instead would
+     * start a fresh one every round — which never deepens and so never trips.
+     */
+    notePermCreated(node: TriggerNode, root: TriggerNode): void {
+        if (this.processingDepth === 0) return;
+        if (!this.permSameLine.has(root.id)) this.permSameLine.set(root.id, this.nextSameLineChain());
+        this.addedWhileProcessing.push({ kind: 'perm', id: node.id });
+    }
+
+    /** Join the lineage of the trigger whose script is running, a generation on;
+     *  or start one when that script predates the line. */
+    private nextSameLineChain(): SameLineChain {
         let chainId = this.currentSameLineChainId;
         if (!chainId) {
             chainId = ++this.lastSameLineChainId;
             this.sameLineChainStarters.set(chainId, this.currentExecutingTriggerName ?? '');
         }
-        entry.sameLine = { chainId, generation: this.currentSameLineGeneration + 1 };
-        this.addedWhileProcessing.push(id);
+        return { chainId, generation: this.currentSameLineGeneration + 1 };
+    }
+
+    /** The lineage of something enrolled for this line, whichever kind it is. */
+    private sameLineOf(added: SameLineEntry): SameLineChain | undefined {
+        if (added.kind === 'temp') return this.temp.get(added.id)?.sameLine;
+        const node = this.allById.get(added.id);
+        return node ? this.permSameLine.get(this.rootIdOf(node)) : undefined;
+    }
+
+    /** The root ancestor's id — the node a lineage is recorded against. */
+    private rootIdOf(node: TriggerNode): string {
+        let cur = node;
+        const guard = new Set<string>([cur.id]);
+        while (cur.parentId) {
+            const parent = this.allById.get(cur.parentId);
+            if (!parent || guard.has(parent.id)) break;
+            guard.add(parent.id);
+            cur = parent;
+        }
+        return cur.id;
+    }
+
+    /** Run a permanent trigger's script inside its lineage, so what it creates
+     *  is enrolled behind it rather than starting a lineage of its own. */
+    private execPerm(m: TriggerMatch, exec: (match: TriggerMatch) => void): void {
+        this.runAsTrigger(
+            m.trigger.name,
+            this.permSameLine.get(this.rootIdOf(m.trigger)),
+            () => exec(m));
     }
 
     /**
@@ -990,17 +1060,27 @@ export class TriggerEngine {
     private stopSameLineCreationLoop(chainId: number): void {
         let stopped = 0;
         for (let i = 0; i < this.addedWhileProcessing.length; i++) {
-            const id = this.addedWhileProcessing[i];
-            if (id === null) continue;
-            const entry = this.temp.get(id);
-            if (!entry || entry.sameLine?.chainId !== chainId) continue;
-            // Through the owner as well as the map: what makes a trigger gone
-            // to isActive() and to the Lua callback registry is its owner's
-            // teardown, not this entry disappearing.
-            entry.onStopped?.();
-            if (this.temp.has(id)) {
-                if (entry.kind === 'regex') entry.re.destroy();
-                this.temp.delete(id);
+            const added = this.addedWhileProcessing[i];
+            if (added === null) continue;
+            if (this.sameLineOf(added)?.chainId !== chainId) continue;
+            if (added.kind === 'temp') {
+                const entry = this.temp.get(added.id);
+                if (!entry) continue;
+                // Through the owner as well as the map: what makes a trigger
+                // gone to isActive() and to the Lua callback registry is its
+                // owner's teardown, not this entry disappearing.
+                entry.onStopped?.();
+                if (this.temp.has(added.id)) {
+                    if (entry.kind === 'regex') entry.re.destroy();
+                    this.temp.delete(added.id);
+                }
+            } else {
+                // A permanent trigger is switched off rather than removed —
+                // there is no removal API for one, and the player's own copy of
+                // it has to survive being stopped.
+                const node = this.allById.get(added.id);
+                if (!node) continue;
+                permDisableRef.fn?.(added.id);
             }
             // Nulled rather than spliced out: the loop in process() is walking
             // this list by index, and shifting entries under it would skip a
@@ -1033,6 +1113,11 @@ export class TriggerEngine {
      *  main console; unset (tests, teardown) the report is dropped. */
     setRunawayReporter(fn: ((text: string) => void) | null): void {
         runawayReportRef.fn = fn;
+    }
+
+    /** How the engine switches off a permanent trigger it stopped. */
+    setPermDisabler(fn: ((nodeId: string) => void) | null): void {
+        permDisableRef.fn = fn;
     }
 
     /** Rebuild the merged, path-sorted processing list from the current

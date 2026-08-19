@@ -1497,6 +1497,10 @@ export class ScriptingEngine implements EngineHost {
             // Capture positions are recorded at match time; text a trigger
             // inserts into its own line has to move them with it.
             this.api.setCaptureShiftHook((at, delta) => rt.shiftCaptureSpans(at, delta));
+            // A permanent trigger the engine stops as a runaway is switched
+            // off, not removed: there is no removal API for one.
+            this.triggerEngine.setPermDisabler(nodeId =>
+                useAppStore.getState().updateTrigger(this.connectionId, nodeId, { enabled: false }));
             return rt;
         }).catch(err => {
             const msg = err instanceof Error ? err.message : String(err);
@@ -2644,7 +2648,33 @@ export class ScriptingEngine implements EngineHost {
             delta: 0,
             isFilter: false,
         });
+        // A trigger created while a line is being processed is offered that
+        // line, and joins the lineage of whatever created it — the same rule
+        // temporaries follow. The reload is normally coalesced into a
+        // microtask, which a pass would finish long before: drain it here so
+        // the new trigger is compiled in time to match the line it was created
+        // on. Read back after that, so the node and its ancestors are the ones
+        // the engine now holds.
+        this.flushPendingApplies();
+        const created = (useAppStore.getState().connectionTriggers[this.connectionId] ?? [])
+            .find(t => t.id === uuid);
+        if (created) this.triggerEngine.notePermCreated(created, this.rootTriggerOf(created));
         return this.numericIdFor(uuid);
+    }
+
+    /** The root ancestor of a trigger node — what a lineage is recorded against. */
+    private rootTriggerOf(node: TriggerNode): TriggerNode {
+        const all = useAppStore.getState().connectionTriggers[this.connectionId] ?? [];
+        const byId = new Map(all.map(t => [t.id, t]));
+        let cur = node;
+        const guard = new Set<string>([cur.id]);
+        while (cur.parentId) {
+            const parent = byId.get(cur.parentId);
+            if (!parent || guard.has(parent.id)) break;
+            guard.add(parent.id);
+            cur = parent;
+        }
+        return cur;
     }
 
     /**
@@ -3417,6 +3447,7 @@ export class ScriptingEngine implements EngineHost {
         this.triggerEngine.setColorMatcher(null);
         this.triggerEngine.setRunawayReporter(null);
         this.api.setCaptureShiftHook(null);
+        this.triggerEngine.setPermDisabler(null);
         // Unbind the host. This does NOT guard against late *Lua* calls —
         // lua_close ran a few lines up. It guards against DOM-side callers
         // that outlive the engine: a rendered line's hyperlink onClick closure

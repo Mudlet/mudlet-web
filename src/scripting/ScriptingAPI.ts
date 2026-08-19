@@ -5571,7 +5571,12 @@ export class ScriptingAPI {
      *  client telling the player something about the line in front of them,
      *  not a script's error. */
     postSystemMessage(text: string): void {
-        this.session.events.emit('message', text, 'error', Date.now());
+        // Through the echo path rather than a bare `message` event: nothing
+        // appends those to the console's own buffer, so getLines and every
+        // other buffer reader would never see a message posted that way. Inside
+        // trigger processing this lands on the line being processed, which is
+        // the line the message is about.
+        this.echo(`${text}\n`);
     }
 
     printError(text: string, source?: ScriptLogSource): void {
