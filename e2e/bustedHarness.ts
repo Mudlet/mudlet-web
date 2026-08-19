@@ -1,10 +1,12 @@
 import { type Page } from '@playwright/test';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 // Shared harness for Mudlet's busted *_spec.lua suite, run against the real mudix
-// app in a browser. Imported by busted.spec.ts (the per-test suite + drift guard)
-// and genBustedManifest.ts (the manifest generator).
+// app in a browser. Imported by bustedRecord.ts (globalSetup, which records the
+// corpus), by busted.spec.ts (which turns that recording into tests) and by
+// bustedFailures.ts (the triage runner).
 
 export type BustedFailure = { spec: string; name: string; message: string; trace?: string };
 export type BustedTest = { spec: string; name: string; status: string; message?: string };
@@ -19,28 +21,14 @@ const SPECS_DIR = fileURLToPath(new URL('../src/scripting/lua/specs/', import.me
 
 // Every spec in src/scripting/lua/specs/ (`<Name>_spec.lua` → `<Name>`),
 // discovered from disk rather than hand-listed, so a re-synced/added/removed spec
-// needs no maintenance here — it just shows up. (busted.spec.ts and
-// genBustedManifest.ts both run in Node, so the filesystem read is available at
-// collection time.) All of them pass in-app and are asserted per-it() in
-// busted.spec.ts; when re-syncing a spec that isn't passing yet, expect per-it()
-// failures here until the gap is closed.
+// needs no maintenance here — it just shows up, gets recorded, and gets its
+// it()s asserted. (This runs in Node, so the filesystem read is available both to
+// globalSetup and at collection time.) All of them pass in-app; when re-syncing a
+// spec that isn't passing yet, expect per-it() failures until the gap is closed.
 export const ALL_SPECS: string[] = fs.readdirSync(SPECS_DIR)
     .filter(f => f.endsWith('_spec.lua'))
     .map(f => f.slice(0, -'_spec.lua'.length))
     .sort();
-
-// The committed per-it manifest: { spec: [fullName, ...] }. The drift guard
-// fails if a spec's live it() set diverges from this, so regenerate with
-// `npm run gen:busted-manifest` whenever specs are re-synced.
-export const manifestPath = fileURLToPath(new URL('./busted.manifest.json', import.meta.url));
-
-export function loadManifest(): Record<string, string[]> {
-    try {
-        return JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as Record<string, string[]>;
-    } catch {
-        return {}; // not generated yet — per-it tests just don't materialise
-    }
-}
 
 // Register the non-dialing connection (store v20) for every navigation on this
 // page. The bogus ws URL + the deep-link's withConnect=false keep it from
@@ -189,17 +177,47 @@ export function runSpec(page: Page, spec: string): Promise<BustedResults> {
     );
 }
 
-// One full run per spec, cached for the worker. The whole suite runs single-worker
-// (workers:1, fullyParallel:false), so this module-scoped Map is shared across
-// every test in the file: the first test for a spec boots a page and runs the
-// whole spec; the rest (and the drift guard) reuse the cached results without
-// touching their page. A single it() re-run in isolation just boots on cache miss.
-const resultCache = new Map<string, BustedResults>();
-export async function specResults(page: Page, spec: string): Promise<BustedResults> {
-    const cached = resultCache.get(spec);
-    if (cached) return cached;
-    await bootProfile(page);
-    const r = await runSpec(page, spec);
-    resultCache.set(spec, r);
-    return r;
+// ── The recorded run ─────────────────────────────────────────────────────────
+// Where globalSetup (bustedRecord.ts) leaves the corpus results, and what
+// busted.spec.ts reads at collection time to build the test tree. Gitignored: it
+// is rewritten by every run whose inputs changed, so a committed copy could only
+// ever be a stale second source of truth.
+export type RecordedRun = { fingerprint: string; results: Record<string, BustedResults> };
+export const resultsPath = fileURLToPath(new URL('./.busted-results.json', import.meta.url));
+
+export function loadRecordedRun(): RecordedRun | null {
+    try {
+        return JSON.parse(fs.readFileSync(resultsPath, 'utf8')) as RecordedRun;
+    } catch {
+        return null; // not recorded yet — globalSetup is about to
+    }
+}
+
+// What a recorded run is a run OF: every input that could change its outcome —
+// the app, the harness, the vendored Lua and the spec corpus alike. Cheap to
+// compute (a stat per file, no reads) and it only has to answer one question:
+// may the previous recording stand, or does this run have to sweep the corpus
+// again? Anything not covered here would let a stale run be reused, so the list
+// is deliberately coarse — src, e2e and the build config, whole.
+const FINGERPRINT_ROOTS = ['src', 'e2e', 'index.html', 'package.json', 'vite.config.ts'];
+
+export function fingerprint(): string {
+    const root = fileURLToPath(new URL('../', import.meta.url));
+    const hash = createHash('sha1');
+    const walk = (rel: string) => {
+        const abs = root + rel;
+        const stat = fs.statSync(abs, { throwIfNoEntry: false });
+        if (!stat) return;
+        if (stat.isDirectory()) {
+            for (const entry of fs.readdirSync(abs).sort()) walk(`${rel}/${entry}`);
+            return;
+        }
+        // The recording itself, and the triage runner's scratch output, are
+        // products of a run — fingerprinting them would invalidate the very file
+        // being written the moment it is written.
+        if (rel.endsWith('.busted-results.json') || rel.endsWith('busted-failures.json')) return;
+        hash.update([rel, stat.size, stat.mtimeMs].join('|') + ';');
+    };
+    for (const entry of FINGERPRINT_ROOTS) walk(entry);
+    return hash.digest('hex');
 }

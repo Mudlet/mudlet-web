@@ -110,5 +110,4 @@ then needs no maintenance: it reads that file's `?url` imports and copies exactl
 those into `dist-lib`, so an archive can't be imported and left out of the
 library build.
 
-Also keep `../specs/SYNCED.md` on the same commit, and re-run
-`yarn gen:busted-manifest` when the spec corpus moves.
+Also keep `../specs/SYNCED.md` on the same commit.

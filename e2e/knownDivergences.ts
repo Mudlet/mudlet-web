@@ -19,7 +19,7 @@
 // disagree with the reasoning, which they cannot do from a symptom.
 
 export interface KnownDivergence {
-    /** Full `describe / describe / it` name, exactly as in busted.manifest.json. */
+    /** Full `describe / describe / it` name, exactly as busted reports it. */
     name: string;
     /** Why mudix does not do this. Shown as the annotation on the expected failure. */
     reason: string;

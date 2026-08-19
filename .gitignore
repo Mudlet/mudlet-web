@@ -44,6 +44,11 @@ Thumbs.db
 /playwright-report/
 /blob-report/
 /playwright/.cache/
+# The busted corpus recording: globalSetup rewrites it whenever anything under
+# src/ or e2e/ has changed, and the suite's whole test tree is built from it. A
+# committed copy could only ever be a stale second source of truth.
+/e2e/.busted-results.json
+
 # Scratch output of `yarn busted:failures` — a snapshot of one run, meant for
 # diffing against the next one locally, not for committing.
 /e2e/busted-failures.json

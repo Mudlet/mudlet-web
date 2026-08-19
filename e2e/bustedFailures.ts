@@ -6,12 +6,11 @@ import { KNOWN_DIVERGENCES, knownDivergence } from './knownDivergences';
 // Triage runner for the busted corpus:  `yarn busted:failures [Other,Media]`
 //
 // Same corpus and the same real app as busted.spec.ts, but one Playwright test
-// for the whole sweep instead of one per Mudlet it(). That matters when you're
-// working through a batch of failures: Playwright discards the worker after each
-// failed test, which throws away bustedHarness's per-spec result cache, so the
-// per-it() suite re-runs a whole spec for every failure it reports. Here each
-// spec runs exactly once no matter how much is red, and every failure prints
-// with its assertion message — the thing you actually need to fix it.
+// for the whole sweep instead of one per Mudlet it(), and every failure printed
+// with its assertion message — the thing you actually need to fix it. That is
+// what makes it the tool for working through a batch of failures: the normal
+// suite reports each it() as its own node, which is the wrong shape when you
+// want the whole picture at once, and it stops at the specs you asked for.
 //
 // Filter with SPECS (comma-separated, matched case-insensitively as substrings)
 // to iterate on one area:  SPECS=Other yarn busted:failures

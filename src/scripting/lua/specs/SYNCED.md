@@ -34,10 +34,10 @@ yarn sync:mudlet-specs --from /path/to/Mudlet --fetch   # local checkout
 
 `scripts/sync-mudlet-specs.mjs` pins one commit, copies every `*_spec.lua`
 verbatim (deleting any Mudlet retired — `--keep-removed` opts out), and rewrites
-the header above. New specs need no wiring: `bustedHarness.ts` discovers them
-from disk and `LuaRuntime.ts` bundles them via `import.meta.glob`. Do regenerate
-the per-it() manifest afterwards (`yarn gen:busted-manifest`) — the drift guard
-in `e2e/busted.spec.ts` fails until you do.
+the header above. New specs need no wiring at all: `bustedHarness.ts` discovers them
+from disk, `LuaRuntime.ts` bundles them via `import.meta.glob`, and the e2e suite
+records and asserts whatever it finds — there is no manifest to regenerate, since
+the test names and their results come from the same run.
 
 Don't edit the spec bodies — divergence from upstream should only ever come from
 a deliberate re-sync, so a failing spec always means a real mudix gap.

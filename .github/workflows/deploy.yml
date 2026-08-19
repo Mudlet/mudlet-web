@@ -64,11 +64,11 @@ jobs:
       - name: Install Playwright system deps
         if: steps.playwright-cache.outputs.cache-hit == 'true'
         run: yarn playwright install-deps chromium
-      # `yarn playwright test` on purpose, not `yarn test:e2e`: the latter's
-      # pretest hook regenerates e2e/busted.manifest.json, which would double the
-      # run time and silently paper over drift. The committed manifest is the
-      # contract here — busted.spec.ts's drift guard fails if it went stale.
-      - run: yarn playwright test
+      # One command records the corpus and asserts it: globalSetup sweeps all 41
+      # specs in the real app, and the test tree is built from that recording (see
+      # playwright.config.ts). Nothing is committed or pre-generated, so there is
+      # no manifest step here and nothing that can go stale between runs.
+      - run: yarn test:e2e
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
