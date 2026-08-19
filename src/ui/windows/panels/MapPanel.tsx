@@ -374,7 +374,24 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
         setAreas(areaList);
 
         if (areaList.length === 0) {
+            // The map just went away — deleteMap(), or a load that failed and
+            // reset the store. Everything derived from the old map has to go
+            // with it, or the empty-state overlay comes up with the previous
+            // map's info block still painted over it, its marker still on the
+            // canvas, and a stale area/level in the toolbar. Dropping the
+            // displayed area is what empties the info block: recomputeMapInfos
+            // clears it when there is no area to describe.
             setStatus('empty');
+            setLevels([]);
+            setCurrentArea(null);
+            currentAreaRef.current = null;
+            renderer.clearPosition();
+            recomputeMapInfos();
+            // Whatever map arrives next opens fresh: drop the one-time fit latch
+            // so it is re-fitted and re-centered instead of inheriting this
+            // one's camera (same reasoning as the loadMap callback's reset).
+            needsFitRef.current = false;
+            viewAppliedRef.current = false;
             return false;
         }
 
@@ -1175,6 +1192,17 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
         return () => { manager.onMmpMapLocationChanged = undefined; };
     }, [manager]);
 
+    // Mudlet's "Create new map" (T2DMap::slot_newMap, offered from the mapper's
+    // context menu while the profile has no map): seed a one-room map so there
+    // is something to build on without loading or downloading anything. Mudlet
+    // only marks the map unsaved at this point; here the map's home is the
+    // connection's IndexedDB slot, and nothing else would ever write it, so the
+    // seed is persisted straight away — same as the load paths do.
+    const handleCreateMap = useCallback(() => {
+        manager.mapStore.createNewMap();
+        void manager.saveMapAsync();
+    }, [manager]);
+
     const handleMapFile = useCallback(async (picked: PickedFile[]) => {
         const file = picked[0]?.file;
         if (!file) return;
@@ -1434,6 +1462,11 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
                                     Download map from game
                                 </button>
                             )}
+                            {/* No "Create empty map" here: Mudlet only offers it
+                                while the profile has no map (it would discard
+                                one that exists), and in that state this whole
+                                toolbar sits under the empty-state overlay. The
+                                overlay carries the button instead. */}
                             <button
                                 className="map-hamburger-item"
                                 onMouseDown={() => { setMenuOpen(false); setEditorOpen(true); }}
@@ -1531,6 +1564,9 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
                             Download map from game
                         </button>
                     )}
+                    <button className="map-load-btn" onClick={handleCreateMap}>
+                        Create empty map
+                    </button>
                     <span className="map-overlay-hint">…or run your mapper script to add rooms</span>
                 </div>
             )}

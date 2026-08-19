@@ -812,6 +812,27 @@ export class MapStore {
         return true;
     }
 
+    /**
+     * Mudlet `T2DMap::slot_newMap` — the mapper's "Create new map" action,
+     * offered when the profile has no map at all. Wipes to a fresh empty map
+     * and seeds it with a single room at the origin of the default area (-1),
+     * marked as the player's position so the marker and the opening view both
+     * land on it. Returns the new room's id.
+     */
+    createNewMap(): number {
+        this.newEmptyMap();
+        const id = this.createRoomID();
+        this.addRoom(id);
+        // Mudlet parks the seed room in the default area. setRoomArea refuses
+        // any areaID below 1, so resetRoomArea is the way there (it is the same
+        // TRoom::setArea call Mudlet's `setRoomArea(roomID, -1, false)` makes).
+        this.resetRoomArea(id);
+        this.setRoomCoordinates(id, 0, 0, 0);
+        this.setPlayerRoom(id);
+        this.notify();
+        return id;
+    }
+
     toRendererData(): MapRendererData | null {
         if (this.rooms.size === 0) return null;
         try { return readerExport(this.toMudletMap()); } catch { return null; }
@@ -2027,7 +2048,19 @@ export class MapStore {
             oldArea.rooms = oldArea.rooms.filter(r => r !== id);
             this.updateAreaBounds(room.area);
         }
+        // Mudlet's TRoom::setArea(-1) also files the room under the default
+        // area's own room list (creating the TArea when it is missing). That
+        // list is what the renderer and every area-scoped query read, so a room
+        // reachable only through `room.area` would vanish off the map.
+        let target = this.areas.get(-1);
+        if (!target) {
+            target = makeArea();
+            this.areas.set(-1, target);
+            if (!this.areaNames.has(-1)) this.areaNames.set(-1, 'Default Area');
+        }
         room.area = -1;
+        if (!target.rooms.includes(id)) target.rooms.push(id);
+        this.updateAreaBounds(-1);
         this.notify();
         return true;
     }
