@@ -55,9 +55,14 @@ export class VideoManager {
      * still reports what the script asked for.
      */
     private muted: Record<MediaOrigin, boolean> = { api: false, game: false };
+    /** Fires once the element has actually begun playing — mirrors Mudlet's
+     *  sysMediaStarted. Deliberately after `el.play()` resolves rather than
+     *  beside the caption below it: autoplay policy can reject the play, and an
+     *  event announcing a playback that never started is worse than none. */
+    onStarted: ((file: string, path: string) => void) | null = null;
     /** Fires when a video ends naturally or is stopped — mirrors Mudlet's
      *  sysMediaFinished. */
-    onEnded: ((name: string, path: string) => void) | null = null;
+    onEnded: ((file: string, path: string) => void) | null = null;
     /** Raised when a video starts ('plays') or finishes ('stops') so the engine
      *  can print a closed caption (Mudlet's enableClosedCaption). */
     onMediaCaption: ((info: MediaCaptionInfo) => void) | null = null;
@@ -154,16 +159,18 @@ export class VideoManager {
             }
             this.stopByName(name);
             this.onMediaCaption?.({ kind: 'video', name, caption: opts.caption, action: 'stops' });
-            this.onEnded?.(name, path);
+            this.onEnded?.(name.split(/[\\/]/).pop() || name, path);
         });
         mount.appendChild(el);
         this.active.set(name, entry);
         this.onMediaCaption?.({ kind: 'video', name, caption: opts.caption, action: 'plays' });
         try {
             await el.play();
+            this.onStarted?.(name.split(/[\\/]/).pop() || name, path);
         } catch {
             // Autoplay may be blocked by user-gesture policy; the element still
-            // exists and the user can recover via pause/resume scripts.
+            // exists and the user can recover via pause/resume scripts. No
+            // sysMediaStarted is raised — nothing started.
         }
         return true;
     }
@@ -208,6 +215,7 @@ export class VideoManager {
         this.prefetched.clear();
         this.loader = null;
         this.getMount = null;
+        this.onStarted = null;
         this.onEnded = null;
     }
 }

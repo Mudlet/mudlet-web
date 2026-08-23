@@ -20,7 +20,7 @@
 //     same as no audio at all — the samples have to be genuinely non-zero,
 //     just attenuated past the audible floor.
 
-import type { MediaCaptionInfo } from './closedCaption';
+import type { MediaCaptionInfo, MediaKind } from './closedCaption';
 
 type LoaderFn = (path: string) => Promise<ArrayBuffer | null>;
 
@@ -210,12 +210,24 @@ export class SoundManager {
      */
     private muted: Record<MediaOrigin, boolean> = { api: false, game: false };
     /**
+     * Raised when a tracked source starts playing. ScriptingEngine wires this
+     * to Mudlet's `sysMediaStarted(file, path, mediaType, key, tag)` — the same
+     * five arguments TMedia.cpp appends when a player reaches PlayingState.
+     *
+     * Fired after `source.start()` has actually been accepted, so a decode
+     * failure or a rejected start never announces a playback that isn't
+     * happening. Mudlet withholds it for preload-volume loads; mudix has no
+     * preload volume (`preload()` only warms the decode cache and never builds
+     * a source), so there is nothing to withhold it for.
+     */
+    onMediaStarted?: (file: string, path: string, mediaType: MediaKind, key: string, tag: string) => void;
+    /**
      * Raised when a tracked source ends — whether it played out naturally or
      * was stopped. ScriptingEngine wires this to raise Mudlet's
-     * `sysMediaFinished(name, path)`. `stopAll()` nulls each source's onended
-     * before stopping, so engine teardown never fires it.
+     * `sysMediaFinished(file, path, mediaType, key, tag)`. `stopAll()` nulls
+     * each source's onended before stopping, so engine teardown never fires it.
      */
-    onMediaFinished?: (name: string, path: string) => void;
+    onMediaFinished?: (file: string, path: string, mediaType: MediaKind, key: string, tag: string) => void;
     /**
      * Raised when a tracked source starts ('plays') or ends ('stops'), so the
      * engine can print a closed caption (Mudlet's enableClosedCaption). Fires
@@ -502,16 +514,19 @@ export class SoundManager {
         this.active.set(id, record);
         ensureKeepAlive();
         this.onMediaCaption?.({ kind, name, key: opts.key, caption: opts.caption, action: 'plays' });
+        // Mudlet's media events are (file, path, mediaType, key, tag): the URL's
+        // trailing filename, then its full path. We resolve a path for playback,
+        // so split the name the script passed in the same way. An absent key or
+        // tag is an empty QString there, so it must be '' here and not
+        // undefined — a nil would shift every argument after it in Lua.
+        const filename = name.split(/[\\/]/).pop() || name;
+        this.onMediaStarted?.(filename, name, kind, opts.key ?? '', opts.tag ?? '');
 
         source.onended = () => {
             this.active.delete(id);
             if (kind === 'music') this.updateMediaSessionState();
             this.onMediaCaption?.({ kind, name, key: opts.key, caption: opts.caption, action: 'stops' });
-            // Mudlet's sysMediaFinished args are (name, path). We resolve a path
-            // for playback, so split it into the trailing filename and the full
-            // path the script passed in.
-            const filename = name.split(/[\\/]/).pop() || name;
-            this.onMediaFinished?.(filename, name);
+            this.onMediaFinished?.(filename, name, kind, opts.key ?? '', opts.tag ?? '');
         };
 
         if (kind === 'music') this.updateMediaSessionState(name);

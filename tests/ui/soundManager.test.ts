@@ -5,6 +5,9 @@ import { SoundManager } from '../../src/ui/sound/SoundManager';
 // API, so we stub exactly that surface and record every GainNode created so the
 // test can read back the effective gain a source was given.
 const createdGains: FakeGain[] = [];
+/** Every FakeSource handed out, so a test can end one on demand — Web Audio
+ *  reports the end of a source through onended, and nothing else does. */
+const createdSources: FakeSource[] = [];
 
 class FakeGainParam {
     value = 0;
@@ -29,7 +32,7 @@ class FakeAudioContext {
     currentTime = 0;
     sampleRate = 44100;
     destination = {};
-    createBufferSource() { return new FakeSource(); }
+    createBufferSource() { const s = new FakeSource(); createdSources.push(s); return s; }
     createGain() { const g = new FakeGain(); createdGains.push(g); return g; }
     createBuffer(_ch: number, len: number, sr: number) {
         return { duration: len / sr, getChannelData: () => new Float32Array(len) };
@@ -110,5 +113,83 @@ describe('SoundManager per-origin mute gates', () => {
         mgr.setOriginMuted('api', true);
         const g = await playAndGetGain(mgr, { name: 'd.wav', volume: 50 });
         expect(g.gain.value).toBe(0);
+    });
+});
+
+// Mudlet's media events (TMedia.cpp) all carry the same five arguments: the
+// source URL's filename, its path, the media type, and the key and tag the
+// playback was given. Media_spec asserts exactly that shape — and cannot run
+// here, because its own gate waits on sysMediaStarted through the browser event
+// loop that a synchronous busted run sits on top of (see e2e/knownDivergences.ts
+// for the same constraint on the TTS specs). So the payload is pinned here
+// instead, against the real SoundManager.
+describe('SoundManager media event payloads', () => {
+    beforeAll(() => {
+        (window as unknown as { AudioContext: unknown }).AudioContext = FakeAudioContext;
+    });
+
+    function makeManager() {
+        const mgr = new SoundManager();
+        mgr.setLoader(async () => new ArrayBuffer(8));
+        return mgr;
+    }
+
+    type Payload = [string, string, string, string, string];
+
+    it('reports the file, path, type, key and tag when a sound starts', async () => {
+        const mgr = makeManager();
+        const started: Payload[] = [];
+        mgr.onMediaStarted = (...args) => started.push(args as Payload);
+
+        await mgr.playSound({ name: 'media/hit.wav', volume: 50, key: 'busted-key', tag: 'busted-tag' });
+
+        expect(started).toEqual([['hit.wav', 'media/hit.wav', 'sound', 'busted-key', 'busted-tag']]);
+    });
+
+    it('names music as its own media type', async () => {
+        const mgr = makeManager();
+        const started: Payload[] = [];
+        mgr.onMediaStarted = (...args) => started.push(args as Payload);
+
+        await mgr.playMusic({ name: 'theme.mp3', volume: 50 });
+
+        expect(started[0][2]).toBe('music');
+    });
+
+    it('sends empty strings, not undefined, for an absent key and tag', async () => {
+        const mgr = makeManager();
+        const started: Payload[] = [];
+        mgr.onMediaStarted = (...args) => started.push(args as Payload);
+
+        await mgr.playSound({ name: 'bare.wav', volume: 50 });
+
+        // A nil in Lua would shift every argument after it, so a script reading
+        // the tag positionally would read nothing at all.
+        expect(started[0][3]).toBe('');
+        expect(started[0][4]).toBe('');
+    });
+
+    it('gives the finished event the same five arguments as the started one', async () => {
+        const mgr = makeManager();
+        const started: Payload[] = [];
+        const finished: Payload[] = [];
+        mgr.onMediaStarted = (...args) => started.push(args as Payload);
+        mgr.onMediaFinished = (...args) => finished.push(args as Payload);
+
+        createdSources.length = 0;
+        await mgr.playSound({ name: 'media/loop.wav', volume: 50, key: 'k', tag: 't' });
+        createdSources[0].onended?.();
+
+        expect(finished).toEqual(started);
+    });
+
+    it('does not announce a start for a sound whose decode fails', async () => {
+        const mgr = makeManager();
+        mgr.setLoader(async () => { throw new Error('no such file'); });
+        const started: Payload[] = [];
+        mgr.onMediaStarted = (...args) => started.push(args as Payload);
+
+        expect(await mgr.playSound({ name: 'missing.wav', volume: 50 })).toBe(-1);
+        expect(started).toEqual([]);
     });
 });
