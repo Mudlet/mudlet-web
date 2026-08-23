@@ -11,6 +11,29 @@ const CLIENT_GUI_MODULE = "client.gui";
 
 export type TelnetOptionHandler = (data: string) => string;
 
+const utf8Decoder = new TextDecoder("utf-8", { fatal: false });
+const utf8Encoder = new TextEncoder();
+
+/** Decode a Latin-1 byte-string (one char per byte, as MudClient produces from
+ *  the socket) as UTF-8. GMCP bodies are JSON, which the spec — and Mudlet's
+ *  `cTelnet::setGMCPVariables`, whose comment reads "JSON (and thus the GMCP
+ *  data) is always utf8" — defines as always UTF-8, independent of the
+ *  session's text encoding. */
+const fromByteString = (s: string): string => {
+    const bytes = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 0xff;
+    return utf8Decoder.decode(bytes);
+};
+
+/** UTF-8-encode into a Latin-1 byte-string, for MudClient.sendBytes (which
+ *  writes `charCodeAt(i) & 0xff` per char). The inverse of fromByteString. */
+const toByteString = (s: string): string => {
+    const bytes = utf8Encoder.encode(s);
+    let out = "";
+    for (let i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]);
+    return out;
+};
+
 export const createTelnetOptionParser = (
     onSubnegotiation: (data: string) => void,
     opts: {
@@ -61,7 +84,7 @@ const parseGmcpPayload = (
         return;
     }
 
-    const gmcpData = data.substring(1);
+    const gmcpData = fromByteString(data.substring(1));
     if (!gmcpData.length) return;
 
     // The data part is optional per the GMCP spec — a message may be just a
@@ -106,14 +129,18 @@ const parseGmcpPayload = (
 
 export const encodeGmcp = (path: string, payload: unknown): string => {
     const data = typeof payload === "string" ? payload : JSON.stringify(payload ?? {});
-    return `${GMCP_IAC}${GMCP_SB}${String.fromCharCode(GMCP_COMMAND_CODE)}${path} ${data}${GMCP_IAC}${GMCP_SE}`;
+    return `${GMCP_IAC}${GMCP_SB}${String.fromCharCode(GMCP_COMMAND_CODE)}${toByteString(`${path} ${data}`)}${GMCP_IAC}${GMCP_SE}`;
 };
 
 /** Encode a GMCP frame from a single pre-formatted body (e.g. `"Module.Sub args"`).
- *  Matches Mudlet's `sendGMCP` semantics — the caller controls the exact bytes
- *  between IAC SB GMCP and IAC SE. */
+ *  Mudlet's `sendGMCP` semantics — the caller controls the body between IAC SB
+ *  GMCP and IAC SE — except that the body is transcoded to UTF-8 rather than to
+ *  the session's outgoing encoding, so it can't be used to place arbitrary raw
+ *  bytes on the wire. UTF-8 is what the GMCP spec asks for, and it's also what
+ *  keeps a 0xFF byte (which would need IAC-escaping inside a subnegotiation)
+ *  out of the body in the first place. */
 export const encodeGmcpRaw = (message: string): string => {
-    return `${GMCP_IAC}${GMCP_SB}${String.fromCharCode(GMCP_COMMAND_CODE)}${message}${GMCP_IAC}${GMCP_SE}`;
+    return `${GMCP_IAC}${GMCP_SB}${String.fromCharCode(GMCP_COMMAND_CODE)}${toByteString(message)}${GMCP_IAC}${GMCP_SE}`;
 };
 
 export interface GmcpStreamOptions {
