@@ -11,6 +11,7 @@ import { registerVfs, unregisterVfs } from './scripting/vfs/vfsBridge';
 import { loadProfileData } from './storage/profileVfsData';
 import { isMudletProfileVfs, loadMudletLinkedProfile } from './import/mudletLink';
 import { loadFolderHandle, checkFolderPermission, requestFolderPermission, clearFolderHandle } from './scripting/vfs/folderHandleStore';
+import { ensurePersistentStorage } from './storage/persistentStorage';
 import { useAppStore, type MudConnection } from './storage';
 import { getBrand, isBrandedMode, brandConnectionData, matchBrandProfile } from './branding';
 
@@ -101,6 +102,12 @@ export default function App() {
 
     const openProfile = (connection: MudConnection, withConnect: boolean) => {
         setAutoConnect(withConnect);
+        // Opening a profile is the point the user commits real data to browser
+        // storage, and it's a click, so Firefox's permission prompt has the
+        // activation it wants. Fire-and-forget: nothing below depends on it, and
+        // a refusal only means the storage docs' "export to back up" advice
+        // matters more.
+        void ensurePersistentStorage();
         const proceed = () => {
             setActiveConnection(connection);
             setProfileQuery(connection.id);

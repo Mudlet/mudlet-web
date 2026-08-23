@@ -28,7 +28,11 @@ Browser storage is not a filing cabinet. Data disappears when:
 - **You're in a private / incognito window.** Everything is discarded when the
   window closes.
 - **The browser reclaims space.** Under storage pressure a browser may evict a
-  site's data. Rare, but real.
+  site's data. Mudlet Web asks to be exempted the first time you open or import a
+  profile, but it's a request, not a setting — the browser decides. Chrome, Edge
+  and Safari decide silently from how much you've used the site, so the more you
+  play the likelier it is granted; Firefox asks you directly. Granted or not,
+  keep exporting.
 - **You switch browser, device, or address.** Storage is scoped to one origin in
   one browser profile. Chrome and Firefox on the same machine see nothing of each
   other's data.

@@ -8,6 +8,7 @@ import { useOpenProfiles } from './useOpenProfiles';
 import { AboutModal } from './AboutModal';
 import { HelpModal } from './HelpModal';
 import { ProfileExportModal } from './ProfileExportModal';
+import { ensurePersistentStorage } from '../storage/persistentStorage';
 import { useAppStore, type MudConnection } from '../storage';
 import { getBrand } from '../branding';
 import { extractMudletProfileZipAll, resolveModulesFromTree, addModuleToBundle, type MudletProfileBundle } from '../import/mudletProfileImport';
@@ -57,6 +58,10 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
     const runImport = async (fn: () => Promise<void>) => {
         setImporting(true);
         setImportError(null);
+        // Someone importing a years-old Mudlet profile has just handed the browser
+        // the data they'd most hate to lose — the best moment to ask for storage
+        // that survives eviction. Best-effort and never blocks the import.
+        void ensurePersistentStorage();
         try {
             await fn();
         } catch (err) {
