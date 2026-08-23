@@ -1,5 +1,5 @@
 import { fromByteString, toByteString, toHex } from "./byteString";
-import { GMCP_COMMAND_CODE, GMCP_IAC, GMCP_SB, GMCP_SE, TELNET_EOR, TELNET_GA, TELNET_OPTION_REGEX } from "./constants";
+import { GMCP_COMMAND_CODE, GMCP_IAC, GMCP_SB, GMCP_SE, TELNET_EOR, TELNET_GA, TELNET_OPTION_REGEX, TELNET_OPTION_REGEX_NO_SB } from "./constants";
 
 export interface GmcpEnvelope {
     path: string;
@@ -47,7 +47,8 @@ export const stripTelnetSequences = (data: string, handler: TelnetOptionHandler)
     // IAC (\xFF) left is a lone trailing one — an option/command split across
     // frames — so drop it. (We no longer blanket-strip \xF9, which the old
     // regex mis-handled for GA and which is a legitimate text byte otherwise.)
-    return data.replace(TELNET_OPTION_REGEX, handler).replace(/\xFF/g, "");
+    const re = data.includes(GMCP_IAC + GMCP_SE) ? TELNET_OPTION_REGEX : TELNET_OPTION_REGEX_NO_SB;
+    return data.replace(re, handler).replace(/\xFF/g, "");
 };
 
 const parseGmcpPayload = (

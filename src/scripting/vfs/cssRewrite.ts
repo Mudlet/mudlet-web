@@ -5,7 +5,14 @@ import { isQtResourcePath, qtResourceUrl } from '../../assets/qt-resources';
 // Match url(<ref>) where <ref> is unquoted, single-quoted, or double-quoted.
 // The CSS spec allows whitespace around the ref but no balanced parens inside,
 // which is fine for the asset URLs scripts emit.
-const URL_RE = /\burl\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*?))\s*\)/g;
+//
+// The `\s*` runs belong to the *quoted* branches only. Wrapping the whole
+// ref as `\s*(?:…|([^)]*?))\s*` let the engine try every way of splitting
+// one whitespace run between the leading `\s*`, the lazy ref and the
+// trailing `\s*`, so an unterminated `url(` followed by a few KB of spaces
+// took cubic time (5.6s at 4KB, 108s at 8KB). The unquoted branch now
+// swallows its own padding instead — harmless, since vfsRefToUrl trims it.
+const URL_RE = /\burl\((?:\s*"([^"]*)"\s*|\s*'([^']*)'\s*|([^)]*))\)/g;
 
 const PASSTHROUGH_PREFIX = /^(?:https?:|data:|blob:|\/__vfs\/)/i;
 
