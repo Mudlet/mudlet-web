@@ -52,7 +52,7 @@ const MUDLET_MAPPER: DefaultPackage = {
  *  profiles that already have the old one — safe because the mapper keeps its
  *  state in `<profile>/map downloads/`, outside the package dir a reinstall wipes. */
 const GENERIC_MAPPER: DefaultPackage = {
-    name: 'generic_mapper', filename: 'generic_mapper.mpackage', url: genericMapperUrl, version: '2.1.10',
+    name: 'generic_mapper', filename: 'generic_mapper.mpackage', url: genericMapperUrl, version: '2.1.11',
 };
 
 /** Mudlet's starter interface: an adjustable dock with the map, tabbed chat and
@@ -72,7 +72,7 @@ const BASE_UI: DefaultPackage = {
  *  reason the mapper's is — and here it also carries the fixed archive to
  *  profiles still holding the versionless loose-XML install. */
 const GUI_DROP: DefaultPackage = {
-    name: 'gui-drop', filename: 'gui-drop.mpackage', url: guiDropUrl, version: '1.2',
+    name: 'gui-drop', filename: 'gui-drop.mpackage', url: guiDropUrl, version: '1.3',
 };
 
 /**

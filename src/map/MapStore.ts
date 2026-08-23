@@ -37,8 +37,8 @@ const DIR_NAME_TO_INT: Record<string, number> = {
     sw: 8, southwest: 8,
     u: 9, up: 9,
     d: 10, down: 10,
-    in: 11,
-    out: 12,
+    i: 11, in: 11,
+    o: 12, out: 12,
 };
 
 // Complementary direction for each stock direction (Mudlet's scmReverseDirections):

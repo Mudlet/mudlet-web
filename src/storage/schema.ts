@@ -401,6 +401,11 @@ export interface MapperSettings {
     backgroundColor?: string;
     /** renderer.settings.lineColor — exit color, hex (#rrggbb). */
     lineColor?: string;
+    /** Mudlet `TMap::mShowDefaultArea` — whether the unnamed catch-all area
+     *  rooms land in before they are filed anywhere is offered in the area
+     *  list. Set from Lua by `setDefaultAreaVisible`; read by MapPanel's area
+     *  dropdown. Visible unless turned off. */
+    showDefaultArea?: boolean;
     /** renderer.settings.gridEnabled — background grid overlay. */
     gridEnabled?: boolean;
     /** renderer.settings.lodEnabled — level-of-detail for very dense planes.
@@ -487,6 +492,7 @@ export const MAPPER_DEFAULTS: Required<MapperSettings> = {
     lineWidth: 0.025,
     backgroundColor: '#000000',
     lineColor: '#e1ffe1',
+    showDefaultArea: true,
     gridEnabled: false,
     // LOD budgets mirror the renderer's createSettings() defaults; `lodEnabled`
     // deliberately does NOT (the renderer defaults it off for back-compat,

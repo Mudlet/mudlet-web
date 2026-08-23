@@ -197,13 +197,37 @@ export default class Pcre2 {
     }
 
     matchAll(subject: string): Pcre2Match[] {
-        let safety = 1000;
+        // Mudlet's global-match loop (TAlias::match, TTrigger::match_perl):
+        // resume at the end of the last match, and when that match was
+        // zero-width step past the position rather than asking PCRE2 for the
+        // same empty match at the same offset for ever. Upstream's wrapper only
+        // does `start = iter[0].end`, so a pattern that can match nothing —
+        // `(\d*)`, the one Trigger_spec and Alias_spec use — spins until the
+        // safety cap fires, and that throw takes the whole line's trigger pass
+        // down with it.
+        //
+        // Mudlet retries at the same offset with PCRE2_NOTEMPTY_ATSTART before
+        // stepping; the `match` export this wrapper is built on takes no options
+        // argument, so the step here is unconditional. The two differ only for a
+        // pattern that prefers an empty match where a non-empty one also starts.
         const results: Pcre2Match[] = [];
         let start = 0;
+        // Stepping one code point at a time over a long line is legitimate, so
+        // the cap has to scale with the subject. It is only here so that a bug
+        // in the loop terminates instead of hanging the tab.
+        let safety = 2 * subject.length + 1000;
         let iter: Pcre2Match | null;
         while ((iter = this.match(subject, start)) !== null) {
             results.push(iter);
-            start = iter[0].end;
+            const whole = iter[0];
+            if (whole.end > whole.start) {
+                start = whole.end;
+            } else {
+                // A surrogate pair is one code point but two UTF-16 code units,
+                // and PCRE2 in 16-bit UTF mode rejects an offset splitting one.
+                const cp = subject.codePointAt(whole.end);
+                start = whole.end + (cp !== undefined && cp > 0xffff ? 2 : 1);
+            }
             safety--;
             if (safety <= 0) throw new Error('safety limit exceeded');
         }

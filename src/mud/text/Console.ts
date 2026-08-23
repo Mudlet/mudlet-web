@@ -150,13 +150,22 @@ export class Console {
     }
 
     private evict(): void {
+        if (this.history.length <= this._maxLines) return;
+        // Mudlet trims a BATCH at a time (TBuffer::shrinkBuffer): once the
+        // buffer is over its limit it drops `batchDeleteSize` lines in one go,
+        // and sysBufferShrinkEvent carries that count so a script can correct a
+        // saved line index by exactly the amount every surviving index moved.
+        // Evicting one line per appended line instead announced a stream of 1s
+        // and left the buffer pinned to the limit.
         let removed = 0;
         while (this.history.length > this._maxLines) {
-            const evicted = this.history.shift()!;
-            evicted.removeFromDom();
-            if (this.cursorIdx > 0) this.cursorIdx--;
-            removed++;
+            const batch = Math.min(Math.max(1, this._batchDeleteSize), this.history.length);
+            for (let i = 0; i < batch; i++) this.history.shift()!.removeFromDom();
+            removed += batch;
         }
+        // The user cursor keeps the index it was given rather than following the
+        // line it was parked on — the known limitation sysBufferShrinkEvent
+        // exists to work around, and what Mudlet does.
         if (removed > 0) this.onBufferShrink?.(removed);
     }
 
@@ -263,6 +272,14 @@ export class Console {
      *  behaviour: `isPrompt()` follows the cursor, so moveCursor + isPrompt can
      *  inspect any historical line's prompt status, not just the most recent. */
     cursorOnPrompt(): boolean { return this.history[this.cursor]?.isPrompt ?? false; }
+
+    /** Whether the cursor was left one slot beyond the last line — the state
+     *  deleteLine() leaves behind when it removes the line the cursor was on and
+     *  there is nothing after it to shift up. Distinct from the ordinary
+     *  "following the end" cursor (index -1), which every read treats as the last
+     *  line. Reads cursorIdx rather than `cursor`, which clamps and so can never
+     *  report either state. */
+    cursorPastEnd(): boolean { return this.cursorIdx >= this.history.length; }
 
     deleteLine(): void {
         const idx = this.cursor;

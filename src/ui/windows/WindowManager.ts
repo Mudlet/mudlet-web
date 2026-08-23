@@ -1809,6 +1809,10 @@ export class WindowManager {
      *  resumes tail mode (scroll-to-bottom); negative values count from the end
      *  (Mudlet semantics). Returns false if the wrapper is not mounted. */
     scrollToLine(id: string, line: number | undefined): boolean {
+        // disableScrolling parks the console at the end and keeps it there, and
+        // that holds for a scripted scroll as much as for the wheel — Mudlet
+        // gates both on the same flag.
+        if (!this.isScrollingEnabled(id)) return false;
         // Line counts come from the buffer, not the DOM: the console may have
         // 200 lines and no laid-out panel to measure them in.
         const total = this.consoleRegistry?.get(id)?.getLineCount() ?? -1;

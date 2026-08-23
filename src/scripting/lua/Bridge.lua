@@ -1739,6 +1739,20 @@ function __mudix_check_number(value, funcName, index, what)
     return num
 end
 
+-- getVerifiedInt in full: the type check above, then the range check Mudlet has
+-- to make because lua_tointeger hands back a 64-bit value where the C++ side
+-- wants an int. Returns the truncated integer.
+function __mudix_check_int(value, funcName, index, what)
+    __mudix_check_number(value, funcName, index, what)
+    local num = __mudix_int(value)
+    if num < -2147483648 or num > 2147483647 then
+        error(funcName .. ": integer over/under-flow in argument #" .. index .. " (" .. what
+            .. " as an integer, provided value " .. tostring(value)
+            .. " is outside of valid range -2147483648 to 2147483647!)", 3)
+    end
+    return num
+end
+
 -- lua_isnumber + lua_tointeger, the pair behind Mudlet's getVerifiedInt: a
 -- numeric string passes the check and is converted, and the result is truncated
 -- toward zero rather than rounded. Returns nil when the value is not a number
@@ -3405,15 +3419,18 @@ do
             expirationCount)
     end
     -- Mudlet tempAnsiColorTrigger(ansiFg, ansiBg, code [, expirationCount]).
-    -- ANSI 256-colour indices (0..255). mudix already matches tempColorTrigger
-    -- against ANSI palette indices, so this shares the same primitive; any
-    -- negative value (Mudlet's ColorIgnore/ColorDefault sentinels) maps to -1
-    -- = "match any", since mudix has no separate default-colour index.
+    -- ANSI 256-colour indices (0..255), plus the two sentinels TTrigger declares:
+    -- -1 (scmIgnored) leaves that channel out of the match, and -2 (scmDefault)
+    -- asks for the console's own default colour, which is a colour to match and
+    -- not an "any". mudix already matches tempColorTrigger against ANSI palette
+    -- indices, and the snapshot a colour trigger reads marks a segment left on
+    -- the default with the same -2, so both go straight through; anything else
+    -- negative is not a sentinel Mudlet defines and reads as ignore.
     function tempAnsiColorTrigger(fg, bg, fn, expirationCount)
         local nf = tonumber(fg)
         local nb = tonumber(bg)
-        if not nf or nf < 0 then nf = -1 end
-        if not nb or nb < 0 then nb = -1 end
+        if not nf or (nf < 0 and nf ~= -2) then nf = -1 end
+        if not nb or (nb < 0 and nb ~= -2) then nb = -1 end
         return _raw(nf, nb,
             __mudix_register_cb(__mudix_to_fn(fn, "tempAnsiColorTrigger", 3)),
             expirationCount)
@@ -5476,12 +5493,18 @@ do
 
     -- tempAnsiColorTrigger(fg [, bg], code [, expiry]). Omitting the background
     -- is equivalent to ignoring it, so an ignored foreground with no background
-    -- is the same catch-all case and is refused the same way.
+    -- is the same catch-all case and is refused the same way. Only -1 counts as
+    -- ignored here: -2 asks for the default colour, so (-2, -1) and (-1, -2) are
+    -- ordinary one-channel colour triggers and must not be refused.
     local _rawTempAnsiColorTrigger = tempAnsiColorTrigger
     tempAnsiColorTrigger = function(fg, a2, ...)
         local bgOmitted = (type(a2) == 'function' or type(a2) == 'string')
         local bg = bgOmitted and -1 or a2
-        if (tonumber(fg) or -1) < 0 and (tonumber(bg) or -1) < 0 then
+        local function ignored(v)
+            local n = tonumber(v)
+            return n == nil or (n < 0 and n ~= -2)
+        end
+        if ignored(fg) and ignored(bg) then
             return nil, "tempAnsiColorTrigger: cannot ignore both foreground and background"
         end
         return _rawTempAnsiColorTrigger(fg, a2, ...)
@@ -5661,7 +5684,8 @@ do
         n = true, north = true, ne = true, northeast = true, nw = true, northwest = true,
         e = true, east = true, w = true, west = true, s = true, south = true,
         se = true, southeast = true, sw = true, southwest = true,
-        u = true, up = true, d = true, down = true, ['in'] = true, out = true,
+        u = true, up = true, d = true, down = true,
+        i = true, ['in'] = true, o = true, out = true,
     }
     local function checkDirection(dir, funcName, pos)
         local n = tonumber(dir)
@@ -7116,4 +7140,72 @@ function spawn(...)
     local cwd = (type(getMudletHomeDir) == 'function' and getMudletHomeDir()) or "/"
     error("Failed to start process '" .. tostring(argv[2]) .. "': the web client cannot start"
         .. " processes. Working directory: '" .. tostring(cwd) .. "'. PATH: ''", 0)
+end
+
+-- Mudlet addSupportedTelnetOption(option) reads its argument with
+-- getVerifiedInt and returns nothing at all. The binding underneath answers a
+-- boolean ("newly registered"), which is mudix's own and not part of the
+-- contract, so it is swallowed here — a script that saw `true` would be reading
+-- something desktop Mudlet never tells it.
+do
+    local _raw = addSupportedTelnetOption
+    function addSupportedTelnetOption(option, ...)
+        __mudix_check_int(option, "addSupportedTelnetOption", 1, "option")
+        _raw(option, ...)
+    end
+end
+
+-- ── Map colour accessors ───────────────────────────────────────────────────
+-- Mudlet reads every component with getVerifiedInt (so a wrong type raises and
+-- one too large for an int over/under-flows), then refuses a value outside
+-- 0-255 with warnArgumentValue's (nil, errMsg) pair. The JS binding does the
+-- range check and hands back the message; the type and int-range checks live
+-- here, ahead of it, in Mudlet's order.
+do
+    local CHANNELS = { "red", "green", "blue", "alpha" }
+    local function components(funcName, count, ...)
+        local out = {}
+        for i = 1, count do
+            out[i] = __mudix_check_int((select(i, ...)), funcName, i, CHANNELS[i])
+        end
+        return out
+    end
+
+    local _rawSetMapBackgroundColor = setMapBackgroundColor
+    function setMapBackgroundColor(r, g, b, a)
+        local n = a == nil and 3 or 4
+        local c = components("setMapBackgroundColor", n, r, g, b, a)
+        local err = _rawSetMapBackgroundColor(c[1], c[2], c[3], c[4])
+        if err then return nil, err end
+        return true
+    end
+
+    function getMapBackgroundColor()
+        local t = __getMapBackgroundColor()
+        return t[0], t[1], t[2], t[3]
+    end
+
+    local _rawSetMapRoomExitsColor = setMapRoomExitsColor
+    function setMapRoomExitsColor(r, g, b)
+        local c = components("setMapRoomExitsColor", 3, r, g, b)
+        local err = _rawSetMapRoomExitsColor(c[1], c[2], c[3])
+        if err then return nil, err end
+        return true
+    end
+
+    function getMapRoomExitsColor()
+        local t = __getMapRoomExitsColor()
+        return t[0], t[1], t[2]
+    end
+
+    -- setDefaultAreaVisible(visible) takes a bool and nothing else: Mudlet reads
+    -- it with getVerifiedBool, which raises for a missing or non-boolean value.
+    local _rawSetDefaultAreaVisible = setDefaultAreaVisible
+    function setDefaultAreaVisible(visible)
+        if type(visible) ~= 'boolean' then
+            error("setDefaultAreaVisible: bad argument #1 type (default area visibility as boolean"
+                .. " expected, got " .. type(visible) .. "!)", 2)
+        end
+        return _rawSetDefaultAreaVisible(visible)
+    end
 end

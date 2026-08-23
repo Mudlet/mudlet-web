@@ -1,4 +1,5 @@
 import type {MudSession, ScriptLogSource, ScriptLogSourceKind} from '../mud/MudSession';
+import type { LogFormat } from '../logging/SessionLogger';
 import { MAP_WIDGET_ID } from '../ui/windows/types';
 import { qtModifiersToList } from '../mud/keybindings/qtKeys';
 import { splitCommands } from '../mud/commandSplit';
@@ -3280,7 +3281,7 @@ export class ScriptingEngine implements EngineHost {
 
     /** Hand the API a startLogging hook. Wired by ProfileSession, which owns
      *  the actual SessionLogger lifecycle. */
-    setLoggingToggler(fn: ((enabled: boolean) => boolean) | null): void {
+    setLoggingToggler(fn: ((enabled: boolean, format: LogFormat) => boolean) | null): void {
         this.api.setLoggingToggler(fn);
     }
 

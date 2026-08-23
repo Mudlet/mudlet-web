@@ -59,6 +59,47 @@ export type TriggerMatch = {
     matchStart?: number;
 };
 
+/**
+ * Fold every occurrence a "match all" pattern found into the one MatchResult the
+ * trigger fires with. Mudlet keeps a single capture list across the whole
+ * match-all loop, so `matches` reads {whole1, groups1…, whole2, groups2…} — a
+ * flat run, not a nested one. The spans follow the same layout so
+ * selectCaptureGroup(n) still points at the text matches[n] names.
+ */
+function mergeAllMatches(results: MatchResult[]): MatchResult | null {
+    const first = results[0];
+    if (!first) return null;
+    if (results.length === 1) return first;
+    const captures = [...first.captures];
+    const captureSpans = [...(first.captureSpans ?? [])];
+    const namedGroups = { ...first.namedGroups };
+    const namedSpans = { ...first.namedSpans };
+    for (const r of results.slice(1)) {
+        captures.push(r.matchedText, ...r.captures);
+        captureSpans.push(
+            { start: r.matchStart ?? 0, length: r.matchedText.length },
+            ...(r.captureSpans ?? r.captures.map(() => ({ start: 0, length: 0 }))),
+        );
+        // A named group repeated across occurrences keeps the FIRST one, which is
+        // what a single-match trigger would have reported — later occurrences are
+        // reachable positionally.
+        for (const [name, value] of Object.entries(r.namedGroups ?? {})) {
+            if (!(name in namedGroups)) namedGroups[name] = value;
+        }
+        for (const [name, span] of Object.entries(r.namedSpans ?? {})) {
+            if (!(name in namedSpans)) namedSpans[name] = span;
+        }
+    }
+    return {
+        captures,
+        matchedText: first.matchedText,
+        matchStart: first.matchStart,
+        captureSpans,
+        namedGroups: Object.keys(namedGroups).length > 0 ? namedGroups : undefined,
+        namedSpans: Object.keys(namedSpans).length > 0 ? namedSpans : undefined,
+    };
+}
+
 function matchResultToTriggerMatch(trigger: TriggerNode, r: MatchResult): TriggerMatch {
     return {
         trigger,
@@ -266,15 +307,30 @@ const RUNAWAY_REPORT_INTERVAL_MS = 10000;
 /** Parse a `"fg,bg"` colour-trigger pattern text into a `[fg, bg]` pair. Both
  *  default to -1 ("any") when missing or non-numeric. Mudlet uses ANSI
  *  palette indices 0..255 plus -1 for "any". */
+/** The engine hands the matchers the line with the newline that ended it still
+ *  attached (Host::runTriggers appends one), so a pattern may anchor on it —
+ *  `foo\n$` is a legitimate way to say "and nothing followed". The `line`
+ *  variable a script reads is the text alone, and so is anything a matcher with
+ *  no match text of its own reports as `matches[1]`. */
+function withEol(line: string): string {
+    return line.endsWith('\n') ? line : line + '\n';
+}
+
+function stripEol(line: string): string {
+    return line.endsWith('\n') ? line.slice(0, -1) : line;
+}
+
 function parseColorPattern(text: string): [number, number] {
     // Mudlet's own wire form, which is what an imported package or profile
     // carries: `ANSI_COLORS_F{003}_B{IGNORE}`. IGNORE is "any colour here", the
-    // same as the -1 the plain form uses; DEFAULT means the profile's own
-    // colour, which mudix reads as the palette's 0.
+    // same as the -1 the plain form uses; DEFAULT is TTrigger's scmDefault
+    // (-2), the console's own colour — a colour to match, not an "any". The
+    // colour snapshot marks a segment left on the default with the same -2, so
+    // the sentinel needs no translation.
     const mudlet = /^ANSI_COLORS_F\{(\d+|DEFAULT|IGNORE)\}_B\{(\d+|DEFAULT|IGNORE)\}$/.exec(text.trim());
     if (mudlet) {
         const channel = (token: string) =>
-            token === 'IGNORE' ? -1 : token === 'DEFAULT' ? 0 : Math.trunc(Number(token));
+            token === 'IGNORE' ? -1 : token === 'DEFAULT' ? -2 : Math.trunc(Number(token));
         return [channel(mudlet[1]), channel(mudlet[2])];
     }
     const parts = text.split(',').map(s => s.trim());
@@ -357,14 +413,18 @@ function buildMatcher(p: TriggerPattern, register: (re: PcreInstance) => void): 
             return (line) => line.startsWith(p.text) ? { captures: [], matchedText: p.text } : null;
         case 'exactMatch':
             if (!p.text) return null;
-            return (line) => line === p.text ? { captures: [], matchedText: line } : null;
+            // The haystack carries the trailing newline the engine appends; an
+            // exact match is against the line without it (TTrigger::match_exact_match
+            // chops one for the same reason).
+            return (line) => stripEol(line) === p.text ? { captures: [], matchedText: p.text } : null;
         case 'prompt':
             return (_line, isPrompt) => isPrompt ? { captures: [], matchedText: '' } : null;
         case 'luaFunction': {
             const code = p.text;
             return (line) => {
                 if (!luaEvalRef.fn) return null;
-                return luaEvalRef.fn(code, line) ? { captures: [], matchedText: line } : null;
+                const text = stripEol(line);
+                return luaEvalRef.fn(code, text) ? { captures: [], matchedText: text } : null;
             };
         }
         case 'colorTrigger': {
@@ -379,7 +439,7 @@ function buildMatcher(p: TriggerPattern, register: (re: PcreInstance) => void): 
                 if (!line) return null;
                 if (!colorMatchRef.fn) return null;
                 return colorMatchRef.fn(fg, bg, colorWindowRef.window)
-                    ? { captures: [], matchedText: line } : null;
+                    ? { captures: [], matchedText: stripEol(line) } : null;
             };
         }
         case 'lineSpacer':
@@ -731,6 +791,7 @@ export class TriggerEngine {
     // ── Temp triggers (session-scoped, created by scripts) ────────────────────
 
     processTemp(line: string, isPrompt = false): void {
+        const haystack = withEol(line);
         const prev = this.inProcessTemp;
         this.inProcessTemp = true;
         this.processingDepth++;
@@ -740,7 +801,7 @@ export class TriggerEngine {
             // temp-only equivalent of what `process()` needs its
             // addedWhileProcessing loop for.
             for (const [id, entry] of this.temp) {
-                this.fireTempEntry(id, entry, line, isPrompt);
+                this.fireTempEntry(id, entry, haystack, isPrompt);
             }
         } finally {
             this.inProcessTemp = prev;
@@ -781,13 +842,13 @@ export class TriggerEngine {
             // then fire on each of the next `remaining` lines, self-expiring.
             if (entry.skipFirst) { entry.skipFirst = false; return; }
             if (entry.countdown > 1) { entry.countdown--; return; }
-            entry.fn([line]);
+            entry.fn([stripEol(line)]);
             entry.remaining--;
             if (entry.remaining <= 0) { this.temp.delete(id); this.orderDirty = true; }
             return;
         }
         if (entry.kind === 'prompt') {
-            if (isPrompt) entry.fn([line]);
+            if (isPrompt) entry.fn([stripEol(line)]);
             return;
         }
         if (entry.kind === 'substring') {
@@ -799,7 +860,8 @@ export class TriggerEngine {
             return;
         }
         if (entry.kind === 'exactMatch') {
-            if (line === entry.pattern) entry.fn([line]);
+            const text = stripEol(line);
+            if (text === entry.pattern) entry.fn([text]);
             return;
         }
         const m = entry.re.match(line) as PcreMatch | null;
@@ -950,13 +1012,18 @@ export class TriggerEngine {
             } else {
                 // OR entry (non-group)
                 if (entry.testAll) {
-                    let firstResult: MatchResult | null = null;
-                    for (const r of entry.testAll(effectiveLine)) {
-                        if (firstResult === null) firstResult = r;
-                        out.push(matchResultToTriggerMatch(item, this.shiftResultSpans(r, effOffset)));
-                    }
-                    if (firstResult !== null && isChainHead) {
-                        this.openChain(item, currentLine, firstResult);
+                    // "Match all occurrences" fires the trigger ONCE and hands it
+                    // every occurrence at the same time: Mudlet appends each
+                    // further match's whole-match-plus-captures to the same
+                    // capture list (TTrigger::match_perl, mPerlSlashGOption), so
+                    // matches[1] is the first whole match and the rest of the
+                    // occurrences follow the first one's groups. Firing once per
+                    // occurrence instead would run the script N times and show it
+                    // only one match each.
+                    const merged = mergeAllMatches(entry.testAll(effectiveLine));
+                    if (merged !== null) {
+                        if (isChainHead) this.openChain(item, currentLine, merged);
+                        out.push(matchResultToTriggerMatch(item, this.shiftResultSpans(merged, effOffset)));
                     }
                 } else {
                     if (seen.has(seenKey)) return;
@@ -995,6 +1062,7 @@ export class TriggerEngine {
      * re-entrancy a handler can cause via `feedTriggers`.
      */
     process(line: string, isPrompt: boolean, exec: (match: TriggerMatch) => void): void {
+        const haystack = withEol(line);
         if (this.orderDirty) this.rebuildOrder();
         const snapshot = this.unified;
         const currentLine = this.lineCounter++;
@@ -1011,10 +1079,10 @@ export class TriggerEngine {
                 if (u.kind === 'temp') {
                     // Re-fetch: an earlier handler this pass may have disposed it.
                     const cur = this.temp.get(u.id);
-                    if (cur) this.fireTempEntry(u.id, cur, line, isPrompt);
+                    if (cur) this.fireTempEntry(u.id, cur, haystack, isPrompt);
                 } else {
                     matches.length = 0;
-                    this.matchPermEntry(u.perm, line, isPrompt, currentLine, seen, matches);
+                    this.matchPermEntry(u.perm, haystack, isPrompt, currentLine, seen, matches);
                     for (const m of matches) this.execPerm(m, exec);
                 }
             }

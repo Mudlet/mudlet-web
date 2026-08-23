@@ -849,10 +849,19 @@ export function installMapBindings({
         const c = api.map.getRoomCharColor(Math.trunc(id));
         return c ? [c.r, c.g, c.b, c.a] : null;
     });
-    // Mudlet setMapBackgroundColor(r, g, b). Stored on the profile mapper
-    // settings — MapPanel reads from there each render.
-    lua.global.set('setMapBackgroundColor', (r: unknown, g: unknown, b: unknown) =>
-        api.setMapBackgroundColor(Number(r) || 0, Number(g) || 0, Number(b) || 0));
+    // Mudlet setMapBackgroundColor(r, g, b [, a]) / setMapRoomExitsColor(r, g, b).
+    // Stored on the profile mapper settings — MapPanel reads from there each
+    // render. Each returns the out-of-range message (or nil), which Bridge.lua
+    // shapes into Mudlet's (nil, errMsg); the argument TYPE checks are up there
+    // too, so what arrives here is already three or four whole numbers.
+    lua.global.set('setMapBackgroundColor', (r: number, g: number, b: number, a?: number) =>
+        api.setMapBackgroundColor(r, g, b, a ?? 255));
+    lua.global.set('__getMapBackgroundColor', () => api.getMapBackgroundColor());
+    lua.global.set('setMapRoomExitsColor', (r: number, g: number, b: number) =>
+        api.setMapRoomExitsColor(r, g, b));
+    lua.global.set('__getMapRoomExitsColor', () => api.getMapRoomExitsColor());
+    // Mudlet setDefaultAreaVisible(visible) — TMap::mShowDefaultArea.
+    lua.global.set('setDefaultAreaVisible', (visible: boolean) => api.setDefaultAreaVisible(visible));
     // Mudlet setMapRoomSize(roomSize). The renderer reads this from
     // settings.roomSize (units = map cells; ~0.6 default).
     lua.global.set('setMapRoomSize', (size: unknown) => api.setMapRoomSize(Number(size)));

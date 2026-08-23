@@ -125,6 +125,41 @@ type LinkActivator = (href: string) => void;
 // emit as `left: NaN` and warn about. Coerce non-finite inputs to 0 so the
 // label still renders (matches Mudlet's int-cast behaviour) instead of
 // poisoning the inline style.
+/**
+ * Mudlet's `TLabel::setText` link-styling pass: every `<a href=…>` in the text a
+ * label is given gets an inline `style` carrying the colours `setLinkStyle`
+ * asked for, because QTextDocument reads neither the widget stylesheet nor the
+ * palette for link colours. The DOM does honour a stylesheet — LabelOverlay
+ * injects one — but `getLabelText` answers with the styled text, so the pass has
+ * to happen here as well as there.
+ *
+ * The pattern is Mudlet's, deliberately strict (lowercase tag, href first, no
+ * spacing around `=`): that is the shape Mudlet's own HTML generation produces.
+ * The separator is `\s+`, so an anchor whose attributes start on the next line
+ * is styled like any other.
+ */
+const ANCHOR_RE = /<a\s+href=(["'][^"']*["'])([^>]*)>/g;
+
+function styleAnchors(
+    html: string,
+    style: { color?: string; visitedColor?: string; underline: boolean } | undefined,
+    visited: Set<string> | undefined,
+): string {
+    if (!style || (!style.color && !style.visitedColor)) return html;
+    return html.replace(ANCHOR_RE, (whole, hrefPart: string, otherAttrs: string) => {
+        const url = hrefPart.slice(1, -1);
+        const decls: string[] = [];
+        if (visited?.has(url) && style.visitedColor) decls.push(`color: ${style.visitedColor};`);
+        else if (style.color) decls.push(`color: ${style.color};`);
+        if (!style.underline) decls.push('text-decoration: none;');
+        if (decls.length === 0) return whole;
+        // An anchor that already carries a style attribute has it REPLACED, not
+        // merged — Mudlet keeps the simple case simple and says so.
+        const rest = otherAttrs.replace(/style=(["'][^"']*["'])/g, '');
+        return `<a href=${hrefPart} style="${decls.join(' ')}"${rest}>`;
+    });
+}
+
 function safeCoord(n: number): number {
     return Number.isFinite(n) ? n : 0;
 }
@@ -218,6 +253,10 @@ export class LabelManager {
             clickThrough: opts.clickThrough ?? false,
             visible: true,
             html: '',
+            // Mudlet's TLabel starts on rgb(32, 32, 32) whatever fillBackground
+            // says — the flag decides whether the fill is painted, not what
+            // colour it is, and getBackgroundColor reports the colour either way.
+            backgroundColor: { r: 32, g: 32, b: 32, a: 255 },
         };
         this.labels.set(name, state);
         this.indexAdd(state);
@@ -366,7 +405,7 @@ export class LabelManager {
         // QLabel shows one content at a time — setText replaces a running
         // movie, so echo()/setLabelText after setMovie drops the animation.
         if (lbl.movie) { lbl.movie.stop(); lbl.movie = undefined; }
-        lbl.html = html;
+        lbl.html = styleAnchors(html, lbl.linkStyle, lbl.visitedLinks);
         this.notify(lbl.parent);
         return true;
     }

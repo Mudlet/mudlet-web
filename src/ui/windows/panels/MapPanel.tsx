@@ -1381,7 +1381,16 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
                         </button>
                         {dropdownOpen && (
                             <div className="map-area-dropdown-list">
-                                {areas.map(a => (
+                                {areas
+                                    // Mudlet TMap::mShowDefaultArea: the unnamed
+                                    // catch-all area (id -1) is offered in the
+                                    // area list unless setDefaultAreaVisible
+                                    // turned it off. The area the map is on stays
+                                    // shown either way — hiding it is about the
+                                    // list, not about where you already are.
+                                    .filter(a => a.id !== -1 || a.id === currentArea
+                                        || (mapper?.showDefaultArea ?? true))
+                                    .map(a => (
                                     <div
                                         key={a.id}
                                         className={`map-area-dropdown-item${a.id === currentArea ? ' map-area-dropdown-item--active' : ''}`}

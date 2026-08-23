@@ -2,6 +2,50 @@ import type { MudSession } from '../mud/MudSession';
 import { AnsiAwareBuffer } from '../mud/text/FormatState';
 import { appendEntries, createSession, updateSession, type LogEntry } from '../storage/logStorage';
 
+/**
+ * How the file log is written. Mudlet's `logInHTML` picks between two genuinely
+ * different documents, and the HTML one has to name the console's own font and
+ * background — neither of which the logger can see for itself.
+ */
+export interface LogFormat {
+    html: boolean;
+    /** Resolved console font family, the one `getFont()` reports. */
+    font?: string;
+    /** Console background, painted behind the whole document as Mudlet does. */
+    background?: { r: number; g: number; b: number };
+}
+
+/** Mudlet's HTML log preamble (TTextEdit::slot_copySelectionToClipboardHTML,
+ *  the same document the log writer emits): a strict-HTML wrapper, a title, and
+ *  a stylesheet naming the console font and background, with the fallback
+ *  families Mudlet appends. The body opens a `<div>` that stopFileLog closes —
+ *  strict HTML 4 wants the spans wrapped in a block. */
+function htmlLogHeader(title: string, format?: LogFormat): string {
+    const bg = format?.background ?? { r: 0, g: 0, b: 0 };
+    const families = [format?.font, 'Monospace', 'Courier']
+        .filter((f): f is string => !!f)
+        .filter((f, i, all) => all.indexOf(f) === i);
+    return "<!DOCTYPE HTML PUBLIC '-//W3C//DTD HTML 4.01//EN' 'http://www.w3.org/TR/html4/strict.dtd'>\n"
+        + '<html>\n'
+        + " <head>\n"
+        + "  <meta http-equiv='content-type' content='text/html; charset=utf-8'>\n"
+        + "  <meta name='generator' content='Mudlet Web'>\n"
+        + `  <title>${escapeHtml(title)}</title>\n`
+        + "  <style type='text/css'>\n"
+        + `   <!-- body { font-family: '${families.join("', '")}'; font-size: 100%;`
+        + ' line-height: 1.125em; white-space: nowrap; color:rgb(255,255,255);'
+        + ` background-color:rgb(${bg.r},${bg.g},${bg.b});}\n`
+        + '        span { white-space: pre-wrap; }\n'
+        + '     -->\n'
+        + '  </style>\n'
+        + '  </head>\n'
+        + '  <body><div>';
+}
+
+function escapeHtml(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 const FLUSH_INTERVAL_MS = 1500;
 /** Force a flush once the in-memory buffer reaches this many lines. */
 const FLUSH_AT = 500;
@@ -67,36 +111,47 @@ export class SessionLogger {
     }
 
     /**
-     * Mudlet's `startLogging(true)` — begin mirroring output to a plain-text
-     * file as well. Deliberately separate from {@link start}: recording to the
-     * log browser is a mudix profile setting that is on by default, whereas
-     * Mudlet's file log is something a player or script asks for. Sharing one
-     * switch would have every profile quietly writing a text file nobody asked
-     * for, and would make `startLogging(true)` report "already on" forever.
+     * Mudlet's `startLogging(true)` — begin mirroring output to a file as well.
+     * Deliberately separate from {@link start}: recording to the log browser is
+     * a mudix profile setting that is on by default, whereas Mudlet's file log
+     * is something a player or script asks for. Sharing one switch would have
+     * every profile quietly writing a file nobody asked for, and would make
+     * `startLogging(true)` report "already on" for ever.
      *
      * The file is created up front, before any line has arrived, so a script can
      * hand its path straight to something else. Named as Mudlet names its own:
-     * `<profile>/log/<yyyy-MM-dd#hh-mm-ss>.txt`.
+     * `<profile>/log/<yyyy-MM-dd#hh-mm-ss>.txt` — or `.html` when `format.html`
+     * is set (Mudlet's `logInHTML`), which is a whole second document format
+     * rather than the same lines with markup: a `<html>` wrapper, a stylesheet
+     * naming the console's own font and background, and a closing tag pair only
+     * {@link stopFileLog} writes.
      */
-    startFileLog(): string | null {
+    startFileLog(format?: LogFormat): string | null {
         if (this.logFilePath) return this.logFilePath;
-        this.openLogFile();
+        this.logHtml = format?.html ?? false;
+        this.openLogFile(format);
         return this.logFilePath;
     }
 
-    /** Stop mirroring to the text file, writing out whatever is buffered. */
+    /** Stop mirroring to the file, writing out whatever is buffered — and, for
+     *  an HTML log, the closing tags that make it a document. */
     stopFileLog(): void {
+        if (this.logHtml && this.logFilePath) this.fileBuffer.push(' </div></body>\n</html>\n');
         this.flushLogFile();
         this.logFilePath = null;
+        this.logHtml = false;
     }
 
-    private openLogFile(): void {
+    /** Whether the open file log is HTML rather than plain text. */
+    private logHtml = false;
+
+    private openLogFile(format?: LogFormat): void {
         if (!this.vfs) return;
         const d = new Date(this.startedAt);
         const p = (n: number, w = 2) => String(n).padStart(w, '0');
         const stamp = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
             + `#${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
-        const path = `${this.vfs.profilePath}/log/${stamp}.txt`;
+        const path = `${this.vfs.profilePath}/log/${stamp}.${this.logHtml ? 'html' : 'txt'}`;
         try {
             this.vfs.mkdir(`${this.vfs.profilePath}/log`);
             // Only create it — never blank one that is already there. The name
@@ -104,7 +159,9 @@ export class SessionLogger {
             // restarting logging inside one session comes back to the same file,
             // and truncating it would throw away everything the first stretch
             // had written. Mudlet reopens for append.
-            if (!this.vfs.exists(path)) this.vfs.writeFile(path, '');
+            if (!this.vfs.exists(path)) {
+                this.vfs.writeFile(path, this.logHtml ? htmlLogHeader(this.connectionName, format) : '');
+            }
             this.logFilePath = path;
         } catch (err) {
             console.warn('[SessionLogger] could not open the log file', err);
@@ -112,7 +169,7 @@ export class SessionLogger {
         }
     }
 
-    /** Append the buffered plain-text lines to the log file. ZenFS has no
+    /** Append the buffered lines to the log file. ZenFS has no
      *  append mode we can rely on across both backends, so this re-writes the
      *  file with the new tail — hence the buffering. */
     private flushLogFile(): void {
@@ -144,7 +201,12 @@ export class SessionLogger {
             plain: buffer.text,
         });
         this.totalCount++;
-        if (this.logFilePath) this.fileBuffer.push(buffer.text + '\n');
+        // An HTML log takes the same styled markup the log browser records, so
+        // colour and formatting survive into the document; a text log takes the
+        // plain line.
+        if (this.logFilePath) {
+            this.fileBuffer.push((this.logHtml ? buffer.toHtml() : buffer.text) + '\n');
+        }
         if (this.buffer.length >= FLUSH_AT) void this.flush();
     }
 

@@ -937,8 +937,12 @@ export function cssEscape(s: string): string {
 // calls setStyleSheet then setColor to tint an otherwise-styled tab).
 export function patchStyleSheetBackgroundColor(styleSheet: string, r: number, g: number, b: number, a: number): string {
     const decl = `background-color: rgba(${r}, ${g}, ${b}, ${a});`;
-    if (styleSheet.includes('background-color')) {
-        return styleSheet.replace(/background-color:[^;]*;/g, decl);
+    // `selection-background-color` ENDS in "background-color" without being one:
+    // matching it patched the selection colour and left the real background
+    // untouched. The leading group pins the property to a declaration boundary.
+    const existing = /(^|[^-\w])background-color\s*:[^;]*;/i;
+    if (existing.test(styleSheet)) {
+        return styleSheet.replace(new RegExp(existing.source, 'gi'), (_m, lead: string) => lead + decl);
     }
     const sep = styleSheet && !styleSheet.endsWith('\n') ? '\n' : '';
     return styleSheet + sep + decl;

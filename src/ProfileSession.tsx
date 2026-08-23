@@ -399,7 +399,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         // recording above is a separate, profile-level setting — turning the
         // file log off must not stop a recording the player asked for, and a
         // profile that records by default must not read as "already logging".
-        engine.setLoggingToggler((enabled: boolean) => {
+        engine.setLoggingToggler((enabled: boolean, format) => {
             if (enabled) {
                 let live = loggerRef.current;
                 if (!live) {
@@ -410,7 +410,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                     loggerRef.current = live;
                     scriptOwnedLogger.current = true;
                 }
-                return live.startFileLog() !== null;
+                return live.startFileLog(format) !== null;
             }
             const live = loggerRef.current;
             if (!live) return true;

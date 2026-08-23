@@ -16,7 +16,8 @@ import { resolveSvgIntrinsicSize } from '../ui/labels/backgroundImageSize';
 import type { CommandLineManager } from '../ui/cmdline/CommandLineManager';
 import type { ScrollBoxManager } from '../ui/scrollbox/ScrollBoxManager';
 import { TextEditManager } from '../ui/textedit/TextEditManager';
-import { userWindowQssToScopedCss, cssEscape, rewriteQtSelectors } from '../ui/labels/qtCss';
+import { userWindowQssToScopedCss, cssEscape, rewriteQtSelectors, patchStyleSheetBackgroundColor } from '../ui/labels/qtCss';
+import type { LogFormat } from '../logging/SessionLogger';
 import { AnsiAwareBuffer, type FormatColor, type FormatStateSnapshot, type FormatHyperlink, type RgbColor } from '../mud/text/FormatState';
 import { classifyHyperlinkUri } from '../mud/text/ansiEscapes';
 import { extractQuery, type UnderlineStyle } from '../mud/text/hyperlinkConfig';
@@ -61,15 +62,24 @@ const DEFAULT_BG_RGB: [number, number, number] = [0x09, 0x09, 0x09];
  * they render as, so those are resolved back through the same palette here.
  * A 256-colour (38;5;N) segment already carries its index.
  */
+/** No colour set on the segment, i.e. the console's default. Mudlet calls this
+ *  `TTrigger::scmDefault` and a colour trigger may ask for it by name. */
+const COLOR_DEFAULT = -2;
+/** A colour that is set but is not a palette index (a 24-bit RGB value). It is
+ *  neither the default nor any ANSI number, so nothing matches it — keeping it
+ *  apart from {@link COLOR_DEFAULT} is what stops `e[38;2;…m` text answering a
+ *  default-foreground trigger. */
+const COLOR_UNPALETTED = -3;
+
 function ansiPaletteIndex(color: FormatColor | undefined): number {
-    if (!color) return -2;
+    if (!color) return COLOR_DEFAULT;
     if (color.space === 'indexed') return color.index;
-    if (color.space !== 'hex') return -2;
+    if (color.space !== 'hex') return COLOR_UNPALETTED;
     const hex = color.color.toLowerCase();
     const dark = colorCodes.ansi.dark.findIndex(c => c.toLowerCase() === hex);
     if (dark >= 0) return dark;
     const bright = colorCodes.ansi.bright.findIndex(c => c.toLowerCase() === hex);
-    return bright >= 0 ? bright + 8 : -2;
+    return bright >= 0 ? bright + 8 : COLOR_UNPALETTED;
 }
 
 const HEX_RE = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i;
@@ -135,6 +145,28 @@ function readableLinkColor(background: [number, number, number]): RgbColor {
 }
 
 /** Clamp a numeric value to [0, 255] and round. Used by the map colour APIs. */
+/** Mudlet validates each colour component in 0..255 and names the one that
+ *  failed. Returns that message, or null when every component is in range. */
+function badColorComponent(components: Record<string, number>): string | null {
+    for (const [channel, value] of Object.entries(components)) {
+        if (!Number.isFinite(value) || value < 0 || value > 255) {
+            return `${channel} value ${value} needs to be between 0-255`;
+        }
+    }
+    return null;
+}
+
+/** Split a `#rrggbb` or `#rrggbbaa` string into components. An absent alpha
+ *  reads as opaque, which is what Mudlet reports for a colour set without one. */
+function parseRgba(hex: string): [number, number, number, number] {
+    const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})?$/i.exec(hex.trim());
+    if (!m) return [0, 0, 0, 255];
+    return [
+        parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16),
+        m[4] === undefined ? 255 : parseInt(m[4], 16),
+    ];
+}
+
 function clamp255(n: number): number {
     return Math.max(0, Math.min(255, Math.round(Number(n) || 0)));
 }
@@ -577,7 +609,16 @@ class ScriptingLabelsAPI {
         return this.manager.setHtml(name, rewrite(html));
     }
     setBackgroundColor(name: string, r: number, g: number, b: number, a = 255): boolean {
-        return this.manager.setBackgroundColor(name, r, g, b, a);
+        const ok = this.manager.setBackgroundColor(name, r, g, b, a);
+        // The manager patched the background-color declaration inside the
+        // label's live stylesheet; the authored copy {@link getStyleSheet}
+        // answers with has to move with it, or a script that sets a colour and
+        // reads the sheet back is handed the colour it just replaced.
+        const authored = ok ? this.authoredCss.get(name) : undefined;
+        if (authored !== undefined) {
+            this.authoredCss.set(name, patchStyleSheetBackgroundColor(authored, r, g, b, a));
+        }
+        return ok;
     }
     getBackgroundColor(name: string): { r: number; g: number; b: number; a: number } | null {
         return this.manager.getBackgroundColor(name);
@@ -751,7 +792,7 @@ export class ScriptingAPI {
 
     /** Mudlet `startLogging(state)`. Forwarded to ProfileSession, which owns
      *  the SessionLogger instance (created/torn-down on this hook). */
-    private loggingToggler: ((enabled: boolean) => boolean) | null = null;
+    private loggingToggler: ((enabled: boolean, format: LogFormat) => boolean) | null = null;
     /** Mudlet `appendLog(text)`. Forwarded to the active SessionLogger (wired by
      *  ProfileSession, which owns the logger lifecycle). */
     private logAppender: ((text: string) => void) | null = null;
@@ -1680,7 +1721,7 @@ export class ScriptingAPI {
     /** Hook for ProfileSession to start/stop the per-connection SessionLogger.
      *  Mudlet `startLogging(true|false)` toggles whether new output lines are
      *  recorded; the on/off transition is synchronous. */
-    setLoggingToggler(fn: ((enabled: boolean) => boolean) | null): void {
+    setLoggingToggler(fn: ((enabled: boolean, format: LogFormat) => boolean) | null): void {
         this.loggingToggler = fn;
     }
 
@@ -1702,7 +1743,15 @@ export class ScriptingAPI {
         // The path has to be read on the way out for a stop (the logger is gone
         // afterwards) and on the way in for a start (it doesn't exist yet).
         const before = this.loggingPath();
-        this.loggingToggler?.(enabled);
+        // `logInHTML` decides which of the two documents a start writes, and
+        // the header needs the console font and background it is told to name —
+        // neither of which the logger can see for itself.
+        this.loggingToggler?.(enabled, {
+            html: this.getConfig('logInHTML') === true,
+            font: this.getFont() ?? undefined,
+            background: selectProfileField(useAppStore.getState(), this.connectionId, 'outputBackgroundColor')
+                ?? undefined,
+        });
         const path = enabled ? this.loggingPath() : before;
         return enabled
             ? { ok: true, state: 1, path, message: `Main console output has started to be logged to file: ${path}` }
@@ -3000,6 +3049,7 @@ export class ScriptingAPI {
         // trigger sees — while the display still shows the recoloured version.
         // Pushed, not assigned: a trigger may call feedTriggers itself, and the
         // outer line's snapshot has to survive the nested pass.
+        this.triggerLinePrompts.push(isPrompt);
         this.lineColorSnapshots.push(buffer.getSegments().map(seg => ({
             fg: ansiPaletteIndex(seg.state?.foreground),
             bg: ansiPaletteIndex(seg.state?.background),
@@ -3027,12 +3077,7 @@ export class ScriptingAPI {
      */
     endLine(): void {
         this.lineColorSnapshots.pop();
-        // A line a trigger gagged leaves the buffer as well as the screen.
-        // deleteLine() during trigger processing only marks the line (the
-        // render pass reads the flag), so the buffer kept a line the player
-        // could not see — getLines/getLineCount/the cursor all still counted it,
-        // and `deleteFull()` looked like it had done nothing.
-        if (this.mainConsole.getBuffer()?.deleted) this.mainConsole.deleteLine();
+        this.triggerLinePrompts.pop();
         // A trigger can call feedTriggers, which processes a line of its own
         // inside this one. Only the OUTERMOST line leaves trigger context —
         // clearing the flag when a nested line finishes left the rest of the
@@ -3118,10 +3163,16 @@ export class ScriptingAPI {
     }
 
     /** Per-segment ANSI palette indices (and text) of each line currently being
-     *  processed, as it arrived — see {@link beginLine}. -2 marks a segment with
-     *  no palette colour (RGB or default), which never matches a requested
-     *  index. A stack, because a trigger can feedTriggers another line. */
+     *  processed, as it arrived — see {@link beginLine}. {@link COLOR_DEFAULT}
+     *  marks a segment left on the console's default colour, which is what a
+     *  trigger asking for `-2` matches; {@link COLOR_UNPALETTED} marks an RGB
+     *  colour outside the palette, which matches nothing. A stack, because a
+     *  trigger can feedTriggers another line. */
     private lineColorSnapshots: { fg: number; bg: number; text: string }[][] = [];
+    /** Whether each line currently being processed arrived as a prompt — the
+     *  fallback isPrompt() reads once a trigger has gagged the line itself. A
+     *  stack for the same reason {@link lineColorSnapshots} is one. */
+    private triggerLinePrompts: boolean[] = [];
     /** How many lines are being processed at once — more than one whenever a
      *  trigger calls feedTriggers. See beginLine/endLine. */
     private triggerLineDepth = 0;
@@ -3424,7 +3475,19 @@ export class ScriptingAPI {
      *  moveCursor + isPrompt can inspect historical lines, not just the most
      *  recent one. Defaults to false for the main window when no history exists. */
     isPrompt(windowName?: string): boolean {
-        return this.getConsole(windowName)?.cursorOnPrompt() ?? false;
+        const con = this.getConsole(windowName);
+        if (!con) return false;
+        if (!con.cursorPastEnd()) return con.cursorOnPrompt();
+        // A trigger that gagged the line it matched left the cursor past the end
+        // of the buffer, so there is no line left to carry the flag — and a
+        // prompt is always the last line while its triggers run, so this is the
+        // ordinary case rather than an edge one. Mudlet keeps the answer in the
+        // trigger pass's own state (TConsoleModel::mIsPromptLine); the stack
+        // mirrors it, one entry per line being processed.
+        if (con === this.mainConsole && this.triggerLineDepth > 0) {
+            return this.triggerLinePrompts[this.triggerLinePrompts.length - 1] ?? false;
+        }
+        return false;
     }
 
     /**
@@ -4173,10 +4236,13 @@ export class ScriptingAPI {
         const con = this.getConsole(windowName);
         if (!con) return;
         const buf = con.getBuffer();
-        if (this.inTriggerProcessing && buf) {
-            buf.markAsDeleted();
-            return;
-        }
+        // A trigger gagging its own matched line is the common case, and that
+        // line is still on its way to the renderer — which reads the flag to
+        // know not to emit it. The buffer drops it either way and drops it now:
+        // Mudlet deletes it from TBuffer inside deleteLine(), so getLineCount()
+        // and the cursor have to see it gone before the trigger script has run
+        // its next statement.
+        if (this.inTriggerProcessing && buf) buf.markAsDeleted();
         con.deleteLine();
     }
 
@@ -4654,18 +4720,56 @@ export class ScriptingAPI {
 
     get videos() { return this.session.videos; }
 
-    /** Mudlet `setMapBackgroundColor(r, g, b)`. Persists into the profile
-     *  mapper settings so MapPanel picks it up on its next render pass. */
-    setMapBackgroundColor(r: number, g: number, b: number): boolean {
-        const rr = clamp255(r);
-        const gg = clamp255(g);
-        const bb = clamp255(b);
-        const hex = '#' + [rr, gg, bb].map(c => c.toString(16).padStart(2, '0')).join('');
-        const store = useAppStore.getState();
-        const prev = store.connectionProfile[this.connectionId]?.mapper ?? {};
-        store.patchConnectionProfile(this.connectionId, { mapper: { ...prev, backgroundColor: hex } });
+    /**
+     * Mudlet `setMapBackgroundColor(r, g, b [, a])`. Persists into the profile
+     * mapper settings so MapPanel picks it up on its next render pass.
+     *
+     * Returns the refusal message for a component outside 0-255 and `null` on
+     * success — Bridge.lua turns the former into Mudlet's `(nil, errMsg)` pair.
+     * The alpha is optional and defaults to opaque; it is stored only when it is
+     * not, so an ordinary colour stays the plain `#rrggbb` the renderer and the
+     * Mapper tab have always written.
+     */
+    setMapBackgroundColor(r: number, g: number, b: number, a = 255): string | null {
+        const bad = badColorComponent({ red: r, green: g, blue: b, alpha: a });
+        if (bad) return bad;
+        const hex = '#' + [r, g, b].map(c => c.toString(16).padStart(2, '0')).join('')
+            + (a === 255 ? '' : a.toString(16).padStart(2, '0'));
+        this.setMapperField('backgroundColor', hex);
+        return null;
+    }
+
+    /** Mudlet `getMapBackgroundColor()` — the four components of the colour
+     *  {@link setMapBackgroundColor} stored, alpha included. */
+    getMapBackgroundColor(): [number, number, number, number] {
+        return parseRgba(this.getMapperField('backgroundColor') ?? MAPPER_DEFAULTS.backgroundColor);
+    }
+
+    /** Mudlet `setMapRoomExitsColor(r, g, b)`. The exit pen carries no alpha
+     *  either way, so this is the renderer's `lineColor` and nothing else. */
+    setMapRoomExitsColor(r: number, g: number, b: number): string | null {
+        const bad = badColorComponent({ red: r, green: g, blue: b });
+        if (bad) return bad;
+        this.setMapperField('lineColor',
+            '#' + [r, g, b].map(c => c.toString(16).padStart(2, '0')).join(''));
+        return null;
+    }
+
+    /** Mudlet `getMapRoomExitsColor()` — three components, no alpha. */
+    getMapRoomExitsColor(): [number, number, number] {
+        const [r, g, b] = parseRgba(this.getMapperField('lineColor') ?? MAPPER_DEFAULTS.lineColor);
+        return [r, g, b];
+    }
+
+    /** Mudlet `setDefaultAreaVisible(visible)`. Mudlet's `TMap::mShowDefaultArea`
+     *  decides whether the unnamed catch-all area rooms land in before they are
+     *  filed anywhere shows up in the area list; here that list is MapPanel's
+     *  area dropdown, which reads the same flag. */
+    setDefaultAreaVisible(visible: boolean): boolean {
+        this.setMapperField('showDefaultArea', visible);
         return true;
     }
+
 
     /** Mudlet `setMapRoomSize(size)`. Maps to renderer.settings.roomSize via
      *  the profile mapper field. Returns false for non-positive values. */
@@ -5115,7 +5219,10 @@ export class ScriptingAPI {
             return true;
         }
         if (this.session.labels.has(name)) {
-            return this.session.labels.setBackgroundColor(name, r, g, b, a);
+            // Through the labels API, not the manager directly: it keeps the
+            // authored copy of the label's stylesheet in step with the
+            // background-color declaration the manager patches.
+            return this.labels.setBackgroundColor(name, r, g, b, a);
         }
         return this.session.windows.setBackgroundColor(name, r, g, b, a);
     }
@@ -5663,6 +5770,12 @@ export class ScriptingAPI {
         let con = this.session.consoles.get(win);
         if (!con) {
             con = new Console();
+            // Mudlet raises sysBufferShrinkEvent for every console that trims,
+            // not only the main one, and it names the window the lines went
+            // from — a script mirroring a miniconsole's buffer has no other way
+            // to hear that its saved indexes moved.
+            const name = win;
+            con.onBufferShrink = (n) => this.host.raiseEvent('sysBufferShrinkEvent', [name, n]);
             this.session.consoles.set(win, con);
         }
         return con;
