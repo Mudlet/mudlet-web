@@ -36,7 +36,11 @@ const MODIFIER_LABELS: Record<string, string> = {
     meta: 'Cmd',
 };
 
-/** Detect the platform accelerator modifier. Falls back to Ctrl off-browser (tests). */
+/** Detect the platform accelerator modifier, from `navigator.platform` on every
+ *  call. Note that a `navigator` exists under vitest's node environment too, and
+ *  reports the real host — so this is not a Ctrl fallback in tests, and a test
+ *  that hard-codes one accelerator will pass on CI and fail on a Mac. Callers
+ *  that need a fixed platform should pass `accel` explicitly. */
 export function detectAccel(): Accel {
     if (typeof navigator !== 'undefined') {
         const platform =
