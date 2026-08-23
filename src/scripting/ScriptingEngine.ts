@@ -270,6 +270,8 @@ export class ScriptingEngine implements EngineHost {
         // by whatever the profile happens to use as a command separator.
         send: (raw) => { if (this.mxpHandshakeEnabled) this.api.sendData(raw); },
         presets: this.osc8Presets,
+        // <HR> draws its rule as wide as the main window wraps.
+        wrapWidth: () => this.api.getWindowWrap('main'),
         // Mudlet publishes every use of a server-defined element as
         // `mxp.<element>` and raises an event of the same name.
         onElementEvent: (name, attrs) => {
@@ -3740,8 +3742,8 @@ export class ScriptingEngine implements EngineHost {
     /** Part of {@link EngineHost} — also reached directly from the flushLines
      *  subscription, and by feedTriggers via the host so synthetic batches share
      *  ordering semantics with network output. */
-    processFlushBatch(groups: { text: string; type: string }[]): void {
-        for (const { text, type } of groups) {
+    processFlushBatch(groups: { text: string; type: string; fromServer?: boolean }[]): void {
+        for (const { text, type, fromServer } of groups) {
             try {
                 const lines = text.split('\n');
                 if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
@@ -3774,7 +3776,7 @@ export class ScriptingEngine implements EngineHost {
                         // wire any <SEND>/<A> links into clickable hyperlinks.
                         // The parser owns SGR carry on these lines (it walked
                         // every byte), so computeTrailingState is bypassed.
-                        const r = this.mxp.parseLine(line, carryState);
+                        const r = this.mxp.parseLine(line, carryState, fromServer !== false);
                         if (debugMxpEnabled()) logMxpLine(line, r.segments);
                         carryState = r.trailingSnapshot;
                         const parts = splitMxpResultLines(r);

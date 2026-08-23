@@ -2,10 +2,12 @@ import { scanEscape } from "../text/ansiEscapes";
 import {
     SERVER_WRAP_FLUSH_DELAY_MS,
     SERVER_WRAP_MAX_JOINED_LENGTH,
+    SERVER_WRAP_SEGMENT_START_CHARS,
     SERVER_WRAP_WIDTH_DEFAULT,
     endsAtServerWrapColumn,
     joinWrappedLines,
     looksLikeWrappedProse,
+    segmentEndsSettledSentence,
     shouldCommitPendingBeforeJoin,
     visibleText,
 } from "../text/serverWrap";
@@ -93,6 +95,9 @@ export class LineAssembler {
     /** Visible length of the last *game line* joined into the held text — what
      *  the next word is measured against, not the whole joined paragraph. */
     private serverWrapPendingSegmentLength = 0;
+    /** Opening of that same game line, kept so a continuation repeating it can
+     *  be told from one that carries on where it left off. */
+    private serverWrapPendingSegmentStart = '';
     private serverWrapTimer: number | null = null;
     /** When the held line falls due, so a blocked event loop can still commit it
      *  on demand — see {@link pumpServerWrapDue}. */
@@ -148,6 +153,7 @@ export class LineAssembler {
         this.clearTailTimer();
         this.serverWrapPending = null;
         this.serverWrapPendingSegmentLength = 0;
+        this.serverWrapPendingSegmentStart = '';
         this.clearServerWrapTimer();
     }
 
@@ -286,6 +292,7 @@ export class LineAssembler {
             const commitFirst = shouldCommitPendingBeforeJoin(visible, proseSegment, {
                 visiblePending: visibleText(this.serverWrapPending),
                 heldSegmentLength: this.serverWrapPendingSegmentLength,
+                segmentStart: this.serverWrapPendingSegmentStart,
                 width: this.undoServerWrapWidth,
             });
             if (commitFirst) committed = this.takeServerWrapPending() + '\n';
@@ -293,10 +300,12 @@ export class LineAssembler {
 
         // Judged before the held line is joined on, deliberately: ending at the
         // game's wrap column is a property of the segment as the game sent it,
-        // not of the longer line it becomes.
+        // not of the longer line it becomes. A segment that finished a sentence
+        // there is not held at all — see segmentEndsSettledSentence.
         const segmentLooksWrapped = endsAtServerWrapColumn(visible.length, this.undoServerWrapWidth)
-            && proseSegment;
+            && proseSegment && !segmentEndsSettledSentence(visible);
         const segmentLength = visible.length;
+        const segmentStart = visible.slice(0, SERVER_WRAP_SEGMENT_START_CHARS);
 
         const joined = this.serverWrapPending === null
             ? line
@@ -306,6 +315,7 @@ export class LineAssembler {
         if (segmentLooksWrapped && visibleText(joined).length <= SERVER_WRAP_MAX_JOINED_LENGTH) {
             this.serverWrapPending = joined;
             this.serverWrapPendingSegmentLength = segmentLength;
+            this.serverWrapPendingSegmentStart = segmentStart;
             this.startServerWrapTimer();
             return committed;
         }
@@ -318,6 +328,7 @@ export class LineAssembler {
         const pending = this.serverWrapPending;
         this.serverWrapPending = null;
         this.serverWrapPendingSegmentLength = 0;
+        this.serverWrapPendingSegmentStart = '';
         this.clearServerWrapTimer();
         return pending;
     }

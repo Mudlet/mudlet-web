@@ -1491,6 +1491,19 @@ export class LuaRuntime implements IScriptingRuntime {
             // through its file, and without this the edits lived only in our
             // store and were lost the moment another profile reloaded it.
             this.api.saveSyncedModules();
+            // Mudlet's saveProfile() is also the only thing that ever writes the
+            // command lines' histories out (Host::signal_saveCommandLinesHistory
+            // → TCommandLine::slot_saveHistory), and it writes them straight
+            // away rather than through the flush below — a spec, and a user
+            // reading the file, both expect it there the moment the call
+            // returns.
+            for (const file of this.api.commandLineHistoryFiles()) {
+                try {
+                    vfs.writeFile(`${path}/${file.name}`, file.content);
+                } catch (err) {
+                    console.warn(`[saveProfile] could not write ${file.name}:`, err);
+                }
+            }
             vfs.flush().catch(err => {
                 const msg = err instanceof Error ? err.message : String(err);
                 console.warn('[saveProfile] vfs flush failed:', err);
@@ -2336,6 +2349,8 @@ end`);
             // Likewise the line held back for a server-wrap continuation, which
             // is committed by a 300ms flush timer once the game goes quiet.
             this.api.pumpServerWrap();
+            // And the OSC 8 link written concealed until its reveal delay is up.
+            this.api.pumpHyperlinkReveals();
             if (Date.now() >= deadline) return true;
             // Let real time advance a little so pending timers come due, without
             // overshooting the caller's deadline.

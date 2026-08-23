@@ -73,9 +73,25 @@ local function make_conn(conn_id)
             in_transaction = true
         end
     end
+    -- A COMMIT can be refused, and the refusal has to be handed back rather than
+    -- swallowed: db:create turns autocommit off for every database it makes, so
+    -- nothing lands until a commit goes through, and a "true" over a refused one
+    -- loses the work without saying so — the failure db.Database:_commit's
+    -- return value exists to report. It is not hypothetical on an in-memory
+    -- database either: a DEFERRABLE constraint is checked at COMMIT
+    -- (SQLITE_CONSTRAINT), and a database that has outgrown what the wasm heap
+    -- can still grow to fails there too (SQLITE_FULL / SQLITE_NOMEM).
+    --
+    -- SQLite leaves the transaction OPEN when it refuses to end one, so
+    -- in_transaction only clears on success — otherwise the shim would think it
+    -- had left a transaction the database is still inside, and the next BEGIN
+    -- would error out.
     local function finish(verb)
         if in_transaction then
-            __sql_exec(conn_id, verb)
+            local result = __sql_exec(conn_id, verb)
+            if type(result) == "table" and result.kind == "error" then
+                return false, result.message
+            end
             in_transaction = false
         end
         if not auto_commit then begin_transaction() end
@@ -133,8 +149,15 @@ local function make_conn(conn_id)
     function conn:setautocommit(on)
         auto_commit = on ~= false
         if auto_commit then
+            -- Same as finish(): a refused COMMIT leaves the transaction open, so
+            -- report it and keep the flag honest instead of turning autocommit
+            -- back on over work that never landed.
             if in_transaction then
-                __sql_exec(conn_id, "COMMIT")
+                local result = __sql_exec(conn_id, "COMMIT")
+                if type(result) == "table" and result.kind == "error" then
+                    auto_commit = false
+                    return false, result.message
+                end
                 in_transaction = false
             end
         else

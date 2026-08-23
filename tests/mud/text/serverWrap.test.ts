@@ -4,6 +4,8 @@ import {
     endsAtServerWrapColumn,
     looksLikeWrappedProse,
     shouldCommitPendingBeforeJoin,
+    segmentEndsSettledSentence,
+    continuationRepeatsSegmentOpening,
     joinWrappedLines,
     detectWrapCeiling,
     SERVER_WRAP_SLACK,
@@ -114,6 +116,63 @@ describe('shouldCommitPendingBeforeJoin', () => {
 
     it('refuses to join a line that is not prose at all', () => {
         expect(shouldCommitPendingBeforeJoin('======================', false)).toBe(true);
+    });
+});
+
+describe('segmentEndsSettledSentence', () => {
+    // The whole point is that it reads the LAST character rather than the last
+    // non-space one: a kept break space is the evidence that the game wrapped
+    // there rather than ending the line itself.
+    it('refuses a segment that stops dead on a full stop', () => {
+        expect(segmentEndsSettledSentence('Es gibt drei sichtbare Ausgaenge: osten, westen und sueden.'))
+            .toBe(true);
+    });
+
+    it('refuses the other marks that finish a sentence', () => {
+        for (const line of ['What a day!', 'Where now?', 'he said "run"', "it was 'over'", 'a note (here)']) {
+            expect(segmentEndsSettledSentence(line)).toBe(true);
+        }
+    });
+
+    it('holds a segment that stops mid-sentence', () => {
+        expect(segmentEndsSettledSentence('nickt Dir kurz zu und laechelt dabei,')).toBe(false);
+    });
+
+    it('holds a sentence whose break space the game kept', () => {
+        expect(segmentEndsSettledSentence('so viel aus, wie ein Hund! ')).toBe(false);
+        expect(segmentEndsSettledSentence('alpha.  ')).toBe(false);
+    });
+
+    it('holds an empty segment — there is no sentence to have finished', () => {
+        expect(segmentEndsSettledSentence('')).toBe(false);
+    });
+});
+
+describe('continuationRepeatsSegmentOpening', () => {
+    it('parts a message the game re-prefixed on every line', () => {
+        expect(continuationRepeatsSegmentOpening(
+            'Anne sagt: Ich habe Dir etwas Wichtiges zu erzaehlen',
+            'Anne sagt: Hoere gut zu, denn es ist wichtig.')).toBe(true);
+    });
+
+    it('joins prose that merely opens with the same word twice', () => {
+        // German prose starts line after line with the same pronoun; one shared
+        // word proves nothing.
+        expect(continuationRepeatsSegmentOpening(
+            'Du bist bis zu den ersten Haeusern der Stadt vorgedrungen',
+            'Du weitere Gebaeude vermutest.')).toBe(false);
+    });
+
+    it('does not count a wide gap as a second shared word', () => {
+        expect(continuationRepeatsSegmentOpening('Anne   sagt hello', 'Anne   sagt goodbye')).toBe(true);
+        expect(continuationRepeatsSegmentOpening('Anne   hello', 'Anne   goodbye')).toBe(false);
+    });
+
+    it('skips the break space a leading-space game puts on every segment', () => {
+        // Both open with that space, so it begins no word and " der Laerm" and
+        // " der Duft" share one word, not two.
+        expect(continuationRepeatsSegmentOpening(
+            ' der Laerm der vielen Stimmen dringt', ' der Duft von Gewuerzen liegt')).toBe(false);
     });
 });
 

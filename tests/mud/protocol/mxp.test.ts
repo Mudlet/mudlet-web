@@ -226,3 +226,56 @@ describe('MxpParser — robustness', () => {
     expect(r.plain).toBe('&x;'); // entity no longer defined → literal
   });
 });
+
+// <HR> is not written out as a rule, it is fed back through the parser as text
+// (Mudlet's TMxpHRTagHandler): a newline to commit whatever the line held, the
+// dashes, and a newline so the next text stands on its own.
+describe('MxpParser — HR', () => {
+  it('draws the rule as wide as the window wraps', () => {
+    const sent: string[] = [];
+    const parser = new MxpParser({ send: (r) => sent.push(r), wrapWidth: () => 100 });
+    const r = parser.parseLine(`${SECURE}MXPRULE1<hr>MXPRULE2`);
+    expect(r.plain).toBe(`MXPRULE1\n${'-'.repeat(100)}\nMXPRULE2`);
+  });
+
+  it('holds a forty column floor however narrowly the window wraps', () => {
+    const sent: string[] = [];
+    const parser = new MxpParser({ send: (r) => sent.push(r), wrapWidth: () => 10 });
+    expect(parser.parseLine(`${SECURE}<hr>`).plain).toBe(`\n${'-'.repeat(40)}\n`);
+  });
+
+  it('falls back to eighty columns when nothing reports a width', () => {
+    const { parser } = makeParser();
+    expect(parser.parseLine(`${SECURE}<hr>`).plain).toBe(`\n${'-'.repeat(80)}\n`);
+  });
+});
+
+// Mudlet applies an ESC[#z only to data flagged as coming from the server
+// (TBuffer.cpp's isFromServer gate on mMxpProcessor.setMode). A script feeding a
+// captured game line must not be able to leave the parser in whatever mode that
+// capture ended on — the next real tag would then be discarded as unsafe.
+describe('MxpParser — ESC[#z only switches mode for server data', () => {
+  it('consumes the sequence either way, so it is never printed', () => {
+    const { parser } = makeParser();
+    expect(parser.parseLine(`${SECURE}<b>hi</b>${ESC}[7z`, undefined, false).plain).toBe('hi');
+  });
+
+  // The setup a script feeding markup actually runs under: the processor forced
+  // on, which locks secure mode (specialForceMXPProcessorOn). A captured game
+  // line ending on ESC[7z must not take that lock away, or every later tag the
+  // script feeds is discarded as unsafe — which is what MXP_spec's frame setup
+  // ran into.
+  it('a locally-fed lock cannot undo the forced secure mode', () => {
+    const { parser } = makeParser();
+    parser.lockSecureMode(true);
+    parser.parseLine(`${ESC}[7z`, undefined, false);
+    expect(parser.parseLine('<frame Status>', undefined, false).frames?.[0]?.name).toBe('Status');
+  });
+
+  it('the same lock from the game does take effect', () => {
+    const { parser } = makeParser();
+    parser.lockSecureMode(true);
+    parser.parseLine(`${ESC}[7z`);
+    expect(parser.parseLine('<frame Status>', undefined, false).frames).toBeUndefined();
+  });
+});

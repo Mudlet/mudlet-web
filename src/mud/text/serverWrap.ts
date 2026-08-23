@@ -43,6 +43,19 @@ export const SERVER_WRAP_FIT_TOLERANCE = 8;
  *  a label however long it runs, where a bare `1364.` is as likely a price. */
 export const MAX_LIST_NUMBER_DIGITS = 3;
 
+/** How much of a held game line's opening is kept for comparing a continuation
+ *  against. Mudlet's `csmServerWrapSegmentStartChars` — only the first
+ *  {@link SERVER_WRAP_REPEATED_WORDS} shared words and the spaces after them
+ *  have to fall inside it, and that leaves room for it even where a long name
+ *  is one of them. */
+export const SERVER_WRAP_SEGMENT_START_CHARS = 48;
+
+/** How many opening words a continuation has to share with the held segment
+ *  before it is a message the game re-prefixed rather than a wrap. Mudlet's
+ *  `csmServerWrapRepeatedWords` — one is far too common in prose to prove
+ *  anything. */
+export const SERVER_WRAP_REPEATED_WORDS = 2;
+
 /** How long a held-back line waits for its continuation before being committed
  *  on its own. Mudlet's `csmServerWrapFlushDelayMs`. */
 export const SERVER_WRAP_FLUSH_DELAY_MS = 300;
@@ -121,6 +134,63 @@ export function looksLikeWrappedProse(visible: string): boolean {
     }
     // At least 60% of the non-space characters must be letters or digits.
     return nonSpace > 0 && letters * 10 >= nonSpace * 6;
+}
+
+/**
+ * Mudlet `TBuffer::segmentEndsSettledSentence`. Where a game swallows the space
+ * it breaks at, a segment that finishes a sentence right on the wrap column
+ * looks exactly like one the game ended there itself — and games end lines on
+ * sentences all the time: a room description, the exits line below it, the
+ * object line below that. Joining those runs separate lines into one and breaks
+ * triggers anchored to their starts.
+ *
+ * A kept break space is the one piece of evidence that settles it, so only a
+ * sentence with nothing at all after it is refused — the check reads the very
+ * last character rather than the last non-space one. What that costs is a
+ * genuine wrap landing exactly after a sentence staying split, which reads as a
+ * break at a sentence boundary; far cheaper than the joins it prevents.
+ *
+ * This belongs at the *hold* decision only: continuations legitimately end
+ * sentences, so {@link looksLikeWrappedProse} must keep accepting them.
+ *
+ * `visible` must already be ANSI-stripped.
+ */
+export function segmentEndsSettledSentence(visible: string): boolean {
+    if (!visible.length) return false;
+    return SENTENCE_FINALS.includes(visible[visible.length - 1]);
+}
+
+/**
+ * Mudlet `TBuffer::continuationRepeatsSegmentOpening`. Games that wrap a tell,
+ * say or channel message themselves put the whole prefix back on every physical
+ * line of it (`Anne teilt Dir mit: …`). Those lines break mid-sentence at the
+ * wrap column and leave no room for the next word, so every other check reads
+ * them as one wrapped paragraph and the join buries the prefix in the middle of
+ * it. The repeated opening is what gives them away — two words of it, because
+ * prose starts line after line with the same article or pronoun and one proves
+ * nothing.
+ *
+ * `segmentStart` is the held *game line's* opening (see
+ * {@link SERVER_WRAP_SEGMENT_START_CHARS}), not the joined paragraph's: a
+ * continuation is compared against the line it actually follows.
+ *
+ * Both strings must already be ANSI-stripped.
+ */
+export function continuationRepeatsSegmentOpening(segmentStart: string, visibleNext: string): boolean {
+    const comparable = Math.min(segmentStart.length, visibleNext.length);
+    let i = 0;
+    // A held segment can open with the space the game moved the break to rather
+    // than swallowing it, and that space begins no word.
+    while (i < comparable && isSpace(segmentStart[i])) i++;
+
+    let repeatedWords = 0;
+    for (; i < comparable; i++) {
+        if (segmentStart[i] !== visibleNext[i]) break;
+        // A word is over at the first space after it, so a run of them counts
+        // once — two words shared, not one and a wide gap.
+        if (isSpace(segmentStart[i]) && !isSpace(segmentStart[i - 1])) repeatedWords++;
+    }
+    return repeatedWords >= SERVER_WRAP_REPEATED_WORDS;
 }
 
 /**
@@ -210,12 +280,14 @@ export function pendingLineHadRoomForNextWord(
 export function shouldCommitPendingBeforeJoin(
     visibleNext: string,
     nextIsProse: boolean,
-    fit?: { visiblePending: string; heldSegmentLength: number; width: number },
+    fit?: { visiblePending: string; heldSegmentLength: number; segmentStart: string; width: number },
 ): boolean {
     const doubleIndented = isSpace(visibleNext[0] ?? '') && visibleNext.length > 1 && isSpace(visibleNext[1]);
     if (doubleIndented || !nextIsProse || startsWithListMarker(visibleNext)) return true;
-    return !!fit && pendingLineHadRoomForNextWord(
-        fit.visiblePending, fit.heldSegmentLength, visibleNext, fit.width);
+    if (!fit) return false;
+    return continuationRepeatsSegmentOpening(fit.segmentStart, visibleNext)
+        || pendingLineHadRoomForNextWord(
+            fit.visiblePending, fit.heldSegmentLength, visibleNext, fit.width);
 }
 
 /**

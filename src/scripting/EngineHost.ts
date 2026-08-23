@@ -68,7 +68,9 @@ export interface EngineHost {
 
     /** Run a synthetic batch of lines through the same pipeline as network
      *  output, so `feedTriggers` shares ordering semantics with real data. */
-    processFlushBatch(groups: { text: string; type: string }[]): void;
+    /** `fromServer` distinguishes a batch that came off the socket from one a
+     *  script synthesised (feedTriggers). Absent means the socket. */
+    processFlushBatch(groups: { text: string; type: string; fromServer?: boolean }[]): void;
 
     /** Apply any coalesced trigger/alias reloads immediately instead of on the
      *  scheduled microtask. The Mudlet `perm…`, `enableTrigger` and

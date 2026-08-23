@@ -1,6 +1,7 @@
 import { FormatState } from './FormatState';
 import { AnsiAwareBuffer } from './FormatState';
 import type { FormatStateSnapshot } from './FormatState';
+import { concealDelayedReveals } from './hyperlinkVisibility';
 
 /** Longest run of characters one echo or insert may add to a line. Mudlet's
  *  `TBuffer::MAX_CHARACTERS_PER_ECHO`. */
@@ -102,7 +103,7 @@ export class Console {
 
         for (let i = 0; i < completeCount; i++) {
             for (const line of this.toStoredLines(splits[i])) {
-                this.history.push(line);
+                this.store(line);
                 this.pending.push(line);
             }
         }
@@ -121,7 +122,7 @@ export class Console {
      * pipeline; pending is reserved for script-driven echo flushes.
      */
     appendLine(buffer: AnsiAwareBuffer): void {
-        this.history.push(buffer);
+        this.store(buffer);
         this.cursorIdx = this.history.length - 1;
         this.cursorCol = 0;
         this.evict();
@@ -141,12 +142,24 @@ export class Console {
         // line that arrives through the clipboard has to lay out like one typed
         // into the window.
         for (const line of this.toStoredLines(buffer)) {
-            this.history.push(line);
+            this.store(line);
             this.pending.push(line);
         }
         this.cursorIdx = -1;
         this.cursorCol = 0;
         this.evict();
+    }
+
+    /**
+     * The one way a completed line enters history. An OSC 8 link set to reveal
+     * itself after a delay is written into the buffer as spaces here and gets
+     * its text back when the delay is up — Mudlet does the same, so that a
+     * script reading the line back sees what the player can see rather than the
+     * secret behind it.
+     */
+    private store(line: AnsiAwareBuffer): void {
+        concealDelayedReveals(line);
+        this.history.push(line);
     }
 
     private evict(): void {

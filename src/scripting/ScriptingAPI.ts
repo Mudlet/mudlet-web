@@ -22,6 +22,9 @@ import { AnsiAwareBuffer, type FormatColor, type FormatStateSnapshot, type Forma
 import { classifyHyperlinkUri } from '../mud/text/ansiEscapes';
 import { extractQuery, type UnderlineStyle } from '../mud/text/hyperlinkConfig';
 import { OscLinkManager } from '../mud/text/oscLinkManager';
+import { pumpDelayedReveals } from '../mud/text/hyperlinkVisibility';
+import { historyStorageKey, loadHistory } from '../ui/commandHistory';
+import { OSC8_DOCS_DEBOUNCE_MS, OSC8_DOCS_PHRASE, osc8DocumentationExamples } from '../mud/text/osc8Docs';
 import { SERVER_WRAP_WIDTH_MAX, SERVER_WRAP_WIDTH_MIN } from '../mud/text/serverWrap';
 import { decodeTelnetByteTags } from '../mud/connection/telnetByteTags';
 import { openOsc8Menu } from '../ui/output/osc8Menu';
@@ -377,22 +380,23 @@ const MIN_CONSOLE_BUFFER_LINES = 100;
 const MAX_CONSOLE_BUFFER_LINES = 1_000_000;
 
 /**
- * Window id backing an MXP `<FRAME name>`. Frame names come from the server,
- * while mudix owns window ids of its own — `main`, `map` (the toolbar's
- * mapper), `mapViewN`. eden calls its minimap frame `map`, which unprefixed
- * would have the server's frame and the user's map widget fighting over one
- * window: creating the frame hijacks the mapper's panel (and drops the frame's
- * text, since a map panel takes no buffer writes), `ACTION=close` deletes the
- * mapper, and the toolbar's Map button hides the frame. The separator cannot
- * appear in a frame name (MxpFrameManager's VALID_FRAME_NAME is alphanumerics,
- * `_` and `-`), so the namespace cannot be reached from the wire either.
+ * Window id backing an MXP `<FRAME name>` — the frame's own name, as in Mudlet,
+ * where a frame console goes into the same `mSubConsoleMap` a script's
+ * miniconsoles live in. That is what lets Lua read a frame back like any other
+ * window (`getLines(frameName, …)`, `windowType(frameName)`), which MXP_spec
+ * asserts.
  *
- * The cost is that a Lua script cannot address a frame by its bare MXP name the
- * way Mudlet's mSubConsoleMap allows; no mudix API exposes frames to scripts
- * yet, so nothing depends on that today.
+ * The names come from the server, so they used to be prefixed to keep a MUD
+ * from seizing a window the client owns — eden calls its minimap frame `map`,
+ * which is also what the toolbar's mapper was once called. That job now belongs
+ * to the `sys:` prefix every client-owned window id carries (see
+ * ui/windows/types.ts), and a frame name cannot contain a `:` in the first
+ * place (MxpFrameManager's VALID_FRAME_NAME is alphanumerics, `_` and `-`), so
+ * the two id spaces still cannot meet. What is left is the collision Mudlet has
+ * too: a server frame and a script miniconsole of the same name are one window.
  */
 function mxpWindowId(name: string): string {
-    return `mxp:${name}`;
+    return name;
 }
 
 function measureMonospaceCell(family: string, size: number): [number, number] {
@@ -1005,6 +1009,13 @@ export class ScriptingAPI {
      *  event loop the timer would have fired on. */
     pumpServerWrap(): boolean {
         return this.session.pumpServerWrap();
+    }
+
+    /** Put back the text of an OSC 8 link written concealed whose reveal delay
+     *  has elapsed. Same reason again: the runner blocks the event loop the
+     *  reveal timer would have fired on. */
+    pumpHyperlinkReveals(): boolean {
+        return pumpDelayedReveals();
     }
 
     /** Mudlet `receiveMSP(text)`. Parses an MSP payload (`!!SOUND(...)` /
@@ -2205,7 +2216,41 @@ export class ScriptingAPI {
 
     // ── Echo / output ─────────────────────────────────────────────────────────
 
+    /** When the `!osc8-docs` banner last went out — see {@link injectOsc8Docs}. */
+    private osc8DocsInjectedAt = 0;
+
+    /**
+     * Mudlet's `!osc8-docs` easter egg (`TBuffer::appendLine`): text printed
+     * through the echo family that carries the phrase is swallowed whole — not
+     * just the phrase, the whole call — and a banner of worked OSC 8 examples
+     * goes into the MAIN console instead, whichever window the echo named.
+     *
+     * Returns true when the caller must print nothing. That happens even while
+     * the once-a-second debounce is suppressing the banner itself: an echo and
+     * the server response repeating it are two sightings of one phrase, and the
+     * phrase never belongs on screen either way.
+     */
+    private injectOsc8Docs(text: string): boolean {
+        if (!text.includes(OSC8_DOCS_PHRASE)) return false;
+        const now = Date.now();
+        if (now - this.osc8DocsInjectedAt > OSC8_DOCS_DEBOUNCE_MS) {
+            this.osc8DocsInjectedAt = now;
+            // Deliberately the main console's own format state, reset first: the
+            // banner colours itself and must not inherit a pen left set by
+            // whatever was echoing when the phrase turned up.
+            this.mainConsole.resetFormat();
+            this.mainConsole.echo(osc8DocumentationExamples());
+            this.mainConsole.resetFormat();
+            this.drainMain();
+        }
+        return true;
+    }
+
     echo(text: string): void {
+        // An echo from inside a trigger goes onto the matched line rather than
+        // through the append path, so it prints the phrase as ordinary text —
+        // Mudlet draws the same line, and UI_spec asserts it.
+        if (!this.echoOnMatchedLine && this.injectOsc8Docs(text)) return;
         // During trigger processing Mudlet's echo/cecho appends to the matched
         // line at the output cursor (the line's end); only a `\n` advances to a
         // fresh line. mudix seeds the matched line into mainConsole.history
@@ -2230,6 +2275,7 @@ export class ScriptingAPI {
     }
 
     echoToWindow(win: string, text: string): void {
+        if (this.injectOsc8Docs(text)) return;
         const con = this.outputConsole(win);
         con.echo(text);
         this.drainWindowConsole(win, con);
@@ -3263,7 +3309,9 @@ export class ScriptingAPI {
 
         // With no engine bound yet (early init) the default host falls back to
         // emitting a raw flushLines event.
-        this.host.processFlushBatch([{ text: completeLines.join('\n'), type: 'mud' }]);
+        // fromServer: false — an MXP `ESC[#z` in fed text is consumed but does
+        // not switch the parser's mode, as in Mudlet.
+        this.host.processFlushBatch([{ text: completeLines.join('\n'), type: 'mud', fromServer: false }]);
 
         if (remainder) {
             this.mainConsole.echo(remainder);
@@ -3866,7 +3914,14 @@ export class ScriptingAPI {
                 this.session.windows.setTopAnchored(id, true);
             }
         }
-        this.session.windows.pushBuffer(id, buffer);
+        // Through the frame's own Console, not straight at the panel: that is
+        // where getLines/getLineCount and the selection APIs read a window
+        // from, so a redirect that bypassed it would be visible on screen and
+        // invisible to every script — which is the opposite of the point of a
+        // frame being "a miniconsole registered under the frame's name".
+        const con = this.outputConsole(id);
+        con.appendBuffer(buffer);
+        this.drainWindowConsole(id, con);
         // A frame the server rewrites wholesale is a pane, not a scrollback, so
         // hold it at the first row. Such a redraw arrives over several network
         // flushes (eden sends ~12 map rows across two), and a console that
@@ -4419,6 +4474,29 @@ export class ScriptingAPI {
         // Only the main bar has a persisted history for the flag to govern; the
         // rest round-trip the setting and will follow if they ever gain one.
         if (cmdLineName === 'main') this.session.events.emit('script.savecommandhistory', save);
+    }
+
+    /**
+     * The command-line history files an end-of-session save should write, as
+     * `{ name, content }` pairs relative to the profile directory. Empty when
+     * nothing is to be written.
+     *
+     * Mudlet does this from `Host::saveProfile()`, which emits
+     * `signal_saveCommandLinesHistory` and lets every TCommandLine write its own
+     * `command_history_<name>` — newest command first, one per line, capped at
+     * the profile-wide save size. Both switches have to be on: the size, and the
+     * command line's own flag.
+     *
+     * Only the main bar has a history to write. mudix's Geyser command lines
+     * keep none, so unlike Mudlet there are no numbered files beside it — the
+     * shape is here rather than a bare `saveMainHistory()` so that one gaining a
+     * history is a change in this function alone.
+     */
+    commandLineHistoryFiles(): { name: string; content: string }[] {
+        const size = Number(this.getConfig('commandLineHistorySaveSize') ?? 0);
+        if (!(size > 0) || !this.saveCommandHistoryFor('main')) return [];
+        const history = loadHistory(historyStorageKey(this.connectionId));
+        return [{ name: 'command_history_main', content: history.slice(0, size).join('\n') }];
     }
 
     /**

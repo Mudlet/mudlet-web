@@ -187,11 +187,15 @@ const MAX_PENDING = 256;
 const ENTITY_NAME_TAIL = /^&[0-9A-Za-z#.\-_&]+$/;
 /** Recursion guard for custom-element template expansion. */
 const MAX_DEPTH = 8;
+/** Narrowest an `<HR>` rule may be drawn, however narrow the window wraps.
+ *  Mudlet's `TMxpMudlet::getWrapWidth` floor. */
+const HR_MIN_WIDTH = 40;
 
 export class MxpParser {
     private readonly opts: {
         send: (raw: string) => void;
         onElementEvent?: (name: string, attrs: Record<string, string>) => void;
+        wrapWidth?: () => number;
     };
 
     // --- persistent across the whole session ---
@@ -210,6 +214,8 @@ export class MxpParser {
     private mxpColorStack: { fg: FormatColor | null; bg: FormatColor | null }[] = [];
     /** Partial tag/entity held from the end of the previous line. */
     private pendingTag = "";
+    /** Whether the line being parsed came off the socket — see {@link parseLine}. */
+    private fromServer = true;
     /** Active `<DEST>` target frame (persists across lines until `</DEST>`), or
      *  null when output flows to the main window. While set, appended text and
      *  flushed runs route to `destOut`/`destPlain` instead of `out`/`plain`. */
@@ -243,6 +249,9 @@ export class MxpParser {
          *  tag's attributes resolved the way Mudlet resolves them (see
          *  {@link elementEventAttrs}). Backs the Lua `mxp` table. */
         onElementEvent?: (name: string, attrs: Record<string, string>) => void;
+        /** Columns the main window wraps at — how wide `<HR>` draws its rule.
+         *  Mudlet's `TMxpClient::getWrapWidth`, whose own fallback is 80. */
+        wrapWidth?: () => number;
     }) {
         this.opts = opts;
         this.presets = opts.presets ?? new HyperlinkPresetRegistry();
@@ -290,8 +299,16 @@ export class MxpParser {
 
     /** Parse one raw line (post telnet-strip, post UTF-8 decode), which may carry
      *  ANSI SGR, MXP tags, `ESC[#z` modes, and entities. `baseSnapshot` is the
-     *  carried pen from the previous line. */
-    parseLine(rawLine: string, baseSnapshot?: FormatStateSnapshot): MxpLineResult {
+     *  carried pen from the previous line.
+     *
+     *  `fromServer` false means the line was synthesised locally (feedTriggers).
+     *  Such a line's `ESC[#z` is consumed but does not switch mode, matching
+     *  Mudlet's `isFromServer` gate on `mMxpProcessor.setMode` — otherwise a
+     *  script feeding a captured game line would leave the parser in whatever
+     *  mode that capture ended on, and the next real tag would be discarded as
+     *  unsafe. */
+    parseLine(rawLine: string, baseSnapshot?: FormatStateSnapshot, fromServer = true): MxpLineResult {
+        this.fromServer = fromServer;
         const input = this.pendingTag + rawLine;
         this.pendingTag = "";
 
@@ -403,8 +420,10 @@ export class MxpParser {
                     this.flushRun();
                     this.fmt.applySgr(parseSgrParams(esc.params ?? ""));
                 } else if (esc.kind === "csi" && esc.finalByte === "z") {
+                    // Consumed either way — it is never text — but only obeyed
+                    // when the game sent it. See parseLine's `fromServer`.
                     this.flushRun();
-                    this.applyLineMode(parseInt(esc.params ?? "", 10) || 0);
+                    if (this.fromServer) this.applyLineMode(parseInt(esc.params ?? "", 10) || 0);
                 } else if (esc.kind === "osc" && esc.oscPayload !== undefined) {
                     // OSC 8 hyperlink: open/close a clickable link on the
                     // following text. The URI is stashed on the pen and the
@@ -612,6 +631,14 @@ export class MxpParser {
                 this.appendText("\n"); break;
             case "sbr":
                 this.appendText(" "); break;
+            case "hr":
+                // Mudlet's TMxpHRTagHandler: the rule is not drawn, it is fed
+                // back through the parser as text — a newline to commit
+                // whatever the line held, the dashes, and a newline to leave
+                // the next text on a line of its own. Its width is the main
+                // window's wrap column, with a forty column floor.
+                this.appendText(`\n${"-".repeat(Math.max(this.opts.wrapWidth?.() ?? 80, HR_MIN_WIDTH))}\n`);
+                break;
             case "frame":
                 this.handleFrameTag(named, positional); break;
             case "dest":
@@ -627,7 +654,7 @@ export class MxpParser {
                 // are our own identity (see src/version.ts).
                 this.opts.send(`${MXP_SECURE_REPLY_PREFIX}<VERSION MXP="1.0" CLIENT="${CLIENT_NAME}" VERSION="${CLIENT_VERSION}">`); break;
             default:
-                // Structural no-ops (p, nobr, hr) and discarded heavy tags (image,
+                // Structural no-ops (p, nobr) and discarded heavy tags (image,
                 // gauge, relocate, …): consume the tag, render nothing for it.
                 // Any enclosed text still renders since the close handler ignores
                 // unmatched closing tags.
@@ -722,6 +749,12 @@ export class MxpParser {
         this.destOut = [];
         this.destPlain = "";
         this.destLinks = [];
+        // Mudlet's clearMxpDestination() ends with resetCurrentTextFormat(): the
+        // pen goes back to the profile's own colours rather than to whatever was
+        // in force before the redirect. Without it, colour a game sets inside a
+        // frame's content follows the text back out and repaints the main
+        // window — the frame's SGR is written for the frame.
+        this.fmt.reset();
     }
 
     private openFormat(name: string, mutate: () => void): void {

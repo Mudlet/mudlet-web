@@ -130,3 +130,24 @@ describe('MxpParser — DEST (Mudlet 4.21)', () => {
     expect(supports).not.toContain('-frame');
   });
 });
+
+
+// Mudlet's clearMxpDestination() ends with resetCurrentTextFormat(): the pen
+// goes back to the profile's own colours rather than to whatever was in force
+// before the redirect. Colour a game sets inside a frame's content is written
+// for the frame, so letting it follow the text back out repaints main.
+describe('MxpParser — the pen after </DEST>', () => {
+  it('does not carry colour set inside the redirect back to main', () => {
+    const { parser } = makeParser();
+    const r = parser.parseLine(`${SECURE}<dest Status>${ESC}[31mred in the frame</dest>back in main`);
+    expect(plainOf(r.redirects?.[0].segments ?? [])).toBe('red in the frame');
+    expect(r.plain).toBe('back in main');
+    expect(r.segments.find(s => s.text === 'back in main')?.state?.foreground).toBeUndefined();
+  });
+
+  it('hands the next line a default pen rather than the frame colour', () => {
+    const { parser } = makeParser();
+    const r = parser.parseLine(`${SECURE}<dest Status>${ESC}[31mred</dest>`);
+    expect(r.trailingSnapshot?.foreground).toBeUndefined();
+  });
+});

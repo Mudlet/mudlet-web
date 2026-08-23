@@ -26,6 +26,26 @@ export interface KnownDivergence {
 }
 
 export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
+    DB: [
+        {
+            name: 'Tests DB.lua functions / Tests the functionality of db.Database:_begin, db.Database:_commit, db.Database:_rollback and db.Database:_end / _commit answers false when the database engine refuses the commit',
+            reason:
+                'It is the SCENARIO that is out of reach here, not the behaviour. The spec provokes a refusal '
+                + 'by opening a SECOND connection to the same database file and holding a read cursor on it, so '
+                + 'SQLite answers the writer with SQLITE_BUSY. That needs two connections contending over one '
+                + 'file and mudix has neither: a database lives in wasm memory (sqliteClient opens `:memory:` '
+                + 'and persists by snapshotting the bytes into the profile VFS), and `open()` hands every caller '
+                + 'naming the same path the one live handle — so the reader and the writer in this spec are '
+                + 'literally the same connection, which cannot lock itself out. Reproducing it would mean an '
+                + "OPFS-backed file with a connection per caller, the design sqliteClient's header rejects, "
+                + 'putting a worker hop and async back on the trigger write path to earn one error message. '
+                + 'What the spec is really guarding — that _commit reports a refusal instead of answering true '
+                + 'over work that never landed — IS implemented and does happen here: SQLite refuses a COMMIT '
+                + 'on a single connection whenever a DEFERRABLE constraint fails at the end of the '
+                + 'transaction, or the database has outgrown what the wasm heap can still grow to. '
+                + 'Luasql.lua propagates those, and tests/scripting/dbCommitRefusal.test.ts pins it.',
+        },
+    ],
     Mapper: [
         {
             name: 'Tests saveMap and loadMap / Tests the saveMap argument contract / resolves a relative location against the profile directory',

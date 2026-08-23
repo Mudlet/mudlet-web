@@ -3,6 +3,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createTestRuntime, type TestRuntime } from '../createTestRuntime';
 import { AnsiAwareBuffer } from '../../src/mud/text/FormatState';
+import { MAP_WIDGET_ID } from '../../src/ui/windows/types';
 
 // Coverage for the Mudlet 4.21 parity additions: getBorderColor, the memory
 // introspection pair, the warning-emitting no-op stubs for inapplicable APIs
@@ -120,26 +121,28 @@ describe('Mudlet 4.21 API additions', () => {
   });
 
   describe('MXP FRAME/DEST consumer (ScriptingAPI)', () => {
-    // Frame consoles live under an `mxp:` id: the names come from the server and
-    // must not be able to seize a client-owned window — eden calls its minimap
-    // frame `map`, which is also the toolbar mapper's id.
+    // A frame console lives under the frame's own name, the way Mudlet keeps
+    // one in the same map as a script's miniconsoles — that is what lets Lua
+    // read it back with getLines/windowType.
     it('mxpFrame opens a mini-console and ACTION=close removes it', () => {
       env.api.mxpFrame('StatusBar', { NAME: 'StatusBar', WIDTH: '200', HEIGHT: '80', LEFT: '0', TOP: '0' });
-      expect(env.session.windows.isMiniConsole('mxp:StatusBar')).toBe(true);
-      expect(env.session.windows.has('StatusBar')).toBe(false);
+      expect(env.session.windows.isMiniConsole('StatusBar')).toBe(true);
       env.api.mxpFrame('StatusBar', { NAME: 'StatusBar', ACTION: 'close' });
-      expect(env.session.windows.isMiniConsole('mxp:StatusBar')).toBe(false);
+      expect(env.session.windows.isMiniConsole('StatusBar')).toBe(false);
     });
 
+    // …but a window the CLIENT owns still cannot be seized: those carry the
+    // `sys:` prefix, which no frame name can spell. eden ships a minimap frame
+    // called `map`, so this is not hypothetical.
     it('leaves the toolbar map widget alone when the server names a frame "map"', () => {
-      env.session.windows.open('map', { kind: 'map', title: 'Map' });
+      env.session.windows.open(MAP_WIDGET_ID, { kind: 'map', title: 'Map' });
       env.api.mxpFrame('map', { NAME: 'map', WIDTH: '200', HEIGHT: '80' });
       // The mapper keeps its identity, and the frame is a console of its own.
-      expect(env.session.windows.isMiniConsole('map')).toBe(false);
-      expect(env.session.windows.isMiniConsole('mxp:map')).toBe(true);
+      expect(env.session.windows.isMiniConsole(MAP_WIDGET_ID)).toBe(false);
+      expect(env.session.windows.isMiniConsole('map')).toBe(true);
       // Closing the frame must not take the mapper with it.
       env.api.mxpFrame('map', { NAME: 'map', ACTION: 'close' });
-      expect(env.session.windows.has('map')).toBe(true);
+      expect(env.session.windows.has(MAP_WIDGET_ID)).toBe(true);
     });
 
     it('mxpWriteToFrame: false for a missing frame, true once the frame exists', () => {

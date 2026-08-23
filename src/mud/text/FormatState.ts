@@ -996,6 +996,13 @@ export class AnsiAwareBuffer {
         }));
     }
 
+    /** Whether any segment carries an OSC 8 link with `visibility` settings.
+     *  A cheap pre-check (no cloning, no grouping) for the concealment pass,
+     *  which every stored line goes through. */
+    hasVisibilityLink(): boolean {
+        return this.segments.some(s => s.state?.hyperlink?.config?.visibility !== undefined);
+    }
+
     toHyperlinkSegments(): { text: string; hyperlink?: FormatHyperlink }[] {
         const segments: { text: string; hyperlink?: FormatHyperlink }[] = [];
         for (const segment of this.segments) {
