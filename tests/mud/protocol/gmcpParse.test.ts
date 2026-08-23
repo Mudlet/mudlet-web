@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createGmcpStream } from '../../../src/mud/protocol/gmcp';
+import { createGmcpStream, encodeGmcp, encodeGmcpRaw } from '../../../src/mud/protocol/gmcp';
 import { GMCP_COMMAND_CODE } from '../../../src/mud/protocol/constants';
 
 /** Build the subnegotiation body createGmcpStream consumes: the GMCP option
@@ -7,6 +7,14 @@ import { GMCP_COMMAND_CODE } from '../../../src/mud/protocol/constants';
  *  stripped upstream before the stream sees it.) */
 function frame(text: string): string {
   return String.fromCharCode(GMCP_COMMAND_CODE) + text;
+}
+
+/** The Latin-1 byte-string MudClient hands the stream: one char per wire byte. */
+function utf8Frame(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let out = String.fromCharCode(GMCP_COMMAND_CODE);
+  for (const b of bytes) out += String.fromCharCode(b);
+  return out;
 }
 
 describe('GMCP payload parsing', () => {
@@ -77,5 +85,34 @@ describe('GMCP payload parsing', () => {
     expect(seen).toEqual([]);
     expect(warn).toHaveBeenCalledOnce();
     warn.mockRestore();
+  });
+
+  // GMCP bodies are JSON, which is always UTF-8 regardless of the session's
+  // text encoding (cTelnet::setGMCPVariables). The bytes arrive here as a
+  // Latin-1 byte-string, so without decoding, "•" reached scripts as the three
+  // mojibake chars "â\x80¢" and Lua pattern matches against it failed.
+  it('decodes a UTF-8 body rather than passing raw bytes through', () => {
+    const seen: Array<{ path: string; value: unknown }> = [];
+    const stream = createGmcpStream({ onEnvelope: e => seen.push(e) });
+    stream(utf8Frame('Game.Players.Info {"route":"Tristeza • Port of Darkhill","emoji":"⛵"}'));
+    expect(seen).toEqual([
+      { path: 'Game.Players.Info', value: { route: 'Tristeza • Port of Darkhill', emoji: '⛵' } },
+    ]);
+  });
+
+  it('UTF-8-encodes outgoing bodies into the byte-string sendBytes expects', () => {
+    // Framing bytes stay raw; only the body is transcoded, and it round-trips
+    // back through the inbound parser.
+    const seen: Array<{ path: string; value: unknown }> = [];
+    const stream = createGmcpStream({ onEnvelope: e => seen.push(e) });
+    for (const wire of [encodeGmcp('Char.Name', { name: 'Zoë' }), encodeGmcpRaw('Char.Name {"name":"Zoë"}')]) {
+      expect(wire.startsWith('\xFF\xFA' + String.fromCharCode(GMCP_COMMAND_CODE))).toBe(true);
+      expect(wire.endsWith('\xFF\xF0')).toBe(true);
+      stream(wire.slice(2, -2));
+    }
+    expect(seen).toEqual([
+      { path: 'Char.Name', value: { name: 'Zoë' } },
+      { path: 'Char.Name', value: { name: 'Zoë' } },
+    ]);
   });
 });
