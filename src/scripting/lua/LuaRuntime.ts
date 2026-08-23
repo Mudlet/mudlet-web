@@ -1354,8 +1354,11 @@ export class LuaRuntime implements IScriptingRuntime {
             const tail = what != null && String(what) !== '' ? ' ' + String(what) : '';
             return this.api.sendATCP(body + tail);
         });
-        this.lua.global.set('__mudix_sendTelnetChannel102', (msg: unknown) =>
-            this.api.sendTelnetChannel102(String(msg ?? '')));
+        // Two numbers, not a string — see the Bridge.lua wrapper: a string
+        // payload is UTF-8-decoded in transit and the raw bytes are lost.
+        this.lua.global.set('__mudix_sendTelnetChannel102', (b1: unknown, b2: unknown) =>
+            this.api.sendTelnetChannel102(
+                String.fromCharCode(Number(b1) & 0xff, Number(b2) & 0xff)));
         this.lua.global.set('__mudix_sendSocket', (data: unknown) => this.api.sendSocket(String(data ?? '')));
         /** Whether the session currently has a live connection — drives the
          *  "not connected to game server" guards Mudlet applies before sending

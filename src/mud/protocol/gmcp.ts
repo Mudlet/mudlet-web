@@ -27,7 +27,7 @@ const fromByteString = (s: string): string => {
 
 /** UTF-8-encode into a Latin-1 byte-string, for MudClient.sendBytes (which
  *  writes `charCodeAt(i) & 0xff` per char). The inverse of fromByteString. */
-const toByteString = (s: string): string => {
+export const toByteString = (s: string): string => {
     const bytes = utf8Encoder.encode(s);
     let out = "";
     for (let i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]);
