@@ -100,9 +100,13 @@ describe('GMCP payload parsing', () => {
     ]);
   });
 
-  it('UTF-8-encodes outgoing bodies into the byte-string sendBytes expects', () => {
-    // Framing bytes stay raw; only the body is transcoded, and it round-trips
-    // back through the inbound parser.
+  it('UTF-8-encodes outgoing bodies and leaves the framing bytes raw', () => {
+    // Asserted against the literal bytes, not just via the round-trip: decoding
+    // with the same helper that encoded would still pass if both sides were
+    // reverted together.
+    expect(encodeGmcp('Char.Name', { name: 'Zoë' })).toContain('"name":"Zo\xC3\xAB"');
+    expect(encodeGmcpRaw('Char.Name {"name":"Zoë"}')).toContain('"name":"Zo\xC3\xAB"');
+
     const seen: Array<{ path: string; value: unknown }> = [];
     const stream = createGmcpStream({ onEnvelope: e => seen.push(e) });
     for (const wire of [encodeGmcp('Char.Name', { name: 'Zoë' }), encodeGmcpRaw('Char.Name {"name":"Zoë"}')]) {
@@ -114,5 +118,55 @@ describe('GMCP payload parsing', () => {
       { path: 'Char.Name', value: { name: 'Zoë' } },
       { path: 'Char.Name', value: { name: 'Zoë' } },
     ]);
+  });
+
+  // A non-conformant server sending the body in the session encoding rather
+  // than UTF-8. Delivering it with replacement characters beats dropping it,
+  // but it can't be silent: the bad bytes never break the JSON (every
+  // structural character is ASCII), so JSON.parse succeeds and nothing
+  // downstream would ever notice.
+  it('warns about a body that is not valid UTF-8 rather than corrupting it silently', () => {
+    const seen: Array<{ path: string; value: unknown }> = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const stream = createGmcpStream({ onEnvelope: e => seen.push(e) });
+
+    // 0xE9 is Latin-1 'é' — a bare UTF-8 lead byte with no continuation.
+    stream(frame('Room.Info {"name":"Caf\xE9 du Nord"}'));
+
+    expect(seen).toEqual([{ path: 'Room.Info', value: { name: 'Caf\uFFFD du Nord' } }]);
+    expect(warn).toHaveBeenCalledOnce();
+    // The raw bytes, since the decoded text has already lost them.
+    expect(warn.mock.calls[0].join(' ')).toContain('Room.Info');
+    expect(warn.mock.calls[0].join(' ')).toContain('e9');
+
+    // Once per module, not once per message.
+    stream(frame('Room.Info {"name":"Caf\xE9 du Sud"}'));
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
+  it('reports a bad gmcp_msgs payload as such, not as a JSON parse error', () => {
+    // The body is valid JSON; it's the base64 in `text` that isn't. Blaming the
+    // JSON would send anyone debugging it to the wrong place.
+    const seen: string[] = [];
+    const stream = createGmcpStream({ onEnvelope: () => {}, onMessage: text => seen.push(text) });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    stream(frame('gmcp_msgs {"type":"say","text":"not!base64"}'));
+
+    expect(seen).toEqual([]);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn.mock.calls[0][0]).toContain('Malformed gmcp_msgs payload');
+    warn.mockRestore();
+  });
+
+  it('still delivers a well-formed gmcp_msgs payload', () => {
+    const seen: Array<{ text: string; type: string }> = [];
+    const stream = createGmcpStream({ onEnvelope: () => {}, onMessage: (text, type) => seen.push({ text, type }) });
+
+    const b64 = btoa(String.fromCharCode(...new TextEncoder().encode('héllo ⛵')));
+    stream(frame(`gmcp_msgs {"type":"say","text":"${b64}"}`));
+
+    expect(seen).toEqual([{ text: 'héllo ⛵', type: 'say' }]);
   });
 });
