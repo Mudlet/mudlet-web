@@ -138,6 +138,23 @@ export class MudSession {
         // The main output area reports its character grid here on every resize;
         // forward it to the client so NAWS (window size) stays in sync.
         this.windows.onMainConsoleResize = (cols, rows) => this.setWindowSize(cols, rows);
+        // Status latch. Deliberately registered here, in the constructor, rather
+        // than alongside the per-client subscriptions in connect(): EventBus
+        // dispatches in registration order, and the ScriptingEngine subscribes to
+        // the same `client.connect`/`client.disconnect` events to raise
+        // sysConnectionEvent/sysDisconnectionEvent into Lua. Registering the
+        // latch at dial time put it *after* the engine, so a Lua handler calling
+        // getConnectionInfo() — which reads this status — saw the pre-transition
+        // value: `connecting` during sysConnectionEvent and `connected` during
+        // sysDisconnectionEvent, i.e. inverted on both edges. Mudlet has no such
+        // window; cTelnet raises both events from the socket slots and reads the
+        // live QAbstractSocket state, so `connected` is already correct there.
+        // The session is always constructed before the engine that wraps it, so
+        // latching here restores that ordering. These stay subscribed for the
+        // session's lifetime (the bus is ours; destroy() clears it).
+        this.events.on('client.connect', () => this.setStatus('connected'));
+        this.events.on('client.disconnect', () => { this.setStatus('disconnected'); this.setPing(null); });
+        this.events.on('error', () => this.setStatus('disconnected'));
         // Replay recording tap. `socket.incoming` carries the post-MCCP data
         // of every real network frame (and only real frames — replayed data is
         // injected below that emit, so a running replay is never re-recorded).
@@ -207,10 +224,9 @@ export class MudSession {
             this.events,
         );
 
+        // Per-client subscriptions only — the status latch lives in the
+        // constructor so it always runs before the scripting engine's handlers.
         this.stateUnsubs = [
-            this.events.on('client.connect', () => this.setStatus('connected')),
-            this.events.on('client.disconnect', () => { this.setStatus('disconnected'); this.setPing(null); }),
-            this.events.on('error', () => this.setStatus('disconnected')),
             this.events.on('client.error', (message) => this.reportConnectionError(message)),
             this.events.on('charset.negotiated', (name) => this.noteNegotiatedEncoding(name)),
         ];
