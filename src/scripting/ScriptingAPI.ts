@@ -412,7 +412,7 @@ function measureMonospaceCell(family: string, size: number): [number, number] {
     const ctx = measureCtx;
     if (!ctx) return fallback;
     const stack = family && family.trim()
-        ? `"${family.trim().replace(/"/g, '\\"')}", ${DEFAULT_MONO_STACK}`
+        ? `"${family.trim().replace(/[\\"]/g, '\\$&')}", ${DEFAULT_MONO_STACK}`
         : DEFAULT_MONO_STACK;
     ctx.font = `${px}px ${stack}`;
     const m = ctx.measureText('M');
@@ -5402,7 +5402,7 @@ export class ScriptingAPI {
         if (!url) return this.session.labels.setCursor(name, undefined);
         const x = Number.isFinite(hotX) ? Math.max(0, Math.round(hotX as number)) : 0;
         const y = Number.isFinite(hotY) ? Math.max(0, Math.round(hotY as number)) : 0;
-        const escaped = url.replace(/"/g, '\\"');
+        const escaped = url.replace(/[\\"]/g, '\\$&');
         return this.session.labels.setCursor(name, `url("${escaped}") ${x} ${y}, auto`);
     }
 

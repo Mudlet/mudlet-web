@@ -86,7 +86,7 @@ export function namedColorToState(name: string, bg = false): FormatStateSnapshot
 
 /** cecho: <color_name>text<r>  or  <b:color_name>text for background */
 export function parseCecho(text: string): string {
-    return text.replace(/<([^>]+)>/g, (_, tag: string) => {
+    return text.replace(/<([^<>]+)>/g, (_, tag: string) => {
         if (tag.startsWith('b:')) return namedColorToAnsi(tag.slice(2), true);
         return namedColorToAnsi(tag);
     }) + '\x1b[0m';
@@ -114,7 +114,7 @@ export function parseDecho(text: string): string {
  * slow-but-correct rather than wrong.
  */
 export function dechoToAnsiFast(str: string): string | null {
-    const tags = str.match(/<[^>]*>/g);
+    const tags = str.match(/<[^<>]*>/g);
     if (tags) {
         for (const t of tags) {
             if (t === '<r>') continue;
@@ -143,7 +143,7 @@ export function dechoToAnsiFast(str: string): string | null {
  * drift again.
  */
 export function cechoToAnsiFast(str: string): string | null {
-    const tags = str.match(/<[^>]*>/g);
+    const tags = str.match(/<[^<>]*>/g);
     if (tags) {
         for (const t of tags) {
             const name = t.slice(1, -1);

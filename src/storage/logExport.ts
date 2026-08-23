@@ -31,7 +31,10 @@ function sanitizeFilename(name: string): string {
 }
 
 function escapeHtml(s: string): string {
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    // Quotes matter: this also escapes values that land inside an attribute
+    // (the `class="…"` on each line div below).
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 const DOC_STYLE = `

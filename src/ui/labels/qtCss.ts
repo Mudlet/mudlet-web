@@ -870,7 +870,10 @@ export function rewriteQtSelectors(qss: string): string {
     // form) or a Qt widget-type name.
     if (!qss || qss.indexOf('{') < 0) return qss;
     if (qss.indexOf('#') < 0 && !/\bQ[A-Z]/.test(qss) && !MUDLET_TYPE_RE.test(qss)) return qss;
-    const src = qss.indexOf('/*') < 0 ? qss : qss.replace(COMMENT_RE, '');
+    // Both markers, not just the opener: COMMENT_RE scans forward for `*/`, so
+    // with no closer present it rescans to end-of-string from every `/*`
+    // (quadratic — 855ms on 160KB). A comment needs both, so this is exact.
+    const src = qss.indexOf('/*') < 0 || qss.indexOf('*/') < 0 ? qss : qss.replace(COMMENT_RE, '');
     const parts: string[] = [];
     const scrollbarHosts = new Set<string>();
     let i = 0;
@@ -940,9 +943,15 @@ export function patchStyleSheetBackgroundColor(styleSheet: string, r: number, g:
     // `selection-background-color` ENDS in "background-color" without being one:
     // matching it patched the selection colour and left the real background
     // untouched. The leading group pins the property to a declaration boundary.
-    const existing = /(^|[^-\w])background-color\s*:[^;]*;/i;
-    if (existing.test(styleSheet)) {
-        return styleSheet.replace(new RegExp(existing.source, 'gi'), (_m, lead: string) => lead + decl);
+    // Mudlet's own pattern (Host.cpp) is `background-color:[^;]*;` — the
+    // terminating `;` is required there too, so a `;`-less stylesheet can never
+    // match and we can skip the scan outright. Without that guard the value scan
+    // restarts at every `background-color:` and runs to end-of-string each time.
+    if (styleSheet.includes(';')) {
+        const existing = /(^|[^-\w])background-color\s*:[^;]*;/gi;
+        let found = false;
+        const patched = styleSheet.replace(existing, (_m, lead: string) => { found = true; return lead + decl; });
+        if (found) return patched;
     }
     const sep = styleSheet && !styleSheet.endsWith('\n') ? '\n' : '';
     return styleSheet + sep + decl;

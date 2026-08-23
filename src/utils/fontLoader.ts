@@ -6,7 +6,7 @@ const PROBE_FALLBACKS = ['monospace', 'serif', 'sans-serif'] as const;
 const PROBE_FONT_SIZE_PX = 72;
 
 function quoteFamily(family: string): string {
-    return `"${family.replace(/"/g, '\\"')}"`;
+    return `"${family.replace(/[\\"]/g, '\\$&')}"`;
 }
 
 /**
