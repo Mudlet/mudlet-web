@@ -417,12 +417,21 @@ export class ScriptingEngine implements EngineHost {
         // stage its bytes in the profile VFS and then raise sysDropEvent with a
         // path the bundled packageDrop handler can read.
         session.windows.onFileDrop = (file, x, y, id) => { void this.stageDroppedFile(file, x, y, id); };
-        // SoundManager raises sysMediaFinished(name, path) when a source ends.
+        // Mudlet's media events all carry the same five arguments (TMedia.cpp,
+        // mediaStarted/mediaFinished): the source URL's filename, its path, the
+        // media type, and the key and tag the playback was given. Scripts index
+        // them positionally, so the trailing three have to be there even when
+        // they are empty.
+        session.sounds.onMediaStarted = (file, path, mediaType, key, tag) => {
+            this.raiseEvent('sysMediaStarted', [file, path, mediaType, key, tag]);
+        };
         // sysSoundFinished is the pre-4.15 name, superseded by sysMediaFinished
         // but still fired here as a compat alias so older scripts keep working.
-        session.sounds.onMediaFinished = (name, path) => {
-            this.raiseEvent('sysMediaFinished', [name, path]);
-            this.raiseEvent('sysSoundFinished', [name, path]);
+        // It keeps its two-argument shape: that is what the scripts written
+        // against it expect, and widening it would break them.
+        session.sounds.onMediaFinished = (file, path, mediaType, key, tag) => {
+            this.raiseEvent('sysMediaFinished', [file, path, mediaType, key, tag]);
+            this.raiseEvent('sysSoundFinished', [file, path]);
         };
         // Closed captions (Mudlet enableClosedCaption): print a text line when a
         // sound/music starts or stops, gated on the setting (decided per-event so
@@ -1484,7 +1493,11 @@ export class ScriptingEngine implements EngineHost {
                 }
             });
             this.session.videos.setMountPoint(() => this.session.windows.getMainViewportElement());
-            this.session.videos.onEnded = (name, path) => this.raiseEvent('sysMediaFinished', [name, path]);
+            // Videos carry no key or tag in mudix (PlayVideoOptions has no
+            // field for either), so those two arguments are the empty strings
+            // Mudlet sends for an unset key/tag rather than anything read back.
+            this.session.videos.onStarted = (file, path) => this.raiseEvent('sysMediaStarted', [file, path, 'video', '', '']);
+            this.session.videos.onEnded = (file, path) => this.raiseEvent('sysMediaFinished', [file, path, 'video', '', '']);
             this.session.videos.onMediaCaption = (info) => this.printClosedCaption(info);
             this.triggerEngine.setLuaEval((code) => {
                 const lua = this.runtimes.lua;
@@ -3524,8 +3537,10 @@ export class ScriptingEngine implements EngineHost {
         this.session.windows.onDownloadMap = undefined;
         this.session.windows.onStartSpeedWalk = undefined;
         this.session.windows.onFileDrop = undefined;
+        this.session.sounds.onMediaStarted = undefined;
         this.session.sounds.onMediaFinished = undefined;
         this.session.sounds.onMediaCaption = undefined;
+        this.session.videos.onStarted = null;
         this.session.videos.onMediaCaption = null;
         // Stop everything that can fire a Lua callback BEFORE closing the VM.
         // The timer engine is the only autonomous async caller into Lua (a

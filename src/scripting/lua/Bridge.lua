@@ -4020,7 +4020,12 @@ function sendTelnetChannel102(msg)
             .. " supplied, it should be two bytes (may use lua \\### for each byte"
             .. " where ### is a number between 1 and 254)"
     end
-    if not __mudix_sendTelnetChannel102(msg) then
+    -- Passed as two numbers rather than as the string: wasmoon marshals
+    -- Lua->JS strings through UTF8ToString, which UTF-8-*decodes* them, so a
+    -- payload of  arrived in JS as U+0001 U+0200 and went out as bytes
+    -- 01 00. Numbers cross the bridge unchanged. The length is already
+    -- pinned at 2 above, so there is nothing else to carry.
+    if not __mudix_sendTelnetChannel102(msg:byte(1), msg:byte(2)) then
         return nil, "sendTelnetChannel102: unable to send message as the 102 subchannel"
             .. " support has not been enabled by the game server"
     end

@@ -78,6 +78,12 @@ yarn start    # listens on ws://localhost:3001 by default
 
 Then choose **MUD (host:port)** mode when creating a connection. Servers that expose a native WebSocket endpoint don't need the proxy — use **WebSocket** mode and point it straight at the `ws(s)://` URL.
 
+### Already play in desktop Mudlet?
+
+Your existing profile comes across whole — triggers, aliases, scripts, keybindings, buttons, saved variables, installed packages, your map, and your colours and fonts. **[docs/help/migrating.md](docs/help/migrating.md)** walks through it: where the profile folder lives on each platform, the three ways in (copy a folder, import a `.zip`, or link the folder and keep using both), what doesn't come across, and how to export back to desktop Mudlet.
+
+The same guide — plus [connecting](docs/help/connecting.md), [storage and backups](docs/help/storage.md), and [browsers and limits](docs/help/browsers.md) — is built into the app behind the **Help** button, on the start screen and in the toolbar.
+
 ## 🛠️ Development
 
 ```bash

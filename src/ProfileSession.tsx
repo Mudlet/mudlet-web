@@ -11,6 +11,7 @@ import { SettingsModal } from './ui/SettingsModal';
 import { FileBrowserModal } from './ui/FileBrowserModal';
 import { LogBrowserModal } from './ui/LogBrowserModal';
 import { ScriptingDocsModal } from './ui/ScriptingDocsModal';
+import { HelpModal } from './ui/HelpModal';
 import { CharLoginModal } from './ui/CharLoginModal';
 import { TlsUpgradeModal } from './ui/TlsUpgradeModal';
 import { TlsAlertBanner } from './ui/TlsAlertBanner';
@@ -70,6 +71,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     const [filesOpen, setFilesOpen] = useState<false | { initialPath?: string; initialLine?: number; pickedAt?: number }>(false);
     const [logsOpen, setLogsOpen] = useState(false);
     const [docsOpen, setDocsOpen] = useState(false);
+    const [helpOpen, setHelpOpen] = useState(false);
     const [quickOpenOpen, setQuickOpenOpen] = useState(false);
     // GMCP Char.Login credentials popup. Non-null while the server is waiting on
     // a Char.Login.Default reply; `error` carries a previous attempt's failure.
@@ -1084,6 +1086,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                 onOpenFiles={handleOpenFiles}
                 onOpenLogs={() => setLogsOpen(true)}
                 onOpenDocs={() => setDocsOpen(true)}
+                onOpenHelp={() => setHelpOpen(true)}
                 onOpenSettings={onToggleSettings}
                 replayRecording={replayRecording}
                 onToggleReplayRecording={handleToggleReplayRecording}
@@ -1167,6 +1170,12 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                 <ScriptingDocsModal
                     connectionId={connection.id}
                     onClose={() => setDocsOpen(false)}
+                />
+            )}
+            {helpOpen && (
+                <HelpModal
+                    connectionId={connection.id}
+                    onClose={() => setHelpOpen(false)}
                 />
             )}
             {fileDialogs.length > 0 && (

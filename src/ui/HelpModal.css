@@ -1,0 +1,213 @@
+.resizable-modal__body.help-modal__body {
+    display: flex;
+    flex-direction: row;
+    padding: 0;
+    overflow: hidden;
+}
+
+/* ── Sidebar: search + topic list + link out to the Mudlet wiki ─────────────── */
+.help-sidebar {
+    flex: 0 0 232px;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border-right: 1px solid var(--border);
+    background: var(--bg-input);
+}
+
+.help-sidebar__search {
+    padding: 8px;
+    border-bottom: 1px solid var(--border);
+}
+
+.help-search {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 4px 8px;
+    background: var(--bg-panel, var(--bg));
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 12px;
+    outline: none;
+}
+.help-search:focus { border-color: var(--accent); }
+
+.help-index {
+    flex: 1;
+    /* Without this the list refuses to shrink below its content height and
+       pushes the wiki link out through the bottom of the modal. */
+    min-height: 0;
+    overflow-y: auto;
+    padding: 4px 0 8px;
+}
+.help-index::-webkit-scrollbar { width: 8px; }
+.help-index::-webkit-scrollbar-track { background: transparent; }
+.help-index::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+.help-index__empty {
+    padding: 16px;
+    color: var(--text-dim);
+    font-style: italic;
+    text-align: center;
+    font-size: 12px;
+}
+
+.help-index__item {
+    display: block;
+    width: 100%;
+    padding: 7px 10px 7px 12px;
+    background: none;
+    border: none;
+    border-left: 2px solid transparent;
+    text-align: left;
+    cursor: pointer;
+}
+.help-index__item:hover { background: var(--hover-bg); }
+.help-index__item.is-active {
+    background: var(--hover-bg);
+    border-left-color: var(--accent);
+}
+
+.help-index__title {
+    display: block;
+    color: var(--text);
+    font-size: 12.5px;
+    font-weight: 600;
+}
+.help-index__item.is-active .help-index__title { color: var(--accent); }
+
+.help-index__blurb {
+    display: block;
+    margin-top: 2px;
+    color: var(--text-dim);
+    font-size: 11px;
+    line-height: 1.35;
+}
+
+.help-sidebar__foot {
+    flex: 0 0 auto;
+    padding: 8px 12px;
+    border-top: 1px solid var(--border);
+}
+.help-sidebar__foot a {
+    color: var(--text-dim);
+    font-size: 11px;
+    text-decoration: none;
+}
+.help-sidebar__foot a:hover { color: var(--accent); }
+
+/* ── Content: rendered markdown ─────────────────────────────────────────────── */
+.help-content {
+    flex: 1;
+    min-width: 0;
+    overflow-y: auto;
+    padding: 4px 26px 28px;
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.6;
+}
+.help-content::-webkit-scrollbar { width: 8px; }
+.help-content::-webkit-scrollbar-track { background: transparent; }
+.help-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+.help-content h1 {
+    margin: 18px 0 10px;
+    color: var(--accent);
+    font-size: 19px;
+    font-weight: 600;
+}
+.help-content h2 {
+    margin: 26px 0 8px;
+    padding-bottom: 5px;
+    border-bottom: 1px solid var(--border);
+    font-size: 15px;
+    font-weight: 600;
+}
+.help-content h3 {
+    margin: 20px 0 6px;
+    font-size: 13.5px;
+    font-weight: 600;
+}
+
+.help-content p { margin: 9px 0; }
+.help-content ul,
+.help-content ol { margin: 9px 0; padding-left: 22px; }
+.help-content li { margin: 4px 0; }
+.help-content li > p { margin: 3px 0; }
+
+.help-content a { color: var(--accent); }
+
+.help-content code {
+    padding: 1px 4px;
+    background: var(--bg-input);
+    border-radius: 3px;
+    font-family: var(--font-mono), monospace;
+    font-size: 12px;
+    word-break: break-word;
+}
+.help-content pre {
+    margin: 12px 0;
+    padding: 10px 12px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow-x: auto;
+}
+.help-content pre code {
+    padding: 0;
+    background: none;
+    word-break: normal;
+    white-space: pre;
+}
+
+.help-content blockquote {
+    margin: 12px 0;
+    padding: 2px 14px;
+    border-left: 3px solid var(--accent);
+    color: var(--text-dim);
+}
+.help-content blockquote p { margin: 6px 0; }
+
+/* Tables can be wider than the modal; scroll them rather than the page. */
+.help-content table {
+    display: block;
+    width: max-content;
+    max-width: 100%;
+    overflow-x: auto;
+    margin: 12px 0;
+    border-collapse: collapse;
+    font-size: 12.5px;
+}
+.help-content th,
+.help-content td {
+    padding: 5px 10px;
+    border: 1px solid var(--border);
+    text-align: left;
+    vertical-align: top;
+}
+.help-content th {
+    background: var(--bg-input);
+    font-weight: 600;
+}
+
+.help-content hr {
+    margin: 20px 0;
+    border: none;
+    border-top: 1px solid var(--border);
+}
+
+/* Phones: the modal is fullscreen, so the sidebar becomes a scrolling strip of
+   topics above the content instead of a fixed-width column beside it. */
+@media (max-width: 600px) {
+    .resizable-modal__body.help-modal__body { flex-direction: column; }
+
+    .help-sidebar {
+        flex: 0 0 auto;
+        max-height: 40%;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+    }
+    .help-sidebar__foot { display: none; }
+    .help-content { padding: 4px 16px 24px; }
+}

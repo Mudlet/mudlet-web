@@ -1,12 +1,14 @@
 import { useRef, useState } from 'react';
-import { Info } from 'lucide-react';
+import { CircleHelp, Info } from 'lucide-react';
 import { Button, useConfirm } from './components';
 import { ConnectionFormModal } from './ConnectionFormModal';
 import { ConnectionGrid } from './ConnectionGrid';
 import { BundledGameGrid, connectionFromGame } from './BundledGameGrid';
 import { useOpenProfiles } from './useOpenProfiles';
 import { AboutModal } from './AboutModal';
+import { HelpModal } from './HelpModal';
 import { ProfileExportModal } from './ProfileExportModal';
+import { ensurePersistentStorage } from '../storage/persistentStorage';
 import { useAppStore, type MudConnection } from '../storage';
 import { getBrand } from '../branding';
 import { extractMudletProfileZipAll, resolveModulesFromTree, addModuleToBundle, type MudletProfileBundle } from '../import/mudletProfileImport';
@@ -37,6 +39,9 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
     // null = editor closed; { connection: null } = add a new one; { connection: c } = edit c.
     const [editor, setEditor] = useState<{ connection: MudConnection | null } | null>(null);
     const [aboutOpen, setAboutOpen] = useState(false);
+    // Opened either from the tools row (default topic) or from the import row's
+    // "how do I do this?" link, which jumps straight to the migration guide.
+    const [helpTopic, setHelpTopic] = useState<string | null>(null);
     const [exportOpen, setExportOpen] = useState(false);
     const [importing, setImporting] = useState(false);
     const [importError, setImportError] = useState<string | null>(null);
@@ -53,6 +58,10 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
     const runImport = async (fn: () => Promise<void>) => {
         setImporting(true);
         setImportError(null);
+        // Someone importing a years-old Mudlet profile has just handed the browser
+        // the data they'd most hate to lose — the best moment to ask for storage
+        // that survives eviction. Best-effort and never blocks the import.
+        void ensurePersistentStorage();
         try {
             await fn();
         } catch (err) {
@@ -136,6 +145,9 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
                     <button className="connection-settings-btn" onClick={onOpenSettings} type="button" aria-label="Settings">
                         ⚙
                     </button>
+                    <button className="connection-help-btn" onClick={() => setHelpTopic('migrating')} type="button" aria-label="Help">
+                        <CircleHelp size={16} />
+                    </button>
                     <button className="connection-about-btn" onClick={() => setAboutOpen(true)} type="button" aria-label={`About ${brand.appName}`}>
                         <Info size={16} />
                     </button>
@@ -162,14 +174,25 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
                 />
 
                 {/* Profile-level actions belong with the profiles, above the
-                    game catalogue rather than below the length of it. */}
+                    game catalogue rather than below the length of it. A bare row
+                    of buttons doesn't say what a "Mudlet folder" is or where to
+                    find one, so it's captioned and linked to the guide. */}
+                <div className="connection-import-caption">
+                    Already play in Mudlet? Bring your profile — triggers, scripts, packages
+                    and map — across.{' '}
+                    <button type="button" className="connection-import-help" onClick={() => setHelpTopic('migrating')}>
+                        How?
+                    </button>
+                </div>
                 <div className="connection-import-row" style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
                     {dirPicker && (
-                        <Button variant="secondary" size="sm" onClick={handleImportFolder} disabled={connecting || importing}>
+                        <Button variant="secondary" size="sm" onClick={handleImportFolder} disabled={connecting || importing}
+                            title="Copy a desktop Mudlet profile folder in — usually ~/.config/mudlet/profiles/<name>. Your folder on disk is left untouched">
                             {importing ? 'Importing…' : 'Import Mudlet folder…'}
                         </Button>
                     )}
-                    <Button variant="secondary" size="sm" onClick={() => zipInputRef.current?.click()} disabled={connecting || importing}>
+                    <Button variant="secondary" size="sm" onClick={() => zipInputRef.current?.click()} disabled={connecting || importing}
+                        title="Import a zipped Mudlet profile folder, or a .zip exported from Mudlet Web">
                         {importing && !dirPicker ? 'Importing…' : 'Import .zip…'}
                     </Button>
                     {dirPicker && (
@@ -233,6 +256,7 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
             <ProfileExportModal connections={connections} onClose={() => setExportOpen(false)} />
         )}
         {aboutOpen && <AboutModal onClose={() => setAboutOpen(false)} />}
+        {helpTopic && <HelpModal initialTopic={helpTopic} onClose={() => setHelpTopic(null)} />}
         </>
     );
 }

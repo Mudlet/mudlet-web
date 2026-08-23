@@ -28,6 +28,7 @@ import {
     OPT_ATCP,
     OPT_TELNET_102,
     SessionCodec,
+    toByteString,
     stripTelnetSequences,
     TELNET_EOR,
     TELNET_GA,
@@ -972,19 +973,32 @@ export class MudClient {
      *  telnet option 200, GMCP's predecessor) and sends it raw. Returns false
      *  when the socket isn't open. */
     sendATCP(message: string): boolean {
-        return this.sendSubnegotiation(OPT_ATCP, message, 'ATCP');
+        // Transcoded to UTF-8 rather than to the session encoding — the same
+        // divergence from Mudlet's `encodeAndCookBytes` that `encodeGmcpRaw`
+        // documents, and for the same reason: ATCP bodies are GMCP-shaped. Without
+        // it a non-ASCII message went out as truncated Latin-1 bytes, and a U+00FF
+        // became a bare IAC that mis-framed the subnegotiation. UTF-8 never emits
+        // 0xFF, so the IAC-doubling half of Mudlet's cook step has nothing to do.
+        return this.sendSubnegotiation(OPT_ATCP, toByteString(message), 'ATCP');
     }
 
     /** Mudlet `sendTelnetChannel102(msg)`. Frames `IAC SB 102 <msg> IAC SE`
      *  (the zMUD generic out-of-band channel) and sends it raw. Returns false
      *  when the socket isn't open. */
     sendTelnetChannel102(msg: string): boolean {
-        return this.sendSubnegotiation(OPT_TELNET_102, msg, 'telnet channel 102');
+        // Not transcoded: the payload is two raw bytes the caller picked, which
+        // Mudlet deliberately leaves unencoded, so UTF-8 would re-expand anything
+        // above 0x7F. Only 0xFF needs handling, and it needs doubling. Mudlet runs
+        // that replace over the whole framed string, doubling the framing IACs too;
+        // applying it to the payload alone is what that was meant to be.
+        return this.sendSubnegotiation(OPT_TELNET_102, msg.replace(/\xFF/g, '\xFF\xFF'), 'telnet channel 102');
     }
 
-    /** Frame a raw `IAC SB <opt> <payload> IAC SE` subnegotiation and send it
-     *  with no encoding conversion (each char → one byte), like the other
-     *  telnet negotiations. Shared by sendATCP / sendTelnetChannel102. */
+    /** Frame an `IAC SB <opt> <payload> IAC SE` subnegotiation and send it.
+     *  `payload` must already be a Latin-1 byte-string (each char → one byte)
+     *  with any IAC handled — the framing is all this does, since ATCP and
+     *  channel 102 need different byte treatments. Shared by sendATCP /
+     *  sendTelnetChannel102. */
     private sendSubnegotiation(opt: string, payload: string, label: string): boolean {
         if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
             return false;

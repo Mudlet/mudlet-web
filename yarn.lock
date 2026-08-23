@@ -789,17 +789,10 @@ domain-browser@4.22.0:
   resolved "https://registry.npmjs.org/domain-browser/-/domain-browser-4.22.0.tgz"
   integrity sha512-IGBwjF7tNk3cwypFNH/7bfzBcgSCbaMOD3GsaY1AU/JRrnHnYgEM0+9kQt52iZxjNsjBtJYtao146V+f8jFZNw==
 
-dompurify@3.4.8:
-  version "3.4.8"
-  resolved "https://registry.yarnpkg.com/dompurify/-/dompurify-3.4.8.tgz#6c54f8c207160e7f83fcb7f4fd05a82ac36b1cdc"
-  integrity sha512-yb1cEmaOum7wFvOCSQxyfgVlv5D47Rc30iZWoMpbDIWTnJ6grDDQyu2KFJzB2k7u0pMuJcQ1zphH//fFnw2tjQ==
-  optionalDependencies:
-    "@types/trusted-types" "^2.0.7"
-
-dompurify@^3.4.12:
-  version "3.4.13"
-  resolved "https://registry.yarnpkg.com/dompurify/-/dompurify-3.4.13.tgz#fc28949d59f92d62e28a3a764bcbeee35897a1be"
-  integrity sha512-2vmYIoqjze2d+kakP8S/nS5shfsl587kzwEjcGlTdiksUVgFHnFCsLYDVj/JNqJVOQZGSYBTmuycv0PodwmnMQ==
+dompurify@3.4.8, dompurify@^3.4.14:
+  version "3.4.14"
+  resolved "https://registry.yarnpkg.com/dompurify/-/dompurify-3.4.14.tgz#a789edb2c7bcdb69a93713a34edb7e0a5245d8c9"
+  integrity sha512-dVoH9z+MY+C9IilgGCk3YfFqjLi3fChm2OiKJMzh6axrJ5qwxqWaZamgmHrpv22CN/KdbZJuGEGgfQoL00LTdg==
   optionalDependencies:
     "@types/trusted-types" "^2.0.7"
 
@@ -1310,12 +1303,13 @@ mudlet-map-binary-reader@^1.2.0:
   dependencies:
     qtdatastream-web "^0.0.1"
 
-mudlet-map-editor@^1.3.1:
-  version "1.3.1"
-  resolved "https://registry.yarnpkg.com/mudlet-map-editor/-/mudlet-map-editor-1.3.1.tgz#482c2e9913facc09f29ef54130bc28434f4a4b5b"
-  integrity sha512-ii8ct7rCni59v6AmJyZAMKVRUhuz4pkwthA2sw1PZKvXLcsJppNqgGBzypzybHkB9I8lR+oXAa9n9MM6xApv+w==
+mudlet-map-editor@^1.3.2:
+  version "1.3.2"
+  resolved "https://registry.yarnpkg.com/mudlet-map-editor/-/mudlet-map-editor-1.3.2.tgz#bf1fbaca5df2538c0bd0eb009994e7ba20d30ea8"
+  integrity sha512-YwTg+IvQpyKcpH8MHln/o5foBjOGdXcKr4ey0TPiDiHsOGeHTW0SnoJ3bWW1xz7XDICrw3NK9FlFDwXmJju2lA==
   dependencies:
     "@monaco-editor/react" "^4.7.0"
+    dompurify "^3.4.14"
     i18next "^26.3.6"
     konva "^10.3.0"
     monaco-editor "^0.56.0"

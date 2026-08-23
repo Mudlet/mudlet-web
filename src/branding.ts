@@ -81,7 +81,7 @@ export const STOCK_THEMES: { value: string; label: string }[] = [
  *  `connection` is the Reconnect/Disconnect pair; `close` closes the profile;
  *  `record` toggles Mudlet-format replay recording. */
 export type StockToolbarButton =
-    | 'scripts' | 'files' | 'map' | 'logs' | 'docs' | 'reportBug' | 'settings'
+    | 'scripts' | 'files' | 'map' | 'logs' | 'docs' | 'help' | 'reportBug' | 'settings'
     | 'record' | 'connection' | 'close';
 
 /** What a brand toolbar button can do when clicked. */
