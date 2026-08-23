@@ -7,6 +7,7 @@ import {
     MSDP_VAR,
     MSDP_VAL,
 } from "./constants";
+import { fromByteString, toByteString } from "./byteString";
 
 // MSDP control bytes, as numeric codes for the byte-at-a-time parser below.
 const VAR = 1;          // MSDP_VAR
@@ -16,26 +17,6 @@ const TABLE_CLOSE = 4;  // MSDP_TABLE_CLOSE
 const ARRAY_OPEN = 5;   // MSDP_ARRAY_OPEN
 const ARRAY_CLOSE = 6;  // MSDP_ARRAY_CLOSE
 const CONTROL_BYTES = new Set([VAR, VAL, TABLE_OPEN, TABLE_CLOSE, ARRAY_OPEN, ARRAY_CLOSE]);
-
-const utf8Decoder = new TextDecoder("utf-8", { fatal: false });
-
-/** Decode a Latin-1 byte-string (one char per byte, as produced upstream) into
- *  a proper UTF-8 string. MSDP names are ASCII but values may carry UTF-8. */
-function fromByteString(s: string): string {
-    const bytes = new Uint8Array(s.length);
-    for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 0xff;
-    return utf8Decoder.decode(bytes);
-}
-
-/** UTF-8-encode `s` into a Latin-1 byte-string (one char per byte) so it can be
- *  handed to MudClient.sendBytes, which writes `charCodeAt(i) & 0xff` per char.
- *  Plain ASCII (the common case for MSDP variable/value names) is unchanged. */
-function toByteString(s: string): string {
-    const bytes = new TextEncoder().encode(s);
-    let out = "";
-    for (let i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]);
-    return out;
-}
 
 /**
  * Frame a Mudlet-style `sendMSDP(variable, ...values)` call as an MSDP
@@ -141,7 +122,10 @@ class MsdpParser {
         while (this.i < n && !CONTROL_BYTES.has(this.data.charCodeAt(this.i))) {
             this.i++;
         }
-        return fromByteString(this.data.substring(start, this.i));
+        // MSDP names are ASCII but values may carry UTF-8. Malformed bytes are
+        // substituted rather than reported: unlike GMCP there's no envelope to
+        // name in a warning, and a bad value is already visible as such.
+        return fromByteString(this.data.substring(start, this.i)).text;
     }
 }
 

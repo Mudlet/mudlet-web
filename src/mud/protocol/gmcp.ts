@@ -1,3 +1,4 @@
+import { fromByteString, toByteString, toHex } from "./byteString";
 import { GMCP_COMMAND_CODE, GMCP_IAC, GMCP_SB, GMCP_SE, TELNET_EOR, TELNET_GA, TELNET_OPTION_REGEX } from "./constants";
 
 export interface GmcpEnvelope {
@@ -10,51 +11,6 @@ export interface GmcpEnvelope {
 const CLIENT_GUI_MODULE = "client.gui";
 
 export type TelnetOptionHandler = (data: string) => string;
-
-const utf8Decoder = new TextDecoder("utf-8", { fatal: false });
-const utf8StrictDecoder = new TextDecoder("utf-8", { fatal: true });
-const utf8Encoder = new TextEncoder();
-
-/** Decode a Latin-1 byte-string (one char per byte, as MudClient produces from
- *  the socket) as UTF-8. GMCP bodies are JSON, which RFC 8259 §8.1 and Mudlet's
- *  `cTelnet::setGMCPVariables` both take as always UTF-8, independent of the
- *  session's text encoding.
- *
- *  A non-conformant server may still send the body in some other encoding. We
- *  decode it leniently anyway — a U+FFFD in one field beats dropping the whole
- *  message — but report `malformed` so the caller can say so, because nothing
- *  downstream can: a bad sequence never breaks the JSON (every structural
- *  character is ASCII, and continuation bytes are all >= 0x80), so `JSON.parse`
- *  succeeds and the corruption is confined to string values. */
-const fromByteString = (s: string): { text: string; malformed: boolean } => {
-    const bytes = new Uint8Array(s.length);
-    for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 0xff;
-    try {
-        return { text: utf8StrictDecoder.decode(bytes), malformed: false };
-    } catch {
-        return { text: utf8Decoder.decode(bytes), malformed: true };
-    }
-};
-
-/** Render a byte-string as hex, for diagnostics that would otherwise print the
- *  post-decode text — where every malformed sequence has already collapsed to
- *  an indistinguishable U+FFFD. Truncated: the head is where the fault is. */
-const toHex = (s: string): string => {
-    const shown = [...s.slice(0, 64)].map(c => (c.charCodeAt(0) & 0xff).toString(16).padStart(2, "0"));
-    return shown.join(" ") + (s.length > 64 ? " …" : "");
-};
-
-/** UTF-8-encode into a Latin-1 byte-string, for MudClient.sendBytes (which
- *  writes `charCodeAt(i) & 0xff` per char). Inverse of fromByteString for
- *  well-formed input only — both directions are non-fatal, so invalid UTF-8
- *  inbound and lone surrogates outbound each collapse to U+FFFD rather than
- *  round-tripping. */
-const toByteString = (s: string): string => {
-    const bytes = utf8Encoder.encode(s);
-    let out = "";
-    for (let i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]);
-    return out;
-};
 
 export const createTelnetOptionParser = (
     onSubnegotiation: (data: string) => void,
@@ -107,6 +63,12 @@ const parseGmcpPayload = (
         return;
     }
 
+    // GMCP bodies are JSON, which RFC 8259 §8.1 and Mudlet's
+    // `cTelnet::setGMCPVariables` both take as always UTF-8, independent of the
+    // session's text encoding. A non-conformant server may still send another
+    // encoding, and only we can notice: a bad sequence never breaks the JSON
+    // (every structural character is ASCII, continuation bytes are all >= 0x80),
+    // so `JSON.parse` succeeds and the corruption stays inside string values.
     const rawBody = data.substring(1);
     const { text: gmcpData, malformed } = fromByteString(rawBody);
     if (!gmcpData.length) return;
