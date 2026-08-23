@@ -2,9 +2,9 @@
  * Transcoding between the wire and JS strings, for the protocol handlers that
  * carry UTF-8 text inside a telnet subnegotiation (GMCP, MSDP, MSSP).
  *
- * Everything upstream of these speaks *byte-strings*: `MudClient.bytesToLatin1`
- * maps each socket byte to one char, and `MudClient.sendBytes` reverses it with
- * `charCodeAt(i) & 0xff`. Subnegotiations are extracted from that byte-string
+ * Everything upstream of these speaks *byte-strings*: `bytesToLatin1` in
+ * `MudClient.ts` maps each socket byte to one char, and the client's `sendBytes`
+ * reverses it with `charCodeAt(i) & 0xff`. Subnegotiations are extracted from that byte-string
  * before the session codec ever runs (`stripTelnetSequences` precedes
  * `codec.decode`), which is what makes these three protocols independent of the
  * session's text encoding — and what obliges each of them to do its own

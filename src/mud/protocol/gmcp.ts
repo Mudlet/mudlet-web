@@ -179,15 +179,19 @@ export const createGmcpStream = ({
             data,
             (type, payload) => {
                 if (type.toLowerCase() === "gmcp_msgs" && onMessage) {
-                    const msgType = (payload as { type: string }).type ?? "";
-                    // `atob` throws on a `text` field that isn't base64, and the
-                    // TextDecoder ctor on an unsupported `textEncoding`. Caught
-                    // here rather than left to the caller's frame-level handler:
-                    // the body parsed as JSON, so this is a bad gmcp_msgs
-                    // payload and nothing else in the frame should be lost over
-                    // it. Reported on its own terms, not as a JSON error.
+                    // Everything that reads the payload goes inside the guard.
+                    // `atob` throws on a `text` field that isn't base64, the
+                    // TextDecoder ctor on an unsupported `textEncoding`, and a
+                    // literal `gmcp_msgs null` body — valid JSON — throws on the
+                    // property access itself. Caught here rather than left to
+                    // the caller's frame-level handler: the body parsed as JSON,
+                    // so this is a bad gmcp_msgs payload and nothing else in the
+                    // frame should be lost over it. Reported on its own terms,
+                    // not as a JSON error.
                     let text: string;
+                    let msgType: string;
                     try {
+                        msgType = (payload as { type: string }).type ?? "";
                         const binaryString = atob((payload as { text: string }).text ?? "");
                         text = new TextDecoder(textEncoding).decode(
                             Uint8Array.from(binaryString, c => c.charCodeAt(0))

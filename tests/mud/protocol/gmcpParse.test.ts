@@ -160,6 +160,22 @@ describe('GMCP payload parsing', () => {
     warn.mockRestore();
   });
 
+  it('treats a null gmcp_msgs body as a bad payload, not an escaping error', () => {
+    // `gmcp_msgs null` is valid JSON, so it reaches the consumer and the
+    // property access throws. With the consumer call outside the parse guard
+    // that would escape to MudClient's frame handler and cost the rest of the
+    // frame — one nonconformant message taking unrelated game text with it.
+    const seen: string[] = [];
+    const stream = createGmcpStream({ onEnvelope: () => {}, onMessage: text => seen.push(text) });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(() => stream(frame('gmcp_msgs null'))).not.toThrow();
+
+    expect(seen).toEqual([]);
+    expect(warn.mock.calls[0][0]).toContain('Malformed gmcp_msgs payload');
+    warn.mockRestore();
+  });
+
   it('still delivers a well-formed gmcp_msgs payload', () => {
     const seen: Array<{ text: string; type: string }> = [];
     const stream = createGmcpStream({ onEnvelope: () => {}, onMessage: (text, type) => seen.push({ text, type }) });
