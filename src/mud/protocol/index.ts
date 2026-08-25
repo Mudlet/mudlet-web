@@ -2,6 +2,9 @@ export * from "./constants";
 export * from "./gmcp";
 export * from "./msdp";
 export * from "./mssp";
+// Only the encoder is re-exported: MudClient needs it for ATCP framing. The
+// decode side has no consumer outside this directory.
+export { toByteString } from "./byteString";
 export { MccpHandler } from "./mccp";
 export { EchoHandler } from "./echo";
 export { MspParser, type MspCommand, type MspKind } from "./msp";
