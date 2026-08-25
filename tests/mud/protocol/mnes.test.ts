@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseMnesRequest, encodeMnesIs, selectMnesVars, buildNewEnvironVars, type MnesVar } from '../../../src/mud/protocol/mnes';
+import { parseMnesRequest, encodeMnesIs, selectMnesVars, MNES_UNMAINTAINED, buildNewEnvironVars, type MnesVar } from '../../../src/mud/protocol/mnes';
 import {
   GMCP_IAC,
   GMCP_SB,
@@ -204,9 +204,73 @@ describe('selectMnesVars', () => {
     ]);
   });
 
-  it('falls back to everything when no requested name is known', () => {
+  // This used to answer a request for one unknown name with the whole set, on
+  // the reasoning that the server still learns who we are. Mudlet does not
+  // (cTelnet::sendIsMNESValues only reaches sendAllMNESValues when the request
+  // named nothing), and neither does the request: a server probing for one
+  // variable should not get an unsolicited dump.
+  it('selects nothing when no requested name is known', () => {
     expect(
       selectMnesVars({ isSend: true, requested: ['UNKNOWN'] }, available),
-    ).toEqual(available);
+    ).toEqual([]);
+  });
+
+  // RFC 1572 distinguishes structurally: a name with no VALUE after it is
+  // undefined, which is not a name with a VALUE and nothing after it (defined,
+  // and empty). Mudlet lists IPADDRESS as an MNES variable while deliberately
+  // not supplying it, and answers it the first way.
+  it('answers a known-but-unsupplied name as undefined rather than omitting it', () => {
+    expect(
+      selectMnesVars({ isSend: true, requested: ['IPADDRESS'] }, available, MNES_UNMAINTAINED),
+    ).toEqual([{ name: 'IPADDRESS', value: null }]);
+  });
+
+  it('keeps undefined answers in request order beside real values', () => {
+    expect(
+      selectMnesVars(
+        { isSend: true, requested: ['MTTS', 'IPADDRESS', 'NOPE', 'CHARSET'] },
+        available,
+        MNES_UNMAINTAINED,
+      ),
+    ).toEqual([
+      { name: 'MTTS', value: '269' },
+      { name: 'IPADDRESS', value: null },
+      // 'NOPE' is not an MNES name at all — left out entirely, not answered.
+      { name: 'CHARSET', value: 'UTF-8' },
+    ]);
+  });
+
+  it('does not treat IPADDRESS as known when the caller does not pass the list', () => {
+    // Plain NEW-ENVIRON has no unsupplied name: everything it defines, it reports.
+    expect(
+      selectMnesVars({ isSend: true, requested: ['IPADDRESS'] }, available),
+    ).toEqual([]);
+  });
+});
+
+describe('encodeMnesIs with an undefined variable', () => {
+  const VAR = '\x00', VALUE = '\x01';
+
+  it('emits the name with no VALUE marker', () => {
+    const frame = encodeMnesIs([{ name: 'IPADDRESS', value: null }]);
+    expect(frame).toContain(VAR + 'IPADDRESS');
+    // No VALUE byte anywhere after the name — that is what makes it undefined
+    // rather than defined-and-empty.
+    expect(frame.slice(frame.indexOf('IPADDRESS'))).not.toContain(VALUE);
+  });
+
+  it('still emits a VALUE marker for a defined-but-empty variable', () => {
+    const frame = encodeMnesIs([{ name: 'CHARSET', value: '' }]);
+    expect(frame).toContain(VAR + 'CHARSET' + VALUE);
+  });
+
+  it('mixes defined and undefined variables in one reply', () => {
+    const frame = encodeMnesIs([
+      { name: 'MTTS', value: '269' },
+      { name: 'IPADDRESS', value: null },
+      { name: 'CHARSET', value: 'UTF-8' },
+    ]);
+    expect(frame).toContain(VAR + 'MTTS' + VALUE + '269');
+    expect(frame).toContain(VAR + 'IPADDRESS' + VAR + 'CHARSET' + VALUE + 'UTF-8');
   });
 });

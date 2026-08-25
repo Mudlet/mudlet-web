@@ -1,4 +1,5 @@
 import type { ProfileVFS } from '../vfs/ProfileVFS';
+import { githubRawUrl } from '../../utils/githubRawUrl';
 
 // Mudlet's HTTP API is fire-and-forget: each function returns immediately,
 // the actual request runs in the background, and completion/failure is
@@ -284,7 +285,14 @@ export class HttpService {
     // through the configured proxy and remember the origin so future calls
     // skip the doomed direct attempt. Throws if both attempts fail, or if
     // the direct attempt fails and no proxy is configured.
-    private async fetchWithFallback(target: string, init: RequestInit): Promise<Response> {
+    //
+    // A github.com `/raw/` url is redirected to raw.githubusercontent.com here
+    // rather than by the browser, which cannot follow it — see githubRawUrl.
+    // The events still report the url the script asked for: handlers match on
+    // it (mpkg checks that a failed download's url ends with its catalog name),
+    // and a rewritten one would not be the url they passed in.
+    private async fetchWithFallback(requested: string, init: RequestInit): Promise<Response> {
+        const target = githubRawUrl(requested);
         const proxyUrl = normalizeProxyBase(this.proxyUrlGetter());
         const origin = parseOrigin(target);
 

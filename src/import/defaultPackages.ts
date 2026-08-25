@@ -27,6 +27,8 @@ import mudletMapperUrl from './defaults/mudlet-mapper.xml?url';
 // needed couldn't be patched inside one; Mudlet/Mudlet#9628 landed that fix
 // upstream, so the archive is back.
 import guiDropUrl from './defaults/gui-drop/gui-drop.mpackage?url';
+// Mudlet's command-line package manager, preinstalled for every game.
+import mpkgUrl from './defaults/mpkg/mpkg.mpackage?url';
 
 interface DefaultPackage {
     /** Must match the manifest name produced by installPackageFromBytes. */
@@ -75,6 +77,22 @@ const GUI_DROP: DefaultPackage = {
     name: 'gui-drop', filename: 'gui-drop.mpackage', url: guiDropUrl, version: '1.3',
 };
 
+/** Mudlet's package manager: `mpkg install/remove/search/show/list/update`
+ *  against the official package repository. It downloads the repository catalog
+ *  on load (and every 12h) and installs from it through the normal
+ *  `installPackage(url)` path, so everything it does runs on APIs we already
+ *  have — the one browser wrinkle is its github.com/raw repository url, which
+ *  {@link githubRawUrl} redirects for it.
+ *
+ *  Deliberately declares no `version`: mpkg upgrades *itself* out of the
+ *  repository the moment the published version outruns the installed one. A
+ *  declared version would make every profile open see the newer self-installed
+ *  copy as a mismatch and reinstall the older vendored archive over it, which
+ *  mpkg would then upgrade again — a downgrade loop, once per session, forever. */
+const MPKG: DefaultPackage = {
+    name: 'mpkg', filename: 'mpkg.mpackage', url: mpkgUrl,
+};
+
 /**
  * Games that get the IRE mapper instead of the generic one — verbatim from the
  * `mudlet-mapper.xml` row of `defaultScripts` in mudlet.cpp.
@@ -99,7 +117,7 @@ export const GAMES_WITH_OWN_UI = [
 ];
 
 /** Every bundled default, whatever the host — for tests and tooling. */
-export const ALL_DEFAULTS: DefaultPackage[] = [RUN_LUA_CODE, MUDLET_MAPPER, GENERIC_MAPPER, GUI_DROP, BASE_UI];
+export const ALL_DEFAULTS: DefaultPackage[] = [RUN_LUA_CODE, MUDLET_MAPPER, GENERIC_MAPPER, MPKG, GUI_DROP, BASE_UI];
 
 /**
  * The stock defaults for a profile on `host`.
@@ -122,7 +140,7 @@ export const ALL_DEFAULTS: DefaultPackage[] = [RUN_LUA_CODE, MUDLET_MAPPER, GENE
  */
 export function stockDefaults(host?: string, conn?: { createdAt?: string }): DefaultPackage[] {
     const isIreMapperGame = !!host && IRE_MAPPER_GAMES.some(g => g.toLowerCase() === host);
-    const packages = [RUN_LUA_CODE, isIreMapperGame ? MUDLET_MAPPER : GENERIC_MAPPER, GUI_DROP];
+    const packages = [RUN_LUA_CODE, isIreMapperGame ? MUDLET_MAPPER : GENERIC_MAPPER, MPKG, GUI_DROP];
     const gameHasOwnUi = !!host && GAMES_WITH_OWN_UI.some(g => g === host);
     if (isNewProfile(conn) && !gameHasOwnUi) packages.push(BASE_UI);
     return packages;

@@ -1,4 +1,12 @@
-import PCRE from 'pcre2-wasm-universal';
+// The trigger engine's vendored wrapper, not `pcre2-wasm-universal` itself.
+// Both drive the same wasm module, but upstream's `matchAll` resumes at
+// `iter[0].end` unconditionally: a pattern that can match empty never advances,
+// spins to its hardcoded 1000-iteration cap and throws — so `rex.gmatch`,
+// `rex.gsub`, `rex.split` and `rex.count` failed outright on something as
+// ordinary as `(\d*)`, ASCII subject and all. The fork steps past a zero-width
+// match (by a whole code point, so a surrogate pair is never split) the way
+// Mudlet's own global-match loop does.
+import PCRE from '../../mud/triggers/pcre/Pcre2';
 import type { Lua } from 'wasmoon-lua5.1';
 
 type MatchGroup = { start: number; end: number; match: string; name?: string };
@@ -87,9 +95,9 @@ const withRe = <T>(
     try { return fn(re); } finally { re.destroy(); }
 };
 
-// DEBUG: diagnose pcre2-wasm-universal's hardcoded 1000-iter cap in matchAll.
-// Logs the callsite, pattern, subject length, ANSI-escape count, and head/tail
-// of the subject so we can identify what's blowing past the cap.
+// The wrapper's safety cap scales with the subject, so it now fires only on a
+// genuinely non-advancing loop rather than on any pattern that can match empty.
+// Log enough to identify one if that ever happens.
 function logSafetyLimit(callsite: string, pattern: string, subject: string): void {
     const ansiCount = (subject.match(/\x1b\[/g) ?? []).length;
     console.error('[matchAll safety limit]', {

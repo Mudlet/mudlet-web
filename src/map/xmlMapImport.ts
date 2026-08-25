@@ -105,22 +105,72 @@ function readRoom(el: Element): { id: number; room: MudletRoom } | null {
 }
 
 /**
+ * Why a document was refused. Mudlet keeps these three apart
+ * (`fileHoldsMapData` in `TMap.cpp`), because they are three different things
+ * to tell a player:
+ *
+ *   `not-a-map`     somebody else's well-formed document — a game's "no map
+ *                   here" page answered with a 200, or a `<MudletPackage>`.
+ *                   Every element parses and none of it means anything, which
+ *                   is what used to count as importing a map successfully.
+ *   `import-failed` a map document that would not parse: the player's own map,
+ *                   damaged. Rooted at `<map>`, so the root test passes and the
+ *                   failure is further in.
+ *   `damaged`       not XML at all — no element to read a root from.
+ *
+ * The root is taken from the first start tag in the text rather than from a
+ * parsed document, exactly as Mudlet's streaming reader does, so a file that is
+ * rooted at `<map>` but truncated is still recognised as a map that broke.
+ */
+export type XmlMapRefusal = 'not-a-map' | 'import-failed' | 'damaged';
+
+/** The first start tag in the text, ignoring `<?xml …?>`, `<!-- … -->` and
+ *  `<!DOCTYPE …>`. Null when there is no element at all. */
+function firstElementName(xmlText: string): string | null {
+    return /<(?![?!/])([A-Za-z_][\w.:-]*)/.exec(xmlText)?.[1] ?? null;
+}
+
+export type XmlMapParse =
+    | { ok: true; map: MudletMap }
+    | { ok: false; reason: XmlMapRefusal };
+
+/**
  * Parse an XML map document into the `MudletMap` shape `loadFromBinary`
  * ingests. Returns null when the text isn't well-formed XML or the root
  * element isn't `<map>` (e.g. an HTML error page served for the map URL).
+ * {@link parseXmlMapResult} is the same parse with the refusal reason kept.
  */
 export function parseXmlMap(xmlText: string): MudletMap | null {
+    const result = parseXmlMapResult(xmlText);
+    return result.ok ? result.map : null;
+}
+
+/** {@link parseXmlMap}, reporting *why* a document was refused. */
+export function parseXmlMapResult(xmlText: string): XmlMapParse {
+    // Which root the file claims is settled on the raw text, before the parse,
+    // because the two questions are independent: a document rooted anywhere but
+    // <map> is refused however well it parses, and one rooted at <map> is the
+    // player's own map however badly it does. Reading the root off the PARSED
+    // document conflates them — a truncated map comes back as a <parsererror>
+    // root, which is simply "not <map>", and the player is told their map was
+    // never a map.
+    const declaredRoot = firstElementName(xmlText);
+    if (declaredRoot === null) return { ok: false, reason: 'damaged' };
+    if (declaredRoot !== 'map') return { ok: false, reason: 'not-a-map' };
+
     let doc: Document;
     try {
         doc = new DOMParser().parseFromString(xmlText, 'text/xml');
     } catch {
-        return null;
+        return { ok: false, reason: 'import-failed' };
     }
     const root = doc.documentElement;
     // Malformed XML surfaces as a <parsererror> document (root or nested,
     // depending on the engine) rather than a thrown error.
-    if (!root || root.tagName !== 'map') return null;
-    if (root.getElementsByTagName('parsererror').length > 0) return null;
+    if (!root || root.tagName !== 'map') return { ok: false, reason: 'import-failed' };
+    if (root.getElementsByTagName('parsererror').length > 0) {
+        return { ok: false, reason: 'import-failed' };
+    }
 
     const map: MudletMap = {
         version: 20, envColors: {}, areaNames: {}, mCustomEnvColors: {},
@@ -181,5 +231,5 @@ export function parseXmlMap(xmlText: string): MudletMap | null {
         map.areaNames[-1] = 'Default Area';
     }
 
-    return map;
+    return { ok: true, map };
 }

@@ -112,6 +112,15 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "iconFile": "batmud_mud.png"
     },
     {
+        "name": "DarkMists",
+        "hostUrl": "darkmists.org",
+        "port": 2222,
+        "tlsEnabled": false,
+        "websiteInfo": "<a href='https://darkmists.org'>https://darkmists.org</a>",
+        "icon": ":/icons/banner_darkmists.png",
+        "description": "Dark Mists is a persistent online fantasy world featuring 24 races and 11 classes, 9 of which branch into distinct subclasses, with dozens of quests and hundreds of skills and spells tied to class, subclass, or race. The world is shaped by the players through active clans and a worship system with direct interaction with the Gods of Dark Mists. The Immortals are present in-game and continue developing new content for the world. The community is welcoming and helpful to newcomers while encouraging competition and growth. Houses remain active and provide guidance and support for new and returning players. Roleplay is required and playerkilling is an integral part of character growth, rewarding wit, courage, and ambition. The world continues to evolve with new discoveries and challenges. Come carve out your legacy in Dark Mists."
+    },
+    {
         "name": "God Wars II",
         "hostUrl": "godwars2.org",
         "port": 3000,
@@ -180,6 +189,16 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "icon": ":/icons/120x30RoDLogo.png",
         "description": "The Realms of Despair is the original SMAUG MUD and is FREE to play. We have an active Roleplaying community, an active player-killing (deadly) community, and a very active peaceful community. Players can choose from 13 classes (including a deadly-only class) and 13 races. Character appearances are customizable on creation and we have a vast collection of equipment that is level, gender, class, race and alignment specific. We boast well over 150 original, exclusive areas, with a total of over 20,000 rooms. Mob killing, or 'running' is one of our most popular activities, with monster difficulties varying from easy one-player kills to difficult group kills. We have four deadly-only Clans, twelve peaceful-only Guilds, eight Orders, and fourteen Role-playing Nations that players can join to interact more closely with other players. We have two mortal councils that actively work toward helping players: The Symposium hears ideas for changes, and the Newbie Council assists new players. Our team of Immortals are always willing to answer questions and to help out however necessary. Best of all, playing the Realms of Despair is totally FREE!",
         "iconFile": "120x30RoDLogo.png"
+    },
+    {
+        "name": "Rites of Passage MUD",
+        "hostUrl": "play.ropmud.com",
+        "port": 4443,
+        "tlsEnabled": false,
+        "websiteInfo": "<a href='https://ropmud.com/index.html'>Website</a><br><a href='https://discord.gg/CkYm9WRnyw'>Discord</a>",
+        "icon": ":/icons/banner_ropmud.png",
+        "description": "Rites of Passage is a PVPVE (Player vs Player vs Environment) MUD where Good and Evil are locked in eternal war. Hunt powerful monsters for legendary loot, then defend it from enemy players hunting you. Every expedition into dangerous territory carries the thrill of both PvE challenge and PvP risk.\n\nThe environment is deadly - 80+ areas filled with creatures guarding valuable equipment, quests that reward the bold, and a remort system that lets you grow stronger with each life. But the real tension comes from other players. That raid boss you're fighting? The enemy faction might be watching, waiting for you to weaken before they strike. That rare gem you just looted? You'll need to make it home alive.\n\nThis is a PK MUD. Combat between Good and Evil players isn't just allowed - it's encouraged. Killing enemies earns warpoints, experience, and their gear. Climb the ranks. Make the topten list. Build your reputation through conquest. If you want the risk of PvP combined with challenging environment combat, you've found your home.",
+        "providesOwnUi": true
     },
     {
         "name": "ZombieMUD",
@@ -318,7 +337,8 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "tlsEnabled": false,
         "websiteInfo": "<a href='https://www.mudlet.org'>www.mudlet.org",
         "icon": "",
-        "description": "This isn't a game profile, but a special one for testing Mudlet itself using Busted. You can also use it as a starting point to create automated tests for your own profiles!"
+        "description": "This isn't a game profile, but a special one for testing Mudlet itself using Busted. You can also use it as a starting point to create automated tests for your own profiles!",
+        "iconFile": "accursed_lands.png"
     },
     {
         "name": "Accursed Lands",

@@ -6,6 +6,7 @@
  */
 
 import type { PackageManifest } from '../storage/schema';
+import { githubRawUrl } from '../utils/githubRawUrl';
 
 export async function downloadFromUrl(url: string, proxyUrlRaw?: string): Promise<Uint8Array> {
     const res = await fetchWithProxyFallback(url, proxyUrlRaw);
@@ -19,7 +20,11 @@ export async function downloadFromUrl(url: string, proxyUrlRaw?: string): Promis
 // devtools noise down. Cleared on full reload (module state).
 const proxyOnlyHosts = new Set<string>();
 
-async function fetchWithProxyFallback(target: string, proxyUrlRaw?: string): Promise<Response> {
+async function fetchWithProxyFallback(requested: string, proxyUrlRaw?: string): Promise<Response> {
+    // github.com's `/raw/` redirect fails the browser's CORS check, so follow it
+    // to raw.githubusercontent.com ourselves — see githubRawUrl. Packages linked
+    // from a game's Client.GUI payload use that form as readily as mpkg does.
+    const target = githubRawUrl(requested);
     const proxy = normalizeProxyBase(proxyUrlRaw);
     let host = '';
     try { host = new URL(target).host; } catch { /* malformed URL — fall through to direct fetch */ }

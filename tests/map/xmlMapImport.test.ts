@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { writeMapToBuffer } from 'mudlet-map-binary-reader';
-import { parseXmlMap } from '../../src/map/xmlMapImport';
+import { parseXmlMap, parseXmlMapResult } from '../../src/map/xmlMapImport';
 import { MapStore } from '../../src/map/MapStore';
 
 // IRE-style XML map (the GMCP Client.Map / MMP download format), matching the
@@ -84,6 +84,31 @@ describe('parseXmlMap', () => {
         expect(parseXmlMap('PK binary junk')).toBeNull();
         expect(parseXmlMap('')).toBeNull();
         expect(parseXmlMap('<map><rooms><room id="1"</rooms></map>')).toBeNull();
+    });
+
+    // Mudlet keeps these two apart (Mudlet/Mudlet#10146) so a player whose own
+    // map will not parse is told that, rather than that it was never a map.
+    // loadMap() picks one message or the other off this distinction.
+    it('says WHY it refused a document', () => {
+        const reason = (xml: string) => {
+            const r = parseXmlMapResult(xml);
+            return r.ok ? 'ok' : r.reason;
+        };
+        // Well-formed, parses completely, means nothing to the map reader —
+        // what a game with no map to offer answers a download with.
+        expect(reason('<html><body>404 Not Found</body></html>')).toBe('not-a-map');
+        expect(reason('<MudletPackage version="1.001"></MudletPackage>')).toBe('not-a-map');
+        // Not XML at all — nothing to read a root from.
+        expect(reason('not xml at all')).toBe('damaged');
+        expect(reason('')).toBe('damaged');
+        // Rooted at <map> but truncated: the player's own map, damaged. Read off
+        // the PARSED document this would look like a <parsererror> root, i.e.
+        // "not a map" — which is exactly the confusion the raw-text root avoids.
+        expect(reason('<map><rooms><room id="1"</rooms></map>')).toBe('import-failed');
+        expect(reason('<map><areas><area id="1" name="unterminated">')).toBe('import-failed');
+        // A declaration, comment or doctype ahead of the root is not the root.
+        expect(reason('<?xml version="1.0"?><!-- hi --><map></map>')).toBe('ok');
+        expect(reason(SAMPLE)).toBe('ok');
     });
 
     it('produces a map MapStore can ingest and re-save as binary', () => {

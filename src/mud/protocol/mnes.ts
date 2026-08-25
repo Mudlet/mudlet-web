@@ -23,10 +23,17 @@ const ESC = 2;      // marker: next byte is literal (unescape it)
 const USERVAR = 3;  // marker: user-defined variable name follows
 
 /** A single MNES variable the client reports back, e.g. `{ name: "CHARSET",
- *  value: "UTF-8" }`. */
+ *  value: "UTF-8" }`.
+ *
+ *  A null `value` means **undefined** rather than empty. RFC 1572 draws the
+ *  distinction structurally: a name followed by VALUE is defined (and, with
+ *  nothing after the VALUE, defined-but-empty), while a name followed by the
+ *  next marker or IAC with no VALUE at all is undefined. That is how a variable
+ *  the client deliberately does not supply is answered — see
+ *  {@link MNES_UNMAINTAINED}. */
 export interface MnesVar {
     name: string;
-    value: string;
+    value: string | null;
 }
 
 /** Result of parsing an `IAC SB NEW-ENVIRON SEND … IAC SE` request body. */
@@ -112,7 +119,11 @@ export function encodeMnesIs(
 ): string {
     let body = OPT_NEW_ENVIRON + NEW_ENVIRON_IS;
     for (const { name, value } of vars) {
-        body += marker + escapeEnv(name) + NEW_ENVIRON_VALUE + escapeEnv(value);
+        body += marker + escapeEnv(name);
+        // RFC 1572: a name with no VALUE after it is undefined, which is not the
+        // same as a VALUE with nothing after it (defined, and empty). Mudlet
+        // answers a variable it deliberately does not maintain with the former.
+        if (value !== null) body += NEW_ENVIRON_VALUE + escapeEnv(value);
     }
     return GMCP_IAC + GMCP_SB + body + GMCP_IAC + GMCP_SE;
 }
@@ -206,24 +217,44 @@ const OSC_HYPERLINK_CAPS: ReadonlyArray<readonly [string, string]> = [
     ["OSC_HYPERLINKS_VISIBILITY", "1"], // timed conceal/reveal + expire on input/prompt/output
 ];
 
+/** MNES names the standard defines that mudix deliberately does not supply.
+ *  They are still *known*, so a server that asks for one is told it is
+ *  undefined rather than left with silence — Mudlet's `isMNESVariable` lists
+ *  IPADDRESS alongside the five it reports, and answers it with a name and no
+ *  VALUE. (A browser tab has no way to learn its own address, and the client is
+ *  not the right party to guess: the server already sees the peer address.) */
+export const MNES_UNMAINTAINED: ReadonlyArray<string> = ["IPADDRESS"];
+
 /**
- * Pick which of the client's `available` MNES variables to report in response
- * to a parsed request. A bare SEND (no specific names) returns everything;
- * otherwise the requested names are returned in request order, filtered to the
- * ones we actually know. If the server asked only for names we don't report,
- * we fall back to sending everything rather than an empty reply — the server
- * still learns who we are.
+ * Pick which of the client's `available` variables to report in response to a
+ * parsed request, mirroring Mudlet's `sendIsMNESValues` /
+ * `sendIsNewEnvironValues`:
+ *
+ *   - A bare SEND (no names) asks for everything, and gets it.
+ *   - Named variables come back in request order, each either with its value or
+ *     — for a name in `undefinedNames` — as undefined (no VALUE).
+ *   - A name that is neither is left out entirely.
+ *
+ * A request naming only names we do not report therefore selects **nothing**.
+ * It used to fall back to sending everything on the reasoning that the server
+ * still learns who we are, but that answers a question nobody asked: a server
+ * probing for one specific variable gets an unsolicited dump of the whole set,
+ * which is not what Mudlet does and not what the request meant. The caller
+ * decides what an empty selection is framed as.
  */
 export function selectMnesVars(
     request: MnesRequest,
     available: ReadonlyArray<MnesVar>,
+    undefinedNames: ReadonlyArray<string> = [],
 ): MnesVar[] {
     if (request.requested.length === 0) return [...available];
     const byName = new Map(available.map((v) => [v.name, v.value] as const));
+    const undefinedSet = new Set(undefinedNames);
     const picked: MnesVar[] = [];
     for (const name of request.requested) {
         const value = byName.get(name);
         if (value !== undefined) picked.push({ name, value });
+        else if (undefinedSet.has(name)) picked.push({ name, value: null });
     }
-    return picked.length > 0 ? picked : [...available];
+    return picked;
 }

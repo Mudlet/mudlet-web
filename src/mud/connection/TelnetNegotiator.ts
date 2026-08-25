@@ -30,6 +30,7 @@ import {
     OPT_TTYPE,
     parseMnesRequest,
     selectMnesVars,
+    MNES_UNMAINTAINED,
     SGA_DONT,
     TTYPE_IS,
     TTYPE_SEND,
@@ -638,7 +639,21 @@ export class TelnetNegotiator {
         if (!f.mnesEnabled && !f.newEnvironEnabled) return;
         const request = parseMnesRequest(subneg);
         if (!request.isSend) return;
-        const vars = selectMnesVars(request, this.collectNewEnvironVars(extended));
+        // MNES knows IPADDRESS but does not supply it, so a server asking for it
+        // is answered "undefined" rather than ignored. Plain NEW-ENVIRON has no
+        // such name: everything it defines, it reports.
+        const vars = selectMnesVars(
+            request,
+            this.collectNewEnvironVars(extended),
+            extended ? [] : MNES_UNMAINTAINED,
+        );
+        // A request naming only variables we do not report selects nothing, and
+        // the two modes say so differently (cTelnet::sendIsMNESValues frames each
+        // variable as its own subnegotiation, so no variables means no traffic at
+        // all; sendIsNewEnvironValues frames one reply either way and lets it come
+        // back empty). Following each keeps a server's own parser on the path it
+        // already handles for Mudlet.
+        if (vars.length === 0 && !extended) return;
         const marker = extended ? NEW_ENVIRON_USERVAR : NEW_ENVIRON_VAR;
         this.hooks.sendRaw(encodeMnesIs(vars, marker));
     }

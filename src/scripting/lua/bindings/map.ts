@@ -1,4 +1,5 @@
 import type { BindingContext } from './context';
+import { parseXmlMapResult } from '../../../map/xmlMapImport';
 
 /**
  * Mudlet's map API: the 2D view, room and area CRUD, exits, doors, custom
@@ -146,9 +147,27 @@ export function installMapBindings({
                 // argument: an XML map can live outside the profile filesystem
                 // — the busted corpus keeps its fixture in the read-only /lua/
                 // namespace — and only Lua's io layer sees both.
+                const text = String(xml ?? '');
                 try {
-                    if (api.loadMapXml(String(xml ?? ''))) return true;
+                    if (api.loadMapXml(text)) return true;
                 } catch { /* reported below */ }
+                // Only the failure path re-parses, and it says which of Mudlet's
+                // three failures this was (TMap::readXmlMapFile): a document
+                // rooted anywhere but <map> is somebody else's — a game with no
+                // map to offer answering a download with an error page — while
+                // one rooted at <map> that will not parse is the player's own
+                // map, damaged, and neither is a file that is not XML at all.
+                // Telling them apart is the point: a player whose map broke must
+                // not be told it was never a map. In every case the loaded map is
+                // untouched, since nothing is cleared before the parse.
+                const parsed = parseXmlMapResult(text);
+                const reason = parsed.ok ? 'import-failed' : parsed.reason;
+                if (reason === 'not-a-map') {
+                    return `loadMap: the file:\n"${location}"\ndoes not contain a map, so the current map has been left as it was.`;
+                }
+                if (reason === 'damaged') {
+                    return `loadMap: the file:\n"${location}"\nis damaged or unreadable, so the current map has been left as it was.`;
+                }
                 return `loadMap: failure to import XML map file "${location}"`;
             }
             let bytes: Uint8Array;

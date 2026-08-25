@@ -54,6 +54,7 @@ const ARCHIVE_PATHS: Record<string, string> = {
     'mudlet-mapper.xml': 'src/import/defaults/mudlet-mapper.xml',
     'mudlet-base-ui.mpackage': 'src/import/defaults/mudlet-base-ui/mudlet-base-ui.mpackage',
     'gui-drop.mpackage': 'src/import/defaults/gui-drop/gui-drop.mpackage',
+    'mpkg.mpackage': 'src/import/defaults/mpkg/mpkg.mpackage',
 };
 
 /** What a profile on `host` ends up with. Defaults to a newly-created profile —
@@ -108,6 +109,24 @@ describe('default packages', () => {
         }
     });
 
+    it('installs mpkg on every host, new profile or not', () => {
+        // mudlet.cpp lists it with the `*` game filter: the package manager is
+        // how a player reaches the repository from the command line, and there
+        // is nothing game-specific about that.
+        for (const host of [undefined, 'stickmud.com', 'elephant.org', ...GAMES_WITH_OWN_UI]) {
+            expect(namesFor(host), `host ${host}`).toContain('mpkg');
+            expect(namesFor(host, {}), `host ${host}, established`).toContain('mpkg');
+        }
+    });
+
+    it('declares no version for mpkg, which upgrades itself', () => {
+        // mpkg replaces its own install from the repository as soon as the
+        // published version outruns the installed one. A declared version here
+        // would read that newer copy as a mismatch on the next profile open and
+        // reinstall the vendored archive over it — a downgrade every session.
+        expect(ALL_DEFAULTS.find(d => d.name === 'mpkg')?.version).toBeUndefined();
+    });
+
     it('matches hosts case-insensitively', () => {
         // connectionHost lowercases, so a profile typed as "StickMud.com" still matches.
         expect(connectionHost({ mode: 'mud', host: ' StickMud.COM ' })).toBe('stickmud.com');
@@ -127,7 +146,7 @@ describe('default packages', () => {
 
         it('installs the stock defaults when the brand has no opinion', () => {
             expect(resolveDefaultPackages(undefined, 'elephant.org').map(d => d.name))
-                .toEqual(['run-lua-code', 'generic_mapper', 'gui-drop', 'mudlet-base-ui']);
+                .toEqual(['run-lua-code', 'generic_mapper', 'mpkg', 'gui-drop', 'mudlet-base-ui']);
         });
 
         it('installs nothing for an empty brand list', () => {
@@ -153,7 +172,7 @@ describe('default packages', () => {
             for (const def of stockDefaults(host)) expect(ALL_DEFAULTS).toContain(def);
         }
         expect(ALL_DEFAULTS.map(d => d.name))
-            .toEqual(['run-lua-code', 'mudlet-mapper', 'generic_mapper', 'gui-drop', 'mudlet-base-ui']);
+            .toEqual(['run-lua-code', 'mudlet-mapper', 'generic_mapper', 'mpkg', 'gui-drop', 'mudlet-base-ui']);
     });
 
     describe('starter UI', () => {
@@ -177,7 +196,7 @@ describe('default packages', () => {
             // experiencedMudletPlayer() check. Everything else still installs.
             const established = namesFor('elephant.org', {});
             expect(established).not.toContain('mudlet-base-ui');
-            expect(established).toEqual(['run-lua-code', 'generic_mapper', 'gui-drop']);
+            expect(established).toEqual(['run-lua-code', 'generic_mapper', 'mpkg', 'gui-drop']);
         });
 
         it('treats a profile with no connection record as new', () => {
