@@ -139,10 +139,18 @@ export const encodeGmcp = (path: string, payload: unknown): string => {
 /** Encode a GMCP frame from a single pre-formatted body (e.g. `"Module.Sub args"`).
  *  Mudlet's `sendGMCP` semantics — the caller controls the body between IAC SB
  *  GMCP and IAC SE — except that the body is transcoded to UTF-8 rather than to
- *  the session's outgoing encoding, so it can't be used to place arbitrary raw
- *  bytes on the wire. UTF-8 is what the GMCP spec asks for, and it's also what
- *  keeps a 0xFF byte (which would need IAC-escaping inside a subnegotiation)
- *  out of the body in the first place. */
+ *  the session's outgoing encoding, so a JS caller can't use it to place arbitrary
+ *  raw bytes on the wire: `U+00FF` goes out as `c3 bf`, not as `ff`. UTF-8 is what
+ *  the GMCP spec asks for, and it's also what keeps a 0xFF byte (which would need
+ *  IAC-escaping inside a subnegotiation) out of the body in the first place.
+ *
+ *  From Lua the same limit holds, but it isn't this call that imposes it — the
+ *  bytes are gone a layer earlier. wasmoon marshals Lua→JS strings through
+ *  `UTF8ToString`, which UTF-8-*decodes* them, so `"\1\200"` reaches `sendGMCP`
+ *  as `U+0001 U+0200` and `"\1\255"` as a lone surrogate. Re-encoding here
+ *  restores the caller's original Lua bytes rather than destroying them.
+ *  Carrying genuinely arbitrary bytes across that bridge needs numbers, or the
+ *  `%XX` armoring the VFS io path uses. */
 export const encodeGmcpRaw = (message: string): string => {
     return `${GMCP_IAC}${GMCP_SB}${String.fromCharCode(GMCP_COMMAND_CODE)}${toByteString(message)}${GMCP_IAC}${GMCP_SE}`;
 };
