@@ -94,6 +94,22 @@ const MPKG: DefaultPackage = {
 };
 
 /**
+ * Whether this build is the one that carries Mudlet's spec corpus — mudix's
+ * MUDLET_TEST_MODE, the same `VITE_BUSTED` flag LuaRuntime gates the busted
+ * bridge (and its `os.getenv('MUDLET_TEST_MODE')` answer) on.
+ *
+ * It exists here for one package. Mudlet leaves mpkg off the preinstall list for
+ * a profile built under MUDLET_TEST_MODE, and Package_spec asserts that a test
+ * profile really does come up without it: mpkg downloads the repository listing
+ * on load and, whenever the published version is ahead of the bundled copy,
+ * removes and reinstalls *itself* — clearing the editor's tree widgets and
+ * writing to the main console partway through whatever is running. A suite that
+ * pumps timers to wait on events (waitForEvent) is exactly what that lands in
+ * the middle of. Nothing else in this file is conditional on the build.
+ */
+const TEST_BUILD = !!(import.meta.env as Record<string, unknown>).VITE_BUSTED;
+
+/**
  * Games that get the IRE mapper instead of the generic one — verbatim from the
  * `mudlet-mapper.xml` row of `defaultScripts` in mudlet.cpp.
  */
@@ -132,15 +148,22 @@ export const ALL_DEFAULTS: DefaultPackage[] = [RUN_LUA_CODE, MUDLET_MAPPER, GENE
  * map view and only a mapper calls it, so a profile with no mapper never follows
  * the player — and two mappers would both fire on the same movement.
  *
- * The starter UI is the one conditional pick: Mudlet skips it for players who
- * aren't new (`experiencedMudletPlayer()` — any profile folder older than six
- * months) because "veterans will have their own layouts already", and for games
- * whose own loader installs a full interface. mudix has no profile-age signal to
- * mirror the first, so `createdAt` stands in for it — see {@link isNewProfile}.
+ * The starter UI is the one host-conditional pick: Mudlet skips it for players
+ * who aren't new (`experiencedMudletPlayer()` — any profile folder older than
+ * six months) because "veterans will have their own layouts already", and for
+ * games whose own loader installs a full interface. mudix has no profile-age
+ * signal to mirror the first, so `createdAt` stands in for it — see
+ * {@link isNewProfile}.
+ *
+ * mpkg is the one *build*-conditional pick, and for the reason Mudlet has:
+ * see {@link TEST_BUILD}.
  */
 export function stockDefaults(host?: string, conn?: { createdAt?: string }): DefaultPackage[] {
     const isIreMapperGame = !!host && IRE_MAPPER_GAMES.some(g => g.toLowerCase() === host);
-    const packages = [RUN_LUA_CODE, isIreMapperGame ? MUDLET_MAPPER : GENERIC_MAPPER, MPKG, GUI_DROP];
+    const packages = [RUN_LUA_CODE, isIreMapperGame ? MUDLET_MAPPER : GENERIC_MAPPER];
+    // Every host gets the package manager, except under the spec corpus — see TEST_BUILD.
+    if (!TEST_BUILD) packages.push(MPKG);
+    packages.push(GUI_DROP);
     const gameHasOwnUi = !!host && GAMES_WITH_OWN_UI.some(g => g === host);
     if (isNewProfile(conn) && !gameHasOwnUi) packages.push(BASE_UI);
     return packages;

@@ -1,5 +1,5 @@
 // Default happy-dom environment: parseMudletXml needs DOMParser.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
     ALL_DEFAULTS,
@@ -116,6 +116,29 @@ describe('default packages', () => {
         for (const host of [undefined, 'stickmud.com', 'elephant.org', ...GAMES_WITH_OWN_UI]) {
             expect(namesFor(host), `host ${host}`).toContain('mpkg');
             expect(namesFor(host, {}), `host ${host}, established`).toContain('mpkg');
+        }
+    });
+
+    it('leaves mpkg out of a busted build, as Mudlet does under MUDLET_TEST_MODE', async () => {
+        // Package_spec asserts a test profile comes up without mpkg, because
+        // mpkg reinstalls itself the moment the repository is ahead of the
+        // bundled copy — mid-run, into the console the suite is asserting on.
+        // TEST_BUILD is read at module load, so re-import under the stubbed env.
+        vi.stubEnv('VITE_BUSTED', '1');
+        vi.resetModules();
+        try {
+            const busted = await import('../../src/import/defaultPackages');
+            for (const host of [undefined, 'stickmud.com', 'elephant.org']) {
+                expect(busted.stockDefaults(host, NEW_PROFILE).map(d => d.name), `host ${host}`)
+                    .not.toContain('mpkg');
+                // Everything else is untouched — this excludes one package, not
+                // a whole code path.
+                expect(busted.stockDefaults(host, NEW_PROFILE).map(d => d.name), `host ${host}`)
+                    .toContain('gui-drop');
+            }
+        } finally {
+            vi.unstubAllEnvs();
+            vi.resetModules();
         }
     });
 
