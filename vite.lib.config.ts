@@ -23,8 +23,16 @@ function isExternal(id: string): boolean {
     // as real files (library mode would inline them as base64 data URIs — the
     // vendored mudlet-mapper.xml alone is ~490 kB, ~650 kB once base64'd).
     // The files ship in dist-lib at the same relative path (see build:lib).
+    //
+    // Matched by directory, not by extension: the spec fixtures under
+    // scripting/lua/specs/fixtures/packages/ are `.mpackage` too, and
+    // externalising those left seven dangling `?inline` imports in the
+    // published bundle — copy-lib-assets ships default packages only, and
+    // test data has no business in a consumer build. Bundled instead they
+    // are what they should be: dead weight behind `BUSTED_ENABLED`, and
+    // tree-shaken away.
     const path = id.replace(/\\/g, '/');
-    if (path.includes('.mpackage') || path.includes('/import/defaults/')) return true;
+    if (path.includes('/import/defaults/')) return true;
     if (id.startsWith('.') || id.startsWith('/') || id.startsWith('\0')) return false;
     if (/^[A-Za-z]:[\\/]/.test(id)) return false; // absolute Windows path
     if (id.startsWith('vite-plugin-node-polyfills')) return false;
@@ -38,6 +46,13 @@ export default defineConfig({
     base: './',
     // Baked at publish time so an installed lib reports its own version/commit.
     define: buildDefine(),
+    // Same reason as the app build (see vite-plugin/vite.ts): a `.mpackage`
+    // is a zip, not source, and the busted fixtures reach the asset pipeline
+    // through `?inline`. The lib build doesn't run that plugin, so it has to
+    // declare the extension itself — without it those imports fail to load,
+    // and externalising them instead (the old workaround) shipped seven
+    // dangling specifiers to consumers.
+    assetsInclude: ['**/*.mpackage'],
     plugins: [
         react(),
         nodePolyfills({ include: ['buffer', 'stream', 'events', 'util'] }),
