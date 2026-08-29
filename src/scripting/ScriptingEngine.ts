@@ -100,6 +100,14 @@ function debugMspEnabled(): boolean {
     }
 }
 
+/** Incoming GMCP paths whose bodies are secrets, so `mudix.debugGmcp` logs only
+ *  their size. Lowercased for the case-insensitive compare — GMCP module casing
+ *  varies between servers. */
+const SECRET_GMCP_PATHS = new Set([
+    'char.login.token',
+    'char.login.credentials',
+]);
+
 /** `mudix.debugGmcp` — log each incoming GMCP message's path + truncated body,
  *  so we can see exactly which modules a server drives (e.g. whether audio
  *  arrives over `Client.Media.*` GMCP or MSP tags). */
@@ -4177,9 +4185,21 @@ export class ScriptingEngine implements EngineHost {
                 // "Char.Items.List", each with args (eventName, fullKey).
                 if (!path) return;
                 if (debugGmcpEnabled()) {
+                    // `Char.Login.Token` carries a bearer token that signs this
+                    // profile in without a password, and `Char.Login.Credentials`
+                    // comes back from some games with the pair still in it. The
+                    // outbound half of this is redacted in telnetDebug; a debug
+                    // log ends up in bug reports either way, so report the length
+                    // (enough to tell "empty frame" from "something arrived")
+                    // and never the body. Mudlet does the same on the one place
+                    // it logs a token payload at all — a parse failure.
                     const body = JSON.stringify(value);
-                    console.debug(`[mudix.gmcp] ${path}`,
-                        body.length > 200 ? body.slice(0, 200) + '…' : body);
+                    if (SECRET_GMCP_PATHS.has(path.toLowerCase())) {
+                        console.debug(`[mudix.gmcp] ${path}`, `<redacted ${body.length}-char body>`);
+                    } else {
+                        console.debug(`[mudix.gmcp] ${path}`,
+                            body.length > 200 ? body.slice(0, 200) + '…' : body);
+                    }
                 }
                 this.runtimes.lua?.setGmcpValue(path, value);
                 const fullKey = `gmcp.${path}`;

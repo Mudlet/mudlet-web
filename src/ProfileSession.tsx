@@ -17,7 +17,8 @@ import { TlsUpgradeModal } from './ui/TlsUpgradeModal';
 import { TlsAlertBanner } from './ui/TlsAlertBanner';
 import { applyMsspVariable, emptyMsspTlsFacts, shouldOfferTlsUpgrade } from './mud/protocol/msspTls';
 import {
-    CHAR_LOGIN_SILENT_DROP_MESSAGE, charLoginFailureMessage, decideCharLoginRequest,
+    CHAR_LOGIN_INVALID_URL_MESSAGE, CHAR_LOGIN_SILENT_DROP_MESSAGE, charLoginFailureMessage,
+    charLoginSignInLinkMessage, decideCharLoginRequest, type CharLoginUrl,
 } from './mud/protocol/charLoginFlow';
 import { describeCertCode } from './mud/protocol/tlsCodes';
 import type { TlsStatus } from './mud/events';
@@ -139,6 +140,14 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // Still set at a disconnect ⇒ the game hung up on the login without a word,
     // which is worth saying out loud — see CHAR_LOGIN_SILENT_DROP_MESSAGE.
     const charLoginUnanswered = useRef(false);
+    // The Char.Login version this connection negotiated (1 until a server says
+    // otherwise). Version 2 games run their own sign-in screen, so the popup
+    // never opens there — see charLoginFlow. Reset on each connect, because a
+    // redial renegotiates and may reach a different server.
+    const charLoginVersion = useRef(1);
+    // The provider (`discord`, `google`, …) the game named on a Char.Login.URL
+    // this connection, remembered so the sign-in messages can name it.
+    const charLoginProvider = useRef<string | undefined>(undefined);
     // Fallback timer for MUDs that never send IAC GA/EOR around their login
     // prompt (e.g. plain FluffOS/LPMud bare-telnet banners) — see the
     // text-login auto-fill effect below.
@@ -553,15 +562,17 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             });
         });
         // GMCP Char.Login: the server asks for credentials.
-        const unsub7 = session.events.on('charLogin.request', (methods) => {
+        const unsub7 = session.events.on('charLogin.request', (caps) => {
             // GMCP login takes over — disarm the text-login state machine.
             autoLoginStage.current = 'idle';
+            charLoginVersion.current = caps.version;
             // In-memory credentials (branded login form) win over the stored
             // per-profile ones; branded builds never store any.
             const mem = getSessionCredentials(connection.id);
             const conn = useAppStore.getState().connections.find(c => c.id === connection.id);
             const action = decideCharLoginRequest({
-                methods,
+                version: caps.version,
+                methods: caps.methods,
                 declined: gmcpLoginDeclined.current,
                 attempted: gmcpAutoTried.current,
                 account: mem ? mem.account : conn?.charLoginAccount,
@@ -601,6 +612,16 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             if (gmcpLoginDeclined.current) return;
             setCharLogin(prev => ({ ...prev, error: result.message || 'Login failed.' }));
         });
+        // Char.Login.URL: the game offering a web page to sign in on. It can
+        // arrive at any point in a session, not only in answer to our hand-off.
+        const unsub12 = session.events.on('charLogin.url', (link) => {
+            if (!link) {
+                postLoginMessage(CHAR_LOGIN_INVALID_URL_MESSAGE);
+                return;
+            }
+            if (link.provider) charLoginProvider.current = link.provider;
+            postSignInLink(link);
+        });
         // A reconnect/disconnect invalidates any pending login prompt — and if
         // the credentials we sent are still unanswered, this drop *is* the
         // game's answer. Say so before the popup goes, or the attempt ends as an
@@ -623,7 +644,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         const unsub10 = session.events.on('script.filedialog', (request: FileDialogRequest) => {
             setFileDialogs(prev => [...prev, request]);
         });
-        return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub5b(); unsub5c(); unsub6(); unsub7(); unsub8(); unsub9(); unsub10(); unsub11(); };
+        return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub5b(); unsub5c(); unsub6(); unsub7(); unsub8(); unsub9(); unsub10(); unsub11(); unsub12(); };
     }, [session]);
 
     // MSSP-advertised secure port, plus the outcome of any TLS handshake.
@@ -744,6 +765,30 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
      *  (`[ WARN ]  - Could not log in to the game…`). */
     const postLoginMessage = (text: string) => {
         session.events.emit('message', `\x1b[33m[ WARN ]  - ${text}\x1b[0m`, 'script', Date.now());
+    };
+
+    /** Offer a `Char.Login.URL` as a clickable line.
+     *
+     *  Mudlet hands the address straight to the system browser, gated on the
+     *  player having sent input this connection so a server cannot open a tab
+     *  unprompted. We never call `window.open` for a server-supplied URL: the
+     *  browser already refuses a popup outside a user gesture, so that gate is
+     *  free here and the failure mode is "nothing happened" rather than "the
+     *  game opened a tab at you". The player clicks instead.
+     *
+     *  Wrapped in OSC 8 so it goes through the same hyperlink machinery as a
+     *  server-sent link (scheme-checked again on the way, and `parseCharLoginUrl`
+     *  has already refused anything but http(s) and anything with a control
+     *  character in it). The address is also the link *text*, so a player who has
+     *  hyperlinks switched off still sees it and can copy it. */
+    const postSignInLink = (link: CharLoginUrl) => {
+        const anchor = `\x1b]8;;${link.url}\x1b\\${link.url}\x1b]8;;\x1b\\`;
+        session.events.emit(
+            'message',
+            `\x1b[36m[ INFO ]\x1b[0m  - ${charLoginSignInLinkMessage(anchor, link.provider)}`,
+            'script',
+            Date.now(),
+        );
     };
 
     /** Console notice from the KaVir TTYPE-version auto-detect, in Mudlet's
@@ -874,6 +919,8 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             gmcpLoginDeclined.current = false;
             lastLoginAttempt.current = null;
             charLoginUnanswered.current = false;
+            charLoginVersion.current = 1;
+            charLoginProvider.current = undefined;
             clearNameFallback();
             const { account, password } = readCreds();
             autoLoginStage.current = account && password ? 'name' : 'idle';

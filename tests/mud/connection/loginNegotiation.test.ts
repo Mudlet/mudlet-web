@@ -10,8 +10,10 @@ import {
   NEW_ENVIRON_DO, NEW_ENVIRON_WILL, NEW_ENVIRON_WONT,
   OPT_NEW_ENVIRON, NEW_ENVIRON_IS, NEW_ENVIRON_SEND,
   NEW_ENVIRON_VAR, NEW_ENVIRON_USERVAR,
+  GMCP_WILL,
 } from '../../../src/mud/protocol/constants';
 import type { MudClientEvents } from '../../../src/mud/events';
+import type { CharLoginCapabilities, CharLoginUrl } from '../../../src/mud/protocol/charLoginFlow';
 
 /** Minimal stand-in for the browser WebSocket, capturing outbound frames. */
 class MockWebSocket {
@@ -265,14 +267,72 @@ describe('login-time telnet negotiation replies', () => {
     expect(seen).toEqual(['NEW-ENVIRON']);
   });
 
+  it('advertises Char.Login 2 in Core.Supports.Set', () => {
+    const bus = new EventBus<MudClientEvents>();
+    const client = new MudClient({ url: 'ws://test.invalid' }, bus);
+    client.connect();
+    const sock = MockWebSocket.instances[0];
+    sock.onopen?.({});
+    sock.deliver(GMCP_WILL);
+    expect(sentText(sock)).toContain('"Char.Login 2"');
+  });
+
   it('emits charLogin.request on Char.Login.Default (no auto-reply)', () => {
     const { sock, bus } = connected();
-    let methods: string[] | undefined;
-    bus.on('charLogin.request', (m) => { methods = m; });
+    let caps: CharLoginCapabilities | undefined;
+    bus.on('charLogin.request', (c) => { caps = c; });
     sock.deliver(gmcpFrame('Char.Login.Default {"type":["password-credentials"]}'));
-    expect(methods).toEqual(['password-credentials']);
+    expect(caps).toEqual({ version: 1, methods: ['password-credentials'] });
     // The client no longer auto-answers — the UI drives the reply now.
     expect(sentText(sock)).not.toContain('Char.Login.Credentials');
+  });
+
+  it('reports the negotiated version from Char.Login.Default', () => {
+    const { sock, bus } = connected();
+    const seen: number[] = [];
+    bus.on('charLogin.request', (c) => { seen.push(c.version); });
+    sock.deliver(gmcpFrame('Char.Login.Default {"version":2,"type":["oauth"]}'));
+    sock.deliver(gmcpFrame('Char.Login.Default {"version":9,"type":["oauth"]}'));
+    sock.deliver(gmcpFrame('Char.Login.Default {"type":["password-credentials"]}'));
+    expect(seen).toEqual([2, 2, 1]);
+  });
+
+  it('drops the client-driven OAuth fields on a cleartext game transport', () => {
+    // The proxy↔game leg is what matters, and `secureTransport` carries that
+    // answer: a ws:// dial cannot be end-to-end encrypted.
+    const { sock, bus } = connected();
+    let caps: CharLoginCapabilities | undefined;
+    bus.on('charLogin.request', (c) => { caps = c; });
+    sock.deliver(gmcpFrame('Char.Login.Default '
+      + '{"version":2,"type":["oauth"],"location":"https://g.example/.well-known","client_id":"abc"}'));
+    expect(caps?.oauth).toBeUndefined();
+  });
+
+  it('keeps the client-driven OAuth fields on an encrypted game transport', () => {
+    const { sock, bus } = connected({ secureTransport: true });
+    let caps: CharLoginCapabilities | undefined;
+    bus.on('charLogin.request', (c) => { caps = c; });
+    sock.deliver(gmcpFrame('Char.Login.Default '
+      + '{"version":2,"type":["oauth"],"location":"https://g.example/.well-known",'
+      + '"client_id":"abc","scopes":["openid"],"nonce":true}'));
+    expect(caps?.oauth).toEqual({
+      location: 'https://g.example/.well-known',
+      clientId: 'abc',
+      scopes: ['openid'],
+      nonceRequired: true,
+    });
+  });
+
+  it('emits charLogin.url for a sign-in page, and null for a refused scheme', () => {
+    const { sock, bus } = connected();
+    const seen: (CharLoginUrl | null)[] = [];
+    bus.on('charLogin.url', (l) => { seen.push(l); });
+    sock.deliver(gmcpFrame('Char.Login.URL {"url":"https://g.example/login?t=1","provider":"Discord"}'));
+    sock.deliver(gmcpFrame('Char.Login.URL {"url":"javascript:alert(1)"}'));
+    expect(seen).toEqual([
+      { url: 'https://g.example/login?t=1', provider: 'discord' },
+      null,
+    ]);
   });
 
   it('sendCharLoginCredentials sends account + password', () => {
@@ -285,6 +345,39 @@ describe('login-time telnet negotiation replies', () => {
     const { client, sock } = connected();
     client.sendCharLoginCredentials();
     expect(sentText(sock)).toContain('Char.Login.Credentials {}');
+  });
+
+  it('echoes the negotiated version on credentials once the server speaks v2', () => {
+    const { client, sock } = connected();
+    sock.deliver(gmcpFrame('Char.Login.Default {"version":2,"type":["password-credentials"]}'));
+    sock.sent.length = 0;
+    client.sendCharLoginCredentials('myaccount', 'secret');
+    expect(sentText(sock))
+      .toContain('Char.Login.Credentials {"account":"myaccount","password":"secret","version":2}');
+  });
+
+  it('never puts a version on the bare hand-off, whatever was negotiated', () => {
+    // The empty form carries no fields at all, by design — adding one would
+    // make it a different message.
+    const { client, sock } = connected();
+    sock.deliver(gmcpFrame('Char.Login.Default {"version":2,"type":["oauth"]}'));
+    sock.sent.length = 0;
+    client.sendCharLoginCredentials();
+    expect(sentText(sock)).toContain('Char.Login.Credentials {}');
+  });
+
+  it('forgets the negotiated version on a redial', () => {
+    // Per socket, not per Char.Login.Default: a redial may reach a different
+    // server, and a v1 game must see byte-identical v1 credentials.
+    const { client, sock } = connected();
+    sock.deliver(gmcpFrame('Char.Login.Default {"version":2,"type":["password-credentials"]}'));
+    client.disconnect();
+    client.connect();
+    const sock2 = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+    sock2.onopen?.({});
+    sock2.sent.length = 0;
+    client.sendCharLoginCredentials('myaccount', 'secret');
+    expect(sentText(sock2)).toContain('Char.Login.Credentials {"account":"myaccount","password":"secret"}');
   });
 
   it('emits charLogin.result on Char.Login.Result', () => {

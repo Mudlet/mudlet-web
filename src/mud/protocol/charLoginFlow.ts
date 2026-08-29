@@ -8,21 +8,54 @@
  * server that rejects an attempt commonly re-sends `Char.Login.Default` to ask
  * again, so these rules run repeatedly within one connection.
  *
- * Mirrors Mudlet's `GMCPAuthenticator` (GMCPAuthenticator.cpp). Kept free of
+ * Two protocol versions are in play, and they want opposite things from us:
+ *
+ * - **Version 1** is a password exchange. We raise `CharLoginModal`, the player
+ *   types, and we relay. That is the pleasant answer for a password game and it
+ *   is what every profile in the wild is talking to today.
+ * - **Version 2** adds browser sign-in (Google, Discord, or the game's own
+ *   account system). There the game owns the interactive sign-in screen and we
+ *   automate *around* it — Mudlet's design note is explicit that the client does
+ *   not render a pop-up of its own. Showing our modal *and* the game's sign-in
+ *   page is the failure mode to avoid, so on version 2 the modal never opens:
+ *   we either autofill a stored pair or send the empty `{}` hand-off.
+ *
+ * Mirrors Mudlet's `GMCPAuthenticator` (GMCPAuthenticator.{h,cpp}). Kept free of
  * React and session plumbing so the rules can be tested directly; the caller
  * supplies the per-connection state.
  */
 
+/** The highest `Char.Login` version this client implements — the value
+ *  advertised in `Core.Supports.Set` and the ceiling every negotiation is
+ *  clamped to. Client-driven OAuth (`Char.Login.AuthCode`), the remaining
+ *  version 2 capability, is deliberately not implemented; see
+ *  {@link parseCharLoginDefault}. */
+export const CHAR_LOGIN_CLIENT_VERSION = 2;
+
 /** What to do about a `Char.Login.Default` request. */
 export type CharLoginAction =
-    /** Reply with the empty `{}` form — "no credentials, use your next method". */
+    /**
+     * Reply with the empty `Char.Login.Credentials {}` form. One wire message,
+     * two meanings, both of which want exactly these bytes:
+     *
+     * - version 1: "no credentials, use your next method" — the player hit
+     *   *Use text login* and wants the game's `By what name…` prompt.
+     * - version 2: the deliberate hand-off — "run your own sign-in screen",
+     *   which is how a browser sign-in gets started. Mudlet sends it even when
+     *   the profile has a stored password, so a saved password never blocks the
+     *   player from reaching a provider choice.
+     */
     | { kind: 'decline' }
     /** Send stored credentials without troubling the player. */
     | { kind: 'autofill'; account: string; password: string }
-    /** Raise the credentials popup. */
+    /** Raise the credentials popup. Version 1 only. */
     | { kind: 'prompt' };
 
 export interface CharLoginRequestState {
+    /** Negotiated `Char.Login` version — `min(client, server)`, 1 when the
+     *  server reported none. Absent is read as 1, so a caller that predates
+     *  version 2 gets the version 1 rules unchanged. */
+    version?: number;
     /** The `type` list from `Char.Login.Default`; empty when the server sent none. */
     methods: string[];
     /** The player chose "Use text login" earlier this connection. */
@@ -34,25 +67,43 @@ export interface CharLoginRequestState {
     password?: string;
 }
 
+/** Whether the game will accept `Char.Login.Credentials {account, password}`.
+ *
+ *  The two versions read an *absent* `type` list differently, deliberately.
+ *  Version 1 servers in the wild send `Char.Login.Default {}` and expect the
+ *  password exchange, so silence means yes. Version 2 lists its methods (that
+ *  is what the list is for) and Mudlet tests `contains("password-credentials")`
+ *  with no fallback, so silence means no — and falls through to the hand-off,
+ *  which is a working sign-in rather than a form the game would refuse. */
+function acceptsPasswordCredentials(state: CharLoginRequestState): boolean {
+    if ((state.version ?? 1) >= 2) return state.methods.includes('password-credentials');
+    return state.methods.length === 0 || state.methods.includes('password-credentials');
+}
+
 /**
  * Decide how to answer a `Char.Login.Default`.
  *
- * The one automatic attempt per connection is the load-bearing rule: it makes a
- * saved login silent when it works, and guarantees that a *wrong* saved login
- * turns into a visible popup instead of a silent send-reject-send loop against
- * the server's repeated asks.
+ * Version 1's one automatic attempt per connection is the load-bearing rule: it
+ * makes a saved login silent when it works, and guarantees that a *wrong* saved
+ * login turns into a visible popup instead of a silent send-reject-send loop
+ * against the server's repeated asks.
  */
 export function decideCharLoginRequest(state: CharLoginRequestState): CharLoginAction {
+    // The player already opted into logging in by hand: keep answering (the
+    // server blocks until we do) without reopening the form over the very
+    // prompts they chose to type into. Ahead of the version split because it is
+    // the player's decision and outranks whatever the game offers.
+    if (state.declined) {
+        return { kind: 'decline' };
+    }
+    if ((state.version ?? 1) >= 2) {
+        return decideCharLoginV2(state);
+    }
+    // ── Version 1, unchanged ──────────────────────────────────────────────
     // Only password-credentials is implemented. If the server offers other
     // methods exclusively (e.g. oauth), decline so it falls back to its own
     // login rather than us showing a form that cannot satisfy it.
     if (state.methods.length > 0 && !state.methods.includes('password-credentials')) {
-        return { kind: 'decline' };
-    }
-    // The player already opted into logging in by hand: keep answering (the
-    // server blocks until we do) without reopening the form over the very
-    // prompts they chose to type into.
-    if (state.declined) {
         return { kind: 'decline' };
     }
     if (state.account && state.password && !state.attempted) {
@@ -62,10 +113,230 @@ export function decideCharLoginRequest(state: CharLoginRequestState): CharLoginA
 }
 
 /**
- * The console line for a rejected login, in Mudlet's wording
- * (`GMCPAuthenticator::handleAuthResult`). Servers doing GMCP login usually send
- * no text of their own, so this is often the only trace of the failure.
+ * The version 2 ladder, mirroring `GMCPAuthenticator::attemptReconnect` →
+ * `selectAuthMethod`. Each rung has a reason and the reasons are not obvious,
+ * so the ordering is copied rather than rederived.
+ *
+ * Phase 1 implements the two rungs that need no stored token:
+ *
+ * 1. A complete stored account **and** password, when the game accepts
+ *    `password-credentials`, is the player's explicit choice of sign-in method
+ *    — they typed both into this profile deliberately — so it outranks anything
+ *    the game would offer on its own screen.
+ * 2. Otherwise hand off with the empty `{}`, *even when the profile has a
+ *    stored password* the game will not take, and let the player choose on the
+ *    game's own sign-in page. The `Char.Login.URL` that answers this is what
+ *    reaches the browser.
+ *
+ * The rungs between them — replaying a saved reconnect token, and the provider
+ * resume — arrive with phase 2 (`Char.Login.Reconnect`).
  */
+function decideCharLoginV2(state: CharLoginRequestState): CharLoginAction {
+    const havePair = !!state.account && !!state.password;
+    // Mudlet has no "already attempted" concept here; it bounds a server that
+    // re-asks in a loop by throttling sign-in attempts to one a second, which
+    // means a wrong saved password is replayed against every repeat ask for as
+    // long as the server keeps asking. We keep our per-connection guard instead
+    // and fall through to the hand-off, so the *second* ask lands the player on
+    // the game's own sign-in screen — where they can fix it — rather than on
+    // the same rejected password again. Strictly better than the loop, and it
+    // is the same rule version 1 already uses to reach its popup.
+    if (havePair && !state.attempted && acceptsPasswordCredentials(state)) {
+        return { kind: 'autofill', account: state.account!, password: state.password! };
+    }
+    // Client-driven OAuth (`Char.Login.AuthCode`) would be Mudlet's next rung.
+    // It is not implementable in a browser today — see parseCharLoginDefault —
+    // so we go straight to the hand-off, which is exactly what Mudlet does on a
+    // connection where the client-driven capability is unavailable.
+    return { kind: 'decline' };
+}
+
+/**
+ * Clamp the version a server reported in `Char.Login.Default` to what we
+ * implement. The negotiated version is `min(client, server)`.
+ *
+ * Absent, non-numeric, or non-positive all mean 1: the spec's version is a
+ * positive non-zero integer, and a version 1 server sends no field at all. A
+ * value *above* what we implement is clamped down, not read as 1 — a version 5
+ * server still speaks version 2 to us. Mirrors `saveSupportsSet`'s
+ * `qBound(1, reportedVersion, 2)`.
+ */
+export function negotiateCharLoginVersion(reported: unknown): number {
+    if (typeof reported !== 'number' || !Number.isFinite(reported)) return 1;
+    const v = Math.trunc(reported);
+    if (v < 1) return 1;
+    return Math.min(v, CHAR_LOGIN_CLIENT_VERSION);
+}
+
+/** The client-driven OAuth capability a version 2 server advertises when it is
+ *  itself an OpenID Provider. Parsed but never acted on — see
+ *  {@link parseCharLoginDefault}. */
+export interface CharLoginOAuthCapability {
+    location: string;
+    clientId: string;
+    scopes: string[];
+    nonceRequired: boolean;
+}
+
+/** Everything `Char.Login.Default` told us, normalised. */
+export interface CharLoginCapabilities {
+    /** Negotiated version — see {@link negotiateCharLoginVersion}. */
+    version: number;
+    /** The `type` list, malformed entries dropped. Empty when the server sent none. */
+    methods: string[];
+    /** Present only on an encrypted game-facing transport, and only when the
+     *  server sent both `location` and `client_id`. */
+    oauth?: CharLoginOAuthCapability;
+}
+
+/**
+ * Read a `Char.Login.Default` payload into capabilities.
+ *
+ * `secureTransport` is whether the link to the *game* is encrypted — the answer
+ * `connectionSecureTransport()` gives, not "is the WebSocket wss:". In proxy
+ * mode a `wss://` proxy URL only secures the browser↔proxy hop; the proxy↔game
+ * leg is plaintext telnet unless the profile enabled TLS.
+ *
+ * The client-driven OAuth fields are read only on an encrypted transport,
+ * because the `Char.Login.AuthCode` that completes that flow carries the
+ * authorization code and the PKCE verifier together and must never travel in
+ * the clear. Dropping them on cleartext silently selects the server-driven flow
+ * instead, which is Mudlet's behaviour (`saveSupportsSet`).
+ *
+ * We then never act on them at all, because a browser cannot complete that
+ * flow: Mudlet's `OAuthClientFlow` listens on `127.0.0.1:<port>` and uses a
+ * loopback redirect URI, which RFC 8252 reserves for native clients. The web
+ * equivalent is a redirect URI on our own origin, and that URI has to be
+ * registered with the game's OpenID Provider against the game's `client_id` —
+ * something no game has done for us. Until one does, `Char.Login.AuthCode` is
+ * undeliverable however much PKCE we write, so we treat `oauth` exactly as
+ * Mudlet treats it on a cleartext connection and use the server-driven flow.
+ * Parsing it anyway keeps the capability visible to tests and to whoever picks
+ * up that question.
+ */
+export function parseCharLoginDefault(value: unknown, secureTransport: boolean): CharLoginCapabilities {
+    const obj = (value && typeof value === 'object' && !Array.isArray(value))
+        ? value as Record<string, unknown>
+        : {};
+    const caps: CharLoginCapabilities = {
+        version: negotiateCharLoginVersion(obj.version),
+        // A non-string or empty entry would otherwise masquerade as a real
+        // method and slip past the `includes` guards above.
+        methods: Array.isArray(obj.type)
+            ? obj.type.filter((t): t is string => typeof t === 'string' && t !== '')
+            : [],
+    };
+    if (secureTransport) {
+        const location = typeof obj.location === 'string' ? obj.location : '';
+        const clientId = typeof obj.client_id === 'string' ? obj.client_id : '';
+        if (location && clientId) {
+            caps.oauth = {
+                location,
+                clientId,
+                scopes: Array.isArray(obj.scopes)
+                    ? obj.scopes.filter((s): s is string => typeof s === 'string' && s !== '')
+                    : [],
+                nonceRequired: obj.nonce === true,
+            };
+        }
+    }
+    return caps;
+}
+
+/** A validated `Char.Login.URL`. */
+export interface CharLoginUrl {
+    url: string;
+    /** Lowercase provider id (`discord`, `google`, …) when the server named one. */
+    provider?: string;
+}
+
+/**
+ * Validate a `Char.Login.URL` payload.
+ *
+ * The address arrives unauthenticated over the wire, so only `http`/`https`
+ * survive: never `javascript:`, `file:`, `data:`, or any other scheme handler,
+ * whether we would open it or merely render it as a link. Returns null for
+ * anything else, including a missing or unparseable `url`.
+ *
+ * Control characters are refused outright. We render the address into the
+ * console inside an OSC 8 sequence, and an ESC in it would close that sequence
+ * early and let the game paint arbitrary ANSI — or a second, differently-targeted
+ * hyperlink — through what is supposed to be one link. `new URL()` would
+ * percent-encode them, but rejecting is the honest answer: a sign-in address
+ * with a raw ESC in it is not one a game meant to send.
+ */
+export function parseCharLoginUrl(value: unknown): CharLoginUrl | null {
+    const obj = (value && typeof value === 'object' && !Array.isArray(value))
+        ? value as Record<string, unknown>
+        : {};
+    const raw = typeof obj.url === 'string' ? obj.url.trim() : '';
+    if (!raw) return null;
+    // eslint-disable-next-line no-control-regex
+    if (/[\x00-\x1F\x7F]/.test(raw)) return null;
+    let scheme: string;
+    try {
+        scheme = new URL(raw).protocol.toLowerCase();
+    } catch {
+        return null;
+    }
+    if (scheme !== 'http:' && scheme !== 'https:') return null;
+    const provider = typeof obj.provider === 'string' && obj.provider.trim()
+        ? obj.provider.trim().toLowerCase()
+        : undefined;
+    return provider ? { url: raw, provider } : { url: raw };
+}
+
+/** Display names for the provider ids that arrive lowercase on the wire, so the
+ *  sign-in messages read naturally ("…to sign in with GitHub"). Mudlet's
+ *  `providerDisplayName` table (GMCPAuthenticator.cpp). */
+const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+    apple: 'Apple',
+    discord: 'Discord',
+    github: 'GitHub',
+    google: 'Google',
+    microsoft: 'Microsoft',
+    slack: 'Slack',
+    twitch: 'Twitch',
+    x: 'X',
+};
+
+/** A provider id as a human-readable name. Unknown ids are capitalised rather
+ *  than dropped — the game may support a provider we have never heard of, and
+ *  its own name is a better label than nothing. Empty for no provider. */
+export function charLoginProviderName(provider?: string): string {
+    if (!provider) return '';
+    const known = PROVIDER_DISPLAY_NAMES[provider.toLowerCase()];
+    if (known) return known;
+    return provider.charAt(0).toUpperCase() + provider.slice(1);
+}
+
+/**
+ * The console line offering a `Char.Login.URL`, in Mudlet's wording
+ * (`GMCPAuthenticator::offerOrOpenSignInUrl`).
+ *
+ * Mudlet hands the address to `QDesktopServices::openUrl`, gated on the player
+ * having sent input this connection so a server cannot open a browser
+ * unprompted. We deliberately never call `window.open` for a server-supplied
+ * URL: the platform already enforces exactly that rule (a popup outside a user
+ * gesture is blocked), so making the player click costs nothing and the failure
+ * mode is "nothing happened" rather than "the game opened a tab at you".
+ *
+ * The caller renders the address as an OSC 8 hyperlink; the sentence carries it
+ * as text either way, so it stays readable and copyable even for a player who
+ * has turned hyperlinks off.
+ */
+export function charLoginSignInLinkMessage(url: string, provider?: string): string {
+    const display = charLoginProviderName(provider);
+    return display
+        ? `To sign in with ${display}, open this link in your browser: ${url}`
+        : `To sign in, open this link in your browser: ${url}`;
+}
+
+/** The console line for a `Char.Login.URL` we refused to render — a scheme that
+ *  is not http(s), or an address that does not parse. Mudlet's wording. */
+export const CHAR_LOGIN_INVALID_URL_MESSAGE =
+    'The game sent an invalid sign-in link; cannot continue.';
+
 /**
  * The console line for credentials the game never answered at all: it closed the
  * connection instead of sending `Char.Login.Result`.
@@ -81,6 +352,11 @@ export const CHAR_LOGIN_SILENT_DROP_MESSAGE =
     'Could not log in to the game: it closed the connection without answering. '
     + 'Games commonly do this when the account name or password is wrong.';
 
+/**
+ * The console line for a rejected login, in Mudlet's wording
+ * (`GMCPAuthenticator::handleAuthResult`). Servers doing GMCP login usually send
+ * no text of their own, so this is often the only trace of the failure.
+ */
 export function charLoginFailureMessage(message?: string): string {
     return message
         ? `Could not log in to the game: ${message}`

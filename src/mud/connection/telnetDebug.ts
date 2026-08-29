@@ -93,8 +93,19 @@ export function logTelnetNegotiation(label: string, s: string): void {
         seqs.length ? seqs.join(' | ') : '(no IAC sequences)');
 }
 
-/** GMCP module whose body carries the player's password — never logged. */
-const SECRET_GMCP_MODULE = 'char.login.credentials';
+/** GMCP modules whose bodies carry a secret — never logged.
+ *
+ *  `Char.Login.Credentials` carries the player's password;
+ *  `Char.Login.Reconnect` carries a bearer token that signs in *without* one,
+ *  and `Char.Login.AuthCode` carries an authorization code and its PKCE
+ *  verifier, which together let anyone holding them redeem the code. A debug
+ *  log is pasted into bug reports, so all three are as bad to print as the
+ *  password was. Matched as prefixes of the lowercased body. */
+const SECRET_GMCP_MODULES = [
+    'char.login.credentials',
+    'char.login.reconnect',
+    'char.login.authcode',
+];
 
 /** Escape control and high bytes so a subnegotiation body reads unambiguously
  *  in the console (a lone `\x00` separator in MSDP, say, or a stray IAC). */
@@ -111,8 +122,8 @@ function escapeBytes(s: string): string {
  * a malformed body from a well-formed one.
  *
  * Bodies only: plain command text is reported as a byte count, never content,
- * because `send()` also carries typed passwords. `Char.Login.Credentials` is
- * redacted for the same reason.
+ * because `send()` also carries typed passwords. The `Char.Login` messages in
+ * {@link SECRET_GMCP_MODULES} are redacted for the same reason.
  */
 export function logOutboundBytes(s: string): void {
     const parts: string[] = [];
@@ -125,7 +136,8 @@ export function logOutboundBytes(s: string): void {
             const end = s.indexOf('\xFF\xF0', i + 3);
             const body = end === -1 ? s.substring(i + 3) : s.substring(i + 3, end);
             const name = TELNET_OPT_NAMES[opt] ?? String(opt);
-            const secret = opt === 201 && body.toLowerCase().startsWith(SECRET_GMCP_MODULE);
+            const secret = opt === 201
+                && SECRET_GMCP_MODULES.some(m => body.toLowerCase().startsWith(m));
             parts.push(`SB ${name} ${secret ? '<redacted>' : JSON.stringify(escapeBytes(body))}`);
             i = end === -1 ? s.length : end + 2;
         } else if (cmd >= 251 && cmd <= 254) { // WILL/WONT/DO/DONT <opt>

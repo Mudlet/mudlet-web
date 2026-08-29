@@ -1,6 +1,7 @@
 import type { AnsiAwareBuffer } from './text/FormatState';
 import type { MspCommand } from './protocol';
 import type { ScriptLogSource } from './MudSession';
+import type { CharLoginCapabilities, CharLoginUrl } from './protocol/charLoginFlow';
 
 export type SessionStatus = 'disconnected' | 'connecting' | 'connected';
 
@@ -139,11 +140,20 @@ export type MudClientEvents = {
     'mssp': [payload: { name: string; value: string }];
     'gmcp.core.ping': [value: unknown];
     /** Fires when the server requests GMCP login (Char.Login.Default). The
-     *  argument is the list of supported authentication methods it advertised
-     *  (e.g. `["password-credentials"]`). The UI shows a credentials popup and
-     *  replies via `sendCharLoginCredentials` — or an empty reply (cancel) to
-     *  fall back to the server's text login prompt. */
-    'charLogin.request': [methods: string[]];
+     *  argument is everything the frame advertised: the negotiated protocol
+     *  version, the supported authentication methods (e.g.
+     *  `["password-credentials"]`), and any client-driven OAuth capability. The
+     *  session decides what to answer with (see charLoginFlow) and replies via
+     *  `sendCharLoginCredentials` — a stored pair, or the empty reply, which is
+     *  version 1's "fall back to the text login" and version 2's hand-off to the
+     *  game's own sign-in screen. */
+    'charLogin.request': [capabilities: CharLoginCapabilities];
+    /** Fires on a GMCP `Char.Login.URL` — the game offering a web page to sign
+     *  in on. `null` when the address was missing, unparseable, or carried a
+     *  scheme other than http(s), which the session reports rather than
+     *  rendering: the address arrives unauthenticated. Can arrive at any point
+     *  in a session, not just at login. */
+    'charLogin.url': [link: CharLoginUrl | null];
     /** Fires when the server reports a GMCP login outcome (Char.Login.Result).
      *  `success` is true on a successful authentication; on failure `message`
      *  carries the server's human-readable reason (e.g. "Invalid credentials"). */

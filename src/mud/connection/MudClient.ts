@@ -34,6 +34,11 @@ import {
     TELNET_GA,
     TTYPE_COMMAND_CODE,
 } from "../protocol";
+import {
+    CHAR_LOGIN_CLIENT_VERSION,
+    parseCharLoginDefault,
+    parseCharLoginUrl,
+} from "../protocol/charLoginFlow";
 import type { MudClientEvents, TlsEstablished, TlsError } from "../events";
 import { LineAssembler } from "./LineAssembler";
 import { TelnetNegotiator } from "./TelnetNegotiator";
@@ -277,6 +282,20 @@ export class MudClient {
     private tlsResolved = false;
     private tlsDeadline: ReturnType<typeof setTimeout> | null = null;
 
+    /** Whether the link to the *game* is encrypted — the answer
+     *  `connectionSecureTransport()` gives, not "is the WebSocket wss:". In
+     *  proxy mode a `wss://` proxy URL only secures the browser↔proxy hop. Read
+     *  by the `Char.Login` bearer-secret gates as well as NEW-ENVIRON's `TLS`
+     *  variable; a fresh client is built per dial, so it cannot go stale. */
+    private readonly gameTransportSecure: boolean;
+    /** The negotiated `Char.Login` version — `min(client, server)`, learned
+     *  from `Char.Login.Default` and echoed back on every client→server message
+     *  except the bare `{}` hand-off, so both ends agree on the version even
+     *  though base GMCP negotiation is one-directional. 1 until a server says
+     *  otherwise, which is also the right answer for a version 1 server.
+     *  Per-socket state: reset on connect, not on each `Char.Login.Default`. */
+    private charLoginVersion = 1;
+
     commandEcho: boolean;
     /** Gates the in-band `!!SOUND(...)` / `!!MUSIC(...)` tag parsing — the tag
      *  bytes are legitimate text on non-MSP MUDs. */
@@ -340,6 +359,11 @@ export class MudClient {
         this.strictUnixEndings = inputLineStrictUnixEndings;
         this.forceGaOff = specialForceGAOff;
         this.telnetParserOpts.promptMarkerAsNewline = specialForceGAOff;
+        // Fall back to the URL scheme when the caller doesn't say — correct for
+        // a direct websocket connection; proxy mode passes its own answer,
+        // since a wss:// proxy URL says nothing about whether the proxy↔game
+        // leg is encrypted.
+        this.gameTransportSecure = secureTransport ?? /^wss:/i.test(url);
 
         this.assembler = new LineAssembler(
             {
@@ -367,11 +391,7 @@ export class MudClient {
                 mnesEnabled,
                 newEnvironEnabled,
                 nawsEnabled,
-                // Fall back to the URL scheme when the caller doesn't say —
-                // correct for a direct websocket connection; proxy mode passes
-                // its own answer, since a wss:// proxy URL says nothing about
-                // whether the proxy↔game leg is encrypted.
-                secureTransport: secureTransport ?? /^wss:/i.test(url),
+                secureTransport: this.gameTransportSecure,
                 screenReaderAdvertised,
                 osc8HyperlinksEnabled,
                 versionInTTYPE,
@@ -579,6 +599,12 @@ export class MudClient {
         this.charModeDetected = false;
         this.cancelCharacterModeDetection();
         this.gmcpHelloSent = false;
+        // Per socket, not per Char.Login.Default: a redial renegotiates from
+        // scratch and may reach a different server (a TLS port, a moved host),
+        // so the previous connection's version must not stamp this one's
+        // messages. Mudlet splits the same two resets (resetForNewConnection vs
+        // resetPerConnectionState) for this reason.
+        this.charLoginVersion = 1;
         // Redialling re-runs the handshake, so the previous verdict is stale.
         this.tlsResolved = false;
         if (this.tlsDeadline !== null) {
@@ -899,7 +925,7 @@ export class MudClient {
                 'IRE.Rift 1',
                 'IRE.Composer 1',
                 'Client.Media 1',
-                'Char.Login 1',
+                `Char.Login ${CHAR_LOGIN_CLIENT_VERSION}`,
             ]));
         } catch (error) {
             console.error('Error sending GMCP handshake:', error);
@@ -912,17 +938,32 @@ export class MudClient {
      *  supply credentials — withholding the normal text "By what name…" prompt
      *  until it hears back (servers that do this gate on the `Char.Login` module
      *  we advertise in `Core.Supports.Set`). We surface it as `charLogin.request`
-     *  so the UI can pop a credentials form; the UI replies via
-     *  `sendCharLoginCredentials`, or an empty reply (cancel) to fall back to the
-     *  text login (the behaviour Mudlet/Mudlet#7377 is about). `Char.Login.Result`
-     *  carries the outcome. Path match is case-insensitive — GMCP module casing
-     *  varies between servers. */
+     *  carrying the parsed capabilities; the session decides what to answer with
+     *  (see charLoginFlow) and replies via `sendCharLoginCredentials` — a full
+     *  pair, or the empty `{}` form, which is both version 1's "fall back to your
+     *  text login" (Mudlet/Mudlet#7377) and version 2's deliberate hand-off to
+     *  the game's own sign-in screen. `Char.Login.URL` offers a sign-in page,
+     *  and can arrive at any point in a session rather than only at login.
+     *  `Char.Login.Result` carries the outcome. Path match is case-insensitive —
+     *  GMCP module casing varies between servers. */
     private handleCharLogin(path: string, value: unknown): void {
         const p = path.toLowerCase();
         if (p === 'char.login.default') {
-            const type = (value as { type?: unknown } | null)?.type;
-            const methods = Array.isArray(type) ? type.map(String) : [];
-            this.eventBus.emit('charLogin.request', methods);
+            // Re-read the capabilities from scratch on every ask. The version
+            // and method list belong to *this* advertisement: a later frame that
+            // is malformed, or that drops a method, must not leave the previous
+            // one's answers driving the decision (Mudlet clears them up front in
+            // saveSupportsSet for exactly this reason).
+            const caps = parseCharLoginDefault(value, this.gameTransportSecure);
+            this.charLoginVersion = caps.version;
+            this.eventBus.emit('charLogin.request', caps);
+        } else if (p === 'char.login.url') {
+            const link = parseCharLoginUrl(value);
+            // null means the address was missing, unparseable, or carried a
+            // scheme we refuse to render (javascript:, file:, data:, …) — the
+            // URL arrives unauthenticated, so the session reports the refusal
+            // rather than putting it on screen.
+            this.eventBus.emit('charLogin.url', link);
         } else if (p === 'char.login.result') {
             const v = (value ?? {}) as { success?: unknown; message?: unknown };
             // `success` may arrive as the string "true" rather than a JSON
@@ -941,11 +982,22 @@ export class MudClient {
     /** Send the GMCP `Char.Login.Credentials` reply. With an account, sends
      *  `{ account, password }` (account may be `"account:character"` for games
      *  with both); with no account it sends the empty `{}` form — the spec's
-     *  "no credentials, fall back to your next auth method" signal, used when the
-     *  user cancels the popup. mudix never stores the password; it only relays it. */
+     *  "no credentials, fall back to your next auth method" signal, which is
+     *  both version 1's popup-cancel and version 2's hand-off to the game's own
+     *  sign-in screen. mudix never stores the password; it only relays it.
+     *
+     *  From version 2 the filled form echoes the negotiated version so both ends
+     *  agree on it. The empty form carries no fields at all, by design — adding
+     *  one would make it a different message. On a version 1 server the bytes
+     *  are exactly what they have always been. */
     sendCharLoginCredentials(account?: string, password?: string): void {
-        const payload = account ? { account, password: password ?? '' } : {};
-        this.sendGmcp('Char.Login.Credentials', payload);
+        if (!account) {
+            this.sendGmcp('Char.Login.Credentials', {});
+            return;
+        }
+        this.sendGmcp('Char.Login.Credentials', this.charLoginVersion >= 2
+            ? { account, password: password ?? '', version: this.charLoginVersion }
+            : { account, password: password ?? '' });
     }
 
     sendGmcpRaw(message: string): void {
