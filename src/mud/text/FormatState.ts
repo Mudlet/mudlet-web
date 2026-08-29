@@ -9,6 +9,7 @@ import {
 } from "./ansiEscapes";
 import {
     parseOsc8Uri,
+    isOsc8HyperlinksEnabled,
     HyperlinkPresetRegistry,
     type HyperlinkConfig,
     type LinkStateStyle,
@@ -680,6 +681,14 @@ function parseAnsiSegments(
                     flush();
                     if (link.uri === "") {
                         state.hyperlink = undefined;
+                    } else if (!isOsc8HyperlinksEnabled()) {
+                        // Mudlet 5.0's mEnableOSC8Hyperlinks gate
+                        // (TBuffer::decodeOSC). Deliberately *below* the close
+                        // branch: closing is the only thing that clears the
+                        // open link, so refusing it would leave a link the
+                        // toggle caught mid-flight open for the rest of the
+                        // session. The sequence is still consumed, never
+                        // rendered as literal text.
                     } else {
                         const result = parseOsc8Uri(link.uri, registry);
                         if (result?.kind === "link" && classifyHyperlinkUri(result.command)) {

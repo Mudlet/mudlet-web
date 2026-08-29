@@ -146,6 +146,12 @@ export interface NewEnvironState {
      *  bit, NEW-ENVIRON SCREEN_READER var) — `setConfig("advertiseScreenReader", …)`.
      *  Defaults to false (matching Mudlet's opt-in behaviour). */
     screenReader?: boolean;
+    /** Whether OSC 8 hyperlinks are enabled for this profile (Mudlet 5.0's
+     *  `Host::mEnableOSC8Hyperlinks`). Every `OSC_HYPERLINKS_*` capability
+     *  reports "0" while it is off, exactly as Mudlet's
+     *  `cTelnet::getNewEnvironOSCHyperlinks*` do — a server that would light up
+     *  its links for us must be told we won't render them. Defaults to true. */
+    osc8Hyperlinks?: boolean;
 }
 
 /** The five core variables MNES standardises (https://tintin.mudhalla.net/protocols/mnes/).
@@ -193,8 +199,13 @@ export function buildNewEnvironVars(
         // OSC 8 hyperlinks. A flag reads "1" only once mudix actually honours
         // that part of Mudlet's OSC 8 extension; the rest stay "0" until the
         // corresponding feature lands (menus, spoilers, presets, …). Mudlet
-        // reports the whole set as "1" because it implements all of them.
-        ...OSC_HYPERLINK_CAPS.map(([name, value]) => ({ name, value })),
+        // reports the whole set as "1" because it implements all of them — and,
+        // like Mudlet, the whole block collapses to "0" when the profile has
+        // OSC 8 hyperlinks turned off.
+        ...OSC_HYPERLINK_CAPS.map(([name, value]) => ({
+            name,
+            value: state.osc8Hyperlinks === false ? "0" : value,
+        })),
     ];
 }
 

@@ -5,6 +5,7 @@ import { Input, FontPicker, Toggle, HelpTip, Button } from './components';
 import { getThemeChoices } from '../branding';
 import { useModalFocus } from './components/useModalFocus';
 import { DEFAULT_ANSI_PALETTE } from '../mud/text/colors';
+import { SERVER_WRAP_WIDTH_MIN, SERVER_WRAP_WIDTH_MAX, SERVER_WRAP_WIDTH_DEFAULT } from '../mud/text/serverWrap';
 import { DEFAULT_HISTORY_SAVE_SIZE, MAX_HISTORY } from './commandHistory';
 import type { ShowSentTextMode, ControlCharacterMode, BlankLinesBehaviour } from '../mud/MudSession';
 
@@ -168,6 +169,13 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     const ansiPalette = useAppStore(s => selectProfileField(s, connectionId, 'ansiPalette'));
     const serverRedefineColors = useAppStore(s => selectProfileField(s, connectionId, 'serverRedefineColors'));
     const serverRedefineOn = serverRedefineColors === true;
+    // Mudlet 5.0's mEnableOSC8Hyperlinks / mUndoServerWrap(+Width). All default
+    // the way Mudlet's Host fields do: OSC 8 on, the wrap-undo off at column 80.
+    const osc8Hyperlinks = useAppStore(s => selectProfileField(s, connectionId, 'osc8Hyperlinks'));
+    const osc8HyperlinksOn = osc8Hyperlinks !== false;
+    const undoServerWrap = useAppStore(s => selectProfileField(s, connectionId, 'undoServerWrap'));
+    const undoServerWrapOn = undoServerWrap === true;
+    const undoServerWrapWidth = useAppStore(s => selectProfileField(s, connectionId, 'undoServerWrapWidth'));
     const outputFont = useAppStore(s => selectProfileField(s, connectionId, 'outputFont'));
     const fontSize = useAppStore(s => selectProfileField(s, connectionId, 'fontSize'));
     const outputWrapAt = useAppStore(s => selectProfileField(s, connectionId, 'outputWrapAt'));
@@ -387,6 +395,23 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     const handleWrapAtBlur = makeWrapBlurHandler('outputWrapAt', MAX_WRAP_AT, wrapAtText, setWrapAtText, outputWrapAt);
     const handleWrapIndentBlur = makeWrapBlurHandler('outputWrapIndent', MAX_WRAP_INDENT, wrapIndentText, setWrapIndentText, outputWrapIndent);
     const handleWrapHangingBlur = makeWrapBlurHandler('outputWrapHangingIndent', MAX_WRAP_INDENT, wrapHangingText, setWrapHangingText, outputWrapHangingIndent);
+
+    // The column the game wraps at, for "undo the game's own wrapping". Unlike
+    // the wrap fields above, blank doesn't clear an override — the join needs a
+    // column, so an empty or out-of-range entry reverts to the stored value and
+    // anything else is clamped into Mudlet's 20–500 range.
+    const [undoWrapWidthText, setUndoWrapWidthText] = useState(
+        String(undoServerWrapWidth ?? SERVER_WRAP_WIDTH_DEFAULT),
+    );
+
+    const handleUndoWrapWidthBlur = () => {
+        const parsed = parseInt(undoWrapWidthText.trim(), 10);
+        const fallback = String(undoServerWrapWidth ?? SERVER_WRAP_WIDTH_DEFAULT);
+        if (!Number.isFinite(parsed)) { setUndoWrapWidthText(fallback); return; }
+        const clamped = Math.min(SERVER_WRAP_WIDTH_MAX, Math.max(SERVER_WRAP_WIDTH_MIN, parsed));
+        setUndoWrapWidthText(String(clamped));
+        patchProfile({ undoServerWrapWidth: clamped });
+    };
 
     const [historySaveSizeText, setHistorySaveSizeText] = useState(String(historySaveSize));
 
@@ -1011,6 +1036,26 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                                     />
                                 </div>
                                 <div className="settings-row">
+                                    <span className="settings-label" id="osc8-hyperlinks-label">
+                                        Enable OSC 8 hyperlinks
+                                        <HelpTip label="About OSC 8 hyperlinks">
+                                            Render the clickable links a game sends as OSC 8 escape
+                                            sequences — commands to send, prompts to fill, tooltips
+                                            and right-click menus (Mudlet's
+                                            {' '}<code>enableOSC8Hyperlinks</code>). On by default.
+                                            Turning it off shows the linked text as plain output and
+                                            tells servers, over NEW-ENVIRON, not to send links at
+                                            all.
+                                        </HelpTip>
+                                    </span>
+                                    <Toggle
+                                        id="osc8-hyperlinks"
+                                        aria-labelledby="osc8-hyperlinks-label"
+                                        checked={osc8HyperlinksOn}
+                                        onChange={next => patchProfile({ osc8Hyperlinks: next })}
+                                    />
+                                </div>
+                                <div className="settings-row">
                                     <span className="settings-label" id="enable-blink-text-label">
                                         Enable blinking text
                                         <HelpTip label="About blinking text">
@@ -1105,6 +1150,49 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                                         </label>
                                     </div>
                                 </div>
+                                <div className="settings-row">
+                                    <span className="settings-label" id="undo-server-wrap-label">
+                                        Undo the game's own wrapping
+                                        <HelpTip label="About undoing the game's wrapping">
+                                            Some games wrap their own lines with no way to turn it
+                                            off, which makes triggers awkward to write: the text a
+                                            trigger sees can be split mid-sentence. This joins those
+                                            lines back together before triggers run, so patterns
+                                            always see whole lines and the wrap settings above apply
+                                            for display instead (Mudlet's
+                                            {' '}<code>undoServerWrap</code>). Set the column to the
+                                            width the game wraps at — very often 80.
+                                            {' '}<em>Experimental: it tells wrapped prose apart from
+                                            prompts, tables and ASCII art by their shape, so the odd
+                                            line can still be joined or left split when it should
+                                            not be.</em>
+                                        </HelpTip>
+                                    </span>
+                                    <Toggle
+                                        id="undo-server-wrap"
+                                        aria-labelledby="undo-server-wrap-label"
+                                        checked={undoServerWrapOn}
+                                        onChange={next => patchProfile({ undoServerWrap: next })}
+                                    />
+                                </div>
+                                {undoServerWrapOn && (
+                                <div className="settings-row">
+                                    <label className="settings-label" htmlFor="undo-server-wrap-width">
+                                        Game wraps at column
+                                    </label>
+                                    <Input
+                                        id="undo-server-wrap-width"
+                                        type="number"
+                                        min={SERVER_WRAP_WIDTH_MIN}
+                                        max={SERVER_WRAP_WIDTH_MAX}
+                                        step={1}
+                                        value={undoWrapWidthText}
+                                        placeholder={String(SERVER_WRAP_WIDTH_DEFAULT)}
+                                        onChange={e => setUndoWrapWidthText(e.target.value)}
+                                        onBlur={handleUndoWrapWidthBlur}
+                                    />
+                                </div>
+                                )}
                             </section>
                             )}
                         </>

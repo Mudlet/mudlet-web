@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseMudletHost, parseMudletProfile } from '../../src/import/mudletHost';
+import { parseMudletHost, parseMudletProfile, applyProfileSettingsToHost } from '../../src/import/mudletHost';
 
 // A <Host> block with the real attribute/element values from a Mudlet 4.x
 // profile export (test profile, 2026-06-26), trimmed to the fields mudix maps.
@@ -98,6 +98,58 @@ describe('parseMudletHost', () => {
     it('only sets fields actually present (missing → absent, not defaulted)', () => {
         const sparse = parseMudletHost(host(`<Host><mCommandSeparator>/</mCommandSeparator></Host>`));
         expect(sparse).toEqual({ commandSeparator: '/' });
+    });
+
+    // The three <Host> fields Mudlet 5.0 added. A profile written by 5.0 carries
+    // them; one written by 4.22 does not, and must not acquire a default here.
+    describe('Mudlet 5.0 fields', () => {
+        it('maps enableOSC8Hyperlinks, mUndoServerWrap and undoServerWrapWidth', () => {
+            const p = parseMudletHost(host(
+                `<Host enableOSC8Hyperlinks="no" mUndoServerWrap="yes">` +
+                `<undoServerWrapWidth>80</undoServerWrapWidth></Host>`,
+            ));
+            expect(p.osc8Hyperlinks).toBe(false);
+            expect(p.undoServerWrap).toBe(true);
+            expect(p.undoServerWrapWidth).toBe(80);
+        });
+
+        it('clamps the wrap width into Mudlet\'s 20–500 range rather than rejecting it', () => {
+            const low = parseMudletHost(host(`<Host><undoServerWrapWidth>2</undoServerWrapWidth></Host>`));
+            const high = parseMudletHost(host(`<Host><undoServerWrapWidth>9000</undoServerWrapWidth></Host>`));
+            expect(low.undoServerWrapWidth).toBe(20);
+            expect(high.undoServerWrapWidth).toBe(500);
+        });
+
+        it('leaves all three unset on a profile that predates them', () => {
+            const p = parseMudletHost(host(HOST));
+            expect(p.osc8Hyperlinks).toBeUndefined();
+            expect(p.undoServerWrap).toBeUndefined();
+            expect(p.undoServerWrapWidth).toBeUndefined();
+        });
+
+        it('round-trips back onto a <Host> element', () => {
+            const el = host(`<Host><mCommandSeparator>;;</mCommandSeparator></Host>`);
+            applyProfileSettingsToHost(el, {
+                osc8Hyperlinks: false,
+                undoServerWrap: true,
+                undoServerWrapWidth: 80,
+            });
+            expect(parseMudletHost(el)).toMatchObject({
+                osc8Hyperlinks: false,
+                undoServerWrap: true,
+                undoServerWrapWidth: 80,
+            });
+            expect(el.getAttribute('enableOSC8Hyperlinks')).toBe('no');
+            expect(el.getAttribute('mUndoServerWrap')).toBe('yes');
+        });
+
+        it('writes nothing for fields the profile never set', () => {
+            const el = host(`<Host />`);
+            applyProfileSettingsToHost(el, { commandSeparator: ';;' });
+            expect(el.hasAttribute('enableOSC8Hyperlinks')).toBe(false);
+            expect(el.hasAttribute('mUndoServerWrap')).toBe(false);
+            expect(el.querySelector(':scope > undoServerWrapWidth')).toBeNull();
+        });
     });
 });
 

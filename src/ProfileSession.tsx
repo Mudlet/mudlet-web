@@ -30,6 +30,7 @@ import { setBaseTitle, flashTitle, clearTitleFlash } from './utils/documentTitle
 import { getBrand, isBrandedMode } from './branding';
 import { getSessionCredentials, setSessionCredentials } from './utils/sessionCredentials';
 import { applyAnsiPalette, setServerRedefineColorsAllowed, resetAllPaletteColors } from './mud/text/colors';
+import { setOsc8HyperlinksEnabled } from './mud/text/hyperlinkConfig';
 import type { MudSession, ControlCharacterMode } from './mud/MudSession';
 import type { FileDialogRequest } from './mud/events';
 import { replayFileName } from './mud/replay/replayFormat';
@@ -150,6 +151,9 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     const promptTimeoutMs = useAppStore(s => selectProfileField(s, connection.id, 'promptTimeoutMs'));
     const ansiPalette = useAppStore(s => selectProfileField(s, connection.id, 'ansiPalette'));
     const serverRedefineColors = useAppStore(s => selectProfileField(s, connection.id, 'serverRedefineColors'));
+    const osc8Hyperlinks = useAppStore(s => selectProfileField(s, connection.id, 'osc8Hyperlinks'));
+    const undoServerWrap = useAppStore(s => selectProfileField(s, connection.id, 'undoServerWrap'));
+    const undoServerWrapWidth = useAppStore(s => selectProfileField(s, connection.id, 'undoServerWrapWidth'));
     const autoClearInput = useAppStore(s => selectProfileField(s, connection.id, 'autoClearInput')) === true;
     const commandEchoForeground = useAppStore(s => selectProfileField(s, connection.id, 'commandEchoForeground'));
     const commandEchoBackground = useAppStore(s => selectProfileField(s, connection.id, 'commandEchoBackground'));
@@ -232,7 +236,17 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // toggles above — the MTTS/NEW-ENVIRON negotiation only runs at connect
     // time, so a mid-session change takes effect on the next reconnect.
     const screenReaderAdvertised = (profileConfig?.advertiseScreenReader as boolean | undefined) ?? false;
-    session.setProtocolOptions({ gmcpEnabled, mttsEnabled, msdpEnabled, msspEnabled, charsetEnabled, mspEnabled, mccpEnabled, mxpEnabled, mnesEnabled, newEnvironEnabled, secureTransport, screenReaderAdvertised, nawsEnabled, subprotocols });
+    // Mudlet 5.0's mEnableOSC8Hyperlinks. Feeds the NEW-ENVIRON capability block
+    // here (connect-time, like the toggles above); the rendering half is the
+    // parser gate applied in an effect below.
+    const osc8HyperlinksEnabled = osc8Hyperlinks !== false;
+    session.setProtocolOptions({ gmcpEnabled, mttsEnabled, msdpEnabled, msspEnabled, charsetEnabled, mspEnabled, mccpEnabled, mxpEnabled, mnesEnabled, newEnvironEnabled, secureTransport, screenReaderAdvertised, osc8HyperlinksEnabled, nawsEnabled, subprotocols });
+    // Mudlet 5.0's `undoServerWrap` / `undoServerWrapWidth` — rejoin the lines
+    // the game hard-wrapped itself before triggers see them. Live: the line
+    // assembler judges each new server line under the current setting, so this
+    // applies without a reconnect.
+    session.setUndoServerWrap(undoServerWrap === true);
+    if (typeof undoServerWrapWidth === 'number') session.setUndoServerWrapWidth(undoServerWrapWidth);
     // Mudlet's "Fix unnecessary linebreaks on GA servers" (config bag, persisted
     // by setConfig). Applied during render — like the protocol toggles above —
     // so it's on the session's options before autoConnect dials, and re-applied
@@ -372,6 +386,16 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         if (!allowed) resetAllPaletteColors();
         return () => setServerRedefineColorsAllowed(true);
     }, [serverRedefineColors]);
+
+    // Mudlet 5.0's "OSC 8 hyperlinks" toggle (default on). Gates the parser so a
+    // link the server opens renders as plain text; the capability half of the
+    // same switch rides along with the protocol options above. Restored to the
+    // default on unmount, since the flag is module-global and the next profile
+    // opened has its own answer.
+    useEffect(() => {
+        setOsc8HyperlinksEnabled(osc8Hyperlinks !== false);
+        return () => setOsc8HyperlinksEnabled(true);
+    }, [osc8Hyperlinks]);
 
     // Record this session's output to the persistent log store. One logger per
     // profile-session lifetime; reconnects within the same mount append to it.

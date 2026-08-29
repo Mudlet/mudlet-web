@@ -95,6 +95,12 @@ export interface TelnetNegotiatorFlags {
      *  key. Default false; some MUDs adjust their output (e.g. suppress ASCII
      *  art, add extra room-description detail) when this is set. */
     screenReaderAdvertised: boolean;
+    /** Whether OSC 8 hyperlinks are enabled for this profile — Mudlet 5.0's
+     *  `mEnableOSC8Hyperlinks`. Drives only the `OSC_HYPERLINKS_*` NEW-ENVIRON
+     *  capability block here; the rendering side of the same toggle is a gate in
+     *  the ANSI parser (see hyperlinkConfig's setOsc8HyperlinksEnabled). Default
+     *  true, matching Mudlet. */
+    osc8HyperlinksEnabled: boolean;
     /** Whether the first TTYPE cycle value carries our version after the client
      *  name — Mudlet's `versionInTTYPE` config key (`mVersionInTTYPE`). Default
      *  false: RFC 1091 doesn't permit the period, so Mudlet stopped sending it
@@ -672,6 +678,7 @@ export class TelnetNegotiator {
             tls: this.flags.secureTransport,
             wrapColumns: this.windowSize?.cols ?? 0,
             screenReader: this.flags.screenReaderAdvertised,
+            osc8Hyperlinks: this.flags.osc8HyperlinksEnabled,
         }, extended);
     }
 

@@ -120,6 +120,11 @@ export interface MudClientOptions {
      *  READER bit and the NEW-ENVIRON `SCREEN_READER` capability
      *  (`setConfig("advertiseScreenReader", …)`). Default false. */
     screenReaderAdvertised?: boolean;
+    /** Whether OSC 8 hyperlinks are enabled for this profile (Mudlet 5.0's
+     *  `mEnableOSC8Hyperlinks`). Reported as the `OSC_HYPERLINKS_*` NEW-ENVIRON
+     *  capability block — all "0" when off. Default true. The rendering half of
+     *  the toggle lives in the ANSI parser, not here. */
+    osc8HyperlinksEnabled?: boolean;
     /** Whether to negotiate NAWS / window size (telnet option 31). Default true
      *  (matching Mudlet). When true the client offers IAC WILL NAWS on connect
      *  and, once the server accepts (IAC DO NAWS), reports the main output
@@ -311,6 +316,7 @@ export class MudClient {
             newEnvironEnabled = false,
             secureTransport,
             screenReaderAdvertised = false,
+            osc8HyperlinksEnabled = true,
             nawsEnabled = true,
             fixUnnecessaryLinebreaks = false,
             undoServerWrap = false,
@@ -367,6 +373,7 @@ export class MudClient {
                 // whether the proxy↔game leg is encrypted.
                 secureTransport: secureTransport ?? /^wss:/i.test(url),
                 screenReaderAdvertised,
+                osc8HyperlinksEnabled,
                 versionInTTYPE,
                 versionInTTYPEPrompted: promptForVersionInTTYPE,
                 mxpInBandDetectionEnabled: specialForceMXPProcessorOn || !promptForMXPProcessorOn,

@@ -1,4 +1,5 @@
 import type { ProfileSettings, ProtocolSettings, BooleanProtocolKey } from '../storage/schema';
+import { SERVER_WRAP_WIDTH_MIN, SERVER_WRAP_WIDTH_MAX } from '../mud/text/serverWrap';
 import { parseMudletXml, type MudletImportResult } from './mudletXmlImport';
 import { parseVariablePackageXml, type MudletVariablePackage } from './mudletVariables';
 
@@ -99,6 +100,23 @@ export function parseMudletHost(host: Element): Partial<ProfileSettings> {
 
     const redefine = attrBool(host, 'mServerMayRedefineColors');
     if (redefine !== undefined) out.serverRedefineColors = redefine;
+    const osc8 = attrBool(host, 'enableOSC8Hyperlinks');
+    if (osc8 !== undefined) out.osc8Hyperlinks = osc8;
+
+    // ── undo the game's own wrapping (Mudlet 5.0) ────────────────────────
+    const undoWrap = attrBool(host, 'mUndoServerWrap');
+    if (undoWrap !== undefined) out.undoServerWrap = undoWrap;
+    // Mudlet clamps rather than rejects on read (XMLimport: qBound(20, …, 500)),
+    // so a profile hand-edited out of range still loads — matched here so the
+    // same file produces the same setting in both clients.
+    const undoWrapWidthText = childText(host, 'undoServerWrapWidth');
+    const undoWrapWidth = undoWrapWidthText !== undefined ? Number(undoWrapWidthText) : NaN;
+    if (Number.isFinite(undoWrapWidth)) {
+        out.undoServerWrapWidth = Math.min(
+            SERVER_WRAP_WIDTH_MAX,
+            Math.max(SERVER_WRAP_WIDTH_MIN, Math.trunc(undoWrapWidth)),
+        );
+    }
 
     // ── borders ──────────────────────────────────────────────────────────
     const top = Number(childText(host, 'borderTopHeight') ?? '');
@@ -196,6 +214,9 @@ export function applyProfileSettingsToHost(host: Element, s: Partial<ProfileSett
     if (s.inputForeground) setHostEl(host, 'mCommandLineFgColor', s.inputForeground);
     if (s.inputBackground) setHostEl(host, 'mCommandLineBgColor', s.inputBackground);
     if (s.serverRedefineColors !== undefined) host.setAttribute('mServerMayRedefineColors', s.serverRedefineColors ? 'yes' : 'no');
+    if (s.osc8Hyperlinks !== undefined) host.setAttribute('enableOSC8Hyperlinks', s.osc8Hyperlinks ? 'yes' : 'no');
+    if (s.undoServerWrap !== undefined) host.setAttribute('mUndoServerWrap', s.undoServerWrap ? 'yes' : 'no');
+    if (s.undoServerWrapWidth !== undefined) setHostEl(host, 'undoServerWrapWidth', String(s.undoServerWrapWidth));
     if (s.promptTimeoutMs !== undefined) host.setAttribute('NetworkPacketTimeout', String(s.promptTimeoutMs));
 
     if (s.ansiPalette) {

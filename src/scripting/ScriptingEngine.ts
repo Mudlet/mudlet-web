@@ -2010,6 +2010,20 @@ export class ScriptingEngine implements EngineHost {
             await vfs.flush();
             useAppStore.getState().installPackage(this.connectionId, finalManifest, data);
             this.notifyPackageInstalled(finalManifest.name);
+            // Mudlet 5.0 (ctelnet.cpp, after installPackage) — tell scripts the
+            // game supplied its own interface, so a starter UI can step out of
+            // the way. The bundled mudlet-base-ui listens for this and calls
+            // BaseUI.standAside; without it both interfaces sit on screen at
+            // once, since we install that package by default.
+            //
+            // Mudlet passes the name it derived from the download's filename,
+            // because that is also what it registers the package under. We
+            // register under the manifest name instead (an mpackage's config.lua
+            // can disagree with its filename), and BaseUI matches the name it
+            // stored against `getPackages()` and against `sysUninstallPackage`
+            // to decide when to come back — so the manifest name is the one that
+            // round-trips here.
+            this.raiseEvent('sysServerGuiInstalled', [finalManifest.name]);
             const versionSuffix = finalManifest.version ? ` v${finalManifest.version}` : '';
             this.session.events.emit('message',
                 mudletInfo(`installed ${finalManifest.name}${versionSuffix}`),

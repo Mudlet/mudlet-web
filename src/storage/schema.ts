@@ -194,6 +194,27 @@ export interface ProfileSettings {
      *  (reset). When disabled, those sequences are ignored and the user palette
      *  stands. Off by default — only an explicit `true` enables it. */
     serverRedefineColors?: boolean;
+    /** Mudlet 5.0's `Host::mEnableOSC8Hyperlinks` ("Enable OSC 8 hyperlinks").
+     *  When disabled, an OSC 8 sequence that *opens* a link is ignored so the
+     *  text renders plain, and the whole `OSC_HYPERLINKS_*` NEW-ENVIRON
+     *  capability block reports "0" — the two things Mudlet's toggle drives
+     *  (TBuffer::decodeOSC and cTelnet::getNewEnvironOSCHyperlinks*). A
+     *  *closing* sequence is always honoured, or a link open when the toggle
+     *  flipped would never end. On by default: only an explicit `false`
+     *  disables it, matching Mudlet's `= true` default. Unlike most of these,
+     *  Mudlet exposes no `setConfig` key for it — preferences and the profile
+     *  XML only — so mudix doesn't invent one either. */
+    osc8Hyperlinks?: boolean;
+    /** Mudlet 5.0's `Host::mUndoServerWrap` ("Undo the game's own wrapping",
+     *  experimental). Rejoins the lines a game hard-wrapped itself before
+     *  triggers see them, so a pattern can't be split mid-sentence; the client's
+     *  own wrap then applies for display. Off by default. Also readable and
+     *  writable from Lua as `getConfig`/`setConfig("undoServerWrap", …)`. */
+    undoServerWrap?: boolean;
+    /** The column the game wraps at, for {@link undoServerWrap} — Mudlet's
+     *  `mUndoServerWrapWidth`, bounded 20–500 and defaulting to 80 (very often
+     *  the right answer). `setConfig("undoServerWrapWidth", …)`. */
+    undoServerWrapWidth?: number;
     /** Mudlet "Network packet timeout": how long (ms) to buffer a partial line
      *  (text after the last `\n` of a WebSocket frame) before flushing it as a
      *  prompt. Mitigates spurious mid-line breaks when long MUD lines arrive

@@ -169,6 +169,20 @@ describe('buildNewEnvironVars', () => {
     expect(byName.get('OSC_HYPERLINKS_SPOILER')).toBe('1');
   });
 
+  // Mudlet 5.0's mEnableOSC8Hyperlinks drives every getNewEnvironOSCHyperlinks*
+  // reply, so the whole block collapses to "0" — a server that would light up
+  // its links has to be told we will not render them.
+  it('reports every OSC_HYPERLINKS_* capability as 0 when the profile disabled them', () => {
+    const vars = buildNewEnvironVars({ ...state, osc8Hyperlinks: false }, true);
+    const osc8 = vars.filter(v => v.name.startsWith('OSC_HYPERLINKS'));
+    expect(osc8.length).toBeGreaterThan(1);
+    expect(osc8.every(v => v.value === '0')).toBe(true);
+    // Neighbouring capabilities are untouched — this is not a blanket "0".
+    const byName = new Map(vars.map(v => [v.name, v.value]));
+    expect(byName.get('OSC_COLOR_PALETTE')).toBe('1');
+    expect(byName.get('TRUECOLOR')).toBe('1');
+  });
+
   it('reports SCREEN_READER and sets the MTTS bit when screenReader is advertised', () => {
     const vars = buildNewEnvironVars({ ...state, screenReader: true }, true);
     const byName = new Map(vars.map(v => [v.name, v.value]));

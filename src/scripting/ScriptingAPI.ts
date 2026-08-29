@@ -1526,9 +1526,18 @@ export class ScriptingAPI {
             // Mudlet Host::mUndoServerWrap — rejoin the lines the game wrapped
             // itself. Live: the line assembler judges the next server line under
             // the new setting, and turning it off commits anything held.
-            case 'undoServerWrap':
-                this.session.setUndoServerWrap(configBool(value));
+            case 'undoServerWrap': {
+                const on = configBool(value);
+                this.session.setUndoServerWrap(on);
+                // Persist as well as apply. Structured rather than a config-bag
+                // key because the Settings checkbox and the Mudlet profile XML
+                // both read it, and because ProfileSession re-pushes the stored
+                // value onto the session on every render — a value that lived
+                // only on the session would be reverted by the next store update
+                // and lost on reload.
+                useAppStore.getState().patchConnectionProfile(this.connectionId, { undoServerWrap: on });
                 return true;
+            }
             // Out of range is a refusal rather than a clamp, matching Mudlet's
             // getVerifiedInt bounds check — a width the caller never chose would
             // leave the join running at a column nothing asked for.
@@ -1537,6 +1546,7 @@ export class ScriptingAPI {
                 if (!Number.isFinite(width)
                     || width < SERVER_WRAP_WIDTH_MIN || width > SERVER_WRAP_WIDTH_MAX) return false;
                 this.session.setUndoServerWrapWidth(width);
+                useAppStore.getState().patchConnectionProfile(this.connectionId, { undoServerWrapWidth: width });
                 return true;
             }
             // read-only keys — present in the catalogue but not writable

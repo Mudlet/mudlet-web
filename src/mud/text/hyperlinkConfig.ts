@@ -443,6 +443,26 @@ function matchBraces(s: string, from: number): number {
     return -1;
 }
 
+// ── Enable/disable gate ───────────────────────────────────────────────────
+
+// Mudlet 5.0's `Host::mEnableOSC8Hyperlinks` (default on). The ANSI parser runs
+// with no access to profile settings, so the gate lives here as a single
+// module-level flag — the same shape as colors.ts's server-redefine gate, and
+// for the same reason. Set from ProfileSession per profile; read by
+// parseAnsiSegments when an OSC 8 sequence *opens* a link, and by the
+// NEW-ENVIRON capability block.
+let osc8HyperlinksEnabled = true;
+
+/** Enable/disable OSC 8 hyperlink parsing (Mudlet `mEnableOSC8Hyperlinks`). */
+export function setOsc8HyperlinksEnabled(enabled: boolean): void {
+    osc8HyperlinksEnabled = enabled;
+}
+
+/** Whether OSC 8 hyperlinks are currently honoured. */
+export function isOsc8HyperlinksEnabled(): boolean {
+    return osc8HyperlinksEnabled;
+}
+
 // ── Preset registry ───────────────────────────────────────────────────────
 
 /** Session-scoped store of `preset:NAME` definitions. Holds raw config objects

@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { AnsiAwareBuffer } from '../../../src/mud/text/FormatState';
-import { HyperlinkPresetRegistry } from '../../../src/mud/text/hyperlinkConfig';
+import { HyperlinkPresetRegistry, setOsc8HyperlinksEnabled } from '../../../src/mud/text/hyperlinkConfig';
 
 const ESC = '\x1b';
 const ST = `${ESC}\\`;
@@ -182,5 +182,38 @@ describe('toDom OSC 8 interactions', () => {
     span.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     expect(span.dataset.spoiler).toBe('shown');
     expect(span.style.cssText).not.toContain('transparent');
+  });
+});
+
+// Mudlet 5.0's mEnableOSC8Hyperlinks (Host preference / profile XML). The flag
+// is module-global because the ANSI parser has no access to profile settings —
+// same shape as colors.ts's server-redefine gate.
+describe('OSC 8 disabled (Mudlet mEnableOSC8Hyperlinks = false)', () => {
+  afterEach(() => setOsc8HyperlinksEnabled(true));
+
+  it('renders the linked text plain, with the sequence still consumed', () => {
+    setOsc8HyperlinksEnabled(false);
+    const buf = new AnsiAwareBuffer(`before${open('send:attack')}Attack${close}after`);
+    expect(buf.text).toBe('beforeAttackafter');
+    expect(buf.getStateAt(6)?.hyperlink).toBeUndefined();
+  });
+
+  it('still honours a close, so a link caught mid-flight cannot run on forever', () => {
+    // Open while enabled, disable, then close: the close must clear the link
+    // rather than being refused along with the opens (TBuffer::decodeOSC puts
+    // its gate below the terminator branch for exactly this).
+    const buf = new AnsiAwareBuffer(`${open('send:attack')}Attack`);
+    expect(buf.getStateAt(0)?.hyperlink?.url).toBe('send:attack');
+    setOsc8HyperlinksEnabled(false);
+    const after = new AnsiAwareBuffer(`Attack${close}plain`, buf.getStateAt(0));
+    expect(after.getStateAt(0)?.hyperlink?.url).toBe('send:attack');
+    expect(after.getStateAt(6)?.hyperlink).toBeUndefined();
+  });
+
+  it('links come back once it is turned on again', () => {
+    setOsc8HyperlinksEnabled(false);
+    expect(new AnsiAwareBuffer(`${open('send:x')}X${close}`).getStateAt(0)?.hyperlink).toBeUndefined();
+    setOsc8HyperlinksEnabled(true);
+    expect(new AnsiAwareBuffer(`${open('send:x')}X${close}`).getStateAt(0)?.hyperlink?.url).toBe('send:x');
   });
 });
