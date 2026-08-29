@@ -3,7 +3,9 @@ import {
     CHAR_LOGIN_CLIENT_VERSION,
     charLoginFailureMessage,
     charLoginProviderName,
+    charLoginResumeMessage,
     charLoginSignInLinkMessage,
+    charLoginTokenRefusedForCleartext,
     decideCharLoginRequest,
     negotiateCharLoginVersion,
     parseCharLoginDefault,
@@ -139,6 +141,111 @@ describe('decideCharLoginRequest — version 2', () => {
     });
 });
 
+/** A v2 oauth game with a saved sign-in, over an encrypted game-facing link. */
+const saved = (over: Partial<CharLoginRequestState> = {}): CharLoginRequestState => v2({
+    methods: ['oauth'],
+    token: 'tok-abc',
+    tokenAccount: 'rahjiii',
+    provider: 'discord',
+    secureTransport: true,
+    ...over,
+});
+
+describe('decideCharLoginRequest — reconnect tokens', () => {
+    it('replays a saved token', () => {
+        expect(decideCharLoginRequest(saved()))
+            .toEqual({ kind: 'reconnect', account: 'rahjiii', token: 'tok-abc' });
+    });
+
+    it('refuses to replay a token over a cleartext game transport', () => {
+        // The gate is connectionSecureTransport's answer, not "is the WebSocket
+        // wss:": in proxy mode a wss:// proxy URL only secures the browser↔proxy
+        // hop, and the proxy↔game leg is plaintext telnet without `tls`. A token
+        // replayed there hands the account to anyone on the path.
+        const state = saved({ secureTransport: false });
+        expect(decideCharLoginRequest(state))
+            .toEqual({ kind: 'resume', account: 'rahjiii', provider: 'discord' });
+        expect(charLoginTokenRefusedForCleartext(state)).toBe(true);
+        expect(charLoginTokenRefusedForCleartext(saved())).toBe(false);
+    });
+
+    it('does not warn about encryption where no token would have been replayed', () => {
+        // A stored token on a v1 server, or on a game not offering oauth, was
+        // never going to be sent — saying "not using your saved sign-in because
+        // this connection is not encrypted" there would be a lie.
+        expect(charLoginTokenRefusedForCleartext(saved({
+            secureTransport: false, version: 1, methods: ['password-credentials'],
+        }))).toBe(false);
+        expect(charLoginTokenRefusedForCleartext(saved({
+            secureTransport: false, methods: ['password-credentials'],
+        }))).toBe(false);
+        expect(charLoginTokenRefusedForCleartext(saved({
+            secureTransport: false, tokenRejected: true,
+        }))).toBe(false);
+    });
+
+    it('falls all the way to the hand-off when there is no provider either', () => {
+        expect(decideCharLoginRequest(saved({ secureTransport: false, provider: undefined })))
+            .toEqual({ kind: 'decline' });
+    });
+
+    it('needs both halves of the stored entry to replay', () => {
+        expect(decideCharLoginRequest(saved({ token: undefined })))
+            .toEqual({ kind: 'resume', account: 'rahjiii', provider: 'discord' });
+        expect(decideCharLoginRequest(saved({ tokenAccount: undefined })))
+            .toEqual({ kind: 'decline' });
+    });
+
+    it('resumes rather than replaying once a token was rejected', () => {
+        // The stored entry has just been rewritten into a token-less resume
+        // hint; replaying anything here risks looping into another rejection.
+        // The player still skips the provider menu.
+        expect(decideCharLoginRequest(saved({ tokenRejected: true })))
+            .toEqual({ kind: 'resume', account: 'rahjiii', provider: 'discord' });
+    });
+
+    it('recovers a rejected token even on a game not offering oauth', () => {
+        // Mudlet's rung 1 reads the store before every other test, because the
+        // point of that pass is to finish the sign-in the rejection interrupted.
+        expect(decideCharLoginRequest(saved({
+            tokenRejected: true, methods: ['password-credentials'],
+        }))).toEqual({ kind: 'resume', account: 'rahjiii', provider: 'discord' });
+    });
+
+    it('replays a token at most once per connection', () => {
+        expect(decideCharLoginRequest(saved({ reconnectAttempted: true })))
+            .toEqual({ kind: 'resume', account: 'rahjiii', provider: 'discord' });
+    });
+
+    it('lets typed credentials outrank a saved token', () => {
+        // A token names whatever account last signed in; a typed pair names the
+        // exact character the player wants to play.
+        expect(decideCharLoginRequest(saved({
+            methods: ['password-credentials', 'oauth'],
+            account: 'rahjiii:Alaric',
+            password: 'hunter2',
+        }))).toEqual({ kind: 'autofill', account: 'rahjiii:Alaric', password: 'hunter2' });
+    });
+
+    it('stops outranking once those credentials have been rejected', () => {
+        // `attempted` means the pair was already tried and refused, so it is no
+        // longer the player's live choice and the token gets its turn.
+        expect(decideCharLoginRequest(saved({
+            methods: ['password-credentials', 'oauth'],
+            account: 'rahjiii:Alaric',
+            password: 'wrong',
+            attempted: true,
+        }))).toEqual({ kind: 'reconnect', account: 'rahjiii', token: 'tok-abc' });
+    });
+
+    it('never reaches a token on a version 1 server', () => {
+        // Every profile in the wild is on one of these; the v1 ladder must not
+        // learn a new move.
+        expect(decideCharLoginRequest(saved({ version: 1, methods: ['password-credentials'] })))
+            .toEqual({ kind: 'prompt' });
+    });
+});
+
 describe('negotiateCharLoginVersion', () => {
     it('reads an absent or unusable version as 1', () => {
         expect(negotiateCharLoginVersion(undefined)).toBe(1);
@@ -269,6 +376,13 @@ describe('charLoginSignInLinkMessage', () => {
     it('falls back to Mudlet\'s unbranded wording', () => {
         expect(charLoginSignInLinkMessage('https://g.example/in'))
             .toBe('To sign in, open this link in your browser: https://g.example/in');
+    });
+});
+
+describe('charLoginResumeMessage', () => {
+    it('names the provider being resumed', () => {
+        expect(charLoginResumeMessage('github'))
+            .toBe('Resuming your GitHub sign-in with the game.');
     });
 });
 

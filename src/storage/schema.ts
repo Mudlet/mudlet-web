@@ -38,6 +38,36 @@ export interface MudConnection {
      *  user explicitly opts in. Convenient for auto-login but not secure on a
      *  shared machine. Never logged; relayed straight to the server on login. */
     charLoginPassword?: string;
+    /** GMCP `Char.Login` password-less reconnect token, issued by the game with
+     *  `Char.Login.Token` after a browser sign-in. Replayed with
+     *  `Char.Login.Reconnect` on a later connection so the player signs in once
+     *  and not again.
+     *
+     *  ⚠ SECURITY: a **bearer secret**, persisted in plaintext in localStorage
+     *  alongside {@link charLoginPassword}. Mudlet keeps it in the OS keychain;
+     *  the browser has no equivalent, and this is strictly *less* exposed than
+     *  the plaintext password we already store here. Sent only over an encrypted
+     *  game-facing transport (see `connectionSecureTransport`), never logged,
+     *  and cleared by "Forget saved sign-in" in the connection editor. Whether
+     *  to issue one at all is the game's decision, not ours — the "remember me"
+     *  choice belongs to its sign-in flow. */
+    charLoginToken?: string;
+    /** The account {@link charLoginToken} was issued for, which
+     *  `Char.Login.Reconnect` has to name.
+     *
+     *  Deliberately not {@link charLoginAccount}: that holds what the player
+     *  typed, which on games with both may be `"account:character"`, while a
+     *  token names an *account*. Overwriting one with the other would lose the
+     *  character the player chose. It also means a token reconnect can land on a
+     *  different character than the profile's stored name suggests — the game
+     *  decides which, and we do not second-guess it. */
+    charLoginTokenAccount?: string;
+    /** The provider (`discord`, `google`, …) this profile's account signs in
+     *  with, learned from a `Char.Login.URL`. Kept when a token is dropped as
+     *  dead, so the next connection can ask the game to restart *that*
+     *  provider's browser sign-in (the resume form) instead of dropping the
+     *  player back on a provider menu. Not a secret. */
+    charLoginProvider?: string;
     /** Set when this profile was created by linking a Mudlet folder (Link mode):
      *  the folder is the source of truth — its `current/*.xml` is re-read on every
      *  open and written back on save. Drives the linked badge on the connection

@@ -385,6 +385,19 @@ export class MudSession {
         this.client?.sendCharLoginCredentials(account, password);
     }
 
+    /** Replay a saved password-less sign-in token (`Char.Login.Reconnect`).
+     *  Returns false when the client refused — the token never goes out over an
+     *  unencrypted game-facing transport. */
+    sendCharLoginReconnect(account: string, token: string): boolean {
+        return this.client?.sendCharLoginReconnect(account, token) ?? false;
+    }
+
+    /** Ask the game to restart a remembered provider's browser sign-in (the
+     *  resume form of `Char.Login.Credentials`). */
+    sendCharLoginResume(account: string, provider: string): void {
+        this.client?.sendCharLoginResume(account, provider);
+    }
+
     sendMSDP(variable: string, values: string[]): boolean {
         return this.client?.sendMSDP(variable, values) ?? false;
     }

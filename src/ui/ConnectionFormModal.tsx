@@ -4,6 +4,7 @@ import { useModalFocus } from './components/useModalFocus';
 import { ProxyInfoModal } from './ProxyInfoModal';
 import { ProxyWhyModal } from './ProxyWhyModal';
 import { connectionNameTaken, DEFAULT_PROXY_URL, proxyCanInspectCertificates, useAppStore, type ConnectionMode, type MudConnection } from '../storage';
+import { charLoginProviderName } from '../mud/protocol/charLoginFlow';
 
 /** Preview of the proxy URL the profile will dial. Mirrors `connectionUrl()` in
  *  storage/schema.ts — keep the two in step. */
@@ -52,6 +53,7 @@ interface Props {
 
 export function ConnectionFormModal({ connection, firstConnection, busy, onAdd, onUpdate, onClose }: Props) {
     const userProxyUrl = useAppStore(s => s.client.userProxyUrl);
+    const patchConnection = useAppStore(s => s.patchConnection);
     const effectiveDefaultProxy = userProxyUrl || DEFAULT_PROXY_URL;
 
     const isEditing = connection !== null;
@@ -88,6 +90,27 @@ export function ConnectionFormModal({ connection, firstConnection, busy, onAdd, 
     const connections = useAppStore(s => s.connections);
     const nameTaken = connectionNameTaken(name, connections, connection?.id);
 
+    // The GMCP Char.Login 2 password-less sign-in saved for this profile, if the
+    // game issued one. Kept as its own control rather than folded into the
+    // password field, as Mudlet keeps them separate: the password is profile
+    // data the player typed, the token is a bearer secret the *game* issued and
+    // rotates, so "clear my password" and "make this game ask me to sign in
+    // again" are different intents. Read live from the store (not from the
+    // `connection` prop snapshot) so a token arriving or being forgotten while
+    // this form is open is reflected either way.
+    const saved = connections.find(c => c.id === connection?.id);
+    const signInSaved = !!saved?.charLoginToken;
+    // Applied straight to the store rather than on Save: dropping a credential
+    // should not be something you can half-do, or undo by cancelling.
+    const forgetSavedSignIn = () => {
+        if (!connection) return;
+        patchConnection(connection.id, {
+            charLoginToken: undefined,
+            charLoginTokenAccount: undefined,
+            charLoginProvider: undefined,
+        });
+    };
+
     const canSubmit = !nameTaken && (mode === 'mud'
         ? name.trim() !== '' && host.trim() !== ''
         : name.trim() !== '' && url.trim() !== '');
@@ -103,6 +126,14 @@ export function ConnectionFormModal({ connection, firstConnection, busy, onAdd, 
             icon: connection?.icon,
             charLoginAccount: acct || undefined,
             charLoginPassword: acct && password ? password : undefined,
+            // Saving replaces the whole record, so the saved sign-in has to be
+            // carried across like `icon` above — this form does not edit it, and
+            // pressing Save must not sign the player out of their game. Read
+            // live, so a Forget just above (or a token that arrived while the
+            // form was open) is what gets written back.
+            charLoginToken: saved?.charLoginToken,
+            charLoginTokenAccount: saved?.charLoginTokenAccount,
+            charLoginProvider: saved?.charLoginProvider,
             description: description.trim() || undefined,
         };
         if (mode === 'mud') {
@@ -400,6 +431,20 @@ export function ConnectionFormModal({ connection, firstConnection, busy, onAdd, 
                                     ⚠ Saves unencrypted in your browser's storage. Any script running on
                                     this page — an installed package, or an XSS bug — could read it.
                                 </p>
+                            )}
+                            {signInSaved && (
+                                <div className="connection-signin-saved">
+                                    <span className="connection-creds-hint">
+                                        Signed in{saved?.charLoginProvider
+                                            ? ` with ${charLoginProviderName(saved.charLoginProvider)}`
+                                            : ''} — this game remembers you, so connecting needs no
+                                        sign-in. The saved sign-in is a token stored unencrypted in your
+                                        browser, like the password above.
+                                    </span>
+                                    <Button type="button" variant="secondary" onClick={forgetSavedSignIn}>
+                                        Forget saved sign-in
+                                    </Button>
+                                </div>
                             )}
                         </div>
 

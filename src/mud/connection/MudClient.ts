@@ -964,6 +964,30 @@ export class MudClient {
             // URL arrives unauthenticated, so the session reports the refusal
             // rather than putting it on screen.
             this.eventBus.emit('charLogin.url', link);
+        } else if (p === 'char.login.token') {
+            // A bearer token that signs this profile in without a password. It
+            // is never logged, never put in a console message, an error string,
+            // or a thrown value — a parse failure reports the payload's *length*
+            // and nothing else, as Mudlet does. What we cannot do is Mudlet's
+            // other half: `GMCPAuthenticator` scrubs every copy of a token,
+            // password, code and verifier through `SecureStringUtils`, and JS
+            // strings are immutable and garbage-collected, so there is no way to
+            // zero them. Writing code that pretends otherwise would be worse
+            // than saying so here. The token also reaches the Lua `gmcp` table
+            // and raises `gmcp.Char.Login.Token` like any other message — as it
+            // does in Mudlet, where cTelnet calls `setGMCPTable` for Char.Login
+            // too; profile scripts already run with full access to the store
+            // this token is saved in, so withholding it would buy nothing.
+            const v = (value ?? {}) as { account?: unknown; token?: unknown };
+            const account = typeof v.account === 'string' ? v.account : '';
+            const token = typeof v.token === 'string' ? v.token : '';
+            if (!account || !token) {
+                console.warn('GMCP Char.Login.Token: missing account or token'
+                    + ` (withholding the ${JSON.stringify(value ?? null).length}-character`
+                    + ' payload as it may contain a token)');
+                return;
+            }
+            this.eventBus.emit('charLogin.token', { account, token });
         } else if (p === 'char.login.result') {
             const v = (value ?? {}) as { success?: unknown; message?: unknown };
             // `success` may arrive as the string "true" rather than a JSON
@@ -998,6 +1022,36 @@ export class MudClient {
         this.sendGmcp('Char.Login.Credentials', this.charLoginVersion >= 2
             ? { account, password: password ?? '', version: this.charLoginVersion }
             : { account, password: password ?? '' });
+    }
+
+    /**
+     * Replay a saved password-less sign-in — GMCP `Char.Login.Reconnect
+     * {account, token, version}`. Returns false when it refused to send.
+     *
+     * The token is a bearer secret and is replayed on whatever transport is live
+     * *now* rather than the one it was earned on, so in the clear it would hand
+     * the account to anyone on the path. The gate is `connectionSecureTransport`'s
+     * answer, not "is the WebSocket wss:": in proxy mode a `wss://` proxy URL
+     * only secures the browser↔proxy hop, and the proxy↔game leg is plaintext
+     * telnet unless the profile enabled TLS. Re-checked here, at send time, as
+     * well as in the decision layer, in case the transport changed underneath.
+     */
+    sendCharLoginReconnect(account: string, token: string): boolean {
+        if (!this.gameTransportSecure) {
+            console.warn('GMCP Char.Login.Reconnect: refusing to replay the saved '
+                + 'sign-in token over an unencrypted connection.');
+            return false;
+        }
+        this.sendGmcp('Char.Login.Reconnect', { account, token, version: this.charLoginVersion });
+        return true;
+    }
+
+    /** Ask the game to restart a provider's browser sign-in — the *resume* form
+     *  of `Char.Login.Credentials`, `{account, provider, version}`. The absence
+     *  of a password, not the presence of `provider`, is what makes it a resume,
+     *  so this deliberately shares the credentials message. */
+    sendCharLoginResume(account: string, provider: string): void {
+        this.sendGmcp('Char.Login.Credentials', { account, provider, version: this.charLoginVersion });
     }
 
     sendGmcpRaw(message: string): void {

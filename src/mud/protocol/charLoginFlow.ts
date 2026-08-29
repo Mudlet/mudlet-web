@@ -48,6 +48,18 @@ export type CharLoginAction =
     | { kind: 'decline' }
     /** Send stored credentials without troubling the player. */
     | { kind: 'autofill'; account: string; password: string }
+    /** Replay the saved password-less token — `Char.Login.Reconnect`. Version 2
+     *  only, and only over an encrypted game-facing transport. */
+    | { kind: 'reconnect'; account: string; token: string }
+    /**
+     * Ask the game to restart this provider's browser sign-in — the *resume*
+     * form of `Char.Login.Credentials`, `{account, provider, version}`.
+     *
+     * The absence of a password, not the presence of `provider`, is what makes
+     * it a resume. Sent when we remember how this account signs in but have no
+     * usable token, so the player skips the provider menu.
+     */
+    | { kind: 'resume'; account: string; provider: string }
     /** Raise the credentials popup. Version 1 only. */
     | { kind: 'prompt' };
 
@@ -65,6 +77,25 @@ export interface CharLoginRequestState {
     /** Stored/in-memory credentials, if any. */
     account?: string;
     password?: string;
+    /** Saved password-less reconnect token, and the account it names. Both are
+     *  needed to replay one; the account is not the typed {@link account} (see
+     *  `MudConnection.charLoginTokenAccount`). */
+    token?: string;
+    tokenAccount?: string;
+    /** The provider this account signs in with, remembered from an earlier
+     *  `Char.Login.URL`. Enough for a resume even with no token left. */
+    provider?: string;
+    /** Whether the link to the *game* is encrypted — `connectionSecureTransport()`,
+     *  not "is the WebSocket wss:". A token is a bearer secret and never goes out
+     *  in the clear. */
+    secureTransport?: boolean;
+    /** A token was rejected on a previous connection and the sign-in restarted.
+     *  Read the store, but do not replay a token this once — see
+     *  {@link decideCharLoginV2}. */
+    tokenRejected?: boolean;
+    /** A token has already been replayed once this connection. Mudlet bounds the
+     *  same thing with its one-attempt-per-second throttle. */
+    reconnectAttempted?: boolean;
 }
 
 /** Whether the game will accept `Char.Login.Credentials {account, password}`.
@@ -117,39 +148,123 @@ export function decideCharLoginRequest(state: CharLoginRequestState): CharLoginA
  * `selectAuthMethod`. Each rung has a reason and the reasons are not obvious,
  * so the ordering is copied rather than rederived.
  *
- * Phase 1 implements the two rungs that need no stored token:
- *
- * 1. A complete stored account **and** password, when the game accepts
+ * 1. Just recovered from a rejected token? Read the store, but do not replay a
+ *    token this once: the entry has been rewritten into a token-less resume
+ *    hint, and replaying anything would risk looping straight back into another
+ *    rejection.
+ * 2. A complete stored account **and** password, when the game accepts
  *    `password-credentials`, is the player's explicit choice of sign-in method
- *    — they typed both into this profile deliberately — so it outranks anything
- *    the game would offer on its own screen.
- * 2. Otherwise hand off with the empty `{}`, *even when the profile has a
- *    stored password* the game will not take, and let the player choose on the
- *    game's own sign-in page. The `Char.Login.URL` that answers this is what
- *    reaches the browser.
+ *    — they typed both into this profile deliberately — so it outranks a token,
+ *    which names whatever account last signed in rather than the character they
+ *    want to play.
+ * 3. The game does not offer `oauth`? Then there is nothing to replay or resume
+ *    against (tokens and the resume are part of the version 2 OAuth capability),
+ *    so go straight to method selection.
+ * 4. Otherwise read the stored sign-in: replay the token if there is one, else
+ *    send the resume form for a remembered provider, else fall through.
  *
- * The rungs between them — replaying a saved reconnect token, and the provider
- * resume — arrive with phase 2 (`Char.Login.Reconnect`).
+ * Method selection is the tail of this function:
+ *
+ * 1. `password-credentials` plus a complete stored pair → autofill.
+ * 2. Client-driven OAuth would be Mudlet's next rung. It is not implementable
+ *    in a browser today — see {@link parseCharLoginDefault} — so we skip it,
+ *    exactly as Mudlet does on a connection where that capability is
+ *    unavailable.
+ * 3. Otherwise hand off with the empty `{}`, *even when the profile has a stored
+ *    password* the game will not take, and let the player choose on the game's
+ *    own sign-in page. The `Char.Login.URL` that answers this is what reaches
+ *    the browser.
  */
 function decideCharLoginV2(state: CharLoginRequestState): CharLoginAction {
     const havePair = !!state.account && !!state.password;
-    // Mudlet has no "already attempted" concept here; it bounds a server that
-    // re-asks in a loop by throttling sign-in attempts to one a second, which
-    // means a wrong saved password is replayed against every repeat ask for as
-    // long as the server keeps asking. We keep our per-connection guard instead
-    // and fall through to the hand-off, so the *second* ask lands the player on
-    // the game's own sign-in screen — where they can fix it — rather than on
-    // the same rejected password again. Strictly better than the loop, and it
-    // is the same rule version 1 already uses to reach its popup.
-    if (havePair && !state.attempted && acceptsPasswordCredentials(state)) {
+    // Mudlet has no "already attempted" concept on the autofill rung; it bounds
+    // a server that re-asks in a loop by throttling sign-in attempts to one a
+    // second, which means a wrong saved password is replayed against every
+    // repeat ask for as long as the server keeps asking. We keep our
+    // per-connection guard instead and fall through to the hand-off, so the
+    // *second* ask lands the player on the game's own sign-in screen — where
+    // they can fix it — rather than on the same rejected password again.
+    // Strictly better than the loop, and it is the same rule version 1 already
+    // uses to reach its popup. `reconnectAttempted` bounds the token replay the
+    // same way.
+    const canAutofill = havePair && !state.attempted && acceptsPasswordCredentials(state);
+    // Rung 1 reads the store whatever else is true — including on a game not
+    // offering oauth — because the whole point of that pass is to finish the
+    // sign-in a rejected token interrupted. Rungs 2 and 3 skip the store: a
+    // sendable stored pair outranks the token (rung 2), and a game not offering
+    // oauth has nothing to replay or resume against (rung 3).
+    //
+    // Rung 2 keys on `canAutofill` rather than merely holding a pair: once those
+    // credentials have been tried and refused they are no longer the player's
+    // live choice, and a working token beats replaying a password the game just
+    // rejected.
+    const readStoredSignIn = state.tokenRejected
+        || (!canAutofill && state.methods.includes('oauth'));
+    if (readStoredSignIn) {
+        // Rung 4. `tokenRejected` allows the read but not the replay: the stored
+        // entry has just been rewritten into a token-less resume hint, and
+        // replaying anything here risks looping back into another rejection.
+        if (!state.tokenRejected && !state.reconnectAttempted && canReplayToken(state)) {
+            return { kind: 'reconnect', account: state.tokenAccount!, token: state.token! };
+        }
+        // No usable token, but we remember how this account signs in: ask the
+        // game to restart that provider's browser sign-in rather than drop the
+        // player back on a provider menu.
+        if (state.tokenAccount && state.provider) {
+            return { kind: 'resume', account: state.tokenAccount, provider: state.provider };
+        }
+    }
+    // ── Method selection ──────────────────────────────────────────────────
+    if (canAutofill) {
         return { kind: 'autofill', account: state.account!, password: state.password! };
     }
-    // Client-driven OAuth (`Char.Login.AuthCode`) would be Mudlet's next rung.
-    // It is not implementable in a browser today — see parseCharLoginDefault —
-    // so we go straight to the hand-off, which is exactly what Mudlet does on a
-    // connection where the client-driven capability is unavailable.
     return { kind: 'decline' };
 }
+
+/** Whether a stored token is both present and safe to send. */
+function canReplayToken(state: CharLoginRequestState): boolean {
+    return !!state.token && !!state.tokenAccount && !!state.secureTransport;
+}
+
+/**
+ * Whether a token would have been replayed but for the game-facing transport
+ * being in the clear — the one case worth telling the player about, since their
+ * saved sign-in silently stopped working and the reason is fixable (connect over
+ * TLS). Mudlet reports it from inside `sendReconnect`, which returns false and
+ * lets the ladder fall through to the resume or the hand-off; the decision here
+ * is pure, so the caller asks separately.
+ *
+ * Answered by re-running the ladder with the gate lifted rather than by
+ * restating its conditions, so the two cannot drift apart — a stored token on a
+ * version 1 server, or on a game not offering `oauth`, was never going to be
+ * replayed and is not worth a warning about encryption.
+ */
+export function charLoginTokenRefusedForCleartext(state: CharLoginRequestState): boolean {
+    if (state.secureTransport) return false;
+    return decideCharLoginRequest({ ...state, secureTransport: true }).kind === 'reconnect';
+}
+
+/** The console line for a token we refused to replay in the clear. Mudlet's
+ *  wording (`GMCPAuthenticator::sendReconnect`). */
+export const CHAR_LOGIN_INSECURE_RECONNECT_MESSAGE =
+    'Not using your saved sign-in because this connection is not encrypted; please sign in again.';
+
+/** The console line announcing a provider resume. Mudlet's wording
+ *  (`GMCPAuthenticator::sendResume`). */
+export function charLoginResumeMessage(provider: string): string {
+    return `Resuming your ${charLoginProviderName(provider) || provider} sign-in with the game.`;
+}
+
+/** The console line shown once, on the first token a connection saves, so the
+ *  player knows their sign-in will be remembered and where to undo it. Mudlet
+ *  points at Preferences → Connection; ours lives on the profile's own editor. */
+export const CHAR_LOGIN_TOKEN_SAVED_MESSAGE =
+    "You'll be signed in automatically next time. "
+    + 'Undo this with "Forget saved sign-in" in the profile\'s settings.';
+
+/** The console line for a saved token the game no longer accepts. */
+export const CHAR_LOGIN_TOKEN_EXPIRED_MESSAGE =
+    'Your saved sign-in is no longer accepted; sign in again to save a new one.';
 
 /**
  * Clamp the version a server reported in `Char.Login.Default` to what we

@@ -1344,6 +1344,19 @@ body.is-sorting {
     color: var(--text-dim);
 }
 
+/* The GMCP Char.Login 2 saved sign-in row: hint text, then its own control.
+   Stacks rather than sitting inline with the password fields, because it is a
+   separate credential with a separate lifetime. */
+.connection-signin-saved {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+}
+
 .connection-autoconnect-row {
     display: flex;
     align-items: center;

@@ -17,8 +17,11 @@ import { TlsUpgradeModal } from './ui/TlsUpgradeModal';
 import { TlsAlertBanner } from './ui/TlsAlertBanner';
 import { applyMsspVariable, emptyMsspTlsFacts, shouldOfferTlsUpgrade } from './mud/protocol/msspTls';
 import {
-    CHAR_LOGIN_INVALID_URL_MESSAGE, CHAR_LOGIN_SILENT_DROP_MESSAGE, charLoginFailureMessage,
-    charLoginSignInLinkMessage, decideCharLoginRequest, type CharLoginUrl,
+    CHAR_LOGIN_INSECURE_RECONNECT_MESSAGE, CHAR_LOGIN_INVALID_URL_MESSAGE,
+    CHAR_LOGIN_SILENT_DROP_MESSAGE, CHAR_LOGIN_TOKEN_EXPIRED_MESSAGE,
+    CHAR_LOGIN_TOKEN_SAVED_MESSAGE, charLoginFailureMessage, charLoginResumeMessage,
+    charLoginSignInLinkMessage, charLoginTokenRefusedForCleartext, decideCharLoginRequest,
+    type CharLoginUrl,
 } from './mud/protocol/charLoginFlow';
 import { describeCertCode } from './mud/protocol/tlsCodes';
 import type { TlsStatus } from './mud/events';
@@ -146,8 +149,29 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // redial renegotiates and may reach a different server.
     const charLoginVersion = useRef(1);
     // The provider (`discord`, `google`, …) the game named on a Char.Login.URL
-    // this connection, remembered so the sign-in messages can name it.
+    // this connection, remembered so the sign-in messages can name it and so a
+    // token saved afterwards is stored with the provider that earned it.
     const charLoginProvider = useRef<string | undefined>(undefined);
+    // True while a Char.Login.Reconnect is awaiting its Char.Login.Result, so a
+    // rejection can recover (drop the dead token, keep the resume hint, sign in
+    // again) instead of aborting the login.
+    const charLoginAwaitingReconnect = useRef(false);
+    // True on a connection that signed in by replaying a saved token: a
+    // Char.Login.Token arriving afterwards is a silent rotation, not a
+    // first-time save worth announcing. Mudlet's mConn.reconnectingWithToken.
+    const charLoginReconnecting = useRef(false);
+    // One-shot guard so the "you'll be signed in automatically next time" notice
+    // shows at most once per connection.
+    const charLoginAnnouncedSave = useRef(false);
+    // A token was replayed once already this connection. Mudlet bounds the same
+    // thing with its one-attempt-per-second sign-in throttle.
+    const charLoginReconnectTried = useRef(false);
+    // Latched when a token is rejected, and consumed by the *next*
+    // Char.Login.Default — which usually arrives on the connection after this
+    // one. Deliberately outside the per-connect reset below for that reason:
+    // it has to survive the redial it causes. Mudlet's mReconnectRejected, and
+    // its "reset per ask" vs "reset per socket" split, which we keep.
+    const charLoginTokenRejected = useRef(false);
     // Fallback timer for MUDs that never send IAC GA/EOR around their login
     // prompt (e.g. plain FluffOS/LPMud bare-telnet banners) — see the
     // text-login auto-fill effect below.
@@ -570,14 +594,64 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             // per-profile ones; branded builds never store any.
             const mem = getSessionCredentials(connection.id);
             const conn = useAppStore.getState().connections.find(c => c.id === connection.id);
-            const action = decideCharLoginRequest({
+            // Reset the state that belongs to a single *ask*, not to the
+            // socket: a server re-sends Char.Login.Default to ask again after a
+            // rejection, so these must start clean each time. The rejected-token
+            // latch and the per-socket refs are deliberately not in here —
+            // Mudlet splits resetPerConnectionState from resetForNewConnection
+            // for exactly this, and the split is worth keeping.
+            charLoginAwaitingReconnect.current = false;
+            // Our store reads are synchronous, so unlike Mudlet's keychain there
+            // is no window between deciding and sending in which a newer ask
+            // could overtake this one — hence no generation counter. Introduce
+            // any `await` between the read below and the send, and one becomes
+            // necessary, or a late answer signs in on the wrong connection.
+            const state = {
                 version: caps.version,
                 methods: caps.methods,
                 declined: gmcpLoginDeclined.current,
                 attempted: gmcpAutoTried.current,
                 account: mem ? mem.account : conn?.charLoginAccount,
                 password: mem ? mem.password : conn?.charLoginPassword,
-            });
+                // A branded (in-memory credentials) session never persists
+                // anything, so it never carries a token either.
+                token: mem ? undefined : conn?.charLoginToken,
+                tokenAccount: mem ? undefined : conn?.charLoginTokenAccount,
+                provider: charLoginProvider.current ?? (mem ? undefined : conn?.charLoginProvider),
+                secureTransport: connectionSecureTransport(conn ?? connection),
+                tokenRejected: charLoginTokenRejected.current,
+                reconnectAttempted: charLoginReconnectTried.current,
+            };
+            // Consumed here, exactly once, the way Mudlet consumes its latch in
+            // attemptReconnect().
+            charLoginTokenRejected.current = false;
+            const action = decideCharLoginRequest(state);
+            // The one case worth saying out loud: a saved sign-in that silently
+            // stopped working because this connection is in the clear.
+            if (charLoginTokenRefusedForCleartext(state)) {
+                postLoginMessage(CHAR_LOGIN_INSECURE_RECONNECT_MESSAGE);
+            }
+            if (action.kind === 'reconnect') {
+                charLoginReconnectTried.current = true;
+                // The client re-checks the transport at send time and can still
+                // refuse. Nothing awaits a result then — and the server is
+                // blocking on *some* reply, so fall through to the hand-off
+                // rather than leaving it waiting.
+                if (session.sendCharLoginReconnect(action.account, action.token)) {
+                    charLoginReconnecting.current = true;
+                    charLoginAwaitingReconnect.current = true;
+                    charLoginUnanswered.current = true;
+                } else {
+                    session.sendCharLoginCredentials();
+                }
+                return;
+            }
+            if (action.kind === 'resume') {
+                charLoginProvider.current = action.provider;
+                postLoginInfo(charLoginResumeMessage(action.provider));
+                session.sendCharLoginResume(action.account, action.provider);
+                return;
+            }
             if (action.kind === 'decline') {
                 session.sendCharLoginCredentials();
                 return;
@@ -601,6 +675,15 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         // output — a failure there must not resurrect the form.
         const unsub8 = session.events.on('charLogin.result', (result) => {
             charLoginUnanswered.current = false;
+            // A failed password-less reconnect is not a dead end: drop the token,
+            // keep the account+provider resume hint, and let the sign-in restart
+            // — rather than reporting a login failure the player cannot act on.
+            if (charLoginAwaitingReconnect.current) {
+                charLoginAwaitingReconnect.current = false;
+                if (result.success) { setCharLogin(null); return; }
+                dropRejectedCharLoginToken();
+                return;
+            }
             if (result.success) { setCharLogin(null); return; }
             // Report the failure in the output too, the way Mudlet does
             // (GMCPAuthenticator::handleAuthResult). The popup is not a reliable
@@ -622,6 +705,30 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             if (link.provider) charLoginProvider.current = link.provider;
             postSignInLink(link);
         });
+        // Char.Login.Token: the game issuing a password-less reconnect token.
+        // Whether to issue one is the game's decision — "remember me" belongs to
+        // its sign-in flow, not to us — so we simply persist what arrives,
+        // overwriting on rotation.
+        const unsub13 = session.events.on('charLogin.token', ({ account, token }) => {
+            // A branded session persists nothing at all, credentials included;
+            // a bearer token is no different.
+            if (getSessionCredentials(connection.id)) return;
+            patchConnection(connection.id, {
+                charLoginToken: token,
+                charLoginTokenAccount: account,
+                // Stored with the token so a later connection can resume this
+                // provider's sign-in once the token expires or is revoked.
+                charLoginProvider: charLoginProvider.current
+                    ?? useAppStore.getState().connections
+                        .find(c => c.id === connection.id)?.charLoginProvider,
+            });
+            // Once per connection, and never on a token-driven reconnect, where
+            // an arriving token is a silent rotation rather than a new opt-in.
+            if (!charLoginReconnecting.current && !charLoginAnnouncedSave.current) {
+                charLoginAnnouncedSave.current = true;
+                postLoginInfo(CHAR_LOGIN_TOKEN_SAVED_MESSAGE);
+            }
+        });
         // A reconnect/disconnect invalidates any pending login prompt — and if
         // the credentials we sent are still unanswered, this drop *is* the
         // game's answer. Say so before the popup goes, or the attempt ends as an
@@ -629,7 +736,18 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         const unsub9 = session.events.on('client.disconnect', () => {
             if (charLoginUnanswered.current) {
                 charLoginUnanswered.current = false;
-                postLoginMessage(CHAR_LOGIN_SILENT_DROP_MESSAGE);
+                // Achaea answers rejected credentials by closing the socket
+                // without a word; assume a rejected Reconnect can present the
+                // same way, or a dead token would replay on every connection
+                // forever. `charLoginUnanswered` is the right guard: it is
+                // cleared by any server output, so a *successful* reconnect
+                // (where the game immediately starts talking) never lands here.
+                if (charLoginAwaitingReconnect.current) {
+                    charLoginAwaitingReconnect.current = false;
+                    dropRejectedCharLoginToken();
+                } else {
+                    postLoginMessage(CHAR_LOGIN_SILENT_DROP_MESSAGE);
+                }
             }
             setCharLogin(null);
         });
@@ -644,7 +762,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         const unsub10 = session.events.on('script.filedialog', (request: FileDialogRequest) => {
             setFileDialogs(prev => [...prev, request]);
         });
-        return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub5b(); unsub5c(); unsub6(); unsub7(); unsub8(); unsub9(); unsub10(); unsub11(); unsub12(); };
+        return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub5b(); unsub5c(); unsub6(); unsub7(); unsub8(); unsub9(); unsub10(); unsub11(); unsub12(); unsub13(); };
     }, [session]);
 
     // MSSP-advertised secure port, plus the outcome of any TLS handshake.
@@ -765,6 +883,49 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
      *  (`[ WARN ]  - Could not log in to the game…`). */
     const postLoginMessage = (text: string) => {
         session.events.emit('message', `\x1b[33m[ WARN ]  - ${text}\x1b[0m`, 'script', Date.now());
+    };
+
+    /** Console notice about GMCP Char.Login progress, in Mudlet's house style
+     *  (`[ INFO ]  - Resuming your Discord sign-in…`). The `[ WARN ]` half is
+     *  {@link postLoginMessage}. */
+    const postLoginInfo = (text: string) => {
+        session.events.emit('message', `\x1b[36m[ INFO ]\x1b[0m  - ${text}`, 'script', Date.now());
+    };
+
+    /**
+     * Recover from a reconnect token the game refused (or answered by hanging
+     * up). Drop only the token and keep the account + provider, so the next
+     * sign-in restarts that provider's browser flow with no provider menu; latch
+     * the rejection so the ask that follows reads the store without replaying a
+     * token again.
+     *
+     * Mudlet's `retryOrDropRejectedToken` does more: before treating the token
+     * as dead it re-reads the keychain and compares hashes, because a second
+     * Mudlet instance sharing this profile's keychain may have rotated the
+     * single-use token while ours was in flight, and destroying its fresh token
+     * would sign that instance out too. Our per-profile Web Lock means one tab
+     * owns a profile at a time, so there is no second instance and no rotation
+     * race — the hash-compare branch has nothing to arbitrate and is not ported.
+     *
+     * Mudlet also reconnects the socket here, because its recovery is an
+     * asynchronous keychain rewrite that wants a fresh, stable connection to
+     * land on. Ours is synchronous, so the very next `Char.Login.Default` — the
+     * one the game sends to ask again, on this connection or the one after it —
+     * already recovers via the latch. Redialling on our own initiative would be
+     * a visible action taken for a reason we do not have.
+     */
+    const dropRejectedCharLoginToken = () => {
+        charLoginTokenRejected.current = true;
+        const conn = useAppStore.getState().connections.find(c => c.id === connection.id);
+        const provider = charLoginProvider.current ?? conn?.charLoginProvider;
+        patchConnection(connection.id, {
+            charLoginToken: undefined,
+            // Without a provider there is nothing to resume, so the whole entry
+            // goes rather than leaving a half-record behind.
+            charLoginTokenAccount: provider ? conn?.charLoginTokenAccount : undefined,
+            charLoginProvider: provider,
+        });
+        postLoginMessage(CHAR_LOGIN_TOKEN_EXPIRED_MESSAGE);
     };
 
     /** Offer a `Char.Login.URL` as a clickable line.
@@ -921,6 +1082,14 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             charLoginUnanswered.current = false;
             charLoginVersion.current = 1;
             charLoginProvider.current = undefined;
+            charLoginAwaitingReconnect.current = false;
+            charLoginReconnecting.current = false;
+            charLoginAnnouncedSave.current = false;
+            charLoginReconnectTried.current = false;
+            // charLoginTokenRejected is deliberately NOT reset here: it is
+            // latched on the connection that saw the rejection and consumed by
+            // the next Char.Login.Default, which usually arrives on the
+            // connection after it.
             clearNameFallback();
             const { account, password } = readCreds();
             autoLoginStage.current = account && password ? 'name' : 'idle';

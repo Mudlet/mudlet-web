@@ -154,6 +154,12 @@ export type MudClientEvents = {
      *  rendering: the address arrives unauthenticated. Can arrive at any point
      *  in a session, not just at login. */
     'charLogin.url': [link: CharLoginUrl | null];
+    /** Fires on a GMCP `Char.Login.Token` — the game issuing a password-less
+     *  reconnect token for `account`. Issued at the server's discretion:
+     *  "remember me" is the game's decision, not ours. The token is a bearer
+     *  secret; see the handling notes in MudClient. A malformed frame raises
+     *  nothing. */
+    'charLogin.token': [entry: { account: string; token: string }];
     /** Fires when the server reports a GMCP login outcome (Char.Login.Result).
      *  `success` is true on a successful authentication; on failure `message`
      *  carries the server's human-readable reason (e.g. "Invalid credentials"). */

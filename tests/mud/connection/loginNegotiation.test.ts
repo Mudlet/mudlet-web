@@ -366,6 +366,47 @@ describe('login-time telnet negotiation replies', () => {
     expect(sentText(sock)).toContain('Char.Login.Credentials {}');
   });
 
+  it('sends Char.Login.Reconnect over an encrypted game transport', () => {
+    const { client, sock } = connected({ secureTransport: true });
+    sock.deliver(gmcpFrame('Char.Login.Default {"version":2,"type":["oauth"]}'));
+    sock.sent.length = 0;
+    expect(client.sendCharLoginReconnect('rahjiii', 'tok-abc')).toBe(true);
+    expect(sentText(sock))
+      .toContain('Char.Login.Reconnect {"account":"rahjiii","token":"tok-abc","version":2}');
+  });
+
+  it('refuses to send Char.Login.Reconnect in the clear', () => {
+    // A ws:// dial is not end-to-end encrypted, and the token is a bearer
+    // secret replayed on whatever transport is live now.
+    const { client, sock } = connected();
+    sock.deliver(gmcpFrame('Char.Login.Default {"version":2,"type":["oauth"]}'));
+    sock.sent.length = 0;
+    expect(client.sendCharLoginReconnect('rahjiii', 'tok-abc')).toBe(false);
+    expect(sentText(sock)).not.toContain('Char.Login.Reconnect');
+    expect(sentText(sock)).not.toContain('tok-abc');
+  });
+
+  it('sends the resume form as a password-less Char.Login.Credentials', () => {
+    // The absence of a password, not the presence of `provider`, is what makes
+    // it a resume — so it shares the credentials message deliberately.
+    const { client, sock } = connected();
+    sock.deliver(gmcpFrame('Char.Login.Default {"version":2,"type":["oauth"]}'));
+    sock.sent.length = 0;
+    client.sendCharLoginResume('rahjiii', 'discord');
+    expect(sentText(sock))
+      .toContain('Char.Login.Credentials {"account":"rahjiii","provider":"discord","version":2}');
+  });
+
+  it('emits charLogin.token, and ignores a frame missing either half', () => {
+    const { sock, bus } = connected();
+    const seen: { account: string; token: string }[] = [];
+    bus.on('charLogin.token', (e) => { seen.push(e); });
+    sock.deliver(gmcpFrame('Char.Login.Token {"account":"rahjiii","token":"tok-abc"}'));
+    sock.deliver(gmcpFrame('Char.Login.Token {"account":"rahjiii"}'));
+    sock.deliver(gmcpFrame('Char.Login.Token {"token":"tok-abc"}'));
+    expect(seen).toEqual([{ account: 'rahjiii', token: 'tok-abc' }]);
+  });
+
   it('forgets the negotiated version on a redial', () => {
     // Per socket, not per Char.Login.Default: a redial may reach a different
     // server, and a v1 game must see byte-identical v1 credentials.
