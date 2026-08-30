@@ -68,7 +68,7 @@ export function HtmlPanel({ id, manager, labels, cmdLines, scrollBoxes, backgrou
             {labels && <LabelOverlay manager={labels} parent={id} />}
             {cmdLines && <CommandLineOverlay manager={cmdLines} parent={id} />}
             {scrollBoxes && labels && cmdLines && (
-                <ScrollBoxOverlay manager={scrollBoxes} labels={labels} cmdLines={cmdLines} parent={id} />
+                <ScrollBoxOverlay manager={scrollBoxes} labels={labels} cmdLines={cmdLines} windows={manager} parent={id} />
             )}
         </div>
     );

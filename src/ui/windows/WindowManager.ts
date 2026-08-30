@@ -117,6 +117,16 @@ const DEFAULT_DOCK_EXTENTS: Record<DockSide, number> = {
     left: 250, right: 250, top: 150, bottom: 150,
 };
 
+/** Geometry of one window nested under a parent viewport — enough for a
+ *  container to size itself around its children (see subscribeChildWindows). */
+export interface NestedWindowGeometry {
+    id: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+}
+
 export type WindowsChangedFn = (
     windows: ScriptWindowRenderData[],
     dockExtents: Record<DockSide, number>,
@@ -131,6 +141,15 @@ export class WindowManager {
      *  from `elements` (the writable text/HTML target) so size queries report the
      *  full user-window box that labels live in, not the inner output area. */
     private readonly viewports     = new Map<string, HTMLElement>();
+    /** Overlay hosts contributed by widgets that are containers but not
+     *  windows — today just Geyser.ScrollBox (see ScrollBoxOverlay). A scroll
+     *  box sets `windowname = its own name`, so mini-consoles created inside
+     *  it arrive here with the box's name as their parent and must portal into
+     *  the box's scroll content instead of escaping to the floating root. */
+    private readonly overlayHosts  = new Map<string, HTMLElement>();
+    /** Per-parent subscribers wanting the geometry of the windows nested under
+     *  them — ScrollBoxOverlay sizes its scroll content to its children. */
+    private readonly childWindowListeners = new Map<string, Set<(children: NestedWindowGeometry[]) => void>>();
     private readonly lineBuffers   = new Map<string, string>();
     /** Per-window scroll/scrollbar overrides applied via CSS classes when the
      *  console's wrapper element registers. Mudlet's enable/disable Scrolling
@@ -578,7 +597,46 @@ export class WindowManager {
      *  context: `.main-overlay-root` for 'main', else the userwindow's own
      *  viewport (where its panel already renders the label overlays). */
     getOverlayHost(parentId: string): HTMLElement | null {
-        return parentId === 'main' ? this.getMainOverlayHost() : (this.getViewport(parentId) ?? null);
+        if (parentId === 'main') return this.getMainOverlayHost();
+        return this.getViewport(parentId) ?? this.overlayHosts.get(parentId) ?? null;
+    }
+
+    /** Registers a non-window overlay host (a scroll box's scroll content) so
+     *  windows parented to `id` portal into it. Notifies so a window that was
+     *  created before its host mounted gets re-homed on the next render. */
+    registerOverlayHost(id: string, element: HTMLElement): void {
+        if (this.overlayHosts.get(id) === element) return;
+        this.overlayHosts.set(id, element);
+        this.notify();
+    }
+
+    unregisterOverlayHost(id: string, element?: HTMLElement): void {
+        if (element && this.overlayHosts.get(id) !== element) return;
+        if (!this.overlayHosts.delete(id)) return;
+        this.notify();
+    }
+
+    /** Geometry of the visible windows nested under `parentId`. */
+    listChildWindows(parentId: string): NestedWindowGeometry[] {
+        const out: NestedWindowGeometry[] = [];
+        for (const w of this.windows.values()) {
+            if (w.parent !== parentId || !w.visible) continue;
+            out.push({ id: w.id, x: w.x, y: w.y, width: w.width, height: w.height });
+        }
+        return out;
+    }
+
+    /** Subscribe to {@link listChildWindows} for one parent. Fires immediately
+     *  with the current list, like the label / cmd-line / scroll-box managers. */
+    subscribeChildWindows(parentId: string, fn: (children: NestedWindowGeometry[]) => void): () => void {
+        let set = this.childWindowListeners.get(parentId);
+        if (!set) { set = new Set(); this.childWindowListeners.set(parentId, set); }
+        set.add(fn);
+        fn(this.listChildWindows(parentId));
+        return () => {
+            set!.delete(fn);
+            if (set!.size === 0) this.childWindowListeners.delete(parentId);
+        };
     }
 
     register(id: string, element: HTMLElement, _kind: 'html'): void {
@@ -2655,6 +2713,10 @@ export class WindowManager {
             }))
             .sort((a, b) => a.zIndex - b.zIndex);
         this.onWindowsChange?.(arr, { ...this.dockExtents });
+        for (const [parentId, set] of this.childWindowListeners) {
+            const children = this.listChildWindows(parentId);
+            for (const fn of set) fn(children);
+        }
     }
 
     private saveHint(id: string, win: ScriptWindowData): void {

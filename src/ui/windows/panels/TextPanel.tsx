@@ -114,7 +114,7 @@ export function TextPanel({ id, title, manager, labels, cmdLines, scrollBoxes, f
             {labels && <LabelOverlay manager={labels} parent={id} />}
             {cmdLines && <CommandLineOverlay manager={cmdLines} parent={id} />}
             {scrollBoxes && labels && cmdLines && (
-                <ScrollBoxOverlay manager={scrollBoxes} labels={labels} cmdLines={cmdLines} parent={id} />
+                <ScrollBoxOverlay manager={scrollBoxes} labels={labels} cmdLines={cmdLines} windows={manager} parent={id} />
             )}
         </div>
     );

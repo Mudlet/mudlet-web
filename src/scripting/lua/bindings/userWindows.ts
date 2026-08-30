@@ -1,14 +1,20 @@
 import type { BindingContext } from './context';
 import { MAP_WIDGET_ID } from '../../../ui/windows/types';
 
-/** Mudlet's single-letter docking-area codes → the side names WindowManager
- *  docks against. Anything unrecognised falls back to 'right', matching how
- *  Mudlet treats an unknown area. */
+/** Mudlet's docking-area codes → the side names WindowManager docks against
+ *  ('main' = floating). Host::openWindow accepts BOTH the single letter and
+ *  the spelled-out word, and Geyser passes the words — `dockPosition = "left"`
+ *  straight from a UserWindow constructor, and `setDockPosition("left")` /
+ *  `"floating"` afterwards. Listing only the letters meant every one of those
+ *  missed and fell through to the 'right' default, so a package asking for a
+ *  left dock got its panels stacked on the right. Anything genuinely
+ *  unrecognised still falls back to 'right', matching Mudlet. */
 const DOCKMAP: Record<string, string> = {
-    r: 'right',
-    l: 'left',
-    t: 'top',
-    b: 'bottom',
+    r: 'right',    right: 'right',
+    l: 'left',     left: 'left',
+    t: 'top',      top: 'top',
+    b: 'bottom',   bottom: 'bottom',
+    f: 'main',     floating: 'main',
     main: 'main',
 };
 
@@ -50,12 +56,30 @@ export function installUserWindowBindings({
     // returned by ScriptingWindowsAPI.open is kept internal — userscripts
     // address windows by name everywhere else (write/move/resize/etc.), so
     // returning `true` (Mudlet shape) avoids leaking the handle object.
-    lua.global.set('openUserWindow', (window: string, restoreLayout: boolean = true, autoDock: boolean = true, dockingArea: string = 'r') => {
+    lua.global.set('openUserWindow', (window: string, restoreLayout: boolean = true, autoDock: boolean = true, dockingArea?: string) => {
+        // Mudlet leaves the 4th argument EMPTY when it is not passed, and
+        // Host::openWindow then returns without touching placement; only a new
+        // dock widget picks a side on its own (Qt::RightDockWidgetArea).
+        const area = typeof dockingArea === 'string' && dockingArea
+            ? (DOCKMAP[dockingArea.toLowerCase()] ?? 'right')
+            : undefined;
+        const existed = api.windows.has(window);
         api.windows.open(window, {
             autoDock,
-            dockingArea: DOCKMAP[dockingArea] ?? 'right',
-            ignoreHint: restoreLayout,
+            // Only a freshly-created window falls back to the right dock.
+            ...(area ? { dockingArea: area } : existed ? {} : { dockingArea: 'right' }),
+            // restoreLayout=true means "come back where you were" — so the
+            // saved hint WINS; only restoreLayout=false ignores it and uses
+            // the dockingArea (Geyser passes "floating" in that branch and
+            // then moves/resizes the window itself). Inverting these two
+            // dropped every restoring userwindow into the default right dock.
+            ignoreHint: !restoreLayout,
         });
+        // An area given for a window that is ALREADY open re-docks it — open()
+        // only reads dockingArea while creating. That re-dock is the whole of
+        // Geyser.UserWindow:setDockPosition, so without it a package could
+        // never move a panel out of the side it was born in.
+        if (existed && area) api.windows.setDockArea(window, area);
         return true;
     });
     // Mudlet `openMapWidget([dockingArea | x, y [, w, h]]) → true`.
@@ -112,12 +136,17 @@ export function installUserWindowBindings({
             });
             return true;
         }
+        const side = DOCKMAP[area.toLowerCase()] ?? 'right';
+        const existed = api.windows.has(MAP_WIDGET_ID);
         api.windows.open(MAP_WIDGET_ID, {
             kind: 'map',
             title: 'Map',
             ignoreHint: true,
-            dockingArea: DOCKMAP[area] ?? 'right',
+            dockingArea: side,
         });
+        // See openUserWindow: a named area moves a widget that is already up,
+        // which is how Geyser.Mapper:setDockPosition re-docks the mapper.
+        if (existed) api.windows.setDockArea(MAP_WIDGET_ID, side);
         return true;
     });
     // ── Widget state getters (Mudlet 4.21's read-back family) ──────────────

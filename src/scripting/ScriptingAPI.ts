@@ -498,6 +498,17 @@ class ScriptingWindowsAPI {
         return this.session.windows.setParent(id, parent);
     }
 
+    /** Re-applies a docking area to a window that is already open — Mudlet's
+     *  Host::openWindow honours the `area` argument on every call, not just
+     *  the one that creates the dock widget. 'main' means floating. */
+    setDockArea(id: string, area: string): void {
+        if (!this.session.windows.has(id)) return;
+        if (area === 'main') this.session.windows.undock(id);
+        else if (area === 'left' || area === 'right' || area === 'top' || area === 'bottom') {
+            this.session.windows.dock(id, area);
+        }
+    }
+
     bringToFront(id: string): void {
         this.session.windows.bringToFront(id);
     }

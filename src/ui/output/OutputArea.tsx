@@ -216,7 +216,7 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
             <div className="main-overlay-root" ref={overlayHostRef}>
                 <LabelOverlay manager={session.labels} parent="main" />
                 <CommandLineOverlay manager={session.cmdLines} parent="main" />
-                <ScrollBoxOverlay manager={session.scrollBoxes} labels={session.labels} cmdLines={session.cmdLines} parent="main" />
+                <ScrollBoxOverlay manager={session.scrollBoxes} labels={session.labels} cmdLines={session.cmdLines} windows={session.windows} parent="main" />
             </div>
         </>
     );
