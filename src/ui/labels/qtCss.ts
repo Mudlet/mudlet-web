@@ -133,7 +133,7 @@ function declarationsToStyleWithMargin(css: string): {
 } {
     const out: Record<string, string> = {};
     const margin: Partial<QtMargin> = {};
-    for (const { key, val } of applyBorderImageBlockTransform(parseQtDeclarations(css))) {
+    for (const { key, val } of applyBorderColorDefault(applyBorderImageBlockTransform(parseQtDeclarations(css)))) {
         if (key === 'qproperty-alignment') {
             Object.assign(out, qtAlignmentToFlex(val));
             continue;
@@ -967,7 +967,7 @@ export function patchStyleSheetBackgroundColor(styleSheet: string, r: number, g:
 export function qtDeclarationsToCss(css: string, important = false): string {
     const out: string[] = [];
     const bang = important ? ' !important' : '';
-    for (const { key, val } of applyBorderImageBlockTransform(parseQtDeclarations(css))) {
+    for (const { key, val } of applyBorderColorDefault(applyBorderImageBlockTransform(parseQtDeclarations(css)))) {
         if (key === 'qproperty-alignment') {
             for (const [k, v] of Object.entries(qtAlignmentToFlex(val))) {
                 out.push(`${k.replace(/[A-Z]/g, c => '-' + c.toLowerCase())}: ${v}${bang}`);
@@ -1146,6 +1146,71 @@ function applyBorderImageBlockTransform(decls: QtDeclaration[]): QtDeclaration[]
         val: `${url} ${slice.join(' ')} fill / ${gridWidths.map(w => `${w}px`).join(' ')} ${repeat}`,
     });
     return out;
+}
+
+// ── Qt border-color default ───────────────────────────────────────────────────
+//
+// Qt leaves a QSS border's brush unset when the block never names a colour, and
+// an unset brush paints nothing — the border still takes up its width in the box
+// model, it's simply invisible. CSS defaults `border-color` to `currentColor`
+// instead, so the very same block paints a border in the label's *text* colour —
+// white, on the dark labels these scripts overwhelmingly use.
+//
+// StickMUD's GUI hits this on its training tabs and font-size buttons:
+//
+//     background-color: rgba(0,0,0,255);
+//     border-style: solid;
+//     border-width: 1px;
+//
+// which Mudlet renders flat and we drew with a white 1px box around every tab.
+// The omission is deliberate, not an oversight in the package: the filler label
+// declared right beside those sets `border-color: #31363b` where it does want
+// the border seen.
+//
+// Only a block that names no colour *at all* is defaulted. Appending one when
+// some side already declared its own would clobber it, and reproducing Qt's
+// per-side colour resolution is far more machinery than any real stylesheet in
+// the wild asks for.
+
+const BORDER_COLOR_RE = /^border(-(top|right|bottom|left))?-color$/;
+const BORDER_STYLE_RE = /^border(-(top|right|bottom|left))?-style$/;
+const BORDER_SHORTHAND_RE = /^border(-(top|right|bottom|left))?$/;
+// Border styles that actually put ink on the screen. `none`/`hidden` don't, and
+// neither does a block that never sets a style — CSS and Qt both default to
+// `none`, so a stray `border-width` on its own paints nothing in either.
+const PAINTING_BORDER_STYLE = /\b(solid|dashed|dotted|double|groove|ridge|inset|outset)\b/i;
+
+function applyBorderColorDefault(decls: QtDeclaration[]): QtDeclaration[] {
+    let paints = false;
+    let hasColor = false;
+    for (const { key, val } of decls) {
+        if (BORDER_COLOR_RE.test(key)) { hasColor = true; continue; }
+        if (BORDER_STYLE_RE.test(key)) {
+            if (PAINTING_BORDER_STYLE.test(val)) paints = true;
+            continue;
+        }
+        if (BORDER_SHORTHAND_RE.test(key)) {
+            if (PAINTING_BORDER_STYLE.test(val)) paints = true;
+            if (borderShorthandHasColor(val)) hasColor = true;
+        }
+    }
+    if (!paints || hasColor) return decls;
+    return [...decls, { key: 'border-color', val: 'transparent' }];
+}
+
+// Does a `border` / `border-<side>` shorthand carry a colour? Everything in the
+// shorthand that isn't a length or a style keyword is one — named colours
+// included, which is why this is a leftovers test rather than a colour pattern.
+function borderShorthandHasColor(val: string): boolean {
+    if (/#[0-9a-f]{3,8}\b/i.test(val)) return true;
+    if (/\b(rgba?|hsla?|qlineargradient)\s*\(/i.test(val)) return true;
+    for (const tok of val.split(/\s+/)) {
+        if (!tok) continue;
+        if (/^-?\d*\.?\d+(px|pt|em|ex|%)?$/i.test(tok)) continue;
+        if (/^(none|hidden|solid|dashed|dotted|double|groove|ridge|inset|outset)$/i.test(tok)) continue;
+        return true;
+    }
+    return false;
 }
 
 // Shared Qt→CSS rewrites that aren't structural (alignment is structural and

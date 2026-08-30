@@ -528,3 +528,74 @@ describe('extractQtScaledContents', () => {
         expect(style.padding).toBe('6px');
     });
 });
+
+// Qt leaves an unnamed border brush unset and paints nothing; CSS falls back to
+// `currentColor` and paints one in the label's text colour. StickMUD's GUI
+// declares style+width with no colour on its training tabs and font-size
+// buttons, which Mudlet renders flat and we drew as a white 1px box.
+describe('qtCss Qt border-color default', () => {
+    it('makes a border with no colour transparent (StickMUD training tabs)', () => {
+        const style = cssTextToStyle(
+            'background-color: rgba(0,0,0,255); border-style: solid;'
+            + ' border-width: 1px; text-align: center;',
+        ) as Record<string, string>;
+        expect(style.borderColor).toBe('transparent');
+        // The border still occupies its width, exactly as it does in Qt.
+        expect(style.borderWidth).toBe('1px');
+        expect(style.borderStyle).toBe('solid');
+    });
+
+    it('leaves an explicitly coloured border alone', () => {
+        const style = cssTextToStyle(
+            'border-style: solid; border-color: #31363b; border-width: 1px;',
+        ) as Record<string, string>;
+        expect(style.borderColor).toBe('#31363b');
+    });
+
+    it('leaves a shorthand that carries its own colour alone', () => {
+        const style = cssTextToStyle('border: 1px solid #32323f;') as Record<string, string>;
+        expect(style.borderColor).toBeUndefined();
+        expect(style.border).toBe('1px solid #32323f');
+    });
+
+    it('defaults a shorthand that omits the colour', () => {
+        const style = cssTextToStyle('border: 1px solid;') as Record<string, string>;
+        expect(style.borderColor).toBe('transparent');
+    });
+
+    it('recognises a named colour in the shorthand', () => {
+        const style = cssTextToStyle('border: 2px dashed red;') as Record<string, string>;
+        expect(style.borderColor).toBeUndefined();
+    });
+
+    it('recognises a functional colour in the shorthand', () => {
+        const style = cssTextToStyle(
+            'border: 2px solid rgba(80, 80, 90, 255);',
+        ) as Record<string, string>;
+        expect(style.borderColor).toBeUndefined();
+    });
+
+    it('leaves a block with no painting border style untouched', () => {
+        // `border-width` alone paints nothing in CSS or Qt — style defaults to
+        // `none` in both — so there is nothing to defuse.
+        const style = cssTextToStyle('border-width: 1px;') as Record<string, string>;
+        expect(style.borderColor).toBeUndefined();
+    });
+
+    it('leaves `border: none` untouched', () => {
+        const style = cssTextToStyle('border: none;') as Record<string, string>;
+        expect(style.borderColor).toBeUndefined();
+    });
+
+    it('defuses the border in a scoped pseudo-state rule too', () => {
+        const css = qtDeclarationsToCss('border-style: solid; border-width: 1px;');
+        expect(css).toContain('border-color: transparent');
+    });
+
+    it('does not touch a border-image block, whose borders are consumed', () => {
+        const style = cssTextToStyle(
+            'border-top: 85px solid transparent; border-image: url(frame.png) fill;',
+        ) as Record<string, string>;
+        expect(style.borderColor).toBeUndefined();
+    });
+});
