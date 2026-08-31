@@ -142,6 +142,9 @@ function declarationsToStyleWithMargin(css: string): {
         // (extractQtScaledContents) and applied to the background image at render
         // — it has no direct CSS declaration, so drop it here.
         if (key === 'qproperty-scaledcontents') continue;
+        // Likewise qproperty-wordWrap (extractQtWordWrap) — it becomes the
+        // label's `white-space`, applied as a widget property at render.
+        if (key === 'qproperty-wordwrap') continue;
         if (key === 'margin' || key === 'margin-top' || key === 'margin-right'
             || key === 'margin-bottom' || key === 'margin-left') {
             applyMarginDeclaration(margin, key, val);
@@ -977,6 +980,9 @@ export function qtDeclarationsToCss(css: string, important = false): string {
         // Widget property applied to the background image at render, not a CSS
         // declaration — see extractQtScaledContents / declarationsToStyleWithMargin.
         if (key === 'qproperty-scaledcontents') continue;
+        // Widget property applied as the label's `white-space` at render — see
+        // extractQtWordWrap.
+        if (key === 'qproperty-wordwrap') continue;
         const [outKey, outVal] = translateDeclaration(key, val);
         out.push(`${outKey}: ${outVal}${bang}`);
     }
@@ -1344,6 +1350,35 @@ export function extractQtScaledContents(css: string): boolean | undefined {
     for (const block of blocks) {
         for (const { key, val } of parseQtDeclarations(block)) {
             if (key === 'qproperty-scaledcontents') {
+                const v = val.trim().toLowerCase();
+                found = v === 'true' || v === '1';
+            }
+        }
+    }
+    return found;
+}
+
+// Pull the value of a `qproperty-wordWrap` declaration out of a Qt stylesheet
+// (base block or a `QLabel { … }` rule) as a boolean — or undefined when none
+// is present, so a restyle that omits it leaves the last value in place. Like
+// the two above, Qt applies qproperty-* as *widget properties* that persist
+// across later stylesheets.
+//
+// QLabel::wordWrap is false by default, and Mudlet's TLabel never sets it: a
+// label's rich text lays out with QTextOption::ManualWrap, so it breaks only at
+// explicit breaks and runs past the widget edge (clipped) rather than wrapping.
+// `qproperty-wordWrap: true` is the one way a script asks for the other
+// behaviour, and LabelOverlay maps it to `white-space: normal`.
+export function extractQtWordWrap(css: string): boolean | undefined {
+    const blocks = css.indexOf('{') < 0
+        ? [css]
+        : splitRulesets(css)
+            .filter(r => r.selector.trim() === '' || /^QLabel$/i.test(r.selector.trim()))
+            .map(r => r.body);
+    let found: boolean | undefined;
+    for (const block of blocks) {
+        for (const { key, val } of parseQtDeclarations(block)) {
+            if (key === 'qproperty-wordwrap') {
                 const v = val.trim().toLowerCase();
                 found = v === 'true' || v === '1';
             }

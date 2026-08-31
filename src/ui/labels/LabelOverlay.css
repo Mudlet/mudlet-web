@@ -35,6 +35,16 @@
        Mudlet instead of inheriting the ambient page cascade, which can be
        tighter and cramps the lines together. */
     line-height: 1.2;
+    /* QLabel::wordWrap defaults to false and TLabel never turns it on, so Qt
+       lays a label's rich text out with QTextOption::ManualWrap: it breaks only
+       where the HTML breaks it (<br/>, a block element) and otherwise runs past
+       the widget edge, where `overflow: hidden` above clips it — exactly as Qt
+       clips to the widget rect. Without this, text a package sized to Qt's
+       metrics folds onto a second line here (e.g. MDW's fixed-width dropdown
+       menu items). `qproperty-wordWrap: true` opts back in, per label, via
+       LabelOverlay's inline `white-space: normal`. Declared on .label so that
+       inline override (which lands on this element) wins for .label-doc too. */
+    white-space: nowrap;
     display: flex;
     flex-direction: column;
     justify-content: center;

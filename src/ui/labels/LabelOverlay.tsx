@@ -227,6 +227,12 @@ function Label({ l, manager, zIndex }: { l: LabelState; manager: LabelManager; z
     if (l.alignment) {
         Object.assign(style, qtAlignmentToFlex(l.alignment));
     }
+    // Sticky Qt wordWrap (qproperty-wordWrap): the opt-in to wrapping. The
+    // `.label` rule is nowrap, matching QLabel's default (see LabelOverlay.css),
+    // so only the `true` case needs a declaration.
+    if (l.wordWrap) {
+        style.whiteSpace = 'normal';
+    }
     // Layer setBackgroundImage on top so it shows over the fillBackground color
     // (and ignores it when a stylesheet already painted the background).
     if (l.backgroundImage) {

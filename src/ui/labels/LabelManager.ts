@@ -1,4 +1,7 @@
-import { cssEscape, extractQtAlignment, extractQtScaledContents, patchStyleSheetBackgroundColor } from './qtCss';
+import {
+    cssEscape, extractQtAlignment, extractQtScaledContents, extractQtWordWrap,
+    patchStyleSheetBackgroundColor,
+} from './qtCss';
 import type { MoviePlayer } from './gifMovie';
 import { OverlayLayerOrder } from '../layout/overlayLayerOrder';
 
@@ -56,6 +59,14 @@ export interface LabelState {
      *  `alignment`, it's a widget property that persists across a later
      *  stylesheet that omits it. */
     scaledContents?: boolean;
+    /** Sticky Qt `wordWrap` widget property, captured from a
+     *  `qproperty-wordWrap` declaration in any setStyleSheet call. QLabel
+     *  defaults it to false (and TLabel never sets it), which is why label text
+     *  in Mudlet runs past the widget edge and gets clipped instead of wrapping
+     *  — LabelOverlay renders that as `white-space: nowrap`, and this property
+     *  as `normal`. Sticky across a later stylesheet that omits it, like
+     *  `alignment` and `scaledContents`. */
+    wordWrap?: boolean;
     /** Mudlet setLinkStyle(labelName, linkColor, linkVisitedColor, underline) —
      *  styling for `<a>` links inside the label's HTML. Cleared by
      *  resetLinkStyle. Colors are any CSS color string (empty = leave default). */
@@ -180,7 +191,10 @@ function measureHtmlContent(html: string, styleSheet?: string): { width: number;
     if (typeof document === 'undefined' || !document.body || !html) return null;
     const probe = document.createElement('div');
     probe.style.cssText = 'position:absolute;left:-99999px;top:0;'
-        + 'visibility:hidden;width:auto;height:auto;white-space:pre-wrap;';
+        // nowrap for the same reason the rendered label carries it: QLabel's
+        // wordWrap is off, so the size a label "wants" is its text on one line
+        // (broken only where the HTML breaks it), not the text folded to fit.
+        + 'visibility:hidden;width:auto;height:auto;white-space:nowrap;';
     for (const prop of ['font-family', 'font-size', 'font-weight', 'font-style'] as const) {
         const found = styleSheet?.match(new RegExp(`(?:^|[;\\s])${prop}\\s*:\\s*([^;]+)`, 'i'));
         if (found) probe.style.setProperty(prop, found[1].trim());
@@ -514,6 +528,9 @@ export class LabelManager {
         // qproperty-scaledContents is likewise a sticky widget property.
         const scaled = extractQtScaledContents(css);
         if (scaled !== undefined) lbl.scaledContents = scaled;
+        // ...as is qproperty-wordWrap, the opt-in to wrapping label text.
+        const wrap = extractQtWordWrap(css);
+        if (wrap !== undefined) lbl.wordWrap = wrap;
         this.notify(lbl.parent);
         return true;
     }
