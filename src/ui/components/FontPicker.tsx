@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type ChangeEvent } from 'react';
+import { useState, useEffect } from 'react';
 import type { ProfileVFS } from '../../scripting/vfs/ProfileVFS';
 import type { OutputFontSource } from '../../storage';
 import { Button } from './Button';
@@ -381,7 +381,6 @@ function VfsTab({ value, onChange, vfs }: VfsTabProps) {
     const [familyTouched, setFamilyTouched] = useState(false);
     const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null);
     const [loading, setLoading] = useState(false);
-    const fileInputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
         setFiles(vfs ? listFontFiles(vfs) : []);

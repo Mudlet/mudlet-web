@@ -1,4 +1,5 @@
-import { useRef, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { ModalBounds } from '../storage/schema';
 import { useModalFocus } from './components/useModalFocus';
 import { useViewportMode } from '../hooks/useViewportMode';
@@ -63,6 +64,26 @@ export function ResizableModal({
     // surprise close could lose work. The header ✕ is reachable inside the trap.
     const ref = useModalFocus<HTMLDivElement>(undefined, { autoFocus: true, closeOnEscape: false });
 
+    // The modal renders into its document's <body> rather than wherever it was
+    // declared. `position: fixed` escapes layout but NOT its ancestors' stacking
+    // contexts, and several of these modals are declared inside a panel — the
+    // map editor from MapPanel, the package modals from the script editor. A
+    // panel sits under `.script-window` (inline z-index) or `.main-overlay-root`
+    // (z:30), each its own stacking context, so the modal's z:40 was ranked only
+    // against that panel's siblings and any label/window above the panel painted
+    // straight over it. At body level the z:40 band applies as written: above
+    // overlays (30) and floating windows (35), below `.modal` (51).
+    //
+    // Resolved from the anchor's ownerDocument, not the global `document`: a
+    // popped-out panel's DOM lives in a child window while its React tree stays
+    // here (see PopoutWindow), so a hardcoded `document.body` would yank the
+    // modal into the wrong window.
+    const anchorRef = useRef<HTMLSpanElement>(null);
+    const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
+    useLayoutEffect(() => {
+        setPortalTarget(anchorRef.current?.ownerDocument.body ?? null);
+    }, []);
+
     const commit = () => onBoundsChange?.(boundsRef.current);
 
     const handleDragDown = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -111,7 +132,7 @@ export function ResizableModal({
         window.addEventListener('mouseup', onUp);
     };
 
-    return (
+    const modal = (
         <div
             ref={ref}
             role="dialog"
@@ -138,6 +159,15 @@ export function ResizableModal({
                 />
             ))}
         </div>
+    );
+
+    // The anchor stays where the modal was declared purely to name the document
+    // to portal into; it is display:none and never painted.
+    return (
+        <>
+            <span ref={anchorRef} hidden />
+            {portalTarget && createPortal(modal, portalTarget)}
+        </>
     );
 }
 

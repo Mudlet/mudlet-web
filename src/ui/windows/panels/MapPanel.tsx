@@ -11,7 +11,7 @@ import {
 import { applyMapperSettings, exportAreaImage } from '../../../map/mapImageExport';
 import { MudletHighlightOverlay } from '../../../map/MudletHighlightOverlay';
 import { MapSelectionOverlay } from '../../../map/MapSelectionOverlay';
-import { useAppStore, selectProfileField, MAP_INFO_BG_DEFAULT, type MapperSettings, type MapInfoBgColor } from '../../../storage';
+import { useAppStore, selectProfileField, MAP_INFO_BG_DEFAULT, type MapInfoBgColor } from '../../../storage';
 import { MapEditorModal } from '../../MapEditorModal';
 import { useFileSource, type PickedFile } from '../../components';
 import type { ProfileVFS } from '../../../scripting/vfs/ProfileVFS';

@@ -66,7 +66,7 @@ test('report busted failures', async ({ page }) => {
     const diverged = all.filter(isDivergence);
 
     const lines: string[] = [];
-    for (const { spec, passed, failed, errors, pending } of perSpec) {
+    for (const { spec, passed, errors, pending } of perSpec) {
         const specFailures = real.filter(x => x.spec === spec);
         // Counted, not derived by subtracting from `failed`: `all` also holds the
         // errors raised outside any it(), which that count does not include, so

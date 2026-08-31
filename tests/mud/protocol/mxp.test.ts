@@ -13,10 +13,6 @@ function makeParser() {
   return { parser, sent };
 }
 
-function plainOf(segments: BufferSegment[]): string {
-  return segments.map(s => s.text).join('');
-}
-
 /** Find the snapshot state covering a given plain-text substring. */
 function stateOf(segments: BufferSegment[], substr: string) {
   return segments.find(s => s.text.includes(substr))?.state;

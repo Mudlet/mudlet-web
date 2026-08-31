@@ -45,13 +45,13 @@ export function rewriteVfsUrlsInHtml(html: string, connectionId: string, vfs: Pr
             ATTR_RE,
             (attrFull, attrName: string, dq?: string, sq?: string, bare?: string) => {
                 const lower = attrName.toLowerCase();
-                const quote = dq !== undefined ? '"' : sq !== undefined ? "'" : '';
                 const value = dq ?? sq ?? bare ?? '';
 
                 if (lower === 'src') {
                     // Attribute values arrive HTML-escaped; resolve against the
-                    // VFS in decoded form, then re-escape for the quote style in
-                    // use so the tag stays well-formed.
+                    // VFS in decoded form, then re-emit double-quoted with the
+                    // value escaped, so the tag stays well-formed whichever
+                    // quote style (or none) the source attribute used.
                     const url = vfsRefToUrl(decodeEntities(value), connectionId, vfs);
                     if (url === null) return attrFull;
                     touched = true;

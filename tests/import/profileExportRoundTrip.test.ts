@@ -16,7 +16,6 @@ import {
 } from '../../src/import/mudletProfileImport';
 import { bundleToConnectionData, bundleToConnectionRecord } from '../../src/import/applyMudletProfile';
 import type { PersistedProfileData } from '../../src/storage/profileVfsData';
-import type { MudConnection } from '../../src/storage/schema';
 
 // Export is only worth anything if import reads it back, so these tests drive
 // the real pipeline end to end: profile data -> zip -> bundle -> store slices.

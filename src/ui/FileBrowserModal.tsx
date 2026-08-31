@@ -4,7 +4,10 @@ import { Folder, FolderOpen, FolderPlus, FolderUp, File, RefreshCw, LucideFolder
 import { ChevronRight, ChevronDown } from 'lucide-react';
 import { zipSync } from 'fflate';
 import { ResizableModal } from './ResizableModal';
-import { ContextMenu } from './components';
+// Imported from the module directly rather than the './components' barrel: the
+// barrel re-exports FileSourceButton, which reaches VfsPickerModal → this file,
+// so going through it would close a runtime import cycle.
+import { ContextMenu } from './components/ContextMenu';
 import { useAppStore } from '../storage';
 import { downloadBlob } from '../storage/logExport';
 import type { ProfileVFS } from '../scripting/vfs/ProfileVFS';

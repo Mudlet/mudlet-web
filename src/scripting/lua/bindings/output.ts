@@ -8,7 +8,7 @@ import type { BindingContext } from './context';
  * Colour channels are validated through the shared 0..255 coercion; Mudlet
  * silently no-ops on an out-of-range channel rather than raising.
  */
-export function installOutputBindings({ lua, api, channel }: BindingContext): void {
+export function installOutputBindings({ lua, api }: BindingContext): void {
     // ── Output / format ───────────────────────────────────────────────────
     lua.global.set('fg',          (name: string)  => api.fg(name));
     lua.global.set('bg',          (name: string)  => api.bg(name));

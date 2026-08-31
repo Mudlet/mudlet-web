@@ -1119,7 +1119,6 @@ export class LuaRuntime implements IScriptingRuntime {
         // touches one on load doesn't die with "attempt to call a nil value".
         // Each logs once and returns the value the real function would on a
         // no-op. See MUDLET_API.md "Not Applicable".
-        const emptyTable = () => [] as unknown[];
         [
             // Discord Rich Presence — getters return nil, setters/reset no-op.
             'getDiscordDetail', 'setDiscordDetail',

@@ -83,7 +83,6 @@ export function LogBrowserModal({ connectionId, connectionName, vfs = null, onCl
 
     // Caches loaded entries so cross-session search and jumps don't refetch.
     const entryCache = useRef<Map<string, LogEntry[]>>(new Map());
-    const fileInputRef = useRef<HTMLInputElement>(null);
 
     const loadEntries = useCallback(async (sessionId: string): Promise<LogEntry[]> => {
         const cached = entryCache.current.get(sessionId);

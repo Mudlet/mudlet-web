@@ -93,18 +93,6 @@ function parseHexToRgb(hex: string | undefined): [number, number, number] | null
     return [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)];
 }
 
-/** Map an ANSI / xterm color index to its palette hex string. 0..7 are the
- *  normal ANSI colors, 8..15 the bright set (both honor a profile palette
- *  override via colorCodes.ansi), and 16..255 the fixed xterm-256 cube. Returns
- *  null for out-of-range indices. Used by isAnsiFgColor / isAnsiBgColor. */
-function ansiIndexToHex(idx: number): string | null {
-    const n = Math.floor(Number(idx));
-    if (!Number.isFinite(n) || n < 0 || n > 255) return null;
-    if (n < 8) return colorCodes.ansi.dark[n];
-    if (n < 16) return colorCodes.ansi.bright[n - 8];
-    return colorCodes.xterm[n] ?? null;
-}
-
 /** Build a CSS color string from Mudlet-style 0..255 channels (alpha included).
  *  Channels are clamped and rounded; alpha (Mudlet's 0..255 "transparency") is
  *  mapped to CSS's 0..1 range. Used by setCommand{Background,Foreground}Color. */
@@ -168,10 +156,6 @@ function parseRgba(hex: string): [number, number, number, number] {
         parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16),
         m[4] === undefined ? 255 : parseInt(m[4], 16),
     ];
-}
-
-function clamp255(n: number): number {
-    return Math.max(0, Math.min(255, Math.round(Number(n) || 0)));
 }
 
 /** Parse the "r,g,b,a" string the Bridge hands `setConfig("mapInfoColor", …)`

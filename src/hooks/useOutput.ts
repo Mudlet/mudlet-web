@@ -5,7 +5,6 @@ export const DEFAULT_STICKY_LINES = 50;
 
 export interface UseStickyOutputOptions {
     stickyLines?: number;
-    maxElements?: number;
     splitViewThreshold?: number;
     showTimestamps?: boolean;
     /** See OutputHandlerOptions.followTail. Omit for a normal scrollback. */
@@ -25,7 +24,6 @@ export function useStickyOutput(
     source: MessageSource | null,
     {
         stickyLines = DEFAULT_STICKY_LINES,
-        maxElements = 1000,
         splitViewThreshold = 1,
         showTimestamps = false,
         followTail,
@@ -111,7 +109,6 @@ export function useStickyOutput(
             stickyArea: stickyAreaEl,
             isSplitView: () => isSplitViewRef.current,
             stickyLines,
-            maxElements,
             suppressSplitView: (ms) => {
                 suppressUntilRef.current = Date.now() + ms;
             },
@@ -128,7 +125,7 @@ export function useStickyOutput(
             outputEl.removeEventListener('wheel', handleWheel);
             c.teardown();
         };
-    }, [source, handleScroll, handleWheel, stickyLines, maxElements]);
+    }, [source, handleScroll, handleWheel, stickyLines]);
 
     useEffect(() => {
         rendererRef.current?.setTimestampVisibility(showTimestamps);

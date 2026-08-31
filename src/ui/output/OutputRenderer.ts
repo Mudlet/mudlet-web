@@ -153,8 +153,6 @@ type OutputHandlerOptions = {
     stickyArea: HTMLElement;
     isSplitView: () => boolean;
     stickyLines: number;
-    maxElements?: number | (() => number);
-    trimSlack?: number;
     suppressSplitView?: (durationMs: number) => void;
     /** Whether new output should scroll the view to the tail. True for a
      *  scrollback; false for a console the writer rewrites wholesale — an MXP
@@ -245,8 +243,6 @@ export function setupOutputRenderer(
         stickyArea,
         isSplitView,
         stickyLines,
-        maxElements = 1000,
-        trimSlack = 100,
         suppressSplitView,
         followTail,
         onCursorReady,

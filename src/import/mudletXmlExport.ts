@@ -196,7 +196,9 @@ function baseAttrs(enabled: boolean, isGroup: boolean): Record<string, string> {
  * is found, returns the original roots.
  */
 function unwrapPackageRoots<T extends TreeNode & { name: string; packageName?: string }>(
-    nodes: T[],
+    // Unread, but kept as the inference site for `T` — the callers' node array is
+    // what pins the generic; `childMap` alone would infer it from a weaker position.
+    _nodes: T[],
     childMap: Map<string | null, T[]>,
     opts: ExportOptions,
 ): T[] {

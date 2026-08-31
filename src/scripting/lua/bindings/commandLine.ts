@@ -9,7 +9,7 @@ import type { BindingContext } from './context';
  * user window's embedded input, and a free-floating createCommandLine widget -
  * which cmdLineKind below resolves from the name Lua passed.
  */
-export function installCommandLineBindings({ lua, api, channel, emitEvent }: BindingContext): void {
+export function installCommandLineBindings({ lua, api, emitEvent }: BindingContext): void {
     // ── Command bar ───────────────────────────────────────────────────────
     // Mudlet's cmdline APIs accept an optional first window-name arg for
     // sub-command-lines (overlay createCommandLine widgets or userwindow

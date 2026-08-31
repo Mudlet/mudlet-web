@@ -24,7 +24,6 @@ import {
     readFileSync,
     writeFileSync,
     mkdirSync,
-    readdirSync,
     statSync,
     existsSync,
     type FileSystem,
