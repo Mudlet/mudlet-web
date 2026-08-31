@@ -94,6 +94,40 @@ export function useStickyOutput(
         }
     }, [splitViewThreshold, applySplitView]);
 
+    // Resizing the console must not cost the reader their place at the tail.
+    //
+    // Scroll offset is measured from the top, so when the viewport grows or
+    // shrinks the distance to the bottom changes even though nothing was
+    // scrolled — a console pinned to its newest line comes back showing its
+    // oldest. No scroll event fires to correct it either, because nothing
+    // scrolled: the box changed underneath.
+    //
+    // Only re-pins when the reader was already following the tail. Someone who
+    // scrolled up to read (isSplitView) is left exactly where they were, which
+    // is the entire point of having scrolled up.
+    //
+    // The suppression window is not belt-and-braces. scrollHeight is still the
+    // pre-resize height when the observer runs — the console has not re-wrapped
+    // yet — so this scroll lands short of the true bottom, and the scroll event
+    // it fires reads to handleScroll as "the reader scrolled up" and raises the
+    // sticky panel. Suppressing marks the scroll as ours, and the frame after
+    // lands it on the height the re-wrap actually produced.
+    useEffect(() => {
+        const el = outputRef.current;
+        if (!el || typeof ResizeObserver === 'undefined') return;
+        const pin = () => {
+            if (isSplitViewRef.current) return;
+            suppressUntilRef.current = Date.now() + 150;
+            el.scrollTop = el.scrollHeight;
+        };
+        const observer = new ResizeObserver(() => {
+            pin();
+            requestAnimationFrame(pin);
+        });
+        observer.observe(el);
+        return () => observer.disconnect();
+    }, []);
+
     useEffect(() => {
         const outputEl = outputRef.current;
         const sentinelEl = sentinelRef.current;
