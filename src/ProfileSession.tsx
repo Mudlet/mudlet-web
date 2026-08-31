@@ -1,3 +1,4 @@
+import { ViewportModeProvider } from './hooks/useViewportMode';
 import { useEffect, useRef, useState } from 'react';
 import { MAP_WIDGET_ID } from './ui/windows/types';
 import { useMudSession } from './hooks/useMudSession';
@@ -1087,6 +1088,11 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
 
     // Capabilities handed to brand-defined toolbar buttons: send a command as
     // if typed, or raise a Mudlet event for the profile's script handlers.
+    // The observed root. A callback ref rather than useRef: the observer has to
+    // re-run when the element actually arrives, and a ref object never triggers
+    // that render.
+    const [appEl, setAppEl] = useState<HTMLDivElement | null>(null);
+
     const brandToolbarContext = {
         connectionId: connection.id,
         send: (text: string) => send(text),
@@ -1095,7 +1101,11 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
 
     return (
         <ConnectionIdContext.Provider value={connection.id}>
-        <div className={fullscreen ? 'app app--fullscreen' : 'app'}>
+        {/* The responsive mode is measured from this element rather than from
+            the window: embedded in a page, the window is not the client. A
+            560px frame on a 2560px screen was reading as a phone. */}
+        <div ref={setAppEl} className={fullscreen ? 'app app--fullscreen' : 'app'}>
+        <ViewportModeProvider element={appEl}>
             {fullscreen && <div className="app-topbar-hover-zone" aria-hidden="true" />}
             <Toolbar
                 connectionName={connection.name}
@@ -1284,6 +1294,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                     }}
                 />
             )}
+        </ViewportModeProvider>
         </div>
         </ConnectionIdContext.Provider>
     );
