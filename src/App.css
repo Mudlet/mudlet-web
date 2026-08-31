@@ -4576,9 +4576,16 @@ body.is-sorting {
     }
 
     /* Hide dock areas, floating windows, and side button strips —
-       not enough horizontal room and touch-drag docking is unworkable. */
+       not enough horizontal room and touch-drag docking is unworkable.
+
+       Not the *nested* floating root: that one carries mini-consoles
+       (createMiniConsole / createMapper), which are script-positioned
+       overlays inside a console rather than windows a finger can drag
+       anywhere. Hiding it took the embedded mapper off screen on every
+       phone-width client, while the labels, command lines and scroll boxes
+       sharing that same overlay stack kept rendering. */
     .dock-area,
-    .floating-window-root,
+    .floating-window-root:not(.floating-window-root--nested),
     .mudix-toolbar-strip--left,
     .mudix-toolbar-strip--right {
         display: none !important;
