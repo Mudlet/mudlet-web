@@ -485,3 +485,9 @@
 }
 .tab-group-tab--active .tab-group-tab-title { color: var(--text); }
 
+/* The slot is a placeholder for the main console host, which is moved into it
+   rather than re-created per layout (see ViewportSlot in ContentLayout).
+   display:contents keeps the host itself in the parent flex layout, so
+   .main-viewport measures and flexes exactly as it did when it was rendered
+   inline. */
+.main-viewport-slot { display: contents; }

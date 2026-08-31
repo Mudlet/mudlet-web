@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { MudSession } from '../../mud/MudSession';
 import type { DockSide, DragState, ScriptWindowRenderData } from '../windows/types';
@@ -50,6 +50,15 @@ export function ContentLayout({
     const [dragState,   setDragState]   = useState<DragState | null>(null);
     const [menuPos,     setMenuPos]     = useState<{ x: number; y: number } | null>(null);
     const isMobile = useViewportMode() === 'mobile';
+
+    // The main console lives here for the lifetime of this component and is
+    // adopted by whichever layout branch is on screen. See ViewportSlot.
+    const outputHostRef = useRef<HTMLDivElement | null>(null);
+    if (!outputHostRef.current) {
+        outputHostRef.current = document.createElement("div");
+        outputHostRef.current.className = "main-viewport";
+    }
+    const outputHost = outputHostRef.current;
 
     const handleTitlebarContextMenu = useCallback((e: React.MouseEvent) => {
         e.preventDefault();
@@ -116,12 +125,26 @@ export function ContentLayout({
         w.id,
     ));
 
+    // Mounted once, portalled into the detached host above, and never
+    // re-created by a branch switch.
+    const outputPool = createPortal(
+        <OutputArea session={session} stickyLines={stickyLines} commandInputRef={commandInputRef} mxpBorders={manager.getMxpBorders()} />,
+        outputHost,
+    );
+
+    // outputPool sits outside the branch and first in both trees, so React sees
+    // the same element in the same slot whichever layout is rendered and keeps
+    // OutputArea mounted across a breakpoint crossing. Inside the branches it
+    // was two different portals in two different trees, which remounts.
     if (isMobile) {
         return (
+            <>
+            {outputPool}
             <div className="content-layout">
                 <MobileLayout
                     session={session}
                     manager={manager}
+                    outputHost={outputHost}
                     windows={laidOut}
                     stickyLines={stickyLines}
                     commandInputRef={commandInputRef}
@@ -129,10 +152,13 @@ export function ContentLayout({
                 />
                 {contentPool}
             </div>
+            </>
         );
     }
 
     return (
+        <>
+        {outputPool}
         <div className="content-layout">
             {buttonStrips.top}
             {showTop && (
@@ -145,9 +171,7 @@ export function ContentLayout({
                     <DockArea side="left" windows={laidOut} extent={dockExtents.left} {...dockAreaProps} />
                 )}
 
-                <div className="main-viewport">
-                    <OutputArea session={session} stickyLines={stickyLines} commandInputRef={commandInputRef} mxpBorders={manager.getMxpBorders()} />
-                </div>
+                <ViewportSlot host={outputHost} />
 
                 {showRight && (
                     <DockArea side="right" windows={laidOut} extent={dockExtents.right} {...dockAreaProps} />
@@ -199,5 +223,42 @@ export function ContentLayout({
 
             {contentPool}
         </div>
+        </>
     );
+}
+
+/**
+ * Holds the main console's DOM while a layout branch is on screen, and hands it
+ * back when that branch goes away.
+ *
+ * The console is mounted once, for the lifetime of ContentLayout, into a
+ * detached host div; the desktop tree and the phone tree each adopt that div
+ * rather than rendering an OutputArea of their own. Crossing the phone
+ * breakpoint therefore *moves* the console instead of destroying it.
+ *
+ * This is the same trick the content pool below uses for panels, and it is not
+ * a refinement: OutputArea's renderer appends lines imperatively into the
+ * wrapper it was handed at setup, and only ever appends *new* ones. Remounting
+ * it handed the renderer a fresh empty wrapper, so every line already on screen
+ * vanished while Console.history still held all of them — one resize across
+ * 600px emptied a session's scrollback with no way to bring it back.
+ *
+ * display:contents on the slot keeps the host in the parent's layout, so
+ * .main-viewport still measures and flexes exactly as it did before.
+ */
+export function ViewportSlot({ host, hidden }: { host: HTMLDivElement; hidden?: boolean }) {
+    const slotRef = useRef<HTMLDivElement>(null);
+
+    useLayoutEffect(() => {
+        const slot = slotRef.current;
+        if (!slot) return;
+        slot.appendChild(host);
+        return () => { if (host.parentNode === slot) slot.removeChild(host); };
+    }, [host]);
+
+    useLayoutEffect(() => {
+        host.style.display = hidden ? 'none' : '';
+    }, [host, hidden]);
+
+    return <div className="main-viewport-slot" ref={slotRef} />;
 }

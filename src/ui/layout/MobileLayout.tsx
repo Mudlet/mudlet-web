@@ -2,11 +2,16 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { MudSession } from '../../mud/MudSession';
 import type { ScriptWindowRenderData } from '../windows/types';
 import type { WindowManager } from '../windows/WindowManager';
-import { OutputArea } from '../output/OutputArea';
+import { ViewportSlot } from './ContentLayout';
+import { FloatingWindowLayer } from './FloatingWindowLayer';
 
 interface MobileLayoutProps {
     session: MudSession;
     manager: WindowManager;
+    /** The one main console, mounted by ContentLayout and adopted here — never
+     *  re-created, or the scrollback on screen would be lost on every
+     *  breakpoint crossing. See ViewportSlot. */
+    outputHost: HTMLDivElement;
     /** Already filtered to non-popped-out windows by ContentLayout. */
     windows: ScriptWindowRenderData[];
     stickyLines?: number;
@@ -24,10 +29,20 @@ const MAIN_VIEW = '__main__';
  * portal-target divs WindowManager already maintains (same trick as the
  * desktop TabGroupPanel), so panels stay live in the background.
  */
-export function MobileLayout({ session, manager, windows, stickyLines, commandInputRef, commandBar }: MobileLayoutProps) {
-    // Selectable panels: visible, top-level (child miniconsoles render inside
-    // their parent panel, not as standalone views).
-    const panels = windows.filter(w => w.visible && (!w.parent || w.parent === 'main'));
+export function MobileLayout({ manager, windows, outputHost, commandBar }: MobileLayoutProps) {
+    // Mini-consoles are overlays *inside* a console, not panels to page
+    // between: createMiniConsole and createMapper position them in console
+    // coordinates and the script expects them to sit there, over the text,
+    // the way a game's HUD does. Desktop portals them into their parent
+    // viewport's overlay host (FloatingWindowLayer.resolveParent); this
+    // layout does the same rather than listing them in the switcher, or an
+    // embedded mapper becomes a "Mapper" tab and its geometry is discarded.
+    const overlays = windows.filter(w => manager.isMiniConsole(w.id));
+
+    // Selectable panels: visible, top-level, and not one of those overlays
+    // (child miniconsoles render inside their parent panel either way).
+    const panels = windows.filter(w =>
+        w.visible && !manager.isMiniConsole(w.id) && (!w.parent || w.parent === 'main'));
 
     const [activeView, setActiveView] = useState<string>(MAIN_VIEW);
 
@@ -44,14 +59,10 @@ export function MobileLayout({ session, manager, windows, stickyLines, commandIn
     return (
         <div className="mobile-layout">
             <div className="mobile-layout__views">
-                {/* Output stays mounted (kept receiving data + scrollback) and is
-                    just hidden when a panel is foregrounded. */}
-                <div
-                    className="main-viewport"
-                    style={activePanelId ? { display: 'none' } : undefined}
-                >
-                    <OutputArea session={session} stickyLines={stickyLines} commandInputRef={commandInputRef} mxpBorders={manager.getMxpBorders()} />
-                </div>
+                {/* Output stays mounted — the same DOM the desktop tree uses, moved
+                    here rather than rebuilt — and is just hidden when a panel is
+                    foregrounded. */}
+                <ViewportSlot host={outputHost} hidden={!!activePanelId} />
 
                 {activePanelId && (
                     <MobilePanelSlot key={activePanelId} id={activePanelId} manager={manager} />
@@ -86,9 +97,26 @@ export function MobileLayout({ session, manager, windows, stickyLines, commandIn
             )}
 
             {commandBar}
+
+            {/* Same component the desktop uses, fed only the mini-consoles:
+                each portals into its parent viewport's overlay host and is
+                positioned there, so a phone-width client shows the mapper
+                where the script put it. ScriptWindow drops the titlebar and
+                resize handles for a mini-console, so nothing draggable
+                reaches a layout that has nowhere to drag to. */}
+            {overlays.length > 0 && (
+                <FloatingWindowLayer
+                    windows={overlays}
+                    manager={manager}
+                    onDragStateChange={NOOP}
+                    onTitlebarContextMenu={NOOP}
+                />
+            )}
         </div>
     );
 }
+
+const NOOP = () => {};
 
 // Re-parents the panel's stable portal-target div into the visible slot while
 // this view is active, and returns it to the content pool on switch-away.
