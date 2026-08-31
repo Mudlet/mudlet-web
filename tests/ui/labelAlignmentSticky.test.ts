@@ -88,3 +88,53 @@ describe('LabelManager qproperty-scaledContents stickiness', () => {
         expect(mgr.list('main')[0].scaledContents).toBeUndefined();
     });
 });
+
+// qproperty-wordWrap is the third sticky Qt widget property a label stylesheet
+// can carry. QLabel::wordWrap is false by default and TLabel never sets it, so
+// Mudlet lays label text out with QTextOption::ManualWrap — it runs past the
+// widget edge and gets clipped rather than folding onto a second line. mudix
+// renders that as `white-space: nowrap`, and this property is the opt-out.
+describe('LabelManager qproperty-wordWrap stickiness', () => {
+    function make(): LabelManager {
+        const mgr = new LabelManager();
+        mgr.create('t', {
+            x: 0, y: 0, width: 100, height: 100, fillBackground: false,
+        });
+        return mgr;
+    }
+
+    it('captures wordWrap from a stylesheet that declares it', () => {
+        const mgr = make();
+        mgr.setStyleSheet('t', 'padding-left: 10px; qproperty-wordWrap: true;');
+        expect(mgr.list('main')[0].wordWrap).toBe(true);
+    });
+
+    it('reads it out of a QLabel ruleset as well as the base block', () => {
+        const mgr = make();
+        mgr.setStyleSheet('t', 'QLabel { qproperty-wordWrap: true; }');
+        expect(mgr.list('main')[0].wordWrap).toBe(true);
+    });
+
+    it('keeps wordWrap when a later stylesheet omits it', () => {
+        const mgr = make();
+        mgr.setStyleSheet('t', 'qproperty-wordWrap: true;');
+        mgr.setStyleSheet('t', 'background-color: black;');
+        expect(mgr.list('main')[0].wordWrap).toBe(true); // sticky
+    });
+
+    it('updates wordWrap when a later stylesheet flips it off', () => {
+        const mgr = make();
+        mgr.setStyleSheet('t', 'qproperty-wordWrap: true;');
+        mgr.setStyleSheet('t', 'qproperty-wordWrap: false;');
+        expect(mgr.list('main')[0].wordWrap).toBe(false);
+    });
+
+    // The default matters: an unset property is what the `.label` nowrap rule
+    // renders, which is what a Mudlet-metrics package (MDW's fixed-width
+    // dropdown items) is drawn against.
+    it('leaves wordWrap unset when no stylesheet ever declared it', () => {
+        const mgr = make();
+        mgr.setStyleSheet('t', "font-family: 'Bitstream Vera Sans Mono'; font-size: 11px;");
+        expect(mgr.list('main')[0].wordWrap).toBeUndefined();
+    });
+});
