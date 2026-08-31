@@ -6,6 +6,7 @@ import {
     qtAlignmentToFlex,
     extractQtAlignment,
     extractQtScaledContents,
+    extractQtWordWrap,
     userWindowQssToScopedCss,
     patchStyleSheetBackgroundColor,
     rewriteQtSelectors,
@@ -526,6 +527,43 @@ describe('extractQtScaledContents', () => {
         const style = cssTextToStyle('padding: 6px; qproperty-scaledContents: true;') as Record<string, string>;
         expect(style.qpropertyScaledContents).toBeUndefined();
         expect(style.padding).toBe('6px');
+    });
+});
+
+// QLabel::wordWrap is off by default (and TLabel never sets it), which is why
+// Mudlet clips over-long label text at the widget edge instead of folding it
+// onto a second line. `qproperty-wordWrap: true` is the only way a stylesheet
+// asks for the other behaviour, and LabelOverlay renders it as white-space.
+describe('extractQtWordWrap', () => {
+    it('reads true from a base-block declaration', () => {
+        expect(extractQtWordWrap('padding-left: 10px; qproperty-wordWrap: true;')).toBe(true);
+    });
+
+    it('reads it from a QLabel { … } ruleset', () => {
+        expect(extractQtWordWrap('QLabel { qproperty-wordWrap: true; }')).toBe(true);
+    });
+
+    it('accepts the quoted / 1 / 0 forms', () => {
+        expect(extractQtWordWrap("qproperty-wordWrap: 'true';")).toBe(true);
+        expect(extractQtWordWrap('qproperty-wordWrap: 1;')).toBe(true);
+        expect(extractQtWordWrap('qproperty-wordWrap: 0;')).toBe(false);
+    });
+
+    it('returns undefined when the stylesheet has no wordWrap', () => {
+        expect(extractQtWordWrap('border: 0; padding: 6px;')).toBeUndefined();
+    });
+
+    it('takes the last declaration when several are present (Qt in-order)', () => {
+        expect(extractQtWordWrap('qproperty-wordWrap: true; qproperty-wordWrap: false;'))
+            .toBe(false);
+    });
+
+    it('is not emitted as a stray CSS property on the inline style or a scoped rule', () => {
+        const style = cssTextToStyle('padding: 6px; qproperty-wordWrap: true;') as Record<string, string>;
+        expect(style.qpropertyWordWrap).toBeUndefined();
+        expect(style.padding).toBe('6px');
+        expect(qtDeclarationsToCss('padding: 6px; qproperty-wordWrap: true;'))
+            .toBe('padding: 6px');
     });
 });
 
