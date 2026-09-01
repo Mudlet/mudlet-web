@@ -33,6 +33,14 @@ function isExternal(id: string): boolean {
     // tree-shaken away.
     const path = id.replace(/\\/g, '/');
     if (path.includes('/import/defaults/')) return true;
+    // Same for the bundled games' logos. gameIcons.ts says why they are files
+    // and not data URIs — "1.7 MB of logos as data URIs would land in the JS
+    // bundle for every user, including the ones who never open the game list" —
+    // and the app build honours that. The lib build did not: library mode inlines
+    // every asset it resolves, so all 42 arrived base64 in index.js, half its
+    // weight, whether or not a consumer ever draws a tile. Externalised they stay
+    // exactly as available, as files the browser fetches on demand.
+    if (path.includes('/mud/games/icons/')) return true;
     if (id.startsWith('.') || id.startsWith('/') || id.startsWith('\0')) return false;
     if (/^[A-Za-z]:[\\/]/.test(id)) return false; // absolute Windows path
     if (id.startsWith('vite-plugin-node-polyfills')) return false;

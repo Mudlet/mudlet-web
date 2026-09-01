@@ -11,28 +11,28 @@
  * for the (freely redistributable) license. */
 @font-face {
     font-family: 'Bitstream Vera Sans Mono';
-    src: url('./assets/fonts/bitstream-vera-sans-mono/VeraMono.ttf') format('truetype');
+    src: url('./assets/fonts/bitstream-vera-sans-mono/VeraMono.woff2') format('woff2');
     font-weight: 400;
     font-style: normal;
     font-display: swap;
 }
 @font-face {
     font-family: 'Bitstream Vera Sans Mono';
-    src: url('./assets/fonts/bitstream-vera-sans-mono/VeraMoBd.ttf') format('truetype');
+    src: url('./assets/fonts/bitstream-vera-sans-mono/VeraMoBd.woff2') format('woff2');
     font-weight: 700;
     font-style: normal;
     font-display: swap;
 }
 @font-face {
     font-family: 'Bitstream Vera Sans Mono';
-    src: url('./assets/fonts/bitstream-vera-sans-mono/VeraMoIt.ttf') format('truetype');
+    src: url('./assets/fonts/bitstream-vera-sans-mono/VeraMoIt.woff2') format('woff2');
     font-weight: 400;
     font-style: italic;
     font-display: swap;
 }
 @font-face {
     font-family: 'Bitstream Vera Sans Mono';
-    src: url('./assets/fonts/bitstream-vera-sans-mono/VeraMoBI.ttf') format('truetype');
+    src: url('./assets/fonts/bitstream-vera-sans-mono/VeraMoBI.woff2') format('woff2');
     font-weight: 700;
     font-style: italic;
     font-display: swap;
@@ -47,56 +47,56 @@
  * generic sans/mono. Ubuntu Font Licence 1.0, see src/assets/fonts/ubuntu/. */
 @font-face {
     font-family: 'Ubuntu';
-    src: url('./assets/fonts/ubuntu/Ubuntu-R.ttf') format('truetype');
+    src: url('./assets/fonts/ubuntu/Ubuntu-R.woff2') format('woff2');
     font-weight: 400;
     font-style: normal;
     font-display: swap;
 }
 @font-face {
     font-family: 'Ubuntu';
-    src: url('./assets/fonts/ubuntu/Ubuntu-B.ttf') format('truetype');
+    src: url('./assets/fonts/ubuntu/Ubuntu-B.woff2') format('woff2');
     font-weight: 700;
     font-style: normal;
     font-display: swap;
 }
 @font-face {
     font-family: 'Ubuntu';
-    src: url('./assets/fonts/ubuntu/Ubuntu-RI.ttf') format('truetype');
+    src: url('./assets/fonts/ubuntu/Ubuntu-RI.woff2') format('woff2');
     font-weight: 400;
     font-style: italic;
     font-display: swap;
 }
 @font-face {
     font-family: 'Ubuntu';
-    src: url('./assets/fonts/ubuntu/Ubuntu-BI.ttf') format('truetype');
+    src: url('./assets/fonts/ubuntu/Ubuntu-BI.woff2') format('woff2');
     font-weight: 700;
     font-style: italic;
     font-display: swap;
 }
 @font-face {
     font-family: 'Ubuntu Mono';
-    src: url('./assets/fonts/ubuntu/UbuntuMono-R.ttf') format('truetype');
+    src: url('./assets/fonts/ubuntu/UbuntuMono-R.woff2') format('woff2');
     font-weight: 400;
     font-style: normal;
     font-display: swap;
 }
 @font-face {
     font-family: 'Ubuntu Mono';
-    src: url('./assets/fonts/ubuntu/UbuntuMono-B.ttf') format('truetype');
+    src: url('./assets/fonts/ubuntu/UbuntuMono-B.woff2') format('woff2');
     font-weight: 700;
     font-style: normal;
     font-display: swap;
 }
 @font-face {
     font-family: 'Ubuntu Mono';
-    src: url('./assets/fonts/ubuntu/UbuntuMono-RI.ttf') format('truetype');
+    src: url('./assets/fonts/ubuntu/UbuntuMono-RI.woff2') format('woff2');
     font-weight: 400;
     font-style: italic;
     font-display: swap;
 }
 @font-face {
     font-family: 'Ubuntu Mono';
-    src: url('./assets/fonts/ubuntu/UbuntuMono-BI.ttf') format('truetype');
+    src: url('./assets/fonts/ubuntu/UbuntuMono-BI.woff2') format('woff2');
     font-weight: 700;
     font-style: italic;
     font-display: swap;

@@ -10,7 +10,7 @@
 // src/import/defaults/ — that directory mirrors every package Mudlet ships
 // (~5 MB), and vendoring one is not preinstalling it. The list is read straight
 // out of defaultPackages.ts so adding a default can't silently miss this step.
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 const DEFAULTS_SRC = 'src/import/defaultPackages.ts';
@@ -28,6 +28,68 @@ for (const rel of assets) {
     copyFileSync(`src/${rel}`, `dist-lib/${rel}`);
 }
 console.log(`copy-lib-assets: vfs-sw.js + ${assets.length} default-package asset(s)`);
+
+// The bundled games' logos, externalised for the same reason (see isExternal in
+// vite.lib.config.ts) and copied whole: unlike the defaults directory this one is
+// exactly what gameIcons.ts globs, so there is no subset to pick.
+const ICONS = 'mud/games/icons';
+mkdirSync(`dist-lib/${ICONS}`, { recursive: true });
+let icons = 0;
+for (const name of readdirSync(`src/${ICONS}`)) {
+    copyFileSync(`src/${ICONS}/${name}`, `dist-lib/${ICONS}/${name}`);
+    icons++;
+}
+console.log(`copy-lib-assets: ${icons} game logo(s)`);
+
+
+// Fonts back out of the stylesheet.
+//
+// The twelve @font-face sources in App.css are the only assets here big enough
+// to matter and the only ones a visitor may never need: styles.css was 3.3 MB,
+// 96% of it base64 font. Library mode inlines every asset it resolves and
+// ignores build.assetsInlineLimit while build.lib is set, so there is no config
+// that prevents it - the files have to be lifted out afterwards.
+//
+// Worth the step because a font that is a file is a font the browser fetches
+// only when something asks for that family. The console default is Vera; a
+// visitor whose profile never loads a package asking for Ubuntu never downloads
+// Ubuntu, which is 60% of the weight. Inlined, everyone paid for all of it
+// before the first frame, because a stylesheet blocks rendering.
+//
+// Named by matching the decoded bytes against src/assets/fonts, so the emitted
+// file keeps the name it has in the repo rather than a hash nobody can trace.
+const CSS = 'dist-lib/styles.css';
+if (existsSync(CSS)) {
+    const byDigest = new Map();
+    const walkFonts = (dir) => {
+        for (const e of readdirSync(dir, { withFileTypes: true })) {
+            const p = `${dir}/${e.name}`;
+            if (e.isDirectory()) walkFonts(p);
+            else if (/\.woff2?$/i.test(e.name)) byDigest.set(readFileSync(p).toString('base64'), e.name);
+        }
+    };
+    walkFonts('src/assets/fonts');
+
+    let css = readFileSync(CSS, 'utf8');
+    let lifted = 0;
+    let saved = 0;
+    css = css.replace(/url\(\s*["']?data:font\/(woff2?|ttf|truetype)[^,]*,([A-Za-z0-9+/=]+)["']?\s*\)/g,
+        (whole, _type, b64) => {
+            const name = byDigest.get(b64);
+            if (!name) return whole; // not one of ours - leave it alone
+            mkdirSync('dist-lib/assets/fonts', { recursive: true });
+            writeFileSync(`dist-lib/assets/fonts/${name}`, Buffer.from(b64, 'base64'));
+            lifted++;
+            saved += whole.length;
+            return `url(./assets/fonts/${name})`;
+        });
+
+    if (lifted) {
+        writeFileSync(CSS, css);
+        console.log(`copy-lib-assets: ${lifted} font(s) lifted out of styles.css `
+            + `(-${Math.round(saved / 1024)} kB inline, now ${Math.round(css.length / 1024)} kB)`);
+    }
+}
 
 // Everything the bundle still imports by relative path has to exist in
 // dist-lib, because nothing downstream will tell us otherwise: rollup leaves
