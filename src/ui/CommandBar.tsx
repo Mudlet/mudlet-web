@@ -161,15 +161,15 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
     // <textarea> and the password <input> (mode toggle), so the user can keep
     // typing without re-clicking the box.
     //
-    // Not on a phone. Focus there summons the on-screen keyboard, which eats
+    // Not on a touch phone. Focus there summons the on-screen keyboard, which eats
     // half the screen — so the client would open, and every password prompt
     // would re-open, with the game hidden behind a keyboard nobody asked for.
     // The player taps the box when they actually mean to type (see the matching
     // opt-out in StickyOutputPanel, and the blur-on-send in `submit` below).
     useEffect(() => {
-        if (isMobile) return;
+        if (isMobile && isTouch) return;
         commandInputRef.current?.focus();
-    }, [commandInputRef, passwordMode, isMobile]);
+    }, [commandInputRef, passwordMode, isMobile, isTouch]);
 
     useEffect(() => {
         if (!menu) return;

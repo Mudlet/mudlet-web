@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type React from 'react';
-import { useIsMobile } from '../../hooks/useViewportMode';
+import { useIsMobile, useIsTouch } from '../../hooks/useViewportMode';
 import { OutputContextMenu, type OutputMenuExtraItem } from './OutputContextMenu';
 import { restoreFocusAfterLinkClick } from './linkNavigation';
 import {
@@ -49,6 +49,11 @@ export function StickyOutputPanel({
     commandInputRef, className, fontSize, fontFamily, lineHeight, wrapAt, wrapIndent, wrapHangingIndent,
 }: StickyOutputPanelProps) {
     const isMobile = useIsMobile();
+    const isTouch = useIsTouch();
+    // One question, asked in three places (see CommandBar): is there an
+    // on-screen keyboard for focus to summon over the output? A narrow
+    // container on a desktop - the 563px hero on mudlet.org - is not that.
+    const keyboardWouldCover = isMobile && isTouch;
     const [stickyHeight, setStickyHeight] = useState(DEFAULT_STICKY_HEIGHT);
     const [contextMenu, setContextMenu] =
         useState<{ x: number; y: number; hasSelection: boolean; extraItems: OutputMenuExtraItem[] } | null>(null);
@@ -86,13 +91,13 @@ export function StickyOutputPanel({
     // Clicking the output hands focus back to the command line so the player can
     // keep typing — Mudlet's behaviour, where the console never takes focus.
     //
-    // Never on a phone: there, a tap on the output is how you scroll and read,
+    // Never on a touch phone: there, a tap on the output is how you scroll and read,
     // and pulling focus to the command line throws the on-screen keyboard up
     // over the thing you were reading. Typing starts by tapping the box, which
     // is the platform convention anyway. (Matching opt-outs: CommandBar's
     // mount-focus effect and its blur-on-send.)
     const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-        if (!commandInputRef || isMobile) return;
+        if (!commandInputRef || keyboardWouldCover) return;
         const target = e.target as Element;
         if (target.closest('a, button, input, select, textarea')) return;
         if (window.getSelection()?.toString()) return;
@@ -114,7 +119,7 @@ export function StickyOutputPanel({
     // sees one — clicking a link would otherwise leave focus on the link span
     // instead of the command line. Capture phase catches it on the way down.
     const handleClickCapture = (e: React.MouseEvent<HTMLDivElement>) => {
-        if (!commandInputRef || isMobile) return;
+        if (!commandInputRef || keyboardWouldCover) return;
         restoreFocusAfterLinkClick(e, () => commandInputRef.current);
     };
 
