@@ -6,6 +6,7 @@ import { useAppStore, useProfileField, useConnectionId } from '../../storage';
 import { StickyOutputPanel } from './StickyOutputPanel';
 import { OutputSearchBar } from './OutputSearchBar';
 import { searchStepDirection } from './outputSearch';
+import { matchClearSplitKey } from './clearSplit';
 import type { OutputMenuExtraItem } from './OutputContextMenu';
 import { ScreenReaderLog } from './ScreenReaderLog';
 import { CaretReviewPanel } from './CaretReviewPanel';
@@ -100,6 +101,22 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
         document.addEventListener('keydown', onKey, true);
         return () => document.removeEventListener('keydown', onKey, true);
     }, [openSearch]);
+
+    // Mudlet binds Ctrl+Return in the command line to TConsole::clearSplit —
+    // it drops the split view and jumps back to the tail. Only while the split
+    // is actually up, so with the console at the tail Ctrl+Enter still stages a
+    // newline in the command bar. Capture phase so it beats the command bar's
+    // own Enter handling; stopPropagation keeps that newline from being staged.
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if (!isSplitViewRef.current || !matchClearSplitKey(e)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            scrollToBottom();
+        };
+        document.addEventListener('keydown', onKey, true);
+        return () => document.removeEventListener('keydown', onKey, true);
+    }, [scrollToBottom]);
 
     // Mudlet's f3SearchEnabled: F3 / Shift+F3 reach buffer search even when the
     // find bar is closed. Mudlet's search box lives permanently in the console

@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type React from 'react';
+import { useIsMobile } from '../../hooks/useViewportMode';
 import { OutputContextMenu, type OutputMenuExtraItem } from './OutputContextMenu';
 import { restoreFocusAfterLinkClick } from './linkNavigation';
 import {
     hasSelectionIn, selectAll, copySelectionText,
     copySelectionAsHtml, copySelectionAsImage,
 } from './outputCopy';
+import { isClearSplitClick } from './clearSplit';
 
 const DEFAULT_STICKY_HEIGHT = 160;
 const MIN_STICKY_HEIGHT = 40;
@@ -46,6 +48,7 @@ export function StickyOutputPanel({
     onFind, getMenuExtraItems,
     commandInputRef, className, fontSize, fontFamily, lineHeight, wrapAt, wrapIndent, wrapHangingIndent,
 }: StickyOutputPanelProps) {
+    const isMobile = useIsMobile();
     const [stickyHeight, setStickyHeight] = useState(DEFAULT_STICKY_HEIGHT);
     const [contextMenu, setContextMenu] =
         useState<{ x: number; y: number; hasSelection: boolean; extraItems: OutputMenuExtraItem[] } | null>(null);
@@ -80,19 +83,38 @@ export function StickyOutputPanel({
         };
     }, [outputRef]);
 
+    // Clicking the output hands focus back to the command line so the player can
+    // keep typing — Mudlet's behaviour, where the console never takes focus.
+    //
+    // Never on a phone: there, a tap on the output is how you scroll and read,
+    // and pulling focus to the command line throws the on-screen keyboard up
+    // over the thing you were reading. Typing starts by tapping the box, which
+    // is the platform convention anyway. (Matching opt-outs: CommandBar's
+    // mount-focus effect and its blur-on-send.)
     const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-        if (!commandInputRef) return;
+        if (!commandInputRef || isMobile) return;
         const target = e.target as Element;
         if (target.closest('a, button, input, select, textarea')) return;
         if (window.getSelection()?.toString()) return;
         commandInputRef.current?.focus();
     };
 
+    // Mudlet clears the split on a middle click anywhere in the console
+    // (TTextEdit::mousePressEvent → TConsole::clearSplit). Gated on the split
+    // being up so a middle click on a link still opens it in a new tab;
+    // preventDefault suppresses the browser's middle-click autoscroll (and, on
+    // Linux, the primary-selection paste).
+    const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+        if (!isSplitView || !isClearSplitClick(e)) return;
+        e.preventDefault();
+        scrollToBottom();
+    };
+
     // A link's own click handler stops propagation, so `handleClick` above never
     // sees one — clicking a link would otherwise leave focus on the link span
     // instead of the command line. Capture phase catches it on the way down.
     const handleClickCapture = (e: React.MouseEvent<HTMLDivElement>) => {
-        if (!commandInputRef) return;
+        if (!commandInputRef || isMobile) return;
         restoreFocusAfterLinkClick(e, () => commandInputRef.current);
     };
 
@@ -118,6 +140,9 @@ export function StickyOutputPanel({
     }, [outputRef]);
 
     const handleResizeStart = (e: React.MouseEvent) => {
+        // Left button only — a middle click on the handle belongs to the
+        // clear-split handler on the container below.
+        if (e.button !== 0) return;
         e.preventDefault();
         e.stopPropagation();
         const startY = e.clientY;
@@ -159,7 +184,12 @@ export function StickyOutputPanel({
     } : undefined;
 
     return (
-        <div className={containerClass} onClick={handleClick} onClickCapture={handleClickCapture}>
+        <div
+            className={containerClass}
+            onClick={handleClick}
+            onClickCapture={handleClickCapture}
+            onMouseDown={handleMouseDown}
+        >
             <div
                 className="output-wrapper"
                 ref={outputRef}
