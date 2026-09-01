@@ -58,6 +58,39 @@ export function useIsMobile(): boolean {
     return useViewportMode() === 'mobile';
 }
 
+const COARSE_POINTER = '(pointer: coarse)';
+
+function subscribeTouch(onChange: () => void): () => void {
+    if (typeof window === 'undefined' || !window.matchMedia) return () => {};
+    const query = window.matchMedia(COARSE_POINTER);
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
+}
+
+function readTouch(): boolean {
+    if (typeof window === 'undefined' || !window.matchMedia) return false;
+    return window.matchMedia(COARSE_POINTER).matches;
+}
+
+/**
+ * Whether the primary pointer is a touch screen — which is really the question
+ * "is there an on-screen keyboard", and a different question from the one the
+ * breakpoints above answer.
+ *
+ * Width says how much room the UI has. It does not say what covers that room
+ * when the player types, and those two come apart exactly where this client is
+ * embedded: the hero on mudlet.org is a 563px frame on a desktop of any size,
+ * so it is phone-sized by every measure the layout cares about and has no
+ * keyboard to hide behind. Anything that exists *because* of the on-screen
+ * keyboard has to ask this rather than the breakpoint, or it fires on a mouse.
+ *
+ * Note this is the primary pointer: a laptop with a touch screen and a
+ * trackpad reports fine, which is the answer we want — it has a real keyboard.
+ */
+export function useIsTouch(): boolean {
+    return useSyncExternalStore<boolean>(subscribeTouch, readTouch, () => false);
+}
+
 /**
  * The same breakpoints, measured against an element instead of the window.
  *

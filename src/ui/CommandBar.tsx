@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Button, Input } from './components';
 import { useConnectionId, useProfileField } from '../storage';
-import { useIsMobile } from '../hooks/useViewportMode';
+import { useIsMobile, useIsTouch } from '../hooks/useViewportMode';
 import { useCommandHistory } from './useCommandHistory';
 import { matchHistory, type Match } from './commandHistory';
 import { hasPrecedingWord, matchWordCandidates, splitTrailingWord, type ActiveWord, type BufferWordIndex } from './bufferWords';
@@ -75,6 +75,7 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
 
     const [ghostHidden, setGhostHidden] = useState(false);
     const isMobile = useIsMobile();
+    const isTouch = useIsTouch();
 
     // Suggestions (from Mudlet's addCmdLineSuggestion) come before history so
     // they outrank older entries when prefix kinds tie. Dedup is case-insensitive
@@ -217,7 +218,14 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         // sees the reply to what they just sent. Desktop keeps focus — there is
         // nothing covering anything, and re-clicking between commands would be
         // absurd.
-        if (isMobile) commandInputRef.current?.blur();
+        //
+        // Both halves are load-bearing. The keyboard is what covers the output,
+        // and a keyboard is a property of the device rather than of the
+        // container's width: mudlet.org embeds this client in a 563px frame,
+        // which is under the phone breakpoint on a 2560px screen and has
+        // nothing to hide behind. Width alone would blur the caret after every
+        // command for every desktop visitor to the front page.
+        if (isMobile && isTouch) commandInputRef.current?.blur();
     };
 
     const handleSubmit = (e: React.FormEvent) => {
