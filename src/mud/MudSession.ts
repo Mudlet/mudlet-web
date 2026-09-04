@@ -15,6 +15,12 @@ import { ReplayRecorder } from './replay/ReplayRecorder';
 import { parseReplay, replayDurationMs } from './replay/replayFormat';
 import { type MudClientEvents, type MudEvents, type SessionStatus } from './events';
 import type { Console } from './text/Console';
+import {
+    DEFAULT_CONSOLE_BUFFER_SIZE,
+    MIN_CONSOLE_BUFFER_SIZE,
+    MAX_CONSOLE_BUFFER_SIZE,
+    consoleBatchDeleteSize,
+} from './text/Console';
 import { mxpColor } from './text/colorParsers';
 import { AnsiAwareBuffer } from './text/FormatState';
 import { SERVER_WRAP_WIDTH_DEFAULT } from './text/serverWrap';
@@ -618,6 +624,44 @@ export class MudSession {
     setUndoServerWrapWidth(width: number): void {
         this.options.undoServerWrapWidth = width;
         this.client?.setUndoServerWrapWidth(width);
+    }
+
+    // ── Main console scrollback size ─────────────────────────────────────────
+    //
+    // Mudlet's per-profile `consoleBufferSize` / `useMaxConsoleBufferSize`
+    // (Host.h:384-387). Held on the session rather than read straight into the
+    // console because the profile setting is applied during ProfileSession's
+    // render, which can run before ScriptingAPI has built the main console —
+    // that console asks for the resolved value when it registers itself.
+    // Named user windows keep their own size (Mudlet applies the preference to
+    // the main console only, mudlet.cpp:2271); scripts size those with
+    // setConsoleBufferSize(windowName, …).
+    private consoleBufferLines = DEFAULT_CONSOLE_BUFFER_SIZE;
+
+    /** The resolved scrollback cap for the main console, in lines. */
+    get consoleBufferSize(): number { return this.consoleBufferLines; }
+
+    /**
+     * Mudlet's preference pair. `useMaximum` mirrors `checkBox_useMaxBufferSize`
+     * — desktop substitutes `TBuffer::getMaxBufferSize()`, a figure derived from
+     * physical memory; a browser tab gets {@link MAX_CONSOLE_BUFFER_SIZE}.
+     * Applies immediately to the main console when it exists.
+     */
+    setConsoleBufferSize(lines: number, useMaximum = false): void {
+        const requested = Number.isFinite(lines) ? Math.trunc(lines) : DEFAULT_CONSOLE_BUFFER_SIZE;
+        this.consoleBufferLines = useMaximum
+            ? MAX_CONSOLE_BUFFER_SIZE
+            : Math.min(MAX_CONSOLE_BUFFER_SIZE, Math.max(MIN_CONSOLE_BUFFER_SIZE, requested));
+        const main = this.consoles.get('main');
+        if (main) this.applyConsoleBufferSize(main);
+    }
+
+    /** Push the resolved size onto a console, batch-deletion size and all —
+     *  the `setBufferSize(bufferSize, max(100, bufferSize / 5))` of
+     *  mudlet.cpp:2270-2271. */
+    applyConsoleBufferSize(console: Console): void {
+        console.setBatchDeleteSize(consoleBatchDeleteSize(this.consoleBufferLines));
+        console.setMaxLines(this.consoleBufferLines);
     }
 
     /** Commit a line held for a wrap continuation whose flush delay has passed —

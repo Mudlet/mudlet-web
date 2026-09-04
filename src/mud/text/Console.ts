@@ -8,6 +8,34 @@ import { concealDelayedReveals } from './hyperlinkVisibility';
 export const MAX_CHARACTERS_PER_ECHO = 1_000_000;
 
 /**
+ * Scrollback line limit — Mudlet's per-profile `consoleBufferSize`
+ * (`Host::mConsoleBufferSize`, saved to the profile XML by XMLexport.cpp:617).
+ *
+ * The default is `TBuffer::mLinesLimit` (src/TBuffer.h:386) and the spin box
+ * default in `src/ui/profile_preferences.ui` — 10,000 lines — rather than
+ * `Host.h:687`'s 100,000. Desktop can afford the larger figure because
+ * `TTextEdit` paints only the visible viewport out of the buffer; mudix keeps a
+ * DOM row per line, so 100,000 rows is a cost the browser pays whether or not
+ * they are on screen.
+ *
+ * The floor is `TBuffer::setBufferSize`'s (src/TBuffer.cpp:405) — a smaller
+ * buffer is not usable. The ceiling stands in for
+ * `TBuffer::getMaxBufferSize()`, which desktop derives from physical memory; a
+ * browser tab cannot ask about that, so "use the maximum" gets a fixed generous
+ * cap instead.
+ */
+export const DEFAULT_CONSOLE_BUFFER_SIZE = 10_000;
+export const MIN_CONSOLE_BUFFER_SIZE = 100;
+export const MAX_CONSOLE_BUFFER_SIZE = 1_000_000;
+
+/** Mudlet's batch-deletion size for a given buffer size — 5% of it, never below
+ *  100 lines (mudlet.cpp:2270, and the identical sum in
+ *  dlgProfilePreferences.cpp:3288 when the preference is applied). */
+export function consoleBatchDeleteSize(lines: number): number {
+    return Math.max(100, Math.floor(lines / 5));
+}
+
+/**
  * Self-contained text output entity — equivalent of Mudlet's TConsole.
  * Owns format state, line history, and cursor position.
  * The renderer is a pure consumer: it receives lines via takeLines() and
@@ -26,7 +54,7 @@ export class Console {
     // moveTo set it explicitly. getCursorColumn clamps lazily to the current
     // line's length, so moves into shorter lines silently snap to end.
     private cursorCol = 0;
-    private _maxLines = 1000;
+    private _maxLines = DEFAULT_CONSOLE_BUFFER_SIZE;
     // Mudlet's setConsoleBufferSize takes a "size of batch deletion" — how many
     // lines it drops at once when the cap is exceeded. mudix evicts lazily down
     // to _maxLines (the observable cap is identical), but we round-trip the
@@ -35,7 +63,7 @@ export class Console {
     // value setConsoleBufferSize clamps an over-large batch down to — so a
     // script that reads the default back and writes it again gets the same
     // number, rather than watching it change under it.
-    private _batchDeleteSize = 100;
+    private _batchDeleteSize = DEFAULT_CONSOLE_BUFFER_SIZE / 10;
     /** Mudlet `sysBufferShrinkEvent(name, linesRemoved)` hook. Fired by
      *  `evict()` whenever the scrollback cap drops one or more lines from the
      *  head of `history`. Set by the owning session (ScriptingAPI for "main",
