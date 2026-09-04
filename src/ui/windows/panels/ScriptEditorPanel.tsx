@@ -183,6 +183,13 @@ const UNDO_TOAST_MS = 5000;
  *  more is exportable but not editable there — the cap is interop, not taste. */
 const MAX_TRIGGER_PATTERNS = 50;
 
+/** Where a sound picked from the user's computer lands — the same profile folder
+ *  MSP/GMCP media downloads are cached in, and one the sound loader can read. */
+const MEDIA_DIR = 'media';
+
+/** Audio types offered by the sound-trigger picker (both sources). */
+const SOUND_ACCEPT = '.wav,.mp3,.ogg,.oga,.m4a,.flac,.aac,.opus,audio/*';
+
 const PATTERN_TYPE_LABELS: Record<TriggerPatternType, string> = {
     substring:    'substring',
     regex:        'perl regex',
@@ -961,6 +968,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     const [editIsFilter, setEditIsFilter] = useState(false);
     const [editSoundTrigger, setEditSoundTrigger] = useState(false);
     const [editSoundFile, setEditSoundFile] = useState('');
+    const [soundError, setSoundError] = useState<string | null>(null);
     const [editColorize, setEditColorize] = useState(false);
     const [editHighlightFg, setEditHighlightFg] = useState('');
     const [editHighlightBg, setEditHighlightBg] = useState('');
@@ -993,6 +1001,36 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     const [editToolbarColumns,     setEditToolbarColumns]     = useState(0);
 
     const [dirty, setDirty] = useState(false);
+
+    /**
+     * Sound-trigger file pick. A file already in the profile is referenced where
+     * it lies; one from the user's computer is copied into `<profile>/media/`
+     * first — the folder the sound loader (and the MSP/GMCP media cache) reads
+     * from, so a trigger keeps working after a reload. Either way the stored
+     * path is profile-relative, which is what `SoundManager`'s loader resolves.
+     */
+    const handleSoundPick = useCallback(async (picked: PickedFile[]) => {
+        const first = picked[0];
+        if (!first) return;
+        if (!vfs) { setSoundError('VFS not ready — wait for the profile to finish loading'); return; }
+        try {
+            let path: string;
+            if (first.vfsPath) {
+                path = first.vfsPath.startsWith(`${vfs.profilePath}/`)
+                    ? first.vfsPath.slice(vfs.profilePath.length + 1)
+                    : first.vfsPath;
+            } else {
+                path = `${MEDIA_DIR}/${first.file.name}`;
+                vfs.writeBinaryFile(`${vfs.profilePath}/${path}`, new Uint8Array(await first.file.arrayBuffer()));
+                void vfs.flush();
+            }
+            setSoundError(null);
+            setEditSoundFile(path);
+            setDirty(true);
+        } catch (err) {
+            setSoundError(err instanceof Error ? err.message : String(err));
+        }
+    }, [vfs]);
 
     // Item-level undo/redo. Mudlet's `EditorUndoStack` belongs to the editor
     // window and dies with it (dlgTriggerEditor.cpp:456), so these live in the
@@ -1230,6 +1268,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
             setEditIsFilter(t.isFilter ?? false);
             setEditSoundTrigger(t.soundTrigger ?? false);
             setEditSoundFile(t.soundFile ?? '');
+            setSoundError(null);
             setEditColorize(isColorizing(t));
             setEditHighlightFg(t.highlight?.fg ?? '');
             setEditHighlightBg(t.highlight?.bg ?? '');
@@ -2447,6 +2486,21 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                             aria-label="Sound file to play when this trigger fires"
                                             onChange={e => { setEditSoundFile(e.target.value); setDirty(true); }}
                                         />
+                                        {/* Desktop's toolButton_soundFile file dialog, widened to the
+                                            two sources the web client has: a file already in the
+                                            profile, or an upload that gets copied into media/ first. */}
+                                        <FileSourceButton
+                                            vfs={vfs}
+                                            label="Browse…"
+                                            size="sm"
+                                            accept={SOUND_ACCEPT}
+                                            location={`${vfs?.profilePath ?? ''}/${MEDIA_DIR}`}
+                                            pickerTitle="Pick a sound from profile files"
+                                            disabled={!editSoundTrigger}
+                                            title="Pick a sound from this profile's files, or upload one from your computer into media/"
+                                            onPick={files => void handleSoundPick(files)}
+                                            onError={msg => setSoundError(msg)}
+                                        />
                                         {/* Desktop's toolButton_clearSoundFile. Clearing the path
                                             is not the same as turning the trigger off, so it
                                             leaves the switch alone. */}
@@ -2460,6 +2514,11 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                             Clear
                                         </Button>
                                     </div>
+                                    {soundError && (
+                                        <span className="script-editor__import-error" title={soundError}>
+                                            Could not set sound: {soundError}
+                                        </span>
+                                    )}
                                 </div>
 
                                 {/* Chain section — visible whenever this trigger could be a chain head
