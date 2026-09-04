@@ -1,6 +1,7 @@
 import PCRE from './pcre/Pcre2';
 import type { TriggerNode, TriggerPattern } from '../../storage/schema';
 import { buildEffectivelyEnabledIds } from '../../storage/schema';
+import { COLOR_IGNORED, remapLegacyColorPattern } from './legacyColorPatterns';
 
 export type { TriggerNode };
 
@@ -327,6 +328,11 @@ function stripEol(line: string): string {
 }
 
 function parseColorPattern(text: string): [number, number] {
+    // A pre-3.17 `FG<n>BG<n>` pattern first, because everything below would read
+    // it as garbage. The importer normalises these as it reads a profile, the
+    // way desktop does, but a profile imported before that landed still holds
+    // the old text and a `permColorTrigger`-style caller can pass one directly.
+    text = remapLegacyColorPattern(text);
     // Mudlet's own wire form, which is what an imported package or profile
     // carries: `ANSI_COLORS_F{003}_B{IGNORE}`. IGNORE is "any colour here", the
     // same as the -1 the plain form uses; DEFAULT is TTrigger's scmDefault
@@ -449,12 +455,18 @@ function buildMatcher(
         }
         case 'colorTrigger': {
             // `pattern.text` carries "fg,bg" as ANSI palette indices (-1 = any).
-            // Empty / unparsable values fall through to -1, so a freshly-added
-            // perm color trigger (`text: ''`) matches every line until the user
-            // picks specific colours. The actual buffer scan runs via
-            // `colorMatchRef.fn`, which ScriptingEngine wires to
-            // `ScriptingAPI.currentLineMatchesColor`.
+            // The actual buffer scan runs via `colorMatchRef.fn`, which
+            // ScriptingEngine wires to `ScriptingAPI.currentLineMatchesColor`.
             const [fg, bg] = parseColorPattern(p.text);
+            // Both channels "any" is not a pattern that matches everything — it
+            // is no pattern at all. Desktop's `createColorPattern` returns
+            // nullptr for that pair and `setupColorTrigger` fails, so nothing is
+            // registered and the trigger cannot fire on it (TTrigger.cpp:1165).
+            // Reaching it means the text was unparsable, which is the shape a
+            // legacy pattern the remap above could not rescue arrives in — and
+            // treating that as "match anything" fired the trigger's script on
+            // every line of output (issue #102).
+            if (fg === COLOR_IGNORED && bg === COLOR_IGNORED) return () => null;
             return (line) => {
                 if (!line) return null;
                 if (!colorMatchRef.fn) return null;

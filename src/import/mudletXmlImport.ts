@@ -1,6 +1,7 @@
 import type { AliasNode, ButtonLocation, ButtonNode, ButtonOrientation, KeyNode, ScriptNode, TimerNode, TriggerNode, TriggerPattern, TriggerPatternType } from '../storage/schema';
 import { qtKeyToDomCode, qtModifiersToList, QT_KEY_UNKNOWN } from '../mud/keybindings/qtKeys';
 import { desanitizeControlChars } from './mudletControlChars';
+import { remapLegacyColorPattern } from '../mud/triggers/legacyColorPatterns';
 
 // Mudlet triggerType integer → our TriggerPatternType
 const MUDLET_PATTERN_TYPES: TriggerPatternType[] = [
@@ -148,9 +149,15 @@ function parseTriggers(els: Element[], parentId: string | null, out: TriggerNode
 
         const patterns: TriggerPattern[] = patternEls.map((p, i) => {
             const typeIdx = parseInt(typeEls[i]?.textContent?.trim() ?? '0') || 0;
+            const type = MUDLET_PATTERN_TYPES[typeIdx] ?? 'substring';
             // Pattern text is preserved verbatim — leading/trailing whitespace
             // is significant for substring/exactMatch/regex matching.
-            return { text: desanitizeControlChars(p.textContent ?? ''), type: MUDLET_PATTERN_TYPES[typeIdx] ?? 'substring' };
+            const text = desanitizeControlChars(p.textContent ?? '');
+            // ...except a colour pattern from before Mudlet 3.17, which carries
+            // an old palette index in a form nothing downstream understands.
+            // Desktop rewrites it here too, unconditionally on every read
+            // (XMLimport.cpp:1425). See legacyColorPatterns.
+            return { text: type === 'colorTrigger' ? remapLegacyColorPattern(text) : text, type };
         });
         if (patterns.length === 0 && !group) patterns.push({ text: '', type: 'substring' });
 
