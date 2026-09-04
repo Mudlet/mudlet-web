@@ -65,6 +65,12 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
     const [exportOpen, setExportOpen] = useState(false);
     const [importing, setImporting] = useState(false);
     const [importError, setImportError] = useState<string | null>(null);
+    // What each imported profile could not carry over. A profile import used to
+    // report success in total silence even when it dropped nodes and fields, so
+    // every fidelity gap surfaced weeks later as a mystery (issue #45). Kept per
+    // profile because one zip can hold several, and each has its own list.
+    const [importWarnings, setImportWarnings] = useState<{ profile: string; warnings: string[] }[]>([]);
+    const importWarningCount = importWarnings.reduce((n, e) => n + e.warnings.length, 0);
     // Profiles whose modules couldn't be resolved from the imported tree — the
     // modal asks the user to upload or drop each file before that profile is
     // provisioned. A queue, not a single slot: one multi-profile zip can hold
@@ -92,17 +98,29 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
         }
     };
 
+    /** Provision one bundle and keep whatever it could not represent. The
+     *  bundle collects warnings right through the import — the XML parse, each
+     *  folded-in module, and the file/map copy — so this is the one place that
+     *  has to read them. */
+    const provision = async (bundle: MudletProfileBundle) => {
+        await importMudletProfile(bundle);
+        if (bundle.warnings.length > 0) {
+            setImportWarnings(w => [...w, { profile: bundle.name, warnings: [...bundle.warnings] }]);
+        }
+    };
+
     // Auto-resolve modules found in the imported tree; defer to the modal for the
     // rest, otherwise provision the profile immediately.
     const beginImport = async (bundle: MudletProfileBundle) => {
         const { resolved, unresolved } = resolveModulesFromTree(bundle);
         for (const r of resolved) addModuleToBundle(bundle, r.ref.key, r.xmlBytes);
         if (unresolved.length) { setPendingImports(q => [...q, { bundle, unresolved }]); return; }
-        await importMudletProfile(bundle);
+        await provision(bundle);
     };
 
     const handleImportFolder = () => {
         if (!dirPicker) return;
+        setImportWarnings([]);
         void runImport(async () => beginImport(await bundleFromDirectory(await dirPicker.call(window))));
     };
 
@@ -110,6 +128,7 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
     // re-read on every open.
     const handleLinkFolder = () => {
         if (!dirPicker) return;
+        setImportWarnings([]);
         void runImport(async () => { await linkMudletFolder(await dirPicker.call(window)); });
     };
 
@@ -117,6 +136,7 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
         const file = e.target.files?.[0];
         e.target.value = '';
         if (!file) return;
+        setImportWarnings([]);
         void runImport(async () => {
             const bytes = new Uint8Array(await file.arrayBuffer());
             // A mudix export holds every selected profile in one archive, so a
@@ -132,7 +152,7 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
         setPendingImports(q => q.slice(1));
         void runImport(async () => {
             for (const u of uploads) addModuleToBundle(p.bundle, u.key, u.bytes);
-            await importMudletProfile(p.bundle);
+            await provision(p.bundle);
         });
     };
 
@@ -171,8 +191,8 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
             tone: 'danger',
             message: (
                 <>
-                    Permanently delete <strong>{c.name}</strong>? Its scripts, aliases, triggers and saved layout
-                    will be removed. This cannot be undone.
+                    Permanently delete <strong>{c.name}</strong>? Its scripts, aliases, triggers, saved layout,
+                    files, map and logs will be removed. This cannot be undone.
                 </>
             ),
             buttons: [
@@ -262,6 +282,41 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
                 {importError && (
                     <div className="connection-import-error" style={{ color: 'var(--danger, #e06c75)', fontSize: 12, textAlign: 'center' }}>
                         Import failed: {importError}
+                    </div>
+                )}
+                {/* An import that dropped something still succeeded, so this is a
+                    notice and not an error: the profile is there, and this says
+                    what it is missing. Dismissible, and replaced wholesale by the
+                    next import. */}
+                {importWarnings.length > 0 && (
+                    <div
+                        className="connection-import-warnings"
+                        role="status"
+                        style={{
+                            fontSize: 12, border: '1px solid var(--border, #2a2a2a)', borderRadius: 6,
+                            padding: '8px 10px', maxHeight: 200, overflowY: 'auto',
+                        }}
+                    >
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
+                            <strong style={{ flex: 1 }}>
+                                Imported, but {importWarningCount} thing{importWarningCount === 1 ? '' : 's'} could not be carried over
+                            </strong>
+                            <button
+                                type="button"
+                                onClick={() => setImportWarnings([])}
+                                style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', opacity: 0.7 }}
+                            >
+                                Dismiss
+                            </button>
+                        </div>
+                        {importWarnings.map(entry => (
+                            <div key={entry.profile} style={{ marginBottom: 4 }}>
+                                <div style={{ opacity: 0.7 }}>{entry.profile}</div>
+                                <ul style={{ margin: '2px 0 0', paddingLeft: 18 }}>
+                                    {entry.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                                </ul>
+                            </div>
+                        ))}
                     </div>
                 )}
 

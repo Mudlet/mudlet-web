@@ -292,6 +292,12 @@ const runawayReportRef: { fn: ((text: string) => void) | null } = { fn: null };
  *  temporaries. */
 const permDisableRef: { fn: ((nodeId: string) => void) | null } = { fn: null };
 
+/** Where a pattern that fails to compile is reported. See
+ *  setCompileErrorReporter. */
+const compileErrorRef: {
+    fn: ((message: string, source?: { id: string; name: string }) => void) | null;
+} = { fn: null };
+
 /** How many generations one lineage of triggers created while a line is being
  *  processed may reach before it is stopped. Mudlet's
  *  `TriggerUnit::scmMaxSameLineGenerations`. */
@@ -385,18 +391,32 @@ const UNICODE_VERBS = '(*UTF)(*UCP)';
 
 /**
  * Compile a PCRE pattern. Returns null if compilation fails, with the failure
- * sticky-cached so we don't retry on every match.
+ * sticky-cached so we don't retry on every match, and the PCRE2 reason handed
+ * to `onError` so the pattern is not dropped in silence — desktop Mudlet builds
+ * the same report from `pcre2_get_error_message` in TTrigger::setRegexCodeList
+ * (src/TTrigger.cpp:144-153).
+ *
+ * The `(*UTF)(*UCP)` verbs are prepended before compiling, so a reported offset
+ * would be shifted by their length; the wrapper only surfaces the reason text,
+ * which needs no adjustment.
  */
-function compilePcre(pattern: string): PcreInstance | null {
+function compilePcre(pattern: string, onError?: (reason: string) => void): PcreInstance | null {
     try { return new PCRE(UNICODE_VERBS + pattern); }
-    catch { return null; }
+    catch (err) {
+        onError?.(err instanceof Error ? err.message : String(err));
+        return null;
+    }
 }
 
-function buildMatcher(p: TriggerPattern, register: (re: PcreInstance) => void): Matcher | null {
+function buildMatcher(
+    p: TriggerPattern,
+    register: (re: PcreInstance) => void,
+    onError?: (pattern: TriggerPattern, reason: string) => void,
+): Matcher | null {
     switch (p.type) {
         case 'regex': {
             if (!p.text) return null;
-            const re = compilePcre(p.text);
+            const re = compilePcre(p.text, reason => onError?.(p, reason));
             if (!re) return null;
             register(re);
             return (line) => {
@@ -588,7 +608,15 @@ export class TriggerEngine {
         } else if (kind === 'substring' || kind === 'startOfLine' || kind === 'exactMatch') {
             this.temp.set(id, { kind, pattern, fn, seq, name, onStopped });
         } else {
-            const re = compilePcre(pattern);
+            const re = compilePcre(pattern, reason => {
+                // Same channel as a permanent trigger's bad pattern — a
+                // tempRegexTrigger that will never fire must not be silent
+                // either (mudlet-web#60). There is no store node behind a temp,
+                // so the report carries no jump-to-source.
+                const who = name ? ` in "${name}"` : '';
+                compileErrorRef.fn?.(
+                    `Error: perl regex "${pattern}"${who} failed to compile, reason: "${reason}".`);
+            });
             if (!re) return () => {};
             this.temp.set(id, { kind: 'regex', re, fn, seq, name, onStopped });
         }
@@ -718,6 +746,24 @@ export class TriggerEngine {
         const instances: PcreInstance[] = [];
         const register = (re: PcreInstance) => { instances.push(re); };
         let compiled: CompiledEntry | null = null;
+        // A pattern that will not compile is dropped, and a trigger whose every
+        // pattern was dropped never fires. Mudlet says so out loud —
+        // TTrigger::setRegexCodeList sets the item's error to
+        //   Error: in item %1, perl regex "%2" failed to compile, reason: "%3".
+        // (src/TTrigger.cpp:149-152) and the editor paints the tree row and
+        // shows it. mudix swallowed the exception, so an invalid pattern was
+        // saved and simply never matched, with nothing anywhere to say why
+        // (mudlet-web#60). The report goes out once per compile: loadPerm caches
+        // the negative result by signature, so it does not repeat until the
+        // pattern is edited.
+        const reportPatternError = (pattern: TriggerPattern, reason: string) => {
+            const itemNumber = item.patterns.indexOf(pattern) + 1;
+            compileErrorRef.fn?.(
+                `Error: in item ${itemNumber}, perl regex "${pattern.text}" failed to compile, `
+                + `reason: "${reason}".`,
+                { id: item.id, name: item.name },
+            );
+        };
 
         // Mudlet compacts a blank pattern out of the list as it stores the
         // trigger (TTrigger::setRegexCodeList), so nothing downstream ever sees
@@ -737,7 +783,7 @@ export class TriggerEngine {
                     const n = parseInt(p.text, 10);
                     conditions.push({ test: null, spacer: isNaN(n) || n < 1 ? 1 : n });
                 } else {
-                    const test = buildMatcher(p, register);
+                    const test = buildMatcher(p, register, reportPatternError);
                     conditions.push({ test, spacer: 0 });
                 }
             }
@@ -750,10 +796,12 @@ export class TriggerEngine {
             let testAll: ((line: string) => MatchResult[]) | null = null;
 
             for (const pattern of patterns) {
-                const test = buildMatcher(pattern, register);
+                const test = buildMatcher(pattern, register, reportPatternError);
                 if (test) tests.push(test);
 
-                // multipleMatches only for non-group regex patterns
+                // multipleMatches only for non-group regex patterns. buildMatcher
+                // above already compiled (and reported) this same pattern, so the
+                // second compile stays quiet rather than doubling the report.
                 if (!item.isGroup && item.multipleMatches && pattern.type === 'regex' && pattern.text) {
                     const re = compilePcre(pattern.text);
                     if (re) {
@@ -965,6 +1013,13 @@ export class TriggerEngine {
             ? null
             : { start: effOffset, length: effectiveLine.length };
 
+        // The last match this entry produced on this line, or null when nothing
+        // matched. Feeds the shared fire-length bookkeeping at the end of the
+        // walk — Mudlet arms mKeepFiring from BOTH the single-line and the
+        // multiline branch of TTrigger::match, so it has to be decided after
+        // whichever branch ran rather than inside one of them.
+        let lastMatch: TriggerMatch | null = null;
+
         try {
             if (item.isGroup) {
                 // Chain head: match opens the chain for children.
@@ -983,6 +1038,10 @@ export class TriggerEngine {
                         out.push(matchResultToTriggerMatch(item, this.shiftResultSpans(result, effOffset)));
                     }
                 }
+                // A group is a folder holding the chain open for its children;
+                // its own fire length has nothing to re-run, so it is left out
+                // of the bookkeeping below.
+                return;
             } else if (entry.kind === 'and') {
                 const completed = this.processAndTrigger(entry, effectiveLine, isPrompt, currentLine);
                 for (const r of completed) {
@@ -994,21 +1053,7 @@ export class TriggerEngine {
                     }
                     out.push(r);
                 }
-                // A fire length keeps the trigger going for that many more lines —
-                // Mudlet's mKeepFiring, set on every completion and spent one line
-                // at a time. Only a childless trigger re-runs its own script; one
-                // with children is holding the chain open FOR them.
-                const fireLength = item.fireLength ?? 0;
-                if (completed.length > 0 && fireLength > 0 && !this.hasChildren.has(item.id)) {
-                    this.keepFiring.set(item.id, {
-                        until: currentLine + fireLength,
-                        match: completed[completed.length - 1],
-                    });
-                } else if (completed.length === 0) {
-                    const keep = this.keepFiring.get(item.id);
-                    if (keep && currentLine <= keep.until) out.push(keep.match);
-                    else if (keep) this.keepFiring.delete(item.id);
-                }
+                if (completed.length > 0) lastMatch = completed[completed.length - 1];
             } else {
                 // OR entry (non-group)
                 if (entry.testAll) {
@@ -1023,7 +1068,8 @@ export class TriggerEngine {
                     const merged = mergeAllMatches(entry.testAll(effectiveLine));
                     if (merged !== null) {
                         if (isChainHead) this.openChain(item, currentLine, merged);
-                        out.push(matchResultToTriggerMatch(item, this.shiftResultSpans(merged, effOffset)));
+                        lastMatch = matchResultToTriggerMatch(item, this.shiftResultSpans(merged, effOffset));
+                        out.push(lastMatch);
                     }
                 } else {
                     if (seen.has(seenKey)) return;
@@ -1035,13 +1081,54 @@ export class TriggerEngine {
                     if (result !== null) {
                         seen.add(seenKey);
                         if (isChainHead) this.openChain(item, currentLine, result);
-                        out.push(matchResultToTriggerMatch(item, this.shiftResultSpans(result, effOffset)));
+                        lastMatch = matchResultToTriggerMatch(item, this.shiftResultSpans(result, effOffset));
+                        out.push(lastMatch);
                     }
                 }
             }
+            this.applyFireLength(item, currentLine, lastMatch, out);
         } finally {
             colorWindowRef.window = previousColorWindow;
         }
+    }
+
+    /**
+     * Mudlet's `mKeepFiring`: a fire length ("Keep firing the script for this
+     * many more lines, after the trigger or chain has matched") keeps a trigger
+     * going once it has matched.
+     *
+     * Desktop arms it from BOTH arms of `TTrigger::match` — the single-line
+     * branch at `src/TTrigger.cpp:995-999`
+     * (`if (!mIsMultiline) { if (ret) { conditionMet = true; mKeepFiring =
+     * mStayOpen; break; } }`) and the multiline completion at
+     * `src/TTrigger.cpp:1016` — and spends it one line at a time at
+     * `src/TTrigger.cpp:1083-1090`, where only a childless trigger re-runs its
+     * own script; one with children is holding the chain open FOR them.
+     *
+     * mudix used to arm it only in the AND branch, so fire length was inert on
+     * single-line (OR) triggers even though the editor offers the field in both
+     * modes (mudlet-web#61). Sharing the bookkeeping here keeps the two in step.
+     */
+    private applyFireLength(
+        item: TriggerNode,
+        currentLine: number,
+        lastMatch: TriggerMatch | null,
+        out: TriggerMatch[],
+    ): void {
+        if (lastMatch) {
+            // Mudlet's `mKeepFiring = mStayOpen` — re-armed on every match, and
+            // (like desktop's `!conditionMet` guard below) never spent on the
+            // same line the trigger matched on.
+            const fireLength = item.fireLength ?? 0;
+            if (fireLength > 0 && !this.hasChildren.has(item.id)) {
+                this.keepFiring.set(item.id, { until: currentLine + fireLength, match: lastMatch });
+            }
+            return;
+        }
+        const keep = this.keepFiring.get(item.id);
+        if (!keep) return;
+        if (currentLine <= keep.until) out.push(keep.match);
+        else this.keepFiring.delete(item.id);
     }
 
     // ── Unified pass (permanent + temporary, in registration order) ───────────
@@ -1279,6 +1366,18 @@ export class TriggerEngine {
     /** How the engine switches off a permanent trigger it stopped. */
     setPermDisabler(fn: ((nodeId: string) => void) | null): void {
         permDisableRef.fn = fn;
+    }
+
+    /**
+     * Where a pattern that failed to compile is reported. ScriptingEngine wires
+     * this to the error log (the Errors tab), tagged with the owning trigger so
+     * the row gets a jump-to-source button; unset (tests, teardown) the report
+     * is dropped. `source` is absent for temporary triggers, which have no node.
+     */
+    setCompileErrorReporter(
+        fn: ((message: string, source?: { id: string; name: string }) => void) | null,
+    ): void {
+        compileErrorRef.fn = fn;
     }
 
     /** Rebuild the merged, path-sorted processing list from the current

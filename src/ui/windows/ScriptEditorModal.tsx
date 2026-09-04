@@ -34,6 +34,11 @@ export function ScriptEditorModal({ connectionId, session, vfs, scriptingEngineR
             title="Scripts"
             className="script-editor-modal"
             onClose={onClose}
+            // Escape belongs to what's inside: ScriptEditorPanel's key capture,
+            // LuaEditor and ScriptSearch each claim it, exactly as Mudlet's
+            // dlgTriggerEditor spends it on leaving key-grab mode. It is a
+            // QMainWindow, not a QDialog, for that reason.
+            closeOnEscape={false}
             savedBounds={savedBounds}
             onBoundsChange={b => {
                 boundsRef.current = { ...boundsRef.current, ...b };

@@ -37,6 +37,14 @@ Browser storage is not a filing cabinet. Data disappears when:
   one browser profile. Chrome and Firefox on the same machine see nothing of each
   other's data.
 
+## Deleting a profile
+
+Deleting a profile from the start screen takes its storage with it: its
+filesystem, its map, its logs, its saved layout, and the folder link if it had
+one. It does **not** touch a linked folder on your disk — that's your directory,
+and the files stay exactly where they are. Everything else is gone for good, so
+export first if you might want it back.
+
 ## Backing up
 
 **Export profiles…** on the start screen downloads a `.zip` containing one Mudlet

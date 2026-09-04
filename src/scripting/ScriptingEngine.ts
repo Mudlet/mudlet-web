@@ -9,7 +9,7 @@ import type {TimerEngine} from '../mud/timers/TimerEngine';
 import type {KeyEngine, KeyNode} from '../mud/keybindings/KeyEngine';
 import {findReservedKeybindings, reservedKeyNote} from '../mud/keybindings/browserReservedKeys';
 import type {ButtonNode, ScriptNode} from '../storage/schema';
-import {buildEffectivelyEnabledIds, isEffectivelyEnabled} from '../storage/schema';
+import {buildEffectivelyEnabledIds, isColorizing, isEffectivelyEnabled} from '../storage/schema';
 import {useAppStore, connectionUrl} from '../storage';
 import {isPackageRemovable} from '../branding';
 import {saveProfileData} from '../storage/profileVfsData';
@@ -72,6 +72,7 @@ import {ensureDefaultPackages} from '../import/defaultPackages';
 import {serializeMudletXml, type SerializeInput} from '../import/mudletXmlExport';
 import {isMudletProfileVfs, readNewestParseableXml} from '../import/mudletLink';
 import {buildLinkedWriteback, mudletTimestamp} from '../import/mudletWriteback';
+import {buildHostBaseXml, RETAINED_HOST_PATH} from '../import/mudletProfileExport';
 import {describeThrown} from '../utils/describeThrown';
 
 // Linked-profile write-back. serializeMudletXml now emits Mudlet's exact format
@@ -161,6 +162,28 @@ function mudletInfo(message: string): string {
 // notices (e.g. browser-reserved keybindings) that aren't script errors.
 function mudletWarn(message: string): string {
     return `\x1b[33m[ WARN ]  - ${message}\x1b[0m`;
+}
+
+// Mudlet colours a postMessage() line off the "[ PREFIX ] -" it starts with, printing
+// the prefix in one colour and the body in another (cTelnet::postMessage,
+// src/ctelnet.cpp:4453-4520). These are its exact RGB pairs for the prefixes this
+// client posts; anything unrecognised is passed through uncoloured.
+const POST_MESSAGE_COLOURS: Record<string, [prefix: string, body: string]> = {
+    ERROR: ['255;0;0',    '255;255;50'],
+    LUA:   ['80;160;255', '50;200;50'],
+    WARN:  ['0;150;190',  '190;150;0'],
+    ALERT: ['190;100;50', '190;190;50'],
+    INFO:  ['0;150;190',  '0;160;0'],
+    OK:    ['0;160;0',    '190;100;50'],
+};
+
+/** Render a Mudlet `postMessage()` string — one already carrying its
+ *  `"[ PREFIX ]  - body"` form — with Mudlet's own two-tone colouring. */
+function mudletPostMessage(message: string): string {
+    const m = /^(\[\s*([A-Z]+)\s*\]\s*-\s*)([\s\S]*)$/.exec(message);
+    const colours = m ? POST_MESSAGE_COLOURS[m[2]] : undefined;
+    if (!m || !colours) return message;
+    return `\x1b[38;2;${colours[0]}m${m[1]}\x1b[38;2;${colours[1]}m${m[3]}\x1b[0m`;
 }
 
 /** Mudlet `permKey` modifier int → KeyNode.modifiers string array. The values
@@ -411,12 +434,30 @@ export class ScriptingEngine implements EngineHost {
         // exists, …) have no engine behind them. Every field those methods read
         // is assigned above, and nothing calls them synchronously from here.
         this.api.setHost(this);
+        // A trigger pattern that fails to compile is reported the way Mudlet
+        // reports it (TTrigger::setRegexCodeList, src/TTrigger.cpp:144-153):
+        // into the error log, tagged with the owning trigger so the Errors tab
+        // row gets a jump-to-source button. Wired here rather than alongside the
+        // other trigger-engine hooks in the Lua-runtime promise — profile data
+        // loads (and so triggers compile) before that resolves, and a compile
+        // error from the first loadPerm would otherwise fall on the floor.
+        triggerEngine.setCompileErrorReporter((message, source) => {
+            this.api.printError(
+                source ? `[${formatErrorPrefix('trigger', source.name)}] ${message}` : `[trigger] ${message}`,
+                source ? { kind: 'trigger', id: source.id, name: source.name } : undefined,
+            );
+        });
         this.bridgeEvents(session);
         // Let WindowManager raise system events (e.g. sysUserWindowResizeEvent)
         // through the same path as everything else.
         session.windows.onRaiseEvent = (event, args) => this.raiseEvent(event, args);
         // Map UI "download map from game" → the Client.Map/MMP download flow.
         session.windows.onDownloadMap = () => void this.downloadMap();
+        // Mudlet's postMessage(): client messages for the player (e.g. a map file
+        // whose format version can't be read) go on the main console, coloured off
+        // their "[ PREFIX ] -" the way cTelnet::postMessage does.
+        session.windows.onSystemMessage = (text) =>
+            this.session.events.emit('message', mudletPostMessage(text), 'info', Date.now());
         // Double-clicking a room on the map walks there (Mudlet
         // T2DMap::initiateSpeedWalk): pathfind, then hand the route to the
         // mapper package's doSpeedWalk.
@@ -843,8 +884,9 @@ export class ScriptingEngine implements EngineHost {
      *
      * Basing on an existing save is what keeps the ~130 `<Host>` fields mudix
      * doesn't model — and any element it doesn't understand — from being dropped
-     * on the way out. A profile with no save to base on gets the empty skeleton
-     * below, so its `<Host>` carries only the settings mudix does model.
+     * on the way out. With no save to base on, a profile imported from Mudlet
+     * falls back to the `<Host>` retained at import; one born in mudix gets the
+     * empty skeleton, so its `<Host>` carries only the settings mudix does model.
      */
     private buildProfileXml(baseXml?: string): string {
         const s = useAppStore.getState();
@@ -859,9 +901,37 @@ export class ScriptingEngine implements EngineHost {
         };
         const values = s.connectionVariables[id]?.values ?? [];
         return buildLinkedWriteback(
-            baseXml ?? EMPTY_PROFILE_XML, trees,
+            baseXml ?? this.retainedHostXml() ?? EMPTY_PROFILE_XML, trees,
             { hidden: [], variables: values }, s.connectionProfile[id],
         );
+    }
+
+    /**
+     * The `<Host>` retained when this profile was imported from Mudlet, restamped
+     * with the connection's current identity and package set — the retained copy
+     * still names them as they were at import.
+     *
+     * Only reached when there's no `current/*.xml` to base on, so it never
+     * displaces a linked folder's own save. Undefined for a profile that was
+     * never imported, or when the retained file is missing or unreadable.
+     */
+    private retainedHostXml(): string | undefined {
+        const vfs = this.vfs;
+        if (!vfs) return undefined;
+        let retained: string;
+        try {
+            if (!vfs.exists(RETAINED_HOST_PATH)) return undefined;
+            retained = vfs.readFile(RETAINED_HOST_PATH);
+        } catch (err) {
+            console.warn('[ScriptingEngine] retained <Host> unreadable:', err);
+            return undefined;
+        }
+        const s = useAppStore.getState();
+        const connection = s.connections.find(c => c.id === this.connectionId);
+        if (!connection) return retained;
+        const packageNames = (s.connectionPackages[this.connectionId] ?? [])
+            .map(p => p.name).filter(Boolean);
+        return buildHostBaseXml(connection, packageNames, retained);
     }
 
     /**
@@ -2147,7 +2217,7 @@ export class ScriptingEngine implements EngineHost {
                 // panel's progress bar) while a freshly-downloaded map parses.
                 const buf = new ArrayBuffer(bytes.byteLength);
                 new Uint8Array(buf).set(bytes);
-                ok = await this.session.windows.loadMapAsync(buf);
+                ok = await this.session.windows.loadMapAsync(buf, url);
             }
             if (!ok) {
                 this.api.printError(`[downloadMap] failure in parsing downloaded map from ${url}`);
@@ -3637,6 +3707,7 @@ export class ScriptingEngine implements EngineHost {
         this.triggerEngine.setRunawayReporter(null);
         this.api.setCaptureShiftHook(null);
         this.triggerEngine.setPermDisabler(null);
+        this.triggerEngine.setCompileErrorReporter(null);
         // Unbind the host. This does NOT guard against late *Lua* calls —
         // lua_close ran a few lines up. It guards against DOM-side callers
         // that outlive the engine: a rendered line's hyperlink onClick closure
@@ -3745,6 +3816,14 @@ export class ScriptingEngine implements EngineHost {
         namedSpans?: Record<string, { start: number; length: number }>,
         matchStart?: number,
     ): void {
+        // Built-in sound, first: TTrigger::execute plays it ahead of the command
+        // and the script (TTrigger.cpp:1320-1330), at full volume — desktop has
+        // no GUI for the level either — and through the API media origin, so
+        // muteMediaAPI silences it like any playSoundFile.
+        if (trigger.soundTrigger && trigger.soundFile) {
+            void this.api.sounds.playSound({ name: trigger.soundFile, volume: 100, origin: 'api' });
+        }
+
         // Built-in command send
         if (trigger.command) {
             const cmd = trigger.command.replace(/%(\d)/g, (_, d) => {
@@ -3758,7 +3837,7 @@ export class ScriptingEngine implements EngineHost {
         }
 
         // Built-in highlight
-        if (trigger.highlight && matchedText) {
+        if (isColorizing(trigger) && trigger.highlight && matchedText) {
             const { fg, bg } = trigger.highlight;
             if (fg || bg) {
                 const idx = this.api.selectString(matchedText, 1);

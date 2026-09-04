@@ -1,4 +1,5 @@
 import { sanitizeControlChars } from './mudletControlChars';
+import { isColorizing } from '../storage/schema';
 import type {
     AliasNode,
     ButtonNode,
@@ -270,26 +271,38 @@ function emitTriggers(xml: XmlBuilder, nodes: TriggerNode[], opts: ExportOptions
             isTempTrigger: 'no',
             isMultiline: n.multiline ? 'yes' : 'no',
             isPerlSlashGOption: n.multipleMatches ? 'yes' : 'no',
-            isColorizerTrigger: n.highlight ? 'yes' : 'no',
+            isColorizerTrigger: isColorizing(n) ? 'yes' : 'no',
             isFilterTrigger: n.isFilter ? 'yes' : 'no',
-            isSoundTrigger: 'no',
-            isColorTrigger: 'no',
+            isSoundTrigger: n.soundTrigger ? 'yes' : 'no',
+            isColorTrigger: n.colorTrigger ? 'yes' : 'no',
+            // These two stay hardcoded, and that IS parity: desktop derives them
+            // from mColorTriggerFgAnsi/BgAnsi (XMLexport.cpp:1009-1010), which
+            // no reader ever restores — neither XMLimport::readTrigger nor
+            // EditorItemXMLHelpers touches them — so a trigger that came from a
+            // file always sits at scmIgnored and desktop writes "no" for it on
+            // the next save too. There is nothing here to preserve.
             isColorTriggerFg: 'no',
             isColorTriggerBg: 'no',
         }),
         (xml, n) => {
             xml.leaf('name', n.name);
             xml.leaf('script', n.code ?? '');
-            xml.leaf('triggerType', '0');
+            // The node-level kind desktop keeps beside the per-pattern kinds
+            // (XMLexport.cpp:1017). Written back verbatim; 0 (REGEX_SUBSTRING)
+            // is TTrigger's own default for a node that never had one.
+            xml.leaf('triggerType', String(n.triggerType ?? 0));
             xml.leaf('conditonLineDelta', String(n.delta ?? 0));
             xml.leaf('mStayOpen', String(n.fireLength ?? 0));
             xml.leaf('mCommand', n.command ?? '');
             xml.leaf('packageName', n.packageName ?? '');
             xml.leaf('mFgColor', n.highlight?.fg || 'transparent');
             xml.leaf('mBgColor', n.highlight?.bg || 'transparent');
-            xml.leaf('mSoundFile', '');
-            xml.leaf('colorTriggerFgColor', '#000000');
-            xml.leaf('colorTriggerBgColor', '#000000');
+            xml.leaf('mSoundFile', n.soundFile ?? '');
+            // '#000000' is what desktop emits for an unset colour: the members
+            // are default-constructed QColors and QColor().name() is "#000000"
+            // (XMLexport.cpp:1025-1026).
+            xml.leaf('colorTriggerFgColor', n.colorTriggerFgColor || '#000000');
+            xml.leaf('colorTriggerBgColor', n.colorTriggerBgColor || '#000000');
             xml.open('regexCodeList');
             for (const p of (n.patterns ?? [])) xml.leaf('string', p.text ?? '');
             xml.close('regexCodeList');

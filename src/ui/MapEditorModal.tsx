@@ -126,6 +126,11 @@ export function MapEditorModal({ connectionId, connectionName, manager, onClose 
             defaultH={Math.min(900, Math.max(600, window.innerHeight - 80))}
             minW={600}
             minH={400}
+            // The embedded editor owns Escape (cancelling a selection or an
+            // in-progress edit), and closing out from under unsaved map changes
+            // would lose work. Same reasoning as the script editor: on the
+            // desktop this is editing surface, not a QDialog.
+            closeOnEscape={false}
             bodyClassName="map-editor-modal-body"
         >
             <Suspense fallback={<div className="map-editor-loading">Loading editor…</div>}>

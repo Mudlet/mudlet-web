@@ -2,6 +2,7 @@ import { zipSync, strToU8 } from 'fflate';
 import type { MudConnection } from '../storage/schema';
 import type { PersistedProfileData } from '../storage/profileVfsData';
 import { buildLinkedWriteback } from './mudletWriteback';
+import { applyHostIdentity, extractHostPackageXml, MUDLET_XML_PROLOG } from './mudletHost';
 
 // The inverse of mudletProfileImport: turn a mudix profile back into a *Mudlet
 // profile folder* — `current/<stamp>.xml`, `map/`, and the profile's loose VFS
@@ -9,10 +10,13 @@ import { buildLinkedWriteback } from './mudletWriteback';
 // read, so export/import is one format rather than two, and the same folder can
 // be dropped into desktop Mudlet's profile directory.
 //
-// The XML is produced by feeding a minimal <Host> skeleton through
-// `buildLinkedWriteback` — the same path the linked-folder write-back uses — so
-// automation packages, the VariablePackage and the ~30 modeled Host settings are
-// serialized by tested code instead of a second, parallel emitter.
+// The XML is produced by feeding a <Host> base through `buildLinkedWriteback` —
+// the same path the linked-folder write-back uses — so automation packages, the
+// VariablePackage and the ~30 modeled Host settings are serialized by tested
+// code instead of a second, parallel emitter. The base is the profile's own
+// retained `<Host>` when it has one (see RETAINED_HOST_PATH), so the ~100
+// settings mudix doesn't model survive the trip out; a profile born in mudix has
+// nothing to retain and starts from the empty skeleton.
 
 /** Mudlet names its saves `YYYY-MM-DD#HH-mm-ss.xml`; the importer sorts by that
  *  filename when no mtimes are available, so the stamp has to be sortable. */
@@ -26,6 +30,18 @@ export function formatSaveStamp(date: Date): string {
  *  override, auto-reconnect). Written beside the XML so a mudix→mudix round-trip
  *  keeps them; desktop Mudlet ignores the dot-directory entirely. */
 export const CONNECTION_SIDECAR_PATH = '.mudix/connection.json';
+
+/** Where a profile imported from Mudlet keeps its original `<HostPackage>`,
+ *  inside its own VFS. `extractHostPackageXml` produces it at import time; the
+ *  export and `saveProfile()` base their `<Host>` on it so the settings mudix
+ *  doesn't model don't revert to Mudlet's defaults. Dot-prefixed like the rest
+ *  of mudix's bookkeeping, so desktop Mudlet ignores it.
+ *
+ *  Absent for a profile created in mudix (nothing unmodeled to preserve), for a
+ *  linked folder (its own `current/*.xml` is the live original), and for
+ *  profiles imported before this file existed — their `<Host>` was already
+ *  dropped at import and can't be recovered. */
+export const RETAINED_HOST_PATH = '.mudix/host.xml';
 
 export interface ConnectionSidecar {
     mode?: MudConnection['mode'];
@@ -47,12 +63,6 @@ export function buildConnectionSidecar(c: MudConnection): ConnectionSidecar {
     return out;
 }
 
-function escapeXml(s: string): string {
-    return s.replace(/[&<>"']/g, c => (
-        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]!
-    ));
-}
-
 /** The `<url>`/`<port>` a Mudlet `<Host>` should carry for this connection.
  *  A websocket profile has no host/port pair, so its ws(s):// URL goes in
  *  `<url>` — the sidecar carries the mode, and the ws scheme is a second signal
@@ -63,37 +73,63 @@ function hostAddress(c: MudConnection): { url: string; port: number } {
 }
 
 /**
- * A minimal but valid Mudlet profile save. `<Host>` carries only the identity
- * plus the installed-package list; every modeled setting is written onto it by
- * `buildLinkedWriteback`, and unmodeled Mudlet settings are simply absent — the
- * importer merges what's present over defaults, and desktop Mudlet fills its own.
+ * A minimal but valid Mudlet profile save: Mudlet's version stamp and an empty
+ * `<Host>` for the identity and the modeled settings to fill in. Unmodeled
+ * Mudlet settings are simply absent — the importer merges what's present over
+ * defaults, and desktop Mudlet fills its own.
  */
-function hostSkeleton(connection: MudConnection, packageNames: string[]): string {
+const EMPTY_HOST_XML = MUDLET_XML_PROLOG
+    + '<MudletPackage version="1.001"><HostPackage><Host></Host></HostPackage></MudletPackage>';
+
+/**
+ * The `<Host>` document an export starts from: the profile's retained original
+ * when it has one — carrying the ~100 settings mudix doesn't model — else the
+ * empty skeleton. A retained document that somehow has no `<Host>` falls back
+ * too, so a hand-edited or truncated file degrades to today's behaviour instead
+ * of failing the export.
+ */
+function hostBaseDoc(retained: string | undefined): Document {
+    const extracted = retained ? extractHostPackageXml(retained) : null;
+    if (extracted) {
+        const doc = new DOMParser().parseFromString(extracted, 'text/xml');
+        if (doc.getElementsByTagName('Host')[0]) return doc;
+    }
+    return new DOMParser().parseFromString(EMPTY_HOST_XML, 'text/xml');
+}
+
+/**
+ * The base `buildLinkedWriteback` writes this profile's automation and settings
+ * onto. The connection identity and package list are stamped on either way: a
+ * retained `<Host>` holds the name, address and packages the profile had when it
+ * was imported, and the live connection record is what's authoritative now.
+ */
+export function buildHostBaseXml(
+    connection: MudConnection,
+    packageNames: string[],
+    retained?: string,
+): string {
+    const doc = hostBaseDoc(retained);
     const { url, port } = hostAddress(connection);
-    const installed = packageNames.length
-        ? `\n      <mInstalledPackages>\n${packageNames
-            .map(n => `        <string>${escapeXml(n)}</string>`)
-            .join('\n')}\n      </mInstalledPackages>`
-        : '\n      <mInstalledPackages></mInstalledPackages>';
-    return '<?xml version="1.0" encoding="UTF-8"?>\n'
-        + '<!DOCTYPE MudletPackage>\n'
-        + '<MudletPackage version="1.001">\n'
-        + '  <HostPackage>\n'
-        + '    <Host>\n'
-        + `      <name>${escapeXml(connection.name)}</name>\n`
-        + `      <url>${escapeXml(url)}</url>\n`
-        + `      <port>${port}</port>`
-        + `${installed}\n`
-        + '    </Host>\n'
-        + '  </HostPackage>\n'
-        + '</MudletPackage>\n';
+    applyHostIdentity(doc.getElementsByTagName('Host')[0], {
+        name: connection.name,
+        url,
+        port,
+        installedPackages: packageNames,
+    });
+    return new XMLSerializer().serializeToString(doc);
 }
 
 /** Serialize one profile's automation, variables and settings as Mudlet profile XML. */
-export function buildProfileXml(connection: MudConnection, data: PersistedProfileData): string {
+export function buildProfileXml(
+    connection: MudConnection,
+    data: PersistedProfileData,
+    /** The profile's retained `<HostPackage>` (or a full save to take it from),
+     *  so unmodeled Mudlet settings survive. See {@link RETAINED_HOST_PATH}. */
+    hostBaseXml?: string,
+): string {
     const packageNames = (data.packages ?? []).map(p => p.name).filter(Boolean);
     return buildLinkedWriteback(
-        hostSkeleton(connection, packageNames),
+        buildHostBaseXml(connection, packageNames, hostBaseXml),
         {
             scripts: data.scripts ?? [],
             aliases: data.aliases ?? [],
@@ -120,6 +156,10 @@ export interface ProfileExportSource {
     /** Loose VFS files (packages, fonts, sounds, …), keyed relative to the
      *  profile root. `.mudix/` is expected to be filtered out by the collector. */
     files: Record<string, Uint8Array>;
+    /** The profile's retained Mudlet `<HostPackage>` — `.mudix/host.xml`, or a
+     *  linked folder's own newest save. Undefined for a profile that was never
+     *  imported from Mudlet: it has no unmodeled Host settings to preserve. */
+    hostBaseXml?: string;
     mapBytes?: Uint8Array;
     logs?: ExportLog[];
 }
@@ -143,7 +183,7 @@ export function buildProfileFolder(src: ProfileExportSource, stamp: string): Rec
         if (path === '.mudix/profile.json') continue;
         out[path] = bytes;
     }
-    out[`current/${stamp}.xml`] = strToU8(buildProfileXml(src.connection, src.data));
+    out[`current/${stamp}.xml`] = strToU8(buildProfileXml(src.connection, src.data, src.hostBaseXml));
     out[CONNECTION_SIDECAR_PATH] = strToU8(JSON.stringify(buildConnectionSidecar(src.connection), null, 2));
     if (src.mapBytes) out[`map/${stamp}map.dat`] = src.mapBytes;
     for (const log of src.logs ?? []) {
