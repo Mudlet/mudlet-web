@@ -87,6 +87,14 @@ export function installWindowBindings({ lua, api, channel }: BindingContext): vo
     // for what goes into the merged set.
     lua.global.set('getAvailableFonts', () => api.getAvailableFonts());
 
+    // The installed family a requested name means, or nil. Bridge.lua's
+    // setFont() uses it in place of an exact key lookup into the table above,
+    // so a "Family Style" name and a differently-cased one both resolve — and
+    // so the family that gets stored is the one the font database spells,
+    // which is what getFont() then reads back.
+    lua.global.set('__resolveFontFamily', (name: unknown) =>
+        (typeof name === 'string' ? api.resolveFontFamily(name) : null) ?? undefined);
+
     // Mudlet calcFontSize(size [, family]) | calcFontSize(windowName).
     // Dispatches on first-arg type — Lua-style: numeric strings (e.g. from
     // a trigger capture) coerce to the size overload. Returns [w, h] from

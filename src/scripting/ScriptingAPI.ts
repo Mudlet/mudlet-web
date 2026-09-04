@@ -223,6 +223,18 @@ const MUDLET_ROOM_SIZE_SCALE = 10;
  *  `commandLineHistorySaveSize` in CommandBar, `showTabConnectionIndicators` in
  *  the window title). Keys with live, non-bag side-effects (showSentText,
  *  mapperPanelVisible) are handled explicitly in get/setConfig instead. */
+/** Words Qt's font database reads as a STYLE on the end of a family name rather
+ *  than as part of it — the set QFontDatabase::styleString can produce, which is
+ *  weight and slant only. Width words (Condensed, Narrow, Expanded) are
+ *  deliberately absent: Qt keeps those in the family name, so "Arial Narrow" is
+ *  a family and trimming it would silently substitute Arial. See
+ *  {@link ScriptingAPI.resolveFontFamily}. */
+const FONT_STYLE_WORDS = new Set([
+    'thin', 'extralight', 'ultralight', 'light', 'regular', 'normal', 'book', 'roman',
+    'medium', 'demibold', 'semibold', 'bold', 'extrabold', 'ultrabold', 'black', 'heavy',
+    'italic', 'oblique',
+]);
+
 const CONFIG_PERSIST_ONLY: Record<string, {
     type: 'bool' | 'num' | 'str';
     default: boolean | number | string;
@@ -620,6 +632,14 @@ class ScriptingLabelsAPI {
     }
     getBackgroundColor(name: string): { r: number; g: number; b: number; a: number } | null {
         return this.manager.getBackgroundColor(name);
+    }
+    /** Backs the label branch of the global setFont/getFont — see
+     *  {@link ScriptingAPI.setFont}. */
+    setFont(name: string, family: string): boolean {
+        return this.manager.setFont(name, family);
+    }
+    getFont(name: string): string | null {
+        return this.manager.getFont(name);
     }
     setStyleSheet(name: string, css: string): boolean {
         const rewrite = this.cssRewriter();
@@ -5718,7 +5738,12 @@ export class ScriptingAPI {
             useAppStore.getState().patchConnectionProfile(this.connectionId, { outputFont: next });
             return true;
         }
-        return this.session.windows.setFont(win, fam);
+        // Labels are not in the window registry — they are overlay widgets with
+        // their own manager — so a label was the one window kind setFont could
+        // not reach at all, and Geyser.Label:setFont took its "Qt will pick
+        // something close" branch on every call. Fall through to them rather
+        // than reporting the name as unknown.
+        return this.session.windows.setFont(win, fam) || this.labels.setFont(win, fam);
     }
 
     /**
@@ -5735,7 +5760,14 @@ export class ScriptingAPI {
             selectProfileField(useAppStore.getState(), this.connectionId, 'outputFont')?.family
             || DEFAULT_OUTPUT_FONT_FAMILY;
         if (!win || win === 'main') return configured();
-        if (!this.session.windows.has(win)) return null;
+        if (!this.session.windows.has(win)) {
+            // A label, or nothing at all. Its own font when it has one; the
+            // profile font when it does not, matching what a window with no
+            // override answers rather than handing back "".
+            const label = this.labels.getFont(win);
+            if (label === null) return null;
+            return label || configured();
+        }
         return this.session.windows.getFont(win) ?? configured();
     }
 
@@ -5801,6 +5833,45 @@ export class ScriptingAPI {
         for (const f of getCachedLocalFonts()) set[f] = true;
         void primeLocalFontsCache();
         return set;
+    }
+
+    /**
+     * The installed family a requested font name means, or null if none does.
+     *
+     * Mudlet hands the name to QFont, which resolves it three ways before
+     * giving up, and scripts depend on all three: the exact family, the same
+     * family in any casing, and a "Family Style" name whose trailing style word
+     * is a weight/slant request rather than part of the family — "Ubuntu Mono
+     * Bold" is Ubuntu Mono asked for in bold, not a family of that name. The
+     * answer is always spelled the way the font database spells it, because
+     * callers read it straight back (Geyser.Label:setFont stores getFont()'s
+     * reply so what it remembers and what the widget got cannot drift).
+     *
+     * Only weight and slant words are trimmed, never width ones: Qt keeps width
+     * in the family name ("Arial Narrow" is its own family), so trimming those
+     * would resolve a name to a font the caller did not ask for. A trailing word
+     * that is not a style word stops the trim outright, so "Arial Nonsense"
+     * fails rather than quietly becoming Arial.
+     */
+    resolveFontFamily(name: string): string | null {
+        const wanted = (name ?? '').trim();
+        if (!wanted) return null;
+        const installed = this.getAvailableFonts();
+        if (installed[wanted]) return wanted;
+
+        const byLowerName = new Map<string, string>();
+        for (const family of Object.keys(installed)) byLowerName.set(family.toLowerCase(), family);
+        const insensitive = byLowerName.get(wanted.toLowerCase());
+        if (insensitive) return insensitive;
+
+        // Right to left, because a style can be several words ("Bold Italic").
+        const words = wanted.split(/\s+/);
+        for (let end = words.length - 1; end > 0; end--) {
+            if (!FONT_STYLE_WORDS.has(words[end].toLowerCase())) break;
+            const base = byLowerName.get(words.slice(0, end).join(' ').toLowerCase());
+            if (base) return base;
+        }
+        return null;
     }
 
     /** Flush any buffered partial lines to the main output and all open windows. Called after each event dispatch. */

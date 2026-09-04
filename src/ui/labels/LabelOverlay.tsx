@@ -209,6 +209,12 @@ function Label({ l, manager, zIndex }: { l: LabelState; manager: LabelManager; z
         cursor: l.cursor ?? (l.onClick ? 'pointer' : undefined),
         zIndex,
     };
+    // The widget font (setFont on the label), applied before the stylesheet so
+    // a QSS `font-family` still overrides it — that is the Qt precedence, where
+    // a stylesheet beats a widget's own QFont.
+    if (l.fontFamily) {
+        style.fontFamily = l.fontFamily;
+    }
     if (inlineFromStylesheet) {
         Object.assign(style, inlineFromStylesheet);
     } else if (l.fillBackground) {

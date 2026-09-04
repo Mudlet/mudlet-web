@@ -509,10 +509,23 @@ function setFont(a, b)
     if font == "" then
         return nil, "font must not be empty"
     end
-    if type(font) == 'string' and not getAvailableFonts()[font] then
-        return nil, "font '" .. font .. "' is not available"
+    -- What gets applied is the family the font database names, not the string
+    -- the caller typed: "Ubuntu Mono Bold" is Ubuntu Mono asked for in bold and
+    -- "ubuntu mono" is the same family in the wrong case. Storing the resolved
+    -- name is what lets getFont() answer canonically, which Geyser.Label:setFont
+    -- relies on to keep what it remembers and what the widget got in step.
+    if type(font) == 'string' then
+        local resolved = __resolveFontFamily(font)
+        if resolved == nil then
+            return nil, "font '" .. font .. "' is not available"
+        end
+        font = resolved
     end
-    if __setFont(a, b) then return true end
+    if b ~= nil then
+        if __setFont(a, font) then return true end
+    elseif __setFont(font) then
+        return true
+    end
     return nil, "window \"" .. tostring(name) .. "\" not found"
 end
 
