@@ -3,29 +3,30 @@
 # to remember, so the spec pin reached 28 commits and 249 missing `it()` cases
 # before a QA sweep noticed.
 #
-# ## One commit, both trees
+# Daily, each vendored tree is re-synced and then handled the way a human would
+# handle the result:
 #
-# `sync:mudlet-lua` (the Lua runtime + the vendored default packages) and
+#   * nothing changed    → the run ends green, nothing is opened.
+#   * something changed  → push the tree's branch, open or update its PR.
+#   * that PR goes green → squash-merge it and delete the branch.
+#   * that PR goes red   → leave it open, open (or comment on) a triage issue.
+#
+# ## What travels together, and what doesn't
+#
+# `sync:mudlet-lua` (the Lua runtime + vendored default packages) and
 # `sync:mudlet-specs` (Mudlet's busted corpus, which tests that runtime) are one
 # operation, not two: upstream lands a behaviour change and its spec in the same
 # commit, so moving one side alone manufactures a failure that exists in neither
 # Mudlet nor here. Both `SYNCED.md` files already say to keep the two on the same
-# commit; this resolves the upstream sha once and passes it to both scripts, so
-# that can't drift even if `development` moves mid-run.
+# commit, and this job resolves the upstream sha once and passes `--ref <sha>` to
+# both, so they cannot drift apart even if `development` moves mid-run.
 #
-# Daily, this runs both syncs and then does what a human would with the result:
-#
-#   * nothing changed    → the run ends green, nothing is opened.
-#   * something changed  → push `chore/sync-mudlet-upstream`, open or update a PR.
-#   * that PR goes green → squash-merge it and delete the branch.
-#   * that PR goes red   → leave it open, open (or comment on) a triage issue.
-#
-# Red is an *expected* outcome, not a malfunction. The spec corpus is a verbatim
-# mirror, so a spec Mudlet just added for behaviour web does not have yet is a
-# parity report; triage means fixing the gap or recording an
-# `e2e/knownDivergences.ts` entry, and both are done by pushing to this branch.
-# Those commits survive: when a PR is already open the next run syncs on top of
-# it instead of recreating it.
+# `sync:mudlet-games` is the opposite case and gets its own job, branch and PR.
+# The catalogue is parsed out of `TGameDetails.h` and no spec asserts anything
+# about it, so it cannot be what turns the corpus red — and it must not wait
+# behind a corpus that IS red. A parity gap can sit in triage for a week; a new
+# game in Mudlet's connection dialog should reach this one the next morning.
+# `fail-fast: false` is what keeps one job's red from cancelling the other.
 #
 # ## Why there is no bot token here
 #
@@ -74,29 +75,79 @@ permissions:
   issues: write          # the triage issue when it goes red
   actions: write         # dispatch ci.yml at the pushed commit
 
-# Two runs would fight over the same branch and PR.
-concurrency:
-  group: sync-mudlet-upstream
-  cancel-in-progress: false
-
 jobs:
   sync:
-    name: Sync vendored Mudlet trees
+    name: Sync ${{ matrix.title }}
     runs-on: ubuntu-latest
     # Long enough to sit through a full ci.yml run on the branch (e2e alone is
     # capped at 30 minutes per shard) on top of the syncs themselves.
     timeout-minutes: 90
+    strategy:
+      # The whole point of splitting these: a red corpus must not stop the game
+      # catalogue landing.
+      fail-fast: false
+      matrix:
+        include:
+          - id: trees
+            title: Mudlet runtime and spec corpus
+            branch: chore/sync-mudlet-upstream
+            # Run in this order — the runtime, then the corpus that tests it —
+            # so the step summary reads the way the diff does.
+            scripts: lua specs
+            paths: src/scripting/lua/mudlet-lua src/scripting/lua/specs src/import/defaults
+            blurb: |
+              Automated re-sync of the vendored Mudlet trees — the Lua runtime and
+              default packages (`sync:mudlet-lua`) and the busted corpus that tests
+              them (`sync:mudlet-specs`), both pinned to the same upstream commit.
+
+              The spec corpus is a verbatim mirror, so **a red run here is a parity
+              report, not a broken PR**: it means Mudlet has specs for behaviour this
+              client does not match yet. Triage on this branch —
+
+              - `yarn busted:failures` re-runs only what failed;
+              - fix the gap, or record why matching would be wrong in
+                `e2e/knownDivergences.ts`;
+              - a package that moved may need `src/import/defaultPackages.ts` updating —
+                vendoring is not preinstalling, and a bumped archive needs its declared
+                `version` bumped to match;
+              - commits pushed here survive: tomorrow's sync stacks onto this PR rather
+                than replacing it.
+            triage: |
+              The spec corpus is a verbatim mirror of Mudlet's tests, so this is far more likely a genuine parity gap than a broken sync: upstream has specs for behaviour this client does not match yet. `yarn busted:failures` re-runs just the failures, and a divergence that should *not* be closed belongs in `e2e/knownDivergences.ts`. The PR stays open, and tomorrow's sync stacks onto it.
+          - id: games
+            title: Mudlet game catalogue
+            branch: chore/sync-mudlet-games
+            scripts: games
+            paths: src/mud/games
+            blurb: |
+              Automated re-sync of Mudlet's bundled-game catalogue —
+              `src/mud/games/bundledGames.ts` and the logos beside it, regenerated
+              from upstream's `TGameDetails.h` by `sync:mudlet-games`.
+
+              This is its own PR on purpose: no spec asserts anything about the
+              catalogue, so it cannot be what turns the busted corpus red, and it
+              should not wait behind a corpus that is. The file is generated — fix
+              `scripts/sync-mudlet-games.mjs`, never the output.
+            triage: |
+              The catalogue is generated, so a red run means the regenerated file no longer satisfies something around it: check `tests/mud/bundledGames.test.ts`, `src/mud/games/gameIcons.ts` and `websiteLinks.ts` against the new shape of upstream's `TGameDetails.h`, and fix `scripts/sync-mudlet-games.mjs` rather than its output.
+    concurrency:
+      # Per tree, so the two never queue behind each other.
+      group: sync-mudlet-${{ matrix.id }}
+      cancel-in-progress: false
     env:
-      BRANCH: chore/sync-mudlet-upstream
-      # Read by `gh` and by both sync scripts — they use it only to lift the
+      BRANCH: ${{ matrix.branch }}
+      # Read by `gh` and by the sync scripts — they use it only to lift the
       # unauthenticated 60-requests/hour GitHub API limit, which a shared runner
       # IP burns through easily.
       GH_TOKEN: ${{ github.token }}
       GITHUB_TOKEN: ${{ github.token }}
       UPSTREAM_REF: ${{ inputs.ref || 'development' }}
-      # Everything the two syncs write. Deliberately used unquoted, as three
-      # pathspecs.
-      SYNC_PATHS: src/scripting/lua/mudlet-lua src/scripting/lua/specs src/import/defaults
+      # Both deliberately used unquoted, as word-split lists.
+      SYNC_SCRIPTS: ${{ matrix.scripts }}
+      SYNC_PATHS: ${{ matrix.paths }}
+      BLURB: ${{ matrix.blurb }}
+      TRIAGE: ${{ matrix.triage }}
+      TITLE: ${{ matrix.title }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - uses: actions/checkout@v6
@@ -109,13 +160,13 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-      # No `yarn install`: both sync scripts are plain node with no imports
+      # No `yarn install`: the sync scripts are plain node with no imports
       # outside node: builtins, and skipping the install keeps a no-drift run
       # down to seconds.
 
-      # Resolved once and handed to both scripts as `--ref <sha>`. Left as
-      # `development`, each script would resolve the branch on its own and a push
-      # landing between them would pin the runtime and its tests to different
+      # Resolved once and handed to every script this job runs. Left as
+      # `development`, each would resolve the branch on its own and a push
+      # landing between them could pin the runtime and its tests to different
       # commits — the one failure mode syncing them together exists to prevent.
       - name: Resolve the upstream commit
         id: upstream
@@ -147,37 +198,39 @@ jobs:
           fi
           echo "pr=$pr" >> "$GITHUB_OUTPUT"
 
-      # The runtime first, then the corpus that tests it — same order a human
-      # would read the diff in. A patch that no longer applies makes
-      # sync-mudlet-lua exit non-zero, and it does so having already written the
-      # tree: the file is pristine upstream and the mudix change it carried is
-      # gone. That must not be pushed, so this step failing skips everything
-      # below and goes straight to the triage issue.
+      # Two scripts fail in ways worth knowing about, and both fail loudly on
+      # purpose: sync-mudlet-lua exits non-zero when a patch no longer applies,
+      # having already written the tree (the file is pristine upstream and the
+      # mudix change it carried is gone), and sync-mudlet-games refuses to write
+      # a catalogue whose logo could not be resolved anywhere. Neither may be
+      # pushed, so this step failing skips everything below and goes straight to
+      # the triage issue.
       - name: Sync
         id: sync
         shell: bash
         run: |
           set -euo pipefail
           pin='${{ steps.upstream.outputs.sha }}'
-          node scripts/sync-mudlet-lua.mjs   --ref "$pin" | tee lua.log
-          node scripts/sync-mudlet-specs.mjs --ref "$pin" | tee specs.log
+          for s in $SYNC_SCRIPTS; do
+            node "scripts/sync-mudlet-$s.mjs" --ref "$pin" | tee "$s.log"
+          done
           if [ -z "$(git status --porcelain -- $SYNC_PATHS)" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
           {
-            echo "## Mudlet/Mudlet@\`${{ steps.upstream.outputs.short }}\` ($UPSTREAM_REF)"
-            for log in lua specs; do
+            echo "## $TITLE — Mudlet/Mudlet@\`${{ steps.upstream.outputs.short }}\`"
+            for s in $SYNC_SCRIPTS; do
               echo
-              echo "### \`sync:mudlet-$log\`"
+              echo "### \`sync:mudlet-$s\`"
               echo '```'
-              cat "$log.log"
+              cat "$s.log"
               echo '```'
             done
           } >> "$GITHUB_STEP_SUMMARY"
           # Artefacts of this run, never part of the commit.
-          rm -f lua.log specs.log
+          for s in $SYNC_SCRIPTS; do rm -f "$s.log"; done
 
       - name: Push the branch
         id: push
@@ -189,7 +242,7 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A -- $SYNC_PATHS
           git commit \
-            -m "chore: sync vendored Mudlet trees to ${{ steps.upstream.outputs.short }}" \
+            -m "chore: sync $TITLE to ${{ steps.upstream.outputs.short }}" \
             -m "Automated by .github/workflows/sync-mudlet-upstream.yml from Mudlet/Mudlet@${{ steps.upstream.outputs.sha }}."
           # --force only bites on the no-open-PR path, where the branch is a
           # leftover from a closed PR and is being rebuilt from master on
@@ -203,23 +256,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat > body.md <<'EOF'
-          Automated re-sync of the vendored Mudlet trees — the Lua runtime and
-          default packages (`sync:mudlet-lua`) and the busted corpus that tests
-          them (`sync:mudlet-specs`), both pinned to the same upstream commit.
-
-          The spec corpus is a verbatim mirror, so **a red run here is a parity
-          report, not a broken PR**: it means Mudlet has specs for behaviour this
-          client does not match yet. Triage on this branch —
-
-          - `yarn busted:failures` re-runs only what failed;
-          - fix the gap, or record why matching would be wrong in
-            `e2e/knownDivergences.ts`;
-          - a package that moved may need `src/import/defaultPackages.ts` updating —
-            vendoring is not preinstalling, and a bumped archive needs its
-            declared `version` bumped to match;
-          - commits pushed here survive: tomorrow's sync stacks onto this PR
-            rather than replacing it.
+          # $BLURB carries markdown with backticks in it, so it is appended as
+          # data rather than interpolated into a script.
+          printf '%s\n' "$BLURB" > body.md
+          cat >> body.md <<'EOF'
 
           <sub>Opened by `.github/workflows/sync-mudlet-upstream.yml` for #65. It
           dispatches ci.yml at this commit and merges once that is green.</sub>
@@ -228,13 +268,13 @@ jobs:
 
           ```
           EOF
-          # The step summary holds both sync logs in full; the file list is
+          # The step summary holds the sync logs in full; the file list is
           # repeated here so the diff keeps a description after log retention
           # expires.
           git show --stat --oneline HEAD | tail -n +2 >> body.md
           printf '```\n' >> body.md
 
-          title="chore: sync vendored Mudlet trees to ${{ steps.upstream.outputs.short }}"
+          title="chore: sync $TITLE to ${{ steps.upstream.outputs.short }}"
           if [ -n "${{ steps.branch.outputs.pr }}" ]; then
             number='${{ steps.branch.outputs.pr }}'
             gh pr edit "$number" --title "$title" --body-file body.md
@@ -286,32 +326,32 @@ jobs:
 
       # Covers both halves of "it went wrong": a red PR (the ci step is
       # continue-on-error, so the job is otherwise still green here) and a
-      # failure of the run itself — a patch that no longer applies, a GitHub
-      # outage, a refused merge. One issue is reused across days, so trees that
-      # stay red for a week are one thread rather than seven issues.
+      # failure of the run itself. One issue per tree is reused across days, so
+      # a week of red is one thread rather than seven issues.
       - name: Report the failure as an issue
         if: ${{ failure() || steps.ci.outcome == 'failure' }}
         shell: bash
-        env:
-          TITLE: Mudlet upstream sync needs triage
         run: |
           set -euo pipefail
           if [ '${{ steps.ci.outcome }}' = 'failure' ]; then
-            what="ci.yml is red on #${{ steps.pr.outputs.number }}, syncing Mudlet/Mudlet@\`${{ steps.upstream.outputs.short }}\`.
-
-          The spec corpus is a verbatim mirror of Mudlet's tests, so this is far more likely a genuine parity gap than a broken sync: upstream has specs for behaviour this client does not match yet. Triage on \`$BRANCH\` — \`yarn busted:failures\` re-runs just the failures, and a divergence that should *not* be closed belongs in \`e2e/knownDivergences.ts\`. The PR stays open, and tomorrow's sync stacks onto it."
+            printf 'ci.yml is red on #%s, syncing Mudlet/Mudlet@`%s`.\n\n%s\n' \
+              '${{ steps.pr.outputs.number }}' '${{ steps.upstream.outputs.short }}' "$TRIAGE" > issue.md
           else
-            what="The sync run itself failed before it could reach a verdict — nothing was merged, and the pins in the two \`SYNCED.md\` files are unchanged.
+            cat > issue.md <<'EOF'
+          The sync run itself failed before it could reach a verdict — nothing was merged, and the recorded pin is unchanged.
 
-          Two causes are worth checking first: a patch under \`scripts/mudlet-lua-patches/\` that no longer applies (\`sync-mudlet-lua\` exits non-zero and names it — the mudix change it carried is gone from the tree until it is re-applied by hand), or the repository setting **Allow GitHub Actions to create and approve pull requests**, without which \`gh pr create\` is refused."
+          Causes worth checking first: a patch under `scripts/mudlet-lua-patches/` that no longer applies (`sync-mudlet-lua` names it, and the mudix change it carried is gone from the tree until somebody re-applies it by hand); a game logo that resolved nowhere (`sync-mudlet-games` refuses to write a catalogue with one missing, rather than quietly committing the icon away); or the repository setting **Allow GitHub Actions to create and approve pull requests**, without which `gh pr create` is refused.
+          EOF
           fi
-          body=$(printf '%s\n\n[Run log](%s)\n\n<sub>Opened by `sync-mudlet-upstream.yml`. Close it once the trees are green again; the next red run opens a fresh one.</sub>' "$what" "$RUN_URL")
+          printf '\n[Run log](%s)\n\n<sub>Opened by `sync-mudlet-upstream.yml`. Close it once this sync is green again; the next red run opens a fresh one.</sub>\n' \
+            "$RUN_URL" >> issue.md
 
-          existing=$(gh issue list --state open --search "\"$TITLE\" in:title" \
+          issue_title="$TITLE sync needs triage"
+          existing=$(gh issue list --state open --search "\"$issue_title\" in:title" \
             --json number --jq '.[0].number // ""')
           if [ -n "$existing" ]; then
-            gh issue comment "$existing" --body "$body"
+            gh issue comment "$existing" --body-file issue.md
             echo "Commented on #$existing." >> "$GITHUB_STEP_SUMMARY"
           else
-            gh issue create --title "$TITLE" --label 'follow up' --body "$body"
+            gh issue create --title "$issue_title" --label 'follow up' --body-file issue.md
           fi
