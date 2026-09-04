@@ -4884,14 +4884,17 @@ export class ScriptingAPI {
      * this method only deals in already-decoded bytes. Returns true unless the
      * panel reported a parse failure for the given buffer.
      */
-    loadMap(buf?: Uint8Array): boolean {
+    loadMap(buf?: Uint8Array, source?: string): boolean {
         if (!buf) return this.session.windows.loadMap();
         // Copy into a fresh standalone ArrayBuffer — the source may be a slice
         // of a larger buffer (e.g. a Node Buffer view onto a pool) or a
         // SharedArrayBuffer-backed view, both of which the binary reader chokes on.
         const out = new ArrayBuffer(buf.byteLength);
         new Uint8Array(out).set(buf);
-        return this.session.windows.loadMap(out);
+        // `source` names the file in any message the load has to put in front of
+        // the player (e.g. an unreadable format version — Mudlet quotes the file
+        // name in every one of those, TMap::readMap src/TMap.cpp:1531-1573).
+        return this.session.windows.loadMap(out, source);
     }
 
     /**
