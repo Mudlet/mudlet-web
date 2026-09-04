@@ -8,7 +8,9 @@ import { LuaRuntime } from '../src/scripting/lua/LuaRuntime';
 import { useAppStore } from '../src/storage/appStore';
 import type { AnsiAwareBuffer } from '../src/mud/text/FormatState';
 
-const TEST_CONNECTION_ID = 'test-connection';
+/** The connection id every test runtime is built for — exported so a test can
+ *  reach the store slice the runtime is reading. */
+export const TEST_CONNECTION_ID = 'test-connection';
 
 export interface TestRuntime {
   session: MudSession;

@@ -1,4 +1,5 @@
 import { createContext, useContext } from 'react';
+import { resolveTheme } from '../utils/systemTheme';
 import { useAppStore } from './appStore';
 import { selectProfileField, type ClientSettings, type ProfileSettings, type Theme } from './schema';
 
@@ -30,5 +31,10 @@ export function useClientField<K extends keyof ClientSettings>(key: K): ClientSe
  *  resolves to the launcher theme. */
 export function useEffectiveTheme(): Theme {
     const id = useConnectionId();
-    return useAppStore(s => (id ? s.connectionProfile[id]?.theme : undefined) ?? s.client.theme);
+    const stored = useAppStore(s => (id ? s.connectionProfile[id]?.theme : undefined) ?? s.client.theme);
+    // Resolved, never the raw stored value: 'system' is a choice rather than a
+    // palette, and every caller wants something it can look a palette up by
+    // (the script editor's syntax colours, the JSON viewer). App.tsx owns
+    // repainting on an OS flip; these re-render along with it.
+    return resolveTheme(stored);
 }
