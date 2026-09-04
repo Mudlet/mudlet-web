@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
-import { EditorState } from '@codemirror/state';
+import { Annotation, EditorState } from '@codemirror/state';
 import { EditorView, hoverTooltip, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter } from '@codemirror/view';
 import { defaultKeymap, indentWithTab, history, historyKeymap } from '@codemirror/commands';
 import { StreamLanguage, indentUnit, bracketMatching } from '@codemirror/language';
@@ -100,6 +100,10 @@ const luaHover = hoverTooltip((view, pos) => {
 
 // ── Extensions ────────────────────────────────────────────────────────────────
 
+/** Marks the transaction that pushes a new `value` prop into the document, so
+ *  the update listener can tell it apart from an edit the user made. */
+const valueSync = Annotation.define<true>();
+
 function buildExtensions(onChangeFn: () => void, onSaveFn: () => void, theme: string) {
     return [
         history(),
@@ -121,7 +125,13 @@ function buildExtensions(onChangeFn: () => void, onSaveFn: () => void, theme: st
             ...historyKeymap,
         ]),
         EditorView.updateListener.of(update => {
-            if (update.docChanged) onChangeFn();
+            // Only a real edit counts as a change. Replacing the document to
+            // adopt a new `value` prop is the parent telling us what the doc
+            // already is — reporting that back as an edit is how selecting an
+            // item in the script editor used to mark it dirty on sight.
+            if (!update.docChanged) return;
+            if (update.transactions.some(tr => tr.annotation(valueSync))) return;
+            onChangeFn();
         }),
         mudixCmTheme,
         luaHoverTheme,
@@ -210,6 +220,7 @@ export function LuaEditor({ value, onChange, onSave, gotoLine }: Props) {
             view.dispatch({
                 changes: { from: 0, to: current.length, insert: value },
                 selection: { anchor: 0 },
+                annotations: valueSync.of(true),
             });
         }
 
