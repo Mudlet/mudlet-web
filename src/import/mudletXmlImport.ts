@@ -105,6 +105,26 @@ function parseAliases(els: Element[], parentId: string | null, out: AliasNode[])
     }
 }
 
+/**
+ * The colorizer colours (XMLimport.cpp:1404 mFgColor, :1407 mBgColor). Mudlet
+ * writes "transparent" for a channel left on "keep" — and older saves an empty
+ * element — so only a real colour becomes one.
+ *
+ * Read regardless of isColorizerTrigger, which is carried separately: TTrigger
+ * holds the colours independently of the switch (defaulting them to red/yellow
+ * and exporting them either way), so gating on it here would erase a disabled
+ * trigger's colours from the user's profile on the next link-mode flush.
+ */
+function parseHighlight(el: Element): TriggerNode['highlight'] {
+    const colour = (tag: string): string | undefined => {
+        const v = getText(el, tag);
+        return v && v !== 'transparent' ? v : undefined;
+    };
+    const fg = colour('mFgColor');
+    const bg = colour('mBgColor');
+    return fg || bg ? { fg, bg } : undefined;
+}
+
 function parseTriggers(els: Element[], parentId: string | null, out: TriggerNode[]): void {
     for (const el of els) {
         if (isYes(el, 'isTempTrigger')) continue;
@@ -137,6 +157,8 @@ function parseTriggers(els: Element[], parentId: string | null, out: TriggerNode
             multiline: isYes(el, 'isMultiline'),
             delta: parseInt(getText(el, 'conditonLineDelta')) || 0,
             isFilter: isYes(el, 'isFilterTrigger'),
+            colorize: isYes(el, 'isColorizerTrigger'),
+            highlight: parseHighlight(el),
             packageName: getText(el, 'packageName') || undefined,
         });
         // Triggers (unlike scripts/aliases/timers/keys) can nest under a non-folder

@@ -9,7 +9,7 @@ import type {TimerEngine} from '../mud/timers/TimerEngine';
 import type {KeyEngine, KeyNode} from '../mud/keybindings/KeyEngine';
 import {findReservedKeybindings, reservedKeyNote} from '../mud/keybindings/browserReservedKeys';
 import type {ButtonNode, ScriptNode} from '../storage/schema';
-import {buildEffectivelyEnabledIds, isEffectivelyEnabled} from '../storage/schema';
+import {buildEffectivelyEnabledIds, isColorizing, isEffectivelyEnabled} from '../storage/schema';
 import {useAppStore, connectionUrl} from '../storage';
 import {isPackageRemovable} from '../branding';
 import {saveProfileData} from '../storage/profileVfsData';
@@ -3755,7 +3755,7 @@ export class ScriptingEngine implements EngineHost {
         }
 
         // Built-in highlight
-        if (trigger.highlight && matchedText) {
+        if (isColorizing(trigger) && trigger.highlight && matchedText) {
             const { fg, bg } = trigger.highlight;
             if (fg || bg) {
                 const idx = this.api.selectString(matchedText, 1);

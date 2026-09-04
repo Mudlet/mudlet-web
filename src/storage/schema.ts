@@ -687,9 +687,18 @@ export interface TriggerNode extends BaseNode {
      * no longer exists.
      */
     temporary?: boolean;
+    /**
+     * Mudlet TTrigger::mIsColorizerTrigger — the master switch for `highlight`.
+     * The colours below persist independently of it (desktop defaults them to
+     * red/yellow and writes them whatever the switch says), so turning
+     * colorization off and back on keeps them. Read it through `isColorizing`,
+     * never directly: profiles written before this field existed carry only
+     * `highlight`, and a highlight there meant the switch was on.
+     */
+    colorize?: boolean;
     highlight?: {                // built-in colorization applied to the matched text
         fg?: string;             // hex color e.g. "#ff0000"
-        bg?: string;
+        bg?: string;             // a channel left unset is Mudlet's "keep" (transparent)
     };
     command?: string;            // plain command to send on fire (%1..%9 = capture groups)
 }
@@ -750,6 +759,15 @@ export interface ButtonNode extends BaseNode {
 
     /** Accepted but currently unused — Mudlet stylesheet text. */
     styleSheet?: string;
+}
+
+/**
+ * Whether a trigger colorizes the text it matched. `colorize` is authoritative;
+ * a trigger from a profile saved before that field existed falls back to the old
+ * rule, where a highlight's presence was itself the switch.
+ */
+export function isColorizing(t: Pick<TriggerNode, 'colorize' | 'highlight'>): boolean {
+    return t.colorize ?? !!t.highlight;
 }
 
 // ── Tree utilities ────────────────────────────────────────────────────────────

@@ -6,7 +6,7 @@ import { useAppStore, useProfileField } from '../../../storage';
 import { isPackageRemovable } from '../../../branding';
 import { DEFAULT_ANSI_PALETTE } from '../../../mud/text/colors';
 import type { AliasNode, ButtonLocation, ButtonNode, ButtonOrientation, KeyNode, PackageManifest, ScriptNode, TimerNode, TriggerNode, TriggerPattern, TriggerPatternType } from '../../../storage/schema';
-import { isEffectivelyEnabled } from '../../../storage/schema';
+import { isColorizing, isEffectivelyEnabled } from '../../../storage/schema';
 import type { MudSession, ScriptLogSource, ScriptLogSourceKind } from '../../../mud/MudSession';
 import type { ProfileVFS } from '../../../scripting/vfs/ProfileVFS';
 import type { ScriptingEngine } from '../../../scripting/ScriptingEngine';
@@ -879,6 +879,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     const [editMultiline, setEditMultiline] = useState(false);
     const [editDelta, setEditDelta] = useState(0);
     const [editIsFilter, setEditIsFilter] = useState(false);
+    const [editColorize, setEditColorize] = useState(false);
     const [editHighlightFg, setEditHighlightFg] = useState('');
     const [editHighlightBg, setEditHighlightBg] = useState('');
     const [editTriggerCommand, setEditTriggerCommand] = useState('');
@@ -1102,6 +1103,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
             setEditMultiline(t.multiline ?? false);
             setEditDelta(t.delta ?? 0);
             setEditIsFilter(t.isFilter ?? false);
+            setEditColorize(isColorizing(t));
             setEditHighlightFg(t.highlight?.fg ?? '');
             setEditHighlightBg(t.highlight?.bg ?? '');
             setEditTriggerCommand(t.command ?? '');
@@ -1449,6 +1451,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                 multiline: editMultiline,
                 delta: editDelta,
                 isFilter: editIsFilter,
+                colorize: editColorize,
                 highlight,
                 command: editTriggerCommand || undefined,
             });
@@ -2059,12 +2062,28 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
 
                                     {/* Highlight section */}
                                     <div className="script-editor__trigger-card">
-                                        <span className="script-editor__trigger-card-label">Highlight</span>
+                                        {/* Mudlet's colorizer is three independent states, and this
+                                            card carries all three: groupBox_triggerColorizer is the
+                                            master switch, and each colour can separately be
+                                            transparent — the state desktop labels "keep" on the
+                                            button (dlgTriggerEditor.cpp:7719-7726), meaning leave
+                                            that channel of the matched text alone. An unchecked
+                                            FG/BG box is that "keep". Turning the master switch off
+                                            greys the colours out but leaves them set. */}
+                                        <label className="script-editor__trigger-card-label script-editor__trigger-card-label--toggle">
+                                            <input
+                                                type="checkbox"
+                                                checked={editColorize}
+                                                onChange={e => { setEditColorize(e.target.checked); setDirty(true); }}
+                                            />
+                                            Highlight
+                                        </label>
                                         <div className="script-editor__trigger-card-row">
                                             <label className="script-editor__trigger-opt">
                                                 <input
                                                     type="checkbox"
                                                     checked={!!editHighlightFg}
+                                                    disabled={!editColorize}
                                                     onChange={e => { setEditHighlightFg(e.target.checked ? '#ff0000' : ''); setDirty(true); }}
                                                 />
                                                 FG
@@ -2073,7 +2092,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                                 type="color"
                                                 className="script-editor__color-pick"
                                                 value={editHighlightFg || '#ff0000'}
-                                                disabled={!editHighlightFg}
+                                                disabled={!editColorize || !editHighlightFg}
                                                 onChange={e => { setEditHighlightFg(e.target.value); setDirty(true); }}
                                             />
                                             <div className="script-editor__trigger-card-divider" />
@@ -2081,15 +2100,16 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                                 <input
                                                     type="checkbox"
                                                     checked={!!editHighlightBg}
-                                                    onChange={e => { setEditHighlightBg(e.target.checked ? '#000080' : ''); setDirty(true); }}
+                                                    disabled={!editColorize}
+                                                    onChange={e => { setEditHighlightBg(e.target.checked ? '#ffff00' : ''); setDirty(true); }}
                                                 />
                                                 BG
                                             </label>
                                             <input
                                                 type="color"
                                                 className="script-editor__color-pick"
-                                                value={editHighlightBg || '#000080'}
-                                                disabled={!editHighlightBg}
+                                                value={editHighlightBg || '#ffff00'}
+                                                disabled={!editColorize || !editHighlightBg}
                                                 onChange={e => { setEditHighlightBg(e.target.value); setDirty(true); }}
                                             />
                                         </div>
