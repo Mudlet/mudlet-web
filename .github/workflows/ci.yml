@@ -1,0 +1,135 @@
+# Gates pull requests. deploy.yml already runs these suites on push to master,
+# where they gate the Pages deploy; this workflow is what blocks the bad merge in
+# the first place. The two triggers are deliberately disjoint — there is no
+# `push:` here — so no commit is checked twice by the same suite.
+#
+# The job set:
+#
+#   * typecheck — `yarn typecheck` (tsconfig.test.json) is the only thing that
+#     type-checks `tests/` and `e2e/`; `yarn build`'s `tsc` covers `src/` only.
+#     It runs in no other workflow, so before this it ran nowhere in CI. The same
+#     job also type-checks `proxy/`, a standalone package with its own lockfile
+#     and no test script — `tsc -p proxy/tsconfig.json` is the only check it has,
+#     and it costs under a second on top of an install already paid for.
+#   * test — `yarn test`, the Vitest suite.
+#   * e2e — `yarn test:e2e`, the recorded Mudlet busted corpus. It is the only
+#     suite that runs Mudlet's own specs, and it already blocks deploys, so
+#     leaving it off the PR gate would only move the discovery of a break from a
+#     red PR to a red master. Sharded exactly as in deploy.yml, which keeps its
+#     wall clock in the same range as the other jobs.
+#   * build — `yarn build`, which catches bundler-level failures that no
+#     type-check or unit test sees. Unlike deploy.yml's build job this one does
+#     not upload a Pages artifact: nothing on a PR deploys it.
+#
+# `build:lib` is not gated here. It only runs on a version tag (publish.yml's
+# prepublishOnly); gating releases is a separate hole in issue #67 and is left to
+# its own change rather than bolted onto the PR gate.
+name: CI
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+# A fresh push to a PR makes the in-flight run's verdict worthless, so cancel it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: yarn
+      - run: yarn install --frozen-lockfile
+      - run: yarn typecheck
+      # proxy/ is its own package with its own lockfile; it needs its runtime
+      # deps present for `ws` to resolve, but it has no typescript of its own —
+      # the compiler comes from the root install above.
+      - name: Install proxy dependencies
+        run: yarn --cwd proxy install --frozen-lockfile
+      - name: Typecheck proxy
+        run: yarn tsc --noEmit -p proxy/tsconfig.json
+
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: yarn
+      - run: yarn install --frozen-lockfile
+      - run: yarn test
+
+  e2e:
+    # Sharded by SPEC, not by Playwright's --shard, for the reason spelled out in
+    # deploy.yml: every test is an assertion over a recorded spec, so slicing the
+    # test list would leave each shard recording the whole corpus anyway.
+    name: E2E (busted) ${{ matrix.shard }}/3
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # One shard failing should not hide what the other two found.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      BUSTED_SHARD: ${{ matrix.shard }}/3
+      # Move the browser download out of ~/.cache so actions/cache can reach it
+      # (the cache action only handles paths inside the workspace reliably).
+      PLAYWRIGHT_BROWSERS_PATH: .cache/ms-playwright
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: yarn
+      - run: yarn install --frozen-lockfile
+      # Key the browser cache on the resolved Playwright version — browser
+      # builds are pinned per Playwright release, so a bump must miss the cache.
+      - name: Resolve Playwright version
+        id: playwright-version
+        run: echo "version=$(node -p "require('./node_modules/@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v5
+        with:
+          path: .cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ steps.playwright-version.outputs.version }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+      - name: Install Playwright browser + system deps
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: yarn playwright install --with-deps chromium
+      # The cache only holds the browser binary; the apt-level libraries it links
+      # against live in the runner image, so they still need installing on a hit.
+      - name: Install Playwright system deps
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: yarn playwright install-deps chromium
+      - run: yarn test:e2e
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: playwright-report-${{ matrix.shard }}
+          path: playwright-report/
+          retention-days: 7
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: yarn
+      - run: yarn install --frozen-lockfile
+      - run: yarn build

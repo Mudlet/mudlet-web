@@ -8,7 +8,7 @@ import { captureDeletion, describeDeletion, pushBounded, type EditorDeleteComman
 import { isPackageRemovable } from '../../../branding';
 import { DEFAULT_ANSI_PALETTE } from '../../../mud/text/colors';
 import type { AliasNode, ButtonLocation, ButtonNode, ButtonOrientation, KeyNode, PackageManifest, ScriptNode, TimerNode, TriggerNode, TriggerPattern, TriggerPatternType } from '../../../storage/schema';
-import { isEffectivelyEnabled } from '../../../storage/schema';
+import { isColorizing, isEffectivelyEnabled } from '../../../storage/schema';
 import type { MudSession, ScriptLogSource, ScriptLogSourceKind } from '../../../mud/MudSession';
 import type { ProfileVFS } from '../../../scripting/vfs/ProfileVFS';
 import type { ScriptingEngine } from '../../../scripting/ScriptingEngine';
@@ -891,6 +891,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     const [editMultiline, setEditMultiline] = useState(false);
     const [editDelta, setEditDelta] = useState(0);
     const [editIsFilter, setEditIsFilter] = useState(false);
+    const [editColorize, setEditColorize] = useState(false);
     const [editHighlightFg, setEditHighlightFg] = useState('');
     const [editHighlightBg, setEditHighlightBg] = useState('');
     const [editTriggerCommand, setEditTriggerCommand] = useState('');
@@ -959,6 +960,11 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     useEffect(() => () => {
         if (undoToastTimerRef.current !== null) clearTimeout(undoToastTimerRef.current);
     }, []);
+    /** The item the edit fields below were loaded from — the one an auto-commit
+     *  has to write back to, since by then the selection has already moved. */
+    const loadedItemRef = useRef<{ id: string; category: EditCategory } | null>(null);
+    const commitEditsRef = useRef<(id: string, category: EditCategory) => void>(() => {});
+    const dirtyRef = useRef(false);
     // Backfill from the session-level buffer so entries that fired before this
     // panel was first mounted (e.g. errors during initial script load) survive.
     const [logs, setLogs] = useState<LogEntry[]>(() =>
@@ -1123,7 +1129,18 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     }, [pendingJump, category, items]);
 
     useEffect(() => {
+        // The edit fields still hold the *outgoing* item's values at this point
+        // — they are only overwritten further down — so this is the last chance
+        // to keep them. Runs before the `if (!selected) return` guard because
+        // switching category clears the selection, which must commit too.
+        const previous = loadedItemRef.current;
+        if (previous && (previous.id !== selectedId || previous.category !== category)) {
+            if (dirty) commitEditsRef.current(previous.id, previous.category);
+            loadedItemRef.current = null;
+        }
+
         if (!selected) return;
+        loadedItemRef.current = { id: selected.id, category: category as EditCategory };
         setEditName(selected.name);
         // New unsaved scripts have code='' in the store; show the template so the
         // user has a starting point, and mark dirty so "Save & Run" is active.
@@ -1141,6 +1158,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
             setEditMultiline(t.multiline ?? false);
             setEditDelta(t.delta ?? 0);
             setEditIsFilter(t.isFilter ?? false);
+            setEditColorize(isColorizing(t));
             setEditHighlightFg(t.highlight?.fg ?? '');
             setEditHighlightBg(t.highlight?.bg ?? '');
             setEditTriggerCommand(t.command ?? '');
@@ -1457,28 +1475,42 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         });
     };
 
-    const handleSave = () => {
-        if (!selectedId || !selected) return;
-        setLogs([]);
-        if (category === 'scripts') {
+    /** Write the edit fields back onto one item, named explicitly rather than
+     *  taken from the current selection — the auto-commit paths below run when
+     *  the selection has already moved on.
+     *
+     *  `runUnchangedScript` distinguishes the two callers: the Save/Run button
+     *  wants a script executed even when nothing changed, an auto-commit does
+     *  not. */
+    const commitEdits = (targetId: string, targetCategory: EditCategory, runUnchangedScript: boolean) => {
+        const list =
+            targetCategory === 'scripts'  ? scripts    :
+            targetCategory === 'aliases'  ? aliases    :
+            targetCategory === 'triggers' ? triggers   :
+            targetCategory === 'timers'   ? timers     :
+            targetCategory === 'keys'     ? keybindings:
+            buttons;
+        const target = list.find(i => i.id === targetId);
+        if (!target) return;
+        if (targetCategory === 'scripts') {
             const handlers = editEventHandlers.split('\n').map(s => s.trim()).filter(Boolean);
             // The store subscription re-runs a script only when its code or event
             // handlers actually change. When neither did — clicking "Run", or
             // re-saving an unedited script — the subscription is a no-op, so force
             // the run explicitly. When they did change, the subscription already
             // runs it; forcing again here would execute the body twice.
-            const prevHandlers = (selected as ScriptNode).eventHandlers ?? [];
-            const subscriptionWillRun = selected.code !== editCode
+            const prevHandlers = (target as ScriptNode).eventHandlers ?? [];
+            const subscriptionWillRun = target.code !== editCode
                 || prevHandlers.join('\n') !== handlers.join('\n');
-            updateScript(connectionId, selectedId, { name: editName, language: 'lua', code: editCode, eventHandlers: handlers });
-            if (!subscriptionWillRun) scriptingEngineRef?.current?.runScript(selectedId);
-        } else if (category === 'aliases') {
-            updateAlias(connectionId, selectedId, { name: editName, pattern: editPattern, command: editCommand, language: 'lua', code: editCode });
-        } else if (category === 'triggers') {
+            updateScript(connectionId, targetId, { name: editName, language: 'lua', code: editCode, eventHandlers: handlers });
+            if (runUnchangedScript && !subscriptionWillRun) scriptingEngineRef?.current?.runScript(targetId);
+        } else if (targetCategory === 'aliases') {
+            updateAlias(connectionId, targetId, { name: editName, pattern: editPattern, command: editCommand, language: 'lua', code: editCode });
+        } else if (targetCategory === 'triggers') {
             const highlight = (editHighlightFg || editHighlightBg)
                 ? { fg: editHighlightFg || undefined, bg: editHighlightBg || undefined }
                 : undefined;
-            updateTrigger(connectionId, selectedId, {
+            updateTrigger(connectionId, targetId, {
                 name: editName,
                 patterns: editPatterns,
                 language: 'lua',
@@ -1488,18 +1520,19 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                 multiline: editMultiline,
                 delta: editDelta,
                 isFilter: editIsFilter,
+                colorize: editColorize,
                 highlight,
                 command: editTriggerCommand || undefined,
             });
-        } else if (category === 'timers') {
+        } else if (targetCategory === 'timers') {
             const seconds = editHours * 3600 + editMinutes * 60 + editSecs + editMs / 1000;
-            updateTimer(connectionId, selectedId, { name: editName, seconds, repeat: editRepeat, language: 'lua', code: editCode, command: editTimerCommand || undefined });
-        } else if (category === 'keys') {
-            updateKeybinding(connectionId, selectedId, { name: editName, key: editKey, modifiers: editModifiers, language: 'lua', code: editCode, command: editKeyCommand || undefined });
+            updateTimer(connectionId, targetId, { name: editName, seconds, repeat: editRepeat, language: 'lua', code: editCode, command: editTimerCommand || undefined });
+        } else if (targetCategory === 'keys') {
+            updateKeybinding(connectionId, targetId, { name: editName, key: editKey, modifiers: editModifiers, language: 'lua', code: editCode, command: editKeyCommand || undefined });
         } else {
             // buttons
-            if (selected.isGroup) {
-                updateButton(connectionId, selectedId, {
+            if (target.isGroup) {
+                updateButton(connectionId, targetId, {
                     name: editName,
                     language: 'lua',
                     code: editCode,
@@ -1509,7 +1542,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                     styleSheet: editButtonStyleSheet || undefined,
                 });
             } else {
-                updateButton(connectionId, selectedId, {
+                updateButton(connectionId, targetId, {
                     name: editName,
                     language: 'lua',
                     code: editCode,
@@ -1522,6 +1555,12 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                 });
             }
         }
+    };
+
+    const handleSave = () => {
+        if (!selectedId || !selected || !isEditCategory) return;
+        setLogs([]);
+        commitEdits(selectedId, category as EditCategory, true);
         setDirty(false);
     };
 
@@ -1561,6 +1600,22 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         setSelectedId(prev => prev === id ? null : prev);
         showUndoToast(command.label);
     };
+    // Auto-commit, so that leaving an item behind never throws away what was
+    // typed into it. Mudlet has no unsaved-changes concept at all: every
+    // selection change saves the outgoing item first
+    // (dlgTriggerEditor::slot_triggerSelected, dlgTriggerEditor.cpp:7703-7709,
+    // and the same shape in slot_aliasSelected/…), on top of the per-property
+    // autosaves (slot_saveProperty_*). Held in refs so both the selection
+    // effect (which is declared above this) and the unmount cleanup — the
+    // editor being closed — reach the latest render's edit fields.
+    commitEditsRef.current = (id, cat) => commitEdits(id, cat, false);
+    dirtyRef.current = dirty;
+
+    useEffect(() => () => {
+        // Closing the editor is leaving the item too.
+        const open = loadedItemRef.current;
+        if (open && dirtyRef.current) commitEditsRef.current(open.id, open.category);
+    }, []);
 
     const handleDelete = () => {
         if (!selectedId) return;
@@ -2200,12 +2255,28 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
 
                                     {/* Highlight section */}
                                     <div className="script-editor__trigger-card">
-                                        <span className="script-editor__trigger-card-label">Highlight</span>
+                                        {/* Mudlet's colorizer is three independent states, and this
+                                            card carries all three: groupBox_triggerColorizer is the
+                                            master switch, and each colour can separately be
+                                            transparent — the state desktop labels "keep" on the
+                                            button (dlgTriggerEditor.cpp:7719-7726), meaning leave
+                                            that channel of the matched text alone. An unchecked
+                                            FG/BG box is that "keep". Turning the master switch off
+                                            greys the colours out but leaves them set. */}
+                                        <label className="script-editor__trigger-card-label script-editor__trigger-card-label--toggle">
+                                            <input
+                                                type="checkbox"
+                                                checked={editColorize}
+                                                onChange={e => { setEditColorize(e.target.checked); setDirty(true); }}
+                                            />
+                                            Highlight
+                                        </label>
                                         <div className="script-editor__trigger-card-row">
                                             <label className="script-editor__trigger-opt">
                                                 <input
                                                     type="checkbox"
                                                     checked={!!editHighlightFg}
+                                                    disabled={!editColorize}
                                                     onChange={e => { setEditHighlightFg(e.target.checked ? '#ff0000' : ''); setDirty(true); }}
                                                 />
                                                 FG
@@ -2214,7 +2285,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                                 type="color"
                                                 className="script-editor__color-pick"
                                                 value={editHighlightFg || '#ff0000'}
-                                                disabled={!editHighlightFg}
+                                                disabled={!editColorize || !editHighlightFg}
                                                 onChange={e => { setEditHighlightFg(e.target.value); setDirty(true); }}
                                             />
                                             <div className="script-editor__trigger-card-divider" />
@@ -2222,15 +2293,16 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                                 <input
                                                     type="checkbox"
                                                     checked={!!editHighlightBg}
-                                                    onChange={e => { setEditHighlightBg(e.target.checked ? '#000080' : ''); setDirty(true); }}
+                                                    disabled={!editColorize}
+                                                    onChange={e => { setEditHighlightBg(e.target.checked ? '#ffff00' : ''); setDirty(true); }}
                                                 />
                                                 BG
                                             </label>
                                             <input
                                                 type="color"
                                                 className="script-editor__color-pick"
-                                                value={editHighlightBg || '#000080'}
-                                                disabled={!editHighlightBg}
+                                                value={editHighlightBg || '#ffff00'}
+                                                disabled={!editColorize || !editHighlightBg}
                                                 onChange={e => { setEditHighlightBg(e.target.value); setDirty(true); }}
                                             />
                                         </div>

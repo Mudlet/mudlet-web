@@ -181,14 +181,14 @@ export function installMapBindings({
             let bytes: Uint8Array;
             try { bytes = vfs.readBinaryFile(path); }
             catch { return false; }
-            return api.loadMap(bytes);
+            return api.loadMap(bytes, location);
         }
         // No path: the profile's most recent save, then whatever is already
         // stored. Mudlet reads the newest file out of the map folder, and a
         // script that saved without naming a file expects to get that back.
         const newest = vfs ? newestMapFile() : null;
         if (newest) {
-            try { return api.loadMap(vfs!.readBinaryFile(newest)); }
+            try { return api.loadMap(vfs!.readBinaryFile(newest), newest); }
             catch { /* fall through to the stored bytes */ }
         }
         return api.loadMap();

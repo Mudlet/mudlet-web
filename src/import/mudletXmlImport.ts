@@ -1,5 +1,6 @@
 import type { AliasNode, ButtonLocation, ButtonNode, ButtonOrientation, KeyNode, ScriptNode, TimerNode, TriggerNode, TriggerPattern, TriggerPatternType } from '../storage/schema';
 import { qtKeyToDomCode, qtModifiersToList, QT_KEY_UNKNOWN } from '../mud/keybindings/qtKeys';
+import { desanitizeControlChars } from './mudletControlChars';
 
 // Mudlet triggerType integer → our TriggerPatternType
 const MUDLET_PATTERN_TYPES: TriggerPatternType[] = [
@@ -13,14 +14,19 @@ const MUDLET_PATTERN_TYPES: TriggerPatternType[] = [
     'prompt',       // 7
 ];
 
+// Both accessors decode Mudlet's control-character placeholders. Desktop only
+// decodes the <script> element (XMLimport.cpp, readScriptElement) and so reads
+// a pattern or name containing one back mangled; decoding everywhere costs
+// nothing — the placeholder lead never occurs in real content — and recovers
+// those too.
 function getText(el: Element, tag: string): string {
-    return el.querySelector(`:scope > ${tag}`)?.textContent?.trim() ?? '';
+    return desanitizeControlChars(el.querySelector(`:scope > ${tag}`)?.textContent?.trim() ?? '');
 }
 
 // Like getText but preserves leading/trailing whitespace — use for fields where
 // whitespace is semantic (trigger pattern strings, alias regex patterns).
 function getRawText(el: Element, tag: string): string {
-    return el.querySelector(`:scope > ${tag}`)?.textContent ?? '';
+    return desanitizeControlChars(el.querySelector(`:scope > ${tag}`)?.textContent ?? '');
 }
 
 function isYes(el: Element, attr: string): boolean {
@@ -101,8 +107,32 @@ function parseAliases(els: Element[], parentId: string | null, out: AliasNode[])
         const id = crypto.randomUUID();
         const group = isGroup(el);
         out.push({ id, parentId, isGroup: group, name: getText(el, 'name'), enabled: isYes(el, 'isActive'), pattern: getRawText(el, 'regex'), command: getText(el, 'command'), code: getText(el, 'script'), language: 'lua', packageName: getText(el, 'packageName') || undefined });
-        if (group) parseAliases(directChildren(el, 'Alias', 'AliasGroup'), id, out);
+        // Recurse unconditionally: desktop's readers descend into nested children
+        // whatever `isFolder` says (XMLimport.cpp:1587 for Alias), and a non-folder
+        // parent with children is a shape real packages ship. directChildren is
+        // empty for true leaves, so this is a no-op there.
+        parseAliases(directChildren(el, 'Alias', 'AliasGroup'), id, out);
     }
+}
+
+/**
+ * The colorizer colours (XMLimport.cpp:1404 mFgColor, :1407 mBgColor). Mudlet
+ * writes "transparent" for a channel left on "keep" — and older saves an empty
+ * element — so only a real colour becomes one.
+ *
+ * Read regardless of isColorizerTrigger, which is carried separately: TTrigger
+ * holds the colours independently of the switch (defaulting them to red/yellow
+ * and exporting them either way), so gating on it here would erase a disabled
+ * trigger's colours from the user's profile on the next link-mode flush.
+ */
+function parseHighlight(el: Element): TriggerNode['highlight'] {
+    const colour = (tag: string): string | undefined => {
+        const v = getText(el, tag);
+        return v && v !== 'transparent' ? v : undefined;
+    };
+    const fg = colour('mFgColor');
+    const bg = colour('mBgColor');
+    return fg || bg ? { fg, bg } : undefined;
 }
 
 function parseTriggers(els: Element[], parentId: string | null, out: TriggerNode[]): void {
@@ -120,7 +150,7 @@ function parseTriggers(els: Element[], parentId: string | null, out: TriggerNode
             const typeIdx = parseInt(typeEls[i]?.textContent?.trim() ?? '0') || 0;
             // Pattern text is preserved verbatim — leading/trailing whitespace
             // is significant for substring/exactMatch/regex matching.
-            return { text: p.textContent ?? '', type: MUDLET_PATTERN_TYPES[typeIdx] ?? 'substring' };
+            return { text: desanitizeControlChars(p.textContent ?? ''), type: MUDLET_PATTERN_TYPES[typeIdx] ?? 'substring' };
         });
         if (patterns.length === 0 && !group) patterns.push({ text: '', type: 'substring' });
 
@@ -137,6 +167,28 @@ function parseTriggers(els: Element[], parentId: string | null, out: TriggerNode
             multiline: isYes(el, 'isMultiline'),
             delta: parseInt(getText(el, 'conditonLineDelta')) || 0,
             isFilter: isYes(el, 'isFilterTrigger'),
+            // The node-level trigger kind (XMLimport.cpp:1380). Not the same
+            // thing as the per-pattern kinds above, and desktop restores it on
+            // load and on paste (EditorItemXMLHelpers.cpp:316), so dropping it
+            // and writing 0 back rewrites the user's own profile.
+            triggerType: parseInt(getText(el, 'triggerType')) || undefined,
+            // Sound trigger (XMLimport.cpp:1358 for the switch, :1406 for the
+            // file). TTrigger::execute plays the file on every fire.
+            soundTrigger: isYes(el, 'isSoundTrigger') || undefined,
+            soundFile: getText(el, 'mSoundFile') || undefined,
+            // Legacy per-node colour trigger (XMLimport.cpp:1359 for the switch,
+            // :1393/:1395 for the colours). Inert here — see TriggerNode — but
+            // desktop keeps it across a save/load and so must we.
+            //
+            // Its isColorTriggerFg / isColorTriggerBg companions are deliberately
+            // absent: desktop writes them from mColorTriggerFgAnsi/BgAnsi
+            // (XMLexport.cpp:1009-1010) and never reads them back, so they carry
+            // nothing a reload could restore.
+            colorTrigger: isYes(el, 'isColorTrigger') || undefined,
+            colorTriggerFgColor: getText(el, 'colorTriggerFgColor') || undefined,
+            colorTriggerBgColor: getText(el, 'colorTriggerBgColor') || undefined,
+            colorize: isYes(el, 'isColorizerTrigger'),
+            highlight: parseHighlight(el),
             packageName: getText(el, 'packageName') || undefined,
         });
         // Triggers (unlike scripts/aliases/timers/keys) can nest under a non-folder
@@ -152,7 +204,8 @@ function parseTimers(els: Element[], parentId: string | null, out: TimerNode[]):
         const id = crypto.randomUUID();
         const group = isGroup(el);
         out.push({ id, parentId, isGroup: group, name: getText(el, 'name'), enabled: isYes(el, 'isActive'), seconds: parseTimerTime(getText(el, 'time')), code: getText(el, 'script'), language: 'lua', command: getText(el, 'command'), repeat: true, packageName: getText(el, 'packageName') || undefined });
-        if (group) parseTimers(directChildren(el, 'Timer', 'TimerGroup'), id, out);
+        // Unconditional, as in desktop's readTimerGroup (XMLimport.cpp:1517).
+        parseTimers(directChildren(el, 'Timer', 'TimerGroup'), id, out);
     }
 }
 
@@ -192,7 +245,8 @@ function parseButtons(els: Element[], parentId: string | null, out: ButtonNode[]
             packageName: getText(el, 'packageName') || undefined,
         };
         out.push(node);
-        if (group) parseButtons(directChildren(el, 'Action', 'ActionGroup'), id, out);
+        // Unconditional, as in desktop's readActionGroup (XMLimport.cpp:1685).
+        parseButtons(directChildren(el, 'Action', 'ActionGroup'), id, out);
     }
 }
 
@@ -215,7 +269,39 @@ function parseKeys(els: Element[], parentId: string | null, out: KeyNode[], warn
             warnings.push(`Key "${getText(el, 'name')}": unknown Qt key code ${qtKey} — keybinding imported with no key set`);
         }
         out.push({ id, parentId, isGroup: group, name: getText(el, 'name'), enabled: isYes(el, 'isActive'), key, modifiers: qtModifiersToList(qtMod), code: getText(el, 'script'), language: 'lua', command: getText(el, 'command'), packageName: getText(el, 'packageName') || undefined });
-        if (group) parseKeys(directChildren(el, 'Key', 'KeyGroup'), id, out, warnings);
+        // Unconditional, as in desktop's readKeyGroup (XMLimport.cpp:1816).
+        parseKeys(directChildren(el, 'Key', 'KeyGroup'), id, out, warnings);
+    }
+}
+
+/**
+ * Warn about offset timers, which this client has no equivalent for.
+ *
+ * There is no `isOffsetTimer` element to read: in Mudlet a timer is an *offset*
+ * timer purely by where it sits in the tree — "children of folder = regular
+ * timers, children of timers = offset timers" (TTimer.h:75-84). Such a timer
+ * never runs on its own clock. Its interval is measured from the moment its
+ * parent fires (TTimer.cpp:255-265), and the normal start/stop walk skips it
+ * entirely (TTimer.cpp:314, :329). Nothing here reproduces that, so whatever
+ * happens to the nested timer, it is not what the profile asked for.
+ *
+ * Read off the document rather than the parsed tree so the warning does not
+ * depend on whether the reader descended into the nested elements — the
+ * shape is visible in the XML either way.
+ */
+function collectOffsetTimerWarnings(doc: Document, warnings: string[]): void {
+    for (const pkg of Array.from(doc.getElementsByTagName('TimerPackage'))) {
+        for (const el of Array.from(pkg.getElementsByTagName('Timer'))) {
+            if (isGroup(el)) continue;
+            const nested = directChildren(el, 'Timer', 'TimerGroup');
+            if (nested.length === 0) continue;
+            const names = nested.map(c => `"${getText(c, 'name')}"`).join(', ');
+            warnings.push(
+                `Timer "${getText(el, 'name')}" contains ${names}: Mudlet runs a timer nested under `
+                + 'another timer as an offset timer, counting its interval from when the parent fires. '
+                + 'This client has no offset timers, so those will not keep that relationship',
+            );
+        }
     }
 }
 
@@ -236,6 +322,8 @@ export function parseMudletXml(xml: string, opts: ParseOptions = {}): MudletImpo
     parseTimers(  pkgChildren('TimerPackage',   'Timer',   'TimerGroup'),   null, result.timers);
     parseKeys(    pkgChildren('KeyPackage',     'Key',     'KeyGroup'),     null, result.keys, result.warnings);
     parseButtons( pkgChildren('ActionPackage',  'Action',  'ActionGroup'),  null, result.buttons);
+
+    collectOffsetTimerWarnings(doc, result.warnings);
 
     if (opts.packageName) {
         applyPackageTagging(result, opts.packageName);

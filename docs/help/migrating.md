@@ -77,12 +77,15 @@ Two things to know:
   which ones persist.
 - Installed packages, registered under the names Mudlet knew them by, so
   `getPackages()` and package managers like `mpkg` behave.
-- Your map — the newest file in `map/`.
+- Your map — the newest file in `map/`. It is read into Mudlet Web's own map
+  store rather than the profile's filesystem, so there is no `map/` folder under
+  `getMudletHomeDir()` afterwards.
 - Profile settings: command separator, wrap width, borders, foreground /
   background / command / input colours, the full 16-colour ANSI palette, display
   font family and size, and the protocol toggles.
-- Every loose file in the profile folder, into the profile's own filesystem — so
+- Every other file in the profile folder, into the profile's own filesystem — so
   `io.open`, `lfs`, images, sounds and fonts keep working at the same paths.
+  `current/` and `map/` are the two exceptions, handled as above.
 
 ## What doesn't
 
@@ -93,8 +96,13 @@ Two things to know:
   can't keep that link alive. Mudlet Web folds each module in as an ordinary
   installed package. If it can't find a module's file in the folder you imported,
   it asks whether to upload it or drop it.
-- **Older saves.** Only the newest save in `current/` is read; the rest are copied
-  as files but not loaded.
+- **Older saves.** Only the newest save in `current/` is read, and the rest are
+  dropped rather than copied across. Desktop keeps them so you can roll back to
+  one; Mudlet Web has no way to load an older save, and a profile's filesystem
+  lives in browser storage that the browser may evict under pressure, so
+  carrying several megabytes of unreachable saves would cost you the files you
+  do use. Keep the original Mudlet folder if you want that history — importing
+  does not consume it.
 - **Anything fundamentally native.** Discord Rich Presence, the IRC client,
   `spawn`, and the system dictionary are bound as no-ops that log a warning, so a
   package that calls them still loads and runs — that one feature just does

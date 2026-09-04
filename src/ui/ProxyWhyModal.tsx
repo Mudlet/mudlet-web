@@ -1,4 +1,5 @@
 import { useModalFocus } from './components/useModalFocus';
+import { getBrand } from '../branding';
 
 interface Props {
     onClose: () => void;
@@ -33,7 +34,7 @@ export function ProxyWhyModal({ onClose, onHostYourOwn }: Props) {
                         <span className="proxy-why-node">MUD</span>
                     </div>
                     <p className="proxy-info-intro">
-                        Mudix ships with a default proxy so things just work. If you'd rather not route traffic
+                        {getBrand().appName} ships with a default proxy so things just work. If you'd rather not route traffic
                         through someone else's server, you can{' '}
                         <button type="button" className="proxy-info-link proxy-why-inline-btn" onClick={onHostYourOwn}>
                             host your own

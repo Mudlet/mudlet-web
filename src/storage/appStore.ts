@@ -5,7 +5,7 @@ import type { MudletVariable } from '../import/mudletVariables';
 import type { MudletImportResult } from '../import/mudletXmlImport';
 import type { WindowOpenOptions } from '../ui/windows/types';
 import { createDebouncedJsonStorage } from './debouncedStorage';
-import { deleteSessionsForConnection } from './logStorage';
+import { deleteProfileStorage, MIGRATION_BACKUP_KEY } from './profileStorage';
 import { getVault } from '../vault/vaultAccess';
 
 function getDescendantIds(id: string, items: { id: string; parentId: string | null }[]): string[] {
@@ -181,14 +181,42 @@ export const MUDIX_STORE_VERSION = 21;
  *  VFS (.mudix/profile.json) the first time it's opened. Kept separate from the
  *  persisted store blob so editing the connections list (which rewrites the
  *  blob) can't drop un-migrated profiles' data. Consumed per-profile by
- *  loadProfileData, then removed when empty. */
-export const MIGRATION_BACKUP_KEY = 'mudix_profile_migration_v21';
+ *  loadProfileData, then removed when empty. Defined next to the rest of the
+ *  per-profile storage inventory so profile deletion can sweep it. */
+export { MIGRATION_BACKUP_KEY };
 
 /** The subset of AppSchema actually persisted to localStorage (see `partialize`).
  *  Only the global index lives here now — the connection list and global client
  *  settings. Every per-profile slice (automation + UI/settings/layout) lives in
  *  that profile's VFS instead, so each profile is single-writer across tabs. */
 type PersistedAppSchema = Pick<AppSchema, 'connections' | 'client'>;
+
+/**
+ * Connection fields that are *stamped*, never edited.
+ *
+ * `updateConnection` full-replaces the record, which is right for everything a
+ * form owns — emptying a field has to clear it — but wrong for the provenance
+ * markers, which no form renders and which therefore cannot survive a
+ * round-trip through one. `createdAt` (schema.ts) is the discriminator
+ * `stockDefaults`/`isNewProfile` read to keep the starter UI off established
+ * profiles, so losing it retroactively turns a new profile into a legacy one;
+ * `mudletLinked`/`mudletImported` mark a Mudlet-originated profile as owning
+ * its own package set, so losing those silently unlinks a linked folder.
+ *
+ * An explicit value in `data` still wins — same precedence `addConnection`
+ * gives `data.createdAt`, so a profile import/copy can set them deliberately.
+ * Unlinking goes through `patchConnection` (see App.tsx), which is unaffected.
+ */
+const PROVENANCE_FIELDS = ['createdAt', 'mudletLinked', 'mudletImported'] as const;
+
+function carriedProvenance(prev: MudConnection, data: Omit<MudConnection, 'id'>): Partial<MudConnection> {
+    const carried: Partial<MudConnection> = {};
+    for (const key of PROVENANCE_FIELDS) {
+        const value = data[key] ?? prev[key];
+        if (value !== undefined) Object.assign(carried, { [key]: value });
+    }
+    return carried;
+}
 
 export const useAppStore = create<AppStore>()(
     persist(
@@ -218,7 +246,12 @@ export const useAppStore = create<AppStore>()(
             },
             updateConnection: (id, data) => set(s => ({
                 connections: s.connections.map(c => c.id === id
-                    ? { ...data, name: uniqueConnectionName(data.name, s.connections, id), id }
+                    ? {
+                        ...data,
+                        ...carriedProvenance(c, data),
+                        name: uniqueConnectionName(data.name, s.connections, id),
+                        id,
+                    }
                     : c),
             })),
             reorderConnections: orderedIds => set(s => {
@@ -250,9 +283,16 @@ export const useAppStore = create<AppStore>()(
                 }),
             })),
             removeConnection: id => set(s => {
-                // Logs live in their own IndexedDB (like maps). Drop them
-                // best-effort; the store update below is synchronous regardless.
-                void deleteSessionsForConnection(id).catch(() => {});
+                // Everything this profile owns outside the store — its VFS
+                // database, map, linked-folder handle, logs and per-profile
+                // localStorage keys — lives in IndexedDB and has to be erased
+                // separately, or it becomes an unreachable orphan against the
+                // origin's quota: the id is regenerated for the next profile,
+                // so nothing in the UI can ever get back to it. All of it is
+                // addressed by `id`, so no other profile is touched. See
+                // storage/profileStorage for the inventory. Best-effort and
+                // not awaited; the store update below is synchronous.
+                void deleteProfileStorage(id).catch(() => {});
                 // Same for a saved password in the credential vault. A locked
                 // vault can't rewrite its ciphertext, so the entry is swept on
                 // the next unlock instead (CredentialVault.pruneMissing).

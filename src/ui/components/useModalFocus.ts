@@ -60,8 +60,20 @@ export interface ModalFocusOptions {
      *  modal manages its own initial focus (e.g. a specific field or button). */
     autoFocus?: boolean;
     /** Close on Escape via `onClose`. Default true. Set false when the modal has
-     *  its own Escape handling (then `onClose` may be omitted). */
+     *  its own Escape handling (then `onClose` may be omitted). Read live on
+     *  every key, so it may vary over the dialog's life — a dialog can hand
+     *  Escape to an inner editor for exactly as long as that editor is open
+     *  (the file browser's inline rename does) without the trap being torn
+     *  down and re-armed, which would re-grab focus. */
     closeOnEscape?: boolean;
+    /** Gate for a dialog whose node is not in the DOM on the first render — a
+     *  portal whose container is only known after a layout effect, say. The
+     *  setup below runs once, off a null ref, and refs don't re-render, so
+     *  without this the trap, the Escape handler and the focus restore are all
+     *  silently skipped (issue #49). Flip it true in the render that mounts the
+     *  dialog node. One-way: flipping it back to false counts as a close and
+     *  restores focus to the opener. Default true (node present immediately). */
+    ready?: boolean;
     /** Where focus should land on close, instead of the opener. Use when the
      *  dialog was raised by the game rather than by a click, so "the opener" is
      *  either nothing or a control that has since gone away — the GMCP login
@@ -74,7 +86,7 @@ export function useModalFocus<T extends HTMLElement = HTMLDivElement>(
     onClose?: () => void,
     opts: ModalFocusOptions = {},
 ): React.RefObject<T | null> {
-    const { autoFocus = true, closeOnEscape = true, restoreFocusTo } = opts;
+    const { autoFocus = true, closeOnEscape = true, ready = true, restoreFocusTo } = opts;
     const ref = useRef<T | null>(null);
     // Keep the latest onClose without re-running the setup effect (which would
     // re-grab focus on every parent render).
@@ -82,8 +94,11 @@ export function useModalFocus<T extends HTMLElement = HTMLDivElement>(
     useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
     const restoreRef = useRef(restoreFocusTo);
     useEffect(() => { restoreRef.current = restoreFocusTo; }, [restoreFocusTo]);
+    const closeOnEscapeRef = useRef(closeOnEscape);
+    useEffect(() => { closeOnEscapeRef.current = closeOnEscape; }, [closeOnEscape]);
 
     useEffect(() => {
+        if (!ready) return;
         const node = ref.current;
         if (!node) return;
         const opener = document.activeElement as HTMLElement | null;
@@ -99,7 +114,7 @@ export function useModalFocus<T extends HTMLElement = HTMLDivElement>(
         }
 
         const onKeyDown = (e: KeyboardEvent) => {
-            if (closeOnEscape && e.key === 'Escape') {
+            if (closeOnEscapeRef.current && e.key === 'Escape') {
                 e.stopPropagation();
                 onCloseRef.current?.();
                 return;
@@ -120,7 +135,7 @@ export function useModalFocus<T extends HTMLElement = HTMLDivElement>(
                 ?? (opener && document.contains(opener) ? opener : null);
             target?.focus();
         };
-    }, []);
+    }, [ready]);
 
     return ref;
 }
