@@ -120,3 +120,16 @@ those into `dist-lib`, so an archive can't be imported and left out of the
 library build.
 
 Also keep `../specs/SYNCED.md` on the same commit.
+
+## Who runs it
+
+Nobody has to, and nothing has to remember that last sentence either:
+`.github/workflows/sync-mudlet-upstream.yml` runs this sync and
+`sync:mudlet-specs` daily as one operation, resolving the upstream sha once and
+handing it to both — so the runtime and the corpus that tests it cannot end up on
+different commits. It opens `chore/sync-mudlet-upstream` as a PR when anything
+moved, merges it once CI is green, and opens a triage issue when it isn't.
+
+A patch that stops applying is one of the things that issue reports, and it is
+the one that needs a human quickly: until it is re-applied by hand the mudix
+change it carried is missing from the tree.
