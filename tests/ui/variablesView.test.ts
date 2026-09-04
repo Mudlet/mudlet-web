@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { VariablesView, dropHiddenPaths, renameHiddenPaths } from '../../src/ui/windows/panels/VariablesView';
+import { VariablesView, dropHiddenPaths } from '../../src/ui/windows/panels/VariablesView';
 import { ConfirmProvider } from '../../src/ui/components';
 import { useAppStore } from '../../src/storage';
 import type { LuaGlobalEntry, VariableEdit } from '../../src/scripting/IScriptingRuntime';
@@ -287,43 +287,21 @@ describe('save-across-sessions checkbox', () => {
     });
 });
 
-// ── Review follow-ups ───────────────────────────────────────────────────────
+// ── Review follow-up: hidden paths that the dedicated suite does not cover ───
+// (renameHiddenPaths, the create-collision refusal and the focus handling all
+// live in editorReviewFixes.test.ts.)
 
-describe('hidden-path bookkeeping', () => {
-    it('renameHiddenPaths moves the entry and everything under it', () => {
-        expect(renameHiddenPaths(['a', 'a.b', 'a[3]', 'a.b.c'], 'a', 'z'))
-            .toEqual(['z', 'z.b', 'z[3]', 'z.b.c']);
-    });
-
-    it('renameHiddenPaths does not capture a name that merely starts the same', () => {
-        expect(renameHiddenPaths(['aTwo', 'aTwo.b'], 'a', 'z')).toBe(null);
-    });
-
-    it('renameHiddenPaths reports no change rather than a fresh array', () => {
-        expect(renameHiddenPaths(['x', 'y'], 'a', 'z')).toBe(null);
-    });
-
-    it('dropHiddenPaths removes the entry and its descendants only', () => {
+describe('dropHiddenPaths', () => {
+    it('removes the entry and its descendants, leaving unrelated names alone', () => {
         expect(dropHiddenPaths(['a', 'a.b', 'a[3]', 'aTwo', 'b'], 'a')).toEqual(['aTwo', 'b']);
-        expect(dropHiddenPaths(['x'], 'a')).toBe(null);
+    });
+
+    it('returns null when nothing matched, so the caller can skip the write', () => {
+        expect(dropHiddenPaths(['x', 'y'], 'a')).toBe(null);
     });
 });
 
-describe('renaming keeps the hidden flag with the variable', () => {
-    it('carries hidden across a rename instead of stranding the old name', async () => {
-        useAppStore.setState({
-            connectionVariables: { [CONN]: { saveList: [], values: [], hidden: ['qaOld', 'qaOld.inner'] } },
-        } as never);
-        await mount([G({ name: 'qaOld', value: 'v' })], { showHidden: true });
-        await clickAction('qaOld', /Edit name/);
-        await setValue(draftName(), 'qaNew');
-        await click(draft().querySelector('button')!);
-
-        expect(useAppStore.getState().connectionVariables[CONN].hidden).toEqual(['qaNew', 'qaNew.inner']);
-    });
-});
-
-describe('deleting clears the variable\'s hidden paths', () => {
+describe('deleting a variable clears its hidden paths', () => {
     it('drops the entry and anything hidden underneath it', async () => {
         useAppStore.setState({
             connectionVariables: { [CONN]: { saveList: [], values: [], hidden: ['qaTbl', 'qaTbl.inner', 'other'] } },
@@ -333,46 +311,8 @@ describe('deleting clears the variable\'s hidden paths', () => {
         await clickAction('qaTbl', /Set to nil/);
         await confirmDialog('Delete');
 
+        // Left behind, 'qaTbl.inner' would silently hide whatever is next given
+        // that name.
         expect(useAppStore.getState().connectionVariables[CONN].hidden).toEqual(['other']);
-    });
-});
-
-describe('creating over an existing name', () => {
-    it('refuses rather than replacing a live table with an empty string', async () => {
-        await mount([G({ name: 'qaTable', valueType: 'table', isTable: true })]);
-        await clickHeader('+ New');
-        await setValue(draftName(), 'qaTable');
-        await click(draft().querySelector('button')!);
-
-        expect(engine.edits).toEqual([]);
-        expect(container.querySelector('.variables__error')!.textContent).toContain('already exists');
-        // The draft stays up so the name can be corrected.
-        expect(draft()).not.toBe(null);
-    });
-
-    it('still allows saving an existing variable under its own name', async () => {
-        await mount([G({ name: 'qaVar', value: 'old' })]);
-        await clickAction('qaVar', /Edit name/);
-        await setValue(draftValue(), 'new');
-        await click(draft().querySelector('button')!);
-
-        expect(engine.edits).toHaveLength(1);
-        expect(engine.edits[0]).toMatchObject({ op: 'set', value: 'new' });
-    });
-});
-
-describe('search focus on a hidden variable', () => {
-    it('reveals the row instead of landing on an empty list', async () => {
-        useAppStore.setState({
-            connectionVariables: { [CONN]: { saveList: [], values: [], hidden: ['qaHidden'] } },
-        } as never);
-        await mountWithFocus([G({ name: 'qaHidden', value: 'v' })], { name: 'qaHidden', revision: 1 });
-
-        expect(names()).toEqual(['qaHidden']);
-    });
-
-    it('tells the parent it is done, so a remount does not re-apply it', async () => {
-        await mountWithFocus([G({ name: 'qaOne' }), G({ name: 'qaTwo' })], { name: 'qaTwo', revision: 1 });
-        expect(consumed).toBe(1);
     });
 });
