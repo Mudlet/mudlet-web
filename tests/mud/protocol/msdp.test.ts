@@ -108,3 +108,92 @@ describe('createMsdpStream', () => {
     expect(collect('')).toEqual([]);
   });
 });
+
+// The malformed and multi-value cases upstream pinned in
+// src/mudlet-lua/tests/Telnet_spec.lua ("Tests MSDP", :294-345 @124ee8b5f).
+// The expectations are Mudlet's own, taken from what
+// TLuaInterpreter::msdp2Lua hands to setMSDPTable: an unmarked adjacent-value
+// list becomes an array scoped to the variable that carried it, and a variable
+// whose table/array markers do not balance is dropped without ever reaching
+// setMSDPTable — so it raises no arrival event either.
+describe('createMsdpStream: Mudlet parity on malformed and multi-value input', () => {
+  const cases: { name: string; payload: string; expected: MsdpEnvelope[] }[] = [
+    {
+      // Telnet_spec.lua "keeps a table's shape when it holds an array of two or
+      // more elements" — adjacent values inside an explicit array must not add
+      // an array level the variable never had.
+      name: "keeps a table's shape when it holds an array of two or more elements",
+      payload:
+        MSDP_VAR + 'MSDPSHAPE' + MSDP_VAL +
+        MSDP_TABLE_OPEN +
+        MSDP_VAR + 'L' + MSDP_VAL +
+        MSDP_ARRAY_OPEN + MSDP_VAL + 'a' + MSDP_VAL + 'b' + MSDP_ARRAY_CLOSE +
+        MSDP_VAR + 'Z' + MSDP_VAL + 'plain' +
+        MSDP_TABLE_CLOSE,
+      expected: [{ path: 'MSDPSHAPE', value: { L: ['a', 'b'], Z: 'plain' } }],
+    },
+    {
+      // Telnet_spec.lua "still turns adjacent top-level values into a list" —
+      // the specification's unmarked list for command-like variables.
+      name: 'still turns adjacent top-level values into a list',
+      payload: MSDP_VAR + 'MSDPCMD' + MSDP_VAL + 'alpha' + MSDP_VAL + 'beta',
+      expected: [{ path: 'MSDPCMD', value: ['alpha', 'beta'] }],
+    },
+    {
+      // Telnet_spec.lua "wraps only the variable that was an unmarked list" —
+      // the wrap is scoped to its own variable, not to whichever comes last.
+      name: 'wraps only the variable that was an unmarked list',
+      payload:
+        MSDP_VAR + 'MSDPLIST' + MSDP_VAL + 'a' + MSDP_VAL + 'b' +
+        MSDP_VAR + 'MSDPSOLO' + MSDP_VAL + 'solo',
+      expected: [
+        { path: 'MSDPLIST', value: ['a', 'b'] },
+        { path: 'MSDPSOLO', value: 'solo' },
+      ],
+    },
+    {
+      // Telnet_spec.lua "drops a variable whose table the game never closed,
+      // without an event" — IAC SE has already arrived, so nothing more is
+      // coming for it. The complete variable ahead of it has to survive.
+      name: 'drops a variable whose table the game never closed, without an event',
+      payload:
+        MSDP_VAR + 'MSDPWHOLE' + MSDP_VAL + 'fine' +
+        MSDP_VAR + 'MSDPCUT' + MSDP_VAL + MSDP_TABLE_OPEN,
+      expected: [{ path: 'MSDPWHOLE', value: 'fine' }],
+    },
+    {
+      // Telnet_spec.lua "yields no variable and no event when the game closes a
+      // table it never opened" — and the malformed variable must not take the
+      // rest of the message with it.
+      name: 'yields no variable and no event when the game closes a table it never opened',
+      payload:
+        MSDP_VAR + 'MSDPOVER' + MSDP_VAL + MSDP_TABLE_CLOSE +
+        MSDP_VAR + 'MSDPNEXT' + MSDP_VAL + 'ok',
+      expected: [{ path: 'MSDPNEXT', value: 'ok' }],
+    },
+  ];
+
+  for (const { name, payload, expected } of cases) {
+    it(name, () => {
+      expect(collect(body(payload))).toEqual(expected);
+    });
+  }
+
+  it('drops a variable whose array the game never closed', () => {
+    // the same imbalance as MSDPCUT with the other pair of markers
+    expect(
+      collect(
+        body(
+          MSDP_VAR + 'KEPT' + MSDP_VAL + 'yes' +
+          MSDP_VAR + 'CUTARRAY' + MSDP_VAL + MSDP_ARRAY_OPEN + MSDP_VAL + 'a',
+        ),
+      ),
+    ).toEqual([{ path: 'KEPT', value: 'yes' }]);
+  });
+
+  it('drops a variable whose value is followed by a stray close marker', () => {
+    // the close belongs to the variable that was still being read, so that
+    // variable goes rather than the message surviving intact
+    expect(collect(body(MSDP_VAR + 'STRAY' + MSDP_VAL + 'a' + MSDP_ARRAY_CLOSE))).toEqual([]);
+  });
+});
