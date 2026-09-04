@@ -1,3 +1,4 @@
+import { sanitizeControlChars } from './mudletControlChars';
 import { isColorizing } from '../storage/schema';
 import type {
     AliasNode,
@@ -71,8 +72,11 @@ function modifiersToQt(mods: string[], key: string): number {
 const BUTTON_LOCATIONS = ['top', 'bottom', 'left', 'right', 'floating'];
 const BUTTON_ORIENTATIONS = ['horizontal', 'vertical'];
 
+// Control characters are placeholder-encoded before the entity escape: XML 1.0
+// cannot represent them at all, and a raw one here yields a document that the
+// linked-profile write-back then grafts a <parsererror> into.
 function escapeXml(s: string): string {
-    return s.replace(/[&<>"']/g, ch => (
+    return sanitizeControlChars(s).replace(/[&<>"']/g, ch => (
         ch === '&' ? '&amp;'  :
         ch === '<' ? '&lt;'   :
         ch === '>' ? '&gt;'   :
