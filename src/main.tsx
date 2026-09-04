@@ -6,6 +6,7 @@ import { MudletWebApp } from './MudletWebApp';
 import { credentialVault } from './vault/CredentialVault';
 import { VaultModal } from './ui/VaultModal';
 import { installVault } from './vault/vaultAccess';
+import { installVaultHelpTopic } from './vault/vaultHelpTopic';
 
 // The stock app is just MudletWebApp with no brand — branded builds import
 // MudletWebApp from the library entry and pass their own BrandConfig. Page
@@ -17,6 +18,7 @@ import { installVault } from './vault/vaultAccess';
 // only ones anywhere that name it, which is what keeps it out of `dist-lib`
 // entirely rather than merely unused there. See `vault/vaultAccess`.
 installVault(credentialVault, VaultModal);
+installVaultHelpTopic();
 
 createRoot(document.getElementById('root')!).render(
     <StrictMode>

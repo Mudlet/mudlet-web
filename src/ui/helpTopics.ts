@@ -58,6 +58,25 @@ export const HELP_TOPICS: HelpTopic[] = [
 
 export const DEFAULT_HELP_TOPIC = HELP_TOPICS[0].id;
 
+/**
+ * Add a topic that only some builds have.
+ *
+ * The manual is otherwise a fixed list, but a few features are stock-app-only —
+ * the credential vault above all — and a branded build must not carry
+ * documentation for something it doesn't ship. Those topics are registered from
+ * `main.tsx` at boot, alongside the feature itself, so they never enter the
+ * library's module graph. See `vault/vaultAccess` for the same seam.
+ *
+ * Idempotent, and ordered by `after` rather than appended, so an added topic
+ * lands next to the one it relates to instead of at the bottom.
+ */
+export function registerHelpTopic(topic: HelpTopic, opts?: { after?: string }): void {
+    if (HELP_TOPICS.some(t => t.id === topic.id)) return;
+    const at = opts?.after ? HELP_TOPICS.findIndex(t => t.id === opts.after) : -1;
+    if (at >= 0) HELP_TOPICS.splice(at + 1, 0, topic);
+    else HELP_TOPICS.push(topic);
+}
+
 /** Resolve a markdown link href to a topic id, or null if it isn't one of ours.
  *  Handles `./storage.md`, `storage.md`, `docs/help/storage.md` and a `#anchor`
  *  suffix — the shapes a relative link between these files can take. */
