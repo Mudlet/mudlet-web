@@ -5328,10 +5328,27 @@ export class ScriptingAPI {
      * fall through here too — their fill color is reported. Returns null when
      * the name doesn't resolve to anything; callers (Lua wrapper) translate that
      * to a 4-tuple of zeros.
+     *
+     * The main window answers from the *preference* when no script has set a
+     * colour, not from nothing. `outputBackgroundColor` is only the override
+     * `setBackgroundColor()` writes; returning null without it meant the Lua
+     * wrapper substituted black, so a package colouring its Geyser UI to match
+     * the user's background — a very common pattern — rendered against black
+     * whatever the user had chosen (issue #71). Desktop reads the
+     * preference-backed model colour for the main window and says why:
+     * "the view's colour is a reference to this one, so read it straight from
+     * the model" (TLuaInterpreterUI.cpp:1217-1243).
      */
     getBackgroundColor(name?: string): { r: number; g: number; b: number; a: number } | null {
         if (!name || name === 'main') {
-            return selectProfileField(useAppStore.getState(), this.connectionId, 'outputBackgroundColor') ?? null;
+            const override = selectProfileField(useAppStore.getState(), this.connectionId, 'outputBackgroundColor');
+            if (override) return override;
+            // Same precedence the renderer itself draws with, so the answer
+            // matches what is on screen rather than a second opinion about it.
+            const [r, g, b] = this.defaultColorRgb('background');
+            // The preference is a hex colour and carries no alpha; the main
+            // console is opaque, which is the alpha setBackgroundColor defaults to.
+            return { r, g, b, a: 255 };
         }
         if (this.session.labels.has(name)) {
             return this.session.labels.getBackgroundColor(name);
