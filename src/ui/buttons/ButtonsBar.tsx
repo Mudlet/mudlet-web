@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { useAppStore } from '../../storage';
-import { isEffectivelyEnabled, type ButtonLocation, type ButtonNode } from '../../storage/schema';
+import { clampFillerOffset, isEffectivelyEnabled, type ButtonLocation, type ButtonNode } from '../../storage/schema';
 import type { ScriptingEngine } from '../../scripting/ScriptingEngine';
 import type { ProfileVFS } from '../../scripting/vfs/ProfileVFS';
 import { cssTextToStyle } from '../labels/qtCss';
@@ -131,7 +131,10 @@ function renderToolbarGroup(
     // before the first button (TToolBar::finalize / TEasyButtonBar::finalize,
     // Mudlet #9332). Only ever placed when the toolbar actually wraps — desktop
     // disables the spin box below 2 rows/columns.
-    const filler = useGrid ? Math.max(0, Math.trunc(toolbar.fillerOffset ?? 0)) : 0;
+    // Clamped the same way the editor clamps on save, so a profile written
+    // elsewhere with an offset >= its row count can't spill the grid into
+    // implicit tracks and push every button out of the layout.
+    const filler = clampFillerOffset(toolbar.fillerOffset ?? 0, cols);
     const tbCls = useGrid
         ? `mudix-buttonbar mudix-buttonbar--grid mudix-buttonbar--${toolbar.orientation}`
         : `mudix-buttonbar mudix-buttonbar--${toolbar.orientation}`;

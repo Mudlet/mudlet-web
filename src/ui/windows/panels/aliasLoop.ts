@@ -20,6 +20,13 @@
  */
 export function aliasSubstitutionLoops(pattern: string, substitution: string): boolean {
     if (!pattern || !substitution) return false;
+    // A half-typed pattern can backtrack catastrophically — `(a+)+b` against a
+    // run of `a`s is the classic shape — and this runs on the UI thread. The
+    // cost of that blow-up grows with the subject, so a substitution longer
+    // than any real alias command simply isn't checked. Desktop escapes the
+    // question by only testing on save; here the caller also debounces, so a
+    // pattern is tested once the typing stops rather than per keystroke.
+    if (substitution.length > MAX_CHECKED_SUBSTITUTION) return false;
     let rx: RegExp;
     try {
         rx = new RegExp(pattern);
@@ -28,6 +35,10 @@ export function aliasSubstitutionLoops(pattern: string, substitution: string): b
     }
     return rx.test(substitution);
 }
+
+/** Longest command this check will look at. Mudlet's own alias command field is
+ *  a single-line edit; anything past this is a script, not a loop candidate. */
+const MAX_CHECKED_SUBSTITUTION = 512;
 
 /** The warning shown beside a looping alias, worded as desktop words it
  *  (`showAliasLoopWarning`, dlgTriggerEditor.cpp:6364-6369) minus the refusal. */

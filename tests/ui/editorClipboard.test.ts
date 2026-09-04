@@ -98,3 +98,33 @@ describe('cloneSubtree', () => {
         expect(cloneSubtree([], null, new Set(), ids)).toEqual([]);
     });
 });
+
+describe('subtree ordering', () => {
+    // collectSubtree and cloneSubtree used to disagree about their own
+    // contract: the first returned only "items order", while the second treated
+    // element 0 as the root. A tree whose child sits before its parent in the
+    // flat array is legal (collectSubtree's own walk is written for it), and it
+    // would have detached the group, uniqued the wrong name and selected a
+    // child after the paste.
+    const REORDERED: TriggerNode[] = [TREE[1], TREE[2], TREE[0], TREE[3]];
+
+    it('collectSubtree puts the picked item first however the array is ordered', () => {
+        expect(collectSubtree(REORDERED, 'head').map(t => t.id)).toEqual(['head', 'kid-a', 'kid-b']);
+    });
+
+    it('cloneSubtree finds the root by its parent, not by position', () => {
+        n = 0;
+        // Handed the descendants first, as an unordered caller might.
+        const clones = cloneSubtree([TREE[1], TREE[2], TREE[0]], 'target', new Set(), ids);
+        const root = clones.find(c => c.name === 'head')!;
+        expect(clones[0]).toBe(root);
+        expect(root.parentId).toBe('target');
+        for (const kid of clones.filter(c => c !== root)) expect(kid.parentId).toBe(root.id);
+    });
+
+    it('uniques the root name, not whichever node came first', () => {
+        const clones = cloneSubtree([TREE[1], TREE[0], TREE[2]], null, new Set(['head', 'kid-a']), ids);
+        expect(clones[0].name).toBe('head (copy)');
+        expect(clones.find(c => c.id !== clones[0].id && c.name.startsWith('kid-a'))!.name).toBe('kid-a');
+    });
+});

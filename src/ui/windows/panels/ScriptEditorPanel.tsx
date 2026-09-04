@@ -4,13 +4,13 @@ import { Button, Input, ContextMenu, FileSourceButton, useConfirm, type PickedFi
 import { VariablesView } from './VariablesView';
 import { useAppStore, useProfileField } from '../../../storage';
 import type { RestoredNode } from '../../../storage/appStore';
-import { captureDeletion, describeDeletion, pushBounded, type EditorDeleteCommand } from './editorUndo';
+import { captureDeletion, describeDeletion, describeInsertion, pushBounded, type EditorItemCommand } from './editorUndo';
 import { cloneSubtree, collectSubtree, type EditorClipboard } from './editorClipboard';
 import { aliasLoopWarning, aliasSubstitutionLoops } from './aliasLoop';
 import { isPackageRemovable } from '../../../branding';
 import { DEFAULT_ANSI_PALETTE } from '../../../mud/text/colors';
 import type { AliasNode, ButtonLocation, ButtonNode, ButtonOrientation, ButtonRotation, KeyNode, PackageManifest, ScriptNode, TimerNode, TriggerNode, TriggerPattern, TriggerPatternType } from '../../../storage/schema';
-import { asButtonRotation, isColorizing, isEffectivelyEnabled, MAX_CONDITION_LINE_DELTA } from '../../../storage/schema';
+import { asButtonRotation, clampFillerOffset, isColorizing, isEffectivelyEnabled, MAX_CONDITION_LINE_DELTA } from '../../../storage/schema';
 import type { MudSession, ScriptLogSource, ScriptLogSourceKind } from '../../../mud/MudSession';
 import type { ProfileVFS } from '../../../scripting/vfs/ProfileVFS';
 import type { ScriptingEngine } from '../../../scripting/ScriptingEngine';
@@ -21,6 +21,7 @@ import { PackageExportModal, type ExportCategory } from './PackageExportModal';
 import type { PackageRepoEntry } from '../../../import/packageRepository';
 import { DEFAULT_PROXY_URL } from '../../../storage';
 import { renderMarkdown } from '../../markdown';
+import { useDebounced } from '../../search/useDebounced';
 import xterm256 from '../../../mud/text/xterm256';
 import './ScriptEditorPanel.css';
 
@@ -99,17 +100,6 @@ const BUTTON_ROTATIONS: { value: ButtonRotation; label: string }[] = [
     { value: 1, label: '90° rotation to the left' },
     { value: 2, label: '90° rotation to the right' },
 ];
-
-/**
- * Mudlet allows the filler to take up to one less than the toolbar's row/column
- * count, and disables the control entirely below 2 of them — a filler as wide as
- * the grid would push every button off it (Mudlet #9332,
- * `dlgActionMainArea`/`dlgTriggerEditor` offset handling).
- */
-function clampFillerOffset(offset: number, columns: number): number {
-    if (!Number.isFinite(offset) || columns < 2) return 0;
-    return Math.max(0, Math.min(columns - 1, Math.trunc(offset)));
-}
 
 const MODIFIER_KEYS = new Set(['Control', 'Shift', 'Alt', 'Meta', 'AltGraph', 'CapsLock', 'NumLock', 'ScrollLock', 'Dead']);
 
@@ -1135,8 +1125,8 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     // Item-level undo/redo. Mudlet's `EditorUndoStack` belongs to the editor
     // window and dies with it (dlgTriggerEditor.cpp:456), so these live in the
     // panel rather than the store and are gone once the editor is closed.
-    const undoStackRef = useRef<EditorDeleteCommand[]>([]);
-    const redoStackRef = useRef<EditorDeleteCommand[]>([]);
+    const undoStackRef = useRef<EditorItemCommand[]>([]);
+    const redoStackRef = useRef<EditorItemCommand[]>([]);
     /** The transient "…deleted. Undo" bar. */
     const [undoToast, setUndoToast] = useState<string | null>(null);
     const undoToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1207,8 +1197,11 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     }, [session]);
 
     /** Set by a search result click: which global the Variables tab should filter
-     *  to when it next mounts. */
+     *  to when it next mounts. Cleared as soon as the view has applied it — the
+     *  view unmounts on every tab switch, so a request left standing would be
+     *  re-applied each time the user came back. */
     const [variableFocus, setVariableFocus] = useState<{ name: string; revision: number } | null>(null);
+    const clearVariableFocus = useCallback(() => setVariableFocus(null), []);
 
     const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; targetId: string | null } | null>(null);
     const logEndRef      = useRef<HTMLDivElement>(null);
@@ -1269,10 +1262,17 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
 
     // Live self-loop check for the open alias. Desktop refuses the save; mudix
     // warns and lets it through — see aliasLoop.ts for why.
+    //
+    // Debounced because the check runs the user's own half-typed pattern through
+    // RegExp, and a backtracking-heavy one (`(a+)+b`) can take exponential time
+    // on a short command. Desktop runs it once, on save; settling for a beat
+    // means at most one evaluation per pause rather than one per keystroke.
+    const loopCheckPattern = useDebounced(editPattern, 250);
+    const loopCheckCommand = useDebounced(editCommand, 250);
     const aliasLoops = useMemo(
         () => category === 'aliases' && !!selected && !selected.isGroup
-            && aliasSubstitutionLoops(editPattern, editCommand),
-        [category, selected, editPattern, editCommand],
+            && aliasSubstitutionLoops(loopCheckPattern, loopCheckCommand),
+        [category, selected, loopCheckPattern, loopCheckCommand],
     );
 
     // Navigation driven by the title-bar search box: reuse the error-jump
@@ -1839,7 +1839,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         else                          removeButton(connectionId, id);
     };
 
-    const restoreEntries = (cmd: EditorDeleteCommand) => {
+    const restoreEntries = (cmd: Pick<EditorItemCommand, 'category' | 'entries'>) => {
         const { category: cat, entries } = cmd;
         if (cat === 'scripts')        restoreScripts(connectionId, entries as ReadonlyArray<RestoredNode<ScriptNode>>);
         else if (cat === 'aliases')   restoreAliases(connectionId, entries as ReadonlyArray<RestoredNode<AliasNode>>);
@@ -1859,12 +1859,25 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         const entries = captureDeletion(items, id);
         if (entries.length === 0) return;
         removeById(cat, id);
-        const command: EditorDeleteCommand = { category: cat, entries, label: describeDeletion(cat, entries) };
+        pushCommand({ kind: 'delete', category: cat, entries, label: describeDeletion(cat, entries) });
+        setSelectedId(prev => prev === id ? null : prev);
+        showUndoToast(describeDeletion(cat, entries));
+    };
+
+    const pushCommand = useCallback((command: EditorItemCommand) => {
         undoStackRef.current = pushBounded(undoStackRef.current, command);
         // A fresh action clears the redo branch, as QUndoStack::push does.
         redoStackRef.current = [];
-        setSelectedId(prev => prev === id ? null : prev);
-        showUndoToast(command.label);
+    }, []);
+
+    /** Drop the command's nodes back out of the tree. Only the roots need
+     *  removing — each takes its subtree with it. */
+    const removeEntries = (cmd: EditorItemCommand) => {
+        const ids = new Set(cmd.entries.map(e => e.node.id));
+        for (const { node } of cmd.entries) {
+            if (node.parentId === null || !ids.has(node.parentId)) removeById(cmd.category, node.id);
+        }
+        setSelectedIn(cmd.category, prev => prev !== null && ids.has(prev) ? null : prev);
     };
     // Auto-commit, so that leaving an item behind never throws away what was
     // typed into it. Mudlet has no unsaved-changes concept at all: every
@@ -1899,28 +1912,50 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
      *  module-level buffer instead of the value it closed over. */
     const [clipboardRevision, setClipboardRevision] = useState(0);
 
+    /** The category's nodes as the store holds them *now*, not as this render
+     *  closed over them — {@link flushPendingEdits} may have just written to it. */
+    const listNow = useCallback((cat: EditCategory): AnyNode[] => {
+        const s = useAppStore.getState();
+        return (
+            cat === 'scripts'  ? s.connectionScripts[connectionId]     :
+            cat === 'aliases'  ? s.connectionAliases[connectionId]     :
+            cat === 'triggers' ? s.connectionTriggers[connectionId]    :
+            cat === 'timers'   ? s.connectionTimers[connectionId]      :
+            cat === 'keys'     ? s.connectionKeybindings[connectionId] :
+            s.connectionButtons[connectionId]
+        ) ?? EMPTY;
+    }, [connectionId]);
+
+    /** Write what is in the edit fields back before an operation reads the tree.
+     *  Copying or duplicating an item the user has typed into would otherwise
+     *  take the last-saved version — and then the selection change the paste
+     *  causes would commit the typed text onto the *original*, leaving two items
+     *  neither of which is the one they meant. */
+    const flushPendingEdits = useCallback(() => {
+        const open = loadedItemRef.current;
+        if (!open || !dirtyRef.current) return;
+        commitEditsRef.current(open.id, open.category);
+        setDirty(false);
+    }, []);
+
     const copyItem = useCallback((id: string) => {
         if (!isEditCategory) return;
-        const nodes = collectSubtree(items, id);
+        const cat = category as EditCategory;
+        flushPendingEdits();
+        const nodes = collectSubtree(listNow(cat), id);
         if (nodes.length === 0) return;
         editorClipboard = {
-            category: category as EditCategory,
+            category: cat,
             nodes: nodes.map(n => structuredClone(n)),
-            label: `${CATEGORY_SINGULAR[category as EditCategory].toLowerCase()} "${nodes[0].name}"`,
+            label: `${CATEGORY_SINGULAR[cat].toLowerCase()} "${nodes[0].name}"`,
         };
         setClipboardRevision(r => r + 1);
-    }, [category, isEditCategory, items]);
+    }, [category, isEditCategory, listNow, flushPendingEdits]);
 
     /** Insert a cloned subtree as the sibling after `targetId` (or at the end of
      *  the roots when nothing is selected), and select its root. */
     const pasteNodes = useCallback((nodes: readonly AnyNode[], cat: EditCategory, targetId: string | null) => {
-        const list: AnyNode[] =
-            cat === 'scripts'  ? scripts    :
-            cat === 'aliases'  ? aliases    :
-            cat === 'triggers' ? triggers   :
-            cat === 'timers'   ? timers     :
-            cat === 'keys'     ? keybindings:
-            buttons;
+        const list = listNow(cat);
         const target = targetId ? list.find(i => i.id === targetId) ?? null : null;
         const parentId = target?.parentId ?? null;
         const siblingNames = new Set(list.filter(i => i.parentId === parentId).map(i => i.name));
@@ -1934,10 +1969,13 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
             ? Math.max(...after.map(n => list.indexOf(n))) + 1
             : list.length;
         const entries = clones.map((node, i) => ({ index: base + i, node }));
-        restoreEntries({ category: cat, entries, label: '' });
+        restoreEntries({ category: cat, entries });
+        // On the same stack as deletions, so Ctrl+Z after a paste undoes the
+        // paste rather than reaching past it to an older delete.
+        pushCommand({ kind: 'insert', category: cat, entries, label: describeInsertion(cat, entries) });
         if (parentId) setExpandedIn(cat, prev => { const next = new Set(prev); next.add(parentId); return next; });
         setSelectedIn(cat, clones[0].id);
-    }, [scripts, aliases, triggers, timers, keybindings, buttons, setExpandedIn, setSelectedIn]);
+    }, [listNow, pushCommand, setExpandedIn, setSelectedIn]);
 
     const pasteItem = useCallback((targetId: string | null) => {
         const clip = editorClipboard;
@@ -1947,36 +1985,41 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
 
     const duplicateItem = useCallback((id: string) => {
         if (!isEditCategory) return;
-        const nodes = collectSubtree(items, id);
+        const cat = category as EditCategory;
+        flushPendingEdits();
+        const nodes = collectSubtree(listNow(cat), id);
         if (nodes.length === 0) return;
-        pasteNodes(nodes, category as EditCategory, id);
-    }, [category, isEditCategory, items, pasteNodes]);
+        pasteNodes(nodes, cat, id);
+    }, [category, isEditCategory, listNow, flushPendingEdits, pasteNodes]);
 
-    const undoDelete = () => {
+    /** Put the command's nodes back — restoring a delete, or re-applying a
+     *  paste. Addressed by the command's own category: either direction can
+     *  cross tabs, and the selection belongs to the tree it happened in. */
+    const reinstate = (command: EditorItemCommand) => {
+        restoreEntries(command);
+        setSelectedIn(command.category, command.entries[0].node.id);
+    };
+
+    const undoLast = () => {
         const command = undoStackRef.current[undoStackRef.current.length - 1];
         if (!command) return false;
         undoStackRef.current = undoStackRef.current.slice(0, -1);
         redoStackRef.current = [...redoStackRef.current, command];
-        restoreEntries(command);
+        // Undo runs the command backwards: a delete puts its nodes back, an
+        // insert takes them away again.
+        if (command.kind === 'delete') reinstate(command); else removeEntries(command);
         if (category !== command.category) setCategory(command.category);
-        // Addressed by the command's own category: an undo can cross tabs, and
-        // the selection belongs to the tree the item came back into.
-        setSelectedIn(command.category, command.entries[0].node.id);
         dismissUndoToast();
         return true;
     };
 
-    const redoDelete = () => {
+    const redoLast = () => {
         const command = redoStackRef.current[redoStackRef.current.length - 1];
         if (!command) return false;
         redoStackRef.current = redoStackRef.current.slice(0, -1);
         undoStackRef.current = pushBounded(undoStackRef.current, command);
-        // Only the roots need removing — each takes its subtree with it.
-        const ids = new Set(command.entries.map(e => e.node.id));
-        for (const { node } of command.entries) {
-            if (node.parentId === null || !ids.has(node.parentId)) removeById(command.category, node.id);
-        }
-        setSelectedIn(command.category, prev => prev !== null && ids.has(prev) ? null : prev);
+        if (command.kind === 'delete') removeEntries(command); else reinstate(command);
+        if (category !== command.category) setCategory(command.category);
         dismissUndoToast();
         return true;
     };
@@ -2006,7 +2049,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         if (!isUndo && !isRedo) return;
         const tag = (e.target as HTMLElement).tagName;
         if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-        if (isUndo ? undoDelete() : redoDelete()) e.preventDefault();
+        if (isUndo ? undoLast() : redoLast()) e.preventDefault();
     };
 
     /** Copy/paste/duplicate, scoped to the item tree so Ctrl+C in the code
@@ -2054,7 +2097,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                     <button
                         type="button"
                         className="script-editor__undo-toast-action"
-                        onClick={() => { undoDelete(); }}
+                        onClick={() => { undoLast(); }}
                     >Undo</button>
                     <button
                         type="button"
@@ -2222,6 +2265,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                     connectionId={connectionId}
                     scriptingEngineRef={scriptingEngineRef}
                     focus={variableFocus}
+                    onFocusConsumed={clearVariableFocus}
                 />
             )}
 

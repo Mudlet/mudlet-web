@@ -20,6 +20,10 @@ interface VariablesViewProps {
     /** A search result asking for this top-level global to be brought into view.
      *  `revision` makes a repeat jump to the same name re-apply the filter. */
     focus?: { name: string; revision: number } | null;
+    /** Called once `focus` has been applied. The request lives in the parent,
+     *  which outlives this view — without clearing it, leaving the tab and
+     *  coming back would silently re-type the old name into the filter. */
+    onFocusConsumed?: () => void;
 }
 
 /** A short, single-line preview of an entry's value for the list. */
@@ -44,6 +48,34 @@ function pathKey(path: readonly VariablePathSegment[]): string {
         else out += `.${seg.key}`;
     }
     return out;
+}
+
+/**
+ * Re-point every hidden path that lived at `from` (or underneath it) at `to`,
+ * for a rename. Returns null when nothing referred to the old path, so the
+ * caller can skip a no-op store write.
+ *
+ * A descendant is spelled `from` followed by `.` or `[`, which are the only two
+ * separators {@link pathKey} emits — so `myTable` never captures `myTableTwo`.
+ */
+export function renameHiddenPaths(hidden: readonly string[], from: string, to: string): string[] | null {
+    let changed = false;
+    const next = hidden.map(h => {
+        if (h === from) { changed = true; return to; }
+        if (h.startsWith(`${from}.`) || h.startsWith(`${from}[`)) {
+            changed = true;
+            return to + h.slice(from.length);
+        }
+        return h;
+    });
+    return changed ? next : null;
+}
+
+/** Drop every hidden path at `at` or underneath it, for a delete. Returns null
+ *  when none matched, so the caller can skip a no-op store write. */
+export function dropHiddenPaths(hidden: readonly string[], at: string): string[] | null {
+    const next = hidden.filter(h => h !== at && !h.startsWith(`${at}.`) && !h.startsWith(`${at}[`));
+    return next.length === hidden.length ? null : next;
 }
 
 /** Only the four types the editor can write round-trip; everything else
@@ -85,7 +117,7 @@ interface DraftState {
  * tick behind a loader: the spinner paints first, then the walk runs, keeping
  * opening the tab responsive even for a large namespace.
  */
-export function VariablesView({ connectionId, scriptingEngineRef, focus }: VariablesViewProps) {
+export function VariablesView({ connectionId, scriptingEngineRef, focus, onFocusConsumed }: VariablesViewProps) {
     const confirm = useConfirm();
     const saveList = useAppStore(s => s.connectionVariables[connectionId]?.saveList ?? EMPTY_LIST);
     const hiddenList = useAppStore(s => s.connectionVariables[connectionId]?.hidden ?? EMPTY_LIST);
@@ -116,15 +148,23 @@ export function VariablesView({ connectionId, scriptingEngineRef, focus }: Varia
         return () => { cancelled = true; clearTimeout(id); };
     }, [loadToken, scriptingEngineRef]);
 
-    // A search hit filters the list down to the global it found, and shows
-    // hidden/built-in rows if that is the only way the hit can appear.
+    // A search hit filters the list down to the global it found. The search
+    // looks at hidden and built-in globals that the list hides by default, so
+    // whichever of those the hit needs is switched on — otherwise clicking a
+    // result would land on "no globals match the filter".
     const lastFocusRef = useRef<number | null>(null);
     useEffect(() => {
         if (!focus || focus.revision === lastFocusRef.current) return;
+        // The built-in check needs the walk to have landed, so hold the request
+        // until it has rather than consuming it against an empty tree.
+        if (loading) return;
         lastFocusRef.current = focus.revision;
         setFilter(focus.name);
         setSelected(focus.name);
-    }, [focus]);
+        if (hiddenList.includes(focus.name)) setShowHidden(true);
+        if (globals.some(g => g.name === focus.name && g.builtin)) setShowBuiltins(true);
+        onFocusConsumed?.();
+    }, [focus, loading, hiddenList, globals, onFocusConsumed]);
 
     const savedSet = useMemo(() => new Set(saveList), [saveList]);
     const hiddenSet = useMemo(() => new Set(hiddenList), [hiddenList]);
@@ -202,7 +242,17 @@ export function VariablesView({ connectionId, scriptingEngineRef, focus }: Varia
         const name = draft.name.trim();
         if (!name) { setError('a variable needs a name'); return; }
         const target: VariablePathSegment[] = [...draft.parent, { key: name, kind: draft.keyType }];
+        const targetKey = pathKey(target);
         const previous = draft.path;
+
+        // Creating over something that already exists would replace it with no
+        // way back — a `table` retyped to `string` loses every key it held. The
+        // rename path is already refused inside the runtime (`move` will not
+        // overwrite), so this only has to cover the new-entry case.
+        if (!previous && findByPath(globals, targetKey)) {
+            setError(`"${targetKey}" already exists — edit it instead, or pick another name`);
+            return;
+        }
 
         // A rename (or a key-type change) moves the entry first, so the value
         // assignment below lands on the new key rather than resurrecting the
@@ -214,12 +264,17 @@ export function VariablesView({ connectionId, scriptingEngineRef, focus }: Varia
                 if (previous.length === 1 && savedSet.has(last.key)) {
                     setSaveList(connectionId, saveList.map(n => n === last.key ? name : n));
                 }
+                // Hidden entries are stored by path, so the renamed row — and
+                // everything under it — has to move with it. Left behind, the
+                // old path would keep hiding whatever is next given that name.
+                const movedHidden = renameHiddenPaths(hiddenList, pathKey(previous), targetKey);
+                if (movedHidden) setHiddenList(connectionId, movedHidden);
             }
         }
         if (!apply({ op: 'set', path: target, valueType: draft.valueType, value: draft.value })) return;
         setDraft(null);
         setSelected(pathKey(target));
-    }, [draft, apply, savedSet, saveList, setSaveList, connectionId]);
+    }, [draft, apply, globals, savedSet, saveList, setSaveList, hiddenList, setHiddenList, connectionId]);
 
     const deleteEntry = useCallback(async (path: VariablePathSegment[]) => {
         const key = pathKey(path);
@@ -238,9 +293,12 @@ export function VariablesView({ connectionId, scriptingEngineRef, focus }: Varia
         if (path.length === 1 && savedSet.has(path[0].key)) {
             setSaveList(connectionId, saveList.filter(n => n !== path[0].key));
         }
-        if (hiddenSet.has(key)) setHiddenList(connectionId, hiddenList.filter(n => n !== key));
+        // Deleting a table takes its keys with it, so their hidden paths go too
+        // — otherwise they would keep hiding whatever is next given those names.
+        const remainingHidden = dropHiddenPaths(hiddenList, key);
+        if (remainingHidden) setHiddenList(connectionId, remainingHidden);
         if (selected === key) setSelected(null);
-    }, [apply, confirm, savedSet, saveList, setSaveList, hiddenSet, hiddenList, setHiddenList, connectionId, selected]);
+    }, [apply, confirm, savedSet, saveList, setSaveList, hiddenList, setHiddenList, connectionId, selected]);
 
     const renderRows = useCallback((entries: LuaGlobalEntry[], depth: number, parentPath: VariablePathSegment[]): React.ReactNode[] => {
         const rows: React.ReactNode[] = [];

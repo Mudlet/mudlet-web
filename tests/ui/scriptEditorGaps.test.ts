@@ -212,8 +212,15 @@ describe('alias self-loop warning', () => {
 
     const warning = () => container.querySelector('.script-editor__inline-warning');
 
+    /** The loop check is debounced so a half-typed pattern isn't compiled on
+     *  every keystroke — let it settle before reading the warning. */
+    async function settle() {
+        await act(async () => { await new Promise(r => setTimeout(r, 320)); });
+    }
+
     it('flags a command that matches its own pattern', async () => {
         await openAlias(nextConn('gaps-alias'), '^qaloop$', 'qaloop');
+        await settle();
 
         expect(warning()!.textContent).toContain('infinite loop');
         expect(warning()!.textContent).toContain('qa-loop');
@@ -221,19 +228,23 @@ describe('alias self-loop warning', () => {
 
     it('stays quiet for an alias that sends something else', async () => {
         await openAlias(nextConn('gaps-alias'), '^qaloop$', 'look');
+        await settle();
 
         expect(warning()).toBe(null);
     });
 
     it('appears and clears as the command is edited', async () => {
         await openAlias(nextConn('gaps-alias'), '^gold$', 'score');
+        await settle();
         expect(warning()).toBe(null);
 
         const commandInput = [...container.querySelectorAll('.script-editor__pattern')][1] as HTMLInputElement;
         await setValue(commandInput, 'gold');
+        await settle();
         expect(warning()).not.toBe(null);
 
         await setValue(commandInput, 'gold coins');
+        await settle();
         // '^gold$' no longer matches, so the warning goes.
         expect(warning()).toBe(null);
     });
@@ -241,6 +252,7 @@ describe('alias self-loop warning', () => {
     it('still saves — the runtime guard is what stops the damage', async () => {
         const conn = nextConn('gaps-alias');
         await openAlias(conn, '^qaloop$', 'qaloop');
+        await settle();
         await save();
 
         expect(useAppStore.getState().connectionAliases[conn][0].command).toBe('qaloop');
@@ -492,5 +504,100 @@ describe('tree state', () => {
 
         expect(container.querySelector('.script-editor__nav-btn--active')!.textContent).toContain('Scripts');
         expect(selectedName()).toBe(null);
+    });
+});
+
+// ── Review follow-ups on the copy/paste work ────────────────────────────────
+
+describe('paste and duplicate are undoable', () => {
+    function seedPair(conn: string) {
+        useAppStore.setState({
+            connectionTriggers: {
+                ...useAppStore.getState().connectionTriggers,
+                [conn]: [
+                    { id: 't1', name: 'one', enabled: true, isGroup: false, parentId: null, language: 'lua', code: '', patterns: [], fireLength: 0, multipleMatches: false, multiline: false, delta: 0, isFilter: false },
+                    { id: 't2', name: 'two', enabled: true, isGroup: false, parentId: null, language: 'lua', code: '', patterns: [], fireLength: 0, multipleMatches: false, multiline: false, delta: 0, isFilter: false },
+                ] as TriggerNode[],
+            },
+        } as never);
+    }
+
+    const names = (conn: string) => useAppStore.getState().connectionTriggers[conn].map(t => t.name);
+
+    async function pressUndo(shift = false) {
+        const el = container.querySelector('.script-editor') as HTMLElement;
+        await act(async () => {
+            el.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, shiftKey: shift, bubbles: true }));
+        });
+    }
+
+    it('Ctrl+Z after a duplicate removes the duplicate, not something older', async () => {
+        const conn = nextConn('gaps-undo');
+        seedPair(conn);
+        await mount(conn);
+        await openTab('Triggers');
+
+        // An earlier delete sits underneath, so a stack that ignored the paste
+        // would resurrect "two" instead of dropping the copy.
+        await clickMenu(await contextMenu('two'), 'Delete');
+        expect(names(conn)).toEqual(['one']);
+
+        await clickMenu(await contextMenu('one'), 'Duplicate');
+        expect(names(conn)).toEqual(['one', 'one (copy)']);
+
+        await pressUndo();
+        expect(names(conn)).toEqual(['one']);
+
+        // The delete is still underneath it, reachable by a second undo.
+        await pressUndo();
+        expect(names(conn).sort()).toEqual(['one', 'two']);
+    });
+
+    it('redo puts a undone paste back', async () => {
+        const conn = nextConn('gaps-undo');
+        seedPair(conn);
+        await mount(conn);
+        await openTab('Triggers');
+
+        await clickMenu(await contextMenu('one'), 'Duplicate');
+        await pressUndo();
+        expect(names(conn)).toEqual(['one', 'two']);
+
+        await pressUndo(true);
+        expect(names(conn)).toEqual(['one', 'one (copy)', 'two']);
+    });
+});
+
+describe('copy and duplicate see unsaved edits', () => {
+    function seedAlias(conn: string) {
+        useAppStore.setState({
+            connectionAliases: {
+                ...useAppStore.getState().connectionAliases,
+                [conn]: [{
+                    id: 'a1', name: 'qa', enabled: true, isGroup: false, parentId: null,
+                    language: 'lua', code: '', pattern: '^saved$', command: 'saved',
+                } as AliasNode],
+            },
+        } as never);
+    }
+
+    const stored = (conn: string) => useAppStore.getState().connectionAliases[conn];
+
+    it('duplicates what is on screen, and leaves the original holding it too', async () => {
+        const conn = nextConn('gaps-flush');
+        seedAlias(conn);
+        await mount(conn);
+        await openTab('Aliases');
+        await selectItem('qa');
+
+        const commandInput = [...container.querySelectorAll('.script-editor__pattern')][1] as HTMLInputElement;
+        await setValue(commandInput, 'typed but not saved');
+
+        await clickMenu(await contextMenu('qa'), 'Duplicate');
+
+        // Both the original and the copy carry the typed command — the copy is
+        // not a snapshot of the last save, and the original did not lose the
+        // edit to the selection change the duplicate causes.
+        expect(stored(conn).map(a => a.command)).toEqual(['typed but not saved', 'typed but not saved']);
     });
 });
