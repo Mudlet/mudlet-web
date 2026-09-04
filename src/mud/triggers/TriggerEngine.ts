@@ -965,6 +965,13 @@ export class TriggerEngine {
             ? null
             : { start: effOffset, length: effectiveLine.length };
 
+        // The last match this entry produced on this line, or null when nothing
+        // matched. Feeds the shared fire-length bookkeeping at the end of the
+        // walk — Mudlet arms mKeepFiring from BOTH the single-line and the
+        // multiline branch of TTrigger::match, so it has to be decided after
+        // whichever branch ran rather than inside one of them.
+        let lastMatch: TriggerMatch | null = null;
+
         try {
             if (item.isGroup) {
                 // Chain head: match opens the chain for children.
@@ -983,6 +990,10 @@ export class TriggerEngine {
                         out.push(matchResultToTriggerMatch(item, this.shiftResultSpans(result, effOffset)));
                     }
                 }
+                // A group is a folder holding the chain open for its children;
+                // its own fire length has nothing to re-run, so it is left out
+                // of the bookkeeping below.
+                return;
             } else if (entry.kind === 'and') {
                 const completed = this.processAndTrigger(entry, effectiveLine, isPrompt, currentLine);
                 for (const r of completed) {
@@ -994,21 +1005,7 @@ export class TriggerEngine {
                     }
                     out.push(r);
                 }
-                // A fire length keeps the trigger going for that many more lines —
-                // Mudlet's mKeepFiring, set on every completion and spent one line
-                // at a time. Only a childless trigger re-runs its own script; one
-                // with children is holding the chain open FOR them.
-                const fireLength = item.fireLength ?? 0;
-                if (completed.length > 0 && fireLength > 0 && !this.hasChildren.has(item.id)) {
-                    this.keepFiring.set(item.id, {
-                        until: currentLine + fireLength,
-                        match: completed[completed.length - 1],
-                    });
-                } else if (completed.length === 0) {
-                    const keep = this.keepFiring.get(item.id);
-                    if (keep && currentLine <= keep.until) out.push(keep.match);
-                    else if (keep) this.keepFiring.delete(item.id);
-                }
+                if (completed.length > 0) lastMatch = completed[completed.length - 1];
             } else {
                 // OR entry (non-group)
                 if (entry.testAll) {
@@ -1023,7 +1020,8 @@ export class TriggerEngine {
                     const merged = mergeAllMatches(entry.testAll(effectiveLine));
                     if (merged !== null) {
                         if (isChainHead) this.openChain(item, currentLine, merged);
-                        out.push(matchResultToTriggerMatch(item, this.shiftResultSpans(merged, effOffset)));
+                        lastMatch = matchResultToTriggerMatch(item, this.shiftResultSpans(merged, effOffset));
+                        out.push(lastMatch);
                     }
                 } else {
                     if (seen.has(seenKey)) return;
@@ -1035,13 +1033,54 @@ export class TriggerEngine {
                     if (result !== null) {
                         seen.add(seenKey);
                         if (isChainHead) this.openChain(item, currentLine, result);
-                        out.push(matchResultToTriggerMatch(item, this.shiftResultSpans(result, effOffset)));
+                        lastMatch = matchResultToTriggerMatch(item, this.shiftResultSpans(result, effOffset));
+                        out.push(lastMatch);
                     }
                 }
             }
+            this.applyFireLength(item, currentLine, lastMatch, out);
         } finally {
             colorWindowRef.window = previousColorWindow;
         }
+    }
+
+    /**
+     * Mudlet's `mKeepFiring`: a fire length ("Keep firing the script for this
+     * many more lines, after the trigger or chain has matched") keeps a trigger
+     * going once it has matched.
+     *
+     * Desktop arms it from BOTH arms of `TTrigger::match` — the single-line
+     * branch at `src/TTrigger.cpp:995-999`
+     * (`if (!mIsMultiline) { if (ret) { conditionMet = true; mKeepFiring =
+     * mStayOpen; break; } }`) and the multiline completion at
+     * `src/TTrigger.cpp:1016` — and spends it one line at a time at
+     * `src/TTrigger.cpp:1083-1090`, where only a childless trigger re-runs its
+     * own script; one with children is holding the chain open FOR them.
+     *
+     * mudix used to arm it only in the AND branch, so fire length was inert on
+     * single-line (OR) triggers even though the editor offers the field in both
+     * modes (mudlet-web#61). Sharing the bookkeeping here keeps the two in step.
+     */
+    private applyFireLength(
+        item: TriggerNode,
+        currentLine: number,
+        lastMatch: TriggerMatch | null,
+        out: TriggerMatch[],
+    ): void {
+        if (lastMatch) {
+            // Mudlet's `mKeepFiring = mStayOpen` — re-armed on every match, and
+            // (like desktop's `!conditionMet` guard below) never spent on the
+            // same line the trigger matched on.
+            const fireLength = item.fireLength ?? 0;
+            if (fireLength > 0 && !this.hasChildren.has(item.id)) {
+                this.keepFiring.set(item.id, { until: currentLine + fireLength, match: lastMatch });
+            }
+            return;
+        }
+        const keep = this.keepFiring.get(item.id);
+        if (!keep) return;
+        if (currentLine <= keep.until) out.push(keep.match);
+        else this.keepFiring.delete(item.id);
     }
 
     // ── Unified pass (permanent + temporary, in registration order) ───────────
