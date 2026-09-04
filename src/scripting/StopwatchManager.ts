@@ -20,12 +20,18 @@ export interface StopwatchStore {
     save(data: string): void;
 }
 
+/** localStorage key holding one profile's stopwatches. Shared with the
+ *  profile-deletion sweep (storage/profileStorage) so the two can't drift. */
+export function stopwatchStorageKey(connectionId: string): string {
+    return `mudix_stopwatches_${connectionId}`;
+}
+
 /** Build a localStorage-backed store scoped to a connection, or undefined when
  *  localStorage is unavailable (tests / SSR) — in which case persistence is a
  *  no-op and watches behave as memory-only. */
 export function localStorageStopwatchStore(connectionId: string): StopwatchStore | undefined {
     if (typeof localStorage === 'undefined') return undefined;
-    const key = `mudix_stopwatches_${connectionId}`;
+    const key = stopwatchStorageKey(connectionId);
     return {
         load: () => localStorage.getItem(key),
         save: (data: string) => localStorage.setItem(key, data),

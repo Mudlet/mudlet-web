@@ -1554,6 +1554,24 @@
     margin-bottom: 1px;
 }
 
+/* The colorizer master switch rides on its card's caption, mirroring Mudlet's
+   checkable groupBox_triggerColorizer. Full opacity because it is a control and
+   not just a caption — the sibling captions stay dimmed. */
+.script-editor__trigger-card-label--toggle {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    opacity: 1;
+    cursor: pointer;
+    user-select: none;
+}
+
+.script-editor__trigger-card-label--toggle input[type="checkbox"] {
+    accent-color: var(--accent);
+    cursor: pointer;
+    margin: 0;
+}
+
 .script-editor__trigger-card-row {
     display: flex;
     align-items: center;

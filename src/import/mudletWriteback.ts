@@ -18,6 +18,25 @@ const OWNED_PACKAGE_TAGS = new Set([
 ]);
 
 /**
+ * Re-parse a fragment we serialized ourselves. A failure here means the serializer
+ * emitted something invalid, and grafting the partial tree `DOMParser` hands back
+ * would put a `<parsererror>` blob and a truncated package into the user's own
+ * Mudlet profile — the file desktop then refuses to load. Refuse the write-back
+ * instead: the caller keeps the previous save, which is at least loadable.
+ *
+ * Note the guard cannot be `if (root)`: on a parse error Chrome still resolves
+ * `getElementsByTagName('MudletPackage')[0]` against the partial tree.
+ */
+function parseOwnFragment(xml: string, what: string): Element {
+    const doc = new DOMParser().parseFromString(xml, 'text/xml');
+    const err = doc.getElementsByTagName('parsererror')[0];
+    if (err) throw new Error(`${what} serialized to invalid XML: ${err.textContent?.split('\n')[0]}`);
+    const root = doc.documentElement;
+    if (!root) throw new Error(`${what} serialized to an empty document`);
+    return root;
+}
+
+/**
  * Produce the updated profile XML: the base save with its automation + variable
  * packages replaced by `trees` / `variables`, the modeled `<Host>` settings
  * updated in place from `settings`, and HostPackage's unmodeled fields (plus any
@@ -46,19 +65,15 @@ export function buildLinkedWriteback(
 
     // Graft freshly-serialized automation packages (with per-node <packageName>
     // preserved, so package associations survive the round-trip).
-    const autoDoc = new DOMParser().parseFromString(serializeMudletXml(trees), 'text/xml');
-    const autoRoot = autoDoc.getElementsByTagName('MudletPackage')[0];
-    if (autoRoot) {
-        for (const child of Array.from(autoRoot.children)) {
-            root.appendChild(doc.importNode(child, true));
-        }
+    const autoRoot = parseOwnFragment(serializeMudletXml(trees), 'automation packages');
+    for (const child of Array.from(autoRoot.children)) {
+        root.appendChild(doc.importNode(child, true));
     }
 
     // Graft the variable package (indent '' so the parsed fragment has no stray
     // leading whitespace node).
-    const varDoc = new DOMParser().parseFromString(serializeVariablePackage(variables, ''), 'text/xml');
-    const varRoot = varDoc.documentElement;
-    if (varRoot && varRoot.tagName === 'VariablePackage') {
+    const varRoot = parseOwnFragment(serializeVariablePackage(variables, ''), 'variable package');
+    if (varRoot.tagName === 'VariablePackage') {
         root.appendChild(doc.importNode(varRoot, true));
     }
 
