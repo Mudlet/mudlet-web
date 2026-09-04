@@ -13,7 +13,7 @@ import type { MudSession, ScriptLogSource, ScriptLogSourceKind } from '../../../
 import type { ProfileVFS } from '../../../scripting/vfs/ProfileVFS';
 import type { ScriptingEngine } from '../../../scripting/ScriptingEngine';
 import { LuaEditor } from './LuaEditor';
-import { installModuleFromVfsPath, installPackageFromBytes, installPackageFromFile, uninstallPackageFiles } from '../../../import/packageInstaller';
+import { installModuleFromVfsPath, installPackageFromBytes, preparePackageInstallFromFile, uninstallPackageFiles } from '../../../import/packageInstaller';
 import { PackageRepositoryModal } from './PackageRepositoryModal';
 import { PackageExportModal, type ExportCategory } from './PackageExportModal';
 import type { PackageRepoEntry } from '../../../import/packageRepository';
@@ -769,7 +769,22 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
             return;
         }
         try {
-            const { manifest, data } = await installPackageFromFile(file, vfs, { kind, ...(sourcePath ? { sourcePath } : {}) });
+            const prepared = await preparePackageInstallFromFile(file, vfs, { kind, ...(sourcePath ? { sourcePath } : {}) });
+            // A package and a module may not share one name — uninstall works by
+            // name alone, so a collision loses both halves' items whichever half
+            // is removed (issue #104). Desktop refuses this at the dialog too
+            // (`ModuleFromUI`, Host.cpp:2567/:2584). Asked here rather than
+            // before the read, because config.lua can rename the archive; and
+            // before `commit()`, so a refusal leaves the installed copy's files
+            // untouched.
+            const collision = scriptingEngineRef?.current?.crossKindInstallRefusal(prepared.manifest.name, kind);
+            if (collision) {
+                setImportError(collision);
+                return;
+            }
+            prepared.commit();
+            await vfs.flush();
+            const { manifest, data } = prepared;
             // installPackage commits the new scripts to the store; the
             // engine's store subscription synchronously loads them into Lua
             // before this call returns. By the time notifyPackageInstalled
