@@ -3,6 +3,8 @@ import { AlertCircle, Braces, Clock, Filter, Folder, FolderOpen, FolderPlus, Key
 import { Button, Input, ContextMenu, FileSourceButton, useConfirm, type PickedFile } from '../../components';
 import { VariablesView } from './VariablesView';
 import { useAppStore, useProfileField } from '../../../storage';
+import type { RestoredNode } from '../../../storage/appStore';
+import { captureDeletion, describeDeletion, pushBounded, type EditorDeleteCommand } from './editorUndo';
 import { isPackageRemovable } from '../../../branding';
 import { DEFAULT_ANSI_PALETTE } from '../../../mud/text/colors';
 import type { AliasNode, ButtonLocation, ButtonNode, ButtonOrientation, KeyNode, PackageManifest, ScriptNode, TimerNode, TriggerNode, TriggerPattern, TriggerPatternType } from '../../../storage/schema';
@@ -141,6 +143,10 @@ function flattenTree<T extends { id: string; parentId: string | null; isGroup: b
 }
 
 const EMPTY: never[] = [];
+
+/** How long the undo offer stays up, matching the five-second single-shot timer
+ *  behind Mudlet's editor undo toast (dlgTriggerEditor.cpp:14381). */
+const UNDO_TOAST_MS = 5000;
 
 const PATTERN_TYPE_LABELS: Record<TriggerPatternType, string> = {
     substring:    'substring',
@@ -715,6 +721,12 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     const updateButton     = useAppStore(s => s.updateButton);
     const removeButton     = useAppStore(s => s.removeButton);
     const moveButton       = useAppStore(s => s.moveButton);
+    const restoreScripts     = useAppStore(s => s.restoreScripts);
+    const restoreAliases     = useAppStore(s => s.restoreAliases);
+    const restoreTriggers    = useAppStore(s => s.restoreTriggers);
+    const restoreTimers      = useAppStore(s => s.restoreTimers);
+    const restoreKeybindings = useAppStore(s => s.restoreKeybindings);
+    const restoreButtons     = useAppStore(s => s.restoreButtons);
     const packages         = useAppStore(s => s.connectionPackages[connectionId] ?? EMPTY);
     const installPackage   = useAppStore(s => s.installPackage);
     const uninstallPackage = useAppStore(s => s.uninstallPackage);
@@ -910,6 +922,43 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     const [editToolbarColumns,     setEditToolbarColumns]     = useState(0);
 
     const [dirty, setDirty] = useState(false);
+
+    // Item-level undo/redo. Mudlet's `EditorUndoStack` belongs to the editor
+    // window and dies with it (dlgTriggerEditor.cpp:456), so these live in the
+    // panel rather than the store and are gone once the editor is closed.
+    const undoStackRef = useRef<EditorDeleteCommand[]>([]);
+    const redoStackRef = useRef<EditorDeleteCommand[]>([]);
+    /** The transient "…deleted. Undo" bar. */
+    const [undoToast, setUndoToast] = useState<string | null>(null);
+    const undoToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    const dismissUndoToast = useCallback(() => {
+        if (undoToastTimerRef.current !== null) {
+            clearTimeout(undoToastTimerRef.current);
+            undoToastTimerRef.current = null;
+        }
+        setUndoToast(null);
+    }, []);
+
+    /** Mudlet's editor raises its undo offers in the system message area on a
+     *  five-second single-shot timer (`showBannerUndoToast`,
+     *  dlgTriggerEditor.cpp:14373-14397). Note that the desktop toast at that
+     *  line is for a dismissed tip banner, not for a deletion — after a delete
+     *  desktop relies on the now-enabled Undo action and Ctrl+Z alone. The web
+     *  editor has no toolbar to light up, so the same five-second bar is what
+     *  makes the undo discoverable here. */
+    const showUndoToast = useCallback((label: string) => {
+        if (undoToastTimerRef.current !== null) clearTimeout(undoToastTimerRef.current);
+        setUndoToast(label);
+        undoToastTimerRef.current = setTimeout(() => {
+            undoToastTimerRef.current = null;
+            setUndoToast(null);
+        }, UNDO_TOAST_MS);
+    }, []);
+
+    useEffect(() => () => {
+        if (undoToastTimerRef.current !== null) clearTimeout(undoToastTimerRef.current);
+    }, []);
     // Backfill from the session-level buffer so entries that fired before this
     // panel was first mounted (e.g. errors during initial script load) survive.
     const [logs, setLogs] = useState<LogEntry[]>(() =>
@@ -970,16 +1019,6 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         setCtxMenu({ x: e.clientX, y: e.clientY, targetId: null });
     }, []);
 
-    const handleContextDelete = useCallback((id: string) => {
-        if (category === 'scripts')        removeScript(connectionId, id);
-        else if (category === 'aliases')   removeAlias(connectionId, id);
-        else if (category === 'triggers')  removeTrigger(connectionId, id);
-        else if (category === 'timers')    removeTimer(connectionId, id);
-        else if (category === 'keys')      removeKeybinding(connectionId, id);
-        else                               removeButton(connectionId, id);
-        setSelectedId(prev => prev === id ? null : prev);
-        setCtxMenu(null);
-    }, [category, connectionId, removeScript, removeAlias, removeTrigger, removeTimer, removeKeybinding, removeButton]);
 
     // Drag-and-drop state
     const [dragId, setDragId]   = useState<string | null>(null);
@@ -1486,15 +1525,101 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         setDirty(false);
     };
 
+    const removeById = (cat: EditCategory, id: string) => {
+        if (cat === 'scripts')        removeScript(connectionId, id);
+        else if (cat === 'aliases')   removeAlias(connectionId, id);
+        else if (cat === 'triggers')  removeTrigger(connectionId, id);
+        else if (cat === 'timers')    removeTimer(connectionId, id);
+        else if (cat === 'keys')      removeKeybinding(connectionId, id);
+        else                          removeButton(connectionId, id);
+    };
+
+    const restoreEntries = (cmd: EditorDeleteCommand) => {
+        const { category: cat, entries } = cmd;
+        if (cat === 'scripts')        restoreScripts(connectionId, entries as ReadonlyArray<RestoredNode<ScriptNode>>);
+        else if (cat === 'aliases')   restoreAliases(connectionId, entries as ReadonlyArray<RestoredNode<AliasNode>>);
+        else if (cat === 'triggers')  restoreTriggers(connectionId, entries as ReadonlyArray<RestoredNode<TriggerNode>>);
+        else if (cat === 'timers')    restoreTimers(connectionId, entries as ReadonlyArray<RestoredNode<TimerNode>>);
+        else if (cat === 'keys')      restoreKeybindings(connectionId, entries as ReadonlyArray<RestoredNode<KeyNode>>);
+        else                          restoreButtons(connectionId, entries as ReadonlyArray<RestoredNode<ButtonNode>>);
+    };
+
+    /** Delete an item the way Mudlet does — at once, but recoverably. Every
+     *  desktop delete path snapshots the item and its whole subtree, removes it,
+     *  and pushes an `EditorDeleteItemCommand` onto the editor's undo stack
+     *  (dlgTriggerEditor.cpp:3714 and the five sibling views). */
+    const deleteItem = (id: string) => {
+        if (!isEditCategory) return;
+        const cat = category as EditCategory;
+        const entries = captureDeletion(items, id);
+        if (entries.length === 0) return;
+        removeById(cat, id);
+        const command: EditorDeleteCommand = { category: cat, entries, label: describeDeletion(cat, entries) };
+        undoStackRef.current = pushBounded(undoStackRef.current, command);
+        // A fresh action clears the redo branch, as QUndoStack::push does.
+        redoStackRef.current = [];
+        setSelectedId(prev => prev === id ? null : prev);
+        showUndoToast(command.label);
+    };
+
     const handleDelete = () => {
         if (!selectedId) return;
-        if (category === 'scripts')        removeScript(connectionId, selectedId);
-        else if (category === 'aliases')   removeAlias(connectionId, selectedId);
-        else if (category === 'triggers')  removeTrigger(connectionId, selectedId);
-        else if (category === 'timers')    removeTimer(connectionId, selectedId);
-        else if (category === 'keys')      removeKeybinding(connectionId, selectedId);
-        else                               removeButton(connectionId, selectedId);
-        setSelectedId(null);
+        deleteItem(selectedId);
+    };
+
+    const undoDelete = () => {
+        const command = undoStackRef.current[undoStackRef.current.length - 1];
+        if (!command) return false;
+        undoStackRef.current = undoStackRef.current.slice(0, -1);
+        redoStackRef.current = [...redoStackRef.current, command];
+        restoreEntries(command);
+        if (category !== command.category) setCategory(command.category);
+        setSelectedId(command.entries[0].node.id);
+        dismissUndoToast();
+        return true;
+    };
+
+    const redoDelete = () => {
+        const command = redoStackRef.current[redoStackRef.current.length - 1];
+        if (!command) return false;
+        redoStackRef.current = redoStackRef.current.slice(0, -1);
+        undoStackRef.current = pushBounded(undoStackRef.current, command);
+        // Only the roots need removing — each takes its subtree with it.
+        const ids = new Set(command.entries.map(e => e.node.id));
+        for (const { node } of command.entries) {
+            if (node.parentId === null || !ids.has(node.parentId)) removeById(command.category, node.id);
+        }
+        setSelectedId(prev => prev !== null && ids.has(prev) ? null : prev);
+        dismissUndoToast();
+        return true;
+    };
+
+    /**
+     * Ctrl+Z / Ctrl+Shift+Z (and Ctrl+Y) for the item stack, matching the
+     * shortcuts desktop binds to `slot_smartUndo` / `slot_smartRedo`
+     * (QKeySequence::Undo and ::Redo, dlgTriggerEditor.cpp:461 and :474).
+     *
+     * Precedence follows `slot_smartUndo` (:1449): the code editor's own stack
+     * goes first and the item stack only once that is empty — explicitly not
+     * focus-based, as the comment there spells out. CodeMirror enforces that
+     * half for free: `undo` returns false on an exhausted history, so the
+     * keymap leaves the event unhandled and it bubbles here. (Deleting always
+     * clears the selection, which unmounts the code pane, so by the time an
+     * item undo is on offer that history is empty anyway.)
+     *
+     * Plain <input>/<textarea> fields keep their native undo. Desktop's
+     * window-scoped QAction would take Ctrl+Z off a QLineEdit too; hijacking a
+     * browser text field's undo is a worse trade than that bit of parity.
+     */
+    const handleEditorKeyDown = (e: React.KeyboardEvent) => {
+        if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+        const key = e.key.toLowerCase();
+        const isUndo = key === 'z' && !e.shiftKey;
+        const isRedo = key === 'y' || (key === 'z' && e.shiftKey);
+        if (!isUndo && !isRedo) return;
+        const tag = (e.target as HTMLElement).tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+        if (isUndo ? undoDelete() : redoDelete()) e.preventDefault();
     };
 
     const isEditCategory = category !== 'errors' && category !== 'packages' && category !== 'variables';
@@ -1504,7 +1629,23 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         : `Select a ${categoryLabel.replace(/s$/, '')} to edit`;
 
     return (
-        <div className="script-editor">
+        <div className="script-editor" onKeyDown={handleEditorKeyDown}>
+            {undoToast && (
+                <div className="script-editor__undo-toast" role="status">
+                    <span className="script-editor__undo-toast-text">Did {undoToast}.</span>
+                    <button
+                        type="button"
+                        className="script-editor__undo-toast-action"
+                        onClick={() => { undoDelete(); }}
+                    >Undo</button>
+                    <button
+                        type="button"
+                        className="script-editor__undo-toast-close"
+                        aria-label="Dismiss"
+                        onClick={dismissUndoToast}
+                    >×</button>
+                </div>
+            )}
             {/* Category nav */}
             <div className="script-editor__nav">
                 {EDIT_CATEGORIES.map(cat => {
@@ -2362,7 +2503,11 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                             </button>
                             <button
                                 className="ctx-menu__item ctx-menu__item--danger"
-                                onClick={() => handleContextDelete(ctxMenu.targetId!)}
+                                onClick={() => {
+                                    const id = ctxMenu.targetId!;
+                                    setCtxMenu(null);
+                                    deleteItem(id);
+                                }}
                             >
                                 <Trash2 size={13} strokeWidth={1.6} />
                                 Delete

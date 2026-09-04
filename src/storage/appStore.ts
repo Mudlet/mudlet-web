@@ -23,6 +23,37 @@ function getDescendantIds(id: string, items: { id: string; parentId: string | nu
     return result;
 }
 
+/** One node lifted out of a per-connection list, with the position it occupied.
+ *  Positions are indices into the flat array, which is what carries sibling
+ *  order in this schema — so putting them back at those indices reinstates the
+ *  tree exactly, subtree included. */
+export interface RestoredNode<T> {
+    index: number;
+    node: T;
+}
+
+/** Inverse of a removal: splice the nodes back in at the indices they came from.
+ *
+ *  Ascending order is what makes this exact — inserting the lowest index first
+ *  shifts everything after it back into place before the next insert is
+ *  measured. Nodes whose id is already present are skipped, so undoing twice
+ *  (or undoing after something else re-added the id) cannot duplicate a node.
+ *
+ *  Mudlet restores from an XML snapshot instead, and has to fix up every id and
+ *  parent reference afterwards because re-importing mints new ones
+ *  (EditorDeleteItemCommand::undo). mudix's ids are stable strings, so the
+ *  original nodes go back unchanged and no remapping is needed. */
+function spliceBack<T extends { id: string }>(current: T[], entries: ReadonlyArray<RestoredNode<T>>): T[] {
+    const present = new Set(current.map(i => i.id));
+    const restorable = entries.filter(e => !present.has(e.node.id));
+    if (restorable.length === 0) return current;
+    const next = [...current];
+    for (const { index, node } of [...restorable].sort((a, b) => a.index - b.index)) {
+        next.splice(Math.max(0, Math.min(index, next.length)), 0, node);
+    }
+    return next;
+}
+
 /** Moves item `id` (and its whole subtree) to a new parent, inserting before `insertBeforeId`. */
 function moveInList<T extends { id: string; parentId: string | null }>(
     items: T[],
@@ -94,6 +125,14 @@ interface AppStore extends AppSchema {
     addButton: (connectionId: string, data: Omit<ButtonNode, 'id'>) => string;
     updateButton: (connectionId: string, id: string, patch: Partial<Omit<ButtonNode, 'id'>>) => void;
     removeButton: (connectionId: string, id: string) => void;
+    /** Put deleted nodes back where they were — the undo half of the six
+     *  `removeX` actions above. See `spliceBack`. */
+    restoreScripts: (connectionId: string, entries: ReadonlyArray<RestoredNode<ScriptNode>>) => void;
+    restoreAliases: (connectionId: string, entries: ReadonlyArray<RestoredNode<AliasNode>>) => void;
+    restoreTriggers: (connectionId: string, entries: ReadonlyArray<RestoredNode<TriggerNode>>) => void;
+    restoreTimers: (connectionId: string, entries: ReadonlyArray<RestoredNode<TimerNode>>) => void;
+    restoreKeybindings: (connectionId: string, entries: ReadonlyArray<RestoredNode<KeyNode>>) => void;
+    restoreButtons: (connectionId: string, entries: ReadonlyArray<RestoredNode<ButtonNode>>) => void;
     moveScript: (connectionId: string, id: string, newParentId: string | null, insertBeforeId: string | null) => void;
     moveAlias: (connectionId: string, id: string, newParentId: string | null, insertBeforeId: string | null) => void;
     moveTrigger: (connectionId: string, id: string, newParentId: string | null, insertBeforeId: string | null) => void;
@@ -550,6 +589,24 @@ export const useAppStore = create<AppStore>()(
                     },
                 };
             }),
+            restoreScripts: (connectionId, entries) => set(s => ({
+                connectionScripts: { ...s.connectionScripts, [connectionId]: spliceBack(s.connectionScripts[connectionId] ?? [], entries) },
+            })),
+            restoreAliases: (connectionId, entries) => set(s => ({
+                connectionAliases: { ...s.connectionAliases, [connectionId]: spliceBack(s.connectionAliases[connectionId] ?? [], entries) },
+            })),
+            restoreTriggers: (connectionId, entries) => set(s => ({
+                connectionTriggers: { ...s.connectionTriggers, [connectionId]: spliceBack(s.connectionTriggers[connectionId] ?? [], entries) },
+            })),
+            restoreTimers: (connectionId, entries) => set(s => ({
+                connectionTimers: { ...s.connectionTimers, [connectionId]: spliceBack(s.connectionTimers[connectionId] ?? [], entries) },
+            })),
+            restoreKeybindings: (connectionId, entries) => set(s => ({
+                connectionKeybindings: { ...s.connectionKeybindings, [connectionId]: spliceBack(s.connectionKeybindings[connectionId] ?? [], entries) },
+            })),
+            restoreButtons: (connectionId, entries) => set(s => ({
+                connectionButtons: { ...s.connectionButtons, [connectionId]: spliceBack(s.connectionButtons[connectionId] ?? [], entries) },
+            })),
             moveScript: (connectionId, id, newParentId, insertBeforeId) => set(s => ({
                 connectionScripts: {
                     ...s.connectionScripts,
