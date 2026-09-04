@@ -163,6 +163,28 @@ function mudletWarn(message: string): string {
     return `\x1b[33m[ WARN ]  - ${message}\x1b[0m`;
 }
 
+// Mudlet colours a postMessage() line off the "[ PREFIX ] -" it starts with, printing
+// the prefix in one colour and the body in another (cTelnet::postMessage,
+// src/ctelnet.cpp:4453-4520). These are its exact RGB pairs for the prefixes this
+// client posts; anything unrecognised is passed through uncoloured.
+const POST_MESSAGE_COLOURS: Record<string, [prefix: string, body: string]> = {
+    ERROR: ['255;0;0',    '255;255;50'],
+    LUA:   ['80;160;255', '50;200;50'],
+    WARN:  ['0;150;190',  '190;150;0'],
+    ALERT: ['190;100;50', '190;190;50'],
+    INFO:  ['0;150;190',  '0;160;0'],
+    OK:    ['0;160;0',    '190;100;50'],
+};
+
+/** Render a Mudlet `postMessage()` string — one already carrying its
+ *  `"[ PREFIX ]  - body"` form — with Mudlet's own two-tone colouring. */
+function mudletPostMessage(message: string): string {
+    const m = /^(\[\s*([A-Z]+)\s*\]\s*-\s*)([\s\S]*)$/.exec(message);
+    const colours = m ? POST_MESSAGE_COLOURS[m[2]] : undefined;
+    if (!m || !colours) return message;
+    return `\x1b[38;2;${colours[0]}m${m[1]}\x1b[38;2;${colours[1]}m${m[3]}\x1b[0m`;
+}
+
 /** Mudlet `permKey` modifier int → KeyNode.modifiers string array. The values
  *  are Qt::KeyboardModifier's real bits (Shift 0x02000000, Control 0x04000000,
  *  …) — the same ones `mudlet.keymodifier` publishes and tempKey already went
@@ -430,6 +452,11 @@ export class ScriptingEngine implements EngineHost {
         session.windows.onRaiseEvent = (event, args) => this.raiseEvent(event, args);
         // Map UI "download map from game" → the Client.Map/MMP download flow.
         session.windows.onDownloadMap = () => void this.downloadMap();
+        // Mudlet's postMessage(): client messages for the player (e.g. a map file
+        // whose format version can't be read) go on the main console, coloured off
+        // their "[ PREFIX ] -" the way cTelnet::postMessage does.
+        session.windows.onSystemMessage = (text) =>
+            this.session.events.emit('message', mudletPostMessage(text), 'info', Date.now());
         // Double-clicking a room on the map walks there (Mudlet
         // T2DMap::initiateSpeedWalk): pathfind, then hand the route to the
         // mapper package's doSpeedWalk.
@@ -2157,7 +2184,7 @@ export class ScriptingEngine implements EngineHost {
                 // panel's progress bar) while a freshly-downloaded map parses.
                 const buf = new ArrayBuffer(bytes.byteLength);
                 new Uint8Array(buf).set(bytes);
-                ok = await this.session.windows.loadMapAsync(buf);
+                ok = await this.session.windows.loadMapAsync(buf, url);
             }
             if (!ok) {
                 this.api.printError(`[downloadMap] failure in parsing downloaded map from ${url}`);

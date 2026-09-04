@@ -10,6 +10,7 @@ import { useAppStore, selectProfileField } from '../../storage';
 import { saveMap as saveMapToStorage, loadMap as loadMapFromStorage } from '../../storage/mapStorage';
 import { readMapFromBuffer, writeMapToBuffer } from 'mudlet-map-binary-reader';
 import { serializeMapInWorker, streamMapInWorker } from '../../map/mapParserClient';
+import { assertReadableMapVersion, MapVersionError } from '../../map/mapVersion';
 import { Buffer } from 'buffer';
 import { OverlayLayerOrder } from '../layout/overlayLayerOrder';
 
@@ -193,6 +194,8 @@ export class WindowManager {
      *  awaits the map before applying scripts, Mudlet parity) and MapPanel on
      *  mount call into this; whichever lands first triggers the work. */
     private mapBootstrapInflight: Promise<boolean> | null = null;
+    /** Backing store for {@link lastMapLoadError}. */
+    private lastMapLoadFailure: string | null = null;
     // Debounced background map-save state. scheduleMapSave() coalesces bursts of
     // view changes (per-area zoom) into one worker-serialised IndexedDB write;
     // flushMapSave() drains a pending save on session close.
@@ -282,6 +285,11 @@ export class WindowManager {
     /** Bridge to the Lua speedwalk entry point (Mudlet Host::startSpeedWalk),
      *  wired by ScriptingEngine. Driven by {@link startSpeedWalk}. */
     onStartSpeedWalk?:    (from: number, to: number) => void;
+    /** Bridge to Mudlet's `postMessage` (cTelnet::postMessage, src/ctelnet.cpp:4436):
+     *  a client message for the player, written onto the main console. Wired by
+     *  ScriptingEngine, which applies the prefix colouring. Used by the map
+     *  loaders to explain a refused map file instead of failing silently. */
+    onSystemMessage?:     (text: string) => void;
 
     /** The MMP map URL from GMCP `Client.Map`, or '' when none announced. */
     get mmpMapLocation(): string {
@@ -1184,9 +1192,34 @@ export class WindowManager {
      * on parse failure so callers can surface the error (the file-upload path
      * in MapPanel turns it into status='error'; bootstrap logs and moves on).
      */
-    ingestMapBuffer(buf: ArrayBuffer): void {
+    ingestMapBuffer(buf: ArrayBuffer, source?: string): void {
+        assertReadableMapVersion(buf, source);
         const mudletMap = readMapFromBuffer(Buffer.from(buf));
         this.mapStore.loadFromBinary(mudletMap);
+    }
+
+    /**
+     * Report a failed map load the way Mudlet does: an unreadable format
+     * version gets its explanation on the main console (TMap::readMap posts
+     * every out-of-range case through postMessage, src/TMap.cpp:1531-1573)
+     * rather than being swallowed into a console.warn the player never sees.
+     * Everything else stays a developer-facing warning.
+     */
+    private reportMapLoadFailure(context: string, err: unknown): void {
+        console.warn(`[WindowManager] ${context}:`, err);
+        if (err instanceof MapVersionError) {
+            this.lastMapLoadFailure = err.summary;
+            for (const message of err.messages) this.onSystemMessage?.(message);
+        } else {
+            this.lastMapLoadFailure = err instanceof Error ? err.message : String(err);
+        }
+    }
+
+    /** Reason the most recent map load failed, or null when the last one
+     *  succeeded. The map panel shows this in its error slot — "Failed to parse
+     *  map file" alone leaves a rejected format version looking like corruption. */
+    get lastMapLoadError(): string | null {
+        return this.lastMapLoadFailure;
     }
 
     /**
@@ -1203,7 +1236,11 @@ export class WindowManager {
      * Batch progress is published on {@link subscribeMapLoadProgress} for the
      * map panel's progress bar; `onProgress` is an extra per-call hook.
      */
-    async ingestMapBufferAsync(buf: ArrayBuffer, onProgress?: (loaded: number, total: number) => void): Promise<void> {
+    async ingestMapBufferAsync(buf: ArrayBuffer, onProgress?: (loaded: number, total: number) => void, source?: string): Promise<void> {
+        // Before the transfer: the worker's failure crosses back as a plain
+        // message, and `buf` is detached by then, so the version can no longer
+        // be read to say what was actually wrong with it.
+        assertReadableMapVersion(buf, source);
         // Rooms land in one notification at the end, so without this the UI has
         // nothing at all to show during the longest part of a big-map load.
         this.publishMapLoadProgress({ loaded: 0, total: 0, phase: 'rooms' });
@@ -1270,10 +1307,11 @@ export class WindowManager {
                 // Off-main-thread parse — the boot path is what dominates LCP,
                 // and the binary reader's Buffer-polyfill loop is the single
                 // biggest synchronous cost when a saved map is large.
-                await this.ingestMapBufferAsync(buf);
+                await this.ingestMapBufferAsync(buf, undefined, 'the map stored with this profile');
+                this.lastMapLoadFailure = null;
                 return true;
             } catch (err) {
-                console.warn('[WindowManager] bootstrapMap failed:', err);
+                this.reportMapLoadFailure('bootstrapMap failed', err);
                 return false;
             }
         })();
@@ -1288,7 +1326,20 @@ export class WindowManager {
      * on synchronous parse failure; the IndexedDB write is fire-and-forget
      * (failures appear in console.warn). Fires sysMapLoadEvent on success.
      */
-    loadMap(buf?: ArrayBuffer): boolean {
+    loadMap(buf?: ArrayBuffer, source?: string): boolean {
+        if (buf) {
+            // Ahead of the IndexedDB write, not just ahead of the parse: Mudlet
+            // refuses an unreadable map before it touches anything
+            // (TMap::readMap, src/TMap.cpp:1531), and persisting first would
+            // replace the profile's good map with bytes that cannot be read
+            // back — turning a rejected file into a lost one.
+            try {
+                assertReadableMapVersion(buf, source);
+            } catch (err) {
+                this.reportMapLoadFailure('loadMap rejected the map file', err);
+                return false;
+            }
+        }
         if (buf && this._connectionId) {
             // Clone for IndexedDB: the parser (qtdatastream's QString.read)
             // mutates the buffer in-place via Buffer.swap16() to convert
@@ -1300,9 +1351,10 @@ export class WindowManager {
             saveMapToStorage(this._connectionId, buf.slice(0)).catch(err =>
                 console.warn('[WindowManager] saveMap failed:', err));
             try {
-                this.ingestMapBuffer(buf);
+                this.ingestMapBuffer(buf, source);
+                this.lastMapLoadFailure = null;
             } catch (err) {
-                console.warn('[WindowManager] loadMap parse failed:', err);
+                this.reportMapLoadFailure('loadMap parse failed', err);
                 return false;
             }
         }
@@ -1328,7 +1380,14 @@ export class WindowManager {
      *
      * `buf` is transferred to the worker and must not be reused by the caller.
      */
-    async loadMapAsync(buf: ArrayBuffer): Promise<boolean> {
+    async loadMapAsync(buf: ArrayBuffer, source?: string): Promise<boolean> {
+        // Same pre-persistence gate as the sync path — see loadMap.
+        try {
+            assertReadableMapVersion(buf, source);
+        } catch (err) {
+            this.reportMapLoadFailure('loadMapAsync rejected the map file', err);
+            return false;
+        }
         if (this._connectionId) {
             // Persist a copy before the original is transferred away. (The
             // sync path clones for a different reason — see loadMap — but the
@@ -1337,9 +1396,10 @@ export class WindowManager {
                 console.warn('[WindowManager] saveMap failed:', err));
         }
         try {
-            await this.ingestMapBufferAsync(buf);
+            await this.ingestMapBufferAsync(buf, undefined, source);
+            this.lastMapLoadFailure = null;
         } catch (err) {
-            console.warn('[WindowManager] loadMapAsync parse failed:', err);
+            this.reportMapLoadFailure('loadMapAsync parse failed', err);
             return false;
         }
         // Same advisory contract as loadMap: the panel reports render success,
