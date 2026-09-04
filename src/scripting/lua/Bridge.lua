@@ -2416,13 +2416,77 @@ function auditAreas()
     }
 end
 
+-- lua_isboolean, behind Mudlet's checkBoolArg: strictly true/false, with none
+-- of the truthiness Lua itself would apply. Nothing else in this bridge needed
+-- it until createMapLabel's four boolean tail arguments.
+local function checkBoolArg(value, funcName, index, what)
+    if type(value) ~= 'boolean' then
+        error(funcName .. ": bad argument #" .. index .. " type (" .. what
+            .. " as boolean expected, got " .. type(value) .. "!)", 3)
+    end
+    return value
+end
+
 -- Mudlet createMapLabel(areaID, text, posx, posy, posz, fgRed, fgGreen, fgBlue,
--- bgRed, bgGreen, bgBlue, zoom, fontSize, showOnTop, noScaling). The label is
--- stored, queryable via getMapLabel, and painted by the renderer; the (display)
--- `zoom` arg is dropped while `fontSize` sizes the label box. → new labelID, or
--- -1 if the area is missing.
-function createMapLabel(areaID, text, posx, posy, posz, fgR, fgG, fgB, bgR, bgG, bgB, _zoom, fontSize, showOnTop, noScaling)
-    return __createMapLabel(areaID, tostring(text or ''), posx, posy, posz, fgR, fgG, fgB, bgR, bgG, bgB, fontSize, showOnTop, noScaling)
+-- bgRed, bgGreen, bgBlue [, zoom, fontSize [, showOnTop [, noScaling [, fontName
+-- [, foregroundTransparency [, backgroundTransparency [, temporary
+-- [, outlineRed, outlineGreen, outlineBlue]]]]]]]]). → new labelID, or -1 if the
+-- area is missing or the text is empty.
+--
+-- The optional tail is gated on the ARGUMENT COUNT, not on nil, which is what
+-- TLuaInterpreter::createMapLabel does: its getVerified* checks are all
+-- lua_isnumber/lua_isboolean, and those reject nil even where the argument is
+-- documented as optional. So an omitted argument takes the default while an
+-- explicit nil in the same position is an error — select('#') is what tells the
+-- two apart. The zoom/fontSize pair is gated together (`args > 11`), so passing
+-- a zoom without a font size is the error Mudlet raises too.
+function createMapLabel(areaID, text, posx, posy, posz, fgR, fgG, fgB, bgR, bgG, bgB, ...)
+    local n = select('#', ...) + 11
+    areaID = __mudix_check_int(areaID, 'createMapLabel', 1, 'areaID')
+    text = __mudix_check_string(text, 'createMapLabel', 2, 'text')
+    posx = __mudix_check_number(posx, 'createMapLabel', 3, 'posX')
+    posy = __mudix_check_number(posy, 'createMapLabel', 4, 'posY')
+    posz = __mudix_check_number(posz, 'createMapLabel', 5, 'posZ')
+    fgR = __mudix_check_int(fgR, 'createMapLabel', 6, 'fgRed')
+    fgG = __mudix_check_int(fgG, 'createMapLabel', 7, 'fgGreen')
+    fgB = __mudix_check_int(fgB, 'createMapLabel', 8, 'fgBlue')
+    bgR = __mudix_check_int(bgR, 'createMapLabel', 9, 'bgRed')
+    bgG = __mudix_check_int(bgG, 'createMapLabel', 10, 'bgGreen')
+    bgB = __mudix_check_int(bgB, 'createMapLabel', 11, 'bgBlue')
+
+    local zoom, fontSize, showOnTop, noScaling, fontName
+    local fgTransparency, bgTransparency, temporary, olR, olG, olB
+    if n > 11 then
+        zoom = __mudix_check_number(select(1, ...), 'createMapLabel', 12, 'zoom')
+        fontSize = __mudix_check_int(select(2, ...), 'createMapLabel', 13, 'fontSize')
+    end
+    if n > 13 then
+        showOnTop = checkBoolArg(select(3, ...), 'createMapLabel', 14, 'showOnTop')
+    end
+    if n > 14 then
+        noScaling = checkBoolArg(select(4, ...), 'createMapLabel', 15, 'noScaling')
+    end
+    if n > 15 then
+        fontName = __mudix_check_string(select(5, ...), 'createMapLabel', 16, 'fontName')
+    end
+    if n > 16 then
+        fgTransparency = __mudix_check_int(select(6, ...), 'createMapLabel', 17, 'foregroundTransparency')
+    end
+    if n > 17 then
+        bgTransparency = __mudix_check_int(select(7, ...), 'createMapLabel', 18, 'backgroundTransparency')
+    end
+    if n > 18 then
+        temporary = checkBoolArg(select(8, ...), 'createMapLabel', 19, 'temporary')
+    end
+    if n > 19 then
+        olR = __mudix_check_int(select(9, ...), 'createMapLabel', 20, 'outlineRed')
+        olG = __mudix_check_int(select(10, ...), 'createMapLabel', 21, 'outlineGreen')
+        olB = __mudix_check_int(select(11, ...), 'createMapLabel', 22, 'outlineBlue')
+    end
+
+    return __createMapLabel(areaID, text, posx, posy, posz, fgR, fgG, fgB, bgR, bgG, bgB,
+        zoom, fontSize, showOnTop, noScaling, fontName,
+        fgTransparency, bgTransparency, temporary, olR, olG, olB)
 end
 
 -- Mudlet createMapImageLabel(areaID, imagePathFileName, posx, posy, posz, width,
@@ -2684,13 +2748,22 @@ do
     end
 end
 
--- Mudlet saveProfile([location]). zustand state is already auto-saved on every
--- mutation; this call additionally forces pending VFS writes (and any debounced
--- SQL snapshots) through to IndexedDB / the linked folder. Synchronous failure
--- (no VFS available) returns (nil, errMsg). Async flush errors raise the
--- `sysSaveProfileError` event so callers can subscribe for the failure.
-function saveProfile(location)
-    local r = __mudix_saveProfile(location)
+-- Mudlet saveProfile([location [, saveName]]) → true, fullPath. Writes the
+-- profile out as a Mudlet-format XML save and forces pending VFS writes (and any
+-- debounced SQL snapshots) through to storage; the zustand slices auto-save on
+-- every mutation regardless. `location` defaults to the profile's own current/,
+-- `saveName` to a YYYY-MM-DD#HH-mm-ss stamp, and a saveName without a .xml
+-- suffix gains one — TLuaInterpreter::saveProfile appends it before Host ever
+-- sees the path. Synchronous failure returns (nil, errMsg); an async flush
+-- failure raises `sysSaveProfileError` instead, having no return left to use.
+function saveProfile(location, saveName)
+    if location ~= nil then
+        location = __mudix_check_string(location, 'saveProfile', 1, 'location')
+    end
+    if saveName ~= nil then
+        saveName = __mudix_check_string(saveName, 'saveProfile', 2, 'file name')
+    end
+    local r = __mudix_saveProfile(location, saveName)
     if type(r) == 'table' then
         local ok = r[0]; if ok == nil then ok = r[1] end
         local val = r[1]; if r[0] == nil then val = r[2] end

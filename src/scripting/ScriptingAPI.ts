@@ -1672,6 +1672,11 @@ export class ScriptingAPI {
     /** Write every module flagged to sync back out to its own file. Called by
      *  saveProfile — see the note there. */
     saveSyncedModules(): void { this.host.saveSyncedModules(); }
+    /** Write the profile out as a Mudlet-format XML save. The XML half of
+     *  `saveProfile([location [, saveName]])` — see ScriptingEngine. */
+    saveProfileXml(location?: string, saveName?: string) {
+        return this.host.saveProfileXml(location, saveName);
+    }
     reloadModule(name: string): boolean { return this.host.reloadModuleFromFile(name); }
     enableModuleSync(name: string): void { this.host.setModuleSync(name, true); }
     disableModuleSync(name: string): void { this.host.setModuleSync(name, false); }

@@ -80,6 +80,14 @@ import {describeThrown} from '../utils/describeThrown';
 // on overwrite, so writes are clean and Mudlet-loadable. The parseable-save
 // fallback means a residual mismatch can't brick the profile either.
 const LINKED_WRITEBACK_ENABLED = true;
+
+/** The document `saveProfile` starts from when the profile has no Mudlet save to
+ *  base on. Mudlet's own version stamp, and an empty `<Host>` for
+ *  applyProfileSettingsToHost to fill in — Mudlet refuses a save with no
+ *  HostPackage in it. */
+const EMPTY_PROFILE_XML =
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    + '<MudletPackage version="1.001"><HostPackage><Host></Host></HostPackage></MudletPackage>';
 import type {PackageManifest} from '../storage/schema';
 
 function hexToRgb(hex: string): RgbColor | null {
@@ -809,30 +817,83 @@ export class ScriptingEngine implements EngineHost {
     private writeBackLinkedProfile(vfs: ProfileVFS): void {
         try {
             // Base on the newest *parseable* save, so a corrupt save is healed
-            // (rewritten clean) rather than aborting the write.
+            // (rewritten clean) rather than aborting the write. Unlike an
+            // explicit saveProfile() this does NOT fall back to an empty
+            // document: no parseable save means this isn't a profile we linked
+            // into, and inventing one would put a file in a Mudlet folder that
+            // Mudlet would then load in preference to its own.
             const base = readNewestParseableXml(vfs);
             if (!base) return;
-            const s = useAppStore.getState();
-            const id = this.connectionId;
-            const trees: SerializeInput = {
-                scripts: s.connectionScripts[id] ?? [],
-                aliases: s.connectionAliases[id] ?? [],
-                triggers: s.connectionTriggers[id] ?? [],
-                timers: s.connectionTimers[id] ?? [],
-                keys: s.connectionKeybindings[id] ?? [],
-                buttons: s.connectionButtons[id] ?? [],
-            };
-            const values = s.connectionVariables[id]?.values ?? [];
-            const xml = buildLinkedWriteback(
-                base.xml, trees, { hidden: [], variables: values }, s.connectionProfile[id],
-            );
             // One timestamped save per session (Mudlet's naming), overwritten on
             // later flushes so a session doesn't flood current/ with files.
             this.mudletSaveName ??= `${mudletTimestamp(new Date())}.xml`;
-            vfs.writeFile(`current/${this.mudletSaveName}`, xml);
+            vfs.writeFile(`current/${this.mudletSaveName}`, this.buildProfileXml(base.xml));
         } catch (err) {
             console.warn('[ScriptingEngine] Mudlet write-back failed:', err);
         }
+    }
+
+    /**
+     * The profile as a Mudlet-format `<MudletPackage>` save: `baseXml` with its
+     * automation and variable packages replaced by the live store state, and its
+     * `<Host>` settings updated in place.
+     *
+     * Basing on an existing save is what keeps the ~130 `<Host>` fields mudix
+     * doesn't model — and any element it doesn't understand — from being dropped
+     * on the way out. A profile with no save to base on gets the empty skeleton
+     * below, so its `<Host>` carries only the settings mudix does model.
+     */
+    private buildProfileXml(baseXml?: string): string {
+        const s = useAppStore.getState();
+        const id = this.connectionId;
+        const trees: SerializeInput = {
+            scripts: s.connectionScripts[id] ?? [],
+            aliases: s.connectionAliases[id] ?? [],
+            triggers: s.connectionTriggers[id] ?? [],
+            timers: s.connectionTimers[id] ?? [],
+            keys: s.connectionKeybindings[id] ?? [],
+            buttons: s.connectionButtons[id] ?? [],
+        };
+        const values = s.connectionVariables[id]?.values ?? [];
+        return buildLinkedWriteback(
+            baseXml ?? EMPTY_PROFILE_XML, trees,
+            { hidden: [], variables: values }, s.connectionProfile[id],
+        );
+    }
+
+    /**
+     * The XML half of Mudlet `saveProfile([location [, saveName]])`: write this
+     * profile out as a Mudlet-format save and answer with the full path written.
+     *
+     * Mirrors `Host::saveProfile`'s naming — an empty location means the
+     * profile's own `current/`, an empty name means a `YYYY-MM-DD#HH-mm-ss`
+     * stamp, and a name without one gains `.xml`. A default-located save also
+     * takes over as this session's write-back target, so the automatic flushes
+     * keep updating the newest file rather than leaving a stale older one as the
+     * save Mudlet would load.
+     */
+    saveProfileXml(location?: string, saveName?: string): { ok: true; path: string } | { ok: false; err: string } {
+        const vfs = this.vfs;
+        if (!vfs) return { ok: false, err: 'no profile VFS available' };
+        // A trailing slash would double up against the separator below.
+        let dir = (location ?? '').trim();
+        while (dir.endsWith('/')) dir = dir.slice(0, -1);
+        let name = (saveName ?? '').trim();
+        const generated = name === '';
+        if (generated) {
+            name = `${mudletTimestamp(new Date())}.xml`;
+        } else if (!name.toLowerCase().endsWith('.xml')) {
+            name = `${name}.xml`;
+        }
+        const path = `${dir || 'current'}/${name}`;
+        try {
+            const base = readNewestParseableXml(vfs);
+            vfs.writeFile(path, this.buildProfileXml(base?.xml));
+        } catch (err) {
+            return { ok: false, err: describeThrown(err) };
+        }
+        if (!dir && generated) this.mudletSaveName = name;
+        return { ok: true, path: vfs.resolvePath(path) };
     }
 
     /** `_G` entries for the Variables view (user globals nested, built-ins

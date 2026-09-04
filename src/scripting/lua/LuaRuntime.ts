@@ -1471,18 +1471,20 @@ export class LuaRuntime implements IScriptingRuntime {
             return this.watchedPaths.delete(vfs.resolvePath(path));
         });
 
-        // Mudlet saveProfile([location]). zustand state (scripts/aliases/etc.)
-        // already auto-syncs to localStorage on every mutation; the work this
-        // call adds is forcing pending VFS writes through to IndexedDB / the
-        // linked folder. Synchronously snapshots any debounced SQL writes,
-        // then kicks off vfs.flush() in the background. Returns the profile
-        // path immediately so the Lua wrapper below can shape it as
-        // (true, path). The optional `location` arg is accepted for
-        // compatibility but ignored — there is no alternate save target.
-        // Returns an [ok, path|errMsg] tuple synchronously. Async flush errors
-        // can't be reported through the return — they raise `sysSaveProfileError`
-        // (eventName, profilePath, errMsg) so user code can subscribe.
-        this.lua.global.set('__mudix_saveProfile', (_location?: unknown): [boolean, string] => {
+        // Mudlet saveProfile([location [, saveName]]). Two halves, both of which
+        // Host::saveProfile does: write the profile out as a Mudlet-format XML
+        // save, and force mudix's own pending state through to storage — the
+        // zustand slices already auto-sync on every mutation, but debounced SQL
+        // snapshots and VFS writes do not.
+        //
+        // `location` defaults to the profile's own current/ and `saveName` to a
+        // YYYY-MM-DD#HH-mm-ss stamp, matching Host::saveProfile's naming; the
+        // returned path is the file actually written, which is what Mudlet
+        // answers with. Async flush errors land after the return, so they raise
+        // `sysSaveProfileError` (eventName, profilePath, errMsg) instead.
+        this.lua.global.set('__mudix_saveProfile', (
+            location?: unknown, saveName?: unknown,
+        ): [boolean, string] => {
             this.flushPendingSqlSnapshots();
             const vfs = this.vfs;
             if (!vfs) return [false, 'saveProfile: no profile VFS available'];
@@ -1493,25 +1495,32 @@ export class LuaRuntime implements IScriptingRuntime {
             // through its file, and without this the edits lived only in our
             // store and were lost the moment another profile reloaded it.
             this.api.saveSyncedModules();
-            // Mudlet's saveProfile() is also the only thing that ever writes the
-            // command lines' histories out (Host::signal_saveCommandLinesHistory
-            // → TCommandLine::slot_saveHistory), and it writes them straight
-            // away rather than through the flush below — a spec, and a user
-            // reading the file, both expect it there the moment the call
-            // returns.
-            for (const file of this.api.commandLineHistoryFiles()) {
-                try {
-                    vfs.writeFile(`${path}/${file.name}`, file.content);
-                } catch (err) {
-                    console.warn(`[saveProfile] could not write ${file.name}:`, err);
+            const dir = location == null ? undefined : String(location);
+            const name = saveName == null ? undefined : String(saveName);
+            // Mudlet emits signal_saveCommandLinesHistory — the only thing that
+            // ever writes the command lines' histories out — solely when given
+            // neither argument, on the reading that such a call is the end of
+            // session save. A save to a named file is a copy, not the session
+            // ending, and leaves the histories alone. It writes them straight
+            // away rather than through the flush below, so a spec (and a user
+            // reading the file) finds them there the moment this returns.
+            if (!dir && !name) {
+                for (const file of this.api.commandLineHistoryFiles()) {
+                    try {
+                        vfs.writeFile(`${path}/${file.name}`, file.content);
+                    } catch (err) {
+                        console.warn(`[saveProfile] could not write ${file.name}:`, err);
+                    }
                 }
             }
+            const written = this.api.saveProfileXml(dir, name);
+            if (!written.ok) return [false, `saveProfile: ${written.err}`];
             vfs.flush().catch(err => {
                 const msg = err instanceof Error ? err.message : String(err);
                 console.warn('[saveProfile] vfs flush failed:', err);
                 this.emitEvent('sysSaveProfileError', [path, msg]);
             });
-            return [true, path];
+            return [true, written.path];
         });
 
         // -- Line / cursor / scrollback inspection --

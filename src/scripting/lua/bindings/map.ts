@@ -15,6 +15,14 @@ import { parseXmlMapResult } from '../../../map/xmlMapImport';
  */
 /** The Mudlet binary map format versions mudix's reader/writer covers. Outside
  *  this range a save is refused rather than written in a shape nothing reads. */
+/** Coerce an optional numeric arg: nil stays nil so the store's own Mudlet
+ *  default applies, rather than collapsing to 0 the way `Number(nil)` would. */
+function opt(v: unknown): number | undefined {
+    if (v == null) return undefined;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+}
+
 const MIN_MAP_FORMAT = 17;
 const MAX_MAP_FORMAT = 21;
 
@@ -1049,22 +1057,36 @@ export function installMapBindings({
     lua.global.set('__getMapLabel', (areaId: unknown, key: unknown) =>
         api.map.getMapLabel(Number(areaId), typeof key === 'number' ? key : String(key ?? '')));
     // Mudlet createMapLabel(areaID, text, x, y, z, fgR,fgG,fgB, bgR,bgG,bgB,
-    // [zoom,] fontSize, showOnTop, noScaling). Bridge.lua drops the unused
-    // zoom arg and coerces flags to bool; → new labelID or -1.
+    // zoom, fontSize, showOnTop, noScaling, fontName, fgTransparency,
+    // bgTransparency, temporary, outlineR,outlineG,outlineB). Bridge.lua has
+    // already applied Mudlet's arg-count gating and type checks, so anything
+    // still nil here is genuinely "not supplied" and MapStore fills the default.
+    // → new labelID, or -1 for a missing area / empty text.
     lua.global.set('__createMapLabel', (
         areaId: unknown, text: unknown,
         x: unknown, y: unknown, z: unknown,
         fgR: unknown, fgG: unknown, fgB: unknown,
         bgR: unknown, bgG: unknown, bgB: unknown,
-        fontSize?: unknown, showOnTop?: unknown, noScaling?: unknown,
+        zoom?: unknown, fontSize?: unknown, showOnTop?: unknown, noScaling?: unknown,
+        fontName?: unknown, fgAlpha?: unknown, bgAlpha?: unknown, temporary?: unknown,
+        olR?: unknown, olG?: unknown, olB?: unknown,
     ) => api.map.createMapLabel(
         Number(areaId), String(text ?? ''),
         Number(x) || 0, Number(y) || 0, Number(z) || 0,
         Number(fgR) || 0, Number(fgG) || 0, Number(fgB) || 0,
         Number(bgR) || 0, Number(bgG) || 0, Number(bgB) || 0,
-        Number(fontSize) || 10,
-        showOnTop == null ? true : !!showOnTop,
-        !!noScaling,
+        {
+            zoom: opt(zoom), fontSize: opt(fontSize),
+            showOnTop: showOnTop == null ? undefined : !!showOnTop,
+            noScaling: noScaling == null ? undefined : !!noScaling,
+            fontName: fontName == null ? undefined : String(fontName),
+            fgAlpha: opt(fgAlpha), bgAlpha: opt(bgAlpha),
+            temporary: temporary == null ? undefined : !!temporary,
+            // All three arrive together or not at all (Mudlet requires the
+            // triple), so one being present is enough to build the colour.
+            outline: olR == null ? undefined
+                : { r: Number(olR) || 0, g: Number(olG) || 0, b: Number(olB) || 0 },
+        },
     ));
     // Mudlet createMapImageLabel(areaID, imagePath, x, y, z, w, h, [zoom,]
     // showOnTop, noScaling). → new labelID or -1.

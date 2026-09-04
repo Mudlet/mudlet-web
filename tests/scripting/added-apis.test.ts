@@ -1131,6 +1131,58 @@ describe('map labels — createMapLabel / createMapImageLabel / deleteMapLabel',
     expect(env.run(`return (deleteMapLabel(${a}, 0))`)).toBe(false); // already gone
   });
 
+  // TLuaInterpreter::createMapLabel gates its optional tail on lua_gettop, and
+  // every getVerified* behind that gate is a lua_isnumber/lua_isboolean check
+  // that rejects nil whether or not the argument is documented as optional. So
+  // "left off" and "passed as nil" are different calls, which is the one thing
+  // about this signature a script can get wrong without noticing.
+  it('applies Mudlet defaults when the optional tail is left off', () => {
+    const a = env.run('return (addAreaName("Defaults"))') as number;
+    expect(env.run(`return (createMapLabel(${a}, "Town", 0, 0, 0, 1, 2, 3, 4, 5, 6))`)).toBe(0);
+    const label = (k: string) => env.run(`return (getMapLabel(${a}, 0)).${k}`);
+    // showOnTop and noScaling both default true — Scaling is the inverse of the
+    // stored noScaling, so it reads back false.
+    expect(label('OnTop')).toBe(true);
+    expect(label('Scaling')).toBe(false);
+    expect(label('Temporary')).toBe(false);
+    // fontSize 50 over zoom 30: ~0.92 map units per character, 2.33 high.
+    expect(label('Width') as number).toBeCloseTo(4 * 50 * 0.55 / 30, 5);
+    expect(label('Height') as number).toBeCloseTo(50 * 1.4 / 30, 5);
+  });
+
+  it('takes the full 22-argument form, including temporary and the outline colour', () => {
+    const a = env.run('return (addAreaName("Full"))') as number;
+    const id = env.run(`return (createMapLabel(${a}, "Inn", 1, 2, 3, 255, 128, 0, 10, 20, 30,
+      10, 20, false, false, "Courier", 200, 90, true, 7, 8, 9))`);
+    expect(id).toBe(0);
+    const label = (k: string) => env.run(`return (getMapLabel(${a}, 0)).${k}`);
+    expect(label('OnTop')).toBe(false);
+    expect(label('Scaling')).toBe(true);
+    expect(label('Temporary')).toBe(true);
+    expect(label('FgColor.r')).toBe(255);
+    expect(label('BgColor.b')).toBe(30);
+    // zoom 10, fontSize 20: 3 chars * 20 * 0.55 / 10.
+    expect(label('Width') as number).toBeCloseTo(3 * 20 * 0.55 / 10, 5);
+  });
+
+  it('refuses an empty label text, as TMap::createMapLabel does', () => {
+    const a = env.run('return (addAreaName("Empty"))') as number;
+    expect(env.run(`return (createMapLabel(${a}, "", 0, 0, 0, 0, 0, 0, 0, 0, 0))`)).toBe(-1);
+    // and nothing was filed under an id
+    expect(env.run(`return next(getMapLabels(${a}))`)).toBe(null);
+  });
+
+  it('rejects an explicit nil where Mudlet requires a value once the tail is opened', () => {
+    const a = env.run('return (addAreaName("Nils"))') as number;
+    // zoom present, fontSize nil — Mudlet reads argument 13 as soon as there
+    // are more than 11, and lua_isnumber says no.
+    expect(() => env.run(`createMapLabel(${a}, "x", 0, 0, 0, 0, 0, 0, 0, 0, 0, 30, nil)`))
+      .toThrow('bad argument #13 type (fontSize as number expected');
+    // showOnTop has to be a real boolean, not merely truthy
+    expect(() => env.run(`createMapLabel(${a}, "x", 0, 0, 0, 0, 0, 0, 0, 0, 0, 30, 50, "yes")`))
+      .toThrow('bad argument #14 type (showOnTop as boolean expected');
+  });
+
   it('createMapImageLabel stores the image path in Pixmap; both reject a missing area', () => {
     const a = env.run('return (addAreaName("Img"))') as number;
     const id = env.run(`return (createMapImageLabel(${a}, "pic.png", 0, 0, 0, 32, 32, 1, true, true))`);

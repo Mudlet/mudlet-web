@@ -364,6 +364,73 @@ export function makeArea(): MudletArea {
     };
 }
 
+/**
+ * A map label as mudix stores it: the binary-map reader's shape plus the fields
+ * Mudlet's `TMapLabel` carries that its map file never persists — the font, the
+ * outline colour and the `temporary` flag. All optional, so labels read back
+ * from a binary map (which have none of them) stay valid without conversion.
+ */
+export interface MapLabel extends MudletLabel {
+    fontName?: string;
+    fontSize?: number;
+    temporary?: boolean;
+    outlineColor?: MudletColor;
+}
+
+/**
+ * The optional tail of Mudlet's `createMapLabel` — everything after the two
+ * colours. Defaults here are Mudlet's own (TLuaInterpreter::createMapLabel),
+ * not zero values: omitting them has to produce the label Mudlet would.
+ */
+export interface MapLabelOptions {
+    /** Map units per rendered pixel; divides the measured text box. Default 30. */
+    zoom?: number;
+    /** Point size the text is measured at. Default 50. */
+    fontSize?: number;
+    /** Paint above rooms rather than below them. Default true. */
+    showOnTop?: boolean;
+    /** Keep a fixed on-screen size instead of scaling with the map. Default true. */
+    noScaling?: boolean;
+    /** Font family; empty/absent means the default face. */
+    fontName?: string;
+    /** Foreground (and outline) alpha, 0-255. Default 255. */
+    fgAlpha?: number;
+    /** Background alpha, 0-255. Default 50 — Mudlet's labels are mostly see-through. */
+    bgAlpha?: number;
+    /** Excluded from the map save. Default false. */
+    temporary?: boolean;
+    /** Text outline colour. Defaults to the foreground colour, which is Mudlet's
+     *  way of saying "no outline" — it only draws one when the two differ. */
+    outline?: { r: number; g: number; b: number };
+}
+
+/** `value` when it is a usable positive number, else `fallback`. */
+function numOr(value: number | undefined, fallback: number): number {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+/** Round and clamp to a 0-255 colour channel / alpha. */
+function clampByte(n: number): number {
+    return Math.max(0, Math.min(255, Math.round(n)));
+}
+
+/**
+ * The map-unit size of a text label's box, mirroring TMap::createMapLabel: it
+ * renders the text into a pixmap at `fontSize` points, takes the bounding
+ * rectangle QPainter measured, and divides both sides by `zoom`.
+ *
+ * There is no text-metric engine on this side, so the pixel box is estimated
+ * from the point size — Qt's default proportional face averages ~0.55em of
+ * advance per character and ~1.4em of line height. That approximation is only
+ * ever the label's *box*; the renderer sizes the drawn glyphs from it, so being
+ * a few percent out shifts the label's scale, it does not misplace it.
+ */
+function labelBoxSize(text: string, fontSize: number, zoom: number): [number, number] {
+    const widthPx = Math.max(1, text.length) * fontSize * 0.55;
+    const heightPx = fontSize * 1.4;
+    return [widthPx / zoom, heightPx / zoom];
+}
+
 export interface MapLabelInfo {
     X: number; Y: number; Z: number;
     Width: number; Height: number;
@@ -381,7 +448,7 @@ export type MapLabelLookup =
     | { ok: true; single: MapLabelInfo }
     | { ok: true; multi: Record<number, MapLabelInfo> };
 
-function labelToInfo(l: MudletLabel): MapLabelInfo {
+function labelToInfo(l: MapLabel): MapLabelInfo {
     let pixmap = '';
     const pm = l.pixMap as unknown;
     if (typeof pm === 'string') pixmap = pm;
@@ -396,7 +463,9 @@ function labelToInfo(l: MudletLabel): MapLabelInfo {
         Pixmap: pixmap,
         OnTop: l.showOnTop,
         Scaling: !l.noScaling,
-        Temporary: false,  // Mudlet runtime flag; binary maps never carry it
+        // Mudlet runtime flag; binary maps never carry it, so a label read back
+        // from one is never temporary — only createMapLabel can set it.
+        Temporary: l.temporary ?? false,
         FgColor: { r: l.fgColor.r, g: l.fgColor.g, b: l.fgColor.b },
         BgColor: { r: l.bgColor.r, g: l.bgColor.g, b: l.bgColor.b },
     };
@@ -482,7 +551,7 @@ export class MapStore {
     private areas = new Map<number, MudletArea>();
     private areaNames = new Map<number, string>();
     private hashToRoom = new Map<string, number>();
-    private labels = new Map<number, MudletLabel[]>();
+    private labels = new Map<number, MapLabel[]>();
     private envColors = new Map<number, number>();
     private nextRoomId = 1;
     private nextAreaId = 1;
@@ -908,7 +977,7 @@ export class MapStore {
         for (const [id, c] of this.customEnvColors) mCustomEnvColors[id] = c;
         const envColors: Record<number, number> = {};
         for (const [id, v] of this.envColors) envColors[id] = v;
-        const labels: Record<number, MudletLabel[]> = {};
+        const labels: Record<number, MapLabel[]> = {};
         for (const [id, ls] of this.labels) labels[id] = ls;
         // Preserve other profiles' saved player rooms, and stamp our own from
         // the live playerRoomId so reopening the map restores the position
@@ -2592,39 +2661,49 @@ export class MapStore {
     /**
      * Mudlet `createMapLabel(areaID, text, posx, posy, posz, fgRed, fgGreen,
      * fgBlue, bgRed, bgGreen, bgBlue [, zoom [, fontSize [, showOnTop [,
-     * noScaling]]]])`. Adds a text label to the area and returns its new id, or
-     * -1 if the area does not exist. (`zoom`/`fontSize` are accepted for
-     * signature parity — mudix stores labels but the renderer does not yet draw
-     * them, mirroring how labels loaded from binary maps are kept and queried
-     * but not painted.)
+     * noScaling [, fontName [, foregroundTransparency [, backgroundTransparency
+     * [, temporary [, outlineRed, outlineGreen, outlineBlue]]]]]]]]])`. Adds a
+     * text label to the area and returns its new id, or -1 if the area does not
+     * exist or the text is empty (both are Mudlet's own refusals).
+     *
+     * `fontName`, `temporary` and the outline colour have nowhere to live in the
+     * binary map format, so they are mudix-only fields on the stored label (see
+     * `MapLabel`); of the three only `temporary` is visible from Lua, because
+     * Mudlet's getMapLabel doesn't publish the other two either.
      */
     createMapLabel(
         areaId: number, text: string,
         x: number, y: number, z: number,
         fgR: number, fgG: number, fgB: number,
         bgR: number, bgG: number, bgB: number,
-        fontSize = 10, showOnTop = true, noScaling = false,
+        opts: MapLabelOptions = {},
     ): number {
         if (!this.areas.has(areaId)) return -1;
-        const id = this.nextLabelId(areaId);
-        // The renderer derives a text label's on-map font size from its
-        // Width/Height (a 0×0 box paints invisibly), so size the box in map
-        // units from the requested point size and text length.
         const str = text ?? '';
-        const fs = Number.isFinite(fontSize) && fontSize > 0 ? fontSize : 10;
-        const fontUnits = Math.min(0.75, Math.max(0.2, fs / 20));
-        const width = Math.max(0.5, str.length * fontUnits);
-        const height = fontUnits / 0.9;
-        const label: MudletLabel = {
+        // TMap::createMapLabel bails on an empty string before it allocates an
+        // id, so an invisible label can never take one up.
+        if (str === '') return -1;
+        const id = this.nextLabelId(areaId);
+        const fontSize = numOr(opts.fontSize, 50);
+        const zoom = numOr(opts.zoom, 30);
+        const [width, height] = labelBoxSize(str, fontSize, zoom);
+        // Mudlet paints the outline in the *foreground* alpha, not its own.
+        const fgAlpha = clampByte(numOr(opts.fgAlpha, 255));
+        const outline = opts.outline ?? { r: fgR, g: fgG, b: fgB };
+        const label: MapLabel = {
             id,
             pos: [x, y, z],
             size: [width, height],
             text: str,
-            fgColor: { spec: 1, alpha: 255, r: fgR, g: fgG, b: fgB },
-            bgColor: { spec: 1, alpha: 255, r: bgR, g: bgG, b: bgB },
+            fgColor: { spec: 1, alpha: fgAlpha, r: fgR, g: fgG, b: fgB },
+            bgColor: { spec: 1, alpha: clampByte(numOr(opts.bgAlpha, 50)), r: bgR, g: bgG, b: bgB },
             pixMap: '',
-            noScaling,
-            showOnTop,
+            noScaling: opts.noScaling ?? true,
+            showOnTop: opts.showOnTop ?? true,
+            fontName: opts.fontName || undefined,
+            fontSize,
+            temporary: opts.temporary ?? false,
+            outlineColor: { spec: 1, alpha: fgAlpha, r: outline.r, g: outline.g, b: outline.b },
         };
         const arr = this.labels.get(areaId);
         if (arr) arr.push(label);

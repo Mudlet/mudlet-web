@@ -97,6 +97,9 @@ export interface EngineHost {
     syncModuleToFile(name: string): Promise<void>;
     /** Write every module flagged to sync back out to its own file. */
     saveSyncedModules(): void;
+    /** Write the profile out as a Mudlet-format XML save, answering with the
+     *  full path written. The XML half of `saveProfile([location [, saveName]])`. */
+    saveProfileXml(location?: string, saveName?: string): { ok: true; path: string } | { ok: false; err: string };
     reloadModuleFromFile(name: string): boolean;
     setModuleSync(name: string, sync: boolean): void;
     getModuleSync(name: string): boolean;
@@ -254,6 +257,7 @@ export const NULL_ENGINE_HOST: EngineHost = Object.freeze({
     uninstallModuleByName: () => false,
     syncModuleToFile: () => Promise.resolve(),
     saveSyncedModules: () => {},
+    saveProfileXml: () => ({ ok: false as const, err: 'no profile host available' }),
     reloadModuleFromFile: () => false,
     setModuleSync: () => {},
     getModuleSync: () => false,
