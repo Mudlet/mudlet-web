@@ -15,6 +15,12 @@ import { ReplayRecorder } from './replay/ReplayRecorder';
 import { parseReplay, replayDurationMs } from './replay/replayFormat';
 import { type MudClientEvents, type MudEvents, type SessionStatus } from './events';
 import type { Console } from './text/Console';
+import {
+    DEFAULT_CONSOLE_BUFFER_SIZE,
+    MIN_CONSOLE_BUFFER_SIZE,
+    MAX_CONSOLE_BUFFER_SIZE,
+    consoleBatchDeleteSize,
+} from './text/Console';
 import { mxpColor } from './text/colorParsers';
 import { AnsiAwareBuffer } from './text/FormatState';
 import { SERVER_WRAP_WIDTH_DEFAULT } from './text/serverWrap';
@@ -122,6 +128,30 @@ export class MudSession {
 
     private readonly options: MudSessionOptions;
 
+    // ── Connection notices ───────────────────────────────────────────────────
+    // cTelnet narrates the whole life of a socket into the console — the dial
+    // attempt (ctelnet.cpp:1213-1280), the connection being made
+    // (ctelnet.cpp:700-713) and every disconnect with its reason and duration
+    // (ctelnet.cpp:774-895). Nothing here used to say anything at all, so an
+    // idle kick, a server restart or a Disconnect click left a stale screen and
+    // a session log with no marker of where the connection ended.
+
+    /** True between a dial and the disconnect that answers it. Guards against
+     *  narrating a teardown of something that was never dialed (an injected
+     *  replay's parsing-only client, a second `destroy()`). */
+    private dialAnnounced = false;
+    /** Whether the outstanding dial asked the proxy for TLS (`&tls=1`) or is a
+     *  `wss://` direct connection — Mudlet's `mCurrent_sslTsl`, sampled at dial
+     *  time so a mid-session settings change can't rewrite the notices. */
+    private secureDial = false;
+    /** `performance`-independent stand-in for Mudlet's `mConnectionTimer`: when
+     *  the socket actually opened, or null while nothing has connected. */
+    private connectedAt: number | null = null;
+    /** The socket-level failure behind the disconnect now in flight, stashed by
+     *  {@link reportConnectionError}. cTelnet reads the equivalent straight off
+     *  `mpSocket->errorString()` when it composes the message. */
+    private disconnectReason: string | null = null;
+
     /** Warn before the tab closes while a connection is live. Owned here rather
      *  than by MudClient — a fresh client is created on every connect(), so a
      *  per-client listener would accumulate one leaked closure per reconnect. */
@@ -152,8 +182,16 @@ export class MudSession {
         // The session is always constructed before the engine that wraps it, so
         // latching here restores that ordering. These stay subscribed for the
         // session's lifetime (the bus is ours; destroy() clears it).
-        this.events.on('client.connect', () => this.setStatus('connected'));
-        this.events.on('client.disconnect', () => { this.setStatus('disconnected'); this.setPing(null); });
+        // The console notices ride along here for the same reason: they must be
+        // in the buffer before a Lua sysConnectionEvent/sysDisconnectionEvent
+        // handler writes anything of its own, which is the order cTelnet
+        // produces (postMessage precedes raiseEvent in both slots).
+        this.events.on('client.connect', () => { this.setStatus('connected'); this.announceConnected(); });
+        this.events.on('client.disconnect', () => {
+            this.setStatus('disconnected');
+            this.setPing(null);
+            this.announceDisconnected();
+        });
         this.events.on('error', () => this.setStatus('disconnected'));
         // Replay recording tap. `socket.incoming` carries the post-MCCP data
         // of every real network frame (and only real frames — replayed data is
@@ -195,10 +233,14 @@ export class MudSession {
         // about to use — interleaving them would corrupt telnet/GMCP state, so
         // dialing wins and the replay stops.
         this.abortReplay();
-        // teardownClient() disconnects, which would otherwise leave the
-        // "asked for it" flag raised over a dial that is very much wanted.
+        // Before the reset below, so a live socket's own disconnect notice still
+        // carries the reason and duration of the connection it is ending. The
+        // "asked for it" flag goes with them: teardownClient() disconnects, and
+        // leaving it raised would suppress a dial that is very much wanted.
         this.teardownClient();
+        this.connectedAt = null;
         this.deliberateDisconnect = false;
+        this.disconnectReason = null;
         // Synchronously re-measure the main console's char grid before dialing.
         // The resize observer that normally feeds windowSize is async, so a quick
         // connect (notably on mobile, where layout settles late) can otherwise
@@ -238,6 +280,7 @@ export class MudSession {
         if (this.serverEncoding !== DEFAULT_SERVER_ENCODING) client.setServerEncoding(this.serverEncoding);
 
         this.setStatus('connecting');
+        this.announceConnecting(url);
         client.connect();
     }
 
@@ -250,8 +293,12 @@ export class MudSession {
     deliberateDisconnect = false;
 
     disconnect(): void {
+        if (!this.client) return;
+        // Latched before the socket closes, so the disconnect notice can name
+        // the user rather than guessing at the server, and so auto-reconnect
+        // leaves a hang-up alone — cTelnet's mDontReconnect.
         this.deliberateDisconnect = true;
-        this.client?.disconnect();
+        this.client.disconnect();
     }
 
     /** Whether a send() carrying the given per-call `echo` flag should produce a
@@ -632,6 +679,44 @@ export class MudSession {
         this.client?.setUndoServerWrapWidth(width);
     }
 
+    // ── Main console scrollback size ─────────────────────────────────────────
+    //
+    // Mudlet's per-profile `consoleBufferSize` / `useMaxConsoleBufferSize`
+    // (Host.h:384-387). Held on the session rather than read straight into the
+    // console because the profile setting is applied during ProfileSession's
+    // render, which can run before ScriptingAPI has built the main console —
+    // that console asks for the resolved value when it registers itself.
+    // Named user windows keep their own size (Mudlet applies the preference to
+    // the main console only, mudlet.cpp:2271); scripts size those with
+    // setConsoleBufferSize(windowName, …).
+    private consoleBufferLines = DEFAULT_CONSOLE_BUFFER_SIZE;
+
+    /** The resolved scrollback cap for the main console, in lines. */
+    get consoleBufferSize(): number { return this.consoleBufferLines; }
+
+    /**
+     * Mudlet's preference pair. `useMaximum` mirrors `checkBox_useMaxBufferSize`
+     * — desktop substitutes `TBuffer::getMaxBufferSize()`, a figure derived from
+     * physical memory; a browser tab gets {@link MAX_CONSOLE_BUFFER_SIZE}.
+     * Applies immediately to the main console when it exists.
+     */
+    setConsoleBufferSize(lines: number, useMaximum = false): void {
+        const requested = Number.isFinite(lines) ? Math.trunc(lines) : DEFAULT_CONSOLE_BUFFER_SIZE;
+        this.consoleBufferLines = useMaximum
+            ? MAX_CONSOLE_BUFFER_SIZE
+            : Math.min(MAX_CONSOLE_BUFFER_SIZE, Math.max(MIN_CONSOLE_BUFFER_SIZE, requested));
+        const main = this.consoles.get('main');
+        if (main) this.applyConsoleBufferSize(main);
+    }
+
+    /** Push the resolved size onto a console, batch-deletion size and all —
+     *  the `setBufferSize(bufferSize, max(100, bufferSize / 5))` of
+     *  mudlet.cpp:2270-2271. */
+    applyConsoleBufferSize(console: Console): void {
+        console.setBatchDeleteSize(consoleBatchDeleteSize(this.consoleBufferLines));
+        console.setMaxLines(this.consoleBufferLines);
+    }
+
     /** Commit a line held for a wrap continuation whose flush delay has passed —
      *  the busted `pumpEvents` path, which cannot wait for a real timer. */
     pumpServerWrap(): boolean {
@@ -759,10 +844,140 @@ export class MudSession {
     }
 
     private reportConnectionError(message: string): void {
-        const text = `[connection error] ${message}`;
-        this.events.emit('message', text, 'error', Date.now());
-        this.events.emit('script.log', text, 'error');
+        // Not printed here any more: it is the *reason* the disconnect notice
+        // that follows carries, exactly as cTelnet folds the socket's
+        // errorString() into "Socket got disconnected, for reason:"
+        // (ctelnet.cpp:1132-1134). Printing both said the same thing twice, in two
+        // different formats. `client.error` always precedes `client.disconnect`
+        // (MudClient.onclose emits them in that order, and the constructor-throw
+        // path emits both), so the message is never lost.
+        this.disconnectReason = message;
+        this.events.emit('script.log', `[connection error] ${message}`, 'error');
     }
+
+    /** One of cTelnet's `postMessage()` notices. Emitted as a normal `message`,
+     *  so it reaches the console, the session log and a saved replay alike —
+     *  the whole point of the issue: a transcript that ends mid-sentence should
+     *  say why. Prefix colours follow the ones already used for the TLS notices
+     *  in ProfileSession. */
+    private postSocketMessage(prefix: 'INFO' | 'OK' | 'ALERT', text: string): void {
+        const tag = SOCKET_MESSAGE_PREFIX[prefix];
+        this.events.emit('message', `${tag.color}${tag.label}\x1b[0m${tag.gap}- ${text}`, 'script', Date.now());
+    }
+
+    /** cTelnet's "[ INFO ]  - Attempting an open connection to %1:%2 ..."
+     *  (ctelnet.cpp:1485/1494 for IPv4, :1454/1463 for IPv6) and its secure
+     *  variant (:1362-1430). `mud`-mode profiles reach
+     *  the game through the telnet→WebSocket proxy, which is what Mudlet's
+     *  "via proxy" wording describes, so it is used for exactly those. */
+    private announceConnecting(url: string): void {
+        const target = parseDialTarget(url);
+        this.secureDial = target.secure;
+        this.dialAnnounced = true;
+        const verb = target.secure ? 'a secure connection' : 'an open connection';
+        this.postSocketMessage('INFO', target.viaProxy
+            ? `Attempting ${verb} to ${target.address} via proxy...`
+            : `Attempting ${verb} to ${target.address} ...`);
+    }
+
+    /** cTelnet's open-connection notice (ctelnet.cpp:920-935). Desktop always
+     *  names the address family it won the dual-stack race with — "Open
+     *  connection made (IPv4)." / "(IPv6)." — because it opens both and reports
+     *  whichever answered. A browser WebSocket exposes no such thing, so the
+     *  suffix is dropped rather than guessed at; this is the one notice here
+     *  that is not Mudlet's string verbatim. */
+    private announceConnected(): void {
+        this.connectedAt = Date.now();
+        // The secure counterpart is announced by the `tls.established` handler
+        // in ProfileSession ("Secure connection made (…)"), which is the real
+        // parallel: Mudlet wires slot_socketConnected to QSslSocket::encrypted
+        // for a secure profile, and here the WebSocket opening only proves the
+        // proxy answered — not that it shook hands with the game.
+        if (this.secureDial) return;
+        this.postSocketMessage('OK', 'Open connection made.');
+    }
+
+    /** cTelnet's disconnect pair: the reason (ctelnet.cpp:1073-1136) and then
+     *  the connection time (ctelnet.cpp:994-999). Posted on *every* disconnect — a clean
+     *  server close and an idle kick used to produce nothing at all, because
+     *  they never reach the abnormal-close path. */
+    private announceDisconnected(): void {
+        if (!this.dialAnnounced) return;
+        this.dialAnnounced = false;
+        const elapsed = this.connectedAt === null ? 0 : Date.now() - this.connectedAt;
+        // cTelnet's precedence, in its order (ctelnet.cpp:1077-1093): the user's
+        // own click, then the "dropped almost immediately" window, and only then
+        // the socket's own errorString(). The window comes FIRST — a server that
+        // slams the door on login drops us with a socket error inside those five
+        // seconds, and Mudlet still calls that a rejection rather than repeating
+        // the transport's words. Mudlet leaves its timeOffset at 0 when the
+        // connection timer never started (:993), so a dial that failed before
+        // connecting lands here too, exactly as `elapsed` does.
+        //
+        // (Mudlet has a TLS-handshake arm between the first two; ours is handled
+        // separately by ProfileSession's tls.error path, which posts its own
+        // notice before this one runs.)
+        const reason = this.deliberateDisconnect ? 'User Disconnected'
+            : elapsed < CONNECTION_REJECTED_WINDOW_MS ? 'Connection/login attempt rejected by server'
+            : this.disconnectReason;
+        if (reason) {
+            // Two lines, because Mudlet's "%1\n%2" renders as two and a `message`
+            // here is one console row. The indent aligns the reason under the
+            // text and the yellow is postMessage's ALERT body colour, so the row
+            // reads as part of the notice rather than as game output.
+            this.postSocketMessage('ALERT', 'Socket got disconnected, for reason:');
+            this.events.emit('message', `\x1b[33m            ${reason}\x1b[0m`, 'script', Date.now());
+        } else {
+            this.postSocketMessage('ALERT', 'Socket got disconnected.');
+        }
+        this.postSocketMessage('INFO', `Connection time: ${formatConnectionTime(elapsed)}.`);
+        this.connectedAt = null;
+        this.disconnectReason = null;
+        // `deliberateDisconnect` is deliberately NOT cleared here. Auto-reconnect
+        // subscribes to `client.disconnect` after this handler, so clearing it now
+        // would hide a hang-up from the one thing that has to see it. {@link connect}
+        // clears it instead, which is the only place it matters.
+    }
+}
+
+/** Mudlet's message prefixes, spacing included — `postMessage` aligns them to a
+ *  fixed width and colours the tag separately from the body (ctelnet.cpp:4878,
+ *  prefix scan :4895-4903, ALERT/INFO colours :4944-4959).
+ *  The colours match the ones the TLS notices already use. */
+const SOCKET_MESSAGE_PREFIX = {
+    INFO:  { label: '[ INFO ]',  color: '\x1b[36m', gap: '  ' },
+    OK:    { label: '[  OK  ]',  color: '\x1b[32m', gap: '  ' },
+    ALERT: { label: '[ ALERT ]', color: '\x1b[31m', gap: ' '  },
+} as const;
+
+/** How soon after connecting a drop still counts as the server rejecting us
+ *  rather than a real session ending — cTelnet's `timeOffset < 5000`
+ *  (ctelnet.cpp:1087). */
+const CONNECTION_REJECTED_WINDOW_MS = 5000;
+
+/** What a dialed URL is actually reaching, for the "Attempting …" notice.
+ *  A `mud`-mode URL is the proxy's, carrying the game's host/port as query
+ *  params; a `websocket`-mode one is the game's own endpoint. */
+function parseDialTarget(url: string): { address: string; secure: boolean; viaProxy: boolean } {
+    try {
+        const parsed = new URL(url);
+        const host = parsed.searchParams.get('host');
+        if (host) {
+            const port = parsed.searchParams.get('port') ?? '23';
+            return { address: `${host}:${port}`, secure: parsed.searchParams.get('tls') === '1', viaProxy: true };
+        }
+        return { address: url, secure: parsed.protocol === 'wss:', viaProxy: false };
+    } catch {
+        return { address: url, secure: false, viaProxy: false };
+    }
+}
+
+/** hh:mm:ss.zzz — the shape cTelnet's "Connection time" line uses. */
+function formatConnectionTime(ms: number): string {
+    const p = (n: number, width = 2) => String(n).padStart(width, '0');
+    const total = Math.max(0, Math.round(ms));
+    return `${p(Math.floor(total / 3_600_000))}:${p(Math.floor(total / 60_000) % 60)}`
+        + `:${p(Math.floor(total / 1000) % 60)}.${p(total % 1000, 3)}`;
 }
 
 /** hh:mm:ss for the replay-loading info line (Mudlet logs the same shape). */

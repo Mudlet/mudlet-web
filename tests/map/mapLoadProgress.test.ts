@@ -24,6 +24,16 @@ const onStream = (impl: Streamer) => { streamImpl = impl; };
 
 const { WindowManager } = await import('../../src/ui/windows/WindowManager');
 
+/** A stand-in for the bytes handed to the loader. The stream itself is mocked,
+ *  but WindowManager reads the leading format-version int off the buffer before
+ *  it parts with it (src/map/mapVersion.ts), so the stub must carry a readable
+ *  one — an all-zero buffer is now refused as "not a Mudlet Map file". */
+function stubMapBytes(): ArrayBuffer {
+    const buf = new ArrayBuffer(8);
+    new DataView(buf).setInt32(0, 20, false);
+    return buf;
+}
+
 /** Header + rooms for a small map, in the shape the worker emits. */
 function fixture(roomCount: number) {
     const src = new MapStore();
@@ -59,7 +69,7 @@ describe('WindowManager map load progress', () => {
         const seen: Array<{ loaded: number; total: number } | null> = [];
         wm.subscribeMapLoadProgress(p => seen.push(p ? { ...p } : null));
 
-        await wm.ingestMapBufferAsync(new ArrayBuffer(8));
+        await wm.ingestMapBufferAsync(stubMapBytes());
 
         // Subscribe fires immediately with the idle value, then: the pre-header
         // indeterminate tick (total 0), the header's 0/10, one per batch, the
@@ -97,7 +107,7 @@ describe('WindowManager map load progress', () => {
         });
         const wm = new WindowManager();
 
-        await wm.ingestMapBufferAsync(new ArrayBuffer(8));
+        await wm.ingestMapBufferAsync(stubMapBytes());
 
         expect(midLoad).toEqual({ loaded: 3, total: 6, phase: 'rooms' });
     });
@@ -114,7 +124,7 @@ describe('WindowManager map load progress', () => {
         const seen: Array<unknown> = [];
         wm.subscribeMapLoadProgress(p => seen.push(p));
 
-        await expect(wm.ingestMapBufferAsync(new ArrayBuffer(8))).rejects.toThrow('worker died');
+        await expect(wm.ingestMapBufferAsync(stubMapBytes())).rejects.toThrow('worker died');
 
         // A stuck bar would outlive the failure and there'd be no way to clear
         // it — the load never reaches its normal completion path.
@@ -135,7 +145,7 @@ describe('WindowManager map load progress', () => {
             const rerendered = vi.fn(() => true);
             wm.registerMapLoadCallback(rerendered);
 
-            await expect(wm.loadMapAsync(new ArrayBuffer(8))).resolves.toBe(true);
+            await expect(wm.loadMapAsync(stubMapBytes())).resolves.toBe(true);
 
             expect(wm.mapStore.roomExists(5)).toBe(true);
             expect(events).toContain('sysMapLoadEvent');
@@ -154,7 +164,7 @@ describe('WindowManager map load progress', () => {
             const events: string[] = [];
             wm.onRaiseEvent = (event) => events.push(event);
 
-            await expect(wm.loadMapAsync(new ArrayBuffer(8))).resolves.toBe(false);
+            await expect(wm.loadMapAsync(stubMapBytes())).resolves.toBe(false);
 
             expect(events).not.toContain('sysMapLoadEvent');
         } finally {

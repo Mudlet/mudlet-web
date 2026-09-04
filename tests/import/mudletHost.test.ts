@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseMudletHost, parseMudletProfile, applyProfileSettingsToHost } from '../../src/import/mudletHost';
+import { MIN_CONSOLE_BUFFER_SIZE, MAX_CONSOLE_BUFFER_SIZE } from '../../src/mud/text/Console';
 
 // A <Host> block with the real attribute/element values from a Mudlet 4.x
 // profile export (test profile, 2026-06-26), trimmed to the fields mudix maps.
@@ -149,6 +150,49 @@ describe('parseMudletHost', () => {
             expect(el.hasAttribute('enableOSC8Hyperlinks')).toBe(false);
             expect(el.hasAttribute('mUndoServerWrap')).toBe(false);
             expect(el.querySelector(':scope > undoServerWrapWidth')).toBeNull();
+        });
+    });
+
+    // Mudlet's "Main display size" preference pair (XMLimport.cpp:1148-1150,
+    // XMLexport.cpp:617-618).
+    describe('consoleBufferSize', () => {
+        it('maps consoleBufferSize and useMaxConsoleBufferSize', () => {
+            const p = parseMudletHost(host(
+                `<Host><consoleBufferSize>25000</consoleBufferSize>` +
+                `<useMaxConsoleBufferSize>yes</useMaxConsoleBufferSize></Host>`,
+            ));
+            expect(p.consoleBufferSize).toBe(25000);
+            expect(p.useMaxConsoleBufferSize).toBe(true);
+        });
+
+        it('clamps the size into the range setBufferSize would apply anyway', () => {
+            const low = parseMudletHost(host(`<Host><consoleBufferSize>5</consoleBufferSize></Host>`));
+            const high = parseMudletHost(host(`<Host><consoleBufferSize>99999999</consoleBufferSize></Host>`));
+            expect(low.consoleBufferSize).toBe(MIN_CONSOLE_BUFFER_SIZE);
+            expect(high.consoleBufferSize).toBe(MAX_CONSOLE_BUFFER_SIZE);
+        });
+
+        it('leaves both unset on a profile that never wrote them', () => {
+            const p = parseMudletHost(host(HOST));
+            expect(p.consoleBufferSize).toBeUndefined();
+            expect(p.useMaxConsoleBufferSize).toBeUndefined();
+        });
+
+        it('round-trips back onto a <Host> element', () => {
+            const el = host(`<Host />`);
+            applyProfileSettingsToHost(el, { consoleBufferSize: 25000, useMaxConsoleBufferSize: false });
+            expect(el.querySelector(':scope > useMaxConsoleBufferSize')?.textContent).toBe('no');
+            expect(parseMudletHost(el)).toMatchObject({
+                consoleBufferSize: 25000,
+                useMaxConsoleBufferSize: false,
+            });
+        });
+
+        it('writes nothing when the profile never set them', () => {
+            const el = host(`<Host />`);
+            applyProfileSettingsToHost(el, { commandSeparator: ';;' });
+            expect(el.querySelector(':scope > consoleBufferSize')).toBeNull();
+            expect(el.querySelector(':scope > useMaxConsoleBufferSize')).toBeNull();
         });
     });
 });

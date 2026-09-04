@@ -78,6 +78,7 @@ export function TextPanel({ id, title, manager, labels, cmdLines, scrollBoxes, f
             isSplitView={isSplitView}
             scrollToBottom={scrollToBottom}
             className="window-text-panel"
+            sourceName={id}
             fontSize={fontSize}
             fontFamily={fontFamily}
             lineHeight={lineHeight}

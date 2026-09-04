@@ -1219,9 +1219,12 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
             // progress bar below would have something to say.
             const ok = file.name.toLowerCase().endsWith('.xml')
                 ? manager.loadMapXml(await file.text())
-                : await manager.loadMapAsync(await file.arrayBuffer());
+                : await manager.loadMapAsync(await file.arrayBuffer(), file.name);
             if (!ok) {
-                setErrorMsg('Failed to parse map file');
+                // A refused format version has a real explanation (it is also
+                // posted to the main console, as Mudlet does); "Failed to parse
+                // map file" alone would read as "your map is corrupt".
+                setErrorMsg(manager.lastMapLoadError ?? 'Failed to parse map file');
                 setStatus('error');
             }
         } catch (err) {

@@ -4,7 +4,8 @@ import { loadMap } from '../storage/mapStorage';
 import { listSessions, getSessionEntries } from '../storage/logStorage';
 import { buildSessionHtml, formatSessionFileStamp } from '../storage/logExport';
 import type { MudConnection } from '../storage/schema';
-import type { ExportLog, ProfileExportSource } from './mudletProfileExport';
+import { RETAINED_HOST_PATH, type ExportLog, type ProfileExportSource } from './mudletProfileExport';
+import { readNewestParseableXml, type VfsReader } from './mudletLink';
 
 // Gathers everything one profile owns across the three stores it's spread over
 // (its VFS, the map IndexedDB, the log IndexedDB) into the plain data that
@@ -60,6 +61,36 @@ function readProfileData(vfs: ProfileVFS): PersistedProfileData {
     }
 }
 
+/**
+ * The `<Host>` this profile's export should base on, so the ~100 Mudlet settings
+ * mudix doesn't model don't revert to Mudlet's defaults on the way out.
+ *
+ * The retained copy comes first. A profile that has one was imported from
+ * Mudlet, and any `current/*.xml` in its VFS is a save mudix itself wrote via
+ * `saveProfile()` — basing on that would just re-read our own output. A linked
+ * folder has no retained copy and its `current/*.xml` *is* the live original,
+ * kept current by write-back, so it's the right base there.
+ *
+ * Undefined for a profile born in mudix: nothing beyond the modeled settings to
+ * preserve, and the export falls back to the empty skeleton as before.
+ *
+ * Takes the same minimal reader surface as the link-mode loader, so it's
+ * testable without a mounted ZenFS.
+ */
+export function readHostBase(vfs: VfsReader): string | undefined {
+    try {
+        if (vfs.exists(RETAINED_HOST_PATH)) return vfs.readFile(RETAINED_HOST_PATH);
+    } catch (err) {
+        console.warn('[collectProfileExport] retained <Host> unreadable', err);
+    }
+    try {
+        return readNewestParseableXml(vfs)?.xml;
+    } catch (err) {
+        console.warn('[collectProfileExport] current/ unreadable', err);
+        return undefined;
+    }
+}
+
 async function collectLogs(connectionId: string): Promise<ExportLog[]> {
     const sessions = await listSessions(connectionId);
     const logs: ExportLog[] = [];
@@ -94,9 +125,11 @@ export async function collectProfileExport(
 ): Promise<ProfileExportSource> {
     const vfs = await ProfileVFS.mount(connection.id);
     let data: PersistedProfileData;
+    let hostBaseXml: string | undefined;
     const files: Record<string, Uint8Array> = {};
     try {
         data = readProfileData(vfs);
+        hostBaseXml = readHostBase(vfs);
         walk(vfs, '', 0, files);
     } finally {
         vfs.unmount();
@@ -119,5 +152,5 @@ export async function collectProfileExport(
         }
     }
 
-    return { connection, data, files, mapBytes, logs };
+    return { connection, data, files, hostBaseXml, mapBytes, logs };
 }

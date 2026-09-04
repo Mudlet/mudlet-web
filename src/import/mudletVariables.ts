@@ -23,6 +23,8 @@
 //     </VariableGroup>
 //   </VariablePackage>
 
+import { desanitizeControlChars, sanitizeControlChars } from './mudletControlChars';
+
 // Mudlet writes the Lua type integer (subset of LUA_T*) for both keyType and
 // valueType. Only these four are ever saved; functions/userdata/threads are
 // skipped by Mudlet on export and we never emit them.
@@ -80,7 +82,7 @@ function valueTypeFromInt(n: number): VarValueType {
 /** Direct child <tag> text, preserving whitespace (string values/keys can have
  *  significant leading/trailing spaces). */
 function childText(el: Element, tag: string): string {
-    return el.querySelector(`:scope > ${tag}`)?.textContent ?? '';
+    return desanitizeControlChars(el.querySelector(`:scope > ${tag}`)?.textContent ?? '');
 }
 
 /** Direct child <Variable>/<VariableGroup> elements (a group's table entries). */
@@ -171,7 +173,7 @@ function valueTypeInt(t: VarValueType): number {
 // Element text only needs &/</> escaped; quotes are legal in text content and
 // Mudlet leaves them raw there.
 function escapeText(s: string): string {
-    return s.replace(/[&<>]/g, ch => (ch === '&' ? '&amp;' : ch === '<' ? '&lt;' : '&gt;'));
+    return sanitizeControlChars(s).replace(/[&<>]/g, ch => (ch === '&' ? '&amp;' : ch === '<' ? '&lt;' : '&gt;'));
 }
 
 // Mudlet sorts table entries by name (codepoint) on export; capture from _G via

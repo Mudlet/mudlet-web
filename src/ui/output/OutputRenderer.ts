@@ -195,10 +195,18 @@ function createTimestampElement(timestamp: number): HTMLSpanElement {
     return timestampEl;
 }
 
+/**
+ * `registerRender` false builds the row without claiming the buffer's render
+ * registration. The split-view sticky area renders the *same* buffer a second
+ * time; letting that copy register would point `rerender()`/`removeFromDom()`
+ * at the sticky row, so eviction would strip the wrong copy and leave the
+ * scrollback one behind.
+ */
 function createMessageWrapper(
     message: string | AnsiAwareBuffer,
     type: string | undefined,
-    timestamp: number
+    timestamp: number,
+    registerRender: boolean = true
 ): HTMLDivElement {
     const wrapper = document.createElement('div');
     wrapper.classList.add('output-msg');
@@ -223,8 +231,12 @@ function createMessageWrapper(
         contentSpan.innerHTML = '&nbsp;';
     } else {
         contentSpan.appendChild(buffer.toDom());
-        buffer.notifyRender(contentSpan);
     }
+    // Registered unconditionally, blank line included: a line that skipped this
+    // had no render container at all, so `Console.evict()` could never drop it
+    // and the scrollback filled with blank rows the buffer no longer knew about.
+    // The wrapper goes with it so eviction takes the row, not just its content.
+    if (registerRender) buffer.notifyRender(contentSpan, wrapper);
 
     contentSpan.style.whiteSpace = 'pre-wrap';
 
@@ -368,7 +380,11 @@ export function setupOutputRenderer(
     let promptLineEl: HTMLDivElement | null = null;
     let promptStickyEl: HTMLDivElement | null = null;
 
-    function updateElementContent(el: HTMLDivElement, message: string | AnsiAwareBuffer): void {
+    function updateElementContent(
+        el: HTMLDivElement,
+        message: string | AnsiAwareBuffer,
+        registerRender: boolean = true,
+    ): void {
         const buffer = typeof message === 'string' ? new AnsiAwareBuffer(message) : message;
         elementBuffers.set(el, buffer);
         const contentSpan = el.querySelector('.output-msg-content') as HTMLElement | null;
@@ -377,8 +393,11 @@ export function setupOutputRenderer(
             contentSpan.innerHTML = '&nbsp;';
         } else {
             contentSpan.replaceChildren(buffer.toDom());
-            buffer.notifyRender(contentSpan);
         }
+        // Same as createMessageWrapper: register even the empty buffer, and
+        // register the row alongside the content slot, so the line stays
+        // evictable. `registerRender` false for the sticky copy of a line.
+        if (registerRender) buffer.notifyRender(contentSpan, el);
     }
 
     function applyTimestampVisibility() {
@@ -387,7 +406,9 @@ export function setupOutputRenderer(
     }
 
     function maybeTrim(): void {
-        // Eviction is handled by Console.evict() via removeFromDom() — no DOM trimming here.
+        // Eviction is handled by Console.evict() via removeFromDom(), which takes
+        // the whole `.output-msg` row registered in createMessageWrapper — no DOM
+        // trimming here.
     }
 
     /** Append a command echo inline to the open prompt line ("- " + "look"). */
@@ -400,7 +421,7 @@ export function setupOutputRenderer(
             const stickyBuf = sticky ? (elementBuffers.get(sticky) as AnsiAwareBuffer | undefined) : undefined;
             if (sticky && stickyBuf) {
                 stickyBuf.appendBuffer(echoBuf.clone());
-                updateElementContent(sticky, stickyBuf);
+                updateElementContent(sticky, stickyBuf, false);
             }
             cursorEl = target;
             deletedPrev = null;
@@ -451,7 +472,7 @@ export function setupOutputRenderer(
         if (type === 'script-partial') {
             if (partialLineEl) {
                 updateElementContent(partialLineEl, message);
-                if (partialStickyEl) updateElementContent(partialStickyEl, message);
+                if (partialStickyEl) updateElementContent(partialStickyEl, message, false);
                 if (!isSplitView()) {
                     requestAnimationFrame(scrollToTail);
                 }
@@ -463,7 +484,7 @@ export function setupOutputRenderer(
                 deletedPrev = null;
                 maybeTrim();
                 if (isSplitView()) {
-                    const stickyWrapper = createMessageWrapper(message, 'script', timestampValue);
+                    const stickyWrapper = createMessageWrapper(message, 'script', timestampValue, false);
                     stickyArea.appendChild(stickyWrapper);
                     partialStickyEl = stickyWrapper;
                     while (stickyArea.childElementCount > stickyLines) {
@@ -485,7 +506,7 @@ export function setupOutputRenderer(
         // 'echo' (trigger mode) skips this — it always creates a fresh element.
         if (type === 'script' && partialLineEl) {
             updateElementContent(partialLineEl, message);
-            if (partialStickyEl) updateElementContent(partialStickyEl, message);
+            if (partialStickyEl) updateElementContent(partialStickyEl, message, false);
             cursorEl = partialLineEl;
             deletedPrev = null;
             partialLineEl = null;
@@ -520,7 +541,7 @@ export function setupOutputRenderer(
         maybeTrim();
 
         if (isSplitView()) {
-            const stickyWrapper = createMessageWrapper(message, effectiveType, timestampValue);
+            const stickyWrapper = createMessageWrapper(message, effectiveType, timestampValue, false);
             stickyArea.appendChild(stickyWrapper);
             if (isPrompt && type === 'mud') {
                 promptStickyEl = stickyWrapper;
