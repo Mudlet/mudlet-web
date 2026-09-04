@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseMudletXml } from '../../src/import/mudletXmlImport';
+import { serializeMudletXml } from '../../src/import/mudletXmlExport';
 
 // Mudlet's TScript model lets a script carry both its own body AND child
 // scripts, and its XML export nests the children directly inside the parent
@@ -92,5 +93,82 @@ describe('parseMudletXml — keys with no binding set', () => {
         expect(keys.find(k => k.name === 'bound')!.key).toBe('KeyN');
         expect(warnings).toHaveLength(1);
         expect(warnings[0]).toContain('"weird"');
+    });
+});
+
+// Desktop's readers descend into nested children unconditionally — Timer
+// (XMLimport.cpp:1517), Alias (:1587), Action (:1685), Key (:1816). Web guarded
+// the recursion on isFolder for those four, so a child of a non-folder parent was
+// dropped on import and then erased from the user's profile on the next link-mode
+// write-back. Scripts and triggers already recursed unconditionally.
+describe('parseMudletXml — non-folder parents with children', () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<MudletPackage version="1.001">
+  <AliasPackage>
+    <Alias isActive="yes" isFolder="no">
+      <name>parentAlias</name><script></script><command></command><regex>^pa$</regex>
+      <Alias isActive="yes" isFolder="no">
+        <name>childAlias</name><script></script><command></command><regex>^ca$</regex>
+      </Alias>
+    </Alias>
+  </AliasPackage>
+  <TimerPackage>
+    <Timer isActive="yes" isFolder="no">
+      <name>parentTimer</name><script></script><command></command><time>00:00:01.000</time>
+      <Timer isActive="yes" isFolder="no">
+        <name>childTimer</name><script></script><command></command><time>00:00:02.000</time>
+      </Timer>
+    </Timer>
+  </TimerPackage>
+  <KeyPackage>
+    <Key isActive="yes" isFolder="no">
+      <name>parentKey</name><script></script><command></command><keyCode>78</keyCode><keyModifier>0</keyModifier>
+      <Key isActive="yes" isFolder="no">
+        <name>childKey</name><script></script><command></command><keyCode>79</keyCode><keyModifier>0</keyModifier>
+      </Key>
+    </Key>
+  </KeyPackage>
+  <ActionPackage>
+    <Action isActive="yes" isFolder="no">
+      <name>parentButton</name><script></script><location>0</location><orientation>0</orientation>
+      <Action isActive="yes" isFolder="no">
+        <name>childButton</name><script></script><location>0</location><orientation>0</orientation>
+      </Action>
+    </Action>
+  </ActionPackage>
+</MudletPackage>`;
+
+    it('imports children of a non-folder parent for every node type', () => {
+        const r = parseMudletXml(xml);
+        expect(r.aliases.map(a => a.name)).toEqual(['parentAlias', 'childAlias']);
+        expect(r.timers.map(t => t.name)).toEqual(['parentTimer', 'childTimer']);
+        expect(r.keys.map(k => k.name)).toEqual(['parentKey', 'childKey']);
+        expect(r.buttons.map(b => b.name)).toEqual(['parentButton', 'childButton']);
+    });
+
+    it('parents each child to its own non-folder parent', () => {
+        const r = parseMudletXml(xml);
+        for (const [nodes, parent, child] of [
+            [r.aliases, 'parentAlias', 'childAlias'],
+            [r.timers, 'parentTimer', 'childTimer'],
+            [r.keys, 'parentKey', 'childKey'],
+            [r.buttons, 'parentButton', 'childButton'],
+        ] as const) {
+            const p = nodes.find(n => n.name === parent)!;
+            const c = nodes.find(n => n.name === child)!;
+            expect(p.parentId).toBeNull();
+            expect(p.isGroup).toBe(false);
+            expect(c.parentId).toBe(p.id);
+        }
+    });
+
+    it('survives an export/import round trip with the hierarchy intact', () => {
+        const r = parseMudletXml(xml);
+        const back = parseMudletXml(serializeMudletXml(r));
+        expect(back.aliases.map(a => a.name)).toEqual(['parentAlias', 'childAlias']);
+        expect(back.aliases[1].parentId).toBe(back.aliases[0].id);
+        expect(back.keys.map(k => k.name)).toEqual(['parentKey', 'childKey']);
+        expect(back.buttons.map(b => b.name)).toEqual(['parentButton', 'childButton']);
+        expect(back.timers.map(t => t.name)).toEqual(['parentTimer', 'childTimer']);
     });
 });
