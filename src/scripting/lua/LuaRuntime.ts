@@ -2084,6 +2084,12 @@ end`,
 -- scripts have to see it unsupported here or they'll happily call into them.
 if mudlet and mudlet.supports then mudlet.supports.mmcp = false end
 
+-- Speech to text needs a native recogniser library and a model directory on
+-- disk (Bridge.lua says why neither survives the move to a browser). stt.* IS
+-- bound, answering as the engine-absent state Mudlet itself reports before
+-- anything is installed, so the same flag has to say so.
+if mudlet and mudlet.supports then mudlet.supports.stt = false end
+
 -- Other.lua's dispatchEventToFunctions guards every handler with pcall, and Lua
 -- 5.1 cannot yield across pcall's C frame: an event handler that suspends on
 -- invokeFileDialog dies there with "attempt to yield across metamethod/C-call

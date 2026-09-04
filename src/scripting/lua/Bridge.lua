@@ -5217,6 +5217,172 @@ end
 -- Mudlet seeds it from the player's profile.
 __mudix_mmcp_chat_name = ""
 
+-- ── Speech to text (stt.*) ─────────────────────────────────────────────────
+-- Mudlet's stt.* drives an offline recogniser: it dlopen()s a native Vosk
+-- library and loads a language model from a directory on disk. Half the API is
+-- about managing exactly that — getLibraryPath, getPlatformKey (the key an
+-- installer downloads a build by), reloadLibrary, unloadLibrary — and none of
+-- it has a browser counterpart. Web speech recognition is a different shape
+-- entirely (an event stream off navigator, cloud-backed in Chrome), so this is
+-- not a port waiting to be written under these names.
+--
+-- What IS implemented is the state the API spends most of its life in even on
+-- desktop, and permanently here: engine absent. STT_spec is written for exactly
+-- that — it branches on stt.available() throughout so it passes on a machine
+-- with no engine installed — so binding the table honestly is what makes those
+-- specs pass, rather than papering over them. The promises being kept are the
+-- ones the spec names: be inert until called, and refuse clearly rather than
+-- crash or lie.
+--
+-- Two kinds of "no" live here and must not be confused, because the spec pins
+-- the difference: a script's own mistake (a negative timeout, a sensitivity
+-- that does not exist) is returned to the caller and nowhere else, while the
+-- engine being missing is also announced on sysSTTError — a package driving the
+-- bridge from events alone would otherwise see nothing happen at all and be
+-- unable to tell a missing engine from a quiet microphone.
+do
+    -- Names the LIBRARY as the missing piece, deliberately and as the spec
+    -- requires: with no engine loaded there is no backend to choose a model
+    -- with, so blaming the models would send the reader looking in the wrong
+    -- place however many they already have installed.
+    local NO_ENGINE = "the speech recognition library is not available in this client"
+
+    -- Announced as well as returned. Only for engine refusals; see above.
+    local function refuse(message)
+        raiseEvent("sysSTTError", message)
+        return nil, message
+    end
+
+    -- Mudlet's getVerifiedString ends in lua_error(), so a wrong TYPE raises
+    -- rather than returning a refusal — and a number is a string to Lua 5.1, so
+    -- it reaches the value checks below instead of being caught here.
+    local function requireOptionalString(name, value, argn)
+        if value == nil then return nil end
+        local s = __mudix_str(value)
+        if s == nil then
+            error("stt." .. name .. ": bad argument #" .. argn
+                .. " type (path as string expected, got " .. type(value) .. "!)", 3)
+        end
+        return s
+    end
+
+    stt = {
+        -- ── state ──────────────────────────────────────────────────────────
+        available   = function() return false end,
+        initialized = function() return false end,
+        listening   = function() return false end,
+
+        getInfo = function()
+            return {
+                -- The engine this build actually has, which is none. Mudlet
+                -- answers "Vosk"; claiming that here would be a lie about what
+                -- is installed, and is the one STT_spec assertion recorded as a
+                -- deliberate divergence (see e2e/knownDivergences.ts).
+                backend        = "none",
+                available      = false,
+                initialized    = false,
+                listening      = false,
+                state          = "uninitialized",
+                -- Empty, not a guess: modelPath is what a package reads to
+                -- decide whether setup already happened, so a path standing in
+                -- it that never loaded skips the init that was needed.
+                modelPath      = "",
+                searchPaths    = { stt.getModelPath() },
+                capabilities   = {
+                    biasing  = false,
+                    grammar  = false,
+                    words    = false,
+                    onDevice = false,
+                },
+                silenceTimeout = 0,
+                audioLevel     = 0,
+                sensitivity    = "default",
+            }
+        end,
+
+        -- ── installation paths ─────────────────────────────────────────────
+        -- Inside the profile, where every other downloadable thing lives. These
+        -- answer where a model WOULD belong; nothing here creates them.
+        getModelPath   = function() return getMudletHomeDir() .. "/stt/models" end,
+        getLibraryPath = function() return getMudletHomeDir() .. "/stt" end,
+        listModels     = function() return {} end,
+
+        -- The key an installer would fetch a build by. A static fact about the
+        -- platform rather than about this client, so it is answered properly
+        -- even though nothing here could use the download: a wrong key is worse
+        -- than none. Mudlet ships no ARM64 Windows build, which is the only
+        -- platform that legitimately has no key.
+        getPlatformKey = function()
+            local os, _, third, fourth = getOS()
+            -- getOS() inserts an extra osType before the processor on Linux, so
+            -- the processor is the last value either way.
+            local processor = fourth or third
+            local arm = processor == "arm64" or processor == "arm"
+            if os == "mac" then return "macos" end
+            if os == "linux" then return arm and "linux-aarch64" or "linux-x86_64" end
+            if os == "windows" then
+                if arm then return nil end
+                return processor == "x86 (32-bit)" and "windows-x86" or "windows-x64"
+            end
+            return nil
+        end,
+
+        -- ── lifecycle ──────────────────────────────────────────────────────
+        init = function(modelPath)
+            local path = requireOptionalString("init", modelPath, 1)
+            -- QDir("") is Qt's spelling for the working directory, so Mudlet
+            -- refuses an empty path rather than loading whatever it was started
+            -- from. It is the caller's mistake, so it is not announced.
+            if path == "" then
+                return nil, "stt.init: the model path is empty"
+            end
+            return refuse(NO_ENGINE)
+        end,
+
+        start  = function() return refuse(NO_ENGINE) end,
+        toggle = function() return refuse(NO_ENGINE) end,
+
+        -- Stopping nothing and closing nothing are not errors — the state is
+        -- never "error" here, so these always take the clean-stop branch.
+        stop  = function() return true end,
+        close = function() return true end,
+
+        reloadLibrary = function() return refuse(NO_ENGINE) end,
+        -- Unloading what was never loaded leaves the documented state.
+        unloadLibrary = function() return true end,
+
+        -- ── tuning ─────────────────────────────────────────────────────────
+        setSilenceTimeout = function(seconds)
+            local n = __mudix_num(seconds)
+            if n == nil then
+                error("stt.setSilenceTimeout: bad argument #1 type (timeout as number expected, got "
+                    .. type(seconds) .. "!)", 2)
+            end
+            if n < 0 then
+                return nil, "stt.setSilenceTimeout: " .. tostring(n) .. " is not a duration"
+            end
+            return refuse(NO_ENGINE)
+        end,
+
+        setSensitivity = function(mode)
+            local name = __mudix_str(mode)
+            if name ~= "short" and name ~= "default" and name ~= "long" then
+                return nil, "stt.setSensitivity: unknown sensitivity " .. tostring(mode)
+                    .. ", expected one of short, default, long"
+            end
+            return refuse(NO_ENGINE)
+        end,
+
+        setVocabulary = function(words)
+            if type(words) ~= "table" then
+                error("stt.setVocabulary: bad argument #1 type (words as table expected, got "
+                    .. type(words) .. "!)", 2)
+            end
+            return refuse(NO_ENGINE)
+        end,
+    }
+end
+
 -- ── Unknown-window contracts ───────────────────────────────────────────────
 -- Mudlet answers a console-targeting call made against a window that doesn't
 -- exist with (nil, 'window "X" not found') instead of silently no-opping, so a
