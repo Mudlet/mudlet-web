@@ -20,7 +20,7 @@ import { applyMsspVariable, emptyMsspTlsFacts, shouldOfferTlsUpgrade } from './m
 import {
     CHAR_LOGIN_SILENT_DROP_MESSAGE, charLoginFailureMessage, decideCharLoginRequest,
 } from './mud/protocol/charLoginFlow';
-import { describeCertCode } from './mud/protocol/tlsCodes';
+import { describeCertCode, describeTlsFailure } from './mud/protocol/tlsCodes';
 import type { TlsStatus } from './mud/events';
 import { QuickOpenPalette } from './ui/QuickOpenPalette';
 import { SessionLogger } from './logging/SessionLogger';
@@ -698,8 +698,13 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         });
         const t3 = session.events.on('tls.error', (info) => {
             setTlsStatus({ kind: 'error', info });
-            const reasons = (info.codes.length ? info.codes : [info.code]).map(describeCertCode).join('; ');
-            postTlsMessage(`Secure connection refused — ${reasons}.`, true);
+            // Not always a certificate: TLS aimed at a plaintext port fails the
+            // handshake with no certificate in sight, and saying otherwise sent
+            // the user looking for a setting that doesn't exist. See
+            // describeTlsFailure, and cTelnet's equivalent at ctelnet.cpp:865.
+            const { summary, remedy } = describeTlsFailure(info);
+            postTlsMessage(summary, true);
+            if (remedy) postTlsMessage(remedy, true);
         });
         const t4 = session.events.on('tls.timeout', ({ host, port }) => {
             setTlsStatus({ kind: 'timeout', host, port });
