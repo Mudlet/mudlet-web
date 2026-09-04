@@ -173,6 +173,9 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     const undoServerWrapWidth = useAppStore(s => selectProfileField(s, connection.id, 'undoServerWrapWidth'));
     const consoleBufferSize = useAppStore(s => selectProfileField(s, connection.id, 'consoleBufferSize'));
     const useMaxConsoleBufferSize = useAppStore(s => selectProfileField(s, connection.id, 'useMaxConsoleBufferSize'));
+    /** The preference pair last pushed onto the session, so a re-render does not
+     *  re-push it over a size a script set. Undefined until the first apply. */
+    const appliedBufferSize = useRef<[number | undefined, boolean | undefined]>([undefined, undefined]);
     const autoClearInput = useAppStore(s => selectProfileField(s, connection.id, 'autoClearInput')) === true;
     const commandEchoForeground = useAppStore(s => selectProfileField(s, connection.id, 'commandEchoForeground'));
     const commandEchoBackground = useAppStore(s => selectProfileField(s, connection.id, 'commandEchoBackground'));
@@ -272,10 +275,21 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // — mudlet.cpp:2264-2271). Applied during render like the wrap settings
     // above, so the main console is sized before any output reaches it, and
     // re-applied live when the preference changes.
-    session.setConsoleBufferSize(
-        consoleBufferSize ?? DEFAULT_CONSOLE_BUFFER_SIZE,
-        useMaxConsoleBufferSize === true,
-    );
+    //
+    // On *change* only, unlike its neighbours here, because this setting has a
+    // second writer: Lua's `setConsoleBufferSize("main", …)`. Pushing the
+    // preference on every render meant a script's own size lasted until the next
+    // React render and was then silently reverted — the preference is a default,
+    // not a policy the session re-asserts. The settings above have no scripting
+    // counterpart, so re-applying those is free.
+    if (appliedBufferSize.current[0] !== consoleBufferSize
+        || appliedBufferSize.current[1] !== useMaxConsoleBufferSize) {
+        appliedBufferSize.current = [consoleBufferSize, useMaxConsoleBufferSize];
+        session.setConsoleBufferSize(
+            consoleBufferSize ?? DEFAULT_CONSOLE_BUFFER_SIZE,
+            useMaxConsoleBufferSize === true,
+        );
+    }
     // Mudlet's "Fix unnecessary linebreaks on GA servers" (config bag, persisted
     // by setConfig). Applied during render — like the protocol toggles above —
     // so it's on the session's options before autoConnect dials, and re-applied
