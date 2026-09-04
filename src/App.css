@@ -4422,6 +4422,18 @@ body.is-sorting {
     margin: 4px 0;
 }
 
+/* A button, because it opens the manual rather than navigating — dressed as the
+   link beside it so the two offers under an empty search read alike. */
+.settings-search__empty-link {
+    font: inherit;
+    color: var(--accent, var(--text));
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    text-decoration: underline;
+}
+
 .settings-titlerow {
     display: flex;
     align-items: center;

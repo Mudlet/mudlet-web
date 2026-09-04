@@ -11,12 +11,16 @@ interface HelpModalProps {
     connectionId?: string;
     /** Topic to open on — defaults to the migration guide. */
     initialTopic?: string;
+    /** Extra class on the dialog. Used by a caller that opens the manual over
+     *  its own dialog rather than instead of it, to lift this one above the
+     *  `.modal` stacking level it would otherwise sit under. */
+    className?: string;
     onClose: () => void;
 }
 
 const MUDLET_WIKI = 'https://wiki.mudlet.org/w/Manual:Contents';
 
-export function HelpModal({ connectionId, initialTopic, onClose }: HelpModalProps) {
+export function HelpModal({ connectionId, initialTopic, className, onClose }: HelpModalProps) {
     const savedBounds = useAppStore(s => (connectionId ? s.connectionModalBounds[connectionId]?.['help'] : undefined));
     const saveModalBounds = useAppStore(s => s.saveModalBounds);
 
@@ -70,7 +74,7 @@ export function HelpModal({ connectionId, initialTopic, onClose }: HelpModalProp
             defaultH={620}
             minW={520}
             minH={360}
-            className="help-modal"
+            className={className ? `help-modal ${className}` : 'help-modal'}
             bodyClassName="help-modal__body"
         >
             <aside className="help-sidebar">

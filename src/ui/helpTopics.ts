@@ -2,6 +2,7 @@ import migrating from '../../docs/help/migrating.md?raw';
 import connecting from '../../docs/help/connecting.md?raw';
 import storage from '../../docs/help/storage.md?raw';
 import browsers from '../../docs/help/browsers.md?raw';
+import settings from '../../docs/help/settings.md?raw';
 
 // The user-facing manual. Deliberately small: Mudlet's own scripting and gameplay
 // documentation lives at wiki.mudlet.org and duplicating it here would only rot.
@@ -53,6 +54,13 @@ export const HELP_TOPICS: HelpTopic[] = [
         blurb: 'What works where, and what differs from desktop Mudlet',
         file: 'browsers.md',
         markdown: browsers,
+    },
+    {
+        id: 'settings',
+        title: 'Settings and desktop Mudlet',
+        blurb: 'Which preferences moved, which can’t exist here, and which are pending',
+        file: 'settings.md',
+        markdown: settings,
     },
 ];
 

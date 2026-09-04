@@ -20,6 +20,7 @@ import { SettingsShell, SubpageRow, type CardDefinition, type CategoryKey, type 
 import { VaultManageButton } from './VaultManageButton';
 import { getVault } from '../vault/vaultAccess';
 import { TlsCertificateBox } from './TlsCertificateBox';
+import { HelpModal } from './HelpModal';
 import type { TlsStatus } from '../mud/events';
 import { effectiveProxyUrl, proxyCanInspectCertificates } from '../storage';
 
@@ -79,6 +80,17 @@ const MUDLET_WIKI = 'https://wiki.mudlet.org/w';
 const supportLink = () => (isBrandedMode()
     ? undefined
     : { label: 'Mudlet support', url: 'https://wiki.mudlet.org' });
+
+// Mudlet Web's Settings is a subset of desktop Mudlet's preferences — partly
+// because a browser can't do some of it, partly because some of it isn't built
+// yet — and until this row existed nothing in the app said so, leaving a player
+// following the desktop manual to hunt for settings that are not there
+// (issue #64). Suppressed in a branded build for the same reason `supportLink`
+// is: to its own players that client isn't a Mudlet subset, it's the client.
+// Short enough for the sidebar to render without ellipsis, and paired with the
+// "Mudlet support" row below it.
+const DIFFERENCES_LABEL = 'Mudlet differences';
+const DIFFERENCES_TOPIC = 'settings';
 
 const DEFAULT_COMMAND_SEPARATOR = ';;';
 
@@ -337,6 +349,10 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     const [category, setCategory] = useState<CategoryKey>('general');
     const [subpage, setSubpage] = useState<string | null>(null);
     const [fontPickerOpen, setFontPickerOpen] = useState(false);
+    // The manual, opened over the dialog rather than in place of it — Settings
+    // is where the question is asked, so it should still be there when the
+    // answer is read. Rendered as a sibling below, like the font picker.
+    const [differencesOpen, setDifferencesOpen] = useState(false);
 
     const handleFontChange = (next: OutputFontSource | undefined) => {
         patchProfile({ outputFont: next });
@@ -2397,6 +2413,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                     cards={cards}
                     subpages={SUBPAGES}
                     support={supportLink()}
+                    differences={isBrandedMode() ? undefined : { label: DIFFERENCES_LABEL, onOpen: () => setDifferencesOpen(true) }}
                     category={category}
                     onCategory={setCategory}
                     subpage={subpage}
@@ -2416,6 +2433,14 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                         </div>
                     </div>
                 </>
+            )}
+            {differencesOpen && (
+                <HelpModal
+                    connectionId={connectionId ?? undefined}
+                    initialTopic={DIFFERENCES_TOPIC}
+                    className="help-modal--over-settings"
+                    onClose={() => setDifferencesOpen(false)}
+                />
             )}
         </>
     );
