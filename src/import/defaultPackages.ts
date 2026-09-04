@@ -14,8 +14,11 @@ import { installPackageFromBytes } from './packageInstaller';
 // mudlet-mapper.xml alone is ~490 kB. scripts/copy-lib-assets.mjs puts them there.
 import runLuaCodeUrl from './defaults/run-lua-code/run-lua-code.mpackage?url';
 import genericMapperUrl from './defaults/generic_mapper/generic_mapper.mpackage?url';
-// Mudlet's starter interface.
-import baseUiUrl from './defaults/mudlet-base-ui/mudlet-base-ui.mpackage?url';
+// Mudlet's starter interface, from the loose XML rather than the `.mpackage`
+// beside it: it carries a mudix patch (scripts/mudlet-lua-patches/packages/) and
+// a patch can't reach inside a zip the sync round-trips byte-for-byte. Same
+// trade gui-drop made while it needed one — see BASE_UI below.
+import baseUiUrl from './defaults/mudlet-base-ui/mudlet-base-ui.xml?url';
 // The IRE mapper: the one preinstalled package Mudlet doesn't keep in
 // `src/packages/` — upstream publishes it as a bare `src/mudlet-mapper.xml`, so
 // the sync pulls it in from the repo root and drops it here loose. Plain XML,
@@ -61,10 +64,17 @@ const GENERIC_MAPPER: DefaultPackage = {
  *  gauges, built only from what the game actually sends (GMCP/MSDP/prompt
  *  scraping) — nothing appears until there's something to show. `baseui hide`
  *  removes it and is remembered, and it stands aside on its own when a game
- *  pushes a GUI via `Client.GUI`. `version` is declared for the same reason the
- *  mapper's is: so a bumped archive reaches profiles that have the old one. */
+ *  pushes a GUI via `Client.GUI`.
+ *
+ *  Installed from the loose XML: its script asserted `enableMSDP` on every
+ *  profile open, which discarded the player's own choice in the preferences at
+ *  every reload, and the fix is a patch the sync can only apply to the loose
+ *  file. The XML carries no config.lua, so the archive's icon and description
+ *  don't come with it — and no version either, which is what `version` below
+ *  supplies. The `+mudix` suffix says which build this is and moves profiles
+ *  holding the unpatched `1.6.1` archive onto the fixed one. */
 const BASE_UI: DefaultPackage = {
-    name: 'mudlet-base-ui', filename: 'mudlet-base-ui.mpackage', url: baseUiUrl, version: '1.6.1',
+    name: 'mudlet-base-ui', filename: 'mudlet-base-ui.xml', url: baseUiUrl, version: '1.6.1+mudix.1',
 };
 
 /** Drop an image file onto a console and it becomes a Geyser label inside an
@@ -274,6 +284,11 @@ export async function ensureDefaultPackages(connectionId: string, vfs: ProfileVF
             if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${def.url}`);
             const buf = new Uint8Array(await res.arrayBuffer());
             const { manifest, data } = installPackageFromBytes(def.filename, buf, vfs);
+            // A loose XML has no config.lua to carry a version, so the declared
+            // one stands in — without it the check above can never tell an old
+            // install of such a package from a current one, and a fix to it
+            // would only ever reach profiles that never had it.
+            if (def.version && !manifest.version) manifest.version = def.version;
             useAppStore.getState().installPackage(connectionId, manifest, data);
             installed.push(manifest.name);
         } catch (err) {

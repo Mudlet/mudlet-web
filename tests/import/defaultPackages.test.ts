@@ -52,7 +52,9 @@ const ARCHIVE_PATHS: Record<string, string> = {
     'run-lua-code.mpackage': 'src/import/defaults/run-lua-code/run-lua-code.mpackage',
     'generic_mapper.mpackage': 'src/import/defaults/generic_mapper/generic_mapper.mpackage',
     'mudlet-mapper.xml': 'src/import/defaults/mudlet-mapper.xml',
-    'mudlet-base-ui.mpackage': 'src/import/defaults/mudlet-base-ui/mudlet-base-ui.mpackage',
+    // The loose XML, not the archive beside it: the starter UI carries a mudix
+    // patch and a patch can't reach inside a zip. See SYNCED.md.
+    'mudlet-base-ui.xml': 'src/import/defaults/mudlet-base-ui/mudlet-base-ui.xml',
     'gui-drop.mpackage': 'src/import/defaults/gui-drop/gui-drop.mpackage',
     'mpkg.mpackage': 'src/import/defaults/mpkg/mpkg.mpackage',
 };
@@ -261,7 +263,14 @@ describe('default packages', () => {
             });
 
             it('declares the archive version, or none at all', () => {
-                if (def.version !== undefined) {
+                if (def.version === undefined) return;
+                if (def.filename.endsWith('.xml')) {
+                    // A loose XML brings no config.lua, so it declares no version
+                    // of its own — ensureDefaultPackages stamps the one above onto
+                    // the manifest at install instead, which is the only way the
+                    // "already current?" check can work for such a package.
+                    expect(installed.manifest.version).toBeUndefined();
+                } else {
                     expect(installed.manifest.version).toBe(def.version);
                 }
             });

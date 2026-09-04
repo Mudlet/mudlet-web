@@ -59,7 +59,11 @@ upstream already defines them.
 
 A package is the one place where "override after loading" isn't available — its
 scripts are installed into the profile, not loaded from this tree — so those do
-take patches, under `scripts/mudlet-lua-patches/packages/`. **Currently none.**
+take patches, under `scripts/mudlet-lua-patches/packages/`. Currently one:
+
+| Patch | Why |
+|-------|-----|
+| `mudlet-base-ui/mudlet-base-ui.xml` | Its load script ran `setConfig("enableMSDP", true)` unconditionally, and a package script runs at *every* profile open — so a player who turned MSDP off in the preferences had that choice quietly rewritten at the next reload, contradicting both `PROTOCOL_DEFAULTS` and the setting's own help text. The patch seeds the preference once, behind a flag in the same settings file the package's other one-time state lives in. Desktop Mudlet doesn't hit this: `setupPreInstallPackages` doesn't preinstall the starter UI, so nothing rewrites the checkbox there. |
 
 The last one was `packages/gui-drop/gui-drop.xml` (a dropped image whose filename
 starts with a digit generated a script that couldn't compile, losing the drop);
@@ -70,6 +74,16 @@ shape: a patch can't reach inside an `.mpackage` (the sync must round-trip the
 zip byte-for-byte), so a package needing one is installed from its loose XML
 until upstream takes the fix. `tests/import/guiDropNaming.test.ts` still guards
 the behaviour, reading the naming block out of the vendored package itself.
+
+`mudlet-base-ui` is in that state now, so `defaultPackages.ts` points at its
+loose `mudlet-base-ui.xml`. The XML brings no `config.lua`, so the install has
+no icon, title or description — and no version, which is why `BASE_UI` declares
+one (`1.6.1+mudix.1`) for `ensureDefaultPackages` to stamp on: without it the
+version check can't tell an old install of a loose-XML package from a current
+one, and the patched build would never reach a profile that already had the
+archive. `tests/import/baseUiMsdpSeed.test.ts` guards the change over whatever
+asset `defaultPackages.ts` actually imports, so a re-sync that drops the patch —
+or a switch back to the unpatched archive — fails there.
 
 ## mudix-only files (no upstream counterpart)
 

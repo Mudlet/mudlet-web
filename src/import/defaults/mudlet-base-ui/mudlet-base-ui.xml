@@ -2605,8 +2605,19 @@ end
 BaseUI.armChatTriggers()
 BaseUI.createVitalsTriggers()
 -- negotiate MSDP up front: it costs nothing on servers without it and gives
--- gauges to games that have it but lack GMCP
-setConfig("enableMSDP", true)
+-- gauges to games that have it but lack GMCP.
+--
+-- Seeded once, not asserted on every load. This whole script runs at every
+-- profile open, so an unconditional setConfig here rewrites the preference
+-- behind the player's back: turning MSDP off in the preferences held for the
+-- session and came back on at the next open, with nothing to say the choice
+-- had been discarded. The flag rides in the same settings file the rest of
+-- the one-time state (announced, hidden, standingAside) uses.
+if not BaseUI.settings.msdpSeeded then
+  BaseUI.settings.msdpSeeded = true
+  BaseUI.saveSettings()
+  setConfig("enableMSDP", true)
+end
 
 onEvent("gmcp.Char.Vitals", "BaseUI.updateVitals")
 onEvent("gmcp.char.vitals", "BaseUI.updateVitals")

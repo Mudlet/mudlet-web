@@ -6,3 +6,9 @@
 # here too, or git undoes that on the way out of the repo.
 *.mpackage binary
 *.dat binary
+
+# A recorded patch is written LF by scripts/sync-mudlet-lua.mjs and applied with
+# core.autocrlf=false against the LF tree that script has just written. A CRLF
+# checkout would hand `git apply` CRLF context for LF files and never match —
+# and a patch that stops applying fails the sync hard rather than being skipped.
+scripts/mudlet-lua-patches/**/*.patch text eol=lf
