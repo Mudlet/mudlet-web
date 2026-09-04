@@ -52,11 +52,15 @@ function looksLikeZip(buf: Uint8Array): boolean {
     return ZIP_MAGIC.every((b, i) => buf[i] === b);
 }
 
+/** Replace path separators and other chars unsafe in a VFS directory name. */
+function sanitizePackageName(name: string): string {
+    return name.replace(/[\\/:*?"<>|]/g, '_').trim();
+}
+
 /** Strip extension, sanitize for use as a directory name. */
 function packageNameFromFile(filename: string): string {
     const base = filename.replace(/\.(mpackage|zip|xml)$/i, '');
-    // Replace path separators and other unsafe chars with underscores.
-    return base.replace(/[\\/:*?"<>|]/g, '_').trim() || 'package';
+    return sanitizePackageName(base) || 'package';
 }
 
 function isXmlEntry(path: string): boolean {
@@ -93,15 +97,23 @@ export function preparePackageInstall(
     opts: InstallOptions = {},
 ): PreparedInstall {
     const kind: PackageKind = opts.kind ?? 'package';
-    const packageName = packageNameFromFile(filename);
-    const pkgDir = `${vfs.profilePath}/${packageName}`;
+    // Provisional: an archive's config.lua may rename the package out from under
+    // us, exactly as it does in Mudlet — see the rename below.
+    let packageName = packageNameFromFile(filename);
+    let pkgDir = `${vfs.profilePath}/${packageName}`;
+    let sourcePath = opts.sourcePath;
 
+    // Where a staging caller put the package's contents: always the filename's
+    // directory, because that is the only name it could know before config.lua
+    // is read. A config.lua rename retargets `pkgDir` below, and the commit
+    // moves the staged directory to match.
+    const stagedDir = pkgDir;
     // Whether the commit may wipe a previous install of the same name. It may
-    // not when the source file is staged inside pkgDir — the caller
+    // not when the source file is staged inside that directory — the caller
     // pre-positioned the package's contents there, and the wipe would destroy
     // what we're about to install.
-    const sourceInsidePkgDir = !!opts.sourcePath
-        && (opts.sourcePath === pkgDir || opts.sourcePath.startsWith(`${pkgDir}/`));
+    const sourceInsidePkgDir = !!sourcePath
+        && (sourcePath === stagedDir || sourcePath.startsWith(`${stagedDir}/`));
 
     let xmlContent: string;
     let xmlRelPath: string | undefined;
@@ -128,6 +140,33 @@ export function preparePackageInstall(
         xmlRelPath = xmlEntry;
 
         manifestExtras = readConfigLua(entries);
+
+        // A config.lua may declare a name of its own ("mpackage"), and that name —
+        // not the archive's filename — is what the package is installed as. This is
+        // how something published as `mypkg-2.1.3.mpackage` presents itself as
+        // `mypkg`. Mudlet unpacks under the filename, reads config.lua, then
+        // physically renames the folder before importing the XML, so the folder,
+        // the node tags and the installed-package list all agree
+        // (src/Host.cpp:2130-2150 `Host::installPackage`).
+        //
+        // We used to only put the declared name in the manifest and leave the
+        // directory and every node's packageName tag on the filename. Uninstall
+        // looks both of those up by manifest.name, so it stripped nothing at all
+        // and the package kept running; a reinstall from a differently named file
+        // left the first copy live alongside the second.
+        //
+        // Nothing is on disk yet at this point, so unlike desktop there is no
+        // folder to rename in the ordinary case — the commit simply writes under
+        // the declared name. Only a *staged* install has files already sitting
+        // under the filename's directory, and the commit moves those.
+        const declared = sanitizePackageName(manifestExtras.name ?? '');
+        if (declared && declared !== packageName) {
+            packageName = declared;
+            pkgDir = `${vfs.profilePath}/${declared}`;
+            // A staged source file moves with its directory; the manifest must
+            // record where it will actually be once the commit has run.
+            if (sourceInsidePkgDir && sourcePath) sourcePath = pkgDir + sourcePath.slice(stagedDir.length);
+        }
     } else {
         xmlContent = strFromU8(buf);
         // Modules need an on-disk XML to reload from on profile open; plain XML
@@ -140,11 +179,15 @@ export function preparePackageInstall(
     const data = parseMudletXml(xmlContent, { packageName });
 
     const manifest: PackageManifest = {
-        name: packageName,
         ...manifestExtras,
+        // Last word, deliberately: `packageName` already *is* the config.lua name
+        // when there was one, sanitized for use as a directory, and it is what the
+        // directory and every node tag now carry. Letting the raw declared value
+        // through here is what let the manifest disagree with both.
+        name: packageName,
         ...(xmlRelPath ? { xmlPath: xmlRelPath } : {}),
         sourceFile: filename,
-        ...(opts.sourcePath ? { sourcePath: opts.sourcePath } : {}),
+        ...(sourcePath ? { sourcePath } : {}),
         installedAt: new Date().toISOString(),
         ...(kind === 'module' ? { kind: 'module' as const, sync: false } : {}),
     };
@@ -153,6 +196,14 @@ export function preparePackageInstall(
         // Wipe any previous install of the same package (re-install is a clean
         // slate). Reached only once the install is certain to go through.
         if (!sourceInsidePkgDir && vfs.exists(pkgDir)) vfs.rmdir(pkgDir);
+        else if (sourceInsidePkgDir && pkgDir !== stagedDir) {
+            // A staged install that config.lua renamed: the contents are under
+            // the filename's directory and belong under the declared one. The
+            // destination is cleared first, or the rename would fail (or merge)
+            // against a previous install's directory.
+            if (vfs.exists(pkgDir)) vfs.rmdir(pkgDir);
+            vfs.rename(stagedDir, pkgDir);
+        }
 
         if (!entries) {
             if (kind === 'module') {

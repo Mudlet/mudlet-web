@@ -30,6 +30,7 @@ const NO_MXP_BORDERS = { top: 0, right: 0, bottom: 0, left: 0 };
 
 export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, commandInputRef, mxpBorders = NO_MXP_BORDERS }: OutputAreaProps) {
     const connectionId = useConnectionId();
+    const connectionName = useAppStore(s => s.connections.find(c => c.id === connectionId)?.name);
     const outputBackgroundString = useProfileField('outputBackground');
     const outputBackgroundColor = useProfileField('outputBackgroundColor');
     const outputBackgroundImage = useProfileField('outputBackgroundImage');
@@ -198,6 +199,7 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
                     showTimestamps={showTimestamps}
                     onToggleTimestamps={() => connectionId && patchConnectionProfile(connectionId, { showTimestamps: !showTimestamps })}
                     onFind={openSearch}
+                    sourceName={connectionName}
                     getMenuExtraItems={getMenuExtraItems}
                     commandInputRef={commandInputRef}
                     fontSize={fontSize}

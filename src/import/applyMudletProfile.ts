@@ -6,8 +6,9 @@ import { saveMap } from '../storage/mapStorage';
 import { saveFolderHandle } from '../scripting/vfs/folderHandleStore';
 import { parseMudletProfile } from './mudletHost';
 import { buildMudletProfileBundle, type MudletProfileBundle } from './mudletProfileImport';
-import { CONNECTION_SIDECAR_PATH, type ConnectionSidecar } from './mudletProfileExport';
+import { CONNECTION_SIDECAR_PATH, RETAINED_HOST_PATH, type ConnectionSidecar } from './mudletProfileExport';
 import type { MudConnection } from '../storage/schema';
+import { describeThrown } from '../utils/describeThrown';
 
 // Apply a parsed Mudlet profile bundle (see mudletProfileImport.ts) as a NEW
 // native mudix profile: create the connection, provision its VFS (copy map +
@@ -92,6 +93,11 @@ export function bundleToConnectionRecord(bundle: MudletProfileBundle): Omit<MudC
  * Create a new mudix profile from a Mudlet profile bundle. Returns the new
  * connection id. The profile opens offline like any other; its data is durable
  * in the new VFS (`.mudix/profile.json`) and map store before this resolves.
+ *
+ * Anything that could not be carried over is appended to `bundle.warnings` for
+ * the caller to show — a copy that quietly loses a package's files or the map
+ * still "succeeds", so the console warnings below are not a surface any user
+ * ever looks at (issue #45).
  */
 export async function importMudletProfile(bundle: MudletProfileBundle): Promise<string> {
     const connectionId = useAppStore.getState().addConnection(bundleToConnectionRecord(bundle));
@@ -104,6 +110,19 @@ export async function importMudletProfile(bundle: MudletProfileBundle): Promise<
                 vfs.writeBinaryFile(rel, bytes);
             } catch (err) {
                 console.warn('[importMudletProfile] failed to write', rel, err);
+                bundle.warnings.push(`Could not copy "${rel}" into the profile: ${describeThrown(err)}`);
+            }
+        }
+        // Retain the original <Host>. ProfileSettings models about a third of
+        // it; without this the rest is gone the moment the import finishes, and
+        // an export would rebuild the profile's <Host> from a bare skeleton.
+        // Written after the loose files so a stale copy inside an imported tree
+        // can't win over the save we actually parsed.
+        if (bundle.hostPackageXml) {
+            try {
+                vfs.writeFile(RETAINED_HOST_PATH, bundle.hostPackageXml);
+            } catch (err) {
+                console.warn('[importMudletProfile] failed to retain <Host>', err);
             }
         }
         // Seed the store, then flush it to the profile's .mudix/profile.json so
@@ -122,6 +141,7 @@ export async function importMudletProfile(bundle: MudletProfileBundle): Promise<
             await saveMap(connectionId, toArrayBuffer(bundle.mapBytes));
         } catch (err) {
             console.warn('[importMudletProfile] map save failed', err);
+            bundle.warnings.push(`The profile's map could not be saved: ${describeThrown(err)}`);
         }
     }
 

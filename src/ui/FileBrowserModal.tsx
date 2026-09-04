@@ -869,7 +869,7 @@ interface FileBrowserModalProps {
     connectionId: string;
     vfs: ProfileVFS | null;
     onClose: () => void;
-    // Optional path to select on open/refresh — used by the Cmd+P quick-open
+    // Optional path to select on open/refresh — used by the Cmd+Shift+P quick-open
     // palette and ScriptEditorModal to reveal a file in the tree and load its
     // preview. initialPathTick bumps on each programmatic open so the selection
     // effect re-fires even when the same path is picked twice in a row.
@@ -989,7 +989,7 @@ export function FileBrowserModal({ connectionId, vfs, onClose, initialPath, init
         bumpRev();
     }, [bumpRev]);
 
-    // Programmatic file open (Cmd+P quick-open, script editor "reveal in
+    // Programmatic file open (Cmd+Shift+P quick-open, script editor "reveal in
     // files"). Expands parent dirs in the tree, then routes through
     // handleSelect so its dirty-edit guard still prompts before switching.
     // initialPathTick re-triggers this even when the same path is picked
@@ -1574,6 +1574,14 @@ export function FileBrowserModal({ connectionId, vfs, onClose, initialPath, init
             <ResizableModal
                 title="Profile Files"
                 onClose={handleCloseModal}
+                // An inline edit owns Escape while it is open — cancelling the
+                // rename or the new-folder entry, the way a QTreeWidget's item
+                // editor consumes the key before its dialog ever sees it. The
+                // dialog's own Escape-to-close resumes once the edit is done.
+                // (Those handlers are React's, dispatched from the portal
+                // container, so they run *after* the trap's native listener on
+                // the dialog node — a stopPropagation there would be too late.)
+                closeOnEscape={renamingPath === null && newFolderParent === null}
                 savedBounds={savedBounds}
                 onBoundsChange={b => saveModalBounds(connectionId, 'files', b)}
                 defaultW={620}

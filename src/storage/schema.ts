@@ -157,6 +157,11 @@ export interface ProfileSettings {
      *  ("Allow secure connection reminder"), settable from Lua via
      *  `setProfileConfig("askTlsAvailable", …)`. */
     askTlsAvailable?: boolean;
+    /** Which engine the console's "Search on …" context-menu entry uses. A key
+     *  of {@link SEARCH_ENGINES}; anything else (or undefined) falls back to
+     *  {@link DEFAULT_SEARCH_ENGINE}, the way Mudlet's `Host::getSearchEngine`
+     *  does. Per-profile, because Mudlet keeps it on the Host. */
+    searchEngine?: string;
     showTimestamps: boolean;
     fontSize: number;
     outputBackground: string;
@@ -220,6 +225,22 @@ export interface ProfileSettings {
      *  `mUndoServerWrapWidth`, bounded 20–500 and defaulting to 80 (very often
      *  the right answer). `setConfig("undoServerWrapWidth", …)`. */
     undoServerWrapWidth?: number;
+    /** Mudlet's `Host::mConsoleBufferSize` ("Main display size") — how many
+     *  lines of scrollback the main output keeps before the oldest are dropped
+     *  in batches. Bounded 100 … 1,000,000; `undefined` uses
+     *  {@link DEFAULT_CONSOLE_BUFFER_SIZE} (10,000 lines, `TBuffer.h:386`).
+     *  Round-trips through the profile XML as `consoleBufferSize`
+     *  (XMLexport.cpp:617). Scripts reach the same cap via
+     *  `setConsoleBufferSize()`, which does not write the preference back —
+     *  matching Mudlet, where the Lua call resizes the live buffer only. */
+    consoleBufferSize?: number;
+    /** Mudlet's `Host::mUseMaxConsoleBufferSize` ("use the maximum buffer size
+     *  your system can handle", `checkBox_useMaxBufferSize`). When true the
+     *  configured {@link consoleBufferSize} is ignored in favour of the ceiling.
+     *  Desktop derives that ceiling from physical memory
+     *  (`TBuffer::getMaxBufferSize()`); a browser tab cannot ask, so mudix uses
+     *  a fixed 1,000,000-line cap. Off unless explicitly true. */
+    useMaxConsoleBufferSize?: boolean;
     /** Mudlet "Network packet timeout": how long (ms) to buffer a partial line
      *  (text after the last `\n` of a WebSocket frame) before flushing it as a
      *  prompt. Mitigates spurious mid-line breaks when long MUD lines arrive
@@ -538,6 +559,24 @@ export interface MapInfoBgColor { r: number; g: number; b: number; a: number; }
 /** Mudlet's default `mapInfoColor` (mMapInfoBg) — translucent grey. */
 export const MAP_INFO_BG_DEFAULT: MapInfoBgColor = { r: 150, g: 150, b: 150, a: 120 };
 
+/** Engines offered by the console's "Search on …" entry, mirroring Mudlet's
+ *  `Host::mSearchEngineData` (`src/Host.cpp`). Each value is the prefix the
+ *  percent-encoded selection is appended to. */
+export const SEARCH_ENGINES: Record<string, string> = {
+    Bing: 'https://www.bing.com/search?q=',
+    DuckDuckGo: 'https://duckduckgo.com/?q=',
+    Google: 'https://www.google.com/search?q=',
+};
+
+/** What an unset or unrecognised `searchEngine` resolves to, as in Mudlet's
+ *  `Host::getSearchEngine`. */
+export const DEFAULT_SEARCH_ENGINE = 'Google';
+
+/** The stored engine name when we know it, else {@link DEFAULT_SEARCH_ENGINE}. */
+export function resolveSearchEngine(name: string | undefined): string {
+    return name && name in SEARCH_ENGINES ? name : DEFAULT_SEARCH_ENGINE;
+}
+
 /** Defaults for profile settings. Reads fall through to these whenever a
  *  profile hasn't set the field. */
 export const PROFILE_DEFAULTS: ProfileSettings = {
@@ -665,6 +704,12 @@ export interface TriggerPattern {
     type: TriggerPatternType;
 }
 
+/** Widest line delta a multiline (AND) trigger can ask for. Mudlet's control is
+ *  a plain QSpinBox with no maximum set (`ui/triggers_main_area.ui`,
+ *  spinBox_lineMargin), so Qt's default 99 is the ceiling a profile written
+ *  there can carry — matching it keeps our XML readable by desktop Mudlet. */
+export const MAX_CONDITION_LINE_DELTA = 99;
+
 export interface TriggerNode extends BaseNode {
     patterns: TriggerPattern[];  // one or more patterns — any match fires (Mudlet TTrigger.mPatterns)
     code: string;
@@ -672,7 +717,8 @@ export interface TriggerNode extends BaseNode {
     fireLength: number;          // chain length: 0 = only the current line; N = current + N more lines (groups with patterns only)
     multipleMatches: boolean;    // fire once per regex occurrence on a line, not just the first
     multiline: boolean;          // AND mode: all patterns must match in sequence
-    delta: number;               // 0 = unlimited; N = max lines from first condition match to last
+    delta: number;               // Mudlet conditonLineDelta: lines after the one that matched the first
+                                 // condition within which the rest must match. 0 = the same line only.
     isFilter: boolean;           // filter chain: pass captured/matched text to children instead of full line
     /**
      * Session-scoped: created by `tempComplexRegexTrigger`, which needs a real
@@ -687,11 +733,49 @@ export interface TriggerNode extends BaseNode {
      * no longer exists.
      */
     temporary?: boolean;
+    /**
+     * Mudlet TTrigger::mIsColorizerTrigger — the master switch for `highlight`.
+     * The colours below persist independently of it (desktop defaults them to
+     * red/yellow and writes them whatever the switch says), so turning
+     * colorization off and back on keeps them. Read it through `isColorizing`,
+     * never directly: profiles written before this field existed carry only
+     * `highlight`, and a highlight there meant the switch was on.
+     */
+    colorize?: boolean;
     highlight?: {                // built-in colorization applied to the matched text
         fg?: string;             // hex color e.g. "#ff0000"
-        bg?: string;
+        bg?: string;             // a channel left unset is Mudlet's "keep" (transparent)
     };
     command?: string;            // plain command to send on fire (%1..%9 = capture groups)
+    /**
+     * Mudlet TTrigger::mTriggerType (TTrigger.h:204) — one of the REGEX_* kinds
+     * defined at TTrigger.h:49-56, the same numbering `patterns[].type` uses.
+     * It is a *node*-level kind that desktop keeps beside the per-pattern kinds
+     * in `regexCodePropertyList`, and does nothing with beyond storing it: the
+     * only readers are the XML reader (XMLimport.cpp:1379), the XML writer
+     * (XMLexport.cpp:1017) and the editor's copy/paste helper
+     * (EditorItemXMLHelpers.cpp:316). Kept as the raw integer so a value we do
+     * not recognise still survives a linked-profile write-back unchanged.
+     */
+    triggerType?: number;
+    /**
+     * TTrigger::mSoundTrigger (TTrigger.h:149) — play `soundFile` on every fire,
+     * before the command and the script (TTrigger.cpp:1320-1330).
+     */
+    soundTrigger?: boolean;
+    /** TTrigger::mSoundFile (TTrigger.h) — the file `soundTrigger` plays. */
+    soundFile?: string;
+    /**
+     * TTrigger::mColorTrigger (TTrigger.h:152) and its two colours
+     * (mColorTriggerFgColor / mColorTriggerBgColor). This is desktop's *legacy*
+     * per-node colour trigger, set by dlgColorTrigger, and distinct from the
+     * per-pattern `colorTrigger` kind this client actually matches on. Nothing
+     * here drives matching; the fields exist so a profile that carries them
+     * survives the round trip instead of being blanked on write-back.
+     */
+    colorTrigger?: boolean;
+    colorTriggerFgColor?: string;
+    colorTriggerBgColor?: string;
 }
 
 export interface TimerNode extends BaseNode {
@@ -750,6 +834,15 @@ export interface ButtonNode extends BaseNode {
 
     /** Accepted but currently unused — Mudlet stylesheet text. */
     styleSheet?: string;
+}
+
+/**
+ * Whether a trigger colorizes the text it matched. `colorize` is authoritative;
+ * a trigger from a profile saved before that field existed falls back to the old
+ * rule, where a highlight's presence was itself the switch.
+ */
+export function isColorizing(t: Pick<TriggerNode, 'colorize' | 'highlight'>): boolean {
+    return t.colorize ?? !!t.highlight;
 }
 
 // ── Tree utilities ────────────────────────────────────────────────────────────
@@ -985,6 +1078,52 @@ export function connectionNameTaken(name: string, connections: MudConnection[], 
     const wanted = name.trim().toLowerCase();
     if (!wanted) return false;
     return connections.some(c => c.id !== exceptId && c.name.trim().toLowerCase() === wanted);
+}
+
+/** The port a `mud`-mode connection falls back to when none was typed — the
+ *  Port field's placeholder, and the telnet default both proxies assume. */
+export const DEFAULT_MUD_PORT = 23;
+
+export type PortValidation =
+    | { ok: true; port: number }
+    | { ok: false; reason: 'notANumber' | 'outOfRange'; message: string };
+
+/**
+ * Validate what the user typed into a Port field.
+ *
+ * `parseInt` is not a validator: it stops at the first character it doesn't
+ * understand and returns what it read so far, so `1e3` becomes 1, `0x50`
+ * becomes 0 and `23abc` becomes 23 — a *different* port from the one typed,
+ * saved without a word. So the text is matched against `^\d+$` first, exactly
+ * as Mudlet does (`src/dlgConnectionProfiles.cpp:2140-2160`), and only then
+ * range-checked. The two messages are Mudlet's, verbatim.
+ *
+ * The range is the one both proxies already enforce server-side
+ * (`proxy/server.ts`, `worker/index.js`) — where the rejection reason never
+ * reaches the user, who is instead told the proxy is unreachable.
+ *
+ * An empty field is accepted as {@link DEFAULT_MUD_PORT}: it is what the
+ * placeholder promises, and Mudlet's validator likewise skips an empty port.
+ */
+export function validatePort(text: string): PortValidation {
+    const trimmed = text.trim();
+    if (trimmed === '') return { ok: true, port: DEFAULT_MUD_PORT };
+    if (!/^\d+$/.test(trimmed)) {
+        return {
+            ok: false,
+            reason: 'notANumber',
+            message: 'You have to enter a number. Other characters are not permitted.',
+        };
+    }
+    const port = Number(trimmed);
+    if (port < 1 || port > 65535) {
+        return {
+            ok: false,
+            reason: 'outOfRange',
+            message: 'Port number must be above zero and below 65535.',
+        };
+    }
+    return { ok: true, port };
 }
 
 /**

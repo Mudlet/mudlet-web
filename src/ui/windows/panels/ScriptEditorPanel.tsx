@@ -3,10 +3,12 @@ import { AlertCircle, Braces, Clock, Filter, Folder, FolderOpen, FolderPlus, Key
 import { Button, Input, ContextMenu, FileSourceButton, useConfirm, type PickedFile } from '../../components';
 import { VariablesView } from './VariablesView';
 import { useAppStore, useProfileField } from '../../../storage';
+import type { RestoredNode } from '../../../storage/appStore';
+import { captureDeletion, describeDeletion, pushBounded, type EditorDeleteCommand } from './editorUndo';
 import { isPackageRemovable } from '../../../branding';
 import { DEFAULT_ANSI_PALETTE } from '../../../mud/text/colors';
 import type { AliasNode, ButtonLocation, ButtonNode, ButtonOrientation, KeyNode, PackageManifest, ScriptNode, TimerNode, TriggerNode, TriggerPattern, TriggerPatternType } from '../../../storage/schema';
-import { isEffectivelyEnabled } from '../../../storage/schema';
+import { isColorizing, isEffectivelyEnabled, MAX_CONDITION_LINE_DELTA } from '../../../storage/schema';
 import type { MudSession, ScriptLogSource, ScriptLogSourceKind } from '../../../mud/MudSession';
 import type { ProfileVFS } from '../../../scripting/vfs/ProfileVFS';
 import type { ScriptingEngine } from '../../../scripting/ScriptingEngine';
@@ -142,6 +144,10 @@ function flattenTree<T extends { id: string; parentId: string | null; isGroup: b
 
 const EMPTY: never[] = [];
 
+/** How long the undo offer stays up, matching the five-second single-shot timer
+ *  behind Mudlet's editor undo toast (dlgTriggerEditor.cpp:14381). */
+const UNDO_TOAST_MS = 5000;
+
 const PATTERN_TYPE_LABELS: Record<TriggerPatternType, string> = {
     substring:    'substring',
     regex:        'perl regex',
@@ -165,6 +171,24 @@ const PATTERN_TYPE_COLORS: Record<TriggerPatternType, string> = {
 };
 
 const PATTERN_NEEDS_TEXT = new Set<TriggerPatternType>(['substring', 'regex', 'startOfLine', 'exactMatch', 'luaFunction']);
+
+/** The `text` a pattern row should carry after its type changes.
+ *
+ *  `colorTrigger` stores `"fg,bg"` and `lineSpacer` stores a line count, so
+ *  neither can inherit a regex left over from the previous type — and a regex
+ *  must not inherit `"-1,-1"` or `"2"` either. Mudlet gets this for free by
+ *  giving each type its own widget (`dlgTriggerEditor.cpp:7196-7239`); here one
+ *  `text` field is shared, so it is reset explicitly whenever the type crosses
+ *  into or out of one of the two structured kinds. */
+export function retypePatternText(text: string, from: TriggerPatternType, to: TriggerPatternType): string {
+    if (from === to) return text;
+    const structured = (t: TriggerPatternType) => t === 'colorTrigger' || t === 'lineSpacer';
+    if (!structured(from) && !structured(to)) return text;
+    if (to === 'colorTrigger') return '-1,-1';
+    // Mudlet's spin box defaults to 0 (QSpinBox's default value).
+    if (to === 'lineSpacer') return '0';
+    return '';
+}
 
 /** Names for the 16 basic ANSI palette entries the colour picker shows by
  *  default. Indices 16..255 (the xterm 6×6×6 cube + 24-step greyscale) are
@@ -715,6 +739,12 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     const updateButton     = useAppStore(s => s.updateButton);
     const removeButton     = useAppStore(s => s.removeButton);
     const moveButton       = useAppStore(s => s.moveButton);
+    const restoreScripts     = useAppStore(s => s.restoreScripts);
+    const restoreAliases     = useAppStore(s => s.restoreAliases);
+    const restoreTriggers    = useAppStore(s => s.restoreTriggers);
+    const restoreTimers      = useAppStore(s => s.restoreTimers);
+    const restoreKeybindings = useAppStore(s => s.restoreKeybindings);
+    const restoreButtons     = useAppStore(s => s.restoreButtons);
     const packages         = useAppStore(s => s.connectionPackages[connectionId] ?? EMPTY);
     const installPackage   = useAppStore(s => s.installPackage);
     const uninstallPackage = useAppStore(s => s.uninstallPackage);
@@ -879,6 +909,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     const [editMultiline, setEditMultiline] = useState(false);
     const [editDelta, setEditDelta] = useState(0);
     const [editIsFilter, setEditIsFilter] = useState(false);
+    const [editColorize, setEditColorize] = useState(false);
     const [editHighlightFg, setEditHighlightFg] = useState('');
     const [editHighlightBg, setEditHighlightBg] = useState('');
     const [editTriggerCommand, setEditTriggerCommand] = useState('');
@@ -910,6 +941,48 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     const [editToolbarColumns,     setEditToolbarColumns]     = useState(0);
 
     const [dirty, setDirty] = useState(false);
+
+    // Item-level undo/redo. Mudlet's `EditorUndoStack` belongs to the editor
+    // window and dies with it (dlgTriggerEditor.cpp:456), so these live in the
+    // panel rather than the store and are gone once the editor is closed.
+    const undoStackRef = useRef<EditorDeleteCommand[]>([]);
+    const redoStackRef = useRef<EditorDeleteCommand[]>([]);
+    /** The transient "…deleted. Undo" bar. */
+    const [undoToast, setUndoToast] = useState<string | null>(null);
+    const undoToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    const dismissUndoToast = useCallback(() => {
+        if (undoToastTimerRef.current !== null) {
+            clearTimeout(undoToastTimerRef.current);
+            undoToastTimerRef.current = null;
+        }
+        setUndoToast(null);
+    }, []);
+
+    /** Mudlet's editor raises its undo offers in the system message area on a
+     *  five-second single-shot timer (`showBannerUndoToast`,
+     *  dlgTriggerEditor.cpp:14373-14397). Note that the desktop toast at that
+     *  line is for a dismissed tip banner, not for a deletion — after a delete
+     *  desktop relies on the now-enabled Undo action and Ctrl+Z alone. The web
+     *  editor has no toolbar to light up, so the same five-second bar is what
+     *  makes the undo discoverable here. */
+    const showUndoToast = useCallback((label: string) => {
+        if (undoToastTimerRef.current !== null) clearTimeout(undoToastTimerRef.current);
+        setUndoToast(label);
+        undoToastTimerRef.current = setTimeout(() => {
+            undoToastTimerRef.current = null;
+            setUndoToast(null);
+        }, UNDO_TOAST_MS);
+    }, []);
+
+    useEffect(() => () => {
+        if (undoToastTimerRef.current !== null) clearTimeout(undoToastTimerRef.current);
+    }, []);
+    /** The item the edit fields below were loaded from — the one an auto-commit
+     *  has to write back to, since by then the selection has already moved. */
+    const loadedItemRef = useRef<{ id: string; category: EditCategory } | null>(null);
+    const commitEditsRef = useRef<(id: string, category: EditCategory) => void>(() => {});
+    const dirtyRef = useRef(false);
     // Backfill from the session-level buffer so entries that fired before this
     // panel was first mounted (e.g. errors during initial script load) survive.
     const [logs, setLogs] = useState<LogEntry[]>(() =>
@@ -970,16 +1043,6 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         setCtxMenu({ x: e.clientX, y: e.clientY, targetId: null });
     }, []);
 
-    const handleContextDelete = useCallback((id: string) => {
-        if (category === 'scripts')        removeScript(connectionId, id);
-        else if (category === 'aliases')   removeAlias(connectionId, id);
-        else if (category === 'triggers')  removeTrigger(connectionId, id);
-        else if (category === 'timers')    removeTimer(connectionId, id);
-        else if (category === 'keys')      removeKeybinding(connectionId, id);
-        else                               removeButton(connectionId, id);
-        setSelectedId(prev => prev === id ? null : prev);
-        setCtxMenu(null);
-    }, [category, connectionId, removeScript, removeAlias, removeTrigger, removeTimer, removeKeybinding, removeButton]);
 
     // Drag-and-drop state
     const [dragId, setDragId]   = useState<string | null>(null);
@@ -1084,7 +1147,18 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     }, [pendingJump, category, items]);
 
     useEffect(() => {
+        // The edit fields still hold the *outgoing* item's values at this point
+        // — they are only overwritten further down — so this is the last chance
+        // to keep them. Runs before the `if (!selected) return` guard because
+        // switching category clears the selection, which must commit too.
+        const previous = loadedItemRef.current;
+        if (previous && (previous.id !== selectedId || previous.category !== category)) {
+            if (dirty) commitEditsRef.current(previous.id, previous.category);
+            loadedItemRef.current = null;
+        }
+
         if (!selected) return;
+        loadedItemRef.current = { id: selected.id, category: category as EditCategory };
         setEditName(selected.name);
         // New unsaved scripts have code='' in the store; show the template so the
         // user has a starting point, and mark dirty so "Save & Run" is active.
@@ -1102,6 +1176,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
             setEditMultiline(t.multiline ?? false);
             setEditDelta(t.delta ?? 0);
             setEditIsFilter(t.isFilter ?? false);
+            setEditColorize(isColorizing(t));
             setEditHighlightFg(t.highlight?.fg ?? '');
             setEditHighlightBg(t.highlight?.bg ?? '');
             setEditTriggerCommand(t.command ?? '');
@@ -1418,28 +1493,42 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         });
     };
 
-    const handleSave = () => {
-        if (!selectedId || !selected) return;
-        setLogs([]);
-        if (category === 'scripts') {
+    /** Write the edit fields back onto one item, named explicitly rather than
+     *  taken from the current selection — the auto-commit paths below run when
+     *  the selection has already moved on.
+     *
+     *  `runUnchangedScript` distinguishes the two callers: the Save/Run button
+     *  wants a script executed even when nothing changed, an auto-commit does
+     *  not. */
+    const commitEdits = (targetId: string, targetCategory: EditCategory, runUnchangedScript: boolean) => {
+        const list =
+            targetCategory === 'scripts'  ? scripts    :
+            targetCategory === 'aliases'  ? aliases    :
+            targetCategory === 'triggers' ? triggers   :
+            targetCategory === 'timers'   ? timers     :
+            targetCategory === 'keys'     ? keybindings:
+            buttons;
+        const target = list.find(i => i.id === targetId);
+        if (!target) return;
+        if (targetCategory === 'scripts') {
             const handlers = editEventHandlers.split('\n').map(s => s.trim()).filter(Boolean);
             // The store subscription re-runs a script only when its code or event
             // handlers actually change. When neither did — clicking "Run", or
             // re-saving an unedited script — the subscription is a no-op, so force
             // the run explicitly. When they did change, the subscription already
             // runs it; forcing again here would execute the body twice.
-            const prevHandlers = (selected as ScriptNode).eventHandlers ?? [];
-            const subscriptionWillRun = selected.code !== editCode
+            const prevHandlers = (target as ScriptNode).eventHandlers ?? [];
+            const subscriptionWillRun = target.code !== editCode
                 || prevHandlers.join('\n') !== handlers.join('\n');
-            updateScript(connectionId, selectedId, { name: editName, language: 'lua', code: editCode, eventHandlers: handlers });
-            if (!subscriptionWillRun) scriptingEngineRef?.current?.runScript(selectedId);
-        } else if (category === 'aliases') {
-            updateAlias(connectionId, selectedId, { name: editName, pattern: editPattern, command: editCommand, language: 'lua', code: editCode });
-        } else if (category === 'triggers') {
+            updateScript(connectionId, targetId, { name: editName, language: 'lua', code: editCode, eventHandlers: handlers });
+            if (runUnchangedScript && !subscriptionWillRun) scriptingEngineRef?.current?.runScript(targetId);
+        } else if (targetCategory === 'aliases') {
+            updateAlias(connectionId, targetId, { name: editName, pattern: editPattern, command: editCommand, language: 'lua', code: editCode });
+        } else if (targetCategory === 'triggers') {
             const highlight = (editHighlightFg || editHighlightBg)
                 ? { fg: editHighlightFg || undefined, bg: editHighlightBg || undefined }
                 : undefined;
-            updateTrigger(connectionId, selectedId, {
+            updateTrigger(connectionId, targetId, {
                 name: editName,
                 patterns: editPatterns,
                 language: 'lua',
@@ -1449,18 +1538,19 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                 multiline: editMultiline,
                 delta: editDelta,
                 isFilter: editIsFilter,
+                colorize: editColorize,
                 highlight,
                 command: editTriggerCommand || undefined,
             });
-        } else if (category === 'timers') {
+        } else if (targetCategory === 'timers') {
             const seconds = editHours * 3600 + editMinutes * 60 + editSecs + editMs / 1000;
-            updateTimer(connectionId, selectedId, { name: editName, seconds, repeat: editRepeat, language: 'lua', code: editCode, command: editTimerCommand || undefined });
-        } else if (category === 'keys') {
-            updateKeybinding(connectionId, selectedId, { name: editName, key: editKey, modifiers: editModifiers, language: 'lua', code: editCode, command: editKeyCommand || undefined });
+            updateTimer(connectionId, targetId, { name: editName, seconds, repeat: editRepeat, language: 'lua', code: editCode, command: editTimerCommand || undefined });
+        } else if (targetCategory === 'keys') {
+            updateKeybinding(connectionId, targetId, { name: editName, key: editKey, modifiers: editModifiers, language: 'lua', code: editCode, command: editKeyCommand || undefined });
         } else {
             // buttons
-            if (selected.isGroup) {
-                updateButton(connectionId, selectedId, {
+            if (target.isGroup) {
+                updateButton(connectionId, targetId, {
                     name: editName,
                     language: 'lua',
                     code: editCode,
@@ -1470,7 +1560,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                     styleSheet: editButtonStyleSheet || undefined,
                 });
             } else {
-                updateButton(connectionId, selectedId, {
+                updateButton(connectionId, targetId, {
                     name: editName,
                     language: 'lua',
                     code: editCode,
@@ -1483,18 +1573,126 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                 });
             }
         }
+    };
+
+    const handleSave = () => {
+        if (!selectedId || !selected || !isEditCategory) return;
+        setLogs([]);
+        commitEdits(selectedId, category as EditCategory, true);
         setDirty(false);
     };
 
+    const removeById = (cat: EditCategory, id: string) => {
+        if (cat === 'scripts')        removeScript(connectionId, id);
+        else if (cat === 'aliases')   removeAlias(connectionId, id);
+        else if (cat === 'triggers')  removeTrigger(connectionId, id);
+        else if (cat === 'timers')    removeTimer(connectionId, id);
+        else if (cat === 'keys')      removeKeybinding(connectionId, id);
+        else                          removeButton(connectionId, id);
+    };
+
+    const restoreEntries = (cmd: EditorDeleteCommand) => {
+        const { category: cat, entries } = cmd;
+        if (cat === 'scripts')        restoreScripts(connectionId, entries as ReadonlyArray<RestoredNode<ScriptNode>>);
+        else if (cat === 'aliases')   restoreAliases(connectionId, entries as ReadonlyArray<RestoredNode<AliasNode>>);
+        else if (cat === 'triggers')  restoreTriggers(connectionId, entries as ReadonlyArray<RestoredNode<TriggerNode>>);
+        else if (cat === 'timers')    restoreTimers(connectionId, entries as ReadonlyArray<RestoredNode<TimerNode>>);
+        else if (cat === 'keys')      restoreKeybindings(connectionId, entries as ReadonlyArray<RestoredNode<KeyNode>>);
+        else                          restoreButtons(connectionId, entries as ReadonlyArray<RestoredNode<ButtonNode>>);
+    };
+
+    /** Delete an item the way Mudlet does — at once, but recoverably. Every
+     *  desktop delete path snapshots the item and its whole subtree, removes it,
+     *  and pushes an `EditorDeleteItemCommand` onto the editor's undo stack
+     *  (dlgTriggerEditor.cpp:3714 and the five sibling views). */
+    const deleteItem = (id: string) => {
+        if (!isEditCategory) return;
+        const cat = category as EditCategory;
+        const entries = captureDeletion(items, id);
+        if (entries.length === 0) return;
+        removeById(cat, id);
+        const command: EditorDeleteCommand = { category: cat, entries, label: describeDeletion(cat, entries) };
+        undoStackRef.current = pushBounded(undoStackRef.current, command);
+        // A fresh action clears the redo branch, as QUndoStack::push does.
+        redoStackRef.current = [];
+        setSelectedId(prev => prev === id ? null : prev);
+        showUndoToast(command.label);
+    };
+    // Auto-commit, so that leaving an item behind never throws away what was
+    // typed into it. Mudlet has no unsaved-changes concept at all: every
+    // selection change saves the outgoing item first
+    // (dlgTriggerEditor::slot_triggerSelected, dlgTriggerEditor.cpp:7703-7709,
+    // and the same shape in slot_aliasSelected/…), on top of the per-property
+    // autosaves (slot_saveProperty_*). Held in refs so both the selection
+    // effect (which is declared above this) and the unmount cleanup — the
+    // editor being closed — reach the latest render's edit fields.
+    commitEditsRef.current = (id, cat) => commitEdits(id, cat, false);
+    dirtyRef.current = dirty;
+
+    useEffect(() => () => {
+        // Closing the editor is leaving the item too.
+        const open = loadedItemRef.current;
+        if (open && dirtyRef.current) commitEditsRef.current(open.id, open.category);
+    }, []);
+
     const handleDelete = () => {
         if (!selectedId) return;
-        if (category === 'scripts')        removeScript(connectionId, selectedId);
-        else if (category === 'aliases')   removeAlias(connectionId, selectedId);
-        else if (category === 'triggers')  removeTrigger(connectionId, selectedId);
-        else if (category === 'timers')    removeTimer(connectionId, selectedId);
-        else if (category === 'keys')      removeKeybinding(connectionId, selectedId);
-        else                               removeButton(connectionId, selectedId);
-        setSelectedId(null);
+        deleteItem(selectedId);
+    };
+
+    const undoDelete = () => {
+        const command = undoStackRef.current[undoStackRef.current.length - 1];
+        if (!command) return false;
+        undoStackRef.current = undoStackRef.current.slice(0, -1);
+        redoStackRef.current = [...redoStackRef.current, command];
+        restoreEntries(command);
+        if (category !== command.category) setCategory(command.category);
+        setSelectedId(command.entries[0].node.id);
+        dismissUndoToast();
+        return true;
+    };
+
+    const redoDelete = () => {
+        const command = redoStackRef.current[redoStackRef.current.length - 1];
+        if (!command) return false;
+        redoStackRef.current = redoStackRef.current.slice(0, -1);
+        undoStackRef.current = pushBounded(undoStackRef.current, command);
+        // Only the roots need removing — each takes its subtree with it.
+        const ids = new Set(command.entries.map(e => e.node.id));
+        for (const { node } of command.entries) {
+            if (node.parentId === null || !ids.has(node.parentId)) removeById(command.category, node.id);
+        }
+        setSelectedId(prev => prev !== null && ids.has(prev) ? null : prev);
+        dismissUndoToast();
+        return true;
+    };
+
+    /**
+     * Ctrl+Z / Ctrl+Shift+Z (and Ctrl+Y) for the item stack, matching the
+     * shortcuts desktop binds to `slot_smartUndo` / `slot_smartRedo`
+     * (QKeySequence::Undo and ::Redo, dlgTriggerEditor.cpp:461 and :474).
+     *
+     * Precedence follows `slot_smartUndo` (:1449): the code editor's own stack
+     * goes first and the item stack only once that is empty — explicitly not
+     * focus-based, as the comment there spells out. CodeMirror enforces that
+     * half for free: `undo` returns false on an exhausted history, so the
+     * keymap leaves the event unhandled and it bubbles here. (Deleting always
+     * clears the selection, which unmounts the code pane, so by the time an
+     * item undo is on offer that history is empty anyway.)
+     *
+     * Plain <input>/<textarea> fields keep their native undo. Desktop's
+     * window-scoped QAction would take Ctrl+Z off a QLineEdit too; hijacking a
+     * browser text field's undo is a worse trade than that bit of parity.
+     */
+    const handleEditorKeyDown = (e: React.KeyboardEvent) => {
+        if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+        const key = e.key.toLowerCase();
+        const isUndo = key === 'z' && !e.shiftKey;
+        const isRedo = key === 'y' || (key === 'z' && e.shiftKey);
+        if (!isUndo && !isRedo) return;
+        const tag = (e.target as HTMLElement).tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+        if (isUndo ? undoDelete() : redoDelete()) e.preventDefault();
     };
 
     const isEditCategory = category !== 'errors' && category !== 'packages' && category !== 'variables';
@@ -1504,7 +1702,23 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         : `Select a ${categoryLabel.replace(/s$/, '')} to edit`;
 
     return (
-        <div className="script-editor">
+        <div className="script-editor" onKeyDown={handleEditorKeyDown}>
+            {undoToast && (
+                <div className="script-editor__undo-toast" role="status">
+                    <span className="script-editor__undo-toast-text">Did {undoToast}.</span>
+                    <button
+                        type="button"
+                        className="script-editor__undo-toast-action"
+                        onClick={() => { undoDelete(); }}
+                    >Undo</button>
+                    <button
+                        type="button"
+                        className="script-editor__undo-toast-close"
+                        aria-label="Dismiss"
+                        onClick={dismissUndoToast}
+                    >×</button>
+                </div>
+            )}
             {/* Category nav */}
             <div className="script-editor__nav">
                 {EDIT_CATEGORIES.map(cat => {
@@ -1928,19 +2142,34 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                                     value={p.type}
                                                     onChange={t => {
                                                         const next = [...editPatterns];
-                                                        // Reset pattern text when switching to/from colorTrigger
-                                                        // since "fg,bg" only makes sense for that mode.
-                                                        const resetText = (t === 'colorTrigger' || p.type === 'colorTrigger') && t !== p.type;
-                                                        next[i] = {
-                                                            ...next[i],
-                                                            type: t,
-                                                            text: resetText ? (t === 'colorTrigger' ? '-1,-1' : '') : next[i].text,
-                                                        };
+                                                        next[i] = { ...next[i], type: t, text: retypePatternText(next[i].text, p.type, t) };
                                                         setEditPatterns(next);
                                                         setDirty(true);
                                                     }}
                                                 />
-                                                {p.type === 'colorTrigger' ? (
+                                                {p.type === 'lineSpacer' ? (
+                                                    /* Mudlet shows a dedicated spin box for this type instead of
+                                                     * the pattern line edit, and saves its value as the pattern
+                                                     * string (dlgTriggerEditor.cpp:7207-7217, :5829-5830). Its
+                                                     * range is QSpinBox's default 0..99
+                                                     * (ui/trigger_pattern_edit.ui:187). */
+                                                    <input
+                                                        type="number"
+                                                        className="script-editor__pattern-spacer"
+                                                        min={0}
+                                                        max={99}
+                                                        value={p.text === '' ? '0' : p.text}
+                                                        aria-label="Lines to skip"
+                                                        title="Number of lines to skip before the next condition is tested"
+                                                        onChange={e => {
+                                                            const n = Math.max(0, Math.min(99, Math.trunc(Number(e.target.value) || 0)));
+                                                            const next = [...editPatterns];
+                                                            next[i] = { ...next[i], text: String(n) };
+                                                            setEditPatterns(next);
+                                                            setDirty(true);
+                                                        }}
+                                                    />
+                                                ) : p.type === 'colorTrigger' ? (
                                                     <div className="script-editor__pattern-color-pair">
                                                         <ColorChannelPicker
                                                             label="FG"
@@ -2038,16 +2267,17 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                             </label>
                                             {editMultiline && (
                                                 <label className="script-editor__trigger-opt script-editor__trigger-opt--fire">
-                                                    Delta
+                                                    within
                                                     <input
                                                         type="number"
                                                         className="script-editor__fire-length"
                                                         value={editDelta}
                                                         min={0}
-                                                        title="0 = unlimited; N = max lines between first and last match"
+                                                        max={MAX_CONDITION_LINE_DELTA}
+                                                        title="How many lines after the one matching the first condition the remaining conditions have to match in. 0 = all of them on that one line."
                                                         onChange={e => {
                                                             const v = parseInt(e.target.value, 10);
-                                                            setEditDelta(isNaN(v) || v < 0 ? 0 : v);
+                                                            setEditDelta(isNaN(v) || v < 0 ? 0 : Math.min(v, MAX_CONDITION_LINE_DELTA));
                                                             setDirty(true);
                                                         }}
                                                     />
@@ -2059,12 +2289,28 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
 
                                     {/* Highlight section */}
                                     <div className="script-editor__trigger-card">
-                                        <span className="script-editor__trigger-card-label">Highlight</span>
+                                        {/* Mudlet's colorizer is three independent states, and this
+                                            card carries all three: groupBox_triggerColorizer is the
+                                            master switch, and each colour can separately be
+                                            transparent — the state desktop labels "keep" on the
+                                            button (dlgTriggerEditor.cpp:7719-7726), meaning leave
+                                            that channel of the matched text alone. An unchecked
+                                            FG/BG box is that "keep". Turning the master switch off
+                                            greys the colours out but leaves them set. */}
+                                        <label className="script-editor__trigger-card-label script-editor__trigger-card-label--toggle">
+                                            <input
+                                                type="checkbox"
+                                                checked={editColorize}
+                                                onChange={e => { setEditColorize(e.target.checked); setDirty(true); }}
+                                            />
+                                            Highlight
+                                        </label>
                                         <div className="script-editor__trigger-card-row">
                                             <label className="script-editor__trigger-opt">
                                                 <input
                                                     type="checkbox"
                                                     checked={!!editHighlightFg}
+                                                    disabled={!editColorize}
                                                     onChange={e => { setEditHighlightFg(e.target.checked ? '#ff0000' : ''); setDirty(true); }}
                                                 />
                                                 FG
@@ -2073,7 +2319,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                                 type="color"
                                                 className="script-editor__color-pick"
                                                 value={editHighlightFg || '#ff0000'}
-                                                disabled={!editHighlightFg}
+                                                disabled={!editColorize || !editHighlightFg}
                                                 onChange={e => { setEditHighlightFg(e.target.value); setDirty(true); }}
                                             />
                                             <div className="script-editor__trigger-card-divider" />
@@ -2081,15 +2327,16 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                                 <input
                                                     type="checkbox"
                                                     checked={!!editHighlightBg}
-                                                    onChange={e => { setEditHighlightBg(e.target.checked ? '#000080' : ''); setDirty(true); }}
+                                                    disabled={!editColorize}
+                                                    onChange={e => { setEditHighlightBg(e.target.checked ? '#ffff00' : ''); setDirty(true); }}
                                                 />
                                                 BG
                                             </label>
                                             <input
                                                 type="color"
                                                 className="script-editor__color-pick"
-                                                value={editHighlightBg || '#000080'}
-                                                disabled={!editHighlightBg}
+                                                value={editHighlightBg || '#ffff00'}
+                                                disabled={!editColorize || !editHighlightBg}
                                                 onChange={e => { setEditHighlightBg(e.target.value); setDirty(true); }}
                                             />
                                         </div>
@@ -2362,7 +2609,11 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                             </button>
                             <button
                                 className="ctx-menu__item ctx-menu__item--danger"
-                                onClick={() => handleContextDelete(ctxMenu.targetId!)}
+                                onClick={() => {
+                                    const id = ctxMenu.targetId!;
+                                    setCtxMenu(null);
+                                    deleteItem(id);
+                                }}
                             >
                                 <Trash2 size={13} strokeWidth={1.6} />
                                 Delete
