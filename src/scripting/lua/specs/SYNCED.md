@@ -45,14 +45,16 @@ a deliberate re-sync, so a failing spec always means a real mudix gap.
 
 ## Who runs it
 
-Nobody has to: `.github/workflows/sync-mudlet-specs.yml` runs the sync daily,
-opens `chore/sync-mudlet-specs` as a PR when the pin has moved, merges it once
-CI is green, and opens a triage issue when it isn't. The commit hash in the
-header above is therefore never more than a day behind Mudlet unless a red
-corpus is waiting on somebody — which is the point: a new upstream spec is a
-parity report, and the open PR is where it gets answered (fix the gap, or record
-an `e2e/knownDivergences.ts` entry on that branch — the next day's sync stacks
-onto it rather than replacing it).
+Nobody has to: `.github/workflows/sync-mudlet-upstream.yml` runs this sync daily
+— together with `sync:mudlet-lua`, at the same upstream commit, because the
+runtime and the corpus that tests it move together — opens
+`chore/sync-mudlet-upstream` as a PR when the pin has moved, merges it once CI is
+green, and opens a triage issue when it isn't. The hash in the header above is
+therefore never more than a day behind Mudlet unless a red corpus is waiting on
+somebody, which is the point: a new upstream spec is a parity report, and the
+open PR is where it gets answered (fix the gap, or record an
+`e2e/knownDivergences.ts` entry on that branch — the next day's sync stacks onto
+it rather than replacing it).
 
 Running `yarn sync:mudlet-specs` by hand is still fine, and is the way to sync
-against a tag or a local checkout.
+against a tag or a local checkout — pass the same `--ref` to `sync:mudlet-lua`.

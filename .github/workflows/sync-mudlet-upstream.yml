@@ -1,0 +1,317 @@
+# Keeps the vendored Mudlet trees from silently falling behind upstream — the
+# drift issue #65 was filed for. Before this, syncing was a command somebody had
+# to remember, so the spec pin reached 28 commits and 249 missing `it()` cases
+# before a QA sweep noticed.
+#
+# ## One commit, both trees
+#
+# `sync:mudlet-lua` (the Lua runtime + the vendored default packages) and
+# `sync:mudlet-specs` (Mudlet's busted corpus, which tests that runtime) are one
+# operation, not two: upstream lands a behaviour change and its spec in the same
+# commit, so moving one side alone manufactures a failure that exists in neither
+# Mudlet nor here. Both `SYNCED.md` files already say to keep the two on the same
+# commit; this resolves the upstream sha once and passes it to both scripts, so
+# that can't drift even if `development` moves mid-run.
+#
+# Daily, this runs both syncs and then does what a human would with the result:
+#
+#   * nothing changed    → the run ends green, nothing is opened.
+#   * something changed  → push `chore/sync-mudlet-upstream`, open or update a PR.
+#   * that PR goes green → squash-merge it and delete the branch.
+#   * that PR goes red   → leave it open, open (or comment on) a triage issue.
+#
+# Red is an *expected* outcome, not a malfunction. The spec corpus is a verbatim
+# mirror, so a spec Mudlet just added for behaviour web does not have yet is a
+# parity report; triage means fixing the gap or recording an
+# `e2e/knownDivergences.ts` entry, and both are done by pushing to this branch.
+# Those commits survive: when a PR is already open the next run syncs on top of
+# it instead of recreating it.
+#
+# ## Why there is no bot token here
+#
+# The obvious shape for this — a PAT that opens a PR which ci.yml then gates —
+# is not used, because `GITHUB_TOKEN` can do the whole job. The catch it usually
+# runs into is that a PR opened with `GITHUB_TOKEN` does not trigger
+# `pull_request` workflows, so ci.yml would never run on it and master's required
+# status checks (Typecheck, Unit tests, E2E (busted) 1..3/3, Build) would block
+# the merge forever.
+#
+# `workflow_dispatch` is the documented exception to that rule: events raised
+# with `GITHUB_TOKEN` create no new workflow run *except* `workflow_dispatch` and
+# `repository_dispatch`. So this dispatches ci.yml directly at the pushed commit
+# (hence `workflow_dispatch:` on ci.yml and `actions: write` below). Those jobs
+# report check runs named exactly `Typecheck`, `Unit tests`, … against that sha,
+# which is the sha the PR's protection rules are evaluated on — so the PR is
+# gated by the real ci.yml, on the real commit, and the merge is allowed. No
+# second copy of the suite lives here to drift out of step, and no credential
+# needs rotating.
+#
+# One repository setting is required, in Settings → Actions → General → Workflow
+# permissions: **Allow GitHub Actions to create and approve pull requests**.
+# Without it `gh pr create` is refused and the run fails with GitHub's own error
+# (which the triage issue then quotes). Nothing else needs configuring.
+name: Sync Mudlet upstream
+
+on:
+  schedule:
+    # Daily, so each PR carries one day of upstream and stays small enough to
+    # triage in one sitting.
+    - cron: '25 5 * * *'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Upstream Mudlet ref to sync from
+        type: string
+        default: development
+      merge:
+        description: Merge the PR when CI comes back green
+        type: boolean
+        default: true
+
+permissions:
+  contents: write        # push the sync branch, merge the PR
+  pull-requests: write   # open, update and merge it
+  issues: write          # the triage issue when it goes red
+  actions: write         # dispatch ci.yml at the pushed commit
+
+# Two runs would fight over the same branch and PR.
+concurrency:
+  group: sync-mudlet-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync vendored Mudlet trees
+    runs-on: ubuntu-latest
+    # Long enough to sit through a full ci.yml run on the branch (e2e alone is
+    # capped at 30 minutes per shard) on top of the syncs themselves.
+    timeout-minutes: 90
+    env:
+      BRANCH: chore/sync-mudlet-upstream
+      # Read by `gh` and by both sync scripts — they use it only to lift the
+      # unauthenticated 60-requests/hour GitHub API limit, which a shared runner
+      # IP burns through easily.
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      UPSTREAM_REF: ${{ inputs.ref || 'development' }}
+      # Everything the two syncs write. Deliberately used unquoted, as three
+      # pathspecs.
+      SYNC_PATHS: src/scripting/lua/mudlet-lua src/scripting/lua/specs src/import/defaults
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Full history, so the branch of a still-open PR arrives as a
+          # remote-tracking ref the next step can simply switch to. The repo is
+          # ~20 MB; this costs nothing worth shaving.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      # No `yarn install`: both sync scripts are plain node with no imports
+      # outside node: builtins, and skipping the install keeps a no-drift run
+      # down to seconds.
+
+      # Resolved once and handed to both scripts as `--ref <sha>`. Left as
+      # `development`, each script would resolve the branch on its own and a push
+      # landing between them would pin the runtime and its tests to different
+      # commits — the one failure mode syncing them together exists to prevent.
+      - name: Resolve the upstream commit
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha=$(gh api "repos/Mudlet/Mudlet/commits/$UPSTREAM_REF" --jq .sha)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short=${sha:0:8}" >> "$GITHUB_OUTPUT"
+          echo "Mudlet/Mudlet@$UPSTREAM_REF is $sha"
+
+      # An open PR is a triage in progress, and its human commits (a
+      # knownDivergences entry, a parity fix) have to survive the next day's
+      # sync — so continue that branch rather than rebuilding it. With no open
+      # PR the branch is disposable and starts again from master, which is also
+      # what should happen when somebody closed the PR to reject a batch.
+      - name: Pick the branch to sync onto
+        id: branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // ""')
+          if [ -n "$pr" ]; then
+            echo "Continuing open PR #$pr on $BRANCH"
+            git switch "$BRANCH"
+          else
+            echo "No open PR for $BRANCH — starting from ${{ github.ref_name }}"
+            git switch -c "$BRANCH"
+          fi
+          echo "pr=$pr" >> "$GITHUB_OUTPUT"
+
+      # The runtime first, then the corpus that tests it — same order a human
+      # would read the diff in. A patch that no longer applies makes
+      # sync-mudlet-lua exit non-zero, and it does so having already written the
+      # tree: the file is pristine upstream and the mudix change it carried is
+      # gone. That must not be pushed, so this step failing skips everything
+      # below and goes straight to the triage issue.
+      - name: Sync
+        id: sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          pin='${{ steps.upstream.outputs.sha }}'
+          node scripts/sync-mudlet-lua.mjs   --ref "$pin" | tee lua.log
+          node scripts/sync-mudlet-specs.mjs --ref "$pin" | tee specs.log
+          if [ -z "$(git status --porcelain -- $SYNC_PATHS)" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo "## Mudlet/Mudlet@\`${{ steps.upstream.outputs.short }}\` ($UPSTREAM_REF)"
+            for log in lua specs; do
+              echo
+              echo "### \`sync:mudlet-$log\`"
+              echo '```'
+              cat "$log.log"
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Artefacts of this run, never part of the commit.
+          rm -f lua.log specs.log
+
+      - name: Push the branch
+        id: push
+        if: steps.sync.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A -- $SYNC_PATHS
+          git commit \
+            -m "chore: sync vendored Mudlet trees to ${{ steps.upstream.outputs.short }}" \
+            -m "Automated by .github/workflows/sync-mudlet-upstream.yml from Mudlet/Mudlet@${{ steps.upstream.outputs.sha }}."
+          # --force only bites on the no-open-PR path, where the branch is a
+          # leftover from a closed PR and is being rebuilt from master on
+          # purpose; continuing an open PR is a fast-forward.
+          git push --force origin "$BRANCH"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update the PR
+        id: pr
+        if: steps.sync.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > body.md <<'EOF'
+          Automated re-sync of the vendored Mudlet trees — the Lua runtime and
+          default packages (`sync:mudlet-lua`) and the busted corpus that tests
+          them (`sync:mudlet-specs`), both pinned to the same upstream commit.
+
+          The spec corpus is a verbatim mirror, so **a red run here is a parity
+          report, not a broken PR**: it means Mudlet has specs for behaviour this
+          client does not match yet. Triage on this branch —
+
+          - `yarn busted:failures` re-runs only what failed;
+          - fix the gap, or record why matching would be wrong in
+            `e2e/knownDivergences.ts`;
+          - a package that moved may need `src/import/defaultPackages.ts` updating —
+            vendoring is not preinstalling, and a bumped archive needs its
+            declared `version` bumped to match;
+          - commits pushed here survive: tomorrow's sync stacks onto this PR
+            rather than replacing it.
+
+          <sub>Opened by `.github/workflows/sync-mudlet-upstream.yml` for #65. It
+          dispatches ci.yml at this commit and merges once that is green.</sub>
+
+          ---
+
+          ```
+          EOF
+          # The step summary holds both sync logs in full; the file list is
+          # repeated here so the diff keeps a description after log retention
+          # expires.
+          git show --stat --oneline HEAD | tail -n +2 >> body.md
+          printf '```\n' >> body.md
+
+          title="chore: sync vendored Mudlet trees to ${{ steps.upstream.outputs.short }}"
+          if [ -n "${{ steps.branch.outputs.pr }}" ]; then
+            number='${{ steps.branch.outputs.pr }}'
+            gh pr edit "$number" --title "$title" --body-file body.md
+          else
+            number=$(gh pr create \
+              --base '${{ github.ref_name }}' --head "$BRANCH" \
+              --title "$title" --body-file body.md \
+              | tail -1 | sed 's#.*/##')
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          echo "Pull request #$number" >> "$GITHUB_STEP_SUMMARY"
+          rm -f body.md
+
+      # The dispatch is the whole trick that makes a bot token enough here — see
+      # the header. It is asynchronous and returns no id, so the run is found by
+      # the commit it is for; filtering on the sha (not just the branch) is what
+      # keeps a leftover run from a previous day off this verdict.
+      - name: Run ci.yml at the pushed commit
+        id: ci
+        if: steps.sync.outputs.changed == 'true' && (inputs.merge == null || inputs.merge)
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          head='${{ steps.push.outputs.sha }}'
+          gh workflow run ci.yml --ref "$BRANCH" || exit 1
+          for _ in $(seq 1 30); do
+            id=$(gh run list --workflow ci.yml --branch "$BRANCH" --event workflow_dispatch \
+              --json databaseId,headSha \
+              --jq "map(select(.headSha == \"$head\")) | .[0].databaseId // empty")
+            [ -n "${id:-}" ] && break
+            echo "ci.yml has not started on $head yet — waiting."
+            sleep 10
+          done
+          if [ -z "${id:-}" ]; then
+            echo "::error::ci.yml did not start on $BRANCH at $head."
+            exit 1
+          fi
+          echo "Watching $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$id"
+          gh run watch "$id" --exit-status --interval 60
+
+      - name: Merge
+        if: steps.ci.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh pr merge '${{ steps.pr.outputs.number }}' --squash --delete-branch
+          echo "Merged #${{ steps.pr.outputs.number }}." >> "$GITHUB_STEP_SUMMARY"
+
+      # Covers both halves of "it went wrong": a red PR (the ci step is
+      # continue-on-error, so the job is otherwise still green here) and a
+      # failure of the run itself — a patch that no longer applies, a GitHub
+      # outage, a refused merge. One issue is reused across days, so trees that
+      # stay red for a week are one thread rather than seven issues.
+      - name: Report the failure as an issue
+        if: ${{ failure() || steps.ci.outcome == 'failure' }}
+        shell: bash
+        env:
+          TITLE: Mudlet upstream sync needs triage
+        run: |
+          set -euo pipefail
+          if [ '${{ steps.ci.outcome }}' = 'failure' ]; then
+            what="ci.yml is red on #${{ steps.pr.outputs.number }}, syncing Mudlet/Mudlet@\`${{ steps.upstream.outputs.short }}\`.
+
+          The spec corpus is a verbatim mirror of Mudlet's tests, so this is far more likely a genuine parity gap than a broken sync: upstream has specs for behaviour this client does not match yet. Triage on \`$BRANCH\` — \`yarn busted:failures\` re-runs just the failures, and a divergence that should *not* be closed belongs in \`e2e/knownDivergences.ts\`. The PR stays open, and tomorrow's sync stacks onto it."
+          else
+            what="The sync run itself failed before it could reach a verdict — nothing was merged, and the pins in the two \`SYNCED.md\` files are unchanged.
+
+          Two causes are worth checking first: a patch under \`scripts/mudlet-lua-patches/\` that no longer applies (\`sync-mudlet-lua\` exits non-zero and names it — the mudix change it carried is gone from the tree until it is re-applied by hand), or the repository setting **Allow GitHub Actions to create and approve pull requests**, without which \`gh pr create\` is refused."
+          fi
+          body=$(printf '%s\n\n[Run log](%s)\n\n<sub>Opened by `sync-mudlet-upstream.yml`. Close it once the trees are green again; the next red run opens a fresh one.</sub>' "$what" "$RUN_URL")
+
+          existing=$(gh issue list --state open --search "\"$TITLE\" in:title" \
+            --json number --jq '.[0].number // ""')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+            echo "Commented on #$existing." >> "$GITHUB_STEP_SUMMARY"
+          else
+            gh issue create --title "$TITLE" --label 'follow up' --body "$body"
+          fi
