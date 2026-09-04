@@ -3756,6 +3756,14 @@ export class ScriptingEngine implements EngineHost {
         namedSpans?: Record<string, { start: number; length: number }>,
         matchStart?: number,
     ): void {
+        // Built-in sound, first: TTrigger::execute plays it ahead of the command
+        // and the script (TTrigger.cpp:1320-1330), at full volume — desktop has
+        // no GUI for the level either — and through the API media origin, so
+        // muteMediaAPI silences it like any playSoundFile.
+        if (trigger.soundTrigger && trigger.soundFile) {
+            void this.api.sounds.playSound({ name: trigger.soundFile, volume: 100, origin: 'api' });
+        }
+
         // Built-in command send
         if (trigger.command) {
             const cmd = trigger.command.replace(/%(\d)/g, (_, d) => {

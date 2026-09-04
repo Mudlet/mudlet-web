@@ -97,6 +97,66 @@ describe('parseMudletXml — keys with no binding set', () => {
     });
 });
 
+// The importer read none of the sound / colour-trigger / triggerType state, so
+// every one of these was silently dropped and then written back as the
+// exporter's constant — destroying it in a linked profile rather than merely
+// ignoring it. Mudlet: XMLimport.cpp:1358 (isSoundTrigger), :1359
+// (isColorTrigger), :1380 (triggerType), :1393/:1395 (colour-trigger colours),
+// :1406 (mSoundFile); the kind numbering is TTrigger.h:49-56.
+describe('parseMudletXml — trigger sound, colour-trigger and triggerType', () => {
+    const parse = (body: string) => parseMudletXml(`<?xml version="1.0" encoding="UTF-8"?>
+<MudletPackage version="1.001"><TriggerPackage>${body}</TriggerPackage></MudletPackage>`).triggers[0];
+
+    const loaded = parse(`
+    <Trigger isActive="yes" isFolder="no" isSoundTrigger="yes" isColorTrigger="yes"
+             isColorTriggerFg="yes" isColorTriggerBg="no">
+      <name>Ding</name>
+      <script></script>
+      <triggerType>7</triggerType>
+      <mSoundFile>/home/me/ding.wav</mSoundFile>
+      <colorTriggerFgColor>#ff8800</colorTriggerFgColor>
+      <colorTriggerBgColor>#001122</colorTriggerBgColor>
+      <regexCodeList><string>You are hungry</string></regexCodeList>
+      <regexCodePropertyList><integer>0</integer></regexCodePropertyList>
+    </Trigger>`);
+
+    it('imports the sound trigger switch and its file', () => {
+        expect(loaded.soundTrigger).toBe(true);
+        expect(loaded.soundFile).toBe('/home/me/ding.wav');
+    });
+
+    it('imports the legacy colour-trigger switch and both of its colours', () => {
+        expect(loaded.colorTrigger).toBe(true);
+        expect(loaded.colorTriggerFgColor).toBe('#ff8800');
+        expect(loaded.colorTriggerBgColor).toBe('#001122');
+    });
+
+    it('imports the node-level triggerType, not just the per-pattern kinds', () => {
+        // 7 is REGEX_PROMPT; the single pattern is still kind 0 (substring).
+        expect(loaded.triggerType).toBe(7);
+        expect(loaded.patterns).toEqual([{ text: 'You are hungry', type: 'substring' }]);
+    });
+
+    it('leaves all of them unset for a plain trigger', () => {
+        const plain = parse(`
+    <Trigger isActive="yes" isFolder="no">
+      <name>Plain</name><script></script><triggerType>0</triggerType>
+      <mSoundFile></mSoundFile>
+      <colorTriggerFgColor>#000000</colorTriggerFgColor>
+      <colorTriggerBgColor>#000000</colorTriggerBgColor>
+      <regexCodeList><string>hi</string></regexCodeList>
+      <regexCodePropertyList><integer>0</integer></regexCodePropertyList>
+    </Trigger>`);
+        expect(plain.soundTrigger).toBeUndefined();
+        expect(plain.soundFile).toBeUndefined();
+        expect(plain.colorTrigger).toBeUndefined();
+        expect(plain.triggerType).toBeUndefined();
+        // The colours have no "absent" spelling — '#000000' IS desktop's unset
+        // value — so they are kept verbatim and written straight back out.
+        expect(plain.colorTriggerFgColor).toBe('#000000');
+        expect(plain.colorTriggerBgColor).toBe('#000000');
+    });
+});
 // Import used to never read isColorizerTrigger/mFgColor/mBgColor even though the
 // exporter writes them, so the highlight was dropped on the way in and then
 // overwritten with isColorizerTrigger="no" + transparent on the next link-mode

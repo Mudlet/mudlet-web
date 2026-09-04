@@ -161,6 +161,26 @@ function parseTriggers(els: Element[], parentId: string | null, out: TriggerNode
             multiline: isYes(el, 'isMultiline'),
             delta: parseInt(getText(el, 'conditonLineDelta')) || 0,
             isFilter: isYes(el, 'isFilterTrigger'),
+            // The node-level trigger kind (XMLimport.cpp:1380). Not the same
+            // thing as the per-pattern kinds above, and desktop restores it on
+            // load and on paste (EditorItemXMLHelpers.cpp:316), so dropping it
+            // and writing 0 back rewrites the user's own profile.
+            triggerType: parseInt(getText(el, 'triggerType')) || undefined,
+            // Sound trigger (XMLimport.cpp:1358 for the switch, :1406 for the
+            // file). TTrigger::execute plays the file on every fire.
+            soundTrigger: isYes(el, 'isSoundTrigger') || undefined,
+            soundFile: getText(el, 'mSoundFile') || undefined,
+            // Legacy per-node colour trigger (XMLimport.cpp:1359 for the switch,
+            // :1393/:1395 for the colours). Inert here — see TriggerNode — but
+            // desktop keeps it across a save/load and so must we.
+            //
+            // Its isColorTriggerFg / isColorTriggerBg companions are deliberately
+            // absent: desktop writes them from mColorTriggerFgAnsi/BgAnsi
+            // (XMLexport.cpp:1009-1010) and never reads them back, so they carry
+            // nothing a reload could restore.
+            colorTrigger: isYes(el, 'isColorTrigger') || undefined,
+            colorTriggerFgColor: getText(el, 'colorTriggerFgColor') || undefined,
+            colorTriggerBgColor: getText(el, 'colorTriggerBgColor') || undefined,
             colorize: isYes(el, 'isColorizerTrigger'),
             highlight: parseHighlight(el),
             packageName: getText(el, 'packageName') || undefined,
