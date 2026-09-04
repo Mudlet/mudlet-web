@@ -33,10 +33,15 @@ export interface MudConnection {
      *  the connection record so the editor can read/write it without mounting the
      *  profile. */
     charLoginAccount?: string;
-    /** GMCP `Char.Login` password. ⚠ SECURITY: persisted in **plaintext** in
-     *  localStorage (the app store is not encrypted) — only ever written when the
-     *  user explicitly opts in. Convenient for auto-login but not secure on a
-     *  shared machine. Never logged; relayed straight to the server on login. */
+    /** @deprecated The pre-vault plaintext password field. Nothing writes it any
+     *  more: passwords now live encrypted in the credential vault
+     *  (`vault/CredentialVault`), because this one sat in localStorage in the
+     *  clear and the UI offering it had to warn against itself (issue #25).
+     *
+     *  Still *read* (see `utils/storedCredentials`) so an existing saved login
+     *  keeps working, and folded into the vault — then deleted from here — the
+     *  first time the user sets one up. Remove the field once enough releases
+     *  have passed for that migration to have run everywhere. */
     charLoginPassword?: string;
     /** Set when this profile was created by linking a Mudlet folder (Link mode):
      *  the folder is the source of truth — its `current/*.xml` is re-read on every

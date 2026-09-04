@@ -8,19 +8,24 @@ interface CharLoginModalProps {
     connectionName?: string;
     /** Error from a previous failed attempt (Char.Login.Result success=false). */
     error?: string;
-    /** Account/username to prefill (saved per-profile credential). */
+    /** Account/username to prefill. Not a secret — it lives on the connection
+     *  record, and prefilling it is also what lets a password manager pick the
+     *  matching password instead of listing every profile's. */
     initialAccount?: string;
-    /** Password to prefill (saved per-profile credential — plaintext). */
+    /** Password to prefill, from the unlocked vault. */
     initialPassword?: string;
-    /** Initial state of the "remember on this device" checkbox. */
-    initialRemember?: boolean;
-    /** Show the "remember on this device" checkbox (default true). Branded
-     *  builds hide it — credentials are never persisted there, so `onSubmit`
-     *  always receives `remember=false`. */
-    allowRemember?: boolean;
+    /** Initial state of the "save this password" checkbox. */
+    initialSave?: boolean;
+    /** Offer to save the password (default true). False where there is nothing
+     *  to save it into: branded builds, which never persist credentials, and
+     *  pages served without a secure context. */
+    allowSave?: boolean;
+    /** Wording under the checkbox — the caller knows whether ticking it will
+     *  store into an existing vault or set one up first. */
+    saveNote?: string;
     /** Send `account` + `password` to the server (Char.Login.Credentials).
-     *  `remember` tells the caller whether to persist them for next time. */
-    onSubmit: (account: string, password: string, remember: boolean) => void;
+     *  `save` asks the caller to put the password in the credential vault. */
+    onSubmit: (account: string, password: string, save: boolean) => void;
     /** Decline GMCP login — sends the empty reply so the server falls back to
      *  its text login prompt. */
     onCancel: () => void;
@@ -33,25 +38,30 @@ interface CharLoginModalProps {
 /**
  * Credentials popup for GMCP `Char.Login` authentication. Rendered as a real
  * `<form>` with `autocomplete="username"` / `autocomplete="current-password"`
- * inputs so browser password managers offer to fill and save. Optionally
- * remembers the account + password per profile (plaintext localStorage — see
- * the inline warning); the password is otherwise handed straight to `onSubmit`
- * and relayed to the server, never stored. Cancelling falls back to text login.
+ * inputs so browser password managers can still fill and save for anyone who
+ * prefers them.
+ *
+ * Saving is the credential vault's job (`vault/CredentialVault`): ticking the
+ * box hands the password to the caller, which encrypts it under a key derived
+ * from a passkey or a passphrase. That replaced an older checkbox that wrote
+ * the password to localStorage in the clear and had to apologise for it in a
+ * red warning right underneath — see issue #25.
  */
 export function CharLoginModal({
     connectionName,
     error,
     initialAccount,
     initialPassword,
-    initialRemember,
-    allowRemember = true,
+    initialSave,
+    allowSave = true,
+    saveNote,
     onSubmit,
     onCancel,
     restoreFocusTo,
 }: CharLoginModalProps) {
     const [account, setAccount] = useState(initialAccount ?? '');
     const [password, setPassword] = useState(initialPassword ?? '');
-    const [remember, setRemember] = useState(allowRemember && (initialRemember ?? !!initialPassword));
+    const [save, setSave] = useState(allowSave && (initialSave ?? !!initialPassword));
     const accountRef = useRef<HTMLInputElement>(null);
     const passwordRef = useRef<HTMLInputElement>(null);
     // Trap + restore only; this modal keeps its own Escape (window) and its own
@@ -81,7 +91,7 @@ export function CharLoginModal({
             accountRef.current?.focus();
             return;
         }
-        onSubmit(trimmed, password, remember);
+        onSubmit(trimmed, password, save);
     };
 
     return (
@@ -134,21 +144,18 @@ export function CharLoginModal({
                                 placeholder="password"
                             />
                         </label>
-                        {allowRemember && (
-                            <label className="char-login-remember">
+                        {allowSave && (
+                            <label className="vault-save-row">
                                 <input
                                     type="checkbox"
-                                    checked={remember}
-                                    onChange={e => setRemember(e.target.checked)}
+                                    checked={save}
+                                    onChange={e => setSave(e.target.checked)}
                                 />
-                                <span>Remember on this device</span>
+                                <span>Save this password</span>
                             </label>
                         )}
-                        {remember && (
-                            <p className="cred-warning" role="note">
-                                ⚠ Saves unencrypted in your browser's storage. Any script running on
-                                this page — an installed package, or an XSS bug — could read it.
-                            </p>
+                        {allowSave && save && saveNote && (
+                            <p className="vault-save-note" role="note">{saveNote}</p>
                         )}
                         <div className="char-login-actions">
                             <Button type="button" variant="ghost" onClick={onCancel}>

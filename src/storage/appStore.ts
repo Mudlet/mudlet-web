@@ -6,6 +6,7 @@ import type { MudletImportResult } from '../import/mudletXmlImport';
 import type { WindowOpenOptions } from '../ui/windows/types';
 import { createDebouncedJsonStorage } from './debouncedStorage';
 import { deleteSessionsForConnection } from './logStorage';
+import { getVault } from '../vault/vaultAccess';
 
 function getDescendantIds(id: string, items: { id: string; parentId: string | null }[]): string[] {
     const result: string[] = [];
@@ -213,6 +214,10 @@ export const useAppStore = create<AppStore>()(
                 // Logs live in their own IndexedDB (like maps). Drop them
                 // best-effort; the store update below is synchronous regardless.
                 void deleteSessionsForConnection(id).catch(() => {});
+                // Same for a saved password in the credential vault. A locked
+                // vault can't rewrite its ciphertext, so the entry is swept on
+                // the next unlock instead (CredentialVault.pruneMissing).
+                void getVault()?.forgetConnection(id).catch(() => {});
                 const { [id]: _h, ...restHints } = s.connectionWindowHints;
                 const { [id]: _e, ...restExtents } = s.connectionDockExtents;
                 const { [id]: _sc, ...restScripts } = s.connectionScripts;

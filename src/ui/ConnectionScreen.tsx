@@ -14,6 +14,8 @@ import { getBrand } from '../branding';
 import { extractMudletProfileZipAll, resolveModulesFromTree, addModuleToBundle, type MudletProfileBundle } from '../import/mudletProfileImport';
 import { importMudletProfile, bundleFromDirectory, linkMudletFolder } from '../import/applyMudletProfile';
 import { ModuleResolveModal, type ModuleUpload } from './ModuleResolveModal';
+import { useVaultSaver } from './useVaultSaver';
+import { VaultManageButton } from './VaultManageButton';
 import type { MudletModuleRef } from '../import/mudletHost';
 
 interface Props {
@@ -38,6 +40,7 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
     const openIds = useOpenProfiles(!connecting);
     // null = editor closed; { connection: null } = add a new one; { connection: c } = edit c.
     const [editor, setEditor] = useState<{ connection: MudConnection | null } | null>(null);
+    const vaultSaver = useVaultSaver();
     const [aboutOpen, setAboutOpen] = useState(false);
     // Opened either from the tools row (default topic) or from the import row's
     // "how do I do this?" link, which jumps straight to the migration guide.
@@ -207,6 +210,8 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
                             Export profiles…
                         </Button>
                     )}
+                    {/* Renders nothing in a build with no credential vault. */}
+                    <VaultManageButton connections={connections} disabled={connecting || importing} />
                 </div>
                 {importError && (
                     <div className="connection-import-error" style={{ color: 'var(--danger, #e06c75)', fontSize: 12, textAlign: 'center' }}>
@@ -242,8 +247,12 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
                 onAdd={onAdd}
                 onUpdate={onUpdate}
                 onClose={() => setEditor(null)}
+                vaultSaver={vaultSaver}
             />
         )}
+        {/* Outside the editor on purpose: a vault setup/unlock step raised by
+            saving a password has to outlive the form that asked for it. */}
+        {vaultSaver.element}
         {pendingImports.length > 0 && (
             <ModuleResolveModal
                 key={pendingImports[0].bundle.name}

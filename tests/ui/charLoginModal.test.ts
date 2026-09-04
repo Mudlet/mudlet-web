@@ -35,9 +35,14 @@ describe('CharLoginModal markup', () => {
         expect(withError).toContain('role="alert"');
     });
 
-    it('has a remember-on-this-device checkbox', () => {
+    it('has a save-this-password checkbox', () => {
         expect(html).toMatch(/<input[^>]*type="checkbox"/i);
-        expect(html).toContain('Remember on this device');
+        expect(html).toContain('Save this password');
+    });
+
+    it('omits the save checkbox where there is nowhere to save to', () => {
+        // Branded builds and vault-less builds pass allowSave=false.
+        expect(render({ allowSave: false })).not.toContain('Save this password');
     });
 
     it('prefills saved account + password', () => {
@@ -46,11 +51,11 @@ describe('CharLoginModal markup', () => {
         expect(prefilled).toMatch(/value="hunter2"/);
     });
 
-    it('shows the storage warning (script/XSS risk, not physical) when remember is on', () => {
-        // initialPassword defaults the checkbox to checked, so the warning shows.
-        const remembered = render({ initialAccount: 'a', initialPassword: 'b' });
-        expect(remembered).toMatch(/unencrypted/i);
-        expect(remembered).toMatch(/script running on this page|XSS/i);
-        expect(remembered).not.toMatch(/shared computer/i);
+    it('says where a saved password goes, and no longer warns about itself', () => {
+        // The old checkbox wrote plaintext to localStorage and had to apologise
+        // for it right underneath (issue #25). The vault replaced both.
+        const saving = render({ initialAccount: 'a', initialPassword: 'b', saveNote: 'Kept in your encrypted saved logins.' });
+        expect(saving).toContain('Kept in your encrypted saved logins.');
+        expect(saving).not.toMatch(/unencrypted/i);
     });
 });

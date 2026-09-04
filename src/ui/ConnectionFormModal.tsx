@@ -4,6 +4,8 @@ import { useModalFocus } from './components/useModalFocus';
 import { ProxyInfoModal } from './ProxyInfoModal';
 import { ProxyWhyModal } from './ProxyWhyModal';
 import { connectionNameTaken, DEFAULT_PROXY_URL, proxyCanInspectCertificates, useAppStore, type ConnectionMode, type MudConnection } from '../storage';
+import type { VaultSaver } from './useVaultSaver';
+import { useVault } from '../vault/useVault';
 
 /** Preview of the proxy URL the profile will dial. Mirrors `connectionUrl()` in
  *  storage/schema.ts — keep the two in step. */
@@ -48,9 +50,13 @@ interface Props {
     onAdd: (data: Omit<MudConnection, 'id'>) => string;
     onUpdate: (id: string, data: Omit<MudConnection, 'id'>) => void;
     onClose: () => void;
+    /** Where a typed password goes. Owned by the screen above, not by this
+     *  modal: saving may need a vault setup or unlock step, and this form closes
+     *  on submit — a prompt rendered from here would unmount with it. */
+    vaultSaver: VaultSaver;
 }
 
-export function ConnectionFormModal({ connection, firstConnection, busy, onAdd, onUpdate, onClose }: Props) {
+export function ConnectionFormModal({ connection, firstConnection, busy, onAdd, onUpdate, onClose, vaultSaver }: Props) {
     const userProxyUrl = useAppStore(s => s.client.userProxyUrl);
     const effectiveDefaultProxy = userProxyUrl || DEFAULT_PROXY_URL;
 
@@ -72,7 +78,16 @@ export function ConnectionFormModal({ connection, firstConnection, busy, onAdd, 
     // editing the proxy URL updates the form without a save/reopen.
     const certOptionsSupported = proxyCanInspectCertificates(proxyUrl.trim() || effectiveDefaultProxy);
     const [account, setAccount] = useState(connection?.charLoginAccount ?? '');
-    const [password, setPassword] = useState(connection?.charLoginPassword ?? '');
+    // Never prefilled from the vault: this form is reachable without unlocking
+    // it, and a blank field that means "unchanged" beats one that misrepresents
+    // what is stored. An empty box therefore leaves a saved password alone; the
+    // "Forget" button next to it is how you remove one.
+    const [password, setPassword] = useState('');
+    // Whether the vault already holds one for this profile. Answerable while
+    // the vault is locked, so the field can say "saved" without opening it.
+    const vaultEntries = useVault().entryIds;
+    const savedId = connection?.id;
+    const hasSavedPassword = !!savedId && vaultEntries.includes(savedId);
     const [description, setDescription] = useState(connection?.description ?? '');
 
     const [proxyModalOpen, setProxyModalOpen] = useState(false);
@@ -102,7 +117,10 @@ export function ConnectionFormModal({ connection, firstConnection, busy, onAdd, 
             autoReconnect: autoReconnect || undefined,
             icon: connection?.icon,
             charLoginAccount: acct || undefined,
-            charLoginPassword: acct && password ? password : undefined,
+            // The password is not written here any more — it goes to the
+            // credential vault in handleSubmit. Clearing the field also clears
+            // any pre-vault plaintext copy still on the record (issue #25).
+            charLoginPassword: undefined,
             description: description.trim() || undefined,
         };
         if (mode === 'mud') {
@@ -133,8 +151,12 @@ export function ConnectionFormModal({ connection, firstConnection, busy, onAdd, 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
         if (!canSubmit) return;
-        if (isEditing) onUpdate(connection.id, buildData());
-        else onAdd(buildData());
+        let id: string;
+        if (isEditing) { id = connection.id; onUpdate(id, buildData()); }
+        else { id = onAdd(buildData()); }
+        // A typed password is a new one to store; an empty field means "leave
+        // whatever is saved alone", so only an explicit Forget removes it.
+        if (account.trim() && password) vaultSaver.save(id, password);
         onClose();
     };
 
@@ -387,7 +409,8 @@ export function ConnectionFormModal({ connection, firstConnection, busy, onAdd, 
                                         autoComplete="current-password"
                                         value={password}
                                         onChange={e => setPassword(e.target.value)}
-                                        placeholder="password"
+                                        placeholder={hasSavedPassword ? 'saved — type to replace' : 'password'}
+                                        disabled={!vaultSaver.canSave}
                                     />
                                 </FormField>
                             </div>
@@ -395,12 +418,28 @@ export function ConnectionFormModal({ connection, firstConnection, busy, onAdd, 
                                 Auto-login: sent to GMCP login, or typed at the name/password prompts on
                                 text-login MUDs.
                             </span>
-                            {(account.trim() || password) && (
-                                <p className="cred-warning" role="note">
-                                    ⚠ Saves unencrypted in your browser's storage. Any script running on
-                                    this page — an installed package, or an XSS bug — could read it.
-                                </p>
-                            )}
+                            {vaultSaver.canSave
+                                ? (
+                                    <div className="vault-save-row">
+                                        <span className="vault-save-note">{vaultSaver.note}</span>
+                                        {hasSavedPassword && (
+                                            <Button
+                                                type="button"
+                                                size="sm"
+                                                variant="ghost"
+                                                onClick={() => { setPassword(''); if (savedId) vaultSaver.save(savedId, null); }}
+                                            >
+                                                Forget
+                                            </Button>
+                                        )}
+                                    </div>
+                                )
+                                : (
+                                    <p className="vault-save-note" role="note">
+                                        This build doesn't store passwords — enter one at the game's login
+                                        prompt instead.
+                                    </p>
+                                )}
                         </div>
 
                         <div className="connection-form-actions">

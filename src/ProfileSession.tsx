@@ -29,7 +29,11 @@ import { DEFAULT_STICKY_LINES } from './hooks/useOutput';
 import { applyOutputFont, primeLocalFontsCache } from './utils/fontLoader';
 import { setBaseTitle, flashTitle, clearTitleFlash } from './utils/documentTitle';
 import { getBrand, isBrandedMode } from './branding';
-import { getSessionCredentials, setSessionCredentials } from './utils/sessionCredentials';
+import { setSessionCredentials } from './utils/sessionCredentials';
+import { readStoredLogin, pruneVaultEntries } from './utils/storedCredentials';
+import { vaultNeedsUnlock } from './vault/vaultAccess';
+import { useVaultSaver } from './ui/useVaultSaver';
+import { VaultUnlockPrompt } from './ui/VaultUnlockPrompt';
 import { applyAnsiPalette, setServerRedefineColorsAllowed, resetAllPaletteColors } from './mud/text/colors';
 import { setOsc8HyperlinksEnabled } from './mud/text/hyperlinkConfig';
 import type { MudSession, ControlCharacterMode } from './mud/MudSession';
@@ -133,7 +137,17 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // is empty whenever "remember" was off — and they retype everything. The
     // password is deliberately not kept: it was just rejected, so the retry form
     // opens with it blank and the cursor already in that field.
-    const lastLoginAttempt = useRef<{ account: string; remember: boolean } | null>(null);
+    const lastLoginAttempt = useRef<{ account: string; save: boolean } | null>(null);
+    // Reason text while the credential vault's unlock prompt is up, else null.
+    const [vaultUnlock, setVaultUnlock] = useState<string | null>(null);
+    // Set when the GMCP login request is the thing waiting on that unlock, so
+    // dismissing the prompt falls through to the manual credentials form rather
+    // than leaving the server waiting for a reply that never comes.
+    const vaultPendingCharLogin = useRef(false);
+    // "Not now" on the unlock prompt, remembered for this connection: a server
+    // that re-asks for credentials must not re-raise a prompt already refused.
+    // Cleared on each connect.
+    const vaultDeclined = useRef(false);
     // Set while credentials are in flight and the server has said nothing back.
     // Cleared by a Char.Login.Result, by any server output (a game that lets us
     // in starts talking immediately), and by a disconnect the player asked for.
@@ -158,11 +172,13 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     const autoClearInput = useAppStore(s => selectProfileField(s, connection.id, 'autoClearInput')) === true;
     const commandEchoForeground = useAppStore(s => selectProfileField(s, connection.id, 'commandEchoForeground'));
     const commandEchoBackground = useAppStore(s => selectProfileField(s, connection.id, 'commandEchoBackground'));
-    // Saved GMCP Char.Login credentials (password is plaintext — opt-in only).
-    // They live on the connection record, not the VFS-backed profile settings,
-    // so the connection editor can read/write them without mounting the profile.
+    // The saved GMCP Char.Login account. Not a secret, and it lives on the
+    // connection record rather than in the VFS-backed profile settings so the
+    // connection editor can read/write it without mounting the profile. The
+    // password that goes with it lives in the credential vault — see
+    // utils/storedCredentials for the full priority order.
     const charLoginAccount = useAppStore(s => s.connections.find(c => c.id === connection.id)?.charLoginAccount);
-    const charLoginPassword = useAppStore(s => s.connections.find(c => c.id === connection.id)?.charLoginPassword);
+    const vaultSaver = useVaultSaver();
     const patchConnection = useAppStore(s => s.patchConnection);
     const protocols = useAppStore(s => selectProfileField(s, connection.id, 'protocols'));
     const gmcpEnabled = protocols?.gmcp ?? PROTOCOL_DEFAULTS.gmcp;
@@ -557,16 +573,13 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         const unsub7 = session.events.on('charLogin.request', (methods) => {
             // GMCP login takes over — disarm the text-login state machine.
             autoLoginStage.current = 'idle';
-            // In-memory credentials (branded login form) win over the stored
-            // per-profile ones; branded builds never store any.
-            const mem = getSessionCredentials(connection.id);
-            const conn = useAppStore.getState().connections.find(c => c.id === connection.id);
+            const stored = readStoredLogin(connection.id);
             const action = decideCharLoginRequest({
                 methods,
                 declined: gmcpLoginDeclined.current,
                 attempted: gmcpAutoTried.current,
-                account: mem ? mem.account : conn?.charLoginAccount,
-                password: mem ? mem.password : conn?.charLoginPassword,
+                account: stored.account,
+                password: stored.password,
             });
             if (action.kind === 'decline') {
                 session.sendCharLoginCredentials();
@@ -574,9 +587,21 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             }
             if (action.kind === 'autofill') {
                 gmcpAutoTried.current = true;
-                lastLoginAttempt.current = { account: action.account, remember: !mem };
+                // Saved credentials just went out, so a retry form should open
+                // with the save box still ticked — that is what "saved" means
+                // here, whether they came from the vault or from memory.
+                lastLoginAttempt.current = { account: action.account, save: true };
                 charLoginUnanswered.current = true;
                 session.sendCharLoginCredentials(action.account, action.password);
+                return;
+            }
+            // A locked vault holding this profile's password is the reason we
+            // have nothing to send: ask to open it rather than for a password
+            // the user already saved. Safe to do here and not at connect time —
+            // the server blocks until we answer, so there is no race to lose.
+            if (!vaultDeclined.current && vaultNeedsUnlock(connection.id)) {
+                vaultPendingCharLogin.current = true;
+                setVaultUnlock(`${connection.name} has a saved login. Unlock it to sign in.`);
                 return;
             }
             // Servers re-send Char.Login.Default to ask again after rejecting an
@@ -819,16 +844,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // mirroring Mudlet's saved-login. Armed on connect; disarmed after use, on
     // disconnect, or when GMCP Char.Login takes over (see charLogin.request).
     useEffect(() => {
-        const readCreds = () => {
-            // In-memory credentials (branded login form) win over stored ones.
-            const mem = getSessionCredentials(connection.id);
-            if (mem) return mem;
-            const conn = useAppStore.getState().connections.find(c => c.id === connection.id);
-            return {
-                account: conn?.charLoginAccount ?? '',
-                password: conn?.charLoginPassword ?? '',
-            };
-        };
+        const readCreds = () => readStoredLogin(connection.id);
         const clearNameFallback = () => {
             if (nameFallbackTimer.current !== null) {
                 window.clearTimeout(nameFallbackTimer.current);
@@ -875,7 +891,18 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             gmcpLoginDeclined.current = false;
             lastLoginAttempt.current = null;
             charLoginUnanswered.current = false;
+            vaultDeclined.current = false;
             clearNameFallback();
+            // A text-login game gives no signal we can wait behind — the name
+            // prompt arrives when it arrives — so a locked vault has to be
+            // offered here, at connect, rather than at the moment its password
+            // is wanted. Missing the window costs an autofill, not a login: the
+            // player types instead. GMCP games are usually done unlocking by the
+            // time Char.Login arrives; the handler there re-raises this prompt
+            // if they aren't, since the server waits for our reply either way.
+            if (vaultNeedsUnlock(connection.id)) {
+                setVaultUnlock(`${connection.name} has a saved login. Unlock it to sign in.`);
+            }
             const { account, password } = readCreds();
             autoLoginStage.current = account && password ? 'name' : 'idle';
             if (autoLoginStage.current === 'name') {
@@ -907,7 +934,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         const u3 = session.events.on('telnet.echo', onEcho);
         const u4 = session.events.on('client.disconnect', onDisconnect);
         return () => { u1(); u2(); u3(); u4(); clearNameFallback(); clearPassFallback(); };
-    }, [session, connection.id, send]);
+    }, [session, connection.id, connection.name, send]);
 
     // Register the getCmdLine provider on the engine. Effect re-runs when the
     // engine instance changes (connection swap). Suggestions state is reset
@@ -988,6 +1015,30 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // Hanging up on ourselves is not the game refusing the login, so drop the
     // "unanswered credentials" latch before the disconnect event fires.
     const handleDisconnect = () => { charLoginUnanswered.current = false; disconnect(); };
+
+    /**
+     * The vault unlock prompt closed. When a GMCP `Char.Login` request was the
+     * thing waiting on it, answer that request now — with the credentials the
+     * unlock just made readable, or by falling through to the manual form.
+     * Leaving it unanswered would hang the login: the server withholds its own
+     * prompt until we reply.
+     */
+    const handleVaultUnlockDone = (result: 'created' | 'unlocked' | 'closed') => {
+        setVaultUnlock(null);
+        if (result === 'closed') vaultDeclined.current = true;
+        else pruneVaultEntries();
+        if (!vaultPendingCharLogin.current) return;
+        vaultPendingCharLogin.current = false;
+        const stored = readStoredLogin(connection.id);
+        if (result !== 'closed' && stored.account && stored.password) {
+            gmcpAutoTried.current = true;
+            lastLoginAttempt.current = { account: stored.account, save: true };
+            charLoginUnanswered.current = true;
+            session.sendCharLoginCredentials(stored.account, stored.password);
+            return;
+        }
+        setCharLogin(prev => prev ?? {});
+    };
     // Reads the store rather than the `connection` snapshot, so a reconnect after
     // a TLS upgrade dials the new secure port instead of the original one.
     const handleReconnect  = () => redialFromStore();
@@ -1245,22 +1296,30 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                 in, alongside the login request). Accepting the upgrade drops the
                 connection, so collecting credentials first would throw them away
                 and ask twice; declining renders this immediately afterwards. */}
-            {charLogin && !tlsOffer && (
+            {vaultUnlock && !tlsOffer && (
+                <VaultUnlockPrompt reason={vaultUnlock} onDone={handleVaultUnlockDone} />
+            )}
+            {vaultSaver.element}
+            {charLogin && !tlsOffer && !vaultUnlock && (
                 <CharLoginModal
                     connectionName={connection.name}
                     error={charLogin.error}
                     // On a retry, prefill from the attempt the server just
                     // rejected rather than from storage (which holds nothing when
-                    // "remember" was off) — and blank the password, so the field
-                    // that most likely needs fixing is the one that takes focus.
+                    // the password was never saved) — and blank the password, so
+                    // the field that most likely needs fixing takes focus.
                     initialAccount={lastLoginAttempt.current?.account
-                        ?? getSessionCredentials(connection.id)?.account ?? charLoginAccount}
+                        || readStoredLogin(connection.id).account
+                        || charLoginAccount}
                     initialPassword={lastLoginAttempt.current
-                        ? '' : (getSessionCredentials(connection.id)?.password ?? charLoginPassword)}
-                    initialRemember={lastLoginAttempt.current?.remember}
-                    allowRemember={!isBrandedMode()}
+                        ? '' : readStoredLogin(connection.id).password}
+                    initialSave={lastLoginAttempt.current?.save}
+                    // Branded builds never persist credentials, and a build with
+                    // no vault has nowhere to put one.
+                    allowSave={!isBrandedMode() && vaultSaver.canSave}
+                    saveNote={vaultSaver.note}
                     restoreFocusTo={() => commandInputRef.current}
-                    onSubmit={(account, password, remember) => {
+                    onSubmit={(account, password, save) => {
                         // Optimistic close: most servers proceed on success. A
                         // failure re-opens the popup via the charLogin.result
                         // handler with the server's message.
@@ -1270,19 +1329,23 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                         // (servers re-ask after rejecting) must raise the form
                         // again rather than silently replay what just failed.
                         gmcpAutoTried.current = true;
-                        lastLoginAttempt.current = { account, remember };
+                        lastLoginAttempt.current = { account, save };
                         charLoginUnanswered.current = true;
                         if (isBrandedMode()) {
                             // Branded builds never persist credentials — keep
                             // them in memory for this page's reconnects only.
                             setSessionCredentials(connection.id, { account, password });
                         } else {
-                            // Persist (plaintext) or clear the saved
-                            // credentials on the connection record.
+                            // The account is not a secret and stays on the
+                            // connection record; the password goes to the vault,
+                            // which may first ask to be created or unlocked.
                             patchConnection(connection.id, {
-                                charLoginAccount: remember ? account : undefined,
-                                charLoginPassword: remember ? password : undefined,
+                                charLoginAccount: account || undefined,
+                                // Any pre-vault plaintext copy is superseded here
+                                // whichever way the box was ticked.
+                                charLoginPassword: undefined,
                             });
+                            vaultSaver.save(connection.id, save ? password : null);
                         }
                         session.sendCharLoginCredentials(account, password);
                     }}
