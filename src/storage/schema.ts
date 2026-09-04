@@ -692,6 +692,35 @@ export interface TriggerNode extends BaseNode {
         bg?: string;
     };
     command?: string;            // plain command to send on fire (%1..%9 = capture groups)
+    /**
+     * Mudlet TTrigger::mTriggerType (TTrigger.h:204) — one of the REGEX_* kinds
+     * defined at TTrigger.h:49-56, the same numbering `patterns[].type` uses.
+     * It is a *node*-level kind that desktop keeps beside the per-pattern kinds
+     * in `regexCodePropertyList`, and does nothing with beyond storing it: the
+     * only readers are the XML reader (XMLimport.cpp:1379), the XML writer
+     * (XMLexport.cpp:1017) and the editor's copy/paste helper
+     * (EditorItemXMLHelpers.cpp:316). Kept as the raw integer so a value we do
+     * not recognise still survives a linked-profile write-back unchanged.
+     */
+    triggerType?: number;
+    /**
+     * TTrigger::mSoundTrigger (TTrigger.h:149) — play `soundFile` on every fire,
+     * before the command and the script (TTrigger.cpp:1320-1330).
+     */
+    soundTrigger?: boolean;
+    /** TTrigger::mSoundFile (TTrigger.h) — the file `soundTrigger` plays. */
+    soundFile?: string;
+    /**
+     * TTrigger::mColorTrigger (TTrigger.h:152) and its two colours
+     * (mColorTriggerFgColor / mColorTriggerBgColor). This is desktop's *legacy*
+     * per-node colour trigger, set by dlgColorTrigger, and distinct from the
+     * per-pattern `colorTrigger` kind this client actually matches on. Nothing
+     * here drives matching; the fields exist so a profile that carries them
+     * survives the round trip instead of being blanked on write-back.
+     */
+    colorTrigger?: boolean;
+    colorTriggerFgColor?: string;
+    colorTriggerBgColor?: string;
 }
 
 export interface TimerNode extends BaseNode {

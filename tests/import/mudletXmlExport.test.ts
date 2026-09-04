@@ -64,3 +64,63 @@ describe('serializeMudletXml — Mudlet format', () => {
         expect(xml).not.toContain('<isTempTimer>');
     });
 });
+
+// triggerType, the sound trigger and the legacy colour-trigger state used to be
+// hardcoded on the way out — triggerType always "0", mSoundFile always empty,
+// the two colour-trigger colours always "#000000" and all four flags "no" —
+// which erased them from the user's own profile on the next link-mode flush.
+// Mudlet: XMLexport.cpp:1007-1008 (flags), :1017 (triggerType), :1024
+// (mSoundFile), :1025-1026 (colours).
+describe('serializeMudletXml — trigger fields that used to be hardcoded', () => {
+    const full = (p: Partial<TriggerNode> = {}) => trigger({
+        triggerType: 7,
+        soundTrigger: true,
+        soundFile: '/home/me/ding.wav',
+        colorTrigger: true,
+        colorTriggerFgColor: '#ff8800',
+        colorTriggerBgColor: '#001122',
+        ...p,
+    });
+
+    it('writes each field from the node instead of a constant', () => {
+        const xml = serializeMudletXml({ ...EMPTY, triggers: [full()] });
+        expect(xml).toContain('isSoundTrigger="yes"');
+        expect(xml).toContain('isColorTrigger="yes"');
+        expect(xml).toContain('<triggerType>7</triggerType>');
+        expect(xml).toContain('<mSoundFile>/home/me/ding.wav</mSoundFile>');
+        expect(xml).toContain('<colorTriggerFgColor>#ff8800</colorTriggerFgColor>');
+        expect(xml).toContain('<colorTriggerBgColor>#001122</colorTriggerBgColor>');
+    });
+
+    it('round-trips them all back through the importer', () => {
+        const back = parseMudletXml(serializeMudletXml({ ...EMPTY, triggers: [full()] })).triggers[0];
+        expect(back).toMatchObject({
+            triggerType: 7,
+            soundTrigger: true,
+            soundFile: '/home/me/ding.wav',
+            colorTrigger: true,
+            colorTriggerFgColor: '#ff8800',
+            colorTriggerBgColor: '#001122',
+        });
+    });
+
+    it("emits Mudlet's own defaults for a trigger that carries none of them", () => {
+        const xml = serializeMudletXml({ ...EMPTY, triggers: [trigger({})] });
+        expect(xml).toContain('isSoundTrigger="no"');
+        expect(xml).toContain('isColorTrigger="no"');
+        expect(xml).toContain('<triggerType>0</triggerType>');
+        expect(xml).toContain('<mSoundFile></mSoundFile>');
+        // QColor() default-constructs invalid and .name() is "#000000".
+        expect(xml).toContain('<colorTriggerFgColor>#000000</colorTriggerFgColor>');
+        expect(xml).toContain('<colorTriggerBgColor>#000000</colorTriggerBgColor>');
+    });
+
+    // isColorTriggerFg/Bg are derived on export from mColorTriggerFgAnsi/BgAnsi
+    // (XMLexport.cpp:1009-1010), and no Mudlet reader restores those, so a
+    // trigger loaded from a file always writes "no" in desktop too.
+    it('still writes the two derived colour flags as "no"', () => {
+        const xml = serializeMudletXml({ ...EMPTY, triggers: [full()] });
+        expect(xml).toContain('isColorTriggerFg="no"');
+        expect(xml).toContain('isColorTriggerBg="no"');
+    });
+});
