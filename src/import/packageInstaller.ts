@@ -35,11 +35,15 @@ function looksLikeZip(buf: Uint8Array): boolean {
     return ZIP_MAGIC.every((b, i) => buf[i] === b);
 }
 
+/** Replace path separators and other chars unsafe in a VFS directory name. */
+function sanitizePackageName(name: string): string {
+    return name.replace(/[\\/:*?"<>|]/g, '_').trim();
+}
+
 /** Strip extension, sanitize for use as a directory name. */
 function packageNameFromFile(filename: string): string {
     const base = filename.replace(/\.(mpackage|zip|xml)$/i, '');
-    // Replace path separators and other unsafe chars with underscores.
-    return base.replace(/[\\/:*?"<>|]/g, '_').trim() || 'package';
+    return sanitizePackageName(base) || 'package';
 }
 
 function isXmlEntry(path: string): boolean {
@@ -74,15 +78,18 @@ export function installPackageFromBytes(
     opts: InstallOptions = {},
 ): InstallResult {
     const kind: PackageKind = opts.kind ?? 'package';
-    const packageName = packageNameFromFile(filename);
-    const pkgDir = `${vfs.profilePath}/${packageName}`;
+    // Provisional: an archive's config.lua may rename the package out from under
+    // us, exactly as it does in Mudlet — see the rename below.
+    let packageName = packageNameFromFile(filename);
+    let pkgDir = `${vfs.profilePath}/${packageName}`;
+    let sourcePath = opts.sourcePath;
 
     // Wipe any previous install of the same package (re-install is a clean slate).
     // Skip when the source file is staged inside pkgDir — the caller pre-positioned
     // the package's contents there and the wipe would destroy what we're about to
     // install.
-    const sourceInsidePkgDir = !!opts.sourcePath
-        && (opts.sourcePath === pkgDir || opts.sourcePath.startsWith(`${pkgDir}/`));
+    const sourceInsidePkgDir = !!sourcePath
+        && (sourcePath === pkgDir || sourcePath.startsWith(`${pkgDir}/`));
     if (!sourceInsidePkgDir && vfs.exists(pkgDir)) vfs.rmdir(pkgDir);
 
     let xmlContent: string;
@@ -132,6 +139,33 @@ export function installPackageFromBytes(
         }
 
         manifestExtras = readConfigLua(entries);
+
+        // A config.lua may declare a name of its own ("mpackage"), and that name —
+        // not the archive's filename — is what the package is installed as. This is
+        // how something published as `mypkg-2.1.3.mpackage` presents itself as
+        // `mypkg`. Mudlet unpacks under the filename, reads config.lua, then
+        // physically renames the folder before importing the XML, so the folder,
+        // the node tags and the installed-package list all agree
+        // (src/Host.cpp:2130-2150 `Host::installPackage`).
+        //
+        // We used to only put the declared name in the manifest and leave the
+        // directory and every node's packageName tag on the filename. Uninstall
+        // looks both of those up by manifest.name, so it stripped nothing at all
+        // and the package kept running; a reinstall from a differently named file
+        // left the first copy live alongside the second.
+        const declared = sanitizePackageName(manifestExtras.name ?? '');
+        if (declared && declared !== packageName) {
+            const newDir = `${vfs.profilePath}/${declared}`;
+            // Re-install is a clean slate under the *effective* name too, or the
+            // rename would fail (or merge) against a previous install's directory.
+            if (newDir !== pkgDir && vfs.exists(newDir)) vfs.rmdir(newDir);
+            vfs.rename(pkgDir, newDir);
+            // A staged source file moved with the directory; the manifest must
+            // record where it actually is now.
+            if (sourceInsidePkgDir && sourcePath) sourcePath = newDir + sourcePath.slice(pkgDir.length);
+            packageName = declared;
+            pkgDir = newDir;
+        }
     } else {
         xmlContent = strFromU8(buf);
         if (kind === 'module') {
@@ -146,11 +180,15 @@ export function installPackageFromBytes(
     const data = parseMudletXml(xmlContent, { packageName });
 
     const manifest: PackageManifest = {
-        name: packageName,
         ...manifestExtras,
+        // Last word, deliberately: `packageName` already *is* the config.lua name
+        // when there was one, sanitized for use as a directory, and it is what the
+        // directory and every node tag now carry. Letting the raw declared value
+        // through here is what let the manifest disagree with both.
+        name: packageName,
         ...(xmlRelPath ? { xmlPath: xmlRelPath } : {}),
         sourceFile: filename,
-        ...(opts.sourcePath ? { sourcePath: opts.sourcePath } : {}),
+        ...(sourcePath ? { sourcePath } : {}),
         installedAt: new Date().toISOString(),
         ...(kind === 'module' ? { kind: 'module' as const, sync: false } : {}),
     };
