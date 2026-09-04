@@ -171,8 +171,8 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
             tone: 'danger',
             message: (
                 <>
-                    Permanently delete <strong>{c.name}</strong>? Its scripts, aliases, triggers and saved layout
-                    will be removed. This cannot be undone.
+                    Permanently delete <strong>{c.name}</strong>? Its scripts, aliases, triggers, saved layout,
+                    files, map and logs will be removed. This cannot be undone.
                 </>
             ),
             buttons: [
