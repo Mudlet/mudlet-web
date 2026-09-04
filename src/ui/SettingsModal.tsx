@@ -1,5 +1,5 @@
 import { Fragment, useState } from 'react';
-import { useAppStore, selectProfileField, MAPPER_DEFAULTS, PLAYER_MARKER_DEFAULTS, MAP_INFO_BG_DEFAULT, PROTOCOL_DEFAULTS, WS_SUBPROTOCOL_CHOICES, type Theme, type OutputFontSource, type ProfileSettings, type MapperSettings, type PlayerMarkerSettings, type MapInfoBgColor, type ProtocolSettings } from '../storage';
+import { useAppStore, selectProfileField, MAPPER_DEFAULTS, PLAYER_MARKER_DEFAULTS, MAP_INFO_BG_DEFAULT, PROTOCOL_DEFAULTS, WS_SUBPROTOCOL_CHOICES, SEARCH_ENGINES, resolveSearchEngine, type Theme, type OutputFontSource, type ProfileSettings, type MapperSettings, type PlayerMarkerSettings, type MapInfoBgColor, type ProtocolSettings } from '../storage';
 import { PlayerMarkerPreview } from './PlayerMarkerPreview';
 import { Input, FontPicker, Toggle, HelpTip, Button } from './components';
 import { getThemeChoices, isBrandedMode } from '../branding';
@@ -182,6 +182,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     // the way Mudlet's Host fields do: OSC 8 on, the wrap-undo off at column 80.
     const osc8Hyperlinks = useAppStore(s => selectProfileField(s, connectionId, 'osc8Hyperlinks'));
     const osc8HyperlinksOn = osc8Hyperlinks !== false;
+    const searchEngine = resolveSearchEngine(useAppStore(s => selectProfileField(s, connectionId, 'searchEngine')));
     const undoServerWrap = useAppStore(s => selectProfileField(s, connectionId, 'undoServerWrap'));
     const undoServerWrapOn = undoServerWrap === true;
     const undoServerWrapWidth = useAppStore(s => selectProfileField(s, connectionId, 'undoServerWrapWidth'));
@@ -1098,7 +1099,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
             category: 'mainDisplay' as const,
             title: 'Display options',
             description: 'The rest of what the game’s text window does with what arrives.',
-            keywords: 'hyperlink, link, clickable url, osc8, control character, CP437, tab',
+            keywords: 'hyperlink, link, clickable url, osc8, control character, CP437, tab, search engine, google, bing, duckduckgo, look up',
             body: (
                 <>
                     <div className="settings-row">
@@ -1144,6 +1145,26 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                         >
                             {CONTROL_CHARACTER_OPTIONS.map(opt => (
                                 <option key={opt.value} value={opt.value}>{opt.label}</option>
+                            ))}
+                        </select>
+                    </div>
+                    <div className="settings-row">
+                        <label className="settings-label" htmlFor="search-engine">
+                            Search selected text on:
+                            <HelpTip label="About the search engine">
+                                Which site the output's right-click <strong>Search on …</strong>
+                                {' '}entry opens for the text you have selected. Mudlet offers the
+                                same three.
+                            </HelpTip>
+                        </label>
+                        <select
+                            id="search-engine"
+                            className="settings-select"
+                            value={searchEngine}
+                            onChange={e => patchProfile({ searchEngine: e.target.value })}
+                        >
+                            {Object.keys(SEARCH_ENGINES).map(name => (
+                                <option key={name} value={name}>{name}</option>
                             ))}
                         </select>
                     </div>

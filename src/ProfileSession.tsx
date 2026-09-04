@@ -999,12 +999,17 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         return () => document.removeEventListener('keydown', handleKeyDown);
     }, [engineRef]);
 
-    // Quick-open (Cmd+P / Ctrl+P). Fires regardless of focus so it also works
-    // from inside CodeMirror editors and the command bar. preventDefault on the
-    // event suppresses the browser's print dialog.
+    // Quick-open (Cmd+Shift+P / Ctrl+Shift+P). Fires regardless of focus so it
+    // also works from inside CodeMirror editors and the command bar.
+    //
+    // Deliberately not the bare Ctrl+P this used to be: that swallowed the
+    // browser's Print dialog for as long as the app had focus, and it is
+    // Preferences on desktop Mudlet, so the one keystroke meant two different
+    // things depending on which client you were in. Shift+ is the palette
+    // chord users already know from editors, and it collides with nothing.
     useEffect(() => {
         const handleQuickOpen = (e: KeyboardEvent) => {
-            if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'p' || e.key === 'P')) {
+            if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && (e.key === 'p' || e.key === 'P')) {
                 if (!vfs) return;
                 e.preventDefault();
                 e.stopPropagation();
