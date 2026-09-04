@@ -7058,6 +7058,11 @@ do
         return 'command line "' .. tostring(name) .. '" not found'
     end
 
+    -- Splits the whole family's [cmdLineName,] word argument list. One argument
+    -- is the word for the main command line; two make the first one a name, and
+    -- a name that is not a string is the caller's mistake rather than a command
+    -- line that happens not to exist — so it raises here instead of being
+    -- stringified into a "not found" refusal further down.
     local function blacklistWord(who, n, a, b)
         if n < 1 then
             error(who .. ": bad argument #1 type (suggestion text as string expected, got no value!)", 3)
@@ -7067,6 +7072,13 @@ do
         if t ~= 'string' and t ~= 'number' then
             error(who .. ": bad argument #" .. n .. " type (suggestion text as string expected, got "
                 .. t .. "!)", 3)
+        end
+        -- Note the ")!" — this message closes its bracket before the bang,
+        -- unlike the "!)" every other argument check in this file uses. That is
+        -- how Mudlet spells this one, and CommandLine_spec matches it verbatim.
+        if n > 1 and type(a) ~= 'string' then
+            error(who .. ": bad argument #1 type (command line name as string expected, got "
+                .. type(a) .. ")!", 3)
         end
         return tostring(word), (n > 1) and a or nil
     end
@@ -7093,6 +7105,34 @@ do
         local err = cmdLineMissing(cmdLineName)
         if err then return nil, err end
         __clearCmdLineBlacklist(cmdLineName)
+    end
+
+    -- The suggestion pair is the same call shape as the blacklist pair above and
+    -- Mudlet holds it to the same contract, but it only ever got the "the word
+    -- is the last argument" check (requireTail, further up). So it neither
+    -- refused a command line that is not there — it wrote the suggestion to the
+    -- main bar instead — nor reported anything at all for one, and it answered a
+    -- plain success with the binding's undefined where Mudlet returns nothing.
+    -- Re-wrapped here, on the same helpers, so the four functions cannot drift
+    -- apart again. requireTail's own check still runs underneath and is simply
+    -- redundant: these arguments have already passed a stricter version of it.
+    do
+        local wrapped = {
+            addCmdLineSuggestion    = addCmdLineSuggestion,
+            removeCmdLineSuggestion = removeCmdLineSuggestion,
+        }
+        for who, raw in pairs(wrapped) do
+            _G[who] = function(...)
+                local n = select('#', ...)
+                local a, b = ...
+                local word, name = blacklistWord(who, n, a, b)
+                local err = cmdLineMissing(name)
+                if err then return nil, err end
+                -- Deliberately not `return raw(...)`: on success Mudlet reports
+                -- nothing, and the binding's undefined would arrive as one nil.
+                if name == nil then raw(word) else raw(name, word) end
+            end
+        end
     end
 
     -- Mudlet get/setSaveCommandHistory([cmdLineName][, save]) — whether THIS
