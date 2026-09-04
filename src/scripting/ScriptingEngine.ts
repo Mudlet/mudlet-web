@@ -1218,6 +1218,13 @@ export class ScriptingEngine implements EngineHost {
                 this.api.printError(`[installModule] ${error}`);
                 return { ok: false, error };
             }
+            // ...and the other direction: a package already holding the name.
+            // See crossKindRefusal.
+            const collision = this.crossKindInstallRefusal(prepared.manifest.name, 'module');
+            if (collision) {
+                this.api.printError(`[installModule] ${collision}`);
+                return { ok: false, error: collision };
+            }
             prepared.commit();
             const { manifest, data } = prepared;
             useAppStore.getState().installPackage(this.connectionId, manifest, data);
@@ -1504,6 +1511,38 @@ export class ScriptingEngine implements EngineHost {
         return this.runtimes.lua?.dispatchSendRequest(text) ?? false;
     }
 
+    /**
+     * The refusal for installing something under a name the *other* kind is
+     * already using, or null when the name is free of it.
+     *
+     * A package and a module may not share one name. Uninstall removes items by
+     * name alone, so a name held both ways loses both halves' items whichever
+     * half is removed — the user uninstalls a package and a module's triggers
+     * and scripts go with it, unwarned. Each half also displaced the other from
+     * its own listing, so nothing in the UI revealed the collision first
+     * (issue #104).
+     *
+     * Desktop refuses both directions with these two sentences
+     * (`Host::installPackage`, Host.cpp:2567 and :2584) and deliberately lets a
+     * profile that already holds the combination go on loading — only a *fresh*
+     * install is turned away, or a profile saved before the check existed would
+     * become unopenable. Here that exemption needs no flag: reopening a profile
+     * replays its modules through `reloadModuleFromVfs`, which never reaches
+     * this, so only the install entry points below can be refused.
+     *
+     * Asked after the name is settled, never before: `config.lua` can rename an
+     * archive to anything at all, so the file's own name answers nothing.
+     */
+    crossKindInstallRefusal(name: string, installing: 'package' | 'module'): string | null {
+        const held = installing === 'package'
+            ? this.getModuleNames().includes(name)
+            : this.getPackageNames().includes(name);
+        if (!held) return null;
+        const other = installing === 'package' ? 'module' : 'package';
+        return `A ${other} called "${name}" is already installed. `
+            + 'Please uninstall it first or choose a different name.';
+    }
+
     /** Names of every package installed in this profile. */
     getPackageNames(): string[] {
         // Packages only. Mudlet keeps modules in a list of their own and
@@ -1704,6 +1743,23 @@ export class ScriptingEngine implements EngineHost {
     }
 
     /**
+     * Register the fonts one just-installed package ships — desktop's
+     * `Host::installPackageFonts` (Host.cpp:3513), called from `installPackage`
+     * at :2802. Without it a package's font unpacked correctly and was then
+     * never handed to the browser, so nothing in the profile could use it and
+     * nothing said why (issue #103).
+     *
+     * Fire-and-forget: `FontFace.load()` is async and every caller of
+     * `notifyPackageInstalled` is not, and a font is not a reason to hold up an
+     * install that has otherwise succeeded — desktop's `loadFont` reports and
+     * carries on too. The consequence is that a package whose *own* install
+     * handler measures its font may run a frame early; the alternative is
+     * making every install path async for the rare package that ships one.
+     *
+     * Failures reach the error log rather than the console, because a font that
+     * will not load is a defect in the package, which is exactly what the
+     * Errors tab is for.
+    /**
      * Raise sysUninstall / sysUninstallPackage. Call this BEFORE removing the
      * package's items from the store so the package's own handlers (and the
      * scripts they live in) are still loaded when the event fires.
@@ -1793,6 +1849,14 @@ export class ScriptingEngine implements EngineHost {
                 const error = `package ${prepared.manifest.name} is already installed`;
                 this.api.printError(`[installPackage] ${error}`);
                 return { ok: false, error };
+            }
+            // ...and refused just as firmly when a *module* holds the name; see
+            // crossKindRefusal. Same place in the sequence, for the same reason:
+            // after config.lua has settled the name, before anything is written.
+            const collision = this.crossKindInstallRefusal(prepared.manifest.name, 'package');
+            if (collision) {
+                this.api.printError(`[installPackage] ${collision}`);
+                return { ok: false, error: collision };
             }
             prepared.commit();
             const { manifest, data } = prepared;

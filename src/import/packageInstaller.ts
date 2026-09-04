@@ -266,6 +266,21 @@ export async function installPackageFromFile(file: File, vfs: ProfileVFS, opts: 
 }
 
 /**
+ * {@link preparePackageInstall} over a `File`, for a caller that has to decide
+ * whether to go through with the install *after* seeing the name it would land
+ * under — which `config.lua` can rename to anything, so the file's own name
+ * settles nothing. Nothing is written until `commit()`; flushing the VFS
+ * afterwards is the caller's, as with every other prepare.
+ */
+export async function preparePackageInstallFromFile(
+    file: File,
+    vfs: ProfileVFS,
+    opts: InstallOptions = {},
+): Promise<PreparedInstall> {
+    return preparePackageInstall(file.name, new Uint8Array(await file.arrayBuffer()), vfs, opts);
+}
+
+/**
  * Parse a Lua string literal beginning at `start` in `text`. Supports:
  *   - "..." / '...'   with simple backslash escapes
  *   - [[ ... ]] and [=*[ ... ]=*]  long-bracket strings (multi-line)
