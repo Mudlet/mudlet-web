@@ -987,6 +987,52 @@ export function connectionNameTaken(name: string, connections: MudConnection[], 
     return connections.some(c => c.id !== exceptId && c.name.trim().toLowerCase() === wanted);
 }
 
+/** The port a `mud`-mode connection falls back to when none was typed — the
+ *  Port field's placeholder, and the telnet default both proxies assume. */
+export const DEFAULT_MUD_PORT = 23;
+
+export type PortValidation =
+    | { ok: true; port: number }
+    | { ok: false; reason: 'notANumber' | 'outOfRange'; message: string };
+
+/**
+ * Validate what the user typed into a Port field.
+ *
+ * `parseInt` is not a validator: it stops at the first character it doesn't
+ * understand and returns what it read so far, so `1e3` becomes 1, `0x50`
+ * becomes 0 and `23abc` becomes 23 — a *different* port from the one typed,
+ * saved without a word. So the text is matched against `^\d+$` first, exactly
+ * as Mudlet does (`src/dlgConnectionProfiles.cpp:2140-2160`), and only then
+ * range-checked. The two messages are Mudlet's, verbatim.
+ *
+ * The range is the one both proxies already enforce server-side
+ * (`proxy/server.ts`, `worker/index.js`) — where the rejection reason never
+ * reaches the user, who is instead told the proxy is unreachable.
+ *
+ * An empty field is accepted as {@link DEFAULT_MUD_PORT}: it is what the
+ * placeholder promises, and Mudlet's validator likewise skips an empty port.
+ */
+export function validatePort(text: string): PortValidation {
+    const trimmed = text.trim();
+    if (trimmed === '') return { ok: true, port: DEFAULT_MUD_PORT };
+    if (!/^\d+$/.test(trimmed)) {
+        return {
+            ok: false,
+            reason: 'notANumber',
+            message: 'You have to enter a number. Other characters are not permitted.',
+        };
+    }
+    const port = Number(trimmed);
+    if (port < 1 || port > 65535) {
+        return {
+            ok: false,
+            reason: 'outOfRange',
+            message: 'Port number must be above zero and below 65535.',
+        };
+    }
+    return { ok: true, port };
+}
+
 /**
  * `name` if no other profile has it, otherwise the first free `name (2)`,
  * `name (3)`, … — the same shape Mudlet gives a profile copied over an existing
