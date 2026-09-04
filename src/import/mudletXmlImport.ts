@@ -101,8 +101,32 @@ function parseAliases(els: Element[], parentId: string | null, out: AliasNode[])
         const id = crypto.randomUUID();
         const group = isGroup(el);
         out.push({ id, parentId, isGroup: group, name: getText(el, 'name'), enabled: isYes(el, 'isActive'), pattern: getRawText(el, 'regex'), command: getText(el, 'command'), code: getText(el, 'script'), language: 'lua', packageName: getText(el, 'packageName') || undefined });
-        if (group) parseAliases(directChildren(el, 'Alias', 'AliasGroup'), id, out);
+        // Recurse unconditionally: desktop's readers descend into nested children
+        // whatever `isFolder` says (XMLimport.cpp:1587 for Alias), and a non-folder
+        // parent with children is a shape real packages ship. directChildren is
+        // empty for true leaves, so this is a no-op there.
+        parseAliases(directChildren(el, 'Alias', 'AliasGroup'), id, out);
     }
+}
+
+/**
+ * The colorizer colours (XMLimport.cpp:1404 mFgColor, :1407 mBgColor). Mudlet
+ * writes "transparent" for a channel left on "keep" — and older saves an empty
+ * element — so only a real colour becomes one.
+ *
+ * Read regardless of isColorizerTrigger, which is carried separately: TTrigger
+ * holds the colours independently of the switch (defaulting them to red/yellow
+ * and exporting them either way), so gating on it here would erase a disabled
+ * trigger's colours from the user's profile on the next link-mode flush.
+ */
+function parseHighlight(el: Element): TriggerNode['highlight'] {
+    const colour = (tag: string): string | undefined => {
+        const v = getText(el, tag);
+        return v && v !== 'transparent' ? v : undefined;
+    };
+    const fg = colour('mFgColor');
+    const bg = colour('mBgColor');
+    return fg || bg ? { fg, bg } : undefined;
 }
 
 function parseTriggers(els: Element[], parentId: string | null, out: TriggerNode[]): void {
@@ -157,6 +181,8 @@ function parseTriggers(els: Element[], parentId: string | null, out: TriggerNode
             colorTrigger: isYes(el, 'isColorTrigger') || undefined,
             colorTriggerFgColor: getText(el, 'colorTriggerFgColor') || undefined,
             colorTriggerBgColor: getText(el, 'colorTriggerBgColor') || undefined,
+            colorize: isYes(el, 'isColorizerTrigger'),
+            highlight: parseHighlight(el),
             packageName: getText(el, 'packageName') || undefined,
         });
         // Triggers (unlike scripts/aliases/timers/keys) can nest under a non-folder
@@ -172,7 +198,8 @@ function parseTimers(els: Element[], parentId: string | null, out: TimerNode[]):
         const id = crypto.randomUUID();
         const group = isGroup(el);
         out.push({ id, parentId, isGroup: group, name: getText(el, 'name'), enabled: isYes(el, 'isActive'), seconds: parseTimerTime(getText(el, 'time')), code: getText(el, 'script'), language: 'lua', command: getText(el, 'command'), repeat: true, packageName: getText(el, 'packageName') || undefined });
-        if (group) parseTimers(directChildren(el, 'Timer', 'TimerGroup'), id, out);
+        // Unconditional, as in desktop's readTimerGroup (XMLimport.cpp:1517).
+        parseTimers(directChildren(el, 'Timer', 'TimerGroup'), id, out);
     }
 }
 
@@ -212,7 +239,8 @@ function parseButtons(els: Element[], parentId: string | null, out: ButtonNode[]
             packageName: getText(el, 'packageName') || undefined,
         };
         out.push(node);
-        if (group) parseButtons(directChildren(el, 'Action', 'ActionGroup'), id, out);
+        // Unconditional, as in desktop's readActionGroup (XMLimport.cpp:1685).
+        parseButtons(directChildren(el, 'Action', 'ActionGroup'), id, out);
     }
 }
 
@@ -235,7 +263,8 @@ function parseKeys(els: Element[], parentId: string | null, out: KeyNode[], warn
             warnings.push(`Key "${getText(el, 'name')}": unknown Qt key code ${qtKey} — keybinding imported with no key set`);
         }
         out.push({ id, parentId, isGroup: group, name: getText(el, 'name'), enabled: isYes(el, 'isActive'), key, modifiers: qtModifiersToList(qtMod), code: getText(el, 'script'), language: 'lua', command: getText(el, 'command'), packageName: getText(el, 'packageName') || undefined });
-        if (group) parseKeys(directChildren(el, 'Key', 'KeyGroup'), id, out, warnings);
+        // Unconditional, as in desktop's readKeyGroup (XMLimport.cpp:1816).
+        parseKeys(directChildren(el, 'Key', 'KeyGroup'), id, out, warnings);
     }
 }
 

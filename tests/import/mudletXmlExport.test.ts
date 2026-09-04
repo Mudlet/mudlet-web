@@ -124,3 +124,48 @@ describe('serializeMudletXml — trigger fields that used to be hardcoded', () =
         expect(xml).toContain('isColorTriggerBg="no"');
     });
 });
+// The colorizer switch is its own field, mirroring TTrigger: mIsColorizerTrigger
+// is what turns colorization on, while mFgColor/mBgColor are state of their own
+// that desktop writes whatever the switch says. Deriving the switch from the
+// colours' presence — as the exporter used to — erased a disabled trigger's
+// colours from the user's own profile on the next link-mode flush.
+describe('serializeMudletXml — trigger colorizer switch', () => {
+    const coloured = (p: Partial<TriggerNode>) =>
+        trigger({ highlight: { fg: '#ff0000', bg: '#ffff00' }, ...p });
+
+    it('writes the switch from `colorize`, not from the colours', () => {
+        expect(serializeMudletXml({ ...EMPTY, triggers: [coloured({ colorize: true })] }))
+            .toContain('isColorizerTrigger="yes"');
+        expect(serializeMudletXml({ ...EMPTY, triggers: [coloured({ colorize: false })] }))
+            .toContain('isColorizerTrigger="no"');
+    });
+
+    it('keeps both colours on disk while the switch is off', () => {
+        const xml = serializeMudletXml({ ...EMPTY, triggers: [coloured({ colorize: false })] });
+        expect(xml).toContain('<mFgColor>#ff0000</mFgColor>');
+        expect(xml).toContain('<mBgColor>#ffff00</mBgColor>');
+    });
+
+    it('round-trips switch and colours independently', () => {
+        for (const colorize of [true, false]) {
+            const xml = serializeMudletXml({ ...EMPTY, triggers: [coloured({ colorize })] });
+            const back = parseMudletXml(xml).triggers[0];
+            expect(back.colorize).toBe(colorize);
+            expect(back.highlight).toEqual({ fg: '#ff0000', bg: '#ffff00' });
+        }
+    });
+
+    it('writes "transparent" for a channel left on "keep"', () => {
+        const xml = serializeMudletXml({
+            ...EMPTY,
+            triggers: [trigger({ colorize: true, highlight: { fg: '#ff0000' } })],
+        });
+        expect(xml).toContain('<mBgColor>transparent</mBgColor>');
+        expect(parseMudletXml(xml).triggers[0].highlight).toEqual({ fg: '#ff0000', bg: undefined });
+    });
+
+    it('still says yes for a trigger saved before the switch existed', () => {
+        const xml = serializeMudletXml({ ...EMPTY, triggers: [coloured({})] });
+        expect(xml).toContain('isColorizerTrigger="yes"');
+    });
+});

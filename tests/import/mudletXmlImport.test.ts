@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { parseMudletXml } from '../../src/import/mudletXmlImport';
+import { isColorizing } from '../../src/storage/schema';
+import { serializeMudletXml } from '../../src/import/mudletXmlExport';
 
 // Mudlet's TScript model lets a script carry both its own body AND child
 // scripts, and its XML export nests the children directly inside the parent
@@ -153,5 +155,136 @@ describe('parseMudletXml — trigger sound, colour-trigger and triggerType', () 
         // value — so they are kept verbatim and written straight back out.
         expect(plain.colorTriggerFgColor).toBe('#000000');
         expect(plain.colorTriggerBgColor).toBe('#000000');
+    });
+});
+// Import used to never read isColorizerTrigger/mFgColor/mBgColor even though the
+// exporter writes them, so the highlight was dropped on the way in and then
+// overwritten with isColorizerTrigger="no" + transparent on the next link-mode
+// flush — destroyed in the user's own profile, not merely ignored.
+//
+// The three map onto TTrigger's own split: mIsColorizerTrigger is a master
+// switch, and mFgColor/mBgColor are state of their own that desktop defaults to
+// red/yellow and exports whatever the switch says. A colour channel set to
+// "transparent" is Mudlet's "keep" — leave that channel of the line alone.
+// Mudlet: XMLimport.cpp:1373 (switch), :1404 (fg), :1407 (bg).
+describe('parseMudletXml — trigger colorizer', () => {
+    const trig = (attrs: string, fg: string, bg: string) => `
+    <Trigger isActive="yes" isFolder="no" ${attrs}>
+      <name>Stop (Key Lift)</name>
+      <script></script>
+      <mFgColor>${fg}</mFgColor>
+      <mBgColor>${bg}</mBgColor>
+      <regexCodeList><string>Key Lift</string></regexCodeList>
+      <regexCodePropertyList><integer>0</integer></regexCodePropertyList>
+    </Trigger>`;
+    const parse = (xml: string) => parseMudletXml(`<?xml version="1.0" encoding="UTF-8"?>
+<MudletPackage version="1.001"><TriggerPackage>${xml}</TriggerPackage></MudletPackage>`).triggers[0];
+
+    it('imports both colours and the switch when the colorizer is on', () => {
+        const t = parse(trig('isColorizerTrigger="yes"', '#ff0000', '#ffff00'));
+        expect(t.colorize).toBe(true);
+        expect(t.highlight).toEqual({ fg: '#ff0000', bg: '#ffff00' });
+        expect(isColorizing(t)).toBe(true);
+    });
+
+    it('imports a single colour, leaving the other on "keep"', () => {
+        expect(parse(trig('isColorizerTrigger="yes"', '#ff0000', 'transparent')).highlight)
+            .toEqual({ fg: '#ff0000', bg: undefined });
+    });
+
+    it('keeps the colours when the switch is off, as TTrigger does', () => {
+        const t = parse(trig('isColorizerTrigger="no"', '#ff0000', '#ffff00'));
+        expect(t.colorize).toBe(false);
+        expect(t.highlight).toEqual({ fg: '#ff0000', bg: '#ffff00' });
+        expect(isColorizing(t)).toBe(false);
+    });
+
+    it('leaves highlight unset when both channels are "keep"', () => {
+        expect(parse(trig('isColorizerTrigger="yes"', 'transparent', 'transparent')).highlight)
+            .toBeUndefined();
+    });
+
+    it('treats a stored highlight with no switch as on, for profiles predating the field', () => {
+        expect(isColorizing({ highlight: { fg: '#ff0000' } })).toBe(true);
+        expect(isColorizing({})).toBe(false);
+        // An explicit switch always wins over the fallback.
+        expect(isColorizing({ colorize: false, highlight: { fg: '#ff0000' } })).toBe(false);
+    });
+});
+
+// Desktop's readers descend into nested children unconditionally — Timer
+// (XMLimport.cpp:1517), Alias (:1587), Action (:1685), Key (:1816). Web guarded
+// the recursion on isFolder for those four, so a child of a non-folder parent was
+// dropped on import and then erased from the user's profile on the next link-mode
+// write-back. Scripts and triggers already recursed unconditionally.
+describe('parseMudletXml — non-folder parents with children', () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<MudletPackage version="1.001">
+  <AliasPackage>
+    <Alias isActive="yes" isFolder="no">
+      <name>parentAlias</name><script></script><command></command><regex>^pa$</regex>
+      <Alias isActive="yes" isFolder="no">
+        <name>childAlias</name><script></script><command></command><regex>^ca$</regex>
+      </Alias>
+    </Alias>
+  </AliasPackage>
+  <TimerPackage>
+    <Timer isActive="yes" isFolder="no">
+      <name>parentTimer</name><script></script><command></command><time>00:00:01.000</time>
+      <Timer isActive="yes" isFolder="no">
+        <name>childTimer</name><script></script><command></command><time>00:00:02.000</time>
+      </Timer>
+    </Timer>
+  </TimerPackage>
+  <KeyPackage>
+    <Key isActive="yes" isFolder="no">
+      <name>parentKey</name><script></script><command></command><keyCode>78</keyCode><keyModifier>0</keyModifier>
+      <Key isActive="yes" isFolder="no">
+        <name>childKey</name><script></script><command></command><keyCode>79</keyCode><keyModifier>0</keyModifier>
+      </Key>
+    </Key>
+  </KeyPackage>
+  <ActionPackage>
+    <Action isActive="yes" isFolder="no">
+      <name>parentButton</name><script></script><location>0</location><orientation>0</orientation>
+      <Action isActive="yes" isFolder="no">
+        <name>childButton</name><script></script><location>0</location><orientation>0</orientation>
+      </Action>
+    </Action>
+  </ActionPackage>
+</MudletPackage>`;
+
+    it('imports children of a non-folder parent for every node type', () => {
+        const r = parseMudletXml(xml);
+        expect(r.aliases.map(a => a.name)).toEqual(['parentAlias', 'childAlias']);
+        expect(r.timers.map(t => t.name)).toEqual(['parentTimer', 'childTimer']);
+        expect(r.keys.map(k => k.name)).toEqual(['parentKey', 'childKey']);
+        expect(r.buttons.map(b => b.name)).toEqual(['parentButton', 'childButton']);
+    });
+
+    it('parents each child to its own non-folder parent', () => {
+        const r = parseMudletXml(xml);
+        for (const [nodes, parent, child] of [
+            [r.aliases, 'parentAlias', 'childAlias'],
+            [r.timers, 'parentTimer', 'childTimer'],
+            [r.keys, 'parentKey', 'childKey'],
+            [r.buttons, 'parentButton', 'childButton'],
+        ] as const) {
+            const p = nodes.find(n => n.name === parent)!;
+            const c = nodes.find(n => n.name === child)!;
+            expect(p.parentId).toBeNull();
+            expect(p.isGroup).toBe(false);
+            expect(c.parentId).toBe(p.id);
+        }
+    });
+
+    it('survives an export/import round trip with the hierarchy intact', () => {
+        const r = parseMudletXml(xml);
+        const back = parseMudletXml(serializeMudletXml(r));
+        expect(back.aliases.map(a => a.name)).toEqual(['parentAlias', 'childAlias']);
+        expect(back.aliases[1].parentId).toBe(back.aliases[0].id);
+        expect(back.keys.map(k => k.name)).toEqual(['parentKey', 'childKey']);
+        expect(back.buttons.map(b => b.name)).toEqual(['parentButton', 'childButton']);
+        expect(back.timers.map(t => t.name)).toEqual(['parentTimer', 'childTimer']);
     });
 });
