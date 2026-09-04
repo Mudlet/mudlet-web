@@ -15,35 +15,37 @@ export interface GameLink {
     href: string;
 }
 
-/** `<a href='…'>Label</a>`, either quote style, any attribute order. */
-const ANCHOR = /<a\b[^>]*\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>([\s\S]*?)<\/a>/gi;
+let parser: DOMParser | undefined;
 
-const ENTITIES: Record<string, string> = {
-    amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", '#39': "'", nbsp: ' ',
-};
-
-function decodeEntities(s: string): string {
-    return s.replace(/&(#\d+|[a-z]+);/gi, (whole, name: string) => {
-        const key = name.toLowerCase();
-        if (key in ENTITIES) return ENTITIES[key];
-        if (key.startsWith('#')) {
-            const code = Number(key.slice(1));
-            return Number.isFinite(code) ? String.fromCodePoint(code) : whole;
-        }
-        return whole;
-    });
+/** The fragment, parsed. `parseFromString` is what a regex over `<a …>` can
+ *  only approximate: it handles either quote style, any attribute order, and
+ *  nested markup, and it decodes entities in text and attributes alike. The
+ *  document it builds has no browsing context, so nothing in it runs or loads. */
+function anchorsIn(html: string): HTMLAnchorElement[] {
+    parser ??= new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    return [...doc.querySelectorAll<HTMLAnchorElement>('a[href]')];
 }
 
-/** Strip any nested markup and collapse whitespace, so the label is plain text. */
-function textOf(html: string): string {
-    return decodeEntities(html.replace(/<[^>]*>/g, '')).replace(/\s+/g, ' ').trim();
+/** An anchor's text, with any nested markup dropped and whitespace collapsed. */
+function textOf(anchor: HTMLAnchorElement): string {
+    return (anchor.textContent ?? '').replace(/\s+/g, ' ').trim();
 }
+
+const HAS_SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
 
 /** A label that is just the link's own address, which about half the catalogue
  *  uses (`<a href='http://www.bat.org'>http://www.bat.org</a>`): no spaces, and
- *  it reads as a hostname. */
+ *  it parses as a host with a dot in it. The URL parser settles that without
+ *  the ambiguous `(\S+\.)+` a hand-written pattern needs — `\S` matches the dot
+ *  too, so a long dotless label makes it backtrack exponentially. */
 function isBareUrlLabel(label: string): boolean {
-    return !/\s/.test(label) && /^(https?:\/\/)?(\S+\.)+[a-z]{2,}(\/\S*)?$/i.test(label);
+    if (!label || /\s/.test(label)) return false;
+    try {
+        return new URL(HAS_SCHEME.test(label) ? label : `https://${label}`).hostname.includes('.');
+    } catch {
+        return false;
+    }
 }
 
 /** What to show for a link. A real label ("Website", "Discord", "Foros") is
@@ -75,9 +77,11 @@ export function parseWebsiteLinks(websiteInfo: string | undefined): GameLink[] {
     if (!websiteInfo) return [];
     const out: GameLink[] = [];
     const seen = new Set<string>();
-    for (const [, dq, sq, inner] of websiteInfo.matchAll(ANCHOR)) {
-        const href = decodeEntities((dq ?? sq ?? '').trim());
-        const label = textOf(inner);
+    for (const anchor of anchorsIn(websiteInfo)) {
+        // The attribute as written, not `.href` — that would resolve a relative
+        // address against the page, and a relative address is one we drop.
+        const href = (anchor.getAttribute('href') ?? '').trim();
+        const label = textOf(anchor);
         if (!label || !isSafeHref(href) || seen.has(href)) continue;
         seen.add(href);
         out.push({ label: displayLabel(label, href), href });

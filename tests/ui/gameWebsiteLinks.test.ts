@@ -52,6 +52,25 @@ describe('parseWebsiteLinks', () => {
             .toEqual([{ label: 'Web&Forum', href: 'https://example.com' }]);
     });
 
+    // A single-pass regex tag-strip hands `<scr<b>ipt>` back out as a whole tag
+    // — it removes the inner `<b>` and closes the outer one up (CodeQL alert
+    // 22). We parse, so the label reads as a browser reads it.
+    it('flattens markup a single-pass tag strip would reassemble', () => {
+        expect(parseWebsiteLinks("<a href='https://example.com'>Ho<scr<b>ipt>me</a>"))
+            .toEqual([{ label: 'Hoipt>me', href: 'https://example.com' }]);
+    });
+
+    // The bare-address test used to be `(\S+\.)+[a-z]{2,}`, where `\S` matches
+    // the dot as well — 20 repetitions of "!." already took 5ms and each one
+    // after that doubled it (CodeQL alert 21). Nothing here may scale with the
+    // label's length.
+    it('answers a pathological label without backtracking', () => {
+        const started = performance.now();
+        expect(parseWebsiteLinks(`<a href='https://example.com'>${'!.'.repeat(60)}!</a>`))
+            .toEqual([{ label: 'example.com', href: 'https://example.com' }]);
+        expect(performance.now() - started).toBeLessThan(1000);
+    });
+
     // About half the catalogue labels its one link with the address itself.
     it('shortens a bare-address label to its hostname', () => {
         expect(parseWebsiteLinks("<a href='http://www.aardwolf.com/'>http://www.aardwolf.com</a>"))
