@@ -44,6 +44,24 @@ describe('bundled game catalogue', () => {
         expect(findBundledGame('MorgenGrauen')?.alternateHostUrls).toContain('mg.mud.de');
     });
 
+    // A re-run with no Mudlet checkout to copy from carries the previous
+    // generation's icons forward by name. That step used to scan the old file
+    // with a lazy regex, which ran past a game that had no icon and gave it the
+    // next game's — DarkMists wore God Wars II's banner, Rites of Passage wore
+    // ZombieMUD's, and the Mudlet self-test (no icon at all) wore Accursed
+    // Lands'. Wrong-but-plausible logos are exactly what nobody reviews, so the
+    // invariant is pinned here rather than left to the script.
+    it('gives every game its own logo, or none', () => {
+        for (const game of BUNDLED_GAMES) {
+            if (!game.iconFile) continue;
+            expect(game.icon, game.name).not.toBe('');
+            const named = game.icon.split('/').pop() ?? '';
+            // Entries pointing at a .qrc alias (":/materiaMagicaIcon") name no
+            // file — the sync resolves those through mudlet.qrc.
+            if (/\.\w+$/.test(named)) expect(game.iconFile, game.name).toBe(named);
+        }
+    });
+
     it('reports own-UI games by any of their hostnames', () => {
         expect(gameProvidesOwnUi('mg.mud.de')).toBe(true);
         expect(gameProvidesOwnUi('MG.MUD.DE')).toBe(true);

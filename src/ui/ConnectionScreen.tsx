@@ -1,15 +1,18 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { CircleHelp, Info } from 'lucide-react';
 import { Button, useConfirm } from './components';
 import { ConnectionFormModal } from './ConnectionFormModal';
 import { ConnectionGrid } from './ConnectionGrid';
 import { BundledGameGrid, connectionFromGame } from './BundledGameGrid';
+import { GameLinkPrompt } from './GameLinkPrompt';
+import { profilesForGame } from '../mud/games/gameLinks';
+import type { BundledGame } from '../mud/games/bundledGames';
 import { useOpenProfiles } from './useOpenProfiles';
 import { AboutModal } from './AboutModal';
 import { HelpModal } from './HelpModal';
 import { ProfileExportModal } from './ProfileExportModal';
 import { ensurePersistentStorage } from '../storage/persistentStorage';
-import { useAppStore, type MudConnection } from '../storage';
+import { uniqueConnectionName, useAppStore, type MudConnection } from '../storage';
 import { getBrand } from '../branding';
 import { extractMudletProfileZipAll, resolveModulesFromTree, addModuleToBundle, type MudletProfileBundle } from '../import/mudletProfileImport';
 import { importMudletProfile, bundleFromDirectory, linkMudletFolder } from '../import/applyMudletProfile';
@@ -28,9 +31,15 @@ interface Props {
     onUpdate: (id: string, data: Omit<MudConnection, 'id'>) => void;
     onDelete: (id: string) => void;
     onOpenSettings: () => void;
+    /** A bundled game named by a `?play=<game>` deep link, offered once on
+     *  mount. Null when the page wasn't opened from such a link. */
+    linkedGame?: BundledGame | null;
+    /** Called once `linkedGame` has been offered, so the caller can drop it
+     *  from its state and clean the parameter out of the URL. */
+    onLinkedGameHandled?: () => void;
 }
 
-export function ConnectionScreen({ connections, connecting, connectingId, onConnect, onOpen, onAdd, onUpdate, onDelete, onOpenSettings }: Props) {
+export function ConnectionScreen({ connections, connecting, connectingId, onConnect, onOpen, onAdd, onUpdate, onDelete, onOpenSettings, linkedGame, onLinkedGameHandled }: Props) {
     const confirm = useConfirm();
     const reorderConnections = useAppStore(s => s.reorderConnections);
     const brand = getBrand();
@@ -39,7 +48,15 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
     // Paused mid-connect: the grid is about to be replaced by the session.
     const openIds = useOpenProfiles(!connecting);
     // null = editor closed; { connection: null } = add a new one; { connection: c } = edit c.
-    const [editor, setEditor] = useState<{ connection: MudConnection | null } | null>(null);
+    // `game` marks the add-a-bundled-game flow: the form starts from `preset`
+    // and dials the profile it creates, instead of just adding it to the list.
+    const [editor, setEditor] = useState<{
+        connection: MudConnection | null;
+        preset?: Omit<MudConnection, 'id'>;
+        game?: BundledGame;
+    } | null>(null);
+    // The game a `?play=` link named, waiting on the "existing or new?" choice.
+    const [gamePrompt, setGamePrompt] = useState<BundledGame | null>(null);
     const vaultSaver = useVaultSaver();
     const [aboutOpen, setAboutOpen] = useState(false);
     // Opened either from the tools row (default topic) or from the import row's
@@ -118,6 +135,35 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
             await importMudletProfile(p.bundle);
         });
     };
+
+    // Picking a game opens the Add form with its host, port, TLS flag and blurb
+    // already filled in — Mudlet's connection dialog does the same, and it
+    // leaves room to rename the profile or set a login before dialing. The name
+    // is pre-uniqued so a second Achaea profile arrives as "Achaea (2)" rather
+    // than tripping the form's "already called that" error.
+    const openGameForm = (game: BundledGame) => {
+        setGamePrompt(null);
+        setEditor({
+            connection: null,
+            game,
+            preset: { ...connectionFromGame(game), name: uniqueConnectionName(game.name, connections) },
+        });
+    };
+
+    // A ?play=<game> link, offered once. Someone arriving from a "Play Astaria"
+    // button on a website may well already have an Astaria profile, and the link
+    // can't know — so with any match we ask which they meant, and only go
+    // straight to the form when there's nothing to choose between. Clicking a
+    // tile skips this: the matching profiles are on screen right above it.
+    const linkOffered = useRef(false);
+    useEffect(() => {
+        if (!linkedGame || linkOffered.current) return;
+        linkOffered.current = true;
+        onLinkedGameHandled?.();
+        if (profilesForGame(linkedGame, connections).length > 0) setGamePrompt(linkedGame);
+        else openGameForm(linkedGame);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [linkedGame]);
 
     const handleDelete = async (c: MudConnection) => {
         const ok = await confirm<boolean>({
@@ -225,14 +271,7 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
                     <BundledGameGrid
                         connections={connections}
                         busy={connecting || importing}
-                        onPlay={(game) => {
-                            // Playing is what creates the profile — the store has
-                            // it by the time addConnection returns, so the record
-                            // handed to onConnect is the real one.
-                            const id = onAdd(connectionFromGame(game));
-                            const created = useAppStore.getState().connections.find(c => c.id === id);
-                            if (created) onConnect(created);
-                        }}
+                        onPlay={openGameForm}
                     />
                 )}
 
@@ -242,12 +281,28 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
         {editor && (
             <ConnectionFormModal
                 connection={editor.connection}
+                preset={editor.preset}
+                // "Add", not "Connect": submitting creates the profile and hands
+                // it back to the launcher. Someone setting up a game may want to
+                // install packages or open it offline before ever dialing.
+                title={editor.game ? `Add ${editor.game.name}` : undefined}
                 firstConnection={connections.length === 0}
                 busy={connecting}
                 onAdd={onAdd}
                 onUpdate={onUpdate}
                 onClose={() => setEditor(null)}
                 vaultSaver={vaultSaver}
+            />
+        )}
+        {gamePrompt && (
+            <GameLinkPrompt
+                game={gamePrompt}
+                profiles={profilesForGame(gamePrompt, connections)}
+                busy={connecting || importing}
+                onPlay={(c) => { setGamePrompt(null); onConnect(c); }}
+                onOpen={(c) => { setGamePrompt(null); onOpen(c); }}
+                onCreate={() => openGameForm(gamePrompt)}
+                onClose={() => setGamePrompt(null)}
             />
         )}
         {/* Outside the editor on purpose: a vault setup/unlock step raised by

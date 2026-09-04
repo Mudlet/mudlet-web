@@ -3,6 +3,7 @@ import { FolderSymlink, Lock, Trash2 } from 'lucide-react';
 import { Button } from './components';
 import { connectionDisplayAddr, type MudConnection } from '../storage';
 import { gameIconUrl } from '../mud/games/gameIcons';
+import { findGameForConnection } from '../mud/games/gameLinks';
 
 /** Deterministic background color for a profile's name tile — same name always
  *  yields the same hue, so each profile gets a stable, distinct color. */
@@ -34,12 +35,15 @@ function fitNameFontSize(name: string): number {
 /** Mudlet-style profile icon. Renders the custom icon when one is set
  *  (setProfileIcon), otherwise a colored tile with the profile name — matching
  *  Mudlet's behaviour of drawing the name onto profiles without an icon. */
-function ProfileAvatar({ name, icon }: { name: string; icon?: string }) {
+function ProfileAvatar({ connection }: { connection: MudConnection }) {
+    const name = connection.name;
     // A profile made from the bundled catalogue keeps its game's logo without
     // storing one: the icon field holds a data URI (setProfileIcon), and copying
     // a 100 KB logo into localStorage per profile to draw what the app already
-    // ships would be a poor trade. A custom icon still wins.
-    const src = icon ?? gameIconUrl(name);
+    // ships would be a poor trade. Resolved from the whole record rather than
+    // the name alone, so a second "Achaea (2)" — or one the player renamed, or
+    // typed in by hand — is recognised by its host too. A custom icon wins.
+    const src = connection.icon ?? gameIconUrl(findGameForConnection(connection) ?? undefined);
     if (src) {
         return <img className="connection-avatar" src={src} alt="" aria-hidden="true" />;
     }
@@ -253,7 +257,7 @@ export function ConnectionGrid({
         return (
             <>
                 <div className="connection-tile__header">
-                    <ProfileAvatar name={c.name} icon={c.icon} />
+                    <ProfileAvatar connection={c} />
                     <Button
                         variant="primary"
                         className="connection-tile__connect"

@@ -118,7 +118,8 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "tlsEnabled": false,
         "websiteInfo": "<a href='https://darkmists.org'>https://darkmists.org</a>",
         "icon": ":/icons/banner_darkmists.png",
-        "description": "Dark Mists is a persistent online fantasy world featuring 24 races and 11 classes, 9 of which branch into distinct subclasses, with dozens of quests and hundreds of skills and spells tied to class, subclass, or race. The world is shaped by the players through active clans and a worship system with direct interaction with the Gods of Dark Mists. The Immortals are present in-game and continue developing new content for the world. The community is welcoming and helpful to newcomers while encouraging competition and growth. Houses remain active and provide guidance and support for new and returning players. Roleplay is required and playerkilling is an integral part of character growth, rewarding wit, courage, and ambition. The world continues to evolve with new discoveries and challenges. Come carve out your legacy in Dark Mists."
+        "description": "Dark Mists is a persistent online fantasy world featuring 24 races and 11 classes, 9 of which branch into distinct subclasses, with dozens of quests and hundreds of skills and spells tied to class, subclass, or race. The world is shaped by the players through active clans and a worship system with direct interaction with the Gods of Dark Mists. The Immortals are present in-game and continue developing new content for the world. The community is welcoming and helpful to newcomers while encouraging competition and growth. Houses remain active and provide guidance and support for new and returning players. Roleplay is required and playerkilling is an integral part of character growth, rewarding wit, courage, and ambition. The world continues to evolve with new discoveries and challenges. Come carve out your legacy in Dark Mists.",
+        "iconFile": "banner_darkmists.png"
     },
     {
         "name": "God Wars II",
@@ -198,7 +199,8 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='https://ropmud.com/index.html'>Website</a><br><a href='https://discord.gg/CkYm9WRnyw'>Discord</a>",
         "icon": ":/icons/banner_ropmud.png",
         "description": "Rites of Passage is a PVPVE (Player vs Player vs Environment) MUD where Good and Evil are locked in eternal war. Hunt powerful monsters for legendary loot, then defend it from enemy players hunting you. Every expedition into dangerous territory carries the thrill of both PvE challenge and PvP risk.\n\nThe environment is deadly - 80+ areas filled with creatures guarding valuable equipment, quests that reward the bold, and a remort system that lets you grow stronger with each life. But the real tension comes from other players. That raid boss you're fighting? The enemy faction might be watching, waiting for you to weaken before they strike. That rare gem you just looted? You'll need to make it home alive.\n\nThis is a PK MUD. Combat between Good and Evil players isn't just allowed - it's encouraged. Killing enemies earns warpoints, experience, and their gear. Climb the ranks. Make the topten list. Build your reputation through conquest. If you want the risk of PvP combined with challenging environment combat, you've found your home.",
-        "providesOwnUi": true
+        "providesOwnUi": true,
+        "iconFile": "banner_ropmud.png"
     },
     {
         "name": "ZombieMUD",
@@ -337,8 +339,7 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "tlsEnabled": false,
         "websiteInfo": "<a href='https://www.mudlet.org'>www.mudlet.org",
         "icon": "",
-        "description": "This isn't a game profile, but a special one for testing Mudlet itself using Busted. You can also use it as a starting point to create automated tests for your own profiles!",
-        "iconFile": "accursed_lands.png"
+        "description": "This isn't a game profile, but a special one for testing Mudlet itself using Busted. You can also use it as a starting point to create automated tests for your own profiles!"
     },
     {
         "name": "Accursed Lands",
@@ -367,7 +368,7 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "tlsEnabled": false,
         "websiteInfo": "<a href='http://www.carrionfields.net'>www.carrionfields.net</a>",
         "icon": ":/icons/carrionfields.png",
-        "description": "Carrion Fields is a unique blend of high-caliber roleplay and complex, hardcore player-versus-player combat that has been running continuously, and 100% free, for over 25 years.\n\nChoose from among 21 races, 17 highly customizable classes, and several cabals and religions to suit your playstyle and the story you want to tell. Our massive, original world is full of secrets and envied limited objects that take skill to acquire and great care to keep.\n\nWe like to think of ourselves as the Dark Souls of MUDs, with a community that is supportive of new players - unforgiving though our world may be. Join us for a real challenge and real rewards: adrenalin-pumping battles, memorable quests run by our volunteer immortal staff, and stories that will stick with you for a lifetime.",
+        "description": "Carrion Fields is a unique blend of high-caliber roleplay and complex, hardcore player-versus-player combat that has been running continuously, and 100% free, for over 30 years.\n\nChoose from among 21 races, 17 highly customizable classes, and several cabals and religions to suit your playstyle and the story you want to tell. Our massive, original world is full of secrets and envied limited objects that take skill to acquire and great care to keep.\n\nWe like to think of ourselves as the Dark Souls of MUDs, with a community that is supportive of new players - unforgiving though our world may be. Join us for a real challenge and real rewards: adrenaline-pumping battles, memorable quests run by our volunteer immortal staff, and stories that will stick with you for a lifetime.",
         "providesOwnUi": true,
         "iconFile": "carrionfields.png"
     },

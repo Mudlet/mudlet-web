@@ -13,6 +13,7 @@ import { isMudletProfileVfs, loadMudletLinkedProfile } from './import/mudletLink
 import { loadFolderHandle, checkFolderPermission, requestFolderPermission, clearFolderHandle } from './scripting/vfs/folderHandleStore';
 import { ensurePersistentStorage } from './storage/persistentStorage';
 import { useAppStore, type MudConnection } from './storage';
+import { GAME_LINK_PARAM, findGameByLink } from './mud/games/gameLinks';
 import { getBrand, isBrandedMode, brandConnectionData, matchBrandProfile } from './branding';
 
 /**
@@ -58,6 +59,14 @@ export default function App() {
     // `&connect=1` (set by loadProfile in another tab) auto-dials on open instead
     // of just opening the profile. Read once, alongside the profile id.
     const deepLinkConnect = useRef(new URLSearchParams(window.location.search).get('connect') === '1');
+    // `?play=<game>` names one of the bundled games — a "Play Astaria" link from
+    // a website. The connection screen offers it (existing profiles for it, or a
+    // prefilled Add form); nothing is created or dialed without a click, so a
+    // bookmarked link is safe to open again and again. Ignored in branded builds,
+    // which target one MUD and never show the catalogue.
+    const [linkedGame, setLinkedGame] = useState(() => (
+        isBrandedMode() ? null : findGameByLink(new URLSearchParams(window.location.search).get(GAME_LINK_PARAM))
+    ));
     // Theme is per-profile with a global launcher fallback. While a profile is
     // open (lock held), its own theme override wins; on the connection screen /
     // busy screen we use the launcher theme. Applied in one place so there's a
@@ -97,6 +106,17 @@ export default function App() {
         const url = new URL(window.location.href);
         if (id) url.searchParams.set('profile', id);
         else url.searchParams.delete('profile');
+        window.history.replaceState(null, '', url.toString());
+    };
+
+    // The game link has been offered; drop it so it can't fire twice, and take
+    // the parameter out of the address bar so a later reload lands on the plain
+    // launcher rather than re-opening the prompt.
+    const clearGameLink = () => {
+        setLinkedGame(null);
+        const url = new URL(window.location.href);
+        if (!url.searchParams.has(GAME_LINK_PARAM)) return;
+        url.searchParams.delete(GAME_LINK_PARAM);
         window.history.replaceState(null, '', url.toString());
     };
 
@@ -329,6 +349,8 @@ export default function App() {
                 onUpdate={updateConnection}
                 onDelete={removeConnection}
                 onOpenSettings={handleToggleSettings}
+                linkedGame={linkedGame}
+                onLinkedGameHandled={clearGameLink}
             />
             )}
             {settingsOpen && (

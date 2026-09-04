@@ -21,8 +21,12 @@ import { basename, dirname, resolve } from 'node:path';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OUT = resolve(HERE, '../src/mud/games/bundledGames.ts');
 const ICON_DIR = resolve(HERE, '../src/mud/games/icons');
-const UPSTREAM =
-    'https://raw.githubusercontent.com/Mudlet/Mudlet/development/src/TGameDetails.h';
+/** Start of the generated array, as written into the output file. */
+const ARRAY_ANCHOR = 'export const BUNDLED_GAMES: readonly BundledGame[] = ';
+/** `development` — where Mudlet's games and their logos actually land. A
+ *  release branch lags it, and so does any checkout more than a few days old. */
+const UPSTREAM_SRC = 'https://raw.githubusercontent.com/Mudlet/Mudlet/development/src/';
+const UPSTREAM = `${UPSTREAM_SRC}TGameDetails.h`;
 
 /** Strip // and /* *\/ comments that sit outside a string literal. */
 function stripComments(src) {
@@ -144,47 +148,87 @@ function parseGames(src) {
     }).filter(g => g.name);
 }
 
+/** Some entries reference a `.qrc` alias rather than a path
+ *  (`:/materiaMagicaIcon`), so the resource file is what resolves them. */
+async function loadQrcAliases(checkoutSrc) {
+    const qrc = checkoutSrc ? resolve(checkoutSrc, 'mudlet.qrc') : null;
+    let text = '';
+    if (qrc && existsSync(qrc)) text = readFileSync(qrc, 'utf8');
+    else text = await fetchText(`${UPSTREAM_SRC}mudlet.qrc`) ?? '';
+    const aliases = new Map();
+    const re = /<file\s+alias="([^"]+)"\s*>([^<]+)<\/file>/g;
+    let m;
+    while ((m = re.exec(text))) aliases.set(m[1], m[2].trim());
+    return aliases;
+}
+
+async function fetchText(url) {
+    try {
+        const res = await fetch(url);
+        return res.ok ? await res.text() : null;
+    } catch { return null; }
+}
+
+/** Download one logo into the vendored icon dir. Returns false (quietly) on
+ *  any failure, so a run with no network still produces a catalogue. */
+async function fetchIcon(relative, to) {
+    try {
+        const res = await fetch(UPSTREAM_SRC + relative.replaceAll('\\', '/'));
+        if (!res.ok) return false;
+        writeFileSync(to, Buffer.from(await res.arrayBuffer()));
+        return true;
+    } catch { return false; }
+}
+
 /**
- * Copy each game's logo out of a Mudlet checkout and record the filename on the
- * entry. Needs the checkout — the icons are binary files beside the header, not
- * in it — so a fetch-only run leaves the catalogue iconless rather than failing.
+ * Vendor each game's logo and record the filename on the entry.
+ *
+ * The icons are binary files beside the header rather than in it, so they come
+ * from one of three places, in order: the Mudlet checkout when one was given,
+ * `development` over HTTP otherwise (a checkout more than a few days old is
+ * missing the newest games' logos, which is exactly when this matters), and
+ * finally whatever a previous run already vendored, so a run with no network
+ * degrades to keeping what it has instead of stripping every logo.
+ *
+ * The filename always comes from the entry's OWN icon path, so a game whose
+ * logo can't be found ends up with none — it can never inherit its neighbour's.
  *
  * Icons land as ordinary files that Vite emits as assets, NOT inlined the way
  * `src/assets/qt-resources` inlines its handful: 1.7 MB of logos as data URIs
  * would go straight into the JS bundle for every user, whereas as files the
  * browser fetches only the tiles it draws.
  */
-function copyIcons(games, checkoutSrc) {
-    // Some entries reference a `.qrc` alias rather than a path
-    // (`:/materiaMagicaIcon`), so the resource file is what resolves them.
-    const aliases = new Map();
-    const qrc = resolve(checkoutSrc, 'mudlet.qrc');
-    if (existsSync(qrc)) {
-        const re = /<file\s+alias="([^"]+)"\s*>([^<]+)<\/file>/g;
-        let m;
-        const text = readFileSync(qrc, 'utf8');
-        while ((m = re.exec(text))) aliases.set(m[1], m[2].trim());
-    }
-
-    // Rebuilt from scratch so an icon Mudlet dropped does not linger.
-    rmSync(ICON_DIR, { recursive: true, force: true });
+async function vendorIcons(games, checkoutSrc) {
+    const aliases = await loadQrcAliases(checkoutSrc);
     mkdirSync(ICON_DIR, { recursive: true });
 
-    let copied = 0;
+    const used = new Set();
     const missing = [];
+    let copied = 0, fetched = 0, kept = 0;
     for (const game of games) {
         if (!game.icon) continue;
         const key = game.icon.replace(/^(:|qrc:)\/+/, '');
         const relative = aliases.get(key) ?? key;
-        const from = resolve(checkoutSrc, relative);
-        if (!existsSync(from)) { missing.push(`${game.name} (${game.icon})`); continue; }
         const file = basename(relative);
-        copyFileSync(from, resolve(ICON_DIR, file));
+        const to = resolve(ICON_DIR, file);
+        const from = checkoutSrc ? resolve(checkoutSrc, relative) : null;
+        if (from && existsSync(from)) { copyFileSync(from, to); copied++; }
+        else if (await fetchIcon(relative, to)) fetched++;
+        else if (existsSync(to)) kept++;
+        else { missing.push(`${game.name} (${game.icon})`); continue; }
         game.iconFile = file;
-        copied++;
+        used.add(file);
+    }
+
+    // Drop logos no game references any more. Skipped entirely if nothing
+    // resolved (no network, no checkout) — that is not evidence they're stale.
+    if (used.size) {
+        for (const file of readdirSync(ICON_DIR)) {
+            if (!used.has(file)) rmSync(resolve(ICON_DIR, file), { force: true });
+        }
     }
     if (missing.length) console.warn(`no icon file for: ${missing.join(', ')}`);
-    return copied;
+    return { total: used.size, copied, fetched, kept };
 }
 
 const fromCheckout = process.argv[2] ? resolve(process.argv[2]) : null;
@@ -193,26 +237,8 @@ const source = fromCheckout
     : await (await fetch(UPSTREAM)).text();
 
 const games = parseGames(source);
-const icons = fromCheckout ? copyIcons(games, dirname(fromCheckout)) : keepExistingIcons(games);
-
-/** Without a checkout there is nothing to copy from, so keep whatever icons a
- *  previous run brought in rather than silently dropping every logo. */
-function keepExistingIcons(games) {
-    const have = new Set(existsSync(ICON_DIR) ? readdirSync(ICON_DIR) : []);
-    if (!have.size) {
-        console.warn('no icons vendored — re-run with a path to a Mudlet checkout\'s TGameDetails.h to copy them');
-        return 0;
-    }
-    const previous = existsSync(OUT) ? readFileSync(OUT, 'utf8') : '';
-    let kept = 0;
-    for (const game of games) {
-        // The previous generation recorded the filename; match it back by name.
-        const m = new RegExp(`"name": ${JSON.stringify(game.name)},[\\s\\S]*?"iconFile": "([^"]+)"`).exec(previous);
-        if (m && have.has(m[1])) { game.iconFile = m[1]; kept++; }
-    }
-    return kept;
-}
 if (games.length < 20) throw new Error(`only ${games.length} games parsed — the header shape must have changed`);
+const icons = await vendorIcons(games, fromCheckout ? dirname(fromCheckout) : null);
 
 const header = `// GENERATED by scripts/sync-mudlet-games.mjs — do not edit by hand.
 //
@@ -246,7 +272,7 @@ export interface BundledGame {
     alternateHostUrls?: string[];
 }
 
-export const BUNDLED_GAMES: readonly BundledGame[] = `;
+${ARRAY_ANCHOR}`;
 
 const footer = `;
 
@@ -268,4 +294,5 @@ export function gameProvidesOwnUi(hostUrl: string): boolean {
 `;
 
 writeFileSync(OUT, header + JSON.stringify(games, null, 4) + footer, 'utf8');
-console.log(`wrote ${games.length} games (${icons} with icons) to ${OUT}`);
+console.log(`wrote ${games.length} games to ${OUT}`);
+console.log(`icons: ${icons.total} vendored (${icons.copied} from the checkout, ${icons.fetched} fetched, ${icons.kept} already present)`);

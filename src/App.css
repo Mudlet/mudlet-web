@@ -1129,6 +1129,15 @@ body.is-sorting {
     min-width: 0;
 }
 
+/* "You have a profile for this". The game stays in the catalogue either way —
+   a second profile for a game is an ordinary thing to want — so the tile says
+   so rather than vanishing. */
+.bundled-game-tile__owned {
+    font-family: var(--font-ui), sans-serif;
+    font-size: 11px;
+    color: var(--accent-dim, var(--text-dim));
+}
+
 /* Two lines of blurb, clipped — the whole description is on the tile's title. */
 .bundled-game-tile__teaser {
     font-family: var(--font-ui), sans-serif;
@@ -2780,6 +2789,83 @@ body.is-sorting {
 .proxy-why-modal {
     width: min(480px, 92vw);
     max-height: 80vh;
+}
+
+/* Where a ?play=<game> link lands when the player already has profiles for that
+   game: pick one, or set up another. */
+.game-link-modal {
+    width: min(460px, 92vw);
+    max-height: 80vh;
+}
+
+.game-link-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.game-link-logo {
+    align-self: flex-start;
+}
+
+.game-link-intro {
+    margin: 0;
+    font-family: var(--font-ui), sans-serif;
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--text);
+}
+
+.game-link-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.game-link-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-glass);
+}
+
+.game-link-row__text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.game-link-row__actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.game-link-row__name {
+    font-family: var(--font-ui), sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.game-link-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
 }
 
 .char-login-modal {

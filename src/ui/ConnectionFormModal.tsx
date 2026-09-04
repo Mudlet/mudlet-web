@@ -25,7 +25,7 @@ function buildPreviewUrl(
     return url;
 }
 
-function modeOf(c: MudConnection): ConnectionMode {
+function modeOf(c: Pick<MudConnection, 'mode'>): ConnectionMode {
     return c.mode ?? 'websocket';
 }
 
@@ -44,8 +44,14 @@ function splitHostPort(value: string): { host: string; port?: string } {
 interface Props {
     /** The connection to edit, or null to add a new one. */
     connection: MudConnection | null;
+    /** Field values to start a new connection from, when `connection` is null —
+     *  a bundled game's host/port/blurb, so picking a game fills the form in
+     *  rather than dialing straight away. Ignored when editing. */
+    preset?: Omit<MudConnection, 'id'> | null;
     /** Whether this is the very first connection (drives the title copy). */
     firstConnection: boolean;
+    /** Overrides the generated dialog title (e.g. "Add Achaea"). */
+    title?: string;
     busy: boolean;
     onAdd: (data: Omit<MudConnection, 'id'>) => string;
     onUpdate: (id: string, data: Omit<MudConnection, 'id'>) => void;
@@ -56,28 +62,32 @@ interface Props {
     vaultSaver: VaultSaver;
 }
 
-export function ConnectionFormModal({ connection, firstConnection, busy, onAdd, onUpdate, onClose, vaultSaver }: Props) {
+export function ConnectionFormModal({ connection, preset, firstConnection, title: titleOverride, busy, onAdd, onUpdate, onClose, vaultSaver }: Props) {
     const userProxyUrl = useAppStore(s => s.client.userProxyUrl);
     const effectiveDefaultProxy = userProxyUrl || DEFAULT_PROXY_URL;
 
     const isEditing = connection !== null;
 
-    const [mode, setMode] = useState<ConnectionMode>(connection ? modeOf(connection) : 'mud');
-    const [name, setName] = useState(connection?.name ?? '');
-    const [host, setHost] = useState(connection?.host ?? '');
-    const [port, setPort] = useState(String(connection?.port ?? 23));
-    const [proxyUrl, setProxyUrl] = useState(connection?.proxyUrl ?? '');
-    const [url, setUrl] = useState(connection?.url ?? '');
-    const [autoReconnect, setAutoReconnect] = useState(connection?.autoReconnect ?? false);
-    const [tls, setTls] = useState(connection?.tls ?? false);
-    const [sslIgnoreExpired, setSslIgnoreExpired] = useState(connection?.sslIgnoreExpired ?? false);
-    const [sslIgnoreSelfSigned, setSslIgnoreSelfSigned] = useState(connection?.sslIgnoreSelfSigned ?? false);
-    const [sslIgnoreAll, setSslIgnoreAll] = useState(connection?.sslIgnoreAll ?? false);
+    // What the fields start from: the connection being edited, or the preset a
+    // bundled game supplied, or nothing at all for a blank Add.
+    const initial = connection ?? preset ?? null;
+
+    const [mode, setMode] = useState<ConnectionMode>(initial ? modeOf(initial) : 'mud');
+    const [name, setName] = useState(initial?.name ?? '');
+    const [host, setHost] = useState(initial?.host ?? '');
+    const [port, setPort] = useState(String(initial?.port ?? 23));
+    const [proxyUrl, setProxyUrl] = useState(initial?.proxyUrl ?? '');
+    const [url, setUrl] = useState(initial?.url ?? '');
+    const [autoReconnect, setAutoReconnect] = useState(initial?.autoReconnect ?? false);
+    const [tls, setTls] = useState(initial?.tls ?? false);
+    const [sslIgnoreExpired, setSslIgnoreExpired] = useState(initial?.sslIgnoreExpired ?? false);
+    const [sslIgnoreSelfSigned, setSslIgnoreSelfSigned] = useState(initial?.sslIgnoreSelfSigned ?? false);
+    const [sslIgnoreAll, setSslIgnoreAll] = useState(initial?.sslIgnoreAll ?? false);
     // A Cloudflare-Worker proxy cannot inspect certificates, so the tolerance
     // options below would be silently ignored. Derived from the live field so
     // editing the proxy URL updates the form without a save/reopen.
     const certOptionsSupported = proxyCanInspectCertificates(proxyUrl.trim() || effectiveDefaultProxy);
-    const [account, setAccount] = useState(connection?.charLoginAccount ?? '');
+    const [account, setAccount] = useState(initial?.charLoginAccount ?? '');
     // Never prefilled from the vault: this form is reachable without unlocking
     // it, and a blank field that means "unchanged" beats one that misrepresents
     // what is stored. An empty box therefore leaves a saved password alone; the
@@ -88,7 +98,7 @@ export function ConnectionFormModal({ connection, firstConnection, busy, onAdd, 
     const vaultEntries = useVault().entryIds;
     const savedId = connection?.id;
     const hasSavedPassword = !!savedId && vaultEntries.includes(savedId);
-    const [description, setDescription] = useState(connection?.description ?? '');
+    const [description, setDescription] = useState(initial?.description ?? '');
 
     const [proxyModalOpen, setProxyModalOpen] = useState(false);
     const [proxyWhyOpen, setProxyWhyOpen] = useState(false);
@@ -160,9 +170,9 @@ export function ConnectionFormModal({ connection, firstConnection, busy, onAdd, 
         onClose();
     };
 
-    const title = connection
+    const title = titleOverride ?? (connection
         ? `Edit connection — ${connection.name}`
-        : firstConnection ? 'Add your first connection' : 'Add connection';
+        : firstConnection ? 'Add your first connection' : 'Add connection');
 
     return (
         <>
