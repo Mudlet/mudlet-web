@@ -28,12 +28,6 @@ export const DEFAULT_CONSOLE_BUFFER_SIZE = 10_000;
 export const MIN_CONSOLE_BUFFER_SIZE = 100;
 export const MAX_CONSOLE_BUFFER_SIZE = 1_000_000;
 
-/** What a line index outside the buffer reads as, byte for byte Mudlet's
- *  `badLineError` (TBuffer.cpp) — the QString its `line()` hands back for any
- *  index below zero or past the end, instead of failing. Scripts compare
- *  against this literal, so it is API surface, not a diagnostic. */
-export const BAD_LINE_ERROR = 'ERROR: invalid line number';
-
 /** Mudlet's batch-deletion size for a given buffer size — 5% of it, never below
  *  100 lines (mudlet.cpp:2270, and the identical sum in
  *  dlgProfilePreferences.cpp:3288 when the preference is applied). */
@@ -532,28 +526,14 @@ export class Console {
 
     /**
      * Mudlet `getLines(from, to)` — the lines starting at the 0-based index
-     * `from`, `abs(to - from)` of them (TConsole::getLines). `to` is exclusive
-     * and neither bound is clamped: the result always holds exactly
-     * `abs(to - from)` entries, and an index outside the buffer contributes
-     * {@link BAD_LINE_ERROR} rather than being dropped.
-     *
-     * That sentinel is the only way a script can tell an empty buffer from a
-     * one-line one, because getLineCount() answers 0 for both (it reports the
-     * last line's INDEX). Returning a short list instead — which is what this
-     * did — made the two indistinguishable, and left every caller reading
-     * `[1]` of an empty result with nil where Mudlet hands back a string.
-     * Mudlet's own TBuffer::line() is the shape being matched here: it answers
-     * every out-of-range index with the same string rather than failing.
+     * `from`, `abs(to - from)` of them (TConsole::getLines). Note that `to` is
+     * exclusive and that neither bound is clamped by Mudlet; out-of-range
+     * indices simply yield fewer lines here.
      */
     getLines(from: number, to: number): string[] {
-        const start = Math.trunc(from);
-        const count = Math.abs(Math.trunc(to) - start);
-        const lines: string[] = [];
-        for (let i = 0; i < count; i++) {
-            const line = this.history[start + i];
-            lines.push(line ? line.text : BAD_LINE_ERROR);
-        }
-        return lines;
+        const start = Math.max(0, Math.trunc(from));
+        const count = Math.abs(Math.trunc(to) - Math.trunc(from));
+        return this.history.slice(start, start + count).map(b => b.text);
     }
 
     /**
