@@ -1,5 +1,6 @@
 import type { ProfileSettings, ProtocolSettings, BooleanProtocolKey } from '../storage/schema';
 import { SERVER_WRAP_WIDTH_MIN, SERVER_WRAP_WIDTH_MAX } from '../mud/text/serverWrap';
+import { MIN_CONSOLE_BUFFER_SIZE, MAX_CONSOLE_BUFFER_SIZE } from '../mud/text/Console';
 import { parseMudletXml, type MudletImportResult } from './mudletXmlImport';
 import { parseVariablePackageXml, type MudletVariablePackage } from './mudletVariables';
 
@@ -118,6 +119,20 @@ export function parseMudletHost(host: Element): Partial<ProfileSettings> {
         );
     }
 
+    // ── main display size (Mudlet 5.0) ───────────────────────────────────
+    // XMLimport.cpp:1148-1150. Clamped to the bounds TBuffer::setBufferSize
+    // would apply anyway, so a hand-edited profile loads the same in both.
+    const bufferSizeText = childText(host, 'consoleBufferSize');
+    const bufferSize = bufferSizeText !== undefined ? Number(bufferSizeText) : NaN;
+    if (Number.isFinite(bufferSize)) {
+        out.consoleBufferSize = Math.min(
+            MAX_CONSOLE_BUFFER_SIZE,
+            Math.max(MIN_CONSOLE_BUFFER_SIZE, Math.trunc(bufferSize)),
+        );
+    }
+    const useMaxBuffer = childText(host, 'useMaxConsoleBufferSize');
+    if (useMaxBuffer !== undefined) out.useMaxConsoleBufferSize = useMaxBuffer.trim() === 'yes';
+
     // ── borders ──────────────────────────────────────────────────────────
     const top = Number(childText(host, 'borderTopHeight') ?? '');
     const bottom = Number(childText(host, 'borderBottomHeight') ?? '');
@@ -218,6 +233,9 @@ export function applyProfileSettingsToHost(host: Element, s: Partial<ProfileSett
     if (s.undoServerWrap !== undefined) host.setAttribute('mUndoServerWrap', s.undoServerWrap ? 'yes' : 'no');
     if (s.undoServerWrapWidth !== undefined) setHostEl(host, 'undoServerWrapWidth', String(s.undoServerWrapWidth));
     if (s.promptTimeoutMs !== undefined) host.setAttribute('NetworkPacketTimeout', String(s.promptTimeoutMs));
+    // XMLexport.cpp:617-618.
+    if (s.consoleBufferSize !== undefined) setHostEl(host, 'consoleBufferSize', String(s.consoleBufferSize));
+    if (s.useMaxConsoleBufferSize !== undefined) setHostEl(host, 'useMaxConsoleBufferSize', s.useMaxConsoleBufferSize ? 'yes' : 'no');
 
     if (s.ansiPalette) {
         for (const [name, idx] of ANSI_COLOR_INDEX) {

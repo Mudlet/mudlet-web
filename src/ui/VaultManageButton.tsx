@@ -8,6 +8,10 @@ interface VaultManageButtonProps {
     /** Every profile, so the manage list can name the ones with a saved login
      *  (the vault itself stores only ids — it has no idea what they are called). */
     connections: MudConnection[];
+    /** `icon` is the connection screen's header glyph; `row` is the labelled
+     *  button the settings dialog's "Saved logins" card puts on a settings row,
+     *  where a bare glyph in a column of switches would read as decoration. */
+    variant?: 'icon' | 'row';
 }
 
 /**
@@ -18,7 +22,7 @@ interface VaultManageButtonProps {
  * Renders nothing when no vault is installed, which is how a branded build gets
  * neither the button nor anything behind it (see `vault/vaultAccess`).
  */
-export function VaultManageButton({ connections }: VaultManageButtonProps) {
+export function VaultManageButton({ connections, variant = 'icon' }: VaultManageButtonProps) {
     const snapshot = useVault();
     const [open, setOpen] = useState(false);
     const VaultUI = getVaultUI();
@@ -37,13 +41,20 @@ export function VaultManageButton({ connections }: VaultManageButtonProps) {
     return (
         <>
             <button
-                className="connection-vault-btn"
+                className={variant === 'row' ? 'btn btn--secondary btn--sm vault-manage-row-btn' : 'connection-vault-btn'}
                 onClick={() => setOpen(true)}
                 type="button"
                 title={title}
-                aria-label={title}
+                aria-label={variant === 'row' ? undefined : title}
             >
                 <KeyRound size={16} />
+                {variant === 'row' && (
+                    <span>
+                        {!snapshot.exists
+                            ? 'Set up saved logins…'
+                            : `Manage saved logins (${count})`}
+                    </span>
+                )}
             </button>
             {open && (
                 <VaultUI

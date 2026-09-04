@@ -20,7 +20,7 @@ import { applyMsspVariable, emptyMsspTlsFacts, shouldOfferTlsUpgrade } from './m
 import {
     CHAR_LOGIN_SILENT_DROP_MESSAGE, charLoginFailureMessage, decideCharLoginRequest,
 } from './mud/protocol/charLoginFlow';
-import { describeCertCode } from './mud/protocol/tlsCodes';
+import { describeCertCode, describeTlsFailure } from './mud/protocol/tlsCodes';
 import type { TlsStatus } from './mud/events';
 import { QuickOpenPalette } from './ui/QuickOpenPalette';
 import { SessionLogger } from './logging/SessionLogger';
@@ -36,6 +36,7 @@ import { useVaultSaver } from './ui/useVaultSaver';
 import { VaultUnlockPrompt } from './ui/VaultUnlockPrompt';
 import { applyAnsiPalette, setServerRedefineColorsAllowed, resetAllPaletteColors } from './mud/text/colors';
 import { setOsc8HyperlinksEnabled } from './mud/text/hyperlinkConfig';
+import { DEFAULT_CONSOLE_BUFFER_SIZE } from './mud/text/Console';
 import type { MudSession, ControlCharacterMode } from './mud/MudSession';
 import type { FileDialogRequest } from './mud/events';
 import { replayFileName } from './mud/replay/replayFormat';
@@ -169,6 +170,8 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     const osc8Hyperlinks = useAppStore(s => selectProfileField(s, connection.id, 'osc8Hyperlinks'));
     const undoServerWrap = useAppStore(s => selectProfileField(s, connection.id, 'undoServerWrap'));
     const undoServerWrapWidth = useAppStore(s => selectProfileField(s, connection.id, 'undoServerWrapWidth'));
+    const consoleBufferSize = useAppStore(s => selectProfileField(s, connection.id, 'consoleBufferSize'));
+    const useMaxConsoleBufferSize = useAppStore(s => selectProfileField(s, connection.id, 'useMaxConsoleBufferSize'));
     const autoClearInput = useAppStore(s => selectProfileField(s, connection.id, 'autoClearInput')) === true;
     const commandEchoForeground = useAppStore(s => selectProfileField(s, connection.id, 'commandEchoForeground'));
     const commandEchoBackground = useAppStore(s => selectProfileField(s, connection.id, 'commandEchoBackground'));
@@ -264,6 +267,14 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // applies without a reconnect.
     session.setUndoServerWrap(undoServerWrap === true);
     if (typeof undoServerWrapWidth === 'number') session.setUndoServerWrapWidth(undoServerWrapWidth);
+    // Mudlet's "Main display size" (`consoleBufferSize`/`useMaxConsoleBufferSize`
+    // — mudlet.cpp:2264-2271). Applied during render like the wrap settings
+    // above, so the main console is sized before any output reaches it, and
+    // re-applied live when the preference changes.
+    session.setConsoleBufferSize(
+        consoleBufferSize ?? DEFAULT_CONSOLE_BUFFER_SIZE,
+        useMaxConsoleBufferSize === true,
+    );
     // Mudlet's "Fix unnecessary linebreaks on GA servers" (config bag, persisted
     // by setConfig). Applied during render — like the protocol toggles above —
     // so it's on the session's options before autoConnect dials, and re-applied
@@ -698,8 +709,13 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         });
         const t3 = session.events.on('tls.error', (info) => {
             setTlsStatus({ kind: 'error', info });
-            const reasons = (info.codes.length ? info.codes : [info.code]).map(describeCertCode).join('; ');
-            postTlsMessage(`Secure connection refused — ${reasons}.`, true);
+            // Not always a certificate: TLS aimed at a plaintext port fails the
+            // handshake with no certificate in sight, and saying otherwise sent
+            // the user looking for a setting that doesn't exist. See
+            // describeTlsFailure, and cTelnet's equivalent at ctelnet.cpp:865.
+            const { summary, remedy } = describeTlsFailure(info);
+            postTlsMessage(summary, true);
+            if (remedy) postTlsMessage(remedy, true);
         });
         const t4 = session.events.on('tls.timeout', ({ host, port }) => {
             setTlsStatus({ kind: 'timeout', host, port });

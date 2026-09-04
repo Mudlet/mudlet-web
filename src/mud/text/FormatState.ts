@@ -749,6 +749,14 @@ export class AnsiAwareBuffer {
     private _onRender?: (container: HTMLElement) => void;
     private _textCache: string | null = null;
     private _renderContainer: HTMLElement | null = null;
+    // The whole rendered row this buffer occupies — the `.output-msg` wrapper of
+    // which `_renderContainer` is only the content slot. The two have to be
+    // tracked separately: `rerender()` must replace just the content (leaving
+    // the timestamp span alone) while `removeFromDom()` must take the entire
+    // row away, or eviction leaves an empty shell behind for every dropped line.
+    // Mudlet has no equivalent split — `TBuffer::shrinkBuffer` (src/TBuffer.cpp)
+    // drops lines from the buffer and `TTextEdit` repaints only what remains.
+    private _lineElement: HTMLElement | null = null;
 
     constructor(
         initial?: string | BufferSegment[],
@@ -791,10 +799,14 @@ export class AnsiAwareBuffer {
     timestamp = Date.now();
 
     removeFromDom(): void {
-        const container = this._renderContainer;
-        if (!container) return;
-        container.parentElement?.removeChild(container);
+        // The row, when the renderer registered one; otherwise whatever single
+        // element it did register (mini-console/user-window renderers hand us
+        // the line element itself, which is both).
+        const el = this._lineElement ?? this._renderContainer;
+        if (!el) return;
+        el.parentElement?.removeChild(el);
         this._renderContainer = null;
+        this._lineElement = null;
     }
 
     onRender(callback: (container: HTMLElement) => void): this {
@@ -802,9 +814,16 @@ export class AnsiAwareBuffer {
         return this;
     }
 
-    /** @internal */
-    notifyRender(container: HTMLElement): void {
+    /**
+     * @internal
+     * `container` is the element `rerender()` rewrites — the content slot.
+     * `lineElement` is the whole row `removeFromDom()` has to detach; pass it
+     * whenever the row is more than the content slot. Omit it and the content
+     * element doubles as the row.
+     */
+    notifyRender(container: HTMLElement, lineElement?: HTMLElement): void {
         this._renderContainer = container;
+        this._lineElement = lineElement ?? null;
         if (this._onRender) {
             this._onRender(container);
             this._onRender = undefined;
