@@ -1,3 +1,4 @@
+import { isColorizing } from '../storage/schema';
 import type {
     AliasNode,
     ButtonNode,
@@ -266,7 +267,7 @@ function emitTriggers(xml: XmlBuilder, nodes: TriggerNode[], opts: ExportOptions
             isTempTrigger: 'no',
             isMultiline: n.multiline ? 'yes' : 'no',
             isPerlSlashGOption: n.multipleMatches ? 'yes' : 'no',
-            isColorizerTrigger: n.highlight ? 'yes' : 'no',
+            isColorizerTrigger: isColorizing(n) ? 'yes' : 'no',
             isFilterTrigger: n.isFilter ? 'yes' : 'no',
             isSoundTrigger: 'no',
             isColorTrigger: 'no',

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseMudletXml } from '../../src/import/mudletXmlImport';
+import { isColorizing } from '../../src/storage/schema';
 import { serializeMudletXml } from '../../src/import/mudletXmlExport';
 
 // Mudlet's TScript model lets a script carry both its own body AND child
@@ -93,6 +94,61 @@ describe('parseMudletXml — keys with no binding set', () => {
         expect(keys.find(k => k.name === 'bound')!.key).toBe('KeyN');
         expect(warnings).toHaveLength(1);
         expect(warnings[0]).toContain('"weird"');
+    });
+});
+
+// Import used to never read isColorizerTrigger/mFgColor/mBgColor even though the
+// exporter writes them, so the highlight was dropped on the way in and then
+// overwritten with isColorizerTrigger="no" + transparent on the next link-mode
+// flush — destroyed in the user's own profile, not merely ignored.
+//
+// The three map onto TTrigger's own split: mIsColorizerTrigger is a master
+// switch, and mFgColor/mBgColor are state of their own that desktop defaults to
+// red/yellow and exports whatever the switch says. A colour channel set to
+// "transparent" is Mudlet's "keep" — leave that channel of the line alone.
+// Mudlet: XMLimport.cpp:1373 (switch), :1404 (fg), :1407 (bg).
+describe('parseMudletXml — trigger colorizer', () => {
+    const trig = (attrs: string, fg: string, bg: string) => `
+    <Trigger isActive="yes" isFolder="no" ${attrs}>
+      <name>Stop (Key Lift)</name>
+      <script></script>
+      <mFgColor>${fg}</mFgColor>
+      <mBgColor>${bg}</mBgColor>
+      <regexCodeList><string>Key Lift</string></regexCodeList>
+      <regexCodePropertyList><integer>0</integer></regexCodePropertyList>
+    </Trigger>`;
+    const parse = (xml: string) => parseMudletXml(`<?xml version="1.0" encoding="UTF-8"?>
+<MudletPackage version="1.001"><TriggerPackage>${xml}</TriggerPackage></MudletPackage>`).triggers[0];
+
+    it('imports both colours and the switch when the colorizer is on', () => {
+        const t = parse(trig('isColorizerTrigger="yes"', '#ff0000', '#ffff00'));
+        expect(t.colorize).toBe(true);
+        expect(t.highlight).toEqual({ fg: '#ff0000', bg: '#ffff00' });
+        expect(isColorizing(t)).toBe(true);
+    });
+
+    it('imports a single colour, leaving the other on "keep"', () => {
+        expect(parse(trig('isColorizerTrigger="yes"', '#ff0000', 'transparent')).highlight)
+            .toEqual({ fg: '#ff0000', bg: undefined });
+    });
+
+    it('keeps the colours when the switch is off, as TTrigger does', () => {
+        const t = parse(trig('isColorizerTrigger="no"', '#ff0000', '#ffff00'));
+        expect(t.colorize).toBe(false);
+        expect(t.highlight).toEqual({ fg: '#ff0000', bg: '#ffff00' });
+        expect(isColorizing(t)).toBe(false);
+    });
+
+    it('leaves highlight unset when both channels are "keep"', () => {
+        expect(parse(trig('isColorizerTrigger="yes"', 'transparent', 'transparent')).highlight)
+            .toBeUndefined();
+    });
+
+    it('treats a stored highlight with no switch as on, for profiles predating the field', () => {
+        expect(isColorizing({ highlight: { fg: '#ff0000' } })).toBe(true);
+        expect(isColorizing({})).toBe(false);
+        // An explicit switch always wins over the fallback.
+        expect(isColorizing({ colorize: false, highlight: { fg: '#ff0000' } })).toBe(false);
     });
 });
 
