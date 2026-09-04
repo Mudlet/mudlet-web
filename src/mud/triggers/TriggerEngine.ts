@@ -721,21 +721,30 @@ export class TriggerEngine {
 
         // Mudlet compacts a blank pattern out of the list as it stores the
         // trigger (TTrigger::setRegexCodeList), so nothing downstream ever sees
-        // one; a prompt pattern is the single kind that legitimately carries no
-        // text. The OR branch would drop a blank anyway — buildMatcher refuses
-        // it — but an AND trigger would turn it into a condition nothing can
-        // satisfy, and the trigger then silently never fires (Mudlet#9851). The
-        // editor filters blank rows out, so these arrive from a perm*Trigger()
-        // call or a hand-written package XML with an empty <string>.
-        const patterns = item.patterns.filter(p => p.text !== '' || p.type === 'prompt');
+        // one; prompt and line-spacer patterns are the two kinds that
+        // legitimately carry no text (`dlgTriggerEditor.cpp:5807` skips a blank
+        // pattern unless it is REGEX_PROMPT or REGEX_LINE_SPACER). The OR branch
+        // would drop a blank anyway — buildMatcher refuses it — but an AND
+        // trigger would turn it into a condition nothing can satisfy, and the
+        // trigger then silently never fires (Mudlet#9851). The editor filters
+        // blank rows out, so these arrive from a perm*Trigger() call or a
+        // hand-written package XML with an empty <string>.
+        const patterns = item.patterns.filter(p => p.text !== '' || p.type === 'prompt' || p.type === 'lineSpacer');
 
         if (!item.isGroup && item.multiline) {
             // AND trigger: compile as a sequence of conditions
             const conditions: Array<{ test: Matcher | null; spacer: number }> = [];
             for (const p of patterns) {
                 if (p.type === 'lineSpacer') {
+                    // Mudlet reads the count with QString::toInt(), which yields
+                    // 0 for anything unparsable — including the empty string a
+                    // spacer row carries when its spin box was never touched
+                    // (TTrigger.cpp:776). 0 is a legal count: TMatchState's
+                    // `mSpacer >= lines` (TMatchState.h:68) is then already true
+                    // on the line the spacer is reached, so the next condition
+                    // is tested straight away.
                     const n = parseInt(p.text, 10);
-                    conditions.push({ test: null, spacer: isNaN(n) || n < 1 ? 1 : n });
+                    conditions.push({ test: null, spacer: isNaN(n) || n < 0 ? 0 : n });
                 } else {
                     const test = buildMatcher(p, register);
                     conditions.push({ test, spacer: 0 });
@@ -1423,7 +1432,9 @@ export class TriggerEngine {
                 break;
             }
             if (!cond.test) {
-                // A null test outside a spacer should not happen — skip it.
+                // A zero-line spacer (or a pattern kind with no matcher) is
+                // satisfied by the line it is reached on, matching Mudlet's
+                // `mSpacer >= 0` first call (TMatchState.h:68).
                 state.nextIdx++;
                 continue;
             }
