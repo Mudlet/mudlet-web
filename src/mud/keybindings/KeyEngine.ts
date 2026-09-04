@@ -121,14 +121,20 @@ export class KeyEngine {
         for (const [id, t] of this.temp) if (t.dead) this.temp.delete(id);
     }
 
-    processTemp(event: KeyboardEvent): boolean {
-        for (const { key, modifiers, fn, enabled } of this.temp.values()) {
-            if (enabled && matchesEvent(key, modifiers, event)) {
-                fn();
-                return true;
-            }
+    /** @param all Mudlet's "React to all keybindings on the same key": run
+     *  every enabled match instead of stopping at the first. Snapshot the
+     *  values first — a handler may create or kill a temp key, and mutating the
+     *  map mid-iteration is exactly the case Mudlet's deferred `reapKilled`
+     *  exists to avoid. */
+    processTemp(event: KeyboardEvent, all = false): boolean {
+        let fired = false;
+        for (const { key, modifiers, fn, enabled } of [...this.temp.values()]) {
+            if (!enabled || !matchesEvent(key, modifiers, event)) continue;
+            fn();
+            if (!all) return true;
+            fired = true;
         }
-        return false;
+        return fired;
     }
 
     // ── Perm keybindings (persisted, visible in UI) ────────────────────────────
@@ -143,6 +149,13 @@ export class KeyEngine {
             if (matchesEvent(binding.key, binding.modifiers, event)) return binding;
         }
         return null;
+    }
+
+    /** Every permanent keybinding the event matches, in tree order. The list
+     *  form of {@link matchPerm}, for Mudlet's "React to all keybindings on the
+     *  same key". */
+    matchAllPerm(event: KeyboardEvent): KeyNode[] {
+        return this.perm.filter(b => matchesEvent(b.key, b.modifiers, event));
     }
 
     destroy(): void {

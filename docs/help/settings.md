@@ -66,17 +66,9 @@ and it isn't currently switched on for the command line.
 
 These apply perfectly well to a browser. They are on the list.
 
-**Server data encoding.** If your game isn't in English and you see `�` instead of
-letters, desktop lets you pick an encoding. Here, the client understands encodings — it
-negotiates them with games that support CHARSET, and `setServerEncoding("ISO-8859-2")`
-from a script works — but there is no setting for it yet.
-
-**"System setting" for light/dark.** Appearance → Theme offers dark, light, amber and
-sky, but won't follow your operating system's choice.
-
-**Most map colours.** Mapper → Map colors has the background, the exit lines and the
-info overlay. Room borders, upper/lower level tints, the grid, and the map's own
-sixteen-colour palette aren't settable yet.
+**Most map colours.** Mapper → Map colors has the background, the exit lines, the grid
+and the info overlay. Room borders, upper/lower level tints and the map's own
+sixteen-colour palette aren't settable yet — the map renderer doesn't expose them.
 
 **Script editor options.** There's no Editor page: autocomplete is always on, the editor
 follows the app theme, and there's no whitespace or item-ID display.

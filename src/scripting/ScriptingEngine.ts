@@ -10,7 +10,7 @@ import type {KeyEngine, KeyNode} from '../mud/keybindings/KeyEngine';
 import {findReservedKeybindings, reservedKeyNote} from '../mud/keybindings/browserReservedKeys';
 import type {ButtonNode, ScriptNode} from '../storage/schema';
 import {buildEffectivelyEnabledIds, isColorizing, isEffectivelyEnabled} from '../storage/schema';
-import {useAppStore, connectionUrl} from '../storage';
+import {useAppStore, connectionUrl, selectProfileField} from '../storage';
 import {isPackageRemovable} from '../branding';
 import {saveProfileData} from '../storage/profileVfsData';
 import type {BufferSegment, FormatColor, FormatStateSnapshot, RgbColor} from '../mud/text/FormatState';
@@ -3539,12 +3539,23 @@ export class ScriptingEngine implements EngineHost {
 
     /** Process a keyboard event. Returns true if a keybinding consumed it. */
     processKey(event: KeyboardEvent): boolean {
+        // Mudlet's "React to all keybindings on the same key". Off by default,
+        // matching desktop: two bindings on one key normally means the second
+        // is a leftover, and firing both would be a surprise.
+        const all = selectProfileField(useAppStore.getState(), this.connectionId, 'reactToAllKeybindings') === true;
         // JS temp keybindings
-        if (this.keyEngine.processTemp(event)) {
+        const tempFired = this.keyEngine.processTemp(event, all);
+        if (tempFired && !all) {
             this.api.flushOutput();
             return true;
         }
         // Permanent keybindings
+        if (all) {
+            const matches = this.keyEngine.matchAllPerm(event);
+            for (const m of matches) this.executePermKeybinding(m);
+            this.api.flushOutput();
+            return tempFired || matches.length > 0;
+        }
         const permMatch = this.keyEngine.matchPerm(event);
         if (permMatch) {
             this.executePermKeybinding(permMatch);

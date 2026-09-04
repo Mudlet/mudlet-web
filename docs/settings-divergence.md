@@ -78,7 +78,7 @@ Three things the totals don't show, and which matter more than the totals do:
 
 | Desktop | | Mudlet Web |
 |---|---|---|
-| Appearance (Dark / Light / System setting) | ✅ | Appearance → Theme, with two extra looks (amber, sky) — but **no "System setting"**, so a light-mode OS still opens dark. Tracked as issue #71 item 2 |
+| Appearance (Dark / Light / System setting) | ✅ | Appearance → Theme, with all three of desktop's choices plus two extra looks (amber, sky). "System setting" is a stored choice that resolves to a palette at read time, so an OS flip repaints without a reload (`src/utils/systemTheme.ts`) |
 | Auto save on exit | ❌ | There is no exit to save on. Profile data is written continuously (debounced `saveProfileData`), so the setting's "off" position has nothing to mean |
 | Notify on new data | ✅ | General → Notifications |
 | Mudlet handles `telnet://` / `telnets://` links | ❌ | `navigator.registerProtocolHandler` only accepts schemes on the HTML spec's safelist, and `telnet` is not on it. A page cannot claim the scheme |
@@ -387,15 +387,13 @@ Ranked by how many players hit it, not by how much work it is.
 1. **Server data encoding** — the engine is finished; this is a combo box wired to
    `setServerEncoding()`. Every player on a non-English game is affected, and today the
    workaround is to write a script.
-2. **"System setting" appearance** — one entry in the theme picker plus a
-   `prefers-color-scheme` listener. Every light-mode user opens the app dark (#71-2).
-3. **Mapper colors** — 22 missing rows, and the card that does exist is thin enough to
+2. **Mapper colors** — 22 missing rows, and the card that does exist is thin enough to
    read as an oversight rather than a decision.
-4. **Ambiguous East Asian width** — silently misdraws box art, with no way out.
-5. **SGR colour-space id** — silently misdraws colour, with no way out.
-6. **Editor options** — six settings, all currently hard-coded.
-7. **Browser spellcheck on the command line** — one prop, already deliberately off.
-8. **An analytics opt-out** — desktop gates its equivalent behind an explicit policy
+3. **Ambiguous East Asian width** — silently misdraws box art, with no way out.
+4. **SGR colour-space id** — silently misdraws colour, with no way out.
+5. **Editor options** — six settings, all currently hard-coded.
+6. **Browser spellcheck on the command line** — one prop, already deliberately off.
+7. **An analytics opt-out** — desktop gates its equivalent behind an explicit policy
    choice; the web build has none.
 
 Everything else is either genuinely inapplicable, or small enough to take when the

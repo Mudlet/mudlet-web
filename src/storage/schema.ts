@@ -246,6 +246,36 @@ export interface ProfileSettings {
      *  prompt. Mitigates spurious mid-line breaks when long MUD lines arrive
      *  fragmented. `undefined` = use MudClient's built-in default (300ms). */
     promptTimeoutMs?: number;
+    /** Mudlet's "Server data encoding": how the game's bytes are decoded into
+     *  text, for games that don't negotiate CHARSET. One of
+     *  `SUPPORTED_SERVER_ENCODINGS`, spelled as that list spells it. Applied on
+     *  profile open and carried across reconnects by `MudSession`; a CHARSET
+     *  negotiation or a script's `setServerEncoding()` overrides it for the
+     *  session without rewriting this. `undefined` = UTF-8. */
+    serverEncoding?: string;
+    /** Mudlet's "Highlight history": a command recalled with Up/Down comes back
+     *  selected rather than with the caret at its end, so the next keystroke
+     *  replaces it. Off unless explicitly true, as on desktop. */
+    highlightHistory?: boolean;
+    /** Mudlet's "Disable password masking": show the characters in the command
+     *  line while the game has echo off. Off unless explicitly true. */
+    disablePasswordMasking?: boolean;
+    /** Mudlet's "React to all keybindings on the same key": when several
+     *  keybindings share a key and modifiers, run every enabled one instead of
+     *  stopping at the first that matches. Off unless explicitly true. */
+    reactToAllKeybindings?: boolean;
+    /** Mudlet's "Stop selecting a word on these characters": the extra
+     *  characters a double-click treats as a word boundary in the main display.
+     *  Empty or unset uses the browser's own word rules. */
+    doubleClickIgnore?: string;
+    /** Mudlet's "Make 'Ambiguous' E. Asian width characters wide": render the
+     *  Unicode East Asian *Ambiguous* characters (box-drawing glyphs, ★ ♠ and
+     *  friends) two columns wide instead of one. Off unless explicitly true. */
+    ambiguousWidthWide?: boolean;
+    /** Mudlet's "Expect Color Space Id in SGR...(3|4)8;2;...m codes": read
+     *  24-bit colour as `38;2;<id>;r;g;b` (the ITU T.416 spelling, with a
+     *  colour-space id) rather than `38;2;r;g;b`. Off unless explicitly true. */
+    expectColorSpaceId?: boolean;
     /** Per-area MapPanel last-viewed z-level. Each area remembers which level
      *  you were on so switching between areas (or reopening the panel) restores
      *  it. Zoom is no longer kept here — it lives in the map file (per-area

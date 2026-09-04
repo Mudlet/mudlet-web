@@ -14,6 +14,7 @@ import { LabelOverlay } from '../labels/LabelOverlay';
 import { CommandLineOverlay } from '../cmdline/CommandLineOverlay';
 import { ScrollBoxOverlay } from '../scrollbox/ScrollBoxOverlay';
 import { backgroundImageStyle } from './backgroundImageStyle';
+import { trimSelectionForDoubleClick } from './wordSelection';
 
 interface OutputAreaProps {
     session: MudSession;
@@ -40,6 +41,7 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
     const outputBackgroundExtra = backgroundImageStyle(outputBackgroundImage) ?? undefined;
     const outputForeground = useProfileField('outputForeground');
     const showTimestamps = useProfileField('showTimestamps');
+    const doubleClickIgnore = useProfileField('doubleClickIgnore') ?? '';
     const fontSize = useProfileField('fontSize');
     const wrapAt = useProfileField('outputWrapAt');
     const wrapIndent = useProfileField('outputWrapIndent');
@@ -190,7 +192,16 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
 
     return (
         <>
-            <div className="output-area-content" ref={viewportRef} style={contentStyle}>
+            <div
+                className="output-area-content"
+                ref={viewportRef}
+                style={contentStyle}
+                // Mudlet's "Stop selecting a word on these characters". The
+                // browser has already made its selection by the time this
+                // fires; the handler narrows it. No listener at all when the
+                // profile names no characters, which is the default.
+                onDoubleClick={doubleClickIgnore ? () => trimSelectionForDoubleClick(doubleClickIgnore) : undefined}
+            >
                 <StickyOutputPanel
                     outputRef={outputRef}
                     sentinelRef={sentinelRef}

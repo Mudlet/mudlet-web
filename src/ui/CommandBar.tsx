@@ -31,6 +31,10 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
     const [menu, setMenu] = useState<{ x: number; y: number; items: CmdLineMenuEntry[] } | null>(null);
     const inputBackground = useProfileField('inputBackground');
     const inputForeground = useProfileField('inputForeground');
+    // Mudlet's "Highlight history" and "Disable password masking", both off by
+    // default as they are on desktop.
+    const highlightHistory = useProfileField('highlightHistory') ?? false;
+    const disablePasswordMasking = useProfileField('disablePasswordMasking') ?? false;
     const inputStyle = (inputBackground || inputForeground) ? {
         ...(inputBackground ? { background: inputBackground } : {}),
         ...(inputForeground ? { color: inputForeground } : {}),
@@ -60,7 +64,9 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
 
     // After traversal or Tab, we want the caret pinned at end after the value
     // re-renders. Set inside the keydown handler, applied in useLayoutEffect.
-    const pendingCaretEndRef = useRef(false);
+    // false = nothing pending; 'end' = park the caret at the end; 'history' =
+    // the value came from a history recall, which "Highlight history" selects.
+    const pendingCaretEndRef = useRef<false | 'end' | 'history'>(false);
 
     // Explicit caret position to restore after a re-render (e.g. inserting a
     // newline mid-text via Ctrl/Shift+Enter). Takes precedence over the
@@ -132,10 +138,16 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
             return;
         }
         if (!pendingCaretEndRef.current) return;
+        const fromHistory = pendingCaretEndRef.current === 'history';
         pendingCaretEndRef.current = false;
         if (!el) return;
         const len = el.value.length;
-        el.setSelectionRange(len, len);
+        // Mudlet's "Highlight history": a command recalled with Up/Down comes
+        // back selected, so the next keystroke replaces it instead of appending
+        // to it. Only for history — a caret parked at the end after an ordinary
+        // edit must stay a caret.
+        if (fromHistory && highlightHistory) el.setSelectionRange(0, len);
+        else el.setSelectionRange(len, len);
     });
 
     // Auto-grow the multi-line command box to fit its content (up to the CSS
@@ -272,7 +284,7 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         state.lastValue = next;
         draftRef.current = next;
         setCursor(-1);
-        pendingCaretEndRef.current = true;
+        pendingCaretEndRef.current = 'end';
         setValue(next);
     };
 
@@ -280,11 +292,11 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         resetCycle();
         if (newCursor === -1) {
             setCursor(-1);
-            pendingCaretEndRef.current = true;
+            pendingCaretEndRef.current = 'end';
             setValue(draftRef.current);
         } else {
             setCursor(newCursor);
-            pendingCaretEndRef.current = true;
+            pendingCaretEndRef.current = 'history';
             setValue(history[newCursor]);
         }
     };
@@ -411,7 +423,11 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
                     <Input
                         ref={commandInputRef as React.RefObject<HTMLInputElement>}
                         className="command-input"
-                        type="password"
+                        // Mudlet's "Disable password masking": still the
+                        // single-line password field (no history, no ghost
+                        // completion), just readable — for a player who would
+                        // rather see a typo than retype a long passphrase.
+                        type={disablePasswordMasking ? 'text' : 'password'}
                         value={command}
                         onChange={handleChange}
                         onKeyDown={handleKeyDown}
