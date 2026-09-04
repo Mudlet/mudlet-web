@@ -696,6 +696,13 @@ export class MudClient {
             const message = error instanceof Error ? error.message : String(error);
             this.eventBus.emit('error', error);
             this.eventBus.emit('client.error', `Failed to open WebSocket: ${message}`);
+            // No socket was ever constructed, so no `close` will arrive to end
+            // the attempt. Say so anyway: a dial that reports nothing back leaves
+            // the session sitting in `connecting` for good, and the session's
+            // disconnect notice — which is what carries the error above into the
+            // console — would never be posted. cTelnet is equivalent here: a
+            // failed connectToHost still reaches slot_socketDisconnected.
+            this.eventBus.emit('client.disconnect');
         }
     }
 
