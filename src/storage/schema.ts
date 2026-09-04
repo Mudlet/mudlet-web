@@ -704,6 +704,12 @@ export interface TriggerPattern {
     type: TriggerPatternType;
 }
 
+/** Widest line delta a multiline (AND) trigger can ask for. Mudlet's control is
+ *  a plain QSpinBox with no maximum set (`ui/triggers_main_area.ui`,
+ *  spinBox_lineMargin), so Qt's default 99 is the ceiling a profile written
+ *  there can carry — matching it keeps our XML readable by desktop Mudlet. */
+export const MAX_CONDITION_LINE_DELTA = 99;
+
 export interface TriggerNode extends BaseNode {
     patterns: TriggerPattern[];  // one or more patterns — any match fires (Mudlet TTrigger.mPatterns)
     code: string;
@@ -711,7 +717,8 @@ export interface TriggerNode extends BaseNode {
     fireLength: number;          // chain length: 0 = only the current line; N = current + N more lines (groups with patterns only)
     multipleMatches: boolean;    // fire once per regex occurrence on a line, not just the first
     multiline: boolean;          // AND mode: all patterns must match in sequence
-    delta: number;               // 0 = unlimited; N = max lines from first condition match to last
+    delta: number;               // Mudlet conditonLineDelta: lines after the one that matched the first
+                                 // condition within which the rest must match. 0 = the same line only.
     isFilter: boolean;           // filter chain: pass captured/matched text to children instead of full line
     /**
      * Session-scoped: created by `tempComplexRegexTrigger`, which needs a real

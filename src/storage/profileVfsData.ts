@@ -13,6 +13,7 @@ import type {
     ProfileVariables,
 } from './schema';
 import { useAppStore, MIGRATION_BACKUP_KEY } from './appStore';
+import { MAX_CONDITION_LINE_DELTA } from './schema';
 import type { WindowOpenOptions } from '../ui/windows/types';
 import type { ProfileVFS } from '../scripting/vfs/ProfileVFS';
 
@@ -31,8 +32,10 @@ import type { ProfileVFS } from '../scripting/vfs/ProfileVFS';
 export const PROFILE_DATA_PATH = '.mudix/profile.json';
 
 /** Bumped if the on-disk shape changes incompatibly. (2: added the UI/layout/
- *  settings slices that used to live in localStorage.) */
-const PROFILE_DATA_VERSION = 2;
+ *  settings slices that used to live in localStorage. 3: a trigger's `delta`
+ *  took Mudlet's meaning, in which 0 is one line rather than no limit — see
+ *  migrateTriggerDelta.) */
+const PROFILE_DATA_VERSION = 3;
 
 export interface PersistedProfileData {
     version: number;
@@ -88,6 +91,25 @@ function consumeMigrationBackup(connectionId: string): void {
 }
 
 /**
+ * v3: a multiline trigger's `delta` used to mean "no limit" at 0, while Mudlet's
+ * conditonLineDelta means "every remaining condition on the line that opened the
+ * state" (TriggerEngine.processAndTrigger). Every AND trigger written under the
+ * old meaning carries 0 — the editor's default — so reading those the way Mudlet
+ * does would stop all of them firing. They move instead to the widest window
+ * Mudlet can express, which keeps them firing and keeps the profile exportable.
+ * Nothing is lost: a 0 that meant "one line" was not reachable before this.
+ *
+ * A trigger imported from Mudlet XML before the fix is caught by this too, and
+ * its genuine 0 widens — but it was already running unbounded here, so this
+ * preserves the behaviour the profile has rather than introducing a new one.
+ */
+function migrateTriggerDelta(triggers: TriggerNode[] | undefined): TriggerNode[] | undefined {
+    return triggers?.map(t => (t.multiline && (t.delta ?? 0) === 0
+        ? { ...t, delta: MAX_CONDITION_LINE_DELTA }
+        : t));
+}
+
+/**
  * Read `.mudix/profile.json` from the profile VFS and push it into the store
  * for `connectionId`. Also completes the one-time v21 migration: if this
  * profile's UI/settings/layout slices haven't moved into the VFS yet, they're
@@ -108,12 +130,14 @@ export function loadProfileData(vfs: ProfileVFS, connectionId: string): void {
     const backup = readMigrationBackup(connectionId);
     if (!fileExists && !backup) return; // fresh profile, nothing to load
 
+    const staleTriggerDelta = (fileData.version ?? 1) < 3;
+
     // The file is authoritative once migrated; the backup is the fallback for a
     // profile whose UI data hasn't moved into the VFS yet.
     useAppStore.getState().hydrateConnectionData(connectionId, {
         scripts: fileData.scripts,
         aliases: fileData.aliases,
-        triggers: fileData.triggers,
+        triggers: staleTriggerDelta ? migrateTriggerDelta(fileData.triggers) : fileData.triggers,
         timers: fileData.timers,
         keybindings: fileData.keybindings,
         buttons: fileData.buttons,
@@ -132,6 +156,11 @@ export function loadProfileData(vfs: ProfileVFS, connectionId: string): void {
     if (backup) {
         saveProfileData(vfs, connectionId);
         consumeMigrationBackup(connectionId);
+    } else if (staleTriggerDelta) {
+        // Stamp the new version now rather than waiting for the next edit to
+        // flush: a delta of 0 saved deliberately after this must not be widened
+        // again the next time the profile opens.
+        saveProfileData(vfs, connectionId);
     }
 }
 

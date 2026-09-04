@@ -1232,6 +1232,27 @@
     cursor: not-allowed;
 }
 
+/* Line-spacer count — Mudlet's spinBox_lineSpacer, which replaces the pattern
+ * line edit for that pattern type. */
+.script-editor__pattern-spacer {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-family: var(--font-mono), monospace;
+    font-size: 12px;
+    padding: 0 6px;
+    height: 24px;
+    outline: none;
+    transition: border-color 0.15s;
+}
+
+.script-editor__pattern-spacer:focus {
+    border-color: var(--accent-dim, var(--accent));
+}
+
 /* Colour trigger picker — two compact swatch buttons (FG and BG) inline,
  * each opening a 16-cell ANSI palette + "any" sentinel + custom-index input.
  */

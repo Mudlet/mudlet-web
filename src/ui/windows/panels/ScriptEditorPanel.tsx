@@ -8,7 +8,7 @@ import { captureDeletion, describeDeletion, pushBounded, type EditorDeleteComman
 import { isPackageRemovable } from '../../../branding';
 import { DEFAULT_ANSI_PALETTE } from '../../../mud/text/colors';
 import type { AliasNode, ButtonLocation, ButtonNode, ButtonOrientation, KeyNode, PackageManifest, ScriptNode, TimerNode, TriggerNode, TriggerPattern, TriggerPatternType } from '../../../storage/schema';
-import { isColorizing, isEffectivelyEnabled } from '../../../storage/schema';
+import { isColorizing, isEffectivelyEnabled, MAX_CONDITION_LINE_DELTA } from '../../../storage/schema';
 import type { MudSession, ScriptLogSource, ScriptLogSourceKind } from '../../../mud/MudSession';
 import type { ProfileVFS } from '../../../scripting/vfs/ProfileVFS';
 import type { ScriptingEngine } from '../../../scripting/ScriptingEngine';
@@ -171,6 +171,24 @@ const PATTERN_TYPE_COLORS: Record<TriggerPatternType, string> = {
 };
 
 const PATTERN_NEEDS_TEXT = new Set<TriggerPatternType>(['substring', 'regex', 'startOfLine', 'exactMatch', 'luaFunction']);
+
+/** The `text` a pattern row should carry after its type changes.
+ *
+ *  `colorTrigger` stores `"fg,bg"` and `lineSpacer` stores a line count, so
+ *  neither can inherit a regex left over from the previous type — and a regex
+ *  must not inherit `"-1,-1"` or `"2"` either. Mudlet gets this for free by
+ *  giving each type its own widget (`dlgTriggerEditor.cpp:7196-7239`); here one
+ *  `text` field is shared, so it is reset explicitly whenever the type crosses
+ *  into or out of one of the two structured kinds. */
+export function retypePatternText(text: string, from: TriggerPatternType, to: TriggerPatternType): string {
+    if (from === to) return text;
+    const structured = (t: TriggerPatternType) => t === 'colorTrigger' || t === 'lineSpacer';
+    if (!structured(from) && !structured(to)) return text;
+    if (to === 'colorTrigger') return '-1,-1';
+    // Mudlet's spin box defaults to 0 (QSpinBox's default value).
+    if (to === 'lineSpacer') return '0';
+    return '';
+}
 
 /** Names for the 16 basic ANSI palette entries the colour picker shows by
  *  default. Indices 16..255 (the xterm 6×6×6 cube + 24-step greyscale) are
@@ -2124,19 +2142,34 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                                     value={p.type}
                                                     onChange={t => {
                                                         const next = [...editPatterns];
-                                                        // Reset pattern text when switching to/from colorTrigger
-                                                        // since "fg,bg" only makes sense for that mode.
-                                                        const resetText = (t === 'colorTrigger' || p.type === 'colorTrigger') && t !== p.type;
-                                                        next[i] = {
-                                                            ...next[i],
-                                                            type: t,
-                                                            text: resetText ? (t === 'colorTrigger' ? '-1,-1' : '') : next[i].text,
-                                                        };
+                                                        next[i] = { ...next[i], type: t, text: retypePatternText(next[i].text, p.type, t) };
                                                         setEditPatterns(next);
                                                         setDirty(true);
                                                     }}
                                                 />
-                                                {p.type === 'colorTrigger' ? (
+                                                {p.type === 'lineSpacer' ? (
+                                                    /* Mudlet shows a dedicated spin box for this type instead of
+                                                     * the pattern line edit, and saves its value as the pattern
+                                                     * string (dlgTriggerEditor.cpp:7207-7217, :5829-5830). Its
+                                                     * range is QSpinBox's default 0..99
+                                                     * (ui/trigger_pattern_edit.ui:187). */
+                                                    <input
+                                                        type="number"
+                                                        className="script-editor__pattern-spacer"
+                                                        min={0}
+                                                        max={99}
+                                                        value={p.text === '' ? '0' : p.text}
+                                                        aria-label="Lines to skip"
+                                                        title="Number of lines to skip before the next condition is tested"
+                                                        onChange={e => {
+                                                            const n = Math.max(0, Math.min(99, Math.trunc(Number(e.target.value) || 0)));
+                                                            const next = [...editPatterns];
+                                                            next[i] = { ...next[i], text: String(n) };
+                                                            setEditPatterns(next);
+                                                            setDirty(true);
+                                                        }}
+                                                    />
+                                                ) : p.type === 'colorTrigger' ? (
                                                     <div className="script-editor__pattern-color-pair">
                                                         <ColorChannelPicker
                                                             label="FG"
@@ -2234,16 +2267,17 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                             </label>
                                             {editMultiline && (
                                                 <label className="script-editor__trigger-opt script-editor__trigger-opt--fire">
-                                                    Delta
+                                                    within
                                                     <input
                                                         type="number"
                                                         className="script-editor__fire-length"
                                                         value={editDelta}
                                                         min={0}
-                                                        title="0 = unlimited; N = max lines between first and last match"
+                                                        max={MAX_CONDITION_LINE_DELTA}
+                                                        title="How many lines after the one matching the first condition the remaining conditions have to match in. 0 = all of them on that one line."
                                                         onChange={e => {
                                                             const v = parseInt(e.target.value, 10);
-                                                            setEditDelta(isNaN(v) || v < 0 ? 0 : v);
+                                                            setEditDelta(isNaN(v) || v < 0 ? 0 : Math.min(v, MAX_CONDITION_LINE_DELTA));
                                                             setDirty(true);
                                                         }}
                                                     />

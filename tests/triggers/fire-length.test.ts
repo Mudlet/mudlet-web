@@ -91,6 +91,12 @@ describe('TriggerEngine fire length', () => {
             id: 'and',
             multiline: true,
             fireLength: 2,
+            // The two conditions land on consecutive lines, so the state has to
+            // survive one line past the one that opened it — Mudlet's
+            // conditonLineDelta, where 0 means the opening line only (see
+            // tests/triggers/lineDelta.test.ts). Orthogonal to the fire length
+            // under test, which starts counting once the trigger has completed.
+            delta: 1,
             patterns: [
                 { type: 'regex', text: '^A1$' },
                 { type: 'regex', text: '^A2$' },
