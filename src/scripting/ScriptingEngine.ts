@@ -829,7 +829,10 @@ export class ScriptingEngine implements EngineHost {
             this.mudletSaveName ??= `${mudletTimestamp(new Date())}.xml`;
             vfs.writeFile(`current/${this.mudletSaveName}`, this.buildProfileXml(base.xml));
         } catch (err) {
-            console.warn('[ScriptingEngine] Mudlet write-back failed:', err);
+            // Nothing was written: the previous save in current/ still stands, so
+            // the profile stays loadable in desktop, but this session's changes
+            // are not on disk.
+            console.warn('[ScriptingEngine] Mudlet write-back failed, profile not updated:', err);
         }
     }
 

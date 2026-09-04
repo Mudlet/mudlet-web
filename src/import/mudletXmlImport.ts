@@ -1,5 +1,6 @@
 import type { AliasNode, ButtonLocation, ButtonNode, ButtonOrientation, KeyNode, ScriptNode, TimerNode, TriggerNode, TriggerPattern, TriggerPatternType } from '../storage/schema';
 import { qtKeyToDomCode, qtModifiersToList, QT_KEY_UNKNOWN } from '../mud/keybindings/qtKeys';
+import { desanitizeControlChars } from './mudletControlChars';
 
 // Mudlet triggerType integer → our TriggerPatternType
 const MUDLET_PATTERN_TYPES: TriggerPatternType[] = [
@@ -13,14 +14,19 @@ const MUDLET_PATTERN_TYPES: TriggerPatternType[] = [
     'prompt',       // 7
 ];
 
+// Both accessors decode Mudlet's control-character placeholders. Desktop only
+// decodes the <script> element (XMLimport.cpp, readScriptElement) and so reads
+// a pattern or name containing one back mangled; decoding everywhere costs
+// nothing — the placeholder lead never occurs in real content — and recovers
+// those too.
 function getText(el: Element, tag: string): string {
-    return el.querySelector(`:scope > ${tag}`)?.textContent?.trim() ?? '';
+    return desanitizeControlChars(el.querySelector(`:scope > ${tag}`)?.textContent?.trim() ?? '');
 }
 
 // Like getText but preserves leading/trailing whitespace — use for fields where
 // whitespace is semantic (trigger pattern strings, alias regex patterns).
 function getRawText(el: Element, tag: string): string {
-    return el.querySelector(`:scope > ${tag}`)?.textContent ?? '';
+    return desanitizeControlChars(el.querySelector(`:scope > ${tag}`)?.textContent ?? '');
 }
 
 function isYes(el: Element, attr: string): boolean {
@@ -120,7 +126,7 @@ function parseTriggers(els: Element[], parentId: string | null, out: TriggerNode
             const typeIdx = parseInt(typeEls[i]?.textContent?.trim() ?? '0') || 0;
             // Pattern text is preserved verbatim — leading/trailing whitespace
             // is significant for substring/exactMatch/regex matching.
-            return { text: p.textContent ?? '', type: MUDLET_PATTERN_TYPES[typeIdx] ?? 'substring' };
+            return { text: desanitizeControlChars(p.textContent ?? ''), type: MUDLET_PATTERN_TYPES[typeIdx] ?? 'substring' };
         });
         if (patterns.length === 0 && !group) patterns.push({ text: '', type: 'substring' });
 
