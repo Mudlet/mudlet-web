@@ -320,3 +320,39 @@ describe('parseMudletXml — non-folder parents with children', () => {
         expect(back.timers.map(t => t.name)).toEqual(['parentTimer', 'childTimer']);
     });
 });
+
+// Colour triggers saved before Mudlet 3.17 carry `FG<n>BG<n>` with an old
+// palette index, and desktop rewrites them into the modern text as it reads the
+// profile (XMLimport::remapColorsToAnsiNumber, called unconditionally from
+// XMLimport.cpp:1425). Web read them as garbage, which the runtime then treated
+// as a pattern matching every line (issue #102).
+describe('parseMudletXml — legacy colour trigger patterns', () => {
+    const withPattern = (text: string, typeInt: number) => parseMudletXml(
+        `<?xml version="1.0" encoding="UTF-8"?>
+<MudletPackage version="1.001"><TriggerPackage>
+  <Trigger isActive="yes" isFolder="no">
+    <name>colour</name><script></script>
+    <regexCodeList><string>${text}</string></regexCodeList>
+    <regexCodePropertyList><integer>${typeInt}</integer></regexCodePropertyList>
+  </Trigger>
+</TriggerPackage></MudletPackage>`,
+    ).triggers[0].patterns[0];
+
+    it('rewrites a legacy colour pattern into the modern form', () => {
+        expect(withPattern('FG4BG0', 6)).toEqual({
+            type: 'colorTrigger', text: 'ANSI_COLORS_F{001}_B{DEFAULT}',
+        });
+    });
+
+    it('leaves a modern colour pattern untouched', () => {
+        expect(withPattern('ANSI_COLORS_F{001}_B{IGNORE}', 6)).toEqual({
+            type: 'colorTrigger', text: 'ANSI_COLORS_F{001}_B{IGNORE}',
+        });
+    });
+
+    it('does not touch a substring pattern that merely looks like one', () => {
+        // The remap is keyed on the pattern's kind, as desktop's is — a
+        // substring trigger for the literal text "FG4BG0" has to survive.
+        expect(withPattern('FG4BG0', 0)).toEqual({ type: 'substring', text: 'FG4BG0' });
+    });
+});
