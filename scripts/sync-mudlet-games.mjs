@@ -9,10 +9,16 @@
  * games), so rather than retyping several hundred lines of prose this parses the
  * header and writes the TypeScript equivalent.
  *
- *   node scripts/sync-mudlet-games.mjs [path-to-TGameDetails.h]
+ *   node scripts/sync-mudlet-games.mjs                        # development branch
+ *   node scripts/sync-mudlet-games.mjs --ref v4.20.0          # any branch/tag/sha
+ *   node scripts/sync-mudlet-games.mjs path-to-TGameDetails.h # a local checkout
  *
- * With no argument it fetches the header from Mudlet's development branch.
- * Re-run it when the pin in src/scripting/lua/mudlet-lua/SYNCED.md moves.
+ * Nobody needs to remember to run it: sync-mudlet-upstream.yml does, daily, in
+ * a job of its own — separate from the Lua/spec sync, because no spec asserts
+ * anything about the catalogue, so it can neither turn the busted corpus red nor
+ * afford to wait behind a corpus that is. `--ref` is what lets that job pin one
+ * resolved sha for the whole run and name it in the PR, instead of racing a
+ * branch that may move between the header fetch and the icon fetches.
  */
 import { writeFileSync, readFileSync, mkdirSync, readdirSync, rmSync, copyFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -23,9 +29,32 @@ const OUT = resolve(HERE, '../src/mud/games/bundledGames.ts');
 const ICON_DIR = resolve(HERE, '../src/mud/games/icons');
 /** Start of the generated array, as written into the output file. */
 const ARRAY_ANCHOR = 'export const BUNDLED_GAMES: readonly BundledGame[] = ';
-/** `development` — where Mudlet's games and their logos actually land. A
- *  release branch lags it, and so does any checkout more than a few days old. */
-const UPSTREAM_SRC = 'https://raw.githubusercontent.com/Mudlet/Mudlet/development/src/';
+// ── args ─────────────────────────────────────────────────────────────────────
+const argv = process.argv.slice(2);
+/** Indices `opt()` has eaten, so the positional path can't be one of them. */
+const consumed = new Set();
+const opt = (name, fallback) => {
+    const i = argv.indexOf(name);
+    if (i === -1) return fallback;
+    const v = argv[i + 1];
+    if (!v || v.startsWith('--')) die(`${name} needs a value`);
+    consumed.add(i).add(i + 1);
+    return v;
+};
+
+function die(msg) {
+    console.error(`sync-mudlet-games: ${msg}`);
+    process.exit(1);
+}
+
+/** Defaults to `development` — where Mudlet's games and their logos actually
+ *  land. A release branch lags it, and so does any checkout more than a few days
+ *  old. */
+const ref = opt('--ref', 'development');
+const positional = argv.filter((a, i) => !consumed.has(i) && !a.startsWith('--'));
+if (positional.length > 1) die(`unexpected argument "${positional[1]}"`);
+
+const UPSTREAM_SRC = `https://raw.githubusercontent.com/Mudlet/Mudlet/${ref}/src/`;
 const UPSTREAM = `${UPSTREAM_SRC}TGameDetails.h`;
 
 /** Strip // and /* *\/ comments that sit outside a string literal. */
@@ -190,8 +219,12 @@ async function fetchIcon(relative, to) {
  * finally whatever a previous run already vendored, so a run with no network
  * degrades to keeping what it has instead of stripping every logo.
  *
- * The filename always comes from the entry's OWN icon path, so a game whose
- * logo can't be found ends up with none — it can never inherit its neighbour's.
+ * The filename always comes from the entry's OWN icon path, so a game whose logo
+ * can't be found ends up with none — it can never inherit its neighbour's. That
+ * case aborts the run rather than writing the catalogue without it: nothing
+ * downstream would notice (bundledGames.test.ts skips an entry with no
+ * `iconFile`, and the UI just draws no tile), so an unattended run could
+ * otherwise commit a game's logo away over one failed request.
  *
  * Icons land as ordinary files that Vite emits as assets, NOT inlined the way
  * `src/assets/qt-resources` inlines its handful: 1.7 MB of logos as data URIs
@@ -227,11 +260,10 @@ async function vendorIcons(games, checkoutSrc) {
             if (!used.has(file)) rmSync(resolve(ICON_DIR, file), { force: true });
         }
     }
-    if (missing.length) console.warn(`no icon file for: ${missing.join(', ')}`);
-    return { total: used.size, copied, fetched, kept };
+    return { total: used.size, copied, fetched, kept, missing };
 }
 
-const fromCheckout = process.argv[2] ? resolve(process.argv[2]) : null;
+const fromCheckout = positional[0] ? resolve(positional[0]) : null;
 const source = fromCheckout
     ? readFileSync(fromCheckout, 'utf8')
     : await (await fetch(UPSTREAM)).text();
@@ -239,6 +271,11 @@ const source = fromCheckout
 const games = parseGames(source);
 if (games.length < 20) throw new Error(`only ${games.length} games parsed — the header shape must have changed`);
 const icons = await vendorIcons(games, fromCheckout ? dirname(fromCheckout) : null);
+if (icons.missing.length) {
+    console.error(`no icon file for: ${icons.missing.join(', ')}`);
+    die('refusing to write a catalogue with logos missing — rerun with network, '
+        + 'or pass a Mudlet checkout to read them from');
+}
 
 const header = `// GENERATED by scripts/sync-mudlet-games.mjs — do not edit by hand.
 //
@@ -294,5 +331,5 @@ export function gameProvidesOwnUi(hostUrl: string): boolean {
 `;
 
 writeFileSync(OUT, header + JSON.stringify(games, null, 4) + footer, 'utf8');
-console.log(`wrote ${games.length} games to ${OUT}`);
+console.log(`wrote ${games.length} games from ${fromCheckout ?? `Mudlet/Mudlet@${ref}`} to ${OUT}`);
 console.log(`icons: ${icons.total} vendored (${icons.copied} from the checkout, ${icons.fetched} fetched, ${icons.kept} already present)`);

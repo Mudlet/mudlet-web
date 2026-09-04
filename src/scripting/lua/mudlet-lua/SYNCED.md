@@ -18,7 +18,10 @@ A third piece of Mudlet is vendored on its own schedule and by its own script:
 `src/TGameDetails.h` — the catalogue of games Mudlet ships with — becomes
 `src/mud/games/bundledGames.ts` via `node scripts/sync-mudlet-games.mjs`. It is
 separate because it is one C++ header parsed into data rather than files copied,
-and because it moves far less often. Re-run it when the pin below moves.
+and because nothing tests it — no spec asserts anything about the catalogue, so
+it can neither turn the busted corpus red nor afford to wait behind a corpus that
+is. `sync-mudlet-upstream.yml` syncs it daily in a job of its own, with its own
+branch and PR; you should never need to re-run it by hand.
 
 They were one tree until Mudlet moved every default package into `src/packages/`
 ([#9626](https://github.com/Mudlet/Mudlet/pull/9626)). Note the second is only a
