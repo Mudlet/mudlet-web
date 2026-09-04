@@ -110,6 +110,9 @@ export function PlayerMarkerPreview({ mapper }: PlayerMarkerPreviewProps) {
     // on every slider tick).
     const mapperRef = useRef(mapper);
     mapperRef.current = mapper;
+    /** The box size the renderer has been told about, so the catch-up below
+     *  fires on a real change rather than on every render. */
+    const syncedSizeRef = useRef('');
 
     useEffect(() => {
         const container = containerRef.current;
@@ -138,6 +141,31 @@ export function PlayerMarkerPreview({ mapper }: PlayerMarkerPreviewProps) {
             renderer.destroy();
         };
     }, []);
+
+    // The settings dialog mounts every card and hides the ones that are not on
+    // the page being shown, so the preview is normally built into a 0×0
+    // container and only gets a size when the Mapper page is opened — by which
+    // time the Konva stage has been sized to nothing and framePreview()'s
+    // `box <= 0` bail has left the scene unframed, i.e. a blank box.
+    //
+    // Both are fixed by the `resize` the renderer listens for on its container,
+    // which is what sizes the stage and the camera the zoom math reads. The
+    // dialog re-renders whenever the page it shows changes, so catching up here
+    // is enough, and is a good deal more predictable than a ResizeObserver on an
+    // element that spends most of its life with no box at all.
+    // Deliberately no dependency list: this runs after every render, which is
+    // when the box may have gained or changed size, and does nothing unless it
+    // actually did.
+    useEffect(() => {
+        const container = containerRef.current;
+        const renderer = rendererRef.current;
+        if (!container || !renderer) return;
+        const size = `${container.clientWidth}x${container.clientHeight}`;
+        if (container.clientWidth <= 0 || container.clientHeight <= 0 || size === syncedSizeRef.current) return;
+        syncedSizeRef.current = size;
+        container.dispatchEvent(new Event('resize'));
+        framePreview(renderer, container, mapperRef.current);
+    });
 
     useEffect(() => {
         const renderer = rendererRef.current;

@@ -3,19 +3,18 @@ import { Button, Input, FormField, Toggle } from './components';
 import { useModalFocus } from './components/useModalFocus';
 import { ProxyInfoModal } from './ProxyInfoModal';
 import { ProxyWhyModal } from './ProxyWhyModal';
-import { connectionNameTaken, DEFAULT_PROXY_URL, proxyCanInspectCertificates, useAppStore, type ConnectionMode, type MudConnection } from '../storage';
+import { connectionNameTaken, DEFAULT_MUD_PORT, DEFAULT_PROXY_URL, proxyCanInspectCertificates, useAppStore, validatePort, type ConnectionMode, type MudConnection } from '../storage';
 import type { VaultSaver } from './useVaultSaver';
 import { useVault } from '../vault/useVault';
 
 /** Preview of the proxy URL the profile will dial. Mirrors `connectionUrl()` in
  *  storage/schema.ts — keep the two in step. */
 function buildPreviewUrl(
-    host: string, port: string, proxyUrl: string, fallback: string,
+    host: string, port: number, proxyUrl: string, fallback: string,
     tls: { on: boolean; expired: boolean; selfSigned: boolean; all: boolean },
 ): string {
     const base = (proxyUrl.trim() || fallback).replace(/\/$/, '');
-    const p = parseInt(port, 10);
-    let url = `${base}?host=${encodeURIComponent(host.trim())}&port=${isNaN(p) ? 23 : p}`;
+    let url = `${base}?host=${encodeURIComponent(host.trim())}&port=${port}`;
     if (tls.on) {
         url += '&tls=1';
         if (tls.expired) url += '&tlsIgnoreExpired=1';
@@ -113,8 +112,15 @@ export function ConnectionFormModal({ connection, preset, firstConnection, title
     const connections = useAppStore(s => s.connections);
     const nameTaken = connectionNameTaken(name, connections, connection?.id);
 
+    // `parseInt` used to stand in for validation here, which meant `1e3` was
+    // stored as 1, `0x50` as 0 and `23abc` as 23 — a different port from the one
+    // typed, saved without a word, and an out-of-range one was stored verbatim
+    // only for the proxy to reject it later as "proxy unreachable". Mudlet
+    // refuses both at the dialog (dlgConnectionProfiles.cpp:2140-2160); so do we.
+    const portCheck = validatePort(port);
+
     const canSubmit = !nameTaken && (mode === 'mud'
-        ? name.trim() !== '' && host.trim() !== ''
+        ? name.trim() !== '' && host.trim() !== '' && portCheck.ok
         : name.trim() !== '' && url.trim() !== '');
 
     const buildData = (): Omit<MudConnection, 'id'> => {
@@ -134,12 +140,13 @@ export function ConnectionFormModal({ connection, preset, firstConnection, title
             description: description.trim() || undefined,
         };
         if (mode === 'mud') {
-            const parsedPort = parseInt(port, 10);
             return {
                 name: name.trim(),
                 mode: 'mud',
                 host: host.trim(),
-                port: isNaN(parsedPort) ? 23 : parsedPort,
+                // Only reachable with a valid port — `canSubmit` gates it — so
+                // the fallback is for the type, not for a silent coercion.
+                port: portCheck.ok ? portCheck.port : DEFAULT_MUD_PORT,
                 // TLS is a proxy-mode concept only — in websocket mode the URL
                 // scheme decides it, so these are deliberately not carried over.
                 tls: tls || undefined,
@@ -254,8 +261,16 @@ export function ConnectionFormModal({ connection, preset, firstConnection, title
                                         onChange={e => setPort(e.target.value)}
                                         placeholder="23"
                                         spellCheck={false}
+                                        inputMode="numeric"
+                                        aria-invalid={!portCheck.ok || undefined}
+                                        aria-describedby={portCheck.ok ? undefined : 'cs-port-error'}
                                         noAutofill
                                     />
+                                    {!portCheck.ok && (
+                                        <div id="cs-port-error" className="field__error" role="alert">
+                                            {portCheck.message}
+                                        </div>
+                                    )}
                                 </FormField>
                             </div>
                         ) : (
@@ -373,10 +388,13 @@ export function ConnectionFormModal({ connection, preset, firstConnection, title
                             </div>
                         )}
 
-                        {mode === 'mud' && host.trim() && (
+                        {/* Hidden while the port is invalid: a preview built from a
+                            coerced port is the very thing that made the typo
+                            invisible. */}
+                        {mode === 'mud' && host.trim() && portCheck.ok && (
                             <div className="proxy-url-preview">
                                 <span className="proxy-url-preview-label">Connects via</span>
-                                <code className="proxy-url-preview-url">{buildPreviewUrl(host, port, proxyUrl, effectiveDefaultProxy, {
+                                <code className="proxy-url-preview-url">{buildPreviewUrl(host, portCheck.port, proxyUrl, effectiveDefaultProxy, {
                                     on: tls, expired: sslIgnoreExpired, selfSigned: sslIgnoreSelfSigned, all: sslIgnoreAll,
                                 })}</code>
                             </div>

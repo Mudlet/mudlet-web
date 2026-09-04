@@ -2775,9 +2775,12 @@ body.is-sorting {
 }
 
 .settings-modal {
-    width: min(640px, 92vw);
+    /* Wide enough for the category sidebar to stand beside a full reading
+       column of cards; below that the sidebar collapses to a rail of icons. */
+    width: min(880px, 94vw);
+    height: min(680px, 80vh);
     max-height: 80vh;
-    /* Anchor the top so switching to a shorter tab doesn't make the modal
+    /* Anchor the top so switching to a shorter page doesn't make the modal
        drift upward (default .modal centering recenters when content shrinks). */
     top: 10vh;
     transform: translateX(-50%);
@@ -4132,17 +4135,6 @@ body.is-sorting {
     flex: 1;
 }
 
-.settings-section {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-}
-
-.settings-section + .settings-section {
-    margin-top: 20px;
-    padding-top: 20px;
-    border-top: 1px solid var(--border);
-}
 
 .settings-row {
     display: flex;
@@ -4235,47 +4227,347 @@ body.is-sorting {
     text-transform: capitalize;
 }
 
-.settings-tabs {
-    display: flex;
-    gap: 2px;
-    padding: 0 16px;
-    border-bottom: 1px solid var(--border);
-    /* Let the tab strip scroll sideways instead of clipping/squashing when the
-       categories don't fit (narrow desktop modal, and especially phones). */
-    overflow-x: auto;
-    overflow-y: hidden;
-    scrollbar-width: none;
-}
-.settings-tabs::-webkit-scrollbar { display: none; }
-/* Also carries `mudix-native-scrollbar`, so a Mudlet theme's QScrollBar rules
-   can't bring the hidden track back — see SCROLLBAR_OPT_OUT in ui/labels/qtCss.ts. */
+/* ── Settings shell ────────────────────────────────────────────────────────
+   The sidebar-and-cards dialog ported from Mudlet's settings redesign: a
+   category rail down the left, a search field over a single reading column of
+   cards. Every card stays mounted and is hidden with [hidden] when it is not on
+   the page being shown, which is what lets the search index be read off the DOM
+   (see ui/settings/SettingsShell.tsx). */
 
-.settings-tab {
+.settings-shell {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+}
+
+.settings-sidebar {
+    width: 186px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--border);
+    padding: 12px 8px;
+    overflow-y: auto;
+}
+
+.settings-sidebar__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.settings-sidebar__separator {
+    height: 1px;
+    margin: 8px 10px;
+    background: var(--border);
+}
+
+.settings-sidebar__item {
     appearance: none;
     background: transparent;
     border: none;
-    border-bottom: 2px solid transparent;
-    padding: 10px 14px;
-    margin-bottom: -1px;
+    border-radius: var(--radius-sm, 4px);
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 10px;
+    font: inherit;
+    font-family: var(--font-ui), sans-serif;
+    font-size: 13px;
+    text-align: left;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: background 0.1s ease, color 0.1s ease;
+}
+
+.settings-sidebar__item:hover {
+    background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+    color: var(--text);
+}
+
+.settings-sidebar__item--active {
+    background: var(--bg-hover, rgba(127, 127, 127, 0.16));
+    color: var(--text);
+}
+
+/* The support row is a link out, not a page — never selected, never underlined
+   into looking like body copy. */
+.settings-sidebar__item--link,
+.settings-sidebar__item--link:hover {
+    text-decoration: none;
+}
+
+.settings-sidebar__icon {
+    flex-shrink: 0;
+    opacity: 0.85;
+}
+
+.settings-sidebar__label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.settings-content {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 14px 16px 0;
+    gap: 12px;
+}
+
+.settings-search {
+    position: relative;
+    max-width: 460px;
+    flex-shrink: 0;
+}
+
+.settings-search__icon {
+    position: absolute;
+    left: 9px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-dim);
+    pointer-events: none;
+}
+
+.settings-search__field {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 7px 10px 7px 30px;
+    font: inherit;
+    font-family: var(--font-ui), sans-serif;
+    font-size: 13px;
+    color: var(--text);
+    background: var(--bg-input, var(--bg));
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm, 4px);
+}
+
+.settings-search__field:focus {
+    outline: none;
+    border-color: var(--accent, var(--text));
+}
+
+.settings-search__empty {
+    font-family: var(--font-ui), sans-serif;
+    font-size: 13px;
+    color: var(--text-dim);
+    margin: 4px 0;
+}
+
+.settings-titlerow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.settings-titlerow__icon {
+    color: var(--text-dim);
+    flex-shrink: 0;
+}
+
+.settings-titlerow__title {
+    font-family: var(--font-ui), sans-serif;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.settings-back {
+    appearance: none;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-sm, 4px);
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px 6px;
     font: inherit;
     font-family: var(--font-ui), sans-serif;
     font-size: 13px;
     color: var(--text-dim);
     cursor: pointer;
-    /* Keep natural width so the strip scrolls rather than crushing labels. */
-    flex-shrink: 0;
-    white-space: nowrap;
-    transition: color 0.1s ease, border-color 0.1s ease;
 }
 
-.settings-tab:hover {
+.settings-back:hover {
     color: var(--text);
+    background: var(--bg-hover, rgba(127, 127, 127, 0.12));
 }
 
-.settings-tab--active {
-    color: var(--text);
-    border-bottom-color: var(--accent, var(--text));
+.settings-pages {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding-bottom: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
 }
+
+/* One card: a titled group of rows, the unit the search moves around. */
+.settings-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius, 6px);
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    /* Cards are laid out by the column's flex gap; without this a card would
+       stretch to fill the leftover height of a short page. */
+    flex: 0 0 auto;
+}
+
+/* An author `display` beats the UA sheet's `[hidden] { display: none }`, so the
+   card that is off this page has to say so itself. */
+.settings-card[hidden] {
+    display: none;
+}
+
+/* A card that is one bare row rather than a group — Mudlet's "settingsCardPlain". */
+.settings-card--plain {
+    border-color: transparent;
+    padding: 0 14px;
+}
+
+.settings-card__title {
+    font-family: var(--font-ui), sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0;
+}
+
+.settings-card__description {
+    font-family: var(--font-ui), sans-serif;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--text-dim);
+    margin: -2px 0 2px;
+}
+
+.settings-card__description a {
+    color: var(--accent, var(--text));
+}
+
+.settings-card__body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* Search results are filed under the category — or "Category › Subpage" — the
+   matching card lives on. */
+.settings-group-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-ui), sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin: 6px 0 -4px;
+}
+
+/* The individual rows a query matched, tinted the way Mudlet spotlights them —
+   and their neighbours dimmed the way an IDE's settings search does, so a card
+   that came back for one of its ten rows says which one. */
+.settings-row--hit {
+    border-radius: var(--radius-sm, 4px);
+    box-shadow: 0 0 0 6px var(--bg-hover, rgba(127, 127, 127, 0.14));
+    background: var(--bg-hover, rgba(127, 127, 127, 0.14));
+}
+
+.settings-row--miss {
+    opacity: 0.4;
+    transition: opacity 0.12s ease;
+}
+
+/* Reading a dimmed setting is one hover away; changing one never needs the
+   query cleared first. */
+.settings-row--miss:hover,
+.settings-row--miss:focus-within {
+    opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .settings-row--miss {
+        transition: none;
+    }
+}
+
+/* The chevron row that leads into a subpage, carrying what it holds. */
+.settings-subpage-row {
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm, 4px);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 9px 10px;
+    font: inherit;
+    font-family: var(--font-ui), sans-serif;
+    font-size: 13px;
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+}
+
+.settings-subpage-row:hover {
+    background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+}
+
+.settings-subpage-row__label {
+    flex: 1;
+    min-width: 0;
+}
+
+.settings-subpage-row__summary {
+    color: var(--text-dim);
+    font-size: 12px;
+}
+
+.vault-manage-row-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* Below the width the sidebar needs to stand beside a full reading column it
+   collapses to a rail of icons, exactly as Mudlet's does — the row's title
+   attribute is what names it then. */
+@media (max-width: 820px) {
+    .settings-sidebar {
+        width: 48px;
+        padding: 12px 6px;
+    }
+    .settings-sidebar__item {
+        justify-content: center;
+        padding: 8px 0;
+    }
+    .settings-sidebar__label {
+        display: none;
+    }
+    .settings-sidebar__separator {
+        margin: 8px 4px;
+    }
+    .settings-content {
+        padding: 12px 12px 0;
+    }
+}
+
 
 .settings-unit {
     font-family: var(--font-ui), sans-serif;
@@ -4337,7 +4629,6 @@ body.is-sorting {
 .settings-colors-toolbar {
     display: flex;
     justify-content: flex-end;
-    margin-bottom: 12px;
 }
 
 .settings-colors-grid {
@@ -4376,14 +4667,6 @@ body.is-sorting {
 
 /* Player marker: a column of controls with the live map preview beside it, so
    a change and its result are in the same glance. */
-.settings-marker-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    margin-top: 4px;
-}
-
 .settings-marker {
     display: flex;
     align-items: flex-start;
@@ -4462,16 +4745,6 @@ body.is-sorting {
         flex: 0 0 auto;
         width: 100%;
     }
-}
-
-.settings-ansi-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    margin: 18px 0 8px;
-    padding-top: 12px;
-    border-top: 1px solid var(--border);
 }
 
 .settings-ansi-grid {
@@ -4717,12 +4990,12 @@ body.is-sorting {
     /* Quick-open: less top offset so the list isn't pushed down the screen. */
     .qo-overlay { padding-top: 8vh; }
 
-    /* Settings: bigger touch targets on the (now swipeable) tab strip and the
-       close button; let rows wrap so a wide control drops below its label
-       instead of overflowing the screen. */
-    .settings-tab {
-        padding: 13px 16px;
-        font-size: 14px;
+    /* Settings: bigger touch targets on the sidebar rail and the close button;
+       let rows wrap so a wide control drops below its label instead of
+       overflowing the screen. */
+    .settings-sidebar__item {
+        padding: 12px 0;
+        justify-content: center;
     }
     .modal-close {
         padding: 10px 12px;
