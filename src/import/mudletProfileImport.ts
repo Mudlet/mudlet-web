@@ -1,6 +1,6 @@
 import { unzipSync, strFromU8 } from 'fflate';
 import type { PackageManifest } from '../storage/schema';
-import { parseMudletProfile, type MudletProfileImport, type MudletModuleRef } from './mudletHost';
+import { extractHostPackageXml, parseMudletProfile, type MudletProfileImport, type MudletModuleRef } from './mudletHost';
 import { parseMudletXml } from './mudletXmlImport';
 
 // Turn the raw files of a Mudlet profile — a directory the user picked, or a
@@ -18,6 +18,11 @@ export interface MudletProfileBundle {
     port?: number;
     /** Parsed settings + automation + variables from the newest current/*.xml. */
     profile: MudletProfileImport;
+    /** That save's `<HostPackage>`, verbatim. `profile.settings` covers only the
+     *  Host fields mudix models; the other ~100 live here and nowhere else, so
+     *  this is retained in the new profile's VFS for an export to base on.
+     *  Undefined if the save carries no `<HostPackage>`. */
+    hostPackageXml?: string;
     /** Manifests for the profile's installed packages (from <mInstalledPackages>,
      *  metadata from each package's config.lua). Registered on import so
      *  getPackageInfo / package managers see them as installed. */
@@ -209,13 +214,15 @@ export function buildMudletProfileBundle(
         newestMap = maps.reduce((a, b) => (basename(b) > basename(a) ? b : a));
     }
 
-    const profile = parseMudletProfile(strFromU8(rel.get(newestXml)!));
+    const newestXmlText = strFromU8(rel.get(newestXml)!);
+    const profile = parseMudletProfile(newestXmlText);
     const folderName = rootPrefix ? basename(rootPrefix.replace(/\/$/, '')) : '';
     return {
         name: profile.connection.name || folderName || fallbackName,
         host: profile.connection.host,
         port: profile.connection.port,
         profile,
+        hostPackageXml: extractHostPackageXml(newestXmlText) ?? undefined,
         packages: buildManifests(profile.installedPackages, others),
         modules: profile.modules,
         mapBytes: newestMap ? rel.get(newestMap) : undefined,

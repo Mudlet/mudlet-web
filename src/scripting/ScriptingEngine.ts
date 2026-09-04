@@ -72,6 +72,7 @@ import {ensureDefaultPackages} from '../import/defaultPackages';
 import {serializeMudletXml, type SerializeInput} from '../import/mudletXmlExport';
 import {isMudletProfileVfs, readNewestParseableXml} from '../import/mudletLink';
 import {buildLinkedWriteback, mudletTimestamp} from '../import/mudletWriteback';
+import {buildHostBaseXml, RETAINED_HOST_PATH} from '../import/mudletProfileExport';
 import {describeThrown} from '../utils/describeThrown';
 
 // Linked-profile write-back. serializeMudletXml now emits Mudlet's exact format
@@ -840,8 +841,9 @@ export class ScriptingEngine implements EngineHost {
      *
      * Basing on an existing save is what keeps the ~130 `<Host>` fields mudix
      * doesn't model — and any element it doesn't understand — from being dropped
-     * on the way out. A profile with no save to base on gets the empty skeleton
-     * below, so its `<Host>` carries only the settings mudix does model.
+     * on the way out. With no save to base on, a profile imported from Mudlet
+     * falls back to the `<Host>` retained at import; one born in mudix gets the
+     * empty skeleton, so its `<Host>` carries only the settings mudix does model.
      */
     private buildProfileXml(baseXml?: string): string {
         const s = useAppStore.getState();
@@ -856,9 +858,37 @@ export class ScriptingEngine implements EngineHost {
         };
         const values = s.connectionVariables[id]?.values ?? [];
         return buildLinkedWriteback(
-            baseXml ?? EMPTY_PROFILE_XML, trees,
+            baseXml ?? this.retainedHostXml() ?? EMPTY_PROFILE_XML, trees,
             { hidden: [], variables: values }, s.connectionProfile[id],
         );
+    }
+
+    /**
+     * The `<Host>` retained when this profile was imported from Mudlet, restamped
+     * with the connection's current identity and package set — the retained copy
+     * still names them as they were at import.
+     *
+     * Only reached when there's no `current/*.xml` to base on, so it never
+     * displaces a linked folder's own save. Undefined for a profile that was
+     * never imported, or when the retained file is missing or unreadable.
+     */
+    private retainedHostXml(): string | undefined {
+        const vfs = this.vfs;
+        if (!vfs) return undefined;
+        let retained: string;
+        try {
+            if (!vfs.exists(RETAINED_HOST_PATH)) return undefined;
+            retained = vfs.readFile(RETAINED_HOST_PATH);
+        } catch (err) {
+            console.warn('[ScriptingEngine] retained <Host> unreadable:', err);
+            return undefined;
+        }
+        const s = useAppStore.getState();
+        const connection = s.connections.find(c => c.id === this.connectionId);
+        if (!connection) return retained;
+        const packageNames = (s.connectionPackages[this.connectionId] ?? [])
+            .map(p => p.name).filter(Boolean);
+        return buildHostBaseXml(connection, packageNames, retained);
     }
 
     /**
