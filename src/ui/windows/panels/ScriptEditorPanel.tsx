@@ -57,7 +57,37 @@ const CATEGORY_ICON: Record<EditCategory, React.ElementType> = {
     buttons:  MousePointerClick,
 };
 
-const BUTTON_LOCATIONS: ButtonLocation[] = ['top', 'bottom', 'left', 'right', 'floating'];
+/**
+ * Toolbar dock areas offered in the editor.
+ *
+ * Mudlet's `TAction::mLocation` numbers these 0 top, 1 bottom, 2 left, 3 right,
+ * 4 floating — but 1 is dead there: `ActionUnit` places 0, 2, 3 and 4 and never
+ * 1 (ActionUnit.cpp:234-246), and `comboBox_action_bar_location` does not offer
+ * it. mudix *can* render a bottom strip, so this is a capability rather than a
+ * mistake — but it is not one that survives leaving mudix. A toolbar saved
+ * there exports into a profile whose bar desktop silently never draws, and a
+ * folder linked with a Mudlet install writes that on every save. So it is not
+ * offered: the profile stays something both clients agree about.
+ *
+ * The index mapping in the importer is unchanged, and {@link buttonLocationChoices}
+ * still shows `bottom` for a toolbar that already carries it — a profile that
+ * arrives on it renders, reads back honestly, and can be moved off.
+ */
+const BUTTON_LOCATIONS: { value: ButtonLocation; label: string }[] = [
+    { value: 'top', label: 'Top' },
+    { value: 'left', label: 'Left' },
+    { value: 'right', label: 'Right' },
+    { value: 'floating', label: 'Floating' },
+];
+
+/** The locations to offer for a toolbar currently on `current`. Adds `bottom`
+ *  only when that is where it already is, so an imported profile is shown the
+ *  truth about itself instead of silently reading as "Top". */
+function buttonLocationChoices(current: ButtonLocation): { value: ButtonLocation; label: string }[] {
+    if (current !== 'bottom') return BUTTON_LOCATIONS;
+    return [...BUTTON_LOCATIONS, { value: 'bottom', label: 'Bottom (desktop Mudlet will not show this)' }];
+}
+
 const BUTTON_ORIENTATIONS: ButtonOrientation[] = ['horizontal', 'vertical'];
 
 const MODIFIER_KEYS = new Set(['Control', 'Shift', 'Alt', 'Meta', 'AltGraph', 'CapsLock', 'NumLock', 'ScrollLock', 'Dead']);
@@ -147,6 +177,11 @@ const EMPTY: never[] = [];
 /** How long the undo offer stays up, matching the five-second single-shot timer
  *  behind Mudlet's editor undo toast (dlgTriggerEditor.cpp:14381). */
 const UNDO_TOAST_MS = 5000;
+
+/** Most pattern rows a trigger may have. Desktop shows at most 50
+ *  (`mVisiblePatternCount < 50`, dlgTriggerEditor.cpp:7394), so a trigger with
+ *  more is exportable but not editable there — the cap is interop, not taste. */
+const MAX_TRIGGER_PATTERNS = 50;
 
 const PATTERN_TYPE_LABELS: Record<TriggerPatternType, string> = {
     substring:    'substring',
@@ -924,6 +959,8 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     const [editMultiline, setEditMultiline] = useState(false);
     const [editDelta, setEditDelta] = useState(0);
     const [editIsFilter, setEditIsFilter] = useState(false);
+    const [editSoundTrigger, setEditSoundTrigger] = useState(false);
+    const [editSoundFile, setEditSoundFile] = useState('');
     const [editColorize, setEditColorize] = useState(false);
     const [editHighlightFg, setEditHighlightFg] = useState('');
     const [editHighlightBg, setEditHighlightBg] = useState('');
@@ -1191,6 +1228,8 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
             setEditMultiline(t.multiline ?? false);
             setEditDelta(t.delta ?? 0);
             setEditIsFilter(t.isFilter ?? false);
+            setEditSoundTrigger(t.soundTrigger ?? false);
+            setEditSoundFile(t.soundFile ?? '');
             setEditColorize(isColorizing(t));
             setEditHighlightFg(t.highlight?.fg ?? '');
             setEditHighlightBg(t.highlight?.bg ?? '');
@@ -1553,6 +1592,10 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                 multiline: editMultiline,
                 delta: editDelta,
                 isFilter: editIsFilter,
+                // Both undefined when off, so a trigger that never had a sound
+                // round-trips as one rather than gaining an empty field.
+                soundTrigger: editSoundTrigger || undefined,
+                soundFile: (editSoundTrigger && editSoundFile) || undefined,
                 colorize: editColorize,
                 highlight,
                 command: editTriggerCommand || undefined,
@@ -2216,7 +2259,18 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                                 <button
                                                     type="button"
                                                     className="script-editor__pattern-remove"
-                                                    onClick={() => { setEditPatterns(editPatterns.filter((_, j) => j !== i)); setDirty(true); }}
+                                                    // Desktop always keeps a row in view
+                                                    // (dlgTriggerEditor.cpp:7394 and the reset paths):
+                                                    // removing the last one leaves a trigger with no
+                                                    // way to add one back except reselecting it.
+                                                    // Emptying the row is what "remove" means there.
+                                                    disabled={editPatterns.length <= 1 && !editPatterns[i].text}
+                                                    onClick={() => {
+                                                        setEditPatterns(editPatterns.length <= 1
+                                                            ? [{ text: '', type: editPatterns[0].type }]
+                                                            : editPatterns.filter((_, j) => j !== i));
+                                                        setDirty(true);
+                                                    }}
                                                     title="Remove pattern"
                                                 >×</button>
                                             </div>
@@ -2226,6 +2280,14 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                         <button
                                             type="button"
                                             className="script-editor__pattern-add"
+                                            // Desktop stops at 50 (mVisiblePatternCount < 50,
+                                            // dlgTriggerEditor.cpp:7394). Past that a trigger is
+                                            // exportable but not editable there, so the cap is
+                                            // interop rather than taste.
+                                            disabled={editPatterns.length >= MAX_TRIGGER_PATTERNS}
+                                            title={editPatterns.length >= MAX_TRIGGER_PATTERNS
+                                                ? `Mudlet shows at most ${MAX_TRIGGER_PATTERNS} patterns per trigger`
+                                                : undefined}
                                             onClick={() => { setEditPatterns([...editPatterns, { text: '', type: 'regex' }]); setDirty(true); }}
                                         >+ Add pattern</button>
                                     </div>
@@ -2358,6 +2420,48 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                     </div>
                                 </div>
 
+                                {/* Sound section. The model, the round-trip and the playback
+                                    already existed — TTrigger::execute plays the file ahead of
+                                    the command and the script — with no way to set it from the
+                                    editor, so the one thing a user could do with a sound trigger
+                                    was lose it by opening a package and saving it back.
+                                    Mirrors desktop's checkable groupBox_soundTrigger +
+                                    lineEdit_soundFile + toolButton_clearSoundFile
+                                    (ui/triggers_main_area.ui:316, :360). */}
+                                <div className="script-editor__trigger-card">
+                                    <label className="script-editor__trigger-card-label script-editor__trigger-card-label--toggle">
+                                        <input
+                                            type="checkbox"
+                                            checked={editSoundTrigger}
+                                            onChange={e => { setEditSoundTrigger(e.target.checked); setDirty(true); }}
+                                        />
+                                        Play sound
+                                    </label>
+                                    <div className="script-editor__trigger-card-row">
+                                        <Input
+                                            className="script-editor__sound-file"
+                                            value={editSoundFile}
+                                            disabled={!editSoundTrigger}
+                                            placeholder="sounds/alert.wav"
+                                            spellCheck={false}
+                                            aria-label="Sound file to play when this trigger fires"
+                                            onChange={e => { setEditSoundFile(e.target.value); setDirty(true); }}
+                                        />
+                                        {/* Desktop's toolButton_clearSoundFile. Clearing the path
+                                            is not the same as turning the trigger off, so it
+                                            leaves the switch alone. */}
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            disabled={!editSoundTrigger || !editSoundFile}
+                                            title="Clear the sound file"
+                                            onClick={() => { setEditSoundFile(''); setDirty(true); }}
+                                        >
+                                            Clear
+                                        </Button>
+                                    </div>
+                                </div>
+
                                 {/* Chain section — visible whenever this trigger could be a chain head
                                     (a folder, or a leaf with at least one nested child trigger). */}
                                 {(selected.isGroup || (childCounts.get(selected.id) ?? 0) > 0) && (
@@ -2480,8 +2584,8 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                     value={editToolbarLocation}
                                     onChange={e => { setEditToolbarLocation(e.target.value as ButtonLocation); setDirty(true); }}
                                 >
-                                    {BUTTON_LOCATIONS.map(loc => (
-                                        <option key={loc} value={loc}>{loc[0].toUpperCase() + loc.slice(1)}</option>
+                                    {buttonLocationChoices(editToolbarLocation).map(loc => (
+                                        <option key={loc.value} value={loc.value}>{loc.label}</option>
                                     ))}
                                 </select>
                                 <span className="script-editor__field-label">Orientation</span>
