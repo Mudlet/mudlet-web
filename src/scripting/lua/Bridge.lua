@@ -5076,6 +5076,19 @@ do
             error("setConfig: bad argument #2 type (value as number expected, got "
                 .. type(value) .. "!)", 2)
         end
+        -- A bounded option refuses out-of-range values by NAME rather than
+        -- through the generic "not a valid value" below, because the bounds are
+        -- the useful half of the answer. The comparison is inverted so that NaN
+        -- — which is false against both bounds, and would blank every room
+        -- symbol if it got through — lands here with the infinities.
+        if kind == 'num' then
+            local range = __mudix_config_range(key)
+            local n = tonumber(value)
+            if range ~= nil and not (n >= range[0] and n <= range[1]) then
+                return nil, "setConfig: " .. tostring(value) .. " is out of range for '"
+                    .. key .. "' (" .. tostring(range[0]) .. " to " .. tostring(range[1]) .. ")"
+            end
+        end
         -- Mudlet reads every string option with getVerifiedString, which raises
         -- on a non-string; an out-of-range *string* is the (nil, errMsg) case
         -- below. Keys taking more than one type report kind 'any' and vet

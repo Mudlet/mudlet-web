@@ -683,6 +683,12 @@ export class LuaRuntime implements IScriptingRuntime {
         // from its (nil, errMsg) refuse-on-bad-value.
         this.lua.global.set('__mudix_config_kind', (key: unknown) =>
             this.api.configKeyKind(String(key ?? '')));
+        // The bounds a numeric option accepts, as [min, max], or nil. Separate
+        // from the kind above because the refusal has to NAME them: "out of
+        // range" is what a script greps for, and the generic "not a valid value"
+        // does not say what the valid ones were.
+        this.lua.global.set('__mudix_config_range', (key: unknown) =>
+            this.api.configKeyRange(String(key ?? '')) ?? undefined);
 
         // Mudlet profile description (a free-text slot per profile). Each takes
         // the profile by name, defaulting to this one; a name that matches no

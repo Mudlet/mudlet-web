@@ -239,6 +239,13 @@ const CONFIG_PERSIST_ONLY: Record<string, {
     type: 'bool' | 'num' | 'str';
     default: boolean | number | string;
     enum?: readonly string[];
+    /** Inclusive bounds for a `num` option. Written as a range rather than
+     *  checked at the call site because the refusal has to name the bounds, and
+     *  Bridge.lua builds that message — see {@link ScriptingAPI.configKeyRange}. */
+    range?: readonly [number, number];
+    /** Options that must NOT outlive the session, however ordinary they look.
+     *  Kept in memory instead of the profile's config bag. */
+    sessionOnly?: true;
 }> = {
     // Consumed by ProfileSession (fed into MudSession.setProtocolOptions →
     // TelnetNegotiator's MTTS/NEW-ENVIRON SCREEN_READER reporting) on the next
@@ -261,6 +268,25 @@ const CONFIG_PERSIST_ONLY: Record<string, {
     fixUnnecessaryLinebreaks:       { type: 'bool', default: false },
     inputLineStrictUnixEndings:     { type: 'bool', default: false },
     logInHTML:                      { type: 'bool', default: false },
+    // The 2D map's room-symbol settings. They live on the map rather than on the
+    // mapper widget, which is why the specs for them need no open mapper.
+    // Mudlet's own defaults (Host::mMapSymbolFont is the application font at
+    // 1.0 scaling, merging enabled); the family is whatever the profile draws
+    // output in, since the browser has no application font to inherit.
+    mapSymbolFont:                  { type: 'str',  default: DEFAULT_OUTPUT_FONT_FAMILY },
+    // The ends of the range Mudlet's preferences spin box offers. NaN is the
+    // value a range check has to be written carefully to stop, since it compares
+    // false against both bounds — see setConfig.
+    mapSymbolFontScaling:           { type: 'num',  default: 1.0, range: [0.5, 2.0] },
+    // Qt's NoFontMerging strategy bit: draw symbols only with the chosen family
+    // instead of falling back to another font for glyphs it lacks.
+    mapSymbolFontOnlyUseSelected:   { type: 'bool', default: false },
+    // Session-only on purpose, and Mudlet is the same: a UI package that sets
+    // this and is then uninstalled must not leave the map button dead for good,
+    // so every session starts back on "default".
+    mapperButton:                   {
+        type: 'str', default: 'default', enum: ['default', 'scripted', 'disabled'], sessionOnly: true,
+    },
     promptForMXPProcessorOn:        { type: 'bool', default: false },
     promptForVersionInTTYPE:        { type: 'bool', default: false },
     show3dMapView:                  { type: 'bool', default: false },
@@ -751,6 +777,10 @@ export class ScriptingAPI {
     private readonly oscLinks = new OscLinkManager();
     readonly windows: ScriptingWindowsAPI;
     readonly labels: ScriptingLabelsAPI;
+    /** Values for the `sessionOnly` options in {@link CONFIG_PERSIST_ONLY} —
+     *  held here rather than in the profile's config bag precisely so they are
+     *  gone next session. */
+    private readonly sessionConfig = new Map<string, unknown>();
     readonly cmdLines: CommandLineManager;
     readonly scrollBoxes: ScrollBoxManager;
     // Mudlet createTextEdit widgets (data-model registry; see TextEditManager).
@@ -1341,10 +1371,16 @@ export class ScriptingAPI {
         }
         const spec = CONFIG_PERSIST_ONLY[key];
         if (spec) {
-            const stored = this.configBag()[key];
+            const stored = spec.sessionOnly ? this.sessionConfig.get(key) : this.configBag()[key];
             return stored !== undefined ? stored : spec.default;
         }
         return undefined;
+    }
+
+    /** The bounds a `num` option accepts, for the refusal Bridge.lua writes.
+     *  Null when the key is unbounded or names no option. */
+    configKeyRange(key: string): readonly [number, number] | null {
+        return CONFIG_PERSIST_ONLY[key]?.range ?? null;
     }
 
     /**
@@ -1576,12 +1612,29 @@ export class ScriptingAPI {
         if (spec) {
             let v: unknown;
             if (spec.type === 'bool') v = configBool(value);
-            else if (spec.type === 'num') v = Number(value);
-            else {
+            else if (spec.type === 'num') {
+                const n = Number(value);
+                // Inverted deliberately: `n < min || n > max` lets NaN through,
+                // since it compares false against both bounds — and a scaling of
+                // NaN would blank every room symbol on the map. Written this way
+                // the infinities are refused by the same expression.
+                if (spec.range && !(n >= spec.range[0] && n <= spec.range[1])) return false;
+                v = n;
+            } else {
                 v = String(value);
                 if (spec.enum && !spec.enum.includes(v as string)) return false;
+                // A font option stores the family the font database names, not
+                // the string the caller typed, so reading it back gives
+                // something that can be passed to setFont — and an unknown
+                // family is refused rather than silently drawn as a fallback.
+                if (key === 'mapSymbolFont') {
+                    const family = this.resolveFontFamily(v as string);
+                    if (!family) return false;
+                    v = family;
+                }
             }
-            this.patchConfigBag(key, v);
+            if (spec.sessionOnly) this.sessionConfig.set(key, v);
+            else this.patchConfigBag(key, v);
             return true;
         }
         return false;
