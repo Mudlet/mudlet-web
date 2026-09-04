@@ -200,7 +200,19 @@ export class Console {
         // and left the buffer pinned to the limit.
         let removed = 0;
         while (this.history.length > this._maxLines) {
-            const batch = Math.min(Math.max(1, this._batchDeleteSize), this.history.length);
+            // Never more than the limit itself. Mudlet keeps `batch < limit` as
+            // an invariant of the one call that sets both
+            // (`TBuffer::setBufferSize`, TBuffer.cpp:407-409: a batch at or over
+            // the limit is knocked down to limit/10), so its shrinkBuffer can
+            // pop a flat batch without checking. Here the two can be set
+            // separately — by a script, by the profile preference, or by the
+            // defaults — so the invariant is enforced at the point of use
+            // instead. Without it a batch larger than the limit empties the
+            // buffer outright rather than trimming it: raising the default batch
+            // to 1,000 alongside the 10,000-line default meant any console
+            // dropped to a smaller limit lost everything on its next write.
+            const batch = Math.min(
+                Math.max(1, this._batchDeleteSize), this._maxLines, this.history.length);
             for (let i = 0; i < batch; i++) this.history.shift()!.removeFromDom();
             removed += batch;
         }
