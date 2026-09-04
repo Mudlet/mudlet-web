@@ -1380,9 +1380,15 @@ export class TriggerEngine {
         const { item, conditions } = entry;
         const delta = item.delta ?? 0;
         // A state that has waited longer than the trigger's line delta allows is
-        // gone before this line is offered to it.
+        // gone before this line is offered to it. The bound is Mudlet's: a state
+        // opened on line S can still complete on lines S..S+delta, so `delta: 0`
+        // means every condition has to be met on the one line that opened the
+        // state — not "no limit" (TMatchState::newLine is `!(mLineCount > mDelta)`
+        // and mLineCount is already 1 on the opening line). Mudlet drops the
+        // state at the end of a line, after that line's completion check; doing
+        // it here, on entry to the next line, admits exactly the same lines.
         const states = (this.andStates.get(item.id) ?? [])
-            .filter(state => !(delta > 0 && currentLine - state.startLine > delta));
+            .filter(state => currentLine - state.startLine <= delta);
 
         // The first condition matching always starts a state, however many are
         // already under way — that is what lets two of them complete together.

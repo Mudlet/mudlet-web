@@ -16,6 +16,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { TriggerEngine, type TriggerNode } from '../../src/mud/triggers/TriggerEngine';
 
+/** A line delta wide enough that the spacer, not the delta, decides every case
+ *  below — the spacer sets how long a state waits, and the delta caps how long
+ *  it is allowed to. */
+const WIDE_DELTA = 10;
+
 function andTrigger(patterns: TriggerNode['patterns']): TriggerNode {
   return {
     id: 'spacer',
@@ -28,7 +33,7 @@ function andTrigger(patterns: TriggerNode['patterns']): TriggerNode {
     fireLength: 0,
     multipleMatches: false,
     multiline: true,
-    delta: 0,
+    delta: WIDE_DELTA,
     isFilter: false,
     patterns,
   } as TriggerNode;

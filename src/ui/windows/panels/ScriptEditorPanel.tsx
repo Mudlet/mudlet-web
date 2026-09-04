@@ -6,7 +6,7 @@ import { useAppStore, useProfileField } from '../../../storage';
 import { isPackageRemovable } from '../../../branding';
 import { DEFAULT_ANSI_PALETTE } from '../../../mud/text/colors';
 import type { AliasNode, ButtonLocation, ButtonNode, ButtonOrientation, KeyNode, PackageManifest, ScriptNode, TimerNode, TriggerNode, TriggerPattern, TriggerPatternType } from '../../../storage/schema';
-import { isEffectivelyEnabled } from '../../../storage/schema';
+import { isEffectivelyEnabled, MAX_CONDITION_LINE_DELTA } from '../../../storage/schema';
 import type { MudSession, ScriptLogSource, ScriptLogSourceKind } from '../../../mud/MudSession';
 import type { ProfileVFS } from '../../../scripting/vfs/ProfileVFS';
 import type { ScriptingEngine } from '../../../scripting/ScriptingEngine';
@@ -2071,16 +2071,17 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                             </label>
                                             {editMultiline && (
                                                 <label className="script-editor__trigger-opt script-editor__trigger-opt--fire">
-                                                    Delta
+                                                    within
                                                     <input
                                                         type="number"
                                                         className="script-editor__fire-length"
                                                         value={editDelta}
                                                         min={0}
-                                                        title="0 = unlimited; N = max lines between first and last match"
+                                                        max={MAX_CONDITION_LINE_DELTA}
+                                                        title="How many lines after the one matching the first condition the remaining conditions have to match in. 0 = all of them on that one line."
                                                         onChange={e => {
                                                             const v = parseInt(e.target.value, 10);
-                                                            setEditDelta(isNaN(v) || v < 0 ? 0 : v);
+                                                            setEditDelta(isNaN(v) || v < 0 ? 0 : Math.min(v, MAX_CONDITION_LINE_DELTA));
                                                             setDirty(true);
                                                         }}
                                                     />

@@ -51,7 +51,7 @@ describe('profileVfsData', () => {
         saveProfileData(vfs, CONN);
         expect(vfs.exists(PROFILE_DATA_PATH)).toBe(true);
         const parsed = JSON.parse(vfs.readFile(PROFILE_DATA_PATH));
-        expect(parsed.version).toBe(2);
+        expect(parsed.version).toBe(3);
         expect(parsed.aliases).toHaveLength(1);
         expect(parsed.buttons).toHaveLength(1);
         expect(parsed.profile).toMatchObject({ fontSize: 18, theme: 'amber' });
@@ -99,6 +99,39 @@ describe('profileVfsData', () => {
         expect(reparsed.profile).toMatchObject({ fontSize: 22 });
         // ...and the backup entry consumed (last profile → key removed).
         expect(localStorage.getItem(MIGRATION_BACKUP_KEY)).toBeNull();
+    });
+
+    it('widens a pre-v3 multiline trigger whose delta meant "no limit"', () => {
+        const vfs = fakeVfs();
+        // A v2 file: `delta: 0` there meant an unbounded AND chain, while from
+        // v3 on it carries Mudlet's meaning (all conditions on the one line).
+        const trigger = (id: string, multiline: boolean, delta: number) => ({
+            id, name: id, enabled: true, isGroup: false, parentId: null,
+            patterns: [{ type: 'regex', text: '^a$' }], code: '', language: 'lua',
+            fireLength: 0, multipleMatches: false, multiline, delta, isFilter: false,
+        });
+        vfs.writeFile(PROFILE_DATA_PATH, JSON.stringify({
+            version: 2,
+            triggers: [trigger('and0', true, 0), trigger('and5', true, 5), trigger('or0', false, 0)],
+        }));
+
+        loadProfileData(vfs, CONN);
+
+        const loaded = useAppStore.getState().connectionTriggers[CONN];
+        expect(loaded.find(t => t.id === 'and0')!.delta).toBe(99);
+        expect(loaded.find(t => t.id === 'and5')!.delta).toBe(5);   // an explicit delta is kept
+        expect(loaded.find(t => t.id === 'or0')!.delta).toBe(0);    // not an AND trigger, untouched
+
+        // The rewrite is stamped straight back so a deliberate 0 saved later
+        // isn't widened again on the next open.
+        const written = JSON.parse(vfs.readFile(PROFILE_DATA_PATH));
+        expect(written.version).toBe(3);
+        expect(written.triggers.find((t: { id: string }) => t.id === 'and0').delta).toBe(99);
+
+        useAppStore.getState().updateTrigger(CONN, 'and0', { delta: 0 });
+        saveProfileData(vfs, CONN);
+        loadProfileData(vfs, CONN);
+        expect(useAppStore.getState().connectionTriggers[CONN].find(t => t.id === 'and0')!.delta).toBe(0);
     });
 
     it('loadProfileData is a no-op when the file is absent', () => {
