@@ -97,6 +97,38 @@ describe('parseMudletXml — keys with no binding set', () => {
     });
 });
 
+// A timer nested under a *non-folder* timer is an offset timer in Mudlet — the
+// nesting alone is what makes it one (TTimer.h:75-84), and its interval counts
+// from when the parent fires rather than from a clock of its own. There is no
+// equivalent here, and the importer said nothing about it (issue #45).
+describe('parseMudletXml — offset timers', () => {
+    const timers = (body: string) => parseMudletXml(`<?xml version="1.0" encoding="UTF-8"?>
+<MudletPackage version="1.001"><TimerPackage>${body}</TimerPackage></MudletPackage>`);
+
+    it('warns, naming both the parent and the nested timers', () => {
+        const { warnings } = timers(`
+    <Timer isActive="yes" isFolder="no">
+      <name>heartbeat</name><script></script><command></command><time>00:00:05.000</time>
+      <Timer isActive="yes" isFolder="no">
+        <name>followup</name><script></script><command></command><time>00:00:02.000</time>
+      </Timer>
+    </Timer>`);
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toContain('"heartbeat"');
+        expect(warnings[0]).toContain('"followup"');
+    });
+
+    it('says nothing about ordinary timers inside a folder', () => {
+        const { warnings } = timers(`
+    <TimerGroup isActive="yes" isFolder="yes">
+      <name>group</name><script></script><command></command><time>00:00:00.000</time>
+      <Timer isActive="yes" isFolder="no">
+        <name>plain</name><script></script><command></command><time>00:00:02.000</time>
+      </Timer>
+    </TimerGroup>`);
+        expect(warnings).toEqual([]);
+    });
+});
 // The importer read none of the sound / colour-trigger / triggerType state, so
 // every one of these was silently dropped and then written back as the
 // exporter's constant — destroying it in a linked profile rather than merely
