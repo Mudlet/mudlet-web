@@ -5,7 +5,7 @@ import type { MudletVariable } from '../import/mudletVariables';
 import type { MudletImportResult } from '../import/mudletXmlImport';
 import type { WindowOpenOptions } from '../ui/windows/types';
 import { createDebouncedJsonStorage } from './debouncedStorage';
-import { deleteSessionsForConnection } from './logStorage';
+import { deleteProfileStorage, MIGRATION_BACKUP_KEY } from './profileStorage';
 import { getVault } from '../vault/vaultAccess';
 
 function getDescendantIds(id: string, items: { id: string; parentId: string | null }[]): string[] {
@@ -142,8 +142,9 @@ export const MUDIX_STORE_VERSION = 21;
  *  VFS (.mudix/profile.json) the first time it's opened. Kept separate from the
  *  persisted store blob so editing the connections list (which rewrites the
  *  blob) can't drop un-migrated profiles' data. Consumed per-profile by
- *  loadProfileData, then removed when empty. */
-export const MIGRATION_BACKUP_KEY = 'mudix_profile_migration_v21';
+ *  loadProfileData, then removed when empty. Defined next to the rest of the
+ *  per-profile storage inventory so profile deletion can sweep it. */
+export { MIGRATION_BACKUP_KEY };
 
 /** The subset of AppSchema actually persisted to localStorage (see `partialize`).
  *  Only the global index lives here now — the connection list and global client
@@ -243,9 +244,16 @@ export const useAppStore = create<AppStore>()(
                 }),
             })),
             removeConnection: id => set(s => {
-                // Logs live in their own IndexedDB (like maps). Drop them
-                // best-effort; the store update below is synchronous regardless.
-                void deleteSessionsForConnection(id).catch(() => {});
+                // Everything this profile owns outside the store — its VFS
+                // database, map, linked-folder handle, logs and per-profile
+                // localStorage keys — lives in IndexedDB and has to be erased
+                // separately, or it becomes an unreachable orphan against the
+                // origin's quota: the id is regenerated for the next profile,
+                // so nothing in the UI can ever get back to it. All of it is
+                // addressed by `id`, so no other profile is touched. See
+                // storage/profileStorage for the inventory. Best-effort and
+                // not awaited; the store update below is synchronous.
+                void deleteProfileStorage(id).catch(() => {});
                 // Same for a saved password in the credential vault. A locked
                 // vault can't rewrite its ciphertext, so the entry is swept on
                 // the next unlock instead (CredentialVault.pruneMissing).

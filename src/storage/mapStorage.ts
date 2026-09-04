@@ -20,6 +20,17 @@ export async function saveMap(connectionId: string, data: ArrayBuffer): Promise<
     });
 }
 
+/** Drop one profile's map. Keyed by connection id, so it can't reach another's. */
+export async function deleteMap(connectionId: string): Promise<void> {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        tx.objectStore(STORE_NAME).delete(connectionId);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+    });
+}
+
 export async function loadMap(connectionId: string): Promise<ArrayBuffer | null> {
     const db = await openDb();
     return new Promise((resolve, reject) => {
