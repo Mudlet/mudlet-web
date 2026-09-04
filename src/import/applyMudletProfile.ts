@@ -6,7 +6,7 @@ import { saveMap } from '../storage/mapStorage';
 import { saveFolderHandle } from '../scripting/vfs/folderHandleStore';
 import { parseMudletProfile } from './mudletHost';
 import { buildMudletProfileBundle, type MudletProfileBundle } from './mudletProfileImport';
-import { CONNECTION_SIDECAR_PATH, type ConnectionSidecar } from './mudletProfileExport';
+import { CONNECTION_SIDECAR_PATH, RETAINED_HOST_PATH, type ConnectionSidecar } from './mudletProfileExport';
 import type { MudConnection } from '../storage/schema';
 import { describeThrown } from '../utils/describeThrown';
 
@@ -111,6 +111,18 @@ export async function importMudletProfile(bundle: MudletProfileBundle): Promise<
             } catch (err) {
                 console.warn('[importMudletProfile] failed to write', rel, err);
                 bundle.warnings.push(`Could not copy "${rel}" into the profile: ${describeThrown(err)}`);
+            }
+        }
+        // Retain the original <Host>. ProfileSettings models about a third of
+        // it; without this the rest is gone the moment the import finishes, and
+        // an export would rebuild the profile's <Host> from a bare skeleton.
+        // Written after the loose files so a stale copy inside an imported tree
+        // can't win over the save we actually parsed.
+        if (bundle.hostPackageXml) {
+            try {
+                vfs.writeFile(RETAINED_HOST_PATH, bundle.hostPackageXml);
+            } catch (err) {
+                console.warn('[importMudletProfile] failed to retain <Host>', err);
             }
         }
         // Seed the store, then flush it to the profile's .mudix/profile.json so

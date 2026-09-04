@@ -193,10 +193,23 @@ export function parseMudletHostIdentity(host: Element): MudletProfileIdentity {
 
 // ── write-back (inverse of parseMudletHost) ──────────────────────────────────
 
+/** What Mudlet's own exporter puts above `<MudletPackage>`, reproduced so a file
+ *  written here is byte-shaped like one written there. Nothing reads it —
+ *  Mudlet's QXmlStreamReader ignores the doctype — but dropping it would make
+ *  mudix's saves gratuitously different. */
+export const MUDLET_XML_PROLOG = '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE MudletPackage>';
+
+/** A Mudlet profile save has no namespace. `createElement` on a document some
+ *  DOM implementations still consider HTML stamps `xmlns="…/xhtml"` onto every
+ *  element we add, so create them namespace-less explicitly. */
+function newHostEl(host: Element, tag: string): Element {
+    return host.ownerDocument.createElementNS(null, tag);
+}
+
 function setHostEl(host: Element, tag: string, value: string): void {
     let el = host.querySelector(`:scope > ${tag}`);
     if (!el) {
-        el = host.ownerDocument.createElement(tag);
+        el = newHostEl(host, tag);
         host.appendChild(el);
     }
     el.textContent = value;
@@ -267,6 +280,78 @@ export function applyProfileSettingsToHost(host: Element, s: Partial<ProfileSett
         const tail = parts.length > 2 ? parts.slice(2) : DEFAULT_QFONT_TAIL;
         setHostEl(host, 'mDisplayFont', [family, size, ...tail].join(','));
     }
+}
+
+/** The identity a Mudlet `<Host>` carries for one profile: its name, the MUD
+ *  address, and the packages Mudlet should consider installed. */
+export interface MudletHostIdentity {
+    name: string;
+    url: string;
+    port: number;
+    installedPackages: string[];
+}
+
+/**
+ * Write the connection identity onto a `<Host>` in place. Unlike
+ * {@link applyProfileSettingsToHost} this always overwrites rather than only
+ * touching what's set: the live connection record and package set are
+ * authoritative, so a `<Host>` retained from an earlier import can't export the
+ * name, address or package list it had back then.
+ */
+export function applyHostIdentity(host: Element, identity: MudletHostIdentity): void {
+    setHostEl(host, 'name', identity.name);
+    setHostEl(host, 'url', identity.url);
+    setHostEl(host, 'port', String(identity.port));
+
+    let list = host.querySelector(':scope > mInstalledPackages');
+    if (!list) {
+        list = newHostEl(host, 'mInstalledPackages');
+        host.appendChild(list);
+    }
+    while (list.firstChild) list.removeChild(list.firstChild);
+    for (const name of identity.installedPackages) {
+        const el = newHostEl(host, 'string');
+        el.textContent = name;
+        list.appendChild(el);
+    }
+}
+
+/**
+ * Reduce a full Mudlet profile save to a document holding just its
+ * `<HostPackage>`.
+ *
+ * Mudlet's `<Host>` is roughly 120 attributes, 26 child elements and 53 colour
+ * elements (`XMLimport.cpp:723-1305`); mudix models about a third of that. The
+ * rest — proxy and TLS configuration, logging setup, the spell dictionary,
+ * console buffer sizing, the map colours and sizes, `<stopwatches>`, `<MMCP>`,
+ * the `<experiment>` flags, the second-console palette — has no home in
+ * ProfileSettings, so it survives a round-trip only by being carried verbatim.
+ * Retaining this on import is what lets an export base its `<Host>` on the real
+ * one instead of a skeleton.
+ *
+ * Dropped on the way through:
+ * - the automation and variable packages, which are regenerated from live state
+ *   on every write; keeping a copy here would ship the same data twice, in two
+ *   formats, and let a stale one resurface.
+ * - `<mInstalledModules>`, because import folds a resolved module into an
+ *   ordinary package. A surviving reference would make Mudlet load it a second
+ *   time from the absolute path it had on the original machine.
+ *
+ * Returns null if `profileXml` doesn't parse or carries no `<HostPackage>`.
+ */
+export function extractHostPackageXml(profileXml: string): string | null {
+    const doc = new DOMParser().parseFromString(profileXml, 'text/xml');
+    if (doc.getElementsByTagName('parsererror')[0]) return null;
+    const hostPackage = doc.getElementsByTagName('HostPackage')[0];
+    if (!hostPackage) return null;
+    const version = doc.getElementsByTagName('MudletPackage')[0]?.getAttribute('version') ?? '1.001';
+
+    const out = new DOMParser().parseFromString('<MudletPackage/>', 'text/xml');
+    out.documentElement.setAttribute('version', version);
+    const copy = out.importNode(hostPackage, true) as Element;
+    for (const el of Array.from(copy.getElementsByTagName('mInstalledModules'))) el.remove();
+    out.documentElement.appendChild(copy);
+    return MUDLET_XML_PROLOG + new XMLSerializer().serializeToString(out);
 }
 
 /** Names from `<Host><mInstalledPackages>` — the packages Mudlet considers
