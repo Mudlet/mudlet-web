@@ -13,6 +13,36 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Mudlet Web" />
     <title>Mudlet Web</title>
+    <!-- Matomo.
+         Nothing here reaches the library build: `build:lib` bundles src/index.ts
+         and publishes dist-lib only, so it never reads this file. Branded builds
+         bring their own index.html and inherit no tracking.
+
+         The host check is for the other direction — this same file is served by
+         `yarn dev`, `yarn preview`, and by anyone who forks and self-hosts the
+         app build. Without it all of that lands in Mudlet's site 3, mixed in
+         with real traffic and indistinguishable from it. Add a host here if the
+         official deployment ever moves. -->
+    <script>
+      (function () {
+        var h = location.hostname;
+        if (h !== 'mudlet.github.io' && h !== 'mudlet.org' && !/\.mudlet\.org$/.test(h)) return;
+        var _paq = (window._paq = window._paq || []);
+        /* tracker methods like "setCustomDimension" should be called before "trackPageView" */
+        _paq.push(['trackPageView']);
+        _paq.push(['enableLinkTracking']);
+        var u = 'https://stats.mudlet.org/';
+        _paq.push(['setTrackerUrl', u + 'matomo.php']);
+        _paq.push(['setSiteId', '3']);
+        var d = document,
+          g = d.createElement('script'),
+          s = d.getElementsByTagName('script')[0];
+        g.async = true;
+        g.src = u + 'matomo.js';
+        s.parentNode.insertBefore(g, s);
+      })();
+    </script>
+    <!-- End Matomo Code -->
   </head>
   <body>
     <div id="root"></div>
