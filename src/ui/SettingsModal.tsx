@@ -1,7 +1,7 @@
-import { Fragment, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import { useAppStore, useEditorSettings, selectProfileField, MAPPER_DEFAULTS, PLAYER_MARKER_DEFAULTS, MAP_INFO_BG_DEFAULT, PROTOCOL_DEFAULTS, WS_SUBPROTOCOL_CHOICES, SEARCH_ENGINES, resolveSearchEngine, type Theme, type OutputFontSource, type ProfileSettings, type MapperSettings, type EditorSettings, type PlayerMarkerSettings, type MapInfoBgColor, type ProtocolSettings } from '../storage';
 import { PlayerMarkerPreview } from './PlayerMarkerPreview';
-import { Input, FontPicker, Toggle, HelpTip, Button } from './components';
+import { Input, FontPicker, Toggle, HelpTip, Button, useConfirm } from './components';
 import { getThemeChoices, isBrandedMode } from '../branding';
 import { useModalFocus } from './components/useModalFocus';
 import { DEFAULT_ANSI_PALETTE } from '../mud/text/colors';
@@ -21,6 +21,9 @@ import { categoriesWithUnavailable, unavailableIn } from './settings/unavailable
 import { useFileSource, type PickedFile } from './components/FileSourceButton';
 import type { WindowManager } from './windows/WindowManager';
 import { describeThrown } from '../utils/describeThrown';
+import { analyticsOptedOut, setAnalyticsOptedOut } from '../analytics';
+import { formatBytes } from '../utils/formatBytes';
+import { EDITOR_THEME_CHOICES } from './codemirror/theme';
 import { SUPPORTED_SERVER_ENCODINGS, DEFAULT_SERVER_ENCODING } from '../mud/protocol';
 import { VaultManageButton } from './VaultManageButton';
 import { getVault } from '../vault/vaultAccess';
@@ -263,6 +266,12 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     const ambiguousWidthWide = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'ambiguousWidthWide') : undefined)) ?? false;
     const expectColorSpaceId = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'expectColorSpaceId') : undefined)) ?? false;
     const doubleClickIgnore = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'doubleClickIgnore') : undefined)) ?? '';
+    const spellCheckInput = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'spellCheckInput') : undefined)) ?? false;
+    // Not in the store: the analytics opt-out has its own localStorage key so
+    // index.html can read it before any module loads. Mirrored into state here
+    // so the toggle repaints on click.
+    const [analyticsOff, setAnalyticsOff] = useState(analyticsOptedOut);
+    const confirm = useConfirm();
     const marker = mapper?.playerMarker;
     const markerStrokeColor = marker?.strokeColor ?? PLAYER_MARKER_DEFAULTS.strokeColor;
     const markerStrokeAlpha = marker?.strokeAlpha ?? PLAYER_MARKER_DEFAULTS.strokeAlpha;
@@ -414,6 +423,50 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
             setMapStatus(ok ? `Loaded ${file.name}.` : (windows.lastMapLoadError ?? 'Failed to parse map file'));
         } catch (e) {
             setMapStatus(describeThrown(e));
+        }
+    };
+
+    // Mudlet's "Clear stored media": the mirror of everything the game asked us
+    // to play, under `media/` in the profile. Sizing it costs one readdir walk,
+    // which is why it is only measured when the card is on screen.
+    const [mediaStatus, setMediaStatus] = useState<string | null>(null);
+    const mediaSize = useMemo(() => {
+        if (!vfs || category !== 'media') return null;
+        const walk = (dir: string): { files: number; bytes: number } => {
+            let files = 0, bytes = 0;
+            let entries: string[];
+            try { entries = vfs.readdir(dir); } catch { return { files, bytes }; }
+            for (const name of entries) {
+                const path = `${dir}/${name}`;
+                const st = vfs.stat(path);
+                if (!st) continue;
+                if (st.type === 'dir') { const sub = walk(path); files += sub.files; bytes += sub.bytes; }
+                else { files++; bytes += st.size; }
+            }
+            return { files, bytes };
+        };
+        return vfs.exists('media') ? walk('media') : { files: 0, bytes: 0 };
+        // mediaStatus is in the deps so clearing re-measures and the row drops
+        // back to "No stored media" without needing the dialog reopened.
+    }, [vfs, category, mediaStatus]);
+
+    const handleClearMedia = async () => {
+        if (!vfs) return;
+        const ok = await confirm({
+            title: 'Clear stored media',
+            message: 'Delete every sound, music and video file this game asked Mudlet Web to download? Files you added yourself under other folders are untouched. This cannot be undone.',
+            tone: 'danger',
+            buttons: [
+                { label: 'Cancel', value: false, variant: 'ghost' },
+                { label: 'Clear', value: true, variant: 'danger' },
+            ],
+        });
+        if (!ok) return;
+        try {
+            vfs.rmdir('media');
+            setMediaStatus('Stored media cleared.');
+        } catch (e) {
+            setMediaStatus(describeThrown(e));
         }
     };
 
@@ -1319,7 +1372,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                     </div>
                     <div className="settings-row">
                         <span className="settings-label" id="color-space-id-label">
-                            Expect Color Space Id in SGR…(3|4)8;2;…m codes
+                            Expect Color Space Id in SGR...(3|4)8;2;...m codes
                             <HelpTip label="About the color space id">
                                 A game sending 24-bit colour writes it either as
                                 <code> 38;2;r;g;b</code> or, following ITU T.416, as
@@ -1532,11 +1585,146 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
             ),
         },
         {
-            id: 'editorOptions',
+            // Mudlet's own group box on the Input line page. Its row inside is
+            // "System/Mudlet dictionary:" beside a dictionary picker; there is
+            // no picker here — the browser's spellchecker is the only one — so
+            // the row says what it actually does rather than promising a
+            // choice of dictionaries we cannot offer.
+            id: 'spellChecking',
+            category: 'inputLine' as const,
+            title: 'Spell checking',
+            description: 'Mudlet Web has no dictionary of its own; this hands the command line to the one your browser already uses.',
+            keywords: 'spell check, spelling, dictionary, autocorrect, red underline',
+            body: (
+                <div className="settings-row">
+                    <span className="settings-label" id="spellcheck-input-label">
+                        Check spelling on the command line
+                        <HelpTip label="About spell checking">
+                            Off by default: a command line is full of game words no dictionary
+                            has, and a screen of red underlines helps nobody. The word list is
+                            your operating system's, so it is configured there rather than
+                            here. Your password is never checked, whatever this says.
+                        </HelpTip>
+                    </span>
+                    <Toggle
+                        id="spellcheck-input"
+                        aria-labelledby="spellcheck-input-label"
+                        checked={spellCheckInput}
+                        onChange={next => patchProfile({ spellCheckInput: next })}
+                    />
+                </div>
+            ),
+        },
+        ...(vfs ? [{
+            id: 'storedMedia',
+            category: 'media' as const,
+            // Mudlet's own group-box and label text, verbatim — its Special
+            // Options page calls this "Clear stored media" over "Purge stored
+            // media files for the current profile:".
+            title: 'Clear stored media',
+            description: 'Sounds, music and video the game asked Mudlet Web to download are kept in this profile so they only download once.',
+            keywords: 'clear stored media, purge, cache, delete sounds, disk space, downloads',
+            body: (
+                <>
+                    <div className="settings-row">
+                        <span className="settings-label" id="clear-media-label">
+                            Purge stored media files for the current profile:
+                            {mediaSize && (
+                                <span className="settings-unit">
+                                    {mediaSize.files > 0
+                                        ? `${mediaSize.files} file${mediaSize.files === 1 ? '' : 's'}, ${formatBytes(mediaSize.bytes)}`
+                                        : 'none stored'}
+                                </span>
+                            )}
+                            <HelpTip label="About clearing stored media">
+                                Clearing frees the space and makes the game download each file
+                                again the next time it plays one. Files you put in the profile
+                                yourself, outside the <code>media</code> folder, are untouched.
+                            </HelpTip>
+                        </span>
+                        <Button
+                            variant="secondary"
+                            size="sm"
+                            disabled={!mediaSize || mediaSize.files === 0}
+                            onClick={() => { void handleClearMedia(); }}
+                        >
+                            Clear
+                        </Button>
+                    </div>
+                    {mediaStatus && <p className="settings-hint">{mediaStatus}</p>}
+                </>
+            ),
+        }] : []),
+        {
+            id: 'analytics',
+            category: 'privacy' as const,
+            title: 'Usage statistics',
+            description: 'Whether this browser is counted in Mudlet Web’s visitor numbers.',
+            keywords: 'analytics, tracking, telemetry, matomo, statistics, opt out, privacy, crash report',
+            body: (
+                <>
+                    <div className="settings-row">
+                        <span className="settings-label" id="analytics-label">
+                            Send anonymous usage statistics
+                            <HelpTip label="About usage statistics">
+                                The official mudlet.org deployment counts page views through
+                                Mudlet's own Matomo instance. No game text, profile, script or
+                                character name is ever sent — only that a browser opened the
+                                page. Nothing is sent at all from a self-hosted or branded
+                                build, or from a local development server.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="analytics"
+                            aria-labelledby="analytics-label"
+                            checked={!analyticsOff}
+                            onChange={next => { setAnalyticsOptedOut(!next); setAnalyticsOff(!next); }}
+                        />
+                    </div>
+                    <p className="settings-hint">Takes effect the next time you load the page.</p>
+                </>
+            ),
+        },
+        // Three cards, not one: Mudlet's Editor page is three group boxes —
+        // Theme, Autocomplete, Display options — and a player who knows the
+        // desktop dialog should find the same three headings here.
+        {
+            id: 'editorTheme',
             category: 'editor' as const,
-            title: 'Display options',
-            description: 'What the script editor shows you while you write. The editor follows the app theme set under Appearance.',
-            keywords: 'editor, code, script, autocomplete, whitespace, spaces, tabs, invisible, control characters, item id, theme',
+            title: 'Theme',
+            description: 'The syntax colours the code editor draws with.',
+            keywords: 'editor, code, script, theme, colour scheme, color scheme, palette, syntax highlighting',
+            body: (
+                <>
+                    <div className="settings-row">
+                        <label className="settings-label" htmlFor="editor-theme">
+                            Theme
+                            <HelpTip label="About the editor theme">
+                                The syntax colours the code editor draws with. "Follow app
+                                theme" picks the light or dark palette to match Appearance;
+                                the other two pin it, so you can keep a dark editor under a
+                                light interface or the reverse.
+                            </HelpTip>
+                        </label>
+                        <select
+                            id="editor-theme"
+                            className="settings-select"
+                            value={editorSettings.theme}
+                            onChange={e => patchEditor({ theme: e.target.value as EditorSettings['theme'] })}
+                        >
+                            {EDITOR_THEME_CHOICES.map(opt => (
+                                <option key={opt.value} value={opt.value}>{opt.label}</option>
+                            ))}
+                        </select>
+                    </div>
+                </>
+            ),
+        },
+        {
+            id: 'editorAutocomplete',
+            category: 'editor' as const,
+            title: 'Autocomplete',
+            keywords: 'editor, code, script, autocomplete, completion, suggestions, lua functions',
             body: (
                 <>
                     <div className="settings-row">
@@ -1554,6 +1742,17 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                             onChange={next => patchEditor({ autocomplete: next })}
                         />
                     </div>
+                </>
+            ),
+        },
+        {
+            id: 'editorOptions',
+            category: 'editor' as const,
+            title: 'Display options',
+            description: 'What the script editor shows you while you write.',
+            keywords: 'editor, code, script, whitespace, spaces, tabs, invisible, control characters, item id',
+            body: (
+                <>
                     <div className="settings-row">
                         <span className="settings-label" id="editor-whitespace-label">
                             Show Spaces/Tabs
@@ -1770,7 +1969,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                             onChange={v => patchMapper({ lineColor: v })}
                         />
                         <ColorCell
-                            label="Grid"
+                            label="Grid color"
                             value={mapperGridColor}
                             fallback={DEFAULT_GRID_COLOR}
                             onChange={v => patchMapper({ gridColor: v })}

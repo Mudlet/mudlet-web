@@ -76,19 +76,18 @@ These apply perfectly well to a browser. They are on the list.
 and the info overlay. Room borders, upper/lower level tints and the map's own
 sixteen-colour palette aren't settable yet — the map renderer doesn't expose them.
 
-**An editor theme.** Settings → Editor has the display options, but the code editor
-follows the app theme rather than offering a palette of its own.
-
-**Spell checking.** Your browser has a spellchecker; the command line doesn't switch it
-on yet. It's the only one available here — there's no separate dictionary to configure.
-
 **Shortcut rebinding.** Mudlet Web's own keyboard shortcuts are fixed. Your *game*
 keybindings work normally — create them in the editor as you would on desktop. Note that
 combinations the browser has claimed (Ctrl+T, Ctrl+W and friends) never reach the page
 at all; see [Browsers and limits](./browsers.md).
 
-**Some smaller ones.** A text analyzer, naming your log files, purging stored media, the
-timer and codepoint debug thresholds, and an opt-out for usage analytics.
+**A few smaller ones.** A text analyzer, naming your log files, and the editor's "Show
+Line/Paragraphs".
+
+Two of desktop's debug settings aren't planned as settings at all: the timer-size
+threshold and "report all codepoint problems" adjust warnings Mudlet Web doesn't produce
+in the first place. If you want those warnings, ask for the warning rather than the
+setting.
 
 ## Asking for one
 

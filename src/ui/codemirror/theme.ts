@@ -181,8 +181,26 @@ const oneLightHighlightStyle = HighlightStyle.define([
 // is safe across multiple EditorState instances.
 export const highlightCompartment = new Compartment();
 
-export function highlightFor(theme: string): ReturnType<typeof syntaxHighlighting> {
-    return isLightTheme(theme)
+/**
+ * Mudlet's Editor → Theme, as far as it makes sense here. Desktop downloads a
+ * catalogue from colorsublime; mudix ships the two palettes it already has and
+ * lets you pin one, which is the part of that feature people actually use — a
+ * dark editor under a light app theme, or the reverse.
+ *
+ * `app` is the default and keeps the old behaviour exactly.
+ */
+export type EditorTheme = 'app' | 'dark' | 'light';
+
+export const EDITOR_THEME_CHOICES: { value: EditorTheme; label: string }[] = [
+    { value: 'app',   label: 'Follow app theme' },
+    { value: 'dark',  label: 'Atom One Dark' },
+    { value: 'light', label: 'Atom One Light' },
+];
+
+/** @param theme the app theme, consulted only when `editorTheme` is 'app'. */
+export function highlightFor(theme: string, editorTheme: EditorTheme = 'app'): ReturnType<typeof syntaxHighlighting> {
+    const light = editorTheme === 'app' ? isLightTheme(theme) : editorTheme === 'light';
+    return light
         ? syntaxHighlighting(oneLightHighlightStyle)
         : syntaxHighlighting(oneDarkHighlightStyle);
 }

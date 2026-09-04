@@ -35,6 +35,7 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
     // default as they are on desktop.
     const highlightHistory = useProfileField('highlightHistory') ?? false;
     const disablePasswordMasking = useProfileField('disablePasswordMasking') ?? false;
+    const spellCheckInput = useProfileField('spellCheckInput') ?? false;
     const inputStyle = (inputBackground || inputForeground) ? {
         ...(inputBackground ? { background: inputBackground } : {}),
         ...(inputForeground ? { color: inputForeground } : {}),
@@ -460,7 +461,11 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
                         autoComplete="off"
                         autoCapitalize="none"
                         autoCorrect="off"
-                        spellCheck={false}
+                        // The browser's spellchecker is the only one available
+                        // here, and it is off by default: a command line is
+                        // full of words no dictionary has. The password field
+                        // above never gets it, whatever this says.
+                        spellCheck={spellCheckInput}
                         aria-label="Command input"
                         style={inputStyle}
                     />

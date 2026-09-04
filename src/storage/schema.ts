@@ -279,6 +279,12 @@ export interface ProfileSettings {
     /** Mudlet's Editor preference page. Each field falls back to
      *  `EDITOR_OPTION_DEFAULTS` when unset. */
     editor?: EditorSettings;
+    /** Mudlet's "System/Mudlet dictionary" spell-check switch, as near as a
+     *  browser gets: turn the browser's own spellchecker on for the command
+     *  line. Off unless explicitly true — a MUD command line is full of words
+     *  no dictionary has, so red underlines everywhere is the wrong default.
+     *  Never applied to the password field. */
+    spellCheckInput?: boolean;
     /** Per-area MapPanel last-viewed z-level. Each area remembers which level
      *  you were on so switching between areas (or reopening the panel) restores
      *  it. Zoom is no longer kept here — it lives in the map file (per-area
@@ -479,6 +485,11 @@ export interface EditorSettings {
     /** "Show Items' ID number" — the numeric id beside each script, alias,
      *  trigger and so on in the editor's tree. Default off. */
     showItemIds?: boolean;
+    /** "Theme" — the code editor's syntax palette. `'app'` (the default)
+     *  follows the app theme, as it always did; the other two pin it. Typed as
+     *  a plain string here so the schema does not depend on the CodeMirror
+     *  layer; `EDITOR_THEME_CHOICES` is the authority on the values. */
+    theme?: 'app' | 'dark' | 'light';
 }
 
 export interface MapperSettings {

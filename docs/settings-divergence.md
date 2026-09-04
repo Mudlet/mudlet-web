@@ -32,9 +32,9 @@ opened with — 78 present, 8 elsewhere, 58 missing — are in that section.
 | Desktop page | ✅ | 📍 | 🚧 | ❌ |
 |---|---|---|---|---|
 | General | 9 | — | 3 | 6 |
-| Input line | 7 | — | 1 | 2 |
+| Input line | 8 | — | — | 2 |
 | Main display | 19 | — | — | 1 |
-| Editor | 3 | — | 3 | — |
+| Editor | 5 | — | 1 | — |
 | Color view | 24 | — | — | — |
 | Mapper | 7 | — | 13 | 1 |
 | Mapper colors | 8 | — | 20 | — |
@@ -42,15 +42,15 @@ opened with — 78 present, 8 elsewhere, 58 missing — are in that section.
 | Connection | 6 | 1 | — | 4 |
 | Shortcuts | — | — | 1 | — |
 | Accessibility | 7 | — | — | — |
-| Special Options | 7 | 1 | 4 | 3 |
-| **Total** | **97** | **2** | **45** | **37** |
+| Special Options | 8 | 1 | 3 | 3 |
+| **Total** | **101** | **2** | **41** | **37** |
 
 Three things the totals don't show, and which matter more than the totals do:
 
 - **Parity is not evenly spread.** Accessibility, Color view and Main display are
   complete. Mapper colors is still thin and Shortcuts is empty.
-- **Nearly half of what remains is one block.** The 16 map ANSI colours are 16 of the
-  45, and they are blocked on the renderer rather than on us.
+- **Most of what remains is one block.** The 16 map ANSI colours are 16 of the 41, and
+  they are blocked on the renderer rather than on us.
 - **Mudlet Web has settings desktop Mudlet does not** — see
   [Web-only settings](#web-only-settings). The divergence runs both ways, so "8 tabs
   against 12 pages" understated the overlap even before this.
@@ -58,7 +58,7 @@ Three things the totals don't show, and which matter more than the totals do:
 ### What was built
 
 The audit's first pass counted 78 present, 8 reachable only from elsewhere, 58 missing
-and 37 impossible. Acting on it closed 25 rows:
+and 37 impossible. Acting on it closed 29 rows:
 
 - **Reachable elsewhere is not reachable.** All but one of the 📍 rows are now in
   Settings: the map file actions, "show the default area" (previously Lua-only), and a
@@ -67,8 +67,14 @@ and 37 impossible. Acting on it closed 25 rows:
   one at a time rather than as a single switch.
 - **Missing settings, built**: server data encoding, highlight history, disable password
   masking, react to all keybindings, the double-click word-break characters, ambiguous
-  East Asian width, the SGR colour-space id, the map grid colour and width, and an
-  Editor category with three of desktop's six rows.
+  East Asian width, the SGR colour-space id, the map grid colour and width, browser
+  spell checking, clearing stored media, a usage-analytics opt-out, and an Editor
+  category carrying five of desktop's six rows.
+- **Labels are Mudlet's own strings.** Every row above that has a desktop counterpart
+  uses its exact wording, checked against `profile_preferences.ui` — so a player who
+  knows the desktop dialog searches for the words they already know. Where a card
+  groups rows, the group box's title is the card title, and where Mudlet splits a page
+  into group boxes (Editor's Theme / Autocomplete / Display options) so does this.
 - **The impossible ones now say so in the app.** Each affected category carries a "Not
   available in the browser" card naming the desktop setting and what the browser
   withholds. The shell indexes card text off the DOM, so searching the desktop wording
@@ -77,9 +83,11 @@ and 37 impossible. Acting on it closed 25 rows:
 What is still 🚧 and why, in short: the 16 map ANSI colours, room border, upper/lower
 level and overlapping-room colours, and most Map view options need fields
 `mudlet-map-renderer` does not expose. Interface language needs a translation layer.
-The shortcut editor needs a shortcut registry that does not exist. Text analyzer, log
-naming, media purge, the debug thresholds, browser spellcheck and an analytics opt-out
-are simply not done yet.
+The shortcut editor needs a shortcut registry that does not exist. Two are deliberately
+left alone — desktop's timer-size debug threshold and "Report all Codepoint problems
+immediately" configure diagnostics mudix does not have, so the setting would be a knob
+attached to nothing; they become worth adding when the diagnostic does. Text analyzer,
+log naming and "Show Line/Paragraphs" are simply not done yet.
 
 ---
 
@@ -151,7 +159,7 @@ are simply not done yet.
 
 | Desktop | | Mudlet Web |
 |---|---|---|
-| System/Mudlet dictionary | 🚧 | No Hunspell in the bundle — but the command bar sets `spellCheck={false}` explicitly, so the *browser's own* spellchecker is one prop away. The cheapest real win on this page |
+| System/Mudlet dictionary | ✅ | Input line → **Spell checking**, desktop's own group-box title. The row is worded differently on purpose — desktop's checkbox sits beside a dictionary picker, and there is no picker here: the browser's spellchecker is the only one a page can reach, and its word list belongs to the OS. Off by default, since a command line is full of game words no dictionary has. Never applied to the password field |
 | User dictionary (Profile / Shared) | ❌ | A word list belongs to the spellchecker, and the browser's is the operating system's |
 
 ---
@@ -215,7 +223,7 @@ unexposed — each row below is a decision taken away from the player.
 
 | Desktop | | Mudlet Web |
 |---|---|---|
-| Theme (colorsublime themes) | 🚧 | The CodeMirror editor follows the app theme (`src/ui/codemirror/theme.ts` — One Dark / One Light). No separate picker |
+| Theme (colorsublime themes) | ✅ | Editor → Theme: Follow app theme / Atom One Dark / Atom One Light. Not desktop's downloadable colorsublime catalogue — the two palettes mudix already ships, pinnable, which is the part of that feature people use (a dark editor under a light interface, or the reverse) |
 | Autocomplete Lua functions in code editor | ✅ | Editor → Display options. Held in a CodeMirror compartment, so a change reconfigures the open editor rather than remounting it |
 | Show Spaces/Tabs | ✅ | Editor → Display options (`highlightWhitespace`) |
 | Show Line/Paragraphs | 🚧 | |
@@ -374,14 +382,14 @@ Absent, and correctly so — both halves need capabilities a browser tab does no
 | Force MXP processing on | ✅ | Same card |
 | Additional text wait time | ✅ | Connection → Network |
 | Search Engine | ✅ | Main display → Display options |
-| Clear stored media | 🚧 | Downloaded media accumulates in the profile with no purge control; deleting the files by hand from the file browser is the only route |
+| Clear stored media | ✅ | Sound and media → Clear stored media, reporting the file count and size and confirming before it deletes. Clears `media/` in the profile — the mirror of what the game asked to play — and nothing else |
 | Disable automatic updates | ❌ | A web app is whatever the server last served; a reload is the update |
 | Show icons on menus | ❌ | No menus |
-| Expect Color Space Id in SGR…(3\|4)8;2;…m codes | ✅ | Main display → Display options. `FormatState` read only `38;2;r;g;b`; the T.416 `38;2;<id>;r;g;b` form shifted every channel and the leftover parameter was then read as its own SGR code |
+| Expect Color Space Id in SGR...(3\|4)8;2;...m codes | ✅ | Main display → Display options. `FormatState` read only `38;2;r;g;b`; the T.416 `38;2;<id>;r;g;b` form shifted every channel and the leftover parameter was then read as its own SGR code |
 | Store character login passwords in | 📍 | Privacy and security → Passwords. The web equivalent is the credential vault — encrypted on the device, unlocked by passkey or password — rather than a choice between the profile file and an OS keyring |
 | Show debug messages for timers not smaller than | 🚧 | |
 | Report all Codepoint problems immediately | 🚧 | |
-| Crash report sending policy | ❌ | There is no crash reporter. **But** the deployed build loads an analytics beacon unconditionally with no opt-out anywhere in Settings — the nearest thing to this row, and it is missing. Tracked as issue #71 item 4 |
+| Crash report sending policy | ❌ | There is no crash reporter to gate — the browser reports its own crashes under its own settings. The nearest thing the web build *does* have is the usage beacon, which now has an opt-out: Privacy and security → Usage statistics. It needs its own localStorage key rather than a store field, because the Matomo snippet in `index.html` runs before any module loads |
 
 ---
 
@@ -412,17 +420,22 @@ necessary or because desktop keeps the equivalent somewhere other than preferenc
 Ranked by how many players hit it, not by how much work it is.
 
 1. **Mapper colors** — 20 rows, 16 of them the map's own ANSI palette. Needs
-   `mudlet-map-renderer` to expose per-index room colours first, so it starts upstream.
-2. **Browser spellcheck on the command line** — one prop, already deliberately off, and
-   the only spellchecker a browser will ever offer.
-3. **An analytics opt-out** — desktop gates its equivalent behind an explicit policy
-   choice; the web build loads its beacon unconditionally with no switch anywhere.
-4. **Editor theme** — the remaining Editor row a player is most likely to want, now that
-   the category exists to put it on.
-5. **Clear stored media** — downloaded media accumulates with no purge control.
-6. **Shortcut rebinding** — the largest remaining item, and the one with a real ceiling:
-   combinations the browser has claimed can never be bound, so the editor would have to
-   say so rather than accept them.
+   `mudlet-map-renderer` to expose per-index room colours first, so it starts upstream
+   and is now much the largest thing left.
+2. **Shortcut rebinding** — the largest item we could start ourselves, and the one with
+   a real ceiling: combinations the browser has claimed never reach the page, so the
+   editor would have to say so rather than accept them.
+3. **The remaining Map view options** — draw upper/lower levels, invert zoom, large area
+   exit arrows, border size, room symbols. Renderer-blocked like the colours.
+4. **Log naming and format** — sessions are named by timestamp with no template.
+5. **Text analyzer** — a dialog rather than a setting, which is why it keeps sliding.
+
+Two rows are deliberately *not* on this list. "Show debug messages for timers not
+smaller than" and "Report all Codepoint problems immediately" configure diagnostics
+mudix does not have: there is no timer-size warning and no codepoint-problem reporting
+to threshold. Adding the setting without the diagnostic would be a knob attached to
+nothing — the work is the diagnostic, and it is a feature request rather than a
+settings gap.
 
 Everything else is either genuinely inapplicable, blocked upstream in the renderer, or
 small enough to take when the surrounding page is next touched.

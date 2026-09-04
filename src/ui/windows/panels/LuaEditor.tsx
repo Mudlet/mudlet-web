@@ -8,7 +8,7 @@ import { search, searchKeymap, highlightSelectionMatches } from '@codemirror/sea
 import { lua } from '@codemirror/legacy-modes/mode/lua';
 import { useEffectiveTheme, useEditorSettings } from '../../../storage';
 import { luaCompletionSource, HOVER_MAP, REFERENCE_GROUPS } from '../../../scripting/lua/luaCompletions';
-import { mudixCmTheme, highlightCompartment, highlightFor } from '../../codemirror/theme';
+import { mudixCmTheme, highlightCompartment, highlightFor, type EditorTheme } from '../../codemirror/theme';
 
 // Lua-specific hover tooltip styling — bolted on top of the shared chrome.
 const luaHoverTheme = EditorView.theme({
@@ -116,21 +116,27 @@ export interface EditorOptions {
     showWhitespace: boolean;
     /** "Show invisible Unicode control characters". */
     showControlChars: boolean;
+    /** "Theme" — the syntax palette, pinned or following the app's. */
+    theme: EditorTheme;
 }
 
 export const EDITOR_OPTION_DEFAULTS: EditorOptions = {
     autocomplete: true,
     showWhitespace: false,
     showControlChars: false,
+    theme: 'app',
 };
 
 const optionsCompartment = new Compartment();
 
 function optionExtensions(opts: EditorOptions) {
     return [
-        opts.autocomplete
-            ? autocompletion({ override: [luaCompletionSource], activateOnTyping: true })
-            : [],
+        // Always mounted, because the extension is also what binds Ctrl+Space.
+        // The switch is whether it volunteers: off means no popup while you
+        // type, but the list is still one keystroke away — which is what
+        // desktop's "Autocomplete Lua functions in code editor" is really
+        // about, and strictly better than losing completion altogether.
+        autocompletion({ override: [luaCompletionSource], activateOnTyping: opts.autocomplete }),
         opts.showWhitespace ? highlightWhitespace() : [],
         // CodeMirror hides control characters behind a placeholder widget by
         // default anyway; this makes them visible as their Unicode name rather
@@ -157,7 +163,7 @@ function buildExtensions(onChangeFn: () => void, onSaveFn: () => void, theme: st
         closeBrackets(),
         indentUnit.of('  '),
         StreamLanguage.define(lua),
-        highlightCompartment.of(highlightFor(theme)),
+        highlightCompartment.of(highlightFor(theme, opts.theme)),
         optionsCompartment.of(optionExtensions(opts)),
         luaHover,
         keymap.of([
@@ -235,14 +241,17 @@ export function LuaEditor({ value, onChange, onSave, gotoLine }: Props) {
         };
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // Swap syntax highlighting when the theme changes; preserves doc + scroll.
+    // Swap syntax highlighting when either theme changes; preserves doc +
+    // scroll. Both are dependencies: the app theme only matters while the
+    // editor is set to follow it, but pinning the editor to a palette is itself
+    // a change this has to repaint for.
     useEffect(() => {
         const view = viewRef.current;
         if (!view) return;
         view.dispatch({
-            effects: highlightCompartment.reconfigure(highlightFor(theme)),
+            effects: highlightCompartment.reconfigure(highlightFor(theme, optionsRef.current.theme)),
         });
-    }, [theme]);
+    }, [theme, editorOptions.theme]);
 
     // Same swap for the Editor preferences. Depends on the three values rather
     // than the object so a re-render that rebuilds an equal object does not

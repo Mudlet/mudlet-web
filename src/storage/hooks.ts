@@ -49,5 +49,6 @@ export function useEditorSettings(): Required<EditorSettings> {
         showWhitespace:   stored?.showWhitespace ?? false,
         showControlChars: stored?.showControlChars ?? false,
         showItemIds:      stored?.showItemIds ?? false,
+        theme:            stored?.theme ?? 'app',
     };
 }
