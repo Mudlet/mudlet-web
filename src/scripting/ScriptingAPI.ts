@@ -30,7 +30,7 @@ import { decodeTelnetByteTags } from '../mud/connection/telnetByteTags';
 import { openOsc8Menu } from '../ui/output/osc8Menu';
 import { namedColorToState, dechoToAnsiFast, cechoToAnsiFast, hechoToAnsiFast } from '../mud/text/colorParsers';
 import { colorCodes } from '../mud/text/colors';
-import { Console } from '../mud/text/Console';
+import { Console, MIN_CONSOLE_BUFFER_SIZE, MAX_CONSOLE_BUFFER_SIZE } from '../mud/text/Console';
 import { flashTitle } from '../utils/documentTitle';
 import { MspParser } from '../mud/protocol';
 import { StopwatchManager, localStorageStopwatchStore } from './StopwatchManager';
@@ -356,12 +356,11 @@ if (typeof document !== 'undefined') {
 let measureCtx: CanvasRenderingContext2D | null | undefined;
 const measureCache = new Map<string, [number, number]>();
 
-/** Mudlet's scrollback floor and ceiling for setConsoleBufferSize. The floor
- *  keeps a buffer usable; the ceiling is what `useMaximum` asks for — Mudlet
- *  sizes it off the machine, which a browser tab cannot ask about, so this is a
- *  fixed generous cap instead. */
-const MIN_CONSOLE_BUFFER_LINES = 100;
-const MAX_CONSOLE_BUFFER_LINES = 1_000_000;
+/** Mudlet's scrollback floor and ceiling for setConsoleBufferSize — shared with
+ *  the profile setting so the Lua API and the Settings control agree on both
+ *  bounds and on what `useMaximum` means. */
+const MIN_CONSOLE_BUFFER_LINES = MIN_CONSOLE_BUFFER_SIZE;
+const MAX_CONSOLE_BUFFER_LINES = MAX_CONSOLE_BUFFER_SIZE;
 
 /**
  * Window id backing an MXP `<FRAME name>` — the frame's own name, as in Mudlet,
@@ -860,6 +859,11 @@ export class ScriptingAPI {
         this.apiUnsubs.push(session.events.on('client.connect', announce));
         this.apiUnsubs.push(session.events.on('client.disconnect', announce));
         session.consoles.set('main', this.mainConsole);
+        // Mudlet applies the profile's `consoleBufferSize` to the main console
+        // as soon as it exists (mudlet.cpp:2264-2271). The session holds the
+        // resolved value because the setting can be read before this console is
+        // constructed; later changes come back through setConsoleBufferSize.
+        session.applyConsoleBufferSize(this.mainConsole);
         // Mudlet `sysBufferShrinkEvent("main", linesRemoved)` — named user
         // windows have the same hook wired in WindowManager.registerConsole.
         this.mainConsole.onBufferShrink = (n) => this.host.raiseEvent('sysBufferShrinkEvent', ['main', n]);

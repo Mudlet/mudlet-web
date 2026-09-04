@@ -220,6 +220,22 @@ export interface ProfileSettings {
      *  `mUndoServerWrapWidth`, bounded 20–500 and defaulting to 80 (very often
      *  the right answer). `setConfig("undoServerWrapWidth", …)`. */
     undoServerWrapWidth?: number;
+    /** Mudlet's `Host::mConsoleBufferSize` ("Main display size") — how many
+     *  lines of scrollback the main output keeps before the oldest are dropped
+     *  in batches. Bounded 100 … 1,000,000; `undefined` uses
+     *  {@link DEFAULT_CONSOLE_BUFFER_SIZE} (10,000 lines, `TBuffer.h:386`).
+     *  Round-trips through the profile XML as `consoleBufferSize`
+     *  (XMLexport.cpp:617). Scripts reach the same cap via
+     *  `setConsoleBufferSize()`, which does not write the preference back —
+     *  matching Mudlet, where the Lua call resizes the live buffer only. */
+    consoleBufferSize?: number;
+    /** Mudlet's `Host::mUseMaxConsoleBufferSize` ("use the maximum buffer size
+     *  your system can handle", `checkBox_useMaxBufferSize`). When true the
+     *  configured {@link consoleBufferSize} is ignored in favour of the ceiling.
+     *  Desktop derives that ceiling from physical memory
+     *  (`TBuffer::getMaxBufferSize()`); a browser tab cannot ask, so mudix uses
+     *  a fixed 1,000,000-line cap. Off unless explicitly true. */
+    useMaxConsoleBufferSize?: boolean;
     /** Mudlet "Network packet timeout": how long (ms) to buffer a partial line
      *  (text after the last `\n` of a WebSocket frame) before flushing it as a
      *  prompt. Mitigates spurious mid-line breaks when long MUD lines arrive

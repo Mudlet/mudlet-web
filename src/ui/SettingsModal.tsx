@@ -6,6 +6,7 @@ import { getThemeChoices, isBrandedMode } from '../branding';
 import { useModalFocus } from './components/useModalFocus';
 import { DEFAULT_ANSI_PALETTE } from '../mud/text/colors';
 import { SERVER_WRAP_WIDTH_MIN, SERVER_WRAP_WIDTH_MAX, SERVER_WRAP_WIDTH_DEFAULT } from '../mud/text/serverWrap';
+import { DEFAULT_CONSOLE_BUFFER_SIZE, MIN_CONSOLE_BUFFER_SIZE, MAX_CONSOLE_BUFFER_SIZE } from '../mud/text/Console';
 import { DEFAULT_HISTORY_SAVE_SIZE, MAX_HISTORY } from './commandHistory';
 import type { ShowSentTextMode, ControlCharacterMode, BlankLinesBehaviour } from '../mud/MudSession';
 
@@ -184,6 +185,8 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     const undoServerWrap = useAppStore(s => selectProfileField(s, connectionId, 'undoServerWrap'));
     const undoServerWrapOn = undoServerWrap === true;
     const undoServerWrapWidth = useAppStore(s => selectProfileField(s, connectionId, 'undoServerWrapWidth'));
+    const consoleBufferSize = useAppStore(s => selectProfileField(s, connectionId, 'consoleBufferSize'));
+    const useMaxBufferSize = useAppStore(s => selectProfileField(s, connectionId, 'useMaxConsoleBufferSize')) === true;
     const outputFont = useAppStore(s => selectProfileField(s, connectionId, 'outputFont'));
     const fontSize = useAppStore(s => selectProfileField(s, connectionId, 'fontSize'));
     const outputWrapAt = useAppStore(s => selectProfileField(s, connectionId, 'outputWrapAt'));
@@ -421,6 +424,23 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
         const clamped = Math.min(SERVER_WRAP_WIDTH_MAX, Math.max(SERVER_WRAP_WIDTH_MIN, parsed));
         setUndoWrapWidthText(String(clamped));
         patchProfile({ undoServerWrapWidth: clamped });
+    };
+
+    // Mudlet's "Main display size" spin box (console_buffer_size_spinBox). Like
+    // the wrap-width field above, blank isn't a clear — the buffer always has a
+    // size — so an unparseable entry reverts and anything else is clamped into
+    // Mudlet's 100 … maximum range.
+    const [bufferSizeText, setBufferSizeText] = useState(
+        String(consoleBufferSize ?? DEFAULT_CONSOLE_BUFFER_SIZE),
+    );
+
+    const handleBufferSizeBlur = () => {
+        const parsed = parseInt(bufferSizeText.trim(), 10);
+        const fallback = String(consoleBufferSize ?? DEFAULT_CONSOLE_BUFFER_SIZE);
+        if (!Number.isFinite(parsed)) { setBufferSizeText(fallback); return; }
+        const clamped = Math.min(MAX_CONSOLE_BUFFER_SIZE, Math.max(MIN_CONSOLE_BUFFER_SIZE, parsed));
+        setBufferSizeText(String(clamped));
+        patchProfile({ consoleBufferSize: clamped });
     };
 
     const [historySaveSizeText, setHistorySaveSizeText] = useState(String(historySaveSize));
@@ -881,6 +901,68 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                         ))}
                     </div>
                 </div>
+            ),
+        },
+        {
+            id: 'scrollback',
+            category: 'mainDisplay' as const,
+            title: 'Scrollback',
+            description: 'How much of the game’s output the main window keeps behind you.',
+            keywords: 'buffer, scrollback, history, lines kept, main display size, console buffer size, memory',
+            body: (
+                <>
+                    <div className="settings-row">
+                        <label className="settings-label" htmlFor="console-buffer-size">
+                            Main display size
+                            <HelpTip label="About the main display size">
+                                Maximum number of lines to keep in the main window's
+                                scrollback (Mudlet's <code>consoleBufferSize</code>). When
+                                it is exceeded the oldest lines are dropped in batches.
+                                Minimum 100 lines; the default is
+                                {' '}<code>{DEFAULT_CONSOLE_BUFFER_SIZE.toLocaleString()}</code>.
+                                Scripts can resize the live buffer with
+                                {' '}<code>setConsoleBufferSize()</code> without changing
+                                this setting.
+                            </HelpTip>
+                        </label>
+                        <div className="settings-color-field">
+                            <Input
+                                id="console-buffer-size"
+                                type="number"
+                                min={MIN_CONSOLE_BUFFER_SIZE}
+                                max={MAX_CONSOLE_BUFFER_SIZE}
+                                step={100}
+                                disabled={useMaxBufferSize}
+                                value={useMaxBufferSize ? String(MAX_CONSOLE_BUFFER_SIZE) : bufferSizeText}
+                                placeholder={String(DEFAULT_CONSOLE_BUFFER_SIZE)}
+                                onChange={e => setBufferSizeText(e.target.value)}
+                                onBlur={handleBufferSizeBlur}
+                            />
+                            <span className="settings-unit">lines</span>
+                        </div>
+                    </div>
+                    <div className="settings-row">
+                        <span className="settings-label" id="use-max-buffer-size-label">
+                            Use the maximum size
+                            <HelpTip label="About the maximum display size">
+                                Keep as much scrollback as the client is willing to hold
+                                ({MAX_CONSOLE_BUFFER_SIZE.toLocaleString()} lines) instead
+                                of the figure above (Mudlet's
+                                {' '}<code>useMaxConsoleBufferSize</code>). Desktop Mudlet
+                                works this out from your machine's memory; a browser tab
+                                cannot ask, so mudix uses a fixed cap. Every retained line
+                                costs memory and slows down redraws — raise this only if
+                                you really scroll that far back.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="use-max-buffer-size"
+                            aria-labelledby="use-max-buffer-size-label"
+                            checked={useMaxBufferSize}
+                            onChange={next => patchProfile({ useMaxConsoleBufferSize: next })}
+                        />
+                    </div>
+                </>
             ),
         },
         {
