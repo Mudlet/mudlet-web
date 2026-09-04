@@ -144,3 +144,73 @@ describe('extractMudletProfileZip', () => {
         expect(Object.keys(bundle.files)).toEqual(['gmcp.lua']);
     });
 });
+
+// A profile import used to succeed in total silence even when it dropped data:
+// the parser's warnings went into `profile.automation.warnings` and nothing on
+// the profile path ever read them (issue #45). The bundle now carries one list
+// that every later stage appends to, which is what the import UI reads.
+describe('bundle warnings', () => {
+    // An unbound Qt key code (999999 maps to nothing) is the parser's own
+    // long-standing warning, and an offset timer — a timer nested under a
+    // non-folder timer, TTimer.h:75-84 — is a structure this client cannot
+    // represent at all.
+    const lossyXml = `<?xml version="1.0" encoding="UTF-8"?>
+<MudletPackage version="1.001">
+  <HostPackage><Host><name>Lossy</name></Host></HostPackage>
+  <KeyPackage>
+    <Key isActive="yes" isFolder="no">
+      <name>weird</name><script></script><command></command>
+      <keyCode>999999</keyCode><keyModifier>0</keyModifier>
+    </Key>
+  </KeyPackage>
+  <TimerPackage>
+    <Timer isActive="yes" isFolder="no">
+      <name>heartbeat</name><script></script><command></command><time>00:00:05.000</time>
+      <Timer isActive="yes" isFolder="no">
+        <name>followup</name><script></script><command></command><time>00:00:02.000</time>
+      </Timer>
+    </Timer>
+  </TimerPackage>
+</MudletPackage>`;
+
+    const lossyFiles = (): Record<string, Uint8Array> => ({
+        'Lossy/current/2026-06-26#10-00-00.xml': strToU8(lossyXml),
+    });
+
+    it('carries the parser warnings on the bundle, not just inside the automation', () => {
+        const bundle = buildMudletProfileBundle(lossyFiles());
+        expect(bundle.warnings.some(w => w.includes('"weird"'))).toBe(true);
+    });
+
+    it('warns that an offset timer cannot keep its relationship to its parent', () => {
+        const bundle = buildMudletProfileBundle(lossyFiles());
+        const w = bundle.warnings.find(w => w.includes('"heartbeat"'));
+        expect(w).toBeDefined();
+        expect(w).toContain('"followup"');
+        expect(w).toContain('offset timer');
+    });
+
+    it('is a copy, so appending to it does not mutate the parsed automation', () => {
+        const bundle = buildMudletProfileBundle(lossyFiles());
+        const before = bundle.profile.automation.warnings.length;
+        bundle.warnings.push('added later');
+        expect(bundle.profile.automation.warnings).toHaveLength(before);
+    });
+
+    it('names the module a folded-in module\'s warnings came from', () => {
+        const bundle = buildMudletProfileBundle(profileWithModule());
+        const moduleXml = `<?xml version="1.0" encoding="UTF-8"?>
+<MudletPackage version="1.001"><KeyPackage>
+  <Key isActive="yes" isFolder="no">
+    <name>modkey</name><script></script><command></command>
+    <keyCode>999999</keyCode><keyModifier>0</keyModifier>
+  </Key>
+</KeyPackage></MudletPackage>`;
+        addModuleToBundle(bundle, 'buttons', strToU8(moduleXml));
+        expect(bundle.warnings.some(w => w.startsWith('Module "buttons": ') && w.includes('"modkey"'))).toBe(true);
+    });
+
+    it('leaves the list empty for a profile that imports cleanly', () => {
+        expect(buildMudletProfileBundle(profileFiles()).warnings).toEqual([]);
+    });
+});

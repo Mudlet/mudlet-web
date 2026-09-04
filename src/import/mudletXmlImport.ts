@@ -219,6 +219,37 @@ function parseKeys(els: Element[], parentId: string | null, out: KeyNode[], warn
     }
 }
 
+/**
+ * Warn about offset timers, which this client has no equivalent for.
+ *
+ * There is no `isOffsetTimer` element to read: in Mudlet a timer is an *offset*
+ * timer purely by where it sits in the tree — "children of folder = regular
+ * timers, children of timers = offset timers" (TTimer.h:75-84). Such a timer
+ * never runs on its own clock. Its interval is measured from the moment its
+ * parent fires (TTimer.cpp:255-265), and the normal start/stop walk skips it
+ * entirely (TTimer.cpp:314, :329). Nothing here reproduces that, so whatever
+ * happens to the nested timer, it is not what the profile asked for.
+ *
+ * Read off the document rather than the parsed tree so the warning does not
+ * depend on whether the reader descended into the nested elements — the
+ * shape is visible in the XML either way.
+ */
+function collectOffsetTimerWarnings(doc: Document, warnings: string[]): void {
+    for (const pkg of Array.from(doc.getElementsByTagName('TimerPackage'))) {
+        for (const el of Array.from(pkg.getElementsByTagName('Timer'))) {
+            if (isGroup(el)) continue;
+            const nested = directChildren(el, 'Timer', 'TimerGroup');
+            if (nested.length === 0) continue;
+            const names = nested.map(c => `"${getText(c, 'name')}"`).join(', ');
+            warnings.push(
+                `Timer "${getText(el, 'name')}" contains ${names}: Mudlet runs a timer nested under `
+                + 'another timer as an offset timer, counting its interval from when the parent fires. '
+                + 'This client has no offset timers, so those will not keep that relationship',
+            );
+        }
+    }
+}
+
 export function parseMudletXml(xml: string, opts: ParseOptions = {}): MudletImportResult {
     const doc = new DOMParser().parseFromString(xml, 'text/xml');
     const err = doc.getElementsByTagName('parsererror')[0];
@@ -236,6 +267,8 @@ export function parseMudletXml(xml: string, opts: ParseOptions = {}): MudletImpo
     parseTimers(  pkgChildren('TimerPackage',   'Timer',   'TimerGroup'),   null, result.timers);
     parseKeys(    pkgChildren('KeyPackage',     'Key',     'KeyGroup'),     null, result.keys, result.warnings);
     parseButtons( pkgChildren('ActionPackage',  'Action',  'ActionGroup'),  null, result.buttons);
+
+    collectOffsetTimerWarnings(doc, result.warnings);
 
     if (opts.packageName) {
         applyPackageTagging(result, opts.packageName);
