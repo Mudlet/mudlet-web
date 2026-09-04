@@ -147,9 +147,6 @@ export class MudSession {
     /** `performance`-independent stand-in for Mudlet's `mConnectionTimer`: when
      *  the socket actually opened, or null while nothing has connected. */
     private connectedAt: number | null = null;
-    /** Set by {@link disconnect} so the notice can name the user as the cause.
-     *  Mudlet's `mDontReconnect`. */
-    private userDisconnected = false;
     /** The socket-level failure behind the disconnect now in flight, stashed by
      *  {@link reportConnectionError}. cTelnet reads the equivalent straight off
      *  `mpSocket->errorString()` when it composes the message. */
@@ -237,10 +234,12 @@ export class MudSession {
         // dialing wins and the replay stops.
         this.abortReplay();
         // Before the reset below, so a live socket's own disconnect notice still
-        // carries the reason and duration of the connection it is ending.
+        // carries the reason and duration of the connection it is ending. The
+        // "asked for it" flag goes with them: teardownClient() disconnects, and
+        // leaving it raised would suppress a dial that is very much wanted.
         this.teardownClient();
         this.connectedAt = null;
-        this.userDisconnected = false;
+        this.deliberateDisconnect = false;
         this.disconnectReason = null;
         // Synchronously re-measure the main console's char grid before dialing.
         // The resize observer that normally feeds windowSize is async, so a quick
@@ -285,11 +284,20 @@ export class MudSession {
         client.connect();
     }
 
+    /**
+     * Whether the last disconnect was asked for rather than suffered — Mudlet's
+     * `mDontReconnect`. Auto-reconnect reads it so hanging up by hand, from the
+     * toolbar or from Lua, is not immediately undone. Cleared by {@link connect}
+     * so it only ever suppresses the one retry it was raised for.
+     */
+    deliberateDisconnect = false;
+
     disconnect(): void {
         if (!this.client) return;
         // Latched before the socket closes, so the disconnect notice can name
-        // the user rather than guessing at the server — cTelnet's mDontReconnect.
-        this.userDisconnected = true;
+        // the user rather than guessing at the server, and so auto-reconnect
+        // leaves a hang-up alone — cTelnet's mDontReconnect.
+        this.deliberateDisconnect = true;
         this.client.disconnect();
     }
 
@@ -909,7 +917,7 @@ export class MudSession {
         // (Mudlet has a TLS-handshake arm between the first two; ours is handled
         // separately by ProfileSession's tls.error path, which posts its own
         // notice before this one runs.)
-        const reason = this.userDisconnected ? 'User Disconnected'
+        const reason = this.deliberateDisconnect ? 'User Disconnected'
             : elapsed < CONNECTION_REJECTED_WINDOW_MS ? 'Connection/login attempt rejected by server'
             : this.disconnectReason;
         if (reason) {
@@ -924,8 +932,11 @@ export class MudSession {
         }
         this.postSocketMessage('INFO', `Connection time: ${formatConnectionTime(elapsed)}.`);
         this.connectedAt = null;
-        this.userDisconnected = false;
         this.disconnectReason = null;
+        // `deliberateDisconnect` is deliberately NOT cleared here. Auto-reconnect
+        // subscribes to `client.disconnect` after this handler, so clearing it now
+        // would hide a hang-up from the one thing that has to see it. {@link connect}
+        // clears it instead, which is the only place it matters.
     }
 }
 

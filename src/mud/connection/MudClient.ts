@@ -272,6 +272,9 @@ export class MudClient {
      *  client knows to expect a `tls.established` control frame and to police
      *  the deadline below. */
     private readonly tlsRequested: boolean;
+    /** Whether this socket goes to a telnet proxy rather than to the game. Only
+     *  the wording of a connection error depends on it. */
+    private readonly viaProxy: boolean;
     /** True once the proxy confirmed the handshake, or once any game bytes have
      *  arrived (which can only happen through a working tunnel). */
     private tlsResolved = false;
@@ -391,6 +394,11 @@ export class MudClient {
         // The proxy contract is expressed in the URL, so that's where we learn
         // whether a TLS handshake is supposed to be happening on the far side.
         this.tlsRequested = /[?&]tls=1(?:&|$)/.test(url);
+        // And likewise whether there is a proxy at all: `?host=…&port=…` is the
+        // contract both proxies read, and a direct websocket URL carries the
+        // game's own address instead. Only the wording of a connection error
+        // rests on this, so deriving it beats plumbing a mode down here.
+        this.viaProxy = /[?&]host=/.test(url) && /[?&]port=/.test(url);
 
         this.gmcpStream = createGmcpStream({
             onEnvelope: ({ path, value }) => {
@@ -648,7 +656,7 @@ export class MudClient {
                 this.assembler.flush(Date.now(), true);
                 this.eventBus.emit('close', event);
                 if (isAbnormalClose(event)) {
-                    this.eventBus.emit('client.error', formatCloseError(event, this.opened));
+                    this.eventBus.emit('client.error', formatCloseError(event, this.opened, this.viaProxy));
                 }
                 this.eventBus.emit('client.disconnect');
                 this.opened = false;
@@ -1213,17 +1221,35 @@ function isAbnormalClose(event: CloseEvent): boolean {
 
 }
 
-function formatCloseError(event: CloseEvent, wasOpened: boolean): string {
+/**
+ * What to tell the user about a socket that closed.
+ *
+ * `viaProxy` distinguishes the two very different things a close can mean. In
+ * proxy mode the socket is to the proxy, so "the proxy refused it" is a real
+ * possibility; in websocket mode no proxy is involved at all, and blaming one
+ * sent people to check infrastructure that was not in the path (issue #56).
+ *
+ * A connect that never opened also gets the advice Mudlet gives, because the
+ * cause is not decidable from here: a Cloudflare-Worker proxy reports the same
+ * "cannot connect to the specified address" for a hostname that does not
+ * resolve and for a port with nothing listening, and `connect()` exposes
+ * nothing finer. Naming both possibilities beats implying one.
+ */
+export function formatCloseError(event: CloseEvent, wasOpened: boolean, viaProxy: boolean): string {
+    const advice = viaProxy
+        ? 'Check the address and port for the game, and the proxy URL in this profile.'
+        : 'Check the URL for the game, and your internet connection.';
     const reason = event.reason?.trim();
-    if (reason) return reason;
+    if (reason) return wasOpened ? reason : `${reason}. ${advice}`;
     if (event.code === 1006) {
-        return wasOpened
-            ? 'Connection lost (no close frame received from server)'
-            : 'Failed to connect (proxy unreachable, blocked, or refused the connection)';
+        if (wasOpened) return 'Connection lost (no close frame received from server)';
+        return viaProxy
+            ? `Failed to connect — the proxy was unreachable, blocked, or refused the connection. ${advice}`
+            : `Failed to connect — the server was unreachable, blocked, or refused the connection. ${advice}`;
     }
     return wasOpened
         ? `Connection closed (code ${event.code})`
-        : `Failed to connect (code ${event.code})`;
+        : `Failed to connect (code ${event.code}). ${advice}`;
 }
 
 /**

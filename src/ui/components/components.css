@@ -154,6 +154,15 @@
     border-color: var(--danger, #e06c75);
 }
 
+/* Same slot as .field__error, for a value that is accepted but probably not
+   what the user wants — a ws:// URL on an https:// page, say. Advisory
+   colouring, because the form is still submittable. */
+.field__hint {
+    font-family: var(--font-ui);
+    font-size: 11px;
+    color: var(--warning, #d19a66);
+}
+
 /* ── Checkbox field ─────────────────────────────────────────── */
 .field--check {
     flex-direction: row;
