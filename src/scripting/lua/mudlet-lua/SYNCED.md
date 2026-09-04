@@ -50,6 +50,14 @@ Currently overridden:
 | `mudlet.supports.mmcp = false` (`Other.lua`) | MMCP is peer-to-peer chat over a direct TCP socket, which a browser tab can't open. `mmcp.*` *is* bound, as no-op stubs (`Bridge.lua`), so feature-detecting scripts have to see it unsupported or they'll call into them. |
 | `dispatchEventToFunctions`'s `pcall` (`Other.lua`) | It guards every event handler with `pcall`, and Lua 5.1 can't yield across `pcall`'s C frame — a handler suspending on `invokeFileDialog` dies there. `setfenv` re-points *that one function's* `pcall` at the coroutine-aware `__mudix_pcall_co`; every other global falls through to `_G`. Covered by `tests/scripting/invokeFileDialog.test.ts`, whose anonymous-event-handler case fails if the override is removed. |
 
+**Backports** — upstream already has these, at a commit newer than the pin
+above. They are not divergences and each is guarded so it defines nothing once
+the real one arrives; **delete the block when a re-sync brings it in**.
+
+| What | Upstream | Why it couldn't wait |
+|------|----------|----------------------|
+| `Adjustable.Container:remove` (`GeyserAdjustableContainer.lua`) | defined at `:879` on `development` | Without it the call resolves to `Geyser.Container.remove`, which searches the outer container's `windowList` — but an adjustable container keeps its children in `self.Inside`. The removal silently does nothing: no error, no return value, child still on screen ([#105](https://github.com/Mudlet/mudlet-web/issues/105)). Covered by `tests/scripting/adjustableContainerRemove.test.ts`. |
+
 If an override ever proves impossible from the outside, the escape hatch is a
 patch file under `scripts/mudlet-lua-patches/<tree>/` — but check first that
 upstream doesn't already do what you're about to add. An early version of this

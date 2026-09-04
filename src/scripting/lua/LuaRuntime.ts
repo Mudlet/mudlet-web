@@ -2124,6 +2124,30 @@ if type(loadTranslations) == 'function' then
     end
     mudlet.Locale = loaded
   end
+end
+
+-- Adjustable.Container:remove — a BACKPORT, not a divergence. Upstream defines
+-- it (GeyserAdjustableContainer.lua:879 on development), but after the commit
+-- this tree is pinned to, so the vendored copy does not have it yet. Delete
+-- this block the moment a re-sync brings it in; the rawget guard means a stale
+-- copy of it could only ever be dead code, never a shadow of upstream's.
+--
+-- Without it the call resolves up the chain to Geyser.Container.remove, which
+-- looks for the child in the outer container's windowList — but an adjustable
+-- container keeps its children in self.Inside. The removal then finds nothing,
+-- touches nothing, and returns no error: the child stays on screen and stays in
+-- the container, silently (issue #105).
+--
+-- Not a plain redirect to self.Inside: the fallback is what removes the
+-- container's own furniture (the title bar), which is not an inside child.
+if Adjustable and Adjustable.Container and not rawget(Adjustable.Container, 'remove') then
+  function Adjustable.Container:remove(window)
+    if self.Inside and self.Inside.windowList[window.name] then
+      self.Inside:remove(window)
+    else
+      Geyser.remove(self, window)
+    end
+  end
 end`,
             'mudlet-lua-overrides',
         );
