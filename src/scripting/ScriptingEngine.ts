@@ -411,6 +411,19 @@ export class ScriptingEngine implements EngineHost {
         // exists, …) have no engine behind them. Every field those methods read
         // is assigned above, and nothing calls them synchronously from here.
         this.api.setHost(this);
+        // A trigger pattern that fails to compile is reported the way Mudlet
+        // reports it (TTrigger::setRegexCodeList, src/TTrigger.cpp:144-153):
+        // into the error log, tagged with the owning trigger so the Errors tab
+        // row gets a jump-to-source button. Wired here rather than alongside the
+        // other trigger-engine hooks in the Lua-runtime promise — profile data
+        // loads (and so triggers compile) before that resolves, and a compile
+        // error from the first loadPerm would otherwise fall on the floor.
+        triggerEngine.setCompileErrorReporter((message, source) => {
+            this.api.printError(
+                source ? `[${formatErrorPrefix('trigger', source.name)}] ${message}` : `[trigger] ${message}`,
+                source ? { kind: 'trigger', id: source.id, name: source.name } : undefined,
+            );
+        });
         this.bridgeEvents(session);
         // Let WindowManager raise system events (e.g. sysUserWindowResizeEvent)
         // through the same path as everything else.
@@ -3634,6 +3647,7 @@ export class ScriptingEngine implements EngineHost {
         this.triggerEngine.setRunawayReporter(null);
         this.api.setCaptureShiftHook(null);
         this.triggerEngine.setPermDisabler(null);
+        this.triggerEngine.setCompileErrorReporter(null);
         // Unbind the host. This does NOT guard against late *Lua* calls —
         // lua_close ran a few lines up. It guards against DOM-side callers
         // that outlive the engine: a rendered line's hyperlink onClick closure
