@@ -676,6 +676,7 @@ html, body, #root {
     z-index: 1;
 }
 
+.connection-vault-btn,
 .connection-settings-btn,
 .connection-help-btn,
 .connection-about-btn {
@@ -693,6 +694,7 @@ html, body, #root {
     transition: color 0.1s, border-color 0.1s;
 }
 
+.connection-vault-btn:hover,
 .connection-settings-btn:hover,
 .connection-help-btn:hover,
 .connection-about-btn:hover {
@@ -5412,4 +5414,23 @@ body.is-sorting {
     font-size: 12px;
     line-height: 1.4;
     color: var(--text-dim);
+}
+
+/* "Forgotten your passphrase?" — a plain link, kept quiet: it is the only exit
+   from a vault nobody can open, and it destroys everything in it. */
+.vault-forgot {
+    align-self: flex-start;
+    margin-top: 2px;
+    padding: 0;
+    background: none;
+    border: 0;
+    font-family: var(--font-ui), sans-serif;
+    font-size: 12px;
+    color: var(--text-dim);
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.vault-forgot:hover {
+    color: var(--text);
 }

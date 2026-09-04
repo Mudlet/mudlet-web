@@ -191,6 +191,8 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
         <div className="connection-screen">
             <div className="connection-panel">
                 <div className="connection-panel-tools">
+                    {/* Renders nothing in a build with no credential vault. */}
+                    <VaultManageButton connections={connections} />
                     <button className="connection-settings-btn" onClick={onOpenSettings} type="button" aria-label="Settings">
                         ⚙
                     </button>
@@ -256,8 +258,6 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
                             Export profiles…
                         </Button>
                     )}
-                    {/* Renders nothing in a build with no credential vault. */}
-                    <VaultManageButton connections={connections} disabled={connecting || importing} />
                 </div>
                 {importError && (
                     <div className="connection-import-error" style={{ color: 'var(--danger, #e06c75)', fontSize: 12, textAlign: 'center' }}>

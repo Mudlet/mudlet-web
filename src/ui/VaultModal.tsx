@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Button, Input } from './components';
+import { Button, Input, useConfirm } from './components';
 import { useModalFocus } from './components/useModalFocus';
 import { getBrand } from '../branding';
 import { getVault, type VaultUIProps } from '../vault/vaultAccess';
@@ -40,6 +40,8 @@ export function VaultModal({ mode, reason, seed, connectionNames, onDone }: Vaul
     const [passphrase, setPassphrase] = useState('');
     const [confirm, setConfirm] = useState('');
     const passphraseRef = useRef<HTMLInputElement>(null);
+    // Named apart from the setup form's confirm-passphrase field.
+    const askConfirm = useConfirm();
     const close = () => onDone('closed');
     // Setting up or unlocking from inside the manage view is a step within it,
     // not the end of the errand — report the result to the caller only when the
@@ -127,6 +129,38 @@ export function VaultModal({ mode, reason, seed, connectionNames, onDone }: Vaul
                 passphraseRef.current?.select();
             }
         });
+    };
+
+    /**
+     * The only exit from a vault nobody can open.
+     *
+     * There is no reset, because a reset would mean the passwords were
+     * recoverable without the key — which is the property the vault exists to
+     * have. So the honest offer is to throw the vault away and start again, and
+     * the confirm dialog says exactly that rather than implying recovery.
+     *
+     * `afterwards` differs by where this was reached from: the unlock prompt has
+     * a caller waiting on an answer, the manage view just re-renders empty.
+     */
+    const discardVault = async (afterwards: 'close' | 'stay') => {
+        const ok = await askConfirm({
+            title: 'Delete saved logins',
+            message: snapshot.entryIds.length === 1
+                ? 'The one password in here cannot be recovered without a way to unlock it — deleting is the only way forward. You can set up saved logins again straight away.'
+                : `The ${snapshot.entryIds.length} passwords in here cannot be recovered without a way to unlock it — deleting is the only way forward. You can set up saved logins again straight away.`,
+            tone: 'danger',
+            buttons: [
+                { label: 'Cancel', value: false, variant: 'ghost' },
+                { label: 'Delete saved logins', value: true, variant: 'danger' },
+            ],
+            dismissValue: false,
+        });
+        if (!ok) return;
+        vault?.deleteVault();
+        setError(null);
+        setPassphrase('');
+        if (afterwards === 'close') onDone('closed');
+        else setView('manage');
     };
 
     // ── shared bits ──────────────────────────────────────────────────────
@@ -276,6 +310,15 @@ export function VaultModal({ mode, reason, seed, connectionNames, onDone }: Vaul
                     <Button type="button" variant="ghost" onClick={close}>Not now</Button>
                 </div>
             )}
+            {/* Reachable from inside a session, where the connection screen's
+                manage view is not — without it, someone who has forgotten their
+                passphrase mid-login has nowhere to go but this same dead form on
+                every reconnect. */}
+            <button type="button" className="vault-forgot" onClick={() => void discardVault('close')}>
+                {hasPasskey
+                    ? "Can't get in? Delete these saved logins and start over"
+                    : 'Forgotten your passphrase?'}
+            </button>
         </div>
     );
 
@@ -408,11 +451,15 @@ export function VaultModal({ mode, reason, seed, connectionNames, onDone }: Vaul
                     </div>
 
                     <div className="vault-section vault-section--danger">
+                        {/* Deliberately NOT disabled while locked: a forgotten
+                            passphrase leaves this as the only way out, and the
+                            confirm dialog is where the consequence is spelled
+                            out. */}
                         <Button
                             size="sm"
                             variant="danger"
                             disabled={busy}
-                            onClick={() => { vault?.deleteVault(); setError(null); }}
+                            onClick={() => void discardVault('stay')}
                         >
                             Delete the vault and every password in it
                         </Button>
