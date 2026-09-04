@@ -2,6 +2,7 @@ import { ViewportModeProvider } from './hooks/useViewportMode';
 import { useEffect, useRef, useState } from 'react';
 import { MAP_WIDGET_ID } from './ui/windows/types';
 import { useMudSession } from './hooks/useMudSession';
+import { useAutoReconnect } from './hooks/useAutoReconnect';
 import { useEngines } from './hooks/useEngines';
 import { Toolbar } from './ui/Toolbar';
 import { CommandBar } from './ui/CommandBar';
@@ -1042,6 +1043,22 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // Reads the store rather than the `connection` snapshot, so a reconnect after
     // a TLS upgrade dials the new secure port instead of the original one.
     const handleReconnect  = () => redialFromStore();
+
+    // What the profile's "Auto-connect" option now also means: keep trying when
+    // the link drops, the way Mudlet's mAutoReconnect does. The callbacks are
+    // wrapped rather than passed directly because both are defined further down
+    // this component body.
+    useAutoReconnect({
+        session,
+        enabled: liveConnection.autoReconnect ?? false,
+        redial: () => redialFromStore(),
+        postInfo: text => postConnectionInfo(text),
+    });
+
+    /** A console line in Mudlet's house style, for the connection's own news. */
+    const postConnectionInfo = (text: string) => {
+        session.events.emit('message', `[36m[ INFO ][0m  - ${text}`, 'script', Date.now());
+    };
 
     /** Redial using the connection record as it stands in the store right now,
      *  rather than the `connection` prop captured at render — the TLS handlers

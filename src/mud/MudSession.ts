@@ -195,7 +195,10 @@ export class MudSession {
         // about to use — interleaving them would corrupt telnet/GMCP state, so
         // dialing wins and the replay stops.
         this.abortReplay();
+        // teardownClient() disconnects, which would otherwise leave the
+        // "asked for it" flag raised over a dial that is very much wanted.
         this.teardownClient();
+        this.deliberateDisconnect = false;
         // Synchronously re-measure the main console's char grid before dialing.
         // The resize observer that normally feeds windowSize is async, so a quick
         // connect (notably on mobile, where layout settles late) can otherwise
@@ -238,7 +241,16 @@ export class MudSession {
         client.connect();
     }
 
+    /**
+     * Whether the last disconnect was asked for rather than suffered — Mudlet's
+     * `mDontReconnect`. Auto-reconnect reads it so hanging up by hand, from the
+     * toolbar or from Lua, is not immediately undone. Cleared by {@link connect}
+     * so it only ever suppresses the one retry it was raised for.
+     */
+    deliberateDisconnect = false;
+
     disconnect(): void {
+        this.deliberateDisconnect = true;
         this.client?.disconnect();
     }
 

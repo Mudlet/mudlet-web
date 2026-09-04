@@ -54,6 +54,8 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
         connection: MudConnection | null;
         preset?: Omit<MudConnection, 'id'>;
         game?: BundledGame;
+        /** Overrides the dialog's own title — "Duplicate Achaea". */
+        title?: string;
     } | null>(null);
     // The game a `?play=` link named, waiting on the "existing or new?" choice.
     const [gamePrompt, setGamePrompt] = useState<BundledGame | null>(null);
@@ -186,6 +188,29 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
         onDelete(c.id);
     };
 
+    /**
+     * Mudlet's "Copy settings only" (`slot_copyOnlySettingsOfProfile`): a second
+     * profile for the same game without retyping every field, which was the only
+     * way to set up an alt (issue #56).
+     *
+     * Deliberately not Mudlet's full "Copy profile": scripts, packages and the
+     * map live in this profile's own filesystem and IndexedDB, and duplicating
+     * those is a different, much larger operation. The login is dropped too —
+     * the point of a second profile is usually a second character, and a saved
+     * password belongs to the profile id that owns it, not to a copy of it.
+     *
+     * The copy opens in the editor rather than being saved outright, so the name
+     * and character can be set before it joins the list.
+     */
+    const handleDuplicate = (c: MudConnection) => {
+        const { id: _id, charLoginAccount: _account, charLoginPassword: _password, ...settings } = c;
+        setEditor({
+            connection: null,
+            preset: { ...settings, name: uniqueConnectionName(c.name, connections) },
+            title: `Duplicate ${c.name}`,
+        });
+    };
+
     return (
         <>
         <div className="connection-screen">
@@ -219,6 +244,7 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
                     onConnect={onConnect}
                     onOpen={onOpen}
                     onEdit={(c) => setEditor({ connection: c })}
+                    onDuplicate={handleDuplicate}
                     onDelete={(c) => { void handleDelete(c); }}
                     onReorder={reorderConnections}
                     onAddClick={() => setEditor({ connection: null })}
@@ -285,7 +311,7 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
                 // "Add", not "Connect": submitting creates the profile and hands
                 // it back to the launcher. Someone setting up a game may want to
                 // install packages or open it offline before ever dialing.
-                title={editor.game ? `Add ${editor.game.name}` : undefined}
+                title={editor.title ?? (editor.game ? `Add ${editor.game.name}` : undefined)}
                 firstConnection={connections.length === 0}
                 busy={connecting}
                 onAdd={onAdd}

@@ -3,25 +3,28 @@ import { Button, Input, FormField, Toggle } from './components';
 import { useModalFocus } from './components/useModalFocus';
 import { ProxyInfoModal } from './ProxyInfoModal';
 import { ProxyWhyModal } from './ProxyWhyModal';
-import { connectionNameTaken, DEFAULT_MUD_PORT, DEFAULT_PROXY_URL, proxyCanInspectCertificates, useAppStore, validatePort, type ConnectionMode, type MudConnection } from '../storage';
+import { connectionNameTaken, connectionUrl, DEFAULT_MUD_PORT, DEFAULT_PROXY_URL, proxyCanInspectCertificates, useAppStore, validateHost, validatePort, validateProxyUrl, validateWsUrl, type ConnectionMode, type MudConnection } from '../storage';
 import type { VaultSaver } from './useVaultSaver';
 import { useVault } from '../vault/useVault';
 
-/** Preview of the proxy URL the profile will dial. Mirrors `connectionUrl()` in
- *  storage/schema.ts — keep the two in step. */
+/** Preview of the proxy URL the profile will dial. Runs the fields through
+ *  `connectionUrl()` itself rather than a parallel copy of it, so the preview
+ *  cannot drift from what Connect actually does — it used to be a hand-kept
+ *  duplicate carrying a "keep the two in step" note. */
 function buildPreviewUrl(
     host: string, port: number, proxyUrl: string, fallback: string,
     tls: { on: boolean; expired: boolean; selfSigned: boolean; all: boolean },
 ): string {
-    const base = (proxyUrl.trim() || fallback).replace(/\/$/, '');
-    let url = `${base}?host=${encodeURIComponent(host.trim())}&port=${port}`;
-    if (tls.on) {
-        url += '&tls=1';
-        if (tls.expired) url += '&tlsIgnoreExpired=1';
-        if (tls.selfSigned) url += '&tlsIgnoreSelfSigned=1';
-        if (tls.all) url += '&tlsIgnoreAll=1';
-    }
-    return url;
+    return connectionUrl({
+        id: '', name: '', mode: 'mud',
+        host: host.trim(),
+        port,
+        proxyUrl: proxyUrl.trim() || fallback,
+        tls: tls.on || undefined,
+        sslIgnoreExpired: tls.on && tls.expired ? true : undefined,
+        sslIgnoreSelfSigned: tls.on && tls.selfSigned ? true : undefined,
+        sslIgnoreAll: tls.on && tls.all ? true : undefined,
+    });
 }
 
 function modeOf(c: Pick<MudConnection, 'mode'>): ConnectionMode {
@@ -31,9 +34,19 @@ function modeOf(c: Pick<MudConnection, 'mode'>): ConnectionMode {
 /** Split a host string that may carry a trailing port (`host:port` or
  *  `host port`) into its parts, so pasting a full address moves the port into
  *  the Port field. Returns `port: undefined` when no trailing numeric port is
- *  present, leaving the Port field untouched. */
-function splitHostPort(value: string): { host: string; port?: string } {
-    const match = value.trim().match(/^(.*?)[\s:]+(\d+)$/);
+ *  present, leaving the Port field untouched.
+ *
+ *  An IPv6 literal is all colons and hex, so the old non-greedy `(.*?)[\s:]+(\d+)$`
+ *  matched its own tail: typing `2001:db8::1` left host `2001:db8` and port 1,
+ *  and saved it that way (issue #56). Only the bracketed form `[::1]:4000` has
+ *  an unambiguous port, so that is the only IPv6 shape that gets split. */
+export function splitHostPort(value: string): { host: string; port?: string } {
+    const trimmed = value.trim();
+    const bracketed = trimmed.match(/^\[([^\]]+)\][\s:]+(\d+)$/);
+    if (bracketed) return { host: `[${bracketed[1]}]`, port: bracketed[2] };
+    // Two or more colons is an IPv6 literal being typed, not host:port.
+    if ((trimmed.match(/:/g)?.length ?? 0) >= 2) return { host: value };
+    const match = trimmed.match(/^(.*?)[\s:]+(\d+)$/);
     if (match && match[1].trim() !== '') {
         return { host: match[1].trim(), port: match[2] };
     }
@@ -118,10 +131,22 @@ export function ConnectionFormModal({ connection, preset, firstConnection, title
     // only for the proxy to reject it later as "proxy unreachable". Mudlet
     // refuses both at the dialog (dlgConnectionProfiles.cpp:2140-2160); so do we.
     const portCheck = validatePort(port);
+    // The same gap the port had, in the other three address fields: `canSubmit`
+    // only ever checked non-emptiness, so a host with spaces, a `ws://` prefix,
+    // a path, or 1200 characters of anything was stored verbatim and only
+    // failed later as the proxy's generic connect error — and a websocket URL
+    // of `http://example.com` or `not a url` failed as a browser-internal
+    // string on Connect. Both are decidable here (issue #56).
+    const hostCheck = validateHost(host, tls);
+    const urlCheck = validateWsUrl(url);
+    const proxyCheck = validateProxyUrl(proxyUrl);
+    // An empty field is not an error yet — it is a form you have not finished.
+    const showHostError = !hostCheck.ok && hostCheck.reason !== 'empty';
+    const showUrlError = !urlCheck.ok && urlCheck.reason !== 'empty';
 
-    const canSubmit = !nameTaken && (mode === 'mud'
-        ? name.trim() !== '' && host.trim() !== '' && portCheck.ok
-        : name.trim() !== '' && url.trim() !== '');
+    const canSubmit = !nameTaken && proxyCheck.ok && (mode === 'mud'
+        ? name.trim() !== '' && hostCheck.ok && portCheck.ok
+        : name.trim() !== '' && urlCheck.ok);
 
     const buildData = (): Omit<MudConnection, 'id'> => {
         const acct = account.trim();
@@ -251,8 +276,15 @@ export function ConnectionFormModal({ connection, preset, firstConnection, title
                                         }}
                                         placeholder="mud.example.com"
                                         spellCheck={false}
+                                        aria-invalid={showHostError || undefined}
+                                        aria-describedby={showHostError ? 'cs-host-error' : undefined}
                                         noAutofill
                                     />
+                                    {showHostError && (
+                                        <div id="cs-host-error" className="field__error" role="alert">
+                                            {hostCheck.message}
+                                        </div>
+                                    )}
                                 </FormField>
                                 <FormField label="Port" htmlFor="cs-port">
                                     <Input
@@ -281,8 +313,25 @@ export function ConnectionFormModal({ connection, preset, firstConnection, title
                                     onChange={e => setUrl(e.target.value)}
                                     placeholder="wss://mud.example.com:4000"
                                     spellCheck={false}
+                                    aria-invalid={showUrlError || undefined}
+                                    aria-describedby={showUrlError ? 'cs-url-error' : undefined}
                                     noAutofill
                                 />
+                                {showUrlError && (
+                                    <div id="cs-url-error" className="field__error" role="alert">
+                                        {urlCheck.message}
+                                    </div>
+                                )}
+                                {/* Well-formed but unusable from this page. A
+                                    warning, not an error: it is correct on an
+                                    http:// dev server, and docs/help/connecting.md
+                                    explains the rule but the form never did. */}
+                                {urlCheck.ok && urlCheck.insecure && (
+                                    <div className="field__hint">
+                                        This page is served over https://, and a browser refuses a plain
+                                        ws:// socket from one. Use wss:// unless you are testing locally.
+                                    </div>
+                                )}
                             </FormField>
                         )}
 
@@ -309,8 +358,21 @@ export function ConnectionFormModal({ connection, preset, firstConnection, title
                                 onChange={e => setProxyUrl(e.target.value)}
                                 placeholder={effectiveDefaultProxy || 'wss://mudix-proxy.yourname.workers.dev'}
                                 spellCheck={false}
+                                aria-invalid={!proxyCheck.ok || undefined}
+                                aria-describedby={proxyCheck.ok ? undefined : 'cs-proxy-error'}
                                 noAutofill
                             />
+                            {!proxyCheck.ok && (
+                                <div id="cs-proxy-error" className="field__error" role="alert">
+                                    {proxyCheck.message}
+                                </div>
+                            )}
+                            {proxyCheck.ok && proxyCheck.insecure && (
+                                <div className="field__hint">
+                                    This page is served over https://, so a plain ws:// proxy is blocked as
+                                    mixed content and can only ever fail.
+                                </div>
+                            )}
                             <span className="proxy-hint">
                                 {mode === 'websocket'
                                     ? 'Used for HTTP requests blocked by CORS'
@@ -402,16 +464,17 @@ export function ConnectionFormModal({ connection, preset, firstConnection, title
 
                         <div className="connection-autoconnect-row">
                             <label className="connection-autoconnect-label" htmlFor="cs-autoreconnect">
-                                <span className="connection-autoconnect-title">Auto-connect on profile open</span>
+                                <span className="connection-autoconnect-title">Connect automatically</span>
                                 <span className="connection-autoconnect-hint">
-                                    Dial automatically when this profile is opened, instead of opening offline.
+                                    Dial when this profile is opened, instead of opening offline — and dial again if
+                                    the connection drops, retrying after 5 seconds and then less often.
                                 </span>
                             </label>
                             <Toggle
                                 id="cs-autoreconnect"
                                 checked={autoReconnect}
                                 onChange={setAutoReconnect}
-                                aria-label="Auto-connect on profile open"
+                                aria-label="Connect automatically"
                             />
                         </div>
 

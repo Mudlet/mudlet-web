@@ -902,22 +902,54 @@ export function selectProfileField<K extends keyof ProfileSettings>(
     return PROFILE_DEFAULTS[key];
 }
 
+/**
+ * The proxy parameters a `mud`-mode connection dials with, in the order the
+ * proxies read them.
+ *
+ * Split out so the connection form's preview is built from the same code as the
+ * real dial rather than a hand-kept copy of it. The cert-tolerance flags are
+ * only sent when actually set, so an older proxy that doesn't understand them
+ * still sees a URL it can parse.
+ */
+function proxyParams(c: MudConnection): [string, string][] {
+    const params: [string, string][] = [
+        ['host', c.host ?? ''],
+        ['port', String(c.port ?? DEFAULT_MUD_PORT)],
+    ];
+    if (c.tls) {
+        params.push(['tls', '1']);
+        if (c.sslIgnoreExpired) params.push(['tlsIgnoreExpired', '1']);
+        if (c.sslIgnoreSelfSigned) params.push(['tlsIgnoreSelfSigned', '1']);
+        if (c.sslIgnoreAll) params.push(['tlsIgnoreAll', '1']);
+    }
+    return params;
+}
+
+/**
+ * Append the dial parameters to a proxy base URL.
+ *
+ * Built with `URL`/`URLSearchParams` rather than string concatenation, which
+ * emitted a second `?` for a base that already carried a query — breaking any
+ * self-hosted proxy protected by a token in its query string, the natural way
+ * to protect one (issue #56). A base we cannot parse is concatenated as before
+ * rather than dropped: a profile that somehow holds one should still dial the
+ * thing it used to.
+ */
+export function withProxyParams(base: string, params: [string, string][]): string {
+    const trimmed = base.replace(/\/$/, '');
+    const q = trimmed.indexOf('?');
+    // The base is kept byte-for-byte rather than round-tripped through `URL`,
+    // which would canonicalise `wss://proxy.example` to `wss://proxy.example/`
+    // and change the URL every existing profile dials for no gain.
+    const head = q === -1 ? trimmed : trimmed.slice(0, q);
+    const search = new URLSearchParams(q === -1 ? '' : trimmed.slice(q + 1));
+    for (const [k, v] of params) search.set(k, v);
+    return `${head}?${search.toString()}`;
+}
+
 export function connectionUrl(c: MudConnection, userProxyUrl?: string): string {
     if (c.mode === 'mud') {
-        // Precedence: connection-level proxy > user's deployed proxy > brand
-        // proxy (white-label builds) > built-in default.
-        const base = (c.proxyUrl?.trim() || userProxyUrl || getBrand().proxyUrl || DEFAULT_PROXY_URL).replace(/\/$/, '');
-        let url = `${base}?host=${encodeURIComponent(c.host ?? '')}&port=${c.port ?? 23}`;
-        if (c.tls) {
-            // Ask the proxy to wrap the game socket in TLS. The cert-tolerance
-            // flags are only sent when actually set, so an older proxy that
-            // doesn't understand them still sees a URL it can parse.
-            url += '&tls=1';
-            if (c.sslIgnoreExpired) url += '&tlsIgnoreExpired=1';
-            if (c.sslIgnoreSelfSigned) url += '&tlsIgnoreSelfSigned=1';
-            if (c.sslIgnoreAll) url += '&tlsIgnoreAll=1';
-        }
-        return url;
+        return withProxyParams(effectiveProxyUrl(c, userProxyUrl), proxyParams(c));
     }
     return c.url ?? '';
 }
@@ -1031,6 +1063,191 @@ export function validatePort(text: string): PortValidation {
         };
     }
     return { ok: true, port };
+}
+
+/** Longest a DNS name may be, and the longest one label in it. Nothing else
+ *  stops a 1200-character host being saved and turned into a proxy URL. */
+const MAX_HOSTNAME_LENGTH = 253;
+const MAX_LABEL_LENGTH = 63;
+
+/** Two or more colons and no brackets: what a user types for an IPv6 literal.
+ *  `new URL()` only accepts the bracketed form, so we add them. */
+function looksLikeBareIpv6(text: string): boolean {
+    return !text.startsWith('[') && (text.match(/:/g)?.length ?? 0) >= 2;
+}
+
+/** The host `text` names, or null when it is not a host at all. Mirrors
+ *  Mudlet's `QUrl::setHost(url); check.isValid()` (dlgConnectionProfiles.cpp)
+ *  using the platform parser we have: anything that survives as *only* a host —
+ *  no scheme, path, query, port or credentials — is one. IDNs are accepted and
+ *  normalised, as QUrl accepts them. */
+function parseHostname(text: string): string | null {
+    // Checked before parsing, because the URL parser does not agree with itself
+    // about whitespace across engines: Chrome percent-encodes a space into the
+    // hostname (`my host` → `my%20host`) and silently deletes a tab, while
+    // happy-dom throws. Neither outcome is a host, and silently deleting part of
+    // what someone typed is the worse of the two.
+    if (/\s/.test(text)) return null;
+    const candidate = looksLikeBareIpv6(text) ? `[${text}]` : text;
+    let url: URL;
+    try {
+        url = new URL(`http://${candidate}`);
+    } catch {
+        return null;
+    }
+    // `http://achaea.com/path` parses, with the path in `pathname`; `ws://x`
+    // parses as scheme `ws` with everything else empty. Neither is a host.
+    if (url.pathname !== '/' || url.search || url.hash) return null;
+    if (url.username || url.password || url.port) return null;
+    if (!url.hostname) return null;
+    // Percent-encoding surviving into a hostname means the parser rescued
+    // something that was not one.
+    if (url.hostname.includes('%')) return null;
+    return url.hostname;
+}
+
+/** Bracketed by `parseHostname` for the IPv6 case, so this sees `[::1]`. */
+function isRawIpAddress(hostname: string): boolean {
+    if (hostname.startsWith('[')) return true;
+    return /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname);
+}
+
+export type HostValidation =
+    | { ok: true; host: string }
+    | { ok: false; reason: 'empty' | 'malformed' | 'tooLong' | 'rawIpWithTls'; message: string };
+
+/**
+ * Validate what the user typed into the Host field of a `mud`-mode profile.
+ *
+ * Nothing used to: `my host with spaces`, `ws://achaea.com`, `achaea.com/path`
+ * and a 1200-character string were all accepted and stored verbatim, and only
+ * failed much later as the proxy's generic connect error (issue #56). Mudlet
+ * refuses them at the dialog, and refuses a raw IP when TLS is ticked because a
+ * certificate cannot name one — both messages below are Mudlet's.
+ *
+ * `tls` is the profile's TLS switch; the raw-IP rule only applies with it on.
+ */
+export function validateHost(text: string, tls = false): HostValidation {
+    const trimmed = text.trim();
+    if (trimmed === '') {
+        return { ok: false, reason: 'empty', message: 'Please enter the URL or IP address of the Game server.' };
+    }
+    if (trimmed.length > MAX_HOSTNAME_LENGTH) {
+        return {
+            ok: false,
+            reason: 'tooLong',
+            message: `A host name cannot be longer than ${MAX_HOSTNAME_LENGTH} characters.`,
+        };
+    }
+    const hostname = parseHostname(trimmed);
+    if (hostname === null) {
+        return { ok: false, reason: 'malformed', message: 'Please enter the URL or IP address of the Game server.' };
+    }
+    if (!hostname.startsWith('[') && hostname.split('.').some(label => label.length > MAX_LABEL_LENGTH)) {
+        return {
+            ok: false,
+            reason: 'tooLong',
+            message: `Each part of a host name cannot be longer than ${MAX_LABEL_LENGTH} characters.`,
+        };
+    }
+    if (tls && isRawIpAddress(hostname)) {
+        return {
+            ok: false,
+            reason: 'rawIpWithTls',
+            message: 'Secure connections need a host name — a certificate cannot identify a game server by IP address.',
+        };
+    }
+    return { ok: true, host: trimmed };
+}
+
+export type UrlValidation =
+    | { ok: true; url: string; insecure: boolean }
+    | { ok: false; reason: 'empty' | 'malformed' | 'wrongScheme'; message: string };
+
+/**
+ * Validate the URL of a `websocket`-mode profile.
+ *
+ * `http://example.com`, `not a url` and `javascript:alert(1)` all used to save
+ * without complaint, and the `ws://`-on-`https://` case only surfaced on
+ * Connect as the browser's own "An insecure WebSocket connection may not be
+ * initiated from a page loaded over HTTPS." The scheme is decidable here, so it
+ * is decided here.
+ *
+ * `insecure` reports the one case that is well-formed but cannot work from this
+ * page — `ws://` served over `https://` — so the caller can warn rather than
+ * refuse: it is correct on an `http://` dev server, and the page's own scheme
+ * is not the URL's fault.
+ */
+export function validateWsUrl(text: string, pageProtocol = typeof location === 'undefined' ? 'https:' : location.protocol): UrlValidation {
+    const trimmed = text.trim();
+    if (trimmed === '') {
+        return { ok: false, reason: 'empty', message: 'Please enter the WebSocket URL of the game server.' };
+    }
+    let url: URL;
+    try {
+        url = new URL(trimmed);
+    } catch {
+        return {
+            ok: false,
+            reason: 'malformed',
+            message: 'That is not a URL. A WebSocket address looks like wss://mud.example.com:4000.',
+        };
+    }
+    if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
+        return {
+            ok: false,
+            reason: 'wrongScheme',
+            // `url.protocol` keeps its colon and no slashes — appending `//`
+            // produced "not javascript://" for a scheme that has none, and
+            // "not example.com://" for a bare host:port the parser read as a
+            // scheme, which is exactly the mistake worth naming.
+            message: `A WebSocket URL has to start with wss:// or ws://, not ${url.protocol}`,
+        };
+    }
+    return { ok: true, url: trimmed, insecure: url.protocol === 'ws:' && pageProtocol === 'https:' };
+}
+
+export type ProxyValidation =
+    | { ok: true; url: string; insecure: boolean }
+    | { ok: false; reason: 'malformed' | 'relative' | 'wrongScheme' | 'hasQuery'; message: string };
+
+/**
+ * Validate the per-profile proxy override. Empty is valid — it means "use the
+ * default".
+ *
+ * Three things used to go wrong silently (issue #56): a bare `proxy.example`
+ * resolved *relative to the page*, so the profile dialed
+ * `https://mudlet-web.mudlet.org/proxy.example?host=…`; an `http://` override
+ * could only ever fail as mixed content; and an override already carrying a
+ * query string — the natural way to put a token on a self-hosted proxy — was
+ * concatenated into a second `?`, which no server can parse. The query case is
+ * now supported rather than rejected ({@link connectionUrl} merges parameters),
+ * so it is only reported here when the URL is otherwise unusable.
+ */
+export function validateProxyUrl(text: string, pageProtocol = typeof location === 'undefined' ? 'https:' : location.protocol): ProxyValidation {
+    const trimmed = text.trim();
+    if (trimmed === '') return { ok: true, url: '', insecure: false };
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+        return {
+            ok: false,
+            reason: 'relative',
+            message: 'Include the scheme — a proxy address has to start with wss:// or ws://.',
+        };
+    }
+    let url: URL;
+    try {
+        url = new URL(trimmed);
+    } catch {
+        return { ok: false, reason: 'malformed', message: 'That is not a URL.' };
+    }
+    if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
+        return {
+            ok: false,
+            reason: 'wrongScheme',
+            message: `A proxy address has to start with wss:// or ws://, not ${url.protocol}`,
+        };
+    }
+    return { ok: true, url: trimmed, insecure: url.protocol === 'ws:' && pageProtocol === 'https:' };
 }
 
 /**

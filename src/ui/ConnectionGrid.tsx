@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { FolderSymlink, Lock, Trash2 } from 'lucide-react';
+import { Copy, FolderSymlink, Lock, Trash2 } from 'lucide-react';
 import { Button } from './components';
 import { connectionDisplayAddr, type MudConnection } from '../storage';
 import { gameIconUrl } from '../mud/games/gameIcons';
@@ -72,6 +72,7 @@ interface Props {
     onConnect: (c: MudConnection) => void;
     onOpen: (c: MudConnection) => void;
     onEdit: (c: MudConnection) => void;
+    onDuplicate: (c: MudConnection) => void;
     onDelete: (c: MudConnection) => void;
     onReorder: (orderedIds: string[]) => void;
     onAddClick: () => void;
@@ -90,7 +91,7 @@ interface DragState {
  *  slides the remaining tiles into their new positions with a FLIP animation. */
 export function ConnectionGrid({
     connections, connecting, connectingId, editingId, openIds,
-    onConnect, onOpen, onEdit, onDelete, onReorder, onAddClick,
+    onConnect, onOpen, onEdit, onDuplicate, onDelete, onReorder, onAddClick,
 }: Props) {
     const [order, setOrder] = useState<string[]>(() => connections.map(c => c.id));
     const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -296,10 +297,13 @@ export function ConnectionGrid({
                         Open
                     </Button>
                     <span className="connection-tile__actions-spacer" />
-                    <Button variant="icon" size="sm" onClick={() => onEdit(c)} disabled={connecting} aria-label="Edit connection" title="Edit">
+                    <Button variant="icon" size="sm" onClick={() => onEdit(c)} disabled={connecting} aria-label={`Edit ${c.name}`} title="Edit">
                         ✎
                     </Button>
-                    <Button variant="icon" size="sm" onClick={() => onDelete(c)} disabled={connecting} aria-label="Delete connection" title="Delete">
+                    <Button variant="icon" size="sm" onClick={() => onDuplicate(c)} disabled={connecting} aria-label={`Duplicate ${c.name}`} title="Duplicate">
+                        <Copy size={14} />
+                    </Button>
+                    <Button variant="icon" size="sm" onClick={() => onDelete(c)} disabled={connecting} aria-label={`Delete ${c.name}`} title="Delete">
                         <Trash2 size={14} />
                     </Button>
                 </div>
