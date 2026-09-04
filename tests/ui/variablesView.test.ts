@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { VariablesView } from '../../src/ui/windows/panels/VariablesView';
+import { VariablesView, dropHiddenPaths, renameHiddenPaths } from '../../src/ui/windows/panels/VariablesView';
 import { ConfirmProvider } from '../../src/ui/components';
 import { useAppStore } from '../../src/storage';
 import type { LuaGlobalEntry, VariableEdit } from '../../src/scripting/IScriptingRuntime';
@@ -29,9 +29,10 @@ function makeEngine(globals: LuaGlobalEntry[], refuseWith: string | null = null)
 let container: HTMLDivElement;
 let root: Root;
 let engine: ReturnType<typeof makeEngine>;
+/** How many times the view has reported a focus request applied. */
+let consumed = 0;
 
-async function mount(globals: LuaGlobalEntry[], opts: { refuseWith?: string } = {}) {
-    engine = makeEngine(globals, opts.refuseWith ?? null);
+async function render(props: Record<string, unknown>) {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -40,10 +41,27 @@ async function mount(globals: LuaGlobalEntry[], opts: { refuseWith?: string } = 
             createElement(VariablesView as never, {
                 connectionId: CONN,
                 scriptingEngineRef: { current: engine },
+                onFocusConsumed: () => { consumed++; },
+                ...props,
             } as never)));
     });
     // The _G walk is deferred a tick behind the loader.
     await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+}
+
+async function mount(globals: LuaGlobalEntry[], opts: { refuseWith?: string; showHidden?: boolean } = {}) {
+    engine = makeEngine(globals, opts.refuseWith ?? null);
+    await render({});
+    if (opts.showHidden) {
+        const toggle = [...container.querySelectorAll('.variables__toggle')]
+            .find(l => l.textContent?.includes('Show hidden'))!.querySelector('input') as HTMLInputElement;
+        await act(async () => { toggle.click(); });
+    }
+}
+
+async function mountWithFocus(globals: LuaGlobalEntry[], focus: { name: string; revision: number }) {
+    engine = makeEngine(globals);
+    await render({ focus });
 }
 
 const rows = () => [...container.querySelectorAll('.variables__row')] as HTMLElement[];
@@ -97,6 +115,7 @@ const G = (over: Partial<LuaGlobalEntry> & { name: string }): LuaGlobalEntry =>
     ({ valueType: 'string', saveable: true, ...over });
 
 beforeEach(() => {
+    consumed = 0;
     useAppStore.setState({ connectionVariables: { [CONN]: { saveList: [], values: [], hidden: [] } } } as never);
 });
 afterEach(async () => {
@@ -248,20 +267,7 @@ describe('hiding a variable', () => {
 
 describe('search focus', () => {
     it('filters to the global a search result asked for', async () => {
-        const globals = [G({ name: 'qaOne' }), G({ name: 'qaTwo' })];
-        engine = makeEngine(globals);
-        container = document.createElement('div');
-        document.body.appendChild(container);
-        root = createRoot(container);
-        await act(async () => {
-            root.render(createElement(ConfirmProvider, null,
-                createElement(VariablesView as never, {
-                    connectionId: CONN,
-                    scriptingEngineRef: { current: engine },
-                    focus: { name: 'qaTwo', revision: 1 },
-                } as never)));
-        });
-        await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+        await mountWithFocus([G({ name: 'qaOne' }), G({ name: 'qaTwo' })], { name: 'qaTwo', revision: 1 });
 
         expect(names()).toEqual(['qaTwo']);
     });
@@ -278,5 +284,95 @@ describe('save-across-sessions checkbox', () => {
 
         await click(boxes('qaTbl')[0]);
         expect(useAppStore.getState().connectionVariables[CONN].saveList).toEqual(['qaTbl']);
+    });
+});
+
+// ── Review follow-ups ───────────────────────────────────────────────────────
+
+describe('hidden-path bookkeeping', () => {
+    it('renameHiddenPaths moves the entry and everything under it', () => {
+        expect(renameHiddenPaths(['a', 'a.b', 'a[3]', 'a.b.c'], 'a', 'z'))
+            .toEqual(['z', 'z.b', 'z[3]', 'z.b.c']);
+    });
+
+    it('renameHiddenPaths does not capture a name that merely starts the same', () => {
+        expect(renameHiddenPaths(['aTwo', 'aTwo.b'], 'a', 'z')).toBe(null);
+    });
+
+    it('renameHiddenPaths reports no change rather than a fresh array', () => {
+        expect(renameHiddenPaths(['x', 'y'], 'a', 'z')).toBe(null);
+    });
+
+    it('dropHiddenPaths removes the entry and its descendants only', () => {
+        expect(dropHiddenPaths(['a', 'a.b', 'a[3]', 'aTwo', 'b'], 'a')).toEqual(['aTwo', 'b']);
+        expect(dropHiddenPaths(['x'], 'a')).toBe(null);
+    });
+});
+
+describe('renaming keeps the hidden flag with the variable', () => {
+    it('carries hidden across a rename instead of stranding the old name', async () => {
+        useAppStore.setState({
+            connectionVariables: { [CONN]: { saveList: [], values: [], hidden: ['qaOld', 'qaOld.inner'] } },
+        } as never);
+        await mount([G({ name: 'qaOld', value: 'v' })], { showHidden: true });
+        await clickAction('qaOld', /Edit name/);
+        await setValue(draftName(), 'qaNew');
+        await click(draft().querySelector('button')!);
+
+        expect(useAppStore.getState().connectionVariables[CONN].hidden).toEqual(['qaNew', 'qaNew.inner']);
+    });
+});
+
+describe('deleting clears the variable\'s hidden paths', () => {
+    it('drops the entry and anything hidden underneath it', async () => {
+        useAppStore.setState({
+            connectionVariables: { [CONN]: { saveList: [], values: [], hidden: ['qaTbl', 'qaTbl.inner', 'other'] } },
+        } as never);
+        await mount([G({ name: 'qaTbl', valueType: 'table', isTable: true })], { showHidden: true });
+
+        await clickAction('qaTbl', /Set to nil/);
+        await confirmDialog('Delete');
+
+        expect(useAppStore.getState().connectionVariables[CONN].hidden).toEqual(['other']);
+    });
+});
+
+describe('creating over an existing name', () => {
+    it('refuses rather than replacing a live table with an empty string', async () => {
+        await mount([G({ name: 'qaTable', valueType: 'table', isTable: true })]);
+        await clickHeader('+ New');
+        await setValue(draftName(), 'qaTable');
+        await click(draft().querySelector('button')!);
+
+        expect(engine.edits).toEqual([]);
+        expect(container.querySelector('.variables__error')!.textContent).toContain('already exists');
+        // The draft stays up so the name can be corrected.
+        expect(draft()).not.toBe(null);
+    });
+
+    it('still allows saving an existing variable under its own name', async () => {
+        await mount([G({ name: 'qaVar', value: 'old' })]);
+        await clickAction('qaVar', /Edit name/);
+        await setValue(draftValue(), 'new');
+        await click(draft().querySelector('button')!);
+
+        expect(engine.edits).toHaveLength(1);
+        expect(engine.edits[0]).toMatchObject({ op: 'set', value: 'new' });
+    });
+});
+
+describe('search focus on a hidden variable', () => {
+    it('reveals the row instead of landing on an empty list', async () => {
+        useAppStore.setState({
+            connectionVariables: { [CONN]: { saveList: [], values: [], hidden: ['qaHidden'] } },
+        } as never);
+        await mountWithFocus([G({ name: 'qaHidden', value: 'v' })], { name: 'qaHidden', revision: 1 });
+
+        expect(names()).toEqual(['qaHidden']);
+    });
+
+    it('tells the parent it is done, so a remount does not re-apply it', async () => {
+        await mountWithFocus([G({ name: 'qaOne' }), G({ name: 'qaTwo' })], { name: 'qaTwo', revision: 1 });
+        expect(consumed).toBe(1);
     });
 });

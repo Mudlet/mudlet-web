@@ -20,7 +20,14 @@ export interface EditorClipboard {
     label: string;
 }
 
-/** The item plus every descendant, in the order they appear in `items`. */
+/**
+ * The item plus every descendant, root first and the rest in `items` order.
+ *
+ * Root-first matters because {@link cloneSubtree} and the paste placement both
+ * treat the first element as the item the user picked. Every producer happens
+ * to keep parents ahead of children today, but the walk below explicitly does
+ * not rely on that — so neither does this.
+ */
 export function collectSubtree<T extends { id: string; parentId: string | null }>(
     items: readonly T[],
     rootId: string,
@@ -36,7 +43,10 @@ export function collectSubtree<T extends { id: string; parentId: string | null }
             }
         }
     }
-    return items.filter(i => ids.has(i.id));
+    const found = items.filter(i => ids.has(i.id));
+    const rootIndex = found.findIndex(i => i.id === rootId);
+    if (rootIndex <= 0) return found;
+    return [found[rootIndex], ...found.slice(0, rootIndex), ...found.slice(rootIndex + 1)];
 }
 
 /**
@@ -58,11 +68,18 @@ export function cloneSubtree<T extends EditorItemNode>(
     newId: () => string = () => crypto.randomUUID(),
 ): T[] {
     if (nodes.length === 0) return [];
-    const rootId = nodes[0].id;
+    // The root is the one node whose parent is outside the set — not simply
+    // `nodes[0]`, so a caller that hands over an unordered subtree still gets
+    // the right node re-parented and the right one uniqued.
+    const ids = new Set(nodes.map(n => n.id));
+    const rootId = (nodes.find(n => n.parentId === null || !ids.has(n.parentId)) ?? nodes[0]).id;
     const idMap = new Map<string, string>();
     for (const n of nodes) idMap.set(n.id, newId());
 
-    return nodes.map((n, i) => {
+    // Root first, so the caller can select `clones[0]` and place the block from
+    // it — mirroring what collectSubtree hands back.
+    const ordered = [nodes.find(n => n.id === rootId)!, ...nodes.filter(n => n.id !== rootId)];
+    return ordered.map((n, i) => {
         const clone = structuredClone(n) as T;
         clone.id = idMap.get(n.id)!;
         clone.parentId = n.id === rootId

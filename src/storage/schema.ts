@@ -800,8 +800,14 @@ export type ButtonOrientation = 'horizontal' | 'vertical';
 /**
  * Mudlet `TAction::mButtonRotation` — the index of `comboBox_action_button_rotation`
  * (ui/actions_main_area.ui:272), stored as that integer in `<buttonRotation>`.
- * 0 = upright, 1 = 90° anticlockwise, 2 = 90° clockwise (TToolBar.cpp:127-138,
- * where 2 is the vertical orientation mirrored).
+ *
+ * 0 = upright; 1 turns the control clockwise, so its text reads downwards; 2
+ * turns it anticlockwise, reading upwards. The combo box labels those "90°
+ * rotation to the left" and "…to the right", which is the opposite way round
+ * from the turn they produce — the direction below is what desktop actually
+ * paints (`TFlipButton::paintEvent`: `rotate(90)` for index 1 and `rotate(-90)`
+ * for index 2, clockwise-positive in Qt's y-down space), so match that and
+ * leave the labels alone.
  */
 export type ButtonRotation = 0 | 1 | 2;
 
@@ -809,6 +815,18 @@ export type ButtonRotation = 0 | 1 | 2;
  *  box offers; anything else means upright, as `qMax(0, currentIndex())` does. */
 export function asButtonRotation(n: number): ButtonRotation {
     return n === 1 || n === 2 ? n : 0;
+}
+
+/**
+ * Clamp a toolbar's filler offset to what its grid can hold: Mudlet allows up to
+ * one less than the row/column count, and disables the control entirely below 2
+ * of them — a filler as wide as the grid would push every button off it (Mudlet
+ * #9332). Applied both on save and at render, so a profile written elsewhere
+ * cannot lay out differently from one written here.
+ */
+export function clampFillerOffset(offset: number, columns: number): number {
+    if (!Number.isFinite(offset) || columns < 2) return 0;
+    return Math.max(0, Math.min(columns - 1, Math.trunc(offset)));
 }
 
 /**

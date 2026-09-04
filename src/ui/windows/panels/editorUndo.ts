@@ -31,10 +31,20 @@ export type EditorItemNode = ScriptNode | AliasNode | TriggerNode | TimerNode | 
  *  dlgTriggerEditor.cpp:457). */
 export const EDITOR_UNDO_LIMIT = 50;
 
-export interface EditorDeleteCommand {
+/**
+ * One reversible edit to the item tree.
+ *
+ * `delete` and `insert` are the same record read in opposite directions: both
+ * hold every node involved plus the index it occupied, so undoing one is
+ * redoing the other. Mudlet only ever pushes deletions here, but a paste that
+ * cannot be undone makes Ctrl+Z do something unrelated to what the user just
+ * did — so pastes and duplicates go on the same stack.
+ */
+export interface EditorItemCommand {
+    kind: 'delete' | 'insert';
     category: EditorItemCategory;
-    /** Every node the delete took — the item and its whole subtree — each with
-     *  the index it occupied in the category's flat list. */
+    /** Every node the command covers — the item and its whole subtree — each
+     *  with the index it occupied in the category's flat list. */
     entries: ReadonlyArray<RestoredNode<EditorItemNode>>;
     /** Undo-menu wording, e.g. `delete trigger "qa-sub"`. Mirrors
      *  `EditorDeleteItemCommand::generateText`. */
@@ -90,10 +100,26 @@ export function describeDeletion(
     category: EditorItemCategory,
     entries: ReadonlyArray<{ node: { name: string } }>,
 ): string {
+    return describeCommand('delete', category, entries);
+}
+
+/** The same wording for the other direction — `paste trigger "qa-sub"`. */
+export function describeInsertion(
+    category: EditorItemCategory,
+    entries: ReadonlyArray<{ node: { name: string } }>,
+): string {
+    return describeCommand('paste', category, entries);
+}
+
+function describeCommand(
+    verb: string,
+    category: EditorItemCategory,
+    entries: ReadonlyArray<{ node: { name: string } }>,
+): string {
     if (entries.length === 1) {
-        return `delete ${SINGULAR[category]} "${entries[0].node.name}"`;
+        return `${verb} ${SINGULAR[category]} "${entries[0].node.name}"`;
     }
-    return `delete ${entries.length} ${PLURAL[category]}`;
+    return `${verb} ${entries.length} ${PLURAL[category]}`;
 }
 
 /** Push onto a stack held at Mudlet's 50-command limit, dropping the oldest. */

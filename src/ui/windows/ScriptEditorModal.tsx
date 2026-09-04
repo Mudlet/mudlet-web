@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useCallback, useRef } from 'react';
 import { ScriptEditorPanel } from './panels/ScriptEditorPanel';
 import type { ScriptEditorPanelHandle } from './panels/ScriptEditorPanel';
 import { ScriptSearch } from './panels/ScriptSearch';
@@ -29,6 +29,20 @@ export function ScriptEditorModal({ connectionId, session, vfs, scriptingEngineR
     const boundsRef = useRef(savedBounds ?? null);
     const panelRef = useRef<ScriptEditorPanelHandle>(null);
 
+    // Stable identities: ScriptSearch memoises its whole scan on these, and the
+    // scan walks every line of every script. Inline arrows here would re-run it
+    // on every render of this modal — which includes every render of the
+    // profile around it, i.e. while MUD output is arriving.
+    const navigateToItem = useCallback(
+        (category: Parameters<ScriptEditorPanelHandle['navigateToItem']>[0], id: string, line?: number) =>
+            panelRef.current?.navigateToItem(category, id, line),
+        [],
+    );
+    const navigateToVariable = useCallback(
+        (name: string) => panelRef.current?.navigateToVariable(name),
+        [],
+    );
+
     return (
         <ResizableModal
             title="Scripts"
@@ -52,8 +66,8 @@ export function ScriptEditorModal({ connectionId, session, vfs, scriptingEngineR
                 <ScriptSearch
                     connectionId={connectionId}
                     scriptingEngineRef={scriptingEngineRef}
-                    onNavigate={(category, id, line) => panelRef.current?.navigateToItem(category, id, line)}
-                    onNavigateVariable={name => panelRef.current?.navigateToVariable(name)}
+                    onNavigate={navigateToItem}
+                    onNavigateVariable={navigateToVariable}
                 />
             }
         >
