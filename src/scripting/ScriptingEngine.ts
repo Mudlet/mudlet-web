@@ -66,6 +66,7 @@ import {ProfileVFS} from './vfs/ProfileVFS';
 import {rewriteVfsUrlsInCss} from './vfs/cssRewrite';
 import {rewriteVfsUrlsInHtml} from './vfs/htmlRewrite';
 import {MapOpenNotifier} from './MapOpenNotifier';
+import {installPackageFonts, refreshPackageFonts} from '../import/packageFonts';
 import {installPackageFromBytes, moduleXmlAbsolutePath, prepareModuleInstallFromVfsPath, preparePackageInstall, reloadModuleFromVfs, uninstallPackageFiles} from '../import/packageInstaller';
 import {downloadFromUrl, filenameFromUrl, isClientGuiRedelivery, parseClientGuiPayload, parseClientMapPayload} from '../import/remotePackageInstall';
 import {ensureDefaultPackages} from '../import/defaultPackages';
@@ -685,6 +686,14 @@ export class ScriptingEngine implements EngineHost {
             // called for them — fire it now that their own scripts are loaded
             // (applyScriptsFromStore, above) and can see it.
             for (const name of freshlyInstalledPackages) this.notifyPackageInstalled(name);
+            // Fonts do not survive a page load, so every already-installed
+            // package's are re-registered here — desktop's
+            // `Host::refreshPackageFonts` (Host.cpp:3529), and the half without
+            // which a package's font would work until the tab was closed and
+            // then silently stop. Freshly-installed ones were done just above by
+            // notifyPackageInstalled; loadFontFromVfs is idempotent, so the
+            // overlap costs nothing.
+            this.refreshInstalledPackageFonts();
             this.api.flushOutput();
 
             // Capture the merged boot state (loaded file + freshly-installed default
@@ -1693,6 +1702,7 @@ export class ScriptingEngine implements EngineHost {
      */
     notifyPackageInstalled(packageName: string, fileName?: string): void {
         this.flushPendingApplies();
+        this.registerPackageFonts(packageName);
         // sysInstall carries the name; the detailed event carries the file it
         // came from as well (Host::installPackage raises both). A handler that
         // reacts to an install often wants the source — to read the archive's
@@ -1701,6 +1711,53 @@ export class ScriptingEngine implements EngineHost {
         // case for the packages seeded on profile open.
         this.raiseEvent('sysInstall', [packageName]);
         this.raiseEvent('sysInstallPackage', fileName ? [packageName, fileName] : [packageName]);
+    }
+
+    /** Re-register every installed package's fonts on profile open. See the
+     *  call site in `start()` and {@link registerPackageFonts}. */
+    private refreshInstalledPackageFonts(): void {
+        const vfs = this.vfs;
+        if (!vfs) return;
+        const manifests = useAppStore.getState().connectionPackages[this.connectionId] ?? [];
+        void refreshPackageFonts(manifests, vfs).then(({ warnings }) => {
+            for (const warning of warnings) this.api.printError(`[package fonts] ${warning}`);
+        }).catch(err => {
+            const msg = err instanceof Error ? err.message : String(err);
+            this.api.printError(`[package fonts] refresh failed: ${msg}`);
+        });
+    }
+
+    /**
+     * Register the fonts one just-installed package ships — desktop's
+     * `Host::installPackageFonts` (Host.cpp:3513), called from `installPackage`
+     * at :2802. Without it a package's font unpacked correctly and was then
+     * never handed to the browser, so nothing in the profile could use it and
+     * nothing said why (issue #103).
+     *
+     * Fire-and-forget: `FontFace.load()` is async and every caller of
+     * `notifyPackageInstalled` is not, and a font is not a reason to hold up an
+     * install that has otherwise succeeded — desktop's `loadFont` reports and
+     * carries on too. The consequence is that a package whose *own* install
+     * handler measures its font may run a frame early; the alternative is
+     * making every install path async for the rare package that ships one.
+     *
+     * Failures reach the error log rather than the console, because a font that
+     * will not load is a defect in the package, which is exactly what the
+     * Errors tab is for.
+     */
+    private registerPackageFonts(packageName: string): void {
+        const vfs = this.vfs;
+        if (!vfs) return;
+        const manifest = this.findManifest(packageName);
+        if (!manifest) return;
+        void installPackageFonts(manifest, vfs).then(({ warnings }) => {
+            for (const warning of warnings) {
+                this.api.printError(`[package "${packageName}"] ${warning}`);
+            }
+        }).catch(err => {
+            const msg = err instanceof Error ? err.message : String(err);
+            this.api.printError(`[package "${packageName}"] font registration failed: ${msg}`);
+        });
     }
 
     /**
