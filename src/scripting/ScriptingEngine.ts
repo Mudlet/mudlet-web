@@ -61,7 +61,7 @@ function permParentId(items: readonly BaseTreeNode[], parent: string): string | 
     return null;
 }
 import {LuaRuntime} from './lua/LuaRuntime';
-import type {IScriptingRuntime, LuaGlobalEntry} from './IScriptingRuntime';
+import type {IScriptingRuntime, LuaGlobalEntry, VariableEdit} from './IScriptingRuntime';
 import {ProfileVFS} from './vfs/ProfileVFS';
 import {rewriteVfsUrlsInCss} from './vfs/cssRewrite';
 import {rewriteVfsUrlsInHtml} from './vfs/htmlRewrite';
@@ -617,9 +617,11 @@ export class ScriptingEngine implements EngineHost {
                     || state.connectionScriptEditorBounds[id] !== prevState.connectionScriptEditorBounds[id]
                     || state.connectionModalBounds[id]        !== prevState.connectionModalBounds[id]
                     || state.connectionLayoutSnapshots[id]    !== prevState.connectionLayoutSnapshots[id]
-                    // Only the save-list (config) triggers a save; captured values are
-                    // refreshed by the flush itself and must not re-arm it.
-                    || state.connectionVariables[id]?.saveList !== prevState.connectionVariables[id]?.saveList;
+                    // Only the variables *config* triggers a save — the save-list
+                    // and the hidden set; captured values are refreshed by the
+                    // flush itself and must not re-arm it.
+                    || state.connectionVariables[id]?.saveList !== prevState.connectionVariables[id]?.saveList
+                    || state.connectionVariables[id]?.hidden   !== prevState.connectionVariables[id]?.hidden;
 
                 // Persist this profile's data to its VFS on any change.
                 if (automationChanged || uiChanged) this.scheduleProfileDataSave();
@@ -908,10 +910,10 @@ export class ScriptingEngine implements EngineHost {
             keys: s.connectionKeybindings[id] ?? [],
             buttons: s.connectionButtons[id] ?? [],
         };
-        const values = s.connectionVariables[id]?.values ?? [];
+        const vars = s.connectionVariables[id];
         return buildLinkedWriteback(
             baseXml ?? this.retainedHostXml() ?? EMPTY_PROFILE_XML, trees,
-            { hidden: [], variables: values }, s.connectionProfile[id],
+            { hidden: vars?.hidden ?? [], variables: vars?.values ?? [] }, s.connectionProfile[id],
         );
     }
 
@@ -982,6 +984,14 @@ export class ScriptingEngine implements EngineHost {
      *  flagged). Empty until the runtime is up. */
     listGlobals(): LuaGlobalEntry[] {
         return this.runtimes.lua?.listGlobals() ?? [];
+    }
+
+    /** Apply one Variables-view edit to `_G`. Returns null on success, or the
+     *  reason it was refused — including there being no runtime to edit. */
+    editVariable(request: VariableEdit): string | null {
+        const lua = this.runtimes.lua;
+        if (!lua) return 'the Lua runtime is not running — open the profile first';
+        return lua.editVariable(request);
     }
 
     /**

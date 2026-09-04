@@ -73,10 +73,19 @@ function ButtonView({ button, engineRef, vfs, onStateChange }: ButtonViewProps) 
     };
 
     const pressed = button.isPushDown && button.buttonState;
+    // Mudlet paints a rotated button by turning the whole control
+    // (TFlipButton::paintEvent): index 1 rotates the painter +90° (content reads
+    // downwards), index 2 rotates it -90° (content reads upwards). Both transpose
+    // the button's size hint, which `writing-mode: vertical-rl` reproduces for
+    // free — the icon needs its own turn on top, since writing mode only turns text.
+    const rotClass = button.rotation === 1 ? 'mudix-btn--rot-cw'
+        : button.rotation === 2 ? 'mudix-btn--rot-ccw'
+        : '';
     const cls = [
         'mudix-btn',
         pressed ? 'mudix-btn--pressed' : '',
         button.isPushDown ? 'mudix-btn--toggle' : '',
+        rotClass,
     ].filter(Boolean).join(' ');
 
     // Mudlet setButtonStyleSheet stores a Qt-style stylesheet on the node;
@@ -118,6 +127,11 @@ function renderToolbarGroup(
     if (leaves.length === 0) return null;
     const cols = toolbar.columns ?? 0;
     const useGrid = cols > 0;
+    // Mudlet's filler widget: `mButtonFillerOffset` blank cells held at (0, 0)
+    // before the first button (TToolBar::finalize / TEasyButtonBar::finalize,
+    // Mudlet #9332). Only ever placed when the toolbar actually wraps — desktop
+    // disables the spin box below 2 rows/columns.
+    const filler = useGrid ? Math.max(0, Math.trunc(toolbar.fillerOffset ?? 0)) : 0;
     const tbCls = useGrid
         ? `mudix-buttonbar mudix-buttonbar--grid mudix-buttonbar--${toolbar.orientation}`
         : `mudix-buttonbar mudix-buttonbar--${toolbar.orientation}`;
@@ -129,8 +143,21 @@ function renderToolbarGroup(
             ? { gridTemplateRows: `repeat(${cols}, auto)`, gridAutoFlow: 'column' }
             : { gridTemplateColumns: `repeat(${cols}, minmax(0, auto))` }
         : undefined;
+    // A toolbar's own <css>, applied the way desktop applies it to the TToolBar
+    // widget. Merged under the grid geometry so a stylesheet cannot break the
+    // layout the row/column setting asked for.
+    const sheet = toolbar.styleSheet ? cssTextToStyle(toolbar.styleSheet) : undefined;
     return (
-        <div className={tbCls} style={gridStyle} title={toolbar.name}>
+        <div className={tbCls} style={{ ...sheet, ...gridStyle }} title={toolbar.name}>
+            {filler > 0 && (
+                <div
+                    className="mudix-buttonbar__filler"
+                    aria-hidden="true"
+                    style={toolbar.orientation === 'horizontal'
+                        ? { gridRow: `span ${filler}` }
+                        : { gridColumn: `span ${filler}` }}
+                />
+            )}
             {leaves.map(b => (
                 <ButtonView
                     key={b.id}

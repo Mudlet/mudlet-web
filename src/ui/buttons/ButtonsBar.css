@@ -102,6 +102,40 @@
     border-style: solid;
 }
 
+/* Rotated buttons — Mudlet's TFlipButton. `writing-mode` turns the text and
+ * transposes the button's intrinsic size in one go, which is what desktop's
+ * `size.transpose()` does; the 180° turn flips the clockwise default into the
+ * anticlockwise one. The icon is turned separately because writing mode only
+ * affects text. */
+.mudix-btn--rot-cw,
+.mudix-btn--rot-ccw {
+    writing-mode: vertical-rl;
+    padding: 8px 3px;
+}
+
+.mudix-btn--rot-ccw {
+    transform: rotate(180deg);
+}
+
+.mudix-btn--rot-cw .mudix-btn__icon,
+.mudix-btn--rot-ccw .mudix-btn__icon {
+    transform: rotate(90deg);
+}
+
+.mudix-btn--rot-cw .mudix-btn__label,
+.mudix-btn--rot-ccw .mudix-btn__label {
+    max-width: none;
+    max-height: 160px;
+}
+
+/* Empty lead-in cells before the first button — Mudlet's filler widget. Sized
+ * like a button so the offset is measured in button-widths, as it is there. */
+.mudix-buttonbar__filler {
+    min-width: 24px;
+    min-height: 24px;
+    pointer-events: none;
+}
+
 .mudix-btn__icon {
     display: block;
     width: 18px;

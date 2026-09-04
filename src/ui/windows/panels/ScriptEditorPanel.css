@@ -1232,6 +1232,43 @@
     cursor: not-allowed;
 }
 
+/* Explanatory text that replaces the pattern line edit for a type that takes no
+ * pattern — Mudlet's label_prompt (ui/trigger_pattern_edit.ui:137). Greyed when
+ * the game sends no Go-Ahead, so a trigger that can never fire says why. */
+/* Non-blocking edit-time warning (currently the alias self-loop check). Sits in
+ * a meta row under the field it is about. */
+.script-editor__inline-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--warning, #d08770);
+}
+
+.script-editor__inline-warning svg {
+    flex-shrink: 0;
+    margin-top: 1px;
+}
+
+.script-editor__pattern-note {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    height: 24px;
+    font-size: 12px;
+    color: var(--text-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.script-editor__pattern-note--disabled {
+    opacity: 0.45;
+    cursor: help;
+}
+
 /* Line-spacer count — Mudlet's spinBox_lineSpacer, which replaces the pattern
  * line edit for that pattern type. */
 .script-editor__pattern-spacer {
@@ -1734,3 +1771,190 @@
     cursor: not-allowed;
 }
 
+/* ── Variables view ──────────────────────────────────────────────────────────
+ * The live _G tree, with the create/rename/retype/hide/delete controls desktop
+ * spreads across ui/vars_main_area.ui folded into each row.
+ */
+
+.variables__toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    opacity: 0.85;
+}
+
+/* Focus ring for the item tree, which is focusable so it can own Ctrl+C /
+ * Ctrl+V / Ctrl+D. */
+.script-editor__items:focus-visible {
+    outline: 1px solid var(--accent-focus, var(--accent));
+    outline-offset: -1px;
+}
+
+.variables__error {
+    padding: 6px 12px;
+    font-size: 11.5px;
+    color: var(--danger, #d05f5f);
+    background: color-mix(in srgb, var(--danger, #d05f5f) 12%, transparent);
+    border-bottom: 1px solid var(--border);
+}
+
+.variables__row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 12px;
+    border-bottom: 1px solid var(--border);
+    cursor: default;
+}
+
+.variables__row:hover {
+    background: var(--hover-bg);
+}
+
+.variables__row--selected {
+    background: var(--hover-bg-strong);
+}
+
+/* A hidden variable is only on screen because "Show hidden" is ticked, so it is
+ * dimmed to read as an exception rather than a normal row. */
+.variables__row--hidden .variables__name,
+.variables__row--hidden .variables__value {
+    opacity: 0.55;
+    font-style: italic;
+}
+
+.variables__chevron {
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    color: inherit;
+    display: flex;
+    flex-shrink: 0;
+}
+
+.variables__chevron-spacer {
+    width: 13px;
+    flex-shrink: 0;
+}
+
+.variables__name {
+    font-family: var(--font-mono), monospace;
+    flex-shrink: 0;
+}
+
+.variables__type {
+    opacity: 0.5;
+    font-size: 11px;
+    flex-shrink: 0;
+}
+
+.variables__value {
+    opacity: 0.7;
+    margin-left: auto;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: var(--font-mono), monospace;
+}
+
+.variables__actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+    margin-left: 8px;
+    opacity: 0;
+}
+
+/* Keep the controls reachable by keyboard even while they are visually out of
+ * the way: focus inside the row reveals them, as does hovering it. */
+.variables__row:hover .variables__actions,
+.variables__row:focus-within .variables__actions,
+.variables__row--selected .variables__actions {
+    opacity: 1;
+}
+
+.variables__action {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    background: none;
+    border: none;
+    border-radius: var(--radius);
+    color: var(--text-dim);
+    cursor: pointer;
+}
+
+.variables__action:hover:not(:disabled) {
+    background: var(--hover-bg-strong);
+    color: var(--text);
+}
+
+.variables__action--danger:hover:not(:disabled) {
+    color: var(--danger, #d05f5f);
+}
+
+.variables__action:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+
+.variables__row--draft {
+    flex-wrap: wrap;
+    background: var(--bg-input);
+    cursor: default;
+}
+
+.variables__draft-parent {
+    font-family: var(--font-mono), monospace;
+    opacity: 0.6;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.variables__draft-name,
+.variables__draft-value {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-family: var(--font-mono), monospace;
+    font-size: 12px;
+    height: 24px;
+    padding: 0 6px;
+    outline: none;
+}
+
+.variables__draft-name { width: 150px; flex-shrink: 0; }
+.variables__draft-value { flex: 1; min-width: 100px; }
+
+.variables__draft-name:focus,
+.variables__draft-value:focus {
+    border-color: var(--accent-dim, var(--accent));
+}
+
+.variables__draft-select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 11.5px;
+    height: 24px;
+    padding: 0 4px;
+    flex-shrink: 0;
+}
+
+.variables__draft-note {
+    flex: 1;
+    min-width: 100px;
+    font-size: 11px;
+    opacity: 0.6;
+}

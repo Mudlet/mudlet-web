@@ -798,9 +798,22 @@ export type ButtonLocation = 'top' | 'bottom' | 'left' | 'right' | 'floating';
 export type ButtonOrientation = 'horizontal' | 'vertical';
 
 /**
+ * Mudlet `TAction::mButtonRotation` — the index of `comboBox_action_button_rotation`
+ * (ui/actions_main_area.ui:272), stored as that integer in `<buttonRotation>`.
+ * 0 = upright, 1 = 90° anticlockwise, 2 = 90° clockwise (TToolBar.cpp:127-138,
+ * where 2 is the vertical orientation mirrored).
+ */
+export type ButtonRotation = 0 | 1 | 2;
+
+/** Coerce an arbitrary `<buttonRotation>` integer to one of the three the combo
+ *  box offers; anything else means upright, as `qMax(0, currentIndex())` does. */
+export function asButtonRotation(n: number): ButtonRotation {
+    return n === 1 || n === 2 ? n : 0;
+}
+
+/**
  * Mudlet-style action node. Groups are toolbars; leaves are buttons.
  * Mirrors Mudlet's TAction (mLocation/mOrientation/mPushDownButton/...).
- * `styleSheet` is persisted but not applied yet (no stylesheet support).
  */
 export interface ButtonNode extends BaseNode {
     // ── Group fields (toolbar) ──────────────────────────────────────────
@@ -808,6 +821,14 @@ export interface ButtonNode extends BaseNode {
     location: ButtonLocation;
     /** Number of columns for the toolbar grid. 0 = auto / single line (Mudlet TToolBar.mButtonColumns). */
     columns: number;
+    /**
+     * Blank cells held before the first button — Mudlet's filler widget, sized
+     * by `TAction::mButtonFillerOffset` (`<buttonFillerOffset>`; spinBox_action_bar_
+     * offsetToFirstButton). Spans that many cells along the wrapping axis at
+     * (0, 0), so 0 (or a toolbar under 2 rows/columns, where desktop disables
+     * the control) means no filler at all.
+     */
+    fillerOffset?: number;
     /** Floating-toolbar geometry (groups with location='floating'). */
     posX?: number;
     posY?: number;
@@ -822,6 +843,8 @@ export interface ButtonNode extends BaseNode {
     /** Path to icon image, relative to the profile VFS root (typically inside a package dir). */
     icon?: string;
     tooltip?: string;
+    /** Quarter-turn applied to the button's label. See {@link ButtonRotation}. */
+    rotation?: ButtonRotation;
 
     // ── Actions ─────────────────────────────────────────────────────────
     /** Lua code; runs on every click regardless of state direction (Mudlet TAction.mScript). */
@@ -832,7 +855,11 @@ export interface ButtonNode extends BaseNode {
     /** Command sent only when a two-state button goes DOWN (Mudlet commandButtonDown). */
     commandDown?: string;
 
-    /** Accepted but currently unused — Mudlet stylesheet text. */
+    /**
+     * Mudlet stylesheet text (`<css>`), applied to the button or the toolbar it
+     * is on. Only the flat-declaration subset survives the Qt→CSS conversion —
+     * pseudo-state selectors (`:hover`, `:pressed`) are dropped.
+     */
     styleSheet?: string;
 }
 
@@ -924,6 +951,17 @@ export interface ScriptEditorBounds extends ModalBounds {
 export interface ProfileVariables {
     saveList: string[];
     values: MudletVariable[];
+    /**
+     * Variables the user has hidden from the Variables view (Mudlet's
+     * `VarUnit::mHiddenVariables`, written as `<HiddenVariables>`). Optional so
+     * a profile saved before this existed still parses.
+     *
+     * Entries are the path as Lua reads it — `myTable.sub`, `myTable[3]` — so a
+     * nested key can be hidden too. Mudlet has only ever been observed writing
+     * this block empty, so its nested spelling is unverified; a path it does not
+     * recognise simply shows the variable there rather than hiding it.
+     */
+    hidden?: string[];
 }
 
 export interface AppSchema {

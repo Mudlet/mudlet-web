@@ -138,7 +138,7 @@ export function buildProfileXml(
             keys: data.keybindings ?? [],
             buttons: data.buttons ?? [],
         },
-        { hidden: [], variables: data.variables?.values ?? [] },
+        { hidden: data.variables?.hidden ?? [], variables: data.variables?.values ?? [] },
         data.profile,
     );
 }

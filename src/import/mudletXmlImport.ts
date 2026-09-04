@@ -1,4 +1,5 @@
 import type { AliasNode, ButtonLocation, ButtonNode, ButtonOrientation, KeyNode, ScriptNode, TimerNode, TriggerNode, TriggerPattern, TriggerPatternType } from '../storage/schema';
+import { asButtonRotation } from '../storage/schema';
 import { qtKeyToDomCode, qtModifiersToList, QT_KEY_UNKNOWN } from '../mud/keybindings/qtKeys';
 import { desanitizeControlChars } from './mudletControlChars';
 import { remapLegacyColorPattern } from '../mud/triggers/legacyColorPatterns';
@@ -235,6 +236,8 @@ function parseButtons(els: Element[], parentId: string | null, out: ButtonNode[]
             orientation: MUDLET_BUTTON_ORIENTATIONS[oriIdx] ?? 'horizontal',
             location: MUDLET_BUTTON_LOCATIONS[locIdx] ?? 'top',
             columns: parseInt(getText(el, 'buttonColumn')) || 0,
+            fillerOffset: parseInt(getText(el, 'buttonFillerOffset')) || undefined,
+            rotation: asButtonRotation(parseInt(getText(el, 'buttonRotation'))),
             posX: parseInt(getText(el, 'posX')) || undefined,
             posY: parseInt(getText(el, 'posY')) || undefined,
             sizeX: parseInt(getText(el, 'sizeX')) || undefined,

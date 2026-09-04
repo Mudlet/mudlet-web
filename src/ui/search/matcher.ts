@@ -1,7 +1,8 @@
 /**
  * The query compiler shared by every search bar in the app (the script editor's
- * `ScriptSearch`, the output find bar). Turns a raw query plus the case/regex
- * toggles into something that hands back match ranges for any string.
+ * `ScriptSearch`, the output find bar). Turns a raw query plus the
+ * case/regex/whole-word toggles into something that hands back match ranges for
+ * any string.
  */
 
 /** Half-open `[start, end)` character offsets of one match. */
@@ -16,13 +17,34 @@ export interface SearchMatcher {
 
 const NO_RANGES: MatchRange[] = [];
 
-/** Compile a search bar query into a matcher honouring the case / regex flags. */
-export function buildMatcher(pattern: string, matchCase: boolean, useRegex: boolean): SearchMatcher {
+/** Escape every regex metacharacter, so a literal needle can be embedded in a
+ *  pattern — `QRegularExpression::escape` in desktop's whole-word path. */
+function escapeRegex(s: string): string {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Compile a search bar query into a matcher honouring the case / regex /
+ * whole-word flags.
+ *
+ * `wholeWord` follows `dlgTriggerEditor::findSearchMatch`
+ * (dlgTriggerEditor.cpp:13128-13148): the escaped needle wrapped in `\b…\b`. It
+ * composes with regex mode too, which desktop has no equivalent for since its
+ * search has no regex option — there the pattern is bracketed as written rather
+ * than escaped, so `gold|silver` matches either word whole.
+ */
+export function buildMatcher(
+    pattern: string,
+    matchCase: boolean,
+    useRegex: boolean,
+    wholeWord = false,
+): SearchMatcher {
     if (!pattern) return { valid: true, ranges: () => NO_RANGES };
-    if (useRegex) {
+    if (useRegex || wholeWord) {
+        const source = useRegex ? pattern : escapeRegex(pattern);
         let re: RegExp;
         try {
-            re = new RegExp(pattern, matchCase ? 'g' : 'gi');
+            re = new RegExp(wholeWord ? `\\b(?:${source})\\b` : source, matchCase ? 'g' : 'gi');
         } catch {
             return { valid: false, ranges: () => NO_RANGES };
         }

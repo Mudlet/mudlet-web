@@ -95,6 +95,10 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
             // or some other textarea keeps it.
             if (target?.isContentEditable) return;
             if (target instanceof HTMLTextAreaElement && !target.classList.contains('command-input')) return;
+            // The script editor's find bar is a plain <input> inside the
+            // CodeMirror wrapper, so neither test above catches it — without
+            // this, Ctrl+F from inside that bar would open the console search.
+            if (target?.closest('.cm-editor')) return;
             e.preventDefault();
             e.stopPropagation();
             openSearch();

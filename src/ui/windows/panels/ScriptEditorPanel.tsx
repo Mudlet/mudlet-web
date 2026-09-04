@@ -1,14 +1,16 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Braces, Clock, Filter, Folder, FolderOpen, FolderPlus, Keyboard, MousePointerClick, Package, Shuffle, FileCode2, Trash2, Zap } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Braces, ClipboardPaste, Clock, Copy, CopyPlus, Filter, Folder, FolderOpen, FolderPlus, Keyboard, MousePointerClick, Package, Shuffle, FileCode2, Trash2, Zap } from 'lucide-react';
 import { Button, Input, ContextMenu, FileSourceButton, useConfirm, type PickedFile } from '../../components';
 import { VariablesView } from './VariablesView';
 import { useAppStore, useProfileField } from '../../../storage';
 import type { RestoredNode } from '../../../storage/appStore';
 import { captureDeletion, describeDeletion, pushBounded, type EditorDeleteCommand } from './editorUndo';
+import { cloneSubtree, collectSubtree, type EditorClipboard } from './editorClipboard';
+import { aliasLoopWarning, aliasSubstitutionLoops } from './aliasLoop';
 import { isPackageRemovable } from '../../../branding';
 import { DEFAULT_ANSI_PALETTE } from '../../../mud/text/colors';
-import type { AliasNode, ButtonLocation, ButtonNode, ButtonOrientation, KeyNode, PackageManifest, ScriptNode, TimerNode, TriggerNode, TriggerPattern, TriggerPatternType } from '../../../storage/schema';
-import { isColorizing, isEffectivelyEnabled, MAX_CONDITION_LINE_DELTA } from '../../../storage/schema';
+import type { AliasNode, ButtonLocation, ButtonNode, ButtonOrientation, ButtonRotation, KeyNode, PackageManifest, ScriptNode, TimerNode, TriggerNode, TriggerPattern, TriggerPatternType } from '../../../storage/schema';
+import { asButtonRotation, isColorizing, isEffectivelyEnabled, MAX_CONDITION_LINE_DELTA } from '../../../storage/schema';
 import type { MudSession, ScriptLogSource, ScriptLogSourceKind } from '../../../mud/MudSession';
 import type { ProfileVFS } from '../../../scripting/vfs/ProfileVFS';
 import type { ScriptingEngine } from '../../../scripting/ScriptingEngine';
@@ -89,6 +91,25 @@ function buttonLocationChoices(current: ButtonLocation): { value: ButtonLocation
 }
 
 const BUTTON_ORIENTATIONS: ButtonOrientation[] = ['horizontal', 'vertical'];
+
+/** `comboBox_action_button_rotation`, in its stored order — the index *is* the
+ *  saved value (ui/actions_main_area.ui:272). */
+const BUTTON_ROTATIONS: { value: ButtonRotation; label: string }[] = [
+    { value: 0, label: 'no rotation' },
+    { value: 1, label: '90° rotation to the left' },
+    { value: 2, label: '90° rotation to the right' },
+];
+
+/**
+ * Mudlet allows the filler to take up to one less than the toolbar's row/column
+ * count, and disables the control entirely below 2 of them — a filler as wide as
+ * the grid would push every button off it (Mudlet #9332,
+ * `dlgActionMainArea`/`dlgTriggerEditor` offset handling).
+ */
+function clampFillerOffset(offset: number, columns: number): number {
+    if (!Number.isFinite(offset) || columns < 2) return 0;
+    return Math.max(0, Math.min(columns - 1, Math.trunc(offset)));
+}
 
 const MODIFIER_KEYS = new Set(['Control', 'Shift', 'Alt', 'Meta', 'AltGraph', 'CapsLock', 'NumLock', 'ScrollLock', 'Dead']);
 
@@ -173,6 +194,47 @@ function flattenTree<T extends { id: string; parentId: string | null; isGroup: b
 }
 
 const EMPTY: never[] = [];
+// Shared stand-in for a category nobody has expanded anything in yet. Never
+// mutated — every update above replaces the set rather than editing it.
+const EMPTY_EXPANDED: Set<string> = new Set<string>();
+
+/** A React-style setter argument: the next value, or a function of the current one. */
+type SetUpdate<T> = T | ((prev: T) => T);
+
+interface EditorTreeState {
+    category: Category;
+    expanded: Record<string, Set<string>>;
+    selected: Record<string, string | null>;
+}
+
+/**
+ * Which tab was open, which groups were expanded and what was selected, kept
+ * outside the component so closing the editor doesn't throw it away. Desktop
+ * never loses this because `dlgTriggerEditor` is created once per profile and
+ * only hidden (`mudlet::slot_showEditor`), so a nested item stays one click
+ * from where you left it. Session-scoped for the same reason: this is window
+ * state, not something the profile carries to the next launch.
+ */
+const editorTreeState = new Map<string, EditorTreeState>();
+
+function loadTreeState(connectionId: string): EditorTreeState {
+    return editorTreeState.get(connectionId)
+        ?? { category: 'scripts', expanded: {}, selected: {} };
+}
+
+/**
+ * The editor's clipboard — one buffer for the whole app, so an item can be
+ * carried between profiles. A paste only offers itself in the category it was
+ * copied from, since the node shapes differ.
+ *
+ * Desktop puts the item's XML on the *system* clipboard (`slot_copyXml` writes
+ * it with `QApplication::clipboard()->setText`, `slot_pasteXml` re-imports it,
+ * dlgTriggerEditor.cpp:11777/:11913), which also lets it travel between running
+ * Mudlets. Reading the system clipboard from a page is permission-gated and
+ * outright blocked outside a paste event in some browsers, so this buffer is
+ * in-memory: same behaviour within the app, no cross-application carry.
+ */
+let editorClipboard: EditorClipboard | null = null;
 
 /** How long the undo offer stays up, matching the five-second single-shot timer
  *  behind Mudlet's editor undo toast (dlgTriggerEditor.cpp:14381). */
@@ -743,12 +805,44 @@ export interface ScriptEditorPanelHandle {
     /** Switch to the item's category, expand its ancestors, select it, and —
      *  when a line is given — move the editor cursor there. */
     navigateToItem: (category: EditCategory, id: string, line?: number) => void;
+    /** Show the Variables tab with its filter set to the named top-level global.
+     *  Desktop selects the row in its variables tree; filtering is the same job
+     *  in a view that has no persistent selection. */
+    navigateToVariable: (name: string) => void;
 }
 
 export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEditorPanelProps>(function ScriptEditorPanel({ connectionId, session, vfs, scriptingEngineRef, initialListWidth, onSplitsChange, onOpenVfsFile }, ref) {
     const confirm = useConfirm();
-    const [category, setCategory] = useState<Category>('scripts');
-    const [expanded, setExpanded] = useState<Set<string>>(new Set());
+    const restored = useRef(loadTreeState(connectionId)).current;
+    const [category, setCategory] = useState<Category>(restored.category);
+    /** The six categories that hold editable items; the rest are read-only views. */
+    const isEditCategory = category !== 'errors' && category !== 'packages' && category !== 'variables';
+    // Expansion and selection are kept per category rather than per mount, so
+    // they survive both a tab switch and the modal being closed — desktop keeps
+    // one QTreeWidget per category alive for the life of the editor window.
+    const [expandedByCat, setExpandedByCat] = useState<Record<string, Set<string>>>(restored.expanded);
+    const [selectedByCat, setSelectedByCat] = useState<Record<string, string | null>>(restored.selected);
+
+    const expanded = expandedByCat[category] ?? EMPTY_EXPANDED;
+    const setExpandedIn = useCallback((cat: Category, update: SetUpdate<Set<string>>) => {
+        setExpandedByCat(prev => {
+            const cur = prev[cat] ?? EMPTY_EXPANDED;
+            const next = typeof update === 'function' ? update(cur) : update;
+            return next === cur ? prev : { ...prev, [cat]: next };
+        });
+    }, []);
+    const setExpanded = useCallback(
+        (update: SetUpdate<Set<string>>) => setExpandedIn(category, update),
+        [category, setExpandedIn],
+    );
+
+    const setSelectedIn = useCallback((cat: Category, update: SetUpdate<string | null>) => {
+        setSelectedByCat(prev => {
+            const cur = prev[cat] ?? null;
+            const next = typeof update === 'function' ? update(cur) : update;
+            return next === cur ? prev : { ...prev, [cat]: next };
+        });
+    }, []);
 
     const scripts     = useAppStore(s => s.connectionScripts[connectionId] ?? EMPTY);
     const aliases     = useAppStore(s => s.connectionAliases[connectionId] ?? EMPTY);
@@ -951,7 +1045,11 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         setLogs(prev => [...prev, { text: `Uninstalled ${label} "${packageName}"`, level: 'info', timestamp: now }]);
     }, [connectionId, scriptingEngineRef, uninstallPackage, vfs]);
 
-    const [selectedId, setSelectedId] = useState<string | null>(null);
+    const selectedId = selectedByCat[category] ?? null;
+    const setSelectedId = useCallback(
+        (update: SetUpdate<string | null>) => setSelectedIn(category, update),
+        [category, setSelectedIn],
+    );
 
     // Common edit state
     const [editName, setEditName]     = useState('');
@@ -995,10 +1093,12 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     const [editButtonTooltip,     setEditButtonTooltip]     = useState('');
     const [editButtonIsPushDown,  setEditButtonIsPushDown]  = useState(false);
     const [editButtonStyleSheet,  setEditButtonStyleSheet]  = useState('');
+    const [editButtonRotation,    setEditButtonRotation]    = useState<ButtonRotation>(0);
     // Toolbar (button group) extra
     const [editToolbarLocation,    setEditToolbarLocation]    = useState<ButtonLocation>('top');
     const [editToolbarOrientation, setEditToolbarOrientation] = useState<ButtonOrientation>('horizontal');
     const [editToolbarColumns,     setEditToolbarColumns]     = useState(0);
+    const [editToolbarFillerOffset, setEditToolbarFillerOffset] = useState(0);
 
     const [dirty, setDirty] = useState(false);
 
@@ -1093,6 +1193,23 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         session.scriptLog.reduce((n, e) => n + (e.level === 'error' ? 1 : 0), 0),
     );
 
+    // Whether this game has ever sent IAC GA / EOR. Drives the `prompt` pattern
+    // type's label, which desktop greys out without one. Seeded from the
+    // session's latch and flipped by the first prompt marker while open.
+    const [gaSeen, setGaSeen] = useState(() => session.promptMarkerSeen);
+    useEffect(() => {
+        setGaSeen(session.promptMarkerSeen);
+        const offPrompt = session.events.on('prompt', () => setGaSeen(true));
+        // A fresh client starts with the latch clear (LineAssembler.reset), so a
+        // reconnect to a game that never sends GA must grey the label again.
+        const offConnect = session.events.on('client.connect', () => setGaSeen(session.promptMarkerSeen));
+        return () => { offPrompt(); offConnect(); };
+    }, [session]);
+
+    /** Set by a search result click: which global the Variables tab should filter
+     *  to when it next mounts. */
+    const [variableFocus, setVariableFocus] = useState<{ name: string; revision: number } | null>(null);
+
     const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; targetId: string | null } | null>(null);
     const logEndRef      = useRef<HTMLDivElement>(null);
     const errorLogEndRef = useRef<HTMLDivElement>(null);
@@ -1150,6 +1267,14 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     const treeEntries = flattenTree(items, null, expanded);
     const selected = items.find(i => i.id === selectedId) ?? null;
 
+    // Live self-loop check for the open alias. Desktop refuses the save; mudix
+    // warns and lets it through — see aliasLoop.ts for why.
+    const aliasLoops = useMemo(
+        () => category === 'aliases' && !!selected && !selected.isGroup
+            && aliasSubstitutionLoops(editPattern, editCommand),
+        [category, selected, editPattern, editCommand],
+    );
+
     // Navigation driven by the title-bar search box: reuse the error-jump
     // machinery to switch category, expand ancestors, select the item, and — for
     // a code occurrence — move the cursor to its line.
@@ -1161,6 +1286,13 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                 ...(line !== undefined ? { line } : {}),
                 revision: jumpRevisionRef.current,
             });
+        },
+        navigateToVariable: (name: string) => {
+            // Revision-stamped so jumping to the same variable twice re-applies
+            // the filter after the user has cleared or edited it.
+            jumpRevisionRef.current += 1;
+            setVariableFocus({ name, revision: jumpRevisionRef.current });
+            setCategory('variables');
         },
     }), []);
 
@@ -1187,12 +1319,21 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         if (it.parentId) childCounts.set(it.parentId, (childCounts.get(it.parentId) ?? 0) + 1);
     }
 
+    // Switching category leaves the old tree exactly as it was; only the
+    // per-item edit state is reset, since the fields below now belong to
+    // whatever the new category had selected.
     useEffect(() => {
-        setSelectedId(null);
         setCapturing(false);
         setDirty(false);
-        setExpanded(new Set());
     }, [category]);
+
+    // Mirror the tree state out to the module-level cache so reopening the
+    // editor lands back on the same tab, with the same groups open and the same
+    // item selected. Session-scoped, as desktop's is: it dies with the profile,
+    // not with the window.
+    useEffect(() => {
+        editorTreeState.set(connectionId, { category, expanded: expandedByCat, selected: selectedByCat });
+    }, [connectionId, category, expandedByCat, selectedByCat]);
 
     // When a jump request comes in (error log click), switch category if needed,
     // expand all ancestor groups so the entity is visible in the tree, and
@@ -1299,9 +1440,11 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
             setEditButtonTooltip(b.tooltip ?? '');
             setEditButtonIsPushDown(b.isPushDown);
             setEditButtonStyleSheet(b.styleSheet ?? '');
+            setEditButtonRotation(b.rotation ?? 0);
             setEditToolbarLocation(b.location);
             setEditToolbarOrientation(b.orientation);
             setEditToolbarColumns(b.columns ?? 0);
+            setEditToolbarFillerOffset(b.fillerOffset ?? 0);
         }
         setCapturing(false);
         setDirty(isNewScript);
@@ -1654,6 +1797,11 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                     location: editToolbarLocation,
                     orientation: editToolbarOrientation,
                     columns: editToolbarColumns,
+                    // Desktop caps the offset at one less than the number of
+                    // rows/columns and disables the control below 2 of them
+                    // (Mudlet #9332), so a shrunken toolbar can't keep an offset
+                    // its grid has no room for.
+                    fillerOffset: clampFillerOffset(editToolbarFillerOffset, editToolbarColumns) || undefined,
                     styleSheet: editButtonStyleSheet || undefined,
                 });
             } else {
@@ -1666,6 +1814,9 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                     commandDown: editButtonIsPushDown ? (editButtonCommandDown || undefined) : undefined,
                     icon:      editButtonIcon    || undefined,
                     tooltip:   editButtonTooltip || undefined,
+                    // Undefined rather than 0 when upright, so a button that
+                    // never had a rotation doesn't gain the field.
+                    rotation:  editButtonRotation || undefined,
                     styleSheet: editButtonStyleSheet || undefined,
                 });
             }
@@ -1737,6 +1888,70 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         deleteItem(selectedId);
     };
 
+    // ── Copy / paste / duplicate ──────────────────────────────────────────
+    // Desktop's Copy and Paste round-trip the item and its subtree through XML
+    // (dlgTriggerEditor.cpp:900-926 wires the actions, :11777 / :11913 do the
+    // work) and paste lands the copy as the sibling *after* the target
+    // (`siblingRow = targetIndex.row() + 1`). Same placement here; Duplicate is
+    // the pair applied in one step, which desktop has no command for.
+
+    /** Bumped whenever the clipboard changes, so the context menu re-reads the
+     *  module-level buffer instead of the value it closed over. */
+    const [clipboardRevision, setClipboardRevision] = useState(0);
+
+    const copyItem = useCallback((id: string) => {
+        if (!isEditCategory) return;
+        const nodes = collectSubtree(items, id);
+        if (nodes.length === 0) return;
+        editorClipboard = {
+            category: category as EditCategory,
+            nodes: nodes.map(n => structuredClone(n)),
+            label: `${CATEGORY_SINGULAR[category as EditCategory].toLowerCase()} "${nodes[0].name}"`,
+        };
+        setClipboardRevision(r => r + 1);
+    }, [category, isEditCategory, items]);
+
+    /** Insert a cloned subtree as the sibling after `targetId` (or at the end of
+     *  the roots when nothing is selected), and select its root. */
+    const pasteNodes = useCallback((nodes: readonly AnyNode[], cat: EditCategory, targetId: string | null) => {
+        const list: AnyNode[] =
+            cat === 'scripts'  ? scripts    :
+            cat === 'aliases'  ? aliases    :
+            cat === 'triggers' ? triggers   :
+            cat === 'timers'   ? timers     :
+            cat === 'keys'     ? keybindings:
+            buttons;
+        const target = targetId ? list.find(i => i.id === targetId) ?? null : null;
+        const parentId = target?.parentId ?? null;
+        const siblingNames = new Set(list.filter(i => i.parentId === parentId).map(i => i.name));
+        const clones = cloneSubtree(nodes, parentId, siblingNames);
+        if (clones.length === 0) return;
+        // Land the whole block immediately after the target's own subtree, so a
+        // paste onto a group doesn't wedge itself between the group and its
+        // children. With no target it goes on the end.
+        const after = target ? collectSubtree(list, target.id) : [];
+        const base = after.length > 0
+            ? Math.max(...after.map(n => list.indexOf(n))) + 1
+            : list.length;
+        const entries = clones.map((node, i) => ({ index: base + i, node }));
+        restoreEntries({ category: cat, entries, label: '' });
+        if (parentId) setExpandedIn(cat, prev => { const next = new Set(prev); next.add(parentId); return next; });
+        setSelectedIn(cat, clones[0].id);
+    }, [scripts, aliases, triggers, timers, keybindings, buttons, setExpandedIn, setSelectedIn]);
+
+    const pasteItem = useCallback((targetId: string | null) => {
+        const clip = editorClipboard;
+        if (!clip || !isEditCategory || clip.category !== category) return;
+        pasteNodes(clip.nodes, category as EditCategory, targetId);
+    }, [category, isEditCategory, pasteNodes]);
+
+    const duplicateItem = useCallback((id: string) => {
+        if (!isEditCategory) return;
+        const nodes = collectSubtree(items, id);
+        if (nodes.length === 0) return;
+        pasteNodes(nodes, category as EditCategory, id);
+    }, [category, isEditCategory, items, pasteNodes]);
+
     const undoDelete = () => {
         const command = undoStackRef.current[undoStackRef.current.length - 1];
         if (!command) return false;
@@ -1744,7 +1959,9 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         redoStackRef.current = [...redoStackRef.current, command];
         restoreEntries(command);
         if (category !== command.category) setCategory(command.category);
-        setSelectedId(command.entries[0].node.id);
+        // Addressed by the command's own category: an undo can cross tabs, and
+        // the selection belongs to the tree the item came back into.
+        setSelectedIn(command.category, command.entries[0].node.id);
         dismissUndoToast();
         return true;
     };
@@ -1759,7 +1976,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         for (const { node } of command.entries) {
             if (node.parentId === null || !ids.has(node.parentId)) removeById(command.category, node.id);
         }
-        setSelectedId(prev => prev !== null && ids.has(prev) ? null : prev);
+        setSelectedIn(command.category, prev => prev !== null && ids.has(prev) ? null : prev);
         dismissUndoToast();
         return true;
     };
@@ -1792,7 +2009,38 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         if (isUndo ? undoDelete() : redoDelete()) e.preventDefault();
     };
 
-    const isEditCategory = category !== 'errors' && category !== 'packages' && category !== 'variables';
+    /** Copy/paste/duplicate, scoped to the item tree so Ctrl+C in the code
+     *  editor or a text field still means "copy the text". */
+    const handleTreeKeyDown = (e: React.KeyboardEvent) => {
+        if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+        const target = e.target as HTMLElement;
+        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
+        const key = e.key.toLowerCase();
+        if (key === 'c') {
+            if (!selectedId) return;
+            copyItem(selectedId);
+        } else if (key === 'd') {
+            if (!selectedId) return;
+            duplicateItem(selectedId);
+        } else if (key === 'v') {
+            if (!pasteable) return;
+            pasteItem(selectedId);
+        } else {
+            return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+    };
+
+    // What a paste would land here, or '' when the buffer is empty or holds a
+    // different category. Reads the module-level buffer, so it has to be
+    // recomputed whenever that changes.
+    const pasteable = useMemo(
+        () => (isEditCategory && editorClipboard?.category === category) ? editorClipboard.label : '',
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [category, isEditCategory, clipboardRevision],
+    );
+
     const categoryLabel = isEditCategory ? CATEGORY_LABELS[category as EditCategory].toLowerCase() : '';
     const emptyMsg = items.length === 0
         ? `No ${categoryLabel} yet — click "+ New" to create one`
@@ -1888,6 +2136,11 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                 </div>
                 <div
                     className="script-editor__items"
+                    // Focusable so the tree can own Ctrl+C / Ctrl+V / Ctrl+D the
+                    // way desktop's QTreeWidget does — clicking a row focuses
+                    // this container, since the rows themselves are plain divs.
+                    tabIndex={0}
+                    onKeyDown={handleTreeKeyDown}
                     onDragLeave={e => {
                         if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(null);
                     }}
@@ -1965,7 +2218,11 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
 
             {/* Variables view — the live _G tree with a save-list checkbox per entry */}
             {category === 'variables' && (
-                <VariablesView connectionId={connectionId} scriptingEngineRef={scriptingEngineRef} />
+                <VariablesView
+                    connectionId={connectionId}
+                    scriptingEngineRef={scriptingEngineRef}
+                    focus={variableFocus}
+                />
             )}
 
             {/* Packages view */}
@@ -2216,6 +2473,14 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                         placeholder="Command (%1, %2… = captures)"
                                     />
                                 </div>
+                                {aliasLoops && (
+                                    <div className="script-editor__meta-row">
+                                        <span className="script-editor__inline-warning" role="status">
+                                            <AlertTriangle size={13} strokeWidth={1.7} />
+                                            {aliasLoopWarning(editName)}
+                                        </span>
+                                    </div>
+                                )}
                             </>
                         )}
                         {category === 'triggers' && (
@@ -2266,6 +2531,18 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                                             setDirty(true);
                                                         }}
                                                     />
+                                                ) : p.type === 'prompt' ? (
+                                                    /* Desktop swaps the pattern line edit for an explanatory
+                                                     * label, greyed with a tooltip when the game has never sent
+                                                     * a Go-Ahead (dlgTriggerEditor.cpp:7222-7235). Without the
+                                                     * label the row is just an empty disabled box, so there is
+                                                     * nothing to say why the trigger never fires. */
+                                                    <span
+                                                        className={`script-editor__pattern-note${gaSeen ? '' : ' script-editor__pattern-note--disabled'}`}
+                                                        title={gaSeen ? undefined : 'A Go-Ahead (GA) signal from the game is required to make this feature work'}
+                                                    >
+                                                        {gaSeen ? 'match on the prompt line' : 'match on the prompt line (disabled)'}
+                                                    </span>
                                                 ) : p.type === 'colorTrigger' ? (
                                                     <div className="script-editor__pattern-color-pair">
                                                         <ColorChannelPicker
@@ -2674,6 +2951,23 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                         setDirty(true);
                                     }}
                                 />
+                                <span className="script-editor__field-label">Offset of first button</span>
+                                <input
+                                    type="number"
+                                    className="script-editor__time-part"
+                                    value={editToolbarFillerOffset}
+                                    min={0}
+                                    max={Math.max(0, editToolbarColumns - 1)}
+                                    disabled={editToolbarColumns < 2}
+                                    title={editToolbarColumns < 2
+                                        ? `Needs at least 2 ${editToolbarOrientation === 'horizontal' ? 'rows' : 'columns'} — with one there is nothing to offset within`
+                                        : 'Blank cells held before the first button (Mudlet buttonFillerOffset)'}
+                                    onChange={e => {
+                                        const v = parseInt(e.target.value, 10);
+                                        setEditToolbarFillerOffset(clampFillerOffset(isNaN(v) ? 0 : v, editToolbarColumns));
+                                        setDirty(true);
+                                    }}
+                                />
                             </div>
                         )}
                         {category === 'buttons' && !selected.isGroup && (
@@ -2721,12 +3015,22 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                         />
                                         Two-state (push-down) button
                                     </label>
+                                    <span className="script-editor__field-label">Rotation</span>
+                                    <select
+                                        className="script-editor__lang-select"
+                                        value={editButtonRotation}
+                                        onChange={e => { setEditButtonRotation(asButtonRotation(Number(e.target.value))); setDirty(true); }}
+                                    >
+                                        {BUTTON_ROTATIONS.map(r => (
+                                            <option key={r.value} value={r.value}>{r.label}</option>
+                                        ))}
+                                    </select>
                                 </div>
                             </>
                         )}
                         {category === 'buttons' && (
                             <div className="script-editor__meta-row script-editor__meta-row--col">
-                                <span className="script-editor__field-label">Stylesheet (stored, not yet applied)</span>
+                                <span className="script-editor__field-label">Stylesheet</span>
                                 <textarea
                                     className="script-editor__patterns"
                                     value={editButtonStyleSheet}
@@ -2786,6 +3090,20 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                 Export as Package…
                             </button>
                             <button
+                                className="ctx-menu__item"
+                                onClick={() => { copyItem(ctxMenu.targetId!); setCtxMenu(null); }}
+                            >
+                                <Copy size={13} strokeWidth={1.6} />
+                                Copy
+                            </button>
+                            <button
+                                className="ctx-menu__item"
+                                onClick={() => { const id = ctxMenu.targetId!; setCtxMenu(null); duplicateItem(id); }}
+                            >
+                                <CopyPlus size={13} strokeWidth={1.6} />
+                                Duplicate
+                            </button>
+                            <button
                                 className="ctx-menu__item ctx-menu__item--danger"
                                 onClick={() => {
                                     const id = ctxMenu.targetId!;
@@ -2795,6 +3113,19 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                             >
                                 <Trash2 size={13} strokeWidth={1.6} />
                                 Delete
+                            </button>
+                            <div className="ctx-menu__sep" />
+                        </>
+                    )}
+                    {pasteable && (
+                        <>
+                            <button
+                                className="ctx-menu__item"
+                                onClick={() => { const id = ctxMenu.targetId; setCtxMenu(null); pasteItem(id); }}
+                                title={`Paste ${pasteable}`}
+                            >
+                                <ClipboardPaste size={13} strokeWidth={1.6} />
+                                Paste {pasteable}
                             </button>
                             <div className="ctx-menu__sep" />
                         </>

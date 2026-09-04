@@ -37,7 +37,7 @@ export function bundleToConnectionData(bundle: MudletProfileBundle, installedAt:
         profile: bundle.profile.settings,
         // Every saved variable in the imported <VariablePackage> seeds the
         // save-list; its current value is restored into _G on first open.
-        variables: { saveList: vars.map(v => v.name), values: vars },
+        variables: { saveList: vars.map(v => v.name), values: vars, hidden: bundle.profile.variables.hidden },
     };
 }
 
