@@ -1,7 +1,7 @@
 import { createContext, useContext } from 'react';
 import { resolveTheme } from '../utils/systemTheme';
 import { useAppStore } from './appStore';
-import { selectProfileField, type ClientSettings, type ProfileSettings, type Theme } from './schema';
+import { selectProfileField, type ClientSettings, type EditorSettings, type ProfileSettings, type Theme } from './schema';
 
 /**
  * Active profile id, provided by ProfileSession. `null` outside a profile
@@ -37,4 +37,17 @@ export function useEffectiveTheme(): Theme {
     // (the script editor's syntax colours, the JSON viewer). App.tsx owns
     // repainting on an OS flip; these re-render along with it.
     return resolveTheme(stored);
+}
+
+/** The script editor's display options, each falling back to its default.
+ *  Returns a stable-shaped object, so read the individual fields in a
+ *  dependency array rather than the object itself. */
+export function useEditorSettings(): Required<EditorSettings> {
+    const stored = useProfileField('editor');
+    return {
+        autocomplete:     stored?.autocomplete ?? true,
+        showWhitespace:   stored?.showWhitespace ?? false,
+        showControlChars: stored?.showControlChars ?? false,
+        showItemIds:      stored?.showItemIds ?? false,
+    };
 }

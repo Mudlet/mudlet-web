@@ -9,6 +9,10 @@ If you are following the [Mudlet manual](https://wiki.mudlet.org/w/Manual:Conten
 this is the page that explains why its preferences chapter describes things you can't
 find here.
 
+Settings also names the impossible ones where they would have lived: each category ends
+with a "Not available in the browser" card, and the settings search finds those by the
+words the desktop manual uses.
+
 ## Where things moved
 
 Nothing is missing here — it just isn't where the desktop manual says it is.
@@ -23,9 +27,11 @@ Nothing is missing here — it just isn't where the desktop manual says it is.
 | Main display → Echo Lua errors | Advanced → Developer |
 | Special Options → Store login passwords in | Privacy and security → Passwords |
 | Connection → Forget saved sign-in | Privacy and security → Passwords |
-| Preferences → Mapper → map files, map download | The map panel's own menu |
-| Preferences → log format and HTML logs | Chosen when you export, in the Logs browser |
+| Preferences → log format and HTML logs | Chosen when you export, in the Logs browser (Settings → General has the door) |
 | Toolbar mute buttons | Sound and media |
+
+Mapper → Map files has the map save, load and download actions; they're also still on
+the map panel's own menu.
 
 ## What a browser can't do
 
@@ -59,8 +65,8 @@ nothing.
 **No anti-aliasing switch, no "high quality graphics" map switch.** Text smoothing isn't
 under a page's control, and the map is always drawn smoothly.
 
-**No spell-check settings.** Your browser's own spellchecker is the only one available,
-and it isn't currently switched on for the command line.
+**No user dictionary.** Spell checking here can only ever be the browser's, and its word
+list belongs to your operating system rather than to a profile.
 
 ## What's missing but shouldn't be
 
@@ -70,18 +76,19 @@ These apply perfectly well to a browser. They are on the list.
 and the info overlay. Room borders, upper/lower level tints and the map's own
 sixteen-colour palette aren't settable yet — the map renderer doesn't expose them.
 
-**Script editor options.** There's no Editor page: autocomplete is always on, the editor
-follows the app theme, and there's no whitespace or item-ID display.
+**An editor theme.** Settings → Editor has the display options, but the code editor
+follows the app theme rather than offering a palette of its own.
+
+**Spell checking.** Your browser has a spellchecker; the command line doesn't switch it
+on yet. It's the only one available here — there's no separate dictionary to configure.
 
 **Shortcut rebinding.** Mudlet Web's own keyboard shortcuts are fixed. Your *game*
 keybindings work normally — create them in the editor as you would on desktop. Note that
 combinations the browser has claimed (Ctrl+T, Ctrl+W and friends) never reach the page
 at all; see [Browsers and limits](./browsers.md).
 
-**Some smaller ones.** Highlight history, password masking, reacting to every keybinding
-on a key, the double-click word-break characters, wide "ambiguous" East Asian
-characters, a text analyzer, purging stored media, and the timer/codepoint debug
-thresholds.
+**Some smaller ones.** A text analyzer, naming your log files, purging stored media, the
+timer and codepoint debug thresholds, and an opt-out for usage analytics.
 
 ## Asking for one
 

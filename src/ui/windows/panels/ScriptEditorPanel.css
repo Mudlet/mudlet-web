@@ -1958,3 +1958,16 @@
     font-size: 11px;
     opacity: 0.6;
 }
+
+/* Mudlet's "Show Items' ID number". Quieter than the child-count badge beside
+   it — an id is a reference you look up when a script needs it, not a property
+   of the item worth emphasising. */
+.script-editor__item-id {
+    margin-left: 6px;
+    font-size: 10px;
+    font-style: normal;
+    font-weight: 400;
+    color: var(--text-dim);
+    opacity: 0.6;
+    font-variant-numeric: tabular-nums;
+}

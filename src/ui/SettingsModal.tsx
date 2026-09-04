@@ -1,5 +1,5 @@
 import { Fragment, useState } from 'react';
-import { useAppStore, selectProfileField, MAPPER_DEFAULTS, PLAYER_MARKER_DEFAULTS, MAP_INFO_BG_DEFAULT, PROTOCOL_DEFAULTS, WS_SUBPROTOCOL_CHOICES, SEARCH_ENGINES, resolveSearchEngine, type Theme, type OutputFontSource, type ProfileSettings, type MapperSettings, type PlayerMarkerSettings, type MapInfoBgColor, type ProtocolSettings } from '../storage';
+import { useAppStore, useEditorSettings, selectProfileField, MAPPER_DEFAULTS, PLAYER_MARKER_DEFAULTS, MAP_INFO_BG_DEFAULT, PROTOCOL_DEFAULTS, WS_SUBPROTOCOL_CHOICES, SEARCH_ENGINES, resolveSearchEngine, type Theme, type OutputFontSource, type ProfileSettings, type MapperSettings, type EditorSettings, type PlayerMarkerSettings, type MapInfoBgColor, type ProtocolSettings } from '../storage';
 import { PlayerMarkerPreview } from './PlayerMarkerPreview';
 import { Input, FontPicker, Toggle, HelpTip, Button } from './components';
 import { getThemeChoices, isBrandedMode } from '../branding';
@@ -43,6 +43,10 @@ const DEFAULT_INPUT_BG_FALLBACK = '#141414';
 const DEFAULT_INPUT_FG_FALLBACK = '#d4d4d4';
 const DEFAULT_CMD_ECHO_FG_FALLBACK = '#717100';
 const DEFAULT_PROMPT_TIMEOUT_MS = 300;
+// mudlet-map-renderer's own grid defaults, mirrored so the swatch and the
+// placeholder show what is actually drawn when the profile sets neither.
+const DEFAULT_GRID_COLOR = '#c8c8c8';
+const DEFAULT_GRID_SIZE = 1;
 const DEFAULT_FONT_SIZE = 13;
 const MIN_FONT_SIZE = 6;
 const MAX_FONT_SIZE = 48;
@@ -251,6 +255,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     const mapperGridEnabled = mapper?.gridEnabled ?? MAPPER_DEFAULTS.gridEnabled;
     const mapperLodEnabled = mapper?.lodEnabled ?? MAPPER_DEFAULTS.lodEnabled;
     const mapperShowDefaultArea = mapper?.showDefaultArea ?? MAPPER_DEFAULTS.showDefaultArea;
+    const mapperGridColor = mapper?.gridColor;
     const serverEncoding = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'serverEncoding') : undefined));
     const highlightHistory = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'highlightHistory') : undefined)) ?? false;
     const disablePasswordMasking = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'disablePasswordMasking') : undefined)) ?? false;
@@ -345,6 +350,12 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     // one field doesn't wipe siblings.
     const patchMapper = (patch: Partial<MapperSettings>) => {
         patchProfile({ mapper: { ...(mapper ?? {}), ...patch } });
+    };
+    // Same nested merge for the editor's options — flipping one must not clear
+    // the other three.
+    const editorSettings = useEditorSettings();
+    const patchEditor = (patch: Partial<EditorSettings>) => {
+        patchProfile({ editor: { ...editorSettings, ...patch } });
     };
     // playerMarker nests one level deeper, so it needs its own merge for the
     // same reason — dragging the size slider must not clear the colours.
@@ -535,6 +546,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
 
     const [roomSizeText, setRoomSizeText] = useState(String(mapperRoomSize));
     const [lineWidthText, setLineWidthText] = useState(String(mapperLineWidth));
+    const [gridSizeText, setGridSizeText] = useState(mapper?.gridSize !== undefined ? String(mapper.gridSize) : '');
 
     const handleRoomSizeBlur = () => {
         const parsed = parseFloat(roomSizeText.trim());
@@ -545,6 +557,20 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
         const clamped = Math.min(parsed, 10);
         setRoomSizeText(String(clamped));
         patchMapper({ roomSize: clamped });
+    };
+
+    const handleGridSizeBlur = () => {
+        const parsed = parseFloat(gridSizeText.trim());
+        if (!Number.isFinite(parsed) || parsed <= 0) {
+            // Empty or nonsense reverts to the renderer's own default rather
+            // than pinning a number the user did not choose.
+            setGridSizeText('');
+            patchMapper({ gridSize: undefined });
+            return;
+        }
+        const clamped = Math.min(Math.round(parsed), 50);
+        setGridSizeText(String(clamped));
+        patchMapper({ gridSize: clamped });
     };
 
     const handleLineWidthBlur = () => {
@@ -1505,6 +1531,80 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                 </>
             ),
         },
+        {
+            id: 'editorOptions',
+            category: 'editor' as const,
+            title: 'Display options',
+            description: 'What the script editor shows you while you write. The editor follows the app theme set under Appearance.',
+            keywords: 'editor, code, script, autocomplete, whitespace, spaces, tabs, invisible, control characters, item id, theme',
+            body: (
+                <>
+                    <div className="settings-row">
+                        <span className="settings-label" id="editor-autocomplete-label">
+                            Autocomplete Lua functions in code editor
+                            <HelpTip label="About autocomplete">
+                                Suggest Mudlet's Lua functions as you type. Turn it off if the
+                                popup gets in the way; Ctrl+Space still opens it on demand.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="editor-autocomplete"
+                            aria-labelledby="editor-autocomplete-label"
+                            checked={editorSettings.autocomplete}
+                            onChange={next => patchEditor({ autocomplete: next })}
+                        />
+                    </div>
+                    <div className="settings-row">
+                        <span className="settings-label" id="editor-whitespace-label">
+                            Show Spaces/Tabs
+                            <HelpTip label="About showing whitespace">
+                                Draw runs of spaces as faint dots and tabs as arrows, so a file
+                                mixing the two is visible rather than merely misaligned.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="editor-whitespace"
+                            aria-labelledby="editor-whitespace-label"
+                            checked={editorSettings.showWhitespace}
+                            onChange={next => patchEditor({ showWhitespace: next })}
+                        />
+                    </div>
+                    <div className="settings-row">
+                        <span className="settings-label" id="editor-control-chars-label">
+                            Show invisible Unicode control characters
+                            <HelpTip label="About invisible characters">
+                                Mark zero-width and directional-formatting characters where they
+                                occur. Worth turning on when a pattern that looks right refuses
+                                to match — a zero-width space pasted from a website is a common
+                                cause.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="editor-control-chars"
+                            aria-labelledby="editor-control-chars-label"
+                            checked={editorSettings.showControlChars}
+                            onChange={next => patchEditor({ showControlChars: next })}
+                        />
+                    </div>
+                    <div className="settings-row">
+                        <span className="settings-label" id="editor-item-ids-label">
+                            Show Items' ID number
+                            <HelpTip label="About item IDs">
+                                Show each item's numeric id beside its name in the editor's
+                                tree — the id scripts pass to <code>enableTrigger</code>,
+                                <code> killTimer</code> and the like.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="editor-item-ids"
+                            aria-labelledby="editor-item-ids-label"
+                            checked={editorSettings.showItemIds}
+                            onChange={next => patchEditor({ showItemIds: next })}
+                        />
+                    </div>
+                </>
+            ),
+        },
         ...(windows ? [{
             id: 'mapFiles',
             category: 'mapper' as const,
@@ -1668,6 +1768,34 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                             value={mapperLineColor}
                             fallback={MAPPER_DEFAULTS.lineColor}
                             onChange={v => patchMapper({ lineColor: v })}
+                        />
+                        <ColorCell
+                            label="Grid"
+                            value={mapperGridColor}
+                            fallback={DEFAULT_GRID_COLOR}
+                            onChange={v => patchMapper({ gridColor: v })}
+                            onClear={() => patchMapper({ gridColor: undefined })}
+                        />
+                    </div>
+                    <div className="settings-row">
+                        <label className="settings-label" htmlFor="mapper-grid-size">
+                            Grid width:
+                            <HelpTip label="About grid width">
+                                How far apart the grid lines are drawn, in map units — one unit
+                                is the spacing between adjacent rooms. Only visible while
+                                "Show grid" is on, under Map view.
+                            </HelpTip>
+                        </label>
+                        <Input
+                            id="mapper-grid-size"
+                            type="number"
+                            min={1}
+                            max={50}
+                            step={1}
+                            value={gridSizeText}
+                            placeholder={String(DEFAULT_GRID_SIZE)}
+                            onChange={e => setGridSizeText(e.target.value)}
+                            onBlur={handleGridSizeBlur}
                         />
                     </div>
                     <div className="settings-row">

@@ -26,33 +26,60 @@ Help modal and is linked from Settings itself.
 
 ## Summary
 
+Counts after the work described in "What was built" below. The figures the audit
+opened with — 78 present, 8 elsewhere, 58 missing — are in that section.
+
 | Desktop page | ✅ | 📍 | 🚧 | ❌ |
 |---|---|---|---|---|
-| General | 6 | 2 | 4 | 6 |
-| Input line | 4 | — | 4 | 2 |
-| Main display | 16 | — | 3 | 1 |
-| Editor | — | — | 6 | — |
+| General | 9 | — | 3 | 6 |
+| Input line | 7 | — | 1 | 2 |
+| Main display | 19 | — | — | 1 |
+| Editor | 3 | — | 3 | — |
 | Color view | 24 | — | — | — |
-| Mapper | 3 | 4 | 13 | 1 |
-| Mapper colors | 6 | — | 22 | — |
+| Mapper | 7 | — | 13 | 1 |
+| Mapper colors | 8 | — | 20 | — |
 | Chat | — | — | — | 20 |
 | Connection | 6 | 1 | — | 4 |
 | Shortcuts | — | — | 1 | — |
 | Accessibility | 7 | — | — | — |
-| Special Options | 6 | 1 | 5 | 3 |
-| **Total** | **78** | **8** | **58** | **37** |
+| Special Options | 7 | 1 | 4 | 3 |
+| **Total** | **97** | **2** | **45** | **37** |
 
 Three things the totals don't show, and which matter more than the totals do:
 
-- **Parity is not evenly spread.** Accessibility and Color view are complete. Editor,
-  Shortcuts and Mapper colors are close to empty. A player who never opens the script
-  editor and never recolours the map sees a near-complete client; one who does sees a
-  conspicuously thin one.
-- **A third of the "missing" count is two blocks.** The 16 map ANSI colours and the six
-  Editor rows are 22 of the 58. The long tail is genuinely long-tail.
+- **Parity is not evenly spread.** Accessibility, Color view and Main display are
+  complete. Mapper colors is still thin and Shortcuts is empty.
+- **Nearly half of what remains is one block.** The 16 map ANSI colours are 16 of the
+  45, and they are blocked on the renderer rather than on us.
 - **Mudlet Web has settings desktop Mudlet does not** — see
   [Web-only settings](#web-only-settings). The divergence runs both ways, so "8 tabs
-  against 12 pages" understates the overlap.
+  against 12 pages" understated the overlap even before this.
+
+### What was built
+
+The audit's first pass counted 78 present, 8 reachable only from elsewhere, 58 missing
+and 37 impossible. Acting on it closed 25 rows:
+
+- **Reachable elsewhere is not reachable.** All but one of the 📍 rows are now in
+  Settings: the map file actions, "show the default area" (previously Lua-only), and a
+  door into the Logs browser where the log format and timestamp choices live. Only
+  "Forget saved sign-in" stays elsewhere, because the credential vault manages logins
+  one at a time rather than as a single switch.
+- **Missing settings, built**: server data encoding, highlight history, disable password
+  masking, react to all keybindings, the double-click word-break characters, ambiguous
+  East Asian width, the SGR colour-space id, the map grid colour and width, and an
+  Editor category with three of desktop's six rows.
+- **The impossible ones now say so in the app.** Each affected category carries a "Not
+  available in the browser" card naming the desktop setting and what the browser
+  withholds. The shell indexes card text off the DOM, so searching the desktop wording
+  finds the explanation.
+
+What is still 🚧 and why, in short: the 16 map ANSI colours, room border, upper/lower
+level and overlapping-room colours, and most Map view options need fields
+`mudlet-map-renderer` does not expose. Interface language needs a translation layer.
+The shortcut editor needs a shortcut registry that does not exist. Text analyzer, log
+naming, media purge, the debug thresholds, browser spellcheck and an analytics opt-out
+are simply not done yet.
 
 ---
 
@@ -72,7 +99,7 @@ Three things the totals don't show, and which matter more than the totals do:
 | Desktop | | Mudlet Web |
 |---|---|---|
 | Interface language | 🚧 | English only. There is no translation layer at all, so this is a project rather than a setting |
-| Server data encoding | 🚧 | **The engine already has this.** `MudClient.setServerEncoding()` and the full CHARSET handler are wired up and reachable from Lua (`setServerEncoding()`); nothing in Settings calls them. A player on a game that needs Latin-2 has to write a script |
+| Server data encoding | ✅ | General → Data encoding. The CHARSET handler and `MudSession.setServerEncoding` were already finished; the combo box over `SUPPORTED_SERVER_ENCODINGS` is what was missing. Stored per profile and re-applied across reconnects |
 
 ### Miscellaneous
 
@@ -95,8 +122,8 @@ Three things the totals don't show, and which matter more than the totals do:
 
 | Desktop | | Mudlet Web |
 |---|---|---|
-| Save log files in HTML instead of plain text | 📍 | Both are recorded for every line; the choice is made at export time, from the Logs browser (HTML, ZIP, JSON) |
-| Add timestamps at the beginning of log lines | 📍 | Timestamps are always recorded; the Logs browser has a live show/hide toggle |
+| Save log files in HTML instead of plain text | ✅ | Both are recorded for every line and the format is chosen at export (HTML, ZIP, JSON). General → Log options now opens the Logs browser, where that choice lives |
+| Add timestamps at the beginning of log lines | ✅ | Timestamps are always recorded; the Logs browser toggles whether they show, and Settings now leads there |
 | Save log files in: (folder) | ❌ | Logs live in IndexedDB. A page cannot write to a folder without a per-save user gesture, so an unattended per-line log file is not possible |
 | Log format (combo) | 🚧 | No naming or format control |
 | Log name | 🚧 | Sessions are named by timestamp |
@@ -112,9 +139,9 @@ Three things the totals don't show, and which matter more than the totals do:
 |---|---|---|
 | Strict UNIX line endings | ✅ | Input line → Input |
 | Auto clear the input line after you sent text | ✅ | Same card |
-| Highlight history | 🚧 | Recalled commands are not visually distinguished |
-| React to all keybindings on the same key | 🚧 | `KeyEngine` returns on the first match — desktop's behaviour with the box **unticked**. The default matches; only the choice is missing |
-| Disable password masking | 🚧 | |
+| Highlight history | ✅ | Input line → Input. A command recalled with Up/Down comes back selected |
+| React to all keybindings on the same key | ✅ | Input line → Input. `KeyEngine` gained a run-every-match path for both temp and permanent keys; off by default, as on desktop |
+| Disable password masking | ✅ | Input line → Input |
 | Show sent commands | ✅ | Same card |
 | Command separator | ✅ | Same card |
 | Command line minimum height in pixels | ❌ | The command bar is a textarea that grows to fit what you type |
@@ -165,7 +192,7 @@ Three things the totals don't show, and which matter more than the totals do:
 
 | Desktop | | Mudlet Web |
 |---|---|---|
-| Stop selecting a word on these characters | 🚧 | Double-click selection uses the browser's word rules, which are not tunable from script |
+| Stop selecting a word on these characters | ✅ | Main display → Display options. The browser picks the word and `wordSelection.ts` narrows the selection afterwards — the browser’s own word rules are not configurable |
 
 ### Display options
 
@@ -173,7 +200,7 @@ Three things the totals don't show, and which matter more than the totals do:
 |---|---|---|
 | Fix unnecessary linebreaks on GA servers | ✅ | Moved to Connection → Compatibility, with the other server workarounds |
 | Enable text analyzer | 🚧 | |
-| Make 'Ambiguous' E. Asian width characters wide | 🚧 | `src/mud/text/wcwidth.ts` fixes ambiguous-width characters at **narrow**. Games that draw box art out of them misalign, with nothing to turn |
+| Make 'Ambiguous' E. Asian width characters wide | ✅ | Main display → Display options, backed by Kuhn’s `mk_wcwidth_cjk` table in `wcwidth.ts`. Applies to lines drawn after the change |
 | Echo Lua errors to the main console | ✅ | Advanced → Developer |
 | Display control characters as | ✅ | Main display → Display options |
 | Show connection status on tabs | ✅ | Appearance → Profile tabs |
@@ -189,11 +216,11 @@ unexposed — each row below is a decision taken away from the player.
 | Desktop | | Mudlet Web |
 |---|---|---|
 | Theme (colorsublime themes) | 🚧 | The CodeMirror editor follows the app theme (`src/ui/codemirror/theme.ts` — One Dark / One Light). No separate picker |
-| Autocomplete Lua functions in code editor | 🚧 | Hard-coded on: `autocompletion({ activateOnTyping: true })`, `LuaEditor.tsx:118` |
-| Show Spaces/Tabs | 🚧 | |
+| Autocomplete Lua functions in code editor | ✅ | Editor → Display options. Held in a CodeMirror compartment, so a change reconfigures the open editor rather than remounting it |
+| Show Spaces/Tabs | ✅ | Editor → Display options (`highlightWhitespace`) |
 | Show Line/Paragraphs | 🚧 | |
-| Show invisible Unicode control characters | 🚧 | |
-| Show Items' ID number | 🚧 | The script tree shows names only |
+| Show invisible Unicode control characters | ✅ | Editor → Display options (`highlightSpecialChars`) |
+| Show Items’ ID number | ✅ | Editor → Display options; the id shows beside each name in the editor tree |
 
 ---
 
@@ -218,9 +245,9 @@ The one page with **complete** parity, and then some.
 
 | Desktop | | Mudlet Web |
 |---|---|---|
-| Save your current map / choose location | 📍 | The map is persisted to the profile's IndexedDB slot on every change; `saveMap(path)` from Lua writes a copy into profile files |
+| Save your current map / choose location | ✅ | Mapper → Map files → **Save now**. The map is persisted on every change anyway; `saveMap(path)` from Lua still writes a copy into profile files |
 | Report map issues on screen | 🚧 | |
-| Load another map file in | 📍 | Map panel menu → **Load map…**, which offers both profile files and a local upload |
+| Load another map file in | ✅ | Mapper → Map files → **Load map…**, offering profile files and a local upload. Still on the map panel’s menu too |
 | Or load an older version | 🚧 | No version history is kept |
 | Delete map | 🚧 | |
 | Copy map to other profile(s) | 🚧 | |
@@ -230,7 +257,7 @@ The one page with **complete** parity, and then some.
 
 | Desktop | | Mudlet Web |
 |---|---|---|
-| Download latest map provided by your game | 📍 | Map panel menu → **Download map from game**, gated on the GMCP `Client.Map` URL |
+| Download latest map provided by your game | ✅ | Mapper → Map files → **Download**, gated on the GMCP `Client.Map` URL. Still on the map panel’s menu too |
 
 ### Map view
 
@@ -241,11 +268,11 @@ The one page with **complete** parity, and then some.
 | Invert zoom direction | 🚧 | |
 | Show room borders | ✅ | Mapper → Map view |
 | Use large area exit arrows in 2D view | 🚧 | |
-| Show the default area in map area selection | 📍 | Settable only from Lua (`setDefaultAreaShown()`). The value is in `MapperSettings.showDefaultArea` with no row to reach it |
+| Show the default area in map area selection | ✅ | Mapper → Map view. `setDefaultAreaShown()` sets the same value |
 | Room size | ✅ | Mapper → Map view |
 | Exit size | ✅ | Same card |
 | Border size | 🚧 | |
-| Grid width | 🚧 | |
+| Grid width | ✅ | Mapper → Map colors, as the renderer’s `gridSize` |
 | — | | *Web-only:* **Room shape**, **Show grid**, **Simplify dense levels** (the level-of-detail tiers) |
 
 ### Symbols
@@ -271,7 +298,7 @@ Present as a card, but a thin one: three of the eight named colours, and none of
 | Lower level color | 🚧 | |
 | Upper level color | 🚧 | |
 | Overlapping rooms border | 🚧 | |
-| Grid color | 🚧 | |
+| Grid color | ✅ | Mapper → Map colors |
 | The 16 map ANSI colours | 🚧 | Sixteen rows, none of them present. The single largest block of missing settings in the client |
 | Reset all colors to default | 🚧 | |
 
@@ -350,7 +377,7 @@ Absent, and correctly so — both halves need capabilities a browser tab does no
 | Clear stored media | 🚧 | Downloaded media accumulates in the profile with no purge control; deleting the files by hand from the file browser is the only route |
 | Disable automatic updates | ❌ | A web app is whatever the server last served; a reload is the update |
 | Show icons on menus | ❌ | No menus |
-| Expect Color Space Id in SGR…(3\|4)8;2;…m codes | 🚧 | **Verified against the parser.** `FormatState.ts` reads `38;2;r;g;b` only; a server sending the colour-space-id form (`38;2;<id>;r;g;b`) renders in the wrong colours with nothing to turn. Desktop makes this a checkbox for exactly that reason |
+| Expect Color Space Id in SGR…(3\|4)8;2;…m codes | ✅ | Main display → Display options. `FormatState` read only `38;2;r;g;b`; the T.416 `38;2;<id>;r;g;b` form shifted every channel and the leftover parameter was then read as its own SGR code |
 | Store character login passwords in | 📍 | Privacy and security → Passwords. The web equivalent is the credential vault — encrypted on the device, unlocked by passkey or password — rather than a choice between the profile file and an OS keyring |
 | Show debug messages for timers not smaller than | 🚧 | |
 | Report all Codepoint problems immediately | 🚧 | |
@@ -384,17 +411,18 @@ necessary or because desktop keeps the equivalent somewhere other than preferenc
 
 Ranked by how many players hit it, not by how much work it is.
 
-1. **Server data encoding** — the engine is finished; this is a combo box wired to
-   `setServerEncoding()`. Every player on a non-English game is affected, and today the
-   workaround is to write a script.
-2. **Mapper colors** — 22 missing rows, and the card that does exist is thin enough to
-   read as an oversight rather than a decision.
-3. **Ambiguous East Asian width** — silently misdraws box art, with no way out.
-4. **SGR colour-space id** — silently misdraws colour, with no way out.
-5. **Editor options** — six settings, all currently hard-coded.
-6. **Browser spellcheck on the command line** — one prop, already deliberately off.
-7. **An analytics opt-out** — desktop gates its equivalent behind an explicit policy
-   choice; the web build has none.
+1. **Mapper colors** — 20 rows, 16 of them the map's own ANSI palette. Needs
+   `mudlet-map-renderer` to expose per-index room colours first, so it starts upstream.
+2. **Browser spellcheck on the command line** — one prop, already deliberately off, and
+   the only spellchecker a browser will ever offer.
+3. **An analytics opt-out** — desktop gates its equivalent behind an explicit policy
+   choice; the web build loads its beacon unconditionally with no switch anywhere.
+4. **Editor theme** — the remaining Editor row a player is most likely to want, now that
+   the category exists to put it on.
+5. **Clear stored media** — downloaded media accumulates with no purge control.
+6. **Shortcut rebinding** — the largest remaining item, and the one with a real ceiling:
+   combinations the browser has claimed can never be bound, so the editor would have to
+   say so rather than accept them.
 
-Everything else is either genuinely inapplicable, or small enough to take when the
-surrounding page is next touched.
+Everything else is either genuinely inapplicable, blocked upstream in the renderer, or
+small enough to take when the surrounding page is next touched.

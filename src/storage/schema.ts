@@ -276,6 +276,9 @@ export interface ProfileSettings {
      *  24-bit colour as `38;2;<id>;r;g;b` (the ITU T.416 spelling, with a
      *  colour-space id) rather than `38;2;r;g;b`. Off unless explicitly true. */
     expectColorSpaceId?: boolean;
+    /** Mudlet's Editor preference page. Each field falls back to
+     *  `EDITOR_OPTION_DEFAULTS` when unset. */
+    editor?: EditorSettings;
     /** Per-area MapPanel last-viewed z-level. Each area remembers which level
      *  you were on so switching between areas (or reopening the panel) restores
      *  it. Zoom is no longer kept here — it lives in the map file (per-area
@@ -463,6 +466,21 @@ export type BooleanProtocolKey = {
  *  more renderer options get exposed. Keep all fields optional so the
  *  patcher can ship partial updates and unset fields fall through to the
  *  renderer's own createSettings() defaults. */
+/** The script editor's display options — desktop Mudlet's Editor preference
+ *  page. `showItemIds` is the tree's, the other three the code view's; all are
+ *  optional and fall back to `EDITOR_OPTION_DEFAULTS`. */
+export interface EditorSettings {
+    /** "Autocomplete Lua functions in code editor". Default on. */
+    autocomplete?: boolean;
+    /** "Show Spaces/Tabs". Default off. */
+    showWhitespace?: boolean;
+    /** "Show invisible Unicode control characters". Default off. */
+    showControlChars?: boolean;
+    /** "Show Items' ID number" — the numeric id beside each script, alias,
+     *  trigger and so on in the editor's tree. Default off. */
+    showItemIds?: boolean;
+}
+
 export interface MapperSettings {
     /** renderer.settings.roomSize — diameter/side of a room in map units. */
     roomSize?: number;
@@ -485,6 +503,12 @@ export interface MapperSettings {
     showDefaultArea?: boolean;
     /** renderer.settings.gridEnabled — background grid overlay. */
     gridEnabled?: boolean;
+    /** Mudlet's "Grid color" (Mapper colors page). Unset uses the renderer's
+     *  own default. */
+    gridColor?: string;
+    /** Mudlet's "Grid width": how far apart the grid lines are drawn, in map
+     *  units. Unset uses the renderer's own default. */
+    gridSize?: number;
     /** renderer.settings.lodEnabled — level-of-detail for very dense planes.
      *  Above {@link lodExitBudget} rooms on the drawn (area, z-level) the
      *  renderer drops exit lines, and above {@link lodRoomBudget} it replaces
@@ -571,6 +595,10 @@ export const MAPPER_DEFAULTS: Required<MapperSettings> = {
     lineColor: '#e1ffe1',
     showDefaultArea: true,
     gridEnabled: false,
+    // Both mirror mudlet-map-renderer's createSettings() defaults, so leaving
+    // them unset and setting them to these draws the same grid.
+    gridColor: 'rgba(200, 200, 200, 0.15)',
+    gridSize: 1,
     // LOD budgets mirror the renderer's createSettings() defaults; `lodEnabled`
     // deliberately does NOT (the renderer defaults it off for back-compat,
     // mudix opts in — see MapperSettings.lodEnabled).

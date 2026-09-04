@@ -44,6 +44,8 @@ export function applyMapperSettings(target: MapRendererSettings, mapper: MapperS
     if (mapper.lineWidth !== undefined) target.lineWidth = mapper.lineWidth;
     if (mapper.lineColor !== undefined) target.lineColor = mapper.lineColor;
     if (mapper.gridEnabled !== undefined) target.gridEnabled = mapper.gridEnabled;
+    if (mapper.gridColor !== undefined) target.gridColor = mapper.gridColor;
+    if (mapper.gridSize !== undefined) target.gridSize = mapper.gridSize;
 
     // playerMarker is a nested object rather than a flat key, so copy it before
     // writing: createSettings() hands out a fresh one per renderer, but this
