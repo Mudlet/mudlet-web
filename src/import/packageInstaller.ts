@@ -8,6 +8,23 @@ export interface InstallResult {
     data: MudletImportResult;
 }
 
+/**
+ * An install that has been validated and unpacked in memory but has not touched
+ * the profile's files yet: `commit()` is the only step that writes. A caller
+ * that decides to refuse — the name is already installed, the user cancelled —
+ * drops the prepared install and the profile is left exactly as it was.
+ *
+ * Desktop Mudlet takes the same order (`Host::installPackage` refuses an
+ * already-installed name before it unpacks anything). Wiping first meant every
+ * later refusal destroyed the files of the very install it declined to replace,
+ * leaving a package that was listed, had items in the store, and had nothing
+ * behind it on disk.
+ */
+export interface PreparedInstall extends InstallResult {
+    /** Write the package's files into the VFS. Nothing on disk changes before this. */
+    commit(): void;
+}
+
 export interface InstallOptions {
     /**
      * 'package' (default) — plain XML imports skip VFS storage; only zips are kept on disk.
@@ -56,8 +73,10 @@ function isTextEntry(path: string): boolean {
 }
 
 /**
- * Install a Mudlet package from in-memory bytes. Synchronous — the caller is
- * expected to flush the VFS afterwards (or let the next idle flush handle it).
+ * Validate and unpack a Mudlet package from in-memory bytes without writing
+ * anything — the returned `commit()` performs every filesystem change.
+ * Synchronous: the caller is expected to flush the VFS afterwards (or let the
+ * next idle flush handle it).
  *
  * Behaviour by kind:
  * - .mpackage / .zip : always unzipped into <profilePath>/<packageName>/. The full payload
@@ -71,12 +90,12 @@ function isTextEntry(path: string): boolean {
  * The XML is parsed in package-mode, which wraps each category in a top-level
  * group and tags every node with the package name, making uninstall a tag-based cascade.
  */
-export function installPackageFromBytes(
+export function preparePackageInstall(
     filename: string,
     buf: Uint8Array,
     vfs: ProfileVFS,
     opts: InstallOptions = {},
-): InstallResult {
+): PreparedInstall {
     const kind: PackageKind = opts.kind ?? 'package';
     // Provisional: an archive's config.lua may rename the package out from under
     // us, exactly as it does in Mudlet — see the rename below.
@@ -84,17 +103,23 @@ export function installPackageFromBytes(
     let pkgDir = `${vfs.profilePath}/${packageName}`;
     let sourcePath = opts.sourcePath;
 
-    // Wipe any previous install of the same package (re-install is a clean slate).
-    // Skip when the source file is staged inside pkgDir — the caller pre-positioned
-    // the package's contents there and the wipe would destroy what we're about to
-    // install.
+    // Where a staging caller put the package's contents: always the filename's
+    // directory, because that is the only name it could know before config.lua
+    // is read. A config.lua rename retargets `pkgDir` below, and the commit
+    // moves the staged directory to match.
+    const stagedDir = pkgDir;
+    // Whether the commit may wipe a previous install of the same name. It may
+    // not when the source file is staged inside that directory — the caller
+    // pre-positioned the package's contents there, and the wipe would destroy
+    // what we're about to install.
     const sourceInsidePkgDir = !!sourcePath
-        && (sourcePath === pkgDir || sourcePath.startsWith(`${pkgDir}/`));
-    if (!sourceInsidePkgDir && vfs.exists(pkgDir)) vfs.rmdir(pkgDir);
+        && (sourcePath === stagedDir || sourcePath.startsWith(`${stagedDir}/`));
 
     let xmlContent: string;
     let xmlRelPath: string | undefined;
     let manifestExtras: Partial<PackageManifest> = {};
+    /** The unpacked archive, held in memory until commit. Null for a plain XML. */
+    let entries: Record<string, Uint8Array> | null = null;
 
     // The extension decides, as it does in Mudlet: a .mpackage/.zip is unpacked,
     // and anything else is read as a plain package XML. Sniffing the bytes
@@ -103,40 +128,16 @@ export function installPackageFromBytes(
     // wrote — where Mudlet says the one thing that is actually true of it.
     if (archiveExtension.test(filename)) {
         if (!looksLikeZip(buf)) throw new Error('could not unzip package');
-        vfs.mkdir(pkgDir);
 
-        let entries: Record<string, Uint8Array>;
         try { entries = unzipSync(buf); }
         catch { throw new Error('could not unzip package'); }
         // Pick the first .xml at any depth — Mudlet places it at the root of the archive.
         const xmlEntry = Object.keys(entries).find(isXmlEntry);
         // Mudlet's wording: an archive that unpacked fine but held nothing it could
         // install is a different complaint from one that would not unpack.
-        //
-        // The directory goes with it. A refused install must leave the profile
-        // exactly as it found it, or the next attempt sees a folder for a package
-        // that was never installed — and `getMudletHomeDir()/<name>` existing is
-        // how scripts (and the uninstaller) decide a package has files.
-        if (!xmlEntry) {
-            if (!sourceInsidePkgDir) { try { vfs.rmdir(pkgDir); } catch { /* nothing to undo */ } }
-            throw new Error(`no package found in ${filename}`);
-        }
+        if (!xmlEntry) throw new Error(`no package found in ${filename}`);
         xmlContent = strFromU8(entries[xmlEntry]);
         xmlRelPath = xmlEntry;
-
-        // Write every entry to VFS preserving the archive's directory layout.
-        for (const [path, data] of Object.entries(entries)) {
-            // Skip the directory placeholders that some zippers emit.
-            if (path.endsWith('/')) {
-                vfs.mkdir(`${pkgDir}/${path}`);
-                continue;
-            }
-            const dest = `${pkgDir}/${path}`;
-            const parent = dest.substring(0, dest.lastIndexOf('/'));
-            if (parent && !vfs.exists(parent)) vfs.mkdir(parent);
-            if (isTextEntry(path)) vfs.writeFile(dest, strFromU8(data));
-            else                   vfs.writeBinaryFile(dest, data);
-        }
 
         manifestExtras = readConfigLua(entries);
 
@@ -153,30 +154,28 @@ export function installPackageFromBytes(
         // looks both of those up by manifest.name, so it stripped nothing at all
         // and the package kept running; a reinstall from a differently named file
         // left the first copy live alongside the second.
+        //
+        // Nothing is on disk yet at this point, so unlike desktop there is no
+        // folder to rename in the ordinary case — the commit simply writes under
+        // the declared name. Only a *staged* install has files already sitting
+        // under the filename's directory, and the commit moves those.
         const declared = sanitizePackageName(manifestExtras.name ?? '');
         if (declared && declared !== packageName) {
-            const newDir = `${vfs.profilePath}/${declared}`;
-            // Re-install is a clean slate under the *effective* name too, or the
-            // rename would fail (or merge) against a previous install's directory.
-            if (newDir !== pkgDir && vfs.exists(newDir)) vfs.rmdir(newDir);
-            vfs.rename(pkgDir, newDir);
-            // A staged source file moved with the directory; the manifest must
-            // record where it actually is now.
-            if (sourceInsidePkgDir && sourcePath) sourcePath = newDir + sourcePath.slice(pkgDir.length);
             packageName = declared;
-            pkgDir = newDir;
+            pkgDir = `${vfs.profilePath}/${declared}`;
+            // A staged source file moves with its directory; the manifest must
+            // record where it will actually be once the commit has run.
+            if (sourceInsidePkgDir && sourcePath) sourcePath = pkgDir + sourcePath.slice(stagedDir.length);
         }
     } else {
         xmlContent = strFromU8(buf);
-        if (kind === 'module') {
-            // Modules need an on-disk XML to reload from on profile open.
-            vfs.mkdir(pkgDir);
-            vfs.writeFile(`${pkgDir}/${filename}`, xmlContent);
-            xmlRelPath = filename;
-        }
-        // Plain XML packages keep nothing on disk.
+        // Modules need an on-disk XML to reload from on profile open; plain XML
+        // packages keep nothing on disk.
+        if (kind === 'module') xmlRelPath = filename;
     }
 
+    // Parsed here, not after the files land: an XML that will not parse is
+    // refused with the profile untouched rather than unpacked and then rejected.
     const data = parseMudletXml(xmlContent, { packageName });
 
     const manifest: PackageManifest = {
@@ -193,6 +192,68 @@ export function installPackageFromBytes(
         ...(kind === 'module' ? { kind: 'module' as const, sync: false } : {}),
     };
 
+    const commit = (): void => {
+        // Wipe any previous install of the same package (re-install is a clean
+        // slate). Reached only once the install is certain to go through.
+        if (!sourceInsidePkgDir && vfs.exists(pkgDir)) vfs.rmdir(pkgDir);
+        else if (sourceInsidePkgDir && pkgDir !== stagedDir) {
+            // A staged install that config.lua renamed: the contents are under
+            // the filename's directory and belong under the declared one. The
+            // destination is cleared first, or the rename would fail (or merge)
+            // against a previous install's directory.
+            if (vfs.exists(pkgDir)) vfs.rmdir(pkgDir);
+            vfs.rename(stagedDir, pkgDir);
+        }
+
+        if (!entries) {
+            if (kind === 'module') {
+                vfs.mkdir(pkgDir);
+                vfs.writeFile(`${pkgDir}/${filename}`, xmlContent);
+            }
+            return;
+        }
+
+        vfs.mkdir(pkgDir);
+        try {
+            // Write every entry to VFS preserving the archive's directory layout.
+            for (const [path, bytes] of Object.entries(entries)) {
+                // Skip the directory placeholders that some zippers emit.
+                if (path.endsWith('/')) {
+                    vfs.mkdir(`${pkgDir}/${path}`);
+                    continue;
+                }
+                const dest = `${pkgDir}/${path}`;
+                const parent = dest.substring(0, dest.lastIndexOf('/'));
+                if (parent && !vfs.exists(parent)) vfs.mkdir(parent);
+                if (isTextEntry(path)) vfs.writeFile(dest, strFromU8(bytes));
+                else                   vfs.writeBinaryFile(dest, bytes);
+            }
+        } catch (err) {
+            // A write that fails partway — quota, a backend that went away —
+            // would otherwise leave a half-unpacked directory standing in for a
+            // package that never installed, and `getMudletHomeDir()/<name>`
+            // existing is how scripts (and the uninstaller) decide a package
+            // has files.
+            if (!sourceInsidePkgDir) { try { vfs.rmdir(pkgDir); } catch { /* nothing to undo */ } }
+            throw err;
+        }
+    };
+
+    return { manifest, data, commit };
+}
+
+/**
+ * Prepare and immediately commit — equivalent to `preparePackageInstall(...)`
+ * followed by `commit()`, for callers with nothing to decide in between.
+ */
+export function installPackageFromBytes(
+    filename: string,
+    buf: Uint8Array,
+    vfs: ProfileVFS,
+    opts: InstallOptions = {},
+): InstallResult {
+    const { manifest, data, commit } = preparePackageInstall(filename, buf, vfs, opts);
+    commit();
     return { manifest, data };
 }
 
@@ -332,7 +393,8 @@ export function reloadModuleFromVfs(manifest: PackageManifest, vfs: ProfileVFS):
 }
 
 /**
- * Install a module from a path that already lives inside the profile's VFS.
+ * Prepare a module install from a path that already lives inside the profile's
+ * VFS. Nothing is written until the returned `commit()` runs.
  *
  * - Plain XML : referenced in place. The manifest stores `xmlVfsPath` and no pkgDir is
  *               created. Reload and sync read/write the user-chosen path verbatim, so
@@ -343,13 +405,13 @@ export function reloadModuleFromVfs(manifest: PackageManifest, vfs: ProfileVFS):
  *
  * Throws on read/parse failures.
  */
-export function installModuleFromVfsPath(
+export function prepareModuleInstallFromVfsPath(
     absolutePath: string,
     vfs: ProfileVFS,
     /** Consulted first, so a module under the read-only /lua/ namespace installs
      *  as readily as one in the profile — see LuaRuntime.readBuiltinBytes. */
     readBuiltin: (path: string) => Uint8Array | null = () => null,
-): InstallResult {
+): PreparedInstall {
     if (!absolutePath) throw new Error('no package file was actually given');
     const builtin = readBuiltin(absolutePath);
     // Mudlet's wording (Host::installPackage), which verboseModuleInstall prints
@@ -363,7 +425,7 @@ export function installModuleFromVfsPath(
         if (!looksLikeZip(buf)) throw new Error('could not unzip package');
         // Zips always go through the unzip-into-pkgDir flow; the user's source archive
         // stays where it was but isn't part of the module's reload path.
-        return installPackageFromBytes(filename, buf, vfs, { kind: 'module', sourcePath: absolutePath });
+        return preparePackageInstall(filename, buf, vfs, { kind: 'module', sourcePath: absolutePath });
     }
 
     // Plain XML: reference in place, no pkgDir.
@@ -379,5 +441,21 @@ export function installModuleFromVfsPath(
         kind: 'module',
         sync: false,
     };
+    // An in-place module is referenced where it lies, so there is nothing to
+    // write and nothing a refusal could have destroyed.
+    return { manifest, data, commit: () => {} };
+}
+
+/**
+ * Prepare and immediately commit — equivalent to
+ * `prepareModuleInstallFromVfsPath(...)` followed by `commit()`.
+ */
+export function installModuleFromVfsPath(
+    absolutePath: string,
+    vfs: ProfileVFS,
+    readBuiltin: (path: string) => Uint8Array | null = () => null,
+): InstallResult {
+    const { manifest, data, commit } = prepareModuleInstallFromVfsPath(absolutePath, vfs, readBuiltin);
+    commit();
     return { manifest, data };
 }

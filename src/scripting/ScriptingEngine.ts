@@ -66,7 +66,7 @@ import {ProfileVFS} from './vfs/ProfileVFS';
 import {rewriteVfsUrlsInCss} from './vfs/cssRewrite';
 import {rewriteVfsUrlsInHtml} from './vfs/htmlRewrite';
 import {MapOpenNotifier} from './MapOpenNotifier';
-import {installModuleFromVfsPath, installPackageFromBytes, moduleXmlAbsolutePath, reloadModuleFromVfs, uninstallPackageFiles} from '../import/packageInstaller';
+import {installPackageFromBytes, moduleXmlAbsolutePath, prepareModuleInstallFromVfsPath, preparePackageInstall, reloadModuleFromVfs, uninstallPackageFiles} from '../import/packageInstaller';
 import {downloadFromUrl, filenameFromUrl, isClientGuiRedelivery, parseClientGuiPayload, parseClientMapPayload} from '../import/remotePackageInstall';
 import {ensureDefaultPackages} from '../import/defaultPackages';
 import {serializeMudletXml, type SerializeInput} from '../import/mudletXmlExport';
@@ -1206,16 +1206,20 @@ export class ScriptingEngine implements EngineHost {
             return { ok: false, error };
         }
         try {
-            const { manifest, data } = installModuleFromVfsPath(path, vfs, p => this.runtimes.lua?.readBuiltinBytes?.(p) ?? null);
+            const prepared = prepareModuleInstallFromVfsPath(path, vfs, p => this.runtimes.lua?.readBuiltinBytes?.(p) ?? null);
             // Refused rather than reinstalled, like a package — and for the
             // stronger reason: a module carries the user's own edits back out to
             // its file, so installing over one would discard work that exists
-            // nowhere else.
-            if (this.getModuleNames().includes(manifest.name)) {
-                const error = `module ${manifest.name} is already installed`;
+            // nowhere else. Decided before commit(), so the refusal costs the
+            // installed copy nothing: preparing an archive unpacks it in memory
+            // only, and the module's files on disk are never touched.
+            if (this.getModuleNames().includes(prepared.manifest.name)) {
+                const error = `module ${prepared.manifest.name} is already installed`;
                 this.api.printError(`[installModule] ${error}`);
                 return { ok: false, error };
             }
+            prepared.commit();
+            const { manifest, data } = prepared;
             useAppStore.getState().installPackage(this.connectionId, manifest, data);
             this.notifyPackageInstalled(manifest.name);
             this.raiseEvent('sysInstallModule', [manifest.name]);
@@ -1774,19 +1778,24 @@ export class ScriptingEngine implements EngineHost {
         try {
             const buf = builtin ?? vfs.readBinaryFile(path);
             const filename = path.split('/').pop() || path;
-            const { manifest, data } = installPackageFromBytes(filename, buf, vfs, { sourcePath: path });
-            // Refused, not replaced. Mudlet cleans up what it unpacked and says
-            // so rather than reinstalling over the top, because a second install
-            // would silently discard whatever the user had changed in the first
-            // — and a script looping over a package list would do it repeatedly.
-            // (Modules are the exception and uninstall themselves first, which
-            // is why this guard is here and not in installModule.)
-            if (this.getPackageNames().includes(manifest.name)) {
-                uninstallPackageFiles(manifest, vfs);
-                const error = `package ${manifest.name} is already installed`;
+            const prepared = preparePackageInstall(filename, buf, vfs, { sourcePath: path });
+            // Refused, not replaced: a second install would silently discard
+            // whatever the user had changed in the first, and a script looping
+            // over a package list would do it repeatedly.
+            //
+            // The guard sits between prepare and commit because it used to sit
+            // after the install had already wiped the package's directory — so
+            // the refusal deleted the files of the copy it was declining to
+            // replace, leaving a package that was listed and had no files
+            // behind it, unrepairable because re-installing hit the same
+            // refusal. Nothing has been written at this point.
+            if (this.getPackageNames().includes(prepared.manifest.name)) {
+                const error = `package ${prepared.manifest.name} is already installed`;
                 this.api.printError(`[installPackage] ${error}`);
                 return { ok: false, error };
             }
+            prepared.commit();
+            const { manifest, data } = prepared;
             useAppStore.getState().installPackage(this.connectionId, manifest, data);
             this.notifyPackageInstalled(manifest.name, path);
             void vfs.flush();
