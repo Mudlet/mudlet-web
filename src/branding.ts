@@ -75,6 +75,11 @@ export const STOCK_THEMES: { value: string; label: string }[] = [
     { value: 'sky', label: 'Dark (Sky Blue)' },
     { value: 'light', label: 'Light (Qt)' },
     { value: 'graylight', label: 'Light (Gray)' },
+    // Not a palette but a choice that resolves to one — see utils/systemTheme.
+    // Last, as desktop lists it (Dark / Light / System setting), and because
+    // MudletWebApp falls back to choices[0] for an unknown stored theme: the
+    // fallback has to stay a concrete palette.
+    { value: 'system', label: 'System setting' },
 ];
 
 /** Ids of the stock toolbar buttons, for `BrandToolbarConfig.hide`.

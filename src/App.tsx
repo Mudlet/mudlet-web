@@ -15,6 +15,7 @@ import { ensurePersistentStorage } from './storage/persistentStorage';
 import { useAppStore, type MudConnection } from './storage';
 import { GAME_LINK_PARAM, findGameByLink } from './mud/games/gameLinks';
 import { getBrand, isBrandedMode, brandConnectionData, matchBrandProfile } from './branding';
+import { onSystemThemeChange, resolveTheme } from './utils/systemTheme';
 
 /**
  * Best-effort (re)grant of a linked profile's folder permission. Must be called
@@ -74,9 +75,16 @@ export default function App() {
     const launcherTheme = useAppStore(s => s.client.theme);
     const profileTheme = useAppStore(s => (activeConnection ? s.connectionProfile[activeConnection.id]?.theme : undefined));
     const effectiveTheme = (activeConnection && lockPhase === 'held' && profileTheme) ? profileTheme : launcherTheme;
+    // "System setting" is a stored choice, not a palette, so it is resolved to a
+    // real one before it reaches the DOM — every stylesheet, brand themes
+    // included, goes on seeing only concrete ids. `systemTick` re-runs the
+    // resolution when the OS flips, so a theme left on System repaints without
+    // a reload (issue #71).
+    const [systemTick, setSystemTick] = useState(0);
+    useEffect(() => onSystemThemeChange(() => setSystemTick(n => n + 1)), []);
     useEffect(() => {
-        document.documentElement.dataset.theme = effectiveTheme;
-    }, [effectiveTheme]);
+        document.documentElement.dataset.theme = resolveTheme(effectiveTheme);
+    }, [effectiveTheme, systemTick]);
 
     const connections = useAppStore(s => s.connections);
     const addConnection    = useAppStore(s => s.addConnection);

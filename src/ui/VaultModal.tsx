@@ -373,7 +373,29 @@ export function VaultModal({ mode, reason, seed, connectionNames, onDone }: Vaul
                                         title={snapshot.unlockers.length <= 1
                                             ? 'The only way in — delete the vault instead.'
                                             : undefined}
-                                        onClick={() => { try { vault?.removeUnlocker(u.id); } catch (e) { setError(describeThrown(e)); } }}
+                                        // Confirmed, because it is irreversible and was one
+                                        // click away: a removed passkey or passphrase cannot be
+                                        // put back, only replaced by enrolling a new one. The
+                                        // `length <= 1` guard above stops you locking yourself
+                                        // out entirely, but says nothing about losing the one
+                                        // you meant to keep (issue #71). Same shape as
+                                        // LogBrowserModal's "Clear all logs".
+                                        onClick={() => void (async () => {
+                                            const ok = await askConfirm({
+                                                title: 'Remove this way in',
+                                                message: `Remove ${u.kind === 'passkey' ? 'the passkey' : 'the passphrase'} “${u.label}”? `
+                                                    + 'It cannot be restored — you would have to enrol a new one. '
+                                                    + 'Your saved logins stay, and the other ways in keep working.',
+                                                tone: 'danger',
+                                                buttons: [
+                                                    { label: 'Cancel', value: false, variant: 'ghost' },
+                                                    { label: 'Remove', value: true, variant: 'danger' },
+                                                ],
+                                                dismissValue: false,
+                                            });
+                                            if (!ok) return;
+                                            try { vault?.removeUnlocker(u.id); } catch (e) { setError(describeThrown(e)); }
+                                        })()}
                                     >
                                         Remove
                                     </Button>
