@@ -3,6 +3,7 @@ import WORKER_CODE from '../../worker/index.js?raw';
 import { useAppStore } from '../storage';
 import { Button, Input } from './components';
 import { useModalFocus } from './components/useModalFocus';
+import { getBrand } from '../branding';
 import {
     listAccounts,
     deployWorker,
@@ -28,11 +29,13 @@ const TOKEN_PERMISSIONS = [
     { key: 'workers_scripts',  type: 'edit' },
     { key: 'account_settings', type: 'read' },
 ];
-const TOKEN_PAGE_URL =
+// A function, not a const: the token's name carries the brand, which is only
+// set once <MudletWebApp> has been rendered.
+const tokenPageUrl = () =>
     'https://dash.cloudflare.com/profile/api-tokens'
     + '?permissionGroupKeys=' + encodeURIComponent(JSON.stringify(TOKEN_PERMISSIONS))
     + '&accountId=*&zoneId=all'
-    + '&name=' + encodeURIComponent('Mudix Proxy Deploy');
+    + '&name=' + encodeURIComponent(`${getBrand().appName} Proxy Deploy`);
 
 const DEFAULT_WORKER_NAME = 'mudix-proxy';
 const WORKER_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,62}$/;
@@ -208,12 +211,12 @@ export function ProxyWizardModal({ onClose, onUseProxy }: Props) {
                             </p>
                             <p className="proxy-info-intro proxy-info-intro--note">
                                 <strong>Note:</strong> Cloudflare's API blocks direct browser requests, so the deploy
-                                calls (including your token) transit the default Mudix proxy. If you don't want that,
+                                calls (including your token) transit the default {getBrand().appName} proxy. If you don't want that,
                                 use the manual setup instead.
                             </p>
                             <ol className="proxy-info-steps">
                                 <li>
-                                    Open the <a className="proxy-info-link" href={TOKEN_PAGE_URL} target="_blank" rel="noreferrer">pre-filled token page</a> (name + Workers Scripts: Edit), click <strong>Continue to summary → Create Token</strong>
+                                    Open the <a className="proxy-info-link" href={tokenPageUrl()} target="_blank" rel="noreferrer">pre-filled token page</a> (name + Workers Scripts: Edit), click <strong>Continue to summary → Create Token</strong>
                                 </li>
                                 <li>
                                     Copy your <strong>Account ID</strong> from the <a className="proxy-info-link" href="https://dash.cloudflare.com/?to=/:account/workers-and-pages" target="_blank" rel="noreferrer">Workers &amp; Pages</a> page (right sidebar)

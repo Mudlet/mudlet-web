@@ -2942,7 +2942,7 @@ body.is-sorting {
     max-height: 75vh;
 }
 
-/* ── Quick Open palette (Cmd+P) ─────────────────────────────── */
+/* ── Quick Open palette (Cmd+Shift+P) ─────────────────────────────── */
 .qo-overlay {
     display: flex;
     justify-content: center;

@@ -157,6 +157,11 @@ export interface ProfileSettings {
      *  ("Allow secure connection reminder"), settable from Lua via
      *  `setProfileConfig("askTlsAvailable", …)`. */
     askTlsAvailable?: boolean;
+    /** Which engine the console's "Search on …" context-menu entry uses. A key
+     *  of {@link SEARCH_ENGINES}; anything else (or undefined) falls back to
+     *  {@link DEFAULT_SEARCH_ENGINE}, the way Mudlet's `Host::getSearchEngine`
+     *  does. Per-profile, because Mudlet keeps it on the Host. */
+    searchEngine?: string;
     showTimestamps: boolean;
     fontSize: number;
     outputBackground: string;
@@ -537,6 +542,24 @@ export interface MapInfoBgColor { r: number; g: number; b: number; a: number; }
 
 /** Mudlet's default `mapInfoColor` (mMapInfoBg) — translucent grey. */
 export const MAP_INFO_BG_DEFAULT: MapInfoBgColor = { r: 150, g: 150, b: 150, a: 120 };
+
+/** Engines offered by the console's "Search on …" entry, mirroring Mudlet's
+ *  `Host::mSearchEngineData` (`src/Host.cpp`). Each value is the prefix the
+ *  percent-encoded selection is appended to. */
+export const SEARCH_ENGINES: Record<string, string> = {
+    Bing: 'https://www.bing.com/search?q=',
+    DuckDuckGo: 'https://duckduckgo.com/?q=',
+    Google: 'https://www.google.com/search?q=',
+};
+
+/** What an unset or unrecognised `searchEngine` resolves to, as in Mudlet's
+ *  `Host::getSearchEngine`. */
+export const DEFAULT_SEARCH_ENGINE = 'Google';
+
+/** The stored engine name when we know it, else {@link DEFAULT_SEARCH_ENGINE}. */
+export function resolveSearchEngine(name: string | undefined): string {
+    return name && name in SEARCH_ENGINES ? name : DEFAULT_SEARCH_ENGINE;
+}
 
 /** Defaults for profile settings. Reads fall through to these whenever a
  *  profile hasn't set the field. */

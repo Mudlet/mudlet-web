@@ -5,6 +5,9 @@
 // styled buffers for the lines a selection touches and re-serialise them.
 
 import type { AnsiAwareBuffer } from '../../mud/text/FormatState';
+import { getBrand } from '../../branding';
+import { CLIENT_VERSION } from '../../version';
+import { SEARCH_ENGINES, resolveSearchEngine } from '../../storage/schema';
 import { elementBuffers } from './OutputRenderer';
 
 /** Resolved console styling read from a live output container. */
@@ -45,16 +48,13 @@ interface SelectedLine {
     timestamp: string | null;
 }
 
-/** Every line whose element the selection intersects, in order, with its
+/** The rendered lines `keep` accepts, in document order, each with its
  *  timestamp (when the timestamp column is currently visible). */
-function selectedLines(container: HTMLElement): SelectedLine[] {
-    const sel = window.getSelection();
+function collectLines(container: HTMLElement, keep: (el: Element) => boolean): SelectedLine[] {
     const out: SelectedLine[] = [];
-    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return out;
-    const range = sel.getRangeAt(0);
     const showTimestamps = container.classList.contains('output-show-timestamps');
     container.querySelectorAll('.output-msg').forEach(el => {
-        if (!range.intersectsNode(el)) return;
+        if (!keep(el)) return;
         const buffer = elementBuffers.get(el);
         if (!buffer) return;
         const timestamp = showTimestamps
@@ -63,6 +63,45 @@ function selectedLines(container: HTMLElement): SelectedLine[] {
         out.push({ buffer, timestamp });
     });
     return out;
+}
+
+/** Every line whose element the selection intersects. */
+function selectedLines(container: HTMLElement): SelectedLine[] {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return [];
+    const range = sel.getRangeAt(0);
+    return collectLines(container, el => range.intersectsNode(el));
+}
+
+/** Every line currently on screen. `.output-wrapper` is itself the scroller, so
+ *  its own box is the viewport to test each row against. */
+function visibleLines(container: HTMLElement): SelectedLine[] {
+    const view = container.getBoundingClientRect();
+    return collectLines(container, el => {
+        const r = el.getBoundingClientRect();
+        return r.bottom > view.top && r.top < view.bottom;
+    });
+}
+
+/** True when this console holds any line at all — what separates "nothing is
+ *  selected" from "there is nothing here to copy". */
+export function hasCopyableLines(container: HTMLElement): boolean {
+    for (const el of container.querySelectorAll('.output-msg')) {
+        if (elementBuffers.get(el)) return true;
+    }
+    return false;
+}
+
+/** Open a web search for the selected text, the way Mudlet's
+ *  `TTextEdit::searchSelectionOnline` does. `engine` is a {@link SEARCH_ENGINES}
+ *  key; an unknown one falls back to the default engine. */
+export function searchSelectionOnline(engine: string | undefined): void {
+    // Desktop joins the selected lines with spaces rather than newlines
+    // (`getSelectedText(QChar::Space)`), which is what a search box wants.
+    const text = (window.getSelection()?.toString() ?? '').replace(/\s+/g, ' ').trim();
+    if (!text) return;
+    const prefix = SEARCH_ENGINES[resolveSearchEngine(engine)];
+    window.open(prefix + encodeURIComponent(text), '_blank', 'noopener,noreferrer');
 }
 
 /** The console's dim timestamp colour, read from a live timestamp element. */
@@ -91,18 +130,29 @@ export async function copySelectionText(): Promise<void> {
     if (text) await navigator.clipboard.writeText(text);
 }
 
-/** Build a complete, self-contained HTML document for the selected lines.
- *  Reuses each buffer's `toHtml()` so colours/links match the on-screen
- *  rendering, and carries the console `--console-*` vars so reverse-video spans
- *  resolve in the standalone document. */
-function buildSelectionHtmlDoc(container: HTMLElement): string | null {
-    const selected = selectedLines(container);
+/** Build a complete, self-contained HTML document for `selected`. Reuses each
+ *  buffer's `toHtml()` so colours/links match the on-screen rendering, and
+ *  carries the console `--console-*` vars so reverse-video spans resolve in the
+ *  standalone document. */
+function buildSelectionHtmlDoc(
+    container: HTMLElement,
+    selected: SelectedLine[],
+    sourceName: string | undefined,
+): string | null {
     if (selected.length === 0) return null;
     const style = readConsoleStyle(container);
     const cs = getComputedStyle(container);
     const consoleBg = cs.getPropertyValue('--console-bg').trim() || style.background;
     const consoleText = cs.getPropertyValue('--console-text').trim() || style.color;
     const tsColor = timestampColor(container, '#888888');
+
+    // Desktop titles the document "Mudlet, main console extract from <profile>"
+    // (`TTextEdit::slot_copySelectionToClipboardHTML`); do the same, but let a
+    // white-label build name itself.
+    const brandName = getBrand().appName;
+    const docTitle = sourceName
+        ? `${brandName}, console extract from ${sourceName}`
+        : `${brandName} console extract`;
 
     const lines = selected
         .map(({ buffer, timestamp }) => {
@@ -116,7 +166,8 @@ function buildSelectionHtmlDoc(container: HTMLElement): string | null {
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Mudix output</title>
+<title>${escapeHtml(docTitle)}</title>
+<meta name="generator" content="${escapeHtml(`${brandName} version: ${CLIENT_VERSION}`)}">
 <style>
   :root { --console-bg: ${consoleBg}; --console-text: ${consoleText}; }
   body { margin: 0; padding: 12px 16px;
@@ -138,8 +189,8 @@ ${lines}
  * paste it rendered) and `text/plain` (so plain targets paste the HTML markup
  * itself), with a `writeText` fallback for browsers without ClipboardItem.
  */
-export async function copySelectionAsHtml(container: HTMLElement): Promise<void> {
-    const html = buildSelectionHtmlDoc(container);
+export async function copySelectionAsHtml(container: HTMLElement, sourceName?: string): Promise<void> {
+    const html = buildSelectionHtmlDoc(container, selectedLines(container), sourceName);
     if (html === null) return;
 
     const ClipboardItemCtor = (window as Window & { ClipboardItem?: typeof ClipboardItem }).ClipboardItem;
@@ -155,9 +206,8 @@ export async function copySelectionAsHtml(container: HTMLElement): Promise<void>
     }
 }
 
-/** Render the selected lines to a canvas matching the console's look. */
-function selectionToCanvas(container: HTMLElement): HTMLCanvasElement | null {
-    const selected = selectedLines(container);
+/** Render `selected` to a canvas matching the console's look. */
+function linesToCanvas(container: HTMLElement, selected: SelectedLine[]): HTMLCanvasElement | null {
     if (selected.length === 0) return null;
     const style = readConsoleStyle(container);
     const { background, color, fontFamily, fontSize } = style;
@@ -241,9 +291,12 @@ function selectionToCanvas(container: HTMLElement): HTMLCanvasElement | null {
     return canvas;
 }
 
-/** Copy the selected lines to the clipboard as a PNG image. */
+/** Copy the selection to the clipboard as a PNG image, falling back to a
+ *  picture of the visible area when nothing is selected — unlike Copy and Copy
+ *  as HTML, "as image" has an obvious default (Mudlet #9715). */
 export async function copySelectionAsImage(container: HTMLElement): Promise<void> {
-    const canvas = selectionToCanvas(container);
+    const selected = selectedLines(container);
+    const canvas = linesToCanvas(container, selected.length ? selected : visibleLines(container));
     if (!canvas) return;
     const ClipboardItemCtor = (window as Window & { ClipboardItem?: typeof ClipboardItem }).ClipboardItem;
     if (!navigator.clipboard?.write || typeof ClipboardItemCtor === 'undefined') {

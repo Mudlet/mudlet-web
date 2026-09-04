@@ -11,10 +11,16 @@ interface OutputContextMenuProps {
     y: number;
     /** Whether the selection touches this window (gates the copy actions). */
     hasSelection: boolean;
+    /** Whether this console holds any line at all. "Copy as image" needs only
+     *  this, since it falls back to the visible area. */
+    hasContent: boolean;
     onSelectAll: () => void;
     onCopy: () => void;
     onCopyHtml: () => void;
     onCopyImage: () => void;
+    /** Display name of the configured web-search engine, e.g. "Google". */
+    searchEngine: string;
+    onSearchOnline: () => void;
     /** Opens the find bar — only the main console passes this. */
     onFind?: () => void;
     /** Timestamp toggle — only the main console passes these. */
@@ -29,10 +35,13 @@ export function OutputContextMenu({
     x,
     y,
     hasSelection,
+    hasContent,
     onSelectAll,
     onCopy,
     onCopyHtml,
     onCopyImage,
+    searchEngine,
+    onSearchOnline,
     onFind,
     showTimestamps,
     onToggleTimestamps,
@@ -40,6 +49,10 @@ export function OutputContextMenu({
     onClose,
 }: OutputContextMenuProps) {
     const run = (fn: () => void) => () => { fn(); onClose(); };
+    // Mudlet spells out why an entry is greyed rather than leaving the user to
+    // guess (`noSelectionHint` in TTextEdit::contextMenuEvent).
+    const noSelection = hasSelection ? undefined : 'Select some text in the console first.';
+    const noContent = hasContent ? undefined : 'This console is empty, there is nothing to copy.';
 
     return (
         <ContextMenu x={x} y={y} onClose={onClose}>
@@ -51,6 +64,7 @@ export function OutputContextMenu({
                 className="ctx-menu__item"
                 type="button"
                 disabled={!hasSelection}
+                title={noSelection}
                 onClick={run(onCopy)}
             >
                 <span className="ctx-menu__check" />
@@ -60,19 +74,35 @@ export function OutputContextMenu({
                 className="ctx-menu__item"
                 type="button"
                 disabled={!hasSelection}
+                title={noSelection}
                 onClick={run(onCopyHtml)}
             >
                 <span className="ctx-menu__check" />
                 Copy as HTML
             </button>
+            {/* Not gated on the selection: with none, this copies the visible
+                area, so the only thing that can stop it is an empty console. */}
             <button
                 className="ctx-menu__item"
                 type="button"
-                disabled={!hasSelection}
+                disabled={!hasContent}
+                title={noContent}
                 onClick={run(onCopyImage)}
             >
                 <span className="ctx-menu__check" />
                 Copy as image
+            </button>
+
+            <div className="ctx-menu__sep" />
+            <button
+                className="ctx-menu__item"
+                type="button"
+                disabled={!hasSelection}
+                title={noSelection}
+                onClick={run(onSearchOnline)}
+            >
+                <span className="ctx-menu__check" />
+                Search on {searchEngine}
             </button>
 
             {onFind && (

@@ -4,9 +4,11 @@ import { useIsMobile, useIsTouch } from '../../hooks/useViewportMode';
 import { OutputContextMenu, type OutputMenuExtraItem } from './OutputContextMenu';
 import { restoreFocusAfterLinkClick } from './linkNavigation';
 import {
-    hasSelectionIn, selectAll, copySelectionText,
-    copySelectionAsHtml, copySelectionAsImage,
+    hasSelectionIn, hasCopyableLines, selectAll, copySelectionText,
+    copySelectionAsHtml, copySelectionAsImage, searchSelectionOnline,
 } from './outputCopy';
+import { useProfileField } from '../../storage';
+import { resolveSearchEngine } from '../../storage/schema';
 import { isClearSplitClick } from './clearSplit';
 
 const DEFAULT_STICKY_HEIGHT = 160;
@@ -27,6 +29,9 @@ interface StickyOutputPanelProps {
     onToggleTimestamps?: () => void;
     /** Opens the find bar from the right-click menu — main console only. */
     onFind?: () => void;
+    /** What to call this console in a copied HTML document's title — the
+     *  profile name for the main console, the window name for a script one. */
+    sourceName?: string;
     /** Script-provided right-click entries (Mudlet addMouseEvent), evaluated
      *  lazily when the menu opens since the registry can change. */
     getMenuExtraItems?: () => OutputMenuExtraItem[];
@@ -45,9 +50,10 @@ export function StickyOutputPanel({
     outputRef, sentinelRef, stickyAreaRef,
     isSplitView, scrollToBottom,
     background, backgroundExtra, foreground, showTimestamps, onToggleTimestamps,
-    onFind, getMenuExtraItems,
+    onFind, sourceName, getMenuExtraItems,
     commandInputRef, className, fontSize, fontFamily, lineHeight, wrapAt, wrapIndent, wrapHangingIndent,
 }: StickyOutputPanelProps) {
+    const searchEngine = resolveSearchEngine(useProfileField('searchEngine'));
     const isMobile = useIsMobile();
     const isTouch = useIsTouch();
     // One question, asked in three places (see CommandBar): is there an
@@ -56,7 +62,7 @@ export function StickyOutputPanel({
     const keyboardWouldCover = isMobile && isTouch;
     const [stickyHeight, setStickyHeight] = useState(DEFAULT_STICKY_HEIGHT);
     const [contextMenu, setContextMenu] =
-        useState<{ x: number; y: number; hasSelection: boolean; extraItems: OutputMenuExtraItem[] } | null>(null);
+        useState<{ x: number; y: number; hasSelection: boolean; hasContent: boolean; extraItems: OutputMenuExtraItem[] } | null>(null);
     const stickyOuterRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -133,6 +139,7 @@ export function StickyOutputPanel({
             x: e.clientX,
             y: e.clientY,
             hasSelection: container ? hasSelectionIn(container) : false,
+            hasContent: container ? hasCopyableLines(container) : false,
             extraItems: getMenuExtraItems?.() ?? [],
         });
     }, [outputRef, getMenuExtraItems]);
@@ -246,10 +253,13 @@ export function StickyOutputPanel({
                     x={contextMenu.x}
                     y={contextMenu.y}
                     hasSelection={contextMenu.hasSelection}
+                    hasContent={contextMenu.hasContent}
                     onSelectAll={() => runCopyAction(selectAll)}
                     onCopy={() => runCopyAction(copySelectionText)}
-                    onCopyHtml={() => runCopyAction(copySelectionAsHtml)}
+                    onCopyHtml={() => runCopyAction(c => copySelectionAsHtml(c, sourceName))}
                     onCopyImage={() => runCopyAction(copySelectionAsImage)}
+                    searchEngine={searchEngine}
+                    onSearchOnline={() => searchSelectionOnline(searchEngine)}
                     onFind={onFind}
                     showTimestamps={showTimestamps ?? false}
                     onToggleTimestamps={onToggleTimestamps}

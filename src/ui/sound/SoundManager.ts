@@ -21,6 +21,7 @@
 //     just attenuated past the audible floor.
 
 import type { MediaCaptionInfo, MediaKind } from './closedCaption';
+import { getBrand } from '../../branding';
 
 type LoaderFn = (path: string) => Promise<ArrayBuffer | null>;
 
@@ -575,7 +576,7 @@ export class SoundManager {
             try {
                 ms.metadata = new MediaMetadata({
                     title: anyMusic.split('/').pop() ?? anyMusic,
-                    artist: 'Mudix',
+                    artist: getBrand().appName,
                 });
             } catch { /* MediaMetadata missing on older Safari */ }
             ms.playbackState = 'playing';
