@@ -6,7 +6,7 @@ import {Lua, LuaReturn, LUA_REGISTRYINDEX, type LuaThread} from 'wasmoon-lua5.1'
 // hand back a base-aware same-origin URL we pass as `customWasmUri` below.
 import luaWasmUrl from 'wasmoon-lua5.1/dist/liblua5.1.wasm?url';
 import {unzipSync, strFromU8} from 'fflate';
-import type {IScriptingRuntime, CaptureSpan, LuaGlobalEntry} from '../IScriptingRuntime';
+import type {IScriptingRuntime, CaptureSpan, LuaGlobalEntry, VariableEdit} from '../IScriptingRuntime';
 import type {ScriptingAPI} from '../ScriptingAPI';
 import type {ProfileVFS} from '../vfs/ProfileVFS';
 import UTF8 from './utf8.lua?raw';
@@ -318,6 +318,89 @@ for k, v in pairs(_G) do
   end
 end
 return yajl.to_string(out)
+`;
+
+// Apply one edit from the Variables view to the live `_G`: set a value, rename
+// a key, or delete an entry. The request arrives as JSON and is decoded with
+// yajl rather than pushed as a JS object, for two reasons: wasmoon turns a JS
+// array into a 0-indexed Lua table (fatal for a path, where order and index
+// both matter), and JSON escaping keeps a NUL inside a value from ever crossing
+// the bridge as a raw byte.
+//
+// Returns '' on success or a human-readable reason on failure — the view shows
+// it next to the row rather than silently doing nothing.
+const EDIT_VAR_LUA = `
+local req = yajl.to_value(__mudix_var_edit)
+__mudix_var_edit = nil
+local function tokey(seg)
+  if seg == nil or seg.key == nil then return nil, 'missing key' end
+  if seg.kind == 'number' then
+    local n = tonumber(seg.key)
+    if n == nil then return nil, ('"%s" is not a number, so it cannot be a numeric key'):format(tostring(seg.key)) end
+    return n
+  end
+  if seg.key == '' then return nil, 'a variable needs a name' end
+  return seg.key
+end
+local path = req.path or {}
+if #path == 0 then return 'no variable given' end
+-- Walk to the table that holds the last segment.
+local container = _G
+for i = 1, #path - 1 do
+  local k, err = tokey(path[i])
+  if k == nil then return err end
+  local nxt = container[k]
+  if type(nxt) ~= 'table' then
+    return ('"%s" is not a table'):format(tostring(path[i].key))
+  end
+  container = nxt
+end
+local key, keyErr = tokey(path[#path])
+if key == nil then return keyErr end
+if container == _G and type(key) == 'string' and key:sub(1, 7) == '__mudix' then
+  return 'names beginning with __mudix belong to the client'
+end
+
+if req.op == 'delete' then
+  container[key] = nil
+  return ''
+end
+
+if req.op == 'move' then
+  local to, toErr = tokey(req.to)
+  if to == nil then return toErr end
+  if container == _G and type(to) == 'string' and to:sub(1, 7) == '__mudix' then
+    return 'names beginning with __mudix belong to the client'
+  end
+  if to ~= key then
+    if container[to] ~= nil then
+      return ('"%s" already exists'):format(tostring(req.to.key))
+    end
+    container[to] = container[key]
+    container[key] = nil
+  end
+  return ''
+end
+
+if req.op ~= 'set' then return 'unknown operation ' .. tostring(req.op) end
+
+local value
+if req.valueType == 'string' then
+  value = req.value or ''
+elseif req.valueType == 'number' then
+  value = tonumber(req.value)
+  if value == nil then return ('"%s" is not a number'):format(tostring(req.value)) end
+elseif req.valueType == 'boolean' then
+  value = req.value == 'true'
+elseif req.valueType == 'table' then
+  -- Retyping something that is already a table keeps its contents; anything
+  -- else becomes a fresh empty one.
+  value = type(container[key]) == 'table' and container[key] or {}
+else
+  return 'unsupported type ' .. tostring(req.valueType)
+end
+container[key] = value
+return ''
 `;
 
 // Coerce a yajl-decoded global entry into a well-formed LuaGlobalEntry. yajl
@@ -2951,6 +3034,23 @@ end`);
         } catch {
             return [];
         }
+    }
+
+    /**
+     * Apply one Variables-view edit to the live `_G`, returning `null` on
+     * success or the reason it was refused.
+     *
+     * Desktop edits variables through `LuaInterface`/`VarUnit` and re-runs the
+     * assignment as Lua (`dlgTriggerEditor::addVar`, :5211, and the
+     * `saveVar`/`deleteVar` paths); the same job here is one small chunk over
+     * the request, so the change is visible to running scripts immediately
+     * rather than only after the next profile save.
+     */
+    editVariable(request: VariableEdit): string | null {
+        this.lua.global.set('__mudix_var_edit', JSON.stringify(request));
+        const result = this.execInner(EDIT_VAR_LUA, 'edit-var');
+        if (typeof result !== 'string') return 'the Lua runtime refused the edit';
+        return result === '' ? null : result;
     }
 
     runWithMatches(

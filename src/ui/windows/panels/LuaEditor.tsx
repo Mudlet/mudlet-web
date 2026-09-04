@@ -4,6 +4,7 @@ import { EditorView, hoverTooltip, keymap, lineNumbers, highlightActiveLine, hig
 import { defaultKeymap, indentWithTab, history, historyKeymap } from '@codemirror/commands';
 import { StreamLanguage, indentUnit, bracketMatching } from '@codemirror/language';
 import { autocompletion, closeBrackets } from '@codemirror/autocomplete';
+import { search, searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import { lua } from '@codemirror/legacy-modes/mode/lua';
 import { useEffectiveTheme } from '../../../storage';
 import { luaCompletionSource, HOVER_MAP, REFERENCE_GROUPS } from '../../../scripting/lua/luaCompletions';
@@ -107,6 +108,13 @@ const valueSync = Annotation.define<true>();
 function buildExtensions(onChangeFn: () => void, onSaveFn: () => void, theme: string) {
     return [
         history(),
+        // Desktop wires Ctrl+F / F3 / Shift+F3 straight to the source editor
+        // (dlgTriggerEditor.cpp:436, :448, :454). CodeMirror's own panel binds
+        // the same three, plus replace — which desktop's edbee widget has no UI
+        // for at all. `top: true` keeps the panel above the code so it never
+        // covers the line the cursor is on.
+        search({ top: true }),
+        highlightSelectionMatches(),
         lineNumbers(),
         highlightActiveLine(),
         highlightActiveLineGutter(),
@@ -121,6 +129,9 @@ function buildExtensions(onChangeFn: () => void, onSaveFn: () => void, theme: st
             { key: 'Mod-s',     preventDefault: true, run: () => { onSaveFn(); return true; } },
             { key: 'Mod-Enter', preventDefault: true, run: () => { onSaveFn(); return true; } },
             indentWithTab,
+            // Ahead of defaultKeymap so Mod-d (selectNextOccurrence) and the
+            // find bindings win over the default single-line commands.
+            ...searchKeymap,
             ...defaultKeymap,
             ...historyKeymap,
         ]),

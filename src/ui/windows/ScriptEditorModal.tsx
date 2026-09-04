@@ -51,7 +51,9 @@ export function ScriptEditorModal({ connectionId, session, vfs, scriptingEngineR
             headerExtra={
                 <ScriptSearch
                     connectionId={connectionId}
+                    scriptingEngineRef={scriptingEngineRef}
                     onNavigate={(category, id, line) => panelRef.current?.navigateToItem(category, id, line)}
+                    onNavigateVariable={name => panelRef.current?.navigateToVariable(name)}
                 />
             }
         >

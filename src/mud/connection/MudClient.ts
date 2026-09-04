@@ -572,6 +572,14 @@ export class MudClient {
         return this.assembler.getPromptTimeoutMs();
     }
 
+    /** True once the server has sent IAC GA / IAC EOR at least once — Mudlet's
+     *  `cTelnet::mGA_Driver`. Prompt-line triggers only ever fire on a game
+     *  that sends one, so the editor greys the `prompt` pattern type without it
+     *  (dlgTriggerEditor.cpp:7226-7234). */
+    get promptMarkerSeen(): boolean {
+        return this.assembler.gaDriver;
+    }
+
     connect(): void {
         if (this.socket) {
             this.socket.onmessage = null;

@@ -95,6 +95,7 @@ interface AppStore extends AppSchema {
     /** Replace the set of global names flagged to persist (Mudlet save-list).
      *  Edited from the Variables view; triggers a profile-data save. */
     setVariableSaveList: (connectionId: string, saveList: string[]) => void;
+    setVariableHidden: (connectionId: string, hidden: string[]) => void;
     /** Replace the captured variable values without disturbing the save-list
      *  reference — so the engine can refresh them on save without re-triggering
      *  the save subscription (which keys on the save-list, not values). */
@@ -758,7 +759,20 @@ export const useAppStore = create<AppStore>()(
             setVariableSaveList: (connectionId, saveList) => set(s => ({
                 connectionVariables: {
                     ...s.connectionVariables,
-                    [connectionId]: { saveList, values: s.connectionVariables[connectionId]?.values ?? [] },
+                    [connectionId]: { ...s.connectionVariables[connectionId], saveList, values: s.connectionVariables[connectionId]?.values ?? [] },
+                },
+            })),
+            setVariableHidden: (connectionId, hidden) => set(s => ({
+                connectionVariables: {
+                    ...s.connectionVariables,
+                    [connectionId]: {
+                        // saveList keeps its identity: the profile-save subscription
+                        // compares it by reference, and hiding a variable is not a
+                        // reason to recapture every saved value.
+                        saveList: s.connectionVariables[connectionId]?.saveList ?? [],
+                        values: s.connectionVariables[connectionId]?.values ?? [],
+                        hidden,
+                    },
                 },
             })),
             setVariableValues: (connectionId, values) => set(s => ({
@@ -767,7 +781,7 @@ export const useAppStore = create<AppStore>()(
                     // Reuse the existing saveList array reference verbatim: the profile-save
                     // subscription compares saveList by identity, so refreshing values here
                     // must not mint a new array or it would reschedule a save on every flush.
-                    [connectionId]: { saveList: s.connectionVariables[connectionId]?.saveList ?? [], values },
+                    [connectionId]: { ...s.connectionVariables[connectionId], saveList: s.connectionVariables[connectionId]?.saveList ?? [], values },
                 },
             })),
             hydrateConnectionData: (connectionId, data) => set(s => {

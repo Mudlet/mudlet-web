@@ -116,7 +116,7 @@ export function loadMudletLinkedProfile(vfs: VfsReader, connectionId: string, in
         keybindings: data.automation.keys,
         buttons: data.automation.buttons,
         packages,
-        variables: { saveList: vars.map(v => v.name), values: vars },
+        variables: { saveList: vars.map(v => v.name), values: vars, hidden: data.variables.hidden },
         // XML settings as the base; mudix-only profile fields (mapper, font source,
         // mapViewStates, …) from the sidecar win where set.
         profile: { ...data.settings, ...(sidecar.profile ?? {}) },

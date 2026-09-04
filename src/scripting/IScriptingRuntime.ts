@@ -26,6 +26,26 @@ export interface LuaGlobalEntry {
     keyKind?: string;
 }
 
+/** One step of a path into `_G`: the key, and whether Lua holds it as a string
+ *  or a number (`myTable.name` vs `myTable[3]`). */
+export interface VariablePathSegment {
+    key: string;
+    kind: 'string' | 'number';
+}
+
+/**
+ * One edit the Variables view asks the runtime to make.
+ *
+ * `set` assigns `value`, read according to `valueType` — retyping to `table`
+ * keeps an existing table's contents rather than emptying it. `move` renames
+ * the last segment in place (which is also how the key type is changed), and
+ * refuses to overwrite a key that already exists. `delete` assigns nil.
+ */
+export type VariableEdit =
+    | { op: 'set'; path: VariablePathSegment[]; valueType: 'string' | 'number' | 'boolean' | 'table'; value: string }
+    | { op: 'move'; path: VariablePathSegment[]; to: VariablePathSegment }
+    | { op: 'delete'; path: VariablePathSegment[] };
+
 export interface IScriptingRuntime {
     load(code: string, name: string): void;
     /** Execute a code chunk once, without match context. Used for timers and keybindings. */
@@ -123,4 +143,7 @@ export interface IScriptingRuntime {
     /** Enumerate `_G` for the Variables view: user globals as a full nested tree,
      *  built-ins flagged (and not recursed). */
     listGlobals(): LuaGlobalEntry[];
+    /** Apply one Variables-view edit to `_G`. Returns null on success, or the
+     *  reason it was refused. */
+    editVariable(request: VariableEdit): string | null;
 }

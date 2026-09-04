@@ -649,6 +649,15 @@ export class MudSession {
         return this.client?.getPromptTimeoutMs() ?? this.options.promptTimeoutMs ?? null;
     }
 
+    /** True once this session's game has sent IAC GA / IAC EOR — Mudlet's
+     *  `mGA_Driver`. False with no client, which is also what the editor wants:
+     *  nothing has proved the game sends one. Latched per client, so it resets
+     *  on reconnect; the `prompt` event fires on every marker, which is what the
+     *  editor listens to for the transition. */
+    get promptMarkerSeen(): boolean {
+        return this.client?.promptMarkerSeen ?? false;
+    }
+
     /** Mudlet `setConfig("fixUnnecessaryLinebreaks", …)`. Updates the live client
      *  and the stored options so the setting survives a reconnect. */
     setFixUnnecessaryLinebreaks(enabled: boolean): void {

@@ -369,7 +369,10 @@ function emitButtons(xml: XmlBuilder, nodes: ButtonNode[], opts: ExportOptions):
             xml.leaf('sizeX', String(n.sizeX ?? 0));
             xml.leaf('sizeY', String(n.sizeY ?? 0));
             xml.leaf('buttonColumn', String(n.columns ?? 0));
-            xml.leaf('buttonRotation', '0');
+            xml.leaf('buttonRotation', String(n.rotation ?? 0));
+            // Newer than the elements above (Mudlet #9332); older Mudlet ignores
+            // an element it doesn't know, so emitting it unconditionally is safe.
+            xml.leaf('buttonFillerOffset', String(n.fillerOffset ?? 0));
         });
     xml.close('ActionPackage');
 }
