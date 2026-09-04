@@ -315,6 +315,13 @@ describe("Tests addRoom", function()
     deleteRoom(roomID)
   end)
 
+  it("refuses a roomID of zero or below", function()
+    assert.is_false(addRoom(0))
+    assert.is_false(roomExists(0))
+    assert.is_false(addRoom(-3))
+    assert.is_false(roomExists(-3))
+  end)
+
 end)
 
 describe("Tests map info functions", function()
@@ -481,10 +488,9 @@ describe("Tests mapper functions against a shared fixture", function()
     deleteArea("MapperSpecGamma")
   end)
 
-  -- saveJsonMap/loadJsonMap are intentionally not covered here: the JSON export
-  -- runs through a progress dialog and bulk import, and loadJsonMap replaces and
-  -- re-initialises the entire map, which is incompatible with this shared
-  -- fixture. JSON persistence is exercised by the C++ MapRoundTripTest instead.
+  -- saveJsonMap/loadJsonMap replace and re-initialise the entire map, which is
+  -- incompatible with this shared fixture, so they have a block of their own
+  -- below.
 
   describe("Tests area listing and naming", function()
     it("getAreaTable maps every area name to its ID", function()
@@ -576,6 +582,19 @@ describe("Tests mapper functions against a shared fixture", function()
       local ok, err = deleteArea(getRoomAreaName(-1))
       assert.is_nil(ok)
       assert.is_string(err)
+    end)
+
+    it("removes an area name that never got an area of its own", function()
+      -- setAreaName on an unused ID registers the name without instantiating
+      -- the area, which from Lua only happens once a room is moved into it, so
+      -- this is the one way to reach a name with nothing behind it
+      local orphanAreaId = 990000003
+      assert.is_nil(getAreaTable()["MapperSpecOrphanArea"])
+      assert.is_true(setAreaName(orphanAreaId, "MapperSpecOrphanArea"))
+      assert.are.equal(orphanAreaId, getAreaTable()["MapperSpecOrphanArea"])
+
+      assert.is_true(deleteArea(orphanAreaId))
+      assert.is_nil(getAreaTable()["MapperSpecOrphanArea"])
     end)
   end)
 
@@ -1629,8 +1648,10 @@ describe("Tests mapper functions against a shared fixture", function()
       -- Guarantee a clean routing graph even if an assertion above failed.
       setExitWeightFilter(nil)
       setExitWeight(rA1, "east", 0)
-      lockRoom(rA2, false)
       lockExit(rA1, "east", false)
+      for _, id in ipairs({rA2, rB1, rB2, rG1, rSandA, rSandB}) do
+        lockRoom(id, false)
+      end
     end)
 
     it("finds the shortest route and fills the speedwalk globals", function()
@@ -1701,6 +1722,106 @@ describe("Tests mapper functions against a shared fixture", function()
       local ok = getPath(rA1, rA3)
       assert.is_true(ok)
       assert.are.same({tostring(rA4), tostring(rA5), tostring(rA3)}, speedWalkPath)
+    end)
+
+    -- Every case above edits the map first, so each one searches a graph that
+    -- has just been rebuilt. These four do not, which is what puts them on the
+    -- state findPath() carries from one search to the next.
+
+    it("does not inherit the previous search's state", function()
+      local firstOk = getPath(rA1, rA3)
+      assert.is_true(firstOk)
+      assert.are.same({tostring(rA2), tostring(rA3)}, speedWalkPath)
+
+      -- Reversed, so the second search has to better the rooms the first one
+      -- had already settled rather than reaching fresh ones.
+      local ok, weight = getPath(rA3, rA1)
+      assert.is_true(ok)
+      assert.are.equal(2, weight)
+      assert.are.same({"w", "w"}, speedWalkDir)
+      assert.are.same({tostring(rA2), tostring(rA1)}, speedWalkPath)
+    end)
+
+    it("does not inherit the state of a search that found nothing", function()
+      -- Giving up means settling every room reachable from the start, so this
+      -- leaves behind the largest amount of state a search on this map can.
+      local failedOk = getPath(rA1, rSandA)
+      assert.is_false(failedOk)
+
+      local ok, weight = getPath(rA1, rA3)
+      assert.is_true(ok)
+      assert.are.equal(2, weight)
+      assert.are.same({tostring(rA2), tostring(rA3)}, speedWalkPath)
+    end)
+
+    it("does not reuse the old room numbering after the graph is rebuilt", function()
+      local firstOk = getPath(rA1, rB2)
+      assert.is_true(firstOk)
+
+      -- Locking rooms drops them from the graph, so the rooms left are
+      -- renumbered and the numbers the search above recorded no longer name the
+      -- rooms they did. Fewer rooms than before is the case that matters: a
+      -- surviving number can then be past the end of the state itself.
+      for _, id in ipairs({rA2, rB1, rB2, rG1, rSandA, rSandB}) do
+        lockRoom(id, true)
+      end
+
+      local ok, weight = getPath(rA1, rA3)
+      assert.is_true(ok)
+      assert.are.equal(3, weight)
+      assert.are.same({tostring(rA4), tostring(rA5), tostring(rA3)}, speedWalkPath)
+    end)
+  end)
+
+  describe("Tests pathfinding where the weights disagree with the coordinates", function()
+    -- A* is steered by straight-line distance to the target but pays in exit
+    -- weights, and nothing makes the two agree. rX sits right beside the target
+    -- and is reached early over a costly exit; the cheap way to it only turns up
+    -- later, through rY, which is the wrong way entirely as the crow flies. The
+    -- route through rZ is there to be beaten: it wins unless the better price
+    -- for rX is carried forward to the target.
+    local areaWeighted
+    local rWStart, rX, rY, rZ, rWGoal
+
+    setup(function()
+      areaWeighted = addAreaName("MapperSpecWeighted")
+
+      local function makeRoom(x, y)
+        local id = createRoomID()
+        addRoom(id)
+        setRoomArea(id, areaWeighted)
+        setRoomCoordinates(id, x, y, 0)
+        return id
+      end
+
+      rWGoal = makeRoom(0, 0)
+      rX = makeRoom(1, 0)
+      rZ = makeRoom(0, 10)
+      rY = makeRoom(0, 20)
+      rWStart = makeRoom(0, 30)
+
+      -- One-way throughout, so the graph is exactly the one the weights
+      -- describe and no return exit offers a cheaper way round.
+      setExit(rWStart, rX, "southeast"); setExitWeight(rWStart, "southeast", 10)
+      setExit(rWStart, rZ, "southwest"); setExitWeight(rWStart, "southwest", 5)
+      setExit(rWStart, rY, "south"); setExitWeight(rWStart, "south", 1)
+      setExit(rY, rX, "southeast"); setExitWeight(rY, "southeast", 1)
+      setExit(rZ, rWGoal, "south"); setExitWeight(rZ, "south", 20)
+      setExit(rX, rWGoal, "west"); setExitWeight(rX, "west", 20)
+    end)
+
+    teardown(function()
+      for _, id in ipairs({rWStart, rX, rY, rZ, rWGoal}) do
+        deleteRoom(id)
+      end
+      deleteArea("MapperSpecWeighted")
+    end)
+
+    it("takes the cheapest route even though a nearer room was settled first", function()
+      local ok, weight = getPath(rWStart, rWGoal)
+      assert.is_true(ok)
+      assert.are.equal(22, weight)
+      assert.are.same({tostring(rY), tostring(rX), tostring(rWGoal)}, speedWalkPath)
     end)
   end)
 
@@ -2452,9 +2573,689 @@ describe("Tests saveMap and loadMap", function()
     end)
   end)
 
+  -- A real IRE map at full size - 22,854 rooms over 379 areas. Routing is the
+  -- one part of the mapper whose behaviour a small map cannot describe: the
+  -- distance heuristic gives up and returns 1 the moment a route leaves the
+  -- target's area, a one-way exit only matters when there is a second way
+  -- round, and an exit weight only reroutes when there is something to reroute
+  -- onto. See fixtures/maps/README.md for the map's provenance and shape.
+  describe("Tests pathfinding over a full-sized IRE map", function()
+    local archivePath = specDirectory .. "/fixtures/maps/achaea-map.zip"
+    local extractedPath = getMudletHomeDir() .. "/achaea-map.xml"
+    local mapRooms, mapAreas = 22854, 379
+
+    -- Every id below is load-bearing for the reason its name gives, so none of
+    -- them can be swapped for another room that merely also exists.
+    local ashtanWorkshop, cyreneBellTower = 107, 1192   -- 96 steps, 7 areas apart
+    local riparium, blackrock = 6595, 18690             -- the map's long diagonal
+    local mhaldorRoom, eleusisRoom = 4417, 2377         -- no route: different components
+    local cliffTop, cliffFoot = 1201, 9326              -- "down" is one-way
+    local hillside, nimick = 1432, 20646                -- joined by a hidden exit
+    local nimickDetour = 43                             -- steps round it when it is shut
+
+    -- speedWalkDir spells a direction short and getRoomExits spells it long,
+    -- so walking one against the other needs the two put side by side
+    local exitDirectionFor = {n = "north", ne = "northeast", e = "east", se = "southeast",
+                              s = "south", sw = "southwest", w = "west", nw = "northwest",
+                              up = "up", down = "down", ["in"] = "in", out = "out"}
+
+    -- A route of the right length is still wrong if its steps do not join up,
+    -- which comparing lengths alone would not notice.
+    local function routeIsWalkable(from)
+      local current = from
+      for step, direction in ipairs(speedWalkDir) do
+        local expected = tonumber(speedWalkPath[step])
+        local exits = getRoomExits(current)
+        if exits[exitDirectionFor[direction] or direction] ~= expected then
+          return false, ("step %d: %s does not lead from room %d to room %s"):format(step, direction, current, tostring(expected))
+        end
+        current = expected
+      end
+      return true
+    end
+
+    -- Two different libraries answer to the global `zip`: Mudlet asks for
+    -- lua-zip (brimworks) first and falls back to luazip (Kepler), and only
+    -- the latter's entry:read() takes io.read's "*a". brimworks wants a byte
+    -- count and raises "number expected, got string" for anything else, so
+    -- read in fixed chunks, which both understand, until one comes back empty.
+    local function readEntry(entry)
+      local chunks = {}
+      while true do
+        local chunk = entry:read(1024 * 1024)
+        if not chunk or chunk == "" then
+          break
+        end
+        chunks[#chunks + 1] = chunk
+      end
+      return table.concat(chunks)
+    end
+
+    local function areasVisited()
+      local seen, count = {}, 0
+      for _, id in ipairs(speedWalkPath) do
+        local area = getRoomArea(tonumber(id))
+        if not seen[area] then
+          seen[area] = true
+          count = count + 1
+        end
+      end
+      return count
+    end
+
+    setup(function()
+      -- zip is only defined when Mudlet preloaded the module, and lua-zip is a
+      -- required rock on every platform, so a nil here is a broken environment
+      -- rather than a reason to skip the block
+      assert.is_table(zip, "the lua-zip module is missing, so the map fixture cannot be unpacked")
+      local archive, openError = zip.open(archivePath)
+      assert(archive, ("could not open %s: %s"):format(archivePath, tostring(openError)))
+      local entry = assert(archive:open("achaea-map.xml"), "achaea-map.zip does not hold achaea-map.xml")
+      local document = readEntry(entry)
+      entry:close()
+      archive:close()
+      local out = assert(io.open(extractedPath, "wb"))
+      out:write(document)
+      out:close()
+
+      deleteMap()
+      assert.is_true(loadMap(extractedPath))
+      -- an import that quietly did nothing would leave every route below
+      -- failing for a reason that has nothing to do with routing
+      local rooms = 0
+      for _ in pairs(getRooms()) do rooms = rooms + 1 end
+      assert.are.equal(mapRooms, rooms)
+      local areas = 0
+      for _ in pairs(getAreaTable()) do areas = areas + 1 end
+      assert.are.equal(mapAreas, areas)
+    end)
+
+    teardown(function()
+      os.remove(extractedPath)
+    end)
+
+    after_each(function()
+      -- leave the graph as the setup built it even if an assertion above
+      -- stopped a spec before its own clean-up
+      setExitWeight(hillside, "east", 0)
+      setRoomWeight(nimick, 1)
+      lockExit(hillside, "east", false)
+    end)
+
+    it("walks a ninety-six step route across seven areas", function()
+      local ok, weight = getPath(ashtanWorkshop, cyreneBellTower)
+      assert.is_true(ok)
+      assert.are.equal(96, weight)
+      assert.are.equal(96, #speedWalkDir)
+      assert.are.equal(96, #speedWalkPath)
+      assert.are.equal(tostring(cyreneBellTower), speedWalkPath[#speedWalkPath])
+      assert.is_true(routeIsWalkable(ashtanWorkshop))
+      -- how many areas, and which rooms, depend on Qt's per-process hash seed
+      -- ordering the graph's vertices (issue #10181), so only the crossing
+      -- itself is pinned
+      assert.is_true(areasVisited() > 1)
+      assert.are_not.equal(getRoomArea(ashtanWorkshop), getRoomArea(cyreneBellTower))
+    end)
+
+    it("walks the map's long diagonal", function()
+      local ok, weight = getPath(riparium, blackrock)
+      assert.is_true(ok)
+      assert.are.equal(186, weight)
+      assert.are.equal(186, #speedWalkDir)
+      assert.is_true(routeIsWalkable(riparium))
+    end)
+
+    it("reports no route between two rooms the game only joins by ship", function()
+      -- both are ordinary city rooms; MMP has no way to spell the sailing that
+      -- connects them, so the imported graph really is in separate pieces
+      local ok, weight, message = getPath(mhaldorRoom, eleusisRoom)
+      assert.is_false(ok)
+      assert.are.equal(-1, weight)
+      assert.is_string(message)
+    end)
+
+    it("uses a one-way exit in its own direction only", function()
+      assert.are.equal(cliffFoot, getRoomExits(cliffTop)["down"])
+      assert.is_nil(getRoomExits(cliffFoot)["up"])
+
+      assert.is_true(getPath(cliffTop, cliffFoot))
+      assert.are.same({"down"}, speedWalkDir)
+
+      -- the way back exists but has to go the long way round
+      assert.is_true(getPath(cliffFoot, cliffTop))
+      assert.are.equal(6, #speedWalkDir)
+      assert.is_true(routeIsWalkable(cliffFoot))
+    end)
+
+    it("routes through a hidden exit, which imports as a locked door", function()
+      -- a door is a description of the exit, not a block on it: only lockExit
+      -- keeps a route out, which is worth pinning because door type 3 reads
+      -- like it would do the same
+      assert.are.equal(3, getDoors(hillside)["e"])
+      assert.is_true(getPath(hillside, nimick))
+      assert.are.same({"e"}, speedWalkDir)
+    end)
+
+    it("takes the long way round once that exit is locked", function()
+      lockExit(hillside, "east", true)
+      local ok, weight = getPath(hillside, nimick)
+      assert.is_true(ok)
+      assert.are.equal(nimickDetour, weight)
+      assert.are.equal(nimickDetour, #speedWalkDir)
+      assert.is_true(routeIsWalkable(hillside))
+    end)
+
+    it("takes an exit weight over the detour only once it costs more than one", function()
+      -- MMP carries no weights, so both routes cost their step count until a
+      -- weight is set here, which is the only way to reach the comparison
+      setExitWeight(hillside, "east", nimickDetour - 23)
+      local ok, weight = getPath(hillside, nimick)
+      assert.is_true(ok)
+      assert.are.equal(nimickDetour - 23, weight)
+      assert.are.same({"e"}, speedWalkDir)
+
+      setExitWeight(hillside, "east", nimickDetour + 57)
+      ok, weight = getPath(hillside, nimick)
+      assert.is_true(ok)
+      assert.are.equal(nimickDetour, weight)
+      assert.are.equal(nimickDetour, #speedWalkDir)
+      assert.is_true(routeIsWalkable(hillside))
+    end)
+
+    it("charges a room weight for arriving in the room", function()
+      setRoomWeight(nimick, 100)
+      local ok, weight = getPath(hillside, nimick)
+      assert.is_true(ok)
+      -- one step still, but it costs what the room asks rather than 1
+      assert.are.same({"e"}, speedWalkDir)
+      assert.are.equal(100, weight)
+    end)
+
+    -- distance_heuristic (src/TAstar.h) returns the euclidean distance between
+    -- two rooms' coordinates, but a diagonal exit costs 1 while moving a room
+    -- north-east moves sqrt(2) in coordinate space. The heuristic therefore
+    -- overestimates, which is what A* is not allowed to do, and the search can
+    -- settle for a route a step longer than the shortest one: room 747 to room
+    -- 42 comes back 93 steps where 92 exist. Flattening the target area's
+    -- coordinates - which makes the heuristic 0 wherever it is consulted -
+    -- returns 92, which is how the cause was pinned down. Left unpinned here
+    -- because it is a defect to fix rather than behaviour to hold still - every
+    -- route this block does pin is the true optimum, checked against a
+    -- breadth-first search, so a fix leaves them green.
+    pending("routes can come back a step longer than the shortest one - issue #10180")
+  end)
+
   -- setMapPerspective/shiftMapPerspective only exist in a build made with 3D
   -- mapper support, which the CI and release builds are not
   pending("setMapPerspective needs a Mudlet built with the 3D mapper")
 
   pending("shiftMapPerspective needs a Mudlet built with the 3D mapper")
+end)
+
+-- The JSON map format has a writer and a reader of its own, entirely separate
+-- from the binary one, and an import always ends by auditing what it read. Like
+-- the saveMap block above, this one replaces the whole map, so it saves what it
+-- found and hands it back.
+describe("Tests saveJsonMap and loadJsonMap", function()
+  local mapDirectory = getMudletHomeDir() .. "/map"
+  local backupPath = mapDirectory .. "/mapper_spec_json_backup.dat"
+  local jsonPath = getMudletHomeDir() .. "/mapper_spec_roundtrip.json"
+  local suffixlessPath = getMudletHomeDir() .. "/mapper_spec_suffixless"
+  local notJsonPath = getMudletHomeDir() .. "/mapper_spec_notjson.json"
+  -- nothing writes this one: it is the path the reader is asked for to be told
+  -- it is not there, so a leftover of any kind would answer a different question
+  local absentPath = getMudletHomeDir() .. "/mapper_spec_absent.json"
+
+  local missingRoomId = 990000001
+  local roomA, roomB
+
+  local function removeScratchFiles()
+    os.remove(jsonPath)
+    os.remove(suffixlessPath)
+    os.remove(suffixlessPath .. ".json")
+    os.remove(notJsonPath)
+    os.remove(absentPath)
+  end
+
+  setup(function()
+    -- the saveJsonMap and loadJsonMap bindings both reach through the mapper
+    -- widget, so they fail outright unless one has been built
+    openMapWidget("r")
+    os.remove(backupPath)
+    removeScratchFiles()
+    assert.is_true(saveMap(backupPath), "the map to be replaced could not be saved first")
+  end)
+
+  teardown(function()
+    assert.is_true(loadMap(backupPath), "the map this block replaced could not be put back")
+    -- an import shows the mapper wherever it last was, and everything after
+    -- this file is entitled to an open, right-docked widget
+    openMapWidget("r")
+    os.remove(backupPath)
+    removeScratchFiles()
+  end)
+
+  describe("Tests the saveJsonMap and loadJsonMap round-trip", function()
+    -- two rooms carrying a value for every kind of room and exit data the JSON
+    -- format stores separately, so a round-trip that dropped one shows up
+    local function buildMap()
+      deleteMap()
+      local area = addAreaName("MapperSpecJsonArea")
+      roomA = createRoomID(); addRoom(roomA); setRoomArea(roomA, area)
+      roomB = createRoomID(); addRoom(roomB); setRoomArea(roomB, area)
+      setRoomCoordinates(roomA, 0, 0, 0)
+      setRoomCoordinates(roomB, 3, -4, 5)
+      setRoomName(roomA, "Json Room A")
+      setRoomEnv(roomA, 42)
+      setRoomWeight(roomA, 7)
+      setRoomHidden(roomA, true)
+      lockRoom(roomA, true)
+      setRoomChar(roomA, "J")
+      setRoomCharColor(roomA, 11, 22, 33)
+      setRoomBorderColor(roomA, 44, 55, 66)
+      setRoomBorderThickness(roomA, 3)
+      setRoomIDbyHash(roomA, "mapperSpecJsonHash")
+      setRoomUserData(roomA, "json key", "json value")
+      setExit(roomA, roomB, "east")
+      setExitWeight(roomA, "east", 4)
+      lockExit(roomA, "east", true)
+      setDoor(roomA, "e", 3)
+      addCustomLine(roomA, {{2, 3, 0}, {4, 5, 0}}, "e", "dash dot line", {10, 20, 30}, true)
+      addSpecialExit(roomA, roomB, "squeeze through")
+      setExitWeight(roomA, "squeeze through", 6)
+      lockSpecialExit(roomA, roomB, "squeeze through", true)
+      setDoor(roomA, "squeeze through", 1)
+      setExitStub(roomA, "north", true)
+      lockExit(roomA, "north", true)
+    end
+
+    local function roundTrip()
+      assert.is_true(saveJsonMap(jsonPath))
+      -- wipe the lot, so that an import which did nothing at all cannot pass
+      deleteMap()
+      assert.is_false(roomExists(roomA))
+      assert.is_true(loadJsonMap(jsonPath))
+    end
+
+    it("puts every kind of room data back exactly as it was saved", function()
+      buildMap()
+      roundTrip()
+
+      assert.is_true(roomExists(roomA))
+      assert.is_true(roomExists(roomB))
+      assert.are.equal("Json Room A", getRoomName(roomA))
+      assert.are.same({3, -4, 5}, {getRoomCoordinates(roomB)})
+      assert.are.equal("MapperSpecJsonArea", getRoomAreaName(getRoomArea(roomA)))
+      assert.are.equal(42, getRoomEnv(roomA))
+      assert.are.equal(7, getRoomWeight(roomA))
+      assert.is_true(getRoomHidden(roomA))
+      assert.is_true(roomLocked(roomA))
+      assert.are.equal("J", getRoomChar(roomA))
+      assert.are.same({11, 22, 33}, {getRoomCharColor(roomA)})
+      -- the alpha is the default 255 because an imported map cannot carry any
+      -- other, so this pins the three channels only:
+      -- https://github.com/Mudlet/Mudlet/issues/10368
+      assert.are.same({44, 55, 66, 255}, {getRoomBorderColor(roomA)})
+      assert.are.equal(3, getRoomBorderThickness(roomA))
+      assert.are.equal(roomA, getRoomIDbyHash("mapperSpecJsonHash"))
+      assert.are.equal("json value", getRoomUserData(roomA, "json key"))
+    end)
+
+    it("puts every kind of exit data back exactly as it was saved", function()
+      buildMap()
+      roundTrip()
+
+      assert.are.equal(roomB, getRoomExits(roomA)["east"])
+      assert.are.equal(4, getExitWeights(roomA)["e"])
+      assert.is_true(hasExitLock(roomA, "east"))
+      assert.are.equal(3, getDoors(roomA)["e"])
+
+      local line = getCustomLines1(roomA)["e"]
+      assert.is_table(line)
+      assert.are.equal("dash dot line", line.attributes.style)
+      assert.is_true(line.attributes.arrow)
+      assert.are.same({10, 20, 30}, line.attributes.color)
+      assert.are.equal(2, #line.points)
+      assert.are.equal(2, line.points[1][1])
+      assert.are.equal(3, line.points[1][2])
+
+      assert.are.equal(roomB, getSpecialExitsSwap(roomA)["squeeze through"])
+      assert.are.equal(6, getExitWeights(roomA)["squeeze through"])
+      assert.is_true(hasSpecialExitLock(roomA, roomB, "squeeze through"))
+      assert.are.equal(1, getDoors(roomA)["squeeze through"])
+
+      assert.are.same({1}, getExitStubs1(roomA))
+      assert.is_true(hasExitLock(roomA, "north"))
+    end)
+
+    it("puts an exit back in each of the twelve directions", function()
+      local directions = {"north", "northeast", "northwest", "east", "west", "south",
+                          "southeast", "southwest", "up", "down", "in", "out"}
+      deleteMap()
+      local area = addAreaName("MapperSpecJsonDirectionArea")
+      roomA = createRoomID(); addRoom(roomA); setRoomArea(roomA, area)
+      -- a destination of its own per direction: pointing all twelve at one room
+      -- would pin the set of directions but not the mapping, so a reader that
+      -- swapped north for south would still pass
+      local destinations = {}
+      for _, direction in ipairs(directions) do
+        local destination = createRoomID(); addRoom(destination); setRoomArea(destination, area)
+        destinations[direction] = destination
+        assert.is_true(setExit(roomA, destination, direction))
+      end
+
+      roundTrip()
+
+      local exits = getRoomExits(roomA)
+      for _, direction in ipairs(directions) do
+        assert.are.equal(destinations[direction], exits[direction], direction)
+      end
+    end)
+
+    it("puts every custom exit line style back", function()
+      local styles = {"solid line", "dot line", "dash line", "dash dot line", "dash dot dot line"}
+      -- one direction per style, so all five travel in the same file
+      local directions = {"north", "east", "south", "west", "up"}
+      local shortDirections = {"n", "e", "s", "w", "up"}
+
+      deleteMap()
+      local area = addAreaName("MapperSpecJsonStyleArea")
+      roomA = createRoomID(); addRoom(roomA); setRoomArea(roomA, area)
+      roomB = createRoomID(); addRoom(roomB); setRoomArea(roomB, area)
+      for index, style in ipairs(styles) do
+        assert.is_true(setExit(roomA, roomB, directions[index]))
+        assert.is_true(addCustomLine(roomA, {{index, index, 0}}, shortDirections[index], style, {1, 2, 3}, index % 2 == 0))
+      end
+
+      roundTrip()
+
+      local lines = getCustomLines1(roomA)
+      for index, style in ipairs(styles) do
+        local line = lines[shortDirections[index]]
+        assert.is_table(line, style)
+        assert.are.equal(style, line.attributes.style)
+        assert.are.equal(index % 2 == 0, line.attributes.arrow, style)
+      end
+    end)
+
+    it("puts every door state back on a normal and on a special exit", function()
+      deleteMap()
+      local area = addAreaName("MapperSpecJsonDoorArea")
+      roomA = createRoomID(); addRoom(roomA); setRoomArea(roomA, area)
+      roomB = createRoomID(); addRoom(roomB); setRoomArea(roomB, area)
+      setExit(roomA, roomB, "north")
+      setExit(roomA, roomB, "east")
+      setExit(roomA, roomB, "south")
+      setDoor(roomA, "n", 1)
+      setDoor(roomA, "e", 2)
+      setDoor(roomA, "s", 3)
+      addSpecialExit(roomA, roomB, "wriggle")
+      setDoor(roomA, "wriggle", 2)
+
+      roundTrip()
+
+      local doors = getDoors(roomA)
+      assert.are.equal(1, doors["n"])
+      assert.are.equal(2, doors["e"])
+      assert.are.equal(3, doors["s"])
+      assert.are.equal(2, doors["wriggle"])
+    end)
+
+    it("keeps a stub exit's door where the long and short direction names match", function()
+      deleteMap()
+      local area = addAreaName("MapperSpecJsonStubDoorArea")
+      roomA = createRoomID(); addRoom(roomA); setRoomArea(roomA, area)
+      setExitStub(roomA, "up", true)
+      setDoor(roomA, "up", 2)
+
+      roundTrip()
+
+      -- the eight compass directions lose this:
+      -- https://github.com/Mudlet/Mudlet/issues/10369
+      assert.are.equal(2, getDoors(roomA)["up"])
+    end)
+
+    it("puts a custom environment colour back", function()
+      deleteMap()
+      local area = addAreaName("MapperSpecJsonEnvArea")
+      roomA = createRoomID(); addRoom(roomA); setRoomArea(roomA, area)
+      setRoomEnv(roomA, 501)
+      -- an ID outside 257-272, which would sync to the profile's ANSI colours
+      -- and survive the deleteMap inside roundTrip
+      setCustomEnvColor(501, 10, 20, 30, 255)
+
+      roundTrip()
+
+      assert.are.same({10, 20, 30, 255}, getCustomEnvColorTable()[501])
+    end)
+
+    it("puts a symbol font scaling below one back, rather than rounding it away", function()
+      deleteMap()
+      local area = addAreaName("MapperSpecJsonScalingArea")
+      roomA = createRoomID(); addRoom(roomA); setRoomArea(roomA, area)
+      local savedScaling = getConfig("mapSymbolFontScaling")
+      finally(function() setConfig("mapSymbolFontScaling", savedScaling) end)
+
+      -- the scaling is not room or area data, so deleteMap leaves it alone and
+      -- roundTrip cannot show it moving. Moving it somewhere else between the
+      -- two halves is what makes the value that comes back the file's own.
+      setConfig("mapSymbolFontScaling", 0.5)
+      assert.is_true(saveJsonMap(jsonPath))
+      setConfig("mapSymbolFontScaling", 2.0)
+      assert.is_true(loadJsonMap(jsonPath))
+
+      assert.are.equal(0.5, getConfig("mapSymbolFontScaling"))
+    end)
+
+    -- TMap::readJsonColor returns QColor(red, green, blue) for a colour array of
+    -- either three or four values, so the alpha the exporter wrote as
+    -- "color32RGBA" never reaches the QColor and comes back as 255. Every colour
+    -- read through that function flattens the same way, custom environment
+    -- colours included, so the test above can only use an opaque one.
+    -- https://github.com/Mudlet/Mudlet/issues/10368
+    pending("a translucent room border colour loses its alpha on import")
+
+    -- TRoom::writeJsonExitStubs looks the stub's door up under the long
+    -- direction name while TRoom::doors is keyed by the short one, so a door on
+    -- a stub survives only for up, down, in and out, whose two spellings match
+    -- https://github.com/Mudlet/Mudlet/issues/10369
+    pending("a stub exit's door is dropped on export in the eight compass directions")
+
+    -- TMap::readJsonUserData inserts each key it reads into the live map's user
+    -- data without emptying it first, and the JSON import never reaches the
+    -- clear a binary load gets, so keys the previous map had outlive it.
+    pending("map user data from the map being replaced survives a JSON import")
+  end)
+
+  describe("Tests the saveJsonMap and loadJsonMap argument contract", function()
+    it("appends the .json suffix to a destination that lacks one", function()
+      assert.is_true(saveJsonMap(suffixlessPath))
+      local written = io.open(suffixlessPath .. ".json", "r")
+      assert.is_not_nil(written, "saveJsonMap should have added the suffix itself")
+      written:close()
+      assert.is_nil(io.open(suffixlessPath, "r"))
+    end)
+
+    it("reports failure rather than raising when the file cannot be written", function()
+      local ok, err = saveJsonMap("/nosuchdirectory/mapper_spec.json")
+      assert.is_nil(ok)
+      assert.is_string(err)
+    end)
+
+    it("hard-errors on a destination that is not a string", function()
+      local ok, err = pcall(saveJsonMap, {})
+      assert.is_false(ok)
+      assert.is_truthy(tostring(err):find("saveJsonMap: bad argument #1 type", 1, true), tostring(err))
+    end)
+
+    it("returns nil and a message for an empty import path", function()
+      local ok, err = loadJsonMap("")
+      assert.is_nil(ok)
+      assert.is_truthy(err:find("a non-empty path and file name", 1, true), err)
+    end)
+
+    it("returns nil and a message for a file that is not there", function()
+      local ok, err = loadJsonMap(absentPath)
+      assert.is_nil(ok)
+      assert.is_truthy(err:find("could not open file", 1, true), err)
+    end)
+
+    it("returns nil and a message for a file that is not JSON at all", function()
+      local file = assert(io.open(notJsonPath, "w"))
+      file:write("this is not JSON")
+      file:close()
+      local ok, err = loadJsonMap(notJsonPath)
+      assert.is_nil(ok)
+      assert.is_truthy(err:find("could not parse file", 1, true), err)
+    end)
+
+    it("returns nil and a message for JSON that carries no format version", function()
+      local file = assert(io.open(notJsonPath, "w"))
+      file:write('{"areas": []}')
+      file:close()
+      local ok, err = loadJsonMap(notJsonPath)
+      assert.is_nil(ok)
+      assert.is_truthy(err:find("no format version detected", 1, true), err)
+    end)
+
+    it("returns nil and a message for a format version it cannot read", function()
+      local file = assert(io.open(notJsonPath, "w"))
+      file:write('{"formatVersion": 2, "areas": []}')
+      file:close()
+      local ok, err = loadJsonMap(notJsonPath)
+      assert.is_nil(ok)
+      assert.is_truthy(err:find("invalid format version \"2.000\" detected", 1, true), err)
+    end)
+
+    it("returns nil and a message for JSON that holds no areas", function()
+      local file = assert(io.open(notJsonPath, "w"))
+      file:write('{"formatVersion": 1}')
+      file:close()
+      local ok, err = loadJsonMap(notJsonPath)
+      assert.is_nil(ok)
+      assert.is_truthy(err:find("no areas detected", 1, true), err)
+    end)
+  end)
+
+  -- Every import ends in an audit that repairs data no mapper call can produce,
+  -- so these plant the fault into an exported file and read it back in. The last
+  -- one plants valid data rather than a fault, because the export cannot write a
+  -- compass stub's door at all: https://github.com/Mudlet/Mudlet/issues/10369
+  describe("Tests the audit of an imported JSON map", function()
+    local function buildMap()
+      deleteMap()
+      local area = addAreaName("MapperSpecJsonAuditArea")
+      roomA = createRoomID(); addRoom(roomA); setRoomArea(roomA, area)
+      roomB = createRoomID(); addRoom(roomB); setRoomArea(roomB, area)
+      setExit(roomA, roomB, "east")
+      setExit(roomA, roomB, "west")
+      addSpecialExit(roomA, roomB, "squeeze through")
+      setExitStub(roomA, "north", true)
+    end
+
+    local function findRoom(document, roomId)
+      for _, area in ipairs(document.areas) do
+        for _, room in ipairs(area.rooms or {}) do
+          if room.id == roomId then
+            return room
+          end
+        end
+      end
+      error("room " .. tostring(roomId) .. " is not in the exported document")
+    end
+
+    local function findExit(room, name)
+      for _, exit in ipairs(room.exits or {}) do
+        if exit.name == name then
+          return exit
+        end
+      end
+      error('the exported room has no exit named "' .. tostring(name) .. '"')
+    end
+
+    local function reimportWith(plantFault)
+      assert.is_true(saveJsonMap(jsonPath))
+      local file = assert(io.open(jsonPath, "r"))
+      local document = yajl.to_value(file:read("*a"))
+      file:close()
+      plantFault(document)
+      file = assert(io.open(jsonPath, "w"))
+      file:write(yajl.to_string(document))
+      file:close()
+
+      deleteMap()
+      assert.is_false(roomExists(roomA))
+      assert.is_true(loadJsonMap(jsonPath))
+    end
+
+    it("turns an exit to a room that is not in the file into a stub", function()
+      buildMap()
+      reimportWith(function(document)
+        findExit(findRoom(document, roomA), "east").exitId = missingRoomId
+      end)
+
+      assert.is_nil(getRoomExits(roomA)["east"])
+      -- the west exit was left alone, so the east one went for its own reason
+      assert.are.equal(roomB, getRoomExits(roomA)["west"])
+      local stubs = {}
+      for _, code in pairs(getExitStubs1(roomA)) do stubs[code] = true end
+      assert.is_true(stubs[4]) -- DIR_EAST
+      assert.are.equal(tostring(missingRoomId), getRoomUserData(roomA, "audit.made_stub_of_valid_but_missing_exit.4"))
+    end)
+
+    it("removes a special exit to a room that is not in the file", function()
+      buildMap()
+      reimportWith(function(document)
+        findExit(findRoom(document, roomA), "squeeze through").exitId = missingRoomId
+      end)
+
+      assert.is_nil(getSpecialExitsSwap(roomA)["squeeze through"])
+      assert.are.equal(roomB, getRoomExits(roomA)["east"])
+      assert.are.equal(tostring(missingRoomId),
+                       getRoomUserData(roomA, "audit.removed_valid_but_missing_special_exit.squeeze through"))
+    end)
+
+    it("drops a stub that stands in the same direction as a real exit", function()
+      buildMap()
+      reimportWith(function(document)
+        local room = findRoom(document, roomA)
+        room.stubExits[#room.stubExits + 1] = {name = "east"}
+        room.stubExits[#room.stubExits + 1] = {name = "south"}
+      end)
+
+      local stubs = {}
+      for _, code in pairs(getExitStubs1(roomA)) do stubs[code] = true end
+      assert.are.equal(roomB, getRoomExits(roomA)["east"])
+      assert.is_nil(stubs[4]) -- DIR_EAST, dropped because the exit outranks it
+      -- the south stub has no exit to give way to, so it is the control
+      assert.is_true(stubs[6]) -- DIR_SOUTH
+      assert.is_true(stubs[1]) -- DIR_NORTH
+    end)
+
+    it("ignores a stub exit named as a special exit command", function()
+      buildMap()
+      reimportWith(function(document)
+        local room = findRoom(document, roomA)
+        room.stubExits[#room.stubExits + 1] = {name = "squeeze through"}
+      end)
+
+      -- a stub in a direction Mudlet has no code for is skipped rather than
+      -- stored as DIR_OTHER
+      assert.are.same({1}, getExitStubs1(roomA))
+      assert.are.equal(roomB, getSpecialExitsSwap(roomA)["squeeze through"])
+    end)
+
+    it("keeps a door and a lock that a stub exit carries", function()
+      buildMap()
+      reimportWith(function(document)
+        local room = findRoom(document, roomA)
+        room.stubExits[1].door = "closed"
+        room.stubExits[1].locked = true
+      end)
+
+      assert.are.same({1}, getExitStubs1(roomA))
+      assert.are.equal(2, getDoors(roomA)["n"])
+      assert.is_true(hasExitLock(roomA, "north"))
+    end)
+  end)
 end)
