@@ -1530,6 +1530,9 @@ export class LuaRuntime implements IScriptingRuntime {
                 console.warn('[saveProfile] vfs flush failed:', err);
                 this.emitEvent('sysSaveProfileError', [path, msg]);
             });
+            // An install asked for before this turn ends is racing the write
+            // just started, so it is put off until the turn is over.
+            this.api.markProfileSaveInFlight();
             return [true, written.path];
         });
 

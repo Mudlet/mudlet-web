@@ -1871,6 +1871,17 @@ export class ScriptingEngine implements EngineHost {
      * script log and handed back to Lua for Mudlet's (ok, err) contract.
      */
     installPackageFromVfsPath(path: string): InstallOutcome {
+        // Before anything else, the path included. A profile save is not over
+        // when saveProfile() returns — the VFS flush that makes it durable is
+        // still running — and an install that wrote through the middle of one
+        // would interleave with it. So it is put off and answers true there and
+        // then, which is why an EMPTY path answers true while a save runs and
+        // its own complaint when none does: the postponement is at the head,
+        // above every check.
+        if (this.profileSaveInFlight) {
+            this.postponedInstalls.push(path);
+            return { ok: true, error: null };
+        }
         const vfs = this.vfs;
         if (!vfs) {
             const error = 'no profile VFS available';
@@ -2483,6 +2494,46 @@ export class ScriptingEngine implements EngineHost {
      * Same batching as toggleTriggerByName: one set() collapses N matches into
      * a single subscription tick (and a single TimerEngine.loadPerm rebuild).
      */
+    /** Whether the flush that makes a profile save durable is still running.
+     *  An install asked for during one is put off rather than interleaved. */
+    private profileSaveInFlight = false;
+    /** Paths handed to installPackage while a save was running, in order. */
+    private readonly postponedInstalls: string[] = [];
+
+    /**
+     * Hold installs until the save's flush has settled, then carry out the ones
+     * that arrived meanwhile.
+     *
+     * The postponed install already answered true to its caller, so there is no
+     * return value left for a failure to travel back on — saying it on the main
+     * console is all that remains, quiet caller or not.
+     */
+    markProfileSaveInFlight(): void {
+        this.profileSaveInFlight = true;
+        // Scheduled on the TIMER ENGINE rather than a plain setTimeout, because
+        // a spec never gives the browser its thread back: pumpEvents() stands in
+        // for the event loop by firing mudix's own due timers in a synchronous
+        // loop, so a setTimeout callback would not run until the spec was over
+        // and every later install would be held behind it.
+        //
+        // The window itself is the turn that asked for the save. Mudlet's save
+        // runs off the event loop and installs during it are put off; mudix
+        // writes the profile synchronously, so what an install can still race is
+        // the write it just started. Tying it to the VFS flush instead — the
+        // durability step — is unbounded, and held installs for good.
+        this.timerEngine.addTemp(0, () => {
+            this.profileSaveInFlight = false;
+            while (this.postponedInstalls.length > 0) {
+                const path = this.postponedInstalls.shift()!;
+                const outcome = this.installPackageFromVfsPath(path);
+                // The postponed install already answered true to its caller, so
+                // there is no return value left for the failure to travel back
+                // on. Saying it on the main console is all that remains.
+                if (!outcome.ok) this.api.postInfo(`Package install failed — ${outcome.error}`);
+            }
+        });
+    }
+
     /** Runs a package's config.lua the way Mudlet does — in an environment with
      *  nothing in it — so a manifest that would raise is read as raising here
      *  too. Bound rather than a method reference so the installer can hold it. */

@@ -6109,6 +6109,11 @@ export class ScriptingAPI {
      * warnIfUnencodable gives: a line the player can read has to be a line
      * getLines() and the cursor APIs can see.
      */
+    /** Held installs wait on the save's flush; see ScriptingEngine. */
+    markProfileSaveInFlight(): void {
+        this.host.markProfileSaveInFlight();
+    }
+
     postInfo(text: string): void {
         const notice = `\x1b[36m[ INFO ]\x1b[0m  - ${text}`;
         this.mainConsole.appendLine(new AnsiAwareBuffer(notice));
