@@ -51,6 +51,18 @@
 # permissions: **Allow GitHub Actions to create and approve pull requests**.
 # Without it `gh pr create` is refused and the run fails with GitHub's own error
 # (which the triage issue then quotes). Nothing else needs configuring.
+#
+# ## Why the cron is upstream-only but the button is not
+#
+# A fork that enables Actions inherits this cron, and every morning it pushes a
+# sync branch into that fork and then fails on the repository setting above —
+# noise nobody asked for, in a repo whose owner never chose to run a sync. So the
+# schedule is pinned to this repository.
+#
+# `workflow_dispatch` deliberately is not. Reproducing a red sync locally is
+# painful and running it is the honest way to see what upstream did, so a fork
+# owner who wants that can press the button; they just have to opt in each time.
+# `GH_REPO` below is what makes that land where they expect — see the note there.
 name: Sync Mudlet upstream
 
 on:
@@ -78,6 +90,9 @@ permissions:
 jobs:
   sync:
     name: Sync ${{ matrix.title }}
+    # The cron belongs to this repository; the button belongs to anyone who
+    # presses it. See the header.
+    if: github.event_name != 'schedule' || github.repository == 'Mudlet/mudlet-web'
     runs-on: ubuntu-latest
     # Long enough to sit through a full ci.yml run on the branch (e2e alone is
     # capped at 30 minutes per shard) on top of the syncs themselves.
@@ -111,7 +126,12 @@ jobs:
                 vendoring is not preinstalling, and a bumped archive needs its declared
                 `version` bumped to match;
               - commits pushed here survive: tomorrow's sync stacks onto this PR rather
-                than replacing it.
+                than replacing it;
+              - without push access, branch off `chore/sync-mudlet-upstream` and open
+                your PR with **that branch as the base**, not `master` — merged there,
+                the fix lands in this batch and tomorrow's sync stacks on top of it.
+                Basing on `master` instead splits the triage across two PRs, and this
+                one comes back red tomorrow.
             triage: |
               The spec corpus is a verbatim mirror of Mudlet's tests, so this is far more likely a genuine parity gap than a broken sync: upstream has specs for behaviour this client does not match yet. `yarn busted:failures` re-runs just the failures, and a divergence that should *not* be closed belongs in `e2e/knownDivergences.ts`. The PR stays open, and tomorrow's sync stacks onto it.
           - id: games
@@ -141,6 +161,14 @@ jobs:
       # IP burns through easily.
       GH_TOKEN: ${{ github.token }}
       GITHUB_TOKEN: ${{ github.token }}
+      # Every `gh` call below means "the repo this run belongs to". Unset, `gh`
+      # infers that from the checkout's remotes, and for a fork it prefers the
+      # parent — so a fork owner's manual run would list, open and merge PRs
+      # against Mudlet/mudlet-web instead of their own fork. Today that is a 403
+      # rather than a surprise, because a fork's token has no write upstream; the
+      # pin is what keeps it from becoming one. `gh api repos/Mudlet/Mudlet/...`
+      # names its path in full and is unaffected.
+      GH_REPO: ${{ github.repository }}
       UPSTREAM_REF: ${{ inputs.ref || 'development' }}
       # Both deliberately used unquoted, as word-split lists.
       SYNC_SCRIPTS: ${{ matrix.scripts }}
@@ -347,6 +375,15 @@ jobs:
             "$RUN_URL" >> issue.md
 
           issue_title="$TITLE sync needs triage"
+          # A fork has its issue tracker off by default, so on a manual run there
+          # is nowhere to file this. The triage notes are the point, not the issue
+          # that carries them — put them in the step summary and stop, rather than
+          # ending the run on a second, unrelated failure that hides the first.
+          if [ "$(gh repo view --json hasIssuesEnabled --jq .hasIssuesEnabled)" != 'true' ]; then
+            echo "::notice::Issues are disabled on $GITHUB_REPOSITORY — triage notes are in the run summary."
+            { echo "## $issue_title"; echo; cat issue.md; } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           existing=$(gh issue list --state open --search "\"$issue_title\" in:title" \
             --json number --jq '.[0].number // ""')
           if [ -n "$existing" ]; then

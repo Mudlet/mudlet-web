@@ -22,6 +22,11 @@ on:
 
 jobs:
   publish:
+    # No fork can satisfy the paragraph above: the Trusted Publisher on npm names
+    # this repository and this filename, and the package name is scoped to
+    # `@mudlet`. A fork that enables Actions and pushes a synced `v*` tag would
+    # get a confusing OIDC rejection instead of a clear "not yours to publish".
+    if: github.repository == 'Mudlet/mudlet-web'
     runs-on: ubuntu-latest
     permissions:
       contents: read
