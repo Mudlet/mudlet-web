@@ -67,6 +67,12 @@ under a page's control, and the map is always drawn smoothly.
 **No user dictionary.** Spell checking here can only ever be the browser's, and its word
 list belongs to your operating system rather than to a profile.
 
+**No saving the map in an older format.** Mudlet Web reads every map format desktop
+writes, and always saves in the current one (version 20). Desktop lets you pick an older
+format to take a map back to an older Mudlet; the map library Mudlet Web is built on
+writes only the current format, and is not going to change that. If you need an older
+one, save the map from desktop Mudlet instead.
+
 ## What's missing but shouldn't be
 
 These apply perfectly well to a browser. They are on the list.
@@ -79,11 +85,6 @@ sixteen-colour palette aren't settable yet — the map renderer doesn't expose t
 keybindings work normally — create them in the editor as you would on desktop. Note that
 combinations the browser has claimed (Ctrl+T, Ctrl+W and friends) never reach the page
 at all; see [Browsers and limits](./browsers.md).
-
-**Saving the map in an older format.** Mudlet Web reads every map format desktop writes,
-but always saves in the current one (version 20). Desktop lets you pick an older format
-to take a map back to an older Mudlet; the map library Mudlet Web is built on can only
-write the current one.
 
 **A few smaller ones.** Naming your log files, and choosing which glyphs a room symbol
 may be drawn from.
