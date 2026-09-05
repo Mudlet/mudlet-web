@@ -41,28 +41,37 @@ Help modal and is linked from Settings itself.
 Counts after the work described in "What was built" below. The figures the audit
 opened with — 78 present, 8 elsewhere, 58 missing — are in that section.
 
+**Generated from the rows below** — run `node scripts/settings-audit-count.mjs
+docs/settings-divergence.md` and paste the result here after changing any row. It was
+maintained by hand at first and drifted four times, the last by five settings across four
+pages, always in the flattering direction. The unit is a setting, not a row: a handful of
+rows collapse a block of identical controls under one label, and the script knows which.
+
 | Desktop page | ✅ | 📍 | 🚧 | ❌ |
 |---|---|---|---|---|
-| General | 9 | — | 3 | 6 |
+| General | 9 | — | 1 | 8 |
 | Input line | 8 | — | — | 2 |
-| Main display | 19 | — | — | 1 |
+| Main display | 18 | — | 1 | 1 |
 | Editor | 5 | — | 1 | — |
 | Color view | 24 | — | — | — |
-| Mapper | 9 | — | 10 | 1 |
-| Mapper colors | 9 | — | 19 | — |
+| Mapper | 10 | — | 9 | 1 |
+| Mapper colors | 8 | — | 20 | — |
 | Chat | — | — | — | 20 |
-| Connection | 7 | — | — | 4 |
+| Connection | 10 | — | — | 4 |
 | Shortcuts | — | — | 1 | — |
 | Accessibility | 7 | — | — | — |
-| Special Options | 10 | — | 2 | 3 |
-| **Total** | **107** | **—** | **36** | **37** |
+| Special Options | 9 | — | 2 | 3 |
+| **Total** | **108** | **—** | **35** | **39** |
+
+One row is marked ⚠️ rather than counted: "Border size", which the renderer merges into
+`lineWidth` alongside exit size — neither present nor absent.
 
 Three things the totals don't show, and which matter more than the totals do:
 
 - **Parity is not evenly spread.** Accessibility, Color view and Main display are
   complete. Mapper colors is still thin and Shortcuts is empty.
 - **Most of what remains is blocked upstream — but check before you say so.** 24 of the
-  36 need a field `mudlet-map-renderer` does not have, and each of those rows now names
+  35 need a field `mudlet-map-renderer` does not have, and each of those rows now names
   the field it would need. An earlier pass called the whole map backlog blocked, which
   was wrong twice over: the room symbol font was the renderer's `fontFamily` all along,
   and "Border size" is merged into `lineWidth` rather than absent. Both are marked as
@@ -102,29 +111,39 @@ and 37 impossible. Acting on it closed 29 rows:
   withholds. The shell indexes card text off the DOM, so searching the desktop wording
   finds the explanation.
 
-What is still 🚧 and why, in short.
+### What is left, and what is not planned
 
-**Blocked upstream in the renderer** (24) — each row below names the missing field: the
-16 map ANSI colours (the environment palette, which the renderer reads from map data
-with no override), room border, upper/lower level and overlapping-room colours, drawing
-rooms on adjacent z-levels, the area-exit arrow size, invert zoom direction, and "only
-use glyphs from the chosen font". The zoom one is worth singling out: the renderer owns
-the wheel handler, so inverting it here would mean swallowing the event and synthesising
-a replacement.
+Everything still marked 🚧 falls into one of two buckets. Neither is an open-ended
+backlog: the first is tracked, the second is a decision.
 
-**Needs a subsystem that does not exist** (2): interface language wants a translation
-layer, and the shortcut editor wants a shortcut registry.
+**Tracked for implementation** (5) — [issue #128](https://github.com/Mudlet/mudlet-web/issues/128):
+the text analyzer, the editor's "Show Line/Paragraphs", "report map issues on screen",
+the symbol usage report, and map format version. All five are ordinary work in this
+repository, needing nothing upstream and no new subsystem.
 
-**Deliberately not settings** (2): desktop's timer-size debug threshold and "Report all
-Codepoint problems immediately" configure diagnostics mudix does not produce, so the
-setting would be a knob attached to nothing — they become worth adding when the
-diagnostic does.
+**Not planned** (30). Not a judgement about whether they are worth having — a statement
+that building them here is not the next move:
 
-**Buildable here, simply not done yet** (8): the text analyzer, log naming and format,
-"Show Line/Paragraphs", map format version, "report map issues on screen", the symbol
-usage report, loading an older map version, and copying a map to another profile — that
-last crosses a profile boundary, and the export path mounts profiles one at a time on
-purpose, so the cheap shape is write-then-import rather than two live VFS handles.
+- *Blocked upstream in `mudlet-map-renderer`* (24). The 16 map ANSI colours (the
+  environment palette, which the renderer reads from map data with no override), room
+  border, upper/lower level and overlapping-room colours, drawing rooms on adjacent
+  z-levels, the area-exit arrow size, invert zoom direction, and "only use glyphs from
+  the chosen font". Each row names the field it would need. Most of this is one upstream
+  change — a colour-override table plus a handful of flags — after which the UI here is
+  small. Invert zoom is the odd one out: the renderer owns the wheel handler, so doing
+  it here would mean swallowing the event and synthesising a replacement.
+- *Needs a subsystem that does not exist* (2). Interface language wants a translation
+  layer; the shortcut editor wants a shortcut registry. Both are projects in their own
+  right, and the shortcut editor has a ceiling besides — combinations the browser has
+  claimed can never be bound, so the editor would have to refuse them.
+- *A knob attached to nothing* (2). Desktop's timer-size debug threshold and "Report all
+  Codepoint problems immediately" configure diagnostics mudix does not emit. The warning
+  is the feature; the threshold only becomes worth adding once there is something to
+  threshold.
+- *Cheaper as an export than as a setting* (2). Loading an older map version needs
+  version history that is not stored, and copying a map to another profile crosses a
+  profile boundary the export path deliberately mounts one at a time. Both are already
+  reachable by exporting the map and importing it where you want it.
 
 ---
 
@@ -170,8 +189,8 @@ purpose, so the cheap shape is write-then-import rather than two live VFS handle
 | Save log files in HTML format instead of plain text | ✅ | Both are recorded for every line and the format is chosen at export (HTML, ZIP, JSON). General → Log options now opens the Logs browser, where that choice lives |
 | Add timestamps at the beginning of log lines | ✅ | Timestamps are always recorded; the Logs browser toggles whether they show, and Settings now leads there |
 | Save log files in: (folder) | ❌ | Logs live in IndexedDB. A page cannot write to a folder without a per-save user gesture, so an unattended per-line log file is not possible |
-| Log format (combo) | 🚧 | No naming or format control |
-| Log name | 🚧 | Sessions are named by timestamp |
+| Log format (combo) | ❌ | Both halves of desktop's naming scheme describe a file being appended to on disk as you play. Nothing here is: a session is a row in IndexedDB keyed by its start time, and a *file* only exists at the moment you export one, where you pick the format then (HTML, ZIP, JSON). There is no name to template and no format to fix in advance |
+| Log name | ❌ | Same reason — the session has an identity, not a filename |
 | — | | *Web-only:* **Record session logs** on/off, per profile (desktop starts logging from its toolbar instead) |
 
 ---
