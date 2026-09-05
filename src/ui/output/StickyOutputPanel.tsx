@@ -184,6 +184,19 @@ export function StickyOutputPanel({
         ['--wrap-indent' as string]: `${indent - hanging}ch`,
     } : {};
 
+    // Half a column of slack on the wrap cap (`--wrap-cols` backs
+    // `.output-msg-content { max-width }`). A line is not one text run: every
+    // colour change starts a new inline box, and the browser rounds each box's
+    // advance up to a layout unit, so N columns spread over several runs can
+    // measure a hair wider than `N`ch and the tail folds onto a second line —
+    // while the same N columns in one colour do not. Mudlet cannot show this:
+    // TTextEdit paints on an integer cell grid where a colour change costs no
+    // width. Half a column absorbs the rounding (hundreds of runs' worth) and
+    // is still far short of admitting column N+1, which needs a full one.
+    const wrapCols = (wrapAt && wrapAt > 0)
+        ? { ['--wrap-cols' as string]: `${wrapAt + 0.5}ch` }
+        : {};
+
     const wrapStyle: React.CSSProperties | undefined = (background || backgroundExtra || foreground || fontSize || fontFamily || lineHeight || (wrapAt && wrapAt > 0) || indent > 0 || hanging > 0) ? {
         ...(background ? { background } : {}),
         ...(backgroundExtra ?? {}),
@@ -191,7 +204,7 @@ export function StickyOutputPanel({
         ...(fontSize ? { fontSize: `${fontSize}pt` } : {}),
         ...(fontFamily ? { fontFamily: `${fontFamily}, monospace` } : {}),
         ...(lineHeight ? { lineHeight: `${lineHeight}px` } : {}),
-        ...(wrapAt && wrapAt > 0 ? { ['--wrap-cols' as string]: `${wrapAt}ch` } : {}),
+        ...wrapCols,
         ...indentStyle,
     } : undefined;
 
@@ -229,7 +242,7 @@ export function StickyOutputPanel({
                     ...(foreground ? { color: foreground } : {}),
                     ...(fontSize ? { fontSize: `${fontSize}pt` } : {}),
                     ...(fontFamily ? { fontFamily: `${fontFamily}, monospace` } : {}),
-                    ...(wrapAt && wrapAt > 0 ? { ['--wrap-cols' as string]: `${wrapAt}ch` } : {}),
+                    ...wrapCols,
                     ...indentStyle,
                 }}
             >

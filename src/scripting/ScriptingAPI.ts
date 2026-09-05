@@ -42,6 +42,7 @@ import {
     getRegisteredFontFamilies,
     getCachedLocalFonts,
     primeLocalFontsCache,
+    getFontGeneration,
     DEFAULT_OUTPUT_FONT_FAMILY,
 } from '../utils/fontLoader';
 import { isQtResourcePath, qtResourceUrl } from '../assets/qt-resources';
@@ -348,14 +349,30 @@ if (typeof document !== 'undefined') {
  * the font bounding box ascent+descent when available, falling back to 1.2x
  * size which matches the line-height Qt's QFontMetrics reports for common
  * fonts.
+ *
+ * The numbers are NOT rounded, even though Mudlet's are (QFontMetrics answers
+ * in whole pixels). Qt can round because TTextEdit then *lays the text out* on
+ * that same integer grid; the DOM lays it out on the font's real fractional
+ * advance, so a rounded-down cell hands scripts a column that does not exist.
+ * The classic caller is `setWindowWrap(win, math.floor(pixelWidth / cellW))`:
+ * at 11pt Fira Code the true advance is 9.02px, and rounding it to 9 wraps a
+ * 234px console at 26 columns when only 25 fit — every padded row then folds
+ * its right-hand value onto the next line.
  */
 // Geyser calls calcFontSize on the per-constraint path (character-unit
 // constraints), so a single re-layout of a large widget tree can reach it
 // thousands of times. Allocating a canvas + 2D context per call costs ~41µs;
 // the result depends only on (family, size), so measure once and reuse both the
 // context and the answer. Measured over 5000 calls: 207ms → 0.1ms.
+//
+// …but only until a font loads: canvas resolves the family against the faces
+// the document has *right now*, so a cell measured before the profile's own
+// font arrives is a fallback's cell. The whole cache is dropped when the font
+// generation moves (see fontLoader.getFontGeneration) rather than keyed by it,
+// so the entries measured against the fallback don't linger.
 let measureCtx: CanvasRenderingContext2D | null | undefined;
 const measureCache = new Map<string, [number, number]>();
+let measureCacheGeneration = -1;
 
 /** Mudlet's scrollback floor and ceiling for setConsoleBufferSize — shared with
  *  the profile setting so the Lua API and the Settings control agree on both
@@ -385,8 +402,13 @@ function mxpWindowId(name: string): string {
 
 function measureMonospaceCell(family: string, size: number): [number, number] {
     const px = size * 4 / 3;
-    const fallback: [number, number] = [Math.round(px * 0.6), Math.round(px * 1.2)];
+    const fallback: [number, number] = [px * 0.6, px * 1.2];
     if (typeof document === 'undefined') return fallback;
+    const generation = getFontGeneration();
+    if (generation !== measureCacheGeneration) {
+        measureCache.clear();
+        measureCacheGeneration = generation;
+    }
     const cacheKey = `${family}|${size}`;
     const hit = measureCache.get(cacheKey);
     if (hit) return hit;
@@ -405,7 +427,7 @@ function measureMonospaceCell(family: string, size: number): [number, number] {
     const height = (typeof ascent === 'number' && typeof descent === 'number')
         ? ascent + descent
         : px * 1.2;
-    const cell: [number, number] = [Math.round(m.width), Math.round(height)];
+    const cell: [number, number] = [m.width, height];
     measureCache.set(cacheKey, cell);
     return cell;
 }

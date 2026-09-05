@@ -10,6 +10,39 @@ function quoteFamily(family: string): string {
 }
 
 /**
+ * Bumped every time a family becomes usable that wasn't before — a profile
+ * font materialised out of the VFS, a `@font-face` stylesheet finishing, a
+ * package installing its own font.
+ *
+ * Anything that *measures* a font has to cache (canvas metrics are hot enough
+ * that Geyser's per-constraint layout would otherwise dominate a reflow), and a
+ * measurement taken before the family exists silently answers for a fallback:
+ * "Fira Code Willowdale" at 11pt measured 8.83px against Bitstream Vera Sans
+ * Mono, then 9.02px once the real face arrived. Cached under a plain
+ * family+size key that first answer never expires, and every script that turns
+ * a cell width into a column count (`math.floor(width / cellW)`) is wrong for
+ * the life of the page. Cache under this generation instead and a stale
+ * measurement can only survive until the font that invalidates it loads.
+ */
+let fontGeneration = 0;
+
+/** Cache-key component for anything that memoises a font measurement. */
+export function getFontGeneration(): number {
+    return fontGeneration;
+}
+
+/** Note that a family became usable — see `getFontGeneration`. */
+export function bumpFontGeneration(): void {
+    fontGeneration++;
+}
+
+// `loadingdone` covers the faces we never register by hand: `@font-face` rules
+// in a profile stylesheet, and anything a package's CSS pulls in.
+if (typeof document !== 'undefined' && document.fonts?.addEventListener) {
+    document.fonts.addEventListener('loadingdone', bumpFontGeneration);
+}
+
+/**
  * DOM offsetWidth probe: render the same text once with each of three generic
  * fallbacks and once with the candidate family prepended; if any pair diverges,
  * the candidate is being applied. We probe all three generics because a
@@ -271,6 +304,7 @@ export async function loadFontFromUrl(family: string, url: string): Promise<void
     } catch {
         // Stylesheet may still be loading; the canvas check will surface failures.
     }
+    bumpFontGeneration();
 }
 
 const loadedVfsKeys = new Set<string>();
@@ -290,6 +324,7 @@ export async function loadFontFromVfs(family: string, path: string, vfs: Profile
     await face.load();
     document.fonts.add(face);
     loadedVfsKeys.add(key);
+    bumpFontGeneration();
 }
 
 const OUTPUT_FONT_VAR = '--font-output';

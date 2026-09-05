@@ -44,6 +44,7 @@ import {installCommandLineBindings} from './bindings/commandLine';
 import {installDiagnosticsBindings} from './bindings/diagnostics';
 import {installSessionBindings} from './bindings/session';
 import {installUserWindowBindings} from './bindings/userWindows';
+import {MAPPER_WIDGET_ID} from '../../ui/windows/types';
 import {describeThrown} from '../../utils/describeThrown';
 
 // wasmoon doesn't re-export its opaque lua_State pointer type; derive it from
@@ -1034,12 +1035,24 @@ export class LuaRuntime implements IScriptingRuntime {
         // userwindows. For labels, each call bumps z past every other raised
         // label (or below every other lowered one). For userwindows, the call
         // restacks the floating window. Returns true if the target existed.
+        //
+        // The embedded mapper answers to the literal name "mapper", as it does
+        // in TMainConsole::raiseWindow/lowerWindow — that console has no name of
+        // its own, so Mudlet special-cases the word. Geyser.Mapper:raise() is
+        // exactly `raiseWindow("mapper")`, and without this a UI that restacks
+        // its widgets (raise the panel background, then its contents) buries the
+        // mapper under its own background label. Checked last, so a label,
+        // command line, scroll box or window a script actually named "mapper"
+        // still wins — Mudlet resolves those before the mapper too.
+        const mapperNamed = (name: string): boolean =>
+            name.toLowerCase() === 'mapper' && this.api.windows.has(MAPPER_WIDGET_ID);
         const raiseAny = (name: unknown): boolean => {
             if (typeof name !== 'string') return false;
             if (this.api.labels.has(name)) { this.api.labels.raise(name); return true; }
             if (this.api.cmdLines.has(name)) { this.api.cmdLines.raise(name); return true; }
             if (this.api.scrollBoxes.has(name)) { this.api.scrollBoxes.raise(name); return true; }
             if (this.api.windows.has(name)) { this.api.windows.bringToFront(name); return true; }
+            if (mapperNamed(name)) { this.api.windows.bringToFront(MAPPER_WIDGET_ID); return true; }
             // A bare Geyser container identity (no real widget of its own —
             // e.g. Adjustable.Container's raiseAll() raises self.name before
             // each child). Mudlet's flat z-order has nothing to raise for it;
@@ -1053,6 +1066,7 @@ export class LuaRuntime implements IScriptingRuntime {
             if (this.api.cmdLines.has(name)) { this.api.cmdLines.lower(name); return true; }
             if (this.api.scrollBoxes.has(name)) { this.api.scrollBoxes.lower(name); return true; }
             if (this.api.windows.has(name)) { this.api.windows.sendToBack(name); return true; }
+            if (mapperNamed(name)) { this.api.windows.sendToBack(MAPPER_WIDGET_ID); return true; }
             return false;
         };
         this.lua.global.set('raiseWindow', raiseAny);
