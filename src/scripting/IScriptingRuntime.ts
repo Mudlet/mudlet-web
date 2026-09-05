@@ -78,6 +78,14 @@ export interface IScriptingRuntime {
      * always run; the trigger "matches" only when the body returns truthy.
      */
     evalTriggerPattern(code: string): boolean;
+
+    /** Run a package's `config.lua` in an empty environment and report what it
+     *  set, or why it never finished — the way Mudlet reads a manifest.
+     *
+     *  Optional: a runtime that cannot run one leaves the installer to read the
+     *  manifest by pattern, which is enough for a well-formed config.lua and
+     *  cannot tell a manifest that would raise from one that would not. */
+    readPackageConfig?(source: string): { ok: true; info: Record<string, string> } | { ok: false; reason: string };
     /**
      * Raise sysDataSendRequest and report whether a handler called
      * denyCurrentSend().

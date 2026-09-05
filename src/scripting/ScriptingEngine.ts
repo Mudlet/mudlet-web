@@ -1215,7 +1215,15 @@ export class ScriptingEngine implements EngineHost {
             return { ok: false, error };
         }
         try {
-            const prepared = prepareModuleInstallFromVfsPath(path, vfs, p => this.runtimes.lua?.readBuiltinBytes?.(p) ?? null);
+            const prepared = prepareModuleInstallFromVfsPath(
+                path, vfs,
+                p => this.runtimes.lua?.readBuiltinBytes?.(p) ?? null,
+                this.readPackageConfig,
+            );
+            // Said here too, because this is a module the user asked for. The
+            // syncs and reloads that follow go through reloadModuleFromVfs,
+            // which reads no manifest and so cannot repeat it.
+            if (prepared.configProblem) this.announceLostManifest(prepared.manifest.name);
             // Refused rather than reinstalled, like a package — and for the
             // stronger reason: a module carries the user's own edits back out to
             // its file, so installing over one would discard work that exists
@@ -1893,7 +1901,15 @@ export class ScriptingEngine implements EngineHost {
         try {
             const buf = builtin ?? vfs.readBinaryFile(path);
             const filename = path.split('/').pop() || path;
-            const prepared = preparePackageInstall(filename, buf, vfs, { sourcePath: path });
+            const prepared = preparePackageInstall(filename, buf, vfs, {
+                sourcePath: path,
+                readConfig: this.readPackageConfig,
+            });
+            // Said on the install the user asked for, and only there — a module
+            // is re-read on every profile save and on every reloadModule(), and
+            // repeating it would be the same sentence over and over about a
+            // manifest they were told about once already.
+            if (prepared.configProblem) this.announceLostManifest(prepared.manifest.name);
             // Refused, not replaced: a second install would silently discard
             // whatever the user had changed in the first, and a script looping
             // over a package list would do it repeatedly.
@@ -2451,6 +2467,27 @@ export class ScriptingEngine implements EngineHost {
      * Same batching as toggleTriggerByName: one set() collapses N matches into
      * a single subscription tick (and a single TimerEngine.loadPerm rebuild).
      */
+    /** Runs a package's config.lua the way Mudlet does — in an environment with
+     *  nothing in it — so a manifest that would raise is read as raising here
+     *  too. Bound rather than a method reference so the installer can hold it. */
+    private get readPackageConfig(): ((source: string) => ReturnType<NonNullable<IScriptingRuntime['readPackageConfig']>>) | undefined {
+        const lua = this.runtimes.lua;
+        // Undefined rather than a reader that always fails: without a runtime
+        // the installer falls back to reading the manifest by pattern, where
+        // reporting "could not be read" would lose every manifest instead.
+        if (!lua?.readPackageConfig) return undefined;
+        return source => lua.readPackageConfig!(source);
+    }
+
+    /** What a lost manifest costs, said once, where the player will see it: the
+     *  package installed under the archive's own name and filed no details, so a
+     *  name-based uninstall, a repository update and anything depending on it
+     *  all stop matching with nothing to go on. */
+    private announceLostManifest(packageName: string): void {
+        this.api.postInfo(`The config.lua of "${packageName}" could not be read,`
+            + ' so it has been installed under the name of its file and describes itself with nothing.');
+    }
+
     toggleTimerByName(name: string, enabled: boolean): boolean {
         const store = useAppStore.getState();
         const timers = store.connectionTimers[this.connectionId] ?? [];

@@ -6100,6 +6100,21 @@ export class ScriptingAPI {
         this.echo(`${text}\n`);
     }
 
+    /**
+     * A notice for the player in the main window — not a script fault, so not
+     * printError, which only reaches main when the profile asked for errors
+     * there and would be missed by exactly the person who needs it.
+     *
+     * Written to the buffer as well as emitted, for the reason
+     * warnIfUnencodable gives: a line the player can read has to be a line
+     * getLines() and the cursor APIs can see.
+     */
+    postInfo(text: string): void {
+        const notice = `\x1b[36m[ INFO ]\x1b[0m  - ${text}`;
+        this.mainConsole.appendLine(new AnsiAwareBuffer(notice));
+        this.session.events.emit('message', notice, 'script', Date.now());
+    }
+
     printError(text: string, source?: ScriptLogSource): void {
         this.session.events.emit('script.log', text, 'error', source);
         if (this.showErrorsInMainWindow) {

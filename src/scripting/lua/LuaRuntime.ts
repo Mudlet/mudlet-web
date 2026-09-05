@@ -3646,6 +3646,31 @@ end`);
     }
 
     /**
+     * A package's `config.lua`, read the way Mudlet reads one: by RUNNING it in
+     * an environment with nothing in it. Returns the string and number globals
+     * the chunk set, or the reason it never finished — a manifest that raises
+     * partway leaves nothing behind, which is the contract packages are written
+     * against and the reason a pattern match is not good enough here.
+     */
+    readPackageConfig(source: string): { ok: true; info: Record<string, string> } | { ok: false; reason: string } {
+        this.lua.global.set('__mudix_cfg_src', source);
+        this.runChunk('__mudix_read_package_config(__mudix_cfg_src)', 'package-config');
+        const ok = this.lua.global.get('__mudix_cfg_ok') === true;
+        if (!ok) {
+            const reason = String(this.lua.global.get('__mudix_cfg_reason') ?? '');
+            return { ok: false, reason: reason || 'config.lua could not be read' };
+        }
+        let info: Record<string, string> = {};
+        try {
+            const parsed = JSON.parse(String(this.lua.global.get('__mudix_cfg_info') ?? '{}'));
+            if (parsed && typeof parsed === 'object') {
+                for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) info[k] = String(v);
+            }
+        } catch { info = {}; }
+        return { ok: true, info };
+    }
+
+    /**
      * Mudlet REGEX_LUA_CODE: the pattern body runs as a Lua function on every
      * incoming line. Side effects (raiseEvent, etc.) always run; the trigger
      * "matches" only when the body returns a truthy value.

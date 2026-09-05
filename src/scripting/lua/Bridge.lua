@@ -5263,6 +5263,44 @@ end
 -- Mudlet seeds it from the player's profile.
 __mudix_mmcp_chat_name = ""
 
+-- ── Reading a package's config.lua ─────────────────────────────────────────
+-- A manifest is a Lua chunk, and Mudlet reads it by RUNNING it in a bare
+-- lua_State — one with no standard libraries at all, so a config.lua that
+-- reaches for `os` or `string` raises and the whole manifest above the offending
+-- line goes with it. That is a contract packages are written against, and
+-- guessing at it with a pattern match reads manifests Mudlet throws away.
+--
+-- An empty function environment is the same sandbox: every global is nil, so
+-- `os.date(...)` fails to index exactly as it does there. Only strings and
+-- numbers are collected, matching what Mudlet's lua_isstring accepts.
+-- The answer crosses as JSON in a global rather than as a table: a Lua table
+-- read back through the wasmoon proxy is fragile to iterate, and a manifest is
+-- a handful of short strings, so the encoding costs nothing.
+function __mudix_read_package_config(src)
+    __mudix_cfg_ok, __mudix_cfg_reason, __mudix_cfg_info = false, '', '{}'
+    local chunk, syntaxError = loadstring(tostring(src or ''), 'config.lua')
+    if not chunk then
+        __mudix_cfg_reason = tostring(syntaxError)
+        return
+    end
+    local env = {}
+    setfenv(chunk, env)
+    local ok, runtimeError = pcall(chunk)
+    if not ok then
+        __mudix_cfg_reason = tostring(runtimeError)
+        return
+    end
+    local info = {}
+    for key, value in pairs(env) do
+        local t = type(value)
+        if type(key) == 'string' and (t == 'string' or t == 'number') then
+            info[key] = tostring(value)
+        end
+    end
+    __mudix_cfg_ok = true
+    __mudix_cfg_info = yajl.to_string(info)
+end
+
 -- ── JSON map import/export ─────────────────────────────────────────────────
 -- Mudlet reads the destination with getVerifiedString, so a path of the wrong
 -- TYPE raises where a path that merely cannot be used is a (nil, why) return.
