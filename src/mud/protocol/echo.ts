@@ -4,16 +4,6 @@ const IAC = 0xFF, SB = 0xFA, SE = 0xF0;
 const WILL = 0xFB, WONT = 0xFC, DO = 0xFD, DONT = 0xFE;
 const ECHO_OPT = 0x01;
 
-/** How long the raw ECHO state must hold before we ack it on the wire and
- *  treat it as a real password transition. Servers like Legend of Kallisti
- *  bracket every line with `IAC WILL ECHO … IAC WONT ECHO` for server-side
- *  line editing, and crucially they bounce on our acks — replying to a `DO`
- *  with another `WILL`, to a `DONT` with another `WONT` — which produces
- *  a self-sustaining negotiation loop several times per second. Real
- *  password prompts sit in `WILL ECHO` for the entire time the user is
- *  typing, so half a second of debounce is invisible to the legitimate case
- *  but long enough to absorb the Kallisti bracket (~250 ms per flip). */
-const STABLE_MS = 500;
 
 /** Mudlet-parity anomaly detection (cTelnet::checkEchoAnomalyPattern):
  *  if the raw ECHO state toggles ≥ ANOMALY_THRESHOLD times within
@@ -33,14 +23,12 @@ const LOGIN_PHASE_MS = 5 * 60 * 1000;
 const PASSWORD_TIMEOUT_MS = 60 * 1000;
 
 export class EchoHandler {
-    /** Committed (debounced) state exposed to UI / send-echo logic. True
-     *  whenever the server is echoing for us, which means we must suppress our
-     *  own local command echo to avoid showing every line twice. This is *not*
-     *  the same as password masking — see `_passwordStyle` / `passwordMode`. */
+    /** State exposed to UI / send-echo logic, committed on the negotiation
+     *  itself as cTelnet does. True whenever the server is echoing for us, which
+     *  means we must suppress our own local command echo to avoid showing every
+     *  line twice. This is *not* the same as password masking — see
+     *  `_passwordStyle` / `passwordMode`. */
     private _serverEchoing = false;
-    /** Latest raw on-the-wire state. Used to gate ack dedup and decide whether
-     *  to schedule a commit. */
-    private _rawEchoing = false;
     /** Whether the *current* ECHO engagement should mask the input line. A
      *  server that enables ECHO during the opening negotiation burst — before
      *  it has printed any output — is doing session-wide remote echo (it will
@@ -55,7 +43,6 @@ export class EchoHandler {
     /** Set once the server has emitted any non-telnet output. Distinguishes a
      *  connect-time (server-wide) ECHO from a later (password) ECHO. */
     private sawAppData = false;
-    private stabilityTimer: ReturnType<typeof setTimeout> | null = null;
     private passwordSafetyTimer: ReturnType<typeof setTimeout> | null = null;
     private connectionStartAt = 0;
     private toggleCount = 0;
@@ -128,53 +115,32 @@ export class EchoHandler {
         // Anomaly is sticky for the session — once we've refused ECHO we don't
         // re-engage no matter what the server sends.
         if (this._anomalyDetected) return;
-        if (on === this._rawEchoing) return;
-        this._rawEchoing = on;
+        if (on === this._serverEchoing) return;
         // Latch whether this engagement masks: a password prompt only if the
         // server had already printed output by the time it asked us to echo.
         if (on) this._passwordStyle = this.sawAppData;
+        // The toggle counter is what stands between us and a server that misuses
+        // ECHO for line editing — see trackToggleAndDetectAnomaly, which is
+        // cTelnet::checkEchoAnomalyPattern down to the 5-in-5000ms constants.
         if (this.trackToggleAndDetectAnomaly()) return;
-        // Raw state matches committed state again. Two cases collapse here:
-        //   (a) committed=OFF, raw was briefly ON, now OFF — transient flap
-        //       during initial connect; just cancel the pending ON commit.
-        //   (b) committed=ON, raw was briefly OFF (pending OFF commit), now
-        //       ON again — Kallisti-style line-edit pattern: server sent WONT
-        //       (release echo) then immediately WILL (re-assert) within the
-        //       debounce window. Treat as ECHO abuse and trip anomaly to
-        //       refuse further engagement for the rest of the session,
-        //       otherwise we'd silently swallow every "exit password mode"
-        //       signal the server gives us.
-        if (this._rawEchoing === this._serverEchoing) {
-            if (this._serverEchoing && this.stabilityTimer) {
-                this.tripAnomaly();
-                return;
-            }
-            if (this.stabilityTimer) {
-                clearTimeout(this.stabilityTimer);
-                this.stabilityTimer = null;
-            }
-            return;
+        // Committed on the negotiation itself, exactly where cTelnet calls
+        // setRemoteEchoingActive(). There used to be half a second of debounce
+        // in front of this, to keep a bouncing server from being acked on every
+        // flip — but that is the job the anomaly counter above already does,
+        // upstream and here, and the delay was visible where it must not be: a
+        // script that negotiates ECHO and reads the command line in the same
+        // breath saw the state before the prompt, and the masking a player is
+        // owed arrived late.
+        this._serverEchoing = on;
+        this.sendRaw(on ? ECHO_DO : ECHO_DONT);
+        this.onEchoChange(this.passwordMode);
+        this.updatePasswordSafetyTimer();
+        if (debugEchoEnabled()) {
+            const mode = !this._serverEchoing ? 'OFF (normal)'
+                : this.passwordMode ? 'ON (password mode)'
+                : 'ON (server-wide echo, input not masked)';
+            console.debug(`[mudix.echo] committed → ${mode}`);
         }
-        // Raw differs from committed. (Re)start the stability timer; only when
-        // it fires without another flip do we ack the wire negotiation and
-        // expose the change to the UI. Acking on every raw flip would drive
-        // a bounce loop with servers that re-emit WILL/WONT in response to
-        // our DO/DONT (see STABLE_MS comment).
-        if (this.stabilityTimer) clearTimeout(this.stabilityTimer);
-        this.stabilityTimer = setTimeout(() => {
-            this.stabilityTimer = null;
-            if (this._rawEchoing === this._serverEchoing) return;
-            this._serverEchoing = this._rawEchoing;
-            this.sendRaw(this._serverEchoing ? ECHO_DO : ECHO_DONT);
-            this.onEchoChange(this.passwordMode);
-            this.updatePasswordSafetyTimer();
-            if (debugEchoEnabled()) {
-                const mode = !this._serverEchoing ? 'OFF (normal)'
-                    : this.passwordMode ? 'ON (password mode)'
-                    : 'ON (server-wide echo, input not masked)';
-                console.debug(`[mudix.echo] committed → ${mode}`);
-            }
-        }, STABLE_MS);
     }
 
     /** Arm / disarm the Mudlet-style "password mode never ended" safety
@@ -195,7 +161,6 @@ export class EchoHandler {
             this.passwordSafetyTimer = null;
             if (!this._serverEchoing) return;
             this._serverEchoing = false;
-            this._rawEchoing = false;
             this.sendRaw(ECHO_DONT);
             this.onEchoChange(false);
             if (debugEchoEnabled()) {
@@ -222,14 +187,10 @@ export class EchoHandler {
     }
 
     /** Refuse ECHO for the rest of the session: send `IAC DONT ECHO`, drop any
-     *  pending commit / safety timers, force the UI back to normal, and notify
+     *  the safety timer, force the UI back to normal, and notify
      *  the engine so a `sysEchoAnomalyDetected` Lua event can fire. */
     private tripAnomaly(): void {
         this._anomalyDetected = true;
-        if (this.stabilityTimer) {
-            clearTimeout(this.stabilityTimer);
-            this.stabilityTimer = null;
-        }
         if (this.passwordSafetyTimer) {
             clearTimeout(this.passwordSafetyTimer);
             this.passwordSafetyTimer = null;
@@ -246,15 +207,10 @@ export class EchoHandler {
     }
 
     reset(): void {
-        if (this.stabilityTimer) {
-            clearTimeout(this.stabilityTimer);
-            this.stabilityTimer = null;
-        }
         if (this.passwordSafetyTimer) {
             clearTimeout(this.passwordSafetyTimer);
             this.passwordSafetyTimer = null;
         }
-        this._rawEchoing = false;
         this._passwordStyle = false;
         this.sawAppData = false;
         this.toggleCount = 0;
