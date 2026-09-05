@@ -17,7 +17,6 @@ const SHOW_SENT_TEXT_OPTIONS: { value: ShowSentTextMode; label: string }[] = [
 ];
 import type { ProfileVFS } from '../scripting/vfs/ProfileVFS';
 import { SettingsShell, SubpageRow, type CardDefinition, type CategoryKey, type SubpageDefinition } from './settings/SettingsShell';
-import { categoriesWithUnavailable, unavailableIn } from './settings/unavailable';
 import { useFileSource, type PickedFile } from './components/FileSourceButton';
 import type { WindowManager } from './windows/WindowManager';
 import { describeThrown } from '../utils/describeThrown';
@@ -3203,26 +3202,11 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
             ),
         },
         ]),
-        // Last in each category, because an absence is the least interesting
-        // thing on a page — but present, so a player who came looking for one
-        // of these stops looking instead of hunting the other nine categories.
-        ...categoriesWithUnavailable().map(cat => ({
-            id: `unavailable-${cat}`,
-            category: cat,
-            title: 'Not available in the browser',
-            description: 'Desktop Mudlet settings that Mudlet Web cannot have, and why.',
-            keywords: 'missing, absent, desktop, difference, why, unavailable, not here',
-            body: (
-                <ul className="settings-unavailable">
-                    {unavailableIn(cat).map(item => (
-                        <li key={item.name} className="settings-unavailable__item">
-                            <span className="settings-unavailable__name">{item.name}</span>
-                            <span className="settings-unavailable__reason">{item.reason}</span>
-                        </li>
-                    ))}
-                </ul>
-            ),
-        })),
+        // Settings that a browser cannot have carry no card. A page of absences
+        // is a worse answer than none: it puts the desktop manual's vocabulary
+        // in front of players who never asked for it. The reasons are kept in
+        // docs/settings-divergence.md, and the user-facing version of the same
+        // question is the "Mudlet differences" help topic linked below.
     ];
 
     return (
