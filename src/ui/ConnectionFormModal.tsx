@@ -464,17 +464,16 @@ export function ConnectionFormModal({ connection, preset, firstConnection, title
 
                         <div className="connection-autoconnect-row">
                             <label className="connection-autoconnect-label" htmlFor="cs-autoreconnect">
-                                <span className="connection-autoconnect-title">Connect automatically</span>
+                                <span className="connection-autoconnect-title">Auto-connect on profile open</span>
                                 <span className="connection-autoconnect-hint">
-                                    Dial when this profile is opened, instead of opening offline — and dial again if
-                                    the connection drops, retrying after 5 seconds and then less often.
+                                    Dial automatically when this profile is opened, instead of opening offline.
                                 </span>
                             </label>
                             <Toggle
                                 id="cs-autoreconnect"
                                 checked={autoReconnect}
                                 onChange={setAutoReconnect}
-                                aria-label="Connect automatically"
+                                aria-label="Auto-connect on profile open"
                             />
                         </div>
 
