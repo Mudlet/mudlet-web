@@ -1771,7 +1771,7 @@ export function FileBrowserModal({ connectionId, vfs, onClose, initialPath, init
             )}
 
             {ctxMenu && (
-                <ContextMenu x={ctxMenu.x} y={ctxMenu.y} onClose={() => setCtxMenu(null)}>
+                <ContextMenu x={ctxMenu.x} y={ctxMenu.y} onClose={() => setCtxMenu(null)} label="File actions">
                     {ctxMenu.node.type === 'dir' && (
                         <>
                             <button

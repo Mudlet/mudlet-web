@@ -60,7 +60,7 @@ export function OutputContextMenu({
     const noContent = hasContent ? undefined : 'This console is empty, there is nothing to copy.';
 
     return (
-        <ContextMenu x={x} y={y} onClose={onClose}>
+        <ContextMenu x={x} y={y} onClose={onClose} label="Output actions">
             <button className="ctx-menu__item" type="button" onClick={run(onSelectAll)}>
                 <span className="ctx-menu__check" />
                 Select all

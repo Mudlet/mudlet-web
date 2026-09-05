@@ -128,7 +128,7 @@ export function useFileSource({
                 onChange={e => void handleUpload(e)}
             />
             {menu && (
-                <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)}>
+                <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)} label="File source">
                     <button
                         className="ctx-menu__item"
                         onClick={() => { setMenu(null); inputRef.current?.click(); }}

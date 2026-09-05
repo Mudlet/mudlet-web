@@ -389,14 +389,19 @@ export function ConnectionFormModal({ connection, preset, firstConnection, title
                         {mode === 'mud' && (
                             <div className="tls-settings">
                                 <div className="connection-autoconnect-row">
+                                    {/* `<label for>` makes a button clickable but
+                                        does not name it — a button's accessible
+                                        name comes from its own subtree, and a
+                                        Toggle's subtree is two decorative spans.
+                                        Hence the explicit aria-labelledby. */}
                                     <label className="connection-autoconnect-label" htmlFor="cs-tls">
-                                        <span className="connection-autoconnect-title">Secure connection (TLS)</span>
+                                        <span className="connection-autoconnect-title" id="cs-tls-label">Secure connection (TLS)</span>
                                         <span className="connection-autoconnect-hint">
                                             The proxy encrypts the link to the game. The game must offer a TLS port —
                                             usually a different one from its plaintext port.
                                         </span>
                                     </label>
-                                    <Toggle id="cs-tls" checked={tls} onChange={setTls} />
+                                    <Toggle id="cs-tls" aria-labelledby="cs-tls-label" checked={tls} onChange={setTls} />
                                 </div>
                                 {tls && !certOptionsSupported && (
                                     <div className="tls-cert-options tls-cert-options--unavailable">

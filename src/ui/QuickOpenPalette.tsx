@@ -171,20 +171,36 @@ export function QuickOpenPalette({ vfs, onPick, onClose }: QuickOpenPaletteProps
             className="modal-overlay qo-overlay"
             onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}
         >
-            <div className="qo-modal" onMouseDown={e => e.stopPropagation()}>
+            <div
+                className="qo-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-label="Go to file"
+                onMouseDown={e => e.stopPropagation()}
+            >
+                {/* Combobox over the results list: the placeholder disappears the
+                    moment the user types, so it cannot be the field's name, and
+                    without aria-activedescendant the Up/Down selection changes
+                    nothing a screen reader can observe. */}
                 <input
                     ref={inputRef}
                     className="qo-input"
                     placeholder="Go to file by name…"
+                    aria-label="Go to file by name"
+                    role="combobox"
+                    aria-expanded={results.length > 0}
+                    aria-controls="qo-list"
+                    aria-autocomplete="list"
+                    aria-activedescendant={results.length > 0 ? `qo-item-${active}` : undefined}
                     value={query}
                     onChange={e => setQuery(e.target.value)}
                     onKeyDown={handleKeyDown}
                     spellCheck={false}
                     autoComplete="off"
                 />
-                <div className="qo-list" ref={listRef}>
+                <div className="qo-list" id="qo-list" role="listbox" aria-label="Matching files" ref={listRef}>
                     {results.length === 0 ? (
-                        <div className="qo-empty">
+                        <div className="qo-empty" role="status">
                             {entries.length === 0 ? 'No files in this profile.' : 'No files match.'}
                         </div>
                     ) : results.map((r, i) => {
@@ -194,6 +210,10 @@ export function QuickOpenPalette({ vfs, onPick, onClose }: QuickOpenPaletteProps
                         return (
                             <div
                                 key={r.path}
+                                id={`qo-item-${i}`}
+                                role="option"
+                                aria-selected={i === active}
+                                aria-label={r.relPath}
                                 className={`qo-item${i === active ? ' qo-active' : ''}`}
                                 onMouseMove={() => { if (i !== active) setActive(i); }}
                                 onClick={() => commit(i)}
