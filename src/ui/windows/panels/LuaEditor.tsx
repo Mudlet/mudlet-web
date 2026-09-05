@@ -9,6 +9,7 @@ import { lua } from '@codemirror/legacy-modes/mode/lua';
 import { useEffectiveTheme, useEditorSettings } from '../../../storage';
 import { luaCompletionSource, HOVER_MAP, REFERENCE_GROUPS } from '../../../scripting/lua/luaCompletions';
 import { mudixCmTheme, highlightCompartment, highlightFor, type EditorTheme } from '../../codemirror/theme';
+import { showLineParagraphs } from '../../codemirror/lineParagraphMarks';
 
 // Lua-specific hover tooltip styling — bolted on top of the shared chrome.
 const luaHoverTheme = EditorView.theme({
@@ -114,6 +115,8 @@ export interface EditorOptions {
     autocomplete: boolean;
     /** "Show Spaces/Tabs" — dots for runs of spaces, arrows for tabs. */
     showWhitespace: boolean;
+    /** "Show Line/Paragraphs" — a ¶ where each line ends. */
+    showLineParagraphs: boolean;
     /** "Show invisible Unicode control characters". */
     showControlChars: boolean;
     /** "Theme" — the syntax palette, pinned or following the app's. */
@@ -123,6 +126,7 @@ export interface EditorOptions {
 export const EDITOR_OPTION_DEFAULTS: EditorOptions = {
     autocomplete: true,
     showWhitespace: false,
+    showLineParagraphs: false,
     showControlChars: false,
     theme: 'app',
 };
@@ -138,6 +142,9 @@ function optionExtensions(opts: EditorOptions) {
         // about, and strictly better than losing completion altogether.
         autocompletion({ override: [luaCompletionSource], activateOnTyping: opts.autocomplete }),
         opts.showWhitespace ? highlightWhitespace() : [],
+        // Desktop's tooltip files this with the whitespace marks ("as well as
+        // whitespace"), and so does the option order on its page.
+        opts.showLineParagraphs ? showLineParagraphs() : [],
         // CodeMirror hides control characters behind a placeholder widget by
         // default anyway; this makes them visible as their Unicode name rather
         // than a bare dot, which is the point of Mudlet's checkbox — spotting a
@@ -253,16 +260,21 @@ export function LuaEditor({ value, onChange, onSave, gotoLine }: Props) {
         });
     }, [theme, editorOptions.theme]);
 
-    // Same swap for the Editor preferences. Depends on the three values rather
-    // than the object so a re-render that rebuilds an equal object does not
-    // reconfigure the editor for nothing.
+    // Same swap for the Editor preferences. Depends on the individual values
+    // rather than the object so a re-render that rebuilds an equal object does
+    // not reconfigure the editor for nothing.
     useEffect(() => {
         const view = viewRef.current;
         if (!view) return;
         view.dispatch({
             effects: optionsCompartment.reconfigure(optionExtensions(optionsRef.current)),
         });
-    }, [editorOptions.autocomplete, editorOptions.showWhitespace, editorOptions.showControlChars]);
+    }, [
+        editorOptions.autocomplete,
+        editorOptions.showWhitespace,
+        editorOptions.showLineParagraphs,
+        editorOptions.showControlChars,
+    ]);
 
     // Combined value-sync + goto.
     //

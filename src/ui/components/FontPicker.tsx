@@ -26,6 +26,10 @@ interface FontPickerProps {
     value: OutputFontSource | undefined;
     onChange: (next: OutputFontSource | undefined) => void;
     vfs: ProfileVFS | null;
+    /** What is drawn with when nothing is chosen. The main display falls back to
+     *  the browser's monospace; the map's room symbols to the bundled Bitstream
+     *  Vera Sans Mono — so the picker has to be told, rather than assert one. */
+    fallbackLabel?: string;
 }
 
 function initialTab(value: OutputFontSource | undefined): Tab {
@@ -34,7 +38,7 @@ function initialTab(value: OutputFontSource | undefined): Tab {
     return 'name';
 }
 
-export function FontPicker({ value, onChange, vfs }: FontPickerProps) {
+export function FontPicker({ value, onChange, vfs, fallbackLabel = 'default monospace' }: FontPickerProps) {
     const [tab, setTab] = useState<Tab>(() => initialTab(value));
 
     return (
@@ -42,7 +46,7 @@ export function FontPicker({ value, onChange, vfs }: FontPickerProps) {
             <div className="font-picker__current">
                 {value
                     ? <span>Active: <strong>{value.family}</strong> <em className="font-picker__kind">({value.kind})</em></span>
-                    : <span className="font-picker__muted">No font set — using default monospace.</span>}
+                    : <span className="font-picker__muted">No font set — using {fallbackLabel}.</span>}
                 {value && (
                     <Button variant="ghost" size="sm" onClick={() => onChange(undefined)}>Reset</Button>
                 )}

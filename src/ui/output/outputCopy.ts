@@ -124,9 +124,15 @@ export function selectAll(container: HTMLElement): void {
     sel.addRange(range);
 }
 
+/** The native selection text verbatim (character-precise). Timestamps sit in a
+ *  `user-select: none` span, so they are absent here as they are from a copy. */
+export function selectionText(): string {
+    return window.getSelection()?.toString() ?? '';
+}
+
 /** Copy the native selection text verbatim (character-precise). */
 export async function copySelectionText(): Promise<void> {
-    const text = window.getSelection()?.toString() ?? '';
+    const text = selectionText();
     if (text) await navigator.clipboard.writeText(text);
 }
 

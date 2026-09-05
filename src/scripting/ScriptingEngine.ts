@@ -385,7 +385,18 @@ export class ScriptingEngine implements EngineHost {
     /** The profile's single item-id sequence, shared with every engine and with
      *  the Lua runtime's temporary items — see {@link ItemIdSequence}. */
     readonly itemIds = new ItemIdSequence();
-    private numericIdFor(uuid: string): number {
+
+    /**
+     * The number Lua sees for a store node, allocating one on first sight.
+     *
+     * Public because the editor's "Show Items' ID number" shows the same number:
+     * the whole point of that option is to read off the id you would then pass to
+     * `enableTrigger` or `killTimer`, so it has to be *this* id and not the store's
+     * UUID. Allocating on first sight matches Mudlet, whose own tooltip warns that
+     * an item's id "is constant during a session of the profile [but] may be
+     * different the next time the profile is loaded".
+     */
+    numericIdFor(uuid: string): number {
         let n = this.uuidToNumericId.get(uuid);
         if (n === undefined) { n = this.itemIds.next(); this.uuidToNumericId.set(uuid, n); }
         return n;
@@ -581,6 +592,12 @@ export class ScriptingEngine implements EngineHost {
             // every script, and intermittently as a hard main-thread freeze when
             // a load lands on a freed lua_State. Bail instead.
             if (this.disposed) return;
+
+            // Number every saved item before anything can create a temporary
+            // one, so the profile's own triggers and aliases hold the low ids —
+            // as they do on desktop, where each is numbered as it is built from
+            // the profile XML. See assignSavedItemIds.
+            this.assignSavedItemIds();
 
             // Saved Lua globals go back into _G before any script runs, so script
             // bodies and sysLoadEvent handlers see their persisted state.
@@ -2840,6 +2857,30 @@ export class ScriptingEngine implements EngineHost {
             case 'button':  return store.connectionButtons[id]      ?? [];
             case 'script':  return store.connectionScripts[id]      ?? [];
             default:        return [];
+        }
+    }
+
+    /**
+     * Give every item saved with this profile its number, at load, before a
+     * script can run and claim one.
+     *
+     * {@link numericIdFor} allocates on first sight, which is enough for the Lua
+     * API on its own — but "first sight" then depends on what a script happened
+     * to touch, and (since the editor's "Show Items' ID number" reads the same
+     * ids) on whether the editor had been opened. Desktop has no such ambiguity:
+     * `TTrigger`, `TAlias` and the rest take their id as they are constructed
+     * from the profile XML, so the profile's own items always hold the first
+     * numbers and a temporary one created later carries on from there. Doing the
+     * same here costs one pass over the tree and makes the ids people read off
+     * the editor the ones they would have got anyway.
+     *
+     * Same order as the store, which is the order the profile was written in.
+     * Groups are numbered too: desktop gives a group an id like any other item,
+     * and `ancestors()` already reports them by number.
+     */
+    private assignSavedItemIds(): void {
+        for (const type of ['trigger', 'alias', 'script', 'timer', 'key', 'button']) {
+            for (const node of this.nodeListForType(type)) this.numericIdFor(node.id);
         }
     }
 

@@ -582,6 +582,26 @@ export interface MapMenuEntry {
     displayName: string;
 }
 
+/**
+ * One thing wrong with the map, as {@link MapStore.auditExits} found it.
+ *
+ * Desktop's counterpart is a formatted line appended to three lists keyed by
+ * scope (whole map / area / room, `TMap::appendRoomErrorMsg` and friends); the
+ * scope is a field here so a caller can group, filter or link to the room
+ * rather than only print. `severity` matches the `[ WARN ]` / `[ INFO ]`
+ * prefixes Mudlet writes, which its console colours off.
+ */
+export interface MapIssue {
+    /** `warn` for something broken, `info` for something merely surplus. */
+    severity: 'warn' | 'info';
+    /** The room the issue is about, when it is about one. */
+    roomId?: number;
+    /** The area the issue is about, when it is about one. */
+    areaId?: number;
+    /** The sentence to show, without the `[ WARN ]  - ` prefix. */
+    message: string;
+}
+
 export class MapStore {
     private rooms = new Map<number, MudletRoom>();
     private areas = new Map<number, MudletArea>();
@@ -597,6 +617,9 @@ export class MapStore {
     // ingestBinaryRooms* → endBinaryLoad). Empty/false outside a load.
     private pendingBinaryHashIndex: Record<string, number> = {};
     private pendingBinaryHadSelection = false;
+    /** What the last import's audit found and repaired, for whoever loaded the
+     *  map to report. Read through {@link takeAuditIssues}. */
+    private lastAuditIssues: MapIssue[] = [];
     private version = 0;
     private subscribers = new Set<() => void>();
     private notifyPending = false;
@@ -756,6 +779,8 @@ export class MapStore {
         this.mapUserData = {};
         this.playerRoomId = null;
         this.mRoomIdHash = {};
+        // An unread report belongs to the map that is being thrown away.
+        this.lastAuditIssues = [];
         this.nextRoomId = 1;
         this.nextAreaId = 2;        // -1 is reserved below
         const defaultArea = makeArea();
@@ -1146,40 +1171,81 @@ export class MapStore {
         // field), so they can only be applied once the rooms exist.
         applyJsonSymbolColors(parsed, this);
         applyJsonRoomBorders(parsed, this);
-        this.auditImportedExits();
+        this.lastAuditIssues = this.auditExits(true);
         return true;
     }
 
     /**
-     * Mudlet's `TRoom::auditExits`, run over every room after an import.
+     * Mudlet's `TRoom::auditExits`, run over every room.
      *
-     * A JSON map is a document, and a document can say things the mapper API
+     * A map file is a document, and a document can say things the mapper API
      * never could: an exit to a room the file does not contain, a stub standing
-     * in a direction that already has an exit. Mudlet repairs those on the way
-     * in rather than carrying them, and writes what it did into the room's own
-     * userData, so a map that quietly changed shape on import can still be
-     * explained afterwards.
+     * in a direction that already has an exit, a door on a direction with no way
+     * out. Every one of them is something the renderer then quietly skips, which
+     * is why desktop reports them — its "report map issues on screen" preference
+     * is the switch on that reporting.
      *
-     * The order matters. Missing destinations are resolved first, because a
-     * stock exit that loses its destination BECOMES a stub, and only then can
-     * stub-versus-exit be judged — otherwise the stub just created would be
-     * dropped again by the very exit it replaced.
+     * With `repair`, the three problems that can be resolved without guessing
+     * are resolved on the way in, as Mudlet does, and what was done is written
+     * into the room's own userData so a map that quietly changed shape on import
+     * can still be explained afterwards. Without it nothing is touched: a `.dat`
+     * came from a client that had already had its chance to repair it, and
+     * rewriting a player's map to make a report tidier is not a trade worth
+     * making.
+     *
+     * The order matters when repairing. Missing destinations are resolved first,
+     * because a stock exit that loses its destination BECOMES a stub, and only
+     * then can stub-versus-exit be judged — otherwise the stub just created
+     * would be dropped again by the very exit it replaced.
      */
-    private auditImportedExits(): void {
-        for (const room of this.rooms.values()) {
+    /** What the last repairing audit found, cleared as it is read — a report is
+     *  owed to the load that caused it, and to no later one. */
+    takeAuditIssues(): MapIssue[] {
+        const issues = this.lastAuditIssues;
+        this.lastAuditIssues = [];
+        return issues;
+    }
+
+    auditExits(repair = false): MapIssue[] {
+        const issues: MapIssue[] = [];
+        for (const [id, room] of this.rooms) {
             for (const [num, field] of Object.entries(DIR_FIELD)) {
                 const dest = (room as unknown as Record<string, number>)[field];
                 if (!Number.isFinite(dest) || dest <= 0 || this.rooms.has(dest)) continue;
+                const dirNum = Number(num);
+                issues.push({
+                    severity: 'warn',
+                    roomId: id,
+                    message: `Room with ID: ${id} has an exit "${field}" to: ${dest} but that room does not exist.`
+                        + (repair ? ' The exit has been turned into a stub, and the destination stored in the room\'s'
+                            + ` user data under "audit.made_stub_of_valid_but_missing_exit.${dirNum}".` : ''),
+                });
+                if (!repair) continue;
                 // The exit pointed somewhere the file never described. The
                 // direction is still real, so it survives as a stub: the map
                 // goes on saying "there is a way east", just not where it goes.
-                const dirNum = Number(num);
                 (room as unknown as Record<string, number>)[field] = -1;
                 if (!room.stubs.includes(dirNum)) room.stubs.push(dirNum);
                 room.userData[`audit.made_stub_of_valid_but_missing_exit.${dirNum}`] = String(dest);
             }
             for (const [command, dest] of Object.entries(room.mSpecialExits ?? {})) {
+                if (command === '') {
+                    issues.push({
+                        severity: 'warn',
+                        roomId: id,
+                        message: `In room ID: ${id} there is an invalid (special) exit to ${dest} (with no name!).`,
+                    });
+                    continue;
+                }
                 if (this.rooms.has(dest)) continue;
+                issues.push({
+                    severity: 'warn',
+                    roomId: id,
+                    message: `Room with ID: ${id} has a special exit "${command}" to: ${dest} but that room does not exist.`
+                        + (repair ? ' The exit has been removed, and the destination stored in the room\'s'
+                            + ` user data under "audit.removed_valid_but_missing_special_exit.${command}".` : ''),
+                });
+                if (!repair) continue;
                 // A special exit IS its command, and a command with nowhere to
                 // go is not a way out of anywhere — there is no stub for it to
                 // fall back to, so it goes entirely.
@@ -1189,11 +1255,104 @@ export class MapStore {
             }
             // A stub says "there is a way out here that goes nowhere yet", which
             // is nothing to add to a direction that already goes somewhere.
-            room.stubs = room.stubs.filter(dirNum => {
+            const surplusStubs = room.stubs.filter(dirNum => {
                 const field = DIR_FIELD[dirNum];
-                if (!field) return false;
+                if (!field) return true;
                 const dest = (room as unknown as Record<string, number>)[field];
-                return !(Number.isFinite(dest) && dest > 0);
+                return Number.isFinite(dest) && dest > 0;
+            });
+            if (surplusStubs.length > 0) {
+                const named = surplusStubs.map(d => DIR_FIELD[d] ?? String(d)).join(', ');
+                issues.push({
+                    severity: 'info',
+                    roomId: id,
+                    message: `In room with ID: ${id} found one or more surplus exit stubs`
+                        + ` in directions that already have an exit${repair ? ', which were removed' : ''}: ${named}.`,
+                });
+                if (repair) room.stubs = room.stubs.filter(d => !surplusStubs.includes(d));
+            }
+            this.auditRoomExitExtras(id, room, issues);
+        }
+        this.auditAreaMembership(issues);
+        return issues;
+    }
+
+    /**
+     * Doors, weights and locks whose exit is not there — Mudlet's "surplus door
+     * items" / "surplus weight items" / "surplus exit lock items" reports
+     * (TRoom.cpp:1395-1462). Report-only in every mode: unlike a dangling exit,
+     * a stray weight harms nothing, and a player who set one on a direction they
+     * are about to map would not thank us for deleting it.
+     */
+    private auditRoomExitExtras(id: number, room: MudletRoom, issues: MapIssue[]): void {
+        // A key is live if it names a stock direction the room has an exit or a
+        // stub in (a stub can carry a door and a lock), or a special exit's
+        // command. Anything else is keyed to nothing.
+        const live = new Set<string>();
+        for (const [num, field] of Object.entries(DIR_FIELD)) {
+            const dirNum = Number(num);
+            const dest = (room as unknown as Record<string, number>)[field];
+            if ((Number.isFinite(dest) && dest > 0) || room.stubs?.includes(dirNum)) {
+                live.add(DIR_SHORT[dirNum]);
+                live.add(field);
+            }
+        }
+        for (const command of Object.keys(room.mSpecialExits ?? {})) live.add(command);
+
+        const surplusDoors = Object.keys(room.doors ?? {}).filter(k => !live.has(k));
+        if (surplusDoors.length > 0) {
+            issues.push({
+                severity: 'info',
+                roomId: id,
+                message: `In room with ID: ${id} found one or more surplus door items`
+                    + ` on directions with no exit: ${surplusDoors.join(', ')}.`,
+            });
+        }
+        const surplusWeights = Object.keys(room.exitWeights ?? {}).filter(k => !live.has(k));
+        if (surplusWeights.length > 0) {
+            issues.push({
+                severity: 'info',
+                roomId: id,
+                message: `In room with ID: ${id} found one or more surplus weight items`
+                    + ` on directions with no exit: ${surplusWeights.join(', ')}.`,
+            });
+        }
+        const surplusLocks = (room.exitLocks ?? []).filter(d => !live.has(DIR_SHORT[d] ?? ''));
+        if (surplusLocks.length > 0) {
+            const named = surplusLocks.map(d => DIR_FIELD[d] ?? String(d)).join(', ');
+            issues.push({
+                severity: 'info',
+                roomId: id,
+                message: `In room with ID: ${id} found one or more surplus exit lock items`
+                    + ` on directions with no exit: ${named}.`,
+            });
+        }
+    }
+
+    /**
+     * The area half of Mudlet's audit (TRoomDB::auditRooms): a room filed under
+     * an area that is not there, and an area whose room list names a room that
+     * is not there. Report-only — the repair is `auditAreas()`, which a script
+     * calls deliberately, and which this report is worth pointing at.
+     */
+    private auditAreaMembership(issues: MapIssue[]): void {
+        for (const [id, room] of this.rooms) {
+            if (this.areas.has(room.area)) continue;
+            issues.push({
+                severity: 'warn',
+                roomId: id,
+                message: `Room with ID: ${id} is in area ${room.area}, but that area does not exist.`,
+            });
+        }
+        for (const [areaId, area] of this.areas) {
+            const dangling = area.rooms.filter(rid => !this.rooms.has(rid));
+            if (dangling.length === 0) continue;
+            issues.push({
+                severity: 'warn',
+                areaId,
+                message: `Area with ID: ${areaId} lists ${dangling.length} room(s) that do not exist`
+                    + `: ${dangling.slice(0, 16).join(', ')}${dangling.length > 16 ? ', …' : ''}.`
+                    + ' auditAreas() rebuilds an area\'s room list from the rooms themselves.',
             });
         }
     }
@@ -1517,6 +1676,31 @@ export class MapStore {
         const seen = new Set<string>();
         for (const room of this.rooms.values()) if (room.symbol) seen.add(room.symbol);
         return [...seen];
+    }
+
+    /**
+     * Mudlet's "Show symbol usage…" report (`TMap::roomSymbolsHash`, consumed by
+     * `dlgProfilePreferences::generateMapGlyphDisplay`): every distinct room
+     * symbol with the rooms that carry it, commonest first.
+     *
+     * The room ids come back in full and sorted; desktop's cap of thirty-two
+     * per symbol is a property of its table cell, not of the data, so it is
+     * applied where the table is drawn.
+     */
+    roomSymbolUsage(): { symbol: string; rooms: number[] }[] {
+        const bySymbol = new Map<string, number[]>();
+        for (const [id, room] of this.rooms) {
+            if (!room.symbol) continue;
+            const list = bySymbol.get(room.symbol);
+            if (list) list.push(id);
+            else bySymbol.set(room.symbol, [id]);
+        }
+        return [...bySymbol]
+            .map(([symbol, rooms]) => ({ symbol, rooms: rooms.sort((a, b) => a - b) }))
+            // Commonest first, as desktop's table opens sorted by its count
+            // column descending; ties by symbol so the order is stable between
+            // two runs over the same map.
+            .sort((a, b) => b.rooms.length - a.rooms.length || a.symbol.localeCompare(b.symbol));
     }
 
     setRoomChar(id: number, char: string): boolean {

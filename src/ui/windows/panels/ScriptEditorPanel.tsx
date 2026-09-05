@@ -804,6 +804,18 @@ export interface ScriptEditorPanelHandle {
 export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEditorPanelProps>(function ScriptEditorPanel({ connectionId, session, vfs, scriptingEngineRef, initialListWidth, onSplitsChange, onOpenVfsFile }, ref) {
     const confirm = useConfirm();
     const { showItemIds } = useEditorSettings();
+    // Mudlet's "Show Items' ID number" shows the id its Lua API hands out, so
+    // this asks the engine that hands them out rather than printing the store's
+    // UUID. With no engine yet (the panel can be open before a profile's Lua
+    // starts) there is no id to show, and a dash says so rather than a wrong
+    // number that a script would reject.
+    const itemNumericId = useCallback(
+        (uuid: string): string => {
+            const n = scriptingEngineRef?.current?.numericIdFor(uuid);
+            return n === undefined ? '—' : String(n);
+        },
+        [scriptingEngineRef],
+    );
     const restored = useRef(loadTreeState(connectionId)).current;
     const [category, setCategory] = useState<Category>(restored.category);
     /** The six categories that hold editable items; the rest are read-only views. */
@@ -2247,9 +2259,12 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                     {/* Mudlet's "Show Items' ID number": the id
                                         scripts pass to enableTrigger/killTimer
                                         and friends, which is otherwise only
-                                        discoverable from Lua. */}
+                                        discoverable from Lua. The store's own key
+                                        is a UUID and is no use here — the number
+                                        Lua answers with is the one to show, so it
+                                        comes from the engine that hands them out. */}
                                     {showItemIds && (
-                                        <span className="script-editor__item-id">#{item.id}</span>
+                                        <span className="script-editor__item-id">#{itemNumericId(item.id)}</span>
                                     )}
                                     {hasChildren && (
                                         <span className="script-editor__item-count">{childCount}</span>

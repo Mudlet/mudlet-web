@@ -2,9 +2,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { AnsiAwareBuffer } from '../../src/mud/text/FormatState';
 import { elementBuffers } from '../../src/ui/output/OutputRenderer';
 import {
-    hasCopyableLines, searchSelectionOnline, copySelectionAsHtml, selectAll,
+    hasCopyableLines, searchSelectionOnline, copySelectionAsHtml, selectAll, selectionText,
 } from '../../src/ui/output/outputCopy';
 import { resolveSearchEngine, SEARCH_ENGINES, DEFAULT_SEARCH_ENGINE } from '../../src/storage/schema';
+import { createElement, act } from 'react';
+import { createRoot } from 'react-dom/client';
+import { OutputContextMenu } from '../../src/ui/output/OutputContextMenu';
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 let container: HTMLElement;
 
@@ -162,5 +167,82 @@ describe('copySelectionAsHtml', () => {
         await copySelectionAsHtml(container);
 
         expect(clip.html()).toContain('<title>Mudlet Web console extract</title>');
+    });
+});
+
+// Issue #128 item 1: desktop's "Enable text analyzer" puts an "Analyse
+// characters" entry on the console's right-click menu (TTextEdit::context\
+// MenuEvent, src/TTextEdit.cpp:2482) and takes it away again when the
+// preference is off.
+describe('OutputContextMenu — Analyse characters', () => {
+    async function renderMenu(props: Partial<Parameters<typeof OutputContextMenu>[0]>) {
+        const host = document.createElement('div');
+        document.body.appendChild(host);
+        const root = createRoot(host);
+        await act(async () => {
+            root.render(createElement(OutputContextMenu, {
+                x: 0, y: 0,
+                hasSelection: true,
+                hasContent: true,
+                onSelectAll: () => {}, onCopy: () => {}, onCopyHtml: () => {}, onCopyImage: () => {},
+                searchEngine: 'Google', onSearchOnline: () => {},
+                onClose: () => {},
+                ...props,
+            }));
+        });
+        const menu = document.querySelector('.ctx-menu') as HTMLElement;
+        const entry = [...menu.querySelectorAll('button')]
+            .find(b => b.textContent?.includes('Analyse characters')) as HTMLButtonElement | undefined;
+        return { entry, cleanup: async () => { await act(async () => root.unmount()); host.remove(); } };
+    }
+
+    it('is absent while the preference is off', async () => {
+        const { entry, cleanup } = await renderMenu({});
+        expect(entry).toBeUndefined();
+        await cleanup();
+    });
+
+    it('is offered when the preference is on', async () => {
+        const { entry, cleanup } = await renderMenu({ onAnalyseText: () => {} });
+        expect(entry).toBeDefined();
+        expect(entry!.disabled).toBe(false);
+        await cleanup();
+    });
+
+    // Desktop simply omits the entry when nothing is selected; greying it, as
+    // the copy entries are greyed, says why it would do nothing.
+    it('is greyed, with a reason, when nothing is selected', async () => {
+        const { entry, cleanup } = await renderMenu({ onAnalyseText: () => {}, hasSelection: false });
+        expect(entry!.disabled).toBe(true);
+        expect(entry!.title).toBe('Select some text in the console first.');
+        await cleanup();
+    });
+
+    it('runs the analysis and closes the menu', async () => {
+        let analysed = 0;
+        let closed = 0;
+        const { entry, cleanup } = await renderMenu({
+            onAnalyseText: () => { analysed++; },
+            onClose: () => { closed++; },
+        });
+        await act(async () => { entry!.click(); });
+        expect(analysed).toBe(1);
+        expect(closed).toBe(1);
+        await cleanup();
+    });
+});
+
+describe('selectionText', () => {
+    // The analyser reads the selection through this, so it has to see exactly
+    // what a copy would — the same characters, in the same order.
+    it('returns the selected text verbatim', () => {
+        addLine('a rusty key');
+        selectAll(container);
+        expect(selectionText()).toBe('a rusty key');
+    });
+
+    it('is empty when nothing is selected', () => {
+        addLine('a rusty key');
+        expect(selectionText()).toBe('');
     });
 });

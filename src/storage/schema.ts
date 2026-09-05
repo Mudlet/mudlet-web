@@ -272,6 +272,12 @@ export interface ProfileSettings {
      *  Unicode East Asian *Ambiguous* characters (box-drawing glyphs, ★ ♠ and
      *  friends) two columns wide instead of one. Off unless explicitly true. */
     ambiguousWidthWide?: boolean;
+    /** Mudlet's "Enable text analyzer" (`Host::mEnableTextAnalyzer`): put an
+     *  "Analyse characters" entry on a console's right-click menu, reporting the
+     *  UTF-16/UTF-8 encoding of the selected text. Off unless explicitly true,
+     *  as on desktop — it is a diagnostic for a pattern that will not match, not
+     *  something to carry in the menu every day. */
+    enableTextAnalyzer?: boolean;
     /** Mudlet's "Expect Color Space Id in SGR...(3|4)8;2;...m codes": read
      *  24-bit colour as `38;2;<id>;r;g;b` (the ITU T.416 spelling, with a
      *  colour-space id) rather than `38;2;r;g;b`. Off unless explicitly true. */
@@ -298,6 +304,16 @@ export interface ProfileSettings {
      *  area on panel mount; the matching {@link mapViewStates} entry drives
      *  the initial level. Falls through to the first area in the map. */
     mapLastAreaId?: number;
+    /** Mudlet's "report map issues on screen" (`mudlet::mShowMapAuditErrors`):
+     *  post the map's sanity-check report on the main console when a map is
+     *  loaded, instead of keeping it to itself. Off unless explicitly true, as
+     *  on desktop — and the audit only runs at all when it is on, so a clean
+     *  profile pays nothing for it on a large map.
+     *
+     *  Desktop's alternative when this is off is a report file it points you at;
+     *  there is no such file here (nothing writes outside the profile VFS on its
+     *  own), so off means the report is simply not made. */
+    reportMapIssues?: boolean;
     /** Whether the map widget's control bar — area picker, z-level buttons,
      *  options menu — is shown. Mudlet's `Host::mShowPanel`: toggled by the
      *  collapse arrow drawn over the map, readable/writable from Lua as
@@ -473,13 +489,20 @@ export type BooleanProtocolKey = {
  *  patcher can ship partial updates and unset fields fall through to the
  *  renderer's own createSettings() defaults. */
 /** The script editor's display options — desktop Mudlet's Editor preference
- *  page. `showItemIds` is the tree's, the other three the code view's; all are
+ *  page. `showItemIds` is the tree's, the other four the code view's; all are
  *  optional and fall back to `EDITOR_OPTION_DEFAULTS`. */
 export interface EditorSettings {
     /** "Autocomplete Lua functions in code editor". Default on. */
     autocomplete?: boolean;
     /** "Show Spaces/Tabs". Default off. */
     showWhitespace?: boolean;
+    /** "Show Line/Paragraphs" — a visible mark where each line ends. Default
+     *  off. Desktop's checkbox is named for "line and paragraph ends with
+     *  visible marks" but currently only rules a separator under each row:
+     *  `slot_changeShowLineFeedsAndParagraphs` sets edbee's `useLineSeparator`
+     *  (dlgProfilePreferences.cpp:4073), which the method's own comment calls a
+     *  stand-in for the marks it was named for. mudix draws the marks. */
+    showLineParagraphs?: boolean;
     /** "Show invisible Unicode control characters". Default off. */
     showControlChars?: boolean;
     /** "Show Items' ID number" — the numeric id beside each script, alias,
@@ -522,11 +545,19 @@ export interface MapperSettings {
      *  `gridLineWidth`; its `gridSize` is the spacing and has no Mudlet
      *  counterpart. Unset uses the renderer's own default. */
     gridLineWidth?: number;
-    /** Mudlet's "2D Map Room Symbol Font" (`mMapSymbolFont`) — the family room
-     *  symbols and the area-name header are drawn in. A family name only; the
-     *  bundled Bitstream Vera Sans Mono stays behind it as the fallback.
-     *  Unset uses that bundled font, which is Mudlet's default too. */
-    symbolFont?: string;
+    /** Mudlet's "2D Map Room Symbol Font" (`mMapSymbolFont`) — the font room
+     *  symbols and the area-name header are drawn in. The bundled Bitstream Vera
+     *  Sans Mono stays behind it as the fallback; unset uses that bundled font,
+     *  which is Mudlet's default too.
+     *
+     *  The same {@link OutputFontSource} the main display's font uses, so a
+     *  symbol font can be installed, fetched from a URL or read out of the
+     *  profile's own files — which matters more here than for body text: room
+     *  symbols are picked for their *glyphs*, and the font that has the glyph a
+     *  map wants is often one the machine does not have. A bare string is the
+     *  older shape (a family name, nothing to load) and is still read; see
+     *  {@link symbolFontSource}. */
+    symbolFont?: string | OutputFontSource;
     /** renderer.settings.lodEnabled — level-of-detail for very dense planes.
      *  Above {@link lodExitBudget} rooms on the drawn (area, z-level) the
      *  renderer drops exit lines, and above {@link lodRoomBudget} it replaces
@@ -603,6 +634,23 @@ export const PLAYER_MARKER_DEFAULTS: Required<PlayerMarkerSettings> = {
     dashEnabled: true,
     matchRoomShape: false,
 };
+
+/**
+ * A mapper symbol font in its current shape, whatever shape it was stored in.
+ *
+ * The field started life as a family name and became an {@link OutputFontSource}
+ * so the same picker (and the same URL/profile-file loading) could serve it. A
+ * profile written by an older build still holds the string, in localStorage and
+ * in its VFS `profile.json` both, so it is normalised on read rather than
+ * migrated: a family name is exactly a `system` source with nothing to load.
+ */
+export function symbolFontSource(font: string | OutputFontSource | undefined): OutputFontSource | undefined {
+    if (font === undefined) return undefined;
+    if (typeof font === 'string') {
+        return font.trim() === '' ? undefined : { kind: 'system', family: font };
+    }
+    return font.family.trim() === '' ? undefined : font;
+}
 
 export const MAPPER_DEFAULTS: Required<MapperSettings> = {
     roomSize: 0.6,

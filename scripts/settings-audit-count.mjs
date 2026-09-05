@@ -34,7 +34,11 @@ const BLOCK = [
 const PAGES = ['General', 'Input line', 'Main display', 'Editor', 'Color view', 'Mapper',
     'Mapper colors', 'Chat', 'Connection', 'Shortcuts', 'Accessibility', 'Special Options'];
 
-const lines = fs.readFileSync(process.argv[2], 'utf8').split('\n');
+// Split on either ending: the repository checks out CRLF on Windows
+// (core.autocrlf), and a trailing \r left on every line makes each "## Page"
+// heading fail to match its entry in PAGES — so every count comes out zero and
+// the table it prints looks like an empty audit rather than a broken script.
+const lines = fs.readFileSync(process.argv[2], 'utf8').split(/\r?\n/);
 const counts = new Map(PAGES.map(p => [p, { '✅': 0, '📍': 0, '🚧': 0, '❌': 0, '⚠️': 0 }]));
 let page = null;
 

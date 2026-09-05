@@ -1,5 +1,5 @@
 import { Fragment, useMemo, useState } from 'react';
-import { useAppStore, useEditorSettings, selectProfileField, MAPPER_DEFAULTS, PLAYER_MARKER_DEFAULTS, MAP_INFO_BG_DEFAULT, PROTOCOL_DEFAULTS, WS_SUBPROTOCOL_CHOICES, SEARCH_ENGINES, resolveSearchEngine, type Theme, type OutputFontSource, type ProfileSettings, type MapperSettings, type EditorSettings, type PlayerMarkerSettings, type MapInfoBgColor, type ProtocolSettings } from '../storage';
+import { useAppStore, useEditorSettings, selectProfileField, MAPPER_DEFAULTS, symbolFontSource, PLAYER_MARKER_DEFAULTS, MAP_INFO_BG_DEFAULT, PROTOCOL_DEFAULTS, WS_SUBPROTOCOL_CHOICES, SEARCH_ENGINES, resolveSearchEngine, type Theme, type OutputFontSource, type ProfileSettings, type MapperSettings, type EditorSettings, type PlayerMarkerSettings, type MapInfoBgColor, type ProtocolSettings } from '../storage';
 import { PlayerMarkerPreview } from './PlayerMarkerPreview';
 import { Input, FontPicker, Toggle, HelpTip, Button, useConfirm } from './components';
 import { getThemeChoices, isBrandedMode } from '../branding';
@@ -21,6 +21,8 @@ import { useFileSource, type PickedFile } from './components/FileSourceButton';
 import type { WindowManager } from './windows/WindowManager';
 import { describeThrown } from '../utils/describeThrown';
 import { deleteMap as deleteStoredMap } from '../storage/mapStorage';
+import { mapSymbolFontStack, BUNDLED_SYMBOL_FONT } from '../map/mapImageExport';
+import { MapSymbolUsageModal } from './MapSymbolUsageModal';
 import { analyticsOptedOut, setAnalyticsOptedOut } from '../analytics';
 import { formatBytes } from '../utils/formatBytes';
 import { EDITOR_THEME_CHOICES } from './codemirror/theme';
@@ -51,9 +53,6 @@ const DEFAULT_PROMPT_TIMEOUT_MS = 300;
 // placeholder show what is actually drawn when the profile sets neither.
 const DEFAULT_GRID_COLOR = '#c8c8c8';
 const DEFAULT_GRID_LINE_WIDTH = 0.02;
-// Mudlet's own default map symbol font, bundled here too — the placeholder in
-// the picker row, and what an unset profile actually draws with.
-const DEFAULT_SYMBOL_FONT = 'Bitstream Vera Sans Mono';
 const DEFAULT_FONT_SIZE = 13;
 const MIN_FONT_SIZE = 6;
 const MAX_FONT_SIZE = 48;
@@ -269,6 +268,8 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     const reactToAllKeybindings = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'reactToAllKeybindings') : undefined)) ?? false;
     const ambiguousWidthWide = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'ambiguousWidthWide') : undefined)) ?? false;
     const expectColorSpaceId = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'expectColorSpaceId') : undefined)) ?? false;
+    const textAnalyzerEnabled = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'enableTextAnalyzer') : undefined)) ?? false;
+    const reportMapIssues = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'reportMapIssues') : undefined)) ?? false;
     const doubleClickIgnore = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'doubleClickIgnore') : undefined)) ?? '';
     const spellCheckInput = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'spellCheckInput') : undefined)) ?? false;
     // Not in the store: the analytics opt-out has its own localStorage key so
@@ -425,6 +426,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     const [category, setCategory] = useState<CategoryKey>('general');
     const [subpage, setSubpage] = useState<string | null>(null);
     const [fontPickerOpen, setFontPickerOpen] = useState(false);
+    const [symbolFontPickerOpen, setSymbolFontPickerOpen] = useState(false);
     // The manual, opened over the dialog rather than in place of it — Settings
     // is where the question is asked, so it should still be there when the
     // answer is read. Rendered as a sibling below, like the font picker.
@@ -433,6 +435,11 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     // way ("An action above happened"), and without it a save that takes a
     // moment looks like a button that did nothing.
     const [mapStatus, setMapStatus] = useState<string | null>(null);
+    // Mudlet's "Show symbol usage…" report. Snapshotted when the button is
+    // pressed rather than subscribed to: it is a report on the map as it stands,
+    // and desktop's dialog only refreshes when the font or its strategy changes.
+    const [symbolUsage, setSymbolUsage] =
+        useState<{ symbol: string; rooms: number[] }[] | null>(null);
 
     const handleSaveMap = async () => {
         if (!windows) return;
@@ -659,7 +666,9 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     const [roomSizeText, setRoomSizeText] = useState(String(mapperRoomSize));
     const [lineWidthText, setLineWidthText] = useState(String(mapperLineWidth));
     const [gridWidthText, setGridWidthText] = useState(mapper?.gridLineWidth !== undefined ? String(mapper.gridLineWidth) : '');
-    const [symbolFontText, setSymbolFontText] = useState(mapper?.symbolFont ?? '');
+    // Normalised on read rather than migrated: a profile written by an older
+    // build holds a bare family name here. See `symbolFontSource`.
+    const symbolFont = symbolFontSource(mapper?.symbolFont);
 
     // Mudlet's "Reset all colors to default" on the Mapper colors page. Shown
     // only once something is customised, like the Main display colour cards —
@@ -1393,7 +1402,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
             category: 'mainDisplay' as const,
             title: 'Display options',
             description: 'The rest of what the game’s text window does with what arrives.',
-            keywords: 'hyperlink, link, clickable url, osc8, control character, CP437, tab, search engine, google, bing, duckduckgo, look up',
+            keywords: 'hyperlink, link, clickable url, osc8, control character, CP437, tab, search engine, google, bing, duckduckgo, look up, analyse, analyze, unicode, codepoint, encoding',
             body: (
                 <>
                     <div className="settings-row">
@@ -1458,6 +1467,26 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                             aria-labelledby="ambiguous-width-label"
                             checked={ambiguousWidthWide}
                             onChange={next => patchProfile({ ambiguousWidthWide: next })}
+                        />
+                    </div>
+                    <div className="settings-row">
+                        <span className="settings-label" id="text-analyzer-label">
+                            Enable text analyzer
+                            <HelpTip label="About the text analyzer">
+                                Adds <strong>Analyse characters</strong> to the output's
+                                right-click menu. It reports, for the selected text, each
+                                character's Unicode code point, its UTF-8 bytes, and the
+                                escape Lua needs to write it into a string — which is how you
+                                find the invisible character in a line a pattern refuses to
+                                match, and how to type it. Only the first line of a selection
+                                is analysed, as on desktop.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="text-analyzer"
+                            aria-labelledby="text-analyzer-label"
+                            checked={textAnalyzerEnabled}
+                            onChange={next => patchProfile({ enableTextAnalyzer: next })}
                         />
                     </div>
                     <div className="settings-row">
@@ -1840,7 +1869,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
             category: 'editor' as const,
             title: 'Display options',
             description: 'What the script editor shows you while you write.',
-            keywords: 'editor, code, script, whitespace, spaces, tabs, invisible, control characters, item id',
+            keywords: 'editor, code, script, whitespace, spaces, tabs, line ends, paragraph, pilcrow, invisible, control characters, item id',
             body: (
                 <>
                     <div className="settings-row">
@@ -1856,6 +1885,24 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                             aria-labelledby="editor-whitespace-label"
                             checked={editorSettings.showWhitespace}
                             onChange={next => patchEditor({ showWhitespace: next })}
+                        />
+                    </div>
+                    <div className="settings-row">
+                        <span className="settings-label" id="editor-line-paragraphs-label">
+                            Show Line/Paragraphs
+                            <HelpTip label="About showing line ends">
+                                Mark where each line ends with a ¶, and the end of the script
+                                with a ␄ — so a trailing space, or a line that only looks
+                                blank, is visible. Desktop's version of this option draws a
+                                faint rule under each row instead; the marks are what its own
+                                tooltip describes.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="editor-line-paragraphs"
+                            aria-labelledby="editor-line-paragraphs-label"
+                            checked={editorSettings.showLineParagraphs}
+                            onChange={next => patchEditor({ showLineParagraphs: next })}
                         />
                     </div>
                     <div className="settings-row">
@@ -1899,7 +1946,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
             category: 'mapper' as const,
             title: 'Map files',
             description: 'Your map is saved into this profile as you explore. These are the same actions the map panel\'s own menu offers.',
-            keywords: 'save map, load map, download map, import map, .dat, .xml, mmp, map file',
+            keywords: 'save map, load map, download map, import map, .dat, .xml, mmp, map file, issues, audit, sanity check, report, broken exits',
             body: (
                 <>
                     <div className="settings-row">
@@ -1913,6 +1960,26 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                             </HelpTip>
                         </span>
                         <Button variant="secondary" size="sm" onClick={() => { void handleSaveMap(); }}>Save now</Button>
+                    </div>
+                    <div className="settings-row">
+                        <span className="settings-label" id="map-issues-label">
+                            report map issues on screen
+                            <HelpTip label="About the map issue report">
+                                Check the map for problems each time one is loaded and write
+                                what it finds on the main display: exits leading to rooms that
+                                are not there, stubs standing where an exit already goes,
+                                doors and weights on directions with no way out, rooms filed
+                                under a missing area. All of them are things the map quietly
+                                draws around. The check only runs while this is on, so a large
+                                map costs nothing for it otherwise.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="map-issues"
+                            aria-labelledby="map-issues-label"
+                            checked={reportMapIssues}
+                            onChange={next => patchProfile({ reportMapIssues: next })}
+                        />
                     </div>
                     <div className="settings-row">
                         <span className="settings-label" id="map-load-label">Load another map file</span>
@@ -2049,41 +2116,71 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
             ),
         },
         {
-            // Mudlet's own group box on the Mapper page. Only the font row of
-            // it: "Only use symbols (glyphs) from chosen font" needs per-glyph
-            // coverage testing the renderer does not expose, and "Show symbol
-            // usage…" is a report rather than a setting.
+            // Mudlet's own group box on the Mapper page, minus "Only use
+            // symbols (glyphs) from chosen font", which needs per-glyph coverage
+            // testing the renderer does not expose.
             id: 'mapSymbols',
             category: 'mapper' as const,
             title: 'Symbols',
             description: 'Room symbols are the letters or glyphs a mapper script writes onto rooms.',
-            keywords: 'symbol, glyph, font, room symbol, typeface, map font',
+            keywords: 'symbol, glyph, font, room symbol, typeface, map font, usage, report',
             body: (
-                <div className="settings-row">
-                    <label className="settings-label" htmlFor="mapper-symbol-font">
-                        2D Map Room Symbol Font
-                        <HelpTip label="About the room symbol font">
-                            Mudlet Web bundles Bitstream Vera Sans Mono and draws symbols with
-                            it, as desktop Mudlet does — a generic system font picks a
-                            different glyph shape per operating system, so the same map looks
-                            different on each. Name another family to override it; the bundled
-                            font stays behind it as a fallback, so a family this device does
-                            not have still lands somewhere sensible. Also sets the area-name
-                            header.
-                        </HelpTip>
-                    </label>
-                    <Input
-                        id="mapper-symbol-font"
-                        type="text"
-                        value={symbolFontText}
-                        placeholder={DEFAULT_SYMBOL_FONT}
-                        onChange={e => setSymbolFontText(e.target.value)}
-                        onBlur={() => {
-                            const next = symbolFontText.trim();
-                            patchMapper({ symbolFont: next === '' || next === DEFAULT_SYMBOL_FONT ? undefined : next });
-                        }}
-                    />
-                </div>
+                <>
+                    {/* The same picker the main display's font uses, and for a
+                        stronger reason: a room symbol is chosen for its glyph,
+                        so the font that has the glyph a map wants is often one
+                        this machine does not have — which is exactly what the
+                        picker's URL and profile-file tabs are for. */}
+                    <div className="settings-row">
+                        <label className="settings-label">
+                            2D Map Room Symbol Font
+                            <HelpTip label="About the room symbol font">
+                                Mudlet Web bundles Bitstream Vera Sans Mono and draws symbols with
+                                it, as desktop Mudlet does — a generic system font picks a
+                                different glyph shape per operating system, so the same map looks
+                                different on each. Choose another to override it: an installed
+                                family, one fetched from a URL, or a font file in this profile.
+                                The bundled font stays behind it as a fallback, so a family this
+                                device does not have still lands somewhere sensible. Also sets the
+                                area-name header.
+                            </HelpTip>
+                        </label>
+                        <div className="settings-font-summary">
+                            {symbolFont
+                                ? <span className="settings-font-summary__name" style={{ fontFamily: mapSymbolFontStack(mapper) }}>
+                                    <strong>{symbolFont.family}</strong>
+                                    <em className="settings-font-summary__kind">({symbolFont.kind})</em>
+                                  </span>
+                                : <span className="settings-font-summary__muted">{BUNDLED_SYMBOL_FONT} (bundled)</span>}
+                            <Button variant="secondary" size="sm" onClick={() => setSymbolFontPickerOpen(true)}>
+                                Change…
+                            </Button>
+                        </div>
+                    </div>
+                    {windows && (
+                        <div className="settings-row">
+                            <span className="settings-label" id="mapper-symbol-usage-label">
+                                Show symbol usage…
+                                <HelpTip label="About the symbol usage report">
+                                    Lists every symbol this map uses, how many rooms carry it,
+                                    and which — so a symbol that came out as a blank box can be
+                                    tracked back to the rooms to fix, with
+                                    {' '}<code>setRoomChar</code>. Desktop also says whether the
+                                    chosen font can draw each one; a browser cannot ask a font
+                                    that, so those columns are absent.
+                                </HelpTip>
+                            </span>
+                            <Button
+                                variant="secondary"
+                                size="sm"
+                                aria-labelledby="mapper-symbol-usage-label"
+                                onClick={() => setSymbolUsage(windows.mapRoomSymbolUsage())}
+                            >
+                                Show
+                            </Button>
+                        </div>
+                    )}
+                </>
             ),
         },
         {
@@ -3242,12 +3339,40 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                     </div>
                 </>
             )}
+            {symbolFontPickerOpen && connectionId && (
+                <>
+                    <div className="modal-overlay font-picker-overlay" onClick={() => setSymbolFontPickerOpen(false)} />
+                    <div className="modal font-picker-modal" role="dialog" aria-modal="true" aria-label="Choose room symbol font">
+                        <div className="modal-header">
+                            <span className="modal-title">Choose Room Symbol Font</span>
+                            <button className="modal-close" onClick={() => setSymbolFontPickerOpen(false)} type="button" aria-label="Close">✕</button>
+                        </div>
+                        <div className="modal-body">
+                            <FontPicker
+                                value={symbolFont}
+                                onChange={next => patchMapper({ symbolFont: next })}
+                                vfs={vfs}
+                                fallbackLabel={`the bundled ${BUNDLED_SYMBOL_FONT}`}
+                            />
+                        </div>
+                    </div>
+                </>
+            )}
             {differencesOpen && (
                 <HelpModal
                     connectionId={connectionId ?? undefined}
                     initialTopic={DIFFERENCES_TOPIC}
                     className="help-modal--over-settings"
                     onClose={() => setDifferencesOpen(false)}
+                />
+            )}
+            {symbolUsage && (
+                <MapSymbolUsageModal
+                    usage={symbolUsage}
+                    // The same stack the renderer draws symbols with, so what
+                    // the report shows is what the map shows.
+                    symbolFont={mapSymbolFontStack(mapper)}
+                    onClose={() => setSymbolUsage(null)}
                 />
             )}
         </>
