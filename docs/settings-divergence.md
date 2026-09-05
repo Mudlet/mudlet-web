@@ -49,20 +49,20 @@ opened with — 78 present, 8 elsewhere, 58 missing — are in that section.
 | Editor | 5 | — | 1 | — |
 | Color view | 24 | — | — | — |
 | Mapper | 9 | — | 10 | 1 |
-| Mapper colors | 8 | — | 20 | — |
+| Mapper colors | 9 | — | 19 | — |
 | Chat | — | — | — | 20 |
 | Connection | 7 | — | — | 4 |
 | Shortcuts | — | — | 1 | — |
 | Accessibility | 7 | — | — | — |
 | Special Options | 10 | — | 2 | 3 |
-| **Total** | **106** | **—** | **37** | **37** |
+| **Total** | **107** | **—** | **36** | **37** |
 
 Three things the totals don't show, and which matter more than the totals do:
 
 - **Parity is not evenly spread.** Accessibility, Color view and Main display are
   complete. Mapper colors is still thin and Shortcuts is empty.
-- **Most of what remains is blocked upstream — but check before you say so.** 25 of the
-  37 need a field `mudlet-map-renderer` does not have, and each of those rows now names
+- **Most of what remains is blocked upstream — but check before you say so.** 24 of the
+  36 need a field `mudlet-map-renderer` does not have, and each of those rows now names
   the field it would need. An earlier pass called the whole map backlog blocked, which
   was wrong twice over: the room symbol font was the renderer's `fontFamily` all along,
   and "Border size" is merged into `lineWidth` rather than absent. Both are marked as
@@ -104,7 +104,7 @@ and 37 impossible. Acting on it closed 29 rows:
 
 What is still 🚧 and why, in short.
 
-**Blocked upstream in the renderer** (25) — each row below names the missing field: the
+**Blocked upstream in the renderer** (24) — each row below names the missing field: the
 16 map ANSI colours (the environment palette, which the renderer reads from map data
 with no override), room border, upper/lower level and overlapping-room colours, drawing
 rooms on adjacent z-levels, the area-exit arrow size, invert zoom direction, and "only
@@ -345,7 +345,7 @@ Present as a card, but a thin one: three of the eight named colours, and none of
 | Overlapping rooms border | 🚧 | Needs a renderer field; the renderer does not mark overlapping rooms at all |
 | Grid color | ✅ | Mapper → Map colors |
 | The 16 map ANSI colours | 🚧 | Sixteen rows, none present, and the largest single block left. These are the environment colours rooms are filled with; the renderer takes them from the map data and `Settings` has no palette to override them with, so this starts upstream |
-| Reset all colors to default | 🚧 | |
+| Reset all colors to default | ✅ | Mapper → Map colors, appearing only once something is customised (the Main display colour cards behave the same way). Clears the profile's overrides rather than writing defaults back, so the renderer's own values are in charge again — which is what "default" has to mean when the defaults live upstream |
 
 ### Player room marker
 

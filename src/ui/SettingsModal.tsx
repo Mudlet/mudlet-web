@@ -662,6 +662,34 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     const [gridWidthText, setGridWidthText] = useState(mapper?.gridLineWidth !== undefined ? String(mapper.gridLineWidth) : '');
     const [symbolFontText, setSymbolFontText] = useState(mapper?.symbolFont ?? '');
 
+    // Mudlet's "Reset all colors to default" on the Mapper colors page. Shown
+    // only once something is customised, like the Main display colour cards —
+    // a reset that can do nothing is noise on a page that has never been
+    // touched. Clearing to undefined rather than writing the defaults back is
+    // what puts the renderer's own values (and the map-info default) in charge
+    // again, which is what "default" has to mean here.
+    // mapInfoColor is not a MapperSettings field — it lives in the Mudlet
+    // `config` bag under its own setConfig key, so it resets separately.
+    const mapColorsCustomised = mapper?.backgroundColor !== undefined
+        || mapper?.lineColor !== undefined
+        || mapper?.gridColor !== undefined
+        || mapper?.gridLineWidth !== undefined
+        || config?.mapInfoColor !== undefined;
+
+    const handleResetMapColors = () => {
+        patchMapper({
+            backgroundColor: undefined,
+            lineColor: undefined,
+            gridColor: undefined,
+            gridLineWidth: undefined,
+        });
+        if (config?.mapInfoColor !== undefined) {
+            const { mapInfoColor: _drop, ...rest } = config;
+            patchProfile({ config: rest });
+        }
+        setGridWidthText('');
+    };
+
     const handleRoomSizeBlur = () => {
         const parsed = parseFloat(roomSizeText.trim());
         if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -2064,9 +2092,16 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
             category: 'mapper' as const,
             title: 'Map colors',
             description: 'The colours the map itself is drawn in.',
-            keywords: 'map colour, map color, background, exit line, info overlay',
+            keywords: 'map colour, map color, background, exit line, info overlay, reset',
             body: (
                 <>
+                    {mapColorsCustomised && (
+                        <div className="settings-colors-toolbar">
+                            <Button variant="secondary" size="sm" onClick={handleResetMapColors}>
+                                Reset all colors to default
+                            </Button>
+                        </div>
+                    )}
                     <div className="settings-colors-grid">
                         <ColorCell
                             label="Background"
