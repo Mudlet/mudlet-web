@@ -2892,6 +2892,115 @@ body.is-sorting {
     max-height: 80vh;
 }
 
+/* Mudlet's text analyser ("Analyse characters" on the output's right-click
+   menu). One row per character, so the width is fixed by the columns and only
+   the height grows with the selection. */
+.analyzer-modal {
+    width: min(620px, 94vw);
+    max-height: 80vh;
+}
+
+.analyzer-table {
+    border-collapse: collapse;
+    width: 100%;
+    font-family: var(--font-ui), sans-serif;
+    font-size: 12px;
+}
+
+.analyzer-table th,
+.analyzer-table td {
+    padding: 4px 8px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+}
+
+.analyzer-table th {
+    position: sticky;
+    top: 0;
+    background: var(--bg-surface);
+    color: var(--text-muted, var(--text));
+    font-weight: 500;
+}
+
+.analyzer-num {
+    text-align: right;
+    color: var(--text-dim, var(--text));
+}
+
+/* The character as the game drew it — bigger than the surrounding table, since
+   telling two look-alike glyphs apart is half of why the dialog exists. */
+.analyzer-glyph {
+    font-family: var(--font-mono), monospace;
+    font-size: 16px;
+}
+
+.analyzer-label {
+    font-family: var(--font-ui), sans-serif;
+    font-size: 11px;
+    color: var(--text-dim, var(--text));
+}
+
+.analyzer-mono {
+    font-family: var(--font-mono), monospace;
+}
+
+/* Mudlet's "Show symbol usage…" report, opened from Mapper → Symbols. Wider
+   than the analyser because the room-id column runs long. */
+.symbol-usage-modal {
+    width: min(720px, 94vw);
+    max-height: 80vh;
+}
+
+.symbol-usage-table {
+    border-collapse: collapse;
+    width: 100%;
+    font-family: var(--font-ui), sans-serif;
+    font-size: 12px;
+}
+
+.symbol-usage-table th,
+.symbol-usage-table td {
+    padding: 4px 8px;
+    text-align: left;
+    vertical-align: top;
+    border-bottom: 1px solid var(--border);
+}
+
+.symbol-usage-table th {
+    position: sticky;
+    top: 0;
+    background: var(--bg-surface);
+    color: var(--text-muted, var(--text));
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+/* Drawn in the map's own symbol font (set inline), and big enough to tell a
+   glyph from the replacement box the fallback substitutes. */
+.symbol-usage-glyph {
+    font-size: 18px;
+    text-align: center;
+    white-space: nowrap;
+}
+
+.symbol-usage-code,
+.symbol-usage-count {
+    font-family: var(--font-mono), monospace;
+    white-space: nowrap;
+}
+
+.symbol-usage-count {
+    text-align: right;
+}
+
+/* The one column allowed to wrap: a symbol on hundreds of rooms lists
+   thirty-two ids, which is several lines wide at this size. */
+.symbol-usage-rooms {
+    font-family: var(--font-mono), monospace;
+    word-break: break-word;
+}
+
 /* Where a ?play=<game> link lands when the player already has profiles for that
    game: pick one, or set up another. */
 .game-link-modal {

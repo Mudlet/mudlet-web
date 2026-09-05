@@ -25,9 +25,9 @@ import { describeCertCode, describeTlsFailure } from './mud/protocol/tlsCodes';
 import type { TlsStatus } from './mud/events';
 import { QuickOpenPalette } from './ui/QuickOpenPalette';
 import { SessionLogger } from './logging/SessionLogger';
-import { useAppStore, selectProfileField, ConnectionIdContext, connectionUrl, connectionSecureTransport, PROTOCOL_DEFAULTS, type MudConnection } from './storage';
+import { useAppStore, selectProfileField, symbolFontSource, ConnectionIdContext, connectionUrl, connectionSecureTransport, PROTOCOL_DEFAULTS, type MudConnection } from './storage';
 import { DEFAULT_STICKY_LINES } from './hooks/useOutput';
-import { applyOutputFont, primeLocalFontsCache } from './utils/fontLoader';
+import { applyOutputFont, registerFontSource, primeLocalFontsCache } from './utils/fontLoader';
 import { setBaseTitle, flashTitle, clearTitleFlash } from './utils/documentTitle';
 import { getBrand, isBrandedMode } from './branding';
 import { setSessionCredentials } from './utils/sessionCredentials';
@@ -167,6 +167,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     const passFallbackTimer = useRef<number | null>(null);
 
     const outputFont = useAppStore(s => selectProfileField(s, connection.id, 'outputFont'));
+    const mapperSymbolFont = useAppStore(s => selectProfileField(s, connection.id, 'mapper')?.symbolFont);
     const promptTimeoutMs = useAppStore(s => selectProfileField(s, connection.id, 'promptTimeoutMs'));
     const serverEncoding = useAppStore(s => selectProfileField(s, connection.id, 'serverEncoding'));
     const ambiguousWidthWide = useAppStore(s => selectProfileField(s, connection.id, 'ambiguousWidthWide'));
@@ -559,6 +560,14 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     useEffect(() => {
         void applyOutputFont(outputFont, vfs);
     }, [outputFont, vfs]);
+
+    // The map's room-symbol font only reaches a canvas, so it needs registering
+    // but not a CSS variable. Registering it here rather than in MapPanel means
+    // it is ready whether or not the map has been opened — the symbol-usage
+    // report and a map image export both draw with it too.
+    useEffect(() => {
+        void registerFontSource(symbolFontSource(mapperSymbolFont), vfs);
+    }, [mapperSymbolFont, vfs]);
 
     // Warm the Local Font Access cache once per profile mount so the first
     // call to getAvailableFonts() from Lua sees installed system fonts. Silent

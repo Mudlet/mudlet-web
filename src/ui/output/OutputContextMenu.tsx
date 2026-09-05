@@ -21,6 +21,10 @@ interface OutputContextMenuProps {
     /** Display name of the configured web-search engine, e.g. "Google". */
     searchEngine: string;
     onSearchOnline: () => void;
+    /** Mudlet's "Analyse characters" — omitted unless the profile's "Enable
+     *  text analyzer" preference is on, exactly as desktop gates it
+     *  (TTextEdit::contextMenuEvent, src/TTextEdit.cpp:2482). */
+    onAnalyseText?: () => void;
     /** Opens the find bar — only the main console passes this. */
     onFind?: () => void;
     /** Timestamp toggle — only the main console passes these. */
@@ -42,6 +46,7 @@ export function OutputContextMenu({
     onCopyImage,
     searchEngine,
     onSearchOnline,
+    onAnalyseText,
     onFind,
     showTimestamps,
     onToggleTimestamps,
@@ -104,6 +109,25 @@ export function OutputContextMenu({
                 <span className="ctx-menu__check" />
                 Search on {searchEngine}
             </button>
+
+            {/* Desktop only builds this entry when there is a selection at all,
+                so there is no greyed-out state to inherit — but greying it, as
+                the copy entries are greyed, says why it does nothing better
+                than an entry that comes and goes. */}
+            {onAnalyseText && (
+                <button
+                    className="ctx-menu__item"
+                    type="button"
+                    disabled={!hasSelection}
+                    title={hasSelection
+                        ? 'Show the Unicode codepoints in the selection (only the first line!)'
+                        : noSelection}
+                    onClick={run(onAnalyseText)}
+                >
+                    <span className="ctx-menu__check" />
+                    Analyse characters
+                </button>
+            )}
 
             {onFind && (
                 <>

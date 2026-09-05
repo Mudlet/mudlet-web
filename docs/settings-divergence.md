@@ -51,31 +51,34 @@ rows collapse a block of identical controls under one label, and the script know
 |---|---|---|---|---|
 | General | 9 | — | 1 | 8 |
 | Input line | 8 | — | — | 2 |
-| Main display | 18 | — | 1 | 1 |
-| Editor | 5 | — | 1 | — |
+| Main display | 19 | — | — | 1 |
+| Editor | 6 | — | — | — |
 | Color view | 24 | — | — | — |
-| Mapper | 10 | — | 9 | 1 |
+| Mapper | 11 | — | 7 | 1 |
 | Mapper colors | 8 | — | 20 | — |
 | Chat | — | — | — | 20 |
 | Connection | 10 | — | — | 4 |
 | Shortcuts | — | — | 1 | — |
 | Accessibility | 7 | — | — | — |
 | Special Options | 9 | — | 2 | 3 |
-| **Total** | **108** | **—** | **35** | **39** |
+| **Total** | **111** | **—** | **31** | **39** |
 
-One row is marked ⚠️ rather than counted: "Border size", which the renderer merges into
-`lineWidth` alongside exit size — neither present nor absent.
+Two rows are marked ⚠️ rather than counted: "Border size", which the renderer merges into
+`lineWidth` alongside exit size, and "Show symbol usage…", which is built but without the
+two columns that would need per-glyph font-coverage testing. Neither is present or
+absent.
 
 Three things the totals don't show, and which matter more than the totals do:
 
-- **Parity is not evenly spread.** Accessibility, Color view and Main display are
+- **Parity is not evenly spread.** Accessibility, Color view, Main display and Editor are
   complete. Mapper colors is still thin and Shortcuts is empty.
 - **Most of what remains is blocked upstream — but check before you say so.** 24 of the
-  35 need a field `mudlet-map-renderer` does not have, and each of those rows now names
-  the field it would need. An earlier pass called the whole map backlog blocked, which
-  was wrong twice over: the room symbol font was the renderer's `fontFamily` all along,
-  and "Border size" is merged into `lineWidth` rather than absent. Both are marked as
-  such now, and the rule is that "blocked upstream" cites a field, not a memory.
+  31 need a field `mudlet-map-renderer` does not have, and a 25th needs a writer
+  `mudlet-map-binary-reader` does not have; each of those rows now names what it would
+  take. An earlier pass called the whole map backlog blocked, which was wrong twice over:
+  the room symbol font was the renderer's `fontFamily` all along, and "Border size" is
+  merged into `lineWidth` rather than absent. Both are marked as such now, and the rule is
+  that "blocked upstream" cites a field, not a memory.
 - **Mudlet Web has settings desktop Mudlet does not** — see
   [Web-only settings](#web-only-settings). The divergence runs both ways, so "8 tabs
   against 12 pages" understated the overlap even before this.
@@ -83,7 +86,8 @@ Three things the totals don't show, and which matter more than the totals do:
 ### What was built
 
 The audit's first pass counted 78 present, 8 reachable only from elsewhere, 58 missing
-and 37 impossible. Acting on it closed 29 rows:
+and 37 impossible. Acting on it closed 29 rows, and
+[issue #128](https://github.com/Mudlet/mudlet-web/issues/128) closed four more:
 
 - **Reachable elsewhere is not reachable.** The 📍 column is now empty. The map file
   actions, "show the default area" (previously Lua-only), a door into the Logs browser
@@ -118,17 +122,25 @@ and 37 impossible. Acting on it closed 29 rows:
 
 ### What is left, and what is not planned
 
-Everything still marked 🚧 falls into one of two buckets. Neither is an open-ended
-backlog: the first is tracked, the second is a decision.
+Everything still marked 🚧 is now a decision rather than a backlog: nothing here is
+waiting only on someone finding the time.
 
-**Tracked for implementation** (5) — [issue #128](https://github.com/Mudlet/mudlet-web/issues/128):
-the text analyzer, the editor's "Show Line/Paragraphs", "report map issues on screen",
-the symbol usage report, and map format version. All five are ordinary work in this
-repository, needing nothing upstream and no new subsystem.
+[Issue #128](https://github.com/Mudlet/mudlet-web/issues/128) tracked the last five that
+*were*, and four landed: the text analyzer, the editor's "Show Line/Paragraphs", "report
+map issues on screen", and the symbol usage report — that one at ⚠️, since the two
+columns saying whether a font can draw a symbol need per-glyph coverage testing a browser
+does not offer. The fifth, **map format version**, turned out to be blocked upstream
+after all, which is why the bucket below has a new heading: it was filed as ordinary work
+here on the assumption that the writer could target any format its reader accepts, and it
+cannot.
 
-**Not planned** (30). Not a judgement about whether they are worth having — a statement
+**Not planned** (31). Not a judgement about whether they are worth having — a statement
 that building them here is not the next move:
 
+- *Blocked upstream in `mudlet-map-binary-reader`* (1). Map format version. The library
+  registers version models for 16-20, but every one below 20 is read-only: its `write`
+  throws outright. So there is no older format for a picker to choose, and stamping one
+  into the header would only produce a file the writer refuses.
 - *Blocked upstream in `mudlet-map-renderer`* (24). The 16 map ANSI colours (the
   environment palette, which the renderer reads from map data with no override), room
   border, upper/lower level and overlapping-room colours, drawing rooms on adjacent
@@ -268,7 +280,7 @@ that building them here is not the next move:
 | Desktop | | Mudlet Web |
 |---|---|---|
 | Fix unnecessary linebreaks on GA servers | ✅ | Moved to Connection → Compatibility, with the other server workarounds |
-| Enable text analyzer | 🚧 | |
+| Enable text analyzer | ✅ | Main display → Display options. Puts **Analyse characters** on the output's right-click menu, as desktop does; the report is a dialog rather than a hover tooltip (a `title` is one OS-drawn line, and a dialog can be read and copied), and its table is transposed — one row per character instead of desktop's rows of sixteen across — so it scrolls rather than reflows |
 | Make 'Ambiguous' E. Asian width characters wide | ✅ | Main display → Display options, backed by Kuhn’s `mk_wcwidth_cjk` table in `wcwidth.ts`. Applies to lines drawn after the change |
 | Echo Lua errors to the main console | ✅ | Advanced → Developer |
 | Display control characters as | ✅ | Main display → Display options |
@@ -287,9 +299,9 @@ unexposed — each row below is a decision taken away from the player.
 | Theme (colorsublime themes) | ✅ | Editor → Theme: Follow app theme / Atom One Dark / Atom One Light. Not desktop's downloadable colorsublime catalogue — the two palettes mudix already ships, pinnable, which is the part of that feature people use (a dark editor under a light interface, or the reverse) |
 | Autocomplete Lua functions in code editor | ✅ | Editor → Display options. Held in a CodeMirror compartment, so a change reconfigures the open editor rather than remounting it |
 | Show Spaces/Tabs | ✅ | Editor → Display options (`highlightWhitespace`) |
-| Show Line/Paragraphs | 🚧 | |
+| Show Line/Paragraphs | ✅ | Editor → Display options. A custom CodeMirror decoration: `highlightWhitespace()` covers spaces and tabs only. Draws the marks the desktop tooltip promises (¶ at each line end, ␄ at the end of the script) rather than what desktop currently does, which is rule a line under each row — `slot_changeShowLineFeedsAndParagraphs` sets edbee's `useLineSeparator`, and its own comment calls that a stand-in |
 | Show invisible Unicode control characters | ✅ | Editor → Display options (`highlightSpecialChars`) |
-| Show Items’ ID number | ✅ | Editor → Display options; the id shows beside each name in the editor tree |
+| Show Items’ ID number | ✅ | Editor → Display options. Shown beside each name in the editor **tree**, where desktop puts it on the selected item's own form instead (`frameId` in `aliases_main_area.ui` and its siblings, revealed by `dlgTriggerEditor::showIDLabels`) — the tree shows every id at once, which is what makes two same-named items tellable apart, and desktop's placement shows one at a time. The number is the one the Lua API answers with (`ScriptingEngine.numericIdFor`), not the store's UUID: reading off an id you could then pass to `enableTrigger` is the whole point of the option |
 
 ---
 
@@ -315,12 +327,12 @@ The one page with **complete** parity, and then some.
 | Desktop | | Mudlet Web |
 |---|---|---|
 | Save your current map / choose location | ✅ | Mapper → Map files → **Save now**. The map is persisted on every change anyway; `saveMap(path)` from Lua still writes a copy into profile files |
-| report map issues on screen | 🚧 | Lower-cased in the .ui, and left that way here: this column is verbatim Mudlet |
+| report map issues on screen | ✅ | Mapper → Map files. Lower-cased in the .ui, and left that way here: this column is verbatim Mudlet. `MapStore.auditExits()` walks the map after every load and posts what it finds on the main console, in Mudlet's `[ WARN ]` / `[ INFO ]` form, capped at 100 lines. Report-only on a `.dat`: the JSON import path already repaired as it parsed and its report is what is shown there, but rewriting a player's binary map to make a report tidier is not a trade worth making. Desktop's alternative when the switch is off is a report *file*; there is none here, so off means the audit does not run at all — which is also what keeps it free on a large map |
 | Load another map file in | ✅ | Mapper → Map files → **Load map…**, offering profile files and a local upload. Still on the map panel’s menu too |
 | Or load an older version | 🚧 | No version history is kept |
 | Delete map: | ✅ | Mapper → Map files. Empties the store *and* drops the profile's IndexedDB slot — clearing only the store would let the next change re-save the old map from memory. Confirms first, and points at "Save now" as the way to keep a copy |
 | Copy map to other profile(s) | 🚧 | Buildable here, not blocked upstream — but it crosses a profile boundary, and the export path mounts profiles one at a time on purpose (concurrent mounts multiply peak memory by the largest map). The cheap shape is write-then-import rather than two live VFS handles |
-| Map format version | 🚧 | Reads every version the binary reader supports; writes the reader's default |
+| Map format version | 🚧 | **Blocked upstream, not merely unbuilt.** Desktop offers 17-20 so a map can be taken back to an older Mudlet. `mudlet-map-binary-reader` registers version models for 16-20 but every one below 20 is *read-only* — its `write` throws "Writing Mudlet map version N is not supported (read-only)" (still so in 2.0.0, whose own description says as much). So there is nothing for a picker to pick: `MapStore.toMudletMap()` stamps 20 because 20 is the only version that can be written. `saveMap(path, version)` already accepts and range-checks the argument, and would honour it the day the writer can |
 
 ### Map download
 
@@ -349,7 +361,7 @@ The one page with **complete** parity, and then some.
 | Desktop | | Mudlet Web |
 |---|---|---|
 | 2D Map Room Symbol Font | ✅ | Mapper → Symbols. The renderer's `fontFamily` was there all along and mudix pinned it to the bundled Bitstream Vera Sans Mono; a profile family now wins, with that font still behind it as the fallback |
-| Show symbol usage… | 🚧 | A report over the map data rather than a setting; buildable here without renderer help, just not built |
+| Show symbol usage… | ⚠️ | **Four of desktop's six columns.** Mapper → Symbols → **Show** opens the report: each symbol drawn in the map's own symbol font, its code points, how many rooms carry it, and which (first 32, as desktop caps it), commonest first. Missing are desktop's pair of sample cells — the symbol in the chosen font alone, and in any font — and the status icon saying which worked. All three answer "can this font draw this symbol", which needs `QFontMetrics::inFontUcs4`: a browser has no counterpart, and the renderer draws the string and lets the browser fall back, so the client cannot tell its own glyph from the fallback's |
 | Only use symbols (glyphs) from chosen font | 🚧 | Needs per-glyph coverage testing the renderer does not expose — it draws the string and lets the browser fall back |
 
 ---
@@ -489,7 +501,10 @@ Ranked by how many players hit it, not by how much work it is.
 3. **The remaining Map view options** — draw upper/lower levels, invert zoom, large area
    exit arrows, border size, room symbols. Renderer-blocked like the colours.
 4. **Log naming and format** — sessions are named by timestamp with no template.
-5. **Text analyzer** — a dialog rather than a setting, which is why it keeps sliding.
+5. **Writing legacy map formats** — upstream in `mudlet-map-binary-reader`, whose legacy
+   version models are read-only. Until they can write, "Map format version" has nothing
+   to offer and the symbol-usage report has no font-coverage columns for the same class
+   of reason (that one is the browser's limit, not a library's).
 
 Two rows are deliberately *not* on this list. "Show debug messages for timers not
 smaller than" and "Report all Codepoint problems immediately" configure diagnostics

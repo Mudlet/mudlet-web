@@ -1222,6 +1222,45 @@ export class WindowManager {
         return this.lastMapLoadFailure;
     }
 
+    /** How many audit lines one load is allowed to put on the console. A map
+     *  with a systematic fault has one per room, and thousands of them would
+     *  push the game's own output out of the scrollback — which is the thing the
+     *  player was reading when they turned the option on. */
+    private static readonly MAX_MAP_ISSUES_POSTED = 100;
+
+    /**
+     * Mudlet's "report map issues on screen" (`mudlet::showMapAuditErrors`,
+     * consulted at every `postMessage` in TRoom/TRoomDB/TMap's audit).
+     *
+     * Called after a load has finished. When the preference is off this does
+     * nothing at all — not even the audit, which on a large map is a full pass
+     * over every room and every exit. `alreadyAudited` covers the import paths
+     * that audit-and-repair as they go: their report is already collected, and
+     * re-running the audit would only find the problems they just fixed.
+     */
+    private reportMapIssues(alreadyAudited: boolean): void {
+        // Take the report either way: it is owed to this load, and leaving it in
+        // the store would hand it to the next one instead.
+        const collected = this.mapStore.takeAuditIssues();
+        if (!this._connectionId) return;
+        if (!selectProfileField(useAppStore.getState(), this._connectionId, 'reportMapIssues')) return;
+
+        const issues = alreadyAudited ? collected : this.mapStore.auditExits(false);
+        if (issues.length === 0) return;
+
+        const shown = issues.slice(0, WindowManager.MAX_MAP_ISSUES_POSTED);
+        for (const issue of shown) {
+            // "[ WARN ]  - " with two spaces: Mudlet's own spelling, and what
+            // ScriptingEngine's postMessage colouring matches on.
+            this.onSystemMessage?.(`[ ${issue.severity === 'warn' ? 'WARN' : 'INFO'} ]  - ${issue.message}`);
+        }
+        if (issues.length > shown.length) {
+            this.onSystemMessage?.(
+                `[ INFO ]  - ${issues.length - shown.length} further map issue(s) are not shown.`,
+            );
+        }
+    }
+
     /**
      * Async sibling of {@link ingestMapBuffer} that parses in a worker so the
      * main thread stays free for paint. `buf` is transferred — callers that
@@ -1280,6 +1319,11 @@ export class WindowManager {
             // progress teardown after that work rather than before it.
             this.mapStore.endBinaryLoad();
             await new Promise<void>(resolve => setTimeout(resolve, 0));
+            // After endBinaryLoad, so the audit sees the finished room graph
+            // (an exit resolved by the hash index is not a dangling one), and
+            // after the yield, so a map big enough to be worth auditing has
+            // already painted before the audit walks it.
+            this.reportMapIssues(false);
         } finally {
             this.publishMapLoadProgress(null);
         }
@@ -1357,6 +1401,7 @@ export class WindowManager {
                 this.reportMapLoadFailure('loadMap parse failed', err);
                 return false;
             }
+            this.reportMapIssues(false);
         }
         // The panel callback is advisory — its return value reports render
         // success, but sysMapLoadEvent fires on successful data ingest so
@@ -1507,6 +1552,12 @@ export class WindowManager {
     /** Every distinct room symbol the map uses; see symbolsThisFontCannotDraw. */
     mapRoomSymbols(): string[] { return this.mapStore.roomSymbols(); }
 
+    /** Mudlet's "Show symbol usage…" data: each symbol with the rooms using it,
+     *  commonest first. */
+    mapRoomSymbolUsage(): { symbol: string; rooms: number[] }[] {
+        return this.mapStore.roomSymbolUsage();
+    }
+
     saveJsonMap(extras: Record<string, unknown> = {}): string {
         return this.mapStore.toMudletJsonString(extras);
     }
@@ -1519,6 +1570,9 @@ export class WindowManager {
      */
     loadJsonMap(json: string): boolean {
         if (!this.mapStore.loadFromJsonString(json)) return false;
+        // The JSON path audits and repairs as it parses, so its report is
+        // already collected — auditing again would find only its own repairs.
+        this.reportMapIssues(true);
         this.mapLoadCallback?.();
         this.onRaiseEvent?.('sysMapLoadEvent', []);
         return true;
@@ -1536,6 +1590,7 @@ export class WindowManager {
         const map = parseXmlMap(xmlText);
         if (!map) return false;
         this.mapStore.loadFromBinary(map);
+        this.reportMapIssues(false);
         this.scheduleMapSave(0);
         this.mapLoadCallback?.();
         this.onRaiseEvent?.('sysMapLoadEvent', []);

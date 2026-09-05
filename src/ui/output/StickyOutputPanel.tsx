@@ -5,8 +5,9 @@ import { OutputContextMenu, type OutputMenuExtraItem } from './OutputContextMenu
 import { restoreFocusAfterLinkClick } from './linkNavigation';
 import {
     hasSelectionIn, hasCopyableLines, selectAll, copySelectionText,
-    copySelectionAsHtml, copySelectionAsImage, searchSelectionOnline,
+    copySelectionAsHtml, copySelectionAsImage, searchSelectionOnline, selectionText,
 } from './outputCopy';
+import { TextAnalyzerModal } from './TextAnalyzerModal';
 import { useProfileField } from '../../storage';
 import { resolveSearchEngine } from '../../storage/schema';
 import { isClearSplitClick } from './clearSplit';
@@ -54,6 +55,7 @@ export function StickyOutputPanel({
     commandInputRef, className, fontSize, fontFamily, lineHeight, wrapAt, wrapIndent, wrapHangingIndent,
 }: StickyOutputPanelProps) {
     const searchEngine = resolveSearchEngine(useProfileField('searchEngine'));
+    const textAnalyzerEnabled = useProfileField('enableTextAnalyzer') ?? false;
     const isMobile = useIsMobile();
     const isTouch = useIsTouch();
     // One question, asked in three places (see CommandBar): is there an
@@ -64,6 +66,10 @@ export function StickyOutputPanel({
     const [contextMenu, setContextMenu] =
         useState<{ x: number; y: number; hasSelection: boolean; hasContent: boolean; extraItems: OutputMenuExtraItem[] } | null>(null);
     const stickyOuterRef = useRef<HTMLDivElement>(null);
+    // The selection is snapshotted when the menu entry is clicked, not read
+    // when the modal renders: opening a dialog moves focus, and focusing
+    // anything outside the console drops the selection that is being analysed.
+    const [analyzerText, setAnalyzerText] = useState<string | null>(null);
 
     useEffect(() => {
         const outer = stickyOuterRef.current;
@@ -273,12 +279,17 @@ export function StickyOutputPanel({
                     onCopyImage={() => runCopyAction(copySelectionAsImage)}
                     searchEngine={searchEngine}
                     onSearchOnline={() => searchSelectionOnline(searchEngine)}
+                    onAnalyseText={textAnalyzerEnabled ? () => setAnalyzerText(selectionText()) : undefined}
                     onFind={onFind}
                     showTimestamps={showTimestamps ?? false}
                     onToggleTimestamps={onToggleTimestamps}
                     extraItems={contextMenu.extraItems}
                     onClose={() => setContextMenu(null)}
                 />
+            )}
+
+            {analyzerText !== null && (
+                <TextAnalyzerModal selection={analyzerText} onClose={() => setAnalyzerText(null)} />
             )}
         </div>
     );

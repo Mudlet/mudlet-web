@@ -80,8 +80,13 @@ keybindings work normally — create them in the editor as you would on desktop.
 combinations the browser has claimed (Ctrl+T, Ctrl+W and friends) never reach the page
 at all; see [Browsers and limits](./browsers.md).
 
-**A few smaller ones.** A text analyzer, naming your log files, and the editor's "Show
-Line/Paragraphs".
+**Saving the map in an older format.** Mudlet Web reads every map format desktop writes,
+but always saves in the current one (version 20). Desktop lets you pick an older format
+to take a map back to an older Mudlet; the map library Mudlet Web is built on can only
+write the current one.
+
+**A few smaller ones.** Naming your log files, and choosing which glyphs a room symbol
+may be drawn from.
 
 Two of desktop's debug settings aren't planned as settings at all: the timer-size
 threshold and "report all codepoint problems" adjust warnings Mudlet Web doesn't produce

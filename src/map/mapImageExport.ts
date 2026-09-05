@@ -5,7 +5,7 @@ import type { MapStore } from './MapStore';
 // Pulled straight from the schema module rather than the ../storage barrel:
 // the barrel also re-exports the Zustand store, and this file is loaded by the
 // headless export path where dragging that in would be a needless cycle risk.
-import { PLAYER_MARKER_DEFAULTS, type MapperSettings } from '../storage/schema';
+import { PLAYER_MARKER_DEFAULTS, symbolFontSource, type MapperSettings } from '../storage/schema';
 
 /**
  * One profile-supplied font family as a CSS string literal, safe to concatenate
@@ -33,6 +33,27 @@ export function cssFontFamilyLiteral(family: string): string {
     return `'${escaped}'`;
 }
 
+/** The bundled room-symbol font. Mudlet's default too, and the reason it has one:
+ *  a generic family picks a different glyph shape per operating system, so the
+ *  same map looks different on each machine. */
+export const BUNDLED_SYMBOL_FONT = 'Bitstream Vera Sans Mono';
+
+/**
+ * The CSS `font-family` room symbols are drawn with — the profile's chosen font
+ * first, the bundled one behind it, so a family this device does not have still
+ * lands somewhere sensible.
+ *
+ * One function because three places have to agree on the answer: the renderer,
+ * the map image export that configures it, and the symbol-usage report, which
+ * would be lying if it drew a symbol in a different font from the map.
+ */
+export function mapSymbolFontStack(mapper: MapperSettings | undefined): string {
+    const font = symbolFontSource(mapper?.symbolFont);
+    return font
+        ? `${cssFontFamilyLiteral(font.family)}, '${BUNDLED_SYMBOL_FONT}', sans-serif`
+        : `'${BUNDLED_SYMBOL_FONT}', sans-serif`;
+}
+
 /**
  * Copy user-set fields from MapperSettings onto a live renderer settings
  * object. Anything left undefined in `mapper` is intentionally not touched
@@ -52,9 +73,7 @@ export function applyMapperSettings(target: MapRendererSettings, mapper: MapperS
     // different glyph shape per-OS for Unicode room-symbol characters. A
     // profile that has chosen a font wins, and keeps the bundled one as the
     // fallback so an unavailable family still lands somewhere sensible.
-    target.fontFamily = mapper?.symbolFont
-        ? `${cssFontFamilyLiteral(mapper.symbolFont)}, 'Bitstream Vera Sans Mono', sans-serif`
-        : "'Bitstream Vera Sans Mono', sans-serif";
+    target.fontFamily = mapSymbolFontStack(mapper);
     // Level-of-detail: on unless the user turns it off. The renderer defaults it
     // off for back-compat, but every tier only engages above ~12k rooms on the
     // drawn plane — a density where the full vector scene costs seconds per

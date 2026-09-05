@@ -45,10 +45,11 @@ export function useEffectiveTheme(): Theme {
 export function useEditorSettings(): Required<EditorSettings> {
     const stored = useProfileField('editor');
     return {
-        autocomplete:     stored?.autocomplete ?? true,
-        showWhitespace:   stored?.showWhitespace ?? false,
-        showControlChars: stored?.showControlChars ?? false,
-        showItemIds:      stored?.showItemIds ?? false,
-        theme:            stored?.theme ?? 'app',
+        autocomplete:       stored?.autocomplete ?? true,
+        showWhitespace:     stored?.showWhitespace ?? false,
+        showLineParagraphs: stored?.showLineParagraphs ?? false,
+        showControlChars:   stored?.showControlChars ?? false,
+        showItemIds:        stored?.showItemIds ?? false,
+        theme:              stored?.theme ?? 'app',
     };
 }

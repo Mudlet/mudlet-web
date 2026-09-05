@@ -329,14 +329,24 @@ export async function loadFontFromVfs(family: string, path: string, vfs: Profile
 
 const OUTPUT_FONT_VAR = '--font-output';
 
-export async function applyOutputFont(
+/**
+ * Make a font source drawable, without saying where it is to be drawn.
+ *
+ * A `system` source is whatever the machine already has, so there is nothing to
+ * do; the other two have to be fetched or read out of the profile before the
+ * family name means anything. Both underlying loaders are idempotent, so calling
+ * this again for a font already registered costs nothing — which is what lets it
+ * sit in an effect keyed on the setting.
+ *
+ * Separate from {@link applyOutputFont} because the map's room-symbol font needs
+ * the registration half and not the CSS-variable half: it is handed to a canvas
+ * by the renderer, not inherited through the document.
+ */
+export async function registerFontSource(
     font: OutputFontSource | undefined,
     vfs: ProfileVFS | null,
 ): Promise<void> {
-    if (!font || !font.family.trim()) {
-        document.documentElement.style.removeProperty(OUTPUT_FONT_VAR);
-        return;
-    }
+    if (!font || !font.family.trim()) return;
     try {
         if (font.kind === 'url') {
             await loadFontFromUrl(font.family, font.url);
@@ -346,5 +356,16 @@ export async function applyOutputFont(
     } catch (e) {
         console.error('[fontLoader] failed to register font', font, e);
     }
+}
+
+export async function applyOutputFont(
+    font: OutputFontSource | undefined,
+    vfs: ProfileVFS | null,
+): Promise<void> {
+    if (!font || !font.family.trim()) {
+        document.documentElement.style.removeProperty(OUTPUT_FONT_VAR);
+        return;
+    }
+    await registerFontSource(font, vfs);
     document.documentElement.style.setProperty(OUTPUT_FONT_VAR, quoteFamily(font.family));
 }
