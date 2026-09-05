@@ -1204,13 +1204,21 @@ function getCustomLines1(id)
         local src = line.points or {}
         while src[i] ~= nil do
             local p = src[i]
-            pts[i + 1] = { x = p.x, y = p.y, z = p.z }
+            -- Positional, not keyed: the "1" variant hands back {x, y, z}
+            -- triples the way addCustomLine takes them, so a line read here can
+            -- be drawn straight into another room. getCustomLines keeps the
+            -- keyed, 0-indexed form it has always had.
+            pts[i + 1] = { p.x, p.y, p.z }
             i = i + 1
         end
         local a = line.attributes or {}
         local c = a.color or {}
         out[dir] = {
-            attributes = { color = { r = c.r, g = c.g, b = c.b }, style = a.style, arrow = a.arrow },
+            -- The colour is a LIST here, not a keyed table: Mudlet hands back
+            -- {r, g, b} positionally, which is also the shape addCustomLine
+            -- takes, so a line can be read from one room and drawn into another
+            -- without being taken apart in between.
+            attributes = { color = { c.r, c.g, c.b }, style = a.style, arrow = a.arrow },
             points = pts,
         }
     end

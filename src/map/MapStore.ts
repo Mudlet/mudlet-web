@@ -960,9 +960,14 @@ export class MapStore {
      * the point of a documented interchange format. A map exported here has to
      * open in Mudlet, and one exported by Mudlet has to open here.
      */
-    toMudletJsonString(): string {
+    toMudletJsonString(extras: Record<string, unknown> = {}): string {
         const doc = {
             formatVersion: 1,
+            // Map-level settings that live in the profile rather than in the
+            // store — the symbol font and its scaling — are passed in by the
+            // caller that owns them, so a saved file carries the whole map the
+            // way Mudlet's does without this layer having to reach for config.
+            ...extras,
             areas: [...this.areaNames.keys()].map(areaId => ({
                 id: areaId,
                 name: this.areaNames.get(areaId) ?? '',
@@ -1114,7 +1119,56 @@ export class MapStore {
         // field), so they can only be applied once the rooms exist.
         applyJsonSymbolColors(parsed, this);
         applyJsonRoomBorders(parsed, this);
+        this.auditImportedExits();
         return true;
+    }
+
+    /**
+     * Mudlet's `TRoom::auditExits`, run over every room after an import.
+     *
+     * A JSON map is a document, and a document can say things the mapper API
+     * never could: an exit to a room the file does not contain, a stub standing
+     * in a direction that already has an exit. Mudlet repairs those on the way
+     * in rather than carrying them, and writes what it did into the room's own
+     * userData, so a map that quietly changed shape on import can still be
+     * explained afterwards.
+     *
+     * The order matters. Missing destinations are resolved first, because a
+     * stock exit that loses its destination BECOMES a stub, and only then can
+     * stub-versus-exit be judged — otherwise the stub just created would be
+     * dropped again by the very exit it replaced.
+     */
+    private auditImportedExits(): void {
+        for (const room of this.rooms.values()) {
+            for (const [num, field] of Object.entries(DIR_FIELD)) {
+                const dest = (room as unknown as Record<string, number>)[field];
+                if (!Number.isFinite(dest) || dest <= 0 || this.rooms.has(dest)) continue;
+                // The exit pointed somewhere the file never described. The
+                // direction is still real, so it survives as a stub: the map
+                // goes on saying "there is a way east", just not where it goes.
+                const dirNum = Number(num);
+                (room as unknown as Record<string, number>)[field] = -1;
+                if (!room.stubs.includes(dirNum)) room.stubs.push(dirNum);
+                room.userData[`audit.made_stub_of_valid_but_missing_exit.${dirNum}`] = String(dest);
+            }
+            for (const [command, dest] of Object.entries(room.mSpecialExits ?? {})) {
+                if (this.rooms.has(dest)) continue;
+                // A special exit IS its command, and a command with nowhere to
+                // go is not a way out of anywhere — there is no stub for it to
+                // fall back to, so it goes entirely.
+                delete room.mSpecialExits[command];
+                room.mSpecialExitLocks = (room.mSpecialExitLocks ?? []).filter(d => d !== dest);
+                room.userData[`audit.removed_valid_but_missing_special_exit.${command}`] = String(dest);
+            }
+            // A stub says "there is a way out here that goes nowhere yet", which
+            // is nothing to add to a direction that already goes somewhere.
+            room.stubs = room.stubs.filter(dirNum => {
+                const field = DIR_FIELD[dirNum];
+                if (!field) return false;
+                const dest = (room as unknown as Record<string, number>)[field];
+                return !(Number.isFinite(dest) && dest > 0);
+            });
+        }
     }
 
     toMudletMap(): MudletMap {

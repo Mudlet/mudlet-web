@@ -238,6 +238,14 @@ export function installMapBindings({
         // Mudlet appends the suffix itself rather than writing a file the
         // loader will not recognise later.
         const path = /\.json$/i.test(location) ? location : `${location}.json`;
+        // The VFS makes a write's parent directory on demand, which is right for
+        // a script keeping its own data and wrong for a destination the player
+        // named: saving a map into a folder that is not there is a typo, and
+        // Mudlet reports it rather than inventing the folder.
+        const parent = path.slice(0, path.lastIndexOf('/'));
+        if (parent && !vfs.exists(parent)) {
+            return `saveJsonMap: could not open file "${path}" for writing, "${parent}" is not a directory`;
+        }
         let json: string;
         try { json = api.saveJsonMap(); }
         catch (e) { return `saveJsonMap: could not serialise the map (${String(e)})`; }
@@ -275,7 +283,12 @@ export function installMapBindings({
         if (!Array.isArray(doc.areas) || doc.areas.length === 0) {
             return `loadJsonMap: no areas detected in file "${location}"`;
         }
-        return api.loadJsonMap(json) ? undefined : `loadJsonMap: could not read the map in file "${location}"`;
+        if (!api.loadJsonMap(json)) return `loadJsonMap: could not read the map in file "${location}"`;
+        // The map-level settings ride in the same document, and are applied
+        // after the rooms so a failed load cannot leave the profile wearing an
+        // imported map's appearance without its map.
+        api.applyJsonMapSettings(doc as Record<string, unknown>);
+        return undefined;
     });
 
     // ── Room CRUD ─────────────────────────────────────────────────────────

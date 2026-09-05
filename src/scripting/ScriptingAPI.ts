@@ -5118,7 +5118,29 @@ export class ScriptingAPI {
 
     /** Mudlet `saveJsonMap(path)` backbone — serialises the current MapStore
      *  as JSON. The Lua binding writes the result to the supplied VFS path. */
-    saveJsonMap(): string { return this.session.windows.saveJsonMap(); }
+    /** The map as Mudlet's JSON, carrying the map-level settings that live in
+     *  the profile rather than in the map store — Mudlet writes them into the
+     *  same file, so a map moved between clients keeps the way it looks. */
+    saveJsonMap(): string {
+        return this.session.windows.saveJsonMap({
+            mapSymbolFontFudgeFactor: this.getConfig('mapSymbolFontScaling'),
+            mapSymbolFontDetails: this.getConfig('mapSymbolFont'),
+            onlyMapSymbolFontToBeUsed: this.getConfig('mapSymbolFontOnlyUseSelected'),
+        });
+    }
+
+    /** The counterpart of the extras {@link saveJsonMap} writes: an imported
+     *  file's map-level settings, applied after the rooms have loaded. */
+    applyJsonMapSettings(doc: Record<string, unknown>): void {
+        const scaling = Number(doc.mapSymbolFontFudgeFactor);
+        if (Number.isFinite(scaling)) this.setConfig('mapSymbolFontScaling', scaling);
+        if (typeof doc.mapSymbolFontDetails === 'string' && doc.mapSymbolFontDetails) {
+            this.setConfig('mapSymbolFont', doc.mapSymbolFontDetails);
+        }
+        if (typeof doc.onlyMapSymbolFontToBeUsed === 'boolean') {
+            this.setConfig('mapSymbolFontOnlyUseSelected', doc.onlyMapSymbolFontToBeUsed);
+        }
+    }
 
     /** Mudlet `loadJsonMap(path)` backbone — parse a JSON payload previously
      *  produced by saveJsonMap and reload the map. Returns false when the
