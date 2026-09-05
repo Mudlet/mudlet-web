@@ -1504,6 +1504,9 @@ export class WindowManager {
     /** Mudlet's own interchange schema, not the binary model — a file written
      *  here has to open in Mudlet, and be readable by anything that parses it
      *  directly. */
+    /** Every distinct room symbol the map uses; see symbolsThisFontCannotDraw. */
+    mapRoomSymbols(): string[] { return this.mapStore.roomSymbols(); }
+
     saveJsonMap(extras: Record<string, unknown> = {}): string {
         return this.mapStore.toMudletJsonString(extras);
     }

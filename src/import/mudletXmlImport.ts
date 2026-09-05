@@ -2,6 +2,7 @@ import type { AliasNode, ButtonLocation, ButtonNode, ButtonOrientation, KeyNode,
 import { qtKeyToDomCode, qtModifiersToList, QT_KEY_UNKNOWN } from '../mud/keybindings/qtKeys';
 import { desanitizeControlChars } from './mudletControlChars';
 import { remapLegacyColorPattern } from '../mud/triggers/legacyColorPatterns';
+import { parseVariablePackage, type MudletVariable } from './mudletVariables';
 
 // Mudlet triggerType integer → our TriggerPatternType
 const MUDLET_PATTERN_TYPES: TriggerPatternType[] = [
@@ -64,6 +65,14 @@ export interface MudletImportResult {
     keys: KeyNode[];
     buttons: ButtonNode[];
     warnings: string[];
+    /**
+     * The globals a `<VariablePackage>` carries, if any. A package may be
+     * nothing BUT these — a module of variables, fonts, images or a map loads
+     * completely and still leaves every one of the six item units empty — so an
+     * install that only looked at the units took such a package for one that had
+     * installed nothing at all.
+     */
+    variables?: MudletVariable[];
     /**
      * Why the document could not be read, when it could not. Set only for a
      * caller that asked to be TOLD rather than thrown at — an install carries on
@@ -327,12 +336,67 @@ function collectOffsetTimerWarnings(doc: Document, warnings: string[]): void {
     }
 }
 
+/**
+ * Everything before the line a parser error names, so what follows the break is
+ * dropped rather than half-read. Returns the whole document when the message
+ * carries no line, in which case the repair below simply has nothing to trim.
+ */
+function truncateAtError(xml: string, errorText: string): string {
+    const line = /error on line (\d+)/i.exec(errorText);
+    if (!line) return xml;
+    const lines = xml.split('\n');
+    const cut = Math.max(0, Number(line[1]) - 1);
+    return lines.slice(0, cut).join('\n');
+}
+
+/**
+ * Close the elements a truncated document left open, innermost first, so it
+ * parses as the document it was on its way to being.
+ *
+ * A last line cut mid-tag cannot be closed into anything valid, so it is dropped
+ * before the scan. Comments, CDATA, declarations and self-closing tags open
+ * nothing and are stepped over.
+ */
+function closeOpenTags(xml: string): string | null {
+    const lastOpen = xml.lastIndexOf('<');
+    const body = lastOpen > xml.lastIndexOf('>') ? xml.slice(0, lastOpen) : xml;
+    const stack: string[] = [];
+    const tag = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<[!?][^>]*>|<\/?([A-Za-z_][\w.:-]*)([^>]*)>/g;
+    for (let m = tag.exec(body); m; m = tag.exec(body)) {
+        const name = m[1];
+        if (!name) continue;                       // comment, CDATA, declaration
+        if (m[0].startsWith('</')) {
+            const at = stack.lastIndexOf(name);
+            if (at >= 0) stack.length = at;        // also closes anything left open inside
+            continue;
+        }
+        if (!m[2]?.trimEnd().endsWith('/')) stack.push(name);
+    }
+    if (stack.length === 0) return null;           // nothing was open: no repair to make
+    return body + stack.reverse().map(n => `</${n}>`).join('');
+}
+
 export function parseMudletXml(xml: string, opts: ParseOptions = {}): MudletImportResult {
     const doc = new DOMParser().parseFromString(xml, 'text/xml');
     const err = doc.getElementsByTagName('parsererror')[0];
     if (err) {
         const reason = `XML parse error: ${err.textContent?.split('\n')[0]}`;
         if (!opts.reportParseError) throw new Error(reason);
+        // Mudlet reads a package XML with a STREAMING reader, so a document that
+        // stops part-way keeps everything it had already read — the items above
+        // the break are installed and the package runs. DOMParser is all or
+        // nothing, so the document is repaired instead: cut at the line the
+        // error names and close whatever was still open. What comes back is the
+        // same items a streaming reader would have had, and the failure is still
+        // reported either way.
+        const repaired = closeOpenTags(truncateAtError(xml, err.textContent ?? ''));
+        if (repaired) {
+            const retry = new DOMParser().parseFromString(repaired, 'text/xml');
+            if (!retry.getElementsByTagName('parsererror')[0]) {
+                const result = parseMudletXml(repaired, { ...opts, reportParseError: false });
+                return { ...result, warnings: [...result.warnings, reason], parseError: reason };
+            }
+        }
         return {
             scripts: [], aliases: [], triggers: [], timers: [], keys: [], buttons: [],
             warnings: [reason], parseError: reason,
@@ -353,6 +417,16 @@ export function parseMudletXml(xml: string, opts: ParseOptions = {}): MudletImpo
     parseButtons( pkgChildren('ActionPackage',  'Action',  'ActionGroup'),  null, result.buttons);
 
     collectOffsetTimerWarnings(doc, result.warnings);
+
+    // The globals a package carries. Kept off the six unit lists deliberately:
+    // they are not items, cannot be tagged, and an uninstall does not take them
+    // away — but a package may be nothing but these, and one that ignored them
+    // read such a package as having installed nothing at all.
+    const variablePkg = doc.getElementsByTagName('VariablePackage')[0];
+    if (variablePkg) {
+        const vars = parseVariablePackage(variablePkg).variables;
+        if (vars.length > 0) result.variables = vars;
+    }
 
     if (opts.packageName) {
         applyPackageTagging(result, opts.packageName);

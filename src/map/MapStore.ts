@@ -1511,6 +1511,14 @@ export class MapStore {
 
     getRoomChar(id: number): string { return this.rooms.get(id)?.symbol ?? ''; }
 
+    /** Every distinct room symbol on the map — what a font has to be able to
+     *  draw before it is worth choosing. */
+    roomSymbols(): string[] {
+        const seen = new Set<string>();
+        for (const room of this.rooms.values()) if (room.symbol) seen.add(room.symbol);
+        return [...seen];
+    }
+
     setRoomChar(id: number, char: string): boolean {
         const r = this.rooms.get(id);
         if (!r) return false;

@@ -548,7 +548,31 @@ export function moduleXmlAbsolutePath(manifest: PackageManifest, vfs: ProfileVFS
  * Re-read a module's XML from the VFS and return the parsed result.
  * Throws if the on-disk file is missing — modules require their XML to be present.
  */
-export function reloadModuleFromVfs(manifest: PackageManifest, vfs: ProfileVFS): MudletImportResult {
+export function reloadModuleFromVfs(
+    manifest: PackageManifest,
+    vfs: ProfileVFS,
+    readConfig?: InstallOptions['readConfig'],
+): MudletImportResult {
+    // A module installed FROM AN ARCHIVE is reloaded from that archive, not from
+    // the XML the last install left behind. Writing a different archive over
+    // that file is what updating a module looks like from here, and re-reading
+    // the unpacked XML instead put back exactly what the module already held —
+    // the update was invisible.
+    const source = manifest.sourcePath;
+    if (source && archiveExtension.test(source) && vfs.exists(source)) {
+        const buf = vfs.readBinaryFile(source);
+        if (looksLikeZip(buf)) {
+            const filename = source.substring(source.lastIndexOf('/') + 1);
+            const prepared = preparePackageInstall(filename, buf, vfs, {
+                kind: 'module', sourcePath: source, readConfig,
+            });
+            // The rename lands on the folder the module already has, which is
+            // why a sync's uninstall leaves that folder alone: this is the write
+            // it was left standing for.
+            prepared.commit();
+            return prepared.data;
+        }
+    }
     const path = moduleXmlAbsolutePath(manifest, vfs);
     if (!path) throw new Error(`Module "${manifest.name}" has no xmlPath; cannot reload from disk`);
     if (!vfs.exists(path)) throw new Error(`Module "${manifest.name}" XML not found at ${path}`);

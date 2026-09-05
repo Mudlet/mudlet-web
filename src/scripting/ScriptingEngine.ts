@@ -68,6 +68,7 @@ import {rewriteVfsUrlsInHtml} from './vfs/htmlRewrite';
 import {MapOpenNotifier} from './MapOpenNotifier';
 import {installPackageFonts, refreshPackageFonts} from '../import/packageFonts';
 import {installPackageFromBytes, moduleXmlAbsolutePath, prepareModuleInstallFromVfsPath, preparePackageInstall, reloadModuleFromVfs, uninstallPackageFiles} from '../import/packageInstaller';
+import type {MudletImportResult} from '../import/mudletXmlImport';
 import {downloadFromUrl, filenameFromUrl, isClientGuiRedelivery, parseClientGuiPayload, parseClientMapPayload} from '../import/remotePackageInstall';
 import {ensureDefaultPackages} from '../import/defaultPackages';
 import {serializeMudletXml, type SerializeInput} from '../import/mudletXmlExport';
@@ -735,7 +736,7 @@ export class ScriptingEngine implements EngineHost {
         for (const pkg of packages) {
             if (pkg.kind !== 'module') continue;
             try {
-                const data = reloadModuleFromVfs(pkg, vfs);
+                const data = reloadModuleFromVfs(pkg, vfs, this.readPackageConfig);
                 useAppStore.getState().installPackage(id, pkg, data);
             } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);
@@ -825,6 +826,25 @@ export class ScriptingEngine implements EngineHost {
      * `_G`. Called once before the initial script load so handlers see their
      * persisted state, and again after a profile reset (fresh global table).
      */
+    /**
+     * Put a package's own `<VariablePackage>` globals into `_G`.
+     *
+     * A package may carry nothing else — a module of variables, fonts, images or
+     * a map loads completely and leaves every one of the six item units empty —
+     * so skipping these made such a package indistinguishable from one whose
+     * contents never loaded at all. They are not items: nothing tags them and an
+     * uninstall does not take them away, which is Mudlet's behaviour too.
+     */
+    private restorePackageVariables(data: MudletImportResult): void {
+        const values = data.variables;
+        if (!values || values.length === 0) return;
+        try {
+            this.runtimes.lua?.restoreVariables(values);
+        } catch (err) {
+            console.warn('[ScriptingEngine] package variable restore failed:', err);
+        }
+    }
+
     private restoreSavedVariables(): void {
         const rt = this.runtimes.lua;
         if (!rt) return;
@@ -1035,7 +1055,7 @@ export class ScriptingEngine implements EngineHost {
             return false;
         }
         try {
-            const data = reloadModuleFromVfs(pkg, vfs);
+            const data = reloadModuleFromVfs(pkg, vfs, this.readPackageConfig);
             // A reload re-reads the module from disk, so anything a script had
             // set on it since the last one is gone — that is the point of asking
             // for a reload. Keeping the overrides meant getModuleInfo went on
@@ -1224,6 +1244,7 @@ export class ScriptingEngine implements EngineHost {
             // syncs and reloads that follow go through reloadModuleFromVfs,
             // which reads no manifest and so cannot repeat it.
             if (prepared.configProblem) this.announceLostManifest(prepared.manifest.name);
+            this.restorePackageVariables(prepared.data);
             // Refused rather than reinstalled, like a package — and for the
             // stronger reason: a module carries the user's own edits back out to
             // its file, so installing over one would discard work that exists
@@ -1926,6 +1947,7 @@ export class ScriptingEngine implements EngineHost {
             // changes is that it is SAID. Silence left the player with a
             // package that is listed, owns nothing, and gives no reason.
             if (prepared.data.parseError) this.announceUnreadableContents(prepared.manifest.name);
+            this.restorePackageVariables(prepared.data);
             // Refused, not replaced: a second install would silently discard
             // whatever the user had changed in the first, and a script looping
             // over a package list would do it repeatedly.

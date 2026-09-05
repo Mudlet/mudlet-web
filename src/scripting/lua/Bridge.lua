@@ -5132,6 +5132,11 @@ do
         if ok == false then
             return nil, "setConfig: '" .. tostring(value) .. "' is not a valid value for '" .. key .. "'"
         end
+        -- A string answer is the option TAKEN, with something the caller should
+        -- know riding along — a symbol font that cannot draw a symbol the map
+        -- already uses, for one. The warning travels beside the true rather than
+        -- replacing it, because a script has nowhere else to hear it from.
+        if type(ok) == 'string' then return true, ok end
         return ok
     end
 

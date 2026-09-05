@@ -1515,6 +1515,15 @@ export class LuaRuntime implements IScriptingRuntime {
             // away rather than through the flush below, so a spec (and a user
             // reading the file) finds them there the moment this returns.
             if (!dir && !name) {
+                // The save-history switches go out with the session's end, not
+                // when they are flipped: profile.ini carries them beside the
+                // history-file mapping, which is written as each command line is
+                // created.
+                try {
+                    vfs.writeFile(`${path}/profile.ini`, this.api.profileIniContent());
+                } catch (err) {
+                    console.warn('[saveProfile] could not write profile.ini:', err);
+                }
                 for (const file of this.api.commandLineHistoryFiles()) {
                     try {
                         vfs.writeFile(`${path}/${file.name}`, file.content);

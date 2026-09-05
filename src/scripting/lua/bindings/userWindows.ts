@@ -33,7 +33,16 @@ export function installUserWindowBindings({
     emitEvent,
     unregisterCb,
     overlayCmdLineActionCbIds,
+    vfs,
 }: BindingContext): void {
+    /** profile.ini as it stands. Written on every change rather than held open
+     *  as QSettings does, which comes to the same thing from a script's side:
+     *  the file is current by the next pass of the event loop. */
+    const writeProfileIni = (): void => {
+        if (!vfs) return;
+        try { vfs.writeFile(`${vfs.profilePath}/profile.ini`, api.profileIniContent()); }
+        catch (err) { console.warn('[profile.ini] could not be written:', err); }
+    };
     // Mudlet `windowType(name)` → kind string. Returns `(nil, errMsg)` when
     // the name doesn't resolve. The raw entry point hands JS `null` for the
     // miss case; the Bridge.lua wrapper re-shapes it into the multi-return.
@@ -223,11 +232,27 @@ export function installUserWindowBindings({
             ? [a as string, b, c, d, e, f]
             : [undefined, a, b, c, d, e];
         if (typeof name !== 'string' || !name) return false;
-        return api.cmdLines.create(name, {
+        const made = api.cmdLines.create(name, {
             parent: parent && parent !== 'main' ? parent : 'main',
             x: Number(x), y: Number(y),
             width: Number(w), height: Number(h),
         });
+        // A sub command line is BORN with a stylesheet, built from the profile's
+        // command line background colour — not with an empty one. Mudlet's
+        // TCommandLine sets it in its constructor, so getCmdLineStyleSheet()
+        // answers with it before any script has styled anything, and a package
+        // reading it back to extend it has something to extend.
+        if (made) {
+            api.noteCmdLineStyleSheet(name, api.bornCmdLineStyleSheet());
+            // Its own history file, recorded straight away. Mudlet lets QSettings
+            // flush profile.ini on the next pass of the event loop, so the
+            // mapping is on disk without anyone asking for a save — and two
+            // command lines made in the same pass must not be handed one file,
+            // or the second's history would write over the first's.
+            api.noteCommandLineForIni(name);
+            writeProfileIni();
+        }
+        return made;
     });
     // Mudlet deleteCommandLine(name) → bool. Destroys an overlay command line
     // created by createCommandLine. Fires sysCommandLineDeleted(name) on

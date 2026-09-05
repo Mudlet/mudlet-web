@@ -28,6 +28,7 @@ import { historyStorageKey, loadHistory } from '../ui/commandHistory';
 import { OSC8_DOCS_DEBOUNCE_MS, OSC8_DOCS_PHRASE, osc8DocumentationExamples } from '../mud/text/osc8Docs';
 import { SERVER_WRAP_WIDTH_MAX, SERVER_WRAP_WIDTH_MIN } from '../mud/text/serverWrap';
 import { decodeTelnetByteTags } from '../mud/connection/telnetByteTags';
+import { toByteString } from '../mud/protocol/byteString';
 import { openOsc8Menu } from '../ui/output/osc8Menu';
 import { namedColorToState, dechoToAnsiFast, cechoToAnsiFast, hechoToAnsiFast } from '../mud/text/colorParsers';
 import { colorCodes } from '../mud/text/colors';
@@ -1048,7 +1049,15 @@ export class ScriptingAPI {
         // The `<T_IAC><T_GA>`-style placeholders come first: a telnet stream is
         // made of bytes a Lua string cannot carry comfortably, so Mudlet lets
         // the data name them. See telnetByteTags.ts.
-        this.session.feedTelnet(decodeTelnetByteTags(data));
+        // Back to BYTES first. A socket hands the parser one char per byte
+        // (String.fromCharCode over the frame), and everything downstream reads
+        // it that way — MSDP decodes its values from UTF-8 bytes, for one. What
+        // arrives here has already been through wasmoon, which UTF-8-DECODES a
+        // Lua string on the way out, so "caf\195\169" reaches this line as
+        // "café": three bytes had become one char, and the byte reader then made
+        // a replacement character of it. Encoding before the tags are decoded
+        // leaves them alone, being ASCII either way.
+        this.session.feedTelnet(decodeTelnetByteTags(toByteString(data)));
         return null;
     }
 
@@ -1443,7 +1452,35 @@ export class ScriptingAPI {
 
     /** Mudlet `setConfig(key, value)`. Returns true when the key is known and
      *  writable, false for unknown or read-only keys. */
-    setConfig(key: string, value: unknown): boolean {
+    /**
+     * The room symbols the named font has no glyph for, quoted, or null when it
+     * can draw every one the map uses.
+     *
+     * Measured rather than looked up, because a browser will not say what a
+     * font contains: a character with no glyph is drawn as the font's notdef
+     * box, and every such character therefore measures the SAME width. So each
+     * symbol is compared against a codepoint nothing has a glyph for — the last
+     * of Private Use Plane 16 — in the same font at the same size. Equal widths
+     * mean both came out as the box.
+     */
+    private symbolsThisFontCannotDraw(family: string): string | null {
+        const symbols = this.session.windows.mapRoomSymbols?.() ?? [];
+        if (symbols.length === 0) return null;
+        const canvas = typeof document !== 'undefined' ? document.createElement('canvas') : null;
+        const ctx = canvas?.getContext('2d');
+        if (!ctx) return null;
+        ctx.font = `32px "${family}"`;
+        // U+10FFFD: unassigned, and unassignable — nothing can have a glyph for
+        // it, so its width IS the notdef width for this font.
+        const notdef = ctx.measureText('\u{10FFFD}').width;
+        const missing = symbols.filter(s => s && ctx.measureText(s).width === notdef);
+        if (missing.length === 0) return null;
+        return [...new Set(missing)].map(s => `"${s}"`).join(', ');
+    }
+
+    /** Returns true, or a string when the option was taken and the caller
+     *  should be told something about it — see the mapSymbolFont case. */
+    setConfig(key: string, value: unknown): boolean | string {
         switch (key) {
             case 'enableGMCP': this.setProtocol('gmcp', configBool(value)); return true;
             case 'enableMSDP': this.setProtocol('msdp', configBool(value)); return true;
@@ -1674,6 +1711,18 @@ export class ScriptingAPI {
                     }
                 }
                 this.addonCommands.setSearchActive(on);
+            }
+            // The font is TAKEN either way — a symbol it cannot draw is the
+            // map's problem to look at, not a reason to refuse the choice — so
+            // the complaint rides along beside the true rather than replacing
+            // it. A script has nowhere else to hear it: the symbols are drawn
+            // by the renderer, which answers no one.
+            if (key === 'mapSymbolFont') {
+                const undrawable = this.symbolsThisFontCannotDraw(String(v));
+                if (undrawable) {
+                    return `the font "${v}" has no glyph for ${undrawable}, which the map uses —`
+                        + ' those rooms will show the replacement character';
+                }
             }
             return true;
         }
@@ -4675,6 +4724,45 @@ export class ScriptingAPI {
     // and this one is not even consulted. Defaults to on, as Mudlet's does.
     private saveCommandHistoryFlags = new Map<string, boolean>();
 
+    /** Which file each command line's history is kept in. Assigned on creation
+     *  and never reused, because two command lines sharing one file would
+     *  overwrite each other's history on the next save. */
+    private readonly cmdLineHistoryFiles = new Map<string, string>();
+    private nextHistoryFile = 1;
+
+    /** Register a command line's history file, returning its name. */
+    noteCommandLineForIni(cmdLineName: string): string {
+        const existing = this.cmdLineHistoryFiles.get(cmdLineName);
+        if (existing) return existing;
+        const file = `command_history_${this.nextHistoryFile++}`;
+        this.cmdLineHistoryFiles.set(cmdLineName, file);
+        return file;
+    }
+
+    forgetCommandLineForIni(cmdLineName: string): void {
+        this.cmdLineHistoryFiles.delete(cmdLineName);
+    }
+
+    /**
+     * The profile's `profile.ini`, in the shape QSettings writes it.
+     *
+     * Mudlet keeps this file open and lets QSettings flush it on the next pass
+     * through the event loop, so what a command line records reaches the disk
+     * without anyone asking for a save. Two things live under [CommandLines]:
+     * which file each one's history goes in, written when it is created, and
+     * whether it saves history at all, written with the end-of-session save.
+     */
+    profileIniContent(): string {
+        const lines = ['[CommandLines]'];
+        for (const [name, file] of this.cmdLineHistoryFiles) {
+            lines.push(`NameMapping\\${name}=${file}`);
+        }
+        for (const [name, save] of this.saveCommandHistoryFlags) {
+            lines.push(`SaveHistory\\${name}=${save}`);
+        }
+        return `${lines.join('\n')}\n`;
+    }
+
     saveCommandHistoryFor(cmdLineName: string): boolean {
         return this.saveCommandHistoryFlags.get(cmdLineName) ?? true;
     }
@@ -4847,6 +4935,14 @@ export class ScriptingAPI {
      *  default and has no widget of its own to read back from. */
     getCmdLineStyleSheet(name: string): string {
         return this.cmdLineCss.get(name || 'main') ?? '';
+    }
+
+    /** The stylesheet a sub command line is created with — the profile's command
+     *  line background, in the shape Mudlet's TCommandLine builds. */
+    bornCmdLineStyleSheet(): string {
+        const profile = useAppStore.getState().connectionProfile[this.connectionId];
+        const background = profile?.inputBackground || 'rgb(0,0,0)';
+        return `QPlainTextEdit{background-color: ${background};}`;
     }
 
     noteCmdLineStyleSheet(name: string, css: string): void {
