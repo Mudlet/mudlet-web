@@ -286,17 +286,16 @@ export class MudSession {
 
     /**
      * Whether the last disconnect was asked for rather than suffered — Mudlet's
-     * `mDontReconnect`. Auto-reconnect reads it so hanging up by hand, from the
-     * toolbar or from Lua, is not immediately undone. Cleared by {@link connect}
-     * so it only ever suppresses the one retry it was raised for.
+     * `mDontReconnect`. The disconnect notice reads it to name the user rather
+     * than guessing at the server, and a future auto-reconnect would read it to
+     * leave a hang-up alone. Cleared by {@link connect}.
      */
     deliberateDisconnect = false;
 
     disconnect(): void {
         if (!this.client) return;
         // Latched before the socket closes, so the disconnect notice can name
-        // the user rather than guessing at the server, and so auto-reconnect
-        // leaves a hang-up alone — cTelnet's mDontReconnect.
+        // the user rather than guessing at the server — cTelnet's mDontReconnect.
         this.deliberateDisconnect = true;
         this.client.disconnect();
     }
@@ -964,10 +963,10 @@ export class MudSession {
         this.postSocketMessage('INFO', `Connection time: ${formatConnectionTime(elapsed)}.`);
         this.connectedAt = null;
         this.disconnectReason = null;
-        // `deliberateDisconnect` is deliberately NOT cleared here. Auto-reconnect
-        // subscribes to `client.disconnect` after this handler, so clearing it now
-        // would hide a hang-up from the one thing that has to see it. {@link connect}
-        // clears it instead, which is the only place it matters.
+        // `deliberateDisconnect` is deliberately NOT cleared here — anything
+        // subscribing to `client.disconnect` after this handler still has to be
+        // able to tell a hang-up from a drop. {@link connect} clears it instead,
+        // which is the only place it matters.
     }
 }
 
