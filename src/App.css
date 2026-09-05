@@ -4650,6 +4650,17 @@ body.is-sorting {
     color: var(--text-dim);
 }
 
+/* A measured value sitting after a label ("3 files, 1.2 MB"), rather than a
+   unit suffix hugging an input the way .settings-unit does — so it needs the
+   space between the two that a suffix must not have. */
+.settings-readout {
+    margin-left: 8px;
+    font-family: var(--font-ui), sans-serif;
+    font-size: 12px;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+}
+
 .settings-font-summary {
     display: flex;
     align-items: center;

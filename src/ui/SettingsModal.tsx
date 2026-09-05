@@ -1630,7 +1630,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                         <span className="settings-label" id="clear-media-label">
                             Purge stored media files for the current profile:
                             {mediaSize && (
-                                <span className="settings-unit">
+                                <span className="settings-readout">
                                     {mediaSize.files > 0
                                         ? `${mediaSize.files} file${mediaSize.files === 1 ? '' : 's'}, ${formatBytes(mediaSize.bytes)}`
                                         : 'none stored'}
