@@ -418,7 +418,7 @@ function PatternTypeSelect({ value, onChange }: { value: TriggerPatternType; onC
                 <span className="script-editor__pattern-type-arrow">▾</span>
             </button>
             {open && (
-                <ContextMenu x={pos.x} y={pos.y} onClose={() => setOpen(false)}>
+                <ContextMenu x={pos.x} y={pos.y} onClose={() => setOpen(false)} label="Pattern type">
                     {(Object.entries(PATTERN_TYPE_LABELS) as [TriggerPatternType, string][]).map(([t, label]) => (
                         <button
                             key={t}
@@ -569,7 +569,7 @@ function ColorChannelPicker({
                 <span className="script-editor__pattern-color-name">{colorPickerLabel(value)}</span>
             </button>
             {open && (
-                <ContextMenu x={pos.x} y={pos.y} onClose={() => setOpen(false)}>
+                <ContextMenu x={pos.x} y={pos.y} onClose={() => setOpen(false)} role="group" label={`${label === 'FG' ? 'Foreground' : 'Background'} colour`}>
                     <div className="script-editor__color-picker">
                         <div className="script-editor__color-picker-header">
                             <span className="script-editor__color-picker-title">
@@ -3142,7 +3142,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
             )}
 
             {ctxMenu && isEditCategory && (
-                <ContextMenu x={ctxMenu.x} y={ctxMenu.y} onClose={() => setCtxMenu(null)}>
+                <ContextMenu x={ctxMenu.x} y={ctxMenu.y} onClose={() => setCtxMenu(null)} label="Item actions">
                     {ctxMenu.targetId !== null && (
                         <>
                             <button

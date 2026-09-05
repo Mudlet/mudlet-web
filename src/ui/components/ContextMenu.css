@@ -29,9 +29,17 @@
     font-size: inherit;
 }
 
-.ctx-menu__item:hover {
+/* Keyboard focus reads the same as hover, plus an inset outline so the row is
+   still identifiable in forced-colours / high-contrast modes. */
+.ctx-menu__item:hover,
+.ctx-menu__item:focus {
     background: var(--accent-glow);
     color: var(--accent);
+}
+
+.ctx-menu__item:focus {
+    outline: 1px solid var(--accent);
+    outline-offset: -1px;
 }
 
 .ctx-menu__item:disabled {
@@ -48,9 +56,14 @@
     color: var(--danger);
 }
 
-.ctx-menu__item--danger:hover {
+.ctx-menu__item--danger:hover,
+.ctx-menu__item--danger:focus {
     background: color-mix(in srgb, var(--danger) 12%, transparent);
     color: var(--danger);
+}
+
+.ctx-menu__item--danger:focus {
+    outline-color: var(--danger);
 }
 
 .ctx-menu__sep {

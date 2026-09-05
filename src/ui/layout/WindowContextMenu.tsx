@@ -22,7 +22,7 @@ export function WindowContextMenu({ windows, manager, x, y, onClose }: WindowCon
         .sort((a, b) => a.title.localeCompare(b.title));
 
     return (
-        <ContextMenu x={x} y={y} onClose={onClose}>
+        <ContextMenu x={x} y={y} onClose={onClose} label="Window actions">
             {sorted.length === 0
                 ? <div className="ctx-menu__empty">No windows</div>
                 : sorted.map(w => (

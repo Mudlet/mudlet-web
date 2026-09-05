@@ -5,7 +5,17 @@ import { useIsMobile, useIsTouch } from '../hooks/useViewportMode';
 import { useCommandHistory } from './useCommandHistory';
 import { matchHistory, type Match } from './commandHistory';
 import { hasPrecedingWord, matchWordCandidates, splitTrailingWord, type ActiveWord, type BufferWordIndex } from './bufferWords';
+import { flushScreenReaderLines } from './output/ScreenReaderLog';
+import { COMMAND_INPUT_ID } from './landmarks';
 import type { CmdLineMenuEntry, CmdLineMenuRegistry } from './CmdLineMenuRegistry';
+
+/** The live region holds exactly one announcement. Keeping only the newest means
+ *  the default `aria-atomic` of role="status" reads that one word and nothing
+ *  else, so the announcement does not depend on `aria-atomic="false"` being
+ *  honoured — and replacing the node is still the DOM addition that triggers it. */
+const ANNOUNCE_HISTORY = 1;
+
+const HINT_ID = 'mudix-cmdline-hint';
 
 interface CommandBarProps {
     command: string;
@@ -81,6 +91,19 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
     const resetCycle = () => { cycleRef.current = null; };
 
     const [ghostHidden, setGhostHidden] = useState(false);
+
+    // Tab completion and history recall rewrite the box without moving focus, so
+    // a screen reader says nothing at all — the user presses Tab and has no idea
+    // what landed. Desktop Mudlet announces both (mudlet::self()->announce, at
+    // TCommandLine.cpp:1132 for the completion proposal and :1212 for a history
+    // move); this is the browser equivalent. Appending a node, rather than
+    // setting text, is what makes a repeat of the same word announce again.
+    const announceRef = useRef<HTMLDivElement>(null);
+    const announce = (text: string) => {
+        const region = announceRef.current;
+        if (region && text) flushScreenReaderLines(region, [text], ANNOUNCE_HISTORY);
+    };
+
     const isMobile = useIsMobile();
     const isTouch = useIsTouch();
 
@@ -270,23 +293,30 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
     // edits, which clears cycleRef). `lists` are the candidate pools in priority
     // order — for the first word: suggestions, history (whole commands), buffer
     // words; for an argument word: suggestions, buffer words.
-    const cycleWord = (active: ActiveWord, dir: 1 | -1, lists: string[][]): void => {
+    //
+    // Returns false when there was nothing to complete, which is the caller's
+    // cue to let the Tab through as an ordinary focus move.
+    const cycleWord = (active: ActiveWord, dir: 1 | -1, lists: string[][]): boolean => {
         let state = cycleRef.current;
         if (!state || state.lastValue !== command) {
             const matched = matchWordCandidates(active.word, lists);
-            if (matched.length === 0) { cycleRef.current = null; return; }
+            if (matched.length === 0) { cycleRef.current = null; return false; }
             state = { matches: matched, index: dir === 1 ? 0 : matched.length - 1, lastValue: '' };
             cycleRef.current = state;
         } else {
             const n = state.matches.length;
             state.index = (state.index + dir + n) % n;
         }
-        const next = active.prefix + state.matches[state.index];
+        const proposal = state.matches[state.index];
+        const next = active.prefix + proposal;
         state.lastValue = next;
         draftRef.current = next;
         setCursor(-1);
         pendingCaretEndRef.current = 'end';
         setValue(next);
+        // Mudlet announces the proposal alone, not the whole rewritten line.
+        announce(proposal);
+        return true;
     };
 
     const traverseTo = (newCursor: number) => {
@@ -295,10 +325,12 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
             setCursor(-1);
             pendingCaretEndRef.current = 'end';
             setValue(draftRef.current);
+            announce(draftRef.current);
         } else {
             setCursor(newCursor);
             pendingCaretEndRef.current = 'history';
             setValue(history[newCursor]);
+            announce(history[newCursor]);
         }
     };
 
@@ -348,13 +380,13 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
 
         if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey && !passwordMode) {
             const active = splitTrailingWord(command);
-            if (!active) {
-                // Nothing to complete (empty input or trailing whitespace). Consume
-                // forward Tab so focus stays in the box; leave Shift+Tab native.
-                if (!e.shiftKey) e.preventDefault();
-                return;
-            }
-            e.preventDefault();
+            // Nothing to complete — empty box or trailing whitespace. Desktop
+            // swallows this Tab anyway (TCommandLine.cpp:293-329) because a
+            // native window has nowhere else for focus to go; in a browser it is
+            // the documented way out of the command line, and swallowing a key
+            // that does nothing is exactly what WCAG 2.1.2 objects to. See the
+            // hint span below, which tells a screen-reader user it is there.
+            if (!active) return;
             const sugg = suggestions ?? [];
             const words = bufferWords?.getWords() ?? [];
             // First word: complete commands you've run (history) + suggestions +
@@ -371,7 +403,9 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
             const allowed = banned.size === 0
                 ? lists
                 : lists.map(l => l.filter(w => !banned.has(w.toLowerCase())));
-            cycleWord(active, e.shiftKey ? -1 : 1, allowed);
+            // Only consume the key if something was actually completed; a word
+            // with no candidates leaves Tab as a focus move, same as above.
+            if (cycleWord(active, e.shiftKey ? -1 : 1, allowed)) e.preventDefault();
             return;
         }
 
@@ -423,6 +457,7 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
                 {passwordMode ? (
                     <Input
                         ref={commandInputRef as React.RefObject<HTMLInputElement>}
+                        id={COMMAND_INPUT_ID}
                         className="command-input"
                         // Mudlet's "Disable password masking": still the
                         // single-line password field (no history, no ghost
@@ -449,6 +484,7 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
                     // adds a newline; the auto-grow effect resizes it to fit.
                     <textarea
                         ref={commandInputRef as React.RefObject<HTMLTextAreaElement>}
+                        id={COMMAND_INPUT_ID}
                         className="command-input command-input--multiline input"
                         rows={1}
                         value={command}
@@ -467,10 +503,29 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
                         // above never gets it, whatever this says.
                         spellCheck={spellCheckInput}
                         aria-label="Command input"
+                        aria-describedby={HINT_ID}
                         style={inputStyle}
                     />
                 )}
             </div>
+
+            {/* Read out once when focus arrives, so the Tab behaviour and the way
+                back out of the box are discoverable without sighted trial and
+                error (WCAG 2.1.2). */}
+            <span id={HINT_ID} className="sr-only">
+                Tab completes the word you are typing; press it again to cycle.
+                With nothing to complete, Tab moves on to the next control.
+                Up and Down recall earlier commands.
+            </span>
+
+            {/* Announcements for the edits Tab and Up/Down make in place. */}
+            <div
+                ref={announceRef}
+                className="sr-only"
+                role="status"
+                aria-live="polite"
+                aria-relevant="additions"
+            />
 
             <Button
                 variant="secondary"

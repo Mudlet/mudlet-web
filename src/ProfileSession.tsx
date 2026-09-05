@@ -24,6 +24,7 @@ import {
 import { describeCertCode, describeTlsFailure } from './mud/protocol/tlsCodes';
 import type { TlsStatus } from './mud/events';
 import { QuickOpenPalette } from './ui/QuickOpenPalette';
+import { MAIN_OUTPUT_ID, COMMAND_INPUT_ID } from './ui/landmarks';
 import { SessionLogger } from './logging/SessionLogger';
 import { useAppStore, selectProfileField, symbolFontSource, ConnectionIdContext, connectionUrl, connectionSecureTransport, PROTOCOL_DEFAULTS, type MudConnection } from './storage';
 import { DEFAULT_STICKY_LINES } from './hooks/useOutput';
@@ -1305,6 +1306,19 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         raiseEvent: (event: string, ...args: unknown[]) => engineRef.current?.raiseEvent(event, args),
     };
 
+    // A fragment link only *reliably* moves focus in some browsers, and the two
+    // targets here are exactly the ones a skip link exists to reach — so focus
+    // them outright, and fall back to the browser's own fragment navigation if
+    // the element isn't mounted (the console is only there once ContentLayout has
+    // adopted its detached host).
+    const skipTo = (id: string) => (e: React.MouseEvent<HTMLAnchorElement>) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        e.preventDefault();
+        el.focus();
+        el.scrollIntoView({ block: 'nearest' });
+    };
+
     return (
         <ConnectionIdContext.Provider value={connection.id}>
         {/* The responsive mode is measured from this element rather than from
@@ -1313,6 +1327,22 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         <div ref={setAppEl} className={fullscreen ? 'app app--fullscreen' : 'app'}>
         <ViewportModeProvider element={appEl}>
             {fullscreen && <div className="app-topbar-hover-zone" aria-hidden="true" />}
+            {/* The session screen is one undifferentiated div tree: no landmarks,
+                no headings, and an output region reachable only through Chrome's
+                "focusable scrollable region" behaviour, which other browsers do
+                not all provide. These three — the skip links, the page heading,
+                and role="main" on the content row below — give structural
+                navigation something to work with. The banner landmark is on the
+                toolbar itself (ui/Toolbar.tsx). */}
+            <nav className="skip-links" aria-label="Skip links">
+                <a className="skip-link" href={`#${MAIN_OUTPUT_ID}`} onClick={skipTo(MAIN_OUTPUT_ID)}>
+                    Skip to game output
+                </a>
+                <a className="skip-link" href={`#${COMMAND_INPUT_ID}`} onClick={skipTo(COMMAND_INPUT_ID)}>
+                    Skip to command input
+                </a>
+            </nav>
+            <h1 className="sr-only">{connection.name}</h1>
             <Toolbar
                 connectionName={connection.name}
                 status={status}
@@ -1355,7 +1385,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                     onDismiss={() => setTlsStatus(null)}
                 />
             )}
-            <div className="app-content">
+            <div className="app-content" role="main">
                 <ContentLayout
                     session={session}
                     manager={session.windows}

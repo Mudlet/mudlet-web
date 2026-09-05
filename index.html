@@ -2,7 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <!-- No `maximum-scale` / `user-scalable=no`: pinch zoom is the first
+         magnification affordance a low-vision user reaches for on a text-dense
+         console, and blocking it fails WCAG 1.4.4. The map panel keeps its own
+         pinch-to-zoom; see ui/preventPinchZoom.ts. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="description" content="Mudlet in your browser — a web-based MUD client with Mudlet Lua scripting, ANSI rendering, and full telnet/GMCP/MSDP support." />
     <meta name="theme-color" content="#090909" />
     <link rel="icon" type="image/svg+xml" href="./icon.svg" />

@@ -133,7 +133,17 @@ export function BundledGameGrid({ connections, busy, onPlay }: Props) {
                                                     <span className="connection-avatar-text">{game.name}</span>
                                                 </span>
                                             )}
-                                        <Button variant="primary" onClick={() => onPlay(game)} disabled={busy}>
+                                        {/* The tile's name is a sibling span and its
+                                            logo is decorative, so the visible "Play"
+                                            is the button's whole accessible name —
+                                            43 identical entries in a screen reader's
+                                            element list. aria-label names the game. */}
+                                        <Button
+                                            variant="primary"
+                                            onClick={() => onPlay(game)}
+                                            disabled={busy}
+                                            aria-label={`Play ${game.name}`}
+                                        >
                                             Play
                                         </Button>
                                     </div>

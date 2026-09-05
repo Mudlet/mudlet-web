@@ -265,6 +265,9 @@ export function ConnectionGrid({
                         onClick={() => onConnect(c)}
                         disabled={connecting || elsewhere}
                         title={elsewhere ? busyTitle : undefined}
+                        // The profile name is a sibling span, so without this every
+                        // tile's button reads as a bare "Connect" in an element list.
+                        aria-label={`Connect to ${c.name}`}
                     >
                         {connectingId === c.id ? 'Connecting…' : 'Connect'}
                     </Button>
@@ -293,6 +296,7 @@ export function ConnectionGrid({
                         onClick={() => onOpen(c)}
                         disabled={connecting || elsewhere}
                         title={elsewhere ? busyTitle : 'Open profile offline'}
+                        aria-label={`Open ${c.name} offline`}
                     >
                         Open
                     </Button>

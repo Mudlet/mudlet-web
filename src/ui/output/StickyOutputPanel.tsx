@@ -37,6 +37,14 @@ interface StickyOutputPanelProps {
      *  lazily when the menu opens since the registry can change. */
     getMenuExtraItems?: () => OutputMenuExtraItem[];
     commandInputRef?: React.RefObject<HTMLInputElement | HTMLTextAreaElement | null>;
+    /** When set, the scrollback becomes a named, Tab-reachable landmark — an id
+     *  a skip link can target, a region role, and an explicit tab stop rather
+     *  than Chrome's "focusable scrollable region" behaviour, which the other
+     *  browsers do not all provide. Only the main console passes these: a script
+     *  window already sits inside its own labelled region (TextPanel), and
+     *  nesting a second one there would only add noise to the landmark list. */
+    regionId?: string;
+    regionLabel?: string;
     className?: string;
     fontSize?: number;
     fontFamily?: string;
@@ -52,7 +60,8 @@ export function StickyOutputPanel({
     isSplitView, scrollToBottom,
     background, backgroundExtra, foreground, showTimestamps, onToggleTimestamps,
     onFind, sourceName, getMenuExtraItems,
-    commandInputRef, className, fontSize, fontFamily, lineHeight, wrapAt, wrapIndent, wrapHangingIndent,
+    commandInputRef, regionId, regionLabel,
+    className, fontSize, fontFamily, lineHeight, wrapAt, wrapIndent, wrapHangingIndent,
 }: StickyOutputPanelProps) {
     const searchEngine = resolveSearchEngine(useProfileField('searchEngine'));
     const textAnalyzerEnabled = useProfileField('enableTextAnalyzer') ?? false;
@@ -137,6 +146,16 @@ export function StickyOutputPanel({
 
     const handleContextMenu = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
         e.preventDefault();
+        // The main console is a tab stop (see `regionLabel`) and Chrome focuses a
+        // focusable element on mousedown whichever button pressed it, so the
+        // right-click that opened this menu has already pulled focus off the
+        // command line — and the menu would faithfully hand it back to the
+        // console on close, leaving the player's next keystroke going nowhere.
+        // Put focus back before the menu records where to return it to. Cancelling
+        // the mousedown would do it too, but in Chrome that also cancels the
+        // contextmenu event, i.e. this menu. Same opt-out as `handleClick`: on a
+        // touch phone, focus summons a keyboard over what you were reading.
+        if (commandInputRef && !keyboardWouldCover) commandInputRef.current?.focus();
         // We own the output's right-click menu; stop it bubbling to ancestor
         // handlers (the OutputArea folds its script entries in via extraItems).
         e.stopPropagation();
@@ -148,7 +167,7 @@ export function StickyOutputPanel({
             hasContent: container ? hasCopyableLines(container) : false,
             extraItems: getMenuExtraItems?.() ?? [],
         });
-    }, [outputRef, getMenuExtraItems]);
+    }, [outputRef, getMenuExtraItems, commandInputRef, keyboardWouldCover]);
 
     const runCopyAction = useCallback((action: (container: HTMLElement) => void | Promise<void>) => {
         const container = outputRef.current;
@@ -224,6 +243,13 @@ export function StickyOutputPanel({
             <div
                 className="output-wrapper"
                 ref={outputRef}
+                id={regionId}
+                role={regionLabel ? 'region' : undefined}
+                aria-label={regionLabel}
+                // Not role="log": the off-screen ScreenReaderLog is the live
+                // region that narrates new output, and role="log" carries an
+                // implicit aria-live="polite" that would double-speak every line.
+                tabIndex={regionLabel ? 0 : undefined}
                 style={wrapStyle}
                 onContextMenu={handleContextMenu}
             >

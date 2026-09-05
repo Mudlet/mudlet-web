@@ -172,7 +172,15 @@ export function Toolbar({ connectionName, status, ping, onDisconnect, onReconnec
     );
 
     return (
-        <div className={`mudix-toolbar${toolbarCfg?.className ? ` ${toolbarCfg.className}` : ''}`} onContextMenu={onContextMenu}>
+        // The banner landmark for the session screen. A <header> element would
+        // give the same role, but the class is a documented brand-styling hook
+        // and several rules key off the element being this div, so the role is
+        // set explicitly instead of changing the tag.
+        <div
+            className={`mudix-toolbar${toolbarCfg?.className ? ` ${toolbarCfg.className}` : ''}`}
+            role="banner"
+            onContextMenu={onContextMenu}
+        >
             {getBrand().logoUrl && (
                 <img className="brand-logo" src={getBrand().logoUrl} alt="" aria-hidden="true" />
             )}

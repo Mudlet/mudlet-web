@@ -15,6 +15,7 @@ import { CommandLineOverlay } from '../cmdline/CommandLineOverlay';
 import { ScrollBoxOverlay } from '../scrollbox/ScrollBoxOverlay';
 import { backgroundImageStyle } from './backgroundImageStyle';
 import { trimSelectionForDoubleClick } from './wordSelection';
+import { MAIN_OUTPUT_ID } from '../landmarks';
 
 interface OutputAreaProps {
     session: MudSession;
@@ -217,6 +218,8 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
                     sourceName={connectionName}
                     getMenuExtraItems={getMenuExtraItems}
                     commandInputRef={commandInputRef}
+                    regionId={MAIN_OUTPUT_ID}
+                    regionLabel={connectionName ? `${connectionName} game output` : 'Game output'}
                     fontSize={fontSize}
                     wrapAt={wrapAt}
                     wrapIndent={wrapIndent}

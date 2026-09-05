@@ -21,7 +21,8 @@ function bootstrapPage(): void {
     void registerVfsServiceWorker().then(ok => {
         if (ok && appShellCacheEnabled) void primeAppShellCache();
     });
-    // Block accidental page pinch-zoom on the app chrome (the map keeps its own).
+    // Keep the browser's pinch-zoom out of the map, which has its own. The rest
+    // of the page zooms normally — WCAG 1.4.4.
     installPinchZoomGuard();
     applyBrandTheming();
 }
