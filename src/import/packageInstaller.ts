@@ -14,6 +14,15 @@ export interface InstallResult {
      * stop matching, with nothing to go on.
      */
     configProblem?: string;
+    /**
+     * The name config.lua asked for, when a folder is already sitting at it.
+     *
+     * Reported rather than refused here because the ORDER matters: a name that
+     * is already installed is refused for that first, and only a folder standing
+     * on its own is this. The caller knows what is installed; this module only
+     * knows what is on disk.
+     */
+    occupiedFolder?: string;
 }
 
 /**
@@ -186,6 +195,9 @@ export function preparePackageInstall(
     let manifestExtras: Partial<PackageManifest> & { configProblem?: string } = {};
     /** Set when config.lua gave up nothing; see InstallResult.configProblem. */
     let configProblem: string | undefined;
+    /** Set when the name config.lua asks for already has a folder in the
+     *  profile; see InstallResult.occupiedFolder. */
+    let occupiedFolder: string | undefined;
     /** The unpacked archive, held in memory until commit. Null for a plain XML. */
     let entries: Record<string, Uint8Array> | null = null;
 
@@ -254,6 +266,20 @@ export function preparePackageInstall(
             manifestExtras = {};
         }
         if (declared && !configProblem && declared !== packageName) {
+            // The archive unpacks under its own file name and is only renamed to
+            // the name its config.lua gives once the checks have passed. A
+            // folder already sitting at that name makes the rename fail, and
+            // what that has to come to is a refusal: the folder that was there
+            // is left exactly as it was found, and nothing in it is taken for
+            // the package. Installing over it wiped whatever a player or an
+            // earlier install had put there, and reading it registered the
+            // contents of a folder this archive never unpacked.
+            // Reported rather than thrown, because the ORDER matters: a name
+            // that is already installed is refused for that first, and only a
+            // folder standing on its own is this. The caller knows what is
+            // installed; this module only knows what is on disk.
+            const destination = `${vfs.profilePath}/${declared}`;
+            if (!sourceInsidePkgDir && vfs.exists(destination)) occupiedFolder = declared;
             packageName = declared;
             pkgDir = `${vfs.profilePath}/${declared}`;
             // A staged source file moves with its directory; the manifest must
@@ -332,7 +358,7 @@ export function preparePackageInstall(
         }
     };
 
-    return { manifest, data, configProblem, commit };
+    return { manifest, data, configProblem, occupiedFolder, commit };
 }
 
 /**

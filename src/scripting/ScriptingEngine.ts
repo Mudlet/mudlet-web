@@ -1938,6 +1938,17 @@ export class ScriptingEngine implements EngineHost {
                 this.api.printError(`[installPackage] ${collision}`);
                 return { ok: false, error: collision };
             }
+            // Last of the three, and only reached when no package or module
+            // holds the name: a folder standing on its own where config.lua
+            // wants to be renamed. Left exactly as it was found — installing
+            // over it wiped whatever was there, and reading it registered the
+            // contents of a folder this archive never unpacked.
+            if (prepared.occupiedFolder) {
+                const error = `a folder called "${prepared.occupiedFolder}" is already in the profile,`
+                    + ' so the package could not be unpacked under that name';
+                this.api.printError(`[installPackage] ${error}`);
+                return { ok: false, error };
+            }
             prepared.commit();
             const { manifest, data } = prepared;
             useAppStore.getState().installPackage(this.connectionId, manifest, data);
