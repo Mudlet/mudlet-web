@@ -64,6 +64,14 @@ export interface MudletImportResult {
     keys: KeyNode[];
     buttons: ButtonNode[];
     warnings: string[];
+    /**
+     * Why the document could not be read, when it could not. Set only for a
+     * caller that asked to be TOLD rather than thrown at — an install carries on
+     * with whatever loaded and reports the failure, because the package is
+     * listed either way and a silent one is a package the player cannot account
+     * for.
+     */
+    parseError?: string;
 }
 
 // Mudlet TAction.mLocation: 0=top, 1=bottom, 2=left, 3=right, 4=floating
@@ -80,6 +88,13 @@ export interface ParseOptions {
      * cleanly removable by tag.
      */
     packageName?: string;
+    /**
+     * Report a malformed document instead of throwing on it. An install wants
+     * this: Mudlet's reader keeps whatever it read before the break and leaves
+     * the package listed, so throwing here would refuse an install Mudlet
+     * completes.
+     */
+    reportParseError?: boolean;
 }
 
 function parseScripts(els: Element[], parentId: string | null, out: ScriptNode[]): void {
@@ -315,7 +330,14 @@ function collectOffsetTimerWarnings(doc: Document, warnings: string[]): void {
 export function parseMudletXml(xml: string, opts: ParseOptions = {}): MudletImportResult {
     const doc = new DOMParser().parseFromString(xml, 'text/xml');
     const err = doc.getElementsByTagName('parsererror')[0];
-    if (err) throw new Error(`XML parse error: ${err.textContent?.split('\n')[0]}`);
+    if (err) {
+        const reason = `XML parse error: ${err.textContent?.split('\n')[0]}`;
+        if (!opts.reportParseError) throw new Error(reason);
+        return {
+            scripts: [], aliases: [], triggers: [], timers: [], keys: [], buttons: [],
+            warnings: [reason], parseError: reason,
+        };
+    }
 
     function pkgChildren(pkgTag: string, leaf: string, group: string): Element[] {
         return Array.from(doc.getElementsByTagName(pkgTag))

@@ -1910,6 +1910,11 @@ export class ScriptingEngine implements EngineHost {
             // repeating it would be the same sentence over and over about a
             // manifest they were told about once already.
             if (prepared.configProblem) this.announceLostManifest(prepared.manifest.name);
+            // A package whose XML will not read installs anyway and stays
+            // listed — the same as a module whose XML will not load — so what
+            // changes is that it is SAID. Silence left the player with a
+            // package that is listed, owns nothing, and gives no reason.
+            if (prepared.data.parseError) this.announceUnreadableContents(prepared.manifest.name);
             // Refused, not replaced: a second install would silently discard
             // whatever the user had changed in the first, and a script looping
             // over a package list would do it repeatedly.
@@ -2483,6 +2488,13 @@ export class ScriptingEngine implements EngineHost {
      *  package installed under the archive's own name and filed no details, so a
      *  name-based uninstall, a repository update and anything depending on it
      *  all stop matching with nothing to go on. */
+    /** Said when a package's XML would not read. Only modules were ever asked
+     *  whether their contents loaded, so a package installed to silence. */
+    private announceUnreadableContents(packageName: string): void {
+        this.api.postInfo(`Failed to load package "${packageName}" — its contents could not be read,`
+            + ' so it is installed but owns nothing.');
+    }
+
     private announceLostManifest(packageName: string): void {
         this.api.postInfo(`The config.lua of "${packageName}" could not be read,`
             + ' so it has been installed under the name of its file and describes itself with nothing.');

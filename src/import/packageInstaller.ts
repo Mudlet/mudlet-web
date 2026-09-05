@@ -269,7 +269,7 @@ export function preparePackageInstall(
 
     // Parsed here, not after the files land: an XML that will not parse is
     // refused with the profile untouched rather than unpacked and then rejected.
-    const data = parseMudletXml(xmlContent, { packageName });
+    const data = parseMudletXml(xmlContent, { packageName, reportParseError: true });
 
     const manifest: PackageManifest = {
         ...manifestExtras,
@@ -575,7 +575,7 @@ export function prepareModuleInstallFromVfsPath(
     // Plain XML: reference in place, no pkgDir.
     const xmlContent = strFromU8(buf);
     const packageName = packageNameFromFile(filename);
-    const data = parseMudletXml(xmlContent, { packageName });
+    const data = parseMudletXml(xmlContent, { packageName, reportParseError: true });
 
     const manifest: PackageManifest = {
         name: packageName,
