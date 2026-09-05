@@ -3574,6 +3574,15 @@ export class ScriptingEngine implements EngineHost {
         this.api.setCmdLineValue(text);
     }
 
+    /** The commands packages placed with addCommand, for the bar that draws
+     *  them. Narrower than handing out the whole API: the toolbar needs to read
+     *  the list, hear when it changes, and report a click. */
+    get addonCommands() { return this.api.addonCommands; }
+
+    addonCommandClicked(id: number): void {
+        this.api.addonCommandClicked(id);
+    }
+
     /** Hand the API a startLogging hook. Wired by ProfileSession, which owns
      *  the actual SessionLogger lifecycle. */
     setLoggingToggler(fn: ((enabled: boolean, format: LogFormat) => boolean) | null): void {

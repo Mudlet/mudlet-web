@@ -781,6 +781,14 @@ export class ScriptingAPI {
     /** Mudlet's addon commands (addCommand and friends). Per profile, like
      *  every other placement a package makes. */
     readonly addonCommands = new AddonCommandRegistry();
+
+    /** A player clicked a command's button. Mudlet raises `sysCommandClicked`
+     *  with the id as a NUMBER (mudlet.cpp:694-699), which is the id addCommand
+     *  handed the package — that is what makes the id worth returning. */
+    addonCommandClicked(id: number): void {
+        if (!this.addonCommands.get(id)?.enabled) return;
+        this.host.raiseEvent('sysCommandClicked', [id]);
+    }
     /** Values for the `sessionOnly` options in {@link CONFIG_PERSIST_ONLY} —
      *  held here rather than in the profile's config bag precisely so they are
      *  gone next session. */

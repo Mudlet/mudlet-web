@@ -1,6 +1,7 @@
 import { ViewportModeProvider } from './hooks/useViewportMode';
 import { useEffect, useRef, useState } from 'react';
 import { MAP_WIDGET_ID } from './ui/windows/types';
+import type { AddonCommand } from './ui/commands/addonCommands';
 import { useMudSession } from './hooks/useMudSession';
 import { useAutoReconnect } from './hooks/useAutoReconnect';
 import { useEngines } from './hooks/useEngines';
@@ -545,6 +546,23 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // keep them (mirrors Mudlet's TCommandLine "partial password" scenario).
     // Leaving password mode always clears, otherwise the password would
     // briefly surface as plaintext on the way back out.
+    // Commands a package placed with addCommand. Kept in state rather than read
+    // at render because the registry is engine-side and changes from Lua, which
+    // React has no other way of hearing about.
+    const [addonCommands, setAddonCommands] = useState<AddonCommand[]>([]);
+    // Keyed on what useEngines itself is keyed on, so this re-subscribes to the
+    // registry of whichever engine currently exists. Keying it on the ref alone
+    // subscribed to nothing: the ref is empty on the first commit — the engine
+    // waits for the profile's VFS — and a ref changing is not a re-render, so
+    // the effect never ran again.
+    useEffect(() => {
+        const registry = engineRef.current?.addonCommands;
+        if (!registry) return;
+        const sync = () => setAddonCommands(registry.buttons());
+        sync();
+        return registry.subscribe(sync);
+    }, [engineRef, session, connection, vfs]);
+
     useEffect(() => {
         if (passwordMode) {
             if (commandRef.current && commandRef.current === lastSentRef.current) {
@@ -1215,6 +1233,8 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                 status={status}
                 ping={ping}
                 brandContext={brandToolbarContext}
+                addonCommands={addonCommands}
+                onAddonCommandClick={id => engineRef.current?.addonCommandClicked(id)}
                 onDisconnect={handleDisconnect}
                 onReconnect={handleReconnect}
                 onNewConnection={onCloseProfile}

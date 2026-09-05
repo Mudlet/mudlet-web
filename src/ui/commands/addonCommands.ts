@@ -246,6 +246,13 @@ export class AddonCommandRegistry {
         return true;
     }
 
+    /** The commands with a button, in placement order — what the toolbar draws.
+     *  A disabled command keeps its button and is drawn unavailable, which is
+     *  what enableCommand/disableCommand are for; a removed one is gone. */
+    buttons(): AddonCommand[] {
+        return this.list().filter(c => c.surfaces === 'toolbar' || c.surfaces === 'both');
+    }
+
     /** Profile teardown. */
     clear(): void {
         if (this.commands.size === 0) return;

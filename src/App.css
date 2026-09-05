@@ -323,6 +323,39 @@ html, body, #root {
     z-index: 60;
     will-change: transform;
 }
+/* Commands a package placed with addCommand. The icon is whatever path the
+   package gave, so it is sized rather than trusted, and a broken one leaves the
+   name on its own instead of a torn image box. */
+.addon-command-icon {
+    width: 1em;
+    height: 1em;
+    object-fit: contain;
+    margin-right: 0.35em;
+    vertical-align: -0.12em;
+}
+.addon-command--checked {
+    box-shadow: inset 0 0 0 1px currentColor;
+}
+/* setCommandPulse. The two colours and the interval arrive as custom properties
+   from the command itself; `alternate` is what makes one interval a there-and-
+   back rather than a jump, matching how Mudlet reads the value. */
+.addon-command--pulsing {
+    animation: addon-command-pulse var(--addon-pulse-ms, 700ms) ease-in-out infinite alternate;
+}
+@keyframes addon-command-pulse {
+    from { background-color: var(--addon-pulse-a); }
+    to   { background-color: var(--addon-pulse-b); }
+}
+/* A player who has asked for less motion gets the end colour and no animation:
+   a button pulsing forever in the corner of the eye is exactly what the
+   preference is about. */
+@media (prefers-reduced-motion: reduce) {
+    .addon-command--pulsing {
+        animation: none;
+        background-color: var(--addon-pulse-b);
+    }
+}
+
 .app-topbar-hover-zone {
     position: absolute;
     top: 0;
