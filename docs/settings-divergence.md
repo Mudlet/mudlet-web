@@ -54,14 +54,14 @@ rows collapse a block of identical controls under one label, and the script know
 | Main display | 19 | — | — | 1 |
 | Editor | 6 | — | — | — |
 | Color view | 24 | — | — | — |
-| Mapper | 11 | — | 7 | 1 |
+| Mapper | 11 | — | 6 | 2 |
 | Mapper colors | 8 | — | 20 | — |
 | Chat | — | — | — | 20 |
 | Connection | 10 | — | — | 4 |
 | Shortcuts | — | — | 1 | — |
 | Accessibility | 7 | — | — | — |
 | Special Options | 9 | — | 2 | 3 |
-| **Total** | **111** | **—** | **31** | **39** |
+| **Total** | **111** | **—** | **30** | **40** |
 
 Two rows are marked ⚠️ rather than counted: "Border size", which the renderer merges into
 `lineWidth` alongside exit size, and "Show symbol usage…", which is built but without the
@@ -73,9 +73,8 @@ Three things the totals don't show, and which matter more than the totals do:
 - **Parity is not evenly spread.** Accessibility, Color view, Main display and Editor are
   complete. Mapper colors is still thin and Shortcuts is empty.
 - **Most of what remains is blocked upstream — but check before you say so.** 24 of the
-  31 need a field `mudlet-map-renderer` does not have, and a 25th needs a writer
-  `mudlet-map-binary-reader` does not have; each of those rows now names what it would
-  take. An earlier pass called the whole map backlog blocked, which was wrong twice over:
+  30 need a field `mudlet-map-renderer` does not have, and each of those rows now names
+  the field. An earlier pass called the whole map backlog blocked, which was wrong twice over:
   the room symbol font was the renderer's `fontFamily` all along, and "Border size" is
   merged into `lineWidth` rather than absent. Both are marked as such now, and the rule is
   that "blocked upstream" cites a field, not a memory.
@@ -129,18 +128,14 @@ waiting only on someone finding the time.
 *were*, and four landed: the text analyzer, the editor's "Show Line/Paragraphs", "report
 map issues on screen", and the symbol usage report — that one at ⚠️, since the two
 columns saying whether a font can draw a symbol need per-glyph coverage testing a browser
-does not offer. The fifth, **map format version**, turned out to be blocked upstream
-after all, which is why the bucket below has a new heading: it was filed as ordinary work
-here on the assumption that the writer could target any format its reader accepts, and it
-cannot.
+does not offer. The fifth, **map format version**, is now an ❌: it was filed as ordinary
+work here on the assumption that `mudlet-map-binary-reader` could write any format its
+reader accepts, and it cannot — nor is it meant to. Saving a map for an older Mudlet is a
+thing to do in desktop Mudlet, which still writes those formats.
 
-**Not planned** (31). Not a judgement about whether they are worth having — a statement
+**Not planned** (30). Not a judgement about whether they are worth having — a statement
 that building them here is not the next move:
 
-- *Blocked upstream in `mudlet-map-binary-reader`* (1). Map format version. The library
-  registers version models for 16-20, but every one below 20 is read-only: its `write`
-  throws outright. So there is no older format for a picker to choose, and stamping one
-  into the header would only produce a file the writer refuses.
 - *Blocked upstream in `mudlet-map-renderer`* (24). The 16 map ANSI colours (the
   environment palette, which the renderer reads from map data with no override), room
   border, upper/lower level and overlapping-room colours, drawing rooms on adjacent
@@ -332,7 +327,7 @@ The one page with **complete** parity, and then some.
 | Or load an older version | 🚧 | No version history is kept |
 | Delete map: | ✅ | Mapper → Map files. Empties the store *and* drops the profile's IndexedDB slot — clearing only the store would let the next change re-save the old map from memory. Confirms first, and points at "Save now" as the way to keep a copy |
 | Copy map to other profile(s) | 🚧 | Buildable here, not blocked upstream — but it crosses a profile boundary, and the export path mounts profiles one at a time on purpose (concurrent mounts multiply peak memory by the largest map). The cheap shape is write-then-import rather than two live VFS handles |
-| Map format version | 🚧 | **Blocked upstream, not merely unbuilt.** Desktop offers 17-20 so a map can be taken back to an older Mudlet. `mudlet-map-binary-reader` registers version models for 16-20 but every one below 20 is *read-only* — its `write` throws "Writing Mudlet map version N is not supported (read-only)" (still so in 2.0.0, whose own description says as much). So there is nothing for a picker to pick: `MapStore.toMudletMap()` stamps 20 because 20 is the only version that can be written. `saveMap(path, version)` already accepts and range-checks the argument, and would honour it the day the writer can |
+| Map format version | ❌ | **Not planned, by a decision upstream.** Desktop offers 17-20 so a map can be taken back to an older Mudlet. `mudlet-map-binary-reader` reads all of 16-20 but writes only 20 — every legacy version model's `write` throws "Writing Mudlet map version N is not supported (read-only)" — and that is deliberate: its author does not intend it to save in an older format. So there is nothing for a picker to pick, now or later, and `MapStore.toMudletMap()` stamps 20 because 20 is the only version there will be to write. Saving a map for an older Mudlet stays a job for desktop Mudlet, which still writes those formats. `saveMap(path, version)` keeps accepting and range-checking the argument, since the Lua signature is Mudlet's |
 
 ### Map download
 
@@ -501,17 +496,15 @@ Ranked by how many players hit it, not by how much work it is.
 3. **The remaining Map view options** — draw upper/lower levels, invert zoom, large area
    exit arrows, border size, room symbols. Renderer-blocked like the colours.
 4. **Log naming and format** — sessions are named by timestamp with no template.
-5. **Writing legacy map formats** — upstream in `mudlet-map-binary-reader`, whose legacy
-   version models are read-only. Until they can write, "Map format version" has nothing
-   to offer and the symbol-usage report has no font-coverage columns for the same class
-   of reason (that one is the browser's limit, not a library's).
 
-Two rows are deliberately *not* on this list. "Show debug messages for timers not
+Three rows are deliberately *not* on this list. "Show debug messages for timers not
 smaller than" and "Report all Codepoint problems immediately" configure diagnostics
 mudix does not have: there is no timer-size warning and no codepoint-problem reporting
 to threshold. Adding the setting without the diagnostic would be a knob attached to
 nothing — the work is the diagnostic, and it is a feature request rather than a
-settings gap.
+settings gap. **Map format version** is the third, and it is not waiting on anything:
+`mudlet-map-binary-reader` is not going to save in older formats, so there is no version
+list for this client to offer. Desktop Mudlet still writes them.
 
 Everything else is either genuinely inapplicable, blocked upstream in the renderer, or
 small enough to take when the surrounding page is next touched.

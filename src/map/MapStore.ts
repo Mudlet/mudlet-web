@@ -1385,10 +1385,14 @@ export class MapStore {
         }
         return {
             // Mudlet binary map *format* version — the leading int that selects
-            // the reader/writer model. Must be 20: it's the only version the
-            // bundled mudlet-map-binary-reader registers a model for, and its
-            // writer now rejects anything else (older versions silently ignored
-            // this field, which is how `1` survived undetected).
+            // the reader/writer model. Always 20: mudlet-map-binary-reader
+            // registers models for 16-20 but only 20 can be written — every
+            // legacy model's `write` throws — and it is not going to gain the
+            // others, so this is the only version there is to stamp. (Older
+            // reader versions silently ignored this field, which is how a `1`
+            // survived here undetected.) Desktop's "Map format version" picker
+            // has no counterpart here for the same reason; see
+            // docs/settings-divergence.md.
             version: 20, envColors, areaNames, mCustomEnvColors,
             mpRoomDbHashToRoomId: hashes, mUserData: { ...this.mapUserData },
             mapSymbolFont: DEFAULT_FONT, mapFontFudgeFactor: 1, useOnlyMapFont: false,

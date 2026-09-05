@@ -201,9 +201,18 @@ export function installMapBindings({
     // back. Returns true on success, false if serialisation fails or the
     // VFS write throws.
     lua.global.set('__saveMap', (location?: unknown, formatVersion?: unknown) => {
-        // A format version mudix cannot write is refused flatly, as Mudlet
-        // refuses one outside the range its own writer supports. The bounds are
-        // the binary reader/writer's, not a policy choice.
+        // The argument is Mudlet's, and so are the bounds (TMap::mMinVersion 17
+        // to mMaxVersion 20, plus the experimental 21): a version outside them
+        // is refused flatly, as desktop refuses it.
+        //
+        // Inside them it is accepted and then ignored — the file is always
+        // written as v20, because `mudlet-map-binary-reader` writes only v20
+        // and is not going to write the older formats it can read. Keeping the
+        // signature means a Mudlet package that passes a version still works
+        // rather than erroring; what it does not get is a v17 file. Desktop's
+        // "Map format version" preference is absent for the same reason (see
+        // docs/settings-divergence.md), and saving for an older Mudlet is a job
+        // for desktop Mudlet, which still writes those formats.
         if (formatVersion !== undefined && formatVersion !== null) {
             const v = Number(formatVersion);
             if (!Number.isFinite(v) || v < MIN_MAP_FORMAT || v > MAX_MAP_FORMAT) return false;
