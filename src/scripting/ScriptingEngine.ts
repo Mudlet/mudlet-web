@@ -2456,8 +2456,23 @@ export class ScriptingEngine implements EngineHost {
         const timers = store.connectionTimers[this.connectionId] ?? [];
         const targets = timers.filter(t => t.name === name);
         if (targets.length === 0) return false;
-        const patches = targets
-            .filter(t => t.enabled !== enabled)
+        // Toggling a GROUP writes its descendants' own switches too, not just
+        // the effective state the readers compute. A timer is a running object,
+        // and Mudlet's tree stops the descendants outright when a folder above
+        // them goes off — "its QTimer really has to stop", as the spec puts it.
+        // Triggers and aliases stay read-time only, having nothing to stop:
+        // they are consulted when a line or a command arrives, and a group that
+        // is off is simply never consulted.
+        const doomed = new Set(targets.filter(t => t.isGroup).map(t => t.id));
+        if (doomed.size > 0) {
+            // Parents always precede their children in store order, so one pass
+            // down the list reaches every descendant.
+            for (const node of timers) {
+                if (node.parentId && doomed.has(node.parentId)) doomed.add(node.id);
+            }
+        }
+        const patches = timers
+            .filter(t => (t.name === name || doomed.has(t.id)) && t.enabled !== enabled)
             .map(t => ({ id: t.id, patch: { enabled } }));
         if (patches.length > 0) store.updateTimers(this.connectionId, patches);
         return true;

@@ -6,6 +6,10 @@ export type {ExitWeightFilter, PathfindResult} from './pathfinding';
 
 export type MapRendererData = ReturnType<typeof readerExport>;
 
+/** What an area with no name of its own is called — Mudlet's mUnnamedAreaName,
+ *  which its area-name audit substitutes before checking for duplicates. */
+const UNNAMED_AREA_NAME = 'Unnamed Area';
+
 // Mudlet direction number → field name on MudletRoom
 const DIR_FIELD: Record<number, string> = {
     1: 'north', 2: 'northeast', 3: 'northwest', 4: 'east', 5: 'west',
@@ -819,7 +823,30 @@ export class MapStore {
             this.areas.set(id, area);
             if (id >= this.nextAreaId) this.nextAreaId = id + 1;
         }
-        for (const [k, name] of Object.entries(header.areaNames ?? {})) {
+        // Mudlet's TRoomDB area-name audit (TRoomDB.cpp:1178-1222). Area names
+        // are a key, not a label: getAreaTable() is name -> id and setAreaName
+        // refuses a duplicate, so a map that arrives with two areas sharing one
+        // name is in a state the API would never let you build — and the second
+        // area becomes unreachable by name, which is how the Achaea fixture's
+        // 379 areas read back as 373.
+        //
+        // The repair is Mudlet's: an empty name becomes the unnamed-area name,
+        // and a name already taken is suffixed "_001", "_002", … — with any
+        // existing three-digit suffix chopped off first, so a second pass over
+        // an already-audited map does not stack them.
+        const takenNames = new Set<string>();
+        for (const [k, rawName] of Object.entries(header.areaNames ?? {})) {
+            let name = rawName || UNNAMED_AREA_NAME;
+            if (takenNames.has(name)) {
+                if (/_\d{3}$/.test(name)) name = name.slice(0, -4);
+                let suffix = 0;
+                let candidate: string;
+                do {
+                    candidate = `${name}_${String(++suffix).padStart(3, '0')}`;
+                } while (takenNames.has(candidate));
+                name = candidate;
+            }
+            takenNames.add(name);
             this.areaNames.set(Number(k), name);
         }
         for (const [k, labels] of Object.entries(header.labels ?? {})) {

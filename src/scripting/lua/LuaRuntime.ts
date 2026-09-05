@@ -105,7 +105,7 @@ const SPEC_TEXT_FIXTURES = BUSTED_ENABLED
     ? (import.meta.glob('./specs/fixtures/**/*.{xml,lua,json,txt}', { query: '?raw', import: 'default', eager: true }) as Record<string, string>)
     : {};
 const SPEC_BINARY_FIXTURES = BUSTED_ENABLED
-    ? (import.meta.glob('./specs/fixtures/**/*.mpackage', { query: '?inline', import: 'default', eager: true }) as Record<string, string>)
+    ? (import.meta.glob('./specs/fixtures/**/*.{mpackage,zip}', { query: '?inline', import: 'default', eager: true }) as Record<string, string>)
     : {};
 
 // VFS spec paths the busted runner can target (e.g. /lua/specs/StringUtils_spec.lua).
@@ -2913,6 +2913,45 @@ end`);
                 modification: Math.floor(s.mtime.getTime() / 1000),
                 access: Math.floor(s.atime.getTime() / 1000),
             };
+        });
+
+        // ── zip (the lua-zip rock Mudlet preloads) ───────────────────────────
+        // Mudlet ships brimworks' lua-zip as a required rock on every platform,
+        // so bundled code — LuaGlobal's unzip(), and any package doing its own
+        // unpacking — takes `zip` for granted and indexes it without a guard.
+        // fflate is already here for package installs, so the archive side costs
+        // nothing but the handle bookkeeping.
+        const archives = new Map<number, Record<string, Uint8Array>>();
+        let nextArchive = 1;
+
+        this.lua.global.set('__zip_open__', (path: string): number | null => {
+            // Builtins first, and read as BYTES rather than re-encoded: a
+            // builtin is held as a latin1 string, so TextEncoder would turn
+            // every byte above 0x7F into two and no archive would ever open.
+            // The spec corpus keeps its map fixtures there.
+            const bytes = this.readBuiltinBytes(path)
+                ?? (() => { try { return vfs?.readBinaryFile(path) ?? null; } catch { return null; } })();
+            if (!bytes) return null;
+            let entries: Record<string, Uint8Array>;
+            try { entries = unzipSync(bytes); }
+            catch { return null; }
+            const id = nextArchive++;
+            archives.set(id, entries);
+            return id;
+        });
+
+        this.lua.global.set('__zip_names__', (id: number): string[] =>
+            Object.keys(archives.get(Number(id)) ?? {}));
+
+        // Armored exactly as the io bindings are: an entry is bytes, and the
+        // wasmoon string bridge truncates at NUL and mangles 0x80-0xFF.
+        this.lua.global.set('__zip_read__', (id: number, name: string): string | null => {
+            const entry = archives.get(Number(id))?.[String(name)];
+            return entry === undefined ? null : armor(bytesToLatin1(entry));
+        });
+
+        this.lua.global.set('__zip_close__', (id: number): void => {
+            archives.delete(Number(id));
         });
     }
 

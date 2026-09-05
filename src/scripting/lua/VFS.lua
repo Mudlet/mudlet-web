@@ -351,4 +351,83 @@ do
         end
         return true
     end
+
+    -- ── zip ──────────────────────────────────────────────────────────────────
+    -- Mudlet preloads brimworks' lua-zip as `zip`, a required rock on every
+    -- platform, so bundled code indexes it without a guard — LuaGlobal's
+    -- unzip() calls zip.open() on line one and the spec corpus unpacks its map
+    -- fixtures with it. A nil `zip` is therefore a broken environment rather
+    -- than a missing optional.
+    --
+    -- Lives here rather than in a module of its own because an entry's bytes
+    -- have to come back through the same armoring io does: the wasmoon string
+    -- bridge truncates at NUL and mangles the high bytes, and an archive is
+    -- binary by definition.
+    do
+        local _zopen  = __zip_open__
+        local _znames = __zip_names__
+        local _zread  = __zip_read__
+        local _zclose = __zip_close__
+        __zip_open__, __zip_names__, __zip_read__, __zip_close__ = nil, nil, nil, nil
+
+        -- An entry is read whole and handed out in slices: the archive is
+        -- already in memory, so a chunked read is a substring, and callers that
+        -- loop until the empty string (which is how lua-zip is used) terminate.
+        local function _make_entry(content)
+            local pos = 1
+            return {
+                read = function(self, count)
+                    if pos > #content then return nil end
+                    local n = tonumber(count)
+                    -- lua-zip's read takes a byte count; anything else reads on
+                    -- to the end, which is what "*a" means to a caller used to
+                    -- io handles.
+                    if n == nil or n < 0 then n = #content - pos + 1 end
+                    local chunk = content:sub(pos, pos + n - 1)
+                    pos = pos + #chunk
+                    return chunk
+                end,
+                close = function() return true end,
+                seek = function(self, _, offset) pos = (tonumber(offset) or 0) + 1 return pos - 1 end,
+            }
+        end
+
+        zip = {
+            open = function(path)
+                local id = _zopen(tostring(path))
+                -- (nil, message) rather than an error: unzip() is written to
+                -- report a bad archive to the player, and raising here would
+                -- take the whole calling script down instead.
+                if id == nil then
+                    return nil, "could not open zip archive '" .. tostring(path) .. "'"
+                end
+                local names = _znames(id)
+                local archive
+                archive = {
+                    open = function(self, name)
+                        local content = _zread(id, tostring(name))
+                        if content == nil then
+                            return nil, "no entry named '" .. tostring(name) .. "' in the archive"
+                        end
+                        return _make_entry(_unarmor(content))
+                    end,
+                    close = function(self)
+                        _zclose(id)
+                        return true
+                    end,
+                    -- The names, 0-indexed as they cross from JS.
+                    files = function(self)
+                        local i = 0
+                        return function()
+                            local name = names[i]
+                            i = i + 1
+                            if name == nil then return nil end
+                            return { filename = name }
+                        end
+                    end,
+                }
+                return archive
+            end,
+        }
+    end
 end

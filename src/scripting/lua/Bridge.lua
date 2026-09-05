@@ -1633,6 +1633,16 @@ do
                 error("setLabelCursor: bad argument #2 type (cursor shape as number expected, got "
                     .. type(shape) .. "!)", 2)
             end
+            -- The shapes the layer below actually knows: -1 (no cursor of its
+            -- own) up to Qt::LastCursor, which is every value in mudlet.cursor.
+            -- A number outside that is refused rather than passed down, where it
+            -- would be taken for a shape nobody asked for — and refusing it is
+            -- what stops "accepts anything" from making the companion test,
+            -- which walks the whole table, pass no matter what is in it.
+            if num < -1 or num > 21 then
+                return nil, "setLabelCursor: bad argument #2 value (cursor shape " .. num
+                    .. " is outside the range of shapes this client knows)"
+            end
             return guarded(name, num)
         end
     end

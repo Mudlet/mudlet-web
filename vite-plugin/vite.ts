@@ -122,7 +122,10 @@ export default function mudix(): PluginOption[] {
                 // import analysis), but `?inline` — which the busted fixtures
                 // use to carry an archive into the VFS — reaches the asset
                 // pipeline and needs the extension declared.
-                assetsInclude: ['**/*.mpackage'],
+                // The map fixtures are plain `.zip`, and scoping that to the
+                // fixture tree keeps a bare `.zip` import anywhere else meaning
+                // what it means today.
+                assetsInclude: ['**/*.mpackage', '**/specs/fixtures/**/*.zip'],
                 optimizeDeps: {
                     // 'mudix': the library entry carries relative `?url` asset
                     // imports (external in the lib build); the dep optimizer's
