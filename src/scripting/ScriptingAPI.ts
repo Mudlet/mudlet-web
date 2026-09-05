@@ -3342,6 +3342,59 @@ export class ScriptingAPI {
      *  colour outside the palette, which matches nothing. A stack, because a
      *  trigger can feedTriggers another line. */
     private lineColorSnapshots: { fg: number; bg: number; text: string }[][] = [];
+
+    /**
+     * Keep the colour snapshot aligned with a line a trigger has just edited.
+     *
+     * The snapshot is of the colours the SERVER sent, and a trigger that
+     * merely RECOLOURS the line must not disturb it — that is the whole point
+     * of taking one. But inserting or deleting characters moves the runs: the
+     * text after an insert is at a different offset than it was, and a colour
+     * trigger reading stale offsets matches across the seam. In the spec's
+     * words, red "CCCC" with its first two characters deleted has to match as
+     * "CC" and not as "CCDD", which is what taking four red characters from the
+     * shifted line gives.
+     *
+     * Done per character and re-joined rather than by walking segment
+     * boundaries, because an edit lands wherever it lands — mid-run as often as
+     * not — and a line is short enough that the simple version is the one worth
+     * having.
+     */
+    /** The snapshot's colours at a character offset — what a `keepColor`
+     *  replacement inherits. Defaults to the reset pair when the line is
+     *  shorter than the offset. */
+    private snapshotColorAt(at: number): { fg: number; bg: number } {
+        const snapshot = this.lineColorSnapshots[this.lineColorSnapshots.length - 1] ?? [];
+        let seen = 0;
+        for (const seg of snapshot) {
+            seen += seg.text.length;
+            if (at < seen) return { fg: seg.fg, bg: seg.bg };
+        }
+        return { fg: -1, bg: -1 };
+    }
+
+    private spliceLineColorSnapshot(
+        at: number, removeCount: number, insert?: { fg: number; bg: number; text: string },
+    ): void {
+        const snapshot = this.lineColorSnapshots[this.lineColorSnapshots.length - 1];
+        if (!snapshot) return;
+        const chars: { fg: number; bg: number; ch: string }[] = [];
+        for (const seg of snapshot) {
+            for (const ch of seg.text) chars.push({ fg: seg.fg, bg: seg.bg, ch });
+        }
+        const added = insert
+            ? [...insert.text].map(ch => ({ fg: insert.fg, bg: insert.bg, ch }))
+            : [];
+        chars.splice(Math.max(0, at), Math.max(0, removeCount), ...added);
+
+        const joined: { fg: number; bg: number; text: string }[] = [];
+        for (const c of chars) {
+            const last = joined[joined.length - 1];
+            if (last && last.fg === c.fg && last.bg === c.bg) last.text += c.ch;
+            else joined.push({ fg: c.fg, bg: c.bg, text: c.ch });
+        }
+        this.lineColorSnapshots[this.lineColorSnapshots.length - 1] = joined;
+    }
     /** Whether each line currently being processed arrived as a prompt — the
      *  fallback isPrompt() reads once a trigger has gagged the line itself. A
      *  stack for the same reason {@link lineColorSnapshots} is one. */
@@ -3861,6 +3914,15 @@ export class ScriptingAPI {
             con.insertText(text, state);
             if (this.inTriggerProcessing && con === this.mainConsole && !text.includes('\n')) {
                 this.captureShiftHook?.(at, text.length);
+                // The colours have to move with the text for the same reason
+                // the captures do — the inserted characters are not the ones
+                // the server coloured, and a later colour trigger must not
+                // sweep them into its run.
+                this.spliceLineColorSnapshot(at, 0, {
+                    fg: ansiPaletteIndex(state.foreground),
+                    bg: ansiPaletteIndex(state.background),
+                    text,
+                });
             }
             if (!this.inTriggerProcessing) con.getBuffer()?.rerender();
             return;
@@ -4277,15 +4339,20 @@ export class ScriptingAPI {
     /**
      * Mudlet `getWindowGeometry(name)` → x, y, width, height. Reads back the
      * stored geometry the move/resizeWindow setters write, following the same
-     * routing precedence they use (labels → command lines → text edits →
-     * scroll boxes → user windows/miniconsoles). Null when no widget of any
+     * routing precedence they use (labels → scroll boxes → command lines →
+     * text edits → user windows/miniconsoles). Null when no widget of any
      * kind owns the name; `"main"` is deliberately excluded because
      * moveWindow/resizeWindow don't act on it either.
+     *
+     * The scroll box comes before the other overlays for the reason windowType
+     * puts it there: one name can be a scroll box AND a text edit at once, and
+     * every by-name lookup has to give the same answer as the last one until
+     * the scroll box is deleted.
      */
     getWindowGeometry(name: string): { x: number; y: number; width: number; height: number } | null {
         if (name === 'main') return null;
-        const overlay = this.labels.get(name) ?? this.cmdLines.get(name)
-            ?? this.textEdits.get(name) ?? this.scrollBoxes.get(name);
+        const overlay = this.labels.get(name) ?? this.scrollBoxes.get(name)
+            ?? this.cmdLines.get(name) ?? this.textEdits.get(name);
         if (overlay) {
             const { x, y, width, height } = overlay;
             return { x, y, width, height };
@@ -4401,6 +4468,17 @@ export class ScriptingAPI {
         if (!buf) return;
         const state = keepColor ? undefined : this.outputConsole(targetWin).format.toSnapshot();
         buf.replace([sel.start, sel.start + sel.length], newText, state);
+        if (this.inTriggerProcessing && this.getConsole(targetWin) === this.mainConsole) {
+            // Same alignment the insert path needs: a replace that changes the
+            // line's LENGTH moves every colour run after it. With keepColor the
+            // replacement wears whatever the snapshot already had at that
+            // offset, which is what "keep" means here.
+            this.spliceLineColorSnapshot(sel.start, sel.length, newText ? {
+                fg: state ? ansiPaletteIndex(state.foreground) : this.snapshotColorAt(sel.start).fg,
+                bg: state ? ansiPaletteIndex(state.background) : this.snapshotColorAt(sel.start).bg,
+                text: newText,
+            } : undefined);
+        }
         this.selection = null;
         if (!this.inTriggerProcessing) {
             buf.rerender();

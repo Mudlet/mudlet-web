@@ -37,17 +37,22 @@ export function installUserWindowBindings({
     // Mudlet `windowType(name)` → kind string. Returns `(nil, errMsg)` when
     // the name doesn't resolve. The raw entry point hands JS `null` for the
     // miss case; the Bridge.lua wrapper re-shapes it into the multi-return.
-    // mudix has no "commandline" or "textedit" concepts, so those kinds are
-    // not reported; off-screen buffers (createBuffer) report "buffer".
+    // Off-screen buffers (createBuffer) report "buffer".
+    //
+    // A scroll box, a command line and a text edit each have a name space of
+    // their own, so one name can be more than one of them at once — and the
+    // order below is the answer to that, not an accident: every by-name lookup
+    // resolves to the scroll box until it is deleted, and only then to whatever
+    // else wears the name.
     lua.global.set('__windowType', (window: unknown) => {
         if (typeof window !== 'string') return null;
         if (window === 'main') return 'main';
         if (api.labels.has(window)) return 'label';
         if (api.windows.isMiniConsole(window)) return 'miniconsole';
         if (api.windows.has(window)) return 'userwindow';
+        if (api.scrollBoxes.has(window)) return 'scrollbox';
         if (api.cmdLines.has(window)) return 'commandline';
         if (api.textEdits.has(window)) return 'textedit';
-        if (api.scrollBoxes.has(window)) return 'scrollbox';
         if (api.isBuffer(window)) return 'buffer';
         return null;
     });
