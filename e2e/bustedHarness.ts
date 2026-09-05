@@ -37,6 +37,25 @@ export const { defaultBrowserType: _defaultBrowserType, ...BUSTED_CONTEXT } = BU
 // The specs directory the runtime bundles via import.meta.glob('./specs/**').
 const SPECS_DIR = fileURLToPath(new URL('../src/scripting/lua/specs/', import.meta.url));
 
+// A spec whose whole body sits behind `if not os.getenv(X) then return end`
+// registers no it() unless X is set, and nothing here sets one: os.getenv answers
+// nil to everything except MUDLET_TEST_MODE (see LuaRuntime.setupBustedBridge),
+// because the other variables the corpus reads name fixtures that really are
+// absent. The fuzzers upstream added this way — TelnetTriggerFuzz, BufferManipFuzz
+// — are gated on MUDLET_FUZZ and drive a sanitizer build of Mudlet through
+// feedTelnet: a diagnostic tool for the C++ client rather than a pass/fail spec,
+// and nothing this build can run at all.
+//
+// Recording one is harmless; what fails is `<spec>: recorded cleanly`, which
+// asserts a spec ran SOMETHING so that a spec blowing up on load cannot pass by
+// having nothing left to assert. That guard is worth keeping, so the gated spec
+// is dropped from the corpus instead — matched on the gate itself rather than by
+// name, so the next env-gated spec upstream writes needs no maintenance here.
+function envGated(spec: string): boolean {
+    const source = fs.readFileSync(`${SPECS_DIR}${spec}_spec.lua`, 'utf8');
+    return /^[ \t]*if not os\.getenv\(\s*["'][^"']+["']\s*\)\s*then\s*\r?\n[ \t]*return\s*\r?\n[ \t]*end/m.test(source);
+}
+
 // Every spec in src/scripting/lua/specs/ (`<Name>_spec.lua` → `<Name>`),
 // discovered from disk rather than hand-listed, so a re-synced/added/removed spec
 // needs no maintenance here — it just shows up, gets recorded, and gets its
@@ -46,6 +65,7 @@ const SPECS_DIR = fileURLToPath(new URL('../src/scripting/lua/specs/', import.me
 export const ALL_SPECS: string[] = fs.readdirSync(SPECS_DIR)
     .filter(f => f.endsWith('_spec.lua'))
     .map(f => f.slice(0, -'_spec.lua'.length))
+    .filter(spec => !envGated(spec))
     .sort();
 
 // ── Sharding ────────────────────────────────────────────────────────────────
