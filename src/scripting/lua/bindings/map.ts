@@ -227,26 +227,55 @@ export function installMapBindings({
     // file. The on-disk format is the same shape as the in-memory
     // MudletMap so `loadJsonMap` can round-trip it. Returns false when
     // serialisation fails or the VFS write throws.
-    lua.global.set('saveJsonMap', (location?: unknown) => {
-        if (typeof location !== 'string' || location.length === 0) return false;
-        if (!vfs) return false;
+    // Null on success, or the reason it did not happen — Bridge.lua turns the
+    // second into Mudlet's (nil, why). The destination's TYPE is checked there
+    // too, because Mudlet reads it with getVerifiedString, which raises.
+    lua.global.set('__saveJsonMap', (location?: unknown): string | undefined => {
+        if (typeof location !== 'string' || location.length === 0) {
+            return 'saveJsonMap: a non-empty path and file name is needed to save the map to';
+        }
+        if (!vfs) return 'saveJsonMap: no profile filesystem to write to';
+        // Mudlet appends the suffix itself rather than writing a file the
+        // loader will not recognise later.
+        const path = /\.json$/i.test(location) ? location : `${location}.json`;
         let json: string;
         try { json = api.saveJsonMap(); }
-        catch { return false; }
-        try { vfs.writeFile(location, json); }
-        catch { return false; }
-        return true;
+        catch (e) { return `saveJsonMap: could not serialise the map (${String(e)})`; }
+        try { vfs.writeFile(path, json); }
+        catch { return `saveJsonMap: could not open file "${path}" for writing`; }
+        return undefined;
     });
     // Mudlet `loadJsonMap(path)` — read a JSON map previously produced by
     // saveJsonMap and replace the in-memory map. Raises sysMapLoadEvent
     // on success. Returns false on missing file / bad JSON / wrong shape.
-    lua.global.set('loadJsonMap', (location?: unknown) => {
-        if (typeof location !== 'string' || location.length === 0) return false;
-        if (!vfs) return false;
+    // Each refusal names what it actually found, in Mudlet's words: a package
+    // that hands a user's file to this needs to say which of "not there", "not
+    // JSON", "not a map" and "not a map this build reads" happened.
+    lua.global.set('__loadJsonMap', (location?: unknown): string | undefined => {
+        if (typeof location !== 'string' || location.length === 0) {
+            return 'loadJsonMap: a non-empty path and file name is needed to read the map from';
+        }
+        if (!vfs) return 'loadJsonMap: no profile filesystem to read from';
         let json: string;
         try { json = vfs.readFile(location); }
-        catch { return false; }
-        return api.loadJsonMap(json);
+        catch { return `loadJsonMap: could not open file "${location}" for reading`; }
+        let parsed: unknown;
+        try { parsed = JSON.parse(json); }
+        catch { return `loadJsonMap: could not parse file "${location}" as JSON`; }
+        const doc = (parsed ?? {}) as { formatVersion?: unknown; areas?: unknown };
+        if (typeof doc.formatVersion !== 'number') {
+            return `loadJsonMap: no format version detected in file "${location}"`;
+        }
+        // Quoted to three decimals as Mudlet prints it — the version is a
+        // number there and the message shows it the way a version reads.
+        if (doc.formatVersion !== 1) {
+            return `loadJsonMap: invalid format version "${doc.formatVersion.toFixed(3)}" detected`
+                + ` in file "${location}"`;
+        }
+        if (!Array.isArray(doc.areas) || doc.areas.length === 0) {
+            return `loadJsonMap: no areas detected in file "${location}"`;
+        }
+        return api.loadJsonMap(json) ? undefined : `loadJsonMap: could not read the map in file "${location}"`;
     });
 
     // ── Room CRUD ─────────────────────────────────────────────────────────
@@ -868,13 +897,14 @@ export function installMapBindings({
         const aa = a == null ? 255 : Math.max(0, Math.min(255, Number(a) || 0));
         return api.map.setRoomCharColor(Math.trunc(id), rr, gg, bb, aa);
     });
-    // Mudlet getRoomCharColor(roomID) → r, g, b, a; nil when no per-room
-    // colour was ever set. Bridge.lua unpacks the 4-tuple array.
+    // Mudlet getRoomCharColor(roomID) → r, g, b; nil when no per-room colour
+    // was ever set. Three channels, not four: a symbol colour has no alpha in
+    // Mudlet, unlike the border colour beside it, which does return one.
     lua.global.set('__getRoomCharColor', (roomId: unknown) => {
         const id = Number(roomId);
         if (!Number.isFinite(id)) return null;
         const c = api.map.getRoomCharColor(Math.trunc(id));
-        return c ? [c.r, c.g, c.b, c.a] : null;
+        return c ? [c.r, c.g, c.b] : null;
     });
     // Mudlet setMapBackgroundColor(r, g, b [, a]) / setMapRoomExitsColor(r, g, b).
     // Stored on the profile mapper settings — MapPanel reads from there each

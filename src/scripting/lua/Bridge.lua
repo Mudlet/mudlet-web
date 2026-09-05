@@ -999,7 +999,9 @@ end
 function getRoomCharColor(roomId)
     local t = __getRoomCharColor(roomId)
     if t == nil then return nil end
-    return t[0], t[1], t[2], t[3]
+    -- Three channels: a symbol colour carries no alpha in Mudlet, unlike the
+    -- border colour, which does.
+    return t[0], t[1], t[2]
 end
 
 -- Mudlet getRoomHidden(roomID) → bool, or (false, errMsg) when the room
@@ -5242,6 +5244,31 @@ end
 -- Local chat name backing mmcp.chatName; defaults to the profile name the way
 -- Mudlet seeds it from the player's profile.
 __mudix_mmcp_chat_name = ""
+
+-- ── JSON map import/export ─────────────────────────────────────────────────
+-- Mudlet reads the destination with getVerifiedString, so a path of the wrong
+-- TYPE raises where a path that merely cannot be used is a (nil, why) return.
+-- Only the type check needs Lua; the reasons come from the binding, which is
+-- what knows whether the file was missing, unparseable, or not a map.
+function saveJsonMap(location)
+    if __mudix_str(location) == nil then
+        error("saveJsonMap: bad argument #1 type (destination as string expected, got "
+            .. type(location) .. "!)", 2)
+    end
+    local err = __saveJsonMap(location)
+    if err then return nil, err end
+    return true
+end
+
+function loadJsonMap(location)
+    if location ~= nil and __mudix_str(location) == nil then
+        error("loadJsonMap: bad argument #1 type (path as string expected, got "
+            .. type(location) .. "!)", 2)
+    end
+    local err = __loadJsonMap(location or "")
+    if err then return nil, err end
+    return true
+end
 
 -- ── Addon commands (addCommand and friends) ────────────────────────────────
 -- The argument contract sits here rather than in JS because every refusal names

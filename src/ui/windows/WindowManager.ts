@@ -1501,7 +1501,10 @@ export class WindowManager {
      * to a JSON string. Used by the Lua binding, which writes the result to
      * the VFS path the script provided.
      */
-    saveJsonMap(): string { return this.mapStore.toJsonString(); }
+    /** Mudlet's own interchange schema, not the binary model — a file written
+     *  here has to open in Mudlet, and be readable by anything that parses it
+     *  directly. */
+    saveJsonMap(): string { return this.mapStore.toMudletJsonString(); }
 
     /**
      * Mudlet `loadJsonMap(path)` backbone — parse a JSON payload previously

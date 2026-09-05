@@ -254,7 +254,11 @@ export function mudletJsonMapToMudletMap(src: unknown): MudletMap | null {
                     else room.mSpecialExitLocks.push(dest);
                 }
 
-                applyCustomLine(room, name, rawExit.customLine);
+                // Keyed the way doors and weights above are — the SHORT name
+                // for a stock direction, the verbatim command for a special
+                // exit. getCustomLines1 reads by that key, so storing under the
+                // long name left every imported line unreachable.
+                applyCustomLine(room, isStock ? DIR_SHORT[dirNum] : name, rawExit.customLine);
             }
 
             for (const rawStub of (Array.isArray(rawRoom.stubExits) ? rawRoom.stubExits : []) as unknown[]) {
@@ -351,6 +355,34 @@ function applyJsonSymbolColors(src: unknown, store: MapStore): void {
             const id = Number(room.id);
             if (!Number.isFinite(id)) continue;
             store.setRoomCharColor(id, Number(rgb[0]) || 0, Number(rgb[1]) || 0, Number(rgb[2]) || 0);
+        }
+    }
+}
+
+/**
+ * Apply a Mudlet JSON map's per-room border colour and width onto the store's
+ * side tables. Border was the one documented field the converter above dropped,
+ * for the same reason the symbol colour needs this treatment: MudletRoom has
+ * nowhere to carry it, so it can only be applied once loadFromBinary has made
+ * the rooms.
+ */
+function applyJsonRoomBorders(src: unknown, store: MapStore): void {
+    const doc = src as Record<string, unknown> | null;
+    if (!doc || !Array.isArray(doc.areas)) return;
+    for (const area of doc.areas as Record<string, unknown>[]) {
+        for (const room of (Array.isArray(area?.rooms) ? area.rooms : []) as Record<string, unknown>[]) {
+            const id = Number(room?.id);
+            if (!Number.isFinite(id)) continue;
+            const rgb = room.borderColor24RGB;
+            if (Array.isArray(rgb)) {
+                // An imported map carries no alpha, so it is the default —
+                // Mudlet issue #10368 records the same limitation.
+                store.setRoomBorderColor(
+                    id, Number(rgb[0]) || 0, Number(rgb[1]) || 0, Number(rgb[2]) || 0, 255,
+                );
+            }
+            const width = Number(room.borderWidth);
+            if (Number.isFinite(width)) store.setRoomBorderThickness(id, width);
         }
     }
 }
@@ -917,6 +949,126 @@ export class MapStore {
     toJsonString(): string { return JSON.stringify(this.toMudletMapForSave()); }
 
     /**
+     * The map in Mudlet's OWN `saveJsonMap` schema — the exact shape
+     * {@link mudletJsonMapToMudletMap} reads, and the mirror of it field for
+     * field.
+     *
+     * Not the same thing as {@link toJsonString}, which writes the binary
+     * model. That was what saveJsonMap used to emit, and it round-tripped
+     * through this client perfectly while being unreadable to Mudlet and to
+     * anything reading the file itself — which the corpus does, and which is
+     * the point of a documented interchange format. A map exported here has to
+     * open in Mudlet, and one exported by Mudlet has to open here.
+     */
+    toMudletJsonString(): string {
+        const doc = {
+            formatVersion: 1,
+            areas: [...this.areaNames.keys()].map(areaId => ({
+                id: areaId,
+                name: this.areaNames.get(areaId) ?? '',
+                userData: this.areas.get(areaId)?.userData ?? {},
+                rooms: (this.areas.get(areaId)?.rooms ?? []).map(id => this.roomToJson(id)),
+            })),
+            customEnvColors: [...this.customEnvColors].map(([id, c]) => ({
+                id, color24RGB: [c.r, c.g, c.b],
+            })),
+        };
+        return JSON.stringify(doc);
+    }
+
+    /** One room in Mudlet's JSON schema. Fields it has no value for are left
+     *  out rather than written empty, which is what Mudlet does and what keeps
+     *  a hand-read export legible. */
+    private roomToJson(id: number): Record<string, unknown> {
+        const room = this.rooms.get(id);
+        if (!room) return { id };
+        const out: Record<string, unknown> = {
+            id,
+            name: room.name ?? '',
+            coordinates: [room.x, room.y, room.z],
+            environment: room.environment ?? 0,
+            weight: room.weight ?? 1,
+            locked: !!room.isLocked,
+        };
+        // The v20 fallback key is an artefact of the binary format, not part of
+        // the JSON one — the flag rides in its own field here.
+        const userData: Record<string, string> = { ...room.userData };
+        delete userData[HIDDEN_FALLBACK_KEY];
+        if (Object.keys(userData).length) out.userData = userData;
+        if (this.hiddenRooms.has(id)) out.hidden = true;
+
+        const hash = [...this.hashToRoom].find(([, rid]) => rid === id)?.[0];
+        if (hash) out.hash = hash;
+
+        // The symbol is an object here — the whole reason the reader exists —
+        // so its colour travels with it rather than in a side table.
+        if (room.symbol) {
+            const colour = this.roomCharColors.get(id);
+            out.symbol = colour
+                ? { text: room.symbol, color24RGB: [colour.r, colour.g, colour.b] }
+                : { text: room.symbol };
+        }
+        const border = this.roomBorderColors.get(id);
+        if (border) out.borderColor24RGB = [border.r, border.g, border.b];
+        const thickness = this.roomBorderThicknesses.get(id);
+        if (thickness != null) out.borderWidth = thickness;
+
+        const exits: Record<string, unknown>[] = [];
+        const doorName = (v: number) => (v === 1 ? 'open' : v === 2 ? 'closed' : v === 3 ? 'locked' : undefined);
+        for (const [num, field] of Object.entries(DIR_FIELD)) {
+            const dest = (room as unknown as Record<string, number>)[field];
+            if (!Number.isFinite(dest) || dest <= 0) continue;
+            const dirNum = Number(num);
+            const short = DIR_SHORT[dirNum];
+            exits.push(this.exitToJson(room, field, short, dest, room.exitLocks.includes(dirNum), doorName));
+        }
+        for (const [command, dest] of Object.entries(room.mSpecialExits ?? {})) {
+            exits.push(this.exitToJson(
+                room, command, command, dest,
+                (room.mSpecialExitLocks ?? []).includes(dest), doorName,
+            ));
+        }
+        if (exits.length) out.exits = exits;
+
+        const stubs = (room.stubs ?? []).map(dirNum => {
+            const short = DIR_SHORT[dirNum];
+            const stub: Record<string, unknown> = { name: DIR_FIELD[dirNum] };
+            const door = doorName(room.doors?.[short] ?? 0);
+            if (door) stub.door = door;
+            if (room.exitLocks.includes(dirNum)) stub.locked = true;
+            return stub;
+        });
+        if (stubs.length) out.stubExits = stubs;
+        return out;
+    }
+
+    /** One exit in Mudlet's JSON schema. `key` is what the door and weight
+     *  tables are keyed on — the SHORT name for a stock direction, the verbatim
+     *  command for a special exit. */
+    private exitToJson(
+        room: MudletRoom, name: string, key: string, dest: number, locked: boolean,
+        doorName: (v: number) => string | undefined,
+    ): Record<string, unknown> {
+        const exit: Record<string, unknown> = { name, exitId: dest };
+        const door = doorName(room.doors?.[key] ?? 0);
+        if (door) exit.door = door;
+        const weight = room.exitWeights?.[key];
+        if (Number.isFinite(weight) && weight > 0) exit.weight = weight;
+        if (locked) exit.locked = true;
+        const points = room.customLines?.[key];
+        if (points?.length) {
+            const colour = room.customLinesColor?.[key];
+            exit.customLine = {
+                coordinates: points.map(p => [p[0], p[1]]),
+                color24RGB: colour ? [colour.r, colour.g, colour.b] : [255, 255, 255],
+                endsInArrow: !!room.customLinesArrow?.[key],
+                style: PEN_STYLE_NAMES[room.customLinesStyle?.[key] ?? 1] ?? 'solid line',
+            };
+        }
+        return exit;
+    }
+
+    /**
      * Save-side variant of {@link toMudletMap}: re-injects the v20-compatible
      * `system.fallback_hidden` userData key for rooms in the hidden side-table
      * so the serialised file round-trips back through `loadFromBinary` (and
@@ -961,6 +1113,7 @@ export class MapStore {
         // Symbol colours live in a side-table (MudletRoom has no charColor
         // field), so they can only be applied once the rooms exist.
         applyJsonSymbolColors(parsed, this);
+        applyJsonRoomBorders(parsed, this);
         return true;
     }
 
