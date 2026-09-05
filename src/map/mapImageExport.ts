@@ -19,12 +19,16 @@ export function applyMapperSettings(target: MapRendererSettings, mapper: MapperS
     // window showed the page/window through it. A user-picked colour in the
     // Mapper tab still wins.
     target.backgroundColor = mapper?.backgroundColor ?? '#000000';
-    // Mudlet always draws room symbols (and, in mudix, the area-name header)
-    // with its bundled "Bitstream Vera Sans Mono" (TMap.h: mMapSymbolFont) —
-    // never the profile's console font. The renderer's own default is a
-    // generic 'sans-serif', which picks a different glyph shape per-OS for
-    // Unicode room-symbol characters. Match Mudlet's fixed choice instead.
-    target.fontFamily = "'Bitstream Vera Sans Mono', sans-serif";
+    // Mudlet draws room symbols (and, in mudix, the area-name header) with
+    // `mMapSymbolFont` — bundled "Bitstream Vera Sans Mono" by default, and
+    // changeable from its Mapper page ("2D Map Room Symbol Font"). That default
+    // matters: the renderer's own is a generic 'sans-serif', which picks a
+    // different glyph shape per-OS for Unicode room-symbol characters. A
+    // profile that has chosen a font wins, and keeps the bundled one as the
+    // fallback so an unavailable family still lands somewhere sensible.
+    target.fontFamily = mapper?.symbolFont
+        ? `'${mapper.symbolFont.replace(/'/g, "\\'")}', 'Bitstream Vera Sans Mono', sans-serif`
+        : "'Bitstream Vera Sans Mono', sans-serif";
     // Level-of-detail: on unless the user turns it off. The renderer defaults it
     // off for back-compat, but every tier only engages above ~12k rooms on the
     // drawn plane — a density where the full vector scene costs seconds per
@@ -45,7 +49,7 @@ export function applyMapperSettings(target: MapRendererSettings, mapper: MapperS
     if (mapper.lineColor !== undefined) target.lineColor = mapper.lineColor;
     if (mapper.gridEnabled !== undefined) target.gridEnabled = mapper.gridEnabled;
     if (mapper.gridColor !== undefined) target.gridColor = mapper.gridColor;
-    if (mapper.gridSize !== undefined) target.gridSize = mapper.gridSize;
+    if (mapper.gridLineWidth !== undefined) target.gridLineWidth = mapper.gridLineWidth;
 
     // playerMarker is a nested object rather than a flat key, so copy it before
     // writing: createSettings() hands out a fresh one per renderer, but this

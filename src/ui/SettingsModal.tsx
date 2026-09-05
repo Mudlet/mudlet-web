@@ -51,7 +51,10 @@ const DEFAULT_PROMPT_TIMEOUT_MS = 300;
 // mudlet-map-renderer's own grid defaults, mirrored so the swatch and the
 // placeholder show what is actually drawn when the profile sets neither.
 const DEFAULT_GRID_COLOR = '#c8c8c8';
-const DEFAULT_GRID_SIZE = 1;
+const DEFAULT_GRID_LINE_WIDTH = 0.02;
+// Mudlet's own default map symbol font, bundled here too — the placeholder in
+// the picker row, and what an unset profile actually draws with.
+const DEFAULT_SYMBOL_FONT = 'Bitstream Vera Sans Mono';
 const DEFAULT_FONT_SIZE = 13;
 const MIN_FONT_SIZE = 6;
 const MAX_FONT_SIZE = 48;
@@ -656,7 +659,8 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
 
     const [roomSizeText, setRoomSizeText] = useState(String(mapperRoomSize));
     const [lineWidthText, setLineWidthText] = useState(String(mapperLineWidth));
-    const [gridSizeText, setGridSizeText] = useState(mapper?.gridSize !== undefined ? String(mapper.gridSize) : '');
+    const [gridWidthText, setGridWidthText] = useState(mapper?.gridLineWidth !== undefined ? String(mapper.gridLineWidth) : '');
+    const [symbolFontText, setSymbolFontText] = useState(mapper?.symbolFont ?? '');
 
     const handleRoomSizeBlur = () => {
         const parsed = parseFloat(roomSizeText.trim());
@@ -669,18 +673,20 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
         patchMapper({ roomSize: clamped });
     };
 
-    const handleGridSizeBlur = () => {
-        const parsed = parseFloat(gridSizeText.trim());
+    // Mudlet's "Grid width" is `mMapGridLineSize` — how thick the lines are,
+    // in map units, not how far apart they sit. Fractions, like Exit size.
+    const handleGridWidthBlur = () => {
+        const parsed = parseFloat(gridWidthText.trim());
         if (!Number.isFinite(parsed) || parsed <= 0) {
             // Empty or nonsense reverts to the renderer's own default rather
             // than pinning a number the user did not choose.
-            setGridSizeText('');
-            patchMapper({ gridSize: undefined });
+            setGridWidthText('');
+            patchMapper({ gridLineWidth: undefined });
             return;
         }
-        const clamped = Math.min(Math.round(parsed), 50);
-        setGridSizeText(String(clamped));
-        patchMapper({ gridSize: clamped });
+        const clamped = Math.min(parsed, 1);
+        setGridWidthText(String(clamped));
+        patchMapper({ gridLineWidth: clamped });
     };
 
     const handleLineWidthBlur = () => {
@@ -2016,6 +2022,44 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
             ),
         },
         {
+            // Mudlet's own group box on the Mapper page. Only the font row of
+            // it: "Only use symbols (glyphs) from chosen font" needs per-glyph
+            // coverage testing the renderer does not expose, and "Show symbol
+            // usage…" is a report rather than a setting.
+            id: 'mapSymbols',
+            category: 'mapper' as const,
+            title: 'Symbols',
+            description: 'Room symbols are the letters or glyphs a mapper script writes onto rooms.',
+            keywords: 'symbol, glyph, font, room symbol, typeface, map font',
+            body: (
+                <div className="settings-row">
+                    <label className="settings-label" htmlFor="mapper-symbol-font">
+                        2D Map Room Symbol Font
+                        <HelpTip label="About the room symbol font">
+                            Mudlet Web bundles Bitstream Vera Sans Mono and draws symbols with
+                            it, as desktop Mudlet does — a generic system font picks a
+                            different glyph shape per operating system, so the same map looks
+                            different on each. Name another family to override it; the bundled
+                            font stays behind it as a fallback, so a family this device does
+                            not have still lands somewhere sensible. Also sets the area-name
+                            header.
+                        </HelpTip>
+                    </label>
+                    <Input
+                        id="mapper-symbol-font"
+                        type="text"
+                        value={symbolFontText}
+                        placeholder={DEFAULT_SYMBOL_FONT}
+                        onChange={e => setSymbolFontText(e.target.value)}
+                        onBlur={() => {
+                            const next = symbolFontText.trim();
+                            patchMapper({ symbolFont: next === '' || next === DEFAULT_SYMBOL_FONT ? undefined : next });
+                        }}
+                    />
+                </div>
+            ),
+        },
+        {
             id: 'mapColors',
             category: 'mapper' as const,
             title: 'Map colors',
@@ -2046,24 +2090,24 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                         />
                     </div>
                     <div className="settings-row">
-                        <label className="settings-label" htmlFor="mapper-grid-size">
+                        <label className="settings-label" htmlFor="mapper-grid-width">
                             Grid width:
                             <HelpTip label="About grid width">
-                                How far apart the grid lines are drawn, in map units — one unit
-                                is the spacing between adjacent rooms. Only visible while
-                                "Show grid" is on, under Map view.
+                                How thick the grid lines are drawn, in map units — the same
+                                scale as Exit size, so 0.02 is a hairline and 0.2 is heavy.
+                                Only visible while "Show grid" is on, under Map view.
                             </HelpTip>
                         </label>
                         <Input
-                            id="mapper-grid-size"
+                            id="mapper-grid-width"
                             type="number"
-                            min={1}
-                            max={50}
-                            step={1}
-                            value={gridSizeText}
-                            placeholder={String(DEFAULT_GRID_SIZE)}
-                            onChange={e => setGridSizeText(e.target.value)}
-                            onBlur={handleGridSizeBlur}
+                            min={0.001}
+                            max={1}
+                            step={0.005}
+                            value={gridWidthText}
+                            placeholder={String(DEFAULT_GRID_LINE_WIDTH)}
+                            onChange={e => setGridWidthText(e.target.value)}
+                            onBlur={handleGridWidthBlur}
                         />
                     </div>
                     <div className="settings-row">

@@ -517,9 +517,16 @@ export interface MapperSettings {
     /** Mudlet's "Grid color" (Mapper colors page). Unset uses the renderer's
      *  own default. */
     gridColor?: string;
-    /** Mudlet's "Grid width": how far apart the grid lines are drawn, in map
-     *  units. Unset uses the renderer's own default. */
-    gridSize?: number;
+    /** Mudlet's "Grid width" (`mMapGridLineSize`): how *thick* the grid lines
+     *  are, in map units — not how far apart they sit. The renderer calls that
+     *  `gridLineWidth`; its `gridSize` is the spacing and has no Mudlet
+     *  counterpart. Unset uses the renderer's own default. */
+    gridLineWidth?: number;
+    /** Mudlet's "2D Map Room Symbol Font" (`mMapSymbolFont`) — the family room
+     *  symbols and the area-name header are drawn in. A family name only; the
+     *  bundled Bitstream Vera Sans Mono stays behind it as the fallback.
+     *  Unset uses that bundled font, which is Mudlet's default too. */
+    symbolFont?: string;
     /** renderer.settings.lodEnabled — level-of-detail for very dense planes.
      *  Above {@link lodExitBudget} rooms on the drawn (area, z-level) the
      *  renderer drops exit lines, and above {@link lodRoomBudget} it replaces
@@ -609,7 +616,8 @@ export const MAPPER_DEFAULTS: Required<MapperSettings> = {
     // Both mirror mudlet-map-renderer's createSettings() defaults, so leaving
     // them unset and setting them to these draws the same grid.
     gridColor: 'rgba(200, 200, 200, 0.15)',
-    gridSize: 1,
+    gridLineWidth: 0.02,
+    symbolFont: 'Bitstream Vera Sans Mono',
     // LOD budgets mirror the renderer's createSettings() defaults; `lodEnabled`
     // deliberately does NOT (the renderer defaults it off for back-compat,
     // mudix opts in — see MapperSettings.lodEnabled).

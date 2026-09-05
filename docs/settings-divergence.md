@@ -48,22 +48,25 @@ opened with — 78 present, 8 elsewhere, 58 missing — are in that section.
 | Main display | 19 | — | — | 1 |
 | Editor | 5 | — | 1 | — |
 | Color view | 24 | — | — | — |
-| Mapper | 8 | — | 12 | 1 |
+| Mapper | 9 | — | 10 | 1 |
 | Mapper colors | 8 | — | 20 | — |
 | Chat | — | — | — | 20 |
 | Connection | 7 | — | — | 4 |
 | Shortcuts | — | — | 1 | — |
 | Accessibility | 7 | — | — | — |
 | Special Options | 10 | — | 2 | 3 |
-| **Total** | **105** | **—** | **39** | **37** |
+| **Total** | **106** | **—** | **37** | **37** |
 
 Three things the totals don't show, and which matter more than the totals do:
 
 - **Parity is not evenly spread.** Accessibility, Color view and Main display are
   complete. Mapper colors is still thin and Shortcuts is empty.
-- **Most of what remains is blocked upstream.** The 16 map ANSI colours, the other map
-  colours, and most Map view options — 30 of the 39 — need fields `mudlet-map-renderer`
-  does not expose. That work starts there, not here.
+- **Most of what remains is blocked upstream — but check before you say so.** 25 of the
+  37 need a field `mudlet-map-renderer` does not have, and each of those rows now names
+  the field it would need. An earlier pass called the whole map backlog blocked, which
+  was wrong twice over: the room symbol font was the renderer's `fontFamily` all along,
+  and "Border size" is merged into `lineWidth` rather than absent. Both are marked as
+  such now, and the rule is that "blocked upstream" cites a field, not a memory.
 - **Mudlet Web has settings desktop Mudlet does not** — see
   [Web-only settings](#web-only-settings). The divergence runs both ways, so "8 tabs
   against 12 pages" understated the overlap even before this.
@@ -81,10 +84,10 @@ and 37 impossible. Acting on it closed 29 rows:
   desktop puts the button on the profile's own page.
 - **Missing settings, built**: server data encoding, highlight history, disable password
   masking, react to all keybindings, the double-click word-break characters, ambiguous
-  East Asian width, the SGR colour-space id, the map grid colour and width, browser
-  spell checking, clearing stored media, a usage-analytics opt-out, deleting the map,
-  "force new line on empty commands", and an Editor category carrying five of desktop's
-  six rows.
+  East Asian width, the SGR colour-space id, the map grid colour and width, the room
+  symbol font, browser spell checking, clearing stored media, a usage-analytics opt-out,
+  deleting the map, "force new line on empty commands", and an Editor category carrying
+  five of desktop's six rows.
 - **One of those was a behaviour gap, not a missing switch.** mudix echoed empty
   commands unconditionally, so a GA game with the linebreak fix on still got the blank
   line that fix exists to remove. `MudSession` now applies Mudlet's own rule from
@@ -99,20 +102,29 @@ and 37 impossible. Acting on it closed 29 rows:
   withholds. The shell indexes card text off the DOM, so searching the desktop wording
   finds the explanation.
 
-What is still 🚧 and why, in short. **Blocked upstream in the renderer** (30): the 16 map
-ANSI colours, room border, upper/lower level and overlapping-room colours, invert zoom
-direction, the area-exit arrow size, border size, the room symbol font, and the rest of
-Map view — `mudlet-map-renderer` exposes no field for any of them, and inverting the
-zoom here would mean swallowing the wheel event and synthesising a replacement.
+What is still 🚧 and why, in short.
+
+**Blocked upstream in the renderer** (25) — each row below names the missing field: the
+16 map ANSI colours (the environment palette, which the renderer reads from map data
+with no override), room border, upper/lower level and overlapping-room colours, drawing
+rooms on adjacent z-levels, the area-exit arrow size, invert zoom direction, and "only
+use glyphs from the chosen font". The zoom one is worth singling out: the renderer owns
+the wheel handler, so inverting it here would mean swallowing the event and synthesising
+a replacement.
+
 **Needs a subsystem that does not exist** (2): interface language wants a translation
-layer, and the shortcut editor wants a shortcut registry. **Deliberately not settings**
-(2): desktop's timer-size debug threshold and "Report all Codepoint problems
-immediately" configure diagnostics mudix does not produce, so the setting would be a
-knob attached to nothing — they become worth adding when the diagnostic does. **Simply
-not done yet** (5): the text analyzer, log naming and format, "Show Line/Paragraphs",
-map format version, and copying a map to another profile — that last one crosses a
-profile boundary, and the export path mounts profiles one at a time on purpose, so the
-cheap shape is write-then-import rather than two live VFS handles.
+layer, and the shortcut editor wants a shortcut registry.
+
+**Deliberately not settings** (2): desktop's timer-size debug threshold and "Report all
+Codepoint problems immediately" configure diagnostics mudix does not produce, so the
+setting would be a knob attached to nothing — they become worth adding when the
+diagnostic does.
+
+**Buildable here, simply not done yet** (8): the text analyzer, log naming and format,
+"Show Line/Paragraphs", map format version, "report map issues on screen", the symbol
+usage report, loading an older map version, and copying a map to another profile — that
+last crosses a profile boundary, and the export path mounts profiles one at a time on
+purpose, so the cheap shape is write-then-import rather than two live VFS handles.
 
 ---
 
@@ -283,7 +295,7 @@ The one page with **complete** parity, and then some.
 | Load another map file in | ✅ | Mapper → Map files → **Load map…**, offering profile files and a local upload. Still on the map panel’s menu too |
 | Or load an older version | 🚧 | No version history is kept |
 | Delete map: | ✅ | Mapper → Map files. Empties the store *and* drops the profile's IndexedDB slot — clearing only the store would let the next change re-save the old map from memory. Confirms first, and points at "Save now" as the way to keep a copy |
-| Copy map to other profile(s) | 🚧 | |
+| Copy map to other profile(s) | 🚧 | Buildable here, not blocked upstream — but it crosses a profile boundary, and the export path mounts profiles one at a time on purpose (concurrent mounts multiply peak memory by the largest map). The cheap shape is write-then-import rather than two live VFS handles |
 | Map format version | 🚧 | Reads every version the binary reader supports; writes the reader's default |
 
 ### Map download
@@ -297,24 +309,24 @@ The one page with **complete** parity, and then some.
 | Desktop | | Mudlet Web |
 |---|---|---|
 | Use high quality graphics in 2D view | ❌ | The canvas renderer is always antialiased |
-| Draw rooms on upper and lower levels | 🚧 | |
+| Draw rooms on upper and lower levels | 🚧 | Needs a renderer field. Its nearest neighbours are not it: `neighborSpill` draws rooms from adjacent *areas*, and `uniformLevelSize` only sizes the viewport across z-levels |
 | Invert zoom direction | 🚧 | Blocked upstream, not merely unbuilt: the renderer owns the wheel handler and its `Settings` has no zoom-direction field. mudix only snapshots the camera in a capture-phase listener, so inverting here would mean swallowing the event and synthesising a replacement |
 | Show room borders | ✅ | Mapper → Map view |
-| Use large area exit arrows in 2D view | 🚧 | |
+| Use large area exit arrows in 2D view | 🚧 | Needs a renderer field. `areaExitLabels` / `areaExitLabelFontSize` size the text label beside an area exit, not the arrow |
 | Show the default area in map area selection | ✅ | Mapper → Map view. `setDefaultAreaShown()` sets the same value |
 | Room size | ✅ | Mapper → Map view |
 | Exit size | ✅ | Same card |
-| Border size | 🚧 | |
-| Grid width | ✅ | Mapper → Map colors, as the renderer’s `gridSize` |
+| Border size | ⚠️ | **Merged, not missing.** The renderer has one `lineWidth` for exit connections *and* room borders, where Mudlet has `mRoomBorderSize` separately from exit size. "Exit size" moves both; splitting them needs a second field upstream |
+| Grid width: | ✅ | Mapper → Map colors, as the renderer's `gridLineWidth`. Mudlet's `mMapGridLineSize` is line *thickness*, not spacing — this was wired to the renderer's `gridSize` (spacing) at first, which is a different setting with no Mudlet counterpart |
 | — | | *Web-only:* **Room shape**, **Show grid**, **Simplify dense levels** (the level-of-detail tiers) |
 
 ### Symbols
 
 | Desktop | | Mudlet Web |
 |---|---|---|
-| 2D Map Room Symbol Font | 🚧 | |
-| Show symbol usage… | 🚧 | |
-| Only use symbols (glyphs) from chosen font | 🚧 | |
+| 2D Map Room Symbol Font | ✅ | Mapper → Symbols. The renderer's `fontFamily` was there all along and mudix pinned it to the bundled Bitstream Vera Sans Mono; a profile family now wins, with that font still behind it as the fallback |
+| Show symbol usage… | 🚧 | A report over the map data rather than a setting; buildable here without renderer help, just not built |
+| Only use symbols (glyphs) from chosen font | 🚧 | Needs per-glyph coverage testing the renderer does not expose — it draws the string and lets the browser fall back |
 
 ---
 
@@ -327,12 +339,12 @@ Present as a card, but a thin one: three of the eight named colours, and none of
 | Link color | ✅ | Mapper → Map colors, as **Exit lines** |
 | Background color | ✅ | Same card |
 | Map info background | ✅ | Same card — *plus an opacity slider desktop has no equivalent for* |
-| Room border color | 🚧 | |
-| Lower level color | 🚧 | |
-| Upper level color | 🚧 | |
-| Overlapping rooms border | 🚧 | |
+| Room border color | 🚧 | Needs a renderer field. Room strokes are drawn from the room's environment colour (`frameMode` / `coloredMode` decide how), with no override |
+| Lower level color | 🚧 | Needs a renderer field, and the level-drawing above it |
+| Upper level color | 🚧 | Needs a renderer field, and the level-drawing above it |
+| Overlapping rooms border | 🚧 | Needs a renderer field; the renderer does not mark overlapping rooms at all |
 | Grid color | ✅ | Mapper → Map colors |
-| The 16 map ANSI colours | 🚧 | Sixteen rows, none of them present. The single largest block of missing settings in the client |
+| The 16 map ANSI colours | 🚧 | Sixteen rows, none present, and the largest single block left. These are the environment colours rooms are filled with; the renderer takes them from the map data and `Settings` has no palette to override them with, so this starts upstream |
 | Reset all colors to default | 🚧 | |
 
 ### Player room marker
