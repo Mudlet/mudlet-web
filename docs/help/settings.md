@@ -9,9 +9,8 @@ If you are following the [Mudlet manual](https://wiki.mudlet.org/w/Manual:Conten
 this is the page that explains why its preferences chapter describes things you can't
 find here.
 
-Settings also names the impossible ones where they would have lived: each category ends
-with a "Not available in the browser" card, and the settings search finds those by the
-words the desktop manual uses.
+Settings itself lists only what you can change, so a setting that cannot exist here
+leaves no trace there. This page is where those go.
 
 ## Where things moved
 

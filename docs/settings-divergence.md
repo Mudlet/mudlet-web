@@ -106,10 +106,15 @@ and 37 impossible. Acting on it closed 29 rows:
   knows the desktop dialog searches for the words they already know. Where a card
   groups rows, the group box's title is the card title, and where Mudlet splits a page
   into group boxes (Editor's Theme / Autocomplete / Display options) so does this.
-- **The impossible ones now say so in the app.** Each affected category carries a "Not
-  available in the browser" card naming the desktop setting and what the browser
-  withholds. The shell indexes card text off the DOM, so searching the desktop wording
-  finds the explanation.
+- **The impossible ones stay out of the app.** They were briefly a "Not available in the
+  browser" card at the foot of each affected category, naming the desktop setting and
+  what the browser withholds. That was the wrong place for them: it spent screen in a
+  dialog of things you can change on a list of things you cannot, and taught the desktop
+  manual's vocabulary to players who had never met it. The reasons live in the ❌ rows of
+  this file, and a player who does go looking finds the prose version in
+  [docs/help/settings.md](help/settings.md) — the "Mudlet differences" topic linked from
+  the Settings shell. So an ❌ row here is the whole record: write the reason, not a
+  pointer to a card.
 
 ### What is left, and what is not planned
 

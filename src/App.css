@@ -5827,35 +5827,3 @@ body.is-sorting {
     color: var(--text);
 }
 
-/* ── "Not available in the browser" card ────────────────────── */
-/* Rows with no control: a desktop setting's name and why it can't be here.
-   Muted, so browsing a category reads them as footnotes rather than options,
-   but full text so the settings search can find them by the desktop wording. */
-.settings-unavailable {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-}
-
-.settings-unavailable__item {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-
-.settings-unavailable__name {
-    font-family: var(--font-ui), sans-serif;
-    font-size: 13px;
-    color: var(--text-dim);
-}
-
-.settings-unavailable__reason {
-    font-family: var(--font-ui), sans-serif;
-    font-size: 12px;
-    line-height: 1.45;
-    color: var(--text-faint, var(--text-dim));
-    opacity: 0.85;
-}
