@@ -100,6 +100,10 @@ export interface EngineHost {
     /** Write the profile out as a Mudlet-format XML save, answering with the
      *  full path written. The XML half of `saveProfile([location [, saveName]])`. */
     saveProfileXml(location?: string, saveName?: string): { ok: true; path: string } | { ok: false; err: string };
+
+    /** Put package installs off until the turn that started a profile save has
+     *  ended; see ScriptingEngine.markProfileSaveInFlight. */
+    markProfileSaveInFlight(): void;
     reloadModuleFromFile(name: string): boolean;
     setModuleSync(name: string, sync: boolean): void;
     getModuleSync(name: string): boolean;
@@ -258,6 +262,7 @@ export const NULL_ENGINE_HOST: EngineHost = Object.freeze({
     syncModuleToFile: () => Promise.resolve(),
     saveSyncedModules: () => {},
     saveProfileXml: () => ({ ok: false as const, err: 'no profile host available' }),
+    markProfileSaveInFlight: () => {},
     reloadModuleFromFile: () => false,
     setModuleSync: () => {},
     getModuleSync: () => false,

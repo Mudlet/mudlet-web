@@ -6,6 +6,23 @@ import { parseMudletXml, type MudletImportResult } from './mudletXmlImport';
 export interface InstallResult {
     manifest: PackageManifest;
     data: MudletImportResult;
+    /**
+     * Why the archive's `config.lua` gave up nothing, when it did. The install
+     * still goes ahead — under the archive's own name, with no details filed —
+     * and the caller says so, because the silence is what costs: a name-based
+     * uninstall, a repository update and anything depending on the package all
+     * stop matching, with nothing to go on.
+     */
+    configProblem?: string;
+    /**
+     * The name config.lua asked for, when a folder is already sitting at it.
+     *
+     * Reported rather than refused here because the ORDER matters: a name that
+     * is already installed is refused for that first, and only a folder standing
+     * on its own is this. The caller knows what is installed; this module only
+     * knows what is on disk.
+     */
+    occupiedFolder?: string;
 }
 
 /**
@@ -39,6 +56,14 @@ export interface InstallOptions {
      * the resources the script just staged.
      */
     sourcePath?: string;
+    /**
+     * Runs a package's `config.lua` and reports what it set, or why it never
+     * finished. Supplied by the caller that owns a Lua runtime — this module
+     * stays free of one — and when it is absent the manifest is read by pattern
+     * instead, which is enough for a well-formed config.lua and cannot tell a
+     * manifest that would RAISE from one that would not.
+     */
+    readConfig?: (source: string) => { ok: true; info: Record<string, string> } | { ok: false; reason: string };
 }
 
 const ZIP_MAGIC = [0x50, 0x4b, 0x03, 0x04]; // "PK\x03\x04" — local file header
@@ -52,15 +77,64 @@ function looksLikeZip(buf: Uint8Array): boolean {
     return ZIP_MAGIC.every((b, i) => buf[i] === b);
 }
 
-/** Replace path separators and other chars unsafe in a VFS directory name. */
-function sanitizePackageName(name: string): string {
-    return name.replace(/[\\/:*?"<>|]/g, '_').trim();
+/** The endings `Host::sanitizePackageName` takes off a name, in its order. */
+const PACKAGE_FILE_ENDINGS = ['.trigger', '.xml', '.zip', '.mpackage'];
+
+/**
+ * Mudlet `Host::sanitizePackageName` — the name a package file is called,
+ * reduced to the name the package installs under.
+ *
+ * Not a suffix strip: each ending is removed wherever it appears, and the whole
+ * thing repeats until a pass changes nothing. That matters because taking one
+ * ending off can leave another that was not there to begin with — `.x.zipml`
+ * gives up its `.zip` to become `.xml`, which the next pass takes as well. One
+ * pass is a different answer from two, and the trimming is asked for at more
+ * than one level of an install: the name a package is installed UNDER and the
+ * name its details are FILED under both come out of this, so a single pass
+ * leaves a package unable to describe itself, and its details stranded under a
+ * name no uninstall knows to remove. Each pass can only shorten, so it stops.
+ */
+function trimPackageFileEndings(name: string): string {
+    let current = name;
+    let previous = '';
+    while (current !== previous) {
+        previous = current;
+        // Only the last path segment is a name; the rest is where it came from.
+        current = current.slice(current.lastIndexOf('/') + 1);
+        for (const ending of PACKAGE_FILE_ENDINGS) {
+            current = current.replace(new RegExp(ending.replace('.', '\\.'), 'gi'), '');
+        }
+        current = current.replaceAll('\\', '');
+    }
+    return current;
 }
 
-/** Strip extension, sanitize for use as a directory name. */
+/** Trim as Mudlet does, then replace what is left that a VFS directory name
+ *  cannot carry — a step mudix needs and desktop does not. */
+function sanitizePackageName(name: string): string {
+    return trimPackageFileEndings(name).replace(/[:*?"<>|]/g, '_').trim();
+}
+
+/** Sanitize a package file's name for use as a directory name. */
 function packageNameFromFile(filename: string): string {
-    const base = filename.replace(/\.(mpackage|zip|xml)$/i, '');
-    return sanitizePackageName(base) || 'package';
+    return sanitizePackageName(filename) || 'package';
+}
+
+/**
+ * Refuse a name that cannot be a folder INSIDE the profile.
+ *
+ * This is not hypothetical tidiness. An ending is taken out wherever it
+ * appears, so an archive called `...mpackage` gives up the `.mpackage` sitting
+ * in its middle and what is left is `..` — and that name becomes the directory
+ * the archive unpacks into, which is the folder holding every profile. Mudlet
+ * refuses it (Package_spec pins that the profiles directory is untouched
+ * afterwards), and so must this: the name arrives from the archive's filename or
+ * from a config.lua inside it, neither of which the player wrote.
+ */
+function assertPackageNameStaysInProfile(name: string, source: string): void {
+    if (!name || /^\.+$/.test(name) || name.includes('/') || name.includes('\\')) {
+        throw new Error(`could not install '${source}': "${name}" is not a usable package name`);
+    }
 }
 
 function isXmlEntry(path: string): boolean {
@@ -100,6 +174,7 @@ export function preparePackageInstall(
     // Provisional: an archive's config.lua may rename the package out from under
     // us, exactly as it does in Mudlet — see the rename below.
     let packageName = packageNameFromFile(filename);
+    assertPackageNameStaysInProfile(packageName, filename);
     let pkgDir = `${vfs.profilePath}/${packageName}`;
     let sourcePath = opts.sourcePath;
 
@@ -117,7 +192,12 @@ export function preparePackageInstall(
 
     let xmlContent: string;
     let xmlRelPath: string | undefined;
-    let manifestExtras: Partial<PackageManifest> = {};
+    let manifestExtras: Partial<PackageManifest> & { configProblem?: string } = {};
+    /** Set when config.lua gave up nothing; see InstallResult.configProblem. */
+    let configProblem: string | undefined;
+    /** Set when the name config.lua asks for already has a folder in the
+     *  profile; see InstallResult.occupiedFolder. */
+    let occupiedFolder: string | undefined;
     /** The unpacked archive, held in memory until commit. Null for a plain XML. */
     let entries: Record<string, Uint8Array> | null = null;
 
@@ -139,7 +219,12 @@ export function preparePackageInstall(
         xmlContent = strFromU8(entries[xmlEntry]);
         xmlRelPath = xmlEntry;
 
-        manifestExtras = readConfigLua(entries);
+        manifestExtras = readConfigLua(entries, opts.readConfig);
+        // A manifest that will not run leaves NOTHING behind — not the name, not
+        // the author, not the version above the line that raised. The install
+        // carries on under the archive's own name and says so, rather than
+        // filing details no uninstall or repository update could match.
+        configProblem = manifestExtras.configProblem;
 
         // A config.lua may declare a name of its own ("mpackage"), and that name —
         // not the archive's filename — is what the package is installed as. This is
@@ -160,7 +245,41 @@ export function preparePackageInstall(
         // the declared name. Only a *staged* install has files already sitting
         // under the filename's directory, and the commit moves those.
         const declared = sanitizePackageName(manifestExtras.name ?? '');
-        if (declared && declared !== packageName) {
+        // A name that asks for something and leaves nothing once trimmed —
+        // "MyPackage/" and ".mpackage" both do — is the same loss as a manifest
+        // that would not run: there is no name to install under and none to file
+        // the details beneath, so it is SAID and the archive's own name is used,
+        // rather than refused outright or quietly passed over.
+        if (manifestExtras.name && !declared) {
+            configProblem = `the name "${manifestExtras.name}" its config.lua asks for has nothing`
+                + ' left in it once the endings a package file is named by are taken off';
+        }
+        // Checked as well as the filename above: a config.lua inside the archive
+        // is no more trustworthy than the archive's own name. A name that merely
+        // trims AWAY is handled just above; this is the one that would climb out
+        // of the profile.
+        if (declared) assertPackageNameStaysInProfile(declared, filename);
+        if (configProblem) {
+            // Nothing the manifest said is kept, so the details are not filed
+            // either: getPackageInfo answers with what config.lua declared, and
+            // it declared nothing that survived.
+            manifestExtras = {};
+        }
+        if (declared && !configProblem && declared !== packageName) {
+            // The archive unpacks under its own file name and is only renamed to
+            // the name its config.lua gives once the checks have passed. A
+            // folder already sitting at that name makes the rename fail, and
+            // what that has to come to is a refusal: the folder that was there
+            // is left exactly as it was found, and nothing in it is taken for
+            // the package. Installing over it wiped whatever a player or an
+            // earlier install had put there, and reading it registered the
+            // contents of a folder this archive never unpacked.
+            // Reported rather than thrown, because the ORDER matters: a name
+            // that is already installed is refused for that first, and only a
+            // folder standing on its own is this. The caller knows what is
+            // installed; this module only knows what is on disk.
+            const destination = `${vfs.profilePath}/${declared}`;
+            if (!sourceInsidePkgDir && vfs.exists(destination)) occupiedFolder = declared;
             packageName = declared;
             pkgDir = `${vfs.profilePath}/${declared}`;
             // A staged source file moves with its directory; the manifest must
@@ -176,7 +295,7 @@ export function preparePackageInstall(
 
     // Parsed here, not after the files land: an XML that will not parse is
     // refused with the profile untouched rather than unpacked and then rejected.
-    const data = parseMudletXml(xmlContent, { packageName });
+    const data = parseMudletXml(xmlContent, { packageName, reportParseError: true });
 
     const manifest: PackageManifest = {
         ...manifestExtras,
@@ -239,7 +358,7 @@ export function preparePackageInstall(
         }
     };
 
-    return { manifest, data, commit };
+    return { manifest, data, configProblem, occupiedFolder, commit };
 }
 
 /**
@@ -329,8 +448,20 @@ function parseLuaString(text: string, start: number): { value: string; end: numb
     return null;
 }
 
-/** Best-effort parse of Mudlet's config.lua for manifest metadata. */
-function readConfigLua(entries: Record<string, Uint8Array>): Partial<PackageManifest> {
+/**
+ * Mudlet's config.lua, read for the manifest it declares.
+ *
+ * Given a `run` (the caller's Lua runtime) the chunk is EXECUTED, which is what
+ * Mudlet does and the only way to tell a manifest that would raise from one that
+ * would not — the fixtures turn on exactly that, a `stamp = os.date(...)` line
+ * in a sandbox where `os` does not exist. Without one, the pattern pass below is
+ * a decent reading of a well-formed manifest and knows nothing of what would
+ * run.
+ */
+function readConfigLua(
+    entries: Record<string, Uint8Array>,
+    run?: InstallOptions['readConfig'],
+): Partial<PackageManifest> & { configProblem?: string } {
     const cfgKey = Object.keys(entries).find(k => /(?:^|\/)config\.lua$/i.test(k));
     if (!cfgKey) return {};
     const out: Partial<PackageManifest> = {};
@@ -340,6 +471,24 @@ function readConfigLua(entries: Record<string, Uint8Array>): Partial<PackageMani
     // info at all, which is exactly what Mudlet reports for one.
     const declared: Record<string, string> = {};
     const text = strFromU8(entries[cfgKey]);
+
+    if (run) {
+        const result = run(text);
+        if (!result.ok) return { configProblem: result.reason };
+        for (const [key, value] of Object.entries(result.info)) {
+            declared[key] = value;
+            const k = key.toLowerCase();
+            if      (k === 'mpackage' || k === 'name' || k === 'package') out.name = value || out.name;
+            else if (k === 'version')     out.version = value;
+            else if (k === 'author')      out.author = value;
+            else if (k === 'title')       out.title = value;
+            else if (k === 'description') out.description = value;
+            else if (k === 'icon')        out.icon = value;
+            else if (k === 'created')     out.created = value;
+        }
+        if (Object.keys(declared).length) out.declaredInfo = declared;
+        return out;
+    }
 
     const keyRe = /^[ \t]*(\w+)[ \t]*=[ \t]*/gm;
     let m: RegExpExecArray | null;
@@ -399,7 +548,31 @@ export function moduleXmlAbsolutePath(manifest: PackageManifest, vfs: ProfileVFS
  * Re-read a module's XML from the VFS and return the parsed result.
  * Throws if the on-disk file is missing — modules require their XML to be present.
  */
-export function reloadModuleFromVfs(manifest: PackageManifest, vfs: ProfileVFS): MudletImportResult {
+export function reloadModuleFromVfs(
+    manifest: PackageManifest,
+    vfs: ProfileVFS,
+    readConfig?: InstallOptions['readConfig'],
+): MudletImportResult {
+    // A module installed FROM AN ARCHIVE is reloaded from that archive, not from
+    // the XML the last install left behind. Writing a different archive over
+    // that file is what updating a module looks like from here, and re-reading
+    // the unpacked XML instead put back exactly what the module already held —
+    // the update was invisible.
+    const source = manifest.sourcePath;
+    if (source && archiveExtension.test(source) && vfs.exists(source)) {
+        const buf = vfs.readBinaryFile(source);
+        if (looksLikeZip(buf)) {
+            const filename = source.substring(source.lastIndexOf('/') + 1);
+            const prepared = preparePackageInstall(filename, buf, vfs, {
+                kind: 'module', sourcePath: source, readConfig,
+            });
+            // The rename lands on the folder the module already has, which is
+            // why a sync's uninstall leaves that folder alone: this is the write
+            // it was left standing for.
+            prepared.commit();
+            return prepared.data;
+        }
+    }
     const path = moduleXmlAbsolutePath(manifest, vfs);
     if (!path) throw new Error(`Module "${manifest.name}" has no xmlPath; cannot reload from disk`);
     if (!vfs.exists(path)) throw new Error(`Module "${manifest.name}" XML not found at ${path}`);
@@ -426,13 +599,17 @@ export function prepareModuleInstallFromVfsPath(
     /** Consulted first, so a module under the read-only /lua/ namespace installs
      *  as readily as one in the profile — see LuaRuntime.readBuiltinBytes. */
     readBuiltin: (path: string) => Uint8Array | null = () => null,
+    /** The same manifest reader the package path takes; see InstallOptions. */
+    readConfig?: InstallOptions['readConfig'],
 ): PreparedInstall {
     if (!absolutePath) throw new Error('no package file was actually given');
     const builtin = readBuiltin(absolutePath);
     // Mudlet's wording (Host::installPackage), which verboseModuleInstall prints
     // verbatim — ours said "File not found", which is the same fact in a shape
     // no script matching on Mudlet's text would recognise.
-    if (!builtin && !vfs.exists(absolutePath)) throw new Error(`could not open file '${absolutePath}`);
+    // The closing quote matters: without it the reason runs straight into
+    // whatever a caller appends to it, and Package_spec checks for it.
+    if (!builtin && !vfs.exists(absolutePath)) throw new Error(`could not open file '${absolutePath}'`);
     const filename = absolutePath.substring(absolutePath.lastIndexOf('/') + 1) || 'module';
     const buf = builtin ?? vfs.readBinaryFile(absolutePath);
 
@@ -440,13 +617,15 @@ export function prepareModuleInstallFromVfsPath(
         if (!looksLikeZip(buf)) throw new Error('could not unzip package');
         // Zips always go through the unzip-into-pkgDir flow; the user's source archive
         // stays where it was but isn't part of the module's reload path.
-        return preparePackageInstall(filename, buf, vfs, { kind: 'module', sourcePath: absolutePath });
+        return preparePackageInstall(filename, buf, vfs, {
+            kind: 'module', sourcePath: absolutePath, readConfig,
+        });
     }
 
     // Plain XML: reference in place, no pkgDir.
     const xmlContent = strFromU8(buf);
     const packageName = packageNameFromFile(filename);
-    const data = parseMudletXml(xmlContent, { packageName });
+    const data = parseMudletXml(xmlContent, { packageName, reportParseError: true });
 
     const manifest: PackageManifest = {
         name: packageName,

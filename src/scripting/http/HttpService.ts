@@ -152,7 +152,8 @@ export class HttpService {
                 try { data = vfs.exists(path) ? vfs.readBinaryFile(path) : null; }
                 catch { data = null; }
             }
-            if (!data) return this.emit('sysDownloadError', [`could not open file '${path}`, saveTo, url]);
+            // Same unterminated quote as the install path had — Mudlet closes it.
+            if (!data) return this.emit('sysDownloadError', [`could not open file '${path}'`, saveTo, url]);
 
             try { vfs.writeBinaryFile(saveTo, data); }
             catch (err) {

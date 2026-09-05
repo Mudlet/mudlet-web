@@ -984,6 +984,7 @@ const MUDLET_GLOBALS: Completion[] = [
     variable('mssp',         'MSSP server-status table — auto-populated once per connection'),
     variable('lpeg',         'LPeg parsing-expression-grammar library (pure-Lua LuLPeg port). lpeg.P/R/S/C/Ct/match etc.'),
     variable('mmcp',         'MudMaster Chat Protocol table. No-op stubs only — peer-to-peer TCP chat is impossible in the browser; mudlet.supports.mmcp is false.'),
+    variable('stt',          'Speech-to-text table. Bound in its engine-absent state — the native recogniser and its model directory have no browser counterpart; available() is false, calls refuse and announce on sysSTTError, mudlet.supports.stt is false.'),
     variable('matches',      'Regex captures in trigger/alias context: [full, cap1, cap2, ...]'),
     variable('line',         'Current trigger line text'),
     variable('command',      'The last command-bar input, set before alias processing (Mudlet `command`)'),

@@ -40,6 +40,7 @@ import {installAutomationBindings} from './bindings/automation';
 import {installPackageBindings} from './bindings/packages';
 import {installOutputBindings} from './bindings/output';
 import {installTextEditBindings} from './bindings/textEdit';
+import {installCommandBindings} from './bindings/commands';
 import {installCommandLineBindings} from './bindings/commandLine';
 import {installDiagnosticsBindings} from './bindings/diagnostics';
 import {installSessionBindings} from './bindings/session';
@@ -105,7 +106,7 @@ const SPEC_TEXT_FIXTURES = BUSTED_ENABLED
     ? (import.meta.glob('./specs/fixtures/**/*.{xml,lua,json,txt}', { query: '?raw', import: 'default', eager: true }) as Record<string, string>)
     : {};
 const SPEC_BINARY_FIXTURES = BUSTED_ENABLED
-    ? (import.meta.glob('./specs/fixtures/**/*.mpackage', { query: '?inline', import: 'default', eager: true }) as Record<string, string>)
+    ? (import.meta.glob('./specs/fixtures/**/*.{mpackage,zip}', { query: '?inline', import: 'default', eager: true }) as Record<string, string>)
     : {};
 
 // VFS spec paths the busted runner can target (e.g. /lua/specs/StringUtils_spec.lua).
@@ -767,6 +768,12 @@ export class LuaRuntime implements IScriptingRuntime {
         // from its (nil, errMsg) refuse-on-bad-value.
         this.lua.global.set('__mudix_config_kind', (key: unknown) =>
             this.api.configKeyKind(String(key ?? '')));
+        // The bounds a numeric option accepts, as [min, max], or nil. Separate
+        // from the kind above because the refusal has to NAME them: "out of
+        // range" is what a script greps for, and the generic "not a valid value"
+        // does not say what the valid ones were.
+        this.lua.global.set('__mudix_config_range', (key: unknown) =>
+            this.api.configKeyRange(String(key ?? '')) ?? undefined);
 
         // Mudlet profile description (a free-text slot per profile). Each takes
         // the profile by name, defaulting to this one; a name that matches no
@@ -879,6 +886,9 @@ export class LuaRuntime implements IScriptingRuntime {
 
         // -- createTextEdit widgets --
         installTextEditBindings(bindings);
+
+        // -- addon commands (addCommand and friends) --
+        installCommandBindings(bindings);
 
         // ── Labels ────────────────────────────────────────────────────────────
         // createLabel([window,] name, x, y, w, h, fillBackground [, clickThrough]).
@@ -1602,6 +1612,15 @@ export class LuaRuntime implements IScriptingRuntime {
             // away rather than through the flush below, so a spec (and a user
             // reading the file) finds them there the moment this returns.
             if (!dir && !name) {
+                // The save-history switches go out with the session's end, not
+                // when they are flipped: profile.ini carries them beside the
+                // history-file mapping, which is written as each command line is
+                // created.
+                try {
+                    vfs.writeFile(`${path}/profile.ini`, this.api.profileIniContent());
+                } catch (err) {
+                    console.warn('[saveProfile] could not write profile.ini:', err);
+                }
                 for (const file of this.api.commandLineHistoryFiles()) {
                     try {
                         vfs.writeFile(`${path}/${file.name}`, file.content);
@@ -1617,6 +1636,9 @@ export class LuaRuntime implements IScriptingRuntime {
                 console.warn('[saveProfile] vfs flush failed:', err);
                 this.emitEvent('sysSaveProfileError', [path, msg]);
             });
+            // An install asked for before this turn ends is racing the write
+            // just started, so it is put off until the turn is over.
+            this.api.markProfileSaveInFlight();
             return [true, written.path];
         });
 
@@ -2180,6 +2202,12 @@ end`,
 -- can't open. mmcp.* IS bound, as no-op stubs (Bridge.lua), so feature-detecting
 -- scripts have to see it unsupported here or they'll happily call into them.
 if mudlet and mudlet.supports then mudlet.supports.mmcp = false end
+
+-- Speech to text needs a native recogniser library and a model directory on
+-- disk (Bridge.lua says why neither survives the move to a browser). stt.* IS
+-- bound, answering as the engine-absent state Mudlet itself reports before
+-- anything is installed, so the same flag has to say so.
+if mudlet and mudlet.supports then mudlet.supports.stt = false end
 
 -- Other.lua's dispatchEventToFunctions guards every handler with pcall, and Lua
 -- 5.1 cannot yield across pcall's C frame: an event handler that suspends on
@@ -2995,6 +3023,45 @@ end`);
                 access: Math.floor(s.atime.getTime() / 1000),
             };
         });
+
+        // ── zip (the lua-zip rock Mudlet preloads) ───────────────────────────
+        // Mudlet ships brimworks' lua-zip as a required rock on every platform,
+        // so bundled code — LuaGlobal's unzip(), and any package doing its own
+        // unpacking — takes `zip` for granted and indexes it without a guard.
+        // fflate is already here for package installs, so the archive side costs
+        // nothing but the handle bookkeeping.
+        const archives = new Map<number, Record<string, Uint8Array>>();
+        let nextArchive = 1;
+
+        this.lua.global.set('__zip_open__', (path: string): number | null => {
+            // Builtins first, and read as BYTES rather than re-encoded: a
+            // builtin is held as a latin1 string, so TextEncoder would turn
+            // every byte above 0x7F into two and no archive would ever open.
+            // The spec corpus keeps its map fixtures there.
+            const bytes = this.readBuiltinBytes(path)
+                ?? (() => { try { return vfs?.readBinaryFile(path) ?? null; } catch { return null; } })();
+            if (!bytes) return null;
+            let entries: Record<string, Uint8Array>;
+            try { entries = unzipSync(bytes); }
+            catch { return null; }
+            const id = nextArchive++;
+            archives.set(id, entries);
+            return id;
+        });
+
+        this.lua.global.set('__zip_names__', (id: number): string[] =>
+            Object.keys(archives.get(Number(id)) ?? {}));
+
+        // Armored exactly as the io bindings are: an entry is bytes, and the
+        // wasmoon string bridge truncates at NUL and mangles 0x80-0xFF.
+        this.lua.global.set('__zip_read__', (id: number, name: string): string | null => {
+            const entry = archives.get(Number(id))?.[String(name)];
+            return entry === undefined ? null : armor(bytesToLatin1(entry));
+        });
+
+        this.lua.global.set('__zip_close__', (id: number): void => {
+            archives.delete(Number(id));
+        });
     }
 
     // ── IScriptingRuntime ─────────────────────────────────────────────────────
@@ -3702,6 +3769,31 @@ end`);
         if (this.inert) return;
         this.lua.global.set('__mudix_kill_sid', scriptId);
         this.runChunk('__mudix_kill_script_handlers(__mudix_kill_sid)', 'kill-script-handlers');
+    }
+
+    /**
+     * A package's `config.lua`, read the way Mudlet reads one: by RUNNING it in
+     * an environment with nothing in it. Returns the string and number globals
+     * the chunk set, or the reason it never finished — a manifest that raises
+     * partway leaves nothing behind, which is the contract packages are written
+     * against and the reason a pattern match is not good enough here.
+     */
+    readPackageConfig(source: string): { ok: true; info: Record<string, string> } | { ok: false; reason: string } {
+        this.lua.global.set('__mudix_cfg_src', source);
+        this.runChunk('__mudix_read_package_config(__mudix_cfg_src)', 'package-config');
+        const ok = this.lua.global.get('__mudix_cfg_ok') === true;
+        if (!ok) {
+            const reason = String(this.lua.global.get('__mudix_cfg_reason') ?? '');
+            return { ok: false, reason: reason || 'config.lua could not be read' };
+        }
+        let info: Record<string, string> = {};
+        try {
+            const parsed = JSON.parse(String(this.lua.global.get('__mudix_cfg_info') ?? '{}'));
+            if (parsed && typeof parsed === 'object') {
+                for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) info[k] = String(v);
+            }
+        } catch { info = {}; }
+        return { ok: true, info };
     }
 
     /**

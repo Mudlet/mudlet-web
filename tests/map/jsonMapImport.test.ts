@@ -185,12 +185,16 @@ describe('loadJsonMap — Mudlet saveJsonMap format', () => {
     it('reconstructs custom lines with points, colour, arrow and pen style', () => {
         const store = load();
         const room = store.toMudletMap().rooms[1];
-        expect(room.customLines.east).toEqual([[33, -8], [33, -7], [40, -7]]);
-        expect(room.customLinesColor.east).toMatchObject({ r: 191, g: 191, b: 191 });
-        expect(room.customLinesArrow.east).toBe(false);
-        expect(room.customLinesStyle.east).toBe(2); // Qt::DashLine
+        // Keyed by the SHORT direction name, which is what addCustomLine writes
+        // and what Mudlet normalises to — the import used to key by the long
+        // one, so a line it read back was unreachable through getCustomLines
+        // while an identical line written by addCustomLine was not.
+        expect(room.customLines.e).toEqual([[33, -8], [33, -7], [40, -7]]);
+        expect(room.customLinesColor.e).toMatchObject({ r: 191, g: 191, b: 191 });
+        expect(room.customLinesArrow.e).toBe(false);
+        expect(room.customLinesStyle.e).toBe(2); // Qt::DashLine
         // And it reads back through the public accessor Mudlet scripts use.
-        expect(store.getCustomLines(1)?.east.attributes.style).toBe('dash line');
+        expect(store.getCustomLines(1)?.e.attributes.style).toBe('dash line');
     });
 
     it('lifts the hidden flag into the hidden-room side table', () => {

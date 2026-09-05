@@ -6,6 +6,10 @@ export type {ExitWeightFilter, PathfindResult} from './pathfinding';
 
 export type MapRendererData = ReturnType<typeof readerExport>;
 
+/** What an area with no name of its own is called — Mudlet's mUnnamedAreaName,
+ *  which its area-name audit substitutes before checking for duplicates. */
+const UNNAMED_AREA_NAME = 'Unnamed Area';
+
 // Mudlet direction number → field name on MudletRoom
 const DIR_FIELD: Record<number, string> = {
     1: 'north', 2: 'northeast', 3: 'northwest', 4: 'east', 5: 'west',
@@ -254,7 +258,11 @@ export function mudletJsonMapToMudletMap(src: unknown): MudletMap | null {
                     else room.mSpecialExitLocks.push(dest);
                 }
 
-                applyCustomLine(room, name, rawExit.customLine);
+                // Keyed the way doors and weights above are — the SHORT name
+                // for a stock direction, the verbatim command for a special
+                // exit. getCustomLines1 reads by that key, so storing under the
+                // long name left every imported line unreachable.
+                applyCustomLine(room, isStock ? DIR_SHORT[dirNum] : name, rawExit.customLine);
             }
 
             for (const rawStub of (Array.isArray(rawRoom.stubExits) ? rawRoom.stubExits : []) as unknown[]) {
@@ -351,6 +359,34 @@ function applyJsonSymbolColors(src: unknown, store: MapStore): void {
             const id = Number(room.id);
             if (!Number.isFinite(id)) continue;
             store.setRoomCharColor(id, Number(rgb[0]) || 0, Number(rgb[1]) || 0, Number(rgb[2]) || 0);
+        }
+    }
+}
+
+/**
+ * Apply a Mudlet JSON map's per-room border colour and width onto the store's
+ * side tables. Border was the one documented field the converter above dropped,
+ * for the same reason the symbol colour needs this treatment: MudletRoom has
+ * nowhere to carry it, so it can only be applied once loadFromBinary has made
+ * the rooms.
+ */
+function applyJsonRoomBorders(src: unknown, store: MapStore): void {
+    const doc = src as Record<string, unknown> | null;
+    if (!doc || !Array.isArray(doc.areas)) return;
+    for (const area of doc.areas as Record<string, unknown>[]) {
+        for (const room of (Array.isArray(area?.rooms) ? area.rooms : []) as Record<string, unknown>[]) {
+            const id = Number(room?.id);
+            if (!Number.isFinite(id)) continue;
+            const rgb = room.borderColor24RGB;
+            if (Array.isArray(rgb)) {
+                // An imported map carries no alpha, so it is the default —
+                // Mudlet issue #10368 records the same limitation.
+                store.setRoomBorderColor(
+                    id, Number(rgb[0]) || 0, Number(rgb[1]) || 0, Number(rgb[2]) || 0, 255,
+                );
+            }
+            const width = Number(room.borderWidth);
+            if (Number.isFinite(width)) store.setRoomBorderThickness(id, width);
         }
     }
 }
@@ -787,7 +823,30 @@ export class MapStore {
             this.areas.set(id, area);
             if (id >= this.nextAreaId) this.nextAreaId = id + 1;
         }
-        for (const [k, name] of Object.entries(header.areaNames ?? {})) {
+        // Mudlet's TRoomDB area-name audit (TRoomDB.cpp:1178-1222). Area names
+        // are a key, not a label: getAreaTable() is name -> id and setAreaName
+        // refuses a duplicate, so a map that arrives with two areas sharing one
+        // name is in a state the API would never let you build — and the second
+        // area becomes unreachable by name, which is how the Achaea fixture's
+        // 379 areas read back as 373.
+        //
+        // The repair is Mudlet's: an empty name becomes the unnamed-area name,
+        // and a name already taken is suffixed "_001", "_002", … — with any
+        // existing three-digit suffix chopped off first, so a second pass over
+        // an already-audited map does not stack them.
+        const takenNames = new Set<string>();
+        for (const [k, rawName] of Object.entries(header.areaNames ?? {})) {
+            let name = rawName || UNNAMED_AREA_NAME;
+            if (takenNames.has(name)) {
+                if (/_\d{3}$/.test(name)) name = name.slice(0, -4);
+                let suffix = 0;
+                let candidate: string;
+                do {
+                    candidate = `${name}_${String(++suffix).padStart(3, '0')}`;
+                } while (takenNames.has(candidate));
+                name = candidate;
+            }
+            takenNames.add(name);
             this.areaNames.set(Number(k), name);
         }
         for (const [k, labels] of Object.entries(header.labels ?? {})) {
@@ -917,6 +976,131 @@ export class MapStore {
     toJsonString(): string { return JSON.stringify(this.toMudletMapForSave()); }
 
     /**
+     * The map in Mudlet's OWN `saveJsonMap` schema — the exact shape
+     * {@link mudletJsonMapToMudletMap} reads, and the mirror of it field for
+     * field.
+     *
+     * Not the same thing as {@link toJsonString}, which writes the binary
+     * model. That was what saveJsonMap used to emit, and it round-tripped
+     * through this client perfectly while being unreadable to Mudlet and to
+     * anything reading the file itself — which the corpus does, and which is
+     * the point of a documented interchange format. A map exported here has to
+     * open in Mudlet, and one exported by Mudlet has to open here.
+     */
+    toMudletJsonString(extras: Record<string, unknown> = {}): string {
+        const doc = {
+            formatVersion: 1,
+            // Map-level settings that live in the profile rather than in the
+            // store — the symbol font and its scaling — are passed in by the
+            // caller that owns them, so a saved file carries the whole map the
+            // way Mudlet's does without this layer having to reach for config.
+            ...extras,
+            areas: [...this.areaNames.keys()].map(areaId => ({
+                id: areaId,
+                name: this.areaNames.get(areaId) ?? '',
+                userData: this.areas.get(areaId)?.userData ?? {},
+                rooms: (this.areas.get(areaId)?.rooms ?? []).map(id => this.roomToJson(id)),
+            })),
+            customEnvColors: [...this.customEnvColors].map(([id, c]) => ({
+                id, color24RGB: [c.r, c.g, c.b],
+            })),
+        };
+        return JSON.stringify(doc);
+    }
+
+    /** One room in Mudlet's JSON schema. Fields it has no value for are left
+     *  out rather than written empty, which is what Mudlet does and what keeps
+     *  a hand-read export legible. */
+    private roomToJson(id: number): Record<string, unknown> {
+        const room = this.rooms.get(id);
+        if (!room) return { id };
+        const out: Record<string, unknown> = {
+            id,
+            name: room.name ?? '',
+            coordinates: [room.x, room.y, room.z],
+            environment: room.environment ?? 0,
+            weight: room.weight ?? 1,
+            locked: !!room.isLocked,
+        };
+        // The v20 fallback key is an artefact of the binary format, not part of
+        // the JSON one — the flag rides in its own field here.
+        const userData: Record<string, string> = { ...room.userData };
+        delete userData[HIDDEN_FALLBACK_KEY];
+        if (Object.keys(userData).length) out.userData = userData;
+        if (this.hiddenRooms.has(id)) out.hidden = true;
+
+        const hash = [...this.hashToRoom].find(([, rid]) => rid === id)?.[0];
+        if (hash) out.hash = hash;
+
+        // The symbol is an object here — the whole reason the reader exists —
+        // so its colour travels with it rather than in a side table.
+        if (room.symbol) {
+            const colour = this.roomCharColors.get(id);
+            out.symbol = colour
+                ? { text: room.symbol, color24RGB: [colour.r, colour.g, colour.b] }
+                : { text: room.symbol };
+        }
+        const border = this.roomBorderColors.get(id);
+        if (border) out.borderColor24RGB = [border.r, border.g, border.b];
+        const thickness = this.roomBorderThicknesses.get(id);
+        if (thickness != null) out.borderWidth = thickness;
+
+        const exits: Record<string, unknown>[] = [];
+        const doorName = (v: number) => (v === 1 ? 'open' : v === 2 ? 'closed' : v === 3 ? 'locked' : undefined);
+        for (const [num, field] of Object.entries(DIR_FIELD)) {
+            const dest = (room as unknown as Record<string, number>)[field];
+            if (!Number.isFinite(dest) || dest <= 0) continue;
+            const dirNum = Number(num);
+            const short = DIR_SHORT[dirNum];
+            exits.push(this.exitToJson(room, field, short, dest, room.exitLocks.includes(dirNum), doorName));
+        }
+        for (const [command, dest] of Object.entries(room.mSpecialExits ?? {})) {
+            exits.push(this.exitToJson(
+                room, command, command, dest,
+                (room.mSpecialExitLocks ?? []).includes(dest), doorName,
+            ));
+        }
+        if (exits.length) out.exits = exits;
+
+        const stubs = (room.stubs ?? []).map(dirNum => {
+            const short = DIR_SHORT[dirNum];
+            const stub: Record<string, unknown> = { name: DIR_FIELD[dirNum] };
+            const door = doorName(room.doors?.[short] ?? 0);
+            if (door) stub.door = door;
+            if (room.exitLocks.includes(dirNum)) stub.locked = true;
+            return stub;
+        });
+        if (stubs.length) out.stubExits = stubs;
+        return out;
+    }
+
+    /** One exit in Mudlet's JSON schema. `key` is what the door and weight
+     *  tables are keyed on — the SHORT name for a stock direction, the verbatim
+     *  command for a special exit. */
+    private exitToJson(
+        room: MudletRoom, name: string, key: string, dest: number, locked: boolean,
+        doorName: (v: number) => string | undefined,
+    ): Record<string, unknown> {
+        const exit: Record<string, unknown> = { name, exitId: dest };
+        const door = doorName(room.doors?.[key] ?? 0);
+        if (door) exit.door = door;
+        const weight = room.exitWeights?.[key];
+        if (Number.isFinite(weight) && weight > 0) exit.weight = weight;
+        if (locked) exit.locked = true;
+        const points = room.customLines?.[key];
+        if (points?.length) {
+            const colour = room.customLinesColor?.[key];
+            exit.customLine = {
+                coordinates: points.map(p => [p[0], p[1]]),
+                color24RGB: colour ? [colour.r, colour.g, colour.b] : [255, 255, 255],
+                endsInArrow: !!room.customLinesArrow?.[key],
+                style: PEN_STYLE_NAMES[room.customLinesStyle?.[key] ?? 1] ?? 'solid line',
+            };
+        }
+        return exit;
+    }
+
+    /**
      * Save-side variant of {@link toMudletMap}: re-injects the v20-compatible
      * `system.fallback_hidden` userData key for rooms in the hidden side-table
      * so the serialised file round-trips back through `loadFromBinary` (and
@@ -961,7 +1145,57 @@ export class MapStore {
         // Symbol colours live in a side-table (MudletRoom has no charColor
         // field), so they can only be applied once the rooms exist.
         applyJsonSymbolColors(parsed, this);
+        applyJsonRoomBorders(parsed, this);
+        this.auditImportedExits();
         return true;
+    }
+
+    /**
+     * Mudlet's `TRoom::auditExits`, run over every room after an import.
+     *
+     * A JSON map is a document, and a document can say things the mapper API
+     * never could: an exit to a room the file does not contain, a stub standing
+     * in a direction that already has an exit. Mudlet repairs those on the way
+     * in rather than carrying them, and writes what it did into the room's own
+     * userData, so a map that quietly changed shape on import can still be
+     * explained afterwards.
+     *
+     * The order matters. Missing destinations are resolved first, because a
+     * stock exit that loses its destination BECOMES a stub, and only then can
+     * stub-versus-exit be judged — otherwise the stub just created would be
+     * dropped again by the very exit it replaced.
+     */
+    private auditImportedExits(): void {
+        for (const room of this.rooms.values()) {
+            for (const [num, field] of Object.entries(DIR_FIELD)) {
+                const dest = (room as unknown as Record<string, number>)[field];
+                if (!Number.isFinite(dest) || dest <= 0 || this.rooms.has(dest)) continue;
+                // The exit pointed somewhere the file never described. The
+                // direction is still real, so it survives as a stub: the map
+                // goes on saying "there is a way east", just not where it goes.
+                const dirNum = Number(num);
+                (room as unknown as Record<string, number>)[field] = -1;
+                if (!room.stubs.includes(dirNum)) room.stubs.push(dirNum);
+                room.userData[`audit.made_stub_of_valid_but_missing_exit.${dirNum}`] = String(dest);
+            }
+            for (const [command, dest] of Object.entries(room.mSpecialExits ?? {})) {
+                if (this.rooms.has(dest)) continue;
+                // A special exit IS its command, and a command with nowhere to
+                // go is not a way out of anywhere — there is no stub for it to
+                // fall back to, so it goes entirely.
+                delete room.mSpecialExits[command];
+                room.mSpecialExitLocks = (room.mSpecialExitLocks ?? []).filter(d => d !== dest);
+                room.userData[`audit.removed_valid_but_missing_special_exit.${command}`] = String(dest);
+            }
+            // A stub says "there is a way out here that goes nowhere yet", which
+            // is nothing to add to a direction that already goes somewhere.
+            room.stubs = room.stubs.filter(dirNum => {
+                const field = DIR_FIELD[dirNum];
+                if (!field) return false;
+                const dest = (room as unknown as Record<string, number>)[field];
+                return !(Number.isFinite(dest) && dest > 0);
+            });
+        }
     }
 
     toMudletMap(): MudletMap {
@@ -1032,6 +1266,11 @@ export class MapStore {
      * Returns false only when the roomID is already taken.
      */
     addRoom(id: number, areaId?: number): boolean | { err: string } {
+        // Room ids start at 1. Zero and below are refused rather than created:
+        // Mudlet uses them as sentinels — getRoomArea and friends answer -1 for
+        // "no such room" — so a room that IS one of them can never be told from
+        // the answer meaning it does not exist.
+        if (!Number.isFinite(id) || id < 1) return false;
         if (this.rooms.has(id)) return false;
         const requested = areaId != null && Number.isFinite(areaId) ? Number(areaId) : undefined;
         const known = requested !== undefined && this.areas.has(requested);
@@ -1271,6 +1510,14 @@ export class MapStore {
     }
 
     getRoomChar(id: number): string { return this.rooms.get(id)?.symbol ?? ''; }
+
+    /** Every distinct room symbol on the map — what a font has to be able to
+     *  draw before it is worth choosing. */
+    roomSymbols(): string[] {
+        const seen = new Set<string>();
+        for (const room of this.rooms.values()) if (room.symbol) seen.add(room.symbol);
+        return [...seen];
+    }
 
     setRoomChar(id: number, char: string): boolean {
         const r = this.rooms.get(id);
@@ -2234,9 +2481,13 @@ export class MapStore {
             }
             if (!this.areaNames.has(id)) return `deleteArea: number ${id} is not a valid areaID`;
         }
+        // A name with no area behind it is a real state, not a miss: setAreaName
+        // on an unused id registers the name, and the area itself only comes
+        // into being when a room is moved into it. Deleting one is deleting the
+        // name — there is nothing else to take away, and refusing would leave
+        // the name unremovable.
         const area = this.areas.get(id);
-        if (!area) return `deleteArea: number ${id} is not a valid areaID`;
-        for (const roomId of area.rooms) {
+        for (const roomId of area?.rooms ?? []) {
             const r = this.rooms.get(roomId);
             if (r?.hash) this.hashToRoom.delete(r.hash);
             this.rooms.delete(roomId);
@@ -2459,9 +2710,19 @@ export class MapStore {
         if (typeof newName !== 'string' || newName.length === 0) {
             return { ok: false, err: 'setAreaName: new area name must be a non-empty string' };
         }
-        const id = this.resolveAreaId(idOrName);
+        let id = this.resolveAreaId(idOrName);
         if (id == null || !this.areaNames.has(id)) {
-            return { ok: false, err: 'setAreaName: area not found' };
+            // A NUMERIC id nothing has claimed yet registers the name without
+            // instantiating the area — Mudlet's areas come into being when a
+            // room is moved into one, and from Lua this is the only way to reach
+            // a name with nothing behind it. A name that resolves to nothing is
+            // still a miss: renaming an area that does not exist is a mistake,
+            // where naming an id is a declaration.
+            const numeric = typeof idOrName === 'number' ? idOrName : Number(idOrName);
+            if (typeof idOrName !== 'number' || !Number.isFinite(numeric) || numeric < 1) {
+                return { ok: false, err: 'setAreaName: area not found' };
+            }
+            id = numeric;
         }
         for (const [aid, n] of this.areaNames) {
             if (aid !== id && n === newName) {

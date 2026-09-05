@@ -114,6 +114,41 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
                 + 'not currently open — unloaded profiles are covered; only the folder-without-a-record case is not.',
         },
     ],
+    Package: [
+        {
+            name: 'Tests installing an archive whose config.lua will not run / refuses a name that trims down to a step out of the profile',
+            reason:
+                'The BEHAVIOUR this pins is implemented — an archive called "...mpackage" trims to ".." and is '
+                + 'refused, because that name would be the folder holding every profile (see '
+                + 'assertPackageNameStaysInProfile). What cannot run here is the spec\'s own instrumentation: it '
+                + 'proves nothing was unpacked by listing that folder before and after, with lfs.dir() over the '
+                + 'PARENT of getMudletHomeDir(). A profile VFS is mounted AT its own directory and cannot read '
+                + 'above it, so lfs.dir() answers nil there and the spec\'s `for entry in lfs.dir(...)` calls it. '
+                + 'That boundary is the point of the sandbox rather than an oversight: a profile reaching its '
+                + 'siblings is what the mount exists to prevent, and opening it to satisfy a test would hand every '
+                + 'script in every profile the run of the others. The refusal itself is covered by a unit test '
+                + 'instead (tests/import/packageConfigRename.test.ts), which can assert it directly.',
+        },
+    ],
+    STT: [
+        {
+            name: 'stt bridge / getInfo / names the engine it would use',
+            reason:
+                'The spec pins getInfo().backend to "Vosk", and its own comment says why that is the right test '
+                + 'THERE: "the contract worth holding is that the name is one this build actually has". mudix has '
+                + 'none. Vosk is a native library Mudlet dlopen()s beside a language-model directory on disk, and '
+                + 'neither survives the move to a browser tab — half of stt.* exists to manage exactly those two '
+                + 'things (getLibraryPath, getPlatformKey, reloadLibrary, unloadLibrary). Answering "Vosk" to '
+                + 'satisfy this line would be the very thing the spec guards against: a build claiming an engine '
+                + 'it does not have. That is worse than a truthful "none", because backend is what a package reads '
+                + 'to decide what it can do. Everything else in STT_spec passes, because the spec is written to '
+                + 'run on a machine with no engine installed and mudix is permanently in that state: available() '
+                + 'is false, mudlet.supports.stt is false, and every call refuses clearly — engine refusals also '
+                + 'announcing on sysSTTError, a script\'s own mistakes not (Bridge.lua). If speech recognition is '
+                + 'ever wired up here it will be the Web Speech API, so the honest name then is that — still not '
+                + '"Vosk".',
+        },
+    ],
 };
 
 /** The recorded divergence for one it(), or undefined when it is expected to pass. */

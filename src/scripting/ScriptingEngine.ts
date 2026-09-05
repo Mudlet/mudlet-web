@@ -68,6 +68,7 @@ import {rewriteVfsUrlsInHtml} from './vfs/htmlRewrite';
 import {MapOpenNotifier} from './MapOpenNotifier';
 import {installPackageFonts, refreshPackageFonts} from '../import/packageFonts';
 import {installPackageFromBytes, moduleXmlAbsolutePath, prepareModuleInstallFromVfsPath, preparePackageInstall, reloadModuleFromVfs, uninstallPackageFiles} from '../import/packageInstaller';
+import type {MudletImportResult} from '../import/mudletXmlImport';
 import {downloadFromUrl, filenameFromUrl, isClientGuiRedelivery, parseClientGuiPayload, parseClientMapPayload} from '../import/remotePackageInstall';
 import {ensureDefaultPackages} from '../import/defaultPackages';
 import {serializeMudletXml, type SerializeInput} from '../import/mudletXmlExport';
@@ -737,7 +738,7 @@ export class ScriptingEngine implements EngineHost {
         for (const pkg of packages) {
             if (pkg.kind !== 'module') continue;
             try {
-                const data = reloadModuleFromVfs(pkg, vfs);
+                const data = reloadModuleFromVfs(pkg, vfs, this.readPackageConfig);
                 useAppStore.getState().installPackage(id, pkg, data);
             } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);
@@ -827,6 +828,25 @@ export class ScriptingEngine implements EngineHost {
      * `_G`. Called once before the initial script load so handlers see their
      * persisted state, and again after a profile reset (fresh global table).
      */
+    /**
+     * Put a package's own `<VariablePackage>` globals into `_G`.
+     *
+     * A package may carry nothing else — a module of variables, fonts, images or
+     * a map loads completely and leaves every one of the six item units empty —
+     * so skipping these made such a package indistinguishable from one whose
+     * contents never loaded at all. They are not items: nothing tags them and an
+     * uninstall does not take them away, which is Mudlet's behaviour too.
+     */
+    private restorePackageVariables(data: MudletImportResult): void {
+        const values = data.variables;
+        if (!values || values.length === 0) return;
+        try {
+            this.runtimes.lua?.restoreVariables(values);
+        } catch (err) {
+            console.warn('[ScriptingEngine] package variable restore failed:', err);
+        }
+    }
+
     private restoreSavedVariables(): void {
         const rt = this.runtimes.lua;
         if (!rt) return;
@@ -1045,7 +1065,7 @@ export class ScriptingEngine implements EngineHost {
             return false;
         }
         try {
-            const data = reloadModuleFromVfs(pkg, vfs);
+            const data = reloadModuleFromVfs(pkg, vfs, this.readPackageConfig);
             // A reload re-reads the module from disk, so anything a script had
             // set on it since the last one is gone — that is the point of asking
             // for a reload. Keeping the overrides meant getModuleInfo went on
@@ -1225,7 +1245,16 @@ export class ScriptingEngine implements EngineHost {
             return { ok: false, error };
         }
         try {
-            const prepared = prepareModuleInstallFromVfsPath(path, vfs, p => this.runtimes.lua?.readBuiltinBytes?.(p) ?? null);
+            const prepared = prepareModuleInstallFromVfsPath(
+                path, vfs,
+                p => this.runtimes.lua?.readBuiltinBytes?.(p) ?? null,
+                this.readPackageConfig,
+            );
+            // Said here too, because this is a module the user asked for. The
+            // syncs and reloads that follow go through reloadModuleFromVfs,
+            // which reads no manifest and so cannot repeat it.
+            if (prepared.configProblem) this.announceLostManifest(prepared.manifest.name);
+            this.restorePackageVariables(prepared.data);
             // Refused rather than reinstalled, like a package — and for the
             // stronger reason: a module carries the user's own edits back out to
             // its file, so installing over one would discard work that exists
@@ -1873,6 +1902,17 @@ export class ScriptingEngine implements EngineHost {
      * script log and handed back to Lua for Mudlet's (ok, err) contract.
      */
     installPackageFromVfsPath(path: string): InstallOutcome {
+        // Before anything else, the path included. A profile save is not over
+        // when saveProfile() returns — the VFS flush that makes it durable is
+        // still running — and an install that wrote through the middle of one
+        // would interleave with it. So it is put off and answers true there and
+        // then, which is why an EMPTY path answers true while a save runs and
+        // its own complaint when none does: the postponement is at the head,
+        // above every check.
+        if (this.profileSaveInFlight) {
+            this.postponedInstalls.push(path);
+            return { ok: true, error: null };
+        }
         const vfs = this.vfs;
         if (!vfs) {
             const error = 'no profile VFS available';
@@ -1894,14 +1934,30 @@ export class ScriptingEngine implements EngineHost {
         // profile file of the same name.
         const builtin = this.runtimes.lua?.readBuiltinBytes?.(path) ?? null;
         if (!builtin && !vfs.exists(path)) {
-            const error = `could not open file '${path}`;
+            // The closing quote matters: without it the reason runs straight
+            // into whatever a caller appends, and Package_spec checks for it.
+            const error = `could not open file '${path}'`;
             this.api.printError(`[installPackage] ${error}`);
             return { ok: false, error };
         }
         try {
             const buf = builtin ?? vfs.readBinaryFile(path);
             const filename = path.split('/').pop() || path;
-            const prepared = preparePackageInstall(filename, buf, vfs, { sourcePath: path });
+            const prepared = preparePackageInstall(filename, buf, vfs, {
+                sourcePath: path,
+                readConfig: this.readPackageConfig,
+            });
+            // Said on the install the user asked for, and only there — a module
+            // is re-read on every profile save and on every reloadModule(), and
+            // repeating it would be the same sentence over and over about a
+            // manifest they were told about once already.
+            if (prepared.configProblem) this.announceLostManifest(prepared.manifest.name);
+            // A package whose XML will not read installs anyway and stays
+            // listed — the same as a module whose XML will not load — so what
+            // changes is that it is SAID. Silence left the player with a
+            // package that is listed, owns nothing, and gives no reason.
+            if (prepared.data.parseError) this.announceUnreadableContents(prepared.manifest.name);
+            this.restorePackageVariables(prepared.data);
             // Refused, not replaced: a second install would silently discard
             // whatever the user had changed in the first, and a script looping
             // over a package list would do it repeatedly.
@@ -1924,6 +1980,17 @@ export class ScriptingEngine implements EngineHost {
             if (collision) {
                 this.api.printError(`[installPackage] ${collision}`);
                 return { ok: false, error: collision };
+            }
+            // Last of the three, and only reached when no package or module
+            // holds the name: a folder standing on its own where config.lua
+            // wants to be renamed. Left exactly as it was found — installing
+            // over it wiped whatever was there, and reading it registered the
+            // contents of a folder this archive never unpacked.
+            if (prepared.occupiedFolder) {
+                const error = `a folder called "${prepared.occupiedFolder}" is already in the profile,`
+                    + ' so the package could not be unpacked under that name';
+                this.api.printError(`[installPackage] ${error}`);
+                return { ok: false, error };
             }
             prepared.commit();
             const { manifest, data } = prepared;
@@ -2459,13 +2526,96 @@ export class ScriptingEngine implements EngineHost {
      * Same batching as toggleTriggerByName: one set() collapses N matches into
      * a single subscription tick (and a single TimerEngine.loadPerm rebuild).
      */
+    /** Whether the flush that makes a profile save durable is still running.
+     *  An install asked for during one is put off rather than interleaved. */
+    private profileSaveInFlight = false;
+    /** Paths handed to installPackage while a save was running, in order. */
+    private readonly postponedInstalls: string[] = [];
+
+    /**
+     * Hold installs until the save's flush has settled, then carry out the ones
+     * that arrived meanwhile.
+     *
+     * The postponed install already answered true to its caller, so there is no
+     * return value left for a failure to travel back on — saying it on the main
+     * console is all that remains, quiet caller or not.
+     */
+    markProfileSaveInFlight(): void {
+        this.profileSaveInFlight = true;
+        // Scheduled on the TIMER ENGINE rather than a plain setTimeout, because
+        // a spec never gives the browser its thread back: pumpEvents() stands in
+        // for the event loop by firing mudix's own due timers in a synchronous
+        // loop, so a setTimeout callback would not run until the spec was over
+        // and every later install would be held behind it.
+        //
+        // The window itself is the turn that asked for the save. Mudlet's save
+        // runs off the event loop and installs during it are put off; mudix
+        // writes the profile synchronously, so what an install can still race is
+        // the write it just started. Tying it to the VFS flush instead — the
+        // durability step — is unbounded, and held installs for good.
+        this.timerEngine.addTemp(0, () => {
+            this.profileSaveInFlight = false;
+            while (this.postponedInstalls.length > 0) {
+                const path = this.postponedInstalls.shift()!;
+                const outcome = this.installPackageFromVfsPath(path);
+                // The postponed install already answered true to its caller, so
+                // there is no return value left for the failure to travel back
+                // on. Saying it on the main console is all that remains.
+                if (!outcome.ok) this.api.postInfo(`Package install failed — ${outcome.error}`);
+            }
+        });
+    }
+
+    /** Runs a package's config.lua the way Mudlet does — in an environment with
+     *  nothing in it — so a manifest that would raise is read as raising here
+     *  too. Bound rather than a method reference so the installer can hold it. */
+    private get readPackageConfig(): ((source: string) => ReturnType<NonNullable<IScriptingRuntime['readPackageConfig']>>) | undefined {
+        const lua = this.runtimes.lua;
+        // Undefined rather than a reader that always fails: without a runtime
+        // the installer falls back to reading the manifest by pattern, where
+        // reporting "could not be read" would lose every manifest instead.
+        if (!lua?.readPackageConfig) return undefined;
+        return source => lua.readPackageConfig!(source);
+    }
+
+    /** What a lost manifest costs, said once, where the player will see it: the
+     *  package installed under the archive's own name and filed no details, so a
+     *  name-based uninstall, a repository update and anything depending on it
+     *  all stop matching with nothing to go on. */
+    /** Said when a package's XML would not read. Only modules were ever asked
+     *  whether their contents loaded, so a package installed to silence. */
+    private announceUnreadableContents(packageName: string): void {
+        this.api.postInfo(`Failed to load package "${packageName}" — its contents could not be read,`
+            + ' so it is installed but owns nothing.');
+    }
+
+    private announceLostManifest(packageName: string): void {
+        this.api.postInfo(`The config.lua of "${packageName}" could not be read,`
+            + ' so it has been installed under the name of its file and describes itself with nothing.');
+    }
+
     toggleTimerByName(name: string, enabled: boolean): boolean {
         const store = useAppStore.getState();
         const timers = store.connectionTimers[this.connectionId] ?? [];
         const targets = timers.filter(t => t.name === name);
         if (targets.length === 0) return false;
-        const patches = targets
-            .filter(t => t.enabled !== enabled)
+        // Toggling a GROUP writes its descendants' own switches too, not just
+        // the effective state the readers compute. A timer is a running object,
+        // and Mudlet's tree stops the descendants outright when a folder above
+        // them goes off — "its QTimer really has to stop", as the spec puts it.
+        // Triggers and aliases stay read-time only, having nothing to stop:
+        // they are consulted when a line or a command arrives, and a group that
+        // is off is simply never consulted.
+        const doomed = new Set(targets.filter(t => t.isGroup).map(t => t.id));
+        if (doomed.size > 0) {
+            // Parents always precede their children in store order, so one pass
+            // down the list reaches every descendant.
+            for (const node of timers) {
+                if (node.parentId && doomed.has(node.parentId)) doomed.add(node.id);
+            }
+        }
+        const patches = timers
+            .filter(t => (t.name === name || doomed.has(t.id)) && t.enabled !== enabled)
             .map(t => ({ id: t.id, patch: { enabled } }));
         if (patches.length > 0) store.updateTimers(this.connectionId, patches);
         return true;
@@ -3593,6 +3743,21 @@ export class ScriptingEngine implements EngineHost {
         this.api.setCmdLineValue(text);
     }
 
+    /** What getCmdLine() answers with — the mirror, which is current the moment
+     *  a script writes it, unlike the React state behind it. */
+    getCmdLineValue(): string {
+        return this.api.getCmdLine();
+    }
+
+    /** The commands packages placed with addCommand, for the bar that draws
+     *  them. Narrower than handing out the whole API: the toolbar needs to read
+     *  the list, hear when it changes, and report a click. */
+    get addonCommands() { return this.api.addonCommands; }
+
+    addonCommandClicked(id: number): void {
+        this.api.addonCommandClicked(id);
+    }
+
     /** Hand the API a startLogging hook. Wired by ProfileSession, which owns
      *  the actual SessionLogger lifecycle. */
     setLoggingToggler(fn: ((enabled: boolean, format: LogFormat) => boolean) | null): void {
@@ -4129,7 +4294,7 @@ export class ScriptingEngine implements EngineHost {
                             // frame renders underlined text that does nothing.
                             this.wireMxpLinks(fbuf, rd.links);
                             this.wireOsc8Links(fbuf);
-                            if (!this.api.mxpWriteToFrame(rd.frame, fbuf, rd.eof)) {
+                            if (!this.api.mxpWriteToFrame(rd.frame, fbuf, rd.eof, rd.eol)) {
                                 units.push({ plain: rd.plain, buffer: fbuf, outputLine: rd.plain, blankRenders: rd.plain === '' });
                             }
                         }

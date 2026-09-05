@@ -11,6 +11,7 @@ import type { WindowHandle, WindowOpenOptions } from '../ui/windows/types';
 import { MAP_WIDGET_ID, MAPPER_WIDGET_ID } from '../ui/windows/types';
 import type { LabelManager, LabelCreateOptions, LabelMouseEvent, LabelWheelEvent } from '../ui/labels/LabelManager';
 import { classifyLabelLink } from '../ui/labels/labelLinks';
+import { AddonCommandRegistry } from '../ui/commands/addonCommands';
 import { decodeGif, decodeAnimatedImage, sniffDecodableImage, supportsImageDecoder, MoviePlayer } from '../ui/labels/gifMovie';
 import { resolveSvgIntrinsicSize } from '../ui/labels/backgroundImageSize';
 import type { CommandLineManager } from '../ui/cmdline/CommandLineManager';
@@ -27,6 +28,7 @@ import { historyStorageKey, loadHistory } from '../ui/commandHistory';
 import { OSC8_DOCS_DEBOUNCE_MS, OSC8_DOCS_PHRASE, osc8DocumentationExamples } from '../mud/text/osc8Docs';
 import { SERVER_WRAP_WIDTH_MAX, SERVER_WRAP_WIDTH_MIN } from '../mud/text/serverWrap';
 import { decodeTelnetByteTags } from '../mud/connection/telnetByteTags';
+import { toByteString } from '../mud/protocol/byteString';
 import { openOsc8Menu } from '../ui/output/osc8Menu';
 import { namedColorToState, dechoToAnsiFast, cechoToAnsiFast, hechoToAnsiFast } from '../mud/text/colorParsers';
 import { colorCodes } from '../mud/text/colors';
@@ -224,10 +226,29 @@ const MUDLET_ROOM_SIZE_SCALE = 10;
  *  `commandLineHistorySaveSize` in CommandBar, `showTabConnectionIndicators` in
  *  the window title). Keys with live, non-bag side-effects (showSentText,
  *  mapperPanelVisible) are handled explicitly in get/setConfig instead. */
+/** Words Qt's font database reads as a STYLE on the end of a family name rather
+ *  than as part of it — the set QFontDatabase::styleString can produce, which is
+ *  weight and slant only. Width words (Condensed, Narrow, Expanded) are
+ *  deliberately absent: Qt keeps those in the family name, so "Arial Narrow" is
+ *  a family and trimming it would silently substitute Arial. See
+ *  {@link ScriptingAPI.resolveFontFamily}. */
+const FONT_STYLE_WORDS = new Set([
+    'thin', 'extralight', 'ultralight', 'light', 'regular', 'normal', 'book', 'roman',
+    'medium', 'demibold', 'semibold', 'bold', 'extrabold', 'ultrabold', 'black', 'heavy',
+    'italic', 'oblique',
+]);
+
 const CONFIG_PERSIST_ONLY: Record<string, {
     type: 'bool' | 'num' | 'str';
     default: boolean | number | string;
     enum?: readonly string[];
+    /** Inclusive bounds for a `num` option. Written as a range rather than
+     *  checked at the call site because the refusal has to name the bounds, and
+     *  Bridge.lua builds that message — see {@link ScriptingAPI.configKeyRange}. */
+    range?: readonly [number, number];
+    /** Options that must NOT outlive the session, however ordinary they look.
+     *  Kept in memory instead of the profile's config bag. */
+    sessionOnly?: true;
 }> = {
     // Consumed by ProfileSession (fed into MudSession.setProtocolOptions →
     // TelnetNegotiator's MTTS/NEW-ENVIRON SCREEN_READER reporting) on the next
@@ -251,6 +272,25 @@ const CONFIG_PERSIST_ONLY: Record<string, {
     forceLfAfterPrompt:             { type: 'bool', default: false },
     inputLineStrictUnixEndings:     { type: 'bool', default: false },
     logInHTML:                      { type: 'bool', default: false },
+    // The 2D map's room-symbol settings. They live on the map rather than on the
+    // mapper widget, which is why the specs for them need no open mapper.
+    // Mudlet's own defaults (Host::mMapSymbolFont is the application font at
+    // 1.0 scaling, merging enabled); the family is whatever the profile draws
+    // output in, since the browser has no application font to inherit.
+    mapSymbolFont:                  { type: 'str',  default: DEFAULT_OUTPUT_FONT_FAMILY },
+    // The ends of the range Mudlet's preferences spin box offers. NaN is the
+    // value a range check has to be written carefully to stop, since it compares
+    // false against both bounds — see setConfig.
+    mapSymbolFontScaling:           { type: 'num',  default: 1.0, range: [0.5, 2.0] },
+    // Qt's NoFontMerging strategy bit: draw symbols only with the chosen family
+    // instead of falling back to another font for glyphs it lacks.
+    mapSymbolFontOnlyUseSelected:   { type: 'bool', default: false },
+    // Session-only on purpose, and Mudlet is the same: a UI package that sets
+    // this and is then uninstalled must not leave the map button dead for good,
+    // so every session starts back on "default".
+    mapperButton:                   {
+        type: 'str', default: 'default', enum: ['default', 'scripted', 'disabled'], sessionOnly: true,
+    },
     promptForMXPProcessorOn:        { type: 'bool', default: false },
     promptForVersionInTTYPE:        { type: 'bool', default: false },
     show3dMapView:                  { type: 'bool', default: false },
@@ -644,6 +684,14 @@ class ScriptingLabelsAPI {
     getBackgroundColor(name: string): { r: number; g: number; b: number; a: number } | null {
         return this.manager.getBackgroundColor(name);
     }
+    /** Backs the label branch of the global setFont/getFont — see
+     *  {@link ScriptingAPI.setFont}. */
+    setFont(name: string, family: string): boolean {
+        return this.manager.setFont(name, family);
+    }
+    getFont(name: string): string | null {
+        return this.manager.getFont(name);
+    }
     setStyleSheet(name: string, css: string): boolean {
         const rewrite = this.cssRewriter();
         const ok = this.manager.setStyleSheet(name, rewrite(css));
@@ -754,6 +802,21 @@ export class ScriptingAPI {
     private readonly oscLinks = new OscLinkManager();
     readonly windows: ScriptingWindowsAPI;
     readonly labels: ScriptingLabelsAPI;
+    /** Mudlet's addon commands (addCommand and friends). Per profile, like
+     *  every other placement a package makes. */
+    readonly addonCommands = new AddonCommandRegistry();
+
+    /** A player clicked a command's button. Mudlet raises `sysCommandClicked`
+     *  with the id as a NUMBER (mudlet.cpp:694-699), which is the id addCommand
+     *  handed the package — that is what makes the id worth returning. */
+    addonCommandClicked(id: number): void {
+        if (!this.addonCommands.get(id)?.enabled) return;
+        this.host.raiseEvent('sysCommandClicked', [id]);
+    }
+    /** Values for the `sessionOnly` options in {@link CONFIG_PERSIST_ONLY} —
+     *  held here rather than in the profile's config bag precisely so they are
+     *  gone next session. */
+    private readonly sessionConfig = new Map<string, unknown>();
     readonly cmdLines: CommandLineManager;
     readonly scrollBoxes: ScrollBoxManager;
     // Mudlet createTextEdit widgets (data-model registry; see TextEditManager).
@@ -1009,7 +1072,15 @@ export class ScriptingAPI {
         // The `<T_IAC><T_GA>`-style placeholders come first: a telnet stream is
         // made of bytes a Lua string cannot carry comfortably, so Mudlet lets
         // the data name them. See telnetByteTags.ts.
-        this.session.feedTelnet(decodeTelnetByteTags(data));
+        // Back to BYTES first. A socket hands the parser one char per byte
+        // (String.fromCharCode over the frame), and everything downstream reads
+        // it that way — MSDP decodes its values from UTF-8 bytes, for one. What
+        // arrives here has already been through wasmoon, which UTF-8-DECODES a
+        // Lua string on the way out, so "caf\195\169" reaches this line as
+        // "café": three bytes had become one char, and the byte reader then made
+        // a replacement character of it. Encoding before the tags are decoded
+        // leaves them alone, being ASCII either way.
+        this.session.feedTelnet(decodeTelnetByteTags(toByteString(data)));
         return null;
     }
 
@@ -1344,10 +1415,16 @@ export class ScriptingAPI {
         }
         const spec = CONFIG_PERSIST_ONLY[key];
         if (spec) {
-            const stored = this.configBag()[key];
+            const stored = spec.sessionOnly ? this.sessionConfig.get(key) : this.configBag()[key];
             return stored !== undefined ? stored : spec.default;
         }
         return undefined;
+    }
+
+    /** The bounds a `num` option accepts, for the refusal Bridge.lua writes.
+     *  Null when the key is unbounded or names no option. */
+    configKeyRange(key: string): readonly [number, number] | null {
+        return CONFIG_PERSIST_ONLY[key]?.range ?? null;
     }
 
     /**
@@ -1398,7 +1475,35 @@ export class ScriptingAPI {
 
     /** Mudlet `setConfig(key, value)`. Returns true when the key is known and
      *  writable, false for unknown or read-only keys. */
-    setConfig(key: string, value: unknown): boolean {
+    /**
+     * The room symbols the named font has no glyph for, quoted, or null when it
+     * can draw every one the map uses.
+     *
+     * Measured rather than looked up, because a browser will not say what a
+     * font contains: a character with no glyph is drawn as the font's notdef
+     * box, and every such character therefore measures the SAME width. So each
+     * symbol is compared against a codepoint nothing has a glyph for — the last
+     * of Private Use Plane 16 — in the same font at the same size. Equal widths
+     * mean both came out as the box.
+     */
+    private symbolsThisFontCannotDraw(family: string): string | null {
+        const symbols = this.session.windows.mapRoomSymbols?.() ?? [];
+        if (symbols.length === 0) return null;
+        const canvas = typeof document !== 'undefined' ? document.createElement('canvas') : null;
+        const ctx = canvas?.getContext('2d');
+        if (!ctx) return null;
+        ctx.font = `32px "${family}"`;
+        // U+10FFFD: unassigned, and unassignable — nothing can have a glyph for
+        // it, so its width IS the notdef width for this font.
+        const notdef = ctx.measureText('\u{10FFFD}').width;
+        const missing = symbols.filter(s => s && ctx.measureText(s).width === notdef);
+        if (missing.length === 0) return null;
+        return [...new Set(missing)].map(s => `"${s}"`).join(', ');
+    }
+
+    /** Returns true, or a string when the option was taken and the caller
+     *  should be told something about it — see the mapSymbolFont case. */
+    setConfig(key: string, value: unknown): boolean | string {
         switch (key) {
             case 'enableGMCP': this.setProtocol('gmcp', configBool(value)); return true;
             case 'enableMSDP': this.setProtocol('msdp', configBool(value)); return true;
@@ -1579,12 +1684,69 @@ export class ScriptingAPI {
         if (spec) {
             let v: unknown;
             if (spec.type === 'bool') v = configBool(value);
-            else if (spec.type === 'num') v = Number(value);
-            else {
+            else if (spec.type === 'num') {
+                const n = Number(value);
+                // Inverted deliberately: `n < min || n > max` lets NaN through,
+                // since it compares false against both bounds — and a scaling of
+                // NaN would blank every room symbol on the map. Written this way
+                // the infinities are refused by the same expression.
+                if (spec.range && !(n >= spec.range[0] && n <= spec.range[1])) return false;
+                v = n;
+            } else {
                 v = String(value);
                 if (spec.enum && !spec.enum.includes(v as string)) return false;
+                // A font option stores the family the font database names, not
+                // the string the caller typed, so reading it back gives
+                // something that can be passed to setFont — and an unknown
+                // family is refused rather than silently drawn as a fallback.
+                if (key === 'mapSymbolFont') {
+                    const family = this.resolveFontFamily(v as string);
+                    if (!family) return false;
+                    v = family;
+                }
             }
-            this.patchConfigBag(key, v);
+            if (spec.sessionOnly) this.sessionConfig.set(key, v);
+            else this.patchConfigBag(key, v);
+            // The buffer search's key is held only while the search is on, and
+            // a package may already be sitting on it. Qt answers two things on
+            // one key by disabling BOTH, so switching the search on over a
+            // command would cost the player the search they just asked for as
+            // well as the command, with nothing on screen to say why.
+            if (key === 'f3SearchEnabled') {
+                const on = v === true;
+                if (on) {
+                    for (const command of this.addonCommands.commandsOn(this.addonCommands.searchShortcut)) {
+                        // Said in the main window rather than through
+                        // printError: it is a notice, not a script fault, and
+                        // an error only reaches main when the profile asked for
+                        // errors there — which is exactly when it would be
+                        // missed by the player who needs it.
+                        //
+                        // Written to the buffer as well as emitted, for the
+                        // reason warnIfUnencodable gives: a line the player can
+                        // read has to be a line getLines() and the cursor APIs
+                        // can see, and the emit alone only reaches the renderer.
+                        const notice = `\x1b[36m[ INFO ]\x1b[0m  - the buffer search has taken `
+                            + `${this.addonCommands.searchShortcut.toUpperCase()} from the command `
+                            + `"${command.name}", which no longer has a shortcut`;
+                        this.mainConsole.appendLine(new AnsiAwareBuffer(notice));
+                        this.session.events.emit('message', notice, 'script', Date.now());
+                    }
+                }
+                this.addonCommands.setSearchActive(on);
+            }
+            // The font is TAKEN either way — a symbol it cannot draw is the
+            // map's problem to look at, not a reason to refuse the choice — so
+            // the complaint rides along beside the true rather than replacing
+            // it. A script has nowhere else to hear it: the symbols are drawn
+            // by the renderer, which answers no one.
+            if (key === 'mapSymbolFont') {
+                const undrawable = this.symbolsThisFontCannotDraw(String(v));
+                if (undrawable) {
+                    return `the font "${v}" has no glyph for ${undrawable}, which the map uses —`
+                        + ' those rooms will show the replacement character';
+                }
+            }
             return true;
         }
         return false;
@@ -3252,6 +3414,59 @@ export class ScriptingAPI {
      *  colour outside the palette, which matches nothing. A stack, because a
      *  trigger can feedTriggers another line. */
     private lineColorSnapshots: { fg: number; bg: number; text: string }[][] = [];
+
+    /**
+     * Keep the colour snapshot aligned with a line a trigger has just edited.
+     *
+     * The snapshot is of the colours the SERVER sent, and a trigger that
+     * merely RECOLOURS the line must not disturb it — that is the whole point
+     * of taking one. But inserting or deleting characters moves the runs: the
+     * text after an insert is at a different offset than it was, and a colour
+     * trigger reading stale offsets matches across the seam. In the spec's
+     * words, red "CCCC" with its first two characters deleted has to match as
+     * "CC" and not as "CCDD", which is what taking four red characters from the
+     * shifted line gives.
+     *
+     * Done per character and re-joined rather than by walking segment
+     * boundaries, because an edit lands wherever it lands — mid-run as often as
+     * not — and a line is short enough that the simple version is the one worth
+     * having.
+     */
+    /** The snapshot's colours at a character offset — what a `keepColor`
+     *  replacement inherits. Defaults to the reset pair when the line is
+     *  shorter than the offset. */
+    private snapshotColorAt(at: number): { fg: number; bg: number } {
+        const snapshot = this.lineColorSnapshots[this.lineColorSnapshots.length - 1] ?? [];
+        let seen = 0;
+        for (const seg of snapshot) {
+            seen += seg.text.length;
+            if (at < seen) return { fg: seg.fg, bg: seg.bg };
+        }
+        return { fg: -1, bg: -1 };
+    }
+
+    private spliceLineColorSnapshot(
+        at: number, removeCount: number, insert?: { fg: number; bg: number; text: string },
+    ): void {
+        const snapshot = this.lineColorSnapshots[this.lineColorSnapshots.length - 1];
+        if (!snapshot) return;
+        const chars: { fg: number; bg: number; ch: string }[] = [];
+        for (const seg of snapshot) {
+            for (const ch of seg.text) chars.push({ fg: seg.fg, bg: seg.bg, ch });
+        }
+        const added = insert
+            ? [...insert.text].map(ch => ({ fg: insert.fg, bg: insert.bg, ch }))
+            : [];
+        chars.splice(Math.max(0, at), Math.max(0, removeCount), ...added);
+
+        const joined: { fg: number; bg: number; text: string }[] = [];
+        for (const c of chars) {
+            const last = joined[joined.length - 1];
+            if (last && last.fg === c.fg && last.bg === c.bg) last.text += c.ch;
+            else joined.push({ fg: c.fg, bg: c.bg, text: c.ch });
+        }
+        this.lineColorSnapshots[this.lineColorSnapshots.length - 1] = joined;
+    }
     /** Whether each line currently being processed arrived as a prompt — the
      *  fallback isPrompt() reads once a trigger has gagged the line itself. A
      *  stack for the same reason {@link lineColorSnapshots} is one. */
@@ -3771,6 +3986,15 @@ export class ScriptingAPI {
             con.insertText(text, state);
             if (this.inTriggerProcessing && con === this.mainConsole && !text.includes('\n')) {
                 this.captureShiftHook?.(at, text.length);
+                // The colours have to move with the text for the same reason
+                // the captures do — the inserted characters are not the ones
+                // the server coloured, and a later colour trigger must not
+                // sweep them into its run.
+                this.spliceLineColorSnapshot(at, 0, {
+                    fg: ansiPaletteIndex(state.foreground),
+                    bg: ansiPaletteIndex(state.background),
+                    text,
+                });
             }
             if (!this.inTriggerProcessing) con.getBuffer()?.rerender();
             return;
@@ -3941,9 +4165,15 @@ export class ScriptingAPI {
      * in the main window, matching Mudlet). `eof` clears the frame first — the
      * status-frame "replace contents" idiom.
      */
-    mxpWriteToFrame(name: string, buffer: AnsiAwareBuffer, eof: boolean): boolean {
+    mxpWriteToFrame(name: string, buffer: AnsiAwareBuffer, eof: boolean, eol = false): boolean {
         if (!this.mxpFrames.has(name)) return false;
         const id = mxpWindowId(name);
+        // EOL is the narrower of the two clears: the write is a complete line,
+        // so the part-written one the frame was left sitting on is discarded
+        // rather than continued — but the finished lines above it stay, which is
+        // what tells EOL from EOF. Without this the redirect joins onto whatever
+        // was half-written and the two lines come out as one.
+        if (eol && !eof) this.outputConsole(id).clearPartial();
         if (eof) {
             this.clearWindow(id);
             if (!this.mxpReplacedFrames.has(name)) {
@@ -4181,15 +4411,20 @@ export class ScriptingAPI {
     /**
      * Mudlet `getWindowGeometry(name)` → x, y, width, height. Reads back the
      * stored geometry the move/resizeWindow setters write, following the same
-     * routing precedence they use (labels → command lines → text edits →
-     * scroll boxes → user windows/miniconsoles). Null when no widget of any
+     * routing precedence they use (labels → scroll boxes → command lines →
+     * text edits → user windows/miniconsoles). Null when no widget of any
      * kind owns the name; `"main"` is deliberately excluded because
      * moveWindow/resizeWindow don't act on it either.
+     *
+     * The scroll box comes before the other overlays for the reason windowType
+     * puts it there: one name can be a scroll box AND a text edit at once, and
+     * every by-name lookup has to give the same answer as the last one until
+     * the scroll box is deleted.
      */
     getWindowGeometry(name: string): { x: number; y: number; width: number; height: number } | null {
         if (name === 'main') return null;
-        const overlay = this.labels.get(name) ?? this.cmdLines.get(name)
-            ?? this.textEdits.get(name) ?? this.scrollBoxes.get(name);
+        const overlay = this.labels.get(name) ?? this.scrollBoxes.get(name)
+            ?? this.cmdLines.get(name) ?? this.textEdits.get(name);
         if (overlay) {
             const { x, y, width, height } = overlay;
             return { x, y, width, height };
@@ -4305,6 +4540,17 @@ export class ScriptingAPI {
         if (!buf) return;
         const state = keepColor ? undefined : this.outputConsole(targetWin).format.toSnapshot();
         buf.replace([sel.start, sel.start + sel.length], newText, state);
+        if (this.inTriggerProcessing && this.getConsole(targetWin) === this.mainConsole) {
+            // Same alignment the insert path needs: a replace that changes the
+            // line's LENGTH moves every colour run after it. With keepColor the
+            // replacement wears whatever the snapshot already had at that
+            // offset, which is what "keep" means here.
+            this.spliceLineColorSnapshot(sel.start, sel.length, newText ? {
+                fg: state ? ansiPaletteIndex(state.foreground) : this.snapshotColorAt(sel.start).fg,
+                bg: state ? ansiPaletteIndex(state.background) : this.snapshotColorAt(sel.start).bg,
+                text: newText,
+            } : undefined);
+        }
         this.selection = null;
         if (!this.inTriggerProcessing) {
             buf.rerender();
@@ -4501,6 +4747,45 @@ export class ScriptingAPI {
     // and this one is not even consulted. Defaults to on, as Mudlet's does.
     private saveCommandHistoryFlags = new Map<string, boolean>();
 
+    /** Which file each command line's history is kept in. Assigned on creation
+     *  and never reused, because two command lines sharing one file would
+     *  overwrite each other's history on the next save. */
+    private readonly cmdLineHistoryFiles = new Map<string, string>();
+    private nextHistoryFile = 1;
+
+    /** Register a command line's history file, returning its name. */
+    noteCommandLineForIni(cmdLineName: string): string {
+        const existing = this.cmdLineHistoryFiles.get(cmdLineName);
+        if (existing) return existing;
+        const file = `command_history_${this.nextHistoryFile++}`;
+        this.cmdLineHistoryFiles.set(cmdLineName, file);
+        return file;
+    }
+
+    forgetCommandLineForIni(cmdLineName: string): void {
+        this.cmdLineHistoryFiles.delete(cmdLineName);
+    }
+
+    /**
+     * The profile's `profile.ini`, in the shape QSettings writes it.
+     *
+     * Mudlet keeps this file open and lets QSettings flush it on the next pass
+     * through the event loop, so what a command line records reaches the disk
+     * without anyone asking for a save. Two things live under [CommandLines]:
+     * which file each one's history goes in, written when it is created, and
+     * whether it saves history at all, written with the end-of-session save.
+     */
+    profileIniContent(): string {
+        const lines = ['[CommandLines]'];
+        for (const [name, file] of this.cmdLineHistoryFiles) {
+            lines.push(`NameMapping\\${name}=${file}`);
+        }
+        for (const [name, save] of this.saveCommandHistoryFlags) {
+            lines.push(`SaveHistory\\${name}=${save}`);
+        }
+        return `${lines.join('\n')}\n`;
+    }
+
     saveCommandHistoryFor(cmdLineName: string): boolean {
         return this.saveCommandHistoryFlags.get(cmdLineName) ?? true;
     }
@@ -4673,6 +4958,14 @@ export class ScriptingAPI {
      *  default and has no widget of its own to read back from. */
     getCmdLineStyleSheet(name: string): string {
         return this.cmdLineCss.get(name || 'main') ?? '';
+    }
+
+    /** The stylesheet a sub command line is created with — the profile's command
+     *  line background, in the shape Mudlet's TCommandLine builds. */
+    bornCmdLineStyleSheet(): string {
+        const profile = useAppStore.getState().connectionProfile[this.connectionId];
+        const background = profile?.inputBackground || 'rgb(0,0,0)';
+        return `QPlainTextEdit{background-color: ${background};}`;
     }
 
     noteCmdLineStyleSheet(name: string, css: string): void {
@@ -4944,7 +5237,29 @@ export class ScriptingAPI {
 
     /** Mudlet `saveJsonMap(path)` backbone — serialises the current MapStore
      *  as JSON. The Lua binding writes the result to the supplied VFS path. */
-    saveJsonMap(): string { return this.session.windows.saveJsonMap(); }
+    /** The map as Mudlet's JSON, carrying the map-level settings that live in
+     *  the profile rather than in the map store — Mudlet writes them into the
+     *  same file, so a map moved between clients keeps the way it looks. */
+    saveJsonMap(): string {
+        return this.session.windows.saveJsonMap({
+            mapSymbolFontFudgeFactor: this.getConfig('mapSymbolFontScaling'),
+            mapSymbolFontDetails: this.getConfig('mapSymbolFont'),
+            onlyMapSymbolFontToBeUsed: this.getConfig('mapSymbolFontOnlyUseSelected'),
+        });
+    }
+
+    /** The counterpart of the extras {@link saveJsonMap} writes: an imported
+     *  file's map-level settings, applied after the rooms have loaded. */
+    applyJsonMapSettings(doc: Record<string, unknown>): void {
+        const scaling = Number(doc.mapSymbolFontFudgeFactor);
+        if (Number.isFinite(scaling)) this.setConfig('mapSymbolFontScaling', scaling);
+        if (typeof doc.mapSymbolFontDetails === 'string' && doc.mapSymbolFontDetails) {
+            this.setConfig('mapSymbolFont', doc.mapSymbolFontDetails);
+        }
+        if (typeof doc.onlyMapSymbolFontToBeUsed === 'boolean') {
+            this.setConfig('mapSymbolFontOnlyUseSelected', doc.onlyMapSymbolFontToBeUsed);
+        }
+    }
 
     /** Mudlet `loadJsonMap(path)` backbone — parse a JSON payload previously
      *  produced by saveJsonMap and reload the map. Returns false when the
@@ -5741,7 +6056,12 @@ export class ScriptingAPI {
             useAppStore.getState().patchConnectionProfile(this.connectionId, { outputFont: next });
             return true;
         }
-        return this.session.windows.setFont(win, fam);
+        // Labels are not in the window registry — they are overlay widgets with
+        // their own manager — so a label was the one window kind setFont could
+        // not reach at all, and Geyser.Label:setFont took its "Qt will pick
+        // something close" branch on every call. Fall through to them rather
+        // than reporting the name as unknown.
+        return this.session.windows.setFont(win, fam) || this.labels.setFont(win, fam);
     }
 
     /**
@@ -5758,7 +6078,14 @@ export class ScriptingAPI {
             selectProfileField(useAppStore.getState(), this.connectionId, 'outputFont')?.family
             || DEFAULT_OUTPUT_FONT_FAMILY;
         if (!win || win === 'main') return configured();
-        if (!this.session.windows.has(win)) return null;
+        if (!this.session.windows.has(win)) {
+            // A label, or nothing at all. Its own font when it has one; the
+            // profile font when it does not, matching what a window with no
+            // override answers rather than handing back "".
+            const label = this.labels.getFont(win);
+            if (label === null) return null;
+            return label || configured();
+        }
         return this.session.windows.getFont(win) ?? configured();
     }
 
@@ -5826,6 +6153,45 @@ export class ScriptingAPI {
         return set;
     }
 
+    /**
+     * The installed family a requested font name means, or null if none does.
+     *
+     * Mudlet hands the name to QFont, which resolves it three ways before
+     * giving up, and scripts depend on all three: the exact family, the same
+     * family in any casing, and a "Family Style" name whose trailing style word
+     * is a weight/slant request rather than part of the family — "Ubuntu Mono
+     * Bold" is Ubuntu Mono asked for in bold, not a family of that name. The
+     * answer is always spelled the way the font database spells it, because
+     * callers read it straight back (Geyser.Label:setFont stores getFont()'s
+     * reply so what it remembers and what the widget got cannot drift).
+     *
+     * Only weight and slant words are trimmed, never width ones: Qt keeps width
+     * in the family name ("Arial Narrow" is its own family), so trimming those
+     * would resolve a name to a font the caller did not ask for. A trailing word
+     * that is not a style word stops the trim outright, so "Arial Nonsense"
+     * fails rather than quietly becoming Arial.
+     */
+    resolveFontFamily(name: string): string | null {
+        const wanted = (name ?? '').trim();
+        if (!wanted) return null;
+        const installed = this.getAvailableFonts();
+        if (installed[wanted]) return wanted;
+
+        const byLowerName = new Map<string, string>();
+        for (const family of Object.keys(installed)) byLowerName.set(family.toLowerCase(), family);
+        const insensitive = byLowerName.get(wanted.toLowerCase());
+        if (insensitive) return insensitive;
+
+        // Right to left, because a style can be several words ("Bold Italic").
+        const words = wanted.split(/\s+/);
+        for (let end = words.length - 1; end > 0; end--) {
+            if (!FONT_STYLE_WORDS.has(words[end].toLowerCase())) break;
+            const base = byLowerName.get(words.slice(0, end).join(' ').toLowerCase());
+            if (base) return base;
+        }
+        return null;
+    }
+
     /** Flush any buffered partial lines to the main output and all open windows. Called after each event dispatch. */
     flushOutput(): void {
         if (!this.isDeferringEcho) {
@@ -5851,6 +6217,26 @@ export class ScriptingAPI {
         // trigger processing this lands on the line being processed, which is
         // the line the message is about.
         this.echo(`${text}\n`);
+    }
+
+    /**
+     * A notice for the player in the main window — not a script fault, so not
+     * printError, which only reaches main when the profile asked for errors
+     * there and would be missed by exactly the person who needs it.
+     *
+     * Written to the buffer as well as emitted, for the reason
+     * warnIfUnencodable gives: a line the player can read has to be a line
+     * getLines() and the cursor APIs can see.
+     */
+    /** Held installs wait on the save's flush; see ScriptingEngine. */
+    markProfileSaveInFlight(): void {
+        this.host.markProfileSaveInFlight();
+    }
+
+    postInfo(text: string): void {
+        const notice = `\x1b[36m[ INFO ]\x1b[0m  - ${text}`;
+        this.mainConsole.appendLine(new AnsiAwareBuffer(notice));
+        this.session.events.emit('message', notice, 'script', Date.now());
     }
 
     printError(text: string, source?: ScriptLogSource): void {

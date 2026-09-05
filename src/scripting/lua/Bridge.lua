@@ -509,10 +509,23 @@ function setFont(a, b)
     if font == "" then
         return nil, "font must not be empty"
     end
-    if type(font) == 'string' and not getAvailableFonts()[font] then
-        return nil, "font '" .. font .. "' is not available"
+    -- What gets applied is the family the font database names, not the string
+    -- the caller typed: "Ubuntu Mono Bold" is Ubuntu Mono asked for in bold and
+    -- "ubuntu mono" is the same family in the wrong case. Storing the resolved
+    -- name is what lets getFont() answer canonically, which Geyser.Label:setFont
+    -- relies on to keep what it remembers and what the widget got in step.
+    if type(font) == 'string' then
+        local resolved = __resolveFontFamily(font)
+        if resolved == nil then
+            return nil, "font '" .. font .. "' is not available"
+        end
+        font = resolved
     end
-    if __setFont(a, b) then return true end
+    if b ~= nil then
+        if __setFont(a, font) then return true end
+    elseif __setFont(font) then
+        return true
+    end
     return nil, "window \"" .. tostring(name) .. "\" not found"
 end
 
@@ -986,7 +999,9 @@ end
 function getRoomCharColor(roomId)
     local t = __getRoomCharColor(roomId)
     if t == nil then return nil end
-    return t[0], t[1], t[2], t[3]
+    -- Three channels: a symbol colour carries no alpha in Mudlet, unlike the
+    -- border colour, which does.
+    return t[0], t[1], t[2]
 end
 
 -- Mudlet getRoomHidden(roomID) → bool, or (false, errMsg) when the room
@@ -1189,13 +1204,21 @@ function getCustomLines1(id)
         local src = line.points or {}
         while src[i] ~= nil do
             local p = src[i]
-            pts[i + 1] = { x = p.x, y = p.y, z = p.z }
+            -- Positional, not keyed: the "1" variant hands back {x, y, z}
+            -- triples the way addCustomLine takes them, so a line read here can
+            -- be drawn straight into another room. getCustomLines keeps the
+            -- keyed, 0-indexed form it has always had.
+            pts[i + 1] = { p.x, p.y, p.z }
             i = i + 1
         end
         local a = line.attributes or {}
         local c = a.color or {}
         out[dir] = {
-            attributes = { color = { r = c.r, g = c.g, b = c.b }, style = a.style, arrow = a.arrow },
+            -- The colour is a LIST here, not a keyed table: Mudlet hands back
+            -- {r, g, b} positionally, which is also the shape addCustomLine
+            -- takes, so a line can be read from one room and drawn into another
+            -- without being taken apart in between.
+            attributes = { color = { c.r, c.g, c.b }, style = a.style, arrow = a.arrow },
             points = pts,
         }
     end
@@ -1609,6 +1632,16 @@ do
             if num == nil then
                 error("setLabelCursor: bad argument #2 type (cursor shape as number expected, got "
                     .. type(shape) .. "!)", 2)
+            end
+            -- The shapes the layer below actually knows: -1 (no cursor of its
+            -- own) up to Qt::LastCursor, which is every value in mudlet.cursor.
+            -- A number outside that is refused rather than passed down, where it
+            -- would be taken for a shape nobody asked for — and refusing it is
+            -- what stops "accepts anything" from making the companion test,
+            -- which walks the whole table, pass no matter what is in it.
+            if num < -1 or num > 21 then
+                return nil, "setLabelCursor: bad argument #2 value (cursor shape " .. num
+                    .. " is outside the range of shapes this client knows)"
             end
             return guarded(name, num)
         end
@@ -5063,6 +5096,19 @@ do
             error("setConfig: bad argument #2 type (value as number expected, got "
                 .. type(value) .. "!)", 2)
         end
+        -- A bounded option refuses out-of-range values by NAME rather than
+        -- through the generic "not a valid value" below, because the bounds are
+        -- the useful half of the answer. The comparison is inverted so that NaN
+        -- — which is false against both bounds, and would blank every room
+        -- symbol if it got through — lands here with the infinities.
+        if kind == 'num' then
+            local range = __mudix_config_range(key)
+            local n = tonumber(value)
+            if range ~= nil and not (n >= range[0] and n <= range[1]) then
+                return nil, "setConfig: " .. tostring(value) .. " is out of range for '"
+                    .. key .. "' (" .. tostring(range[0]) .. " to " .. tostring(range[1]) .. ")"
+            end
+        end
         -- Mudlet reads every string option with getVerifiedString, which raises
         -- on a non-string; an out-of-range *string* is the (nil, errMsg) case
         -- below. Keys taking more than one type report kind 'any' and vet
@@ -5086,6 +5132,11 @@ do
         if ok == false then
             return nil, "setConfig: '" .. tostring(value) .. "' is not a valid value for '" .. key .. "'"
         end
+        -- A string answer is the option TAKEN, with something the caller should
+        -- know riding along — a symbol font that cannot draw a symbol the map
+        -- already uses, for one. The warning travels beside the true rather than
+        -- replacing it, because a script has nowhere else to hear it from.
+        if type(ok) == 'string' then return true, ok end
         return ok
     end
 
@@ -5216,6 +5267,355 @@ end
 -- Local chat name backing mmcp.chatName; defaults to the profile name the way
 -- Mudlet seeds it from the player's profile.
 __mudix_mmcp_chat_name = ""
+
+-- ── Reading a package's config.lua ─────────────────────────────────────────
+-- A manifest is a Lua chunk, and Mudlet reads it by RUNNING it in a bare
+-- lua_State — one with no standard libraries at all, so a config.lua that
+-- reaches for `os` or `string` raises and the whole manifest above the offending
+-- line goes with it. That is a contract packages are written against, and
+-- guessing at it with a pattern match reads manifests Mudlet throws away.
+--
+-- An empty function environment is the same sandbox: every global is nil, so
+-- `os.date(...)` fails to index exactly as it does there. Only strings and
+-- numbers are collected, matching what Mudlet's lua_isstring accepts.
+-- The answer crosses as JSON in a global rather than as a table: a Lua table
+-- read back through the wasmoon proxy is fragile to iterate, and a manifest is
+-- a handful of short strings, so the encoding costs nothing.
+function __mudix_read_package_config(src)
+    __mudix_cfg_ok, __mudix_cfg_reason, __mudix_cfg_info = false, '', '{}'
+    local chunk, syntaxError = loadstring(tostring(src or ''), 'config.lua')
+    if not chunk then
+        __mudix_cfg_reason = tostring(syntaxError)
+        return
+    end
+    local env = {}
+    setfenv(chunk, env)
+    local ok, runtimeError = pcall(chunk)
+    if not ok then
+        __mudix_cfg_reason = tostring(runtimeError)
+        return
+    end
+    local info = {}
+    for key, value in pairs(env) do
+        local t = type(value)
+        if type(key) == 'string' and (t == 'string' or t == 'number') then
+            info[key] = tostring(value)
+        end
+    end
+    __mudix_cfg_ok = true
+    __mudix_cfg_info = yajl.to_string(info)
+end
+
+-- ── JSON map import/export ─────────────────────────────────────────────────
+-- Mudlet reads the destination with getVerifiedString, so a path of the wrong
+-- TYPE raises where a path that merely cannot be used is a (nil, why) return.
+-- Only the type check needs Lua; the reasons come from the binding, which is
+-- what knows whether the file was missing, unparseable, or not a map.
+function saveJsonMap(location)
+    if __mudix_str(location) == nil then
+        error("saveJsonMap: bad argument #1 type (destination as string expected, got "
+            .. type(location) .. "!)", 2)
+    end
+    local err = __saveJsonMap(location)
+    if err then return nil, err end
+    return true
+end
+
+function loadJsonMap(location)
+    if location ~= nil and __mudix_str(location) == nil then
+        error("loadJsonMap: bad argument #1 type (path as string expected, got "
+            .. type(location) .. "!)", 2)
+    end
+    local err = __loadJsonMap(location or "")
+    if err then return nil, err end
+    return true
+end
+
+-- ── Addon commands (addCommand and friends) ────────────────────────────────
+-- The argument contract sits here rather than in JS because every refusal names
+-- the LUA type of what it was handed — "surfaces has to be a list of surface
+-- names and this one holds a boolean" — and a value's Lua type is exactly what
+-- does not survive the trip across wasmoon. Everything needing state or real
+-- parsing (ids, the key sequence, who holds a key, what the pulse takes) is on
+-- the other side, in bindings/commands.ts.
+do
+    -- Leaving a field out and giving it the wrong type are different mistakes:
+    -- the first asks for nothing, the second asks for something and is ignored.
+    -- menuPath is the one that bites, because a path reads as a list and the
+    -- sibling surfaces field really does take one, so menuPath = {"a","b"} is
+    -- easy to write and used to place the command at the top of the menu
+    -- without a word. Numbers are left to the parser on purpose: Lua 5.1 says a
+    -- number IS a string, so shortcut = 12345 reaches the sequence reader and is
+    -- refused for what it actually is rather than as a type mistake.
+    local function stringField(t, field)
+        local value = t[field]
+        if value == nil then return "" end
+        local s = __mudix_str(value)
+        if s == nil then
+            return nil, field .. " has to be a string and this one is a " .. type(value)
+        end
+        return s
+    end
+
+    -- surfaces is a list rather than a single word, so a client that grows
+    -- another surface takes another entry rather than a new spelling of "both".
+    -- A bare string is accepted for the one-surface case.
+    local function readSurfaces(value)
+        if value == nil then return "both" end
+        local wantsMenu, wantsToolbar, named = false, false, false
+        local function name(surface)
+            named = true
+            if surface == "menu" then wantsMenu = true
+            elseif surface == "toolbar" then wantsToolbar = true
+            else
+                return nil, "'" .. surface .. "' is not a surface this client has - use 'menu' or 'toolbar'"
+            end
+            return true
+        end
+        if type(value) == "string" then
+            local ok, err = name(value)
+            if not ok then return nil, err end
+        elseif type(value) == "table" then
+            for _, entry in pairs(value) do
+                -- A list of names, so a keyed table such as {menu = true} is a
+                -- mistake worth naming by type: a boolean has no string form,
+                -- and quoting it would send the package looking for a surface
+                -- named by the empty string.
+                if type(entry) ~= "string" then
+                    return nil, "surfaces has to be a list of surface names and this one holds a "
+                        .. type(entry) .. " - use surfaces = {'menu', 'toolbar'}"
+                end
+                local ok, err = name(entry)
+                if not ok then return nil, err end
+            end
+            -- An empty list asks for the command to go nowhere, which no package
+            -- can have meant — and reading it as "both" would place the command
+            -- in the two places it just said it did not want.
+            if not named then
+                return nil, "surfaces is empty, so there is nowhere to put the command - name 'menu', 'toolbar', or leave surfaces out for both"
+            end
+        else
+            return nil, "surfaces has to be a surface name or a list of them, not a "
+                .. type(value) .. " - use 'menu' or 'toolbar'"
+        end
+        if wantsMenu and wantsToolbar then return "both" end
+        if wantsToolbar then return "toolbar" end
+        return "menu"
+    end
+
+    function addCommand(request)
+        if type(request) ~= "table" then
+            return nil, "addCommand needs a table, e.g. addCommand{name = 'Speech', menuPath = 'Speech'}"
+        end
+        local fields, err = {}, nil
+        for _, field in ipairs({"name", "icon", "tooltip", "menuPath", "shortcut"}) do
+            fields[field], err = stringField(request, field)
+            if err then return nil, err end
+        end
+        if fields.name == "" then
+            return nil, "a command needs a name to show"
+        end
+        local surfaces, surfaceErr = readSurfaces(request.surfaces)
+        if surfaceErr then return nil, surfaceErr end
+
+        local result = __addCommand(fields.name, fields.icon, fields.tooltip,
+                                    fields.menuPath, fields.shortcut, surfaces)
+        if type(result) == "string" then return nil, result end
+        return result
+    end
+
+    -- Every setter answers false for an id nobody knows rather than raising:
+    -- one sequence covers every command, so an unknown id names nothing at all
+    -- rather than something of another kind.
+    function removeCommand(id)     return __removeCommand(id) end
+    function enableCommand(id)     return __enableCommand(id) end
+    function disableCommand(id)    return __disableCommand(id) end
+    function setCommandChecked(id, checked) return __setCommandChecked(id, checked) end
+    function setCommandIcon(id, icon)       return __setCommandIcon(id, icon) end
+    function setCommandTooltip(id, tooltip) return __setCommandTooltip(id, tooltip) end
+
+    function setCommandPulse(id, on, colour, altColour, intervalMs)
+        local result = __setCommandPulse(id, on, colour, altColour, intervalMs)
+        if type(result) == "string" then return nil, result end
+        return result
+    end
+
+    function getCommands()
+        local list, out = __getCommands(), {}
+        local i = 0
+        while list[i] ~= nil do
+            out[#out + 1] = list[i]
+            i = i + 1
+        end
+        return out
+    end
+end
+
+-- ── Speech to text (stt.*) ─────────────────────────────────────────────────
+-- Mudlet's stt.* drives an offline recogniser: it dlopen()s a native Vosk
+-- library and loads a language model from a directory on disk. Half the API is
+-- about managing exactly that — getLibraryPath, getPlatformKey (the key an
+-- installer downloads a build by), reloadLibrary, unloadLibrary — and none of
+-- it has a browser counterpart. Web speech recognition is a different shape
+-- entirely (an event stream off navigator, cloud-backed in Chrome), so this is
+-- not a port waiting to be written under these names.
+--
+-- What IS implemented is the state the API spends most of its life in even on
+-- desktop, and permanently here: engine absent. STT_spec is written for exactly
+-- that — it branches on stt.available() throughout so it passes on a machine
+-- with no engine installed — so binding the table honestly is what makes those
+-- specs pass, rather than papering over them. The promises being kept are the
+-- ones the spec names: be inert until called, and refuse clearly rather than
+-- crash or lie.
+--
+-- Two kinds of "no" live here and must not be confused, because the spec pins
+-- the difference: a script's own mistake (a negative timeout, a sensitivity
+-- that does not exist) is returned to the caller and nowhere else, while the
+-- engine being missing is also announced on sysSTTError — a package driving the
+-- bridge from events alone would otherwise see nothing happen at all and be
+-- unable to tell a missing engine from a quiet microphone.
+do
+    -- Names the LIBRARY as the missing piece, deliberately and as the spec
+    -- requires: with no engine loaded there is no backend to choose a model
+    -- with, so blaming the models would send the reader looking in the wrong
+    -- place however many they already have installed.
+    local NO_ENGINE = "the speech recognition library is not available in this client"
+
+    -- Announced as well as returned. Only for engine refusals; see above.
+    local function refuse(message)
+        raiseEvent("sysSTTError", message)
+        return nil, message
+    end
+
+    -- Mudlet's getVerifiedString ends in lua_error(), so a wrong TYPE raises
+    -- rather than returning a refusal — and a number is a string to Lua 5.1, so
+    -- it reaches the value checks below instead of being caught here.
+    local function requireOptionalString(name, value, argn)
+        if value == nil then return nil end
+        local s = __mudix_str(value)
+        if s == nil then
+            error("stt." .. name .. ": bad argument #" .. argn
+                .. " type (path as string expected, got " .. type(value) .. "!)", 3)
+        end
+        return s
+    end
+
+    stt = {
+        -- ── state ──────────────────────────────────────────────────────────
+        available   = function() return false end,
+        initialized = function() return false end,
+        listening   = function() return false end,
+
+        getInfo = function()
+            return {
+                -- The engine this build actually has, which is none. Mudlet
+                -- answers "Vosk"; claiming that here would be a lie about what
+                -- is installed, and is the one STT_spec assertion recorded as a
+                -- deliberate divergence (see e2e/knownDivergences.ts).
+                backend        = "none",
+                available      = false,
+                initialized    = false,
+                listening      = false,
+                state          = "uninitialized",
+                -- Empty, not a guess: modelPath is what a package reads to
+                -- decide whether setup already happened, so a path standing in
+                -- it that never loaded skips the init that was needed.
+                modelPath      = "",
+                searchPaths    = { stt.getModelPath() },
+                capabilities   = {
+                    biasing  = false,
+                    grammar  = false,
+                    words    = false,
+                    onDevice = false,
+                },
+                silenceTimeout = 0,
+                audioLevel     = 0,
+                sensitivity    = "default",
+            }
+        end,
+
+        -- ── installation paths ─────────────────────────────────────────────
+        -- Inside the profile, where every other downloadable thing lives. These
+        -- answer where a model WOULD belong; nothing here creates them.
+        getModelPath   = function() return getMudletHomeDir() .. "/stt/models" end,
+        getLibraryPath = function() return getMudletHomeDir() .. "/stt" end,
+        listModels     = function() return {} end,
+
+        -- The key an installer would fetch a build by. A static fact about the
+        -- platform rather than about this client, so it is answered properly
+        -- even though nothing here could use the download: a wrong key is worse
+        -- than none. Mudlet ships no ARM64 Windows build, which is the only
+        -- platform that legitimately has no key.
+        getPlatformKey = function()
+            local os, _, third, fourth = getOS()
+            -- getOS() inserts an extra osType before the processor on Linux, so
+            -- the processor is the last value either way.
+            local processor = fourth or third
+            local arm = processor == "arm64" or processor == "arm"
+            if os == "mac" then return "macos" end
+            if os == "linux" then return arm and "linux-aarch64" or "linux-x86_64" end
+            if os == "windows" then
+                if arm then return nil end
+                return processor == "x86 (32-bit)" and "windows-x86" or "windows-x64"
+            end
+            return nil
+        end,
+
+        -- ── lifecycle ──────────────────────────────────────────────────────
+        init = function(modelPath)
+            local path = requireOptionalString("init", modelPath, 1)
+            -- QDir("") is Qt's spelling for the working directory, so Mudlet
+            -- refuses an empty path rather than loading whatever it was started
+            -- from. It is the caller's mistake, so it is not announced.
+            if path == "" then
+                return nil, "stt.init: the model path is empty"
+            end
+            return refuse(NO_ENGINE)
+        end,
+
+        start  = function() return refuse(NO_ENGINE) end,
+        toggle = function() return refuse(NO_ENGINE) end,
+
+        -- Stopping nothing and closing nothing are not errors — the state is
+        -- never "error" here, so these always take the clean-stop branch.
+        stop  = function() return true end,
+        close = function() return true end,
+
+        reloadLibrary = function() return refuse(NO_ENGINE) end,
+        -- Unloading what was never loaded leaves the documented state.
+        unloadLibrary = function() return true end,
+
+        -- ── tuning ─────────────────────────────────────────────────────────
+        setSilenceTimeout = function(seconds)
+            local n = __mudix_num(seconds)
+            if n == nil then
+                error("stt.setSilenceTimeout: bad argument #1 type (timeout as number expected, got "
+                    .. type(seconds) .. "!)", 2)
+            end
+            if n < 0 then
+                return nil, "stt.setSilenceTimeout: " .. tostring(n) .. " is not a duration"
+            end
+            return refuse(NO_ENGINE)
+        end,
+
+        setSensitivity = function(mode)
+            local name = __mudix_str(mode)
+            if name ~= "short" and name ~= "default" and name ~= "long" then
+                return nil, "stt.setSensitivity: unknown sensitivity " .. tostring(mode)
+                    .. ", expected one of short, default, long"
+            end
+            return refuse(NO_ENGINE)
+        end,
+
+        setVocabulary = function(words)
+            if type(words) ~= "table" then
+                error("stt.setVocabulary: bad argument #1 type (words as table expected, got "
+                    .. type(words) .. "!)", 2)
+            end
+            return refuse(NO_ENGINE)
+        end,
+    }
+end
 
 -- ── Unknown-window contracts ───────────────────────────────────────────────
 -- Mudlet answers a console-targeting call made against a window that doesn't
@@ -6866,6 +7266,11 @@ do
         return 'command line "' .. tostring(name) .. '" not found'
     end
 
+    -- Splits the whole family's [cmdLineName,] word argument list. One argument
+    -- is the word for the main command line; two make the first one a name, and
+    -- a name that is not a string is the caller's mistake rather than a command
+    -- line that happens not to exist — so it raises here instead of being
+    -- stringified into a "not found" refusal further down.
     local function blacklistWord(who, n, a, b)
         if n < 1 then
             error(who .. ": bad argument #1 type (suggestion text as string expected, got no value!)", 3)
@@ -6875,6 +7280,13 @@ do
         if t ~= 'string' and t ~= 'number' then
             error(who .. ": bad argument #" .. n .. " type (suggestion text as string expected, got "
                 .. t .. "!)", 3)
+        end
+        -- Note the ")!" — this message closes its bracket before the bang,
+        -- unlike the "!)" every other argument check in this file uses. That is
+        -- how Mudlet spells this one, and CommandLine_spec matches it verbatim.
+        if n > 1 and type(a) ~= 'string' then
+            error(who .. ": bad argument #1 type (command line name as string expected, got "
+                .. type(a) .. ")!", 3)
         end
         return tostring(word), (n > 1) and a or nil
     end
@@ -6901,6 +7313,34 @@ do
         local err = cmdLineMissing(cmdLineName)
         if err then return nil, err end
         __clearCmdLineBlacklist(cmdLineName)
+    end
+
+    -- The suggestion pair is the same call shape as the blacklist pair above and
+    -- Mudlet holds it to the same contract, but it only ever got the "the word
+    -- is the last argument" check (requireTail, further up). So it neither
+    -- refused a command line that is not there — it wrote the suggestion to the
+    -- main bar instead — nor reported anything at all for one, and it answered a
+    -- plain success with the binding's undefined where Mudlet returns nothing.
+    -- Re-wrapped here, on the same helpers, so the four functions cannot drift
+    -- apart again. requireTail's own check still runs underneath and is simply
+    -- redundant: these arguments have already passed a stricter version of it.
+    do
+        local wrapped = {
+            addCmdLineSuggestion    = addCmdLineSuggestion,
+            removeCmdLineSuggestion = removeCmdLineSuggestion,
+        }
+        for who, raw in pairs(wrapped) do
+            _G[who] = function(...)
+                local n = select('#', ...)
+                local a, b = ...
+                local word, name = blacklistWord(who, n, a, b)
+                local err = cmdLineMissing(name)
+                if err then return nil, err end
+                -- Deliberately not `return raw(...)`: on success Mudlet reports
+                -- nothing, and the binding's undefined would arrive as one nil.
+                if name == nil then raw(word) else raw(name, word) end
+            end
+        end
     end
 
     -- Mudlet get/setSaveCommandHistory([cmdLineName][, save]) — whether THIS

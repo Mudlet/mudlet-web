@@ -1100,6 +1100,13 @@ export class MudClient {
      *  stripping, ANSI parsing, the trigger pipeline, and rendering. `data` is
      *  treated as a Latin-1 byte-string (matching incoming-frame handling). */
     feedTelnet(data: string): void {
+        // Injected bytes are "as if received from the MUD", so they have to
+        // reach the protocol handlers the socket path runs and not just the text
+        // pipeline. ECHO is scanned separately from the option parser — it walks
+        // the stream itself, because a GMCP payload can carry the same three
+        // bytes — and that scan hung off the socket's onmessage alone, so an
+        // injected password prompt engaged nothing at all.
+        this.echoHandler.processData(data);
         this.processIncomingData(data);
     }
 

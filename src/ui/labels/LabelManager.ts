@@ -43,6 +43,13 @@ export interface LabelState {
     backgroundImage?: { url: string; width?: number; height?: number };
     /** Qt-style CSS string set via setLabelStyleSheet; parsed at render time. */
     styleSheet?: string;
+    /** Family set via `setFont(labelName, family)` — the widget font, which in
+     *  Qt is a property of the QLabel itself and so is kept here rather than
+     *  folded into `styleSheet`. A stylesheet `font-family` still wins over it
+     *  at render, as QSS wins over a widget font in Qt. Always stored as the
+     *  font database spells it (ScriptingAPI.resolveFontFamily), because
+     *  Geyser.Label:setFont reads it straight back through getFont(). */
+    fontFamily?: string;
     /** Sticky Qt `alignment` widget property, captured from a
      *  `qproperty-alignment` declaration in any setStyleSheet call. In Qt,
      *  qproperty-* declarations set the widget property permanently — a later
@@ -513,6 +520,25 @@ export class LabelManager {
         lbl.backgroundImage = undefined;
         this.notify(lbl.parent);
         return true;
+    }
+
+    /** Mudlet `setFont(labelName, family)` on a label. An empty family clears
+     *  the override, leaving the label on whatever it inherits. */
+    setFont(name: string, family: string): boolean {
+        const lbl = this.labels.get(name);
+        if (!lbl) return false;
+        lbl.fontFamily = family && family.trim() ? family : undefined;
+        this.notify(lbl.parent);
+        return true;
+    }
+
+    /** The label's own font family, or null when there is no such label.
+     *  An existing label with no override reads as "" — the same "nothing set"
+     *  answer a window with no override gives. */
+    getFont(name: string): string | null {
+        const lbl = this.labels.get(name);
+        if (!lbl) return null;
+        return lbl.fontFamily ?? '';
     }
 
     setStyleSheet(name: string, css: string): boolean {

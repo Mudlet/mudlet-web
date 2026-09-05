@@ -150,7 +150,24 @@ describe('installPackageFromBytes — config.lua renames the package', () => {
         const { manifest } = installPackageFromBytes(
             FILE, archive({ config: 'mpackage = "../evil"\n' }), vfs,
         );
-        expect(manifest.name).toBe('.._evil');
-        expect(vfs.exists('/profiles/test/.._evil/config.lua')).toBe(true);
+        // Mudlet keeps the last path segment and drops the rest
+        // (Host::sanitizePackageName's section("/", -1)); this used to map the
+        // separator to an underscore and install as ".._evil" instead. Either
+        // way nothing escapes — the property this test is here for — but the
+        // corpus is the parity authority, so the name is now upstream's.
+        expect(manifest.name).toBe('evil');
+        expect(vfs.exists('/profiles/test/evil/config.lua')).toBe(true);
+    });
+
+    it('refuses a declared name that trims down to a step out of the profile', () => {
+        // An ending is removed wherever it appears, so "...mpackage" gives up
+        // the ".mpackage" in its middle and what is left is "..", which as a
+        // folder is the directory holding every profile. Nothing may unpack
+        // there, and the name comes from inside the archive.
+        const vfs = stubVfs();
+        expect(() => installPackageFromBytes(
+            FILE, archive({ config: 'mpackage = "...mpackage"\n' }), vfs,
+        )).toThrow(/not a usable package name/);
+        expect(vfs.exists('/profiles/test/config.lua')).toBe(false);
     });
 });

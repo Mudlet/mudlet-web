@@ -223,13 +223,21 @@ export function parseXmlMapResult(xmlText: string): XmlMapParse {
     }
     for (const area of Object.values(map.areas)) area.zLevels.sort((a, b) => a - b);
 
-    // Mudlet's audit() guarantees the -1 default area exists on every map.
+    // Mudlet's audit() guarantees the -1 default area EXISTS on every map: it is
+    // where a room with no home of its own goes, so it has to be there before
+    // one needs it.
+    //
+    // Naming it is a separate question, and the answer is only when it holds
+    // something. An area name is a key — getAreaTable() is name -> id — so a
+    // name given to an area the file never declared and nothing occupies shows
+    // up as one area more than the map has, which is exactly what Mudlet
+    // reports for the same file.
     if (!map.areas[-1]) {
         const defaultArea = makeArea();
         defaultArea.zLevels = [0];
         map.areas[-1] = defaultArea;
-        map.areaNames[-1] = 'Default Area';
     }
+    if (map.areas[-1].rooms.length > 0) map.areaNames[-1] = 'Default Area';
 
     return { ok: true, map };
 }

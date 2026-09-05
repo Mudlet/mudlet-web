@@ -28,6 +28,12 @@ export const DEFAULT_CONSOLE_BUFFER_SIZE = 10_000;
 export const MIN_CONSOLE_BUFFER_SIZE = 100;
 export const MAX_CONSOLE_BUFFER_SIZE = 1_000_000;
 
+/** What a line index outside the buffer reads as, byte for byte Mudlet's
+ *  `badLineError` (TBuffer.cpp) — the QString its `line()` hands back for any
+ *  index below zero or past the end, instead of failing. Scripts compare
+ *  against this literal, so it is API surface, not a diagnostic. */
+export const BAD_LINE_ERROR = 'ERROR: invalid line number';
+
 /** Mudlet's batch-deletion size for a given buffer size — 5% of it, never below
  *  100 lines (mudlet.cpp:2270, and the identical sum in
  *  dlgProfilePreferences.cpp:3288 when the preference is applied). */
@@ -47,6 +53,23 @@ export class Console {
     private history: AnsiAwareBuffer[] = [];
     private pending:  AnsiAwareBuffer[] = [];
     private partial = new AnsiAwareBuffer();
+    /**
+     * Whether the buffer has a current line at all.
+     *
+     * Mudlet's TBuffer always keeps one — the line being built — as the last
+     * entry of lineBuffer, so a console that has printed nothing still holds a
+     * line and getLineCount() answers 0 rather than -1. mudix keeps that line in
+     * `partial`, beside `history` instead of in it, which is why getLineNumber()
+     * and moveTo() already treat it as living at index `history.length`; this
+     * flag is what lets the READ side agree with them.
+     *
+     * False in exactly one situation, and it is the one EmptyBufferOps_spec is
+     * about: deleteLine() removing the open line itself, which is what
+     * clearWindow() followed by deleteLine() does. That is the only way to a
+     * buffer of zero lines, and telling it apart from a one-line buffer is
+     * precisely what getLines()'s out-of-range answer exists for.
+     */
+    private hasOpenLine = true;
     private cursorIdx = -1; // -1 = always resolve to last line
     // Persistent column position on the rendered-history cursor line. Tracked
     // independently of the active trigger lineBuffer (ScriptingAPI owns that).
@@ -113,6 +136,8 @@ export class Console {
             }
         }
         this.partial.appendBuffer(new AnsiAwareBuffer(text, this.format.toSnapshot()));
+        // Anything written gives the buffer a current line back — see hasOpenLine.
+        this.hasOpenLine = true;
 
         if (!this.partial.text.includes('\n')) return;
         this.promotePartialLines();
@@ -188,9 +213,17 @@ export class Console {
     private store(line: AnsiAwareBuffer): void {
         concealDelayedReveals(line);
         this.history.push(line);
+        // Writing re-opens a buffer that deleteLine() had left with no current
+        // line: Mudlet has one again the moment anything is appended.
+        this.hasOpenLine = true;
     }
 
     private evict(): void {
+        // Counted over the COMPLETE lines only. Mudlet bounds lineBuffer.size(),
+        // which includes the line being built, so its capacity is one lower than
+        // this — an off-by-one nothing observes: the open line is not scrollback,
+        // no spec pins the figure, and moving it would change what every console
+        // holds to nobody's benefit.
         if (this.history.length <= this._maxLines) return;
         // Mudlet trims a BATCH at a time (TBuffer::shrinkBuffer): once the
         // buffer is over its limit it drops `batchDeleteSize` lines in one go,
@@ -260,6 +293,11 @@ export class Console {
         this.cursorIdx = -1;
         this.cursorCol = 0;
         this.consumeLeadingNewline = false;
+        // Mudlet's clearWindow() leaves exactly ONE empty line, not none — the
+        // current line every TBuffer keeps. deleteLine() on that line is what
+        // empties a buffer outright, and the two states have to be different or
+        // a script cannot tell "cleared" from "emptied".
+        this.hasOpenLine = true;
     }
 
     /**
@@ -337,7 +375,23 @@ export class Console {
     deleteLine(): void {
         const idx = this.cursor;
         const buf = this.history[idx];
-        if (!buf) return;
+        if (!buf) {
+            // No complete line under the cursor, so the line being deleted is
+            // the open one — the case clearWindow() then deleteLine() reaches,
+            // and the only way to a buffer holding nothing at all. Mudlet drops
+            // it from lineBuffer and is left with zero lines; here that is the
+            // flag going down and the half-written text going with it.
+            // Tested on hasOpenLine alone rather than on the cursor index: with
+            // no complete lines the `cursor` getter clamps to -1 whatever the
+            // user cursor was set to, so there is nothing else left for
+            // deleteLine to mean here.
+            if (this.hasOpenLine) {
+                this.hasOpenLine = false;
+                this.partial = new AnsiAwareBuffer();
+                this.consumeLeadingNewline = false;
+            }
+            return;
+        }
         buf.removeFromDom();
         this.history.splice(idx, 1);
         // Keep the cursor at the same row index (Mudlet: deleteLine leaves the
@@ -448,7 +502,12 @@ export class Console {
         // end", which is exactly what `partial` is — and the index is kept
         // verbatim (as moveToEnd does) so getLineNumber reports the open line
         // rather than clamping back onto the last complete one.
-        if (Math.trunc(line) > this.history.length) return false;
+        // The last addressable line, which is the open one while there is one.
+        // Written as lineTotal rather than history.length so that a buffer
+        // deleteLine() has emptied refuses line 0 as well: there is no line
+        // there to move onto, and answering true left insertText appending to a
+        // cursor that was never placed.
+        if (Math.trunc(line) > this.lineTotal - 1) return false;
         this.cursorIdx = Math.trunc(line);
         this.cursorCol = Math.trunc(col);
         return true;
@@ -510,6 +569,23 @@ export class Console {
         if (this.cursorIdx < 0) return len - 1;
         return this.cursorIdx;
     }
+    /** How many lines the buffer holds, counting the open one — Mudlet's
+     *  lineBuffer.size(). */
+    private get lineTotal(): number {
+        return this.history.length + (this.hasOpenLine ? 1 : 0);
+    }
+
+    /** The text of line `index` in Mudlet's numbering, where the open line is
+     *  the last one; null when the index names no line. */
+    private lineAt(index: number): string | null {
+        if (index < 0 || index >= this.lineTotal) return null;
+        return index < this.history.length ? this.history[index].text : this.partial.text;
+    }
+
+    // The last COMPLETE line's index, deliberately not counting the open one:
+    // ScriptingAPI.getLineCount() adds it back to reach Mudlet's number, which
+    // is where the open line has always been accounted for. Counting it here as
+    // well made every Lua-facing count one too high.
     getLineCount(): number  { return this.history.length - 1; }
 
     /**
@@ -526,14 +602,25 @@ export class Console {
 
     /**
      * Mudlet `getLines(from, to)` — the lines starting at the 0-based index
-     * `from`, `abs(to - from)` of them (TConsole::getLines). Note that `to` is
-     * exclusive and that neither bound is clamped by Mudlet; out-of-range
-     * indices simply yield fewer lines here.
+     * `from`, `abs(to - from)` of them (TConsole::getLines). `to` is exclusive
+     * and neither bound is clamped: the result always holds exactly
+     * `abs(to - from)` entries, and an index outside the buffer contributes
+     * {@link BAD_LINE_ERROR} rather than being dropped.
+     *
+     * That sentinel is the only way a script can tell an empty buffer from a
+     * one-line one, because getLineCount() answers 0 for both — it reports the
+     * last line's index. Mudlet's TBuffer::line() is the shape being matched:
+     * it answers every out-of-range index with the same string rather than
+     * failing.
      */
     getLines(from: number, to: number): string[] {
-        const start = Math.max(0, Math.trunc(from));
-        const count = Math.abs(Math.trunc(to) - Math.trunc(from));
-        return this.history.slice(start, start + count).map(b => b.text);
+        const start = Math.trunc(from);
+        const count = Math.abs(Math.trunc(to) - start);
+        const lines: string[] = [];
+        for (let i = 0; i < count; i++) {
+            lines.push(this.lineAt(start + i) ?? BAD_LINE_ERROR);
+        }
+        return lines;
     }
 
     /**

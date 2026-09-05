@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Button } from './components';
 import { getBrand, type BrandToolbarContext, type StockToolbarButton } from '../branding';
 import type { SessionStatus } from '../mud/events';
+import type { AddonCommand } from './commands/addonCommands';
 
 interface ToolbarProps {
     connectionName: string;
@@ -28,6 +29,10 @@ interface ToolbarProps {
     onContextMenu?: (e: React.MouseEvent<HTMLDivElement>) => void;
     /** Capabilities handed to brand toolbar buttons (send / raiseEvent). */
     brandContext?: BrandToolbarContext;
+    /** Commands a package placed with addCommand, for the surfaces that put
+     *  them on a bar. Drawn after the stock buttons, in placement order. */
+    addonCommands?: AddonCommand[];
+    onAddonCommandClick?: (id: number) => void;
 }
 
 function Icon({ children }: { children: ReactNode }) {
@@ -63,7 +68,7 @@ const IconCloseProfile = () => <Icon><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 
 const IconRecord = () => <Icon><circle cx="12" cy="12" r="6" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="9" /></Icon>;
 const IconStopReplay = () => <Icon><rect x="7" y="7" width="10" height="10" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="9" /></Icon>;
 
-export function Toolbar({ connectionName, status, ping, onDisconnect, onReconnect, onNewConnection, onOpenMap, onOpenScripts, onOpenFiles, onOpenLogs, onOpenDocs, onOpenHelp, onOpenSettings, replayRecording, onToggleReplayRecording, replaySpeed, onReplaySpeedChange, onReplayStop, onContextMenu, brandContext }: ToolbarProps) {
+export function Toolbar({ connectionName, status, ping, onDisconnect, onReconnect, onNewConnection, onOpenMap, onOpenScripts, onOpenFiles, onOpenLogs, onOpenDocs, onOpenHelp, onOpenSettings, replayRecording, onToggleReplayRecording, replaySpeed, onReplaySpeedChange, onReplayStop, onContextMenu, brandContext, addonCommands, onAddonCommandClick }: ToolbarProps) {
     const [menuOpen, setMenuOpen] = useState(false);
     const hamburgerRef = useRef<HTMLDivElement>(null);
 
@@ -124,6 +129,37 @@ export function Toolbar({ connectionName, status, ping, onDisconnect, onReconnec
             {brandContext && toolbarCfg?.buttons?.map(b => (
                 <Button key={b.id} variant="ghost" title={b.title} onClick={fire(() => b.onClick(brandContext))}>
                     {b.icon}{b.label}
+                </Button>
+            ))}
+            {/* Package-placed commands. A disabled one keeps its button and is
+                drawn unavailable rather than disappearing, so the bar does not
+                reflow under the player every time a script toggles one. The
+                pulse is a CSS variable pair the stylesheet animates between. */}
+            {addonCommands?.map(c => (
+                <Button
+                    key={c.id}
+                    variant="ghost"
+                    className={`addon-command${c.checked ? ' addon-command--checked' : ''}${c.pulse ? ' addon-command--pulsing' : ''}`}
+                    title={c.tooltip || c.name}
+                    disabled={!c.enabled}
+                    aria-pressed={c.checked}
+                    style={c.pulse ? {
+                        ['--addon-pulse-a' as string]: c.pulse.colour,
+                        ['--addon-pulse-b' as string]: c.pulse.altColour,
+                        ['--addon-pulse-ms' as string]: `${c.pulse.intervalMs}ms`,
+                    } : undefined}
+                    // Qt gives a toolbar button Qt::NoFocus, so clicking one
+                    // does not take the keyboard away from the command line.
+                    // That matters more here than for the stock buttons: a
+                    // package's command is clicked mid-play, and a player whose
+                    // next keystrokes went to a button instead of the game would
+                    // rightly call it broken. Preventing the default on
+                    // mousedown is the web spelling of it; the click still runs.
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={fire(() => onAddonCommandClick?.(c.id))}
+                >
+                    {c.icon && <img className="addon-command-icon" src={c.icon} alt="" aria-hidden="true" />}
+                    {c.name}
                 </Button>
             ))}
             <span className="toolbar-sep" aria-hidden="true" />
