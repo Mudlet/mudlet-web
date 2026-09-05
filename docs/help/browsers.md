@@ -23,6 +23,21 @@ serves profile images, fonts and CSS to your scripts won't register otherwise.
 Phones and tablets work, with a layout that adapts to the smaller screen. Expect
 the usual on-screen-keyboard friction with keybinding-heavy setups.
 
+## Installing it, and opening it offline
+
+Mudlet Web is installable: Chrome, Edge and Android offer **Install** from the
+address bar or the browser menu, and Safari on iOS has *Add to Home Screen*. It
+then opens in its own window, with no address bar.
+
+Once you have loaded it a couple of times it also opens **without a network**.
+The app itself is kept in browser storage, so an aeroplane or a dead Wi-Fi still
+gets you your profiles, scripts, triggers, map and logs — everything except the
+one thing that genuinely needs the network, which is the game. Connecting will
+fail until you are back online.
+
+Updates still arrive the moment you are: the page itself is fetched fresh
+whenever it can be, so reloading online is all it takes to move to a new version.
+
 ## Things that behave differently
 
 **Keyboard shortcuts the browser has claimed.** A keybinding on Ctrl+T or Ctrl+W
