@@ -11,6 +11,18 @@ from `src/ui/SettingsModal.tsx` and `src/ui/settings/SettingsShell.tsx`, and eac
 several turned out to be implemented but unexposed, which is a different problem with a
 much cheaper fix.
 
+The **Desktop** column is verbatim Mudlet, down to its capitalisation and its ASCII
+ellipses — that is what makes it checkable against the `.ui`, and what lets a player
+searching Settings for the words they know from the desktop dialog find them.
+
+> **Re-running this comparison.** Walk the `.ui` line by line, tracking the current
+> `<widget>` and the current `<property>`, and take the first `<string>` inside a `text`
+> or `title` property. Do **not** run a single `/<string[^>]*>(.*?)<\/string>/` over the
+> whole file: a self-closing `<string/>` (an empty label — several exist here) opens a
+> match that runs on to the next `</string>` and swallows every widget in between.
+> "Spell checking" and "Grid color:" are the two that vanish first, which is a quiet way
+> to conclude a setting is absent when it is merely unparsed.
+
 This file answers "is it there?". The user-facing version of the same question — "what
 will I notice?" — is [docs/help/settings.md](help/settings.md), which ships in the app's
 Help modal and is linked from Settings itself.
@@ -130,7 +142,7 @@ log naming and "Show Line/Paragraphs" are simply not done yet.
 
 | Desktop | | Mudlet Web |
 |---|---|---|
-| Save log files in HTML instead of plain text | ✅ | Both are recorded for every line and the format is chosen at export (HTML, ZIP, JSON). General → Log options now opens the Logs browser, where that choice lives |
+| Save log files in HTML format instead of plain text | ✅ | Both are recorded for every line and the format is chosen at export (HTML, ZIP, JSON). General → Log options now opens the Logs browser, where that choice lives |
 | Add timestamps at the beginning of log lines | ✅ | Timestamps are always recorded; the Logs browser toggles whether they show, and Settings now leads there |
 | Save log files in: (folder) | ❌ | Logs live in IndexedDB. A page cannot write to a folder without a per-save user gesture, so an unattended per-line log file is not possible |
 | Log format (combo) | 🚧 | No naming or format control |
@@ -254,7 +266,7 @@ The one page with **complete** parity, and then some.
 | Desktop | | Mudlet Web |
 |---|---|---|
 | Save your current map / choose location | ✅ | Mapper → Map files → **Save now**. The map is persisted on every change anyway; `saveMap(path)` from Lua still writes a copy into profile files |
-| Report map issues on screen | 🚧 | |
+| report map issues on screen | 🚧 | Lower-cased in the .ui, and left that way here: this column is verbatim Mudlet |
 | Load another map file in | ✅ | Mapper → Map files → **Load map…**, offering profile files and a local upload. Still on the map panel’s menu too |
 | Or load an older version | 🚧 | No version history is kept |
 | Delete map | 🚧 | |
@@ -362,7 +374,7 @@ Absent, and correctly so — both halves need capabilities a browser tab does no
 | Desktop | | Mudlet Web |
 |---|---|---|
 | Announce incoming text in screen reader | ✅ | Accessibility → Screen reader |
-| Advertise screen reader use via NEW-ENVIRON, MNES, MTTS | ✅ | Same card |
+| Advertise screen reader use via protocols supporting this notice (NEW-ENVIRON, MNES, MTTS) | ✅ | Same card, with Mudlet's own wording |
 | Enable closed caption for media | ✅ | Accessibility → Text and media |
 | When the game sends blank lines | ✅ | Same card |
 | Enable blinking text | ✅ | Same card |
