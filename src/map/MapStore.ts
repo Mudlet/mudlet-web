@@ -1032,6 +1032,11 @@ export class MapStore {
      * Returns false only when the roomID is already taken.
      */
     addRoom(id: number, areaId?: number): boolean | { err: string } {
+        // Room ids start at 1. Zero and below are refused rather than created:
+        // Mudlet uses them as sentinels — getRoomArea and friends answer -1 for
+        // "no such room" — so a room that IS one of them can never be told from
+        // the answer meaning it does not exist.
+        if (!Number.isFinite(id) || id < 1) return false;
         if (this.rooms.has(id)) return false;
         const requested = areaId != null && Number.isFinite(areaId) ? Number(areaId) : undefined;
         const known = requested !== undefined && this.areas.has(requested);
@@ -2234,9 +2239,13 @@ export class MapStore {
             }
             if (!this.areaNames.has(id)) return `deleteArea: number ${id} is not a valid areaID`;
         }
+        // A name with no area behind it is a real state, not a miss: setAreaName
+        // on an unused id registers the name, and the area itself only comes
+        // into being when a room is moved into it. Deleting one is deleting the
+        // name — there is nothing else to take away, and refusing would leave
+        // the name unremovable.
         const area = this.areas.get(id);
-        if (!area) return `deleteArea: number ${id} is not a valid areaID`;
-        for (const roomId of area.rooms) {
+        for (const roomId of area?.rooms ?? []) {
             const r = this.rooms.get(roomId);
             if (r?.hash) this.hashToRoom.delete(r.hash);
             this.rooms.delete(roomId);
@@ -2459,9 +2468,19 @@ export class MapStore {
         if (typeof newName !== 'string' || newName.length === 0) {
             return { ok: false, err: 'setAreaName: new area name must be a non-empty string' };
         }
-        const id = this.resolveAreaId(idOrName);
+        let id = this.resolveAreaId(idOrName);
         if (id == null || !this.areaNames.has(id)) {
-            return { ok: false, err: 'setAreaName: area not found' };
+            // A NUMERIC id nothing has claimed yet registers the name without
+            // instantiating the area — Mudlet's areas come into being when a
+            // room is moved into one, and from Lua this is the only way to reach
+            // a name with nothing behind it. A name that resolves to nothing is
+            // still a miss: renaming an area that does not exist is a mistake,
+            // where naming an id is a declaration.
+            const numeric = typeof idOrName === 'number' ? idOrName : Number(idOrName);
+            if (typeof idOrName !== 'number' || !Number.isFinite(numeric) || numeric < 1) {
+                return { ok: false, err: 'setAreaName: area not found' };
+            }
+            id = numeric;
         }
         for (const [aid, n] of this.areaNames) {
             if (aid !== id && n === newName) {
