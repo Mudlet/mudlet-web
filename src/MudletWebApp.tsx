@@ -4,7 +4,7 @@ import { ConfirmProvider } from './ui/components';
 import { setBrand, getBrand, getThemeChoices, brandThemesCss, type BrandConfig } from './branding';
 import { useAppStore, MUDIX_STORE_NAME } from './storage/appStore';
 import { registerVfsServiceWorker } from './scripting/vfs/vfsBridge';
-import { primeAppShellCache } from './utils/appShellCache';
+import { appShellCacheEnabled, primeAppShellCache } from './utils/appShellCache';
 import { installPinchZoomGuard } from './ui/preventPinchZoom';
 
 // Page-level side effects, run once regardless of how many times MudletWebApp
@@ -18,7 +18,9 @@ function bootstrapPage(): void {
     // request for a /__vfs/* asset awaits the SW being active via vfs:read
     // message handling on the page side. Once it is registered, tell it what
     // this build loaded so the app can be opened offline from the first visit.
-    void registerVfsServiceWorker().then(ok => { if (ok) void primeAppShellCache(); });
+    void registerVfsServiceWorker().then(ok => {
+        if (ok && appShellCacheEnabled) void primeAppShellCache();
+    });
     // Block accidental page pinch-zoom on the app chrome (the map keeps its own).
     installPinchZoomGuard();
     applyBrandTheming();

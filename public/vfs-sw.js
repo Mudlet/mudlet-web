@@ -28,6 +28,13 @@ const SHELL_URL = SCOPE_PATH;
 // storage API. `__`-prefixed like `__vfs/`, which no real asset path uses.
 const BUILD_KEY = `${SCOPE_PATH}__app-build`;
 const READ_TIMEOUT_MS = 5000;
+// Whether this registration is allowed to cache the app at all. Set from the
+// script URL by the page (`vfs-sw.js?app-shell=1`), which only a built app asks
+// for — a dev server has no content-hashed assets to cache, and caching the
+// files it does serve under fixed names is cost with no offline to show for it.
+// It has to be known here, at evaluation time, because the first fetch event can
+// arrive long before any message from the page.
+const APP_SHELL = new URL(self.location.href).searchParams.get('app-shell') === '1';
 
 // What may be cached as part of the app. Deliberately narrow rather than
 // "anything same-origin": it admits Vite's content-hashed output and the static
@@ -63,7 +70,7 @@ function isAppAsset(url) {
 
 self.addEventListener('install', (event) => {
     self.skipWaiting();
-    event.waitUntil(cacheShell());
+    if (APP_SHELL) event.waitUntil(cacheShell());
 });
 
 self.addEventListener('activate', (event) => event.waitUntil((async () => {
@@ -87,6 +94,7 @@ self.addEventListener('fetch', (event) => {
         event.respondWith(handle(event, url));
         return;
     }
+    if (!APP_SHELL) return;
     // Navigations go to the network first, so a deploy is picked up on the next
     // load rather than whenever the cache happens to turn over; the cached shell
     // is strictly the offline answer.
@@ -286,7 +294,7 @@ self.addEventListener('message', (event) => {
     if (!data) return;
     if (data.type === 'vfs:invalidate') {
         event.waitUntil(invalidate(data));
-    } else if (data.type === 'app:precache') {
+    } else if (data.type === 'app:precache' && APP_SHELL) {
         event.waitUntil(precacheApp(data));
     }
 });

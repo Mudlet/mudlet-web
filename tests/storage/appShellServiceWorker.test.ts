@@ -102,7 +102,10 @@ interface Harness {
     install(): Promise<void>;
 }
 
-function loadWorker(network: Record<string, string>): Harness {
+function loadWorker(network: Record<string, string>, opts?: { appShell?: boolean }): Harness {
+    // The page registers `vfs-sw.js?app-shell=1` only from a built app; a dev
+    // server registers the bare URL and gets the VFS half of the worker alone.
+    const scriptUrl = `${SCOPE}vfs-sw.js${opts?.appShell === false ? '' : '?app-shell=1'}`;
     const listeners = new Map<string, ((event: unknown) => void)[]>();
     const cacheStorage = new FakeCacheStorage();
     const state = {
@@ -143,7 +146,7 @@ function loadWorker(network: Record<string, string>): Harness {
     const context = createContext({
         self: {
             registration: { scope: SCOPE },
-            location: new URL(`${SCOPE}vfs-sw.js`),
+            location: new URL(scriptUrl),
             skipWaiting: () => {},
             clients: { claim: async () => {}, matchAll: async () => [], get: async () => null },
             addEventListener: (type: string, fn: (event: unknown) => void) => {
@@ -402,6 +405,38 @@ describe('app shell service worker', () => {
         await sw.cacheStorage.open('acme-shop-images');
         await sw.activate();
         expect(await sw.cacheStorage.keys()).toContain('acme-shop-images');
+    });
+});
+
+describe('without the app-shell flag (a dev server registers the bare URL)', () => {
+    let sw: Harness;
+
+    beforeEach(async () => {
+        sw = loadWorker(NETWORK, { appShell: false });
+        await sw.install();
+    });
+
+    it('caches nothing at install', () => {
+        expect(sw.cacheStorage.caches.has('mudix-app-v1')).toBe(false);
+    });
+
+    it('does not touch navigations or assets', async () => {
+        expect(await navigation(sw, '/')).toBeNull();
+        expect(await sw.request('/assets/index-hf1D-FYj.js')).toBeNull();
+        expect(await sw.request('/libpcre2.wasm')).toBeNull();
+    });
+
+    it('ignores a precache message', async () => {
+        await sw.message({
+            type: 'app:precache',
+            build: '0.5.0+abc1234',
+            urls: [`${SCOPE}assets/index-hf1D-FYj.js`],
+        });
+        expect(sw.cacheStorage.caches.has('mudix-app-v1')).toBe(false);
+    });
+
+    it('still serves the VFS, which is the half every build wants', async () => {
+        expect((await sw.request('/__vfs/conn-1/logo.png'))!.status).toBe(503);
     });
 });
 

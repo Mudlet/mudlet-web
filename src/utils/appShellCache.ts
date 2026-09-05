@@ -12,6 +12,22 @@
 
 import { CLIENT_VERSION, GIT_COMMIT } from '../version';
 
+/**
+ * Whether this build wants its shell cached at all.
+ *
+ * Only a built app does. A dev server has no content-hashed assets to cache
+ * anyway, and the caching it *could* do — the icons, the manifest, the WASM the
+ * plugin serves at the root — is pure cost there: a second copy written on every
+ * boot, and a hot-reload hazard for the one file that isn't content-addressed.
+ * It is measurable cost, too. The busted corpus boots the whole app 41 times in
+ * parallel contexts, and on a four-core CI runner the extra work per boot was
+ * enough to push readiness past its 90s timeout.
+ *
+ * Read at the two edges rather than inside the functions below, so the worker's
+ * registration URL and the page's decision to speak to it can't disagree.
+ */
+export const appShellCacheEnabled: boolean = import.meta.env.PROD;
+
 /** Identifies the deployed build. The commit is empty in a tarball install, so
  *  the version alone has to be able to carry it. */
 const BUILD_ID = GIT_COMMIT ? `${CLIENT_VERSION}+${GIT_COMMIT}` : CLIENT_VERSION;

@@ -1,4 +1,5 @@
 import type { ProfileVFS } from './ProfileVFS';
+import { appShellCacheEnabled } from '../../utils/appShellCache';
 
 // URL prefix the service worker intercepts. The leading directory matches the
 // deploy base path (root '/' for top-level hosting, '/<repo>/' for GitHub Pages
@@ -64,7 +65,14 @@ export function vfsUrlFor(connectionId: string, path: string): string {
 export async function registerVfsServiceWorker(): Promise<boolean> {
     if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return false;
     try {
-        await navigator.serviceWorker.register('vfs-sw.js', { scope: './' });
+        // The `app-shell` flag is how the worker learns whether this build wants
+        // its shell cached; see `appShellCacheEnabled`. It rides in the script
+        // URL because the worker has to know before it answers its first fetch,
+        // which is well before any message from the page could reach it.
+        await navigator.serviceWorker.register(
+            appShellCacheEnabled ? 'vfs-sw.js?app-shell=1' : 'vfs-sw.js',
+            { scope: './' },
+        );
         await navigator.serviceWorker.ready;
         ensureListener();
         return true;
