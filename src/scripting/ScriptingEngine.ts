@@ -3722,6 +3722,12 @@ export class ScriptingEngine implements EngineHost {
         this.api.setCmdLineValue(text);
     }
 
+    /** What getCmdLine() answers with — the mirror, which is current the moment
+     *  a script writes it, unlike the React state behind it. */
+    getCmdLineValue(): string {
+        return this.api.getCmdLine();
+    }
+
     /** The commands packages placed with addCommand, for the bar that draws
      *  them. Narrower than handing out the whole API: the toolbar needs to read
      *  the list, hear when it changes, and report a click. */

@@ -2,8 +2,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EchoHandler } from '../../../src/mud/protocol/echo';
 import { ECHO_WILL, ECHO_WONT, ECHO_DO, ECHO_DONT } from '../../../src/mud/protocol/constants';
 
-const STABLE_MS = 500;
-
 function makeHandler() {
   const sent: string[] = [];
   const masks: boolean[] = [];
@@ -17,80 +15,66 @@ function makeHandler() {
   return { handler, sent, masks, anomalies: () => anomalies };
 }
 
-describe('EchoHandler — server-wide echo vs password masking', () => {
+// The rule is cTelnet's: the server taking ECHO is the server saying "do not
+// show what is typed", and nothing else is consulted. mudix used to mask only
+// for an ECHO that engaged AFTER the server had printed something, so that a
+// full-server-echo MUD would not hide the player's name — but nothing was ever
+// recorded as running into that, and the reading left a server which negotiates
+// ECHO in its opening burst and then asks for a password with no masking at all,
+// which is the error that matters.
+describe('EchoHandler — masking follows the server taking ECHO', () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
-  it('treats connect-time WILL ECHO (before any output) as server-wide echo: suppresses local echo but does NOT mask', () => {
+  it('masks for a WILL ECHO in the opening burst, before any output', () => {
     const { handler, sent, masks } = makeHandler();
 
-    // Opening negotiation burst — no server output yet.
     handler.processData(ECHO_WILL);
-    vi.advanceTimersByTime(STABLE_MS);
 
-    // Local echo is suppressed (server echoes for us)…
     expect(handler.serverEchoing).toBe(true);
-    // …but the input line is NOT masked.
-    expect(handler.passwordMode).toBe(false);
-    // We still ack the option on the wire.
-    expect(sent).toContain(ECHO_DO);
-    // The only mask signal emitted (if any) is false.
-    expect(masks.every(m => m === false)).toBe(true);
+    expect(handler.passwordMode).toBe(true);
+    expect(sent).toContain(ECHO_DO);          // acked on the wire
+    expect(masks[masks.length - 1]).toBe(true);
   });
 
-  it('masks for a WILL ECHO that arrives after the server has printed output (password prompt)', () => {
+  it('masks for one that arrives after the server has printed output', () => {
     const { handler, masks } = makeHandler();
 
-    // Name prompt etc. has already been printed.
     handler.processData('By what name do you wish to be known? ');
-    // Then the password prompt enables ECHO.
     handler.processData(ECHO_WILL);
-    vi.advanceTimersByTime(STABLE_MS);
 
     expect(handler.serverEchoing).toBe(true);
     expect(handler.passwordMode).toBe(true);
     expect(masks[masks.length - 1]).toBe(true);
 
-    // WONT ECHO ends password mode.
+    // WONT ECHO ends it again.
     handler.processData(ECHO_WONT);
-    vi.advanceTimersByTime(STABLE_MS);
     expect(handler.passwordMode).toBe(false);
     expect(masks[masks.length - 1]).toBe(false);
   });
 
-  it('does not mask the name on a full-server-echo MUD, but masks a later real password toggle', () => {
+  it('commits on the negotiation itself, with no settling delay', () => {
     const { handler, masks } = makeHandler();
 
-    // Connect-time server-wide echo.
     handler.processData(ECHO_WILL);
-    vi.advanceTimersByTime(STABLE_MS);
-    expect(handler.passwordMode).toBe(false);
-
-    // Server prints the name prompt (still echoing for us).
-    handler.processData('By what name do you wish to be known? ');
-
-    // Server releases echo, then re-enables it for the password.
-    handler.processData(ECHO_WONT);
-    vi.advanceTimersByTime(STABLE_MS);
-    expect(handler.serverEchoing).toBe(false);
-
-    handler.processData(ECHO_WILL);
-    vi.advanceTimersByTime(STABLE_MS);
+    // Read before any timer could have run: cTelnet calls
+    // setRemoteEchoingActive() in the WILL branch, so the state is already
+    // there for a script that negotiates and asks in the same breath.
     expect(handler.passwordMode).toBe(true);
-    expect(masks[masks.length - 1]).toBe(true);
+    expect(masks).toEqual([true]);
   });
 
-  it('does not arm the password safety timeout for connect-time server-wide echo', () => {
+  it('forces ECHO off when a server never sends the WONT that ends a prompt', () => {
     const { handler, sent } = makeHandler();
 
     handler.processData(ECHO_WILL);
-    vi.advanceTimersByTime(STABLE_MS);
     expect(handler.serverEchoing).toBe(true);
 
-    // Past the 60s password-mode safety window: a password engagement would
-    // force ECHO off here, but server-wide echo must stay on.
+    // Past the 60s safety window Mudlet arms during the login phase: a server
+    // that took ECHO and never gave it back would otherwise leave the input
+    // masked for the rest of the session.
     vi.advanceTimersByTime(61_000);
-    expect(handler.serverEchoing).toBe(true);
-    expect(sent).not.toContain(ECHO_DONT);
+    expect(handler.serverEchoing).toBe(false);
+    expect(sent).toContain(ECHO_DONT);
   });
 });

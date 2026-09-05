@@ -1,5 +1,5 @@
 import { ViewportModeProvider } from './hooks/useViewportMode';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { MAP_WIDGET_ID } from './ui/windows/types';
 import type { AddonCommand } from './ui/commands/addonCommands';
 import { useMudSession } from './hooks/useMudSession';
@@ -563,15 +563,81 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         return registry.subscribe(sync);
     }, [engineRef, session, connection, vfs]);
 
+    // TCommandLine::setEchoSuppression. A password prompt puts what is on the
+    // command line ASIDE and gives it back when the prompt ends, rather than
+    // throwing it away — and restoring it is also what discards the password,
+    // since whatever was typed during the prompt is overwritten by what was
+    // there before it.
+    //
+    // Which of three things the text is decides what happens to it:
+    //
+    //  - SELECTED: the command that was just sent, still there because
+    //    auto-clear is off. Put aside, and re-selected on the way back so the
+    //    player can overtype or resend it.
+    //  - the command that was just sent, unselected: put aside the same way.
+    //  - anything else: password characters the player had already started
+    //    typing before the server got round to suppressing echo. Those are kept
+    //    and typing continues, hidden.
+    //
+    // Driven off the telnet event rather than an effect on `passwordMode`,
+    // because the swap has to be visible to a script in the same breath as the
+    // negotiation that caused it — `passwordMode` only reaches here through a
+    // React state update. The engine mirror is what getCmdLine() answers with,
+    // so it is written alongside the React state rather than left to the render.
+    const passwordStashRef = useRef('');
+    const stashWasSelectedRef = useRef(false);
+    const typedDuringPasswordRef = useRef(false);
+    const inPasswordModeRef = useRef(false);
+    /** Every edit the PLAYER makes, as opposed to the ones a script stages
+     *  through printCmdLine. Only the player's own typing forfeits the command
+     *  put aside for them — TCommandLine tracks this in processNormalKey, which
+     *  a scripted write likewise never reaches. */
+    const onCommandTyped = useCallback((text: string) => {
+        if (inPasswordModeRef.current) typedDuringPasswordRef.current = true;
+        setCommand(text);
+    }, []);
     useEffect(() => {
-        if (passwordMode) {
-            if (commandRef.current && commandRef.current === lastSentRef.current) {
-                setCommand('');
+        const swap = (next: string) => {
+            setCommand(next);
+            engineRef.current?.setCmdLineValue(next);
+        };
+        return session.events.on('telnet.echo', (maskInput: boolean) => {
+            inPasswordModeRef.current = maskInput;
+            if (maskInput) {
+                // The MIRROR, not the React state. A script that staged text
+                // with printCmdLine and a prompt that arrives in the same chunk
+                // give React no chance to re-render in between, so commandRef
+                // still holds what was there before — and the command would be
+                // "put aside" as an empty string.
+                const text = engineRef.current?.getCmdLineValue() ?? commandRef.current;
+                const el = commandInputRef.current;
+                const selected = !!el && el.selectionStart !== el.selectionEnd;
+                let stash = '';
+                let partialPassword = '';
+                if (text) {
+                    if (selected || text === lastSentRef.current) stash = text;
+                    else if (lastSentRef.current) partialPassword = text;
+                    else stash = text;
+                }
+                passwordStashRef.current = stash;
+                stashWasSelectedRef.current = selected;
+                typedDuringPasswordRef.current = false;
+                swap(partialPassword);
+            } else {
+                // Cleared first whatever happens, so the password never survives
+                // the prompt; the command only comes back if the player did not
+                // start typing something of their own over it.
+                const restore = typedDuringPasswordRef.current ? '' : passwordStashRef.current;
+                swap(restore);
+                if (restore && stashWasSelectedRef.current) {
+                    queueMicrotask(() => commandInputRef.current?.select());
+                }
+                passwordStashRef.current = '';
+                stashWasSelectedRef.current = false;
+                typedDuringPasswordRef.current = false;
             }
-        } else {
-            setCommand('');
-        }
-    }, [passwordMode]);
+        });
+    }, [session, engineRef]);
 
     useEffect(() => {
         const unsub1 = session.events.on('script.appendcmd', (text: string) => {
@@ -1281,7 +1347,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                     commandBar={
                         <CommandBar
                             command={command}
-                            onCommandChange={setCommand}
+                            onCommandChange={onCommandTyped}
                             passwordMode={passwordMode}
                             commandInputRef={commandInputRef}
                             onSubmit={handleSend}
