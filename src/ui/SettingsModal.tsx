@@ -21,12 +21,14 @@ import { categoriesWithUnavailable, unavailableIn } from './settings/unavailable
 import { useFileSource, type PickedFile } from './components/FileSourceButton';
 import type { WindowManager } from './windows/WindowManager';
 import { describeThrown } from '../utils/describeThrown';
+import { deleteMap as deleteStoredMap } from '../storage/mapStorage';
 import { analyticsOptedOut, setAnalyticsOptedOut } from '../analytics';
 import { formatBytes } from '../utils/formatBytes';
 import { EDITOR_THEME_CHOICES } from './codemirror/theme';
 import { SUPPORTED_SERVER_ENCODINGS, DEFAULT_SERVER_ENCODING } from '../mud/protocol';
 import { VaultManageButton } from './VaultManageButton';
 import { getVault } from '../vault/vaultAccess';
+import { useVault } from '../vault/useVault';
 import { TlsCertificateBox } from './TlsCertificateBox';
 import { HelpModal } from './HelpModal';
 import type { TlsStatus } from '../mud/events';
@@ -272,6 +274,36 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     // so the toggle repaints on click.
     const [analyticsOff, setAnalyticsOff] = useState(analyticsOptedOut);
     const confirm = useConfirm();
+    const vaultState = useVault();
+    const [forgetStatus, setForgetStatus] = useState<string | null>(null);
+
+    // Desktop's per-profile "Forget saved sign-in" button. The vault modal can
+    // already remove entries, but only as one row in a list of every profile —
+    // this is the one desktop puts on the profile's own page.
+    const handleForgetSignIn = async () => {
+        const vault = getVault();
+        if (!vault || !connectionId) return;
+        const ok = await confirm({
+            title: 'Forget saved sign-in',
+            message: 'Delete the password saved for this profile? Other profiles keep theirs, and the vault stays set up. You will be asked for it again the next time this profile signs in.',
+            tone: 'danger',
+            buttons: [
+                { label: 'Cancel', value: false, variant: 'ghost' },
+                { label: 'Forget', value: true, variant: 'danger' },
+            ],
+        });
+        if (!ok) return;
+        try {
+            // False means the vault was locked and could not rewrite its
+            // ciphertext — the button is disabled in that state, but the vault
+            // can lock between render and click.
+            setForgetStatus(await vault.forgetConnection(connectionId)
+                ? 'Saved sign-in forgotten.'
+                : 'The vault locked before that could be saved — unlock it and try again.');
+        } catch (e) {
+            setForgetStatus(describeThrown(e));
+        }
+    };
     const marker = mapper?.playerMarker;
     const markerStrokeColor = marker?.strokeColor ?? PLAYER_MARKER_DEFAULTS.strokeColor;
     const markerStrokeAlpha = marker?.strokeAlpha ?? PLAYER_MARKER_DEFAULTS.strokeAlpha;
@@ -292,6 +324,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
         : DEFAULT_HISTORY_SAVE_SIZE;
     const showTabConnectionIndicators = (config?.showTabConnectionIndicators as boolean | undefined) ?? true;
     const fixUnnecessaryLinebreaks = (config?.fixUnnecessaryLinebreaks as boolean | undefined) ?? false;
+    const forceLfAfterPrompt = (config?.forceLfAfterPrompt as boolean | undefined) ?? false;
     const enableBlinkText = (config?.enableBlinkText as boolean | undefined) ?? false;
     // Accessibility: mirror MUD output to an off-screen ARIA live region so the
     // user's screen reader narrates it. Defaults on (matches Mudlet); the
@@ -404,6 +437,30 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
         setMapStatus('Saving…');
         try {
             setMapStatus(await windows.saveMapAsync() ? 'Map saved to this profile.' : 'Nothing to save — this profile has no map yet.');
+        } catch (e) {
+            setMapStatus(describeThrown(e));
+        }
+    };
+
+    // Mudlet's "Delete map:" button. Empties the store and drops the profile's
+    // IndexedDB slot, so a reload does not bring the old map back — the store
+    // alone would be re-saved from memory on the next change.
+    const handleDeleteMap = async () => {
+        if (!windows || !connectionId) return;
+        const ok = await confirm({
+            title: 'Delete map',
+            message: 'Delete this profile\'s map? Every room, exit, label and area goes with it. This cannot be undone — export the map first if you might want it back.',
+            tone: 'danger',
+            buttons: [
+                { label: 'Cancel', value: false, variant: 'ghost' },
+                { label: 'Delete', value: true, variant: 'danger' },
+            ],
+        });
+        if (!ok) return;
+        try {
+            windows.mapStore.newEmptyMap();
+            await deleteStoredMap(connectionId);
+            setMapStatus('Map deleted.');
         } catch (e) {
             setMapStatus(describeThrown(e));
         }
@@ -1838,6 +1895,18 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                         </span>
                         <Button variant="secondary" size="sm" onClick={() => windows.onDownloadMap?.()}>Download</Button>
                     </div>
+                    <div className="settings-row">
+                        <span className="settings-label" id="map-delete-label">
+                            Delete map:
+                            <HelpTip label="About deleting the map">
+                                Throws away every room, exit, label and area in this profile's
+                                map and leaves an empty one. Use <strong>Save now</strong> above,
+                                or <code>saveMap(path)</code> from a script, to keep a copy
+                                first — this cannot be undone.
+                            </HelpTip>
+                        </span>
+                        <Button variant="danger" size="sm" onClick={() => { void handleDeleteMap(); }}>delete</Button>
+                    </div>
                     {mapStatus && <p className="settings-hint">{mapStatus}</p>}
                     {mapSource.elements}
                 </>
@@ -2513,6 +2582,26 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                         />
                     </div>
                     <div className="settings-row">
+                        <span className="settings-label" id="force-lf-after-prompt-label">
+                            Force new line on empty commands
+                            <HelpTip label="About forcing a new line">
+                                Only does anything while the linebreak fix above is on. That
+                                fix exists because GA-driven servers already leave the cursor
+                                on a fresh line after a prompt, so echoing an empty command
+                                adds a second blank one — this turns that echo back on if you
+                                want the blank line. Mudlet's
+                                <code> mUSE_FORCE_LF_AFTER_PROMPT</code>; rarely necessary.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="force-lf-after-prompt"
+                            aria-labelledby="force-lf-after-prompt-label"
+                            disabled={!fixUnnecessaryLinebreaks}
+                            checked={forceLfAfterPrompt}
+                            onChange={next => patchConfig({ forceLfAfterPrompt: next })}
+                        />
+                    </div>
+                    <div className="settings-row">
                         <span className="settings-label" id="special-force-ga-off-label">
                             Force telnet GA signal interpretation off
                             <HelpTip label="About forcing GA off">
@@ -2736,10 +2825,54 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
             description: 'Where Mudlet Web keeps the passwords you have let it remember, encrypted on this device.',
             keywords: 'password, keyring, keychain, credentials, sign in, vault, autologin',
             body: (
-                <div className="settings-row">
-                    <span className="settings-label">Saved logins</span>
-                    <VaultManageButton connections={connections} variant="row" />
-                </div>
+                <>
+                    <div className="settings-row">
+                        <span className="settings-label">Saved logins</span>
+                        <VaultManageButton connections={connections} variant="row" />
+                    </div>
+                    {/* Desktop's Special Options combo offers the profile file
+                        or an OS secure store. There is exactly one answer here
+                        and it is not a choice, so it reads as a value rather
+                        than as a control that only does one thing. */}
+                    <div className="settings-row">
+                        <span className="settings-label" id="password-store-label">
+                            Store character login passwords in:
+                            <HelpTip label="About where passwords are kept">
+                                Desktop Mudlet can put them in the profile file or in your
+                                operating system's keyring. A page can reach neither, so
+                                Mudlet Web encrypts them itself and keeps the ciphertext in
+                                this browser's storage — readable only after the vault is
+                                unlocked with your passkey or passphrase. They never leave
+                                this device and are not part of a profile export.
+                            </HelpTip>
+                        </span>
+                        <span className="settings-readout">An encrypted vault on this device</span>
+                    </div>
+                    {connectionId && (
+                        <div className="settings-row">
+                            <span className="settings-label" id="forget-signin-label">
+                                Forget saved sign-in
+                                <HelpTip label="About forgetting this sign-in">
+                                    Deletes the password saved for this profile only. Every
+                                    other profile keeps its own, and the vault itself stays
+                                    set up. You will be asked for the password the next time
+                                    this profile signs in.
+                                </HelpTip>
+                            </span>
+                            <Button
+                                variant="secondary"
+                                size="sm"
+                                disabled={!vaultState.exists || vaultState.locked || !vaultState.entryIds.includes(connectionId)}
+                                onClick={() => { void handleForgetSignIn(); }}
+                            >
+                                {vaultState.locked && vaultState.entryIds.includes(connectionId)
+                                    ? 'Unlock first'
+                                    : 'Forget'}
+                            </Button>
+                        </div>
+                    )}
+                    {forgetStatus && <p className="settings-hint">{forgetStatus}</p>}
+                </>
             ),
         }] : []),
         {

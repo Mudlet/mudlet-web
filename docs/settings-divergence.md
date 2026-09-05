@@ -48,21 +48,22 @@ opened with — 78 present, 8 elsewhere, 58 missing — are in that section.
 | Main display | 19 | — | — | 1 |
 | Editor | 5 | — | 1 | — |
 | Color view | 24 | — | — | — |
-| Mapper | 7 | — | 13 | 1 |
+| Mapper | 8 | — | 12 | 1 |
 | Mapper colors | 8 | — | 20 | — |
 | Chat | — | — | — | 20 |
-| Connection | 6 | 1 | — | 4 |
+| Connection | 7 | — | — | 4 |
 | Shortcuts | — | — | 1 | — |
 | Accessibility | 7 | — | — | — |
-| Special Options | 8 | 1 | 3 | 3 |
-| **Total** | **101** | **2** | **41** | **37** |
+| Special Options | 10 | — | 2 | 3 |
+| **Total** | **105** | **—** | **39** | **37** |
 
 Three things the totals don't show, and which matter more than the totals do:
 
 - **Parity is not evenly spread.** Accessibility, Color view and Main display are
   complete. Mapper colors is still thin and Shortcuts is empty.
-- **Most of what remains is one block.** The 16 map ANSI colours are 16 of the 41, and
-  they are blocked on the renderer rather than on us.
+- **Most of what remains is blocked upstream.** The 16 map ANSI colours, the other map
+  colours, and most Map view options — 30 of the 39 — need fields `mudlet-map-renderer`
+  does not expose. That work starts there, not here.
 - **Mudlet Web has settings desktop Mudlet does not** — see
   [Web-only settings](#web-only-settings). The divergence runs both ways, so "8 tabs
   against 12 pages" understated the overlap even before this.
@@ -72,16 +73,22 @@ Three things the totals don't show, and which matter more than the totals do:
 The audit's first pass counted 78 present, 8 reachable only from elsewhere, 58 missing
 and 37 impossible. Acting on it closed 29 rows:
 
-- **Reachable elsewhere is not reachable.** All but one of the 📍 rows are now in
-  Settings: the map file actions, "show the default area" (previously Lua-only), and a
-  door into the Logs browser where the log format and timestamp choices live. Only
-  "Forget saved sign-in" stays elsewhere, because the credential vault manages logins
-  one at a time rather than as a single switch.
+- **Reachable elsewhere is not reachable.** The 📍 column is now empty. The map file
+  actions, "show the default area" (previously Lua-only), a door into the Logs browser
+  where the log format and timestamp choices live, and both vault rows are all in
+  Settings. "Forget saved sign-in" was the last holdout and the weakest excuse: the
+  vault modal did offer it, but only as one row in a list of every profile, where
+  desktop puts the button on the profile's own page.
 - **Missing settings, built**: server data encoding, highlight history, disable password
   masking, react to all keybindings, the double-click word-break characters, ambiguous
   East Asian width, the SGR colour-space id, the map grid colour and width, browser
-  spell checking, clearing stored media, a usage-analytics opt-out, and an Editor
-  category carrying five of desktop's six rows.
+  spell checking, clearing stored media, a usage-analytics opt-out, deleting the map,
+  "force new line on empty commands", and an Editor category carrying five of desktop's
+  six rows.
+- **One of those was a behaviour gap, not a missing switch.** mudix echoed empty
+  commands unconditionally, so a GA game with the linebreak fix on still got the blank
+  line that fix exists to remove. `MudSession` now applies Mudlet's own rule from
+  `Host::send`, and the checkbox turns the echo back on.
 - **Labels are Mudlet's own strings.** Every row above that has a desktop counterpart
   uses its exact wording, checked against `profile_preferences.ui` — so a player who
   knows the desktop dialog searches for the words they already know. Where a card
@@ -92,14 +99,20 @@ and 37 impossible. Acting on it closed 29 rows:
   withholds. The shell indexes card text off the DOM, so searching the desktop wording
   finds the explanation.
 
-What is still 🚧 and why, in short: the 16 map ANSI colours, room border, upper/lower
-level and overlapping-room colours, and most Map view options need fields
-`mudlet-map-renderer` does not expose. Interface language needs a translation layer.
-The shortcut editor needs a shortcut registry that does not exist. Two are deliberately
-left alone — desktop's timer-size debug threshold and "Report all Codepoint problems
-immediately" configure diagnostics mudix does not have, so the setting would be a knob
-attached to nothing; they become worth adding when the diagnostic does. Text analyzer,
-log naming and "Show Line/Paragraphs" are simply not done yet.
+What is still 🚧 and why, in short. **Blocked upstream in the renderer** (30): the 16 map
+ANSI colours, room border, upper/lower level and overlapping-room colours, invert zoom
+direction, the area-exit arrow size, border size, the room symbol font, and the rest of
+Map view — `mudlet-map-renderer` exposes no field for any of them, and inverting the
+zoom here would mean swallowing the wheel event and synthesising a replacement.
+**Needs a subsystem that does not exist** (2): interface language wants a translation
+layer, and the shortcut editor wants a shortcut registry. **Deliberately not settings**
+(2): desktop's timer-size debug threshold and "Report all Codepoint problems
+immediately" configure diagnostics mudix does not produce, so the setting would be a
+knob attached to nothing — they become worth adding when the diagnostic does. **Simply
+not done yet** (5): the text analyzer, log naming and format, "Show Line/Paragraphs",
+map format version, and copying a map to another profile — that last one crosses a
+profile boundary, and the export path mounts profiles one at a time on purpose, so the
+cheap shape is write-then-import rather than two live VFS handles.
 
 ---
 
@@ -269,7 +282,7 @@ The one page with **complete** parity, and then some.
 | report map issues on screen | 🚧 | Lower-cased in the .ui, and left that way here: this column is verbatim Mudlet |
 | Load another map file in | ✅ | Mapper → Map files → **Load map…**, offering profile files and a local upload. Still on the map panel’s menu too |
 | Or load an older version | 🚧 | No version history is kept |
-| Delete map | 🚧 | |
+| Delete map: | ✅ | Mapper → Map files. Empties the store *and* drops the profile's IndexedDB slot — clearing only the store would let the next change re-save the old map from memory. Confirms first, and points at "Save now" as the way to keep a copy |
 | Copy map to other profile(s) | 🚧 | |
 | Map format version | 🚧 | Reads every version the binary reader supports; writes the reader's default |
 
@@ -285,7 +298,7 @@ The one page with **complete** parity, and then some.
 |---|---|---|
 | Use high quality graphics in 2D view | ❌ | The canvas renderer is always antialiased |
 | Draw rooms on upper and lower levels | 🚧 | |
-| Invert zoom direction | 🚧 | |
+| Invert zoom direction | 🚧 | Blocked upstream, not merely unbuilt: the renderer owns the wheel handler and its `Settings` has no zoom-direction field. mudix only snapshots the camera in a capture-phase listener, so inverting here would mean swallowing the event and synthesising a replacement |
 | Show room borders | ✅ | Mapper → Map view |
 | Use large area exit arrows in 2D view | 🚧 | |
 | Show the default area in map area selection | ✅ | Mapper → Map view. `setDefaultAreaShown()` sets the same value |
@@ -354,7 +367,7 @@ Absent, and correctly so — both halves need capabilities a browser tab does no
 | Accept expired certificates | ✅ | Same card, same caveat |
 | Accept all certificate errors (unsecure) | ✅ | Same card, same caveat |
 | Allow secure connection reminder | ✅ | Privacy and security |
-| Forget saved sign-in | 📍 | Privacy and security → Passwords opens the credential vault, which manages saved logins individually |
+| Forget saved sign-in | ✅ | Privacy and security → Passwords, as its own row — desktop puts the button on the profile's own page, and the vault modal only offered it as one row in a list of every profile. Disabled while the vault is locked (a locked vault cannot rewrite its ciphertext) and says so on the button |
 | Connect to the game via proxy (address, port, username, password) | ❌ | **Means something different here.** A page cannot route a socket through a SOCKS or HTTP proxy; that is the user agent's business. Mudlet Web's "proxy" is the telnet↔WebSocket bridge without which telnet games are unreachable at all, and it is configured per-connection in the connection form rather than globally. See [Connecting to a MUD](help/connecting.md) |
 
 ---
@@ -388,7 +401,7 @@ Absent, and correctly so — both halves need capabilities a browser tab does no
 | Desktop | | Mudlet Web |
 |---|---|---|
 | Force compression off | ✅ | Untick **MCCP** in Connection → Game protocols. The `specialForceCompressionOff` config key maps onto it, so scripts that set it keep working |
-| Force new line on empty commands | 🚧 | |
+| Force new line on empty commands | ✅ | Connection → Compatibility, beneath the linebreak fix it depends on and disabled without it. This was a behaviour gap as much as a missing switch: mudix echoed empty commands unconditionally, so a GA game with the fix on still got the blank line the fix exists to remove. Now mirrors `Host::send` (Host.cpp:1461) exactly |
 | Force telnet GA signal interpretation off | ✅ | Connection → Compatibility |
 | Send Mudlet version in terminal type | ✅ | Same card |
 | Force MXP processing on | ✅ | Same card |
@@ -398,7 +411,7 @@ Absent, and correctly so — both halves need capabilities a browser tab does no
 | Disable automatic updates | ❌ | A web app is whatever the server last served; a reload is the update |
 | Show icons on menus | ❌ | No menus |
 | Expect Color Space Id in SGR...(3\|4)8;2;...m codes | ✅ | Main display → Display options. `FormatState` read only `38;2;r;g;b`; the T.416 `38;2;<id>;r;g;b` form shifted every channel and the leftover parameter was then read as its own SGR code |
-| Store character login passwords in | 📍 | Privacy and security → Passwords. The web equivalent is the credential vault — encrypted on the device, unlocked by passkey or password — rather than a choice between the profile file and an OS keyring |
+| Store character login passwords in | ✅ | Privacy and security → Passwords — but **replaced rather than ported**, and the row says so. Desktop's combo is a choice between the profile file and an OS keyring; a page can reach neither, so there is one storage mode (the encrypted vault) and it reads as a stated value, not a control with a single option |
 | Show debug messages for timers not smaller than | 🚧 | |
 | Report all Codepoint problems immediately | 🚧 | |
 | Crash report sending policy | ❌ | There is no crash reporter to gate — the browser reports its own crashes under its own settings. The nearest thing the web build *does* have is the usage beacon, which now has an opt-out: Privacy and security → Usage statistics. It needs its own localStorage key rather than a store field, because the Matomo snippet in `index.html` runs before any module loads |

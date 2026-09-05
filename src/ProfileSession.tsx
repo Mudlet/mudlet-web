@@ -300,6 +300,9 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // so it's on the session's options before autoConnect dials, and re-applied
     // live whenever the config bag changes.
     session.setFixUnnecessaryLinebreaks((profileConfig?.fixUnnecessaryLinebreaks as boolean | undefined) ?? false);
+    // Mudlet's `mUSE_FORCE_LF_AFTER_PROMPT` — read only while the fix above is
+    // on, so it is a plain field rather than a setter with a client to update.
+    session.forceLfAfterPrompt = (profileConfig?.forceLfAfterPrompt as boolean | undefined) ?? false;
     // Mudlet's `inputLineStrictUnixEndings` (config bag) — submit commands with a
     // bare LF instead of CRLF. Live, like Mudlet's per-send read of mUSE_UNIX_EOL.
     session.setInputLineStrictUnixEndings((profileConfig?.inputLineStrictUnixEndings as boolean | undefined) ?? false);
