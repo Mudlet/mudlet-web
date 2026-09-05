@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
-import { Annotation, EditorState } from '@codemirror/state';
-import { EditorView, hoverTooltip, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter } from '@codemirror/view';
+import { Annotation, Compartment, EditorState } from '@codemirror/state';
+import { EditorView, hoverTooltip, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, highlightWhitespace, highlightSpecialChars } from '@codemirror/view';
 import { defaultKeymap, indentWithTab, history, historyKeymap } from '@codemirror/commands';
 import { StreamLanguage, indentUnit, bracketMatching } from '@codemirror/language';
 import { autocompletion, closeBrackets } from '@codemirror/autocomplete';
 import { search, searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import { lua } from '@codemirror/legacy-modes/mode/lua';
-import { useEffectiveTheme } from '../../../storage';
+import { useEffectiveTheme, useEditorSettings } from '../../../storage';
 import { luaCompletionSource, HOVER_MAP, REFERENCE_GROUPS } from '../../../scripting/lua/luaCompletions';
-import { mudixCmTheme, highlightCompartment, highlightFor } from '../../codemirror/theme';
+import { mudixCmTheme, highlightCompartment, highlightFor, type EditorTheme } from '../../codemirror/theme';
 
 // Lua-specific hover tooltip styling — bolted on top of the shared chrome.
 const luaHoverTheme = EditorView.theme({
@@ -105,7 +105,48 @@ const luaHover = hoverTooltip((view, pos) => {
  *  the update listener can tell it apart from an edit the user made. */
 const valueSync = Annotation.define<true>();
 
-function buildExtensions(onChangeFn: () => void, onSaveFn: () => void, theme: string) {
+/** Mudlet's Editor preference page, which mudix had no equivalent of: the
+ *  display options and autocomplete were hard-coded on. Held in a compartment
+ *  so a change reconfigures the live editor instead of remounting it, which is
+ *  what the theme swap below already does. */
+export interface EditorOptions {
+    /** "Autocomplete Lua functions in code editor". */
+    autocomplete: boolean;
+    /** "Show Spaces/Tabs" — dots for runs of spaces, arrows for tabs. */
+    showWhitespace: boolean;
+    /** "Show invisible Unicode control characters". */
+    showControlChars: boolean;
+    /** "Theme" — the syntax palette, pinned or following the app's. */
+    theme: EditorTheme;
+}
+
+export const EDITOR_OPTION_DEFAULTS: EditorOptions = {
+    autocomplete: true,
+    showWhitespace: false,
+    showControlChars: false,
+    theme: 'app',
+};
+
+const optionsCompartment = new Compartment();
+
+function optionExtensions(opts: EditorOptions) {
+    return [
+        // Always mounted, because the extension is also what binds Ctrl+Space.
+        // The switch is whether it volunteers: off means no popup while you
+        // type, but the list is still one keystroke away — which is what
+        // desktop's "Autocomplete Lua functions in code editor" is really
+        // about, and strictly better than losing completion altogether.
+        autocompletion({ override: [luaCompletionSource], activateOnTyping: opts.autocomplete }),
+        opts.showWhitespace ? highlightWhitespace() : [],
+        // CodeMirror hides control characters behind a placeholder widget by
+        // default anyway; this makes them visible as their Unicode name rather
+        // than a bare dot, which is the point of Mudlet's checkbox — spotting a
+        // stray U+200B a game or a paste left in a script.
+        opts.showControlChars ? highlightSpecialChars() : [],
+    ];
+}
+
+function buildExtensions(onChangeFn: () => void, onSaveFn: () => void, theme: string, opts: EditorOptions) {
     return [
         history(),
         // Desktop wires Ctrl+F / F3 / Shift+F3 straight to the source editor
@@ -122,8 +163,8 @@ function buildExtensions(onChangeFn: () => void, onSaveFn: () => void, theme: st
         closeBrackets(),
         indentUnit.of('  '),
         StreamLanguage.define(lua),
-        highlightCompartment.of(highlightFor(theme)),
-        autocompletion({ override: [luaCompletionSource], activateOnTyping: true }),
+        highlightCompartment.of(highlightFor(theme, opts.theme)),
+        optionsCompartment.of(optionExtensions(opts)),
         luaHover,
         keymap.of([
             { key: 'Mod-s',     preventDefault: true, run: () => { onSaveFn(); return true; } },
@@ -172,6 +213,9 @@ export function LuaEditor({ value, onChange, onSave, gotoLine }: Props) {
     const theme = useEffectiveTheme();
     const themeRef = useRef(theme);
     themeRef.current = theme;
+    const editorOptions = useEditorSettings();
+    const optionsRef = useRef(editorOptions);
+    optionsRef.current = editorOptions;
 
     const [refOpen, setRefOpen] = useState(false);
 
@@ -185,7 +229,7 @@ export function LuaEditor({ value, onChange, onSave, gotoLine }: Props) {
                     onChangeRef.current(viewRef.current!.state.doc.toString());
                 }, () => {
                     onSaveRef.current?.();
-                }, themeRef.current),
+                }, themeRef.current, optionsRef.current),
             }),
             parent: editorHostRef.current,
         });
@@ -197,14 +241,28 @@ export function LuaEditor({ value, onChange, onSave, gotoLine }: Props) {
         };
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // Swap syntax highlighting when the theme changes; preserves doc + scroll.
+    // Swap syntax highlighting when either theme changes; preserves doc +
+    // scroll. Both are dependencies: the app theme only matters while the
+    // editor is set to follow it, but pinning the editor to a palette is itself
+    // a change this has to repaint for.
     useEffect(() => {
         const view = viewRef.current;
         if (!view) return;
         view.dispatch({
-            effects: highlightCompartment.reconfigure(highlightFor(theme)),
+            effects: highlightCompartment.reconfigure(highlightFor(theme, optionsRef.current.theme)),
         });
-    }, [theme]);
+    }, [theme, editorOptions.theme]);
+
+    // Same swap for the Editor preferences. Depends on the three values rather
+    // than the object so a re-render that rebuilds an equal object does not
+    // reconfigure the editor for nothing.
+    useEffect(() => {
+        const view = viewRef.current;
+        if (!view) return;
+        view.dispatch({
+            effects: optionsCompartment.reconfigure(optionExtensions(optionsRef.current)),
+        });
+    }, [editorOptions.autocomplete, editorOptions.showWhitespace, editorOptions.showControlChars]);
 
     // Combined value-sync + goto.
     //

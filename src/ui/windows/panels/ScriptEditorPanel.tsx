@@ -2,7 +2,7 @@ import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo
 import { AlertCircle, AlertTriangle, Braces, ClipboardPaste, Clock, Copy, CopyPlus, Filter, Folder, FolderOpen, FolderPlus, Keyboard, MousePointerClick, Package, Shuffle, FileCode2, Trash2, Zap } from 'lucide-react';
 import { Button, Input, ContextMenu, FileSourceButton, useConfirm, type PickedFile } from '../../components';
 import { VariablesView } from './VariablesView';
-import { useAppStore, useProfileField } from '../../../storage';
+import { useAppStore, useProfileField, useEditorSettings } from '../../../storage';
 import type { RestoredNode } from '../../../storage/appStore';
 import { captureDeletion, describeDeletion, describeInsertion, pushBounded, type EditorItemCommand } from './editorUndo';
 import { cloneSubtree, collectSubtree, type EditorClipboard } from './editorClipboard';
@@ -803,6 +803,7 @@ export interface ScriptEditorPanelHandle {
 
 export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEditorPanelProps>(function ScriptEditorPanel({ connectionId, session, vfs, scriptingEngineRef, initialListWidth, onSplitsChange, onOpenVfsFile }, ref) {
     const confirm = useConfirm();
+    const { showItemIds } = useEditorSettings();
     const restored = useRef(loadTreeState(connectionId)).current;
     const [category, setCategory] = useState<Category>(restored.category);
     /** The six categories that hold editable items; the rest are read-only views. */
@@ -2243,6 +2244,13 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                 />
                                 <span className="script-editor__item-name">
                                     {item.name}
+                                    {/* Mudlet's "Show Items' ID number": the id
+                                        scripts pass to enableTrigger/killTimer
+                                        and friends, which is otherwise only
+                                        discoverable from Lua. */}
+                                    {showItemIds && (
+                                        <span className="script-editor__item-id">#{item.id}</span>
+                                    )}
                                     {hasChildren && (
                                         <span className="script-editor__item-count">{childCount}</span>
                                     )}

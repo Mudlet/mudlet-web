@@ -211,3 +211,10 @@
     .help-sidebar__foot { display: none; }
     .help-content { padding: 4px 16px 24px; }
 }
+
+/* Opened from inside Settings, which is a `.modal` at z-index 51 — a plain
+   `.resizable-modal` (40) would open behind the dialog that raised it. Kept
+   under the confirm dialog (60/61), which must stay on top of everything. */
+.resizable-modal.help-modal--over-settings {
+    z-index: 55;
+}

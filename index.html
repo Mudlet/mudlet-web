@@ -33,6 +33,16 @@
       (function () {
         var h = location.hostname;
         if (h !== 'mudlet.github.io' && h !== 'mudlet.org' && !/\.mudlet\.org$/.test(h)) return;
+        // Settings -> Privacy and security -> "Send anonymous usage statistics".
+        // Its own localStorage key, not the mudix_v1 store: that store is read
+        // and hydrated by a module, which is far too late — this script has
+        // already fired the page view by then. Kept in step with
+        // src/analytics.ts, which is what writes it.
+        try {
+          if (localStorage.getItem('mudix_analytics_opt_out') === '1') return;
+        } catch (e) {
+          /* storage blocked; fall through and track as before */
+        }
         var _paq = (window._paq = window._paq || []);
         /* tracker methods like "setCustomDimension" should be called before "trackPageView" */
         _paq.push(['trackPageView']);

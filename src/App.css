@@ -4422,6 +4422,18 @@ body.is-sorting {
     margin: 4px 0;
 }
 
+/* A button, because it opens the manual rather than navigating — dressed as the
+   link beside it so the two offers under an empty search read alike. */
+.settings-search__empty-link {
+    font: inherit;
+    color: var(--accent, var(--text));
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    text-decoration: underline;
+}
+
 .settings-titlerow {
     display: flex;
     align-items: center;
@@ -4636,6 +4648,17 @@ body.is-sorting {
     font-family: var(--font-ui), sans-serif;
     font-size: 12px;
     color: var(--text-dim);
+}
+
+/* A measured value sitting after a label ("3 files, 1.2 MB"), rather than a
+   unit suffix hugging an input the way .settings-unit does — so it needs the
+   space between the two that a suffix must not have. */
+.settings-readout {
+    margin-left: 8px;
+    font-family: var(--font-ui), sans-serif;
+    font-size: 12px;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
 }
 
 .settings-font-summary {
@@ -5769,4 +5792,37 @@ body.is-sorting {
 
 .vault-forgot:hover {
     color: var(--text);
+}
+
+/* ── "Not available in the browser" card ────────────────────── */
+/* Rows with no control: a desktop setting's name and why it can't be here.
+   Muted, so browsing a category reads them as footnotes rather than options,
+   but full text so the settings search can find them by the desktop wording. */
+.settings-unavailable {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.settings-unavailable__item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.settings-unavailable__name {
+    font-family: var(--font-ui), sans-serif;
+    font-size: 13px;
+    color: var(--text-dim);
+}
+
+.settings-unavailable__reason {
+    font-family: var(--font-ui), sans-serif;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--text-faint, var(--text-dim));
+    opacity: 0.85;
 }

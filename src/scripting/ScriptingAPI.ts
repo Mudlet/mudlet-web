@@ -247,6 +247,7 @@ const CONFIG_PERSIST_ONLY: Record<string, {
     enableClosedCaption:            { type: 'bool', default: false },
     f3SearchEnabled:                { type: 'bool', default: false },
     fixUnnecessaryLinebreaks:       { type: 'bool', default: false },
+    forceLfAfterPrompt:             { type: 'bool', default: false },
     inputLineStrictUnixEndings:     { type: 'bool', default: false },
     logInHTML:                      { type: 'bool', default: false },
     promptForMXPProcessorOn:        { type: 'bool', default: false },

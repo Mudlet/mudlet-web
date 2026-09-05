@@ -8,6 +8,32 @@ import type { MapStore } from './MapStore';
 import { PLAYER_MARKER_DEFAULTS, type MapperSettings } from '../storage/schema';
 
 /**
+ * One profile-supplied font family as a CSS string literal, safe to concatenate
+ * into a `font-family` list.
+ *
+ * The backslash must be escaped *before* the quote, and escaping the quote
+ * alone is worse than not escaping at all. Take a family ending in a single
+ * backslash: quote-only escaping emits `'Foo\'`, whose closing quote is now
+ * itself escaped, so the literal never terminates and the rest of the
+ * declaration is swallowed as string content. Doubling the backslash first
+ * gives `'Foo\\'`, which closes properly around one literal backslash.
+ * (CodeQL alert 23 caught the original, which escaped only the quote.)
+ *
+ * Line terminators cannot appear in a CSS string at all, escaped or not, so
+ * they are dropped rather than encoded. The value reaches the renderer's canvas
+ * `font` shorthand today, where a malformed string merely fails to parse — but
+ * it is a profile field a package can set through the mapper settings, and the
+ * next consumer might be a stylesheet.
+ */
+export function cssFontFamilyLiteral(family: string): string {
+    const escaped = family
+        .replace(/[\r\n\f]/g, '')
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'");
+    return `'${escaped}'`;
+}
+
+/**
  * Copy user-set fields from MapperSettings onto a live renderer settings
  * object. Anything left undefined in `mapper` is intentionally not touched
  * so the renderer's own createSettings() defaults stay in effect.
@@ -19,12 +45,16 @@ export function applyMapperSettings(target: MapRendererSettings, mapper: MapperS
     // window showed the page/window through it. A user-picked colour in the
     // Mapper tab still wins.
     target.backgroundColor = mapper?.backgroundColor ?? '#000000';
-    // Mudlet always draws room symbols (and, in mudix, the area-name header)
-    // with its bundled "Bitstream Vera Sans Mono" (TMap.h: mMapSymbolFont) —
-    // never the profile's console font. The renderer's own default is a
-    // generic 'sans-serif', which picks a different glyph shape per-OS for
-    // Unicode room-symbol characters. Match Mudlet's fixed choice instead.
-    target.fontFamily = "'Bitstream Vera Sans Mono', sans-serif";
+    // Mudlet draws room symbols (and, in mudix, the area-name header) with
+    // `mMapSymbolFont` — bundled "Bitstream Vera Sans Mono" by default, and
+    // changeable from its Mapper page ("2D Map Room Symbol Font"). That default
+    // matters: the renderer's own is a generic 'sans-serif', which picks a
+    // different glyph shape per-OS for Unicode room-symbol characters. A
+    // profile that has chosen a font wins, and keeps the bundled one as the
+    // fallback so an unavailable family still lands somewhere sensible.
+    target.fontFamily = mapper?.symbolFont
+        ? `${cssFontFamilyLiteral(mapper.symbolFont)}, 'Bitstream Vera Sans Mono', sans-serif`
+        : "'Bitstream Vera Sans Mono', sans-serif";
     // Level-of-detail: on unless the user turns it off. The renderer defaults it
     // off for back-compat, but every tier only engages above ~12k rooms on the
     // drawn plane — a density where the full vector scene costs seconds per
@@ -44,6 +74,8 @@ export function applyMapperSettings(target: MapRendererSettings, mapper: MapperS
     if (mapper.lineWidth !== undefined) target.lineWidth = mapper.lineWidth;
     if (mapper.lineColor !== undefined) target.lineColor = mapper.lineColor;
     if (mapper.gridEnabled !== undefined) target.gridEnabled = mapper.gridEnabled;
+    if (mapper.gridColor !== undefined) target.gridColor = mapper.gridColor;
+    if (mapper.gridLineWidth !== undefined) target.gridLineWidth = mapper.gridLineWidth;
 
     // playerMarker is a nested object rather than a flat key, so copy it before
     // writing: createSettings() hands out a fresh one per renderer, but this

@@ -4,7 +4,9 @@ import {
     ChevronLeft,
     ChevronRight,
     CircleHelp,
+    Code2,
     Globe,
+    Info,
     Map as MapIcon,
     Monitor,
     Palette,
@@ -35,6 +37,7 @@ export type CategoryKey =
     | 'appearance'
     | 'mainDisplay'
     | 'inputLine'
+    | 'editor'
     | 'mapper'
     | 'media'
     | 'connection'
@@ -54,13 +57,14 @@ export interface CategoryDefinition {
 
 /** Sidebar order, icon and name — the one place a category is declared.
  *  Mirrors Mudlet's `categoryDefinitions()`, minus the categories the web
- *  client has nothing to put on (Editor, Chat and sharing, Shortcuts) and plus
+ *  client has nothing to put on (Chat and sharing, Shortcuts) and plus
  *  the one it does that Mudlet keeps on a toolbar instead (Sound and media). */
 export const CATEGORIES: CategoryDefinition[] = [
     { key: 'general',       label: 'General',              Icon: SlidersHorizontal },
     { key: 'appearance',    label: 'Appearance',           Icon: Palette },
     { key: 'mainDisplay',   label: 'Main display',         Icon: Monitor },
     { key: 'inputLine',     label: 'Input line',           Icon: Terminal },
+    { key: 'editor',        label: 'Editor',               Icon: Code2 },
     { key: 'mapper',        label: 'Mapper',               Icon: MapIcon },
     { key: 'media',         label: 'Sound and media',      Icon: Volume2 },
     { key: 'connection',    label: 'Connection',           Icon: Globe, separatorAbove: true },
@@ -110,6 +114,12 @@ interface SettingsShellProps {
      *  row (and the offer under an empty search) goes away, which is how a
      *  branded build avoids pointing its players at someone else's wiki. */
     support?: { label: string; url: string };
+    /** Opens the Help topic listing which desktop Mudlet preferences are absent
+     *  here and why. Shown as a sidebar row, and offered again when a search
+     *  finds nothing — the two moments a player is hunting for a setting that
+     *  isn't there. Omitted like `support` by a branded build, which is not a
+     *  subset of Mudlet as far as its own players are concerned. */
+    differences?: { label: string; onOpen: () => void };
 }
 
 /** Query → the words every match has to contain. */
@@ -121,7 +131,7 @@ function matchesNeedles(haystack: string, needles: string[]): boolean {
     return needles.every(n => haystack.includes(n));
 }
 
-export function SettingsShell({ cards, subpages, category, onCategory, subpage, onSubpage, support }: SettingsShellProps) {
+export function SettingsShell({ cards, subpages, category, onCategory, subpage, onSubpage, support, differences }: SettingsShellProps) {
     const [query, setQuery] = useState('');
     const [matches, setMatches] = useState<string[]>([]);
     // Where the search interrupted, so leaving the results by any door comes
@@ -288,24 +298,37 @@ export function SettingsShell({ cards, subpages, category, onCategory, subpage, 
                             </li>
                         </Fragment>
                     ))}
+                    {(differences || support) && <li className="settings-sidebar__separator" aria-hidden="true" />}
+                    {differences && (
+                        <li>
+                            {/* Not a category either: it opens the manual over
+                                the dialog rather than a page inside it. */}
+                            <button
+                                type="button"
+                                className="settings-sidebar__item settings-sidebar__item--link"
+                                onClick={differences.onOpen}
+                                title={differences.label}
+                            >
+                                <Info size={16} className="settings-sidebar__icon" aria-hidden="true" />
+                                <span className="settings-sidebar__label">{differences.label}</span>
+                            </button>
+                        </li>
+                    )}
                     {support && (
-                        <>
-                            <li className="settings-sidebar__separator" aria-hidden="true" />
-                            <li>
-                                {/* A link, not a category: it opens a browser tab
-                                    rather than a page, so it is never selected. */}
-                                <a
-                                    className="settings-sidebar__item settings-sidebar__item--link"
-                                    href={support.url}
-                                    target="_blank"
-                                    rel="noreferrer noopener"
-                                    title={support.label}
-                                >
-                                    <CircleHelp size={16} className="settings-sidebar__icon" aria-hidden="true" />
-                                    <span className="settings-sidebar__label">{support.label}</span>
-                                </a>
-                            </li>
-                        </>
+                        <li>
+                            {/* A link, not a category: it opens a browser tab
+                                rather than a page, so it is never selected. */}
+                            <a
+                                className="settings-sidebar__item settings-sidebar__item--link"
+                                href={support.url}
+                                target="_blank"
+                                rel="noreferrer noopener"
+                                title={support.label}
+                            >
+                                <CircleHelp size={16} className="settings-sidebar__icon" aria-hidden="true" />
+                                <span className="settings-sidebar__label">{support.label}</span>
+                            </a>
+                        </li>
                     )}
                 </ul>
             </nav>
@@ -395,6 +418,15 @@ export function SettingsShell({ cards, subpages, category, onCategory, subpage, 
                     {searching && matches.length === 0 && (
                         <p className="settings-search__empty">
                             No results in settings for "{query.trim()}"
+                            {differences && (
+                                <>
+                                    <br />
+                                    Some of desktop Mudlet's preferences aren't here —{' '}
+                                    <button type="button" className="settings-search__empty-link" onClick={differences.onOpen}>
+                                        see what's different
+                                    </button>
+                                </>
+                            )}
                             {support && (
                                 <>
                                     <br />

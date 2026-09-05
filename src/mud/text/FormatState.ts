@@ -18,6 +18,7 @@ import {
 import { applyVisibility } from "./hyperlinkVisibility";
 import { appendCells, cellsToHtml, columnAfter } from "./cellRender";
 import { getControlCharacterMode } from "./controlCharacterMode";
+import { getExpectColorSpaceId } from "./colorSpaceId";
 
 /** Apply OSC 4/104 palette operations to the global colour tables. Palette
  *  changes affect text parsed *after* this point — which is exactly document
@@ -454,22 +455,29 @@ export class FormatState {
                             this.background = color;
                         }
                         i += 2;
-                    } else if (
-                        mode === 2 && arg1 !== undefined
-                        && at(3) !== undefined && at(4) !== undefined
-                    ) {
-                        const color: RgbColor = {
-                            space: "rgb",
-                            r: arg1,
-                            g: at(3)!,
-                            b: at(4)!,
-                        };
-                        if (isForeground) {
-                            this.setForeground(color, color);
-                        } else {
-                            this.background = color;
+                    } else if (mode === 2 && arg1 !== undefined) {
+                        // Two spellings of 24-bit colour. `38;2;r;g;b` is what
+                        // almost every server sends; ITU T.416 actually puts a
+                        // colour-space id first, `38;2;<id>;r;g;b`, and a few
+                        // servers follow it — read that way the first channel
+                        // is eaten and every colour comes out wrong. Desktop
+                        // Mudlet makes it a preference for the same reason
+                        // ("Expect Color Space Id in SGR...(3|4)8;2;...m
+                        // codes"), because the two are not distinguishable from
+                        // the escape alone.
+                        const shift = getExpectColorSpaceId() ? 1 : 0;
+                        const r = at(2 + shift);
+                        const g = at(3 + shift);
+                        const b = at(4 + shift);
+                        if (r !== undefined && g !== undefined && b !== undefined) {
+                            const color: RgbColor = { space: "rgb", r, g, b };
+                            if (isForeground) {
+                                this.setForeground(color, color);
+                            } else {
+                                this.background = color;
+                            }
+                            i += 4 + shift;
                         }
-                        i += 4;
                     }
                     break;
                 }

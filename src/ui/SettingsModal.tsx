@@ -1,7 +1,7 @@
-import { Fragment, useState } from 'react';
-import { useAppStore, selectProfileField, MAPPER_DEFAULTS, PLAYER_MARKER_DEFAULTS, MAP_INFO_BG_DEFAULT, PROTOCOL_DEFAULTS, WS_SUBPROTOCOL_CHOICES, SEARCH_ENGINES, resolveSearchEngine, type Theme, type OutputFontSource, type ProfileSettings, type MapperSettings, type PlayerMarkerSettings, type MapInfoBgColor, type ProtocolSettings } from '../storage';
+import { Fragment, useMemo, useState } from 'react';
+import { useAppStore, useEditorSettings, selectProfileField, MAPPER_DEFAULTS, PLAYER_MARKER_DEFAULTS, MAP_INFO_BG_DEFAULT, PROTOCOL_DEFAULTS, WS_SUBPROTOCOL_CHOICES, SEARCH_ENGINES, resolveSearchEngine, type Theme, type OutputFontSource, type ProfileSettings, type MapperSettings, type EditorSettings, type PlayerMarkerSettings, type MapInfoBgColor, type ProtocolSettings } from '../storage';
 import { PlayerMarkerPreview } from './PlayerMarkerPreview';
-import { Input, FontPicker, Toggle, HelpTip, Button } from './components';
+import { Input, FontPicker, Toggle, HelpTip, Button, useConfirm } from './components';
 import { getThemeChoices, isBrandedMode } from '../branding';
 import { useModalFocus } from './components/useModalFocus';
 import { DEFAULT_ANSI_PALETTE } from '../mud/text/colors';
@@ -17,9 +17,20 @@ const SHOW_SENT_TEXT_OPTIONS: { value: ShowSentTextMode; label: string }[] = [
 ];
 import type { ProfileVFS } from '../scripting/vfs/ProfileVFS';
 import { SettingsShell, SubpageRow, type CardDefinition, type CategoryKey, type SubpageDefinition } from './settings/SettingsShell';
+import { categoriesWithUnavailable, unavailableIn } from './settings/unavailable';
+import { useFileSource, type PickedFile } from './components/FileSourceButton';
+import type { WindowManager } from './windows/WindowManager';
+import { describeThrown } from '../utils/describeThrown';
+import { deleteMap as deleteStoredMap } from '../storage/mapStorage';
+import { analyticsOptedOut, setAnalyticsOptedOut } from '../analytics';
+import { formatBytes } from '../utils/formatBytes';
+import { EDITOR_THEME_CHOICES } from './codemirror/theme';
+import { SUPPORTED_SERVER_ENCODINGS, DEFAULT_SERVER_ENCODING } from '../mud/protocol';
 import { VaultManageButton } from './VaultManageButton';
 import { getVault } from '../vault/vaultAccess';
+import { useVault } from '../vault/useVault';
 import { TlsCertificateBox } from './TlsCertificateBox';
+import { HelpModal } from './HelpModal';
 import type { TlsStatus } from '../mud/events';
 import { effectiveProxyUrl, proxyCanInspectCertificates } from '../storage';
 
@@ -37,6 +48,13 @@ const DEFAULT_INPUT_BG_FALLBACK = '#141414';
 const DEFAULT_INPUT_FG_FALLBACK = '#d4d4d4';
 const DEFAULT_CMD_ECHO_FG_FALLBACK = '#717100';
 const DEFAULT_PROMPT_TIMEOUT_MS = 300;
+// mudlet-map-renderer's own grid defaults, mirrored so the swatch and the
+// placeholder show what is actually drawn when the profile sets neither.
+const DEFAULT_GRID_COLOR = '#c8c8c8';
+const DEFAULT_GRID_LINE_WIDTH = 0.02;
+// Mudlet's own default map symbol font, bundled here too — the placeholder in
+// the picker row, and what an unset profile actually draws with.
+const DEFAULT_SYMBOL_FONT = 'Bitstream Vera Sans Mono';
 const DEFAULT_FONT_SIZE = 13;
 const MIN_FONT_SIZE = 6;
 const MAX_FONT_SIZE = 48;
@@ -80,6 +98,17 @@ const supportLink = () => (isBrandedMode()
     ? undefined
     : { label: 'Mudlet support', url: 'https://wiki.mudlet.org' });
 
+// Mudlet Web's Settings is a subset of desktop Mudlet's preferences — partly
+// because a browser can't do some of it, partly because some of it isn't built
+// yet — and until this row existed nothing in the app said so, leaving a player
+// following the desktop manual to hunt for settings that are not there
+// (issue #64). Suppressed in a branded build for the same reason `supportLink`
+// is: to its own players that client isn't a Mudlet subset, it's the client.
+// Short enough for the sidebar to render without ellipsis, and paired with the
+// "Mudlet support" row below it.
+const DIFFERENCES_LABEL = 'Mudlet differences';
+const DIFFERENCES_TOPIC = 'settings';
+
 const DEFAULT_COMMAND_SEPARATOR = ';;';
 
 // Per-name blurb for the WebSocket subprotocol checkboxes. Keyed by the wire
@@ -121,9 +150,17 @@ interface SettingsModalProps {
     /** TLS state of the live session, when there is one. Drives the certificate
      *  box below the secure-connection reminder. */
     tlsStatus?: TlsStatus | null;
+    /** The live session's window manager, for the map-file actions Mudlet keeps
+     *  on its Mapper preference page. Absent on the connection screen, where
+     *  there is no map to act on and the card is not rendered. */
+    windows?: WindowManager | null;
+    /** Opens the Logs browser. Mudlet's Log options page owns the log format
+     *  and folder; ours owns the switch, and the rest of what a player wants to
+     *  do with logs lives in that browser — so Settings offers the door. */
+    onOpenLogs?: () => void;
 }
 
-export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = null }: SettingsModalProps) {
+export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = null, windows = null, onOpenLogs }: SettingsModalProps) {
     const modalRef = useModalFocus<HTMLDivElement>(onClose);
     // Theme is per-profile with a launcher fallback: inside a profile the picker
     // shows/edits that profile's override; on the connection screen it edits the
@@ -225,6 +262,51 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     const mapperLineColor = mapper?.lineColor ?? MAPPER_DEFAULTS.lineColor;
     const mapperGridEnabled = mapper?.gridEnabled ?? MAPPER_DEFAULTS.gridEnabled;
     const mapperLodEnabled = mapper?.lodEnabled ?? MAPPER_DEFAULTS.lodEnabled;
+    const mapperShowDefaultArea = mapper?.showDefaultArea ?? MAPPER_DEFAULTS.showDefaultArea;
+    const mapperGridColor = mapper?.gridColor;
+    const serverEncoding = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'serverEncoding') : undefined));
+    const highlightHistory = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'highlightHistory') : undefined)) ?? false;
+    const disablePasswordMasking = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'disablePasswordMasking') : undefined)) ?? false;
+    const reactToAllKeybindings = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'reactToAllKeybindings') : undefined)) ?? false;
+    const ambiguousWidthWide = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'ambiguousWidthWide') : undefined)) ?? false;
+    const expectColorSpaceId = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'expectColorSpaceId') : undefined)) ?? false;
+    const doubleClickIgnore = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'doubleClickIgnore') : undefined)) ?? '';
+    const spellCheckInput = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'spellCheckInput') : undefined)) ?? false;
+    // Not in the store: the analytics opt-out has its own localStorage key so
+    // index.html can read it before any module loads. Mirrored into state here
+    // so the toggle repaints on click.
+    const [analyticsOff, setAnalyticsOff] = useState(analyticsOptedOut);
+    const confirm = useConfirm();
+    const vaultState = useVault();
+    const [forgetStatus, setForgetStatus] = useState<string | null>(null);
+
+    // Desktop's per-profile "Forget saved sign-in" button. The vault modal can
+    // already remove entries, but only as one row in a list of every profile —
+    // this is the one desktop puts on the profile's own page.
+    const handleForgetSignIn = async () => {
+        const vault = getVault();
+        if (!vault || !connectionId) return;
+        const ok = await confirm({
+            title: 'Forget saved sign-in',
+            message: 'Delete the password saved for this profile? Other profiles keep theirs, and the vault stays set up. You will be asked for it again the next time this profile signs in.',
+            tone: 'danger',
+            buttons: [
+                { label: 'Cancel', value: false, variant: 'ghost' },
+                { label: 'Forget', value: true, variant: 'danger' },
+            ],
+        });
+        if (!ok) return;
+        try {
+            // False means the vault was locked and could not rewrite its
+            // ciphertext — the button is disabled in that state, but the vault
+            // can lock between render and click.
+            setForgetStatus(await vault.forgetConnection(connectionId)
+                ? 'Saved sign-in forgotten.'
+                : 'The vault locked before that could be saved — unlock it and try again.');
+        } catch (e) {
+            setForgetStatus(describeThrown(e));
+        }
+    };
     const marker = mapper?.playerMarker;
     const markerStrokeColor = marker?.strokeColor ?? PLAYER_MARKER_DEFAULTS.strokeColor;
     const markerStrokeAlpha = marker?.strokeAlpha ?? PLAYER_MARKER_DEFAULTS.strokeAlpha;
@@ -245,6 +327,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
         : DEFAULT_HISTORY_SAVE_SIZE;
     const showTabConnectionIndicators = (config?.showTabConnectionIndicators as boolean | undefined) ?? true;
     const fixUnnecessaryLinebreaks = (config?.fixUnnecessaryLinebreaks as boolean | undefined) ?? false;
+    const forceLfAfterPrompt = (config?.forceLfAfterPrompt as boolean | undefined) ?? false;
     const enableBlinkText = (config?.enableBlinkText as boolean | undefined) ?? false;
     // Accessibility: mirror MUD output to an off-screen ARIA live region so the
     // user's screen reader narrates it. Defaults on (matches Mudlet); the
@@ -313,6 +396,12 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     const patchMapper = (patch: Partial<MapperSettings>) => {
         patchProfile({ mapper: { ...(mapper ?? {}), ...patch } });
     };
+    // Same nested merge for the editor's options — flipping one must not clear
+    // the other three.
+    const editorSettings = useEditorSettings();
+    const patchEditor = (patch: Partial<EditorSettings>) => {
+        patchProfile({ editor: { ...editorSettings, ...patch } });
+    };
     // playerMarker nests one level deeper, so it needs its own merge for the
     // same reason — dragging the size slider must not clear the colours.
     const patchMarker = (patch: Partial<PlayerMarkerSettings>) => {
@@ -337,6 +426,117 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     const [category, setCategory] = useState<CategoryKey>('general');
     const [subpage, setSubpage] = useState<string | null>(null);
     const [fontPickerOpen, setFontPickerOpen] = useState(false);
+    // The manual, opened over the dialog rather than in place of it — Settings
+    // is where the question is asked, so it should still be there when the
+    // answer is read. Rendered as a sibling below, like the font picker.
+    const [differencesOpen, setDifferencesOpen] = useState(false);
+    // What the map-file buttons last did. Mudlet's Mapper page reports the same
+    // way ("An action above happened"), and without it a save that takes a
+    // moment looks like a button that did nothing.
+    const [mapStatus, setMapStatus] = useState<string | null>(null);
+
+    const handleSaveMap = async () => {
+        if (!windows) return;
+        setMapStatus('Saving…');
+        try {
+            setMapStatus(await windows.saveMapAsync() ? 'Map saved to this profile.' : 'Nothing to save — this profile has no map yet.');
+        } catch (e) {
+            setMapStatus(describeThrown(e));
+        }
+    };
+
+    // Mudlet's "Delete map:" button. Empties the store and drops the profile's
+    // IndexedDB slot, so a reload does not bring the old map back — the store
+    // alone would be re-saved from memory on the next change.
+    const handleDeleteMap = async () => {
+        if (!windows || !connectionId) return;
+        const ok = await confirm({
+            title: 'Delete map',
+            message: 'Delete this profile\'s map? Every room, exit, label and area goes with it. This cannot be undone — export the map first if you might want it back.',
+            tone: 'danger',
+            buttons: [
+                { label: 'Cancel', value: false, variant: 'ghost' },
+                { label: 'Delete', value: true, variant: 'danger' },
+            ],
+        });
+        if (!ok) return;
+        try {
+            windows.mapStore.newEmptyMap();
+            await deleteStoredMap(connectionId);
+            setMapStatus('Map deleted.');
+        } catch (e) {
+            setMapStatus(describeThrown(e));
+        }
+    };
+
+    const handleLoadMap = async (picked: PickedFile[]) => {
+        const file = picked[0]?.file;
+        if (!file || !windows) return;
+        setMapStatus(`Loading ${file.name}…`);
+        try {
+            // Same split MapPanel makes: `.xml` is the IRE-style importer, and
+            // binary goes down the streamed path so a large map does not freeze
+            // the dialog while it parses.
+            const ok = file.name.toLowerCase().endsWith('.xml')
+                ? windows.loadMapXml(await file.text())
+                : await windows.loadMapAsync(await file.arrayBuffer(), file.name);
+            setMapStatus(ok ? `Loaded ${file.name}.` : (windows.lastMapLoadError ?? 'Failed to parse map file'));
+        } catch (e) {
+            setMapStatus(describeThrown(e));
+        }
+    };
+
+    // Mudlet's "Clear stored media": the mirror of everything the game asked us
+    // to play, under `media/` in the profile. Sizing it costs one readdir walk,
+    // which is why it is only measured when the card is on screen.
+    const [mediaStatus, setMediaStatus] = useState<string | null>(null);
+    const mediaSize = useMemo(() => {
+        if (!vfs || category !== 'media') return null;
+        const walk = (dir: string): { files: number; bytes: number } => {
+            let files = 0, bytes = 0;
+            let entries: string[];
+            try { entries = vfs.readdir(dir); } catch { return { files, bytes }; }
+            for (const name of entries) {
+                const path = `${dir}/${name}`;
+                const st = vfs.stat(path);
+                if (!st) continue;
+                if (st.type === 'dir') { const sub = walk(path); files += sub.files; bytes += sub.bytes; }
+                else { files++; bytes += st.size; }
+            }
+            return { files, bytes };
+        };
+        return vfs.exists('media') ? walk('media') : { files: 0, bytes: 0 };
+        // mediaStatus is in the deps so clearing re-measures and the row drops
+        // back to "No stored media" without needing the dialog reopened.
+    }, [vfs, category, mediaStatus]);
+
+    const handleClearMedia = async () => {
+        if (!vfs) return;
+        const ok = await confirm({
+            title: 'Clear stored media',
+            message: 'Delete every sound, music and video file this game asked Mudlet Web to download? Files you added yourself under other folders are untouched. This cannot be undone.',
+            tone: 'danger',
+            buttons: [
+                { label: 'Cancel', value: false, variant: 'ghost' },
+                { label: 'Clear', value: true, variant: 'danger' },
+            ],
+        });
+        if (!ok) return;
+        try {
+            vfs.rmdir('media');
+            setMediaStatus('Stored media cleared.');
+        } catch (e) {
+            setMediaStatus(describeThrown(e));
+        }
+    };
+
+    const mapSource = useFileSource({
+        vfs,
+        accept: '.dat,.xml',
+        pickerTitle: 'Load map from profile files',
+        onPick: handleLoadMap,
+        onError: msg => setMapStatus(msg),
+    });
 
     const handleFontChange = (next: OutputFontSource | undefined) => {
         patchProfile({ outputFont: next });
@@ -459,6 +659,36 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
 
     const [roomSizeText, setRoomSizeText] = useState(String(mapperRoomSize));
     const [lineWidthText, setLineWidthText] = useState(String(mapperLineWidth));
+    const [gridWidthText, setGridWidthText] = useState(mapper?.gridLineWidth !== undefined ? String(mapper.gridLineWidth) : '');
+    const [symbolFontText, setSymbolFontText] = useState(mapper?.symbolFont ?? '');
+
+    // Mudlet's "Reset all colors to default" on the Mapper colors page. Shown
+    // only once something is customised, like the Main display colour cards —
+    // a reset that can do nothing is noise on a page that has never been
+    // touched. Clearing to undefined rather than writing the defaults back is
+    // what puts the renderer's own values (and the map-info default) in charge
+    // again, which is what "default" has to mean here.
+    // mapInfoColor is not a MapperSettings field — it lives in the Mudlet
+    // `config` bag under its own setConfig key, so it resets separately.
+    const mapColorsCustomised = mapper?.backgroundColor !== undefined
+        || mapper?.lineColor !== undefined
+        || mapper?.gridColor !== undefined
+        || mapper?.gridLineWidth !== undefined
+        || config?.mapInfoColor !== undefined;
+
+    const handleResetMapColors = () => {
+        patchMapper({
+            backgroundColor: undefined,
+            lineColor: undefined,
+            gridColor: undefined,
+            gridLineWidth: undefined,
+        });
+        if (config?.mapInfoColor !== undefined) {
+            const { mapInfoColor: _drop, ...rest } = config;
+            patchProfile({ config: rest });
+        }
+        setGridWidthText('');
+    };
 
     const handleRoomSizeBlur = () => {
         const parsed = parseFloat(roomSizeText.trim());
@@ -469,6 +699,22 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
         const clamped = Math.min(parsed, 10);
         setRoomSizeText(String(clamped));
         patchMapper({ roomSize: clamped });
+    };
+
+    // Mudlet's "Grid width" is `mMapGridLineSize` — how thick the lines are,
+    // in map units, not how far apart they sit. Fractions, like Exit size.
+    const handleGridWidthBlur = () => {
+        const parsed = parseFloat(gridWidthText.trim());
+        if (!Number.isFinite(parsed) || parsed <= 0) {
+            // Empty or nonsense reverts to the renderer's own default rather
+            // than pinning a number the user did not choose.
+            setGridWidthText('');
+            patchMapper({ gridLineWidth: undefined });
+            return;
+        }
+        const clamped = Math.min(parsed, 1);
+        setGridWidthText(String(clamped));
+        patchMapper({ gridLineWidth: clamped });
     };
 
     const handleLineWidthBlur = () => {
@@ -602,12 +848,43 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
             ),
         },
         ...(connectionId ? [{
+            id: 'encoding',
+            category: 'general' as const,
+            title: 'Data encoding',
+            description: 'How the game\'s bytes are turned into letters. Leave this on UTF-8 unless the game tells you otherwise, or unless you are seeing \u{FFFD} where accented characters should be.',
+            keywords: 'encoding, charset, character set, latin, cyrillic, utf-8, iso 8859, windows-125, koi8, accents, unicode, language',
+            body: (
+                <div className="settings-row">
+                    <label className="settings-label" htmlFor="server-encoding">
+                        Server data encoding:
+                        <HelpTip label="About server data encoding">
+                            Games that negotiate CHARSET agree an encoding with Mudlet Web on
+                            connect and this setting is not consulted. Games that don't send
+                            raw bytes with no label, and this says how to read them. A script's
+                            <code> setServerEncoding()</code> changes it for the session only.
+                        </HelpTip>
+                    </label>
+                    <select
+                        id="server-encoding"
+                        className="settings-select"
+                        value={serverEncoding ?? DEFAULT_SERVER_ENCODING}
+                        onChange={e => patchProfile({ serverEncoding: e.target.value })}
+                    >
+                        {SUPPORTED_SERVER_ENCODINGS.map(name => (
+                            <option key={name} value={name}>{name}</option>
+                        ))}
+                    </select>
+                </div>
+            ),
+        }] : []),
+        ...(connectionId ? [{
             id: 'logging',
             category: 'general' as const,
             title: 'Log options',
             description: 'Keeps what this profile sent and received so you can read it back later.',
-            keywords: 'log, transcript, history, record, session',
+            keywords: 'log, transcript, history, record, session, log format, HTML logs, log folder, log timestamps',
             body: (
+                <>
                 <div className="settings-row">
                     <span className="settings-label" id="logging-enabled-label">
                         Record session logs
@@ -623,6 +900,24 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                         onChange={next => patchProfile({ loggingEnabled: next })}
                     />
                 </div>
+                {onOpenLogs && (
+                    <div className="settings-row">
+                        <span className="settings-label" id="open-logs-label">
+                            Recorded logs
+                            <HelpTip label="About the Logs browser">
+                                Where Mudlet's Log options page sets a folder and a file format,
+                                the browser keeps every session in storage and lets you choose a
+                                format when you export one — as HTML, as a ZIP of several, or as
+                                JSON. Timestamps are always recorded; the browser toggles whether
+                                they are shown.
+                            </HelpTip>
+                        </span>
+                        <Button variant="secondary" size="sm" onClick={() => { onClose(); onOpenLogs(); }}>
+                            Browse logs…
+                        </Button>
+                    </div>
+                )}
+            </>
             ),
         }] : []),
         {
@@ -1149,6 +1444,60 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                         </select>
                     </div>
                     <div className="settings-row">
+                        <span className="settings-label" id="ambiguous-width-label">
+                            Make 'Ambiguous' E. Asian width characters wide
+                            <HelpTip label="About ambiguous-width characters">
+                                Unicode marks a set of characters — box-drawing lines, ★ ♠ ①,
+                                accented Latin, Greek and Cyrillic — as taking one cell in a
+                                Western terminal and two in a CJK one. Turn this on if a game
+                                draws frames or bars out of them and the columns don't line up.
+                                Applies to lines drawn after the change.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="ambiguous-width"
+                            aria-labelledby="ambiguous-width-label"
+                            checked={ambiguousWidthWide}
+                            onChange={next => patchProfile({ ambiguousWidthWide: next })}
+                        />
+                    </div>
+                    <div className="settings-row">
+                        <span className="settings-label" id="color-space-id-label">
+                            Expect Color Space Id in SGR...(3|4)8;2;...m codes
+                            <HelpTip label="About the color space id">
+                                A game sending 24-bit colour writes it either as
+                                <code> 38;2;r;g;b</code> or, following ITU T.416, as
+                                <code> 38;2;id;r;g;b</code> with a colour-space id first. They
+                                look the same in the stream. Turn this on if a game's 24-bit
+                                colours come out visibly wrong. Applies to lines drawn after
+                                the change.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="color-space-id"
+                            aria-labelledby="color-space-id-label"
+                            checked={expectColorSpaceId}
+                            onChange={next => patchProfile({ expectColorSpaceId: next })}
+                        />
+                    </div>
+                    <div className="settings-row">
+                        <label className="settings-label" htmlFor="double-click-ignore">
+                            Stop selecting a word on these characters:
+                            <HelpTip label="About double-click selection">
+                                Double-clicking output selects a word. Any character listed here
+                                also ends one — useful for games that wrap names in punctuation.
+                                Leave it empty to use the browser's own word rules.
+                            </HelpTip>
+                        </label>
+                        <Input
+                            id="double-click-ignore"
+                            type="text"
+                            value={doubleClickIgnore}
+                            placeholder="e.g. &quot;'`"
+                            onChange={e => patchProfile({ doubleClickIgnore: e.target.value })}
+                        />
+                    </div>
+                    <div className="settings-row">
                         <label className="settings-label" htmlFor="search-engine">
                             Search selected text on:
                             <HelpTip label="About the search engine">
@@ -1260,6 +1609,52 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                         </select>
                     </div>
                     <div className="settings-row">
+                        <span className="settings-label" id="highlight-history-label">
+                            Highlight history
+                            <HelpTip label="About highlighting history">
+                                A command recalled with Up or Down comes back selected, so the
+                                next thing you type replaces it instead of being appended to it.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="highlight-history"
+                            aria-labelledby="highlight-history-label"
+                            checked={highlightHistory}
+                            onChange={next => patchProfile({ highlightHistory: next })}
+                        />
+                    </div>
+                    <div className="settings-row">
+                        <span className="settings-label" id="react-all-keys-label">
+                            React to all keybindings on the same key
+                            <HelpTip label="About reacting to all keybindings">
+                                When several keybindings share a key and modifiers, run every
+                                enabled one instead of stopping at the first that matches.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="react-all-keys"
+                            aria-labelledby="react-all-keys-label"
+                            checked={reactToAllKeybindings}
+                            onChange={next => patchProfile({ reactToAllKeybindings: next })}
+                        />
+                    </div>
+                    <div className="settings-row">
+                        <span className="settings-label" id="disable-password-masking-label">
+                            Disable password masking
+                            <HelpTip label="About password masking">
+                                While the game has echo off — which is how it asks for a
+                                password — the command line hides what you type. Turn this on to
+                                show it instead. Anyone who can see your screen can then read it.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="disable-password-masking"
+                            aria-labelledby="disable-password-masking-label"
+                            checked={disablePasswordMasking}
+                            onChange={next => patchProfile({ disablePasswordMasking: next })}
+                        />
+                    </div>
+                    <div className="settings-row">
                         <span className="settings-label" id="strict-unix-endings-label">
                             Strict UNIX line endings
                             <HelpTip label="About strict UNIX line endings">
@@ -1280,6 +1675,277 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                 </>
             ),
         },
+        {
+            // Mudlet's own group box on the Input line page. Its row inside is
+            // "System/Mudlet dictionary:" beside a dictionary picker; there is
+            // no picker here — the browser's spellchecker is the only one — so
+            // the row says what it actually does rather than promising a
+            // choice of dictionaries we cannot offer.
+            id: 'spellChecking',
+            category: 'inputLine' as const,
+            title: 'Spell checking',
+            description: 'Mudlet Web has no dictionary of its own; this hands the command line to the one your browser already uses.',
+            keywords: 'spell check, spelling, dictionary, autocorrect, red underline',
+            body: (
+                <div className="settings-row">
+                    <span className="settings-label" id="spellcheck-input-label">
+                        Check spelling on the command line
+                        <HelpTip label="About spell checking">
+                            Off by default: a command line is full of game words no dictionary
+                            has, and a screen of red underlines helps nobody. The word list is
+                            your operating system's, so it is configured there rather than
+                            here. Your password is never checked, whatever this says.
+                        </HelpTip>
+                    </span>
+                    <Toggle
+                        id="spellcheck-input"
+                        aria-labelledby="spellcheck-input-label"
+                        checked={spellCheckInput}
+                        onChange={next => patchProfile({ spellCheckInput: next })}
+                    />
+                </div>
+            ),
+        },
+        ...(vfs ? [{
+            id: 'storedMedia',
+            category: 'media' as const,
+            // Mudlet's own group-box and label text, verbatim — its Special
+            // Options page calls this "Clear stored media" over "Purge stored
+            // media files for the current profile:".
+            title: 'Clear stored media',
+            description: 'Sounds, music and video the game asked Mudlet Web to download are kept in this profile so they only download once.',
+            keywords: 'clear stored media, purge, cache, delete sounds, disk space, downloads',
+            body: (
+                <>
+                    <div className="settings-row">
+                        <span className="settings-label" id="clear-media-label">
+                            Purge stored media files for the current profile:
+                            {mediaSize && (
+                                <span className="settings-readout">
+                                    {mediaSize.files > 0
+                                        ? `${mediaSize.files} file${mediaSize.files === 1 ? '' : 's'}, ${formatBytes(mediaSize.bytes)}`
+                                        : 'none stored'}
+                                </span>
+                            )}
+                            <HelpTip label="About clearing stored media">
+                                Clearing frees the space and makes the game download each file
+                                again the next time it plays one. Files you put in the profile
+                                yourself, outside the <code>media</code> folder, are untouched.
+                            </HelpTip>
+                        </span>
+                        <Button
+                            variant="secondary"
+                            size="sm"
+                            disabled={!mediaSize || mediaSize.files === 0}
+                            onClick={() => { void handleClearMedia(); }}
+                        >
+                            Clear
+                        </Button>
+                    </div>
+                    {mediaStatus && <p className="settings-hint">{mediaStatus}</p>}
+                </>
+            ),
+        }] : []),
+        {
+            id: 'analytics',
+            category: 'privacy' as const,
+            title: 'Usage statistics',
+            description: 'Whether this browser is counted in Mudlet Web’s visitor numbers.',
+            keywords: 'analytics, tracking, telemetry, matomo, statistics, opt out, privacy, crash report',
+            body: (
+                <>
+                    <div className="settings-row">
+                        <span className="settings-label" id="analytics-label">
+                            Send anonymous usage statistics
+                            <HelpTip label="About usage statistics">
+                                The official mudlet.org deployment counts page views through
+                                Mudlet's own Matomo instance. No game text, profile, script or
+                                character name is ever sent — only that a browser opened the
+                                page. Nothing is sent at all from a self-hosted or branded
+                                build, or from a local development server.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="analytics"
+                            aria-labelledby="analytics-label"
+                            checked={!analyticsOff}
+                            onChange={next => { setAnalyticsOptedOut(!next); setAnalyticsOff(!next); }}
+                        />
+                    </div>
+                    <p className="settings-hint">Takes effect the next time you load the page.</p>
+                </>
+            ),
+        },
+        // Three cards, not one: Mudlet's Editor page is three group boxes —
+        // Theme, Autocomplete, Display options — and a player who knows the
+        // desktop dialog should find the same three headings here.
+        {
+            id: 'editorTheme',
+            category: 'editor' as const,
+            title: 'Theme',
+            description: 'The syntax colours the code editor draws with.',
+            keywords: 'editor, code, script, theme, colour scheme, color scheme, palette, syntax highlighting',
+            body: (
+                <>
+                    <div className="settings-row">
+                        <label className="settings-label" htmlFor="editor-theme">
+                            Theme
+                            <HelpTip label="About the editor theme">
+                                The syntax colours the code editor draws with. "Follow app
+                                theme" picks the light or dark palette to match Appearance;
+                                the other two pin it, so you can keep a dark editor under a
+                                light interface or the reverse.
+                            </HelpTip>
+                        </label>
+                        <select
+                            id="editor-theme"
+                            className="settings-select"
+                            value={editorSettings.theme}
+                            onChange={e => patchEditor({ theme: e.target.value as EditorSettings['theme'] })}
+                        >
+                            {EDITOR_THEME_CHOICES.map(opt => (
+                                <option key={opt.value} value={opt.value}>{opt.label}</option>
+                            ))}
+                        </select>
+                    </div>
+                </>
+            ),
+        },
+        {
+            id: 'editorAutocomplete',
+            category: 'editor' as const,
+            title: 'Autocomplete',
+            keywords: 'editor, code, script, autocomplete, completion, suggestions, lua functions',
+            body: (
+                <>
+                    <div className="settings-row">
+                        <span className="settings-label" id="editor-autocomplete-label">
+                            Autocomplete Lua functions in code editor
+                            <HelpTip label="About autocomplete">
+                                Suggest Mudlet's Lua functions as you type. Turn it off if the
+                                popup gets in the way; Ctrl+Space still opens it on demand.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="editor-autocomplete"
+                            aria-labelledby="editor-autocomplete-label"
+                            checked={editorSettings.autocomplete}
+                            onChange={next => patchEditor({ autocomplete: next })}
+                        />
+                    </div>
+                </>
+            ),
+        },
+        {
+            id: 'editorOptions',
+            category: 'editor' as const,
+            title: 'Display options',
+            description: 'What the script editor shows you while you write.',
+            keywords: 'editor, code, script, whitespace, spaces, tabs, invisible, control characters, item id',
+            body: (
+                <>
+                    <div className="settings-row">
+                        <span className="settings-label" id="editor-whitespace-label">
+                            Show Spaces/Tabs
+                            <HelpTip label="About showing whitespace">
+                                Draw runs of spaces as faint dots and tabs as arrows, so a file
+                                mixing the two is visible rather than merely misaligned.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="editor-whitespace"
+                            aria-labelledby="editor-whitespace-label"
+                            checked={editorSettings.showWhitespace}
+                            onChange={next => patchEditor({ showWhitespace: next })}
+                        />
+                    </div>
+                    <div className="settings-row">
+                        <span className="settings-label" id="editor-control-chars-label">
+                            Show invisible Unicode control characters
+                            <HelpTip label="About invisible characters">
+                                Mark zero-width and directional-formatting characters where they
+                                occur. Worth turning on when a pattern that looks right refuses
+                                to match — a zero-width space pasted from a website is a common
+                                cause.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="editor-control-chars"
+                            aria-labelledby="editor-control-chars-label"
+                            checked={editorSettings.showControlChars}
+                            onChange={next => patchEditor({ showControlChars: next })}
+                        />
+                    </div>
+                    <div className="settings-row">
+                        <span className="settings-label" id="editor-item-ids-label">
+                            Show Items' ID number
+                            <HelpTip label="About item IDs">
+                                Show each item's numeric id beside its name in the editor's
+                                tree — the id scripts pass to <code>enableTrigger</code>,
+                                <code> killTimer</code> and the like.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="editor-item-ids"
+                            aria-labelledby="editor-item-ids-label"
+                            checked={editorSettings.showItemIds}
+                            onChange={next => patchEditor({ showItemIds: next })}
+                        />
+                    </div>
+                </>
+            ),
+        },
+        ...(windows ? [{
+            id: 'mapFiles',
+            category: 'mapper' as const,
+            title: 'Map files',
+            description: 'Your map is saved into this profile as you explore. These are the same actions the map panel\'s own menu offers.',
+            keywords: 'save map, load map, download map, import map, .dat, .xml, mmp, map file',
+            body: (
+                <>
+                    <div className="settings-row">
+                        <span className="settings-label" id="map-save-label">
+                            Save your current map
+                            <HelpTip label="About saving the map">
+                                The map is written into this profile automatically whenever it
+                                changes, so this is only needed to force a save. To keep a copy
+                                outside the profile, use <code>saveMap(path)</code> from a script
+                                and export the file from the file browser.
+                            </HelpTip>
+                        </span>
+                        <Button variant="secondary" size="sm" onClick={() => { void handleSaveMap(); }}>Save now</Button>
+                    </div>
+                    <div className="settings-row">
+                        <span className="settings-label" id="map-load-label">Load another map file</span>
+                        <Button variant="secondary" size="sm" onClick={e => mapSource.open(e.currentTarget)}>Load map…</Button>
+                    </div>
+                    <div className="settings-row">
+                        <span className="settings-label" id="map-download-label">
+                            Download the latest map provided by your game
+                            <HelpTip label="About downloading the map">
+                                Only games that advertise a map URL over GMCP (<code>Client.Map</code>)
+                                offer one. The button does nothing on a game that does not.
+                            </HelpTip>
+                        </span>
+                        <Button variant="secondary" size="sm" onClick={() => windows.onDownloadMap?.()}>Download</Button>
+                    </div>
+                    <div className="settings-row">
+                        <span className="settings-label" id="map-delete-label">
+                            Delete map:
+                            <HelpTip label="About deleting the map">
+                                Throws away every room, exit, label and area in this profile's
+                                map and leaves an empty one. Use <strong>Save now</strong> above,
+                                or <code>saveMap(path)</code> from a script, to keep a copy
+                                first — this cannot be undone.
+                            </HelpTip>
+                        </span>
+                        <Button variant="danger" size="sm" onClick={() => { void handleDeleteMap(); }}>delete</Button>
+                    </div>
+                    {mapStatus && <p className="settings-hint">{mapStatus}</p>}
+                    {mapSource.elements}
+                </>
+            ),
+        }] : []),
         {
             id: 'mapView',
             category: 'mapper' as const,
@@ -1349,6 +2015,23 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                         />
                     </div>
                     <div className="settings-row">
+                        <span className="settings-label" id="mapper-default-area-label">
+                            Show the default area in map area selection
+                            <HelpTip label="About the default area">
+                                Rooms a mapper script created without naming an area land in the
+                                unnamed catch-all area. Turn this off to keep it out of the area
+                                list. Mudlet's <code>setDefaultAreaShown()</code> sets the same
+                                value from a script.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="mapper-default-area"
+                            aria-labelledby="mapper-default-area-label"
+                            checked={mapperShowDefaultArea}
+                            onChange={next => patchMapper({ showDefaultArea: next })}
+                        />
+                    </div>
+                    <div className="settings-row">
                         <span className="settings-label" id="mapper-lod-label">Simplify dense levels</span>
                         <Toggle
                             id="mapper-lod"
@@ -1367,13 +2050,58 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
             ),
         },
         {
+            // Mudlet's own group box on the Mapper page. Only the font row of
+            // it: "Only use symbols (glyphs) from chosen font" needs per-glyph
+            // coverage testing the renderer does not expose, and "Show symbol
+            // usage…" is a report rather than a setting.
+            id: 'mapSymbols',
+            category: 'mapper' as const,
+            title: 'Symbols',
+            description: 'Room symbols are the letters or glyphs a mapper script writes onto rooms.',
+            keywords: 'symbol, glyph, font, room symbol, typeface, map font',
+            body: (
+                <div className="settings-row">
+                    <label className="settings-label" htmlFor="mapper-symbol-font">
+                        2D Map Room Symbol Font
+                        <HelpTip label="About the room symbol font">
+                            Mudlet Web bundles Bitstream Vera Sans Mono and draws symbols with
+                            it, as desktop Mudlet does — a generic system font picks a
+                            different glyph shape per operating system, so the same map looks
+                            different on each. Name another family to override it; the bundled
+                            font stays behind it as a fallback, so a family this device does
+                            not have still lands somewhere sensible. Also sets the area-name
+                            header.
+                        </HelpTip>
+                    </label>
+                    <Input
+                        id="mapper-symbol-font"
+                        type="text"
+                        value={symbolFontText}
+                        placeholder={DEFAULT_SYMBOL_FONT}
+                        onChange={e => setSymbolFontText(e.target.value)}
+                        onBlur={() => {
+                            const next = symbolFontText.trim();
+                            patchMapper({ symbolFont: next === '' || next === DEFAULT_SYMBOL_FONT ? undefined : next });
+                        }}
+                    />
+                </div>
+            ),
+        },
+        {
             id: 'mapColors',
             category: 'mapper' as const,
             title: 'Map colors',
             description: 'The colours the map itself is drawn in.',
-            keywords: 'map colour, map color, background, exit line, info overlay',
+            keywords: 'map colour, map color, background, exit line, info overlay, reset',
             body: (
                 <>
+                    {mapColorsCustomised && (
+                        <div className="settings-colors-toolbar">
+                            <Button variant="secondary" size="sm" onClick={handleResetMapColors}>
+                                Reset all colors to default
+                            </Button>
+                        </div>
+                    )}
                     <div className="settings-colors-grid">
                         <ColorCell
                             label="Background"
@@ -1387,6 +2115,34 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                             value={mapperLineColor}
                             fallback={MAPPER_DEFAULTS.lineColor}
                             onChange={v => patchMapper({ lineColor: v })}
+                        />
+                        <ColorCell
+                            label="Grid color"
+                            value={mapperGridColor}
+                            fallback={DEFAULT_GRID_COLOR}
+                            onChange={v => patchMapper({ gridColor: v })}
+                            onClear={() => patchMapper({ gridColor: undefined })}
+                        />
+                    </div>
+                    <div className="settings-row">
+                        <label className="settings-label" htmlFor="mapper-grid-width">
+                            Grid width:
+                            <HelpTip label="About grid width">
+                                How thick the grid lines are drawn, in map units — the same
+                                scale as Exit size, so 0.02 is a hairline and 0.2 is heavy.
+                                Only visible while "Show grid" is on, under Map view.
+                            </HelpTip>
+                        </label>
+                        <Input
+                            id="mapper-grid-width"
+                            type="number"
+                            min={0.001}
+                            max={1}
+                            step={0.005}
+                            value={gridWidthText}
+                            placeholder={String(DEFAULT_GRID_LINE_WIDTH)}
+                            onChange={e => setGridWidthText(e.target.value)}
+                            onBlur={handleGridWidthBlur}
                         />
                     </div>
                     <div className="settings-row">
@@ -1905,6 +2661,26 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                         />
                     </div>
                     <div className="settings-row">
+                        <span className="settings-label" id="force-lf-after-prompt-label">
+                            Force new line on empty commands
+                            <HelpTip label="About forcing a new line">
+                                Only does anything while the linebreak fix above is on. That
+                                fix exists because GA-driven servers already leave the cursor
+                                on a fresh line after a prompt, so echoing an empty command
+                                adds a second blank one — this turns that echo back on if you
+                                want the blank line. Mudlet's
+                                <code> mUSE_FORCE_LF_AFTER_PROMPT</code>; rarely necessary.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="force-lf-after-prompt"
+                            aria-labelledby="force-lf-after-prompt-label"
+                            disabled={!fixUnnecessaryLinebreaks}
+                            checked={forceLfAfterPrompt}
+                            onChange={next => patchConfig({ forceLfAfterPrompt: next })}
+                        />
+                    </div>
+                    <div className="settings-row">
                         <span className="settings-label" id="special-force-ga-off-label">
                             Force telnet GA signal interpretation off
                             <HelpTip label="About forcing GA off">
@@ -2128,10 +2904,54 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
             description: 'Where Mudlet Web keeps the passwords you have let it remember, encrypted on this device.',
             keywords: 'password, keyring, keychain, credentials, sign in, vault, autologin',
             body: (
-                <div className="settings-row">
-                    <span className="settings-label">Saved logins</span>
-                    <VaultManageButton connections={connections} variant="row" />
-                </div>
+                <>
+                    <div className="settings-row">
+                        <span className="settings-label">Saved logins</span>
+                        <VaultManageButton connections={connections} variant="row" />
+                    </div>
+                    {/* Desktop's Special Options combo offers the profile file
+                        or an OS secure store. There is exactly one answer here
+                        and it is not a choice, so it reads as a value rather
+                        than as a control that only does one thing. */}
+                    <div className="settings-row">
+                        <span className="settings-label" id="password-store-label">
+                            Store character login passwords in:
+                            <HelpTip label="About where passwords are kept">
+                                Desktop Mudlet can put them in the profile file or in your
+                                operating system's keyring. A page can reach neither, so
+                                Mudlet Web encrypts them itself and keeps the ciphertext in
+                                this browser's storage — readable only after the vault is
+                                unlocked with your passkey or passphrase. They never leave
+                                this device and are not part of a profile export.
+                            </HelpTip>
+                        </span>
+                        <span className="settings-readout">An encrypted vault on this device</span>
+                    </div>
+                    {connectionId && (
+                        <div className="settings-row">
+                            <span className="settings-label" id="forget-signin-label">
+                                Forget saved sign-in
+                                <HelpTip label="About forgetting this sign-in">
+                                    Deletes the password saved for this profile only. Every
+                                    other profile keeps its own, and the vault itself stays
+                                    set up. You will be asked for the password the next time
+                                    this profile signs in.
+                                </HelpTip>
+                            </span>
+                            <Button
+                                variant="secondary"
+                                size="sm"
+                                disabled={!vaultState.exists || vaultState.locked || !vaultState.entryIds.includes(connectionId)}
+                                onClick={() => { void handleForgetSignIn(); }}
+                            >
+                                {vaultState.locked && vaultState.entryIds.includes(connectionId)
+                                    ? 'Unlock first'
+                                    : 'Forget'}
+                            </Button>
+                        </div>
+                    )}
+                    {forgetStatus && <p className="settings-hint">{forgetStatus}</p>}
+                </>
             ),
         }] : []),
         {
@@ -2383,6 +3203,26 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
             ),
         },
         ]),
+        // Last in each category, because an absence is the least interesting
+        // thing on a page — but present, so a player who came looking for one
+        // of these stops looking instead of hunting the other nine categories.
+        ...categoriesWithUnavailable().map(cat => ({
+            id: `unavailable-${cat}`,
+            category: cat,
+            title: 'Not available in the browser',
+            description: 'Desktop Mudlet settings that Mudlet Web cannot have, and why.',
+            keywords: 'missing, absent, desktop, difference, why, unavailable, not here',
+            body: (
+                <ul className="settings-unavailable">
+                    {unavailableIn(cat).map(item => (
+                        <li key={item.name} className="settings-unavailable__item">
+                            <span className="settings-unavailable__name">{item.name}</span>
+                            <span className="settings-unavailable__reason">{item.reason}</span>
+                        </li>
+                    ))}
+                </ul>
+            ),
+        })),
     ];
 
     return (
@@ -2397,6 +3237,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                     cards={cards}
                     subpages={SUBPAGES}
                     support={supportLink()}
+                    differences={isBrandedMode() ? undefined : { label: DIFFERENCES_LABEL, onOpen: () => setDifferencesOpen(true) }}
                     category={category}
                     onCategory={setCategory}
                     subpage={subpage}
@@ -2416,6 +3257,14 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                         </div>
                     </div>
                 </>
+            )}
+            {differencesOpen && (
+                <HelpModal
+                    connectionId={connectionId ?? undefined}
+                    initialTopic={DIFFERENCES_TOPIC}
+                    className="help-modal--over-settings"
+                    onClose={() => setDifferencesOpen(false)}
+                />
             )}
         </>
     );

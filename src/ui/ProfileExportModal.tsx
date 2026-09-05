@@ -6,6 +6,7 @@ import { downloadBlob, formatSessionFileStamp } from '../storage/logExport';
 import { collectProfileExport } from '../import/collectProfileExport';
 import { buildProfilesZip, type ProfileExportSource } from '../import/mudletProfileExport';
 import type { MudConnection } from '../storage/schema';
+import { formatBytes } from '../utils/formatBytes';
 
 // Export profiles as a Mudlet-format .zip — one folder per selected profile.
 // The same archive imports back through "Import .zip…" (here or on another
@@ -14,12 +15,6 @@ import type { MudConnection } from '../storage/schema';
 interface Props {
     connections: MudConnection[];
     onClose: () => void;
-}
-
-function formatBytes(n: number): string {
-    if (n < 1024) return `${n} B`;
-    if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
-    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export function ProfileExportModal({ connections, onClose }: Props) {

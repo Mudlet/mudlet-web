@@ -37,6 +37,8 @@ import { useVaultSaver } from './ui/useVaultSaver';
 import { VaultUnlockPrompt } from './ui/VaultUnlockPrompt';
 import { applyAnsiPalette, setServerRedefineColorsAllowed, resetAllPaletteColors } from './mud/text/colors';
 import { setOsc8HyperlinksEnabled } from './mud/text/hyperlinkConfig';
+import { setAmbiguousWidthWide } from './mud/text/wcwidth';
+import { setExpectColorSpaceId } from './mud/text/colorSpaceId';
 import { DEFAULT_CONSOLE_BUFFER_SIZE } from './mud/text/Console';
 import type { MudSession, ControlCharacterMode } from './mud/MudSession';
 import type { FileDialogRequest } from './mud/events';
@@ -166,6 +168,9 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
 
     const outputFont = useAppStore(s => selectProfileField(s, connection.id, 'outputFont'));
     const promptTimeoutMs = useAppStore(s => selectProfileField(s, connection.id, 'promptTimeoutMs'));
+    const serverEncoding = useAppStore(s => selectProfileField(s, connection.id, 'serverEncoding'));
+    const ambiguousWidthWide = useAppStore(s => selectProfileField(s, connection.id, 'ambiguousWidthWide'));
+    const expectColorSpaceId = useAppStore(s => selectProfileField(s, connection.id, 'expectColorSpaceId'));
     const ansiPalette = useAppStore(s => selectProfileField(s, connection.id, 'ansiPalette'));
     const serverRedefineColors = useAppStore(s => selectProfileField(s, connection.id, 'serverRedefineColors'));
     const osc8Hyperlinks = useAppStore(s => selectProfileField(s, connection.id, 'osc8Hyperlinks'));
@@ -295,6 +300,9 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // so it's on the session's options before autoConnect dials, and re-applied
     // live whenever the config bag changes.
     session.setFixUnnecessaryLinebreaks((profileConfig?.fixUnnecessaryLinebreaks as boolean | undefined) ?? false);
+    // Mudlet's `mUSE_FORCE_LF_AFTER_PROMPT` — read only while the fix above is
+    // on, so it is a plain field rather than a setter with a client to update.
+    session.forceLfAfterPrompt = (profileConfig?.forceLfAfterPrompt as boolean | undefined) ?? false;
     // Mudlet's `inputLineStrictUnixEndings` (config bag) — submit commands with a
     // bare LF instead of CRLF. Live, like Mudlet's per-send read of mUSE_UNIX_EOL.
     session.setInputLineStrictUnixEndings((profileConfig?.inputLineStrictUnixEndings as boolean | undefined) ?? false);
@@ -367,6 +375,25 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             session.setPromptTimeoutMs(promptTimeoutMs);
         }
     }, [promptTimeoutMs, session]);
+
+    // The profile's decoder choice, for games that never negotiate CHARSET.
+    // MudSession keeps it across reconnects and lets a CHARSET agreement or a
+    // script override it for the session, so this only has to push the value.
+    useEffect(() => {
+        if (serverEncoding) session.setServerEncoding(serverEncoding);
+    }, [serverEncoding, session]);
+
+    // Two text-pipeline switches held as module state (one tab renders one
+    // profile), so they are pushed rather than read. Like the ANSI palette,
+    // they apply to lines drawn after the change — what is already on screen
+    // keeps the widths and colours it was rendered with.
+    useEffect(() => {
+        setAmbiguousWidthWide(ambiguousWidthWide === true);
+    }, [ambiguousWidthWide]);
+
+    useEffect(() => {
+        setExpectColorSpaceId(expectColorSpaceId === true);
+    }, [expectColorSpaceId]);
 
     useEffect(() => {
         document.documentElement.classList.toggle('blink-text-enabled', blinkTextEnabled);
@@ -1238,6 +1265,8 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                     connectionId={connection.id}
                     vfs={vfs}
                     tlsStatus={tlsStatus}
+                    windows={session.windows}
+                    onOpenLogs={() => setLogsOpen(true)}
                 />
             )}
             {tlsStatus && tlsStatus.kind !== 'established' && (

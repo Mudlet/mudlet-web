@@ -246,6 +246,45 @@ export interface ProfileSettings {
      *  prompt. Mitigates spurious mid-line breaks when long MUD lines arrive
      *  fragmented. `undefined` = use MudClient's built-in default (300ms). */
     promptTimeoutMs?: number;
+    /** Mudlet's "Server data encoding": how the game's bytes are decoded into
+     *  text, for games that don't negotiate CHARSET. One of
+     *  `SUPPORTED_SERVER_ENCODINGS`, spelled as that list spells it. Applied on
+     *  profile open and carried across reconnects by `MudSession`; a CHARSET
+     *  negotiation or a script's `setServerEncoding()` overrides it for the
+     *  session without rewriting this. `undefined` = UTF-8. */
+    serverEncoding?: string;
+    /** Mudlet's "Highlight history": a command recalled with Up/Down comes back
+     *  selected rather than with the caret at its end, so the next keystroke
+     *  replaces it. Off unless explicitly true, as on desktop. */
+    highlightHistory?: boolean;
+    /** Mudlet's "Disable password masking": show the characters in the command
+     *  line while the game has echo off. Off unless explicitly true. */
+    disablePasswordMasking?: boolean;
+    /** Mudlet's "React to all keybindings on the same key": when several
+     *  keybindings share a key and modifiers, run every enabled one instead of
+     *  stopping at the first that matches. Off unless explicitly true. */
+    reactToAllKeybindings?: boolean;
+    /** Mudlet's "Stop selecting a word on these characters": the extra
+     *  characters a double-click treats as a word boundary in the main display.
+     *  Empty or unset uses the browser's own word rules. */
+    doubleClickIgnore?: string;
+    /** Mudlet's "Make 'Ambiguous' E. Asian width characters wide": render the
+     *  Unicode East Asian *Ambiguous* characters (box-drawing glyphs, ★ ♠ and
+     *  friends) two columns wide instead of one. Off unless explicitly true. */
+    ambiguousWidthWide?: boolean;
+    /** Mudlet's "Expect Color Space Id in SGR...(3|4)8;2;...m codes": read
+     *  24-bit colour as `38;2;<id>;r;g;b` (the ITU T.416 spelling, with a
+     *  colour-space id) rather than `38;2;r;g;b`. Off unless explicitly true. */
+    expectColorSpaceId?: boolean;
+    /** Mudlet's Editor preference page. Each field falls back to
+     *  `EDITOR_OPTION_DEFAULTS` when unset. */
+    editor?: EditorSettings;
+    /** Mudlet's "System/Mudlet dictionary" spell-check switch, as near as a
+     *  browser gets: turn the browser's own spellchecker on for the command
+     *  line. Off unless explicitly true — a MUD command line is full of words
+     *  no dictionary has, so red underlines everywhere is the wrong default.
+     *  Never applied to the password field. */
+    spellCheckInput?: boolean;
     /** Per-area MapPanel last-viewed z-level. Each area remembers which level
      *  you were on so switching between areas (or reopening the panel) restores
      *  it. Zoom is no longer kept here — it lives in the map file (per-area
@@ -433,6 +472,26 @@ export type BooleanProtocolKey = {
  *  more renderer options get exposed. Keep all fields optional so the
  *  patcher can ship partial updates and unset fields fall through to the
  *  renderer's own createSettings() defaults. */
+/** The script editor's display options — desktop Mudlet's Editor preference
+ *  page. `showItemIds` is the tree's, the other three the code view's; all are
+ *  optional and fall back to `EDITOR_OPTION_DEFAULTS`. */
+export interface EditorSettings {
+    /** "Autocomplete Lua functions in code editor". Default on. */
+    autocomplete?: boolean;
+    /** "Show Spaces/Tabs". Default off. */
+    showWhitespace?: boolean;
+    /** "Show invisible Unicode control characters". Default off. */
+    showControlChars?: boolean;
+    /** "Show Items' ID number" — the numeric id beside each script, alias,
+     *  trigger and so on in the editor's tree. Default off. */
+    showItemIds?: boolean;
+    /** "Theme" — the code editor's syntax palette. `'app'` (the default)
+     *  follows the app theme, as it always did; the other two pin it. Typed as
+     *  a plain string here so the schema does not depend on the CodeMirror
+     *  layer; `EDITOR_THEME_CHOICES` is the authority on the values. */
+    theme?: 'app' | 'dark' | 'light';
+}
+
 export interface MapperSettings {
     /** renderer.settings.roomSize — diameter/side of a room in map units. */
     roomSize?: number;
@@ -455,6 +514,19 @@ export interface MapperSettings {
     showDefaultArea?: boolean;
     /** renderer.settings.gridEnabled — background grid overlay. */
     gridEnabled?: boolean;
+    /** Mudlet's "Grid color" (Mapper colors page). Unset uses the renderer's
+     *  own default. */
+    gridColor?: string;
+    /** Mudlet's "Grid width" (`mMapGridLineSize`): how *thick* the grid lines
+     *  are, in map units — not how far apart they sit. The renderer calls that
+     *  `gridLineWidth`; its `gridSize` is the spacing and has no Mudlet
+     *  counterpart. Unset uses the renderer's own default. */
+    gridLineWidth?: number;
+    /** Mudlet's "2D Map Room Symbol Font" (`mMapSymbolFont`) — the family room
+     *  symbols and the area-name header are drawn in. A family name only; the
+     *  bundled Bitstream Vera Sans Mono stays behind it as the fallback.
+     *  Unset uses that bundled font, which is Mudlet's default too. */
+    symbolFont?: string;
     /** renderer.settings.lodEnabled — level-of-detail for very dense planes.
      *  Above {@link lodExitBudget} rooms on the drawn (area, z-level) the
      *  renderer drops exit lines, and above {@link lodRoomBudget} it replaces
@@ -541,6 +613,11 @@ export const MAPPER_DEFAULTS: Required<MapperSettings> = {
     lineColor: '#e1ffe1',
     showDefaultArea: true,
     gridEnabled: false,
+    // Both mirror mudlet-map-renderer's createSettings() defaults, so leaving
+    // them unset and setting them to these draws the same grid.
+    gridColor: 'rgba(200, 200, 200, 0.15)',
+    gridLineWidth: 0.02,
+    symbolFont: 'Bitstream Vera Sans Mono',
     // LOD budgets mirror the renderer's createSettings() defaults; `lodEnabled`
     // deliberately does NOT (the renderer defaults it off for back-compat,
     // mudix opts in — see MapperSettings.lodEnabled).

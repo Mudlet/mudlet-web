@@ -320,6 +320,7 @@ export class MudSession {
      *  for them) sent, under the showSentText mode. `wantPrint` is the per-call
      *  flag `script` mode defers to — `always` and `never` overrule it. */
     echoSentCommand(text: string, wantPrint: boolean): void {
+        if (text === '' && !this.shouldEchoEmptyCommand()) return;
         if (this.shouldEchoSentText(wantPrint)) this.echoCommand(text);
     }
 
@@ -663,6 +664,27 @@ export class MudSession {
     setFixUnnecessaryLinebreaks(enabled: boolean): void {
         this.options.fixUnnecessaryLinebreaks = enabled;
         this.client?.setFixUnnecessaryLinebreaks(enabled);
+    }
+
+    /** Mudlet `mUSE_FORCE_LF_AFTER_PROMPT` — the "Force new line on empty
+     *  commands" checkbox. Only consulted while the GA linebreak fix is on;
+     *  see {@link shouldEchoEmptyCommand}. */
+    forceLfAfterPrompt = false;
+
+    /**
+     * Whether pressing Enter on an empty command line should echo a blank line.
+     *
+     * Mudlet's rule, from `Host::send` (Host.cpp:1461):
+     *
+     *     if (!cmd.isEmpty() || !mUSE_IRE_DRIVER_BUGFIX || mUSE_FORCE_LF_AFTER_PROMPT)
+     *
+     * The GA linebreak fix exists because those servers already put the cursor
+     * on a fresh line after a prompt, so echoing the empty command adds a
+     * second blank one. With the fix off — the default, and every non-GA game —
+     * an empty command echoes exactly as it always did here.
+     */
+    private shouldEchoEmptyCommand(): boolean {
+        return !(this.options.fixUnnecessaryLinebreaks ?? false) || this.forceLfAfterPrompt;
     }
 
     /** Mudlet `Host::mUndoServerWrap` / `mUndoServerWrapWidth`, as getConfig
