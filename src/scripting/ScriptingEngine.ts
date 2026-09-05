@@ -4119,7 +4119,7 @@ export class ScriptingEngine implements EngineHost {
                             // frame renders underlined text that does nothing.
                             this.wireMxpLinks(fbuf, rd.links);
                             this.wireOsc8Links(fbuf);
-                            if (!this.api.mxpWriteToFrame(rd.frame, fbuf, rd.eof)) {
+                            if (!this.api.mxpWriteToFrame(rd.frame, fbuf, rd.eof, rd.eol)) {
                                 units.push({ plain: rd.plain, buffer: fbuf, outputLine: rd.plain, blankRenders: rd.plain === '' });
                             }
                         }

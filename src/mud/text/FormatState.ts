@@ -604,10 +604,19 @@ export class FormatState {
  * accidental italic. Extended colours still read either form, since applySgr
  * looks ahead across parameters for the `38;5;n` spelling.
  */
-export function parseSgrCodes(sequence: string): SgrParam[] {
+export function parseSgrCodes(sequence: string): SgrParam[] | null {
     if (!sequence) return [0];
     const params: SgrParam[] = [];
+    let anyUsable = false;
     for (const part of sequence.split(';')) {
+        // A reserved byte inside a parameter makes THAT parameter unreadable,
+        // and it is dropped rather than read as far as it parses: parseInt would
+        // take "1<2" for a 1 and quietly apply a rendition the game never asked
+        // for. The parameters either side are untouched, so "0;37;4>" still
+        // paints what "0;37" paints. Only 0x3C-0x3F are treated this way — they
+        // are legal as the FIRST byte of a private sequence and nowhere else.
+        if (/[<-?]/.test(part)) continue;
+        anyUsable = true;
         const nums = part
             .split(':')
             .map(sub => sub.trim())
@@ -617,7 +626,11 @@ export function parseSgrCodes(sequence: string): SgrParam[] {
         if (nums.length === 1) params.push(nums[0]);
         else params.push(nums);
     }
-    return params;
+    // Every parameter was unreadable. Null rather than an empty list, because an
+    // SGR with NO parameters is a reset — applying one here would repaint the
+    // line in the default colour, which is the loudest possible way to act on a
+    // sequence that should have changed nothing.
+    return anyUsable ? params : null;
 }
 
 /** True when a parsed OSC 8 config carries any field worth keeping (so a bare
@@ -667,8 +680,14 @@ function parseAnsiSegments(
             // fully assembled by the time we parse it; a truncated tail is junk).
             if (esc.kind === "incomplete") break;
             if (esc.kind === "csi" && esc.finalByte === "m") {
-                flush();
-                state.applySgr(parseSgrCodes(esc.params ?? ""));
+                // Null means every parameter was unreadable, so the sequence is
+                // consumed and changes nothing — not even a flush, since no run
+                // boundary is created by a rendition that never happened.
+                const sgr = parseSgrCodes(esc.params ?? "");
+                if (sgr) {
+                    flush();
+                    state.applySgr(sgr);
+                }
             } else if (esc.kind === "osc" && esc.oscPayload !== undefined) {
                 const link = parseOsc8Payload(esc.oscPayload);
                 if (link) {
@@ -1900,7 +1919,8 @@ export function computeTrailingState(
             const esc = scanEscape(text, i);
             if (esc.kind === "incomplete") break;
             if (esc.kind === "csi" && esc.finalByte === "m") {
-                state.applySgr(parseSgrCodes(esc.params ?? ""));
+                const sgr = parseSgrCodes(esc.params ?? "");
+                if (sgr) state.applySgr(sgr);
             }
             // All other sequences are consumed without affecting carry state.
             i = esc.end;

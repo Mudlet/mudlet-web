@@ -49,8 +49,14 @@ export function scanEscape(text: string, start: number): EscapeScan {
     // CSI — ESC [ <params/intermediates> <final 0x40-0x7E>
     if (next === "[") {
         let j = start + 2;
-        while (j < n && !isCsiFinal(text[j])) j++;
+        // An ESC ends the scan without being part of it. A CSI that never
+        // reaches a final byte is unusable, but the byte that cut it short
+        // belongs to whatever comes next: reading through it swallowed the
+        // following sequence whole, so "ESC[0;4> ESC[0m text" lost its reset and
+        // printed "0m" as if the game had sent it.
+        while (j < n && !isCsiFinal(text[j]) && text[j] !== ESC) j++;
         if (j >= n) return { kind: "incomplete", end: n };
+        if (text[j] === ESC) return { kind: "csi", end: j, params: text.slice(start + 2, j) };
         return { kind: "csi", end: j + 1, finalByte: text[j], params: text.slice(start + 2, j) };
     }
 

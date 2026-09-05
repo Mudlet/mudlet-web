@@ -4031,9 +4031,15 @@ export class ScriptingAPI {
      * in the main window, matching Mudlet). `eof` clears the frame first — the
      * status-frame "replace contents" idiom.
      */
-    mxpWriteToFrame(name: string, buffer: AnsiAwareBuffer, eof: boolean): boolean {
+    mxpWriteToFrame(name: string, buffer: AnsiAwareBuffer, eof: boolean, eol = false): boolean {
         if (!this.mxpFrames.has(name)) return false;
         const id = mxpWindowId(name);
+        // EOL is the narrower of the two clears: the write is a complete line,
+        // so the part-written one the frame was left sitting on is discarded
+        // rather than continued — but the finished lines above it stay, which is
+        // what tells EOL from EOF. Without this the redirect joins onto whatever
+        // was half-written and the two lines come out as one.
+        if (eol && !eof) this.outputConsole(id).clearPartial();
         if (eof) {
             this.clearWindow(id);
             if (!this.mxpReplacedFrames.has(name)) {

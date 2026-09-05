@@ -71,7 +71,13 @@ describe('command echo vs. an open script partial', () => {
         t.api.echo('TEST');
         t.api.flushOutput();
         t.session.echoCommand('gg');
-        const lines = t.session.consoles.get('main')!.getLines(0, 10).map(plain);
+        // Asked for the lines that exist rather than a round number: getLines()
+        // does not clamp — it answers exactly abs(to - from) entries, filling
+        // past the end with Mudlet's invalid-line string — so a 10-wide window
+        // on a two-line buffer is eight sentinels and the open line, not a short
+        // list. That is the contract EmptyBufferOps_spec is built on.
+        const con = t.session.consoles.get('main')!;
+        const lines = con.getLines(0, con.getLineCount() + 1).map(plain);
         expect(lines).toEqual(['TEST', 'gg']);
     });
 });
