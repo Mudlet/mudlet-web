@@ -52,15 +52,64 @@ function looksLikeZip(buf: Uint8Array): boolean {
     return ZIP_MAGIC.every((b, i) => buf[i] === b);
 }
 
-/** Replace path separators and other chars unsafe in a VFS directory name. */
-function sanitizePackageName(name: string): string {
-    return name.replace(/[\\/:*?"<>|]/g, '_').trim();
+/** The endings `Host::sanitizePackageName` takes off a name, in its order. */
+const PACKAGE_FILE_ENDINGS = ['.trigger', '.xml', '.zip', '.mpackage'];
+
+/**
+ * Mudlet `Host::sanitizePackageName` — the name a package file is called,
+ * reduced to the name the package installs under.
+ *
+ * Not a suffix strip: each ending is removed wherever it appears, and the whole
+ * thing repeats until a pass changes nothing. That matters because taking one
+ * ending off can leave another that was not there to begin with — `.x.zipml`
+ * gives up its `.zip` to become `.xml`, which the next pass takes as well. One
+ * pass is a different answer from two, and the trimming is asked for at more
+ * than one level of an install: the name a package is installed UNDER and the
+ * name its details are FILED under both come out of this, so a single pass
+ * leaves a package unable to describe itself, and its details stranded under a
+ * name no uninstall knows to remove. Each pass can only shorten, so it stops.
+ */
+function trimPackageFileEndings(name: string): string {
+    let current = name;
+    let previous = '';
+    while (current !== previous) {
+        previous = current;
+        // Only the last path segment is a name; the rest is where it came from.
+        current = current.slice(current.lastIndexOf('/') + 1);
+        for (const ending of PACKAGE_FILE_ENDINGS) {
+            current = current.replace(new RegExp(ending.replace('.', '\\.'), 'gi'), '');
+        }
+        current = current.replaceAll('\\', '');
+    }
+    return current;
 }
 
-/** Strip extension, sanitize for use as a directory name. */
+/** Trim as Mudlet does, then replace what is left that a VFS directory name
+ *  cannot carry — a step mudix needs and desktop does not. */
+function sanitizePackageName(name: string): string {
+    return trimPackageFileEndings(name).replace(/[:*?"<>|]/g, '_').trim();
+}
+
+/** Sanitize a package file's name for use as a directory name. */
 function packageNameFromFile(filename: string): string {
-    const base = filename.replace(/\.(mpackage|zip|xml)$/i, '');
-    return sanitizePackageName(base) || 'package';
+    return sanitizePackageName(filename) || 'package';
+}
+
+/**
+ * Refuse a name that cannot be a folder INSIDE the profile.
+ *
+ * This is not hypothetical tidiness. An ending is taken out wherever it
+ * appears, so an archive called `...mpackage` gives up the `.mpackage` sitting
+ * in its middle and what is left is `..` — and that name becomes the directory
+ * the archive unpacks into, which is the folder holding every profile. Mudlet
+ * refuses it (Package_spec pins that the profiles directory is untouched
+ * afterwards), and so must this: the name arrives from the archive's filename or
+ * from a config.lua inside it, neither of which the player wrote.
+ */
+function assertPackageNameStaysInProfile(name: string, source: string): void {
+    if (!name || /^\.+$/.test(name) || name.includes('/') || name.includes('\\')) {
+        throw new Error(`could not install '${source}': "${name}" is not a usable package name`);
+    }
 }
 
 function isXmlEntry(path: string): boolean {
@@ -100,6 +149,7 @@ export function preparePackageInstall(
     // Provisional: an archive's config.lua may rename the package out from under
     // us, exactly as it does in Mudlet — see the rename below.
     let packageName = packageNameFromFile(filename);
+    assertPackageNameStaysInProfile(packageName, filename);
     let pkgDir = `${vfs.profilePath}/${packageName}`;
     let sourcePath = opts.sourcePath;
 
@@ -160,6 +210,9 @@ export function preparePackageInstall(
         // the declared name. Only a *staged* install has files already sitting
         // under the filename's directory, and the commit moves those.
         const declared = sanitizePackageName(manifestExtras.name ?? '');
+        // Checked as well as the filename above: a config.lua inside the archive
+        // is no more trustworthy than the archive's own name.
+        if (manifestExtras.name) assertPackageNameStaysInProfile(declared, filename);
         if (declared && declared !== packageName) {
             packageName = declared;
             pkgDir = `${vfs.profilePath}/${declared}`;
@@ -432,7 +485,9 @@ export function prepareModuleInstallFromVfsPath(
     // Mudlet's wording (Host::installPackage), which verboseModuleInstall prints
     // verbatim — ours said "File not found", which is the same fact in a shape
     // no script matching on Mudlet's text would recognise.
-    if (!builtin && !vfs.exists(absolutePath)) throw new Error(`could not open file '${absolutePath}`);
+    // The closing quote matters: without it the reason runs straight into
+    // whatever a caller appends to it, and Package_spec checks for it.
+    if (!builtin && !vfs.exists(absolutePath)) throw new Error(`could not open file '${absolutePath}'`);
     const filename = absolutePath.substring(absolutePath.lastIndexOf('/') + 1) || 'module';
     const buf = builtin ?? vfs.readBinaryFile(absolutePath);
 

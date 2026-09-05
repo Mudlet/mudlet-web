@@ -1884,7 +1884,9 @@ export class ScriptingEngine implements EngineHost {
         // profile file of the same name.
         const builtin = this.runtimes.lua?.readBuiltinBytes?.(path) ?? null;
         if (!builtin && !vfs.exists(path)) {
-            const error = `could not open file '${path}`;
+            // The closing quote matters: without it the reason runs straight
+            // into whatever a caller appends, and Package_spec checks for it.
+            const error = `could not open file '${path}'`;
             this.api.printError(`[installPackage] ${error}`);
             return { ok: false, error };
         }
