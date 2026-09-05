@@ -1,3 +1,9 @@
+# Deliberately not pinned to `github.repository`, unlike publish.yml and the
+# schedule in sync-mudlet-upstream.yml: this one deploys to whichever repository
+# runs it, and a fork serving its own build — a brand, a staging copy — is a use
+# case this project supports rather than an accident. A fork that enables Actions
+# without turning on Pages sees `deploy-pages` fail; the fix is Settings → Pages →
+# Source: GitHub Actions, or switching this workflow off in its Actions tab.
 name: Deploy to GitHub Pages
 
 on:
