@@ -5243,6 +5243,126 @@ end
 -- Mudlet seeds it from the player's profile.
 __mudix_mmcp_chat_name = ""
 
+-- ── Addon commands (addCommand and friends) ────────────────────────────────
+-- The argument contract sits here rather than in JS because every refusal names
+-- the LUA type of what it was handed — "surfaces has to be a list of surface
+-- names and this one holds a boolean" — and a value's Lua type is exactly what
+-- does not survive the trip across wasmoon. Everything needing state or real
+-- parsing (ids, the key sequence, who holds a key, what the pulse takes) is on
+-- the other side, in bindings/commands.ts.
+do
+    -- Leaving a field out and giving it the wrong type are different mistakes:
+    -- the first asks for nothing, the second asks for something and is ignored.
+    -- menuPath is the one that bites, because a path reads as a list and the
+    -- sibling surfaces field really does take one, so menuPath = {"a","b"} is
+    -- easy to write and used to place the command at the top of the menu
+    -- without a word. Numbers are left to the parser on purpose: Lua 5.1 says a
+    -- number IS a string, so shortcut = 12345 reaches the sequence reader and is
+    -- refused for what it actually is rather than as a type mistake.
+    local function stringField(t, field)
+        local value = t[field]
+        if value == nil then return "" end
+        local s = __mudix_str(value)
+        if s == nil then
+            return nil, field .. " has to be a string and this one is a " .. type(value)
+        end
+        return s
+    end
+
+    -- surfaces is a list rather than a single word, so a client that grows
+    -- another surface takes another entry rather than a new spelling of "both".
+    -- A bare string is accepted for the one-surface case.
+    local function readSurfaces(value)
+        if value == nil then return "both" end
+        local wantsMenu, wantsToolbar, named = false, false, false
+        local function name(surface)
+            named = true
+            if surface == "menu" then wantsMenu = true
+            elseif surface == "toolbar" then wantsToolbar = true
+            else
+                return nil, "'" .. surface .. "' is not a surface this client has - use 'menu' or 'toolbar'"
+            end
+            return true
+        end
+        if type(value) == "string" then
+            local ok, err = name(value)
+            if not ok then return nil, err end
+        elseif type(value) == "table" then
+            for _, entry in pairs(value) do
+                -- A list of names, so a keyed table such as {menu = true} is a
+                -- mistake worth naming by type: a boolean has no string form,
+                -- and quoting it would send the package looking for a surface
+                -- named by the empty string.
+                if type(entry) ~= "string" then
+                    return nil, "surfaces has to be a list of surface names and this one holds a "
+                        .. type(entry) .. " - use surfaces = {'menu', 'toolbar'}"
+                end
+                local ok, err = name(entry)
+                if not ok then return nil, err end
+            end
+            -- An empty list asks for the command to go nowhere, which no package
+            -- can have meant — and reading it as "both" would place the command
+            -- in the two places it just said it did not want.
+            if not named then
+                return nil, "surfaces is empty, so there is nowhere to put the command - name 'menu', 'toolbar', or leave surfaces out for both"
+            end
+        else
+            return nil, "surfaces has to be a surface name or a list of them, not a "
+                .. type(value) .. " - use 'menu' or 'toolbar'"
+        end
+        if wantsMenu and wantsToolbar then return "both" end
+        if wantsToolbar then return "toolbar" end
+        return "menu"
+    end
+
+    function addCommand(request)
+        if type(request) ~= "table" then
+            return nil, "addCommand needs a table, e.g. addCommand{name = 'Speech', menuPath = 'Speech'}"
+        end
+        local fields, err = {}, nil
+        for _, field in ipairs({"name", "icon", "tooltip", "menuPath", "shortcut"}) do
+            fields[field], err = stringField(request, field)
+            if err then return nil, err end
+        end
+        if fields.name == "" then
+            return nil, "a command needs a name to show"
+        end
+        local surfaces, surfaceErr = readSurfaces(request.surfaces)
+        if surfaceErr then return nil, surfaceErr end
+
+        local result = __addCommand(fields.name, fields.icon, fields.tooltip,
+                                    fields.menuPath, fields.shortcut, surfaces)
+        if type(result) == "string" then return nil, result end
+        return result
+    end
+
+    -- Every setter answers false for an id nobody knows rather than raising:
+    -- one sequence covers every command, so an unknown id names nothing at all
+    -- rather than something of another kind.
+    function removeCommand(id)     return __removeCommand(id) end
+    function enableCommand(id)     return __enableCommand(id) end
+    function disableCommand(id)    return __disableCommand(id) end
+    function setCommandChecked(id, checked) return __setCommandChecked(id, checked) end
+    function setCommandIcon(id, icon)       return __setCommandIcon(id, icon) end
+    function setCommandTooltip(id, tooltip) return __setCommandTooltip(id, tooltip) end
+
+    function setCommandPulse(id, on, colour, altColour, intervalMs)
+        local result = __setCommandPulse(id, on, colour, altColour, intervalMs)
+        if type(result) == "string" then return nil, result end
+        return result
+    end
+
+    function getCommands()
+        local list, out = __getCommands(), {}
+        local i = 0
+        while list[i] ~= nil do
+            out[#out + 1] = list[i]
+            i = i + 1
+        end
+        return out
+    end
+end
+
 -- ── Speech to text (stt.*) ─────────────────────────────────────────────────
 -- Mudlet's stt.* drives an offline recogniser: it dlopen()s a native Vosk
 -- library and loads a language model from a directory on disk. Half the API is

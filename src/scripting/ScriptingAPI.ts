@@ -11,6 +11,7 @@ import type { WindowHandle, WindowOpenOptions } from '../ui/windows/types';
 import { MAP_WIDGET_ID, MAPPER_WIDGET_ID } from '../ui/windows/types';
 import type { LabelManager, LabelCreateOptions, LabelMouseEvent, LabelWheelEvent } from '../ui/labels/LabelManager';
 import { classifyLabelLink } from '../ui/labels/labelLinks';
+import { AddonCommandRegistry } from '../ui/commands/addonCommands';
 import { decodeGif, decodeAnimatedImage, sniffDecodableImage, supportsImageDecoder, MoviePlayer } from '../ui/labels/gifMovie';
 import { resolveSvgIntrinsicSize } from '../ui/labels/backgroundImageSize';
 import type { CommandLineManager } from '../ui/cmdline/CommandLineManager';
@@ -777,6 +778,9 @@ export class ScriptingAPI {
     private readonly oscLinks = new OscLinkManager();
     readonly windows: ScriptingWindowsAPI;
     readonly labels: ScriptingLabelsAPI;
+    /** Mudlet's addon commands (addCommand and friends). Per profile, like
+     *  every other placement a package makes. */
+    readonly addonCommands = new AddonCommandRegistry();
     /** Values for the `sessionOnly` options in {@link CONFIG_PERSIST_ONLY} —
      *  held here rather than in the profile's config bag precisely so they are
      *  gone next session. */
@@ -1635,6 +1639,34 @@ export class ScriptingAPI {
             }
             if (spec.sessionOnly) this.sessionConfig.set(key, v);
             else this.patchConfigBag(key, v);
+            // The buffer search's key is held only while the search is on, and
+            // a package may already be sitting on it. Qt answers two things on
+            // one key by disabling BOTH, so switching the search on over a
+            // command would cost the player the search they just asked for as
+            // well as the command, with nothing on screen to say why.
+            if (key === 'f3SearchEnabled') {
+                const on = v === true;
+                if (on) {
+                    for (const command of this.addonCommands.commandsOn(this.addonCommands.searchShortcut)) {
+                        // Said in the main window rather than through
+                        // printError: it is a notice, not a script fault, and
+                        // an error only reaches main when the profile asked for
+                        // errors there — which is exactly when it would be
+                        // missed by the player who needs it.
+                        //
+                        // Written to the buffer as well as emitted, for the
+                        // reason warnIfUnencodable gives: a line the player can
+                        // read has to be a line getLines() and the cursor APIs
+                        // can see, and the emit alone only reaches the renderer.
+                        const notice = `\x1b[36m[ INFO ]\x1b[0m  - the buffer search has taken `
+                            + `${this.addonCommands.searchShortcut.toUpperCase()} from the command `
+                            + `"${command.name}", which no longer has a shortcut`;
+                        this.mainConsole.appendLine(new AnsiAwareBuffer(notice));
+                        this.session.events.emit('message', notice, 'script', Date.now());
+                    }
+                }
+                this.addonCommands.setSearchActive(on);
+            }
             return true;
         }
         return false;

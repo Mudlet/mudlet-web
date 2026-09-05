@@ -40,6 +40,7 @@ import {installAutomationBindings} from './bindings/automation';
 import {installPackageBindings} from './bindings/packages';
 import {installOutputBindings} from './bindings/output';
 import {installTextEditBindings} from './bindings/textEdit';
+import {installCommandBindings} from './bindings/commands';
 import {installCommandLineBindings} from './bindings/commandLine';
 import {installDiagnosticsBindings} from './bindings/diagnostics';
 import {installSessionBindings} from './bindings/session';
@@ -801,6 +802,9 @@ export class LuaRuntime implements IScriptingRuntime {
 
         // -- createTextEdit widgets --
         installTextEditBindings(bindings);
+
+        // -- addon commands (addCommand and friends) --
+        installCommandBindings(bindings);
 
         // ── Labels ────────────────────────────────────────────────────────────
         // createLabel([window,] name, x, y, w, h, fillBackground [, clickThrough]).
