@@ -1322,6 +1322,14 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // that render.
     const [appEl, setAppEl] = useState<HTMLDivElement | null>(null);
 
+    // The content row is the client area: everything above it is a bar of the
+    // client's own (the menu row, the button row, a TLS banner), and floating
+    // windows are kept out of that strip — see WindowManager.clientAreaTop.
+    const setClientAreaEl = useCallback(
+        (el: HTMLDivElement | null) => session.windows.registerClientArea(el),
+        [session],
+    );
+
     const brandToolbarContext = {
         connectionId: connection.id,
         send: (text: string) => send(text),
@@ -1409,7 +1417,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                     onDismiss={() => setTlsStatus(null)}
                 />
             )}
-            <div className="app-content" role="main">
+            <div className="app-content" role="main" ref={setClientAreaEl}>
                 <ContentLayout
                     session={session}
                     manager={session.windows}

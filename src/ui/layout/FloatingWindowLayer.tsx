@@ -19,13 +19,14 @@ export function FloatingWindowLayer({ windows, manager, onDragStateChange, onTit
     // the same parent (see overlayLayerOrder.ts), not just other windows —
     // so it replaces `w.zIndex` (a global, windows-only counter) instead of
     // being layered under a wrapper-level z-index.
-    const renderWindow = (w: ScriptWindowRenderData, zIndexOverride?: number) => w.visible && (
+    const renderWindow = (w: ScriptWindowRenderData, zIndexOverride?: number, nested?: boolean) => w.visible && (
         <ScriptWindow
             key={w.id}
             {...w}
             zIndex={zIndexOverride ?? w.zIndex}
             manager={manager}
             isMiniConsole={manager.isMiniConsole(w.id)}
+            nested={nested}
             lockFloating={w.lockFloating}
             frameTabs={w.frameTabs}
             isMxpFrame={w.isMxpFrame}
@@ -96,7 +97,7 @@ export function FloatingWindowLayer({ windows, manager, onDragStateChange, onTit
         <>
             {createPortal(
                 <div className="floating-window-root">
-                    {rootWindows.map(renderWindow)}
+                    {rootWindows.map(w => renderWindow(w))}
                 </div>,
                 document.body,
             )}
@@ -112,7 +113,7 @@ export function FloatingWindowLayer({ windows, manager, onDragStateChange, onTit
                 // exactly the bug this per-widget ranking replaces.
                 return createPortal(
                     <div className="floating-window-root floating-window-root--nested">
-                        {list.map(w => renderWindow(w, manager.overlayZ.getZ(parent, 'windows', w.id)))}
+                        {list.map(w => renderWindow(w, manager.overlayZ.getZ(parent, 'windows', w.id), true))}
                     </div>,
                     target,
                     `nested:${parent}`,
