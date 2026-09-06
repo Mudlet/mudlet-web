@@ -8,7 +8,9 @@
  * That difference is the whole reason this is not six independent popovers.
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { nextMenuIndex } from '../components/ContextMenu';
+import { anchoredStyle, inPopupSurface, useAnchoredPopup } from './anchoredPopup';
 import type { MenuNode, MenuSubmenu, TopMenu } from './menuModel';
 import './MenuBar.css';
 
@@ -31,9 +33,17 @@ interface MenuListProps {
     autoFocus?: boolean;
     /** A flyout opens beside its parent entry; a dropdown under its title. */
     flyout?: boolean;
+    /**
+     * The control this list drops from — a menu title, a split button. Given
+     * one, the list is portaled to that element's document body and placed
+     * against its rect, the way Qt opens a menu as its own top-level window.
+     * Without it (a flyout, which opens inside a list that is already portaled)
+     * the list stays where it is written and positions itself in CSS.
+     */
+    anchor?: HTMLElement | null;
 }
 
-export function MenuList({ items, onCloseAll, onCloseSelf, autoFocus, flyout }: MenuListProps) {
+export function MenuList({ items, onCloseAll, onCloseSelf, autoFocus, flyout, anchor }: MenuListProps) {
     const ref = useRef<HTMLDivElement>(null);
     const [openSub, setOpenSub] = useState<string | null>(null);
     /** Whether the open submenu was opened from the keyboard, so it knows
@@ -48,12 +58,16 @@ export function MenuList({ items, onCloseAll, onCloseSelf, autoFocus, flyout }: 
     // A menu running off the right edge of the window is a menu with entries
     // nobody can read. Measured rather than guessed: how far along the bar a
     // menu sits depends on the titles before it, and a package chooses those.
+    // Anchored lists do their own measuring in placePopup, which flips and
+    // clamps in both axes; this is the flyout's version of the same thing.
     useLayoutEffect(() => {
         const el = ref.current;
-        if (!el) return;
+        if (!el || anchor) return;
         const rect = el.getBoundingClientRect();
         setFlipped(rect.right > window.innerWidth - 4);
-    }, [items]);
+    }, [items, anchor]);
+
+    const placement = useAnchoredPopup(anchor, ref, 'start', items);
 
     const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
         const entries = ownItems(ref.current);
@@ -76,12 +90,21 @@ export function MenuList({ items, onCloseAll, onCloseSelf, autoFocus, flyout }: 
 
     const listClass = [
         'menu-list',
-        flyout ? 'menu-list--flyout' : 'menu-list--dropdown',
+        anchor ? 'menu-list--anchored' : flyout ? 'menu-list--flyout' : 'menu-list--dropdown',
         flipped ? 'menu-list--flipped' : '',
     ].filter(Boolean).join(' ');
 
-    return (
-        <div ref={ref} className={listClass} role="menu" onKeyDown={onKeyDown}>
+    const list = (
+        <div
+            ref={ref}
+            className={listClass}
+            role="menu"
+            onKeyDown={onKeyDown}
+            // Marks this subtree as part of the control that opened it, for the
+            // dismiss-on-outside-click handlers — see inPopupSurface.
+            data-anchored-popup={anchor ? '' : undefined}
+            style={anchor ? anchoredStyle(placement) : undefined}
+        >
             {items.map(node => {
                 if (node.kind === 'separator') {
                     return <div key={node.id} className="menu-sep" role="separator" />;
@@ -139,6 +162,10 @@ export function MenuList({ items, onCloseAll, onCloseSelf, autoFocus, flyout }: 
             })}
         </div>
     );
+
+    // Portaled out of whatever declared it, into its own document's body — a
+    // popped-out panel keeps its menus, as ResizableModal does.
+    return anchor ? createPortal(list, anchor.ownerDocument.body) : list;
 }
 
 interface SubmenuItemProps {
@@ -202,11 +229,14 @@ export function MenuBar({ menus, label = 'Main menu' }: MenuBarProps) {
     const [open, setOpen] = useState<string | null>(null);
     const [fromKeyboard, setFromKeyboard] = useState(false);
     const rootRef = useRef<HTMLDivElement>(null);
+    // Each title's wrapper, so the open dropdown can be placed against it once
+    // it no longer hangs inside it. Filled at mount, read at render.
+    const titleRefs = useRef(new Map<string, HTMLDivElement>());
 
     useEffect(() => {
         if (!open) return;
         const onDocPointer = (e: PointerEvent) => {
-            if (!rootRef.current?.contains(e.target as Node)) setOpen(null);
+            if (!inPopupSurface(rootRef.current, e.target)) setOpen(null);
         };
         document.addEventListener('pointerdown', onDocPointer);
         return () => document.removeEventListener('pointerdown', onDocPointer);
@@ -254,7 +284,14 @@ export function MenuBar({ menus, label = 'Main menu' }: MenuBarProps) {
             onKeyDown={onKeyDown}
         >
             {menus.map(menu => (
-                <div className="menu-root" key={menu.id}>
+                <div
+                    className="menu-root"
+                    key={menu.id}
+                    ref={el => {
+                        if (el) titleRefs.current.set(menu.id, el);
+                        else titleRefs.current.delete(menu.id);
+                    }}
+                >
                     <button
                         type="button"
                         className={`menu-title${open === menu.id ? ' menu-title--open' : ''}`}
@@ -287,6 +324,7 @@ export function MenuBar({ menus, label = 'Main menu' }: MenuBarProps) {
                     {open === menu.id && (
                         <MenuList
                             items={menu.items}
+                            anchor={titleRefs.current.get(menu.id) ?? null}
                             autoFocus={fromKeyboard}
                             onCloseAll={() => setOpen(null)}
                         />

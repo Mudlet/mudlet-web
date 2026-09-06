@@ -1,19 +1,20 @@
-/* Portal root for floating windows — position:fixed so dock layout shifts never affect them.
-   Sits above panel content and label overlays (z:30) but below app modals (.resizable-modal
-   z:40, .modal-overlay z:50) so the Scripts editor and other chrome stay on top of
-   script-created windows/miniconsoles. */
+/* Portal root for floating windows — position:fixed so dock layout shifts never
+   affect them. A floating user window is a top-level window in Mudlet, so this
+   layer sits above the console's overlays AND above the client's own bars (it
+   may cover the menu bar, issue #145), while the client's dialogs still open
+   over it. See ui/layout/layers.css for the whole ladder. */
 .floating-window-root {
     position: fixed;
     inset: 0;
     pointer-events: none;
-    z-index: 35;
+    z-index: var(--z-window);
     overflow: hidden;
 }
 
 /* Nested variant: portaled into a parent userwindow viewport for parent-anchored
  * miniconsoles. position:absolute so absolute child coords are parent-relative.
  * Also carries the base .floating-window-root class above (shared portal
- * wrapper styling) — which sets z-index:35, so this rule must explicitly
+ * wrapper styling) — which sets a z-index, so this rule must explicitly
  * reset it back to `auto` rather than just omitting the property, or the
  * base class's z:35 keeps applying.
  *

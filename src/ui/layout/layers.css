@@ -1,0 +1,87 @@
+/**
+ * ── The client's stacking order, in one place ──────────────────────────────
+ *
+ * Every z-index that one *surface* of the client compares against another
+ * surface is a token below. Nothing else should invent a number: a rule that
+ * only ranks against its own siblings (a resize handle over a panel's body, a
+ * toast inside the editor, the map renderer's own layers) stays local, because
+ * its parent already carries one of these tokens and traps it.
+ *
+ * ## Where the ladder comes from
+ *
+ * Mudlet has no z-order to configure — Qt's widget hierarchy is the ordering,
+ * and the ladder below is that hierarchy written down:
+ *
+ *   - A Geyser label, mini-console, command line or scroll box is a QWidget
+ *     child of a console. It cannot leave its console, and inside it the
+ *     stack is flat, most-recently-raised-wins (see overlayLayerOrder.ts).
+ *   - The menu bar and the button bar belong to the main window's frame. They
+ *     sit above the console they frame, and below anything that is its own
+ *     top-level window.
+ *   - A floating user window (`openUserWindow`) and a detached button bar are
+ *     real top-level windows in Mudlet. They float over the main window — the
+ *     menu bar included. That is the whole of issue #145.
+ *   - The client's own dialogs (settings, the editor, the map editor) are
+ *     top-level too, and modal ones sit above the windows they block.
+ *   - A Qt menu — a menu-bar dropdown, a split button's list, a right-click
+ *     menu — is a *popup window*: its own top-level window that paints over
+ *     everything, whatever widget opened it.
+ *
+ * ## What a browser makes us do about it
+ *
+ * A popup window has no HTML equivalent. A dropdown written where it belongs —
+ * inside the bar that owns it — is trapped in that bar's stacking context, so
+ * it can only ever paint as high as the bar itself does. Raising the bar to
+ * compensate is what broke #145: the bar then swallowed clicks on any window
+ * drawn over it.
+ *
+ * So the rule is: anything Qt would make a top-level window, we portal to
+ * `<body>` and rank here. That is what the portals in MenuBar/SplitButton/
+ * Toolbar/ContextMenu/ResizableModal are for — not layout, just escaping the
+ * stacking context of whatever declared them. Everything that Qt keeps as a
+ * child widget stays a child element and never needs a token.
+ */
+:root {
+    /* ── Inside one console viewport ────────────────────────────────────── */
+    /* Script-created overlays: labels, mini-consoles, command lines, scroll
+       boxes. Their inline z-indices are small ordinals ranked among each
+       other (overlayLayerOrder.ts); this wrapper is the context that keeps
+       that ranking from escaping the console. */
+    --z-console-overlay: 10;
+    /* The keyboard/screen-reader scrollback mirror, over that console. */
+    --z-console-caret: 20;
+    /* The find bar, over both. */
+    --z-console-find: 30;
+
+    /* ── The main window's frame ────────────────────────────────────────── */
+    /* Menu row + button row. Below every top-level window, as in Mudlet. */
+    --z-chrome: 40;
+
+    /* ── Top-level windows ──────────────────────────────────────────────── */
+    /* Detached Mudlet button bars (floating QToolBar). */
+    --z-toolbar-float: 50;
+    /* Script-created floating user windows and their mini-consoles. */
+    --z-window: 60;
+
+    /* ── The client's own dialogs ───────────────────────────────────────── */
+    /* Non-modal, draggable: the map editor, the package modals. */
+    --z-dialog: 70;
+    /* A modal and its backdrop share a rung: the backdrop takes the token,
+       the surface it dims takes `calc(token + 1)`. */
+    --z-modal: 80;
+    /* A modal raised from inside a modal — the font picker and the confirm
+       dialog over Settings, the Help window over Settings. */
+    --z-modal-child: 90;
+    /* And one raised from inside *that*: the VFS picker, which any of the
+       above can open. */
+    --z-modal-top: 100;
+
+    /* ── Qt popup windows — above everything ────────────────────────────── */
+    /* Menu-bar dropdowns, split-button lists, the hamburger, context menus,
+       the script-search results list. */
+    --z-popup: 110;
+    /* Tooltips, which a popup can itself raise. */
+    --z-tooltip: 120;
+    /* The skip link: reachable by keyboard from anywhere, so above all of it. */
+    --z-skip-link: 130;
+}

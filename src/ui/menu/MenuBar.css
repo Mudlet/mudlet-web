@@ -46,7 +46,9 @@
 /* ── Dropdowns and flyouts ───────────────────────────────────── */
 .menu-list {
     position: absolute;
-    z-index: 200;
+    /* A Qt menu is its own top-level window: above everything, whatever opened
+       it. See ui/layout/layers.css. */
+    z-index: var(--z-popup);
     min-width: 200px;
     /* Set here rather than inherited: a list opened from a split button hangs
        inside the toolbar, which sits in the console's monospace family. Menus
@@ -60,6 +62,14 @@
     font-size: 12px;
 }
 
+/* A dropdown opened from a control: portaled to <body> and placed against that
+   control's rect (see anchoredPopup.ts), so `left`/`top` arrive inline, and the
+   flip rules below don't apply — placePopup handles both axes itself. */
+.menu-list--anchored {
+    position: fixed;
+}
+
+/* The in-place variant, kept for a list written where it drops. */
 .menu-list--dropdown {
     top: calc(100% + 4px);
     left: 0;
@@ -226,13 +236,6 @@
 .split-button__arrow:focus-visible {
     outline: 1px solid var(--accent);
     outline-offset: -1px;
-}
-
-/* The popup hangs off the pair, not off the arrow, so it lines up with the
-   button's left edge the way Qt's does. */
-.split-button > .menu-list--dropdown {
-    top: calc(100% + 4px);
-    left: 0;
 }
 
 /* ── Tablet & below ──────────────────────────────────────────

@@ -1,3 +1,5 @@
+@import './ui/layout/layers.css';
+
 /* ── Reset & base ─────────────────────────────────────────── */
 *, *::before, *::after {
     box-sizing: border-box;
@@ -307,7 +309,7 @@ html, body, #root {
     position: absolute;
     top: -100vh;
     left: 0;
-    z-index: 10000;
+    z-index: var(--z-skip-link);
     padding: 10px 16px;
     background: var(--bg-surface);
     border: 1px solid var(--accent);
@@ -350,13 +352,12 @@ html, body, #root {
     flex-direction: column;
     flex-shrink: 0;
     position: relative;
-    /* Above the main viewport's overlay layer (.main-overlay-root, z:30 — the
-       Geyser labels, gauges and command lines) and the floating windows (z:35),
-       because everything this bar opens is a menu that drops over the output:
-       at the old z:10 a label sitting under the toolbar painted straight
-       through the menus. Still below the modals and the caret-review panel
-       (both z:40), which are meant to cover the whole client. */
-    z-index: 36;
+    /* The main window's frame: above the console it frames, below every
+       top-level window — a floating user window may cover this bar, exactly as
+       one covers Mudlet's menu bar (issue #145). The bar carried a higher z
+       for a while so its dropdowns would clear the floating layer; they are
+       portaled to <body> now (see MenuBar.tsx), so it doesn't have to. */
+    z-index: var(--z-chrome);
     /* Pad in by the top notch inset so both rows clear it. */
     padding-top: var(--safe-top);
     background: color-mix(in srgb, var(--bg-surface) 50%, transparent);
@@ -643,10 +644,10 @@ html, body, #root {
     background: var(--accent);
 }
 
+/* Portaled to <body> and placed against the button's rect (see Toolbar.tsx) —
+   a Qt popup window, so `left`/`top` arrive inline. */
 .toolbar-hamburger-menu {
-    position: absolute;
-    top: calc(100% + 6px);
-    right: 0;
+    position: fixed;
     background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -659,7 +660,7 @@ html, body, #root {
     display: flex;
     flex-direction: column;
     gap: 4px;
-    z-index: 100;
+    z-index: var(--z-popup);
 }
 
 .toolbar-hamburger-menu .btn {
@@ -683,7 +684,7 @@ html, body, #root {
 /* ── Resizable modal (shared shell for draggable/resizable modals) ── */
 .resizable-modal {
     position: fixed;
-    z-index: 40;
+    z-index: var(--z-dialog);
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -2043,7 +2044,7 @@ body.is-sorting {
 .main-overlay-root {
     position: absolute;
     inset: 0;
-    z-index: 30;
+    z-index: var(--z-console-overlay);
     pointer-events: none;
 }
 
@@ -2054,7 +2055,7 @@ body.is-sorting {
 .caret-review {
     position: absolute;
     inset: 0;
-    z-index: 40;
+    z-index: var(--z-console-caret);
     display: flex;
     flex-direction: column;
     background: var(--console-bg);
@@ -2783,7 +2784,7 @@ body.is-sorting {
     border: 1px solid var(--border);
     border-radius: var(--radius);
     box-shadow: var(--shadow-float);
-    z-index: 1000;
+    z-index: var(--z-popup);
 }
 
 .map-hamburger-check {
@@ -2818,7 +2819,7 @@ body.is-sorting {
     box-shadow: var(--shadow-float);
     min-width: 160px;
     padding: 4px 0;
-    z-index: 1000;
+    z-index: var(--z-popup);
     font-family: var(--font-ui), sans-serif;
     font-size: 13px;
 }
@@ -2954,7 +2955,7 @@ body.is-sorting {
     position: fixed;
     inset: 0;
     background: var(--modal-backdrop);
-    z-index: 50;
+    z-index: var(--z-modal);
 }
 
 .modal {
@@ -2962,7 +2963,7 @@ body.is-sorting {
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    z-index: 51;
+    z-index: calc(var(--z-modal) + 1);
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -3255,7 +3256,7 @@ body.is-sorting {
     justify-content: center;
     align-items: flex-start;
     padding-top: 12vh;
-    z-index: 60;
+    z-index: var(--z-modal-child);
 }
 
 .qo-modal {
@@ -3547,11 +3548,10 @@ body.is-sorting {
 /* VFS picker (invokeFileDialog + the "from profile files" buttons) — tree fills
    the modal body, footer reuses the merge-modal button styles. */
 
-/* Above every app modal layer — .modal (51), the settings font-picker overlay
-   (60) and its modal (61): this picker is always opened from inside one of
-   them, so it has to paint over the dialog that opened it. It stays below the
-   confirm dialog (200) and context menus (9999). */
-.resizable-modal.vfs-picker-modal { z-index: 70; }
+/* Always opened from inside another modal (Settings, the package manager), so
+   it takes the rung above them and paints over whichever raised it. Menus and
+   context menus still cover it — a popup covers everything. */
+.resizable-modal.vfs-picker-modal { z-index: var(--z-modal-top); }
 
 .picker-tree-panel {
     flex: 1;
@@ -4943,13 +4943,13 @@ body.is-sorting {
     color: var(--text-dim);
 }
 
-/* Nested font-picker modal sits above the Settings modal (overlay 50 / 51). */
+/* Raised from inside the Settings modal, so it takes the child-modal rung. */
 .font-picker-overlay {
-    z-index: 60;
+    z-index: var(--z-modal-child);
 }
 
 .font-picker-modal {
-    z-index: 61;
+    z-index: calc(var(--z-modal-child) + 1);
     width: min(520px, 92vw);
     max-height: 80vh;
     top: 10vh;

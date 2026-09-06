@@ -1,9 +1,11 @@
 import { Fragment, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { Button } from './components';
 import { getBrand, type BrandCommand, type BrandToolbarContext, type StockToolbarButton } from '../branding';
 import type { SessionStatus } from '../mud/events';
 import type { AddonCommand } from './commands/addonCommands';
 import { hostCommands } from './commands/hostCommands';
+import { anchoredStyle, inPopupSurface, useAnchoredPopup } from './menu/anchoredPopup';
 import { MenuBar } from './menu/MenuBar';
 import { SplitButton } from './menu/SplitButton';
 import { buildAppMenus } from './menu/appMenus';
@@ -131,6 +133,7 @@ function useBrandCommands(commands: BrandCommand[] | undefined, ctx: BrandToolba
 export function Toolbar({ connectionName, status, ping, onDisconnect, onReconnect, onNewConnection, onOpenMap, onOpenScripts, onOpenFiles, onOpenLogs, onOpenDocs, onOpenHelp, onOpenSettings, onOpenAbout, onFocusInputLine, replayRecording, onToggleReplayRecording, replaySpeed, onReplaySpeedChange, onReplayStop, onContextMenu, brandContext, addonCommands, addonMenuCommands, onAddonCommandClick }: ToolbarProps) {
     const [menuOpen, setMenuOpen] = useState(false);
     const hamburgerRef = useRef<HTMLDivElement>(null);
+    const hamburgerMenuRef = useRef<HTMLDivElement>(null);
     // The two menu entries with no button of their own. Read here rather than
     // threaded down from the session: both are profile settings the store
     // already publishes, and the toolbar sits inside the profile's context.
@@ -188,11 +191,18 @@ export function Toolbar({ connectionName, status, ping, onDisconnect, onReconnec
     useEffect(() => {
         if (!menuOpen) return;
         const onDocPointer = (e: PointerEvent) => {
-            if (!hamburgerRef.current?.contains(e.target as Node)) setMenuOpen(false);
+            if (!inPopupSurface(hamburgerRef.current, e.target)) setMenuOpen(false);
         };
         document.addEventListener('pointerdown', onDocPointer);
         return () => document.removeEventListener('pointerdown', onDocPointer);
     }, [menuOpen]);
+
+    // The hamburger's list is a popup like any other menu: portaled to <body>
+    // so the bar's own stacking context can't cap it, and placed against the
+    // button. Right-aligned, as its stylesheet used to be.
+    const hamburgerPlacement = useAnchoredPopup(
+        menuOpen ? hamburgerRef.current : null, hamburgerMenuRef, 'end', menuOpen,
+    );
 
     const fire = (cb: () => void) => () => { setMenuOpen(false); cb(); };
 
@@ -573,8 +583,14 @@ export function Toolbar({ connectionName, status, ping, onDisconnect, onReconnec
             >
                 <span /><span /><span />
             </button>
-            {menuOpen && (
-                <div className="toolbar-hamburger-menu" role="menu">
+            {menuOpen && createPortal(
+                <div
+                    ref={hamburgerMenuRef}
+                    className="toolbar-hamburger-menu"
+                    role="menu"
+                    data-anchored-popup=""
+                    style={anchoredStyle(hamburgerPlacement)}
+                >
                     {actions(true)}
                     {menuOnlyCommands.length > 0 && <span className="toolbar-sep" aria-hidden="true" />}
                     {menuOnlyCommands.map(c => (
@@ -590,7 +606,8 @@ export function Toolbar({ connectionName, status, ping, onDisconnect, onReconnec
                             {c.name}
                         </Button>
                     ))}
-                </div>
+                </div>,
+                (hamburgerRef.current ?? document.body).ownerDocument.body,
             )}
         </div>
     );

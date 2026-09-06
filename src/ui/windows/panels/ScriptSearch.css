@@ -90,7 +90,7 @@
 /* ── Portal dropdown ──────────────────────────────────────────── */
 .script-search__dropdown {
     position: fixed;
-    z-index: 60;
+    z-index: var(--z-popup);
     max-height: min(60vh, 480px);
     display: flex;
     flex-direction: column;
