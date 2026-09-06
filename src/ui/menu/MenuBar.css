@@ -1,0 +1,245 @@
+/* ── Menu bar ──────────────────────────────────────────────────
+   Mudlet's menu bar, in the client's own toolbar row rather than a strip of its
+   own: a browser tab has 44px of chrome to spend and Mudlet's second row would
+   double it for six words. Titles are quiet until hovered so the bar reads as
+   chrome rather than as a row of buttons competing with the toolbar's. */
+.mudix-menubar {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    flex-shrink: 0;
+    font-family: var(--font-ui), sans-serif;
+    user-select: none;
+}
+
+.menu-root {
+    position: relative;
+}
+
+.menu-title {
+    display: block;
+    padding: 4px 9px;
+    background: none;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-dim);
+    font-family: inherit;
+    font-size: 12.5px;
+    line-height: 1.4;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s;
+}
+
+.menu-title:hover,
+.menu-title:focus-visible,
+.menu-title--open {
+    background: var(--accent-glow);
+    color: var(--accent);
+}
+
+.menu-title:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: -1px;
+}
+
+/* ── Dropdowns and flyouts ───────────────────────────────────── */
+.menu-list {
+    position: absolute;
+    z-index: 200;
+    min-width: 200px;
+    /* Set here rather than inherited: a list opened from a split button hangs
+       inside the toolbar, which sits in the console's monospace family. Menus
+       are chrome and read in the UI font wherever they are opened from. */
+    font-family: var(--font-ui), sans-serif;
+    padding: 4px 0;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: inset 0 1px 0 var(--border-hi), var(--shadow-float);
+    font-size: 12px;
+}
+
+.menu-list--dropdown {
+    top: calc(100% + 4px);
+    left: 0;
+}
+
+/* A submenu opens beside the entry that owns it, overlapping its parent's
+   padding by 4px so the pointer never crosses a gap on the way in. */
+.menu-list--flyout {
+    top: -5px;
+    left: calc(100% - 4px);
+}
+
+/* Measured overflow: the menu would have run off the right edge, so it hangs
+   the other way instead. */
+.menu-list--dropdown.menu-list--flipped {
+    left: auto;
+    right: 0;
+}
+
+.menu-list--flyout.menu-list--flipped {
+    left: auto;
+    right: calc(100% - 4px);
+}
+
+.menu-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 5px 12px 5px 6px;
+    background: none;
+    border: none;
+    color: var(--text);
+    font-family: inherit;
+    font-size: inherit;
+    text-align: left;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background 0.08s, color 0.08s;
+}
+
+.menu-item:hover,
+.menu-item:focus {
+    background: var(--accent-glow);
+    color: var(--accent);
+}
+
+.menu-item:focus {
+    outline: 1px solid var(--accent);
+    outline-offset: -1px;
+}
+
+.menu-item:disabled {
+    color: var(--text-dim);
+    cursor: default;
+}
+
+.menu-item:disabled:hover {
+    background: none;
+    color: var(--text-dim);
+}
+
+/* The tick column is always present, checked or not, so entries under one
+   another line up on their labels rather than shuffling when one is ticked. */
+.menu-item__tick {
+    width: 14px;
+    flex-shrink: 0;
+    text-align: center;
+    opacity: 0.9;
+}
+
+/* The icon box. Whatever went in — a package's image path, a brand's inline
+   SVG — is sized to the label here rather than trusted to size itself. */
+.menu-item__icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1em;
+    height: 1em;
+    flex-shrink: 0;
+}
+
+.menu-item__icon > * {
+    width: 1em;
+    height: 1em;
+    object-fit: contain;
+}
+
+.menu-item__label {
+    flex: 1;
+}
+
+/* The key sequence, pushed to the right edge the way Qt draws an accelerator. */
+.menu-item__key {
+    margin-left: 18px;
+    color: var(--text-dim);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+
+.menu-item:hover .menu-item__key,
+.menu-item:focus .menu-item__key {
+    color: inherit;
+    opacity: 0.75;
+}
+
+.menu-item__arrow {
+    margin-left: 14px;
+    color: var(--text-dim);
+}
+
+.menu-sub {
+    position: relative;
+}
+
+.menu-sep {
+    height: 1px;
+    margin: 4px 8px;
+    background: var(--border);
+}
+
+/* ── Split button (QToolButton::MenuButtonPopup) ──────────────
+   Two controls drawn as one: the default action, and an arrow beside it that
+   opens the rest. The seam between them is a border rather than a gap, so the
+   pair reads as one button without the arrow ever swallowing a click meant for
+   Connect. */
+.split-button {
+    position: relative;
+    display: inline-flex;
+    align-items: stretch;
+}
+
+.split-button__main {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+    border-right-color: transparent;
+}
+
+.split-button__arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    padding: 0;
+    background: var(--bg-glass);
+    border: 1px solid var(--border);
+    border-left: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    border-top-right-radius: var(--radius);
+    border-bottom-right-radius: var(--radius);
+    color: var(--text-dim);
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.split-button__arrow:hover,
+.split-button__arrow[aria-expanded="true"] {
+    border-color: var(--accent-dim);
+    color: var(--accent);
+}
+
+.split-button__arrow:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: -1px;
+}
+
+/* The popup hangs off the pair, not off the arrow, so it lines up with the
+   button's left edge the way Qt's does. */
+.split-button > .menu-list--dropdown {
+    top: calc(100% + 4px);
+    left: 0;
+}
+
+/* ── Tablet & below ──────────────────────────────────────────
+   Same threshold the toolbar's inline action row uses: below it the bar has no
+   room, and everything the menus reach is in the hamburger instead. */
+@media (max-width: 900px) {
+    .mudix-menubar {
+        display: none;
+    }
+}

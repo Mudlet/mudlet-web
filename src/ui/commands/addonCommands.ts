@@ -125,9 +125,24 @@ export class AddonCommandRegistry {
     /** Which platform's key map Mudlet would be answering from. Pushed in for
      *  the same reason. */
     private reserved: ReadonlyMap<string, string> = reservedShortcuts('');
+    /**
+     * What the client's own commands hold right now, normalised key → the name
+     * to quote back. Separate from `reserved` because that one is a mirror of
+     * Mudlet's fixed map, while these move: the player can rebind any of them
+     * (see `appShortcuts.ts`), and a package asking about the key they moved it
+     * TO deserves the truth rather than "free".
+     */
+    private clientKeys: ReadonlyMap<string, string> = new Map();
 
     setPlatform(platform: string): void {
         this.reserved = reservedShortcuts(platform);
+    }
+
+    /** Told by the UI whenever the client's own bindings change: normalised key
+     *  → the command's name. */
+    setClientShortcuts(keys: ReadonlyMap<string, string>): void {
+        this.clientKeys = keys;
+        this.notify();
     }
 
     subscribe(fn: () => void): () => void {
@@ -160,6 +175,12 @@ export class AddonCommandRegistry {
         const key = normaliseShortcut(shortcut);
         if (!key) return null;
         if (this.searchActive && key === SEARCH_SHORTCUT) return SEARCH_HOLDER;
+        // What the client holds NOW is asked before the Mudlet mirror: a
+        // binding the player moved is no longer on its default key, and
+        // answering from the mirror would refuse a key that is now free and
+        // hand out the one that is not.
+        const client = this.clientKeys.get(key);
+        if (client) return client;
         const reserved = this.reserved.get(key);
         if (reserved) return reserved;
         for (const command of this.commands.values()) {
@@ -251,6 +272,13 @@ export class AddonCommandRegistry {
      *  what enableCommand/disableCommand are for; a removed one is gone. */
     buttons(): AddonCommand[] {
         return this.list().filter(c => c.surfaces === 'toolbar' || c.surfaces === 'both');
+    }
+
+    /** The commands with a menu entry, in placement order — what the menu bar
+     *  draws. Same rule as `buttons()`: a disabled one keeps its entry and is
+     *  drawn unavailable, and only a removed one is gone. */
+    menuItems(): AddonCommand[] {
+        return this.list().filter(c => c.surfaces === 'menu' || c.surfaces === 'both');
     }
 
     /** Profile teardown. */
