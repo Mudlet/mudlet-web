@@ -1,5 +1,7 @@
 import type { ComponentType, ReactNode } from 'react';
 import type { ConnectionMode, MudConnection } from './storage/schema';
+import type { TopMenu } from './ui/menu/menuModel';
+import type { ToolbarItem } from './ui/menu/toolbarModel';
 import mudletLogoUrl from './assets/mudlet-logo.svg?url';
 
 /**
@@ -83,11 +85,16 @@ export const STOCK_THEMES: { value: string; label: string }[] = [
 ];
 
 /** Ids of the stock toolbar buttons, for `BrandToolbarConfig.hide`.
- *  `connection` is the Reconnect/Disconnect pair; `close` closes the profile;
- *  `record` toggles Mudlet-format replay recording. */
+ *  `connection` is Mudlet's Connect split button (Connect, with Disconnect and
+ *  Close profile behind its arrow); `close` is the Close profile entry inside
+ *  it, so hiding that one alone leaves the rest of the button. `mute` is the
+ *  Mute split button, `record` toggles Mudlet-format replay recording.
+ *
+ *  Every id also gates the matching menu-bar entry, so a brand that removed a
+ *  feature does not find it again in a menu. */
 export type StockToolbarButton =
     | 'scripts' | 'files' | 'map' | 'logs' | 'docs' | 'help' | 'reportBug' | 'settings'
-    | 'record' | 'connection' | 'close';
+    | 'record' | 'mute' | 'connection' | 'close';
 
 /** What a brand toolbar button can do when clicked. */
 export interface BrandToolbarContext {
@@ -111,13 +118,67 @@ export interface BrandToolbarButton {
 }
 
 export interface BrandToolbarConfig {
-    /** Stock buttons to remove. */
+    /** Stock buttons to remove, applied before the transforms below see the
+     *  list. A shorthand: `menuBar`/`buttonBar` can drop the same things, and
+     *  anything else besides. */
     hide?: StockToolbarButton[];
-    /** Brand buttons, appended after the stock app buttons. */
+    /** Brand buttons, appended after the stock app buttons.
+     *  @deprecated Use `commands` — it reaches the menu bar too, takes a
+     *  shortcut, and can be enabled, checked and removed while running. */
     buttons?: BrandToolbarButton[];
-    /** Extra class on the toolbar root (`.mudix-toolbar`) so brand CSS can
-     *  restyle it. */
+    /**
+     * Commands in `addCommand`'s own shape: they land on the toolbar, the menu
+     * bar or both, take a key sequence, and can be ticked or greyed out. These
+     * are the brand's opening set — the exported `commands` registry places and
+     * removes them at runtime.
+     */
+    commands?: BrandCommand[];
+    /** Extra class on the menu row (`.mudix-toolbar`). NOTE: the top bar is two
+     *  rows now, wrapped in `.mudix-topbar`, which carries the background and
+     *  the bottom border — brand CSS written against the old single bar should
+     *  move those rules to `.mudix-topbar`. */
     className?: string;
+    /**
+     * The menu bar: `false` to remove it, or a function to rebuild it.
+     *
+     * The function is handed the finished stock tree — the client's own menus,
+     * with `hide` applied and every package and host command already placed —
+     * and returns what to draw. Reorder, rename, nest, drop, or return
+     * something entirely your own; nothing downstream assumes a particular
+     * menu is still there.
+     */
+    menuBar?: boolean | ((stock: TopMenu[], ctx: BrandToolbarContext) => TopMenu[]);
+    /**
+     * The button row, the same way: `false` to remove it, or a function handed
+     * the finished stock items to rebuild.
+     *
+     * Below the desktop breakpoint the row is the hamburger instead, and it
+     * draws whatever this returned — so a brand that reorders the row reorders
+     * the phone menu with it.
+     */
+    buttonBar?: boolean | ((stock: ToolbarItem[], ctx: BrandToolbarContext) => ToolbarItem[]);
+}
+
+/**
+ * A brand's command, in the shape `addCommand` uses. The one difference is the
+ * icon: a package names a file in its own directory, a brand passes a node, so
+ * an inline SVG needs no round trip through the VFS.
+ */
+export interface BrandCommand {
+    /** The brand's own id, for `commands.remove()` later. */
+    id: string;
+    name: string;
+    icon?: ReactNode;
+    tooltip?: string;
+    /** '/'-separated; the first segment names a top-level menu. */
+    menuPath?: string;
+    /** Qt-style key sequence, e.g. "Ctrl+Alt+K". */
+    shortcut?: string;
+    /** Absent means both bars. */
+    surfaces?: 'menu' | 'toolbar' | 'both';
+    enabled?: boolean;
+    checked?: boolean;
+    onClick(ctx: BrandToolbarContext): void;
 }
 
 /** Contract for a brand-supplied landing screen, rendered instead of the stock

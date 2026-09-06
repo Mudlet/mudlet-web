@@ -126,6 +126,16 @@ export interface ClientSettings {
      *  triggered (a real user gesture), so the first script notification can fire
      *  without a surprise permission pop-up. */
     notificationsEnabled?: boolean;
+    /**
+     * Keyboard-shortcut overrides, keyed by `AppCommandId` (see
+     * `ui/commands/appShortcuts.ts`), each a Qt-style sequence such as
+     * "Ctrl+Alt+L". Application-wide rather than per-profile, as Mudlet's are.
+     *
+     * An id that is absent uses the default for the platform. An id present
+     * with an empty string is a binding the player deliberately cleared, which
+     * is not the same thing — clearing has to survive a default changing.
+     */
+    shortcuts?: Record<string, string>;
 }
 
 /** Per-profile settings. Scripts (setBorder, setFont, setBackgroundColor, …) and
@@ -335,10 +345,23 @@ export interface ProfileSettings {
      *  red), in addition to the script editor's Errors tab. Mudlet's "Show
      *  errors in main console" preference. Off unless explicitly set to true. */
     showErrorsInMainWindow?: boolean;
-    /** Fullscreen mode: hide the top toolbar so the output area fills the whole
-     *  window, revealing the toolbar only when the pointer nears the top edge (or
-     *  it takes keyboard focus). Off unless explicitly set to true. */
-    fullscreen?: boolean;
+    /** Mudlet's menu-bar visibility (Settings → "Icons and toolbars"): the row
+     *  holding the client's own menus. On unless explicitly set to false.
+     *
+     *  Mudlet's setting has three values — never, only without a loaded
+     *  profile, always — and the middle one describes a window this client does
+     *  not have: the session screen only exists once a profile IS loaded, so
+     *  "only without one" and "never" would be the same switch. Hence a
+     *  two-state one. */
+    showMenuBar?: boolean;
+    /** The same for Mudlet's main toolbar — the row of buttons under the menus.
+     *  On unless explicitly set to false.
+     *
+     *  Never false at the same time as `showMenuBar`: a client with neither has
+     *  no way back to its own settings, which is the clash Mudlet's preference
+     *  guards against too (its "Never" entry greys out in one control while the
+     *  other holds it). */
+    showToolbar?: boolean;
     /** User-tunable subset of mudlet-map-renderer's Settings object. Fields
      *  are forwarded onto the live renderer.settings on mount and whenever
      *  the user changes them in the Mapper tab. Missing fields fall through

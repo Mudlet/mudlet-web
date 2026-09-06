@@ -1,7 +1,8 @@
 import { ViewportModeProvider } from './hooks/useViewportMode';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MAP_WIDGET_ID } from './ui/windows/types';
-import type { AddonCommand } from './ui/commands/addonCommands';
+import { normaliseShortcut, type AddonCommand } from './ui/commands/addonCommands';
+import { boundShortcuts, shortcutPlatform } from './ui/commands/appShortcuts';
 import { useMudSession } from './hooks/useMudSession';
 import { useEngines } from './hooks/useEngines';
 import { Toolbar } from './ui/Toolbar';
@@ -14,6 +15,7 @@ import { FileBrowserModal } from './ui/FileBrowserModal';
 import { LogBrowserModal } from './ui/LogBrowserModal';
 import { ScriptingDocsModal } from './ui/ScriptingDocsModal';
 import { HelpModal } from './ui/HelpModal';
+import { AboutModal } from './ui/AboutModal';
 import { CharLoginModal } from './ui/CharLoginModal';
 import { TlsUpgradeModal } from './ui/TlsUpgradeModal';
 import { TlsAlertBanner } from './ui/TlsAlertBanner';
@@ -83,6 +85,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     const [logsOpen, setLogsOpen] = useState(false);
     const [docsOpen, setDocsOpen] = useState(false);
     const [helpOpen, setHelpOpen] = useState(false);
+    const [aboutOpen, setAboutOpen] = useState(false);
     const [quickOpenOpen, setQuickOpenOpen] = useState(false);
     // GMCP Char.Login credentials popup. Non-null while the server is waiting on
     // a Char.Login.Default reply; `error` carries a previous attempt's failure.
@@ -215,7 +218,6 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // Mudlet's "Show errors in main console": mirror script errors into the main
     // output window (red), not just the script editor's Errors tab. Off by default.
     const showErrorsInMainWindow = useAppStore(s => selectProfileField(s, connection.id, 'showErrorsInMainWindow')) === true;
-    const fullscreen = useAppStore(s => selectProfileField(s, connection.id, 'fullscreen')) === true;
     // Mudlet's `showTabConnectionIndicators` (config bag). Defaults to true; when
     // on, the window title is prefixed with a connection-status dot. mudix has no
     // tab strip, so the indicator (and always the profile name) live in the title.
@@ -586,6 +588,10 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // at render because the registry is engine-side and changes from Lua, which
     // React has no other way of hearing about.
     const [addonCommands, setAddonCommands] = useState<AddonCommand[]>([]);
+    /** The same registry read for the other surface. Two states rather than one
+     *  filtered at render, so which surface a command belongs to stays the
+     *  registry's answer rather than a rule the toolbar keeps its own copy of. */
+    const [addonMenuCommands, setAddonMenuCommands] = useState<AddonCommand[]>([]);
     // Keyed on what useEngines itself is keyed on, so this re-subscribes to the
     // registry of whichever engine currently exists. Keying it on the ref alone
     // subscribed to nothing: the ref is empty on the first commit — the engine
@@ -594,10 +600,26 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     useEffect(() => {
         const registry = engineRef.current?.addonCommands;
         if (!registry) return;
-        const sync = () => setAddonCommands(registry.buttons());
+        const sync = () => {
+            setAddonCommands(registry.buttons());
+            setAddonMenuCommands(registry.menuItems());
+        };
         sync();
         return registry.subscribe(sync);
     }, [engineRef, session, connection, vfs]);
+
+    // What the client's own commands hold, so `addCommand` refuses a package
+    // the key a player has moved one of them onto. The registry starts from a
+    // mirror of Mudlet's fixed map; this is the part that moves.
+    const shortcutOverrides = useAppStore(s => s.client.shortcuts);
+    useEffect(() => {
+        const registry = engineRef.current?.addonCommands;
+        if (!registry) return;
+        registry.setClientShortcuts(new Map(
+            boundShortcuts(shortcutOverrides, shortcutPlatform())
+                .map(({ label, shortcut }) => [normaliseShortcut(shortcut), label]),
+        ));
+    }, [engineRef, session, connection, vfs, shortcutOverrides]);
 
     // TCommandLine::setEchoSuppression. A password prompt puts what is on the
     // command line ASIDE and gives it back when the prompt ends, rather than
@@ -1324,9 +1346,8 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         {/* The responsive mode is measured from this element rather than from
             the window: embedded in a page, the window is not the client. A
             560px frame on a 2560px screen was reading as a phone. */}
-        <div ref={setAppEl} className={fullscreen ? 'app app--fullscreen' : 'app'}>
+        <div ref={setAppEl} className="app">
         <ViewportModeProvider element={appEl}>
-            {fullscreen && <div className="app-topbar-hover-zone" aria-hidden="true" />}
             {/* The session screen is one undifferentiated div tree: no landmarks,
                 no headings, and an output region reachable only through Chrome's
                 "focusable scrollable region" behaviour, which other browsers do
@@ -1349,6 +1370,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                 ping={ping}
                 brandContext={brandToolbarContext}
                 addonCommands={addonCommands}
+                addonMenuCommands={addonMenuCommands}
                 onAddonCommandClick={id => engineRef.current?.addonCommandClicked(id)}
                 onDisconnect={handleDisconnect}
                 onReconnect={handleReconnect}
@@ -1360,6 +1382,8 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                 onOpenDocs={() => setDocsOpen(true)}
                 onOpenHelp={() => setHelpOpen(true)}
                 onOpenSettings={onToggleSettings}
+                onOpenAbout={() => setAboutOpen(true)}
+                onFocusInputLine={() => commandInputRef.current?.focus()}
                 replayRecording={replayRecording}
                 onToggleReplayRecording={handleToggleReplayRecording}
                 replaySpeed={replaySpeed}
@@ -1452,6 +1476,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                     onClose={() => setHelpOpen(false)}
                 />
             )}
+            {aboutOpen && <AboutModal onClose={() => setAboutOpen(false)} />}
             {fileDialogs.length > 0 && (
                 <FilePickerModal
                     key={fileDialogs.length /* remount per request so tree/selection reset */}
