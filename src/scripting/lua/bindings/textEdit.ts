@@ -217,9 +217,13 @@ export function installTextEditBindings({ lua, api, channel }: BindingContext): 
         return api.setBackgroundImage(a, b, Number(c));
     });
 
-    // Mudlet `resetBackgroundImage([windowName])`. No name → main window.
-    lua.global.set('resetBackgroundImage', (name?: unknown) => {
-        return api.resetBackgroundImage(typeof name === 'string' ? name : undefined);
+    // Mudlet `resetBackgroundImage([windowName] [, fullWindow])`. No name →
+    // main window. Both arguments are positional, so a boolean in the first
+    // slot is the fullWindow flag for the main console. Returns true, or the
+    // refusal message for Bridge.lua to shape into (nil, errMsg).
+    lua.global.set('resetBackgroundImage', (a?: unknown, b?: unknown) => {
+        const named = typeof a === 'string';
+        return api.resetBackgroundImage(named ? a : undefined, (named ? b : a) === true);
     });
 }
 

@@ -716,6 +716,9 @@ do
     -- are illegal (reparenting a userwindow, or making a cycle).
     local _rawSetWindow = setWindow
     function setWindow(parent, element, ...)
+        -- The TYPE is settled before the lookup: a table where a name belongs is
+        -- a mistake in the call, not a window that could not be found.
+        element = __mudix_check_string(element, 'setWindow', 2, 'element name')
         if parent ~= 'main' and __windowType(parent) == nil then
             return nil, "window '" .. tostring(parent) .. "' not found"
         end
@@ -725,8 +728,20 @@ do
         return _rawSetWindow(parent, element, ...)
     end
 
-    local function userWindowGuard(fn, message)
+    -- `what` names argument #1 the way Mudlet's own message does, and the
+    -- trailing arguments each carry their own name — the type is checked before
+    -- the window is looked up, since a table is a bad argument rather than a
+    -- window that is not there.
+    local function userWindowGuard(fn, message, who, what, tailName, tailOptional)
         return function(name, ...)
+            name = __mudix_check_string(name, who, 1, what)
+            local tail = ...
+            if select('#', ...) > 0 and not (tailOptional and tail == nil) then
+                if __mudix_str(tail) == nil then
+                    error(who .. ': bad argument #2 type (' .. tailName .. ' as string '
+                        .. (tailOptional and 'is optional' or 'expected') .. ', got ' .. type(tail) .. '!)', 2)
+                end
+            end
             if __windowType(name) ~= 'userwindow' then
                 return nil, (message:gsub("%%s", tostring(name)))
             end
@@ -734,8 +749,23 @@ do
             return true
         end
     end
-    setUserWindowTitle      = userWindowGuard(setUserWindowTitle,      "user window name '%s' not found")
-    setUserWindowStyleSheet = userWindowGuard(setUserWindowStyleSheet, "userwindow name '%s' not found")
+    -- wrapLine([window,] line). A window name has to be text and a line number
+    -- a number, so anything else in the first slot is a bad argument rather
+    -- than a line that could not be found.
+    local _rawWrapLine = wrapLine
+    function wrapLine(...)
+        local first = ...
+        if type(first) ~= 'string' and __mudix_num(first) == nil then
+            error('wrapLine: bad argument #1 type (window name as string expected, got '
+                .. __mudix_typename(first, select('#', ...) > 0) .. '!)', 2)
+        end
+        return _rawWrapLine(...)
+    end
+
+    setUserWindowTitle      = userWindowGuard(setUserWindowTitle,      "user window name '%s' not found",
+        'setUserWindowTitle', 'name', 'title', true)
+    setUserWindowStyleSheet = userWindowGuard(setUserWindowStyleSheet, "userwindow name '%s' not found",
+        'setUserWindowStyleSheet', 'userwindow name', 'StyleSheet', false)
 
     -- The read-back half of the pair. Each refuses exactly as its setter does,
     -- so a script that got past the setter can always get past the getter —
@@ -1570,13 +1600,37 @@ do
     createMiniConsole = reuseReporter(createMiniConsole, 'miniconsole', 'miniconsole')
     createScrollBox   = reuseReporter(createScrollBox,   'scrollbox',   'scrollBox')
 
+    -- openUserWindow(name [, loadLayout [, autoDock [, area]]]). Every argument
+    -- is type-checked before the window is touched, so a refused call leaves no
+    -- window behind — UI_spec proves that by asking windowType() afterwards.
+    --
+    -- The two spaces after "openUserWindow:" on the first one are Mudlet's own
+    -- typo (#10418), and the spec pins the message verbatim, so they stay.
     local _rawOpenUserWindow = openUserWindow
-    function openUserWindow(name, ...)
+    function openUserWindow(...)
+        local top = select('#', ...)
+        local name, loadLayout, autoDock, area = ...
+        if type(name) ~= 'string' then
+            error('openUserWindow:  bad argument #1 type (name as string expected, got '
+                .. __mudix_typename(name, top >= 1) .. '!)', 2)
+        end
+        if top > 1 and loadLayout ~= nil and type(loadLayout) ~= 'boolean' then
+            error('openUserWindow: bad argument #2 type (loadLayout as boolean is optional, got '
+                .. type(loadLayout) .. '!)', 2)
+        end
+        if top > 2 and autoDock ~= nil and type(autoDock) ~= 'boolean' then
+            error('openUserWindow: bad argument #3 type (autoDock as boolean is optional, got '
+                .. type(autoDock) .. '!)', 2)
+        end
+        if top > 3 and type(area) ~= 'string' then
+            error('openUserWindow: bad argument #4 type (area as string expected, got '
+                .. type(area) .. '!)', 2)
+        end
         if __windowType(name) == 'label' then
             return nil, "label with the name '" .. tostring(name) .. "' already exists"
         end
         __mudix_forget_geometry(name)
-        return _rawOpenUserWindow(name, ...)
+        return _rawOpenUserWindow(...)
     end
 
     -- Both take the widget name as argument #1 and have nothing sensible to do
@@ -7074,9 +7128,28 @@ end
 -- Mudlet closeUserWindow(name) — hide a user window without deleting it, so
 -- reopening it brings the same dock back. Reports nothing; a name that is not a
 -- user window is simply nothing to close.
+-- Mudlet resetBackgroundImage([window] [, fullWindow]) → true, or (nil, errMsg)
+-- for a console nothing answers to and for asking a miniconsole to reset a full
+-- window background it does not have. The JS side hands the message back.
+do
+    local _raw = resetBackgroundImage
+    function resetBackgroundImage(...)
+        local r = _raw(...)
+        if type(r) == 'string' then return nil, r end
+        return r
+    end
+end
+
+-- Mudlet closeUserWindow(name). Despite the name it closes any CONSOLE — the
+-- lookup is Host::closeWindow's mSubConsoleMap, which holds miniconsoles and
+-- buffers alongside user windows. A label is the one thing it leaves alone,
+-- those living in a map of their own; only hideWindow reaches one.
 function closeUserWindow(name)
     name = __mudix_check_string(name, "closeUserWindow", 1, "name")
-    if __windowType(name) == 'userwindow' then hideWindow(name) end
+    local kind = __windowType(name)
+    if kind == 'userwindow' or kind == 'miniconsole' or kind == 'buffer' then
+        hideWindow(name)
+    end
 end
 
 -- Mudlet setBackgroundImage([window,] path [, mode [, fullWindow]]). GUIUtils'

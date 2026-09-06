@@ -4215,6 +4215,16 @@ export class ScriptingAPI {
                 state.foreground = this.linkColor(windowName);
                 state.underline = true;
             }
+            // A newline in the inserted text BREAKS the line, as it does for
+            // insertText — TConsole::insertLink runs the same wrapLine() over
+            // the result. Writing straight into the buffer skipped that, so the
+            // text arrived carrying a literal newline inside one line and
+            // getLineCount never moved.
+            if (text.includes('\n')) {
+                con.insertText(text, state);
+                if (!this.inTriggerProcessing) con.getBuffer()?.rerender();
+                return;
+            }
             const at = Math.max(0, Math.min(con.getCursorColumn(), buf.text.length));
             buf.insert(at, text, state);
             if (!this.inTriggerProcessing) buf.rerender();
@@ -5948,15 +5958,22 @@ export class ScriptingAPI {
      * clears the main window background image; otherwise looks up the named
      * label or window and clears its image. Returns true on success.
      */
-    resetBackgroundImage(name?: string): boolean {
+    resetBackgroundImage(name?: string, fullWindow = false): true | string {
+        // The FULL WINDOW background belongs to the profile, so only the main
+        // console has one to reset. Asking a miniconsole for it is a mistake
+        // rather than a no-op, and saying so is the only way a caller learns
+        // that the console they named has just its own background.
+        if (fullWindow && name && name !== 'main') {
+            return 'the full window background can only be reset on the main console';
+        }
         if (!name || name === 'main') {
             useAppStore.getState().patchConnectionProfile(this.connectionId, { outputBackgroundImage: undefined });
             return true;
         }
         if (this.session.labels.has(name)) {
-            return this.session.labels.resetBackgroundImage(name);
+            return this.session.labels.resetBackgroundImage(name) ? true : `console '${name}' not found`;
         }
-        return this.session.windows.resetBackgroundImage(name);
+        return this.session.windows.resetBackgroundImage(name) ? true : `console '${name}' not found`;
     }
 
     /**
