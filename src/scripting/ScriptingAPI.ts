@@ -2979,27 +2979,36 @@ export class ScriptingAPI {
             }
             searchFrom = idx + str.length;
         }
+        // A failed search CLEARS the selection (TConsole::select deselects on
+        // every one of its -1 paths). Leaving the old one standing meant the -1
+        // was followed by a getSelection reporting a start on a line the cursor
+        // had since left — a stale answer that reads exactly like a live one.
+        this.deselect(windowName);
         return -1;
     }
 
     /**
      * Mudlet `selectSection([window,] from, length) → bool`. `from` is 0-indexed.
-     * Negative `from` is rejected (Mudlet behavior); zero/negative lengths
-     * register a no-op selection but still report success in Mudlet — we match
-     * that, but reject when the resolved buffer doesn't exist.
+     *
+     * A selection that does not fit the line is REFUSED, not trimmed to fit:
+     * TConsole::selectSection rejects a negative start, a start past the end of
+     * the line, and a length that runs off it, and leaves the previous selection
+     * standing in each case. Clamping instead — which mudix did — turned
+     * "selectSection(5, 1)" on a four-character line into a silent selection of
+     * its last character, so a script checking the return value was told its
+     * out-of-range request had succeeded and then styled the wrong text.
+     *
+     * `from == line length` is allowed: that is an empty selection at the end of
+     * the line, not a start past it.
      */
     selectSection(from: number, length: number, windowName?: string): boolean {
         if (!Number.isFinite(from) || from < 0) return false;
         if (!Number.isFinite(length) || length < 0) return false;
         const buf = this.resolveBuffer(windowName);
         if (!buf) return false;
-        // Mudlet clamps a selection to the buffer: a `from` at/past the end of a
-        // non-empty line refers to the last character (so e.g. selectSection at
-        // column == line length still selects one char) rather than an empty,
-        // format-less selection.
-        const bufLen = buf.length;
-        const start = bufLen > 0 && from >= bufLen ? bufLen - 1 : from;
-        this.selection = { windowName, start, length };
+        const lineLength = buf.length;
+        if (from > lineLength || from + length > lineLength) return false;
+        this.selection = { windowName, start: from, length };
         return true;
     }
 
@@ -3033,12 +3042,18 @@ export class ScriptingAPI {
      * match the selection's window — the Lua wrapper translates null into
      * Mudlet's `false, "no selection"` 2-tuple.
      */
-    getSelection(windowName?: string): { text: string; start: number; length: number } | null {
+    getSelection(windowName?: string): { text: string; start: number; length: number } | string | null {
         if (!this.selection) return null;
         if (windowName !== undefined && !this.selectionMatches(windowName)) return null;
         const buf = this.resolveBuffer(this.selection.windowName);
         if (!buf) return null;
         const { start, length } = this.selection;
+        // The selection is columns on whatever line the cursor is on NOW, not on
+        // the line it was made on — so moving the cursor to a shorter line can
+        // strand it past the end. Mudlet reports that as a refusal rather than
+        // silently answering with the empty string the slice would give, which a
+        // script cannot tell from a line that really is blank there.
+        if (buf.length < start) return 'getSelection: the selection is no longer valid';
         return { text: buf.text.slice(start, start + length), start, length };
     }
 
@@ -3112,17 +3127,28 @@ export class ScriptingAPI {
         return parseHexToRgb(palette[Math.floor((n - 1) / 2)]);
     }
 
+    /**
+     * The colour Mudlet's getFgColor/getBgColor read: the one at P_begin, the
+     * start of the selection.
+     *
+     * Mudlet has no "no selection" state — deselect() collapses P_begin and
+     * P_end to (0, 0) rather than unsetting them, so the getters go on reading
+     * the first column of the cursor's line. mudix models the selection as
+     * absent instead, so that case is spelled out here: with nothing selected
+     * the column is zero, and the answer is "nothing at all" only when there is
+     * no character there to read — an empty console, or a line the selection
+     * outlived.
+     */
     private readSelectionColor(
         channel: 'foreground' | 'background',
         windowName: string | undefined,
     ): [number, number, number] | null {
-        if (!this.selection) return null;
-        if (!this.selectionMatches(windowName)) return null;
-        const sel = this.selection;
-        const buf = this.resolveBuffer(sel.windowName);
+        const selected = this.selection && this.selectionMatches(windowName);
+        const buf = this.resolveBuffer(selected ? this.selection!.windowName : windowName);
         if (!buf) return null;
-        if (sel.start < 0 || sel.start >= buf.length) return null;
-        return this.readColorAt(buf, sel.start, channel);
+        const start = selected ? this.selection!.start : 0;
+        if (start < 0 || start >= buf.length) return null;
+        return this.readColorAt(buf, start, channel);
     }
 
     /**
@@ -6348,8 +6374,18 @@ export class ScriptingAPI {
             con.takeLines();
             return;
         }
-        for (const line of con.takeLines()) {
+        const committed = con.takeLines();
+        for (const line of committed) {
             this.session.windows.pushBuffer(win, line);
+        }
+        // Mudlet raises sysWindowOverflowEvent from the same place: once per
+        // append that added text, not once per line and not on a resize tick.
+        // What it counts is `lineBuffer.size()`, which includes the line the
+        // cursor sits on — one more than Lua's getLineCount(), and the reason
+        // the console is full (rather than overflowing by nothing) at the
+        // moment getLineCount() + 1 reaches the row count.
+        if (committed.length > 0) {
+            this.session.windows.noteLineOverflow(win, this.getLineCount(win) + 1, this.getRowCount(win));
         }
         // Also surface the in-flight partial (echo without a trailing \n) so
         // prompts like `echo(win, "Do: ")` actually appear — matches the

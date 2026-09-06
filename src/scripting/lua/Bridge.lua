@@ -1036,11 +1036,14 @@ end
 
 -- Mudlet getSelection([windowName]) → text, start, length. With no active
 -- selection Mudlet returns ("", 0, 0) (not nil) — GUIUtils.lua's replace() and
--- other callers test for exactly that tuple. JS hands back a 0-indexed array or
--- nil for the no-selection case.
+-- other callers test for exactly that tuple. JS hands back a 0-indexed array,
+-- nil for the no-selection case, or the refusal message for a selection that no
+-- longer fits the line the cursor is on — which is (nil, errMsg), a third answer
+-- and not the same as having no selection.
 function getSelection(windowName)
     local t = __getSelection(windowName)
     if t == nil then return "", 0, 0 end
+    if type(t) == 'string' then return nil, t end
     return t[0], t[1], t[2]
 end
 

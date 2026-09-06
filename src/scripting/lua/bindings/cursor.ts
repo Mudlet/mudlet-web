@@ -160,9 +160,14 @@ export function installCursorBindings({ lua, api }: BindingContext): void {
     // false, errMsg. The wasmoon → Lua boundary returns one value, so we
     // hand back a 0-indexed [text, start, length] array (or null) and let
     // Bridge.lua unpack into the documented multi-return.
+    // A string back is a refusal (the selection outlived the line it was made
+    // on) — Bridge.lua turns that into Mudlet's (nil, errMsg), which is a
+    // different answer from the ("", 0, 0) of having no selection at all.
     lua.global.set('__getSelection', (win?: string) => {
         const sel = api.getSelection(win);
-        return sel ? [sel.text, sel.start, sel.length] : null;
+        if (sel === null) return null;
+        if (typeof sel === 'string') return sel;
+        return [sel.text, sel.start, sel.length];
     });
 
     // Mudlet getFgColor([window]) / getBgColor([window]) → r, g, b at the
