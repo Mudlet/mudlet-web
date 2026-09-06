@@ -5871,7 +5871,12 @@ do
         stop  = function() return true end,
         close = function() return true end,
 
-        reloadLibrary = function() return refuse(NO_ENGINE) end,
+        -- Re-running detection is a probe, not something the engine can
+        -- refuse: it answers whether the library is available now, which here
+        -- is always false, and announces nothing. Mudlet returns false plus a
+        -- message only when the recognizer is still in use, which nothing can
+        -- reach with no engine to be using.
+        reloadLibrary = function() return false end,
         -- Unloading what was never loaded leaves the documented state.
         unloadLibrary = function() return true end,
 
