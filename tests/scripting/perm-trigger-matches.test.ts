@@ -68,7 +68,7 @@ describe('issue 4 — perm regex trigger matches[1] is the match, not the line',
     const html = buffer.toHtml();
     // Only the URL run carries the link/bold/underline.
     expect(html).toBe(
-      'Visit <span style="font-weight: bold; text-decoration: underline; cursor: pointer" data-output-clickable="true" title="open">http://example.com</span> today',
+      'Visit <span style="font-weight: bold; text-decoration: underline; cursor: pointer;" data-output-clickable="true" title="open">http://example.com</span> today',
     );
   });
 });

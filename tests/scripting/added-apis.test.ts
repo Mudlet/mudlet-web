@@ -1031,9 +1031,11 @@ describe('Mudlet-API batch — Lua bindings', () => {
   });
 
   it('ancestors / isAncestorsActive report the documented miss shape', () => {
-    expect(env.run('return (ancestors(123, "trigger"))')).toBe(false);
-    // nil, not false: for isAncestorsActive false is a real answer ("an
-    // ancestor is disabled"), so the miss has to look different from it.
+    // Both miss as nil. `ancestors` used to answer false, which is a value a
+    // caller could mistake for an empty list; and for isAncestorsActive false
+    // is a real answer ("an ancestor is disabled"), so the miss has to look
+    // different from it either way.
+    expect(env.run('return (ancestors(123, "trigger"))')).toBeNull();
     expect(env.run('return (isAncestorsActive(123, "trigger"))')).toBeNull();
     expect(env.run('local _, err = isAncestorsActive(123, "trigger"); return err'))
       .toContain('does not exist');

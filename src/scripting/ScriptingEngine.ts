@@ -2887,7 +2887,17 @@ export class ScriptingEngine implements EngineHost {
         const list = this.nodeListForType(type);
         const byUuid = new Map(list.map(i => [i.id, i]));
         const start = list.find(i => this.uuidToNumericId.get(i.id) === id);
-        if (!start) return null;
+        if (!start) {
+            // A script-created temp item is a real item that simply has no
+            // parent — it is not in the tree and by construction sits at the
+            // root, so its ancestor list is EMPTY rather than missing. Reporting
+            // it as "does not exist" made an ordinary tempTrigger look like a
+            // bad id. Same test isAncestorsActiveById already makes.
+            const isTemp = this.runtimes.lua?.tempItemExists(id, type)
+                || (type === 'timer' && this.api.timers.hasTemp(id))
+                || ((type === 'key' || type === 'keybind') && this.api.keys.hasTemp(id));
+            return isTemp ? [] : null;
+        }
         const out: Array<{ id: number; name: string; node: string; isActive: boolean }> = [];
         let node = start.parentId ? byUuid.get(start.parentId) : undefined;
         while (node) {
@@ -3258,10 +3268,16 @@ export class ScriptingEngine implements EngineHost {
             parentId = permParentId(aliases, parent);
             if (parentId === null) return -1;
         }
+        // An alias with neither a pattern nor a body is a FOLDER — that is how
+        // permGroup(name, "alias") makes one, and startPermAlias decides it the
+        // same way (`regex.isEmpty() && function.isEmpty()`). Filed as an
+        // ordinary alias instead, the group came back from ancestors() as an
+        // "item" and nothing could be nested under it.
+        const isGroup = !pattern && !code;
         const uuid = store.addAlias(this.connectionId, {
             name,
             enabled: true,
-            isGroup: false,
+            isGroup,
             parentId,
             pattern,
             command: '',
@@ -3324,13 +3340,17 @@ export class ScriptingEngine implements EngineHost {
             parentId = permParentId(keys, parent);
             if (parentId === null) return -1;
         }
-        // Mudlet's permKey overload that creates a group passes modifier=-1
-        // with an empty key. Mirror that here so `permGroup("name","key")` lands
-        // on a real ButtonNode-style group.
-        const isGroup = modifier < 0 && (!key || key === '');
+        // Mudlet keys the folder flag off the KEY CODE, not the modifier:
+        // startPermKey is `setIsFolder(keycode == -1)`, and permKey(name, parent,
+        // -1, "") passes that -1 as the code rather than as a modifier (the
+        // modifier is only read when there are more than four arguments). Testing
+        // the modifier instead meant permGroup(name, "key") produced a keybind.
+        //
+        // A folder also starts INACTIVE, as setIsActive(keycode != -1) has it.
+        const isGroup = Number(key) === -1 || (modifier < 0 && (!key || key === ''));
         const uuid = store.addKeybinding(this.connectionId, {
             name,
-            enabled: true,
+            enabled: !isGroup,
             isGroup,
             parentId,
             key: isGroup ? '' : keyCodeFromMudletKey(key),

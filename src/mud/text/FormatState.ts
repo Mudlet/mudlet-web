@@ -189,6 +189,18 @@ function hasVisualFormatting(state?: FormatStateSnapshot): boolean {
     );
 }
 
+/**
+ * A style attribute from a list of declarations, or "" when there are none.
+ *
+ * Every declaration is TERMINATED, including the last one — Mudlet's log markup
+ * writes them that way and a reader looking for "font-style: italic;" in it will
+ * not find "font-style: italic" at the end of an attribute.
+ */
+function declsToStyleAttr(decls: string[]): string {
+    if (decls.length === 0) return "";
+    return ` style="${decls.map(d => `${d};`).join(" ")}"`;
+}
+
 function dimEffectsEqual(a?: DimEffect, b?: DimEffect): boolean {
     if (!a && !b) return true;
     if (!a || !b) return false;
@@ -1318,13 +1330,16 @@ export class AnsiAwareBuffer {
         const bgSrc = state.inverse ? state.foreground : state.background;
         const fg = overlay?.foreground ?? fgSrc;
         const bg = overlay?.background ?? bgSrc;
-        if (fg) styles.push(`color: ${this.colorToHex(fg)}`);
+        if (fg) styles.push(`color: ${this.colorToCss(fg)}`);
         // Reverse video with a default-coloured source: the swap yields no
         // explicit colour, so paint the console default of the opposite role
         // (text→bg, bg→text) — otherwise \e[7m on default colours is invisible.
         else if (state.inverse && overlay?.foreground === undefined) styles.push("color: var(--console-bg)");
-        if (bg) styles.push(`background-color: ${this.colorToHex(bg)}`);
-        else if (state.inverse && overlay?.background === undefined) styles.push("background-color: var(--console-text)");
+        // `background`, not `background-color`: this markup is Mudlet's log
+        // format as much as it is CSS, and TBuffer::bufferToHtml writes the
+        // shorthand. Both mean the same thing to a browser.
+        if (bg) styles.push(`background: ${this.colorToCss(bg)}`);
+        else if (state.inverse && overlay?.background === undefined) styles.push("background: var(--console-text)");
         if (overlay?.bold ?? state.bold) styles.push("font-weight: bold");
         if (overlay?.italic ?? state.italic) styles.push("font-style: italic");
 
@@ -1378,12 +1393,12 @@ export class AnsiAwareBuffer {
                 let attrs = ' data-output-clickable="true"';
                 if (link.linkId) attrs += ` data-link-id="${this.escapeHtml(link.linkId)}"`;
                 if (link.title) attrs += ` title="${this.escapeHtml(link.title)}"`;
-                const styleAttr = styles.length > 0 ? ` style="${styles.join("; ")}"` : "";
+                const styleAttr = declsToStyleAttr(styles);
                 html += `<span${styleAttr}${attrs}>${escapedText}</span>`;
                 continue;
             }
 
-            const styleAttr = styles.length > 0 ? ` style="${styles.join("; ")}"` : "";
+            const styleAttr = declsToStyleAttr(styles);
             html += `<span${styleAttr}>${escapedText}</span>`;
         }
 
@@ -1665,6 +1680,23 @@ export class AnsiAwareBuffer {
             .replace(/>/g, "&gt;")
             .replace(/"/g, "&quot;")
             .replace(/'/g, "&#39;");
+    }
+
+    /**
+     * A colour as the HTML consumers want it written: `rgb(r,g,b)`, decimal and
+     * unspaced, which is what TBuffer::bufferToHtml emits and what anything
+     * reading a Mudlet log back parses. Falls through to {@link colorToHex} for
+     * the forms that are not plain opaque RGB (a named/hex colour stays as it
+     * is, a translucent one keeps its rgba()).
+     */
+    private colorToCss(color: FormatColor): string {
+        if (color.space === "rgb" && (color.a === undefined || color.a >= 255)) {
+            return `rgb(${color.r},${color.g},${color.b})`;
+        }
+        const hex = this.colorToHex(color);
+        const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+        if (!m) return hex;
+        return `rgb(${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)})`;
     }
 
     private colorToHex(color: FormatColor): string {

@@ -4789,11 +4789,31 @@ end
 
 -- Mudlet `ancestors(id, type)`. Re-index the JS 0-indexed array of
 -- {id, name, node, isActive} (immediate parent → root) to a 1-based Lua
--- sequence. (false, errMsg) when no item of that type carries the id.
-function ancestors(id, itemType)
+-- sequence.
+--
+-- Same contract as isAncestorsActive below, which it did not have: a bad
+-- argument TYPE raises, and the three ways of naming no item are told apart
+-- rather than all reported as "does not exist". They read very differently to
+-- a caller — an id that is not a positive integer is a mistake in the call, a
+-- type nothing answers to is a mistake in the name, and an id nothing carries
+-- is a real miss.
+function ancestors(...)
+    local top = select('#', ...)
+    local id, itemType = ...
+    id = __mudix_check_number(id, "ancestors", 1, "item ID", top >= 1)
+    itemType = __mudix_check_string(itemType, "ancestors", 2, "item type", top >= 2)
+    if id < 1 or id ~= math.floor(id) then
+        return nil, "ancestors: item ID as " .. tostring(id)
+            .. " does not seem to be parseable as a positive integer"
+    end
+    if not __isKnownItemType(itemType) then
+        return nil, "ancestors: invalid item type '" .. tostring(itemType)
+            .. "' given, it should be one (case insensitive) of: 'alias', 'button',"
+            .. " 'script', 'keybind', 'timer' or 'trigger'"
+    end
     local raw = __ancestors(id, itemType)
     if not raw then
-        return false, "ancestors: " .. tostring(itemType) .. " item ID " .. tostring(id) .. " does not exist"
+        return nil, "ancestors: " .. tostring(itemType) .. " item ID " .. tostring(id) .. " does not exist"
     end
     local out = {}
     local i = 0
