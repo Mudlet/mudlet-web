@@ -1527,6 +1527,16 @@ export class LuaRuntime implements IScriptingRuntime {
         this.lua.global.set('__mudix_exportAreaImage', (areaId: unknown, filePath: unknown, zLevel?: unknown): [boolean, string] => {
             const aid = Number(areaId);
             if (!Number.isFinite(aid)) return [false, 'exportAreaImage: areaID must be a number'];
+            // A BOOLEAN z level means "every z level", and only `true` can mean
+            // it — `false` asks for nothing at all and is refused rather than
+            // read as the number zero, which is a real level and a different
+            // picture (TLuaInterpreterMapper.cpp's boolean branch).
+            if (typeof zLevel === 'boolean') {
+                if (!zLevel) {
+                    return [false, 'exportAreaImage: zLevel parameter when boolean must be true to export all Z levels'];
+                }
+                return this.api.exportAreaImage(Math.trunc(aid), String(filePath ?? ''), undefined);
+            }
             const z = zLevel != null && zLevel !== '' ? Number(zLevel) : undefined;
             return this.api.exportAreaImage(
                 Math.trunc(aid),

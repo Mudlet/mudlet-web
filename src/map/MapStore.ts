@@ -226,7 +226,13 @@ export function mudletJsonMapToMudletMap(src: unknown): MudletMap | null {
             for (const rawExit of (Array.isArray(rawRoom.exits) ? rawRoom.exits : []) as Record<string, unknown>[]) {
                 const name = String(rawExit?.name ?? '');
                 const dest = Number(rawExit?.exitId);
-                if (!name || !Number.isFinite(dest)) continue;
+                // Room ids start at 1, so anything below it is not an exit the
+                // file should have carried and the reader drops it outright
+                // (TRoom::readJsonSpecialExit and readJsonNormalExit both bail
+                // on `exitRoomId < 1`). Letting it through instead left the
+                // audit to remove it later and write a note about a room that
+                // was never missing, only impossible.
+                if (!name || !Number.isFinite(dest) || dest < 1) continue;
                 const dirNum = DIR_NUM_BY_NAME[name];
                 const isStock = dirNum !== undefined;
                 if (isStock) {
@@ -2288,7 +2294,7 @@ export class MapStore {
         const from = this.rooms.get(fromId)!;
         const uv = UNIT_VECTORS[dir];
         if (!uv) return `connectExitStub: direction ${dir} has no spatial component (in/out can't be auto-resolved)`;
-        if (!from.stubs.includes(dir)) return `connectExitStub: fromID (${fromId}) has no exit stub in the given direction`;
+        if (!from.stubs.includes(dir)) return `connectExitStub: fromID (${fromId}) does not have an exit stub in the given direction`;
         const reverse = REVERSE_DIR[dir];
         const area = this.areas.get(from.area);
         if (!area) return `connectExitStub: fromID (${fromId}) room does not have an area`;
@@ -2311,7 +2317,7 @@ export class MapStore {
             const msd = dx * dx + dy * dy + dz * dz;
             if (minDistance === -1 || msd < minDistance) { minRoom = toId; minDistance = msd; }
         }
-        if (!minRoom) return `connectExitStub: fromID (${fromId}) has no room in that direction with a matching reverse stub in its area`;
+        if (!minRoom) return `connectExitStub: fromID (${fromId}) does not have another room in the indicated direction with an exit stub in the reverse direction to connect to in its area`;
         this.setExit(fromId, minRoom, dir);
         this.setExit(minRoom, fromId, reverse);
         return true;
@@ -2322,13 +2328,21 @@ export class MapStore {
         const from = this.rooms.get(fromId)!;
         if (toId === fromId) return `connectExitStub: fromID and toID are the same (${fromId})`;
         const to = this.rooms.get(toId);
-        if (!to) return `connectExitStub: toID (${toId}) does not exist`;
-        if (from.stubs.length === 0) return `connectExitStub: fromID (${fromId}) has no stub exits`;
-        if (to.stubs.length === 0) return `connectExitStub: toID (${toId}) has no stub exits`;
+        if (!to) return `connectExitStub: toID (${toId}) room does not exist`;
+        if (from.stubs.length === 0) return `connectExitStub: fromID (${fromId}) does not have any stub exits`;
+        if (to.stubs.length === 0) return `connectExitStub: toID (${toId}) does not have any stub exits`;
         const toReverse = new Set(to.stubs.map(d => REVERSE_DIR[d]).filter((d): d is number => d != null));
         const usable = [...new Set(from.stubs)].filter(d => toReverse.has(d));
         if (usable.length === 0) return `connectExitStub: no pairs of reverse stubs found between rooms ${fromId} and ${toId}`;
-        if (usable.length > 1) return `connectExitStub: multiple pairs of reverse stubs between rooms ${fromId} and ${toId}; use the three-argument form with a direction`;
+        if (usable.length > 1) {
+            // Naming the directions is the whole point of this refusal: the
+            // caller is being sent away to pick one, so the message has to say
+            // which there are to pick from.
+            const choices = usable.map(d => `'${DIR_FIELD[d] ?? d}' (${d})`).join(', ');
+            return `connectExitStub: multiple pairs of reverse stubs found between rooms ${fromId}`
+                + ` and ${toId}, please try again with the three argument function and one of the`
+                + ` follow directions: ${choices}`;
+        }
         const dir = usable[0];
         this.setExit(fromId, toId, dir);
         this.setExit(toId, fromId, REVERSE_DIR[dir]);
@@ -2339,11 +2353,11 @@ export class MapStore {
     private connectStubByDirAndTo(fromId: number, dir: number, toId: number): true | string {
         const from = this.rooms.get(fromId)!;
         if (toId === fromId) return `connectExitStub: fromID and toID are the same (${fromId})`;
-        if (!from.stubs.includes(dir)) return `connectExitStub: fromID (${fromId}) has no exit stub in the given direction`;
+        if (!from.stubs.includes(dir)) return `connectExitStub: fromID (${fromId}) does not have an exit stub in the given direction`;
         const to = this.rooms.get(toId);
-        if (!to) return `connectExitStub: toID (${toId}) does not exist`;
+        if (!to) return `connectExitStub: toID (${toId}) room does not exist`;
         const reverse = REVERSE_DIR[dir];
-        if (!to.stubs.includes(reverse)) return `connectExitStub: toID (${toId}) has no exit stub in the reverse direction`;
+        if (!to.stubs.includes(reverse)) return `connectExitStub: toID (${toId}) does not have an exit stub in the reverse direction`;
         this.setExit(fromId, toId, dir);
         this.setExit(toId, fromId, reverse);
         return true;
@@ -2985,8 +2999,34 @@ export class MapStore {
      * Rejects empty new names and names that conflict with another area.
      */
     setAreaName(idOrName: number | string, newName: string): boolean | { ok: false; err: string } {
-        if (typeof newName !== 'string' || newName.length === 0) {
-            return { ok: false, err: 'setAreaName: new area name must be a non-empty string' };
+        // Which area is asked for first, and each way of getting that wrong has
+        // its own answer: an empty NAME in the id's place, an id below one, and
+        // the default area — which is named, and whose name is reserved.
+        if (typeof idOrName === 'string' && idOrName.trim().length === 0) {
+            return { ok: false, err: 'setAreaName: area name cannot be empty' };
+        }
+        if (typeof idOrName === 'number' && idOrName < 1) {
+            return { ok: false, err: `setAreaName: number ${idOrName} is not a valid areaID greater than zero` };
+        }
+        if (typeof idOrName === 'string') {
+            // Keyed off area -1's own name rather than a literal, since the
+            // default area can be renamed in the profile.
+            const defaultName = this.areaNames.get(-1);
+            if (defaultName && idOrName === defaultName) {
+                return {
+                    ok: false,
+                    err: `setAreaName: area name '${defaultName}' is reserved and protected - it cannot be changed`,
+                };
+            }
+        }
+        // Mudlet trims before validating and stores the trimmed form, as
+        // addAreaName does.
+        newName = typeof newName === 'string' ? newName.trim() : '';
+        if (newName.length === 0) {
+            return {
+                ok: false,
+                err: 'setAreaName: area names may not be empty strings (and spaces are trimmed from the ends)',
+            };
         }
         let id = this.resolveAreaId(idOrName);
         if (id == null || !this.areaNames.has(id)) {

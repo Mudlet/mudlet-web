@@ -237,15 +237,48 @@ function addCustomLine(roomID, id_to, direction, style, color, arrow)
     end
     local target
     if type(id_to) == 'table' then
-        local pts = {}
-        for _, p in ipairs(id_to) do
-            if type(p) ~= 'table' or tonumber(p[1]) == nil or tonumber(p[2]) == nil then
-                return nil, "addCustomLine: every coordinate must be a {x, y, z} triple of numbers"
+        -- A malformed coordinate list is a TYPE error and raises, naming the
+        -- point and — for a component that is not a number — which of x, y and
+        -- z it is. Collapsing the two into one (nil, message) told the caller
+        -- something was wrong with the list and left them to find where, and
+        -- the z component was not checked at all: `tostring(p[3] or 0)` wrote
+        -- the words "not a number" into the coordinate payload.
+        -- Only the coordinates that are THERE are type-checked. Mudlet walks
+        -- each point with lua_next, so an absent one is not "a nil where a
+        -- number should be" — it simply never comes up, and a point with too
+        -- few of them is caught by the count afterwards as a value mistake
+        -- rather than a type error. That distinction is the whole of issue
+        -- #5272: {{}} has to be refused, not raised on.
+        local AXES = {'x', 'y', 'z'}
+        local pts, counted = {}, 0
+        for i, p in ipairs(id_to) do
+            if type(p) ~= 'table' then
+                error('addCustomLine: bad argument #2 table item index #' .. i
+                    .. ' type (coordinate list must be a table containing tables of three'
+                    .. ' coordinates, got ' .. type(p) .. ' as indicated item!)', 2)
             end
-            pts[#pts + 1] = tostring(p[1]) .. ',' .. tostring(p[2]) .. ',' .. tostring(p[3] or 0)
+            local coords, present = {}, 0
+            for j = 1, 3 do
+                local value = p[j]
+                if value ~= nil then
+                    if tonumber(value) == nil then
+                        error('addCustomLine: bad argument #2 table item index #' .. i
+                            .. ' inner table item #' .. j .. ' type (coordinates list as table'
+                            .. ' containing tables of three numbers (x, y and z coordinates}'
+                            .. ' expected, but got a ' .. type(value) .. ' as the ' .. AXES[j]
+                            .. '-coordinate at that index!)', 2)
+                    end
+                    present = present + 1
+                end
+                coords[j] = tostring(value == nil and 0 or value)
+            end
+            -- A point needs at least an x; z alone defaults, as Mudlet's own
+            -- counts allow a two-coordinate point through to the mismatch test.
+            if present > 0 then counted = counted + 1 end
+            pts[#pts + 1] = table.concat(coords, ',')
         end
-        if #pts == 0 then
-            return nil, "addCustomLine: the coordinate list is empty, at least one {x, y, z} point is needed"
+        if #pts == 0 or counted == 0 then
+            return nil, "addCustomLine: missing coordinates to create the line to"
         end
         target = 'P:' .. table.concat(pts, ';')
     else
@@ -1231,7 +1264,25 @@ end
 -- Mudlet searchRoom(roomID|name[, caseSensitive[, exactMatch]]). By id → name
 -- string (false on miss). By name → { [roomID] = name } with integer ids
 -- (wasmoon stringifies the keys).
-function searchRoom(arg, caseSensitive, exactMatch)
+function searchRoom(...)
+    local top = select('#', ...)
+    local arg, caseSensitive, exactMatch = ...
+    -- A room is named by a string or numbered by an integer; anything else is
+    -- a type error rather than a search that finds nothing. The two optional
+    -- flags are booleans, and a string in either slot is the mistake that
+    -- silently turned an inexact search exact.
+    if type(arg) ~= 'string' and __mudix_num(arg) == nil then
+        error('searchRoom: bad argument #1 ("room name" as string expected, got '
+            .. type(arg) .. '!)', 2)
+    end
+    if top > 1 and caseSensitive ~= nil and type(caseSensitive) ~= 'boolean' then
+        error('searchRoom: bad argument #2 type ("case sensitive" as boolean is optional, got '
+            .. type(caseSensitive) .. '!)', 2)
+    end
+    if top > 2 and exactMatch ~= nil and type(exactMatch) ~= 'boolean' then
+        error('searchRoom: bad argument #3 type ("exact match" as boolean is optional, got '
+            .. type(exactMatch) .. '!)', 2)
+    end
     local raw = __searchRoom(arg, caseSensitive and true or false, exactMatch and true or false)
     if type(raw) == 'table' then
         local out = {}
@@ -2612,6 +2663,12 @@ end
 -- Mudlet setAreaName(areaID|areaName, newName) → true on success, or
 -- (false, errMsg) on duplicate/missing/empty.
 function setAreaName(idOrName, newName)
+    -- An area is reached by id or by name; a boolean names neither, and Mudlet
+    -- raises rather than reporting it as an area that could not be found.
+    if type(idOrName) ~= 'string' and __mudix_num(idOrName) == nil then
+        error('setAreaName: bad argument #1 type (areaID as number or area name as string\n'
+            .. 'expected, got ' .. type(idOrName) .. '!)', 2)
+    end
     local r = __setAreaName(idOrName, newName)
     if r == true then return true end
     if type(r) == 'table' then
@@ -6335,6 +6392,10 @@ do
     -- proxy can't be walked from JS, so the id list is flattened here.
     function setRoomArea(rooms, area)
         local ids
+        if type(rooms) ~= 'table' and __mudix_num(rooms) == nil then
+            error('setRoomArea: bad argument #1 type (roomID as number or table of roomIDs\n'
+                .. 'expected, got ' .. type(rooms) .. '!)', 2)
+        end
         if type(rooms) == 'table' then
             local parts = {}
             for _, id in ipairs(rooms) do parts[#parts + 1] = tostring(id) end

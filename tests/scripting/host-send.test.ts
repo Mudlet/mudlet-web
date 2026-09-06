@@ -59,6 +59,7 @@ const CONN = 'host-send-conn';
 type EngineInternals = {
     api: {
         printError: (msg: string) => void;
+        postError: (msg: string) => void;
         send: (text: string, echo?: boolean) => void;
         setCmdLineAction: (fn: ((text: string) => void) | null) => void;
     };
