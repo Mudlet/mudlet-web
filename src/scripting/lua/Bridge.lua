@@ -1763,11 +1763,14 @@ function __mudix_check_lua_code(value, funcName, index)
     return str
 end
 
-function __mudix_check_number(value, funcName, index, what)
+-- `present` is optional and only matters when the caller counted its own
+-- arguments: false makes an absent one report as "no value" the way
+-- luaL_typename does, rather than as the "nil" a named parameter degrades to.
+function __mudix_check_number(value, funcName, index, what, present)
     local num = tonumber(value)
     if num == nil then
         error(funcName .. ": bad argument #" .. index .. " type (" .. what
-            .. " as number expected, got " .. type(value) .. "!)", 3)
+            .. " as number expected, got " .. __mudix_typename(value, present) .. "!)", 3)
     end
     return num
 end
@@ -1775,8 +1778,8 @@ end
 -- getVerifiedInt in full: the type check above, then the range check Mudlet has
 -- to make because lua_tointeger hands back a 64-bit value where the C++ side
 -- wants an int. Returns the truncated integer.
-function __mudix_check_int(value, funcName, index, what)
-    __mudix_check_number(value, funcName, index, what)
+function __mudix_check_int(value, funcName, index, what, present)
+    __mudix_check_number(value, funcName, index, what, present)
     local num = __mudix_int(value)
     if num < -2147483648 or num > 2147483647 then
         error(funcName .. ": integer over/under-flow in argument #" .. index .. " (" .. what
@@ -1811,6 +1814,18 @@ function __mudix_str(value)
     if t == 'string' then return value end
     if t == 'number' then return tostring(value) end
     return nil
+end
+
+-- luaL_typename, which every Mudlet bad-argument message ends with. It reads
+-- the *stack slot*, so an argument nobody passed is "no value" and one passed
+-- as nil is "nil" — a distinction Lua loses the moment the arguments become
+-- named parameters. Callers that care have to count with select('#', ...) and
+-- say which they got; callers that do not can leave `present` out and get the
+-- plain type. Mudlet's own messages do make the distinction (UI_spec asserts
+-- "got no value" on a missing argument), so it is worth carrying.
+function __mudix_typename(value, present)
+    if present == false then return 'no value' end
+    return type(value)
 end
 
 -- Optional headers table: absent/nil is fine, anything else must be a table of
@@ -3124,12 +3139,21 @@ end
 
 -- Mudlet accepts either a function or a Lua code string for temp* callbacks;
 -- compile strings to functions so handlers run in a fresh chunk.
+--
+-- A string that does not compile is NOT a refusal. Mudlet builds the object
+-- first and calls TTrigger::setScript() on it afterwards (startTempColorTrigger
+-- in TLuaInterpreter.cpp), so a bad body still registers, still takes an ID and
+-- still comes back to the caller — it simply errors when it fires. Raising here
+-- instead made every temp* constructor reject a body it should have accepted,
+-- which is what LuaApiContracts_spec's "builds nothing when it refuses" reads as
+-- a consumed ID. So the compile error is deferred into the handler itself.
 function __mudix_to_fn(v, who, argN)
     if type(v) == 'function' then return v end
     if type(v) == 'string' then
         local fn, err = loadstring(v)
         if not fn then
-            error(who .. ": failed to compile code string: " .. tostring(err))
+            local message = who .. ": failed to compile code string: " .. tostring(err)
+            return function() error(message, 0) end
         end
         return fn
     end
@@ -5683,14 +5707,20 @@ end
 -- wordings genuinely differ between functions (quoting and phrasing included),
 -- so they are spelled out here rather than funnelled through a shared helper.
 do
-    -- isAnsiFgColor / isAnsiBgColor accept Mudlet's 0-16 ANSI range.
+    -- isAnsiFgColor / isAnsiBgColor accept Mudlet's 0-16 ANSI range. The two
+    -- refusals are not the same kind: a colour number outside the range is a
+    -- value mistake and comes back as (nil, message), while something that is
+    -- not a number at all never reaches the range check — Mudlet reads it with
+    -- getVerifiedInt, which raises. Answering "out of range" to isAnsiFgColor()
+    -- told a script its argument was a number that happened to be too big.
     local function ansiGuard(fn, name)
-        return function(code, ...)
-            local n = tonumber(code)
-            if n == nil or n < 0 or n > 16 then
-                return nil, "ANSI color " .. tostring(code) .. " out of range (0 to 16)"
+        return function(...)
+            local code = ...
+            local n = __mudix_check_int(code, name, 1, "ANSI color", select('#', ...) > 0)
+            if n < 0 or n > 16 then
+                return nil, "ANSI color " .. n .. " out of range (0 to 16)"
             end
-            return fn(code, ...)
+            return fn(...)
         end
     end
     isAnsiFgColor = ansiGuard(isAnsiFgColor, "isAnsiFgColor")
@@ -5959,33 +5989,120 @@ do
         return mapped ~= nil and mapped or n
     end
 
-    local _rawTempColorTrigger = tempColorTrigger
-    tempColorTrigger = function(fg, bg, ...)
-        -- -1 ("ignore this channel") on both would match every line, so Mudlet
-        -- refuses rather than creating a catch-all.
-        if (tonumber(fg) or -1) < 0 and (tonumber(bg) or -1) < 0 then
-            return nil, "tempColorTrigger: only one of foreground and background may be ignored"
+    -- The two sentinels TTrigger declares (TTrigger.h): -1 leaves a channel out
+    -- of the match, -2 asks for the console's own default colour — which is a
+    -- colour to match, not an "any".
+    local IGNORED, DEFAULT = -1, -2
+
+    -- The body is read but never compiled here: an uncompilable string is a
+    -- trigger that errors when it fires, not a refusal (see __mudix_to_fn).
+    local function checkTriggerBody(who, index, value, present)
+        local t = type(value)
+        if t ~= 'string' and t ~= 'function' then
+            error(who .. ": bad argument #" .. index
+                .. " type (code to run as a string or a function expected, got "
+                .. __mudix_typename(value, present) .. "!)", 3)
         end
-        return _rawTempColorTrigger(remapLegacyColor(fg), remapLegacyColor(bg), ...)
     end
 
-    -- tempAnsiColorTrigger(fg [, bg], code [, expiry]). Omitting the background
-    -- is equivalent to ignoring it, so an ignored foreground with no background
-    -- is the same catch-all case and is refused the same way. Only -1 counts as
-    -- ignored here: -2 asks for the default colour, so (-2, -1) and (-1, -2) are
-    -- ordinary one-channel colour triggers and must not be refused.
+    -- Both constructors take the expiry last and validate it the same way, but
+    -- word the refusal differently — tempAnsiColorTrigger says "nil or greater
+    -- than zero" where tempColorTrigger says "greater than zero", and they swap
+    -- the phrasing again on the raising path. Kept as parameters rather than
+    -- unified: UI_spec and LuaApiContracts_spec both assert them verbatim.
+    local function checkExpiry(who, index, value, present, refusal, wanted)
+        if not present or value == nil then return nil end
+        local n = __mudix_int(value)
+        if n == nil then
+            error(who .. ": bad argument #" .. index .. " value (trigger expiration count must be "
+                .. wanted .. ", got " .. type(value) .. "!)", 3)
+        end
+        if n < 1 then
+            return nil, who .. ": trigger expiration count " .. refusal .. ", got " .. n
+        end
+        return n
+    end
+
+    -- tempColorTrigger(fg, bg, code [, expiry]). Mudlet validates in stack
+    -- order but takes the expiry (#4) before the body (#3), and nothing is
+    -- built until all four have passed — LuaApiContracts_spec proves that by
+    -- watching the trigger ID counter across a run of refusals.
+    local _rawTempColorTrigger = tempColorTrigger
+    tempColorTrigger = function(...)
+        local top = select('#', ...)
+        local fg, bg, body, expiry = ...
+        fg = __mudix_check_int(fg, "tempColorTrigger", 1, "foreground color")
+        bg = __mudix_check_int(bg, "tempColorTrigger", 2, "background color")
+        fg, bg = remapLegacyColor(fg), remapLegacyColor(bg)
+        if fg == IGNORED and bg == IGNORED then
+            return nil, "tempColorTrigger: only one of foreground and background colors can be -1 (ignored)"
+        end
+        local count, refused = checkExpiry("tempColorTrigger", 4, expiry, top >= 4,
+            "must be greater than zero", "nil or a number")
+        if refused then return nil, refused end
+        checkTriggerBody("tempColorTrigger", 3, body, top >= 3)
+        return _rawTempColorTrigger(fg, bg, body, count)
+    end
+
+    -- tempAnsiColorTrigger(fg [, bg], code [, expiry]) — the one function here
+    -- whose *second* argument may be omitted, so which argument is which can
+    -- only be settled from the argument count. Mudlet reads the background when
+    -- there are four arguments (it must be one then) or when argument #2 is a
+    -- number; otherwise it slides the body and expiry down a place.
+    --
+    -- That count is also what tells the two ways of ignoring everything apart.
+    -- A -1 foreground with the background *given* as -1 is one mistake; a -1
+    -- foreground with the background left out is a different one, and each gets
+    -- its own wording so a script author can tell which they made.
     local _rawTempAnsiColorTrigger = tempAnsiColorTrigger
-    tempAnsiColorTrigger = function(fg, a2, ...)
-        local bgOmitted = (type(a2) == 'function' or type(a2) == 'string')
-        local bg = bgOmitted and -1 or a2
-        local function ignored(v)
-            local n = tonumber(v)
-            return n == nil or (n < 0 and n ~= -2)
+    tempAnsiColorTrigger = function(...)
+        local top = select('#', ...)
+        local a1, a2, a3, a4 = ...
+        local who = "tempAnsiColorTrigger"
+        local function inRange(v) return v == IGNORED or v == DEFAULT or (v >= 0 and v <= 255) end
+
+        local fg = __mudix_check_int(a1, who, 1,
+            "foreground color as ANSI Color number {-1 = ignore foreground color, -2 = default color, 0 to 255 ANSI color}",
+            top >= 1)
+        if fg == IGNORED and top < 2 then
+            return nil, who .. ": invalid ANSI color number " .. fg
+                .. ", it cannot be used (to ignore the foreground color) if the background color is omitted"
         end
-        if ignored(fg) and ignored(bg) then
-            return nil, "tempAnsiColorTrigger: cannot ignore both foreground and background"
+        if not inRange(fg) then
+            return nil, who .. ": invalid ANSI color number " .. fg
+                .. ", only -1 (ignore foreground color), -2 (default foregroud color) or 0 to 255 recognised"
         end
-        return _rawTempAnsiColorTrigger(fg, a2, ...)
+        -- "(omitted)" is the whole point of this branch: it fires only when the
+        -- background really was left out, which is why it tests the argument
+        -- count and the type of #2 rather than the value of the background.
+        if fg == IGNORED and top < 4 and __mudix_num(a2) == nil then
+            return nil, who .. ": invalid ANSI color number " .. fg
+                .. ", you cannot ignore both foreground and background color (omitted)"
+        end
+
+        local bg, bodyIndex = IGNORED, 2
+        if top < 4 and __mudix_num(a2) == nil then
+            -- background omitted: the body is argument #2 and the expiry #3
+            a3, a4 = a2, a3
+        else
+            bg = __mudix_check_int(a2, who, 2,
+                "background color as ANSI Color number {-1 = ignore foreground color, -2 = default color, 0 to 255 ANSI color}")
+            if not inRange(bg) then
+                return nil, who .. ": invalid ANSI color number " .. bg
+                    .. ", only -1 (ignore background color), -2 (default background color) or 0 to 255 recognised"
+            end
+            if bg == IGNORED and fg == IGNORED then
+                return nil, who .. ": invalid ANSI color number " .. bg
+                    .. ", you cannot ignore both foreground and background color"
+            end
+            bodyIndex = 3
+        end
+
+        checkTriggerBody(who, bodyIndex, a3, top >= bodyIndex)
+        local count, refused = checkExpiry(who, bodyIndex + 1, a4, top > bodyIndex,
+            "must be nil or greater than zero", "a number")
+        if refused then return nil, refused end
+        return _rawTempAnsiColorTrigger(fg, bg, a3, count)
     end
 end
 
