@@ -11,6 +11,7 @@ import type {ScriptingAPI} from '../ScriptingAPI';
 import type {ProfileVFS} from '../vfs/ProfileVFS';
 import UTF8 from './utf8.lua?raw';
 import {findLuaPattern} from './utf8Patterns';
+import {armor, unarmor} from './byteArmor';
 import VFS_LUA from './VFS.lua?raw';
 import LUAGLOBAL from './LuaGlobal.lua?raw';
 import BRIDGE_LUA from './Bridge.lua?raw';
@@ -1476,7 +1477,13 @@ export class LuaRuntime implements IScriptingRuntime {
         // pipeline as if received from the MUD.
         // Returns the refusal message (or nil when the data was fed); the
         // Bridge.lua wrapper shapes that into Mudlet's (nil, errMsg) / true.
-        this.lua.global.set('__feedTelnet', (data: unknown) => this.api.feedTelnet(String(data ?? '')));
+        //
+        // The payload arrives ARMORED. A telnet stream is bytes, and most byte
+        // sequences are not valid UTF-8 — which is all wasmoon will carry, so a
+        // plain crossing silently rewrites them (0xE5 0xFE 0x0D arrived here as
+        // U+5F8D, one char where three bytes were sent). See byteArmor.ts.
+        this.lua.global.set('__feedTelnet', (data: unknown) =>
+            this.api.feedTelnet(unarmor(String(data ?? ''))));
         // Mudlet `loadReplay(fileName)` — play back a binary replay (.dat) from
         // the profile VFS. The format parse + chunk scheduling live in
         // MudSession; this binding just reads the bytes. Returns an
@@ -2771,28 +2778,6 @@ end`);
         }
 
         const handles = new Map<number, Handle>();
-
-        // ── Binary armoring across the wasmoon bridge ─────────────────────────
-        // wasmoon marshals strings between Lua and JS with emscripten's
-        // UTF8ToString / stringToUTF8: Lua→JS stops at the first NUL byte and
-        // UTF-8-*decodes* the rest, JS→Lua re-encodes chars ≥ 0x80 as multi-byte
-        // UTF-8. Fine for text, silently corrupting for binary (a replay file's
-        // int32 headers lost every \0). So every io payload crosses the bridge
-        // "armored" as pure ASCII: a marker char (\2 = raw, \1 = encoded) plus
-        // the payload with NUL / '%' / 0x80–0xFF bytes as %XX escapes. VFS.lua
-        // mirrors the scheme (_armor/_unarmor) on the Lua side.
-        const VFS_RAW = 2;
-        const NEEDS_ARMOR = /[\x00%\x80-\xff]/;
-        const armor = (s: string): string => {
-            if (!NEEDS_ARMOR.test(s)) return '\x02' + s;
-            return '\x01' + s.replace(/[\x00%\x80-\xff]/g,
-                c => '%' + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'));
-        };
-        const unarmor = (s: string): string => {
-            const payload = s.substring(1);
-            if (s.charCodeAt(0) === VFS_RAW) return payload;
-            return payload.replace(/%([0-9A-Fa-f]{2})/g, (_, h: string) => String.fromCharCode(parseInt(h, 16)));
-        };
 
         // Byte-string ↔ bytes for the storage boundary. Chunked to stay within
         // String.fromCharCode's argument limit on large files.

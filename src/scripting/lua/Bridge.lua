@@ -1732,11 +1732,11 @@ end
 -- number one. Scripts rely on it — trigger captures are always strings, so
 -- `tempLineTrigger(matches[2], matches[3], code)` is ordinary Mudlet code — and a
 -- strict type() test here rejected calls that work in Mudlet.
-function __mudix_check_string(value, funcName, index, what)
+function __mudix_check_string(value, funcName, index, what, present)
     local str = __mudix_str(value)
     if str == nil then
         error(funcName .. ": bad argument #" .. index .. " type (" .. what
-            .. " as string expected, got " .. type(value) .. "!)", 3)
+            .. " as string expected, got " .. __mudix_typename(value, present) .. "!)", 3)
     end
     return str
 end
@@ -1826,6 +1826,53 @@ end
 function __mudix_typename(value, present)
     if present == false then return 'no value' end
     return type(value)
+end
+
+-- ── Binary armoring across the wasmoon bridge ──────────────────────────────
+-- wasmoon marshals strings with emscripten's UTF8ToString / stringToUTF8, so a
+-- Lua→JS crossing stops at the first NUL and UTF-8-*decodes* the rest. That is
+-- fine for text and silently destructive for bytes: feedTelnet("\229\254") does
+-- not deliver 0xE5 0xFE to JS, it delivers whatever those bytes plus the next
+-- one happen to decode to (0xE5 0xFE 0x0D arrives as U+5F8D). Any binding that
+-- carries game bytes rather than text therefore sends them "armored" as pure
+-- ASCII: a marker byte (\2 = raw, \1 = encoded) then the payload with NUL, '%'
+-- and 0x80-0xFF as %XX escapes. LuaRuntime mirrors the scheme in JS.
+--
+-- Neither direction may pay a function call per byte — both run over whole-file
+-- payloads in VFS.lua, where a multi-megabyte read costs millions of calls and
+-- wedges the main thread for minutes. gsub resolves a replacement *table* in C,
+-- so both maps are precomputed once here. The decode table carries all four
+-- case spellings because the pattern matches %x%x case-insensitively.
+--
+-- Defined here rather than in VFS.lua (which had them first, and privately)
+-- because Bridge.lua runs first and the feed bindings need them too: one scheme
+-- with one implementation, since the JS half is shared as well.
+do
+    local ENC, RAW = string.char(1), string.char(2)
+    local char2hex, hex2char = {}, {}
+    for b = 0, 255 do
+        local c  = string.char(b)
+        local up = string.format('%02X', b)
+        local lo = string.format('%02x', b)
+        char2hex[c] = '%' .. up
+        hex2char[up] = c
+        hex2char[lo] = c
+        hex2char[up:sub(1, 1) .. lo:sub(2, 2)] = c
+        hex2char[lo:sub(1, 1) .. up:sub(2, 2)] = c
+    end
+
+    function __mudix_armor(s)
+        if s:find('[%z%%\128-\255]') then
+            return ENC .. s:gsub('[%z%%\128-\255]', char2hex)
+        end
+        return RAW .. s
+    end
+
+    function __mudix_unarmor(s)
+        local payload = s:sub(2)
+        if s:sub(1, 1) == RAW then return payload end
+        return (payload:gsub('%%(%x%x)', hex2char))
+    end
 end
 
 -- Optional headers table: absent/nil is fine, anything else must be a table of
@@ -5880,9 +5927,13 @@ do
     -- type error rather than a silent tostring().
     -- Injecting into a socket that is anything but unconnected would interleave
     -- with the live stream, so it is refused with (nil, errMsg).
+    -- Armored on the way over: these really are bytes, and most byte sequences
+    -- are not valid UTF-8 — which is all the wasmoon bridge will carry. Sent
+    -- plain, "\229\254\13" reached JS as a single U+5F8D and the encoding
+    -- specs were testing the decoder against data they had never sent.
     feedTelnet = function(data, ...)
         data = __mudix_check_string(data, "feedTelnet", 1, "data")
-        local err = __feedTelnet(data, ...)
+        local err = __feedTelnet(__mudix_armor(data), ...)
         if err ~= nil then return nil, err end
         return true
     end
@@ -6476,17 +6527,80 @@ do
     createCommandLine = windowCtorGuard(createCommandLine, "createCommandLine")
 end
 
--- feedTriggers(text) injects imitation server output. Mudlet reads it with
--- lua_isstring, so a table (or anything else non-coercible) raises rather than
--- being tostring()-ed into the buffer.
+-- feedTriggers(text [, isUtf8]) injects imitation server output. Mudlet reads
+-- the text with lua_isstring, so a table (or anything else non-coercible)
+-- raises rather than being tostring()-ed into the buffer, and the optional
+-- second argument is read with getVerifiedBool — a non-boolean raises too
+-- rather than being taken for its truthiness, since getting it backwards is
+-- exactly the mistake that shows up as double-encoded text.
+--
+-- Armored across the bridge (see __mudix_armor): with isUtf8 false the caller
+-- is handing over bytes already in the game's encoding, which by definition are
+-- not UTF-8 and would not survive the crossing as text.
 do
     local _rawFeedTriggers = feedTriggers
-    function feedTriggers(data, ...)
-        if type(data) ~= 'string' and type(data) ~= 'number' then
-            error("feedTriggers: bad argument #1 type (imitation game server text as string"
-                .. " expected, got " .. type(data) .. "!)", 2)
+    function feedTriggers(...)
+        local top = select('#', ...)
+        local data, isUtf8 = ...
+        data = __mudix_check_string(data, "feedTriggers", 1, "imitation game server text", top >= 1)
+        if top > 1 then
+            if type(isUtf8) ~= 'boolean' then
+                error("feedTriggers: bad argument #2 type (Utf8Encoded as boolean is optional, got "
+                    .. type(isUtf8) .. "!)", 2)
+            end
+        else
+            isUtf8 = true
         end
-        return _rawFeedTriggers(data, ...)
+        local err = _rawFeedTriggers(__mudix_armor(data), isUtf8)
+        if err ~= nil then return nil, err end
+        return true
+    end
+end
+
+-- announce(text [, processing]) hands text to a screen reader. The processing
+-- style is the queueing policy the reader applies, and the list of them only
+-- exists in this refusal — there is no getter for it — so dropping the names
+-- from the message removes the documentation with them. Mudlet raises on all
+-- three mistakes (unreadable text, unreadable style, unknown style) rather than
+-- refusing quietly: a script that mis-announces is a script whose author cannot
+-- hear that it did.
+do
+    local PROCESSING_KINDS = {"importantall", "importantmostrecent", "all", "mostrecent", "currentthenmostrecent"}
+    local _raw = announce
+    function announce(...)
+        local top = select('#', ...)
+        local text, processing = ...
+        text = __mudix_check_string(text, "announce", 1, "text to announce", top >= 1)
+        if top > 1 then
+            processing = __mudix_check_string(processing, "announce", 2, "processing style")
+            local known = false
+            for _, kind in ipairs(PROCESSING_KINDS) do
+                if processing == kind then known = true break end
+            end
+            if not known then
+                error("announce: bad argument #2 type (processing should be one of "
+                    .. table.concat(PROCESSING_KINDS, ", ") .. ", got " .. processing .. "!)", 2)
+            end
+            return _raw(text, processing)
+        end
+        return _raw(text)
+    end
+end
+
+-- alert([seconds]) flashes for attention. The duration is optional, and zero is
+-- a duration rather than a mistake — the boundary is where the refusal starts,
+-- not "anything falsy". Mudlet raises on a negative one instead of clamping,
+-- since a script asking for a negative flash has a bug either way and a silent
+-- clamp hides it.
+do
+    local _raw = alert
+    function alert(...)
+        if select('#', ...) == 0 then return _raw() end
+        local seconds = __mudix_check_number((...), "alert", 1, "alert duration in seconds", true)
+        if seconds < 0 then
+            error("alert: duration, in seconds, is optional but if given must be zero or greater.", 2)
+        end
+        return _raw(seconds)
     end
 end
 

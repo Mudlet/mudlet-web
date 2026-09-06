@@ -28,13 +28,14 @@ import { historyStorageKey, loadHistory } from '../ui/commandHistory';
 import { OSC8_DOCS_DEBOUNCE_MS, OSC8_DOCS_PHRASE, osc8DocumentationExamples } from '../mud/text/osc8Docs';
 import { SERVER_WRAP_WIDTH_MAX, SERVER_WRAP_WIDTH_MIN } from '../mud/text/serverWrap';
 import { decodeTelnetByteTags } from '../mud/connection/telnetByteTags';
-import { toByteString } from '../mud/protocol/byteString';
 import { openOsc8Menu } from '../ui/output/osc8Menu';
 import { namedColorToState, dechoToAnsiFast, cechoToAnsiFast, hechoToAnsiFast } from '../mud/text/colorParsers';
 import { colorCodes } from '../mud/text/colors';
 import { Console, MIN_CONSOLE_BUFFER_SIZE, MAX_CONSOLE_BUFFER_SIZE } from '../mud/text/Console';
 import { flashTitle } from '../utils/documentTitle';
 import { MspParser } from '../mud/protocol';
+import { fromByteString } from '../mud/protocol/byteString';
+import { canEncodeForServer, decodeForServer } from '../mud/protocol/charset';
 import { StopwatchManager, localStorageStopwatchStore } from './StopwatchManager';
 import { MxpFrameManager } from './MxpFrameManager';
 import { getHeldModifiers } from './heldModifiers';
@@ -1069,18 +1070,15 @@ export class ScriptingAPI {
         if (!this.session.isSocketUnconnected()) {
             return 'feedTelnet: refused, telnet connection socket is not in the unconnected state';
         }
-        // The `<T_IAC><T_GA>`-style placeholders come first: a telnet stream is
-        // made of bytes a Lua string cannot carry comfortably, so Mudlet lets
-        // the data name them. See telnetByteTags.ts.
-        // Back to BYTES first. A socket hands the parser one char per byte
-        // (String.fromCharCode over the frame), and everything downstream reads
-        // it that way — MSDP decodes its values from UTF-8 bytes, for one. What
-        // arrives here has already been through wasmoon, which UTF-8-DECODES a
-        // Lua string on the way out, so "caf\195\169" reaches this line as
-        // "café": three bytes had become one char, and the byte reader then made
-        // a replacement character of it. Encoding before the tags are decoded
-        // leaves them alone, being ASCII either way.
-        this.session.feedTelnet(decodeTelnetByteTags(toByteString(data)));
+        // `data` is a BYTE-STRING: one char per byte, as a socket produces and
+        // as everything downstream reads it (MSDP decodes its values from UTF-8
+        // bytes, for one). The Lua binding unarmors it into that shape — see
+        // byteArmor.ts for why the crossing cannot be made in plain text.
+        //
+        // The `<T_IAC><T_GA>`-style placeholders are decoded after: a telnet
+        // stream is made of bytes a Lua string cannot carry comfortably, so
+        // Mudlet lets the data name them instead. See telnetByteTags.ts.
+        this.session.feedTelnet(decodeTelnetByteTags(data));
         return null;
     }
 
@@ -3519,12 +3517,51 @@ export class ScriptingAPI {
     private feedTriggersRemainder = '';
 
     /**
-     * Feed `text` through the trigger pipeline as if it arrived from the MUD.
+     * Feed bytes through the trigger pipeline as if they arrived from the MUD.
      * Routes complete lines through ScriptingEngine.processFlushBatch (same
      * code path as network-driven flushLines) so trigger ordering, ANSI carry,
      * and deferred-echo placement match exactly.
+     *
+     * `data` is a byte-string (the Lua binding unarmors it — see byteArmor.ts).
+     * `utf8Encoded` says how to read it, and it is the caller's promise rather
+     * than a guess:
+     *
+     *  - true (the default) — the bytes are UTF-8. Mudlet transcodes them into
+     *    the game's encoding before display, so text the encoding cannot carry
+     *    is REFUSED rather than mangled: a script feeding an accented character
+     *    to an ASCII game has made a mistake it needs to hear about, and the
+     *    transcode is lossless otherwise, so refusing costs nothing real.
+     *  - false — the older form, where the caller has already encoded the bytes
+     *    themselves. They pass through untouched, decoded with the game's own
+     *    encoding rather than read as UTF-8 and double-encoded.
+     *
+     * Returns null when the text was fed, or the refusal message; the binding
+     * shapes that into Mudlet's `true` / `(nil, errMsg)`.
      */
-    feedTriggers(text: string): boolean {
+    feedTriggers(data: string, utf8Encoded = true): string | null {
+        const encoding = this.session.getServerEncoding();
+        let text: string;
+        if (utf8Encoded) {
+            text = fromByteString(data).text;
+            // ASCII is the strictest case and the one Mudlet checks by hand:
+            // it has no encoder to ask, so the test is simply that nothing has
+            // its top bit set.
+            const carried = /^(us-)?ascii$/i.test(encoding.trim())
+                ? ![...text].some(c => (c.codePointAt(0) ?? 0) > 0x7f)
+                : canEncodeForServer(text, encoding);
+            if (!carried) {
+                return `feedTriggers: cannot send '${text}' as it contains one or more characters`
+                    + ` that cannot be conveyed in the current game server encoding of '${encoding}'`;
+            }
+        } else {
+            text = decodeForServer(data, encoding);
+        }
+        this.feedTriggersText(text);
+        return null;
+    }
+
+    /** The feed itself, once {@link feedTriggers} has settled what the bytes say. */
+    private feedTriggersText(text: string): boolean {
         // Trigger reloads are coalesced onto a microtask, which cannot run while
         // the calling Lua chunk is still on the stack. Mudlet applies perm* and
         // enable/disableTrigger immediately, so a script that creates or toggles

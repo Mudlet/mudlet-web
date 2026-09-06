@@ -570,6 +570,16 @@ export class MudSession {
     private ensureParsingClient(): MudClient {
         if (!this.client) {
             this.client = new MudClient({ url: '', ...this.options }, this.events as EventBus<MudClientEvents>);
+            // Same hand-off setClient() makes, and for the same reason: the
+            // encoding belongs to the profile, but the decoder that has to obey
+            // it belongs to the client. setServerEncoding() can only reach a
+            // client that already exists, so one created here would otherwise
+            // start on UTF-8 no matter what the profile had been set to — and
+            // the very next feedTelnet would decode the injected bytes with the
+            // wrong table while getServerEncoding() reported the right name.
+            if (this.serverEncoding !== DEFAULT_SERVER_ENCODING) {
+                this.client.setServerEncoding(this.serverEncoding);
+            }
         }
         return this.client;
     }

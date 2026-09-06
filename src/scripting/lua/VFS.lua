@@ -36,43 +36,13 @@ do
 
     local _handles = {}
 
-    -- The wasmoon Lua↔JS string bridge is UTF-8-based: crossing it truncates
-    -- at NUL bytes and mangles 0x80–0xFF, so binary file content would corrupt.
-    -- Every io payload therefore crosses "armored" as pure ASCII: a marker
-    -- byte (\2 = raw, \1 = encoded) plus the data with NUL / '%' / high bytes
-    -- as %XX escapes. The JS hooks in LuaRuntime.setupVFS mirror the scheme.
-    local ENC, RAW = string.char(1), string.char(2)
-
-    -- Both directions run over whole-file payloads, so neither may pay a Lua
-    -- function call per escaped byte: reading a multi-megabyte file that way
-    -- costs millions of calls and wedges the main thread for minutes (the
-    -- f2ce-tools map-database import froze exactly here). gsub also accepts a
-    -- replacement *table*, which it resolves in C, so precompute both maps once.
-    -- The decode table carries all four case spellings of each byte since the
-    -- pattern matches %x%x case-insensitively.
-    local _char2hex, _hex2char = {}, {}
-    for b = 0, 255 do
-        local c  = string.char(b)
-        local up = string.format('%02X', b)
-        local lo = string.format('%02x', b)
-        _char2hex[c] = '%' .. up
-        _hex2char[up] = c
-        _hex2char[lo] = c
-        _hex2char[up:sub(1, 1) .. lo:sub(2, 2)] = c
-        _hex2char[lo:sub(1, 1) .. up:sub(2, 2)] = c
-    end
-
-    local function _armor(s)
-        if s:find('[%z%%\128-\255]') then
-            return ENC .. s:gsub('[%z%%\128-\255]', _char2hex)
-        end
-        return RAW .. s
-    end
-    local function _unarmor(s)
-        local payload = s:sub(2)
-        if s:sub(1, 1) == RAW then return payload end
-        return (payload:gsub('%%(%x%x)', _hex2char))
-    end
+    -- Every io payload crosses the wasmoon bridge "armored" as pure ASCII,
+    -- because that bridge is UTF-8-based and would otherwise truncate binary
+    -- content at NUL and mangle 0x80–0xFF. The scheme, and why it is written the
+    -- way it is, lives in Bridge.lua next to __mudix_armor; the JS hooks in
+    -- LuaRuntime mirror it. Taken as locals here so the hot read/write paths do
+    -- a local lookup rather than a global one.
+    local _armor, _unarmor = __mudix_armor, __mudix_unarmor
 
     local function _make_handle(id)
         local mt = {
