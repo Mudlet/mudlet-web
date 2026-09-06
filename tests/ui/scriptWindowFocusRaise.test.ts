@@ -15,8 +15,12 @@ import type { WindowManager } from '../../src/ui/windows/WindowManager';
 // interacting with it never raises it, only an explicit raiseWindow() does.
 // (JSX is avoided so the file stays a plain .test.ts, matching the include glob.)
 
-// ScriptWindow only reaches the manager for the content portal target.
-const stubManager = () => ({ getPortalTarget: () => null }) as unknown as WindowManager;
+// ScriptWindow only reaches the manager for the content portal target and the
+// top of the client area (0 here — no bars in this host).
+const stubManager = () => ({
+    getPortalTarget: () => null,
+    clientAreaTop:   () => 0,
+}) as unknown as WindowManager;
 
 const baseProps = {
     id: 'mapper',
