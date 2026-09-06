@@ -60,7 +60,18 @@ export default defineConfig({
     // declare the extension itself — without it those imports fail to load,
     // and externalising them instead (the old workaround) shipped seven
     // dangling specifiers to consumers.
-    assetsInclude: ['**/*.mpackage'],
+    //
+    // Both halves, and they have to stay in step with the plugin's list and
+    // vitest's: `LuaRuntime.ts` reaches the fixtures through one glob,
+    // `'./specs/fixtures/**/*.{mpackage,zip}'`, so declaring only `.mpackage`
+    // leaves the `.zip` arm of the same glob unclaimed. Nothing catches that
+    // on Linux — the load still resolves and the fixture tree-shakes away
+    // behind `BUSTED_ENABLED`, so CI is green — but on Windows rolldown falls
+    // through to its own loader and asks the filesystem for a path with a `?`
+    // in it, which is not a legal Windows filename: `Could not load
+    // achaea-map.zip?inline … (os error 123)`, and `yarn build:lib` cannot
+    // run on a Windows dev machine at all.
+    assetsInclude: ['**/*.mpackage', '**/specs/fixtures/**/*.zip'],
     plugins: [
         react(),
         nodePolyfills({ include: ['buffer', 'stream', 'events', 'util'] }),
