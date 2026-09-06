@@ -79,10 +79,25 @@ export function detectDock(mx: number, my: number): {
     const vp = document.querySelector<HTMLElement>('.main-viewport');
     if (vp) {
         const r = vp.getBoundingClientRect();
+        // The activation band is the strip *inside* the viewport's edge, not the
+        // half-plane beyond it: `my - r.top < EMPTY_DOCK_ZONE` is true for every y
+        // above the viewport too, which is the whole top bar. A titlebar dragged
+        // up there therefore armed the top dock — and that state cannot survive
+        // its own preview. The ghost dock area opens at the viewport's old top
+        // edge, so on the next move the cursor is above `.dock-area-top` (the loop
+        // above bails), and `.dock-area-top` now exists so this fallback is
+        // skipped as well → null → ghost gone → viewport grows back → armed again.
+        // Flicker for as long as the pointer sits in the bar.
+        //
+        // Requiring the cursor to be inside the viewport makes activation and
+        // deactivation measure the same edge, and matches Mudlet: a titlebar held
+        // over the toolbar is outside the client area, so docking is not live
+        // there at all and the window simply stays floating.
+        const inside = mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom;
         // Bottom side is handled above, anchored to the command bar.
-        if (!document.querySelector('.dock-area-left')   && mx - r.left   < EMPTY_DOCK_ZONE) return { side: 'left',   slotIndex: 0 };
-        if (!document.querySelector('.dock-area-right')  && r.right  - mx < EMPTY_DOCK_ZONE) return { side: 'right',  slotIndex: 0 };
-        if (!document.querySelector('.dock-area-top')    && my - r.top    < EMPTY_DOCK_ZONE) return { side: 'top',    slotIndex: 0 };
+        if (inside && !document.querySelector('.dock-area-left')   && mx - r.left   < EMPTY_DOCK_ZONE) return { side: 'left',   slotIndex: 0 };
+        if (inside && !document.querySelector('.dock-area-right')  && r.right  - mx < EMPTY_DOCK_ZONE) return { side: 'right',  slotIndex: 0 };
+        if (inside && !document.querySelector('.dock-area-top')    && my - r.top    < EMPTY_DOCK_ZONE) return { side: 'top',    slotIndex: 0 };
     }
     return { side: null, slotIndex: 0 };
 }
