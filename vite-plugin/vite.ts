@@ -102,20 +102,25 @@ export default function mudix(): PluginOption[] {
             name: 'mudix:config',
             config: () => ({
                 resolve: {
-                    // Exactly one React instance, always. `mudlet-map-editor`
-                    // declares react/react-dom as plain *dependencies* (not
-                    // peers), so the moment its range outruns the range the
-                    // app resolved, the package manager nests a second copy
-                    // under the editor. The editor's `App` is then rendered by
-                    // mudix's React while its hooks come from the nested one,
-                    // whose dispatcher is null — "Invalid hook call", and with
-                    // no error boundary above the lazy boundary the throw
+                    // Exactly one instance of each, always. `mudlet-map-editor`
+                    // used to declare these as plain *dependencies*, so the
+                    // moment its range outran the range the app resolved, the
+                    // package manager nested a second copy under the editor.
+                    // The editor's `App` was then rendered by mudix's React
+                    // while its hooks came from the nested one, whose
+                    // dispatcher is null — "Invalid hook call", and with no
+                    // error boundary above the lazy boundary the throw
                     // unmounts the whole root, so opening the map editor
                     // blanked the entire UI in dev and in production alike.
-                    // Deduping is the structural fix: it survives the next
-                    // version skew, and consumers of the library (which
-                    // externalizes react) get it through this plugin too.
-                    dedupe: ['react', 'react-dom'],
+                    // Editor 2.0.0 makes all of them peer dependencies, which
+                    // is the fix at the source; this stays as the backstop that
+                    // does not depend on the package manager hoisting correctly
+                    // — and consumers of the library (which externalizes react)
+                    // get it through this plugin too. Konva and the renderer
+                    // are here for the same reason and not only for symmetry:
+                    // two Konvas split the stage registry, and two renderers
+                    // disagree on scene structure, both silently.
+                    dedupe: ['react', 'react-dom', 'konva', 'mudlet-map-renderer'],
                 },
                 // A Mudlet package archive is a zip, not source. `?url` imports
                 // get away without this (the explicit query short-circuits
