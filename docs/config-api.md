@@ -249,7 +249,7 @@ group 3 to group 1/2 as the underlying feature lands:
 - **Input line / editor:** `compactInputLine`, `editorAutoComplete`.
 - **Map:** `show3dMapView` (no 3D renderer), `showRoomIdsOnMap`,
   `showUpperLowerLevels` — the first has no 3D renderer at all; the other two
-  need renderer support that `mudlet-map-renderer` 2.6.1 does not expose
+  need renderer support that `mudlet-map-renderer` 3.0.0 does not expose
   (no room-id labels, no dimmed z±1 planes), so they are blocked upstream
   rather than merely unwired.
 - **Misc UI / logging:** `logInHTML`.

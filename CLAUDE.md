@@ -29,6 +29,13 @@ Mudlet Web is a **web-based MUD (Multi-User Dungeon) client** built with React +
 
 Key libraries: `wasmoon-lua5.1` (WASM-compiled Lua 5.1), `pcre2-wasm-universal` (PCRE regex for triggers/aliases), `@sqlite.org/sqlite-wasm` (the `db:*` API), `@zenfs/core` + `@zenfs/dom` (the profile VFS), `mudlet-map-binary-reader`/`-renderer`/`-editor` (map files), `zustand` (state), `pako`/`fflate` (compression), `@codemirror/*` (the script editor), `dompurify` + `marked` (HTML/markdown panels).
 
+> **`konva`, `i18next` and `react-i18next` are dependencies nothing here imports** — do not sweep them
+> as unused. `mudlet-map-editor` (2.0.0 and up) leaves every library it renders with external and
+> declares it as a peer dependency, so the host tree has to supply them; Yarn 1 does not install peers
+> on its own. They exist so exactly one copy of each is resolved — two Reacts break hooks, two Konvas
+> split the stage registry, two renderers disagree on scene structure — which is also what
+> `resolve.dedupe` in `vite-plugin/vite.ts` backstops.
+
 ## Architecture Overview
 
 ### Event-Driven Core
