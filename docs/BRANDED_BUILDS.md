@@ -84,8 +84,9 @@ that file as the source of truth.
   See [Bundling Lua packages](#bundling-lua-packages) below.
 - **`themes`** / **`availableThemes`** / **`defaultTheme`** — brand color
   themes and picker configuration (see [Theming](#theming) below).
-- **`toolbar`** — hide stock buttons, add brand buttons, restyle via
-  `className` (see [Toolbar](#toolbar) below).
+- **`toolbar`** — hide stock buttons, place your own commands, rebuild or remove
+  either bar, restyle via `className` (see
+  [Toolbar and menu bar](#toolbar-and-menu-bar) below).
 - **`Landing`** — replace the built-in login screen entirely (see
   [Custom landing screens](#custom-landing-screens) below).
 
@@ -151,23 +152,159 @@ Mudlet Web's bundled stylesheets, so unset variables fall back to the dark base 
 reusing a stock id (`dark`, `light`, ...) overrides that stock theme in place.
 See the `:root` block in `src/App.css` for the full CSS variable list.
 
-## Toolbar
+## Toolbar and menu bar
+
+The top bar is two rows: the **menu bar** (Games, Toolbox, Options, Window,
+Help, About — Mudlet's own menus) over the **button bar**. Either can be
+removed, rebuilt, or left alone.
 
 ```ts
 const brand: BrandConfig = {
     toolbar: {
         hide: ['map', 'logs'],
-        buttons: [
-            { id: 'roll', label: 'Roll d20', onClick: ctx => ctx.raiseEvent('rollDice', 20) },
+        commands: [
+            { id: 'roll', name: 'Roll d20', menuPath: 'Realm', shortcut: 'Ctrl+Alt+D',
+              onClick: ctx => ctx.raiseEvent('rollDice', 20) },
         ],
         className: 'mybrand-toolbar',
     },
 };
 ```
 
-Brand buttons get a `BrandToolbarContext` with `send(text)` (as if the user
-typed a command) and `raiseEvent(event, ...args)` (a Mudlet event your Lua
-scripts can register a handler for).
+### Commands
+
+`commands` is `addCommand`'s shape, from JavaScript: `name`, `icon` (a URL or
+any node), `tooltip`, `menuPath`, `shortcut`, `surfaces` (`'menu'`,
+`'toolbar'`, or both), `enabled`, `checked`. `menuPath` is `/`-separated — the
+first segment names a top-level menu (an existing title joins it, a new one
+opens a menu at the end of the bar), and further segments nest submenus.
+
+Handlers get a `BrandToolbarContext` with `send(text)` (as if the user typed a
+command) and `raiseEvent(event, ...args)` (a Mudlet event your Lua scripts can
+register a handler for).
+
+For anything that changes while the client runs, use the exported registry —
+it holds the brand's `commands` too, so `remove('roll')` reaches one declared
+above:
+
+```ts
+import { commands } from '@mudlet/mudlet-web';
+
+const id = commands.add({
+    name: 'Character sheet',
+    menuPath: 'Realm',
+    surfaces: 'both',
+    onClick: () => openSheet(),
+});
+
+commands.setChecked(id, true);
+commands.setEnabled(id, false);
+commands.update(id, { name: 'Sheet (2)' });
+commands.remove(id);
+```
+
+### Rebuilding either bar
+
+`menuBar` and `buttonBar` take `false` to remove the bar, or a function to
+rebuild it. The function is handed the finished stock tree — your `hide` already
+applied, and every package and host command already placed — and returns what to
+draw:
+
+```ts
+toolbar: {
+    menuBar: stock => [
+        stock.find(m => m.id === 'games')!,
+        { id: 'realm', label: 'Realm', items: [
+            { kind: 'action', id: 'sheet', label: 'Character sheet', run: openSheet },
+            { kind: 'separator', id: 'realm-1' },
+            { kind: 'submenu', id: 'realm-help', label: 'Help', items: [/* … */] },
+        ] },
+    ],
+    buttonBar: stock => [
+        ...stock.filter(b => b.id !== 'reportBug'),
+        { kind: 'button', id: 'sheet', label: 'Sheet', run: openSheet },
+    ],
+},
+```
+
+Toolbar items are `{ kind: 'button' | 'split' | 'custom' }` — a plain button, a
+Qt-style split button (a default action with more behind an arrow), or any node
+you want in the row. `TopMenu`, `MenuNode`, `ToolbarItem` and friends are all
+exported.
+
+Below the desktop breakpoint the button row becomes the hamburger and draws
+whatever your transform returned, so reordering the row reorders the phone menu
+with it.
+
+### Visibility
+
+Bars the brand keeps are the player's to hide (Settings → Appearance → "Menu bar
+and toolbar"); the settings refuse to hide the last one, so there is always a
+way back to the dialog. A brand that sets both to `false` gets no top bar at
+all, which is a reasonable thing for an embedded client to want.
+
+### Shortcuts
+
+Settings → Shortcuts lists the client's own keys (Mudlet's menu accelerators:
+Alt+E for the script editor, Alt+M for the map, and so on — Ctrl on macOS) and
+lets the player rebind them. Commands you hid with `hide` are not listed and
+their keys do not fire: a shortcut is another door onto the same room, so it
+goes with the button.
+
+## Migrating from the single-row toolbar
+
+The top bar was one row until this release. Nothing here is a compile error —
+`BrandConfig` only gained fields — so the changes are all things you will see
+rather than things the build will tell you about. Five to check:
+
+1. **A menu bar appears.** A brand that never asked for one now has it, and the
+   bar is taller. Your `hide` list does carry into the menus (hide `scripts` and
+   Script editor is gone from Toolbox too, and a menu that empties out is not
+   drawn), so nothing you removed comes back — but the row is new.
+   `toolbar: { menuBar: false }` restores a single row.
+2. **A Mute button appears.** `mute` is a new `StockToolbarButton`, and an
+   existing `hide` list cannot have listed a button that did not exist — so it
+   defaults to shown. Add `'mute'` to `hide` if you do not want it. The same
+   will be true of any stock button added in future: `hide` is a deny-list, so
+   new buttons arrive opted in.
+3. **`hide` ids shifted.** `connection` is now Mudlet's Connect split button
+   (Connect, with Disconnect, Reconnect and Close profile behind its arrow), and
+   `close` is the Close profile entry inside it — so `hide: ['connection']`
+   removes Close with it, and keeping `close` no longer gives you a standalone
+   Close button.
+4. **Keyboard shortcuts are live.** Mudlet's menu accelerators now fire:
+   Alt+C/D/R/W for the connection group, Alt+K mute, Alt+L focus the command
+   line, Ctrl+Alt+T timestamps, Ctrl+Alt+L logging, F11 fullscreen (Ctrl on
+   macOS for the letter group). Commands you hid get no binding. Two things to
+   look at: **Alt+W closes the profile**, which is a real action for a player to
+   hit by accident; and the client dispatcher runs in the capture phase and
+   stops propagation, so it wins over a Mudlet keybinding your packages set on
+   the same key. Settings → Shortcuts rebinds or clears any of them, and the
+   stored overrides are application-wide.
+5. **CSS.** `.mudix-toolbar` is now the *menu row* inside a `.mudix-topbar`
+   wrapper, and the wrapper carries the background, blur and bottom border.
+   Brand rules that styled `.mudix-toolbar` as the whole bar should move to
+   `.mudix-topbar`. `toolbar.className` still lands on `.mudix-toolbar`;
+   `.brand-logo`, `.brand` and `.toolbar-connection-name` are unchanged, and the
+   connection name is still the row's `flex: 1` spacer.
+
+Also gone: the `fullscreen` profile setting, which hid the toolbar and called
+that fullscreen. Hiding the bars is what the two visibility settings are for
+now, and Fullscreen is the browser's own.
+
+A brand whose whole toolbar config is a `hide` list — the common case — migrates
+in two lines:
+
+```ts
+toolbar: {
+    menuBar: false,
+    hide: [...whatYouHadBefore, 'mute'],
+},
+```
+
+`toolbar.buttons` still works and is drawn where it always was, but `commands`
+supersedes it: it reaches the menu bar, takes a shortcut, and can be enabled,
+ticked and removed while the client runs.
 
 ## Consumer build notes
 

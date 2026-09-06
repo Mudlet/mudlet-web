@@ -148,6 +148,14 @@
     --dim-duration: 1000ms;
     --dim-easing:   ease-in-out;
     --toolbar-h:    44px;
+    /* The two stacked top-bar rows. A menu bar is the shorter of the pair, the
+       way a desktop one is — but only because a menu title is shorter than a
+       button, not because it gets less room. The heights are each their
+       content plus the same margin (a title's box is 25.5px, a button's 28px,
+       both with ~4px above and below), so the two rows read as one rhythm
+       rather than a cramped strip over a roomy one. Change one, change both. */
+    --menurow-h:    34px;
+    --buttonrow-h:  36px;
     --cmdbar-h:     44px;
     --radius:       6px;
 
@@ -324,60 +332,100 @@ html, body, #root {
     height: 100dvh;
 }
 
-/* ── Toolbar ───────────────────────────────────────────────── */
+/* ── Top bar ───────────────────────────────────────────────────
+   Mudlet's two bars, stacked as they are there: the menu row on top, the
+   button row under it. Either can be switched off in the settings (never
+   both), so the chrome, the ground and the rule along the bottom belong to
+   this wrapper rather than to either row.
+
+   Flush full-bleed strip: no radius, no side borders. An outlined, rounded
+   bar reads as a floating widget, which is the wrong thing for something
+   carrying a menu bar — a menu bar belongs to the window frame. (The
+   outlined look was an accident to begin with: ButtonsBar.css styled
+   `.mudix-toolbar` for Mudlet button bars and leaked onto the app toolbar.
+   That collision is long fixed — the button-bar rule is `.mudix-buttonbar`
+   — so nothing else depends on it.) */
+.mudix-topbar {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    position: relative;
+    /* Above the main viewport's overlay layer (.main-overlay-root, z:30 — the
+       Geyser labels, gauges and command lines) and the floating windows (z:35),
+       because everything this bar opens is a menu that drops over the output:
+       at the old z:10 a label sitting under the toolbar painted straight
+       through the menus. Still below the modals and the caret-review panel
+       (both z:40), which are meant to cover the whole client. */
+    z-index: 36;
+    /* Pad in by the top notch inset so both rows clear it. */
+    padding-top: var(--safe-top);
+    background: color-mix(in srgb, var(--bg-surface) 50%, transparent);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+    box-shadow: inset 0 1px 0 var(--border-hi);
+}
+
 /* Namespaced class so this rule's flex layout (align-items: center, fixed
    height, padding) doesn't cascade into the embedded mudlet-map-editor's
    own `.toolbar` element, which only sets a subset of these properties
    and would otherwise inherit mudix's row layout. */
-.mudix-toolbar {
+.mudix-toolbar,
+.mudix-buttonbar-row {
     display: flex;
     align-items: center;
     gap: 8px;
-    /* Grow the bar by the top notch inset and pad it in, so content still gets
-       the full --toolbar-h below the inset (border-box folds padding into height). */
-    height: calc(var(--toolbar-h) + var(--safe-top));
-    padding: var(--safe-top) calc(12px + var(--safe-right)) 0 calc(16px + var(--safe-left));
-    /* Contained/outlined bar rather than a flush full-bleed strip. This look
-       originally came about by accident — ButtonsBar.css styled `.mudix-toolbar`
-       for Mudlet button bars and leaked onto the app toolbar — but it's the
-       shipped appearance, so it's kept deliberately now that the class
-       collision is fixed (that rule is `.mudix-buttonbar`). The `border`
-       shorthand replaces the bottom-only border on purpose. */
-    background: color-mix(in srgb, var(--bg-surface) 50%, transparent);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-    border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
-    border-radius: var(--radius);
-    box-shadow: inset 0 1px 0 var(--border-hi);
-    flex-shrink: 0;
-    position: relative;
-    z-index: 10;
+    padding: 0 calc(12px + var(--safe-right)) 0 calc(16px + var(--safe-left));
 }
 
-/* ── Fullscreen mode ───────────────────────────────────────────
-   The toolbar is lifted out of the flex column and floats over the
-   output, hidden above the top edge. It slides down when the pointer
-   enters the top hover zone, hovers the bar itself, or the bar takes
-   keyboard focus — so the output area gets the full window height. */
-.app--fullscreen > .mudix-toolbar {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    transform: translateY(-100%);
-    transition: transform 0.18s ease;
-    z-index: 60;
-    will-change: transform;
+/* Two rows: the menu row is the shorter of the pair, the way a desktop menu
+   bar is shorter than the toolbar under it. */
+.mudix-toolbar {
+    height: var(--menurow-h);
 }
+
+.mudix-buttonbar-row {
+    height: var(--buttonrow-h);
+}
+
+/* The menu row keeps its height whether or not the button row is under it.
+   Growing it to --toolbar-h when it stands alone looked right in isolation and
+   wrong in use: switching the button bar off moved every menu title down by
+   seven pixels, which reads as the bar jumping rather than as a row going away.
+
+   The button row does take the full height alone, and there is no jump there:
+   alone it is also carrying the profile name and status dot, which the menu row
+   was carrying a moment ago — the row genuinely changes what it holds. */
+.mudix-topbar--single > .mudix-buttonbar-row {
+    height: var(--toolbar-h);
+}
+
+/* Under the menu row the buttons are the row's only content, so the extra
+   left margin that separates them from the profile name is just an indent
+   that fails to line up with the menu titles above. */
+.mudix-buttonbar-row > .toolbar-actions:first-child {
+    margin-left: 0;
+}
+
 /* Commands a package placed with addCommand. The icon is whatever path the
    package gave, so it is sized rather than trusted, and a broken one leaves the
    name on its own instead of a torn image box. */
 .addon-command-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1em;
+    height: 1em;
+    margin-right: 0.35em;
+    flex-shrink: 0;
+}
+
+/* Whatever went in the box — an image the package named, a brand's inline SVG
+   — is sized here rather than trusted to size itself. */
+.addon-command-icon > * {
     width: 1em;
     height: 1em;
     object-fit: contain;
-    margin-right: 0.35em;
-    vertical-align: -0.12em;
 }
 .addon-command--checked {
     box-shadow: inset 0 0 0 1px currentColor;
@@ -402,22 +450,6 @@ html, body, #root {
     }
 }
 
-.app-topbar-hover-zone {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    /* Thin catch strip along the top edge; sits above the output so a
-       pointer approaching the top reveals the bar. */
-    height: 10px;
-    z-index: 55;
-}
-.app-topbar-hover-zone:hover ~ .mudix-toolbar,
-.app--fullscreen > .mudix-toolbar:hover,
-.app--fullscreen > .mudix-toolbar:focus-within {
-    transform: translateY(0);
-}
-
 /* Logo + wordmark: the bar's 8px flex gap alone crowds the mark against the
    text, so add 4px on top of it. */
 .brand-logo {
@@ -439,14 +471,43 @@ html, body, #root {
     user-select: none;
 }
 
+/* Which profile this is. It now sits directly after the menu titles, which are
+   the same size and family, so a dim grey name read as one more menu nobody
+   could open. The accent colour and the extra gap say it is a label rather
+   than a control; the wordmark beside it is the same colour but bold and a
+   size up, so the two do not blur together either. */
 .toolbar-connection-name {
     flex: 1;
     font-family: var(--font-ui), sans-serif;
-    font-size: 13px;
-    color: var(--text-dim);
+    /* Deliberately the menu titles' size and line-height (.menu-title in
+       MenuBar.css), not merely a similar one. The name sits immediately after
+       them on the same row: both boxes centre in the same flex line, but a
+       larger font centres its baseline lower inside that box, so 13px beside
+       12.5px read as one text run sitting a pixel low. Same metrics, same
+       baseline — the weight and colour are what set it apart. */
+    font-size: 12.5px;
+    line-height: 1.4;
+    font-weight: 600;
+    color: var(--accent);
+    margin-left: 8px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+/* With the menu bar switched off the name moves into the button row, where its
+   neighbour is the wordmark rather than the menu titles — so it takes the
+   wordmark's metrics instead.
+
+   It has to be the same font SIZE, not merely the same line-height: two centred
+   boxes put their baselines at F·(ascent−descent)/2 below the row's middle, a
+   distance proportional to the font size alone. 12.5px beside 15px therefore
+   rides about a pixel high however the line-heights are set, which is exactly
+   what "something is not vertically centred" looks like. The weight and the gap
+   are what keep the two apart. */
+.mudix-buttonbar-row > .toolbar-connection-name {
+    font-size: 15px;
+    line-height: 22.5px;
 }
 
 /* ── Status dot ─────────────────────────────────────────────── */
@@ -498,11 +559,6 @@ html, body, #root {
     background: var(--border);
     margin: 0 2px;
     flex-shrink: 0;
-}
-
-.toolbar-conn-btn {
-    min-width: 108px;
-    justify-content: flex-start;
 }
 
 /* Replay recording toggle (Toolbar): red pulsing dot while recording runs. */
@@ -5166,13 +5222,10 @@ body.is-sorting {
     .toolbar-hamburger {
         display: block;
     }
-    /* The hamburger dropdown is z:100 but bounded by the toolbar's own stacking
-       context (z:10), which sits *below* the label/cmd-line/scrollbox overlay
-       layers (z:30/31/32) — so the menu rendered behind labels. Lift the whole
-       toolbar context above those overlays, while staying under modals and the
-       caret-review panel (both z:40). */
+    /* Only the menu row exists at this width (the component does not render
+       the button row at all), so it takes the single-bar height. */
     .mudix-toolbar {
-        z-index: 35;
+        height: var(--toolbar-h);
     }
 }
 
@@ -5193,7 +5246,7 @@ body.is-sorting {
 
     /* Toolbar tightens horizontal padding; the connection name stays visible
        (it tells you which MUD you're on), only the ping readout drops.
-       Vertical/safe-area handling stays from the base .mudix-toolbar rule. */
+       Vertical/safe-area handling stays on the .mudix-topbar wrapper. */
     .mudix-toolbar {
         padding-left: calc(8px + var(--safe-left));
         padding-right: calc(8px + var(--safe-right));

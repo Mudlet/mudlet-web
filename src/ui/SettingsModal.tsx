@@ -17,6 +17,8 @@ const SHOW_SENT_TEXT_OPTIONS: { value: ShowSentTextMode; label: string }[] = [
 ];
 import type { ProfileVFS } from '../scripting/vfs/ProfileVFS';
 import { SettingsShell, SubpageRow, type CardDefinition, type CategoryKey, type SubpageDefinition } from './settings/SettingsShell';
+import { ShortcutEditor } from './settings/ShortcutEditor';
+import { shortcutPlatform } from './commands/appShortcuts';
 import { useFileSource, type PickedFile } from './components/FileSourceButton';
 import type { WindowManager } from './windows/WindowManager';
 import { describeThrown } from '../utils/describeThrown';
@@ -171,6 +173,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     const allowMudPackageInstall = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'allowMudPackageInstall') : undefined));
     const notificationsEnabled = useAppStore(s => s.client.notificationsEnabled);
     const patchClient = useAppStore(s => s.patchClient);
+    const shortcuts = useAppStore(s => s.client.shortcuts);
     const mudPackageInstallEnabled = allowMudPackageInstall !== false;
     // Mudlet's mAcceptServerMedia ("Allow server to download and play media").
     // Same undefined-means-true shape as allowMudPackageInstall above.
@@ -233,7 +236,10 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     const loggingOn = loggingEnabled !== false;
     const notifyOnNewData = useAppStore(s => selectProfileField(s, connectionId, 'notifyOnNewData')) === true;
     const showErrorsInMainWindow = useAppStore(s => selectProfileField(s, connectionId, 'showErrorsInMainWindow')) === true;
-    const fullscreen = useAppStore(s => selectProfileField(s, connectionId, 'fullscreen')) === true;
+    // Mudlet's two bars. Absent means on, so a profile written before they
+    // existed keeps the chrome it had.
+    const showMenuBar = useAppStore(s => selectProfileField(s, connectionId, 'showMenuBar')) !== false;
+    const showToolbar = useAppStore(s => selectProfileField(s, connectionId, 'showToolbar')) !== false;
     const outputBorders = useAppStore(s => selectProfileField(s, connectionId, 'outputBorders'));
     const borders = outputBorders ?? EMPTY_BORDERS;
     const autoClearInput = useAppStore(s => selectProfileField(s, connectionId, 'autoClearInput')) === true;
@@ -956,32 +962,81 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                 </div>
             ),
         },
+        {
+            id: 'shortcuts',
+            category: 'shortcuts' as const,
+            // Mudlet's own page is "Shortcuts › Main window shortcuts"
+            // (profile_preferences.ui, `tab_shortcuts`), down to the
+            // instruction about Esc and the conflict warning under the row.
+            title: 'Main window shortcuts',
+            description: 'Click a key to rebind it. To disable a shortcut press Esc.',
+            keywords: 'shortcut, keyboard, key, binding, rebind, accelerator, hotkey, alt, ctrl',
+            body: (
+                <ShortcutEditor
+                    overrides={shortcuts}
+                    platform={shortcutPlatform()}
+                    onChange={(id, shortcut) => {
+                        const next = { ...(shortcuts ?? {}) };
+                        if (shortcut === undefined) delete next[id];
+                        else next[id] = shortcut;
+                        patchClient({ shortcuts: next });
+                    }}
+                    onResetAll={() => patchClient({ shortcuts: {} })}
+                />
+            ),
+        },
         ...(!connectionId ? [] : [
         {
             id: 'toolbar',
             category: 'appearance' as const,
-            title: 'Toolbar',
-            // Mudlet's counterpart card is "Icons and toolbars" — it holds icon
-            // sizes and menu/toolbar visibility, neither of which a browser
-            // gives us; fullscreen is the one thing we have in that slot.
-            description: 'How much of the client’s own interface stays on screen.',
-            keywords: 'toolbar, hide buttons, fullscreen, distraction free, menu bar',
+            title: 'Menu bar and toolbar',
+            // Mudlet's counterpart card is "Icons and toolbars": icon sizes,
+            // which a browser does not give us, and these two. Mudlet's are
+            // three-way (never / only without a loaded profile / always) — the
+            // middle value describes a window with no profile in it, and this
+            // screen only exists once one is loaded, so two states say the same
+            // thing here.
+            description: 'Which of the client’s own bars stay on screen.',
+            keywords: 'toolbar, menu bar, hide buttons, button bar, distraction free, chrome',
             body: (
-                <div className="settings-row">
-                    <span className="settings-label" id="fullscreen-mode-label">
-                        Fullscreen mode
-                        <HelpTip label="About fullscreen mode">
-                            Hide the top toolbar so the output area fills the whole window. Move
-                            the pointer to the top edge (or tab into the bar) to reveal it.
-                        </HelpTip>
-                    </span>
-                    <Toggle
-                        id="fullscreen-mode"
-                        aria-labelledby="fullscreen-mode-label"
-                        checked={fullscreen}
-                        onChange={next => patchProfile({ fullscreen: next })}
-                    />
-                </div>
+                <>
+                    <div className="settings-row">
+                        <span className="settings-label" id="show-menu-bar-label">
+                            Menu bar
+                            <HelpTip label="About the menu bar">
+                                The row of menus (Games, Toolbox, Options…) along the top, which is
+                                also where packages put the commands they add with addCommand.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="show-menu-bar"
+                            aria-labelledby="show-menu-bar-label"
+                            checked={showMenuBar}
+                            // One of the two always stays: a client with neither
+                            // has no way back to this dialog. Mudlet guards the
+                            // same clash by greying the other control's "Never".
+                            disabled={showMenuBar && !showToolbar}
+                            onChange={next => patchProfile({ showMenuBar: next })}
+                        />
+                    </div>
+                    <div className="settings-row">
+                        <span className="settings-label" id="show-toolbar-label">
+                            Button bar
+                            <HelpTip label="About the button bar">
+                                The row of buttons under the menus. Everything on it is in the
+                                menus too, so hiding it gives the output area the space back.
+                                On a narrow window it is always the hamburger instead.
+                            </HelpTip>
+                        </span>
+                        <Toggle
+                            id="show-toolbar"
+                            aria-labelledby="show-toolbar-label"
+                            checked={showToolbar}
+                            disabled={showToolbar && !showMenuBar}
+                            onChange={next => patchProfile({ showToolbar: next })}
+                        />
+                    </div>
+                </>
             ),
         },
         {

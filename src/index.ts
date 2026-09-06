@@ -21,12 +21,24 @@ export {
     type BrandMudTarget,
     type BrandPackage,
     type BrandTheme,
+    type BrandCommand,
     type BrandToolbarButton,
     type BrandToolbarConfig,
     type BrandToolbarContext,
     type StockToolbarButton,
     type LandingProps,
 } from "./branding";
+// `addCommand` for the embedding app: place a command on the toolbar, the menu
+// bar or both, and enable, tick or remove it while the client runs.
+export { hostCommands as commands } from "./ui/commands/hostCommands";
+export type { HostCommand, HostCommandRequest } from "./ui/commands/hostCommands";
+// The shapes the `toolbar.menuBar` / `toolbar.buttonBar` transforms are handed.
+export type {
+    MenuAction, MenuNode, MenuSeparator, MenuSubmenu, PlacedCommand, TopMenu,
+} from "./ui/menu/menuModel";
+export type {
+    ToolbarButtonItem, ToolbarCustomItem, ToolbarItem, ToolbarSplitItem,
+} from "./ui/menu/toolbarModel";
 export { BrandLoginScreen } from "./ui/BrandLoginScreen";
 export { useBrandLogin, type UseBrandLoginResult } from "./ui/useBrandLogin";
 export { BrandLoginFields, type BrandLoginFieldsProps } from "./ui/BrandLoginFields";

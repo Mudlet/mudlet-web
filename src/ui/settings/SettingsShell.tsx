@@ -7,6 +7,7 @@ import {
     Code2,
     Globe,
     Info,
+    Keyboard,
     Map as MapIcon,
     Monitor,
     Palette,
@@ -38,6 +39,7 @@ export type CategoryKey =
     | 'mainDisplay'
     | 'inputLine'
     | 'editor'
+    | 'shortcuts'
     | 'mapper'
     | 'media'
     | 'connection'
@@ -56,15 +58,16 @@ export interface CategoryDefinition {
 }
 
 /** Sidebar order, icon and name — the one place a category is declared.
- *  Mirrors Mudlet's `categoryDefinitions()`, minus the categories the web
- *  client has nothing to put on (Chat and sharing, Shortcuts) and plus
- *  the one it does that Mudlet keeps on a toolbar instead (Sound and media). */
+ *  Mirrors Mudlet's `categoryDefinitions()`, minus the category the web client
+ *  has nothing to put on (Chat and sharing) and plus the one it does that
+ *  Mudlet keeps on a toolbar instead (Sound and media). */
 export const CATEGORIES: CategoryDefinition[] = [
     { key: 'general',       label: 'General',              Icon: SlidersHorizontal },
     { key: 'appearance',    label: 'Appearance',           Icon: Palette },
     { key: 'mainDisplay',   label: 'Main display',         Icon: Monitor },
     { key: 'inputLine',     label: 'Input line',           Icon: Terminal },
     { key: 'editor',        label: 'Editor',               Icon: Code2 },
+    { key: 'shortcuts',     label: 'Shortcuts',            Icon: Keyboard },
     { key: 'mapper',        label: 'Mapper',               Icon: MapIcon },
     { key: 'media',         label: 'Sound and media',      Icon: Volume2 },
     { key: 'connection',    label: 'Connection',           Icon: Globe, separatorAbove: true },
