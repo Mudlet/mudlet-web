@@ -1,157 +1,22 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
-import { Annotation, Compartment, EditorState } from '@codemirror/state';
-import { EditorView, hoverTooltip, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, highlightWhitespace, highlightSpecialChars } from '@codemirror/view';
+import { Annotation, EditorState } from '@codemirror/state';
+import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter } from '@codemirror/view';
 import { defaultKeymap, indentWithTab, history, historyKeymap } from '@codemirror/commands';
 import { StreamLanguage, indentUnit, bracketMatching } from '@codemirror/language';
-import { autocompletion, closeBrackets } from '@codemirror/autocomplete';
+import { closeBrackets } from '@codemirror/autocomplete';
 import { search, searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import { lua } from '@codemirror/legacy-modes/mode/lua';
 import { useEffectiveTheme, useEditorSettings } from '../../../storage';
-import { luaCompletionSource, HOVER_MAP, REFERENCE_GROUPS } from '../../../scripting/lua/luaCompletions';
-import { mudixCmTheme, highlightCompartment, highlightFor, type EditorTheme } from '../../codemirror/theme';
-import { showLineParagraphs } from '../../codemirror/lineParagraphMarks';
-
-// Lua-specific hover tooltip styling — bolted on top of the shared chrome.
-const luaHoverTheme = EditorView.theme({
-    '.cm-lua-hover': {
-        padding: '6px 10px',
-        fontFamily: 'var(--font-mono)',
-        fontSize: '12px',
-        maxWidth: '360px',
-    },
-    '.cm-lua-hover__header': {
-        display: 'flex',
-        alignItems: 'baseline',
-        gap: '2px',
-        flexWrap: 'wrap',
-    },
-    '.cm-lua-hover__name': {
-        color: 'var(--accent)',
-        fontWeight: '500',
-    },
-    '.cm-lua-hover__sig': {
-        color: 'var(--text-dim)',
-    },
-    '.cm-lua-hover__info': {
-        marginTop: '5px',
-        color: 'var(--text-dim)',
-        fontSize: '11px',
-        lineHeight: '1.5',
-    },
-});
-
-// ── Hover tooltip ─────────────────────────────────────────────────────────────
-
-const luaHover = hoverTooltip((view, pos) => {
-    const word = view.state.wordAt(pos);
-    if (!word) return null;
-
-    const label = view.state.sliceDoc(word.from, word.to);
-    if (!label || !/^[a-zA-Z_]/.test(label)) return null;
-
-    // Walk left to pick up any dotted namespace prefix (e.g. "mudix.windows.")
-    const lookback = view.state.sliceDoc(Math.max(0, word.from - 60), word.from);
-    const prefixMatch = lookback.match(/([\w.]+\.)$/);
-    const prefix = prefixMatch ? prefixMatch[1] : '';
-    const fullName = prefix + label;
-
-    // Most-specific match first, then bare label as fallback
-    const entry = HOVER_MAP.get(fullName) ?? HOVER_MAP.get(label);
-    if (!entry) return null;
-
-    const infoText = typeof entry.info === 'string' ? entry.info : null;
-    if (!entry.detail && !infoText) return null;
-
-    return {
-        pos: word.from,
-        end: word.to,
-        above: true,
-        arrow: true,
-        create() {
-            const dom = document.createElement('div');
-            dom.className = 'cm-lua-hover';
-
-            const header = document.createElement('div');
-            header.className = 'cm-lua-hover__header';
-
-            const nameEl = document.createElement('span');
-            nameEl.className = 'cm-lua-hover__name';
-            nameEl.textContent = fullName;
-            header.appendChild(nameEl);
-
-            if (entry.detail) {
-                const sigEl = document.createElement('span');
-                sigEl.className = 'cm-lua-hover__sig';
-                sigEl.textContent = entry.detail;
-                header.appendChild(sigEl);
-            }
-
-            dom.appendChild(header);
-
-            if (infoText) {
-                const infoEl = document.createElement('div');
-                infoEl.className = 'cm-lua-hover__info';
-                infoEl.textContent = infoText;
-                dom.appendChild(infoEl);
-            }
-
-            return { dom };
-        },
-    };
-});
+import { REFERENCE_GROUPS } from '../../../scripting/lua/luaCompletions';
+import { mudixCmTheme, paletteCompartment, paletteFor } from '../../codemirror/theme';
+import { luaHover, luaHoverTheme } from '../../codemirror/luaHover';
+import { optionsCompartment, optionExtensions, type EditorOptions } from '../../codemirror/options';
 
 // ── Extensions ────────────────────────────────────────────────────────────────
 
 /** Marks the transaction that pushes a new `value` prop into the document, so
  *  the update listener can tell it apart from an edit the user made. */
 const valueSync = Annotation.define<true>();
-
-/** Mudlet's Editor preference page, which mudix had no equivalent of: the
- *  display options and autocomplete were hard-coded on. Held in a compartment
- *  so a change reconfigures the live editor instead of remounting it, which is
- *  what the theme swap below already does. */
-export interface EditorOptions {
-    /** "Autocomplete Lua functions in code editor". */
-    autocomplete: boolean;
-    /** "Show Spaces/Tabs" — dots for runs of spaces, arrows for tabs. */
-    showWhitespace: boolean;
-    /** "Show Line/Paragraphs" — a ¶ where each line ends. */
-    showLineParagraphs: boolean;
-    /** "Show invisible Unicode control characters". */
-    showControlChars: boolean;
-    /** "Theme" — the syntax palette, pinned or following the app's. */
-    theme: EditorTheme;
-}
-
-export const EDITOR_OPTION_DEFAULTS: EditorOptions = {
-    autocomplete: true,
-    showWhitespace: false,
-    showLineParagraphs: false,
-    showControlChars: false,
-    theme: 'app',
-};
-
-const optionsCompartment = new Compartment();
-
-function optionExtensions(opts: EditorOptions) {
-    return [
-        // Always mounted, because the extension is also what binds Ctrl+Space.
-        // The switch is whether it volunteers: off means no popup while you
-        // type, but the list is still one keystroke away — which is what
-        // desktop's "Autocomplete Lua functions in code editor" is really
-        // about, and strictly better than losing completion altogether.
-        autocompletion({ override: [luaCompletionSource], activateOnTyping: opts.autocomplete }),
-        opts.showWhitespace ? highlightWhitespace() : [],
-        // Desktop's tooltip files this with the whitespace marks ("as well as
-        // whitespace"), and so does the option order on its page.
-        opts.showLineParagraphs ? showLineParagraphs() : [],
-        // CodeMirror hides control characters behind a placeholder widget by
-        // default anyway; this makes them visible as their Unicode name rather
-        // than a bare dot, which is the point of Mudlet's checkbox — spotting a
-        // stray U+200B a game or a paste left in a script.
-        opts.showControlChars ? highlightSpecialChars() : [],
-    ];
-}
 
 function buildExtensions(onChangeFn: () => void, onSaveFn: () => void, theme: string, opts: EditorOptions) {
     return [
@@ -170,8 +35,8 @@ function buildExtensions(onChangeFn: () => void, onSaveFn: () => void, theme: st
         closeBrackets(),
         indentUnit.of('  '),
         StreamLanguage.define(lua),
-        highlightCompartment.of(highlightFor(theme, opts.theme)),
-        optionsCompartment.of(optionExtensions(opts)),
+        paletteCompartment.of(paletteFor(theme, opts.theme)),
+        optionsCompartment.of(optionExtensions(opts, true)),
         luaHover,
         keymap.of([
             { key: 'Mod-s',     preventDefault: true, run: () => { onSaveFn(); return true; } },
@@ -248,15 +113,15 @@ export function LuaEditor({ value, onChange, onSave, gotoLine }: Props) {
         };
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // Swap syntax highlighting when either theme changes; preserves doc +
-    // scroll. Both are dependencies: the app theme only matters while the
-    // editor is set to follow it, but pinning the editor to a palette is itself
-    // a change this has to repaint for.
+    // Swap the palette when either theme changes; preserves doc + scroll. Both
+    // are dependencies: the app theme only matters while the editor is set to
+    // follow it, but pinning the editor to a palette is itself a change this
+    // has to repaint for.
     useEffect(() => {
         const view = viewRef.current;
         if (!view) return;
         view.dispatch({
-            effects: highlightCompartment.reconfigure(highlightFor(theme, optionsRef.current.theme)),
+            effects: paletteCompartment.reconfigure(paletteFor(theme, optionsRef.current.theme)),
         });
     }, [theme, editorOptions.theme]);
 
@@ -267,7 +132,7 @@ export function LuaEditor({ value, onChange, onSave, gotoLine }: Props) {
         const view = viewRef.current;
         if (!view) return;
         view.dispatch({
-            effects: optionsCompartment.reconfigure(optionExtensions(optionsRef.current)),
+            effects: optionsCompartment.reconfigure(optionExtensions(optionsRef.current, true)),
         });
     }, [
         editorOptions.autocomplete,

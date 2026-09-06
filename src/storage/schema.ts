@@ -511,9 +511,13 @@ export type BooleanProtocolKey = {
  *  more renderer options get exposed. Keep all fields optional so the
  *  patcher can ship partial updates and unset fields fall through to the
  *  renderer's own createSettings() defaults. */
-/** The script editor's display options — desktop Mudlet's Editor preference
+/** The code editor's display options — desktop Mudlet's Editor preference
  *  page. `showItemIds` is the tree's, the other four the code view's; all are
- *  optional and fall back to `EDITOR_OPTION_DEFAULTS`. */
+ *  optional and fall back to `EDITOR_OPTION_DEFAULTS`.
+ *
+ *  They apply to every CodeMirror surface in the app, not just the script
+ *  editor: the file browser's editor and its JSON viewer read the same
+ *  settings, because they are the same editor opened on a different document. */
 export interface EditorSettings {
     /** "Autocomplete Lua functions in code editor". Default on. */
     autocomplete?: boolean;
@@ -531,10 +535,12 @@ export interface EditorSettings {
     /** "Show Items' ID number" — the numeric id beside each script, alias,
      *  trigger and so on in the editor's tree. Default off. */
     showItemIds?: boolean;
-    /** "Theme" — the code editor's syntax palette. `'app'` (the default)
-     *  follows the app theme, as it always did; the other two pin it. Typed as
-     *  a plain string here so the schema does not depend on the CodeMirror
-     *  layer; `EDITOR_THEME_CHOICES` is the authority on the values. */
+    /** "Theme" — the code editor's palette. `'app'` (the default) follows the
+     *  app theme, as it always did; the other two pin it, and pinning covers
+     *  the editor's chrome as well as its syntax colours, so a light editor is
+     *  light-backgrounded even under a dark app theme. Typed as a plain string
+     *  here so the schema does not depend on the CodeMirror layer;
+     *  `EDITOR_THEME_CHOICES` is the authority on the values. */
     theme?: 'app' | 'dark' | 'light';
 }
 

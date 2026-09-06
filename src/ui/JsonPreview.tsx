@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Eye, Pencil } from 'lucide-react';
 import { EditorState } from '@codemirror/state';
-import { EditorView, lineNumbers } from '@codemirror/view';
+import { EditorView, lineNumbers, keymap } from '@codemirror/view';
 import { bracketMatching } from '@codemirror/language';
+import { search, searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import { json } from '@codemirror/lang-json';
 import { CodeEditorPreview } from './CodeEditorPreview';
-import { mudixCmTheme, highlightCompartment, highlightFor } from './codemirror/theme';
-import { useEffectiveTheme } from '../storage';
+import { mudixCmTheme, paletteCompartment, paletteFor } from './codemirror/theme';
+import { optionsCompartment, optionExtensions } from './codemirror/options';
+import { useEffectiveTheme, useEditorSettings } from '../storage';
 import type { ProfileVFS } from '../scripting/vfs/ProfileVFS';
 
 interface Props {
@@ -38,6 +40,9 @@ function JsonReadOnlyView({ text }: { text: string }) {
     const hostRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
     const theme = useEffectiveTheme();
+    const editorOptions = useEditorSettings();
+    const optionsRef = useRef(editorOptions);
+    optionsRef.current = editorOptions;
 
     useEffect(() => {
         if (!hostRef.current) return;
@@ -45,10 +50,18 @@ function JsonReadOnlyView({ text }: { text: string }) {
             state: EditorState.create({
                 doc: text,
                 extensions: [
+                    // Read-only, but still searchable: a pretty-printed map or
+                    // package manifest is exactly the kind of document you open
+                    // in order to find one key in it.
+                    search({ top: true }),
+                    highlightSelectionMatches(),
                     lineNumbers(),
                     bracketMatching(),
                     json(),
-                    highlightCompartment.of(highlightFor(theme)),
+                    paletteCompartment.of(paletteFor(theme, optionsRef.current.theme)),
+                    // No autocomplete here — this is JSON, and read-only besides.
+                    optionsCompartment.of(optionExtensions(optionsRef.current, false)),
+                    keymap.of(searchKeymap),
                     EditorState.readOnly.of(true),
                     EditorView.editable.of(false),
                     mudixCmTheme,
@@ -61,15 +74,26 @@ function JsonReadOnlyView({ text }: { text: string }) {
             view.destroy();
             viewRef.current = null;
         };
-        // theme handled separately; rebuild only when doc changes
+        // theme and options are handled separately; rebuild only on a new doc
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [text]);
 
     useEffect(() => {
         viewRef.current?.dispatch({
-            effects: highlightCompartment.reconfigure(highlightFor(theme)),
+            effects: paletteCompartment.reconfigure(paletteFor(theme, optionsRef.current.theme)),
         });
-    }, [theme]);
+    }, [theme, editorOptions.theme]);
+
+    useEffect(() => {
+        viewRef.current?.dispatch({
+            effects: optionsCompartment.reconfigure(optionExtensions(optionsRef.current, false)),
+        });
+    }, [
+        editorOptions.autocomplete,
+        editorOptions.showWhitespace,
+        editorOptions.showLineParagraphs,
+        editorOptions.showControlChars,
+    ]);
 
     return <div ref={hostRef} className="vfs-json__view" />;
 }

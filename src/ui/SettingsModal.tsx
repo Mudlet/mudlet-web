@@ -1866,18 +1866,20 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
             id: 'editorTheme',
             category: 'editor' as const,
             title: 'Theme',
-            description: 'The syntax colours the code editor draws with.',
-            keywords: 'editor, code, script, theme, colour scheme, color scheme, palette, syntax highlighting',
+            description: 'The palette the code editor draws with — its syntax colours and the background behind them.',
+            keywords: 'editor, code, script, theme, colour scheme, color scheme, palette, syntax highlighting, light, dark, background',
             body: (
                 <>
                     <div className="settings-row">
                         <label className="settings-label" htmlFor="editor-theme">
                             Theme
                             <HelpTip label="About the editor theme">
-                                The syntax colours the code editor draws with. "Follow app
-                                theme" picks the light or dark palette to match Appearance;
-                                the other two pin it, so you can keep a dark editor under a
-                                light interface or the reverse.
+                                The palette the code editor draws with — syntax colours and
+                                the background behind them. "Follow app theme" matches
+                                Appearance; the other two pin the editor, background
+                                included, so you can keep a dark editor under a light
+                                interface or the reverse. Applies to the script editor and to
+                                files opened from the file browser alike.
                             </HelpTip>
                         </label>
                         <select
@@ -1923,7 +1925,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
             id: 'editorOptions',
             category: 'editor' as const,
             title: 'Display options',
-            description: 'What the script editor shows you while you write.',
+            description: 'What the code editor shows you while you write — in the script editor and in files opened from the file browser alike.',
             keywords: 'editor, code, script, whitespace, spaces, tabs, line ends, paragraph, pilcrow, invisible, control characters, item id',
             body: (
                 <>

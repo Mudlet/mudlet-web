@@ -10,12 +10,15 @@ import {
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { StreamLanguage, bracketMatching, indentUnit } from '@codemirror/language';
 import { closeBrackets } from '@codemirror/autocomplete';
+import { search, searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import { json } from '@codemirror/lang-json';
 import { lua } from '@codemirror/legacy-modes/mode/lua';
 import { xml, html } from '@codemirror/legacy-modes/mode/xml';
 import { Save, Undo2 } from 'lucide-react';
-import { mudixCmTheme, highlightCompartment, highlightFor } from './codemirror/theme';
-import { useEffectiveTheme } from '../storage';
+import { mudixCmTheme, paletteCompartment, paletteFor } from './codemirror/theme';
+import { optionsCompartment, optionExtensions } from './codemirror/options';
+import { luaHover, luaHoverTheme } from './codemirror/luaHover';
+import { useEffectiveTheme, useEditorSettings } from '../storage';
 import type { ProfileVFS } from '../scripting/vfs/ProfileVFS';
 
 function fileExt(filename: string): string {
@@ -41,6 +44,10 @@ function pickLanguage(filename: string): Extension | null {
     }
 }
 
+function isLuaFile(filename: string): boolean {
+    return fileExt(filename) === 'lua';
+}
+
 interface Props {
     content: string;
     filename: string;
@@ -64,6 +71,11 @@ export function CodeEditorPreview({ content, filename, path, vfs, onDirtyChange,
     const [saveError, setSaveError] = useState<string | null>(null);
 
     const theme = useEffectiveTheme();
+    // The same Editor preferences the script editor obeys: a file opened here is
+    // opened in that editor, not in a lesser one that happens to share its keys.
+    const editorOptions = useEditorSettings();
+    const optionsRef = useRef(editorOptions);
+    optionsRef.current = editorOptions;
 
     // Latest-callback refs so the editor keymap closure stays stable.
     const onDirtyRef = useRef(onDirtyChange);
@@ -122,11 +134,14 @@ export function CodeEditorPreview({ content, filename, path, vfs, onDirtyChange,
         if (!hostRef.current) return;
 
         const langExt = pickLanguage(filename);
+        const isLua = isLuaFile(filename);
         const view = new EditorView({
             state: EditorState.create({
                 doc: content,
                 extensions: [
                     history(),
+                    search({ top: true }),
+                    highlightSelectionMatches(),
                     lineNumbers(),
                     highlightActiveLine(),
                     highlightActiveLineGutter(),
@@ -134,7 +149,11 @@ export function CodeEditorPreview({ content, filename, path, vfs, onDirtyChange,
                     closeBrackets(),
                     indentUnit.of('  '),
                     ...(langExt ? [langExt] : []),
-                    highlightCompartment.of(highlightFor(theme)),
+                    paletteCompartment.of(paletteFor(theme, optionsRef.current.theme)),
+                    optionsCompartment.of(optionExtensions(optionsRef.current, isLua)),
+                    // Mudlet's own functions are what a .lua file in a profile is
+                    // made of, so the tooltip that explains them belongs here too.
+                    ...(isLua ? [luaHover, luaHoverTheme] : []),
                     keymap.of([
                         {
                             key: 'Mod-s',
@@ -142,6 +161,9 @@ export function CodeEditorPreview({ content, filename, path, vfs, onDirtyChange,
                             run: () => { void saveRef.current(); return true; },
                         },
                         indentWithTab,
+                        // Ahead of defaultKeymap so the find bindings win over
+                        // the default single-line commands.
+                        ...searchKeymap,
                         ...defaultKeymap,
                         ...historyKeymap,
                     ]),
@@ -171,12 +193,32 @@ export function CodeEditorPreview({ content, filename, path, vfs, onDirtyChange,
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [path]);
 
-    // Swap syntax highlighting on theme change without rebuilding the view.
+    // Swap the palette on a theme change without rebuilding the view. Both the
+    // app theme and the editor's own are dependencies: the first only matters
+    // while the editor follows it, but re-pinning is itself a repaint.
     useEffect(() => {
         viewRef.current?.dispatch({
-            effects: highlightCompartment.reconfigure(highlightFor(theme)),
+            effects: paletteCompartment.reconfigure(paletteFor(theme, optionsRef.current.theme)),
         });
-    }, [theme]);
+    }, [theme, editorOptions.theme]);
+
+    // Same for the display options. Depends on the individual values rather
+    // than the object so a re-render that rebuilds an equal object does not
+    // reconfigure the editor for nothing.
+    useEffect(() => {
+        viewRef.current?.dispatch({
+            effects: optionsCompartment.reconfigure(
+                optionExtensions(optionsRef.current, isLuaFile(filename)),
+            ),
+        });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [
+        filename,
+        editorOptions.autocomplete,
+        editorOptions.showWhitespace,
+        editorOptions.showLineParagraphs,
+        editorOptions.showControlChars,
+    ]);
 
     // Apply jump requests from the parent (error-log hyperlinks). Tied to
     // `revision` so the same line can be re-jumped after the user scrolls

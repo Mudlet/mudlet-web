@@ -1,4 +1,4 @@
-import { Compartment } from '@codemirror/state';
+import { Compartment, type Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { oneDarkHighlightStyle } from '@codemirror/theme-one-dark';
@@ -177,9 +177,47 @@ const oneLightHighlightStyle = HighlightStyle.define([
     { tag: t.invalid, color: '#e45649' },
 ]);
 
+// The two halves of a pinned editor theme's chrome: the surface tokens App.css
+// gives `:root` (dark) and `:root[data-theme="light"]`, redeclared on the
+// editor's own root so everything inside it — background, gutter, search panel,
+// autocomplete popup — resolves against the pinned palette instead of the app's.
+// Only the light/dark half is overridden; --accent and the tokens derived from
+// it are left alone, so a pinned editor still wears the app's accent colour.
+const DARK_CHROME_VARS: Record<string, string> = {
+    '--bg':              '#090909',
+    '--bg-surface':      '#090909',
+    '--bg-input':        '#141414',
+    '--border':          '#383838',
+    '--border-hi':       'rgba(255, 255, 255, 0.09)',
+    '--text':            '#d4d4d4',
+    '--text-dim':        '#606070',
+    '--hover-bg':        'rgba(255, 255, 255, 0.05)',
+    '--hover-bg-strong': 'rgba(255, 255, 255, 0.08)',
+    '--shadow-float':    '0 8px 32px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.4)',
+};
+
+const LIGHT_CHROME_VARS: Record<string, string> = {
+    '--bg':              '#f0f0f0',
+    '--bg-surface':      '#fafafa',
+    '--bg-input':        '#ffffff',
+    '--border':          '#c8c8c8',
+    '--border-hi':       'rgba(0, 0, 0, 0.04)',
+    '--text':            '#1a1a1a',
+    '--text-dim':        '#6b6b6b',
+    '--hover-bg':        'rgba(0, 0, 0, 0.05)',
+    '--hover-bg-strong': 'rgba(0, 0, 0, 0.08)',
+    '--shadow-float':    '0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.08)',
+};
+
+// `colorScheme` rides along so the browser paints the editor's own native bits
+// to match — a light editor under a dark app otherwise keeps a dark-scheme
+// caret and scrollbars in the find panel's text fields.
+const DARK_CHROME  = EditorView.theme({ '&': { ...DARK_CHROME_VARS,  colorScheme: 'dark'  } });
+const LIGHT_CHROME = EditorView.theme({ '&': { ...LIGHT_CHROME_VARS, colorScheme: 'light' } });
+
 // Shared across editors — a Compartment is a stable key, not state, so reuse
 // is safe across multiple EditorState instances.
-export const highlightCompartment = new Compartment();
+export const paletteCompartment = new Compartment();
 
 /**
  * Mudlet's Editor → Theme, as far as it makes sense here. Desktop downloads a
@@ -197,10 +235,21 @@ export const EDITOR_THEME_CHOICES: { value: EditorTheme; label: string }[] = [
     { value: 'light', label: 'Atom One Light' },
 ];
 
-/** @param theme the app theme, consulted only when `editorTheme` is 'app'. */
-export function highlightFor(theme: string, editorTheme: EditorTheme = 'app'): ReturnType<typeof syntaxHighlighting> {
+/**
+ * The whole palette for one editor: syntax colours, plus — when the theme is
+ * pinned — the chrome that goes with them.
+ *
+ * Pinning means pinning: "Atom One Light" under a dark app theme is a light
+ * editor, background and all, not light syntax colours floating on a black
+ * page. `'app'` returns highlighting alone and leaves the chrome on whatever
+ * CSS vars the document carries, which is also what keeps a brand theme's own
+ * surface colours from being flattened into the stock two.
+ *
+ * @param theme the app theme, consulted only when `editorTheme` is 'app'.
+ */
+export function paletteFor(theme: string, editorTheme: EditorTheme = 'app'): Extension {
     const light = editorTheme === 'app' ? isLightTheme(theme) : editorTheme === 'light';
-    return light
-        ? syntaxHighlighting(oneLightHighlightStyle)
-        : syntaxHighlighting(oneDarkHighlightStyle);
+    const highlight = syntaxHighlighting(light ? oneLightHighlightStyle : oneDarkHighlightStyle);
+    if (editorTheme === 'app') return highlight;
+    return [highlight, light ? LIGHT_CHROME : DARK_CHROME];
 }
