@@ -8,6 +8,7 @@ import {
     OPT_CHARSET,
 } from "./constants";
 import { codePageUpperHalf, VENDORED_CODE_PAGES } from "./codePages";
+import { decodeMultiByte, isMultiByteFramed, type MultiByteLabel } from "./multiByte";
 
 /**
  * CHARSET (RFC 2066, telnet option 42) negotiation and the session's byte→char
@@ -19,13 +20,20 @@ import { codePageUpperHalf, VENDORED_CODE_PAGES } from "./codePages";
 
 /**
  * Map a wire-format charset name (case-insensitive, with various dash/underscore
- * spellings) onto an IANA label that `TextDecoder` accepts. Returns null for
- * encodings we don't support — most legacy MUD codepages aren't reachable from
- * the browser TextDecoder API and would need a polyfill not worth shipping.
+ * spellings) onto the label mudix decodes it with, or null when it is not an
+ * encoding this client speaks.
  *
- * Coverage is deliberately narrow: UTF-8 (the universal modern answer), the
- * Latin-N family, the Cyrillic KOI8 variants, and the Windows-125x codepages.
- * That covers every Polish, Russian, and Western European MUD seen in practice.
+ * The label is not always an IANA one, because not every encoding here is the
+ * browser's to decode. Three kinds come out:
+ *
+ *  - a lowercase TextDecoder label (`utf-8`, `iso-8859-2`, `windows-1250`,
+ *    `gbk`) for the encodings the browser knows;
+ *  - an uppercase code-page name (`CP437`, `MEDIEVIA`) for the ones it does not,
+ *    which are decoded from the tables in codePages.ts;
+ *  - `ascii`, which is neither — it is a decoder of its own, since the browser
+ *    reads that label as windows-1252.
+ *
+ * Downstream tells them apart by the label, so the casing carries meaning.
  */
 export function normalizeCharsetName(raw: string): string | null {
     const n = raw.trim().toLowerCase().replace(/_/g, '-');
@@ -41,11 +49,11 @@ export function normalizeCharsetName(raw: string): string | null {
     // apart downstream — see SessionCodec.trySetEncoding.
     const vendored = VENDORED_CODE_PAGES.find(page => page.toLowerCase() === n);
     if (vendored) return vendored;
-    // The CJK multi-byte encodings. All four are in the WHATWG set, so the
-    // browser's own decoders handle the lead/trail byte validation and the
-    // four-byte GB18030 forms. BIG5-HKSCS rides Big5's decoder — the browser's
-    // big5 already covers the HKSCS extensions — but keeps its own name,
-    // because getServerEncoding() has to answer with the name it was given.
+    // The CJK multi-byte encodings. The browser maps their characters, but the
+    // sequences are framed in multiByte.ts — its header says why. BIG5-HKSCS
+    // rides Big5's decoder (the browser's big5 already covers the HKSCS
+    // extensions) but keeps its own name, because getServerEncoding() has to
+    // answer with the name it was given.
     if (n === 'gbk') return 'gbk';
     if (n === 'gb18030') return 'gb18030';
     if (n === 'big5' || n === 'big5-hkscs') return 'big5';
@@ -85,13 +93,9 @@ const CHARSET_PRIORITY = [
     'koi8-u',
 ];
 
-/** Wire-format names of every charset mudix can decode, surfaced to Lua scripts
- *  via `getServerEncodingsList()`. Every entry round-trips through
- *  {@link normalizeCharsetName}, so any name here is a valid `setServerEncoding`
- *  argument. ("ASCII" maps to the UTF-8 decoder, which handles it byte-for-byte.) */
 /** What `getServerEncoding()` reports before anything has changed it. UTF-8
- *  rather than Mudlet's ASCII: the decoder handles ASCII byte-for-byte anyway,
- *  and a browser stream is far more likely to be UTF-8 than not. */
+ *  rather than Mudlet's ASCII: a browser stream is far more likely to be UTF-8
+ *  than not, and ASCII text reads identically either way. */
 export const DEFAULT_SERVER_ENCODING = 'UTF-8';
 
 // Spelled exactly as Mudlet spells them (TEncodingTable.cpp and the "ASCII"
@@ -226,6 +230,10 @@ export function decodeForServer(byteString: string, serverEncoding: string): str
     const label = normalizeCharsetName(String(serverEncoding ?? '')) ?? 'utf-8';
     const table = singleByteDecodeTable(label);
     if (table) return decodeWithTable(byteString, table);
+    // A sequence running off the end of a complete payload is truncated data,
+    // not data still arriving, so its bytes are dropped rather than held —
+    // which is what Mudlet does for anything that did not come off the socket.
+    if (isMultiByteFramed(label)) return decodeMultiByte(byteString, label).text;
     const bytes = new Uint8Array(byteString.length);
     for (let i = 0; i < byteString.length; i++) bytes[i] = byteString.charCodeAt(i) & 0xff;
     try {
@@ -311,6 +319,12 @@ export class SessionCodec {
     private decoder = new TextDecoder('utf-8', { fatal: false });
     /** Set instead of {@link decoder} while a single-byte encoding is in use. */
     private table: readonly string[] | null = null;
+    /** Set instead of both while an encoding mudix frames itself is in use. */
+    private framed: MultiByteLabel | null = null;
+    /** Bytes of a framed sequence cut short by the end of a frame, waiting for
+     *  the rest of it. TextDecoder holds this itself for the encodings it
+     *  decodes; the framed ones need it kept here. */
+    private pendingBytes = '';
     private currentEncoding = 'utf-8';
 
     /** The IANA name of the decoder currently applied to the inbound stream. */
@@ -322,6 +336,8 @@ export class SessionCodec {
     reset(): void {
         this.decoder = new TextDecoder('utf-8', { fatal: false });
         this.table = null;
+        this.framed = null;
+        this.pendingBytes = '';
         this.currentEncoding = 'utf-8';
     }
 
@@ -336,15 +352,24 @@ export class SessionCodec {
         // TextDecoder: ASCII and the DOS code pages have no browser decoder to
         // ask for. Being single-byte, they also carry no state across frames,
         // so the streaming buffer simply does not apply to them.
+        this.pendingBytes = '';
         const table = singleByteDecodeTable(encoding);
         if (table) {
             this.table = table;
+            this.framed = null;
+            this.currentEncoding = encoding;
+            return true;
+        }
+        if (isMultiByteFramed(encoding)) {
+            this.framed = encoding;
+            this.table = null;
             this.currentEncoding = encoding;
             return true;
         }
         try {
             this.decoder = new TextDecoder(encoding, { fatal: false });
             this.table = null;
+            this.framed = null;
             this.currentEncoding = encoding;
             return true;
         } catch {
@@ -358,6 +383,11 @@ export class SessionCodec {
     decode(byteString: string): string {
         if (byteString.length === 0) return '';
         if (this.table) return decodeWithTable(byteString, this.table);
+        if (this.framed) {
+            const framed = decodeMultiByte(this.pendingBytes + byteString, this.framed);
+            this.pendingBytes = framed.pending;
+            return framed.text;
+        }
         const bytes = new Uint8Array(byteString.length);
         for (let i = 0; i < byteString.length; i++) {
             bytes[i] = byteString.charCodeAt(i) & 0xff;
