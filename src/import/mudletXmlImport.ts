@@ -161,7 +161,7 @@ function parseHighlight(el: Element): TriggerNode['highlight'] {
     return fg || bg ? { fg, bg } : undefined;
 }
 
-function parseTriggers(els: Element[], parentId: string | null, out: TriggerNode[]): void {
+function parseTriggers(els: Element[], parentId: string | null, out: TriggerNode[], warnings: string[]): void {
     for (const el of els) {
         if (isYes(el, 'isTempTrigger')) continue;
         const id = crypto.randomUUID();
@@ -172,8 +172,30 @@ function parseTriggers(els: Element[], parentId: string | null, out: TriggerNode
         const patternEls = Array.from(codeListEl?.children ?? []).filter(c => c.tagName === 'string');
         const typeEls    = Array.from(propListEl?.children ?? []).filter(c => c.tagName === 'integer');
 
+        const triggerName = getText(el, 'name');
         const patterns: TriggerPattern[] = patternEls.map((p, i) => {
-            const typeIdx = parseInt(typeEls[i]?.textContent?.trim() ?? '0') || 0;
+            // A pattern type this build cannot read is REPORTED and then treated
+            // as a substring, rather than dropped: patterns and their types are
+            // matched by position, so removing one would shift every later
+            // pattern's type by one. Saying so is the point — a silent fallback
+            // leaves a trigger that looks installed and matches something other
+            // than what the package author wrote.
+            const raw = typeEls[i]?.textContent?.trim() ?? '0';
+            const parsed = parseInt(raw);
+            let typeIdx = 0;
+            if (Number.isNaN(parsed)) {
+                warnings.push(`Unable to convert: "${raw}" to a number when reading the`
+                    + ` 'regexCodePropertyList' element of the 'Trigger' or 'TriggerGroup'`
+                    + ` element "${triggerName}"!`);
+            } else if (MUDLET_PATTERN_TYPES[parsed] === undefined) {
+                warnings.push(`"${raw}" as a number when reading the 'regexCodePropertyList'`
+                    + ` element of the 'Trigger' or 'TriggerGroup' element "${triggerName}" cannot`
+                    + ` be understood by this version of Mudlet, is it from a later version?`
+                    + ` Converting it to a SUBSTRING type so the data can be shown but it will`
+                    + ` probably not work as expected.`);
+            } else {
+                typeIdx = parsed;
+            }
             const type = MUDLET_PATTERN_TYPES[typeIdx] ?? 'substring';
             // Pattern text is preserved verbatim — leading/trailing whitespace
             // is significant for substring/exactMatch/regex matching.
@@ -226,7 +248,7 @@ function parseTriggers(els: Element[], parentId: string | null, out: TriggerNode
         // Triggers (unlike scripts/aliases/timers/keys) can nest under a non-folder
         // parent: Mudlet's chain-trigger model lets any trigger with children act as
         // a chain head, gating its descendants for `mStayOpen` lines after it fires.
-        parseTriggers(directChildren(el, 'Trigger', 'TriggerGroup'), id, out);
+        parseTriggers(directChildren(el, 'Trigger', 'TriggerGroup'), id, out, warnings);
     }
 }
 
@@ -412,9 +434,25 @@ export function parseMudletXml(xml: string, opts: ParseOptions = {}): MudletImpo
     }
 
     const result: MudletImportResult = { scripts: [], aliases: [], triggers: [], timers: [], keys: [], buttons: [], warnings: [] };
+
+    // A file from a LATER Mudlet is refused whole, before anything in it is
+    // read. The major version is the gate — 1.001 is current, 2.000 and up are
+    // not this format — and refusing early is the point: a document written to
+    // a schema this build does not know cannot be partially trusted, so nothing
+    // in it is installed. The package itself stays registered, exactly as a
+    // malformed one does.
+    const declared = doc.documentElement?.getAttribute('version');
+    const declaredMajor = declared ? Math.floor(Number(declared)) : 1;
+    if (Number.isFinite(declaredMajor) && declaredMajor > 1) {
+        const reason = `[ ALERT ] - Sorry, the file being read reports it has a version (${declared})`
+            + ' it must have come from a later Mudlet version, and this one cannot read it,'
+            + ' you need a newer Mudlet!';
+        return { ...result, warnings: [reason], parseError: reason };
+    }
+
     parseScripts( pkgChildren('ScriptPackage',  'Script',  'ScriptGroup'),  null, result.scripts);
     parseAliases( pkgChildren('AliasPackage',   'Alias',   'AliasGroup'),   null, result.aliases);
-    parseTriggers(pkgChildren('TriggerPackage', 'Trigger', 'TriggerGroup'), null, result.triggers);
+    parseTriggers(pkgChildren('TriggerPackage', 'Trigger', 'TriggerGroup'), null, result.triggers, result.warnings);
     parseTimers(  pkgChildren('TimerPackage',   'Timer',   'TimerGroup'),   null, result.timers);
     parseKeys(    pkgChildren('KeyPackage',     'Key',     'KeyGroup'),     null, result.keys, result.warnings);
     parseButtons( pkgChildren('ActionPackage',  'Action',  'ActionGroup'),  null, result.buttons);

@@ -126,7 +126,7 @@ describe('AnsiAwareBuffer escape handling', () => {
     const buf = new AnsiAwareBuffer(`${ESC}[7mrev${ESC}[0m`);
     const html = buf.toHtml();
     expect(html).toContain('color: var(--console-bg)');
-    expect(html).toContain('background-color: var(--console-text)');
+    expect(html).toContain('background: var(--console-text)');
   });
 
   it('swaps explicit fg/bg under reverse video', () => {
@@ -134,7 +134,7 @@ describe('AnsiAwareBuffer escape handling', () => {
     // colour falls back to the console default (the swapped-in bg was unset).
     const buf = new AnsiAwareBuffer(`${ESC}[31;7mx${ESC}[0m`);
     const html = buf.toHtml();
-    expect(html).toContain('background-color: #');
+    expect(html).toContain('background: rgb(');
     expect(html).toContain('color: var(--console-bg)');
   });
 });

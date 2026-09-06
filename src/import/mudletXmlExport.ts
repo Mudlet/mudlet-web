@@ -1,5 +1,6 @@
 import { sanitizeControlChars } from './mudletControlChars';
 import { isColorizing } from '../storage/schema';
+import { toSaveFileColorPattern } from '../mud/triggers/legacyColorPatterns';
 import type {
     AliasNode,
     ButtonNode,
@@ -304,7 +305,15 @@ function emitTriggers(xml: XmlBuilder, nodes: TriggerNode[], opts: ExportOptions
             xml.leaf('colorTriggerFgColor', n.colorTriggerFgColor || '#000000');
             xml.leaf('colorTriggerBgColor', n.colorTriggerBgColor || '#000000');
             xml.open('regexCodeList');
-            for (const p of (n.patterns ?? [])) xml.leaf('string', p.text ?? '');
+            // A colour pattern goes out in the numbering a save file uses,
+            // which is not the ANSI one the runtime matches on — see
+            // toSaveFileColorPattern. Written verbatim, the in-memory text is
+            // something desktop's reader does not recognise as a colour
+            // pattern at all.
+            for (const p of (n.patterns ?? [])) {
+                const text = p.text ?? '';
+                xml.leaf('string', p.type === 'colorTrigger' ? toSaveFileColorPattern(text) : text);
+            }
             xml.close('regexCodeList');
             xml.open('regexCodePropertyList');
             for (const p of (n.patterns ?? [])) xml.leaf('integer', String(patternTypeIndex(p.type)));

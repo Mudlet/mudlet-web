@@ -47,6 +47,11 @@ export function buildLinkedWriteback(
     trees: SerializeInput,
     variables: MudletVariablePackage,
     settings?: Partial<ProfileSettings>,
+    /** Leave the profile's own settings out, as Mudlet's "save as" does —
+     *  Host::saveProfileAs goes through writeGenericPackage, which writes the
+     *  seven item packages and nothing else. A document meant to be handed to
+     *  someone else should not carry the sender's preferences. */
+    omitHostSettings = false,
 ): string {
     const doc = new DOMParser().parseFromString(baseXml, 'text/xml');
     const err = doc.getElementsByTagName('parsererror')[0];
@@ -61,6 +66,7 @@ export function buildLinkedWriteback(
     // Drop the packages we own; HostPackage and unknown siblings stay.
     for (const child of Array.from(root.children)) {
         if (OWNED_PACKAGE_TAGS.has(child.tagName)) child.remove();
+        else if (omitHostSettings && child.tagName === 'HostPackage') child.remove();
     }
 
     // Graft freshly-serialized automation packages (with per-node <packageName>
@@ -77,7 +83,21 @@ export function buildLinkedWriteback(
         root.appendChild(doc.importNode(varRoot, true));
     }
 
-    return new XMLSerializer().serializeToString(doc);
+    const xml = new XMLSerializer().serializeToString(doc);
+    // The doctype does not survive a DOMParser/XMLSerializer round trip, and the
+    // base document does not always carry one to begin with — but every Mudlet
+    // save has it (XMLexport::writeXmlHeader appends a node_doctype), and a
+    // reader looking for `<!DOCTYPE MudletPackage>` is entitled to find it. Put
+    // back rather than depended on.
+    return withMudletDoctype(xml);
+}
+
+/** `xml` with the XML declaration and `<!DOCTYPE MudletPackage>` in front,
+ *  whichever of them the serialiser dropped. */
+function withMudletDoctype(xml: string): string {
+    let body = xml.replace(/^\s*<\?xml[^?]*\?>\s*/i, '');
+    body = body.replace(/^\s*<!DOCTYPE[^>]*>\s*/i, '');
+    return `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE MudletPackage>${body}`;
 }
 
 /** Two-digit zero-pad. */

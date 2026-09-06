@@ -14,6 +14,25 @@ export function isCsiFinal(c: string): boolean {
     return code >= 0x40 && code <= 0x7e;
 }
 
+/** CSI parameter bytes are 0x30–0x3F: the digits and separators, plus the four
+ *  reserved bytes `<=>?` that are only legal as the FIRST one. */
+function isCsiParameter(c: string): boolean {
+    const code = c.charCodeAt(0);
+    return code >= 0x30 && code <= 0x3f;
+}
+
+/** CSI intermediate bytes are 0x20–0x2F. They come after the parameters and
+ *  before the final byte, and end the parameter string. */
+function isCsiIntermediate(c: string): boolean {
+    const code = c.charCodeAt(0);
+    return code >= 0x20 && code <= 0x2f;
+}
+
+/** TBuffer's MAX_CSI_SEQUENCE_LENGTH: how long a parameter string may get
+ *  before the sequence is discarded instead of acted on. Counts the parameters
+ *  only — not the `ESC [` in front or the final byte behind. */
+const MAX_CSI_SEQUENCE_LENGTH = 4096;
+
 export interface EscapeScan {
     /**
      * - `csi`    — `ESC [ <params> <final>` (SGR, cursor moves, erase, …)
@@ -46,7 +65,7 @@ export function scanEscape(text: string, start: number): EscapeScan {
     const next = text[start + 1];
     if (next === undefined) return { kind: "incomplete", end: n };
 
-    // CSI — ESC [ <params/intermediates> <final 0x40-0x7E>
+    // CSI — ESC [ <params 0x30-0x3F> <intermediates 0x20-0x2F> <final 0x40-0x7E>
     if (next === "[") {
         let j = start + 2;
         // An ESC ends the scan without being part of it. A CSI that never
@@ -54,10 +73,24 @@ export function scanEscape(text: string, start: number): EscapeScan {
         // belongs to whatever comes next: reading through it swallowed the
         // following sequence whole, so "ESC[0;4> ESC[0m text" lost its reset and
         // printed "0m" as if the game had sent it.
-        while (j < n && !isCsiFinal(text[j]) && text[j] !== ESC) j++;
+        while (j < n && isCsiParameter(text[j]) && text[j] !== ESC) j++;
         if (j >= n) return { kind: "incomplete", end: n };
         if (text[j] === ESC) return { kind: "csi", end: j, params: text.slice(start + 2, j) };
-        return { kind: "csi", end: j + 1, finalByte: text[j], params: text.slice(start + 2, j) };
+        const params = text.slice(start + 2, j);
+        // A parameter string past the cap is thrown away rather than buffered
+        // without bound — a server that never sends a final byte would
+        // otherwise grow it for as long as it kept typing. The comparison is
+        // on the parameters ALONE, excluding the introducer and the final byte
+        // (TBuffer's MAX_CSI_SEQUENCE_LENGTH).
+        if (params.length >= MAX_CSI_SEQUENCE_LENGTH) {
+            return { kind: "csi", end: Math.min(j + 1, n), params: "" };
+        }
+        // An intermediate byte ENDS the sequence. The parameters and the
+        // intermediate are consumed and whatever follows stays ordinary text —
+        // there is no look-ahead for a final byte, so where the packet happened
+        // to break makes no difference to what is drawn.
+        if (isCsiIntermediate(text[j])) return { kind: "csi", end: j + 1, params };
+        return { kind: "csi", end: j + 1, finalByte: text[j], params };
     }
 
     // OSC — ESC ] <payload> (BEL | ST). ST is the two-byte `ESC \`.

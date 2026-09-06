@@ -42,10 +42,12 @@ end
 -- player's current room (getPlayerRoom). On an unknown room id Mudlet does not
 -- move the view or touch the player room; it returns (nil, errMsg). The JS side
 -- returns false in that case, so translate it here.
-function centerview(roomID)
-    if __centerview(roomID) then
-        return true
-    end
+-- A second argument aims a secondary map window instead: that view centres on
+-- the room and the player stays where they are.
+function centerview(roomID, viewID)
+    local r = __centerview(roomID, viewID)
+    if type(r) == 'string' then return nil, "centerview: " .. r end
+    if r then return true end
     return nil, "centerview: number " .. tostring(roomID) .. " is not a valid room id."
 end
 
@@ -237,15 +239,48 @@ function addCustomLine(roomID, id_to, direction, style, color, arrow)
     end
     local target
     if type(id_to) == 'table' then
-        local pts = {}
-        for _, p in ipairs(id_to) do
-            if type(p) ~= 'table' or tonumber(p[1]) == nil or tonumber(p[2]) == nil then
-                return nil, "addCustomLine: every coordinate must be a {x, y, z} triple of numbers"
+        -- A malformed coordinate list is a TYPE error and raises, naming the
+        -- point and — for a component that is not a number — which of x, y and
+        -- z it is. Collapsing the two into one (nil, message) told the caller
+        -- something was wrong with the list and left them to find where, and
+        -- the z component was not checked at all: `tostring(p[3] or 0)` wrote
+        -- the words "not a number" into the coordinate payload.
+        -- Only the coordinates that are THERE are type-checked. Mudlet walks
+        -- each point with lua_next, so an absent one is not "a nil where a
+        -- number should be" — it simply never comes up, and a point with too
+        -- few of them is caught by the count afterwards as a value mistake
+        -- rather than a type error. That distinction is the whole of issue
+        -- #5272: {{}} has to be refused, not raised on.
+        local AXES = {'x', 'y', 'z'}
+        local pts, counted = {}, 0
+        for i, p in ipairs(id_to) do
+            if type(p) ~= 'table' then
+                error('addCustomLine: bad argument #2 table item index #' .. i
+                    .. ' type (coordinate list must be a table containing tables of three'
+                    .. ' coordinates, got ' .. type(p) .. ' as indicated item!)', 2)
             end
-            pts[#pts + 1] = tostring(p[1]) .. ',' .. tostring(p[2]) .. ',' .. tostring(p[3] or 0)
+            local coords, present = {}, 0
+            for j = 1, 3 do
+                local value = p[j]
+                if value ~= nil then
+                    if tonumber(value) == nil then
+                        error('addCustomLine: bad argument #2 table item index #' .. i
+                            .. ' inner table item #' .. j .. ' type (coordinates list as table'
+                            .. ' containing tables of three numbers (x, y and z coordinates}'
+                            .. ' expected, but got a ' .. type(value) .. ' as the ' .. AXES[j]
+                            .. '-coordinate at that index!)', 2)
+                    end
+                    present = present + 1
+                end
+                coords[j] = tostring(value == nil and 0 or value)
+            end
+            -- A point needs at least an x; z alone defaults, as Mudlet's own
+            -- counts allow a two-coordinate point through to the mismatch test.
+            if present > 0 then counted = counted + 1 end
+            pts[#pts + 1] = table.concat(coords, ',')
         end
-        if #pts == 0 then
-            return nil, "addCustomLine: the coordinate list is empty, at least one {x, y, z} point is needed"
+        if #pts == 0 or counted == 0 then
+            return nil, "addCustomLine: missing coordinates to create the line to"
         end
         target = 'P:' .. table.concat(pts, ';')
     else
@@ -681,6 +716,9 @@ do
     -- are illegal (reparenting a userwindow, or making a cycle).
     local _rawSetWindow = setWindow
     function setWindow(parent, element, ...)
+        -- The TYPE is settled before the lookup: a table where a name belongs is
+        -- a mistake in the call, not a window that could not be found.
+        element = __mudix_check_string(element, 'setWindow', 2, 'element name')
         if parent ~= 'main' and __windowType(parent) == nil then
             return nil, "window '" .. tostring(parent) .. "' not found"
         end
@@ -690,8 +728,20 @@ do
         return _rawSetWindow(parent, element, ...)
     end
 
-    local function userWindowGuard(fn, message)
+    -- `what` names argument #1 the way Mudlet's own message does, and the
+    -- trailing arguments each carry their own name — the type is checked before
+    -- the window is looked up, since a table is a bad argument rather than a
+    -- window that is not there.
+    local function userWindowGuard(fn, message, who, what, tailName, tailOptional)
         return function(name, ...)
+            name = __mudix_check_string(name, who, 1, what)
+            local tail = ...
+            if select('#', ...) > 0 and not (tailOptional and tail == nil) then
+                if __mudix_str(tail) == nil then
+                    error(who .. ': bad argument #2 type (' .. tailName .. ' as string '
+                        .. (tailOptional and 'is optional' or 'expected') .. ', got ' .. type(tail) .. '!)', 2)
+                end
+            end
             if __windowType(name) ~= 'userwindow' then
                 return nil, (message:gsub("%%s", tostring(name)))
             end
@@ -699,8 +749,23 @@ do
             return true
         end
     end
-    setUserWindowTitle      = userWindowGuard(setUserWindowTitle,      "user window name '%s' not found")
-    setUserWindowStyleSheet = userWindowGuard(setUserWindowStyleSheet, "userwindow name '%s' not found")
+    -- wrapLine([window,] line). A window name has to be text and a line number
+    -- a number, so anything else in the first slot is a bad argument rather
+    -- than a line that could not be found.
+    local _rawWrapLine = wrapLine
+    function wrapLine(...)
+        local first = ...
+        if type(first) ~= 'string' and __mudix_num(first) == nil then
+            error('wrapLine: bad argument #1 type (window name as string expected, got '
+                .. __mudix_typename(first, select('#', ...) > 0) .. '!)', 2)
+        end
+        return _rawWrapLine(...)
+    end
+
+    setUserWindowTitle      = userWindowGuard(setUserWindowTitle,      "user window name '%s' not found",
+        'setUserWindowTitle', 'name', 'title', true)
+    setUserWindowStyleSheet = userWindowGuard(setUserWindowStyleSheet, "userwindow name '%s' not found",
+        'setUserWindowStyleSheet', 'userwindow name', 'StyleSheet', false)
 
     -- The read-back half of the pair. Each refuses exactly as its setter does,
     -- so a script that got past the setter can always get past the getter —
@@ -1036,11 +1101,14 @@ end
 
 -- Mudlet getSelection([windowName]) → text, start, length. With no active
 -- selection Mudlet returns ("", 0, 0) (not nil) — GUIUtils.lua's replace() and
--- other callers test for exactly that tuple. JS hands back a 0-indexed array or
--- nil for the no-selection case.
+-- other callers test for exactly that tuple. JS hands back a 0-indexed array,
+-- nil for the no-selection case, or the refusal message for a selection that no
+-- longer fits the line the cursor is on — which is (nil, errMsg), a third answer
+-- and not the same as having no selection.
 function getSelection(windowName)
     local t = __getSelection(windowName)
     if t == nil then return "", 0, 0 end
+    if type(t) == 'string' then return nil, t end
     return t[0], t[1], t[2]
 end
 
@@ -1228,7 +1296,25 @@ end
 -- Mudlet searchRoom(roomID|name[, caseSensitive[, exactMatch]]). By id → name
 -- string (false on miss). By name → { [roomID] = name } with integer ids
 -- (wasmoon stringifies the keys).
-function searchRoom(arg, caseSensitive, exactMatch)
+function searchRoom(...)
+    local top = select('#', ...)
+    local arg, caseSensitive, exactMatch = ...
+    -- A room is named by a string or numbered by an integer; anything else is
+    -- a type error rather than a search that finds nothing. The two optional
+    -- flags are booleans, and a string in either slot is the mistake that
+    -- silently turned an inexact search exact.
+    if type(arg) ~= 'string' and __mudix_num(arg) == nil then
+        error('searchRoom: bad argument #1 ("room name" as string expected, got '
+            .. type(arg) .. '!)', 2)
+    end
+    if top > 1 and caseSensitive ~= nil and type(caseSensitive) ~= 'boolean' then
+        error('searchRoom: bad argument #2 type ("case sensitive" as boolean is optional, got '
+            .. type(caseSensitive) .. '!)', 2)
+    end
+    if top > 2 and exactMatch ~= nil and type(exactMatch) ~= 'boolean' then
+        error('searchRoom: bad argument #3 type ("exact match" as boolean is optional, got '
+            .. type(exactMatch) .. '!)', 2)
+    end
     local raw = __searchRoom(arg, caseSensitive and true or false, exactMatch and true or false)
     if type(raw) == 'table' then
         local out = {}
@@ -1514,13 +1600,37 @@ do
     createMiniConsole = reuseReporter(createMiniConsole, 'miniconsole', 'miniconsole')
     createScrollBox   = reuseReporter(createScrollBox,   'scrollbox',   'scrollBox')
 
+    -- openUserWindow(name [, loadLayout [, autoDock [, area]]]). Every argument
+    -- is type-checked before the window is touched, so a refused call leaves no
+    -- window behind — UI_spec proves that by asking windowType() afterwards.
+    --
+    -- The two spaces after "openUserWindow:" on the first one are Mudlet's own
+    -- typo (#10418), and the spec pins the message verbatim, so they stay.
     local _rawOpenUserWindow = openUserWindow
-    function openUserWindow(name, ...)
+    function openUserWindow(...)
+        local top = select('#', ...)
+        local name, loadLayout, autoDock, area = ...
+        if type(name) ~= 'string' then
+            error('openUserWindow:  bad argument #1 type (name as string expected, got '
+                .. __mudix_typename(name, top >= 1) .. '!)', 2)
+        end
+        if top > 1 and loadLayout ~= nil and type(loadLayout) ~= 'boolean' then
+            error('openUserWindow: bad argument #2 type (loadLayout as boolean is optional, got '
+                .. type(loadLayout) .. '!)', 2)
+        end
+        if top > 2 and autoDock ~= nil and type(autoDock) ~= 'boolean' then
+            error('openUserWindow: bad argument #3 type (autoDock as boolean is optional, got '
+                .. type(autoDock) .. '!)', 2)
+        end
+        if top > 3 and type(area) ~= 'string' then
+            error('openUserWindow: bad argument #4 type (area as string expected, got '
+                .. type(area) .. '!)', 2)
+        end
         if __windowType(name) == 'label' then
             return nil, "label with the name '" .. tostring(name) .. "' already exists"
         end
         __mudix_forget_geometry(name)
-        return _rawOpenUserWindow(name, ...)
+        return _rawOpenUserWindow(...)
     end
 
     -- Both take the widget name as argument #1 and have nothing sensible to do
@@ -1732,11 +1842,11 @@ end
 -- number one. Scripts rely on it — trigger captures are always strings, so
 -- `tempLineTrigger(matches[2], matches[3], code)` is ordinary Mudlet code — and a
 -- strict type() test here rejected calls that work in Mudlet.
-function __mudix_check_string(value, funcName, index, what)
+function __mudix_check_string(value, funcName, index, what, present)
     local str = __mudix_str(value)
     if str == nil then
         error(funcName .. ": bad argument #" .. index .. " type (" .. what
-            .. " as string expected, got " .. type(value) .. "!)", 3)
+            .. " as string expected, got " .. __mudix_typename(value, present) .. "!)", 3)
     end
     return str
 end
@@ -1763,11 +1873,14 @@ function __mudix_check_lua_code(value, funcName, index)
     return str
 end
 
-function __mudix_check_number(value, funcName, index, what)
+-- `present` is optional and only matters when the caller counted its own
+-- arguments: false makes an absent one report as "no value" the way
+-- luaL_typename does, rather than as the "nil" a named parameter degrades to.
+function __mudix_check_number(value, funcName, index, what, present)
     local num = tonumber(value)
     if num == nil then
         error(funcName .. ": bad argument #" .. index .. " type (" .. what
-            .. " as number expected, got " .. type(value) .. "!)", 3)
+            .. " as number expected, got " .. __mudix_typename(value, present) .. "!)", 3)
     end
     return num
 end
@@ -1775,8 +1888,8 @@ end
 -- getVerifiedInt in full: the type check above, then the range check Mudlet has
 -- to make because lua_tointeger hands back a 64-bit value where the C++ side
 -- wants an int. Returns the truncated integer.
-function __mudix_check_int(value, funcName, index, what)
-    __mudix_check_number(value, funcName, index, what)
+function __mudix_check_int(value, funcName, index, what, present)
+    __mudix_check_number(value, funcName, index, what, present)
     local num = __mudix_int(value)
     if num < -2147483648 or num > 2147483647 then
         error(funcName .. ": integer over/under-flow in argument #" .. index .. " (" .. what
@@ -1811,6 +1924,65 @@ function __mudix_str(value)
     if t == 'string' then return value end
     if t == 'number' then return tostring(value) end
     return nil
+end
+
+-- luaL_typename, which every Mudlet bad-argument message ends with. It reads
+-- the *stack slot*, so an argument nobody passed is "no value" and one passed
+-- as nil is "nil" — a distinction Lua loses the moment the arguments become
+-- named parameters. Callers that care have to count with select('#', ...) and
+-- say which they got; callers that do not can leave `present` out and get the
+-- plain type. Mudlet's own messages do make the distinction (UI_spec asserts
+-- "got no value" on a missing argument), so it is worth carrying.
+function __mudix_typename(value, present)
+    if present == false then return 'no value' end
+    return type(value)
+end
+
+-- ── Binary armoring across the wasmoon bridge ──────────────────────────────
+-- wasmoon marshals strings with emscripten's UTF8ToString / stringToUTF8, so a
+-- Lua→JS crossing stops at the first NUL and UTF-8-*decodes* the rest. That is
+-- fine for text and silently destructive for bytes: feedTelnet("\229\254") does
+-- not deliver 0xE5 0xFE to JS, it delivers whatever those bytes plus the next
+-- one happen to decode to (0xE5 0xFE 0x0D arrives as U+5F8D). Any binding that
+-- carries game bytes rather than text therefore sends them "armored" as pure
+-- ASCII: a marker byte (\2 = raw, \1 = encoded) then the payload with NUL, '%'
+-- and 0x80-0xFF as %XX escapes. LuaRuntime mirrors the scheme in JS.
+--
+-- Neither direction may pay a function call per byte — both run over whole-file
+-- payloads in VFS.lua, where a multi-megabyte read costs millions of calls and
+-- wedges the main thread for minutes. gsub resolves a replacement *table* in C,
+-- so both maps are precomputed once here. The decode table carries all four
+-- case spellings because the pattern matches %x%x case-insensitively.
+--
+-- Defined here rather than in VFS.lua (which had them first, and privately)
+-- because Bridge.lua runs first and the feed bindings need them too: one scheme
+-- with one implementation, since the JS half is shared as well.
+do
+    local ENC, RAW = string.char(1), string.char(2)
+    local char2hex, hex2char = {}, {}
+    for b = 0, 255 do
+        local c  = string.char(b)
+        local up = string.format('%02X', b)
+        local lo = string.format('%02x', b)
+        char2hex[c] = '%' .. up
+        hex2char[up] = c
+        hex2char[lo] = c
+        hex2char[up:sub(1, 1) .. lo:sub(2, 2)] = c
+        hex2char[lo:sub(1, 1) .. up:sub(2, 2)] = c
+    end
+
+    function __mudix_armor(s)
+        if s:find('[%z%%\128-\255]') then
+            return ENC .. s:gsub('[%z%%\128-\255]', char2hex)
+        end
+        return RAW .. s
+    end
+
+    function __mudix_unarmor(s)
+        local payload = s:sub(2)
+        if s:sub(1, 1) == RAW then return payload end
+        return (payload:gsub('%%(%x%x)', hex2char))
+    end
 end
 
 -- Optional headers table: absent/nil is fine, anything else must be a table of
@@ -2547,6 +2719,12 @@ end
 -- Mudlet setAreaName(areaID|areaName, newName) → true on success, or
 -- (false, errMsg) on duplicate/missing/empty.
 function setAreaName(idOrName, newName)
+    -- An area is reached by id or by name; a boolean names neither, and Mudlet
+    -- raises rather than reporting it as an area that could not be found.
+    if type(idOrName) ~= 'string' and __mudix_num(idOrName) == nil then
+        error('setAreaName: bad argument #1 type (areaID as number or area name as string\n'
+            .. 'expected, got ' .. type(idOrName) .. '!)', 2)
+    end
     local r = __setAreaName(idOrName, newName)
     if r == true then return true end
     if type(r) == 'table' then
@@ -2760,24 +2938,37 @@ end
 --   "major" / "minor" / "revision" / "build" → field value
 --   "table"           → major, minor, revision as 3 separate return values
 --                       (mudlet-lua's mudletOlderThan relies on this)
+-- The style is matched the way Mudlet matches it: lowered, trimmed, and by
+-- `contains` rather than equality, so "  MAJOR  " is the major version. The two
+-- refusals differ by one word — "takes" for a style it does not know, "only
+-- takes" for being handed more than one argument — and both RAISE, so a caller
+-- has to pcall to see either. Both are Mudlet's strings verbatim: the list of
+-- styles is the only documentation of them a script author gets.
 do
     local MAJOR, MINOR, REVISION, BUILD = 4, 21, 0, ""
-    function getMudletVersion(mode)
-        if mode == nil then
+    local STYLES = "   \"major\", \"minor\", \"revision\", \"build\", \"string\" or \"table\"."
+    function getMudletVersion(...)
+        local count = select('#', ...)
+        if count > 1 then
+            error("getMudletVersion: only takes one (optional) argument:\n" .. STYLES, 2)
+        end
+        local mode = ...
+        if count == 0 or mode == nil then
             return { major = MAJOR, minor = MINOR, revision = REVISION, build = BUILD }
-        elseif mode == "string" then
+        end
+        local what = tostring(mode):lower():match("^%s*(.-)%s*$")
+        if what:find("major", 1, true)    then return MAJOR end
+        if what:find("minor", 1, true)    then return MINOR end
+        if what:find("revision", 1, true) then return REVISION end
+        if what:find("build", 1, true)    then return BUILD end
+        if what:find("string", 1, true) then
             if BUILD ~= "" then
                 return string.format("%d.%d.%d-%s", MAJOR, MINOR, REVISION, BUILD)
             end
             return string.format("%d.%d.%d", MAJOR, MINOR, REVISION)
-        elseif mode == "major"    then return MAJOR
-        elseif mode == "minor"    then return MINOR
-        elseif mode == "revision" then return REVISION
-        elseif mode == "build"    then return BUILD
-        elseif mode == "table"    then return MAJOR, MINOR, REVISION, BUILD
-        else
-            error('getMudletVersion: bad argument (expected nil/"string"/"major"/"minor"/"revision"/"build"/"table", got "' .. tostring(mode) .. '")', 2)
         end
+        if what:find("table", 1, true) then return MAJOR, MINOR, REVISION, BUILD end
+        error("getMudletVersion: takes one (optional) argument:\n" .. STYLES, 2)
     end
 end
 
@@ -2850,9 +3041,20 @@ function __mudix_register_cb(fn)
     return __mudix_cb_next
 end
 function __mudix_unregister_cb(id) __mudix_cb[id] = nil end
+-- __mudix_cb_returned_true records whether the body asked to be kept alive. An
+-- expiring temp trigger whose script returns true has its expiry count put back
+-- up (TTrigger::execute increments mExpiryCount, TTrigger::match then decrements
+-- it, so the two cancel and the trigger lives for another line). The chunk runs
+-- through doStringSync, which hands back nothing, so the answer is left here for
+-- the caller to read rather than returned.
 function __mudix_dispatch_cb(id)
     local fn = __mudix_cb[id]
-    if fn then return fn() end
+    __mudix_cb_returned_true = false
+    if fn then
+        local result = fn()
+        __mudix_cb_returned_true = result == true
+        return result
+    end
 end
 -- Variant for callbacks that receive a single argument (label mouse events
 -- carry a {button, x, y, ...} table). JS sets __mudix_cb_arg before invoking.
@@ -3124,12 +3326,21 @@ end
 
 -- Mudlet accepts either a function or a Lua code string for temp* callbacks;
 -- compile strings to functions so handlers run in a fresh chunk.
+--
+-- A string that does not compile is NOT a refusal. Mudlet builds the object
+-- first and calls TTrigger::setScript() on it afterwards (startTempColorTrigger
+-- in TLuaInterpreter.cpp), so a bad body still registers, still takes an ID and
+-- still comes back to the caller — it simply errors when it fires. Raising here
+-- instead made every temp* constructor reject a body it should have accepted,
+-- which is what LuaApiContracts_spec's "builds nothing when it refuses" reads as
+-- a consumed ID. So the compile error is deferred into the handler itself.
 function __mudix_to_fn(v, who, argN)
     if type(v) == 'function' then return v end
     if type(v) == 'string' then
         local fn, err = loadstring(v)
         if not fn then
-            error(who .. ": failed to compile code string: " .. tostring(err))
+            local message = who .. ": failed to compile code string: " .. tostring(err)
+            return function() error(message, 0) end
         end
         return fn
     end
@@ -3595,22 +3806,48 @@ do
         return nil
     end
 
-    -- Colorize the matched text on the current line. `matches[1]` is the full
-    -- match (set by the temp-trigger dispatch before the callback runs).
+    -- Colorize what the trigger matched on the current line.
+    --
+    -- Which part depends on whether the pattern has capture groups. Mudlet walks
+    -- the capture list and paints every entry EXCEPT the whole-match ones, but
+    -- only once there is more than one entry to choose from — so a pattern with
+    -- groups recolours its groups and leaves the rest of the match alone, and a
+    -- pattern without them recolours the match itself. Painting matches[1]
+    -- unconditionally, as this did, recoloured the whole line's match even when
+    -- the author had asked for the groups.
+    --
+    -- Groups are selected by NUMBER rather than by searching for their text:
+    -- a capture whose text also appears earlier in the line would otherwise be
+    -- painted in the wrong place.
     local function highlight(hlFg, hlBg, matchAll)
-        local text = matches and matches[1]
-        if not text or text == '' then return end
+        if not matches or matches[1] == nil then return end
         local fr, fg_, fb = resolveColor(hlFg)
         local br, bg_, bb = resolveColor(hlBg)
         if not (fr or br) then return end
-        local n = 1
-        while true do
-            local idx = selectString(text, n)
-            if not idx or idx < 0 then break end
+        local function paint()
             if fr then setFgColor(fr, fg_, fb) end
             if br then setBgColor(br, bg_, bb) end
-            if not matchAll then break end
-            n = n + 1
+        end
+        if #matches > 1 then
+            -- selectCaptureGroup is 1-based over the SAME list as `matches`, so
+            -- group 1 is the whole match and the groups start at 2. It answers
+            -- with a position, and -1 for "nothing selected" — which is truthy
+            -- in Lua, so the comparison has to be explicit.
+            for i = 2, #matches do
+                local at = selectCaptureGroup(i)
+                if type(at) == 'number' and at >= 0 then paint() end
+            end
+        elseif matchAll then
+            local n = 1
+            while true do
+                local idx = selectString(matches[1], n)
+                if not idx or idx < 0 then break end
+                paint()
+                n = n + 1
+            end
+        elseif matches[1] ~= '' then
+            local idx = selectString(matches[1], 1)
+            if idx and idx >= 0 then paint() end
         end
         deselect()
     end
@@ -3621,10 +3858,14 @@ do
         local userFn = __mudix_to_fn(code, "tempComplexRegexTrigger", 3)
         local matchAllOn = tonumber(matchAll) == 1
 
-        -- A colour pattern is the one thing here that has no home on the node:
-        -- Mudlet's fgColor/bgColor name colours, and the node's colour patterns
-        -- are ANSI indices. Still the honest thing to say out loud.
-        if type(fgColor) == 'string' or type(bgColor) == 'string' then warnOnce('colour pattern (fgColor/bgColor)') end
+        -- Arguments 5 and 6 decide what KIND of pattern argument 2 is, and
+        -- their own values are then never used. A number in either means an
+        -- ordinary perl pattern; anything else means the pattern text is a
+        -- colour pattern ("ANSI_COLORS_F{002}_B{IGNORE}"), which the trigger
+        -- engine already knows how to match — this used to warn that the case
+        -- had no home and then compile the colour pattern as a regex, which
+        -- matched nothing a game ever sends.
+        local isColorPattern = not (tonumber(fgColor) ~= nil and tonumber(bgColor) ~= nil)
 
         local hasHighlight = type(hlFgColor) == 'string' or type(hlBgColor) == 'string'
         local hasSound = type(soundFile) == 'string' and soundFile ~= ''
@@ -3642,7 +3883,7 @@ do
 
         local patterns = ''
         if type(regex) == 'string' and regex ~= '' then
-            patterns = 'regex\2' .. regex
+            patterns = (isColorPattern and 'colorTrigger\2' or 'regex\2') .. regex
         end
         -- The body is a node's Lua source, so the callback is reached through
         -- the registry the same way a temp trigger's is. `matches` and
@@ -4602,11 +4843,31 @@ end
 
 -- Mudlet `ancestors(id, type)`. Re-index the JS 0-indexed array of
 -- {id, name, node, isActive} (immediate parent → root) to a 1-based Lua
--- sequence. (false, errMsg) when no item of that type carries the id.
-function ancestors(id, itemType)
+-- sequence.
+--
+-- Same contract as isAncestorsActive below, which it did not have: a bad
+-- argument TYPE raises, and the three ways of naming no item are told apart
+-- rather than all reported as "does not exist". They read very differently to
+-- a caller — an id that is not a positive integer is a mistake in the call, a
+-- type nothing answers to is a mistake in the name, and an id nothing carries
+-- is a real miss.
+function ancestors(...)
+    local top = select('#', ...)
+    local id, itemType = ...
+    id = __mudix_check_number(id, "ancestors", 1, "item ID", top >= 1)
+    itemType = __mudix_check_string(itemType, "ancestors", 2, "item type", top >= 2)
+    if id < 1 or id ~= math.floor(id) then
+        return nil, "ancestors: item ID as " .. tostring(id)
+            .. " does not seem to be parseable as a positive integer"
+    end
+    if not __isKnownItemType(itemType) then
+        return nil, "ancestors: invalid item type '" .. tostring(itemType)
+            .. "' given, it should be one (case insensitive) of: 'alias', 'button',"
+            .. " 'script', 'keybind', 'timer' or 'trigger'"
+    end
     local raw = __ancestors(id, itemType)
     if not raw then
-        return false, "ancestors: " .. tostring(itemType) .. " item ID " .. tostring(id) .. " does not exist"
+        return nil, "ancestors: " .. tostring(itemType) .. " item ID " .. tostring(id) .. " does not exist"
     end
     local out = {}
     local i = 0
@@ -5130,8 +5391,26 @@ do
         end
         local ok = _setConfig(key, value)
         if ok == false then
+            -- The accepted set rides along when the option has one. It is the
+            -- only place a script author is told what the option takes — there
+            -- is no getter for it — so a refusal that names the rejected value
+            -- and nothing else takes the documentation away with it.
+            local raw = __mudix_config_values(key)
+            if raw then
+                -- 0-indexed on the way over, as every wasmoon array is.
+                local accepted = {}
+                local i = 0
+                while raw[i] ~= nil do accepted[#accepted + 1] = raw[i] i = i + 1 end
+                if #accepted > 0 then
+                    return nil, "setConfig: '" .. tostring(value) .. "' is not a valid value for '"
+                        .. key .. "', it should be one of '" .. table.concat(accepted, "', '") .. "'"
+                end
+            end
             return nil, "setConfig: '" .. tostring(value) .. "' is not a valid value for '" .. key .. "'"
         end
+        -- An experiment refuses with a message of its own (the name is not one
+        -- this build knows), which has to reach the caller intact.
+        if type(ok) == 'string' and key:find('^experiment%.') then return nil, ok end
         -- A string answer is the option TAKEN, with something the caller should
         -- know riding along — a symbol font that cannot draw a symbol the map
         -- already uses, for one. The warning travels beside the true rather than
@@ -5145,7 +5424,18 @@ do
         if keyErr then return nil, keyErr end
         local v = _getConfig(key, useStringFormat and true or false)
         if v == nil then
+            -- "<group>.active" answers nil when no experiment in that group is
+            -- on, which is an answer rather than a missing key — the only read
+            -- in the API whose nil means something.
+            if key:find('^experiment%.') and key:find('%.active$') then return nil end
             return nil, "getConfig: '" .. key .. "' isn't a valid configuration option"
+        end
+        -- Arrays cross the wasmoon boundary 0-indexed; a Lua caller walks them
+        -- with ipairs, which starts at 1 and would see an empty list.
+        if key == "experiment.list" and type(v) == "table" then
+            local list, i = {}, 0
+            while v[i] ~= nil do list[#list + 1] = v[i] i = i + 1 end
+            return list
         end
         if key == "mapInfoColor" and type(v) == "string" then
             local r, g, b, a = v:match("^(%d+),(%d+),(%d+),(%d+)$")
@@ -5581,7 +5871,12 @@ do
         stop  = function() return true end,
         close = function() return true end,
 
-        reloadLibrary = function() return refuse(NO_ENGINE) end,
+        -- Re-running detection is a probe, not something the engine can
+        -- refuse: it answers whether the library is available now, which here
+        -- is always false, and announces nothing. Mudlet returns false plus a
+        -- message only when the recognizer is still in use, which nothing can
+        -- reach with no engine to be using.
+        reloadLibrary = function() return false end,
         -- Unloading what was never loaded leaves the documented state.
         unloadLibrary = function() return true end,
 
@@ -5683,14 +5978,20 @@ end
 -- wordings genuinely differ between functions (quoting and phrasing included),
 -- so they are spelled out here rather than funnelled through a shared helper.
 do
-    -- isAnsiFgColor / isAnsiBgColor accept Mudlet's 0-16 ANSI range.
+    -- isAnsiFgColor / isAnsiBgColor accept Mudlet's 0-16 ANSI range. The two
+    -- refusals are not the same kind: a colour number outside the range is a
+    -- value mistake and comes back as (nil, message), while something that is
+    -- not a number at all never reaches the range check — Mudlet reads it with
+    -- getVerifiedInt, which raises. Answering "out of range" to isAnsiFgColor()
+    -- told a script its argument was a number that happened to be too big.
     local function ansiGuard(fn, name)
-        return function(code, ...)
-            local n = tonumber(code)
-            if n == nil or n < 0 or n > 16 then
-                return nil, "ANSI color " .. tostring(code) .. " out of range (0 to 16)"
+        return function(...)
+            local code = ...
+            local n = __mudix_check_int(code, name, 1, "ANSI color", select('#', ...) > 0)
+            if n < 0 or n > 16 then
+                return nil, "ANSI color " .. n .. " out of range (0 to 16)"
             end
-            return fn(code, ...)
+            return fn(...)
         end
     end
     isAnsiFgColor = ansiGuard(isAnsiFgColor, "isAnsiFgColor")
@@ -5850,9 +6151,13 @@ do
     -- type error rather than a silent tostring().
     -- Injecting into a socket that is anything but unconnected would interleave
     -- with the live stream, so it is refused with (nil, errMsg).
+    -- Armored on the way over: these really are bytes, and most byte sequences
+    -- are not valid UTF-8 — which is all the wasmoon bridge will carry. Sent
+    -- plain, "\229\254\13" reached JS as a single U+5F8D and the encoding
+    -- specs were testing the decoder against data they had never sent.
     feedTelnet = function(data, ...)
         data = __mudix_check_string(data, "feedTelnet", 1, "data")
-        local err = __feedTelnet(data, ...)
+        local err = __feedTelnet(__mudix_armor(data), ...)
         if err ~= nil then return nil, err end
         return true
     end
@@ -5959,33 +6264,120 @@ do
         return mapped ~= nil and mapped or n
     end
 
-    local _rawTempColorTrigger = tempColorTrigger
-    tempColorTrigger = function(fg, bg, ...)
-        -- -1 ("ignore this channel") on both would match every line, so Mudlet
-        -- refuses rather than creating a catch-all.
-        if (tonumber(fg) or -1) < 0 and (tonumber(bg) or -1) < 0 then
-            return nil, "tempColorTrigger: only one of foreground and background may be ignored"
+    -- The two sentinels TTrigger declares (TTrigger.h): -1 leaves a channel out
+    -- of the match, -2 asks for the console's own default colour — which is a
+    -- colour to match, not an "any".
+    local IGNORED, DEFAULT = -1, -2
+
+    -- The body is read but never compiled here: an uncompilable string is a
+    -- trigger that errors when it fires, not a refusal (see __mudix_to_fn).
+    local function checkTriggerBody(who, index, value, present)
+        local t = type(value)
+        if t ~= 'string' and t ~= 'function' then
+            error(who .. ": bad argument #" .. index
+                .. " type (code to run as a string or a function expected, got "
+                .. __mudix_typename(value, present) .. "!)", 3)
         end
-        return _rawTempColorTrigger(remapLegacyColor(fg), remapLegacyColor(bg), ...)
     end
 
-    -- tempAnsiColorTrigger(fg [, bg], code [, expiry]). Omitting the background
-    -- is equivalent to ignoring it, so an ignored foreground with no background
-    -- is the same catch-all case and is refused the same way. Only -1 counts as
-    -- ignored here: -2 asks for the default colour, so (-2, -1) and (-1, -2) are
-    -- ordinary one-channel colour triggers and must not be refused.
+    -- Both constructors take the expiry last and validate it the same way, but
+    -- word the refusal differently — tempAnsiColorTrigger says "nil or greater
+    -- than zero" where tempColorTrigger says "greater than zero", and they swap
+    -- the phrasing again on the raising path. Kept as parameters rather than
+    -- unified: UI_spec and LuaApiContracts_spec both assert them verbatim.
+    local function checkExpiry(who, index, value, present, refusal, wanted)
+        if not present or value == nil then return nil end
+        local n = __mudix_int(value)
+        if n == nil then
+            error(who .. ": bad argument #" .. index .. " value (trigger expiration count must be "
+                .. wanted .. ", got " .. type(value) .. "!)", 3)
+        end
+        if n < 1 then
+            return nil, who .. ": trigger expiration count " .. refusal .. ", got " .. n
+        end
+        return n
+    end
+
+    -- tempColorTrigger(fg, bg, code [, expiry]). Mudlet validates in stack
+    -- order but takes the expiry (#4) before the body (#3), and nothing is
+    -- built until all four have passed — LuaApiContracts_spec proves that by
+    -- watching the trigger ID counter across a run of refusals.
+    local _rawTempColorTrigger = tempColorTrigger
+    tempColorTrigger = function(...)
+        local top = select('#', ...)
+        local fg, bg, body, expiry = ...
+        fg = __mudix_check_int(fg, "tempColorTrigger", 1, "foreground color")
+        bg = __mudix_check_int(bg, "tempColorTrigger", 2, "background color")
+        fg, bg = remapLegacyColor(fg), remapLegacyColor(bg)
+        if fg == IGNORED and bg == IGNORED then
+            return nil, "tempColorTrigger: only one of foreground and background colors can be -1 (ignored)"
+        end
+        local count, refused = checkExpiry("tempColorTrigger", 4, expiry, top >= 4,
+            "must be greater than zero", "nil or a number")
+        if refused then return nil, refused end
+        checkTriggerBody("tempColorTrigger", 3, body, top >= 3)
+        return _rawTempColorTrigger(fg, bg, body, count)
+    end
+
+    -- tempAnsiColorTrigger(fg [, bg], code [, expiry]) — the one function here
+    -- whose *second* argument may be omitted, so which argument is which can
+    -- only be settled from the argument count. Mudlet reads the background when
+    -- there are four arguments (it must be one then) or when argument #2 is a
+    -- number; otherwise it slides the body and expiry down a place.
+    --
+    -- That count is also what tells the two ways of ignoring everything apart.
+    -- A -1 foreground with the background *given* as -1 is one mistake; a -1
+    -- foreground with the background left out is a different one, and each gets
+    -- its own wording so a script author can tell which they made.
     local _rawTempAnsiColorTrigger = tempAnsiColorTrigger
-    tempAnsiColorTrigger = function(fg, a2, ...)
-        local bgOmitted = (type(a2) == 'function' or type(a2) == 'string')
-        local bg = bgOmitted and -1 or a2
-        local function ignored(v)
-            local n = tonumber(v)
-            return n == nil or (n < 0 and n ~= -2)
+    tempAnsiColorTrigger = function(...)
+        local top = select('#', ...)
+        local a1, a2, a3, a4 = ...
+        local who = "tempAnsiColorTrigger"
+        local function inRange(v) return v == IGNORED or v == DEFAULT or (v >= 0 and v <= 255) end
+
+        local fg = __mudix_check_int(a1, who, 1,
+            "foreground color as ANSI Color number {-1 = ignore foreground color, -2 = default color, 0 to 255 ANSI color}",
+            top >= 1)
+        if fg == IGNORED and top < 2 then
+            return nil, who .. ": invalid ANSI color number " .. fg
+                .. ", it cannot be used (to ignore the foreground color) if the background color is omitted"
         end
-        if ignored(fg) and ignored(bg) then
-            return nil, "tempAnsiColorTrigger: cannot ignore both foreground and background"
+        if not inRange(fg) then
+            return nil, who .. ": invalid ANSI color number " .. fg
+                .. ", only -1 (ignore foreground color), -2 (default foregroud color) or 0 to 255 recognised"
         end
-        return _rawTempAnsiColorTrigger(fg, a2, ...)
+        -- "(omitted)" is the whole point of this branch: it fires only when the
+        -- background really was left out, which is why it tests the argument
+        -- count and the type of #2 rather than the value of the background.
+        if fg == IGNORED and top < 4 and __mudix_num(a2) == nil then
+            return nil, who .. ": invalid ANSI color number " .. fg
+                .. ", you cannot ignore both foreground and background color (omitted)"
+        end
+
+        local bg, bodyIndex = IGNORED, 2
+        if top < 4 and __mudix_num(a2) == nil then
+            -- background omitted: the body is argument #2 and the expiry #3
+            a3, a4 = a2, a3
+        else
+            bg = __mudix_check_int(a2, who, 2,
+                "background color as ANSI Color number {-1 = ignore foreground color, -2 = default color, 0 to 255 ANSI color}")
+            if not inRange(bg) then
+                return nil, who .. ": invalid ANSI color number " .. bg
+                    .. ", only -1 (ignore background color), -2 (default background color) or 0 to 255 recognised"
+            end
+            if bg == IGNORED and fg == IGNORED then
+                return nil, who .. ": invalid ANSI color number " .. bg
+                    .. ", you cannot ignore both foreground and background color"
+            end
+            bodyIndex = 3
+        end
+
+        checkTriggerBody(who, bodyIndex, a3, top >= bodyIndex)
+        local count, refused = checkExpiry(who, bodyIndex + 1, a4, top > bodyIndex,
+            "must be nil or greater than zero", "a number")
+        if refused then return nil, refused end
+        return _rawTempAnsiColorTrigger(fg, bg, a3, count)
     end
 end
 
@@ -6034,6 +6426,17 @@ do
         return r
     end
 
+    -- createRoomID answers with a number, or the refusal message when the
+    -- optional minimum is below one.
+    do
+        local _raw = createRoomID
+        function createRoomID(minimum)
+            local r = _raw(minimum)
+            if type(r) == 'string' then return nil, r end
+            return r
+        end
+    end
+
     deleteArea        = shaped(__deleteArea)
     setDoor           = shaped(__setDoor)
     setExitWeight     = shaped(__setExitWeight)
@@ -6070,6 +6473,10 @@ do
     -- proxy can't be walked from JS, so the id list is flattened here.
     function setRoomArea(rooms, area)
         local ids
+        if type(rooms) ~= 'table' and __mudix_num(rooms) == nil then
+            error('setRoomArea: bad argument #1 type (roomID as number or table of roomIDs\n'
+                .. 'expected, got ' .. type(rooms) .. '!)', 2)
+        end
         if type(rooms) == 'table' then
             local parts = {}
             for _, id in ipairs(rooms) do parts[#parts + 1] = tostring(id) end
@@ -6084,8 +6491,9 @@ do
 
     -- Mudlet getMapZoom([areaID]) → the area's zoom, or (nil, errMsg) for an
     -- areaID that doesn't exist.
-    function getMapZoom(areaID)
-        local z = __getMapZoom(areaID)
+    function getMapZoom(areaID, viewID)
+        local z = __getMapZoom(areaID, viewID)
+        if type(z) == 'string' then return nil, z end
         if z == nil then
             return nil, "getMapZoom: number " .. tostring(areaID) .. " is not a valid areaID"
         end
@@ -6359,17 +6767,80 @@ do
     createCommandLine = windowCtorGuard(createCommandLine, "createCommandLine")
 end
 
--- feedTriggers(text) injects imitation server output. Mudlet reads it with
--- lua_isstring, so a table (or anything else non-coercible) raises rather than
--- being tostring()-ed into the buffer.
+-- feedTriggers(text [, isUtf8]) injects imitation server output. Mudlet reads
+-- the text with lua_isstring, so a table (or anything else non-coercible)
+-- raises rather than being tostring()-ed into the buffer, and the optional
+-- second argument is read with getVerifiedBool — a non-boolean raises too
+-- rather than being taken for its truthiness, since getting it backwards is
+-- exactly the mistake that shows up as double-encoded text.
+--
+-- Armored across the bridge (see __mudix_armor): with isUtf8 false the caller
+-- is handing over bytes already in the game's encoding, which by definition are
+-- not UTF-8 and would not survive the crossing as text.
 do
     local _rawFeedTriggers = feedTriggers
-    function feedTriggers(data, ...)
-        if type(data) ~= 'string' and type(data) ~= 'number' then
-            error("feedTriggers: bad argument #1 type (imitation game server text as string"
-                .. " expected, got " .. type(data) .. "!)", 2)
+    function feedTriggers(...)
+        local top = select('#', ...)
+        local data, isUtf8 = ...
+        data = __mudix_check_string(data, "feedTriggers", 1, "imitation game server text", top >= 1)
+        if top > 1 then
+            if type(isUtf8) ~= 'boolean' then
+                error("feedTriggers: bad argument #2 type (Utf8Encoded as boolean is optional, got "
+                    .. type(isUtf8) .. "!)", 2)
+            end
+        else
+            isUtf8 = true
         end
-        return _rawFeedTriggers(data, ...)
+        local err = _rawFeedTriggers(__mudix_armor(data), isUtf8)
+        if err ~= nil then return nil, err end
+        return true
+    end
+end
+
+-- announce(text [, processing]) hands text to a screen reader. The processing
+-- style is the queueing policy the reader applies, and the list of them only
+-- exists in this refusal — there is no getter for it — so dropping the names
+-- from the message removes the documentation with them. Mudlet raises on all
+-- three mistakes (unreadable text, unreadable style, unknown style) rather than
+-- refusing quietly: a script that mis-announces is a script whose author cannot
+-- hear that it did.
+do
+    local PROCESSING_KINDS = {"importantall", "importantmostrecent", "all", "mostrecent", "currentthenmostrecent"}
+    local _raw = announce
+    function announce(...)
+        local top = select('#', ...)
+        local text, processing = ...
+        text = __mudix_check_string(text, "announce", 1, "text to announce", top >= 1)
+        if top > 1 then
+            processing = __mudix_check_string(processing, "announce", 2, "processing style")
+            local known = false
+            for _, kind in ipairs(PROCESSING_KINDS) do
+                if processing == kind then known = true break end
+            end
+            if not known then
+                error("announce: bad argument #2 type (processing should be one of "
+                    .. table.concat(PROCESSING_KINDS, ", ") .. ", got " .. processing .. "!)", 2)
+            end
+            return _raw(text, processing)
+        end
+        return _raw(text)
+    end
+end
+
+-- alert([seconds]) flashes for attention. The duration is optional, and zero is
+-- a duration rather than a mistake — the boundary is where the refusal starts,
+-- not "anything falsy". Mudlet raises on a negative one instead of clamping,
+-- since a script asking for a negative flash has a bug either way and a silent
+-- clamp hides it.
+do
+    local _raw = alert
+    function alert(...)
+        if select('#', ...) == 0 then return _raw() end
+        local seconds = __mudix_check_number((...), "alert", 1, "alert duration in seconds", true)
+        if seconds < 0 then
+            error("alert: duration, in seconds, is optional but if given must be zero or greater.", 2)
+        end
+        return _raw(seconds)
     end
 end
 
@@ -6662,9 +7133,28 @@ end
 -- Mudlet closeUserWindow(name) — hide a user window without deleting it, so
 -- reopening it brings the same dock back. Reports nothing; a name that is not a
 -- user window is simply nothing to close.
+-- Mudlet resetBackgroundImage([window] [, fullWindow]) → true, or (nil, errMsg)
+-- for a console nothing answers to and for asking a miniconsole to reset a full
+-- window background it does not have. The JS side hands the message back.
+do
+    local _raw = resetBackgroundImage
+    function resetBackgroundImage(...)
+        local r = _raw(...)
+        if type(r) == 'string' then return nil, r end
+        return r
+    end
+end
+
+-- Mudlet closeUserWindow(name). Despite the name it closes any CONSOLE — the
+-- lookup is Host::closeWindow's mSubConsoleMap, which holds miniconsoles and
+-- buffers alongside user windows. A label is the one thing it leaves alone,
+-- those living in a map of their own; only hideWindow reaches one.
 function closeUserWindow(name)
     name = __mudix_check_string(name, "closeUserWindow", 1, "name")
-    if __windowType(name) == 'userwindow' then hideWindow(name) end
+    local kind = __windowType(name)
+    if kind == 'userwindow' or kind == 'miniconsole' or kind == 'buffer' then
+        hideWindow(name)
+    end
 end
 
 -- Mudlet setBackgroundImage([window,] path [, mode [, fullWindow]]). GUIUtils'

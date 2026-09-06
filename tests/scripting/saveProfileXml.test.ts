@@ -137,26 +137,47 @@ describe('saveProfile — the XML save it writes', () => {
             pattern: '^hi$', command: 'say hello', code: '', language: 'lua',
         });
 
-        expect(makeEngine(vfs).saveProfileXml('out', 'x').ok).toBe(true);
-        const xml = files.get('out/x.xml') ?? '';
+        // Unnamed: the profile's own save. It keeps a HostPackage — Mudlet will
+        // not load a profile without one — where the "save as" form below drops
+        // it. Both carry the automation tree.
+        const saved = makeEngine(vfs).saveProfileXml('out');
+        expect(saved.ok).toBe(true);
+        const xml = files.get([...files.keys()].find(k => k.startsWith('out/')) ?? '') ?? '';
+        expect(xml).toContain('<!DOCTYPE MudletPackage>');
         expect(xml).toContain('<MudletPackage');
-        // A profile with no save to base on still gets a HostPackage — Mudlet
-        // will not load one without it.
         expect(xml).toContain('HostPackage');
         expect(xml).toContain('greet');
     });
 
+    it('leaves the profile settings out of a save-as', () => {
+        // Host::saveProfileAs goes through writeGenericPackage, which writes the
+        // seven item packages and nothing else — a document meant to be handed
+        // to someone else does not carry the sender's preferences.
+        // Package_spec pins it ("a save as wrote the profile's settings out too").
+        const { vfs, files } = fakeVfs();
+        useAppStore.getState().addAlias(CONN, {
+            name: 'greet', enabled: true, isGroup: false, parentId: null,
+            pattern: '^hi$', command: 'say hello', code: '', language: 'lua',
+        });
+
+        expect(makeEngine(vfs).saveProfileXml('out', 'x').ok).toBe(true);
+        const xml = files.get('out/x.xml') ?? '';
+        expect(xml).toContain('greet');
+        expect(xml).not.toContain('HostPackage');
+    });
+
     it('bases the save on an existing Mudlet save, keeping what mudix does not model', () => {
         // A <Host> field mudix has no idea about has to survive the round-trip;
-        // dropping it silently resets that setting in Mudlet.
+        // dropping it silently resets that setting in Mudlet. Only the profile's
+        // own save carries a Host at all, so this is the unnamed form.
         const base = '<?xml version="1.0" encoding="UTF-8"?>'
             + '<MudletPackage version="1.001"><HostPackage>'
             + '<Host mSomethingMudixNeverModels="yes"><mSomeUnmodelledField>keep me</mSomeUnmodelledField></Host>'
             + '</HostPackage><TriggerPackage/></MudletPackage>';
         const { vfs, files } = fakeVfs({ 'current/2020-01-01#00-00-00.xml': base });
 
-        expect(makeEngine(vfs).saveProfileXml('out', 'copy').ok).toBe(true);
-        const xml = files.get('out/copy.xml') ?? '';
+        expect(makeEngine(vfs).saveProfileXml('out').ok).toBe(true);
+        const xml = files.get([...files.keys()].find(k => k.startsWith('out/')) ?? '') ?? '';
         expect(xml).toContain('mSomethingMudixNeverModels="yes"');
         expect(xml).toContain('keep me');
     });

@@ -28,8 +28,19 @@ describe('server encoding names', () => {
     });
 
     it('refuses one it cannot decode', () => {
-        expect(canonicalServerEncoding('BIG5')).toBeNull();
+        // Shift JIS is in the browser's own set but not in Mudlet's list, so it
+        // is a name that reads plausibly and still has to be refused — the list
+        // is the contract, not whatever TextDecoder happens to accept.
+        expect(canonicalServerEncoding('SHIFT_JIS')).toBeNull();
         expect(canonicalServerEncoding('')).toBeNull();
+    });
+
+    // BIG5 and BIG5-HKSCS share a decoder, so a canonicaliser that resolved
+    // names through it would answer BIG5 to both and getServerEncoding() would
+    // report a name the caller never set.
+    it('keeps two names that share a decoder apart', () => {
+        expect(canonicalServerEncoding('BIG5')).toBe('BIG5');
+        expect(canonicalServerEncoding('big5-hkscs')).toBe('BIG5-HKSCS');
     });
 
     // Every entry has to be settable, or the list advertises a name that is

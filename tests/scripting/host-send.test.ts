@@ -59,6 +59,7 @@ const CONN = 'host-send-conn';
 type EngineInternals = {
     api: {
         printError: (msg: string) => void;
+        postError: (msg: string) => void;
         send: (text: string, echo?: boolean) => void;
         setCmdLineAction: (fn: ((text: string) => void) | null) => void;
     };
@@ -243,17 +244,21 @@ describe('hostSend — Mudlet Host::send', () => {
             expect(wire).toEqual(['north']);
         });
 
-        it('cuts a self-feeding alias loop instead of wedging the tab', () => {
-            // Mudlet has no cap here — it recurses until the C++ stack gives
-            // out. mudix stops and says so.
+        it('cuts a self-feeding alias loop and sends the command unexpanded', () => {
+            // AliasUnit::scmMaxProcessingDepth: 50 nested expansions, then the
+            // command goes to the game AS TYPED rather than being dropped — the
+            // player asked for something, and a command the game does not
+            // understand beats silence. Reported on the main console, not
+            // through printError: it is the client's news, not the script's
+            // fault, so it shows whether or not script errors are echoed there.
             const errors: string[] = [];
-            vi.spyOn((engine as unknown as EngineInternals).api, 'printError')
+            vi.spyOn((engine as unknown as EngineInternals).api, 'postError')
                 .mockImplementation((msg: string) => { errors.push(msg); });
             aliasEngine.loadPerm([{ ...ALIAS, command: 'gg' } as never]);
             engine.sendCommand('gg');
             expect(errors.length).toBe(1);
-            expect(errors[0]).toContain('an alias is very likely feeding itself');
-            expect(wire).toEqual([]);
+            expect(errors[0]).toContain('Alias processing stopped to prevent a crash: "gg"');
+            expect(wire).toEqual(['gg']);
         });
 
         it('leaves Lua send() unexpanded — sendRaw passes dontExpandAliases', () => {

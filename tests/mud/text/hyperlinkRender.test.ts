@@ -48,7 +48,7 @@ describe('toHtml renders OSC 8 link styling', () => {
       `${ESC}]8;id=g1;send:x?config={"style":{"color":"#ff0000","bold":true}}${ST}X${close}`,
     );
     const html = buf.toHtml();
-    expect(html).toContain('color: #ff0000');
+    expect(html).toContain('color: rgb(255,0,0)');
     expect(html).toContain('font-weight: bold');
     expect(html).toContain('data-link-id="g1"');
   });
@@ -67,8 +67,8 @@ describe('toHtml renders OSC 8 link styling', () => {
     // SGR green inside the link, but config says red → red wins.
     const buf = new AnsiAwareBuffer(`${open('send:x?config={"style":{"color":"red"}}')}${ESC}[32mX${close}`);
     const html = buf.toHtml();
-    expect(html).toContain('color: #ff0000');
-    expect(html).not.toContain('color: #00bb00');
+    expect(html).toContain('color: rgb(255,0,0)');
+    expect(html).not.toContain('color: rgb(0,187,0)');
   });
 });
 
@@ -77,7 +77,7 @@ describe('toDom OSC 8 interactions', () => {
     const buf = new AnsiAwareBuffer(`${open('send:x?config={"style":{"color":"#0000ff"}}')}X${close}`);
     const span = buf.toDom().querySelector('[data-output-clickable]') as HTMLElement;
     expect(span).toBeTruthy();
-    expect(span.style.cssText).toContain('#0000ff');
+    expect(span.style.cssText).toContain('rgb(0, 0, 255)');
     expect(span.style.cssText).toContain('cursor: pointer');
   });
 
@@ -87,9 +87,9 @@ describe('toDom OSC 8 interactions', () => {
     );
     const span = buf.toDom().querySelector('span') as HTMLElement;
     span.dispatchEvent(new Event('mouseenter'));
-    expect(span.style.cssText).toContain('#ff0000');
+    expect(span.style.cssText).toContain('rgb(255, 0, 0)');
     span.dispatchEvent(new Event('mouseleave'));
-    expect(span.style.cssText).toContain('#0000ff');
+    expect(span.style.cssText).toContain('rgb(0, 0, 255)');
     expect(span.style.cssText).not.toContain('#ff0000');
   });
 
@@ -142,11 +142,11 @@ describe('toDom OSC 8 interactions', () => {
     const spans = Array.from(buf.toDom().querySelectorAll('[data-link-id="g"]')) as HTMLElement[];
     expect(spans.length).toBe(2);
     spans[0].dispatchEvent(new Event('mouseenter'));
-    expect(spans[0].style.cssText).toContain('#ff0000');
-    expect(spans[1].style.cssText).toContain('#ff0000');
+    expect(spans[0].style.cssText).toContain('rgb(255, 0, 0)');
+    expect(spans[1].style.cssText).toContain('rgb(255, 0, 0)');
     spans[1].dispatchEvent(new Event('mouseleave'));
-    expect(spans[0].style.cssText).toContain('#0000ff');
-    expect(spans[1].style.cssText).toContain('#0000ff');
+    expect(spans[0].style.cssText).toContain('rgb(0, 0, 255)');
+    expect(spans[1].style.cssText).toContain('rgb(0, 0, 255)');
   });
 
   it('renders a disabled link with a default cursor', () => {
@@ -165,10 +165,10 @@ describe('toDom OSC 8 interactions', () => {
     expect(span.dataset.oscGroup).toBe('diff');
     expect(span.dataset.oscValue).toBe('easy');
     expect(span.dataset.oscExclusive).toBe('true');
-    expect(span.dataset.cssSelected).toContain('#008000'); // green selected bg
+    expect(span.dataset.cssSelected).toContain('rgb(0,128,0)'); // green selected bg
     expect(span.dataset.cssBase).toBeTruthy();
     // server pre-selected → the selected style is applied at render
-    expect(span.style.cssText).toContain('#008000');
+    expect(span.style.cssText).toContain('rgb(0, 128, 0)');
   });
 
   it('conceals a spoiler until the first click reveals it', () => {

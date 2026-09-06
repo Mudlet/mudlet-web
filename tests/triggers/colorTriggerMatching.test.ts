@@ -47,13 +47,15 @@ function trig(id: string, patternText: string): TriggerNode {
 }
 
 /** Feed every line and count fires, with the colour matcher standing in for
- *  ScriptingAPI.currentLineMatchesColor: -1 is "any", so a channel set to it
- *  matches whatever the line carries. */
+ *  ScriptingAPI.currentLineColorMatch: -1 is "any", so a channel set to it
+ *  matches whatever the line carries. The real one answers with the coloured
+ *  RUN (null when there is none), which is what the trigger reports as its
+ *  match; this stand-in only has to be non-null on a hit. */
 function countFires(te: TriggerEngine, patternText: string): { plain: number; red: number; green: number } {
     te.loadPerm([trig('t', patternText)]);
     const out = { plain: 0, red: 0, green: 0 };
     for (const line of LINES) {
-        te.setColorMatcher((fg, bg) => (fg === -1 || fg === line.fg) && (bg === -1 || bg === -2));
+        te.setColorMatcher((fg, bg) => ((fg === -1 || fg === line.fg) && (bg === -1 || bg === -2) ? line.text : null));
         let fired = false;
         te.process(line.text, false, () => { fired = true; });
         if (!fired) continue;

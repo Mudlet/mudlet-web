@@ -1,4 +1,5 @@
 import type { BindingContext } from './context';
+import { unarmor } from '../byteArmor';
 
 /**
  * Console output and text formatting: the echo family's targets, foreground/
@@ -21,11 +22,19 @@ export function installOutputBindings({ lua, api }: BindingContext): void {
         if (b !== undefined) api.insertText(b, a);
         else                 api.insertText(a);
     });
-    lua.global.set('feedTriggers',(text: string)  => api.feedTriggers(text));
+    // Armored, like feedTelnet: the older `feedTriggers(data, false)` form
+    // carries bytes already in the game's encoding, which are not UTF-8 and
+    // would not survive the wasmoon crossing as text. See byteArmor.ts.
+    // Returns the refusal message, or nil when the text was fed.
+    lua.global.set('feedTriggers', (data: string, utf8Encoded?: unknown) =>
+        api.feedTriggers(unarmor(String(data ?? '')), utf8Encoded !== false));
     lua.global.set('deleteLine',  (win?: string)  => api.deleteLine(win));
     // Mudlet `wrapLine([window,] lineNumber)`. Re-displays a line, re-wrapping
     // it and interpreting embedded \n. Overloaded: a string first arg is the
     // window (lineNumber follows); a number first arg targets the main window.
+    // The argument TYPES are settled in Bridge.lua, where a Lua table is still
+    // a table — it reaches JS as an ordinary object, and a message built from
+    // `typeof` here would name the wrong thing.
     lua.global.set('wrapLine', (a: unknown, b?: unknown) => {
         if (typeof a === 'string') return api.wrapLine(Number(b), a);
         return api.wrapLine(Number(a));

@@ -28,13 +28,14 @@ import { historyStorageKey, loadHistory } from '../ui/commandHistory';
 import { OSC8_DOCS_DEBOUNCE_MS, OSC8_DOCS_PHRASE, osc8DocumentationExamples } from '../mud/text/osc8Docs';
 import { SERVER_WRAP_WIDTH_MAX, SERVER_WRAP_WIDTH_MIN } from '../mud/text/serverWrap';
 import { decodeTelnetByteTags } from '../mud/connection/telnetByteTags';
-import { toByteString } from '../mud/protocol/byteString';
 import { openOsc8Menu } from '../ui/output/osc8Menu';
 import { namedColorToState, dechoToAnsiFast, cechoToAnsiFast, hechoToAnsiFast } from '../mud/text/colorParsers';
 import { colorCodes } from '../mud/text/colors';
 import { Console, MIN_CONSOLE_BUFFER_SIZE, MAX_CONSOLE_BUFFER_SIZE } from '../mud/text/Console';
 import { flashTitle } from '../utils/documentTitle';
 import { MspParser } from '../mud/protocol';
+import { fromByteString } from '../mud/protocol/byteString';
+import { canEncodeForServer, decodeForServer } from '../mud/protocol/charset';
 import { StopwatchManager, localStorageStopwatchStore } from './StopwatchManager';
 import { MxpFrameManager } from './MxpFrameManager';
 import { getHeldModifiers } from './heldModifiers';
@@ -56,9 +57,14 @@ import { findBundledGame } from '../mud/games/bundledGames';
 // Mudlet's TChar always carries baked-in fg/bg colors (the rendered pair), so
 // getFgColor/getBgColor never return "no color" for in-bounds positions. mudix
 // buffer segments are sparse — plain text has no explicit color — so we fall
-// back to these defaults, matching the dark-theme values SettingsModal uses
-// (App.css :root --text / --bg).
-const DEFAULT_FG_RGB: [number, number, number] = [0xd4, 0xd4, 0xd4];
+// back to these defaults.
+//
+// The foreground is Qt::lightGray, which is what Host::mFgColor starts as and
+// what App.css already paints uncoloured console text (`--console-text`). It
+// used to be #d4d4d4 here, so mudix RENDERED plain text at #c0c0c0 and REPORTED
+// it as #d4d4d4 — a script comparing getFgColor() against what it could see was
+// told they differed.
+const DEFAULT_FG_RGB: [number, number, number] = [0xc0, 0xc0, 0xc0];
 const DEFAULT_BG_RGB: [number, number, number] = [0x09, 0x09, 0x09];
 
 /**
@@ -184,20 +190,20 @@ function configBool(v: unknown): boolean {
 }
 
 /** Coerce a `setConfig("showSentText", …)` value into a {@link ShowSentTextMode}.
- *  Accepts the three mode strings directly; maps booleans / boolean-ish strings
- *  / numbers to `script` (on) or `never` (off) for backward compatibility with
- *  the original boolean key (Mudlet's "show sent text" toggle ≙ `script`).
- *  Returns null for anything else so `setConfig` reports failure. */
+ *  Accepts the three mode strings; a real boolean is the legacy form of the key
+ *  and maps to `script` (on) or `never` (off).
+ *
+ *  A NUMBER is not a mode. Mudlet reads the value with `lua_isboolean` first and
+ *  `lua_isstring` second, and in Lua 5.1 a number is string-convertible — so 42
+ *  becomes "42", fails the three-way match and is refused. Treating it as the
+ *  boolean toggle instead (which is what mudix did) meant any number at all
+ *  silently turned command echo on. */
 function parseShowSentText(value: unknown): ShowSentTextMode | null {
-    if (typeof value === 'string') {
-        const s = value.trim().toLowerCase();
+    if (typeof value === 'boolean') return value ? 'script' : 'never';
+    if (typeof value === 'string' || typeof value === 'number') {
+        const s = String(value).trim().toLowerCase();
         if (s === 'never' || s === 'script' || s === 'always') return s;
-        if (/^(true|1|yes|on)$/.test(s)) return 'script';
-        if (/^(false|0|no|off)$/.test(s)) return 'never';
         return null;
-    }
-    if (typeof value === 'boolean' || typeof value === 'number') {
-        return value ? 'script' : 'never';
     }
     return null;
 }
@@ -309,14 +315,49 @@ const CONFIG_PERSIST_ONLY: Record<string, {
     // and get/setIrcNick and friends read and write exactly this. Defaults are
     // Mudlet's own (dlgIRC.h), so a profile that has never touched IRC still
     // answers with something usable.
-    ircNick:                        { type: 'str',  default: 'Mudlet' },
-    ircHost:                        { type: 'str',  default: 'irc.libera.chat' },
-    ircPort:                        { type: 'num',  default: 6667 },
-    ircSecure:                      { type: 'bool', default: false },
+    //
+    // Named as Mudlet names them (TLuaInterpreter's getConfig map, defaults from
+    // dlgIRC.h). The shorter ircNick/ircHost/ircPort/ircSecure spellings mudix
+    // used first are kept as aliases below — get/setIrcNick and the settings UI
+    // were written against them, and a script that found them working has no
+    // reason to be broken for the sake of the rename.
+    ircHostName:                    { type: 'str',  default: 'irc.libera.chat' },
+    ircHostPort:                    { type: 'num',  default: 6667, range: [1, 65535] },
+    ircHostSecure:                  { type: 'bool', default: false },
+    ircNickName:                    { type: 'str',  default: 'Mudlet' },
     ircPassword:                    { type: 'str',  default: '' },
     /** Space-separated, as Mudlet stores it. */
     ircChannels:                    { type: 'str',  default: '#mudlet' },
 };
+
+/** The mudix spellings of the IRC keys, and the Mudlet ones they now mean.
+ *  Resolved before every get and set, so both names read and write one value. */
+/** Distinguishes "this key is not an experiment" from an experiment that reads
+ *  as nil — `<group>.active` answers nil when nothing in the group is on. */
+const NOT_AN_EXPERIMENT = Symbol('not-an-experiment');
+
+/** Where the enabled experiment names live in the profile's config bag. */
+const EXPERIMENTS_KEY = 'enabledExperiments';
+
+const CONFIG_KEY_ALIASES: Record<string, string> = {
+    ircHost:   'ircHostName',
+    ircPort:   'ircHostPort',
+    ircSecure: 'ircHostSecure',
+    ircNick:   'ircNickName',
+};
+
+/** Mudlet's valid experiments (Host::mValidExperiments). An experiment is a
+ *  rendering or mapper behaviour a build can be asked to try; mudix implements
+ *  none of them, but the switches are ordinary profile state and scripts feature-
+ *  test through them, so they are answered rather than refused. Grouped by the
+ *  first two dot-segments, and at most one per group may be on. */
+const VALID_EXPERIMENTS: readonly string[] = [
+    'experiment.rendering.originalish',
+    'experiment.rendering.more-transparent',
+    'experiment.3dmap.modernmapper',
+    'experiment.render-in-out-exits',
+    'experiment.3d-player-icon',
+];
 
 /** Format an epoch-ms timestamp as Mudlet's "hh:mm:ss.zzz" (local time). */
 function formatLineTimestamp(ms: number): string {
@@ -1069,18 +1110,15 @@ export class ScriptingAPI {
         if (!this.session.isSocketUnconnected()) {
             return 'feedTelnet: refused, telnet connection socket is not in the unconnected state';
         }
-        // The `<T_IAC><T_GA>`-style placeholders come first: a telnet stream is
-        // made of bytes a Lua string cannot carry comfortably, so Mudlet lets
-        // the data name them. See telnetByteTags.ts.
-        // Back to BYTES first. A socket hands the parser one char per byte
-        // (String.fromCharCode over the frame), and everything downstream reads
-        // it that way — MSDP decodes its values from UTF-8 bytes, for one. What
-        // arrives here has already been through wasmoon, which UTF-8-DECODES a
-        // Lua string on the way out, so "caf\195\169" reaches this line as
-        // "café": three bytes had become one char, and the byte reader then made
-        // a replacement character of it. Encoding before the tags are decoded
-        // leaves them alone, being ASCII either way.
-        this.session.feedTelnet(decodeTelnetByteTags(toByteString(data)));
+        // `data` is a BYTE-STRING: one char per byte, as a socket produces and
+        // as everything downstream reads it (MSDP decodes its values from UTF-8
+        // bytes, for one). The Lua binding unarmors it into that shape — see
+        // byteArmor.ts for why the crossing cannot be made in plain text.
+        //
+        // The `<T_IAC><T_GA>`-style placeholders are decoded after: a telnet
+        // stream is made of bytes a Lua string cannot carry comfortably, so
+        // Mudlet lets the data name them instead. See telnetByteTags.ts.
+        this.session.feedTelnet(decodeTelnetByteTags(data));
         return null;
     }
 
@@ -1346,7 +1384,10 @@ export class ScriptingAPI {
      *  legacy boolean reading alongside a newer enum — currently `showSentText`.
      *  The no-arg / table forms are handled by the Lua wrapper in Other.lua,
      *  which calls this once per key. */
-    getConfig(key: string, useStringFormat = false): unknown {
+    getConfig(rawKey: string, useStringFormat = false): unknown {
+        const key = CONFIG_KEY_ALIASES[rawKey] ?? rawKey;
+        const experiment = this.readExperimentConfig(key);
+        if (experiment !== NOT_AN_EXPERIMENT) return experiment;
         switch (key) {
             // structured — protocol toggles
             case 'enableGMCP': return this.getProtocol('gmcp');
@@ -1416,15 +1457,80 @@ export class ScriptingAPI {
         const spec = CONFIG_PERSIST_ONLY[key];
         if (spec) {
             const stored = spec.sessionOnly ? this.sessionConfig.get(key) : this.configBag()[key];
-            return stored !== undefined ? stored : spec.default;
+            if (stored === undefined) return spec.default;
+            // A stored number outside the option's own bounds is answered with
+            // the default rather than handed back. Mudlet's readers do this
+            // (dlgIRC::readIrcHostPort falls back to 6667 for anything outside
+            // 1..65535) because the writers do not all validate, so a profile
+            // can carry a value the rest of the client would choke on.
+            if (spec.type === 'num' && spec.range && typeof stored === 'number'
+                && (stored < spec.range[0] || stored > spec.range[1])) {
+                return spec.default;
+            }
+            return stored;
         }
         return undefined;
+    }
+
+    /**
+     * `getConfig` for the `experiment.*` namespace, or {@link NOT_AN_EXPERIMENT}
+     * when the key is not one. Three shapes: `experiment.list` is the names this
+     * build knows, `<group>.active` is the suffix of whichever experiment in
+     * that group is on (nil when none is), and any other key reads as the
+     * on/off flag — FALSE for a name this build has never heard of, rather than
+     * a refusal, so a script can feature-test one that does not exist here.
+     */
+    private readExperimentConfig(key: string): unknown {
+        if (!key.startsWith('experiment.')) return NOT_AN_EXPERIMENT;
+        if (key === 'experiment.list') return [...VALID_EXPERIMENTS];
+        if (key.endsWith('.active')) {
+            const group = key.slice(0, -'.active'.length) + '.';
+            for (const name of this.enabledExperiments()) {
+                if (name.startsWith(group)) return name.slice(group.length);
+            }
+            return null;
+        }
+        return VALID_EXPERIMENTS.includes(key) && this.enabledExperiments().includes(key);
+    }
+
+    /** The experiments currently switched on, as stored in the profile bag. */
+    private enabledExperiments(): string[] {
+        const stored = this.configBag()[EXPERIMENTS_KEY];
+        return Array.isArray(stored) ? stored.filter((n): n is string => typeof n === 'string') : [];
+    }
+
+    /**
+     * `setConfig` for the `experiment.*` namespace: true on success, or the
+     * refusal message. At most one experiment in a group may be on at a time —
+     * a group being the first two dot-segments — so enabling one turns off
+     * whichever of its siblings was on (Host::setExperimentEnabled).
+     */
+    private writeExperimentConfig(key: string, value: unknown): true | string {
+        if (!VALID_EXPERIMENTS.includes(key)) return `Invalid experiment name: ${key}`;
+        if (typeof value !== 'boolean') {
+            return `setConfig: bad argument #2 type (experiment state as boolean expected, got ${typeof value})`;
+        }
+        const group = key.split('.').slice(0, 2).join('.') + '.';
+        const kept = this.enabledExperiments().filter(name =>
+            name !== key && !(key.split('.').length > 2 && name.startsWith(group)));
+        this.patchConfigBag(EXPERIMENTS_KEY, value ? [...kept, key] : kept);
+        return true;
     }
 
     /** The bounds a `num` option accepts, for the refusal Bridge.lua writes.
      *  Null when the key is unbounded or names no option. */
     configKeyRange(key: string): readonly [number, number] | null {
-        return CONFIG_PERSIST_ONLY[key]?.range ?? null;
+        return CONFIG_PERSIST_ONLY[CONFIG_KEY_ALIASES[key] ?? key]?.range ?? null;
+    }
+
+    /** The values a string option accepts, for the refusal Bridge.lua writes —
+     *  the list is the only place a script author is told what the option takes,
+     *  so it has to reach the message. Null when the key takes no fixed set. */
+    configKeyValues(key: string): readonly string[] | null {
+        const resolved = CONFIG_KEY_ALIASES[key] ?? key;
+        if (resolved === 'blankLinesBehaviour') return ['show', 'hide', 'replacewithspace'];
+        if (resolved === 'showSentText') return ['never', 'always', 'script'];
+        return CONFIG_PERSIST_ONLY[resolved]?.enum ?? null;
     }
 
     /**
@@ -1438,7 +1544,14 @@ export class ScriptingAPI {
      * `'readonly'` keys exist for `getConfig` but refuse every write; `'any'`
      * keys take more than one value type and vet the value themselves.
      */
-    configKeyKind(key: string): 'bool' | 'num' | 'str' | 'any' | 'readonly' | null {
+    configKeyKind(rawKey: string): 'bool' | 'num' | 'str' | 'any' | 'readonly' | null {
+        const key = CONFIG_KEY_ALIASES[rawKey] ?? rawKey;
+        // An experiment takes a boolean, and one this build has never heard of
+        // is still a KEY — its refusal has to name it, which it cannot do from
+        // the generic "no such option" path. The two pseudo-keys are reads.
+        if (key.startsWith('experiment.')) {
+            return key === 'experiment.list' || key.endsWith('.active') ? 'readonly' : 'bool';
+        }
         switch (key) {
             case 'enableGMCP': case 'enableMSDP': case 'enableMSP': case 'enableMSSP':
             case 'enableMTTS': case 'enableMXP': case 'enableMNES':
@@ -1503,7 +1616,12 @@ export class ScriptingAPI {
 
     /** Returns true, or a string when the option was taken and the caller
      *  should be told something about it — see the mapSymbolFont case. */
-    setConfig(key: string, value: unknown): boolean | string {
+    setConfig(rawKey: string, value: unknown): boolean | string {
+        const key = CONFIG_KEY_ALIASES[rawKey] ?? rawKey;
+        if (key.startsWith('experiment.')) {
+            const written = this.writeExperimentConfig(key, value);
+            return written === true ? true : written;
+        }
         switch (key) {
             case 'enableGMCP': this.setProtocol('gmcp', configBool(value)); return true;
             case 'enableMSDP': this.setProtocol('msdp', configBool(value)); return true;
@@ -2981,27 +3099,36 @@ export class ScriptingAPI {
             }
             searchFrom = idx + str.length;
         }
+        // A failed search CLEARS the selection (TConsole::select deselects on
+        // every one of its -1 paths). Leaving the old one standing meant the -1
+        // was followed by a getSelection reporting a start on a line the cursor
+        // had since left — a stale answer that reads exactly like a live one.
+        this.deselect(windowName);
         return -1;
     }
 
     /**
      * Mudlet `selectSection([window,] from, length) → bool`. `from` is 0-indexed.
-     * Negative `from` is rejected (Mudlet behavior); zero/negative lengths
-     * register a no-op selection but still report success in Mudlet — we match
-     * that, but reject when the resolved buffer doesn't exist.
+     *
+     * A selection that does not fit the line is REFUSED, not trimmed to fit:
+     * TConsole::selectSection rejects a negative start, a start past the end of
+     * the line, and a length that runs off it, and leaves the previous selection
+     * standing in each case. Clamping instead — which mudix did — turned
+     * "selectSection(5, 1)" on a four-character line into a silent selection of
+     * its last character, so a script checking the return value was told its
+     * out-of-range request had succeeded and then styled the wrong text.
+     *
+     * `from == line length` is allowed: that is an empty selection at the end of
+     * the line, not a start past it.
      */
     selectSection(from: number, length: number, windowName?: string): boolean {
         if (!Number.isFinite(from) || from < 0) return false;
         if (!Number.isFinite(length) || length < 0) return false;
         const buf = this.resolveBuffer(windowName);
         if (!buf) return false;
-        // Mudlet clamps a selection to the buffer: a `from` at/past the end of a
-        // non-empty line refers to the last character (so e.g. selectSection at
-        // column == line length still selects one char) rather than an empty,
-        // format-less selection.
-        const bufLen = buf.length;
-        const start = bufLen > 0 && from >= bufLen ? bufLen - 1 : from;
-        this.selection = { windowName, start, length };
+        const lineLength = buf.length;
+        if (from > lineLength || from + length > lineLength) return false;
+        this.selection = { windowName, start: from, length };
         return true;
     }
 
@@ -3035,12 +3162,18 @@ export class ScriptingAPI {
      * match the selection's window — the Lua wrapper translates null into
      * Mudlet's `false, "no selection"` 2-tuple.
      */
-    getSelection(windowName?: string): { text: string; start: number; length: number } | null {
+    getSelection(windowName?: string): { text: string; start: number; length: number } | string | null {
         if (!this.selection) return null;
         if (windowName !== undefined && !this.selectionMatches(windowName)) return null;
         const buf = this.resolveBuffer(this.selection.windowName);
         if (!buf) return null;
         const { start, length } = this.selection;
+        // The selection is columns on whatever line the cursor is on NOW, not on
+        // the line it was made on — so moving the cursor to a shorter line can
+        // strand it past the end. Mudlet reports that as a refusal rather than
+        // silently answering with the empty string the slice would give, which a
+        // script cannot tell from a line that really is blank there.
+        if (buf.length < start) return 'getSelection: the selection is no longer valid';
         return { text: buf.text.slice(start, start + length), start, length };
     }
 
@@ -3114,17 +3247,28 @@ export class ScriptingAPI {
         return parseHexToRgb(palette[Math.floor((n - 1) / 2)]);
     }
 
+    /**
+     * The colour Mudlet's getFgColor/getBgColor read: the one at P_begin, the
+     * start of the selection.
+     *
+     * Mudlet has no "no selection" state — deselect() collapses P_begin and
+     * P_end to (0, 0) rather than unsetting them, so the getters go on reading
+     * the first column of the cursor's line. mudix models the selection as
+     * absent instead, so that case is spelled out here: with nothing selected
+     * the column is zero, and the answer is "nothing at all" only when there is
+     * no character there to read — an empty console, or a line the selection
+     * outlived.
+     */
     private readSelectionColor(
         channel: 'foreground' | 'background',
         windowName: string | undefined,
     ): [number, number, number] | null {
-        if (!this.selection) return null;
-        if (!this.selectionMatches(windowName)) return null;
-        const sel = this.selection;
-        const buf = this.resolveBuffer(sel.windowName);
+        const selected = this.selection && this.selectionMatches(windowName);
+        const buf = this.resolveBuffer(selected ? this.selection!.windowName : windowName);
         if (!buf) return null;
-        if (sel.start < 0 || sel.start >= buf.length) return null;
-        return this.readColorAt(buf, sel.start, channel);
+        const start = selected ? this.selection!.start : 0;
+        if (start < 0 || start >= buf.length) return null;
+        return this.readColorAt(buf, start, channel);
     }
 
     /**
@@ -3179,8 +3323,9 @@ export class ScriptingAPI {
      *
      * `foreground`/`background` resolve through the same logic as getFgColor /
      * getBgColor (falling back to the profile defaults for unstyled segments).
-     * `overline`, `concealed`, and `alternateFont` have no equivalent in mudix's
-     * FormatState, so they report Mudlet's "off" values (false / 0) for parity.
+     * `alternateFont` is recorded but never rendered — mudix has no alternate
+     * font to switch to — so a script reads back the number the game asked for
+     * and sees no difference on screen.
      */
     getTextFormat(windowName?: string): {
         bold: boolean;
@@ -3240,8 +3385,8 @@ export class ScriptingAPI {
             strikeout: !!state?.strikethrough,
             reverse: !!state?.inverse,
             overline: !!state?.overline,
-            concealed: false,
-            alternateFont: 0,
+            concealed: !!state?.concealed,
+            alternateFont: state?.alternateFont ?? 0,
             blinking: state?.rapidBlink ? 'fast' : state?.slowBlink ? 'slow' : 'none',
             foreground,
             background,
@@ -3519,12 +3664,51 @@ export class ScriptingAPI {
     private feedTriggersRemainder = '';
 
     /**
-     * Feed `text` through the trigger pipeline as if it arrived from the MUD.
+     * Feed bytes through the trigger pipeline as if they arrived from the MUD.
      * Routes complete lines through ScriptingEngine.processFlushBatch (same
      * code path as network-driven flushLines) so trigger ordering, ANSI carry,
      * and deferred-echo placement match exactly.
+     *
+     * `data` is a byte-string (the Lua binding unarmors it — see byteArmor.ts).
+     * `utf8Encoded` says how to read it, and it is the caller's promise rather
+     * than a guess:
+     *
+     *  - true (the default) — the bytes are UTF-8. Mudlet transcodes them into
+     *    the game's encoding before display, so text the encoding cannot carry
+     *    is REFUSED rather than mangled: a script feeding an accented character
+     *    to an ASCII game has made a mistake it needs to hear about, and the
+     *    transcode is lossless otherwise, so refusing costs nothing real.
+     *  - false — the older form, where the caller has already encoded the bytes
+     *    themselves. They pass through untouched, decoded with the game's own
+     *    encoding rather than read as UTF-8 and double-encoded.
+     *
+     * Returns null when the text was fed, or the refusal message; the binding
+     * shapes that into Mudlet's `true` / `(nil, errMsg)`.
      */
-    feedTriggers(text: string): boolean {
+    feedTriggers(data: string, utf8Encoded = true): string | null {
+        const encoding = this.session.getServerEncoding();
+        let text: string;
+        if (utf8Encoded) {
+            text = fromByteString(data).text;
+            // ASCII is the strictest case and the one Mudlet checks by hand:
+            // it has no encoder to ask, so the test is simply that nothing has
+            // its top bit set.
+            const carried = /^(us-)?ascii$/i.test(encoding.trim())
+                ? ![...text].some(c => (c.codePointAt(0) ?? 0) > 0x7f)
+                : canEncodeForServer(text, encoding);
+            if (!carried) {
+                return `feedTriggers: cannot send '${text}' as it contains one or more characters`
+                    + ` that cannot be conveyed in the current game server encoding of '${encoding}'`;
+            }
+        } else {
+            text = decodeForServer(data, encoding);
+        }
+        this.feedTriggersText(text);
+        return null;
+    }
+
+    /** The feed itself, once {@link feedTriggers} has settled what the bytes say. */
+    private feedTriggersText(text: string): boolean {
         // Trigger reloads are coalesced onto a microtask, which cannot run while
         // the calling Lua chunk is still on the stack. Mudlet applies perm* and
         // enable/disableTrigger immediately, so a script that creates or toggles
@@ -4030,6 +4214,16 @@ export class ScriptingAPI {
             if (!useCurrentFormat) {
                 state.foreground = this.linkColor(windowName);
                 state.underline = true;
+            }
+            // A newline in the inserted text BREAKS the line, as it does for
+            // insertText — TConsole::insertLink runs the same wrapLine() over
+            // the result. Writing straight into the buffer skipped that, so the
+            // text arrived carrying a literal newline inside one line and
+            // getLineCount never moved.
+            if (text.includes('\n')) {
+                con.insertText(text, state);
+                if (!this.inTriggerProcessing) con.getBuffer()?.rerender();
+                return;
             }
             const at = Math.max(0, Math.min(con.getCursorColumn(), buf.text.length));
             buf.insert(at, text, state);
@@ -5024,8 +5218,8 @@ export class ScriptingAPI {
         return this.clipboardText;
     }
 
-    centerView(roomId: number): boolean {
-        return this.session.windows.centerView(roomId);
+    centerView(roomId: number, viewId?: number): boolean | string {
+        return this.session.windows.centerView(roomId, viewId);
     }
 
     // ── Secondary map views ───────────────────────────────────────────────────
@@ -5069,7 +5263,13 @@ export class ScriptingAPI {
      * is mounted. Undefined for an areaID that doesn't exist — the binding
      * reports that as `(nil, errMsg)`.
      */
-    getMapZoom(areaID?: number): number | undefined {
+    getMapZoom(areaID?: number, viewId?: number): number | undefined | string {
+        // A view answers for the area IT is showing, whatever areaID was passed.
+        if (viewId !== undefined && viewId > 0) {
+            const area = this.session.windows.mapViewArea(viewId);
+            if (typeof area === 'string') return `getMapZoom: ${area}`;
+            return this.map.getAreaZoom(area) ?? MapStore.DEFAULT_MAP_ZOOM;
+        }
         if (areaID !== undefined) {
             if (!this.map.hasArea(areaID)) return undefined;
             return this.map.getAreaZoom(areaID) ?? MapStore.DEFAULT_MAP_ZOOM;
@@ -5085,9 +5285,18 @@ export class ScriptingAPI {
      * and pushed to the live renderer when one is mounted. Returns the refusal
      * message, or null on success, for the binding to shape.
      */
-    setMapZoom(zoom: number, areaID?: number): string | null {
+    setMapZoom(zoom: number, areaID?: number, viewId?: number): string | null {
         if (!Number.isFinite(zoom) || zoom < MapStore.MIN_MAP_ZOOM) {
             return `setMapZoom: zoom ${zoom} is too small, it must be at least ${MapStore.MIN_MAP_ZOOM}`;
+        }
+        // Through a view the areaID is ignored and the zoom lands on the area
+        // the view is showing, which is what makes the primary mapper read it
+        // back — the zoom lives on the TArea, not on the window.
+        if (viewId !== undefined && viewId > 0) {
+            const area = this.session.windows.mapViewArea(viewId);
+            if (typeof area === 'string') return `setMapZoom: ${area}`;
+            this.map.setAreaZoom(area, zoom);
+            return null;
         }
         if (areaID !== undefined && !this.map.hasArea(areaID)) {
             return `setMapZoom: number ${areaID} is not a valid areaID`;
@@ -5749,15 +5958,22 @@ export class ScriptingAPI {
      * clears the main window background image; otherwise looks up the named
      * label or window and clears its image. Returns true on success.
      */
-    resetBackgroundImage(name?: string): boolean {
+    resetBackgroundImage(name?: string, fullWindow = false): true | string {
+        // The FULL WINDOW background belongs to the profile, so only the main
+        // console has one to reset. Asking a miniconsole for it is a mistake
+        // rather than a no-op, and saying so is the only way a caller learns
+        // that the console they named has just its own background.
+        if (fullWindow && name && name !== 'main') {
+            return 'the full window background can only be reset on the main console';
+        }
         if (!name || name === 'main') {
             useAppStore.getState().patchConnectionProfile(this.connectionId, { outputBackgroundImage: undefined });
             return true;
         }
         if (this.session.labels.has(name)) {
-            return this.session.labels.resetBackgroundImage(name);
+            return this.session.labels.resetBackgroundImage(name) ? true : `console '${name}' not found`;
         }
-        return this.session.windows.resetBackgroundImage(name);
+        return this.session.windows.resetBackgroundImage(name) ? true : `console '${name}' not found`;
     }
 
     /**
@@ -6239,6 +6455,15 @@ export class ScriptingAPI {
         this.session.events.emit('message', notice, 'script', Date.now());
     }
 
+    /** Mudlet's `Host::postMessage` for the `[ ERROR ]` kind: unlike printError
+     *  this is client news rather than a script's own fault, so it goes on the
+     *  main console whether or not the profile shows script errors there. */
+    postError(text: string): void {
+        const notice = `\x1b[31m[ ERROR ]\x1b[0m - ${text}`;
+        this.mainConsole.appendLine(new AnsiAwareBuffer(notice));
+        this.session.events.emit('message', notice, 'error', Date.now());
+    }
+
     printError(text: string, source?: ScriptLogSource): void {
         this.session.events.emit('script.log', text, 'error', source);
         if (this.showErrorsInMainWindow) {
@@ -6310,8 +6535,18 @@ export class ScriptingAPI {
             con.takeLines();
             return;
         }
-        for (const line of con.takeLines()) {
+        const committed = con.takeLines();
+        for (const line of committed) {
             this.session.windows.pushBuffer(win, line);
+        }
+        // Mudlet raises sysWindowOverflowEvent from the same place: once per
+        // append that added text, not once per line and not on a resize tick.
+        // What it counts is `lineBuffer.size()`, which includes the line the
+        // cursor sits on — one more than Lua's getLineCount(), and the reason
+        // the console is full (rather than overflowing by nothing) at the
+        // moment getLineCount() + 1 reaches the row count.
+        if (committed.length > 0) {
+            this.session.windows.noteLineOverflow(win, this.getLineCount(win) + 1, this.getRowCount(win));
         }
         // Also surface the in-flight partial (echo without a trailing \n) so
         // prompts like `echo(win, "Do: ")` actually appear — matches the

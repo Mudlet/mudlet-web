@@ -792,11 +792,6 @@ export class WindowManager {
         // height. Both axes use the rendered monospace cell size so the
         // event values match what scripts can use to lay out output.
         this.emitConsoleGridIfChanged(id, w, h, element);
-        // Mudlet sysWindowOverflowEvent(name, overflowLines) — fires when a
-        // non-scrolling console pushes content past its visible row count.
-        // The DOM exposes this directly via scrollHeight vs clientHeight; a
-        // ResizeObserver tick is the cheapest reliable hook.
-        this.emitWindowOverflowIfPresent(id, element);
     }
 
     /** Measure one monospace cell (px) by probing `el` with its own inherited
@@ -868,23 +863,28 @@ export class WindowManager {
         if (id === 'main') this.onMainConsoleResize?.(cols, rows);
     }
 
-    /** Mudlet sysWindowOverflowEvent(name, overflowLines). Fires when a console
-     *  whose scrolling is disabled has more content than fits in the viewport.
-     *  scrollHeight − clientHeight gives the pixel overflow; dividing by the
-     *  estimated line height converts it to lines for the event payload. */
-    private emitWindowOverflowIfPresent(id: string, element: HTMLElement): void {
+    /**
+     * Mudlet sysWindowOverflowEvent(name, overflowLines) — raised when a console
+     * that is not allowed to scroll holds more lines than its pane can show, so
+     * a script laying out fixed panels can react to text it has pushed out of
+     * sight. `lineCount` and `rows` are counted the way TConsole does it:
+     * lineCount includes the line the cursor is on, and the payload is how many
+     * lines are past the bottom.
+     *
+     * Driven from the append path (ScriptingAPI.drainWindowConsole), because
+     * that is where Mudlet raises it — TBuffer::append and translateToPlainText
+     * both call handleLinesOverflowEvent once they have added their text. It
+     * used to be measured here instead, off scrollHeight vs clientHeight on a
+     * ResizeObserver tick, which never fired for the case the event exists for:
+     * content growing inside an element does not resize that element, so a
+     * console could overflow indefinitely without a single event.
+     */
+    noteLineOverflow(id: string, lineCount: number, rows: number): void {
+        if (rows <= 0) return;
         const scroll = this.scrollState.get(id);
         if (!scroll || scroll.scrollingEnabled) return;
-        const overflowPx = element.scrollHeight - element.clientHeight;
-        if (overflowPx <= 0) return;
-        let cellH = 16;
-        try {
-            const cs = getComputedStyle(element);
-            const fs = parseFloat(cs.fontSize) || 12;
-            const lh = parseFloat(cs.lineHeight);
-            cellH = Number.isFinite(lh) && lh > 0 ? lh : fs * 1.4;
-        } catch { /* keep fallback */ }
-        const overflowLines = Math.max(1, Math.ceil(overflowPx / cellH));
+        const overflowLines = lineCount - rows;
+        if (overflowLines <= 0) return;
         this.onRaiseEvent?.('sysWindowOverflowEvent', [id, overflowLines]);
     }
 
@@ -962,18 +962,42 @@ export class WindowManager {
         this.mapCallbacks.delete(id);
     }
 
-    centerView(roomId: number): boolean {
+    /**
+     * Mudlet `centerview(roomID [, viewID])`.
+     *
+     * With a view id it centres THAT window and returns; the player is not
+     * moved. Only the primary mapper's form writes mRoomIdHash — a secondary
+     * view is somewhere the player is looking, not somewhere they are, and
+     * T2DMap::centerview returns before the block that records a position.
+     */
+    centerView(roomId: number, viewId?: number): boolean | string {
         // Mudlet's centerview rejects an unknown room id outright: it returns
         // (nil, errMsg) and does NOT touch mRoomIdHash. Mirror that — bail
         // before setting the player room or notifying the view, so a script
         // centerview()ing a stale/saved id (e.g. on sysLoadEvent before the map
         // covers it) is a clean failure, not a half-applied position.
         if (!this.mapStore.roomExists(roomId)) return false;
+        if (viewId !== undefined && viewId > 0) {
+            const view = this.mapViews.get(viewId);
+            if (!view) return `view ${viewId} not found`;
+            view.centeredRoomId = roomId;
+            view.areaId = this.mapStore.getRoomArea(roomId) ?? view.areaId;
+            return true;
+        }
         // On success Mudlet sets the player room (mRoomIdHash) as a side effect,
         // so getPlayerRoom() returns this id afterwards.
         this.mapStore.setPlayerRoom(roomId);
         for (const cb of this.mapCallbacks.values()) cb(roomId);
         return true;
+    }
+
+    /** The area a map view is showing, or a refusal when there is no such view.
+     *  A view ignores the areaID a caller hands setMapZoom/getMapZoom and uses
+     *  this one — TMapView::setZoom throws the argument away and passes
+     *  getCurrentAreaId(). */
+    mapViewArea(viewId: number): number | string {
+        const view = this.mapViews.get(viewId);
+        return view ? view.areaId : `view ${viewId} not found`;
     }
 
     /**

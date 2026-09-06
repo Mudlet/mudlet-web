@@ -117,6 +117,13 @@ export interface FormatStateSnapshot {
     overline?: boolean;
     slowBlink?: boolean;
     rapidBlink?: boolean;
+    /** SGR 8: the text is there and not drawn. */
+    concealed?: boolean;
+    /** SGR 11-19 select one of nine alternate fonts, SGR 10 the primary one.
+     *  Carried for parity with Mudlet's getTextFormat: mudix has no alternate
+     *  font to switch to, so the number is recorded and nothing renders
+     *  differently — but a script reading it back gets the truth. */
+    alternateFont?: number;
     dim?: DimEffect;
     hyperlink?: FormatHyperlink;
     cssClass?: string;
@@ -175,9 +182,23 @@ function hasVisualFormatting(state?: FormatStateSnapshot): boolean {
         state.overline ||
         state.slowBlink ||
         state.rapidBlink ||
+        state.concealed ||
+        state.alternateFont ||
         state.dim ||
         state.cssClass
     );
+}
+
+/**
+ * A style attribute from a list of declarations, or "" when there are none.
+ *
+ * Every declaration is TERMINATED, including the last one — Mudlet's log markup
+ * writes them that way and a reader looking for "font-style: italic;" in it will
+ * not find "font-style: italic" at the end of an attribute.
+ */
+function declsToStyleAttr(decls: string[]): string {
+    if (decls.length === 0) return "";
+    return ` style="${decls.map(d => `${d};`).join(" ")}"`;
 }
 
 function dimEffectsEqual(a?: DimEffect, b?: DimEffect): boolean {
@@ -209,6 +230,8 @@ function cloneState(state?: FormatStateSnapshot): FormatStateSnapshot | undefine
         overline: state.overline,
         slowBlink: state.slowBlink,
         rapidBlink: state.rapidBlink,
+        concealed: state.concealed,
+        alternateFont: state.alternateFont,
         dim: state.dim ? {...state.dim} : undefined,
         hyperlink: state.hyperlink ? {...state.hyperlink} : undefined,
         cssClass: state.cssClass,
@@ -230,6 +253,8 @@ function statesEqual(a?: FormatStateSnapshot, b?: FormatStateSnapshot): boolean 
         !!a.overline === !!b.overline &&
         !!a.slowBlink === !!b.slowBlink &&
         !!a.rapidBlink === !!b.rapidBlink &&
+        !!a.concealed === !!b.concealed &&
+        (a.alternateFont ?? 0) === (b.alternateFont ?? 0) &&
         dimEffectsEqual(a.dim, b.dim) &&
         hyperlinksEqual(a.hyperlink, b.hyperlink) &&
         a.cssClass === b.cssClass
@@ -250,6 +275,8 @@ export class FormatState {
     overline?: boolean;
     slowBlink?: boolean;
     rapidBlink?: boolean;
+    concealed?: boolean;
+    alternateFont?: number;
     dim?: DimEffect;
     hyperlink?: FormatHyperlink;
 
@@ -312,6 +339,8 @@ export class FormatState {
         this.overline = snapshot.overline ? true : undefined;
         this.slowBlink = snapshot.slowBlink ? true : undefined;
         this.rapidBlink = snapshot.rapidBlink ? true : undefined;
+        this.concealed = snapshot.concealed ? true : undefined;
+        this.alternateFont = snapshot.alternateFont || undefined;
         this.dim = snapshot.dim ? {...snapshot.dim} : undefined;
         this.hyperlink = snapshot.hyperlink ? {...snapshot.hyperlink} : undefined;
     }
@@ -328,6 +357,8 @@ export class FormatState {
         this.overline = undefined;
         this.slowBlink = undefined;
         this.rapidBlink = undefined;
+        this.concealed = undefined;
+        this.alternateFont = undefined;
         this.dim = undefined;
     }
 
@@ -344,6 +375,8 @@ export class FormatState {
             overline: this.overline ? true : undefined,
             slowBlink: this.slowBlink ? true : undefined,
             rapidBlink: this.rapidBlink ? true : undefined,
+            concealed: this.concealed ? true : undefined,
+            alternateFont: this.alternateFont || undefined,
             dim: this.dim ? {...this.dim} : undefined,
             hyperlink: this.hyperlink ? {...this.hyperlink} : undefined,
         };
@@ -371,8 +404,22 @@ export class FormatState {
                     this.bold = true;
                     this.resolveForeground();
                     break;
+                case 2:
+                    // Faint. Mudlet has no rendering for a third intensity, so
+                    // it falls back to normal — which means SGR 2 CLEARS bold
+                    // rather than being ignored, and a `1m...2m` run has to stop
+                    // being bold at the 2.
+                    this.bold = undefined;
+                    this.resolveForeground();
+                    break;
                 case 3:
                     this.italic = true;
+                    break;
+                case 8:
+                    this.concealed = true;
+                    break;
+                case 28:
+                    this.concealed = undefined;
                     break;
                 case 4:
                     // The bare SGR 4 is the solid underline, so it replaces any
@@ -438,51 +485,77 @@ export class FormatState {
                     // parameter, so this reads the ones that follow — and only
                     // plain numbers count, since a sub-parameter group belongs
                     // to a parameter of its own.
+                    // A parameter that is present but unreadable is not the same
+                    // as one that is absent, and the difference decides what
+                    // happens: `38;5` asks for index 0, while `38;5;<` asks for
+                    // nothing at all and must leave the colour alone.
                     const at = (n: number): number | undefined => {
                         const p = params[i + n];
-                        return typeof p === "number" ? p : undefined;
+                        return typeof p === "number" && !Number.isNaN(p) ? p : undefined;
                     };
+                    const present = (n: number): boolean => i + n < params.length;
                     const mode = at(1);
-                    const arg1 = at(2);
-                    if (mode === 5 && arg1 !== undefined) {
-                        const color: HexColor = {space: "hex", color: colorCodes.xterm[arg1]};
-                        if (isForeground) {
+                    // A missing, unreadable or zero colour type abandons the
+                    // WHOLE sequence, arguments and all — anything after it was
+                    // meant to be read relative to a type we never got.
+                    if (mode === undefined || mode === 0) {
+                        i = params.length;
+                        break;
+                    }
+                    // Two spellings of 24-bit colour. `38;2;r;g;b` is what
+                    // almost every server sends; ITU T.416 actually puts a
+                    // colour-space id first, `38;2;<id>;r;g;b`, and a few
+                    // servers follow it — read that way the first channel is
+                    // eaten and every colour comes out wrong. Desktop Mudlet
+                    // makes it a preference for the same reason ("Expect Color
+                    // Space Id in SGR...(3|4)8;2;...m codes"), because the two
+                    // are not distinguishable from the escape alone.
+                    const shift = getExpectColorSpaceId() ? 1 : 0;
+                    if (mode === 5) {
+                        // The index may be left off entirely, in which case it
+                        // is a zero — the same as writing `38;5;0`.
+                        const index = present(2) ? at(2) : 0;
+                        if (index !== undefined) {
+                            const color: HexColor = {space: "hex", color: colorCodes.xterm[index]};
                             // A colour chosen out of the 256-colour cube names
                             // itself exactly; there is no brighter twin to pick,
                             // so bold leaves it alone. Same for 24-bit below.
-                            this.setForeground(color, color);
-                        } else {
-                            this.background = color;
+                            if (isForeground) this.setForeground(color, color);
+                            else this.background = color;
                         }
                         i += 2;
-                    } else if (mode === 2 && arg1 !== undefined) {
-                        // Two spellings of 24-bit colour. `38;2;r;g;b` is what
-                        // almost every server sends; ITU T.416 actually puts a
-                        // colour-space id first, `38;2;<id>;r;g;b`, and a few
-                        // servers follow it — read that way the first channel
-                        // is eaten and every colour comes out wrong. Desktop
-                        // Mudlet makes it a preference for the same reason
-                        // ("Expect Color Space Id in SGR...(3|4)8;2;...m
-                        // codes"), because the two are not distinguishable from
-                        // the escape alone.
-                        const shift = getExpectColorSpaceId() ? 1 : 0;
-                        const r = at(2 + shift);
-                        const g = at(3 + shift);
-                        const b = at(4 + shift);
-                        if (r !== undefined && g !== undefined && b !== undefined) {
-                            const color: RgbColor = { space: "rgb", r, g, b };
-                            if (isForeground) {
-                                this.setForeground(color, color);
-                            } else {
-                                this.background = color;
-                            }
-                            i += 4 + shift;
-                        }
+                    } else if (mode === 2) {
+                        // A component the sequence stopped short of is a zero,
+                        // not a reason to drop the colour: `38;2;120;134` is a
+                        // request for (120, 134, 0).
+                        const channel = (n: number) => Math.min(255, Math.max(0, at(n) ?? 0));
+                        const color: RgbColor = {
+                            space: "rgb",
+                            r: channel(2 + shift),
+                            g: channel(3 + shift),
+                            b: channel(4 + shift),
+                        };
+                        if (isForeground) this.setForeground(color, color);
+                        else this.background = color;
+                        i += 4 + shift;
+                    } else if (mode === 3 || mode === 4) {
+                        // Direct CMY and CMYK. Neither is rendered, but their
+                        // arguments still have to be stepped over or the codes
+                        // behind them are read as renditions of their own — the
+                        // `31` in `38;3;1;2;3;31` is a red foreground, and the
+                        // 1, 2 and 3 in front of it are not bold, faint and
+                        // italics.
+                        i += (mode === 3 ? 4 : 5) + shift;
                     }
+                    // Every other type (1, transparent, and anything unassigned)
+                    // takes no arguments, so there is nothing to skip.
                     break;
                 }
                 default:
-                    if (code >= 30 && code <= 37) {
+                    if (code >= 10 && code <= 19) {
+                        // 10 is the primary font, 11-19 the nine alternates.
+                        this.alternateFont = code === 10 ? undefined : code - 10;
+                    } else if (code >= 30 && code <= 37) {
                         // Both variants are recorded, so a bold in this same
                         // sequence or any later one picks the bright twin.
                         // Polish MUDs (Arkadia, Avalon) draw map glyphs as
@@ -517,6 +590,16 @@ export class FormatState {
     private applySgrGroup(group: number[]): void {
         if (group[0] === 38 || group[0] === 48) {
             this.applyExtendedColorGroup(group);
+            return;
+        }
+        if (group[0] === 3) {
+            // `3:n` — the VTE proposal for telling italics and slanted text
+            // apart. Mudlet draws both the same way, so 1 (italic) and 2
+            // (slanted) both switch italics on and everything else switches it
+            // off: 0 says so outright, and an unassigned value is a style this
+            // build cannot draw, which is not a reason to draw a different one.
+            const style = group[1] ?? 0;
+            this.italic = style === 1 || style === 2 ? true : undefined;
             return;
         }
         if (group[0] !== 4) {
@@ -618,12 +701,21 @@ export function parseSgrCodes(sequence: string): SgrParam[] | null {
     let anyUsable = false;
     for (const part of sequence.split(';')) {
         // A reserved byte inside a parameter makes THAT parameter unreadable,
-        // and it is dropped rather than read as far as it parses: parseInt would
-        // take "1<2" for a 1 and quietly apply a rendition the game never asked
-        // for. The parameters either side are untouched, so "0;37;4>" still
-        // paints what "0;37" paints. Only 0x3C-0x3F are treated this way — they
-        // are legal as the FIRST byte of a private sequence and nowhere else.
-        if (/[<-?]/.test(part)) continue;
+        // and it is not read as far as it parses: parseInt would take "1<2" for
+        // a 1 and quietly apply a rendition the game never asked for. The
+        // parameters either side are untouched, so "0;37;4>" still paints what
+        // "0;37" paints. Only 0x3C-0x3F are treated this way — they are legal
+        // as the FIRST byte of a private sequence and nowhere else.
+        //
+        // It is kept in the list as a NaN rather than dropped, because an
+        // extended colour reads the parameters that follow it and the two cases
+        // part company there: `38;5` left the index off and means index zero,
+        // while `38;5;<` asked for an index and did not manage to say which, so
+        // the colour is left alone. Dropping made them indistinguishable.
+        if (/[<-?]/.test(part)) {
+            params.push(Number.NaN);
+            continue;
+        }
         anyUsable = true;
         const nums = part
             .split(':')
@@ -1238,13 +1330,16 @@ export class AnsiAwareBuffer {
         const bgSrc = state.inverse ? state.foreground : state.background;
         const fg = overlay?.foreground ?? fgSrc;
         const bg = overlay?.background ?? bgSrc;
-        if (fg) styles.push(`color: ${this.colorToHex(fg)}`);
+        if (fg) styles.push(`color: ${this.colorToCss(fg)}`);
         // Reverse video with a default-coloured source: the swap yields no
         // explicit colour, so paint the console default of the opposite role
         // (text→bg, bg→text) — otherwise \e[7m on default colours is invisible.
         else if (state.inverse && overlay?.foreground === undefined) styles.push("color: var(--console-bg)");
-        if (bg) styles.push(`background-color: ${this.colorToHex(bg)}`);
-        else if (state.inverse && overlay?.background === undefined) styles.push("background-color: var(--console-text)");
+        // `background`, not `background-color`: this markup is Mudlet's log
+        // format as much as it is CSS, and TBuffer::bufferToHtml writes the
+        // shorthand. Both mean the same thing to a browser.
+        if (bg) styles.push(`background: ${this.colorToCss(bg)}`);
+        else if (state.inverse && overlay?.background === undefined) styles.push("background: var(--console-text)");
         if (overlay?.bold ?? state.bold) styles.push("font-weight: bold");
         if (overlay?.italic ?? state.italic) styles.push("font-style: italic");
 
@@ -1298,12 +1393,12 @@ export class AnsiAwareBuffer {
                 let attrs = ' data-output-clickable="true"';
                 if (link.linkId) attrs += ` data-link-id="${this.escapeHtml(link.linkId)}"`;
                 if (link.title) attrs += ` title="${this.escapeHtml(link.title)}"`;
-                const styleAttr = styles.length > 0 ? ` style="${styles.join("; ")}"` : "";
+                const styleAttr = declsToStyleAttr(styles);
                 html += `<span${styleAttr}${attrs}>${escapedText}</span>`;
                 continue;
             }
 
-            const styleAttr = styles.length > 0 ? ` style="${styles.join("; ")}"` : "";
+            const styleAttr = declsToStyleAttr(styles);
             html += `<span${styleAttr}>${escapedText}</span>`;
         }
 
@@ -1585,6 +1680,23 @@ export class AnsiAwareBuffer {
             .replace(/>/g, "&gt;")
             .replace(/"/g, "&quot;")
             .replace(/'/g, "&#39;");
+    }
+
+    /**
+     * A colour as the HTML consumers want it written: `rgb(r,g,b)`, decimal and
+     * unspaced, which is what TBuffer::bufferToHtml emits and what anything
+     * reading a Mudlet log back parses. Falls through to {@link colorToHex} for
+     * the forms that are not plain opaque RGB (a named/hex colour stays as it
+     * is, a translucent one keeps its rgba()).
+     */
+    private colorToCss(color: FormatColor): string {
+        if (color.space === "rgb" && (color.a === undefined || color.a >= 255)) {
+            return `rgb(${color.r},${color.g},${color.b})`;
+        }
+        const hex = this.colorToHex(color);
+        const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+        if (!m) return hex;
+        return `rgb(${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)})`;
     }
 
     private colorToHex(color: FormatColor): string {
