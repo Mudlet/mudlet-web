@@ -96,3 +96,43 @@ export function remapLegacyColorPattern(text: string): string {
     if (!m) return text;
     return colorPatternText(toAnsi(Number(m[1])), toAnsi(Number(m[2])));
 }
+
+/**
+ * ANSI number → the number a SAVE FILE uses, the inverse of
+ * {@link LEGACY_TO_ANSI}. Built from that table rather than written out again,
+ * so the two cannot drift apart — which is exactly what a round trip through
+ * both is testing.
+ */
+const ANSI_TO_LEGACY: Record<number, number> = Object.fromEntries(
+    Object.entries(LEGACY_TO_ANSI).map(([legacy, ansi]) => [ansi, Number(legacy)]),
+);
+
+/** The modern wire form, as `createColorPatternText` writes it. */
+const MODERN_COLOR_PATTERN = /^ANSI_COLORS_F\{(\d+|IGNORE|DEFAULT)\}_B\{(\d+|IGNORE|DEFAULT)\}$/;
+
+function toLegacy(channel: string): number {
+    if (channel === 'IGNORE') return ANSI_TO_LEGACY[COLOR_IGNORED] ?? -2;
+    if (channel === 'DEFAULT') return ANSI_TO_LEGACY[COLOR_DEFAULT] ?? 0;
+    const ansi = Number(channel);
+    return ANSI_TO_LEGACY[ansi] ?? ansi;
+}
+
+/**
+ * Rewrite a modern `ANSI_COLORS_F{…}_B{…}` colour pattern back into the
+ * `FG<n>BG<n>` numbering a save file uses, or return the text unchanged when it
+ * is not one.
+ *
+ * The save-file numbers are NOT the ANSI ones the runtime matches on, and
+ * Mudlet converts in both directions — `remapColorsToAnsiNumber` on the way in
+ * (XMLimport.cpp:1425) and `remapAnsiToColorNumber` on the way out
+ * (XMLexport.cpp:1031, "Revert the first 16 ANSI colour codes back to the wrong
+ * values that are still used in the save files"). mudix had only the reading
+ * half, so an exported colour trigger carried the in-memory text into the file
+ * — where desktop's reader does not recognise it, and the trigger comes back as
+ * a colour pattern nothing can parse.
+ */
+export function toSaveFileColorPattern(text: string): string {
+    const m = MODERN_COLOR_PATTERN.exec(text.trim());
+    if (!m) return text;
+    return `FG${toLegacy(m[1])}BG${toLegacy(m[2])}`;
+}

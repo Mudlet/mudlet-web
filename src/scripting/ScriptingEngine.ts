@@ -936,7 +936,7 @@ export class ScriptingEngine implements EngineHost {
      * falls back to the `<Host>` retained at import; one born in mudix gets the
      * empty skeleton, so its `<Host>` carries only the settings mudix does model.
      */
-    private buildProfileXml(baseXml?: string): string {
+    private buildProfileXml(baseXml?: string, omitHostSettings = false): string {
         const s = useAppStore.getState();
         const id = this.connectionId;
         const trees: SerializeInput = {
@@ -951,6 +951,7 @@ export class ScriptingEngine implements EngineHost {
         return buildLinkedWriteback(
             baseXml ?? this.retainedHostXml() ?? EMPTY_PROFILE_XML, trees,
             { hidden: vars?.hidden ?? [], variables: vars?.values ?? [] }, s.connectionProfile[id],
+            omitHostSettings,
         );
     }
 
@@ -996,6 +997,12 @@ export class ScriptingEngine implements EngineHost {
     saveProfileXml(location?: string, saveName?: string): { ok: true; path: string } | { ok: false; err: string } {
         const vfs = this.vfs;
         if (!vfs) return { ok: false, err: 'no profile VFS available' };
+        // One at a time. A save is only durable once its flush has settled, and
+        // a second one starting meanwhile would race the first over the same
+        // profile state — so the second is refused rather than queued, and
+        // refused BEFORE it writes anything, or it would leave a file behind
+        // that nothing finished.
+        if (this.profileSaveInFlight) return { ok: false, err: 'a save is already in progress' };
         // A trailing slash would double up against the separator below.
         let dir = (location ?? '').trim();
         while (dir.endsWith('/')) dir = dir.slice(0, -1);
@@ -1009,7 +1016,9 @@ export class ScriptingEngine implements EngineHost {
         const path = `${dir || 'current'}/${name}`;
         try {
             const base = readNewestParseableXml(vfs);
-            vfs.writeFile(path, this.buildProfileXml(base?.xml));
+            // A named save is Mudlet's "save as", which writes the items and
+            // leaves the profile's settings out.
+            vfs.writeFile(path, this.buildProfileXml(base?.xml, !generated));
         } catch (err) {
             return { ok: false, err: describeThrown(err) };
         }
@@ -1955,6 +1964,12 @@ export class ScriptingEngine implements EngineHost {
             // changes is that it is SAID. Silence left the player with a
             // package that is listed, owns nothing, and gives no reason.
             if (prepared.data.parseError) this.announceUnreadableContents(prepared.manifest.name);
+            // Everything the reader could not make sense of but carried on past
+            // — a pattern type from a later Mudlet, a key code nothing maps to.
+            // The package installs either way; these say what it will not do,
+            // and a silent fallback is a trigger that looks installed and
+            // matches something other than what its author wrote.
+            for (const warning of prepared.data.warnings) this.api.postError(warning);
             this.restorePackageVariables(prepared.data);
             // Refused, not replaced: a second install would silently discard
             // whatever the user had changed in the first, and a script looping
