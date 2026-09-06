@@ -538,7 +538,7 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
                 <div
                     id="mudix-cmdline-menu"
                     className="map-context-menu"
-                    style={{ position: 'fixed', left: menu.x, top: menu.y, zIndex: 9999 }}
+                    style={{ position: 'fixed', left: menu.x, top: menu.y, zIndex: 'var(--z-popup)' }}
                     onContextMenu={(e) => e.preventDefault()}
                 >
                     {menu.items.map(item => (

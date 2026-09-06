@@ -17,10 +17,6 @@ interface ScriptWindowProps {
     /** Miniconsoles render bare: no titlebar, no border, no drag, no resize.
      *  Position and size are script-controlled. */
     isMiniConsole?: boolean;
-    /** Portaled into a parent viewport rather than the document (see
-     *  FloatingWindowLayer): (x, y) are parent-relative, and the parent already
-     *  sits below the client's bars, so the client-area clamp doesn't apply. */
-    nested?: boolean;
     /** When true, dragging the titlebar still moves the window but never
      *  enters a dock zone — mirrors Mudlet's openUserWindow(..., autoDock=false). */
     lockFloating?: boolean;
@@ -42,18 +38,21 @@ interface ScriptWindowProps {
 export function ScriptWindow({
     id, title, visible,
     x, y, width, height, zIndex,
-    manager, isMiniConsole, nested, lockFloating, frameTabs, isMxpFrame,
+    manager, isMiniConsole, lockFloating, frameTabs, isMxpFrame,
     onFocus, onMoved, onResized, onDock, onDragStateChange, onTitlebarContextMenu, onHide,
 }: ScriptWindowProps) {
     const windowRef  = useRef<HTMLDivElement>(null);
     const contentRef = useRef<HTMLDivElement>(null);
 
-    // The top bar paints over the floating layer, so a window drawn under it is
-    // one whose titlebar no longer takes a click — no drag, no close (see
-    // WindowManager.clientAreaTop). Held here, at the point of drawing, rather
-    // than in the stored geometry: a script's moveWindow / getWindowGeometry
-    // round-trip still reads back exactly what it set, the way Mudlet's does.
-    const clampTop = (top: number) => nested ? top : Math.max(top, manager.clientAreaTop());
+    // A floating window now paints over the client's own bars, as a top-level
+    // window does in Mudlet, so nothing has to be held out of their strip any
+    // more. Dragging still stops at the top of the surface the window floats on
+    // — the viewport for a root window, the parent's viewport for a nested one,
+    // since `top` is written in whichever space that is. Every window manager
+    // does the same: a titlebar dragged past the top edge is one nobody can
+    // grab back. Applied to the drag only, never to `y` as drawn — a script's
+    // moveWindow / getWindowGeometry must round-trip exactly what it set.
+    const onScreenTop = (top: number) => Math.max(top, 0);
 
     // Attach the window's persistent portal-target div into our content slot.
     // useLayoutEffect runs before paint — no flash, and the panel's useEffect
@@ -119,7 +118,7 @@ export function ScriptWindow({
             lastClientX = ev.clientX;
             lastClientY = ev.clientY;
             lastX = ev.clientX - startOffsetX;
-            lastY = clampTop(ev.clientY - startOffsetY);
+            lastY = onScreenTop(ev.clientY - startOffsetY);
 
             // Direct DOM update every frame for smooth drag.
             el.style.left = `${lastX}px`;
@@ -184,7 +183,7 @@ export function ScriptWindow({
             if (dir.includes('s')) lastH = Math.max(80, startH + dy);
             if (dir.includes('n')) {
                 const bottom = startTop + startH;
-                lastTop = Math.min(clampTop(startTop + dy), bottom - 80);
+                lastTop = Math.min(onScreenTop(startTop + dy), bottom - 80);
                 lastH   = bottom - lastTop;
             }
 
@@ -210,7 +209,7 @@ export function ScriptWindow({
             ref={windowRef}
             className={`script-window${isMiniConsole ? ' script-window--miniconsole' : ''}${isMxpFrame ? ' script-window--mxp-frame' : ''}`}
             data-window-id={id}
-            style={{ left: x, top: clampTop(y), width, height, zIndex, display: visible ? 'flex' : 'none' }}
+            style={{ left: x, top: y, width, height, zIndex, display: visible ? 'flex' : 'none' }}
             // Click-to-front applies to real windows only. A mini-console (and
             // the embedded Geyser mapper, which is one) is a bare child widget
             // with no chrome — in Mudlet, clicking or dragging inside such a

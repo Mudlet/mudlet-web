@@ -1688,57 +1688,6 @@ export class WindowManager {
 
     // ── Floating window drag / resize ─────────────────────────────────────────
 
-    private clientAreaEl: HTMLElement | null = null;
-    private clientAreaObserver: ResizeObserver | null = null;
-    private clientAreaTopPx = 0;
-
-    /** Registers the client area — everything below the client's own bars (the
-     *  menu row, the button row, a TLS banner). See clientAreaTop. */
-    registerClientArea(element: HTMLElement | null): void {
-        if (this.clientAreaEl === element) return;
-        this.clientAreaObserver?.disconnect();
-        this.clientAreaObserver = null;
-        this.clientAreaEl = element;
-        this.measureClientArea();
-        // The bars are not a fixed height: the button row can be switched off,
-        // a TLS banner can appear, a narrow viewport re-flows the menu row —
-        // and at the first paint they have not laid out at all yet. Measuring
-        // once would leave every window clamped to whatever the client area
-        // happened to be that instant, so follow it.
-        if (element && typeof ResizeObserver !== 'undefined') {
-            this.clientAreaObserver = new ResizeObserver(() => this.measureClientArea());
-            this.clientAreaObserver.observe(element);
-        }
-    }
-
-    private measureClientArea(): void {
-        const top = this.clientAreaEl ? Math.max(0, this.clientAreaEl.getBoundingClientRect().top) : 0;
-        if (top === this.clientAreaTopPx) return;
-        this.clientAreaTopPx = top;
-        // Re-render the floating layer against the new client area.
-        this.notify();
-    }
-
-    /**
-     * Top edge of the client area, in viewport coordinates: floating windows
-     * are drawn no higher than this.
-     *
-     * The top bar has to paint over the floating layer — everything it opens is
-     * a menu that drops over the output, and at a lower z-index a window (or a
-     * label under it) painted straight through those menus. So a window whose
-     * titlebar sits in the bar's strip is a window nobody can drag, hide or
-     * close again: the bar swallows every click on it. Keeping the two apart is
-     * the only arrangement in which both stay usable, and it is what Mudlet
-     * does too — a floating user window there is its own OS window, and the
-     * main window's menu bar is not something it can be dropped behind.
-     *
-     * Falls back to 0 while nothing is registered (tests, a brand that removes
-     * both bars), which is exactly "the whole viewport is the client area".
-     */
-    clientAreaTop(): number {
-        return this.clientAreaTopPx;
-    }
-
     setPosition(id: string, x: number, y: number): void {
         const win = this.windows.get(id);
         if (!win) return;

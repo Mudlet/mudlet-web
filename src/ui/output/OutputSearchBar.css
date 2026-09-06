@@ -1,11 +1,11 @@
 /* Find-in-output bar — floats over the top-right of the console, browser-style.
-   Above the overlay widgets (.main-overlay-root, z-index 30) and the caret
-   review panel (40) so a Geyser label can never bury the search box. */
+   Above the console's overlay widgets and its caret-review panel, so a Geyser
+   label can never bury the search box (see ui/layout/layers.css). */
 .output-search {
     position: absolute;
     top: 6px;
     right: 12px;
-    z-index: 50;
+    z-index: var(--z-console-find);
     display: flex;
     align-items: center;
     font-family: var(--font-ui), sans-serif;

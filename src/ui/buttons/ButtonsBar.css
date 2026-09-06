@@ -152,13 +152,14 @@
     max-width: 160px;
 }
 
-/* Floating toolbars — position:fixed portal, sits just under floating windows
-   (z:35) so script modals (z:40+) and app modals (z:50) stay above. */
+/* Floating toolbars — position:fixed portal. A detached Mudlet button bar is a
+   floating QToolBar: a top-level window, so it clears the client's own bars,
+   and it sits just under the floating user windows. See layers.css. */
 .mudix-floating-toolbars-root {
     position: fixed;
     inset: 0;
     pointer-events: none;
-    z-index: 34;
+    z-index: var(--z-toolbar-float);
 }
 
 .mudix-floating-toolbar {

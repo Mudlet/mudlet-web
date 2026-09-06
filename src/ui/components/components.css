@@ -281,7 +281,7 @@
 
 .help-tip-popover {
     position: fixed;
-    z-index: 200;
+    z-index: var(--z-tooltip);
     transform: translateX(-50%);
     max-width: 280px;
     padding: 8px 10px;
@@ -309,12 +309,12 @@
 
 /* ── Confirm dialog ─────────────────────────────────────────── */
 .confirm-dialog-overlay {
-    z-index: 60;
+    z-index: var(--z-modal-child);
     animation: confirm-fade-in 0.12s ease-out;
 }
 
 .confirm-dialog {
-    z-index: 61;
+    z-index: calc(var(--z-modal-child) + 1);
     width: min(420px, calc(100vw - 32px));
     animation: confirm-pop-in 0.16s cubic-bezier(0.2, 0.8, 0.3, 1);
 }

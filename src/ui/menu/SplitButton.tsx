@@ -10,6 +10,7 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Button } from '../components';
+import { inPopupSurface } from './anchoredPopup';
 import { MenuList } from './MenuBar';
 import type { MenuNode } from './menuModel';
 
@@ -48,7 +49,7 @@ export function SplitButton({
     useEffect(() => {
         if (!open) return;
         const onDocPointer = (e: PointerEvent) => {
-            if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+            if (!inPopupSurface(rootRef.current, e.target)) setOpen(false);
         };
         document.addEventListener('pointerdown', onDocPointer);
         return () => document.removeEventListener('pointerdown', onDocPointer);
@@ -126,8 +127,10 @@ export function SplitButton({
                 </svg>
             </button>
             {/* MenuList closes before it runs an entry, which is what
-                `onCloseAll` is; the entries need no wrapping of their own. */}
-            {open && <MenuList items={items} onCloseAll={() => setOpen(false)} />}
+                `onCloseAll` is; the entries need no wrapping of their own.
+                Anchored to the pair rather than to the arrow, so it lines up
+                with the button's left edge the way Qt's does. */}
+            {open && <MenuList items={items} anchor={rootRef.current} onCloseAll={() => setOpen(false)} />}
         </div>
     );
 }
