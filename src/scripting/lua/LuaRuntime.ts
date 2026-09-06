@@ -775,6 +775,13 @@ export class LuaRuntime implements IScriptingRuntime {
         // does not say what the valid ones were.
         this.lua.global.set('__mudix_config_range', (key: unknown) =>
             this.api.configKeyRange(String(key ?? '')) ?? undefined);
+        // Same reasoning for the options that take one of a fixed set of words:
+        // the refusal is the only place their names appear, so it has to carry
+        // them. Returned 0-indexed, as wasmoon hands arrays over.
+        this.lua.global.set('__mudix_config_values', (key: unknown) => {
+            const values = this.api.configKeyValues(String(key ?? ''));
+            return values ? [...values] : undefined;
+        });
 
         // Mudlet profile description (a free-text slot per profile). Each takes
         // the profile by name, defaulting to this one; a name that matches no

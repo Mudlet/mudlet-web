@@ -185,20 +185,20 @@ function configBool(v: unknown): boolean {
 }
 
 /** Coerce a `setConfig("showSentText", …)` value into a {@link ShowSentTextMode}.
- *  Accepts the three mode strings directly; maps booleans / boolean-ish strings
- *  / numbers to `script` (on) or `never` (off) for backward compatibility with
- *  the original boolean key (Mudlet's "show sent text" toggle ≙ `script`).
- *  Returns null for anything else so `setConfig` reports failure. */
+ *  Accepts the three mode strings; a real boolean is the legacy form of the key
+ *  and maps to `script` (on) or `never` (off).
+ *
+ *  A NUMBER is not a mode. Mudlet reads the value with `lua_isboolean` first and
+ *  `lua_isstring` second, and in Lua 5.1 a number is string-convertible — so 42
+ *  becomes "42", fails the three-way match and is refused. Treating it as the
+ *  boolean toggle instead (which is what mudix did) meant any number at all
+ *  silently turned command echo on. */
 function parseShowSentText(value: unknown): ShowSentTextMode | null {
-    if (typeof value === 'string') {
-        const s = value.trim().toLowerCase();
+    if (typeof value === 'boolean') return value ? 'script' : 'never';
+    if (typeof value === 'string' || typeof value === 'number') {
+        const s = String(value).trim().toLowerCase();
         if (s === 'never' || s === 'script' || s === 'always') return s;
-        if (/^(true|1|yes|on)$/.test(s)) return 'script';
-        if (/^(false|0|no|off)$/.test(s)) return 'never';
         return null;
-    }
-    if (typeof value === 'boolean' || typeof value === 'number') {
-        return value ? 'script' : 'never';
     }
     return null;
 }
@@ -310,14 +310,49 @@ const CONFIG_PERSIST_ONLY: Record<string, {
     // and get/setIrcNick and friends read and write exactly this. Defaults are
     // Mudlet's own (dlgIRC.h), so a profile that has never touched IRC still
     // answers with something usable.
-    ircNick:                        { type: 'str',  default: 'Mudlet' },
-    ircHost:                        { type: 'str',  default: 'irc.libera.chat' },
-    ircPort:                        { type: 'num',  default: 6667 },
-    ircSecure:                      { type: 'bool', default: false },
+    //
+    // Named as Mudlet names them (TLuaInterpreter's getConfig map, defaults from
+    // dlgIRC.h). The shorter ircNick/ircHost/ircPort/ircSecure spellings mudix
+    // used first are kept as aliases below — get/setIrcNick and the settings UI
+    // were written against them, and a script that found them working has no
+    // reason to be broken for the sake of the rename.
+    ircHostName:                    { type: 'str',  default: 'irc.libera.chat' },
+    ircHostPort:                    { type: 'num',  default: 6667, range: [1, 65535] },
+    ircHostSecure:                  { type: 'bool', default: false },
+    ircNickName:                    { type: 'str',  default: 'Mudlet' },
     ircPassword:                    { type: 'str',  default: '' },
     /** Space-separated, as Mudlet stores it. */
     ircChannels:                    { type: 'str',  default: '#mudlet' },
 };
+
+/** The mudix spellings of the IRC keys, and the Mudlet ones they now mean.
+ *  Resolved before every get and set, so both names read and write one value. */
+/** Distinguishes "this key is not an experiment" from an experiment that reads
+ *  as nil — `<group>.active` answers nil when nothing in the group is on. */
+const NOT_AN_EXPERIMENT = Symbol('not-an-experiment');
+
+/** Where the enabled experiment names live in the profile's config bag. */
+const EXPERIMENTS_KEY = 'enabledExperiments';
+
+const CONFIG_KEY_ALIASES: Record<string, string> = {
+    ircHost:   'ircHostName',
+    ircPort:   'ircHostPort',
+    ircSecure: 'ircHostSecure',
+    ircNick:   'ircNickName',
+};
+
+/** Mudlet's valid experiments (Host::mValidExperiments). An experiment is a
+ *  rendering or mapper behaviour a build can be asked to try; mudix implements
+ *  none of them, but the switches are ordinary profile state and scripts feature-
+ *  test through them, so they are answered rather than refused. Grouped by the
+ *  first two dot-segments, and at most one per group may be on. */
+const VALID_EXPERIMENTS: readonly string[] = [
+    'experiment.rendering.originalish',
+    'experiment.rendering.more-transparent',
+    'experiment.3dmap.modernmapper',
+    'experiment.render-in-out-exits',
+    'experiment.3d-player-icon',
+];
 
 /** Format an epoch-ms timestamp as Mudlet's "hh:mm:ss.zzz" (local time). */
 function formatLineTimestamp(ms: number): string {
@@ -1344,7 +1379,10 @@ export class ScriptingAPI {
      *  legacy boolean reading alongside a newer enum — currently `showSentText`.
      *  The no-arg / table forms are handled by the Lua wrapper in Other.lua,
      *  which calls this once per key. */
-    getConfig(key: string, useStringFormat = false): unknown {
+    getConfig(rawKey: string, useStringFormat = false): unknown {
+        const key = CONFIG_KEY_ALIASES[rawKey] ?? rawKey;
+        const experiment = this.readExperimentConfig(key);
+        if (experiment !== NOT_AN_EXPERIMENT) return experiment;
         switch (key) {
             // structured — protocol toggles
             case 'enableGMCP': return this.getProtocol('gmcp');
@@ -1414,15 +1452,80 @@ export class ScriptingAPI {
         const spec = CONFIG_PERSIST_ONLY[key];
         if (spec) {
             const stored = spec.sessionOnly ? this.sessionConfig.get(key) : this.configBag()[key];
-            return stored !== undefined ? stored : spec.default;
+            if (stored === undefined) return spec.default;
+            // A stored number outside the option's own bounds is answered with
+            // the default rather than handed back. Mudlet's readers do this
+            // (dlgIRC::readIrcHostPort falls back to 6667 for anything outside
+            // 1..65535) because the writers do not all validate, so a profile
+            // can carry a value the rest of the client would choke on.
+            if (spec.type === 'num' && spec.range && typeof stored === 'number'
+                && (stored < spec.range[0] || stored > spec.range[1])) {
+                return spec.default;
+            }
+            return stored;
         }
         return undefined;
+    }
+
+    /**
+     * `getConfig` for the `experiment.*` namespace, or {@link NOT_AN_EXPERIMENT}
+     * when the key is not one. Three shapes: `experiment.list` is the names this
+     * build knows, `<group>.active` is the suffix of whichever experiment in
+     * that group is on (nil when none is), and any other key reads as the
+     * on/off flag — FALSE for a name this build has never heard of, rather than
+     * a refusal, so a script can feature-test one that does not exist here.
+     */
+    private readExperimentConfig(key: string): unknown {
+        if (!key.startsWith('experiment.')) return NOT_AN_EXPERIMENT;
+        if (key === 'experiment.list') return [...VALID_EXPERIMENTS];
+        if (key.endsWith('.active')) {
+            const group = key.slice(0, -'.active'.length) + '.';
+            for (const name of this.enabledExperiments()) {
+                if (name.startsWith(group)) return name.slice(group.length);
+            }
+            return null;
+        }
+        return VALID_EXPERIMENTS.includes(key) && this.enabledExperiments().includes(key);
+    }
+
+    /** The experiments currently switched on, as stored in the profile bag. */
+    private enabledExperiments(): string[] {
+        const stored = this.configBag()[EXPERIMENTS_KEY];
+        return Array.isArray(stored) ? stored.filter((n): n is string => typeof n === 'string') : [];
+    }
+
+    /**
+     * `setConfig` for the `experiment.*` namespace: true on success, or the
+     * refusal message. At most one experiment in a group may be on at a time —
+     * a group being the first two dot-segments — so enabling one turns off
+     * whichever of its siblings was on (Host::setExperimentEnabled).
+     */
+    private writeExperimentConfig(key: string, value: unknown): true | string {
+        if (!VALID_EXPERIMENTS.includes(key)) return `Invalid experiment name: ${key}`;
+        if (typeof value !== 'boolean') {
+            return `setConfig: bad argument #2 type (experiment state as boolean expected, got ${typeof value})`;
+        }
+        const group = key.split('.').slice(0, 2).join('.') + '.';
+        const kept = this.enabledExperiments().filter(name =>
+            name !== key && !(key.split('.').length > 2 && name.startsWith(group)));
+        this.patchConfigBag(EXPERIMENTS_KEY, value ? [...kept, key] : kept);
+        return true;
     }
 
     /** The bounds a `num` option accepts, for the refusal Bridge.lua writes.
      *  Null when the key is unbounded or names no option. */
     configKeyRange(key: string): readonly [number, number] | null {
-        return CONFIG_PERSIST_ONLY[key]?.range ?? null;
+        return CONFIG_PERSIST_ONLY[CONFIG_KEY_ALIASES[key] ?? key]?.range ?? null;
+    }
+
+    /** The values a string option accepts, for the refusal Bridge.lua writes —
+     *  the list is the only place a script author is told what the option takes,
+     *  so it has to reach the message. Null when the key takes no fixed set. */
+    configKeyValues(key: string): readonly string[] | null {
+        const resolved = CONFIG_KEY_ALIASES[key] ?? key;
+        if (resolved === 'blankLinesBehaviour') return ['show', 'hide', 'replacewithspace'];
+        if (resolved === 'showSentText') return ['never', 'always', 'script'];
+        return CONFIG_PERSIST_ONLY[resolved]?.enum ?? null;
     }
 
     /**
@@ -1436,7 +1539,14 @@ export class ScriptingAPI {
      * `'readonly'` keys exist for `getConfig` but refuse every write; `'any'`
      * keys take more than one value type and vet the value themselves.
      */
-    configKeyKind(key: string): 'bool' | 'num' | 'str' | 'any' | 'readonly' | null {
+    configKeyKind(rawKey: string): 'bool' | 'num' | 'str' | 'any' | 'readonly' | null {
+        const key = CONFIG_KEY_ALIASES[rawKey] ?? rawKey;
+        // An experiment takes a boolean, and one this build has never heard of
+        // is still a KEY — its refusal has to name it, which it cannot do from
+        // the generic "no such option" path. The two pseudo-keys are reads.
+        if (key.startsWith('experiment.')) {
+            return key === 'experiment.list' || key.endsWith('.active') ? 'readonly' : 'bool';
+        }
         switch (key) {
             case 'enableGMCP': case 'enableMSDP': case 'enableMSP': case 'enableMSSP':
             case 'enableMTTS': case 'enableMXP': case 'enableMNES':
@@ -1501,7 +1611,12 @@ export class ScriptingAPI {
 
     /** Returns true, or a string when the option was taken and the caller
      *  should be told something about it — see the mapSymbolFont case. */
-    setConfig(key: string, value: unknown): boolean | string {
+    setConfig(rawKey: string, value: unknown): boolean | string {
+        const key = CONFIG_KEY_ALIASES[rawKey] ?? rawKey;
+        if (key.startsWith('experiment.')) {
+            const written = this.writeExperimentConfig(key, value);
+            return written === true ? true : written;
+        }
         switch (key) {
             case 'enableGMCP': this.setProtocol('gmcp', configBool(value)); return true;
             case 'enableMSDP': this.setProtocol('msdp', configBool(value)); return true;

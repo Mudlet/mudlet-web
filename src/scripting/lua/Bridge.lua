@@ -2825,24 +2825,37 @@ end
 --   "major" / "minor" / "revision" / "build" → field value
 --   "table"           → major, minor, revision as 3 separate return values
 --                       (mudlet-lua's mudletOlderThan relies on this)
+-- The style is matched the way Mudlet matches it: lowered, trimmed, and by
+-- `contains` rather than equality, so "  MAJOR  " is the major version. The two
+-- refusals differ by one word — "takes" for a style it does not know, "only
+-- takes" for being handed more than one argument — and both RAISE, so a caller
+-- has to pcall to see either. Both are Mudlet's strings verbatim: the list of
+-- styles is the only documentation of them a script author gets.
 do
     local MAJOR, MINOR, REVISION, BUILD = 4, 21, 0, ""
-    function getMudletVersion(mode)
-        if mode == nil then
+    local STYLES = "   \"major\", \"minor\", \"revision\", \"build\", \"string\" or \"table\"."
+    function getMudletVersion(...)
+        local count = select('#', ...)
+        if count > 1 then
+            error("getMudletVersion: only takes one (optional) argument:\n" .. STYLES, 2)
+        end
+        local mode = ...
+        if count == 0 or mode == nil then
             return { major = MAJOR, minor = MINOR, revision = REVISION, build = BUILD }
-        elseif mode == "string" then
+        end
+        local what = tostring(mode):lower():match("^%s*(.-)%s*$")
+        if what:find("major", 1, true)    then return MAJOR end
+        if what:find("minor", 1, true)    then return MINOR end
+        if what:find("revision", 1, true) then return REVISION end
+        if what:find("build", 1, true)    then return BUILD end
+        if what:find("string", 1, true) then
             if BUILD ~= "" then
                 return string.format("%d.%d.%d-%s", MAJOR, MINOR, REVISION, BUILD)
             end
             return string.format("%d.%d.%d", MAJOR, MINOR, REVISION)
-        elseif mode == "major"    then return MAJOR
-        elseif mode == "minor"    then return MINOR
-        elseif mode == "revision" then return REVISION
-        elseif mode == "build"    then return BUILD
-        elseif mode == "table"    then return MAJOR, MINOR, REVISION, BUILD
-        else
-            error('getMudletVersion: bad argument (expected nil/"string"/"major"/"minor"/"revision"/"build"/"table", got "' .. tostring(mode) .. '")', 2)
         end
+        if what:find("table", 1, true) then return MAJOR, MINOR, REVISION, BUILD end
+        error("getMudletVersion: takes one (optional) argument:\n" .. STYLES, 2)
     end
 end
 
@@ -5204,8 +5217,26 @@ do
         end
         local ok = _setConfig(key, value)
         if ok == false then
+            -- The accepted set rides along when the option has one. It is the
+            -- only place a script author is told what the option takes — there
+            -- is no getter for it — so a refusal that names the rejected value
+            -- and nothing else takes the documentation away with it.
+            local raw = __mudix_config_values(key)
+            if raw then
+                -- 0-indexed on the way over, as every wasmoon array is.
+                local accepted = {}
+                local i = 0
+                while raw[i] ~= nil do accepted[#accepted + 1] = raw[i] i = i + 1 end
+                if #accepted > 0 then
+                    return nil, "setConfig: '" .. tostring(value) .. "' is not a valid value for '"
+                        .. key .. "', it should be one of '" .. table.concat(accepted, "', '") .. "'"
+                end
+            end
             return nil, "setConfig: '" .. tostring(value) .. "' is not a valid value for '" .. key .. "'"
         end
+        -- An experiment refuses with a message of its own (the name is not one
+        -- this build knows), which has to reach the caller intact.
+        if type(ok) == 'string' and key:find('^experiment%.') then return nil, ok end
         -- A string answer is the option TAKEN, with something the caller should
         -- know riding along — a symbol font that cannot draw a symbol the map
         -- already uses, for one. The warning travels beside the true rather than
@@ -5219,7 +5250,18 @@ do
         if keyErr then return nil, keyErr end
         local v = _getConfig(key, useStringFormat and true or false)
         if v == nil then
+            -- "<group>.active" answers nil when no experiment in that group is
+            -- on, which is an answer rather than a missing key — the only read
+            -- in the API whose nil means something.
+            if key:find('^experiment%.') and key:find('%.active$') then return nil end
             return nil, "getConfig: '" .. key .. "' isn't a valid configuration option"
+        end
+        -- Arrays cross the wasmoon boundary 0-indexed; a Lua caller walks them
+        -- with ipairs, which starts at 1 and would see an empty list.
+        if key == "experiment.list" and type(v) == "table" then
+            local list, i = {}, 0
+            while v[i] ~= nil do list[#list + 1] = v[i] i = i + 1 end
+            return list
         end
         if key == "mapInfoColor" and type(v) == "string" then
             local r, g, b, a = v:match("^(%d+),(%d+),(%d+),(%d+)$")
