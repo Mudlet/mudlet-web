@@ -14,18 +14,26 @@ export type { AliasNode };
  * Returned flat, in Mudlet's order. `null` when the pattern never matched, which
  * is what "this alias did not fire" means.
  */
-function matchAllCaptures(input: string, re: RegExp): { all: string[]; index: number } | null {
+function matchAllCaptures(input: string, re: RegExp): { all: string[]; index: number; named: Record<string, string> } | null {
     // The stored RegExp has no `g` (it is also used for plain `.match()`), and
     // `lastIndex` on a shared instance would leak between calls — so the loop
     // drives its own clone.
     const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`);
     const all: string[] = [];
+    // Named groups sit alongside the positional ones on the same table in
+    // Lua. A group on a branch that did not take part in the match has no
+    // capture to offer, so it is left out rather than written as an empty
+    // string — TAlias skips a PCRE2_UNSET slot for the same reason.
+    const named: Record<string, string> = {};
     let index = -1;
     let m: RegExpExecArray | null;
     while ((m = g.exec(input)) !== null) {
         if (index < 0) index = m.index;
         all.push(m[0]);
         for (let i = 1; i < m.length; i++) all.push(m[i] ?? '');
+        for (const [name, value] of Object.entries(m.groups ?? {})) {
+            if (value !== undefined && named[name] === undefined) named[name] = value;
+        }
         if (m[0] === '') {
             // A zero-width match leaves lastIndex where it was, so step past it
             // — by a whole code point, or the step would split a surrogate pair.
@@ -34,7 +42,7 @@ function matchAllCaptures(input: string, re: RegExp): { all: string[]; index: nu
             if (g.lastIndex > input.length) break;
         }
     }
-    return index < 0 ? null : { all, index };
+    return index < 0 ? null : { all, index, named };
 }
 
 export class AliasEngine extends PatternEngine<AliasNode> {
@@ -43,8 +51,11 @@ export class AliasEngine extends PatternEngine<AliasNode> {
     /** Returns true and fires the first matching temp alias. Stops at first match. */
     processTemp(input: string): boolean {
         for (const { pattern, fn } of this.temp.values()) {
+            // A null pattern is an alias that exists but can never match — see
+            // PatternEngine.addTemp.
+            if (!pattern) continue;
             const hit = matchAllCaptures(input, pattern);
-            if (hit) { fn(asMatchArray(hit.all, hit.index, input)); return true; }
+            if (hit) { fn(asMatchArray(hit.all, hit.index, input, hit.named)); return true; }
         }
         return false;
     }
@@ -54,10 +65,10 @@ export class AliasEngine extends PatternEngine<AliasNode> {
     /** Returns the first matching perm alias, or null. `matchedText` is the
      *  portion of `input` the regex actually matched (Mudlet's `matches[1]`),
      *  which differs from the whole input for an unanchored pattern. */
-    matchPerm(input: string): { alias: AliasNode; matchedText: string; captures: string[] } | null {
+    matchPerm(input: string): { alias: AliasNode; matchedText: string; captures: string[]; named: Record<string, string> } | null {
         for (const { item, re } of this.permCompiled) {
             const hit = matchAllCaptures(input, re);
-            if (hit) return { alias: item, matchedText: hit.all[0], captures: hit.all.slice(1) };
+            if (hit) return { alias: item, matchedText: hit.all[0], captures: hit.all.slice(1), named: hit.named };
         }
         return null;
     }
@@ -66,9 +77,12 @@ export class AliasEngine extends PatternEngine<AliasNode> {
 /** The temp-alias callback is typed against `RegExpMatchArray` and only ever
  *  read as a list, but `input` is part of that contract — so hand back a real
  *  one carrying the accumulated captures. */
-function asMatchArray(all: string[], index: number, input: string): RegExpMatchArray {
+function asMatchArray(all: string[], index: number, input: string, named: Record<string, string>): RegExpMatchArray {
     const out = all as RegExpMatchArray;
     out.index = index;
     out.input = input;
+    // Only when the pattern actually named something, so the common case
+    // stays indistinguishable from a plain RegExp match.
+    if (Object.keys(named).length > 0) out.groups = named;
     return out;
 }

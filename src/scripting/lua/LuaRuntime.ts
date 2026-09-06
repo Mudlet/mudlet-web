@@ -1683,7 +1683,10 @@ export class LuaRuntime implements IScriptingRuntime {
             const id = this.api.allocateItemId();
             const unsub = this.api.aliases.addTemp(pattern, (m: RegExpMatchArray) => {
                 if (this.tempIds.get(id)?.enabled === false) return;
-                this.setMatches(Array.from(m));
+                // Named groups go onto the same `matches` table as the numbered
+                // ones, which is how Mudlet presents them (setCaptureNameGroups
+                // feeds the same table setCaptureGroups does).
+                this.setMatches(Array.from(m), undefined, m.groups as Record<string, string> | undefined);
                 dispatchCb(cbId, 'tempAlias');
             });
             this.tempIds.set(id, { kill: () => { unsub(); releaseCb(cbId); }, type: 'alias', enabled: true });
@@ -1738,15 +1741,23 @@ export class LuaRuntime implements IScriptingRuntime {
                 this.currentNamedSpans = spans?.namedSpans ?? {};
                 this.currentFullMatchSpan = spans?.matchSpan ?? null;
                 this.setMatches(matches, undefined, namedGroups);
+                let renewed = false;
                 try {
                     dispatchCb(cbId, label);
+                    // Only an EXPIRING trigger reads the return value; Mudlet
+                    // calls the plain `call` for the rest and never looks.
+                    renewed = max > 0 && this.lastCbReturnedTrue();
                 } finally {
                     this.currentMatches = prevMatches;
                     this.currentCaptureSpans = prevSpans;
                     this.currentNamedSpans = prevNamed;
                     this.currentFullMatchSpan = prevFullMatchSpan;
                 }
-                fires++;
+                // A body that returns true is asking for one more fire, so the
+                // trigger only goes when it stops asking: Mudlet increments
+                // mExpiryCount on a truthy return and decrements it after the
+                // match, leaving the count where it was.
+                if (!renewed) fires++;
                 if (max > 0 && fires >= max) kill();
             }, kind, { name: name ?? String(id), onStopped: kill });
             this.tempIds.set(id, { kill, type: 'trigger', enabled: true, name });
@@ -3135,6 +3146,9 @@ end`);
         captureSpans?: CaptureSpan[],
         namedSpans?: Record<string, CaptureSpan>,
         fullMatchSpan?: CaptureSpan,
+        /** Named captures per multimatches row, aligned with it. Last, so the
+         *  positional callers ahead of it are undisturbed. */
+        multiNamedGroups?: (Record<string, string> | undefined)[],
     ): void {
         const prevMatches = this.currentMatches;
         const prevSpans = this.currentCaptureSpans;
@@ -3144,7 +3158,7 @@ end`);
         this.currentCaptureSpans = captureSpans ?? [];
         this.currentNamedSpans = namedSpans ?? {};
         this.currentFullMatchSpan = fullMatchSpan ?? null;
-        this.setMatches(matches, multimatches, namedGroups);
+        this.setMatches(matches, multimatches, namedGroups, multiNamedGroups);
         try {
             this.execInner(code, name);
         } finally {
@@ -3165,7 +3179,7 @@ end`);
     // assignment. wasmoon's pushTable splits numeric vs string keys at push
     // time, so `matches[2]` and `matches.foo` coexist on the Lua side just
     // like in Mudlet.
-    private setMatches(matches: (string | undefined)[], multimatches?: (string | undefined)[][], namedGroups?: Record<string, string>): void {
+    private setMatches(matches: (string | undefined)[], multimatches?: (string | undefined)[][], namedGroups?: Record<string, string>, multiNamedGroups?: (Record<string, string> | undefined)[]): void {
         // Build matches/multimatches with raw lua_createtable pushes instead of
         // wasmoon's auto-converting global.set — ~2.4× cheaper per fired trigger,
         // and the matches table is the dominant cost of trigger/alias dispatch.
@@ -3177,7 +3191,9 @@ end`);
         api.lua_createtable(L, multimatches?.length ?? 0, 0);
         if (multimatches) {
             for (let i = 0; i < multimatches.length; i++) {
-                this.pushMatchesTable(L, multimatches[i]);
+                // Each row gets the names its own line defined, alongside the
+                // numbered captures — the same table shape as .
+                this.pushMatchesTable(L, multimatches[i], multiNamedGroups?.[i]);
                 api.lua_rawseti(L, -2, i + 1);
             }
         }
@@ -3464,6 +3480,16 @@ end`);
     private dispatchCb(cbId: number, label: string): void {
         this.runChunk(`__mudix_dispatch_cb(${cbId})`, label);
         this.api.flushOutput();
+    }
+
+    /** Whether the callback {@link dispatchCb} last ran returned true — the way
+     *  an expiring temp trigger asks for another life. See __mudix_dispatch_cb. */
+    private lastCbReturnedTrue(): boolean {
+        try {
+            return this.lua.global.get('__mudix_cb_returned_true') === true;
+        } catch {
+            return false;
+        }
     }
 
     // Same as dispatchCb but passes a single argument to the callback. Used by

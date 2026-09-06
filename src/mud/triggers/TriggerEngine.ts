@@ -40,6 +40,11 @@ type MatchResult = {
     captureSpans?: CaptureSpan[];
     namedSpans?: Record<string, CaptureSpan>;
     matchStart?: number;
+    /** Entries ONE occurrence of this pattern contributes to the flattened
+     *  capture list: the whole match plus its groups. Mudlet reads it off the
+     *  capture list before the match-all loop appends to it, and the highlight
+     *  uses it to tell a whole-match entry from a group one. */
+    groupCount?: number;
 };
 
 type Matcher = (line: string, isPrompt: boolean) => MatchResult | null;
@@ -54,10 +59,13 @@ export type TriggerMatch = {
     captures: Capture[];
     matchedText: string;
     multimatches?: Capture[][];
+    /** Named captures per multimatches row, aligned with it. */
+    multiNamedGroups?: (Record<string, string> | undefined)[];
     namedGroups?: Record<string, string>;
     captureSpans?: CaptureSpan[];
     namedSpans?: Record<string, CaptureSpan>;
     matchStart?: number;
+    groupCount?: number;
 };
 
 /**
@@ -96,6 +104,7 @@ function mergeAllMatches(results: MatchResult[]): MatchResult | null {
         matchedText: first.matchedText,
         matchStart: first.matchStart,
         captureSpans,
+        groupCount: 1 + first.captures.length,
         namedGroups: Object.keys(namedGroups).length > 0 ? namedGroups : undefined,
         namedSpans: Object.keys(namedSpans).length > 0 ? namedSpans : undefined,
     };
@@ -110,6 +119,7 @@ function matchResultToTriggerMatch(trigger: TriggerNode, r: MatchResult): Trigge
         captureSpans: r.captureSpans,
         namedSpans: r.namedSpans,
         matchStart: r.matchStart,
+        groupCount: r.groupCount ?? 1 + r.captures.length,
     };
 }
 
@@ -172,6 +182,10 @@ type TempEntryBase = {
     seq: number;
     sameLine?: SameLineChain;
     name?: string;
+    /** Lines this trigger has been asked to go on firing for even without a
+     *  match — Mudlet mKeepFiring, set by setTriggerStayOpen. Spent one line
+     *  at a time, and only on lines the pattern did NOT match. */
+    keepFiring?: number;
     /** Run when the ENGINE stops this trigger of its own accord (a runaway
      *  lineage), so its owner can tear down what it holds — the Lua callback,
      *  the id isActive() reads. Not called for an ordinary disposal, where the
@@ -276,7 +290,7 @@ const luaEvalRef: { fn: ((code: string, line: string) => boolean) | null } = { f
  *  the plain-text line, so the check has to come from outside). Used by the
  *  `colorTrigger` pattern branch — see `buildMatcher`. */
 const colorMatchRef: {
-    fn: ((fg: number, bg: number, window: { start: number; length: number } | null) => boolean) | null;
+    fn: ((fg: number, bg: number, window: { start: number; length: number } | null) => string | null) | null;
 } = { fn: null };
 
 /** The stretch of the ORIGINAL line a colour trigger may look at: the whole line
@@ -470,8 +484,12 @@ function buildMatcher(
             return (line) => {
                 if (!line) return null;
                 if (!colorMatchRef.fn) return null;
-                return colorMatchRef.fn(fg, bg, colorWindowRef.window)
-                    ? { captures: [], matchedText: stripEol(line) } : null;
+                // The MATCH is the coloured run, not the line it sits on:
+                // TTrigger::match_color_pattern pushes that run as the
+                // capture, which is what a script reads as matches[1] and
+                // what the built-in highlight recolours.
+                const run = colorMatchRef.fn(fg, bg, colorWindowRef.window);
+                return run === null ? null : { captures: [], matchedText: run };
             };
         }
         case 'lineSpacer':
@@ -820,6 +838,23 @@ export class TriggerEngine {
                 const test = buildMatcher(pattern, register, reportPatternError);
                 if (test) tests.push(test);
 
+                // A plain substring pattern collects its occurrences too:
+                // TTrigger::processSubstringMatch runs an indexOf loop under
+                // mPerlSlashGOption exactly as the regex path runs a global
+                // match, so `matches` holds one entry per occurrence. Overlaps
+                // count — the loop advances by one character, not by the
+                // needle's length.
+                if (!item.isGroup && item.multipleMatches && pattern.type === 'substring' && pattern.text) {
+                    const needle = pattern.text;
+                    testAll = (line: string) => {
+                        const results: MatchResult[] = [];
+                        for (let at = line.indexOf(needle); at !== -1; at = line.indexOf(needle, at + 1)) {
+                            results.push({ captures: [], matchedText: needle, matchStart: at });
+                        }
+                        return results;
+                    };
+                }
+
                 // multipleMatches only for non-group regex patterns. buildMatcher
                 // above already compiled (and reported) this same pattern, so the
                 // second compile stays quiet rather than doubling the report.
@@ -906,35 +941,51 @@ export class TriggerEngine {
     }
 
     private fireTempEntryInner(id: number, entry: TempEntry, line: string, isPrompt: boolean): void {
+        if (this.fireTempEntryMatch(id, entry, line, isPrompt)) return;
+        // No match. A trigger held open by setTriggerStayOpen fires anyway,
+        // with nothing captured, and spends one of its lines doing it
+        // (TTrigger::match: ).
+        if (!entry.keepFiring || entry.keepFiring <= 0) return;
+        entry.keepFiring--;
+        entry.fn([]);
+    }
+
+    /** The match half of {@link fireTempEntryInner}: true when the pattern
+     *  matched and the callback has already run. */
+    private fireTempEntryMatch(id: number, entry: TempEntry, line: string, isPrompt: boolean): boolean {
         if (entry.kind === 'line') {
             // Position-based: skip the creation-line tick, count down `from`,
             // then fire on each of the next `remaining` lines, self-expiring.
-            if (entry.skipFirst) { entry.skipFirst = false; return; }
-            if (entry.countdown > 1) { entry.countdown--; return; }
+            if (entry.skipFirst) { entry.skipFirst = false; return false; }
+            if (entry.countdown > 1) { entry.countdown--; return false; }
             entry.fn([stripEol(line)]);
             entry.remaining--;
             if (entry.remaining <= 0) { this.temp.delete(id); this.orderDirty = true; }
-            return;
+            return true;
         }
         if (entry.kind === 'prompt') {
-            if (isPrompt) entry.fn([stripEol(line)]);
-            return;
+            if (!isPrompt) return false;
+            entry.fn([stripEol(line)]);
+            return true;
         }
         if (entry.kind === 'substring') {
-            if (line.includes(entry.pattern)) entry.fn([entry.pattern]);
-            return;
+            if (!line.includes(entry.pattern)) return false;
+            entry.fn([entry.pattern]);
+            return true;
         }
         if (entry.kind === 'startOfLine') {
-            if (line.startsWith(entry.pattern)) entry.fn([entry.pattern]);
-            return;
+            if (!line.startsWith(entry.pattern)) return false;
+            entry.fn([entry.pattern]);
+            return true;
         }
         if (entry.kind === 'exactMatch') {
             const text = stripEol(line);
-            if (text === entry.pattern) entry.fn([text]);
-            return;
+            if (text !== entry.pattern) return false;
+            entry.fn([text]);
+            return true;
         }
         const m = entry.re.match(line) as PcreMatch | null;
-        if (!m) return;
+        if (!m) return false;
         const result = pcreToMatchResult(m);
         entry.fn(
             [result.matchedText, ...result.captures],
@@ -947,6 +998,7 @@ export class TriggerEngine {
             },
             result.namedGroups,
         );
+        return true;
     }
 
     // ── Perm triggers (persisted, visible in UI) ──────────────────────────────
@@ -1442,7 +1494,7 @@ export class TriggerEngine {
      * `ScriptingAPI.currentLineMatchesColor`. Passing `null` disables every
      * colour trigger (e.g. during runtime teardown).
      */
-    setColorMatcher(fn: ((fg: number, bg: number, window: { start: number; length: number } | null) => boolean) | null): void {
+    setColorMatcher(fn: ((fg: number, bg: number, window: { start: number; length: number } | null) => string | null) | null): void {
         colorMatchRef.fn = fn;
     }
 
@@ -1568,11 +1620,17 @@ export class TriggerEngine {
      *  as `multimatches`. */
     private andMatch(item: TriggerNode, state: AndState): TriggerMatch {
         const lastNamedGroups = state.namedGroups[state.namedGroups.length - 1] ?? {};
+        // Each multimatches row carries the names ITS OWN line defined, which
+        // is the point of them being per-row: multimatches[1]["beta"] is nil
+        // when only the second line's pattern named a beta. The top-level
+        // `namedGroups` stays the last line's, as the flat `matches` table is.
+        const rowNames = state.namedGroups.map(n => (n && Object.keys(n).length > 0 ? n : undefined));
         return {
             trigger: item,
             captures: state.captures.flat(),
             matchedText: '',
             multimatches: state.captures.map((c, i) => [state.matchedTexts[i], ...c]),
+            multiNamedGroups: rowNames.some(Boolean) ? rowNames : undefined,
             namedGroups: Object.keys(lastNamedGroups).length > 0 ? lastNamedGroups : undefined,
         };
     }
@@ -1629,6 +1687,27 @@ export class TriggerEngine {
         for (const id of ids) {
             this.chainOpenUntil.set(id, openUntil);
         }
+    }
+
+    /**
+     * Mudlet `setTriggerStayOpen(name, lines)` for a TEMPORARY trigger, which is
+     * addressed by the string form of its id — startTempTrigger names every temp
+     * after its own id, and setTriggerStayOpen searches the same name table the
+     * permanent ones live in. Returns whether anything answered to the name.
+     *
+     * The counter it sets is `mKeepFiring`: the trigger fires on that many more
+     * lines whether or not its pattern is in them. That is a different thing
+     * from the chain window {@link setStayOpen} writes, which only decides
+     * whether a trigger's CHILDREN get a look at the line.
+     */
+    setTempStayOpen(name: string, lines: number): boolean {
+        let found = false;
+        for (const entry of this.temp.values()) {
+            if (entry.name !== name) continue;
+            entry.keepFiring = Math.max(0, Math.trunc(lines));
+            found = true;
+        }
+        return found;
     }
 
     /**

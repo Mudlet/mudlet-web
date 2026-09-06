@@ -76,6 +76,9 @@ export interface IScriptingRuntime {
         captureSpans?: CaptureSpan[],
         namedSpans?: Record<string, CaptureSpan>,
         fullMatchSpan?: CaptureSpan,
+        /** Named captures per multimatches row, aligned with it. Last, so the
+         *  positional callers ahead of it are undisturbed. */
+        multiNamedGroups?: (Record<string, string> | undefined)[],
     ): void;
     destroy(): void;
     /** Bytes behind a path in the runtime's read-only bundled namespace, or null

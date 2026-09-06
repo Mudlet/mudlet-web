@@ -57,9 +57,14 @@ import { findBundledGame } from '../mud/games/bundledGames';
 // Mudlet's TChar always carries baked-in fg/bg colors (the rendered pair), so
 // getFgColor/getBgColor never return "no color" for in-bounds positions. mudix
 // buffer segments are sparse — plain text has no explicit color — so we fall
-// back to these defaults, matching the dark-theme values SettingsModal uses
-// (App.css :root --text / --bg).
-const DEFAULT_FG_RGB: [number, number, number] = [0xd4, 0xd4, 0xd4];
+// back to these defaults.
+//
+// The foreground is Qt::lightGray, which is what Host::mFgColor starts as and
+// what App.css already paints uncoloured console text (`--console-text`). It
+// used to be #d4d4d4 here, so mudix RENDERED plain text at #c0c0c0 and REPORTED
+// it as #d4d4d4 — a script comparing getFgColor() against what it could see was
+// told they differed.
+const DEFAULT_FG_RGB: [number, number, number] = [0xc0, 0xc0, 0xc0];
 const DEFAULT_BG_RGB: [number, number, number] = [0x09, 0x09, 0x09];
 
 /**
@@ -6416,6 +6421,15 @@ export class ScriptingAPI {
         const notice = `\x1b[36m[ INFO ]\x1b[0m  - ${text}`;
         this.mainConsole.appendLine(new AnsiAwareBuffer(notice));
         this.session.events.emit('message', notice, 'script', Date.now());
+    }
+
+    /** Mudlet's `Host::postMessage` for the `[ ERROR ]` kind: unlike printError
+     *  this is client news rather than a script's own fault, so it goes on the
+     *  main console whether or not the profile shows script errors there. */
+    postError(text: string): void {
+        const notice = `\x1b[31m[ ERROR ]\x1b[0m - ${text}`;
+        this.mainConsole.appendLine(new AnsiAwareBuffer(notice));
+        this.session.events.emit('message', notice, 'error', Date.now());
     }
 
     printError(text: string, source?: ScriptLogSource): void {

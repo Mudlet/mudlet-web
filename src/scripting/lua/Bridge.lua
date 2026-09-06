@@ -2928,9 +2928,20 @@ function __mudix_register_cb(fn)
     return __mudix_cb_next
 end
 function __mudix_unregister_cb(id) __mudix_cb[id] = nil end
+-- __mudix_cb_returned_true records whether the body asked to be kept alive. An
+-- expiring temp trigger whose script returns true has its expiry count put back
+-- up (TTrigger::execute increments mExpiryCount, TTrigger::match then decrements
+-- it, so the two cancel and the trigger lives for another line). The chunk runs
+-- through doStringSync, which hands back nothing, so the answer is left here for
+-- the caller to read rather than returned.
 function __mudix_dispatch_cb(id)
     local fn = __mudix_cb[id]
-    if fn then return fn() end
+    __mudix_cb_returned_true = false
+    if fn then
+        local result = fn()
+        __mudix_cb_returned_true = result == true
+        return result
+    end
 end
 -- Variant for callbacks that receive a single argument (label mouse events
 -- carry a {button, x, y, ...} table). JS sets __mudix_cb_arg before invoking.
@@ -3682,22 +3693,48 @@ do
         return nil
     end
 
-    -- Colorize the matched text on the current line. `matches[1]` is the full
-    -- match (set by the temp-trigger dispatch before the callback runs).
+    -- Colorize what the trigger matched on the current line.
+    --
+    -- Which part depends on whether the pattern has capture groups. Mudlet walks
+    -- the capture list and paints every entry EXCEPT the whole-match ones, but
+    -- only once there is more than one entry to choose from — so a pattern with
+    -- groups recolours its groups and leaves the rest of the match alone, and a
+    -- pattern without them recolours the match itself. Painting matches[1]
+    -- unconditionally, as this did, recoloured the whole line's match even when
+    -- the author had asked for the groups.
+    --
+    -- Groups are selected by NUMBER rather than by searching for their text:
+    -- a capture whose text also appears earlier in the line would otherwise be
+    -- painted in the wrong place.
     local function highlight(hlFg, hlBg, matchAll)
-        local text = matches and matches[1]
-        if not text or text == '' then return end
+        if not matches or matches[1] == nil then return end
         local fr, fg_, fb = resolveColor(hlFg)
         local br, bg_, bb = resolveColor(hlBg)
         if not (fr or br) then return end
-        local n = 1
-        while true do
-            local idx = selectString(text, n)
-            if not idx or idx < 0 then break end
+        local function paint()
             if fr then setFgColor(fr, fg_, fb) end
             if br then setBgColor(br, bg_, bb) end
-            if not matchAll then break end
-            n = n + 1
+        end
+        if #matches > 1 then
+            -- selectCaptureGroup is 1-based over the SAME list as `matches`, so
+            -- group 1 is the whole match and the groups start at 2. It answers
+            -- with a position, and -1 for "nothing selected" — which is truthy
+            -- in Lua, so the comparison has to be explicit.
+            for i = 2, #matches do
+                local at = selectCaptureGroup(i)
+                if type(at) == 'number' and at >= 0 then paint() end
+            end
+        elseif matchAll then
+            local n = 1
+            while true do
+                local idx = selectString(matches[1], n)
+                if not idx or idx < 0 then break end
+                paint()
+                n = n + 1
+            end
+        elseif matches[1] ~= '' then
+            local idx = selectString(matches[1], 1)
+            if idx and idx >= 0 then paint() end
         end
         deselect()
     end
@@ -3708,10 +3745,14 @@ do
         local userFn = __mudix_to_fn(code, "tempComplexRegexTrigger", 3)
         local matchAllOn = tonumber(matchAll) == 1
 
-        -- A colour pattern is the one thing here that has no home on the node:
-        -- Mudlet's fgColor/bgColor name colours, and the node's colour patterns
-        -- are ANSI indices. Still the honest thing to say out loud.
-        if type(fgColor) == 'string' or type(bgColor) == 'string' then warnOnce('colour pattern (fgColor/bgColor)') end
+        -- Arguments 5 and 6 decide what KIND of pattern argument 2 is, and
+        -- their own values are then never used. A number in either means an
+        -- ordinary perl pattern; anything else means the pattern text is a
+        -- colour pattern ("ANSI_COLORS_F{002}_B{IGNORE}"), which the trigger
+        -- engine already knows how to match — this used to warn that the case
+        -- had no home and then compile the colour pattern as a regex, which
+        -- matched nothing a game ever sends.
+        local isColorPattern = not (tonumber(fgColor) ~= nil and tonumber(bgColor) ~= nil)
 
         local hasHighlight = type(hlFgColor) == 'string' or type(hlBgColor) == 'string'
         local hasSound = type(soundFile) == 'string' and soundFile ~= ''
@@ -3729,7 +3770,7 @@ do
 
         local patterns = ''
         if type(regex) == 'string' and regex ~= '' then
-            patterns = 'regex\2' .. regex
+            patterns = (isColorPattern and 'colorTrigger\2' or 'regex\2') .. regex
         end
         -- The body is a node's Lua source, so the callback is reached through
         -- the registry the same way a temp trigger's is. `matches` and

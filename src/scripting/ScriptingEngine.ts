@@ -1520,35 +1520,16 @@ export class ScriptingEngine implements EngineHost {
      * `expandAlias(text, echo)` is exactly this function.
      */
     hostSend(text: string, echo = true): void {
-        // Mudlet has no such cap: an alias whose command field re-matches itself
-        // recurses until the C++ stack gives out. A wedged browser tab is a
-        // worse failure than a refused command, so the chain is cut with an
-        // error the script author can act on.
-        if (this.sendDepth >= ScriptingEngine.MAX_SEND_DEPTH) {
-            this.api.printError(
-                `send: "${text}" expanded more than ${ScriptingEngine.MAX_SEND_DEPTH}`
-                + ` levels deep — stopped, an alias is very likely feeding itself`);
-            return;
-        }
-        this.sendDepth++;
-        try {
-            this.session.echoSentCommand(text, echo);
-            const parts = splitCommands(text, this.api.getCommandSeparator());
-            // Nothing but separators (or nothing at all) still reaches the game
-            // as a bare line feed, and never sees the aliases — Mudlet returns
-            // early from its "allow sending blank commands" branch.
-            if (parts.length === 0) { this.api.sendData(''); return; }
-            for (const part of parts) {
-                if (!this.processInput(part)) this.api.sendData(part);
-            }
-        } finally {
-            this.sendDepth--;
+        this.session.echoSentCommand(text, echo);
+        const parts = splitCommands(text, this.api.getCommandSeparator());
+        // Nothing but separators (or nothing at all) still reaches the game
+        // as a bare line feed, and never sees the aliases — Mudlet returns
+        // early from its "allow sending blank commands" branch.
+        if (parts.length === 0) { this.api.sendData(''); return; }
+        for (const part of parts) {
+            if (!this.processInput(part)) this.api.sendData(part);
         }
     }
-
-    /** Nesting depth of {@link hostSend} — see the runaway-alias note there. */
-    private sendDepth = 0;
-    private static readonly MAX_SEND_DEPTH = 25;
 
     /** Mudlet `expandAlias(text, echo)` — `Host::send` with both defaults, i.e.
      *  "run this as though I had typed it". */
@@ -1748,7 +1729,7 @@ export class ScriptingEngine implements EngineHost {
             // Perm colorTrigger patterns delegate to the same buffer scan the
             // tempColorTrigger binding uses — both inspect the line that
             // beginLine() just appended to the main console.
-            this.triggerEngine.setColorMatcher((fg, bg, window) => this.api.currentLineMatchesColor(fg, bg, window));
+            this.triggerEngine.setColorMatcher((fg, bg, window) => this.api.currentLineColorMatch(fg, bg, window));
             // The runaway-creation report goes to the main console, where the
             // player is already looking at the line it could not finish.
             this.triggerEngine.setRunawayReporter(text => this.api.postSystemMessage(text));
@@ -2533,9 +2514,15 @@ export class ScriptingEngine implements EngineHost {
         const store = useAppStore.getState();
         const triggers = store.connectionTriggers[this.connectionId] ?? [];
         const targets = triggers.filter(t => t.name === name);
-        if (targets.length === 0) return false;
-        this.triggerEngine.setStayOpen(targets.map(t => t.id), lines);
-        return true;
+        if (targets.length > 0) {
+            this.triggerEngine.setStayOpen(targets.map(t => t.id), lines);
+            return true;
+        }
+        // A temporary trigger answers to the string form of its id — Mudlet
+        // names every temp after its own id and looks both kinds up in the same
+        // table, so `setTriggerStayOpen(tostring(tempTrigger(...)), 2)` is an
+        // ordinary call rather than a miss.
+        return this.triggerEngine.setTempStayOpen(name, lines);
     }
 
     /**
@@ -3689,6 +3676,19 @@ export class ScriptingEngine implements EngineHost {
 
     /** Run input through aliases. Returns true if an alias matched (caller should not send). */
     processInput(text: string): boolean {
+        // An alias whose command expands into something its own pattern matches
+        // recurses one level per pass, and the stack is what runs out. Mudlet
+        // stops at 50 and lets the command through UNEXPANDED rather than
+        // dropping it — the player asked for something, and a command the game
+        // does not understand is a better answer than silence.
+        if (this.aliasDepth >= ScriptingEngine.MAX_ALIAS_DEPTH) {
+            this.api.postError(
+                `Alias processing stopped to prevent a crash: "${text}" was expanded by an alias `
+                + `${ScriptingEngine.MAX_ALIAS_DEPTH} times in a row, each time producing a command that matched `
+                + 'an alias again. It goes to the game unexpanded. Send from the alias with send() rather than '
+                + 'expandAlias(), or give it a pattern that does not match what it sends.');
+            return false;
+        }
         // Mudlet's AliasUnit::mProcessingDepth. An alias handler can call
         // expandAlias, re-entering this with an outer pass still walking the
         // alias list, so a killed alias is only freed once every nested pass has
@@ -3704,6 +3704,8 @@ export class ScriptingEngine implements EngineHost {
 
     /** Nesting depth of {@link processInput} — see the note there. */
     private aliasDepth = 0;
+    /** AliasUnit::scmMaxProcessingDepth. */
+    private static readonly MAX_ALIAS_DEPTH = 50;
 
     private processInputPass(text: string): boolean {
         // Mirror the input into the Lua `command` global before alias matching,
@@ -3720,7 +3722,7 @@ export class ScriptingEngine implements EngineHost {
         if (permMatch) {
             // matches[1] is the matched portion (Mudlet semantics), not the
             // whole input — see the perm-trigger note above (issue #4).
-            this.executePermAlias(permMatch.alias, [permMatch.matchedText, ...permMatch.captures]);
+            this.executePermAlias(permMatch.alias, [permMatch.matchedText, ...permMatch.captures], permMatch.named);
             this.api.flushOutput();
             return true;
         }
@@ -4143,7 +4145,7 @@ export class ScriptingEngine implements EngineHost {
         ].join('\n');
     }
 
-    private executePermAlias(alias: AliasNode, matches: string[]): void {
+    private executePermAlias(alias: AliasNode, matches: string[], named?: Record<string, string>): void {
         if (alias.command) {
             const cmd = alias.command.replace(/%(\d)/g, (_, d) => {
                 const idx = Number(d);
@@ -4156,7 +4158,7 @@ export class ScriptingEngine implements EngineHost {
         }
         if (alias.code && alias.language === 'lua') {
             try {
-                this.runtimes.lua?.runWithMatches(alias.code, alias.name, matches);
+                this.runtimes.lua?.runWithMatches(alias.code, alias.name, matches, undefined, named);
             } catch (err) {
                 this.reportEntityError('alias', alias.id, alias.name, err);
             }
@@ -4172,6 +4174,8 @@ export class ScriptingEngine implements EngineHost {
         captureSpans?: { start: number; length: number }[],
         namedSpans?: Record<string, { start: number; length: number }>,
         matchStart?: number,
+        groupCount?: number,
+        multiNamedGroups?: (Record<string, string> | undefined)[],
     ): void {
         // Built-in sound, first: TTrigger::execute plays it ahead of the command
         // and the script (TTrigger.cpp:1320-1330), at full volume — desktop has
@@ -4193,20 +4197,45 @@ export class ScriptingEngine implements EngineHost {
             this.hostSend(cmd);
         }
 
-        // Built-in highlight
+        // Built-in highlight.
+        //
+        // Mudlet walks the whole flattened capture list — {whole, groups…} per
+        // occurrence — and paints each entry EXCEPT the whole-match ones, but
+        // only when there is more than one entry to choose from. So a pattern
+        // with capture groups recolours its groups and leaves the rest of the
+        // match alone; a pattern without them recolours the match itself; and a
+        // match-all pattern does that for every occurrence, not just the first.
+        // mudix painted `matches[1]` and stopped, which got the no-groups
+        // single-match case right and the other two wrong.
         if (isColorizing(trigger) && trigger.highlight && matchedText) {
             const { fg, bg } = trigger.highlight;
-            if (fg || bg) {
-                const idx = this.api.selectString(matchedText, 1);
-                if (idx >= 0) {
-                    const fgColor = fg ? hexToRgb(fg) : null;
-                    const bgColor = bg ? hexToRgb(bg) : null;
-                    if (fgColor || bgColor) {
-                        this.api.applyFormatToSelection({
-                            ...(fgColor ? { foreground: fgColor } : {}),
-                            ...(bgColor ? { background: bgColor } : {}),
-                        });
-                    }
+            const fgColor = fg ? hexToRgb(fg) : null;
+            const bgColor = bg ? hexToRgb(bg) : null;
+            if (fgColor || bgColor) {
+                const format = {
+                    ...(fgColor ? { foreground: fgColor } : {}),
+                    ...(bgColor ? { background: bgColor } : {}),
+                };
+                // Entry 0 is the whole match; the rest line up with captureSpans.
+                const spans: ({ start: number; length: number } | undefined)[] = [
+                    matchStart !== undefined ? { start: matchStart, length: matchedText.length } : undefined,
+                    ...(captureSpans ?? []),
+                ];
+                const perOccurrence = groupCount ?? matches.length;
+                for (let i = 0; i < matches.length; i++) {
+                    // `position % numberOfCaptureGroups != 1` in TTrigger::execute,
+                    // 1-based. With one entry per occurrence the modulus is 1 and
+                    // nothing is ever skipped, which is what makes a match-all
+                    // substring paint all of its hits.
+                    if (matches.length > 1 && perOccurrence > 0 && (i + 1) % perOccurrence === 1) continue;
+                    const span = spans[i];
+                    const text = matches[i];
+                    if (!text) continue;
+                    const ok = span
+                        ? this.api.selectSection(span.start, span.length)
+                        : this.api.selectString(text, 1) >= 0;
+                    if (!ok) continue;
+                    this.api.applyFormatToSelection(format);
                     this.api.deselect();
                 }
             }
@@ -4220,7 +4249,7 @@ export class ScriptingEngine implements EngineHost {
                     : undefined;
                 this.runtimes.lua?.runWithMatches(
                     trigger.code, trigger.name, matches, multimatches, namedGroups,
-                    captureSpans, namedSpans, fullMatchSpan);
+                    captureSpans, namedSpans, fullMatchSpan, multiNamedGroups);
             } catch (err) {
                 this.reportEntityError('trigger', trigger.id, trigger.name, err);
             }
@@ -4490,6 +4519,8 @@ export class ScriptingEngine implements EngineHost {
                     m.captureSpans,
                     m.namedSpans,
                     m.matchStart,
+                    m.groupCount,
+                    m.multiNamedGroups,
                 );
             });
         } finally {
