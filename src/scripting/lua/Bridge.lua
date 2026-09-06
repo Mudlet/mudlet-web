@@ -6205,6 +6205,17 @@ do
         return r
     end
 
+    -- createRoomID answers with a number, or the refusal message when the
+    -- optional minimum is below one.
+    do
+        local _raw = createRoomID
+        function createRoomID(minimum)
+            local r = _raw(minimum)
+            if type(r) == 'string' then return nil, r end
+            return r
+        end
+    end
+
     deleteArea        = shaped(__deleteArea)
     setDoor           = shaped(__setDoor)
     setExitWeight     = shaped(__setExitWeight)

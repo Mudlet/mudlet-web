@@ -301,11 +301,20 @@ export function installMapBindings({
     });
 
     // ── Room CRUD ─────────────────────────────────────────────────────────
-    // Mudlet `createRoomID([minimum])` — smallest unused room id at or
-    // above `minimum`, or above the running cursor if no floor is given.
+    // Mudlet `createRoomID([minimum])` — smallest unused room id at or above
+    // `minimum`, counting from 1 when none is given. A minimum below one is
+    // refused rather than ignored: room ids start at 1, so asking for the first
+    // free id at or above zero is a question about a range that does not exist,
+    // and silently answering it hides the mistake. Returns the id, or the
+    // message string that Bridge.lua turns into Mudlet's (nil, errMsg).
     lua.global.set('createRoomID', (minimum?: unknown) => {
+        if (minimum === undefined || minimum === null) return api.map.createRoomID();
         const m = Number(minimum);
-        return api.map.createRoomID(Number.isFinite(m) && m > 0 ? m : undefined);
+        if (!Number.isFinite(m) || Math.trunc(m) < 1) {
+            return `createRoomID: minimum roomID ${Math.trunc(m) || 0} is an optional value`
+                + ' but if provided it must be greater than zero';
+        }
+        return api.map.createRoomID(Math.trunc(m));
     });
     // Mudlet addRoom(roomID [, areaID]) — when an areaID is given the new room
     // is placed in that area, which must already exist. Without one the room

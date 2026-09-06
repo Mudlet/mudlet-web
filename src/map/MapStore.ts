@@ -1408,9 +1408,15 @@ export class MapStore {
      * id isn't reserved; a follow-up `addRoom(id)` is what actually claims it.
      */
     createRoomID(minimum?: number): number {
+        // The first free id AT OR ABOVE the minimum, counting up from 1 when
+        // none is given — TMap::createNewRoomID scans from the bottom every
+        // time. A running cursor was used here instead, which never went back,
+        // so the number of a deleted room was gone for the rest of the session
+        // and an import that deleted as it went climbed away from the ids it
+        // had just freed.
         let id = minimum != null && Number.isFinite(minimum) && minimum > 0
             ? Math.trunc(minimum)
-            : this.nextRoomId;
+            : 1;
         while (this.rooms.has(id)) id++;
         if (id >= this.nextRoomId) this.nextRoomId = id + 1;
         return id;
@@ -1457,6 +1463,7 @@ export class MapStore {
         }
         if (room.hash) this.hashToRoom.delete(room.hash);
         this.rooms.delete(id);
+        this.severExitsTo(new Set([id]));
         // Selection is paint-only but it tracks room ids — drop the deleted
         // one so getMapSelection doesn't dangle.
         if (this.selectedRooms.delete(id)) {
@@ -1471,6 +1478,35 @@ export class MapStore {
         }
         this.notify();
         return true;
+    }
+
+    /**
+     * Clear every exit — stock and special — that pointed at a room in `gone`.
+     *
+     * A deleted room does not take its entrances with it: the exits live on the
+     * rooms that lead INTO it, so removing the room alone leaves them pointing
+     * at a number that no longer resolves. Mudlet walks its entrance map for
+     * exactly this (TRoomDB::__removeRoom, then TRoom::removeAllSpecialExitsToRoom
+     * for the named ones), and mudix left them dangling: getRoomExits went on
+     * reporting a north exit to a room that had been deleted, and the mapper
+     * would happily route a player through it.
+     *
+     * There is no entrance index here, so this is a scan of the remaining rooms.
+     * Deletions are rare and the map is in memory; an index would have to be
+     * kept correct through every exit write to save a walk nobody waits on.
+     */
+    private severExitsTo(gone: ReadonlySet<number>): void {
+        for (const [roomId, room] of this.rooms) {
+            const fields = room as unknown as Record<string, number>;
+            for (const field of Object.values(DIR_FIELD)) {
+                if (gone.has(fields[field])) fields[field] = -1;
+            }
+            for (const [cmd, dest] of Object.entries(room.mSpecialExits ?? {})) {
+                if (!gone.has(dest)) continue;
+                delete room.mSpecialExits[cmd];
+                this.clearSpecialExitAttributes(roomId, cmd);
+            }
+        }
     }
 
     roomExists(id: number): boolean { return this.rooms.has(id); }
@@ -1754,8 +1790,12 @@ export class MapStore {
     setRoomWeight(id: number, weight: number): boolean {
         const r = this.rooms.get(id);
         if (!r) return false;
-        if (!Number.isFinite(weight) || weight < 0) return false;
-        r.weight = weight;
+        if (!Number.isFinite(weight)) return false;
+        // TRoom::setWeight clamps anything below one up to one rather than
+        // refusing it. A weight of zero would make the room free to pass
+        // through, which is not a thing the pathfinder can represent — every
+        // room costs at least one step.
+        r.weight = weight < 1 ? 1 : weight;
         this.notify();
         return true;
     }
@@ -1812,9 +1852,15 @@ export class MapStore {
         if (!room) return false;
         const dirInt = parseDirection(dir);
         if (dirInt == null) return false;
+        // A destination that does not exist is refused rather than written:
+        // TMap::setExit bails on `!pR_to && to > 0`, so an exit can never point
+        // at a room that is not there. Anything below 1 is the documented way
+        // to CLEAR the exit and is normalised to -1.
+        if (to > 0 && !this.rooms.has(to)) return false;
+        const dest = to < 1 ? -1 : to;
         const field = DIR_FIELD[dirInt];
-        (room as unknown as Record<string, number>)[field] = to;
-        if (to >= 0) room.stubs = room.stubs.filter(s => s !== dirInt);
+        (room as unknown as Record<string, number>)[field] = dest;
+        if (dest >= 0) room.stubs = room.stubs.filter(s => s !== dirInt);
         this.notify();
         return true;
     }
@@ -1858,8 +1904,20 @@ export class MapStore {
         if (!room) return false;
         const dirInt = parseDirection(dir);
         if (dirInt == null) return false;
-        if (set) { if (!room.stubs.includes(dirInt)) room.stubs.push(dirInt); }
-        else room.stubs = room.stubs.filter(s => s !== dirInt);
+        if (set) {
+            // A stub is a place an exit COULD go, so a direction that already
+            // has one takes no stub (TRoom::setExitStub logs "There is already
+            // an exit there!" and leaves the list alone). Without this the room
+            // held a stub and an exit in the same direction, and
+            // connectExitStub would offer to connect a direction that was
+            // already connected.
+            const field = DIR_FIELD[dirInt];
+            const existing = (room as unknown as Record<string, number>)[field];
+            if (existing !== undefined && existing !== -1) return true;
+            if (!room.stubs.includes(dirInt)) room.stubs.push(dirInt);
+        } else {
+            room.stubs = room.stubs.filter(s => s !== dirInt);
+        }
         this.notify();
         return true;
     }
@@ -1926,8 +1984,29 @@ export class MapStore {
             return `removeSpecialExit: the special exit name/command '${cmd}' does not exist in exit roomID ${from}`;
         }
         delete r.mSpecialExits[cmd];
+        this.clearSpecialExitAttributes(from, cmd);
         this.notify();
         return null;
+    }
+
+    /**
+     * Drop everything keyed by a special exit's command once the exit itself is
+     * gone: its door, its lock, its weight. Mudlet does this in every path that
+     * removes one (removeAllSpecialExitsToRoom cleans up "related elements
+     * first"), and leaving them behind is not inert — the command name is the
+     * key, so re-adding the same exit later found a door and a lock it never
+     * asked for, and the room stayed unwalkable for reasons nothing showed.
+     */
+    private clearSpecialExitAttributes(roomId: number, cmd: string): void {
+        const room = this.rooms.get(roomId);
+        if (!room) return;
+        delete room.doors?.[cmd];
+        delete room.exitWeights?.[cmd];
+        // The per-command set is the authority; the destination-keyed list on
+        // the room is the mirror the binary writer repacks, so it is rebuilt
+        // rather than edited (two commands can share a destination, and only
+        // one of them is going).
+        if (this.specialExitLocks.get(roomId)?.delete(cmd)) this.syncSpecialExitLockMirror(roomId);
     }
 
     getSpecialExitsSwap(id: number): Record<string, number> {
@@ -2638,7 +2717,12 @@ export class MapStore {
                 return { ok: false, err: `addAreaName: area names may not be duplicated and areaID ${aid} already has the name '${name}'` };
             }
         }
-        const id = this.nextAreaId++;
+        // The lowest free id, as TRoomDB::createNewAreaID counts it — so the
+        // number of a deleted area is handed back rather than being lost for
+        // the rest of the session.
+        let id = 1;
+        while (this.areas.has(id) || this.areaNames.has(id)) id++;
+        if (id >= this.nextAreaId) this.nextAreaId = id + 1;
         this.areas.set(id, makeArea());
         this.areaNames.set(id, name);
         this.notify();
@@ -2675,11 +2759,17 @@ export class MapStore {
         // name — there is nothing else to take away, and refusing would leave
         // the name unremovable.
         const area = this.areas.get(id);
+        const removed = new Set<number>();
         for (const roomId of area?.rooms ?? []) {
             const r = this.rooms.get(roomId);
             if (r?.hash) this.hashToRoom.delete(r.hash);
             this.rooms.delete(roomId);
+            removed.add(roomId);
         }
+        // One sweep for the whole area rather than one per room: the rooms
+        // still standing are walked once, and an exit between two rooms that
+        // are both going is never looked at.
+        if (removed.size > 0) this.severExitsTo(removed);
         this.areas.delete(id);
         this.areaNames.delete(id);
         this.notify();
