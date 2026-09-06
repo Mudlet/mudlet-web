@@ -962,18 +962,42 @@ export class WindowManager {
         this.mapCallbacks.delete(id);
     }
 
-    centerView(roomId: number): boolean {
+    /**
+     * Mudlet `centerview(roomID [, viewID])`.
+     *
+     * With a view id it centres THAT window and returns; the player is not
+     * moved. Only the primary mapper's form writes mRoomIdHash — a secondary
+     * view is somewhere the player is looking, not somewhere they are, and
+     * T2DMap::centerview returns before the block that records a position.
+     */
+    centerView(roomId: number, viewId?: number): boolean | string {
         // Mudlet's centerview rejects an unknown room id outright: it returns
         // (nil, errMsg) and does NOT touch mRoomIdHash. Mirror that — bail
         // before setting the player room or notifying the view, so a script
         // centerview()ing a stale/saved id (e.g. on sysLoadEvent before the map
         // covers it) is a clean failure, not a half-applied position.
         if (!this.mapStore.roomExists(roomId)) return false;
+        if (viewId !== undefined && viewId > 0) {
+            const view = this.mapViews.get(viewId);
+            if (!view) return `view ${viewId} not found`;
+            view.centeredRoomId = roomId;
+            view.areaId = this.mapStore.getRoomArea(roomId) ?? view.areaId;
+            return true;
+        }
         // On success Mudlet sets the player room (mRoomIdHash) as a side effect,
         // so getPlayerRoom() returns this id afterwards.
         this.mapStore.setPlayerRoom(roomId);
         for (const cb of this.mapCallbacks.values()) cb(roomId);
         return true;
+    }
+
+    /** The area a map view is showing, or a refusal when there is no such view.
+     *  A view ignores the areaID a caller hands setMapZoom/getMapZoom and uses
+     *  this one — TMapView::setZoom throws the argument away and passes
+     *  getCurrentAreaId(). */
+    mapViewArea(viewId: number): number | string {
+        const view = this.mapViews.get(viewId);
+        return view ? view.areaId : `view ${viewId} not found`;
     }
 
     /**

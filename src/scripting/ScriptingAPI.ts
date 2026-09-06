@@ -5208,8 +5208,8 @@ export class ScriptingAPI {
         return this.clipboardText;
     }
 
-    centerView(roomId: number): boolean {
-        return this.session.windows.centerView(roomId);
+    centerView(roomId: number, viewId?: number): boolean | string {
+        return this.session.windows.centerView(roomId, viewId);
     }
 
     // ── Secondary map views ───────────────────────────────────────────────────
@@ -5253,7 +5253,13 @@ export class ScriptingAPI {
      * is mounted. Undefined for an areaID that doesn't exist — the binding
      * reports that as `(nil, errMsg)`.
      */
-    getMapZoom(areaID?: number): number | undefined {
+    getMapZoom(areaID?: number, viewId?: number): number | undefined | string {
+        // A view answers for the area IT is showing, whatever areaID was passed.
+        if (viewId !== undefined && viewId > 0) {
+            const area = this.session.windows.mapViewArea(viewId);
+            if (typeof area === 'string') return `getMapZoom: ${area}`;
+            return this.map.getAreaZoom(area) ?? MapStore.DEFAULT_MAP_ZOOM;
+        }
         if (areaID !== undefined) {
             if (!this.map.hasArea(areaID)) return undefined;
             return this.map.getAreaZoom(areaID) ?? MapStore.DEFAULT_MAP_ZOOM;
@@ -5269,9 +5275,18 @@ export class ScriptingAPI {
      * and pushed to the live renderer when one is mounted. Returns the refusal
      * message, or null on success, for the binding to shape.
      */
-    setMapZoom(zoom: number, areaID?: number): string | null {
+    setMapZoom(zoom: number, areaID?: number, viewId?: number): string | null {
         if (!Number.isFinite(zoom) || zoom < MapStore.MIN_MAP_ZOOM) {
             return `setMapZoom: zoom ${zoom} is too small, it must be at least ${MapStore.MIN_MAP_ZOOM}`;
+        }
+        // Through a view the areaID is ignored and the zoom lands on the area
+        // the view is showing, which is what makes the primary mapper read it
+        // back — the zoom lives on the TArea, not on the window.
+        if (viewId !== undefined && viewId > 0) {
+            const area = this.session.windows.mapViewArea(viewId);
+            if (typeof area === 'string') return `setMapZoom: ${area}`;
+            this.map.setAreaZoom(area, zoom);
+            return null;
         }
         if (areaID !== undefined && !this.map.hasArea(areaID)) {
             return `setMapZoom: number ${areaID} is not a valid areaID`;

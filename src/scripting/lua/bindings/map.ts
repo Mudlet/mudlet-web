@@ -100,7 +100,11 @@ export function installMapBindings({
     // ── Map view ──────────────────────────────────────────────────────────
     // Returns a bool; the Bridge.lua `centerview` wrapper turns false into
     // Mudlet's (nil, errMsg) multi-return for an unknown room id.
-    lua.global.set('__centerview',    (id: number)              => api.centerView(id));
+    // A second argument aims a secondary map window: that view centres on the
+    // room and the player is left where they are. Answers with the refusal
+    // message when the view id names nothing.
+    lua.global.set('__centerview', (id: number, viewId?: unknown) =>
+        api.centerView(id, viewId == null || viewId === '' ? undefined : Number(viewId)));
     // Mudlet getMapZoom([areaID]) / setMapZoom(zoom[, areaID]) / updateMap().
     // mudix has a single shared 2D view, so areaID is accepted for compat but
     // applies to the current view. getMapZoom returns false (→ nil) with no
@@ -108,10 +112,19 @@ export function installMapBindings({
     // units across the viewport's shorter edge (must be >= 3.0 to set).
     // Both report their refusal to Bridge.lua: getMapZoom via null (unknown
     // areaID), setMapZoom via the message string (null = success).
-    lua.global.set('__getMapZoom', (areaID?: unknown) =>
-        api.getMapZoom(areaID == null || areaID === '' ? undefined : Number(areaID)) ?? null);
-    lua.global.set('__setMapZoom', (zoom: unknown, areaID?: unknown) =>
-        api.setMapZoom(Number(zoom), areaID == null || areaID === '' ? undefined : Number(areaID)));
+    // A trailing viewID aims both at a secondary map window instead, which
+    // answers for the area IT shows and ignores the areaID it was handed.
+    lua.global.set('__getMapZoom', (areaID?: unknown, viewId?: unknown) =>
+        api.getMapZoom(
+            areaID == null || areaID === '' ? undefined : Number(areaID),
+            viewId == null || viewId === '' ? undefined : Number(viewId),
+        ) ?? null);
+    lua.global.set('__setMapZoom', (zoom: unknown, areaID?: unknown, viewId?: unknown) =>
+        api.setMapZoom(
+            Number(zoom),
+            areaID == null || areaID === '' ? undefined : Number(areaID),
+            viewId == null || viewId === '' ? undefined : Number(viewId),
+        ));
     lua.global.set('updateMap',        ()                         => { api.updateMap(); });
     // ── Secondary map views ───────────────────────────────────────────────
     // createMapView hands back the new id, or the refusal message as a string;

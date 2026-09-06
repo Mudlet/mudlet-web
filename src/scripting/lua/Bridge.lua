@@ -42,10 +42,12 @@ end
 -- player's current room (getPlayerRoom). On an unknown room id Mudlet does not
 -- move the view or touch the player room; it returns (nil, errMsg). The JS side
 -- returns false in that case, so translate it here.
-function centerview(roomID)
-    if __centerview(roomID) then
-        return true
-    end
+-- A second argument aims a secondary map window instead: that view centres on
+-- the room and the player stays where they are.
+function centerview(roomID, viewID)
+    local r = __centerview(roomID, viewID)
+    if type(r) == 'string' then return nil, "centerview: " .. r end
+    if r then return true end
     return nil, "centerview: number " .. tostring(roomID) .. " is not a valid room id."
 end
 
@@ -6410,8 +6412,9 @@ do
 
     -- Mudlet getMapZoom([areaID]) → the area's zoom, or (nil, errMsg) for an
     -- areaID that doesn't exist.
-    function getMapZoom(areaID)
-        local z = __getMapZoom(areaID)
+    function getMapZoom(areaID, viewID)
+        local z = __getMapZoom(areaID, viewID)
+        if type(z) == 'string' then return nil, z end
         if z == nil then
             return nil, "getMapZoom: number " .. tostring(areaID) .. " is not a valid areaID"
         end

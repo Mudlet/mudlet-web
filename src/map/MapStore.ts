@@ -186,6 +186,7 @@ export function mudletJsonMapToMudletMap(src: unknown): MudletMap | null {
     const areaNames: Record<number, string> = {};
     const rooms: Record<number, MudletRoom> = {};
     const hashes: Record<string, number> = {};
+    const labels: Record<number, MudletLabel[]> = {};
 
     for (const rawArea of doc.areas as Record<string, unknown>[]) {
         if (!rawArea || typeof rawArea !== 'object') continue;
@@ -196,6 +197,8 @@ export function mudletJsonMapToMudletMap(src: unknown): MudletMap | null {
         area.userData = (rawArea.userData as Record<string, string>) ?? {};
         areas[areaId] = area;
         areaNames[areaId] = typeof rawArea.name === 'string' ? rawArea.name : '';
+        const areaLabels = labelsFromJson(rawArea.labels);
+        if (areaLabels.length > 0) labels[areaId] = areaLabels;
 
         const zLevels = new Set<number>();
         for (const rawRoom of (Array.isArray(rawArea.rooms) ? rawArea.rooms : []) as Record<string, unknown>[]) {
@@ -319,12 +322,79 @@ export function mudletJsonMapToMudletMap(src: unknown): MudletMap | null {
         version: 20,
         envColors: {}, areaNames, mCustomEnvColors,
         mpRoomDbHashToRoomId: hashes,
-        mUserData: {},
+        mUserData: jsonStringMap(doc.userData),
         mapSymbolFont: DEFAULT_FONT,
         mapFontFudgeFactor: Number(doc.mapSymbolFontFudgeFactor) || 1,
         useOnlyMapFont: !!doc.onlyMapSymbolFontToBeUsed,
-        areas, mRoomIdHash, labels: {}, rooms,
+        areas, mRoomIdHash, labels, rooms,
     };
+}
+
+/** A `{key: value}` object of strings from a JSON document, or `{}` when the
+ *  value is absent or not an object. Used for the map-wide user data. */
+function jsonStringMap(raw: unknown): Record<string, string> {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+        if (typeof v === 'string') out[k] = v;
+    }
+    return out;
+}
+
+/** One JSON colour object (`{r, g, b, a}`) as the reader's colour record. */
+function jsonColor(raw: unknown, fallbackAlpha: number): MudletColor {
+    const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+    return {
+        spec: 1,
+        r: Number(o.r) || 0,
+        g: Number(o.g) || 0,
+        b: Number(o.b) || 0,
+        alpha: o.a === undefined ? fallbackAlpha : Number(o.a) || 0,
+    };
+}
+
+/** The inverse of {@link jsonColor}, for the writer. */
+function colorToJson(c: MudletColor | undefined): Record<string, number> {
+    return { r: c?.r ?? 0, g: c?.g ?? 0, b: c?.b ?? 0, a: c?.alpha ?? 255 };
+}
+
+/**
+ * An area's labels out of Mudlet's JSON schema (TArea::readJsonLabel).
+ *
+ * `scaledels` is the inverse of the store's `noScaling`, and a label the file
+ * does not mention it for is scaled — Mudlet reads the key with a default of
+ * true.
+ */
+function labelsFromJson(raw: unknown): MudletLabel[] {
+    if (!Array.isArray(raw)) return [];
+    const out: MudletLabel[] = [];
+    for (const entry of raw as Record<string, unknown>[]) {
+        if (!entry || typeof entry !== 'object') continue;
+        const id = Number(entry.id);
+        if (!Number.isFinite(id)) continue;
+        const pos = Array.isArray(entry.coordinates) ? entry.coordinates : [];
+        const size = Array.isArray(entry.size) ? entry.size : [];
+        const colors = Array.isArray(entry.colors) ? entry.colors : [];
+        const font = (entry.font && typeof entry.font === 'object' ? entry.font : {}) as Record<string, unknown>;
+        const label: MapLabel = {
+            id,
+            pos: [Number(pos[0]) || 0, Number(pos[1]) || 0, Number(pos[2]) || 0],
+            size: [Number(size[0]) || 0, Number(size[1]) || 0],
+            text: typeof entry.text === 'string' ? entry.text : '',
+            fgColor: jsonColor(colors[0], 255),
+            bgColor: jsonColor(colors[1], 50),
+            pixMap: typeof entry.image === 'string' ? entry.image : '',
+            showOnTop: !!entry.showOnTop,
+            noScaling: entry.scaledels === undefined ? false : !entry.scaledels,
+        };
+        if (typeof font.family === 'string' && font.family) {
+            label.fontName = font.family;
+            const points = Number(font.pointSize);
+            if (Number.isFinite(points) && points > 0) label.fontSize = points;
+        }
+        out.push(label);
+    }
+    return out;
 }
 
 /**
@@ -1030,13 +1100,49 @@ export class MapStore {
                 id: areaId,
                 name: this.areaNames.get(areaId) ?? '',
                 userData: this.areas.get(areaId)?.userData ?? {},
+                labels: this.labelsToJson(areaId),
                 rooms: (this.areas.get(areaId)?.rooms ?? []).map(id => this.roomToJson(id)),
             })),
             customEnvColors: [...this.customEnvColors].map(([id, c]) => ({
                 id, color24RGB: [c.r, c.g, c.b],
             })),
+            // Map-wide user data, as TMap::writeJsonUserData writes it. Omitted
+            // when there is none, so an export from a map nobody has annotated
+            // reads the same as it always did.
+            ...(Object.keys(this.mapUserData).length > 0 ? { userData: { ...this.mapUserData } } : {}),
         };
         return JSON.stringify(doc);
+    }
+
+    /**
+     * An area's labels in Mudlet's JSON schema (TArea::writeJsonLabels).
+     *
+     * A TEMPORARY label is left out: it belongs to the session that drew it, not
+     * to the map, and writing it would resurrect it on every later load.
+     */
+    private labelsToJson(areaId: number): Record<string, unknown>[] {
+        const out: Record<string, unknown>[] = [];
+        for (const label of this.labels.get(areaId) ?? []) {
+            if (label.temporary) continue;
+            const entry: Record<string, unknown> = {
+                id: label.id,
+                coordinates: [...label.pos],
+                size: [...label.size],
+                showOnTop: !!label.showOnTop,
+                // `scaledels` is the INVERSE of noScaling, which is how Mudlet
+                // spells it in the file — a label that does not scale is one
+                // the file says is not scaled with the map.
+                scaledels: !label.noScaling,
+                colors: [colorToJson(label.fgColor), colorToJson(label.bgColor)],
+            };
+            if (label.text) entry.text = label.text;
+            if (label.pixMap) entry.image = label.pixMap;
+            if (label.fontName) {
+                entry.font = { family: label.fontName, pointSize: label.fontSize ?? 0 };
+            }
+            out.push(entry);
+        }
+        return out;
     }
 
     /** One room in Mudlet's JSON schema. Fields it has no value for are left
@@ -3712,8 +3818,27 @@ export class MapStore {
      *  Qt QColor::Rgb spec, matching what the binary reader emits. */
     setCustomEnvColor(envId: number, r: number, g: number, b: number, a = 255): void {
         this.customEnvColors.set(envId, { spec: 1, alpha: a, r, g, b });
+        // 257-272 are not map data. They are the profile's own sixteen mapper
+        // colours, which the map merely carries a copy of — Mudlet mirrors a
+        // write into Host::mRed_2 and friends, and mapClear() refills the slots
+        // from there rather than from Qt's defaults. So the write is kept
+        // somewhere the map wipe cannot reach.
+        if (envId >= 257 && envId <= 272) {
+            this.profileEnvColors.set(envId, { spec: 1, alpha: a, r, g, b });
+        }
         this.notify();
     }
+
+    /**
+     * The sixteen mapper colours as the profile holds them, outliving any map
+     * loaded into this store.
+     *
+     * They outlive the SESSION in Mudlet, being profile data; here they do not
+     * yet — nothing writes them to the profile bag, so reopening a profile
+     * brings back the Qt defaults. Closing that needs a settings field of its
+     * own, which is a change to the stored schema rather than to the map.
+     */
+    private readonly profileEnvColors = new Map<number, MudletColor>();
 
     /**
      * Seed env IDs 257-272 with the profile's 16 mapper colours, mirroring
@@ -3744,7 +3869,12 @@ export class MapStore {
             [128, 128, 128],   // 272 dark gray
         ];
         palette.forEach(([r, g, b], i) => {
-            this.customEnvColors.set(257 + i, { spec: 1, alpha: 255, r, g, b });
+            const envId = 257 + i;
+            // Whatever the profile was last told to hold for this slot wins:
+            // that is the point of the block, and of TMap::restore16ColorSet
+            // reading Host::mRed_2 rather than a constant.
+            this.customEnvColors.set(envId, this.profileEnvColors.get(envId)
+                ?? { spec: 1, alpha: 255, r, g, b });
         });
     }
 
