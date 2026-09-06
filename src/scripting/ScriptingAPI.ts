@@ -3177,8 +3177,9 @@ export class ScriptingAPI {
      *
      * `foreground`/`background` resolve through the same logic as getFgColor /
      * getBgColor (falling back to the profile defaults for unstyled segments).
-     * `overline`, `concealed`, and `alternateFont` have no equivalent in mudix's
-     * FormatState, so they report Mudlet's "off" values (false / 0) for parity.
+     * `alternateFont` is recorded but never rendered — mudix has no alternate
+     * font to switch to — so a script reads back the number the game asked for
+     * and sees no difference on screen.
      */
     getTextFormat(windowName?: string): {
         bold: boolean;
@@ -3238,8 +3239,8 @@ export class ScriptingAPI {
             strikeout: !!state?.strikethrough,
             reverse: !!state?.inverse,
             overline: !!state?.overline,
-            concealed: false,
-            alternateFont: 0,
+            concealed: !!state?.concealed,
+            alternateFont: state?.alternateFont ?? 0,
             blinking: state?.rapidBlink ? 'fast' : state?.slowBlink ? 'slow' : 'none',
             foreground,
             background,

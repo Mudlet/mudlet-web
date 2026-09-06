@@ -47,10 +47,16 @@ describe('SGR 24-bit colour with a colour space id', () => {
         }
     });
 
-    it('ignores a truncated sequence rather than inventing a colour', () => {
+    // A component the sequence stopped short of is a zero, not a reason to drop
+    // the colour — decodeSGR38 pads the missing ones and always ends up with a
+    // colour, black in the worst case. Telnet_spec pins the same rule without
+    // the colour space id ("fills the missing components of a truncated
+    // truecolour foreground with zero").
+    it('fills a truncated sequence out with zeroes', () => {
         setExpectColorSpaceId(true);
-        // Only three parameters after the mode — not enough once the id eats one.
+        // Only three parameters after the mode — the id eats one, so blue is
+        // the component that goes missing.
         const buf = new AnsiAwareBuffer(`${ESC}[38;2;1;10;20mX${ESC}[0m`);
-        expect(buf.getStateAt(0)?.foreground).not.toMatchObject({ space: 'rgb' });
+        expect(buf.getStateAt(0)?.foreground).toMatchObject({ space: 'rgb', r: 10, g: 20, b: 0 });
     });
 });
