@@ -145,7 +145,9 @@ export class MudSession {
      *  time so a mid-session settings change can't rewrite the notices. */
     private secureDial = false;
     /** `performance`-independent stand-in for Mudlet's `mConnectionTimer`: when
-     *  the socket actually opened, or null while nothing has connected. */
+     *  the link to the *game* came up (`client.established`), or null while
+     *  nothing has. Not the WebSocket's own open: in `mud` mode that one is to
+     *  the proxy, which accepts it before dialling the game at all. */
     private connectedAt: number | null = null;
     /** The socket-level failure behind the disconnect now in flight, stashed by
      *  {@link reportConnectionError}. cTelnet reads the equivalent straight off
@@ -187,6 +189,12 @@ export class MudSession {
         // handler writes anything of its own, which is the order cTelnet
         // produces (postMessage precedes raiseEvent in both slots).
         this.events.on('client.connect', () => { this.setStatus('connected'); this.announceConnected(); });
+        // Mudlet's `mConnectionTimer.start()` (ctelnet.cpp:723). It hangs off
+        // the *game* socket, not the proxy one: `client.connect` in `mud` mode
+        // only means the proxy accepted our WebSocket, so timing a session from
+        // there credits a dial that never reached the game with however long the
+        // upstream connect took to fail. See `client.established` in events.ts.
+        this.events.on('client.established', () => { this.connectedAt = Date.now(); });
         this.events.on('client.disconnect', () => {
             this.setStatus('disconnected');
             this.setPing(null);
@@ -240,6 +248,7 @@ export class MudSession {
         this.teardownClient();
         this.connectedAt = null;
         this.deliberateDisconnect = false;
+        this.dontReconnect = false;
         this.disconnectReason = null;
         // Synchronously re-measure the main console's char grid before dialing.
         // The resize observer that normally feeds windowSize is async, so a quick
@@ -285,18 +294,38 @@ export class MudSession {
     }
 
     /**
-     * Whether the last disconnect was asked for rather than suffered — Mudlet's
-     * `mDontReconnect`. The disconnect notice reads it to name the user rather
-     * than guessing at the server, and a future auto-reconnect would read it to
-     * leave a hang-up alone. Cleared by {@link connect}.
+     * Whether the last disconnect was asked for rather than suffered. The
+     * disconnect notice reads it to name the user rather than guessing at the
+     * server — cTelnet's `mDontReconnect` in its reason-naming role
+     * (ctelnet.cpp:803, :859). Cleared by {@link connect}.
      */
     deliberateDisconnect = false;
+
+    /**
+     * Whether the disconnect now in flight must not be auto-reconnected —
+     * cTelnet's `mDontReconnect` in its *other* role (ctelnet.cpp:920).
+     *
+     * Mudlet uses the one flag for both, which is why a rejected GMCP login
+     * there reports the drop as "User Disconnected": GMCPAuthenticator raises
+     * `mDontReconnect` at rejection time (GMCPAuthenticator.cpp:613), long
+     * before the reason is composed. Splitting the two keeps "the user asked
+     * for it" honest while still suppressing the redial — the certificate and
+     * login paths in ProfileSession set this one alone, and Mudlet's own
+     * ordering makes the certificate case agree either way (it raises the flag
+     * *after* naming the reason, ctelnet.cpp:819).
+     *
+     * Set by {@link disconnect} too, so hanging up by hand is never undone, and
+     * cleared by {@link connect} — it only ever suppresses the one cycle it was
+     * raised for, as Mudlet's `mDontReconnect = false` at ctelnet.cpp:923 does.
+     */
+    dontReconnect = false;
 
     disconnect(): void {
         if (!this.client) return;
         // Latched before the socket closes, so the disconnect notice can name
         // the user rather than guessing at the server — cTelnet's mDontReconnect.
         this.deliberateDisconnect = true;
+        this.dontReconnect = true;
         this.client.disconnect();
     }
 
@@ -927,7 +956,6 @@ export class MudSession {
      *  suffix is dropped rather than guessed at; this is the one notice here
      *  that is not Mudlet's string verbatim. */
     private announceConnected(): void {
-        this.connectedAt = Date.now();
         // The secure counterpart is announced by the `tls.established` handler
         // in ProfileSession ("Secure connection made (…)"), which is the real
         // parallel: Mudlet wires slot_socketConnected to QSslSocket::encrypted

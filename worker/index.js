@@ -177,7 +177,14 @@ export default {
         };
 
         tcpSocket.opened.then(
-            () => { /* handshake outcome still unknown; see the read loop */ },
+            () => {
+                // The TCP leg is up. On the TLS path the handshake outcome is
+                // still unknown here (see the read loop), but the *socket* to
+                // the game exists either way, and that is what the client's
+                // "has this session settled?" clock needs: its own WebSocket
+                // opened before this dial even started. Issue #130.
+                sendControl(server, { type: 'game.connected' });
+            },
             (err) => {
                 tcpClosed = true;
                 if (useTls) {

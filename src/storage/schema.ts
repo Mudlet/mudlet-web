@@ -21,6 +21,19 @@ export interface MudConnection {
      *  `undefined`/`false` = open offline (default); the "Connect" button always
      *  dials regardless. */
     autoReconnect?: boolean;
+    /** Mudlet's *other* connection option, `autoreconnect` (read per profile in
+     *  `Host.cpp:344-345`, written by
+     *  `dlgConnectionProfiles::slot_updateAutoReconnect`): when a connection
+     *  that had settled drops for any reason the user didn't ask for, redial it
+     *  once, straight away and silently (`cTelnet::slot_socketDisconnected`,
+     *  ctelnet.cpp:918-923).
+     *
+     *  {@link autoReconnect} above is Mudlet's `autologin` in spite of its name
+     *  — it only decides whether *opening* the profile dials — and renaming it
+     *  would orphan every existing profile, same reasoning as the `mudix_*`
+     *  storage keys. So the second option gets a name of its own. See
+     *  `hooks/useAutoReconnect`. */
+    reconnectOnDrop?: boolean;
     /** Profile icon shown on the connection-selection screen (Mudlet's profile
      *  icon, set by setProfileIcon / read by getProfileIcon / cleared by
      *  resetProfileIcon). Stored as a self-contained `data:` URI. Lives on the

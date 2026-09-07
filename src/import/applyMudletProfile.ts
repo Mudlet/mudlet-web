@@ -80,6 +80,7 @@ export function bundleToConnectionRecord(bundle: MudletProfileBundle): Omit<MudC
     if (typeof side.port === 'number' && Number.isFinite(side.port)) out.port = side.port;
     if (typeof side.proxyUrl === 'string') out.proxyUrl = side.proxyUrl;
     if (typeof side.autoReconnect === 'boolean') out.autoReconnect = side.autoReconnect;
+    if (typeof side.reconnectOnDrop === 'boolean') out.reconnectOnDrop = side.reconnectOnDrop;
     // A websocket profile's address lives in `url`; <Host><url> held it only so
     // the XML stayed valid, and as `host` it would read as a telnet hostname.
     if (out.mode === 'websocket') {

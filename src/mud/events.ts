@@ -71,6 +71,16 @@ export type MudClientEvents = {
     'client.connect': void;
     'client.disconnect': void;
     'client.error': [message: string];
+    /** The link to the *game* is up — Mudlet's `slot_socketConnected`, where
+     *  `mConnectionTimer` starts (ctelnet.cpp:723). Distinct from
+     *  `client.connect`, which in proxy mode only means the WebSocket to the
+     *  proxy opened: the proxy accepts that first and dials the game afterwards,
+     *  so a dial to a dead game still "connects". Fires at most once per socket,
+     *  on whichever comes first of the proxy's `game.connected` control frame, a
+     *  completed TLS handshake, or the first byte of game traffic — and
+     *  immediately on open for a direct websocket, where there is no second leg.
+     *  Anything measuring how long a session lasted wants this one. */
+    'client.established': void;
     /** The WebSocket subprotocol the server selected from our advertised list
      *  (RFC 6455), or '' if none — only emitted when we advertised any. */
     'client.subprotocol': [protocol: string];

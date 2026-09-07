@@ -279,6 +279,10 @@ export class MudClient {
      *  arrived (which can only happen through a working tunnel). */
     private tlsResolved = false;
     private tlsDeadline: ReturnType<typeof setTimeout> | null = null;
+    /** True once `client.established` has been emitted for the current socket —
+     *  the several signals that can prove the game leg is up all funnel through
+     *  {@link markEstablished}, and only the first of them counts. */
+    private gameEstablished = false;
 
     commandEcho: boolean;
     /** Gates the in-band `!!SOUND(...)` / `!!MUSIC(...)` tag parsing — the tag
@@ -597,6 +601,7 @@ export class MudClient {
         this.gmcpHelloSent = false;
         // Redialling re-runs the handshake, so the previous verdict is stale.
         this.tlsResolved = false;
+        this.gameEstablished = false;
         if (this.tlsDeadline !== null) {
             clearTimeout(this.tlsDeadline);
             this.tlsDeadline = null;
@@ -629,6 +634,9 @@ export class MudClient {
                     // also clears a pending TLS deadline — a proxy that reports
                     // no control frames still can't fake decrypted traffic.
                     if (this.tlsRequested && !this.tlsResolved) this.resolveTls();
+                    // …and for the same reason it proves the game leg is up,
+                    // which is the fallback for a proxy too old to say so.
+                    this.markEstablished();
                     const decodedData = bytesToLatin1(new Uint8Array(event.data));
                     const data = this.mccpHandler.processData(decodedData);
                     if (debugTelnetEnabled()) {
@@ -707,6 +715,10 @@ export class MudClient {
                 }
                 this.eventBus.emit('open', event);
                 this.eventBus.emit('client.connect');
+                // A direct websocket has only one leg, so opening it *is*
+                // reaching the game. Through a proxy it is not, and the frame
+                // or first byte that proves it arrives later.
+                if (!this.viaProxy) this.markEstablished();
             };
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -720,6 +732,15 @@ export class MudClient {
             // failed connectToHost still reaches slot_socketDisconnected.
             this.eventBus.emit('client.disconnect');
         }
+    }
+
+    /** Announce that the link to the game itself is up, once per socket.
+     *  See the `client.established` docs in events.ts for why this is not the
+     *  same thing as `client.connect`. */
+    private markEstablished(): void {
+        if (this.gameEstablished) return;
+        this.gameEstablished = true;
+        this.eventBus.emit('client.established');
     }
 
     /** Stop policing the TLS deadline — the handshake is accounted for. */
@@ -742,8 +763,18 @@ export class MudClient {
         }
         if (!msg || typeof msg.type !== 'string') return;
 
+        // Both proxies announce the upstream TCP connect (issue #130). A proxy
+        // predating it says nothing, and the first game byte stands in.
+        if (msg.type === 'game.connected') {
+            this.markEstablished();
+            return;
+        }
+
         if (msg.type === 'tls.established') {
             this.resolveTls();
+            // A completed handshake is a connected socket by definition, so an
+            // older proxy that sends only this one still dates the session.
+            this.markEstablished();
             this.eventBus.emit('tls.established', {
                 protocol: typeof msg.protocol === 'string' ? msg.protocol : '',
                 cipher: typeof msg.cipher === 'string' ? msg.cipher : '',

@@ -29,6 +29,11 @@ export interface BrandMudTarget {
     name?: string;
     /** Seeded profiles dial automatically when opened. */
     autoConnect?: boolean;
+    /** Seeded profiles come back on their own when a settled connection drops —
+     *  Mudlet's "Reconnect automatically". Exposed here because branded mode
+     *  never shows the connection editor: the brand config is the only place a
+     *  managed profile's options can be set (see `ensureBrandProfile`). */
+    autoReconnect?: boolean;
 }
 
 /** A package bundled with the brand, installed on first profile open through
@@ -343,7 +348,10 @@ export function brandConnectionData(brand: BrandConfig, account?: string): Omit<
     if (!mud) return null;
     const common = {
         name: account?.trim() || mud.name || brand.appName,
+        // `autoReconnect` on the connection record is the dial-on-open flag
+        // (Mudlet's autologin); `reconnectOnDrop` is the redial-on-drop one.
         autoReconnect: mud.autoConnect || undefined,
+        reconnectOnDrop: mud.autoReconnect || undefined,
     };
     if (mud.mode === 'mud') {
         return { ...common, mode: 'mud', host: mud.host ?? '', port: mud.port ?? 23, url: undefined };

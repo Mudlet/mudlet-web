@@ -66,6 +66,16 @@ describe('connect/disconnect console notices', () => {
         return MockWebSocket.instances[MockWebSocket.instances.length - 1];
     };
 
+    /** Open the socket *and* have the proxy report that it reached the game.
+     *  Through a proxy the WebSocket opening only means the proxy accepted us —
+     *  it dials the game afterwards — so the session clock (Mudlet's
+     *  mConnectionTimer) starts on this frame, not on `onopen`. */
+    const settle = (sock: MockWebSocket) => {
+        sock.onopen?.({});
+        sock.onmessage?.({ data: JSON.stringify({ type: 'game.connected' }) as unknown as ArrayBuffer });
+        return sock;
+    };
+
     beforeEach(() => {
         realWebSocket = g.WebSocket;
         g.WebSocket = MockWebSocket as unknown;
@@ -142,8 +152,7 @@ describe('connect/disconnect console notices', () => {
         // five-second window cTelnet has no explanation to offer, so it says so.
         it('says only that it got disconnected when it has no reason', () => {
             vi.useFakeTimers();
-            const sock = dial();
-            sock.onopen?.({});
+            const sock = settle(dial());
             messages = [];
             vi.advanceTimersByTime(65_000);
             sock.onclose?.({ code: 1000, reason: '', wasClean: true });
@@ -156,8 +165,7 @@ describe('connect/disconnect console notices', () => {
         // cTelnet's last arm (ctelnet.cpp:1092-1093).
         it('carries the socket error as the reason, printed once', () => {
             vi.useFakeTimers();
-            const sock = dial();
-            sock.onopen?.({});
+            const sock = settle(dial());
             messages = [];
             vi.advanceTimersByTime(30_000);
             sock.onclose?.({ code: 1006, reason: '', wasClean: false });

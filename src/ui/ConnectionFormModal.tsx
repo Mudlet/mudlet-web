@@ -91,6 +91,7 @@ export function ConnectionFormModal({ connection, preset, firstConnection, title
     const [proxyUrl, setProxyUrl] = useState(initial?.proxyUrl ?? '');
     const [url, setUrl] = useState(initial?.url ?? '');
     const [autoReconnect, setAutoReconnect] = useState(initial?.autoReconnect ?? false);
+    const [reconnectOnDrop, setReconnectOnDrop] = useState(initial?.reconnectOnDrop ?? false);
     const [tls, setTls] = useState(initial?.tls ?? false);
     const [sslIgnoreExpired, setSslIgnoreExpired] = useState(initial?.sslIgnoreExpired ?? false);
     const [sslIgnoreSelfSigned, setSslIgnoreSelfSigned] = useState(initial?.sslIgnoreSelfSigned ?? false);
@@ -156,6 +157,7 @@ export function ConnectionFormModal({ connection, preset, firstConnection, title
         const common = {
             proxyUrl: proxyUrl.trim() || undefined,
             autoReconnect: autoReconnect || undefined,
+            reconnectOnDrop: reconnectOnDrop || undefined,
             icon: connection?.icon,
             charLoginAccount: acct || undefined,
             // The password is not written here any more — it goes to the
@@ -479,6 +481,22 @@ export function ConnectionFormModal({ connection, preset, firstConnection, title
                                 checked={autoReconnect}
                                 onChange={setAutoReconnect}
                                 aria-label="Auto-connect on profile open"
+                            />
+                        </div>
+
+                        <div className="connection-autoconnect-row">
+                            <label className="connection-autoconnect-label" htmlFor="cs-reconnect-on-drop">
+                                <span className="connection-autoconnect-title">Reconnect automatically</span>
+                                <span className="connection-autoconnect-hint">
+                                    Reconnect this profile if it becomes disconnected for any reason
+                                    other than you disconnecting from the game server.
+                                </span>
+                            </label>
+                            <Toggle
+                                id="cs-reconnect-on-drop"
+                                checked={reconnectOnDrop}
+                                onChange={setReconnectOnDrop}
+                                aria-label="Reconnect automatically"
                             />
                         </div>
 
