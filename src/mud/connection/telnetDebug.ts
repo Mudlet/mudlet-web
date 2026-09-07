@@ -89,7 +89,10 @@ export function logTelnetNegotiation(label: string, s: string): void {
         }
     }
     // eslint-disable-next-line no-console
-    console.debug(`[mudlet.telnet ${label}] bytes=${s.length}`,
+    // `label` rides a `%s` substitution rather than the template: console reads
+    // the first argument as a format string, so interpolating a caller-supplied
+    // value there would let it smuggle in specifiers of its own.
+    console.debug('[mudlet.telnet %s] bytes=%d', label, s.length,
         seqs.length ? seqs.join(' | ') : '(no IAC sequences)');
 }
 

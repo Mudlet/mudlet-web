@@ -125,7 +125,11 @@
           var tag = el.tagName.toLowerCase();
           if (tag !== 'script' && !(tag === 'link' && el.rel === 'stylesheet')) return;
           var src = el.src || el.href || '';
-          if (src.indexOf('stats.mudlet.org') !== -1) return; // analytics is not the app
+          // Compare the host, not a substring: an app asset served from some
+          // other host that merely contains this name still has to be reported.
+          var host = '';
+          try { host = new URL(src, location.href).hostname; } catch (e) { /* not a URL */ }
+          if (host === 'stats.mudlet.org') return; // analytics is not the app
           fail('could not load ' + src.split('/').pop());
         }, true);
 

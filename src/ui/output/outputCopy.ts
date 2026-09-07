@@ -111,7 +111,10 @@ function timestampColor(container: HTMLElement, fallback: string): string {
 }
 
 function escapeHtml(s: string): string {
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    // Quotes matter: the generator value below lands inside `content="…"`, so an
+    // unescaped quote would close the attribute early.
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 /** The current selection's ranges, cloned so later collapsing cannot disturb
