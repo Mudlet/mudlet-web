@@ -14,6 +14,9 @@
          logo — the same 512px master the manifest's PNG icons are cut from. -->
     <link rel="apple-touch-icon" href="./icon-512.png" />
     <link rel="manifest" href="./manifest.webmanifest" />
+    <!-- Chrome deprecated the apple- prefixed form in favour of the standard
+         one, but Safari still reads only the prefixed name, so both ship. -->
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Mudlet Web" />
