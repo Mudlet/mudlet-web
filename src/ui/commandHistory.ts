@@ -1,7 +1,7 @@
 // MRU command-line history with prefix/subsequence matching and LCP-based
 // Tab-completion. Persisted in localStorage; case-insensitive de-duplication.
 
-const STORAGE_PREFIX = 'cmd.history';
+const STORAGE_PREFIX = 'mudlet_history';
 export const MAX_HISTORY = 500;
 
 /** Default number of entries persisted to localStorage when the profile hasn't
@@ -13,7 +13,7 @@ export const DEFAULT_HISTORY_SAVE_SIZE = MAX_HISTORY;
  *  one MUD's commands shouldn't surface in another's. The bare prefix (no
  *  connection) backs the connection screen before a profile is open. */
 export function historyStorageKey(connectionId: string | null): string {
-    return connectionId ? `${STORAGE_PREFIX}.${connectionId}` : STORAGE_PREFIX;
+    return connectionId ? `${STORAGE_PREFIX}_${connectionId}` : STORAGE_PREFIX;
 }
 
 export function loadHistory(key: string): string[] {

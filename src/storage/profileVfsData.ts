@@ -27,9 +27,9 @@ import type { ProfileVFS } from '../scripting/vfs/ProfileVFS';
  * eliminating the multi-tab clobber the shared blob suffered.
  *
  * The file is dot-prefixed so it stays out of the way in the user-browsable
- * file area. `ProfileVFS.writeFile` creates the `.mudix/` parent dir for us.
+ * file area. `ProfileVFS.writeFile` creates the `.mudlet/` parent dir for us.
  */
-export const PROFILE_DATA_PATH = '.mudix/profile.json';
+export const PROFILE_DATA_PATH = '.mudlet/profile.json';
 
 /** Bumped if the on-disk shape changes incompatibly. (2: added the UI/layout/
  *  settings slices that used to live in localStorage. 3: a trigger's `delta`
@@ -109,14 +109,56 @@ function migrateTriggerDelta(triggers: TriggerNode[] | undefined): TriggerNode[]
         : t));
 }
 
+/** The dot-directory this app kept its per-profile bookkeeping in while the
+ *  project's storage was namespaced `mudix`: profile.json, and the export
+ *  sidecars connection.json and host.xml. */
+const LEGACY_DOT_DIR = '.mudix';
+const DOT_DIR = '.mudlet';
+
 /**
- * Read `.mudix/profile.json` from the profile VFS and push it into the store
+ * Move a profile's bookkeeping out of the old `.mudix/` directory.
+ *
+ * Unlike the localStorage keys and the databases (storageMigration.ts), this
+ * lives *inside* a profile's filesystem and so cannot be touched until that
+ * profile is mounted — which is exactly here, on open. A profile the user never
+ * opens keeps the old directory until they do, which costs nothing.
+ *
+ * Moves the whole directory rather than the one file this module owns, so the
+ * export sidecars come too and nothing is left behind to go stale. A file
+ * already present under the new name wins: it is the one being written.
+ */
+function migrateLegacyDotDir(vfs: ProfileVFS): void {
+    try {
+        if (!vfs.exists(LEGACY_DOT_DIR)) return;
+        for (const name of vfs.readdir(LEGACY_DOT_DIR)) {
+            const from = `${LEGACY_DOT_DIR}/${name}`;
+            const to = `${DOT_DIR}/${name}`;
+            try {
+                // Binary-safe: host.xml and profile.json are text today, but this
+                // is a directory move and should not care what is in it.
+                if (!vfs.exists(to)) vfs.writeBinaryFile(to, vfs.readBinaryFile(from));
+                vfs.deleteFile(from);
+            } catch (err) {
+                console.warn('[profileVfsData] could not move', from, err);
+            }
+        }
+        try { vfs.rmdir(LEGACY_DOT_DIR); } catch { /* not empty, or already gone */ }
+    } catch (err) {
+        // Leave the old directory be; it is still readable next time. Never let
+        // this stop the profile from loading.
+        console.warn('[profileVfsData] could not move', LEGACY_DOT_DIR, err);
+    }
+}
+
+/**
+ * Read `.mudlet/profile.json` from the profile VFS and push it into the store
  * for `connectionId`. Also completes the one-time v21 migration: if this
  * profile's UI/settings/layout slices haven't moved into the VFS yet, they're
  * pulled from the migration backup, hydrated, written to the VFS, and dropped
  * from the backup. No-op for a fresh profile with nothing to load.
  */
 export function loadProfileData(vfs: ProfileVFS, connectionId: string): void {
+    migrateLegacyDotDir(vfs);
     const fileExists = vfs.exists(PROFILE_DATA_PATH);
     let fileData: Partial<PersistedProfileData> = {};
     if (fileExists) {

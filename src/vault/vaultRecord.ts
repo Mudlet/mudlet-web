@@ -16,7 +16,7 @@
 
 import type { Ciphertext } from './vaultCrypto';
 
-export const VAULT_STORAGE_KEY = 'mudix_vault_v1';
+export const VAULT_STORAGE_KEY = 'mudlet_vault_v1';
 
 interface UnlockerBase {
     /** Stable local id, so the manage UI can remove one unambiguously. */

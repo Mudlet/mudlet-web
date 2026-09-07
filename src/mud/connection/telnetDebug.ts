@@ -1,6 +1,6 @@
 /**
  * localStorage-gated diagnostic logging for the MUD connection. Each gate is
- * toggled from the browser console (e.g. `localStorage.setItem('mudix.debugTelnet',
+ * toggled from the browser console (e.g. `localStorage.setItem('mudlet.debugTelnet',
  * '1')`) and read live on every use, so logging can be flipped mid-session
  * without a reconnect.
  */
@@ -14,51 +14,51 @@ function gateEnabled(key: string): boolean {
 }
 
 /**
- * `mudix.debugTelnet` — log every telnet command/subnegotiation byte seen on
+ * `mudlet.debugTelnet` — log every telnet command/subnegotiation byte seen on
  * each incoming frame, and every byte-string we send. Used to investigate
  * protocol-negotiation issues (GMCP/MSDP/MCCP not enabling) by revealing
  * exactly what crosses the wire in both directions.
  */
 export function debugTelnetEnabled(): boolean {
-    return gateEnabled('mudix.debugTelnet');
+    return gateEnabled('mudlet.debugTelnet');
 }
 
 /**
- * `mudix.debugFrames` — log WebSocket frame boundaries for the MUD stream.
+ * `mudlet.debugFrames` — log WebSocket frame boundaries for the MUD stream.
  * Used to investigate "extra line break" issues that surface when long MUD
  * lines arrive split across multiple WebSocket frames.
  */
 export function debugFramesEnabled(): boolean {
-    return gateEnabled('mudix.debugFrames');
+    return gateEnabled('mudlet.debugFrames');
 }
 
 /**
- * `mudix.debugMsp` — log MSP negotiation, parsed `!!SOUND`/`!!MUSIC` tags
+ * `mudlet.debugMsp` — log MSP negotiation, parsed `!!SOUND`/`!!MUSIC` tags
  * (inline and subneg), and their dispatch into the SoundManager. Use this to
  * confirm whether a MUD is actually emitting MSP and whether the client is
  * routing it through.
  */
 export function debugMspEnabled(): boolean {
-    return gateEnabled('mudix.debugMsp');
+    return gateEnabled('mudlet.debugMsp');
 }
 
 /**
- * `mudix.debugGmcp` — log every parsed GMCP message's path and (truncated) body
+ * `mudlet.debugGmcp` — log every parsed GMCP message's path and (truncated) body
  * as it arrives. Used to see exactly which modules a server drives — e.g.
  * whether login audio comes over `Client.Media.*` GMCP vs. MSP tags.
  */
 export function debugGmcpEnabled(): boolean {
-    return gateEnabled('mudix.debugGmcp');
+    return gateEnabled('mudlet.debugGmcp');
 }
 
 /**
- * `mudix.debugGa` — log every IAC GA / IAC EOR prompt marker the server sends,
+ * `mudlet.debugGa` — log every IAC GA / IAC EOR prompt marker the server sends,
  * plus the one-time moment the client latches into GA-driven prompt mode. Use
  * this to confirm whether a MUD actually signals its prompts (GA-less MUDs rely
  * on the `promptTimeoutMs` idle-flush fallback instead).
  */
 export function debugGaEnabled(): boolean {
-    return gateEnabled('mudix.debugGa');
+    return gateEnabled('mudlet.debugGa');
 }
 
 const TELNET_CMD_NAMES: Record<number, string> = {

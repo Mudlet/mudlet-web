@@ -29,7 +29,11 @@ export function formatSaveStamp(date: Date): string {
 /** Connection fields Mudlet's `<Host>` can't express (websocket mode, the proxy
  *  override, auto-reconnect). Written beside the XML so a mudix→mudix round-trip
  *  keeps them; desktop Mudlet ignores the dot-directory entirely. */
-export const CONNECTION_SIDECAR_PATH = '.mudix/connection.json';
+export const CONNECTION_SIDECAR_PATH = '.mudlet/connection.json';
+
+/** Where the sidecar lived in archives exported before the storage rename.
+ *  Those zips are out in the wild, so import still has to look here. */
+export const LEGACY_CONNECTION_SIDECAR_PATH = '.mudix/connection.json';
 
 /** Where a profile imported from Mudlet keeps its original `<HostPackage>`,
  *  inside its own VFS. `extractHostPackageXml` produces it at import time; the
@@ -41,7 +45,12 @@ export const CONNECTION_SIDECAR_PATH = '.mudix/connection.json';
  *  linked folder (its own `current/*.xml` is the live original), and for
  *  profiles imported before this file existed — their `<Host>` was already
  *  dropped at import and can't be recovered. */
-export const RETAINED_HOST_PATH = '.mudix/host.xml';
+export const RETAINED_HOST_PATH = '.mudlet/host.xml';
+
+/** Pre-rename location of the retained host XML. A profile whose VFS has not
+ *  been opened since the rename still keeps it here (see migrateLegacyDotDir),
+ *  as does any archive exported before it. */
+export const LEGACY_RETAINED_HOST_PATH = '.mudix/host.xml';
 
 export interface ConnectionSidecar {
     mode?: MudConnection['mode'];
@@ -153,12 +162,12 @@ export interface ExportLog {
 
 export interface ProfileExportSource {
     connection: MudConnection;
-    /** Contents of `.mudix/profile.json`. */
+    /** Contents of `.mudlet/profile.json`. */
     data: PersistedProfileData;
     /** Loose VFS files (packages, fonts, sounds, …), keyed relative to the
-     *  profile root. `.mudix/` is expected to be filtered out by the collector. */
+     *  profile root. `.mudlet/` is expected to be filtered out by the collector. */
     files: Record<string, Uint8Array>;
-    /** The profile's retained Mudlet `<HostPackage>` — `.mudix/host.xml`, or a
+    /** The profile's retained Mudlet `<HostPackage>` — `.mudlet/host.xml`, or a
      *  linked folder's own newest save. Undefined for a profile that was never
      *  imported from Mudlet: it has no unmodeled Host settings to preserve. */
     hostBaseXml?: string;
@@ -181,8 +190,10 @@ export function buildProfileFolder(src: ProfileExportSource, stamp: string): Rec
     const out: Record<string, Uint8Array> = {};
     for (const [path, bytes] of Object.entries(src.files)) {
         // The profile.json is re-serialized into the XML; carrying it too would
-        // ship the same state twice in two formats.
-        if (path === '.mudix/profile.json') continue;
+        // ship the same state twice in two formats. Both locations: a profile
+        // that has not been opened since the storage rename still keeps it in
+        // `.mudix/` (moved on open — see migrateLegacyDotDir).
+        if (path === '.mudlet/profile.json' || path === '.mudix/profile.json') continue;
         out[path] = bytes;
     }
     out[`current/${stamp}.xml`] = strToU8(buildProfileXml(src.connection, src.data, src.hostBaseXml));

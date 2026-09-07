@@ -3,7 +3,7 @@
  *
  * The Matomo snippet in `index.html` runs before any module loads, so the
  * opt-out cannot live in the Zustand store the way every other preference does
- * — by the time `mudix_v1` has been read and hydrated, the tracker has already
+ * — by the time `mudlet_v1` has been read and hydrated, the tracker has already
  * fired. It gets its own localStorage key instead, written here and read by
  * that inline script with a bare `localStorage.getItem`.
  *
@@ -17,7 +17,7 @@
  */
 
 /** Also spelled literally in `index.html` — keep the two in step. */
-export const ANALYTICS_OPT_OUT_KEY = 'mudix_analytics_opt_out';
+export const ANALYTICS_OPT_OUT_KEY = 'mudlet_analytics_opt_out';
 
 /** True when the user has asked not to be counted. Defaults to false (counted),
  *  and answers false when storage is unavailable — matching what the inline

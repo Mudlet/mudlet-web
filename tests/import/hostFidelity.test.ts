@@ -287,7 +287,7 @@ describe('readHostBase', () => {
     }
 
     it('lives under the internal directory the export and Mudlet both skip', () => {
-        expect(RETAINED_HOST_PATH.startsWith('.mudix/')).toBe(true);
+        expect(RETAINED_HOST_PATH.startsWith('.mudlet/')).toBe(true);
     });
 
     it('prefers the retained copy over a save mudix wrote itself', () => {

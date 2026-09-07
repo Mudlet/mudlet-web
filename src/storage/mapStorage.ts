@@ -1,7 +1,12 @@
-const DB_NAME = 'mudix_maps';
+import { whenIdbNamesMigrated } from './storageMigration';
+
+const DB_NAME = 'mudlet_maps';
 const STORE_NAME = 'maps';
 
-function openDb(): Promise<IDBDatabase> {
+async function openDb(): Promise<IDBDatabase> {
+    // The database was called `mudix_maps` until the storage namespace was
+    // renamed; no reader may run before that has been moved across.
+    await whenIdbNamesMigrated();
     return new Promise((resolve, reject) => {
         const req = indexedDB.open(DB_NAME, 1);
         req.onupgradeneeded = () => req.result.createObjectStore(STORE_NAME);

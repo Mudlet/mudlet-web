@@ -694,7 +694,7 @@ export class MudClient {
                     this.eventBus.emit('client.subprotocol', selected);
                     if (debugTelnetEnabled()) {
                         // eslint-disable-next-line no-console
-                        console.debug('[mudix.telnet subprotocol] requested',
+                        console.debug('[mudlet.telnet subprotocol] requested',
                             this.subprotocols.join(', '), '→ selected',
                             selected ? `'${selected}'` : '(none)');
                     }
@@ -901,7 +901,7 @@ export class MudClient {
 
     /** Encodes a Latin-1 byte-string to raw bytes and sends it as a binary
      *  WebSocket frame. The proxy worker expects binary, not base64. Every
-     *  outbound byte funnels through here, so it's also where `mudix.debugTelnet`
+     *  outbound byte funnels through here, so it's also where `mudlet.debugTelnet`
      *  mirrors what we send. */
     private sendBytes(payload: string): void {
         if (debugTelnetEnabled()) logOutboundBytes(payload);

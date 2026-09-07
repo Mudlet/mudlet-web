@@ -6,7 +6,7 @@ import { saveMap } from '../storage/mapStorage';
 import { saveFolderHandle } from '../scripting/vfs/folderHandleStore';
 import { parseMudletProfile } from './mudletHost';
 import { buildMudletProfileBundle, type MudletProfileBundle } from './mudletProfileImport';
-import { CONNECTION_SIDECAR_PATH, RETAINED_HOST_PATH, type ConnectionSidecar } from './mudletProfileExport';
+import { CONNECTION_SIDECAR_PATH, LEGACY_CONNECTION_SIDECAR_PATH, RETAINED_HOST_PATH, type ConnectionSidecar } from './mudletProfileExport';
 import type { MudConnection } from '../storage/schema';
 import { describeThrown } from '../utils/describeThrown';
 
@@ -49,7 +49,7 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
  * The connection record for an imported bundle.
  *
  * A Mudlet `<Host>` only models a telnet host/port, so that's the default. A
- * profile exported *from mudix* also carries `.mudix/connection.json`, which
+ * profile exported from Mudlet Web also carries `.mudlet/connection.json`, which
  * restores what Mudlet can't express — websocket mode and its ws(s):// URL, the
  * per-profile proxy override, auto-reconnect. Unknown/aliased sidecar values are
  * ignored field by field, so a hand-edited file can't produce a broken profile.
@@ -65,7 +65,7 @@ export function bundleToConnectionRecord(bundle: MudletProfileBundle): Omit<MudC
         // profile that doesn't already carry them.
         mudletImported: true,
     };
-    const raw = bundle.files[CONNECTION_SIDECAR_PATH];
+    const raw = bundle.files[CONNECTION_SIDECAR_PATH] ?? bundle.files[LEGACY_CONNECTION_SIDECAR_PATH];
     if (!raw) return base;
     let side: ConnectionSidecar;
     try {
@@ -93,7 +93,7 @@ export function bundleToConnectionRecord(bundle: MudletProfileBundle): Omit<MudC
 /**
  * Create a new mudix profile from a Mudlet profile bundle. Returns the new
  * connection id. The profile opens offline like any other; its data is durable
- * in the new VFS (`.mudix/profile.json`) and map store before this resolves.
+ * in the new VFS (`.mudlet/profile.json`) and map store before this resolves.
  *
  * Anything that could not be carried over is appended to `bundle.warnings` for
  * the caller to show — a copy that quietly loses a package's files or the map

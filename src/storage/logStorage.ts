@@ -3,7 +3,9 @@
 // (`sessions`) and one row per output line (`entries`). Logs can grow large,
 // so they live in their own DB rather than the Zustand/localStorage store.
 
-const DB_NAME = 'mudix_logs';
+import { whenIdbNamesMigrated } from './storageMigration';
+
+const DB_NAME = 'mudlet_logs';
 const SESSION_STORE = 'sessions';
 const ENTRY_STORE = 'entries';
 const DB_VERSION = 1;
@@ -37,7 +39,9 @@ export interface LogEntry {
     plain: string;
 }
 
-function openDb(): Promise<IDBDatabase> {
+async function openDb(): Promise<IDBDatabase> {
+    // Was `mudix_logs` before the storage namespace rename.
+    await whenIdbNamesMigrated();
     return new Promise((resolve, reject) => {
         const req = indexedDB.open(DB_NAME, DB_VERSION);
         req.onupgradeneeded = () => {

@@ -165,7 +165,8 @@ function backupFixture(): MudletWebBackup {
             }),
             [`cmd.history.${OLD_A}`]: '["look","score"]',
             [`mudix_stopwatches_${OLD_A}`]: '{"sw":1}',
-            [VAULT_STORAGE_KEY]: '{"version":1,"unlockers":[]}',
+            // A real backup predates the storage rename, so this is the old key.
+            ['mudix_vault_v1']: '{"version":1,"unlockers":[]}',
         },
         indexedDB: {
             ...vfsDatabase(OLD_A, [10, 20, 30]),

@@ -74,7 +74,7 @@ import {ensureDefaultPackages} from '../import/defaultPackages';
 import {serializeMudletXml, type SerializeInput} from '../import/mudletXmlExport';
 import {isMudletProfileVfs, readNewestParseableXml} from '../import/mudletLink';
 import {buildLinkedWriteback, mudletTimestamp} from '../import/mudletWriteback';
-import {buildHostBaseXml, RETAINED_HOST_PATH} from '../import/mudletProfileExport';
+import {buildHostBaseXml, RETAINED_HOST_PATH, LEGACY_RETAINED_HOST_PATH} from '../import/mudletProfileExport';
 import {describeThrown} from '../utils/describeThrown';
 
 // Linked-profile write-back. serializeMudletXml now emits Mudlet's exact format
@@ -969,8 +969,13 @@ export class ScriptingEngine implements EngineHost {
         if (!vfs) return undefined;
         let retained: string;
         try {
-            if (!vfs.exists(RETAINED_HOST_PATH)) return undefined;
-            retained = vfs.readFile(RETAINED_HOST_PATH);
+            // The legacy path covers a profile whose VFS has not been opened
+            // since the storage rename moved `.mudix/` to `.mudlet/`.
+            const path = vfs.exists(RETAINED_HOST_PATH) ? RETAINED_HOST_PATH
+                : vfs.exists(LEGACY_RETAINED_HOST_PATH) ? LEGACY_RETAINED_HOST_PATH
+                : null;
+            if (!path) return undefined;
+            retained = vfs.readFile(path);
         } catch (err) {
             console.warn('[ScriptingEngine] retained <Host> unreadable:', err);
             return undefined;

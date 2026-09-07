@@ -5,7 +5,7 @@ import { buildPackageManifests } from './mudletProfileImport';
 
 // Link mode (read-only, phase 1): a profile whose VFS is a *linked Mudlet folder*
 // loads its settings/automation/variables/packages from the newest current/*.xml
-// on every open — so edits made in Mudlet show up in mudix. The .mudix/profile.json
+// on every open — so edits made in Mudlet show up in mudix. The .mudlet/profile.json
 // sidecar holds only mudix-only state (layout/dock/mapper/…), applied over the
 // XML. Automation write-back to current/*.xml is phase 2; until then mudix's own
 // automation edits aren't persisted to a linked profile.

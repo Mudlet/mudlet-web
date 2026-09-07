@@ -44,10 +44,44 @@ export const BACKUP_FORMAT = 'mudlet-web-backup';
 /** The highest `version` this importer understands. */
 export const BACKUP_MAX_VERSION = 1;
 
-const STORE_KEY = 'mudix_v1';
-const MAPS_DB = 'mudix_maps';
-const LOGS_DB = 'mudix_logs';
-const VFS_DB_PREFIX = 'mudix_vfs_';
+// Names as they appear INSIDE a backup file. A v1 backup was written by the
+// notice page at the old address, where storage was still namespaced `mudix`,
+// so these are frozen at that spelling and must not follow the rename — see
+// storageMigration.ts. What they are restored *to* is decided by the current
+// name helpers (profileVfsDatabaseName, historyStorageKey, ...).
+// Both spellings are accepted so a file taken from either side of the rename
+// reads. Legacy first: that is what every backup written so far contains.
+const STORE_KEYS = ['mudix_v1', 'mudlet_v1'];
+const MAPS_DBS = ['mudix_maps', 'mudlet_maps'];
+const LOGS_DBS = ['mudix_logs', 'mudlet_logs'];
+const VFS_DB_PREFIXES = ['mudix_vfs_', 'mudlet_vfs_'];
+const HANDLES_DBS = ['mudix_folder_handles', 'mudlet_folder_handles'];
+
+/** The raw store blob, under whichever key this file happens to use. */
+function storeBlob(backup: MudletWebBackup): string | undefined {
+    for (const key of STORE_KEYS) {
+        const raw = backup.localStorage[key];
+        if (raw) return raw;
+    }
+    return undefined;
+}
+
+/** One of a database's stores, looked up under either spelling of its name. */
+function backupStore(backup: MudletWebBackup, names: string[], store: string): BackupStore | undefined {
+    for (const name of names) {
+        const found = backup.indexedDB[name]?.stores?.[store];
+        if (found) return found;
+    }
+    return undefined;
+}
+
+/** The VFS database name prefix this file uses, and the ids under it. */
+function vfsEntries(backup: MudletWebBackup): { name: string; id: string }[] {
+    return Object.keys(backup.indexedDB).flatMap(name => {
+        const prefix = VFS_DB_PREFIXES.find(p => name.startsWith(p));
+        return prefix ? [{ name, id: name.slice(prefix.length) }] : [];
+    });
+}
 
 // ---------------------------------------------------------------------------
 // File shape
@@ -203,7 +237,7 @@ export function parseBackup(text: string): MudletWebBackup {
 
 /** The connection rows the old store blob held. */
 function backedUpConnections(backup: MudletWebBackup): MudConnection[] {
-    const raw = backup.localStorage[STORE_KEY];
+    const raw = storeBlob(backup);
     if (!raw) return [];
     try {
         const parsed = JSON.parse(raw) as { state?: { connections?: MudConnection[] } };
@@ -215,7 +249,7 @@ function backedUpConnections(backup: MudletWebBackup): MudConnection[] {
 }
 
 function backedUpClientSettings(backup: MudletWebBackup): Partial<ClientSettings> | null {
-    const raw = backup.localStorage[STORE_KEY];
+    const raw = storeBlob(backup);
     if (!raw) return null;
     try {
         const parsed = JSON.parse(raw) as { state?: { client?: Partial<ClientSettings> } };
@@ -229,13 +263,11 @@ function backedUpClientSettings(backup: MudletWebBackup): Partial<ClientSettings
 /** Profile ids that have a VFS database in the file, whether or not the store
  *  blob still lists them. */
 function backedUpVfsIds(backup: MudletWebBackup): string[] {
-    return Object.keys(backup.indexedDB)
-        .filter(name => name.startsWith(VFS_DB_PREFIX))
-        .map(name => name.slice(VFS_DB_PREFIX.length));
+    return vfsEntries(backup).map(e => e.id);
 }
 
 function mapRecordFor(backup: MudletWebBackup, connectionId: string): ArrayBuffer | null {
-    const store = backup.indexedDB[MAPS_DB]?.stores?.['maps'];
+    const store = backupStore(backup, MAPS_DBS, 'maps');
     const record = store?.records.find(r => r.key === connectionId);
     if (!record) return null;
     const decoded = decodeBackupValue(record.value);
@@ -248,7 +280,7 @@ function mapRecordFor(backup: MudletWebBackup, connectionId: string): ArrayBuffe
 }
 
 function logSessionsFor(backup: MudletWebBackup, connectionId: string): LogSession[] {
-    const store = backup.indexedDB[LOGS_DB]?.stores?.['sessions'];
+    const store = backupStore(backup, LOGS_DBS, 'sessions');
     if (!store) return [];
     return store.records
         .map(r => decodeBackupValue(r.value) as LogSession)
@@ -256,7 +288,7 @@ function logSessionsFor(backup: MudletWebBackup, connectionId: string): LogSessi
 }
 
 function logEntriesFor(backup: MudletWebBackup, sessionIds: Set<string>): LogEntry[] {
-    const store = backup.indexedDB[LOGS_DB]?.stores?.['entries'];
+    const store = backupStore(backup, LOGS_DBS, 'entries');
     if (!store) return [];
     return store.records
         .map(r => decodeBackupValue(r.value) as LogEntry)
@@ -279,20 +311,21 @@ export function summariseBackup(backup: MudletWebBackup): BackupSummary {
     }
 
     const warnings: string[] = [];
-    if (backup.localStorage[VAULT_STORAGE_KEY]) {
+    // Legacy spelling first: a backup was written before the storage rename.
+    if (backup.localStorage['mudix_vault_v1'] || backup.localStorage[VAULT_STORAGE_KEY]) {
         warnings.push('Saved logins are not imported — passkeys are tied to the address they were created on. Re-enter and save them here.');
     }
-    if (!backup.indexedDB[LOGS_DB]) {
+    if (!backupStore(backup, LOGS_DBS, 'sessions')) {
         warnings.push('This backup has no session logs in it (they are optional on the export side).');
     }
     for (const note of backup.skipped ?? []) {
-        if (note.where === 'mudix_folder_handles') {
+        if (HANDLES_DBS.includes(note.where)) {
             warnings.push('Linked local folders cannot be carried across addresses — re-link the folder after importing.');
         }
     }
 
     const maps = profiles.filter(p => mapRecordFor(backup, p.id) !== null).length;
-    const logSessions = backup.indexedDB[LOGS_DB]?.stores?.['sessions']?.records.length ?? 0;
+    const logSessions = backupStore(backup, LOGS_DBS, 'sessions')?.records.length ?? 0;
 
     return {
         createdAt: backup.createdAt ?? null,
@@ -350,9 +383,17 @@ async function restoreVfsDatabase(sourceStore: BackupStore, newConnectionId: str
     }
 }
 
-/** Carry a per-profile localStorage key across, re-addressed to the new id. */
-function restoreLocalKey(backup: MudletWebBackup, from: string, to: string, warnings: string[]): void {
-    const value = backup.localStorage[from];
+/**
+ * Carry a per-profile localStorage key across, re-addressed to the new id.
+ *
+ * `from` lists the names the value could be under: a backup predates the
+ * storage rename, so its keys are the legacy spellings — command history in
+ * particular was `cmd.history.<id>`, with no prefix at all. The value is always
+ * written under the current name.
+ */
+function restoreLocalKey(backup: MudletWebBackup, from: string[], to: string, warnings: string[]): void {
+    const key = from.find(k => backup.localStorage[k] !== undefined);
+    const value = key === undefined ? undefined : backup.localStorage[key];
     if (value === undefined) return;
     try {
         localStorage.setItem(to, value);
@@ -399,7 +440,10 @@ export async function importBackup(backup: MudletWebBackup): Promise<BackupImpor
         // The VFS carries the profile's scripts, triggers, packages, settings and
         // layout, so a failure here is a failure to import the profile at all —
         // drop the empty connection rather than leave a hollow one behind.
-        const vfsStore = backup.indexedDB[VFS_DB_PREFIX + profile.id]?.stores?.[VFS_DB_PREFIX + profile.id];
+        // The database and the store inside it share a name, whichever prefix
+        // the file was written with.
+        const vfsName = vfsEntries(backup).find(e => e.id === profile.id)?.name;
+        const vfsStore = vfsName ? backup.indexedDB[vfsName]?.stores?.[vfsName] : undefined;
         if (vfsStore) {
             try {
                 await restoreVfsDatabase(vfsStore, newId);
@@ -442,8 +486,12 @@ export async function importBackup(backup: MudletWebBackup): Promise<BackupImpor
             }
         }
 
-        restoreLocalKey(backup, historyStorageKey(profile.id), historyStorageKey(newId), warnings);
-        restoreLocalKey(backup, stopwatchStorageKey(profile.id), stopwatchStorageKey(newId), warnings);
+        restoreLocalKey(backup,
+            [`cmd.history.${profile.id}`, historyStorageKey(profile.id)],
+            historyStorageKey(newId), warnings);
+        restoreLocalKey(backup,
+            [`mudix_stopwatches_${profile.id}`, stopwatchStorageKey(profile.id)],
+            stopwatchStorageKey(newId), warnings);
 
         imported.push({ id: newId, name });
     }

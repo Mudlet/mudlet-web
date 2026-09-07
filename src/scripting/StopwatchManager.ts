@@ -23,7 +23,7 @@ export interface StopwatchStore {
 /** localStorage key holding one profile's stopwatches. Shared with the
  *  profile-deletion sweep (storage/profileStorage) so the two can't drift. */
 export function stopwatchStorageKey(connectionId: string): string {
-    return `mudix_stopwatches_${connectionId}`;
+    return `mudlet_stopwatches_${connectionId}`;
 }
 
 /** Build a localStorage-backed store scoped to a connection, or undefined when

@@ -4,7 +4,7 @@ import { loadMap } from '../storage/mapStorage';
 import { listSessions, getSessionEntries } from '../storage/logStorage';
 import { buildSessionHtml, formatSessionFileStamp } from '../storage/logExport';
 import type { MudConnection } from '../storage/schema';
-import { RETAINED_HOST_PATH, type ExportLog, type ProfileExportSource } from './mudletProfileExport';
+import { RETAINED_HOST_PATH, LEGACY_RETAINED_HOST_PATH, type ExportLog, type ProfileExportSource } from './mudletProfileExport';
 import { readNewestParseableXml, type VfsReader } from './mudletLink';
 
 // Gathers everything one profile owns across the three stores it's spread over
@@ -80,6 +80,8 @@ function readProfileData(vfs: ProfileVFS): PersistedProfileData {
 export function readHostBase(vfs: VfsReader): string | undefined {
     try {
         if (vfs.exists(RETAINED_HOST_PATH)) return vfs.readFile(RETAINED_HOST_PATH);
+        // A profile not opened since the storage rename still has it here.
+        if (vfs.exists(LEGACY_RETAINED_HOST_PATH)) return vfs.readFile(LEGACY_RETAINED_HOST_PATH);
     } catch (err) {
         console.warn('[collectProfileExport] retained <Host> unreadable', err);
     }
@@ -114,7 +116,7 @@ export interface CollectOptions {
 /**
  * Read one profile out of storage, ready for export.
  *
- * The profile's `.mudix/profile.json` is the source of truth — not the Zustand
+ * The profile's `.mudlet/profile.json` is the source of truth — not the Zustand
  * store, which only holds slices for the *open* profile. A profile open in
  * another tab may therefore be up to one save-debounce stale; exporting from the
  * connection screen (where nothing is open) always sees the committed state.

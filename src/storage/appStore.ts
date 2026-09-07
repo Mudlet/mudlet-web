@@ -6,6 +6,7 @@ import type { MudletImportResult } from '../import/mudletXmlImport';
 import type { WindowOpenOptions } from '../ui/windows/types';
 import { createDebouncedJsonStorage } from './debouncedStorage';
 import { deleteProfileStorage, MIGRATION_BACKUP_KEY } from './profileStorage';
+import { migrateLocalStorageNames } from './storageMigration';
 import { getVault } from '../vault/vaultAccess';
 
 function getDescendantIds(id: string, items: { id: string; parentId: string | null }[]): string[] {
@@ -174,12 +175,18 @@ interface PersistedConnectionData {
 /** localStorage key + schema version for the persisted store. Exported so the
  *  cross-tab sync (crossTabSync.ts) can match `storage` events to this store and
  *  reject writes from a different schema version. */
-export const MUDIX_STORE_NAME = 'mudix_v1';
+// Storage used to be namespaced `mudix_*`. Move the old keys across BEFORE
+// `persist` below hydrates from them: it reads during module evaluation, so a
+// later migration would hydrate an empty store and then write that emptiness
+// back over the user's real data. See storageMigration.ts.
+migrateLocalStorageNames();
+
+export const MUDIX_STORE_NAME = 'mudlet_v1';
 export const MUDIX_STORE_VERSION = 21;
 
 /** One-time localStorage key holding pre-v21 per-profile UI/layout/settings
  *  slices, stashed by the v21 migration so they can be moved into each profile's
- *  VFS (.mudix/profile.json) the first time it's opened. Kept separate from the
+ *  VFS (.mudlet/profile.json) the first time it's opened. Kept separate from the
  *  persisted store blob so editing the connections list (which rewrites the
  *  blob) can't drop un-migrated profiles' data. Consumed per-profile by
  *  loadProfileData, then removed when empty. Defined next to the rest of the

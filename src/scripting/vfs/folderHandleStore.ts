@@ -17,12 +17,16 @@ declare global {
     }
 }
 
-const DB_NAME = 'mudix_folder_handles';
+import { whenIdbNamesMigrated } from '../../storage/storageMigration';
+
+const DB_NAME = 'mudlet_folder_handles';
 const STORE_NAME = 'handles';
 
 export type FolderPermissionState = 'granted' | 'prompt' | 'denied' | 'unsupported';
 
-function openDb(): Promise<IDBDatabase> {
+async function openDb(): Promise<IDBDatabase> {
+    // Was `mudix_folder_handles` before the storage namespace rename.
+    await whenIdbNamesMigrated();
     return new Promise((resolve, reject) => {
         const req = indexedDB.open(DB_NAME, 1);
         req.onupgradeneeded = () => req.result.createObjectStore(STORE_NAME);

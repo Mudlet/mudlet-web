@@ -9,6 +9,7 @@ vi.mock('../../src/storage/logStorage', () => ({
 }));
 
 import { deleteProfileStorage, profileVfsDatabaseName, MIGRATION_BACKUP_KEY } from '../../src/storage/profileStorage';
+import { markStorageMigrationDoneForTests } from '../../src/storage/storageMigration';
 import { useAppStore } from '../../src/storage/appStore';
 import { historyStorageKey } from '../../src/ui/commandHistory';
 import { stopwatchStorageKey } from '../../src/scripting/StopwatchManager';
@@ -96,8 +97,8 @@ const DOOMED = 'doomed-profile';
 function seed(idb: ReturnType<typeof fakeIndexedDB>) {
     idb.dbs.set(profileVfsDatabaseName(DOOMED), new Map([['store', new Map([['f', 1]])]]));
     idb.dbs.set(profileVfsDatabaseName(KEEP), new Map([['store', new Map([['f', 1]])]]));
-    idb.dbs.set('mudix_maps', new Map([['maps', new Map<string, unknown>([[DOOMED, 'map-a'], [KEEP, 'map-b']])]]));
-    idb.dbs.set('mudix_folder_handles', new Map([['handles', new Map<string, unknown>([[DOOMED, 'h-a'], [KEEP, 'h-b']])]]));
+    idb.dbs.set('mudlet_maps', new Map([['maps', new Map<string, unknown>([[DOOMED, 'map-a'], [KEEP, 'map-b']])]]));
+    idb.dbs.set('mudlet_folder_handles', new Map([['handles', new Map<string, unknown>([[DOOMED, 'h-a'], [KEEP, 'h-b']])]]));
 
     localStorage.setItem(historyStorageKey(DOOMED), '["look"]');
     localStorage.setItem(historyStorageKey(KEEP), '["score"]');
@@ -114,6 +115,10 @@ describe('deleteProfileStorage', () => {
         idb = fakeIndexedDB();
         (globalThis as { indexedDB?: unknown }).indexedDB = idb.api;
         localStorage.clear();
+        // Every openDb() waits on the mudix->mudlet rename. This suite is about
+        // deletion and hands over a stand-in IndexedDB, so say the rename is done
+        // rather than make the stand-in able to perform it.
+        markStorageMigrationDoneForTests();
         seed(idb);
     });
 
@@ -125,8 +130,8 @@ describe('deleteProfileStorage', () => {
 
     it('drops the profile map, folder handle and logs', async () => {
         await deleteProfileStorage(DOOMED);
-        expect(idb.dbs.get('mudix_maps')!.get('maps')!.has(DOOMED)).toBe(false);
-        expect(idb.dbs.get('mudix_folder_handles')!.get('handles')!.has(DOOMED)).toBe(false);
+        expect(idb.dbs.get('mudlet_maps')!.get('maps')!.has(DOOMED)).toBe(false);
+        expect(idb.dbs.get('mudlet_folder_handles')!.get('handles')!.has(DOOMED)).toBe(false);
         expect(deletedSessionsFor).toEqual([DOOMED]);
     });
 
@@ -140,8 +145,8 @@ describe('deleteProfileStorage', () => {
     it('leaves every other profile untouched', async () => {
         await deleteProfileStorage(DOOMED);
         expect(idb.dbs.has(profileVfsDatabaseName(KEEP))).toBe(true);
-        expect(idb.dbs.get('mudix_maps')!.get('maps')!.get(KEEP)).toBe('map-b');
-        expect(idb.dbs.get('mudix_folder_handles')!.get('handles')!.get(KEEP)).toBe('h-b');
+        expect(idb.dbs.get('mudlet_maps')!.get('maps')!.get(KEEP)).toBe('map-b');
+        expect(idb.dbs.get('mudlet_folder_handles')!.get('handles')!.get(KEEP)).toBe('h-b');
         expect(localStorage.getItem(historyStorageKey(KEEP))).toBe('["score"]');
         expect(localStorage.getItem(stopwatchStorageKey(KEEP))).toBe('{}');
     });

@@ -30,12 +30,12 @@ import { stopwatchStorageKey } from '../scripting/StopwatchManager';
 
 /** localStorage key holding the one-time v21 profile-data migration backup,
  *  a `{ [connectionId]: slices }` map consumed on each profile's next open. */
-export const MIGRATION_BACKUP_KEY = 'mudix_profile_migration_v21';
+export const MIGRATION_BACKUP_KEY = 'mudlet_profile_migration_v21';
 
 /** Name of the IndexedDB database backing a profile's ZenFS mount. Must match
  *  the `storeName` ProfileVFS.doMount passes to the IndexedDB backend. */
 export function profileVfsDatabaseName(connectionId: string): string {
-    return `mudix_vfs_${connectionId}`;
+    return `mudlet_vfs_${connectionId}`;
 }
 
 /** Delete a profile's ZenFS database outright. */

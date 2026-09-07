@@ -173,6 +173,10 @@
         // already fired the page view by then. Kept in step with
         // src/analytics.ts, which is what writes it.
         try {
+          // Both spellings: this runs before the bundle, so on the first load
+          // after the storage rename the opt-out is still under its old name.
+          // Reading only the new one would count someone who asked not to be.
+          if (localStorage.getItem('mudlet_analytics_opt_out') === '1') return;
           if (localStorage.getItem('mudix_analytics_opt_out') === '1') return;
         } catch (e) {
           /* storage blocked; fall through and track as before */

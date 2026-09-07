@@ -21,6 +21,8 @@ import {
 import { IndexedDB, WebAccess } from '@zenfs/dom';
 import { checkFolderPermission, loadFolderHandle } from './folderHandleStore';
 import { invalidateVfsPath } from './vfsBridge';
+import { profileVfsDatabaseName } from '../../storage/profileStorage';
+import { whenIdbNamesMigrated } from '../../storage/storageMigration';
 
 let rootReady: Promise<void> | null = null;
 
@@ -133,7 +135,11 @@ export class ProfileVFS {
             }
         }
 
-        const fs = disableAtime(await resolveMountConfig({ backend: IndexedDB, storeName: `mudix_vfs_${connectionId}` }) as Syncable);
+        // The profile databases were named `mudix_vfs_<id>` until the storage
+        // namespace rename; mounting before that has been moved would create a
+        // fresh, empty filesystem alongside the real one.
+        await whenIdbNamesMigrated();
+        const fs = disableAtime(await resolveMountConfig({ backend: IndexedDB, storeName: profileVfsDatabaseName(connectionId) }) as Syncable);
         claimSlot();
         mount(profilePath, fs);
         if (!existsSync(profilePath)) {

@@ -30,6 +30,7 @@ import {
 } from '@zenfs/core';
 import { IndexedDB } from '@zenfs/dom';
 import type { ProfileVFS } from './ProfileVFS';
+import { profileVfsDatabaseName } from '../../storage/profileStorage';
 
 export type SideKind = 'local' | 'folder';
 
@@ -197,7 +198,7 @@ export async function copyFolderToIdb(
     type Syncable = FileSystem & { sync?: () => Promise<void> };
     const fs = await resolveMountConfig({
         backend: IndexedDB,
-        storeName: `mudix_vfs_${connectionId}`,
+        storeName: profileVfsDatabaseName(connectionId),
     }) as Syncable;
     // Tear down any leftover mount at this path (shouldn't happen, but defensive).
     if (mounts.has(sidePath)) {
