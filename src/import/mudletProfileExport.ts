@@ -50,6 +50,7 @@ export interface ConnectionSidecar {
     port?: number;
     proxyUrl?: string;
     autoReconnect?: boolean;
+    reconnectOnDrop?: boolean;
 }
 
 export function buildConnectionSidecar(c: MudConnection): ConnectionSidecar {
@@ -60,6 +61,7 @@ export function buildConnectionSidecar(c: MudConnection): ConnectionSidecar {
     if (c.port !== undefined) out.port = c.port;
     if (c.proxyUrl !== undefined) out.proxyUrl = c.proxyUrl;
     if (c.autoReconnect !== undefined) out.autoReconnect = c.autoReconnect;
+    if (c.reconnectOnDrop !== undefined) out.reconnectOnDrop = c.reconnectOnDrop;
     return out;
 }
 

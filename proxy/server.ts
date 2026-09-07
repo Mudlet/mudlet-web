@@ -284,6 +284,7 @@ wss.on('connection', (ws, req) => {
                 return;
             }
             console.log(`[proxy] Connected to ${host}:${port} over ${secure.getProtocol() ?? 'TLS'}`);
+            sendControl(ws, { type: 'game.connected' });
             sendControl(ws, {
                 type: 'tls.established',
                 protocol: secure.getProtocol() ?? '',
@@ -300,6 +301,12 @@ wss.on('connection', (ws, req) => {
         tcp.on('connect', () => {
             tcpConnected = true;
             console.log(`[proxy] Connected to ${host}:${port}`);
+            // The client's WebSocket opened when *this* socket was still being
+            // dialled, so it cannot tell "connected to the game" from "the proxy
+            // accepted me" on its own. Say which one just happened, so
+            // auto-reconnect measures the session against the game's socket
+            // rather than the proxy's (issue #130).
+            sendControl(ws, { type: 'game.connected' });
         });
     }
 

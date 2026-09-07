@@ -110,6 +110,30 @@ describe('brandConnectionData', () => {
         });
     });
 
+    // The brand's two connection flags are Mudlet's two, and they are not the
+    // same option: `autoConnect` dials when the profile opens (Mudlet's
+    // autologin, stored as the badly-named `autoReconnect`), `autoReconnect`
+    // brings a dropped session back (stored as `reconnectOnDrop`). Branded mode
+    // never shows the connection editor, so this mapping is the only way a
+    // managed profile can have either.
+    it('maps the brand\'s two connection flags to their separate options', () => {
+        setBrand({
+            appName: 'Arkadia',
+            mud: { mode: 'mud', host: 'arkadia.rpg.pl', port: 4000, autoReconnect: true },
+        });
+        const seed = brandConnectionData(getBrand());
+        expect(seed?.reconnectOnDrop).toBe(true);
+        expect(seed?.autoReconnect).toBeUndefined();
+
+        setBrand({
+            appName: 'Arkadia',
+            mud: { mode: 'mud', host: 'arkadia.rpg.pl', port: 4000, autoConnect: true },
+        });
+        const other = brandConnectionData(getBrand());
+        expect(other?.autoReconnect).toBe(true);
+        expect(other?.reconnectOnDrop).toBeUndefined();
+    });
+
     it('names a per-login seed after the account', () => {
         setBrand({ appName: 'Arkadia', mud: { mode: 'mud', host: 'arkadia.rpg.pl', port: 4000 } });
         expect(brandConnectionData(getBrand(), '  Gandalf ')?.name).toBe('Gandalf');

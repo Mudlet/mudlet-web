@@ -4,6 +4,7 @@ import { MAP_WIDGET_ID } from './ui/windows/types';
 import { normaliseShortcut, type AddonCommand } from './ui/commands/addonCommands';
 import { boundShortcuts, shortcutPlatform } from './ui/commands/appShortcuts';
 import { useMudSession } from './hooks/useMudSession';
+import { useAutoReconnect } from './hooks/useAutoReconnect';
 import { useEngines } from './hooks/useEngines';
 import { Toolbar } from './ui/Toolbar';
 import { CommandBar } from './ui/CommandBar';
@@ -792,6 +793,12 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             // and a server doing GMCP login withholds its text output — so
             // without this the attempt fails with nothing on screen at all.
             postLoginMessage(charLoginFailureMessage(result.message));
+            // Mudlet's GMCPAuthenticator::handleAuthResult sets mDontReconnect
+            // on a failed login (GMCPAuthenticator.cpp:613). Servers commonly
+            // hang up straight after rejecting one, and auto-reconnect would
+            // otherwise redial and re-offer the same wrong credentials for as
+            // long as the profile stayed open.
+            session.dontReconnect = true;
             if (gmcpLoginDeclined.current) return;
             setCharLogin(prev => ({ ...prev, error: result.message || 'Login failed.' }));
         });
@@ -866,6 +873,11 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         });
         const t3 = session.events.on('tls.error', (info) => {
             setTlsStatus({ kind: 'error', info });
+            // cTelnet raises mDontReconnect on unignored certificate errors
+            // (ctelnet.cpp:819): a cert problem is a standing condition, and
+            // redialing into it just loops. The close is still on its way, so
+            // this lands before auto-reconnect is asked.
+            session.dontReconnect = true;
             // Not always a certificate: TLS aimed at a plaintext port fails the
             // handshake with no certificate in sight, and saying otherwise sent
             // the user looking for a setting that doesn't exist. See
@@ -1220,6 +1232,15 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // Reads the store rather than the `connection` snapshot, so a reconnect after
     // a TLS upgrade dials the new secure port instead of the original one.
     const handleReconnect  = () => redialFromStore();
+
+    // Mudlet's "Reconnect automatically": bring a settled session that dropped
+    // back, once and silently. `redialFromStore` is wrapped rather than passed
+    // directly because it is declared just below this line.
+    useAutoReconnect({
+        session,
+        enabled: liveConnection.reconnectOnDrop ?? false,
+        redial: () => redialFromStore(),
+    });
 
     /** Redial using the connection record as it stands in the store right now,
      *  rather than the `connection` prop captured at render — the TLS handlers

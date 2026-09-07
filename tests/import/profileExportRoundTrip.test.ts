@@ -163,6 +163,31 @@ describe('export → import round-trip', () => {
         expect(record.host).toBeUndefined();
     });
 
+    // Two options that sound like one. Mudlet's `<Host>` expresses neither, so
+    // both ride in the sidecar, and an export that dropped one would silently
+    // change how the profile behaves on the machine it lands on.
+    it('keeps both connection flags apart', () => {
+        const [bundle] = roundTrip([source({
+            connection: {
+                id: 'c9', name: 'Arkadia', mode: 'mud', host: 'arkadia.rpg.pl', port: 23,
+                autoReconnect: true, reconnectOnDrop: true,
+            },
+        })]);
+        expect(bundleToConnectionRecord(bundle)).toMatchObject({
+            autoReconnect: true, reconnectOnDrop: true,
+        });
+
+        const [off] = roundTrip([source({
+            connection: {
+                id: 'c10', name: 'Arkadia', mode: 'mud', host: 'arkadia.rpg.pl', port: 23,
+                reconnectOnDrop: true,
+            },
+        })]);
+        const record = bundleToConnectionRecord(off);
+        expect(record.reconnectOnDrop).toBe(true);
+        expect(record.autoReconnect).toBeUndefined();
+    });
+
     it('keeps a per-profile proxy override', () => {
         const [bundle] = roundTrip([source({
             connection: { id: 'c3', name: 'Proxied', mode: 'mud', host: 'h', port: 4000, proxyUrl: 'wss://proxy.example/ws' },
