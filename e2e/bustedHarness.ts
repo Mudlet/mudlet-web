@@ -194,6 +194,14 @@ export async function seedProfile(page: Page): Promise<void> {
                 connectionPackages: {
                     'mudlet-self-test': [{ name: 'run-tests' }],
                 },
+                // MSDP is off by default in a profile, here as in Mudlet
+                // (Host.h: mEnableMSDP = false), but the corpus expects a
+                // profile that will negotiate it: Telnet_spec offers each
+                // protocol in turn and waits for sysProtocolEnabled on every
+                // one of them. Everything else on that list is on by default.
+                connectionProfile: {
+                    'mudlet-self-test': { protocols: { msdp: true } },
+                },
             },
         }));
     });

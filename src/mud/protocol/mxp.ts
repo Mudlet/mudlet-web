@@ -641,7 +641,12 @@ export class MxpParser {
             case "color": case "c":
                 this.openColor(name, named.get("fore") ?? positional[0], named.get("back") ?? positional[1]); break;
             case "font":
-                this.openColor(name, named.get("color") ?? named.get("fore"), named.get("back") ?? named.get("bgcolor")); break;
+                // FACE and SIZE are read and thrown away — a MUD does not get to
+                // pick the font — but they still hold the first two positions the
+                // colours are counted from (TMxpFontTagHandler: FACE 0, SIZE 1,
+                // COLOR 2, BACK 3).
+                this.openColor(name, named.get("color") ?? named.get("fore") ?? positional[2],
+                    named.get("back") ?? named.get("bgcolor") ?? positional[3]); break;
             case "send":
                 this.openLink("send", named.get("href") ?? named.get("hr") ?? positional[0],
                     named.get("hint") ?? named.get("title"), false); break;
