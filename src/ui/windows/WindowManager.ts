@@ -552,6 +552,7 @@ export class WindowManager {
     registerMainViewport(element: HTMLElement | null): void {
         this.mainViewportEl = element;
         if (element) {
+            this.applyMainViewportInsets();
             this.observeResize('main', element);
             this.observeMouse('main', element);
             this.observeDrop('main', element);
@@ -1703,7 +1704,34 @@ export class WindowManager {
         if (cur.top === borders.top && cur.right === borders.right
             && cur.bottom === borders.bottom && cur.left === borders.left) return;
         this.mxpBorders = { ...borders };
+        this.applyMainViewportInsets();
         this.notify();
+    }
+
+    /** Write the console insets straight onto the main viewport, on top of
+     *  notifying React to render the same values.
+     *
+     *  A server's frames and the script that reads what they cost are in the
+     *  same turn: `<FRAME ALIGN=left WIDTH=25%>` and the getColumnCount() that
+     *  measures what is left of the main window both happen before React can
+     *  render anything, so a caller waiting on the React path measures the
+     *  window as it was and lays its own output out over the frame. The browser
+     *  reflows on the next geometry read either way, so writing the padding
+     *  here makes that measurement the true one. React then renders the
+     *  identical value, and the two never disagree — the sum is computed the
+     *  same way in both places (OutputArea's contentStyle). */
+    private applyMainViewportInsets(): void {
+        const el = this.mainViewportEl;
+        if (!el) return;
+        const profile = selectProfileField(useAppStore.getState(), this._connectionId, 'outputBorders');
+        const inset = (side: 'top' | 'right' | 'bottom' | 'left') => {
+            const px = (profile?.[side] ?? 0) + this.mxpBorders[side];
+            return px > 0 ? `${px}px` : '';
+        };
+        el.style.paddingTop = inset('top');
+        el.style.paddingRight = inset('right');
+        el.style.paddingBottom = inset('bottom');
+        el.style.paddingLeft = inset('left');
     }
 
     getRoomIDbyHash(hash: string): number | undefined {

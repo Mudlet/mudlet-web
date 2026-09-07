@@ -256,6 +256,7 @@ export class MxpParser {
             attrs: Record<string, string>,
             body?: { text: string; actions: string[] },
         ) => void;
+        onFrame?: (frame: MxpFrameCommand) => boolean;
         wrapWidth?: () => number;
     };
 
@@ -316,6 +317,12 @@ export class MxpParser {
             attrs: Record<string, string>,
             body?: { text: string; actions: string[] },
         ) => void;
+        /** Carry out a `<FRAME>` as it is read, answering whether it could be:
+         *  false leaves the tag in the line as text, which is what a game sees
+         *  when it names a frame that is not open or a name that is not a plain
+         *  word. Without this the commands are collected into the result for a
+         *  caller to run afterwards, which cannot report a refusal in time. */
+        onFrame?: (frame: MxpFrameCommand) => boolean;
         /** Columns the main window wraps at — how wide `<HR>` draws its rule.
          *  Mudlet's `TMxpClient::getWrapWidth`, whose own fallback is 80. */
         wrapWidth?: () => number;
@@ -674,7 +681,7 @@ export class MxpParser {
             this.showAsText(raw);
             return;
         }
-        this.handleOpenTag(name, attrStr, depth);
+        this.handleOpenTag(name, attrStr, depth, raw);
     }
 
     /** A tag the current line mode does not allow is shown to the player as
@@ -692,7 +699,7 @@ export class MxpParser {
         return def ? def.open : false;
     }
 
-    private handleOpenTag(name: string, attrStr: string, depth: number): void {
+    private handleOpenTag(name: string, attrStr: string, depth: number, raw = ""): void {
         const def = this.elements.get(name);
         if (def) {
             this.expandElement(def, attrStr, depth);
@@ -754,7 +761,7 @@ export class MxpParser {
                 this.appendText(`\n${"-".repeat(Math.max(this.opts.wrapWidth?.() ?? 80, HR_MIN_WIDTH))}\n`);
                 break;
             case "frame":
-                this.handleFrameTag(named, positional); break;
+                this.handleFrameTag(named, positional, raw); break;
             case "dest":
                 this.handleDestTag(named, positional); break;
             case "sound":
@@ -854,12 +861,12 @@ export class MxpParser {
      *  [scrolling] [title]>` — record a window create/close request for the
      *  consumer. NAME is the first positional or the NAME attribute; valueless
      *  flags (INTERNAL/EXTERNAL/FLOATING) become `"true"`. */
-    private handleFrameTag(named: Map<string, string>, positional: string[]): void {
+    private handleFrameTag(named: Map<string, string>, positional: string[], raw: string): void {
         let name = named.get("name");
         let flagStart = 0;
         if (!name) { name = positional[0]; flagStart = 1; }
         name = (name ?? "").trim();
-        if (name === "") return; // a nameless FRAME is ignored (matches Mudlet)
+        if (name === "") { this.showAsText(raw); return; }
         this.flushRun(); // commit any preceding main text before the command
         const attrs: Record<string, string> = {};
         for (const [k, v] of named) if (k !== "name") attrs[k.toUpperCase()] = v;
@@ -867,7 +874,17 @@ export class MxpParser {
         attrs.NAME = name;
         const cmd: MxpFrameCommand = { name, attrs };
         if (this.destName !== null) cmd.dest = this.destName;
-        this.frames.push(cmd);
+        if (!this.opts.onFrame) {
+            this.frames.push(cmd);
+            return;
+        }
+        // Acted on here rather than collected, because whether it worked
+        // decides what the line says: a FRAME naming a window that is not
+        // there, or a name that is not a plain word, is a tag the client
+        // could not carry out, and Mudlet leaves such a tag in the stream as
+        // text rather than swallowing it (MXP_TAG_NOT_HANDLED). Doing that
+        // after the line was assembled would put the tag on the wrong line.
+        if (!this.opts.onFrame(cmd)) this.showAsText(raw);
     }
 
     /** `<DEST name [eol] [eof]>` — start redirecting enclosed text into `name`.

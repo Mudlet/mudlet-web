@@ -312,6 +312,10 @@ export class ScriptingEngine implements EngineHost {
             this.runtimes.lua?.setMxpElement(name, attrs, body);
             this.raiseEvent(`mxp.${name.toLowerCase()}`);
         },
+        // <FRAME> is carried out as the tag is read, so a refusal — a name
+        // that is not a plain word, or a frame that is not open to act on —
+        // can put the tag back into the line it came from.
+        onFrame: (frame) => this.api.mxpFrame(frame.name, frame.attrs, frame.dest),
     });
     private vfs: ProfileVFS | null = null;
     private readonly runtimeReady: Promise<IScriptingRuntime>;
@@ -4391,12 +4395,12 @@ export class ScriptingEngine implements EngineHost {
                                 blankRenders: multiLine ? true : line === '',
                             });
                         }
-                        // MXP <FRAME> creates/closes a frame console; <DEST> writes
-                        // redirected text into it. A redirect to a frame that
-                        // doesn't exist falls back to inline main rendering (the
-                        // parser already pulled it out of the main line), matching
-                        // Mudlet's degradation when setMxpDestination fails.
-                        if (r.frames) for (const f of r.frames) this.api.mxpFrame(f.name, f.attrs, f.dest);
+                        // <DEST> writes redirected text into a frame. A redirect to
+                        // a frame that doesn't exist falls back to inline main
+                        // rendering (the parser already pulled it out of the main
+                        // line), matching Mudlet's degradation when
+                        // setMxpDestination fails. (<FRAME> itself was carried out
+                        // during the parse — see the onFrame hook.)
                         if (r.redirects) for (const rd of r.redirects) {
                             const fbuf = new AnsiAwareBuffer(rd.segments);
                             // A <SEND>/<A> inside the <DEST> is offset into the

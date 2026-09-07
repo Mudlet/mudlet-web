@@ -4370,9 +4370,9 @@ export class ScriptingAPI {
      * and `DOCK` tab groups. This just owns the manager and satisfies its host
      * interface below. `dest` is the `<DEST>` frame open when the tag was parsed.
      */
-    mxpFrame(name: string, attrs: Record<string, string>, dest?: string): void {
-        if (!name) return;
-        this.mxpFrames.createFrame(name, attrs, dest);
+    mxpFrame(name: string, attrs: Record<string, string>, dest?: string): boolean {
+        if (!name) return false;
+        return this.mxpFrames.createFrame(name, attrs, dest);
     }
 
     /** Tear every MXP frame down. MXP frames are per-connection state in Mudlet
@@ -4479,9 +4479,18 @@ export class ScriptingAPI {
             this.session.windows.setLineHeight(id, measureMonospaceCell(font?.family ?? '', size)[1]);
         },
         openExternalFrame: (name, title, width, height) => {
-            this.session.windows.open(mxpWindowId(name), {
+            const id = mxpWindowId(name);
+            this.session.windows.open(id, {
                 kind: 'text', title, autoDock: false, lockFloating: true, ignoreHint: true, width, height,
             });
+            // A frame is a frame whichever side of the main window it is on:
+            // EXTERNAL only decides that it floats rather than taking space out
+            // of the console, so it answers windowType() as the mini-console it
+            // is — the same as an internal one, and the same as in Mudlet, where
+            // both are a TConsole the frame manager owns. A script asking what a
+            // frame is should not have to know how the game placed it.
+            this.session.windows.markAsMiniConsole(id);
+            this.session.windows.markAsMxpFrame(id);
         },
         destroyFrameConsole: (name) => this.session.windows.close(mxpWindowId(name)),
         showFrameConsole: (name) => { this.session.windows.show(mxpWindowId(name)); },
