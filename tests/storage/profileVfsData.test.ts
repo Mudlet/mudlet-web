@@ -7,20 +7,39 @@ import {
 } from '../../src/storage/profileVfsData';
 import type { ProfileVFS } from '../../src/scripting/vfs/ProfileVFS';
 
-// profileVfsData only touches three ProfileVFS methods, so a Map-backed stub is
-// enough to exercise the store <-> JSON round-trip without ZenFS/IndexedDB.
-function fakeVfs(): ProfileVFS {
-    const files = new Map<string, string>();
+// A Map-backed stub, enough to exercise the store <-> JSON round-trip without
+// ZenFS/IndexedDB. Directories are implied by path prefixes rather than stored,
+// which is all the dot-directory move below needs.
+function fakeVfs(seed: Record<string, string> = {}): ProfileVFS {
+    const files = new Map<string, string>(Object.entries(seed));
+    const isDir = (p: string) => [...files.keys()].some(k => k.startsWith(`${p}/`));
     return {
-        exists: (p: string) => files.has(p),
+        exists: (p: string) => files.has(p) || isDir(p),
         readFile: (p: string) => {
             const v = files.get(p);
             if (v === undefined) throw new Error(`ENOENT: ${p}`);
             return v;
         },
         writeFile: (p: string, content: string) => { files.set(p, content); },
+        readBinaryFile: (p: string) => {
+            const v = files.get(p);
+            if (v === undefined) throw new Error(`ENOENT: ${p}`);
+            return new TextEncoder().encode(v);
+        },
+        writeBinaryFile: (p: string, data: Uint8Array) => {
+            files.set(p, new TextDecoder().decode(data));
+        },
+        readdir: (p: string) => [...new Set([...files.keys()]
+            .filter(k => k.startsWith(`${p}/`))
+            .map(k => k.slice(p.length + 1).split('/')[0]))],
+        deleteFile: (p: string) => { files.delete(p); },
+        rmdir: (p: string) => { if (isDir(p)) throw new Error('ENOTEMPTY'); },
+        // Test-only handle on the backing map.
+        __files: files,
     } as unknown as ProfileVFS;
 }
+
+const filesOf = (vfs: ProfileVFS) => (vfs as unknown as { __files: Map<string, string> }).__files;
 
 const CONN = 'test-conn';
 
@@ -140,7 +159,7 @@ describe('profileVfsData', () => {
             name: 'keep', enabled: true, isGroup: false, parentId: null,
             pattern: 'x', command: 'y', code: '', language: 'lua',
         });
-        loadProfileData(vfs, CONN); // no .mudix/profile.json present
+        loadProfileData(vfs, CONN); // no .mudlet/profile.json present
         // Absent file must not clobber existing in-memory state.
         expect(useAppStore.getState().connectionAliases[CONN]).toHaveLength(1);
     });
@@ -150,5 +169,73 @@ describe('profileVfsData', () => {
         vfs.writeFile(PROFILE_DATA_PATH, '{ not json');
         expect(() => loadProfileData(vfs, CONN)).not.toThrow();
         expect(useAppStore.getState().connectionAliases[CONN]).toEqual([]);
+    });
+
+    // The dot-directory move, on profile open.
+    //
+    // This is the half of the mudix->mudlet rename that cannot happen in
+    // storageMigration.ts: it lives inside a profile filesystem and needs that
+    // profile mounted. It is also the half that broke silently during the
+    // codename sweep — LEGACY_DOT_DIR was rewritten to '.mudlet', making the
+    // move a no-op that nothing typed or unit-tested noticed.
+    describe('the legacy .mudix directory', () => {
+        it('moves the profile data file to .mudlet and reads it', () => {
+            const vfs = fakeVfs({
+                '.mudix/profile.json': JSON.stringify({
+                    version: 3,
+                    aliases: [{
+                        id: 'a1', name: 'greet', enabled: true, isGroup: false, parentId: null,
+                        pattern: '^hi$', command: 'say hello', code: '', language: 'lua',
+                    }],
+                }),
+            });
+
+            loadProfileData(vfs, CONN);
+
+            expect(filesOf(vfs).has(PROFILE_DATA_PATH)).toBe(true);
+            expect(filesOf(vfs).has('.mudix/profile.json')).toBe(false);
+            expect(useAppStore.getState().connectionAliases[CONN]).toHaveLength(1);
+        });
+
+        // The whole directory moves, not just the one file this module owns:
+        // the export sidecars live beside it and would otherwise go stale.
+        it('brings the export sidecars with it', () => {
+            const vfs = fakeVfs({
+                '.mudix/profile.json': '{"version":3}',
+                '.mudix/host.xml': '<MudletPackage/>',
+                '.mudix/connection.json': '{"mode":"mud"}',
+            });
+
+            loadProfileData(vfs, CONN);
+
+            expect(filesOf(vfs).get('.mudlet/host.xml')).toBe('<MudletPackage/>');
+            expect(filesOf(vfs).get('.mudlet/connection.json')).toBe('{"mode":"mud"}');
+            expect([...filesOf(vfs).keys()].some(k => k.startsWith('.mudix/'))).toBe(false);
+        });
+
+        it('keeps the new file when both exist', () => {
+            const vfs = fakeVfs({
+                '.mudix/profile.json': '{"version":3,"aliases":[]}',
+                [PROFILE_DATA_PATH]: JSON.stringify({
+                    version: 3,
+                    aliases: [{
+                        id: 'live', name: 'current', enabled: true, isGroup: false, parentId: null,
+                        pattern: 'x', command: 'y', code: '', language: 'lua',
+                    }],
+                }),
+            });
+
+            loadProfileData(vfs, CONN);
+
+            // The new path is the one being written, so it wins.
+            expect(useAppStore.getState().connectionAliases[CONN][0].name).toBe('current');
+            expect(filesOf(vfs).has('.mudix/profile.json')).toBe(false);
+        });
+
+        it('leaves a profile that never had one alone', () => {
+            const vfs = fakeVfs({ [PROFILE_DATA_PATH]: '{"version":3,"aliases":[]}' });
+            expect(() => loadProfileData(vfs, CONN)).not.toThrow();
+            expect(filesOf(vfs).has(PROFILE_DATA_PATH)).toBe(true);
+        });
     });
 });

@@ -49,7 +49,8 @@
     "busted:failures": "playwright test -c playwright.failures.config.ts",
     "sync:mudlet-specs": "node scripts/sync-mudlet-specs.mjs",
     "sync:mudlet-lua": "node scripts/sync-mudlet-lua.mjs",
-    "sync:mudlet-games": "node scripts/sync-mudlet-games.mjs"
+    "sync:mudlet-games": "node scripts/sync-mudlet-games.mjs",
+    "test:e2e:upgrade": "playwright test -c playwright.upgrade.config.ts"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.1",
