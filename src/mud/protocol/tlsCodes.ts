@@ -79,9 +79,9 @@ export interface TlsFailureExplanation {
  * failed: connecting with TLS to a plaintext port was reported as a certificate
  * refusal and the user was told to tick "Accept all certificate errors" in
  * Settings → Network — a control that is not rendered on the default
- * Cloudflare-Worker proxy (`proxyCanInspectCertificates` is false for every
- * `*.workers.dev` host, so that panel says "Certificate options unavailable"
- * instead), and that would not have helped if it were.
+ * Cloudflare-Worker proxy (`proxyCanInspectCertificates` is false for it and
+ * for every `*.workers.dev` host, so that panel says "Certificate options
+ * unavailable" instead), and that would not have helped if it were.
  *
  * Desktop Mudlet reports the underlying socket/SSL error verbatim and only
  * offers the ignore-certificate settings when they apply; its answer to a

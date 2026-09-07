@@ -2,7 +2,7 @@ import type { WindowOpenOptions } from '../ui/windows/types';
 import type { MudletVariable } from '../import/mudletVariables';
 import { getBrand } from '../branding';
 
-export const DEFAULT_PROXY_URL = 'wss://mudix.delwing.workers.dev';
+export const DEFAULT_PROXY_URL = 'wss://web-proxy.mudlet.org';
 
 export type ConnectionMode = 'mud' | 'websocket';
 
@@ -1287,16 +1287,19 @@ export function effectiveProxyUrl(c: MudConnection, userProxyUrl?: string): stri
  * no certificate and no way to waive a validation failure — the options would be
  * silently ignored, so the UI disables them instead of pretending.
  *
- * Recognised by the `workers.dev` hostname, which covers the built-in default
- * proxy and anything deployed from `worker/`. A Worker on a custom domain can't
- * be told apart from a Node proxy up front; that case is corrected at runtime by
- * the `certInspection: false` flag the proxy reports on `tls.established`.
+ * Recognised by the `workers.dev` hostname, which covers anything deployed
+ * from `worker/` under its own subdomain — plus the built-in default, which is
+ * a Worker on a custom domain and so cannot be recognised by its name at all.
+ * Any other Worker on a custom domain can't be told apart from a Node proxy up
+ * front; that case is corrected at runtime by the `certInspection: false` flag
+ * the proxy reports on `tls.established`.
  */
 export function proxyCanInspectCertificates(proxyUrl: string): boolean {
     try {
         // The scheme is ws/wss; URL parses those fine.
         const host = new URL(proxyUrl).hostname.toLowerCase();
-        return !(host === 'workers.dev' || host.endsWith('.workers.dev'));
+        const isDefault = host === new URL(DEFAULT_PROXY_URL).hostname.toLowerCase();
+        return !(isDefault || host === 'workers.dev' || host.endsWith('.workers.dev'));
     } catch {
         return true; // unparseable — don't hide controls on a guess
     }

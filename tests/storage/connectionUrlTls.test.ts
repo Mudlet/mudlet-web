@@ -71,8 +71,11 @@ describe('effectiveProxyUrl', () => {
 describe('proxyCanInspectCertificates', () => {
     it('says no for a Cloudflare Worker, including the built-in default', () => {
         expect(proxyCanInspectCertificates('wss://mudix.delwing.workers.dev')).toBe(false);
-        expect(proxyCanInspectCertificates(DEFAULT_PROXY_URL)).toBe(false);
         expect(proxyCanInspectCertificates('wss://anything.someone.workers.dev')).toBe(false);
+        // The built-in default is a Worker on a custom domain, so its name is
+        // no help — it is recognised as itself.
+        expect(proxyCanInspectCertificates(DEFAULT_PROXY_URL)).toBe(false);
+        expect(proxyCanInspectCertificates('wss://web-proxy.mudlet.org')).toBe(false);
     });
 
     it('is case-insensitive about the hostname', () => {
