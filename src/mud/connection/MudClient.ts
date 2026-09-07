@@ -443,6 +443,7 @@ export class MudClient {
         });
 
         this.msspStream = createMsspStream({
+            decode: (bytes) => this.codec.decodeOutOfBand(bytes),
             onEnvelope: ({ name, value }) => {
                 (this.eventBus.emit as (event: string, ...args: unknown[]) => void)(`mssp.${name}`, value);
                 this.eventBus.emit('mssp', { name, value });
@@ -457,7 +458,12 @@ export class MudClient {
             else if (code === MSDP_COMMAND_CODE) this.msdpStream(subneg);
             else if (code === MSSP_COMMAND_CODE) this.msspStream(subneg);
             else if (code === TTYPE_COMMAND_CODE) this.negotiator.handleTtypeSubneg(subneg);
-            else if (code === CHARSET_COMMAND_CODE) this.charsetHandler.handleSubneg(subneg);
+            // Only while the option is live: Mudlet reads a REQUEST under
+            // `enableCHARSET`, so a server that has withdrawn CHARSET cannot go
+            // on changing the session's encoding with subnegotiations.
+            else if (code === CHARSET_COMMAND_CODE && this.negotiator.isCharsetNegotiated()) {
+                this.charsetHandler.handleSubneg(subneg);
+            }
             else if (code === MSP_COMMAND_CODE) this.handleMspSubneg(subneg);
             else if (code === MXP_COMMAND_CODE) this.negotiator.handleMxpSubneg();
             else if (code === NEW_ENVIRON_COMMAND_CODE) this.negotiator.handleNewEnvironSubneg(subneg);

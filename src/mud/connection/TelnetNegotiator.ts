@@ -264,6 +264,13 @@ export class TelnetNegotiator {
      *  `sendTelnetChannel102`: Mudlet frames and writes the subnegotiation
      *  whether or not a socket is still there and answers true either way, so
      *  a caller is told about the option rather than about the connection. */
+    /** Whether CHARSET (option 42) is live — Mudlet's `enableCHARSET`. A
+     *  REQUEST subnegotiation is read only while it is, so a server that has
+     *  withdrawn the option cannot go on changing the encoding. */
+    isCharsetNegotiated(): boolean {
+        return this.enabledProtocols.has(OPT_CHARSET_NUM);
+    }
+
     isChannel102Enabled(): boolean {
         return this.enabledProtocols.has(OPT_TELNET_102_NUM);
     }

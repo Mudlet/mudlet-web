@@ -189,6 +189,13 @@ export class MudSession {
         // handler writes anything of its own, which is the order cTelnet
         // produces (postMessage precedes raiseEvent in both slots).
         this.events.on('client.connect', () => { this.setStatus('connected'); this.announceConnected(); });
+        // A CHARSET exchange decides what encoding the session reads its game in,
+        // and the answer belongs to the profile rather than to the socket that
+        // happened to negotiate it. Subscribed here, for the session's lifetime:
+        // feedTelnet parses through a client that was never connected, and a
+        // dial-time subscription left an injected REQUEST changing the decoder
+        // while getServerEncoding() went on reporting the old name.
+        this.events.on('charset.negotiated', (name) => this.noteNegotiatedEncoding(name));
         // Mudlet's `mConnectionTimer.start()` (ctelnet.cpp:723). It hangs off
         // the *game* socket, not the proxy one: `client.connect` in `mud` mode
         // only means the proxy accepted our WebSocket, so timing a session from
@@ -279,10 +286,12 @@ export class MudSession {
         );
 
         // Per-client subscriptions only — the status latch lives in the
-        // constructor so it always runs before the scripting engine's handlers.
+        // constructor so it always runs before the scripting engine's handlers,
+        // and so does the encoding latch (the encoding is the profile's and
+        // survives a socket, and a CHARSET negotiation can reach a client that
+        // was never dialled — see ensureParsingClient).
         this.stateUnsubs = [
             this.events.on('client.error', (message) => this.reportConnectionError(message)),
-            this.events.on('charset.negotiated', (name) => this.noteNegotiatedEncoding(name)),
         ];
         // Carry the profile's encoding onto the new socket, so a script that set
         // one before dialing isn't silently overridden by the client default.

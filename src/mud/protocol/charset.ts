@@ -80,19 +80,6 @@ export function normalizeCharsetName(raw: string): string | null {
     return null;
 }
 
-/** Priority order for picking among offered charsets. Earlier wins. Matches
- *  the Mudlet preference (UTF-8 first, then Polish/Russian, then Western). */
-const CHARSET_PRIORITY = [
-    'utf-8',
-    'iso-8859-2',
-    'windows-1250',
-    'iso-8859-1',
-    'iso-8859-15',
-    'windows-1252',
-    'koi8-r',
-    'koi8-u',
-];
-
 /** What `getServerEncoding()` reports before anything has changed it. UTF-8
  *  rather than Mudlet's ASCII: a browser stream is far more likely to be UTF-8
  *  than not, and ASCII text reads identically either way. */
@@ -273,12 +260,15 @@ function decodeWithTable(byteString: string, table: readonly string[]): string {
  * Parse an `IAC SB CHARSET REQUEST ...` subnegotiation body (leading byte is
  * the option code 42, then subcommand byte 1, then optional `[TTABLE]<ver>`
  * prefix, then a separator byte, then separator-delimited IANA names). Returns
- * the best match against {@link CHARSET_PRIORITY} with both the original wire
- * spelling (echoed back in the ACCEPTED reply per RFC 2066) and the normalized
- * IANA label suitable for `new TextDecoder(...)`. Returns null if no offered
- * name is supported.
+ * the one to switch to with both the original wire spelling (echoed back in
+ * the ACCEPTED reply per RFC 2066) and this client's canonical name for it,
+ * which is what `getServerEncoding()` then reports. Returns null if no offered
+ * name is one we can decode.
  */
-export function pickCharsetFromRequest(subneg: string): { original: string; normalized: string } | null {
+export function pickCharsetFromRequest(
+    subneg: string,
+    current?: string,
+): { original: string; canonical: string } | null {
     if (subneg.length < 4) return null;
     let i = 2; // skip option code (42) + subcommand (REQUEST = 1)
     // Optional `[TTABLE]<version>` prefix — skip the bracket-delimited tag and
@@ -295,17 +285,16 @@ export function pickCharsetFromRequest(subneg: string): { original: string; norm
     const sep = subneg[i];
     const list = subneg.substring(i).split(sep).filter(name => name.length > 0);
     if (list.length === 0) return null;
-    // Build a lookup from normalized name → first occurrence with original spelling.
-    const normalized = new Map<string, string>();
-    for (const original of list) {
-        const norm = normalizeCharsetName(original);
-        if (norm && !normalized.has(norm)) normalized.set(norm, original);
-    }
-    for (const preferred of CHARSET_PRIORITY) {
-        const original = normalized.get(preferred);
-        if (original) return { original, normalized: preferred };
-    }
-    return null;
+    const offered = list
+        .map(original => ({ original, canonical: canonicalServerEncoding(original) }))
+        .filter((o): o is { original: string; canonical: string } => o.canonical !== null);
+    if (offered.length === 0) return null;
+    // What is already in use wins whenever the game offers it too. Taking the
+    // first name on the list otherwise (which is what Mudlet does, and what
+    // this falls through to) would let a game that lists ASCII ahead of UTF-8
+    // quietly downgrade a UTF-8 session.
+    const inUse = current ? canonicalServerEncoding(current) : null;
+    return offered.find(o => o.canonical === inUse) ?? offered[0];
 }
 
 /**
@@ -395,6 +384,23 @@ export class SessionCodec {
         return this.decoder.decode(bytes, { stream: true });
     }
 
+    /** Decode an out-of-band body (an MSSP or MSDP subnegotiation payload)
+     *  under the current encoding. Separate from {@link decode} because that
+     *  one streams: it holds a trailing partial sequence back for the next
+     *  frame, and a subnegotiation is a whole message that must neither leave
+     *  bytes behind in the display path nor take any from it. Mudlet decodes
+     *  these through the same encoding tables (`decodeBytes`), which is what
+     *  makes an MSSP value readable on a game running CP437. */
+    decodeOutOfBand(byteString: string): string {
+        if (byteString.length === 0) return '';
+        if (this.table) return decodeWithTable(byteString, this.table);
+        if (this.framed) return decodeMultiByte(byteString, this.framed).text;
+        const bytes = new Uint8Array(byteString.length);
+        for (let i = 0; i < byteString.length; i++) {
+            bytes[i] = byteString.charCodeAt(i) & 0xff;
+        }
+        return new TextDecoder(this.currentEncoding, { fatal: false }).decode(bytes);
+    }
     /** Convert a user-typed JS string (UTF-16) into the Latin-1 byte-string the
      *  socket layer expects, using the currently negotiated outgoing encoding.
      *  UTF-8 goes through TextEncoder so multi-byte chars survive; every other
@@ -466,19 +472,24 @@ export class CharsetHandler {
         if (subneg.length < 2) return;
         const sub = subneg.charCodeAt(1);
         if (sub === CHARSET_REQUEST.charCodeAt(0)) {
-            const chosen = pickCharsetFromRequest(subneg);
+            const chosen = pickCharsetFromRequest(subneg, this.codec.encoding);
             if (!chosen) {
                 this.hooks.sendRaw(GMCP_IAC + GMCP_SB + OPT_CHARSET + CHARSET_REJECTED + GMCP_IAC + GMCP_SE);
                 return;
             }
             this.hooks.sendRaw(GMCP_IAC + GMCP_SB + OPT_CHARSET + CHARSET_ACCEPTED + chosen.original + GMCP_IAC + GMCP_SE);
-            this.setEncoding(chosen.normalized, chosen.original);
+            // Reported under our own name for it, not the wire spelling: a game
+            // asking for ISO-8859-2 or US-ASCII has named the encoding this
+            // client calls 'ISO 8859-2' and 'ASCII', and getServerEncoding()
+            // answers with one canonical name whoever set it.
+            this.setEncoding(normalizeCharsetName(chosen.canonical)!, chosen.canonical);
         } else if (sub === CHARSET_ACCEPTED.charCodeAt(0)) {
             // Server accepted one of the names from our REQUEST. The body after
             // byte[1] is the chosen name verbatim.
             const name = subneg.substring(2);
-            const norm = normalizeCharsetName(name);
-            if (norm) this.setEncoding(norm, name);
+            const canonical = canonicalServerEncoding(name);
+            const norm = canonical ? normalizeCharsetName(canonical) : null;
+            if (norm && canonical) this.setEncoding(norm, canonical);
         }
         // CHARSET_REJECTED — no action, keep current encoding.
     }
