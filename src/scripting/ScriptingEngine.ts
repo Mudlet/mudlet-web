@@ -4782,12 +4782,17 @@ export class ScriptingEngine implements EngineHost {
             // MXP finished negotiating (telnet option 91). Flip on in-band markup
             // parsing and mirror the GMCP/MSDP/MSSP pair so scripts can hook
             // sysProtocolEnabled('MXP').
-            session.events.on('mxp.negotiated', (viaTelnet) => {
+            session.events.on('mxp.negotiated', (viaTelnet, viaSubnegotiation) => {
                 this.mxpActive = true;
                 // Only a real option-91 handshake authorizes sending the
                 // <SUPPORTS>/<VERSION> replies (see ScriptingAPI / event doc).
                 if (viaTelnet) this.mxpHandshakeEnabled = true;
                 else this.autoEnableMxpProcessor();
+                // A bare IAC SB MXP IAC SE starts the processor in locked mode:
+                // the server has said nothing about what it will send, so nothing
+                // it sends is markup until it switches modes itself (cTelnet sets
+                // MXP_MODE_CODE_LOCK_LOCKED on that subnegotiation).
+                if (viaSubnegotiation) this.mxp.setLockedMode('locked');
             }),
             // Mudlet `setChannel102Table` — the zMUD out-of-band channel writes
             // its numbered variable into the Lua `channel102` table and raises

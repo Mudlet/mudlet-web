@@ -51,7 +51,9 @@ describe('MxpParser — FRAME (Mudlet 4.21)', () => {
     const { parser } = makeParser();
     const r = parser.parseLine(`<frame Status>hello`);
     expect(r.frames).toBeUndefined();
-    expect(r.plain).toBe('hello');
+    // Not acted on, and not swallowed either: a tag the mode disallows is
+    // shown as the text it is.
+    expect(r.plain).toBe('<frame Status>hello');
   });
 });
 
@@ -85,8 +87,9 @@ describe('MxpParser — DEST (Mudlet 4.21)', () => {
     const r1 = parser.parseLine(`${SECURE}<dest Log>line one`);
     expect(r1.plain).toBe('');
     expect(r1.redirects?.[0]).toMatchObject({ frame: 'Log', plain: 'line one', eol: true });
-    // No secure prefix needed on the continuation — the redirect state persists.
-    const r2 = parser.parseLine(`line two</dest>after`);
+    // The redirect state persists across the line break on its own; the
+    // closing tag still needs a secure line, being a tag like any other.
+    const r2 = parser.parseLine(`${SECURE}line two</dest>after`);
     expect(r2.redirects?.[0]).toMatchObject({ frame: 'Log', plain: 'line two', eol: false });
     expect(r2.plain).toBe('after');
   });

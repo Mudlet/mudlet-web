@@ -719,7 +719,7 @@ export class TelnetNegotiator {
         // option is on from here, so it announces itself like any other.
         this.enabledProtocols.add(OPT_MXP);
         this.eventBus.emit('protocol.enabled', 'MXP');
-        this.startMxp(true);
+        this.startMxp(true, true);
     }
 
     /** Answer an `IAC SB NEW-ENVIRON SEND … IAC SE` request, framed as
@@ -778,11 +778,13 @@ export class TelnetNegotiator {
     /** Latch MXP on for this session and notify listeners. Idempotent — only the
      *  first call emits `mxp.negotiated`; later calls (repeat WILL/DO, in-band
      *  detection on subsequent frames) are no-ops. `viaTelnet` distinguishes a
-     *  real option-91 handshake from in-band-only detection (see the event doc). */
-    private startMxp(viaTelnet: boolean): void {
+     *  real option-91 handshake from in-band-only detection (see the event doc),
+     *  and `viaSubnegotiation` the bare `IAC SB MXP IAC SE` that starts the
+     *  processor locked until the server sends a mode of its own. */
+    private startMxp(viaTelnet: boolean, viaSubnegotiation = false): void {
         if (this.mxpStarted) return;
         this.mxpStarted = true;
-        this.eventBus.emit('mxp.negotiated', viaTelnet);
+        this.eventBus.emit('mxp.negotiated', viaTelnet, viaSubnegotiation);
     }
 
     /** Send the current window size as an `IAC SB NAWS … IAC SE` subnegotiation.

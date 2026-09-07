@@ -184,18 +184,22 @@ export class StopwatchManager {
 
     /**
      * Mudlet startStopWatch. `resetAndRestart` replicates the legacy behaviour
-     * for a numeric id called bare: reset to zero and run from there. Otherwise
-     * a stopped watch resumes and a running one is left untouched. Returns false
-     * for an unknown watch.
+     * for a numeric id called bare: reset to zero and run from there, which
+     * always succeeds. Asked to keep the elapsed time instead, starting one
+     * that is already running is a refusal (stopWatch::start answers false),
+     * reported as the message rather than as a bare boolean so the caller can
+     * say which watch and why. False is still "no such stopwatch".
      */
-    start(arg: number | string, resetAndRestart: boolean): boolean {
+    start(arg: number | string, resetAndRestart: boolean): boolean | string {
         const w = this.resolve(arg);
         if (!w) return false;
         if (resetAndRestart) {
             w.accumulatedMs = 0;
             w.startEpochMs = this.now();
             w.running = true;
-        } else if (!w.running) {
+        } else if (w.running) {
+            return `${this.describe(w)} was already running`;
+        } else {
             w.startEpochMs = this.now();
             w.running = true;
         }
@@ -203,18 +207,27 @@ export class StopwatchManager {
         return true;
     }
 
+    /** How Mudlet names a stopwatch in a refusal: by id, and by name too
+     *  when it has one. */
+    private describe(w: Stopwatch): string {
+        return w.name
+            ? `stopwatch with name '${w.name}' (id:${w.id})`
+            : `stopwatch with id ${w.id}`;
+    }
+
     /**
      * Mudlet stopStopWatch. Pauses the watch and returns the elapsed seconds
-     * once (legacy behaviour preserved by Mudlet). null for an unknown watch.
+     * once (legacy behaviour preserved by Mudlet). Stopping one that is
+     * already stopped — including one that was never started — is refused
+     * with the reason; null is "no such stopwatch".
      */
-    stop(arg: number | string): number | null {
+    stop(arg: number | string): number | string | null {
         const w = this.resolve(arg);
         if (!w) return null;
-        if (w.running) {
-            w.accumulatedMs += this.now() - w.startEpochMs;
-            w.running = false;
-            if (w.persistent) this.persist();
-        }
+        if (!w.running) return `${this.describe(w)} was already stopped`;
+        w.accumulatedMs += this.now() - w.startEpochMs;
+        w.running = false;
+        if (w.persistent) this.persist();
         return this.elapsedMs(w) / 1000;
     }
 

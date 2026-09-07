@@ -124,7 +124,7 @@ export type MudClientEvents = {
      *  `<SUPPORTS>`/`<VERSION>` handshake replies — an in-band-only server's
      *  inbound MXP channel isn't confirmed, so replying would spam it with
      *  invalid commands. */
-    'mxp.negotiated': [viaTelnet: boolean];
+    'mxp.negotiated': [viaTelnet: boolean, viaSubnegotiation?: boolean];
     /** Fired for every `!!SOUND` / `!!MUSIC` tag parsed from the in-band text
      *  stream (or an `IAC SB MSP ... IAC SE` subnegotiation body). The
      *  scripting engine wires this to the SoundManager. */

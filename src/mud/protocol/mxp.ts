@@ -158,7 +158,7 @@ const MXP_SECURE_REPLY_PREFIX = "\x1b[1z";
 const OPEN_MODE_TAGS = new Set<string>([
     "b", "bold", "strong", "i", "italic", "em", "u", "underline",
     "s", "strikeout", "strike", "del", "h", "high", "color", "c", "font",
-    "br", "sbr", "nobr", "p", "hr", "version", "support",
+    "br", "sbr", "nobr", "p", "hr",
 ]);
 
 /** Reported back to the server in response to `<SUPPORT>`. `+tag` = implemented,
@@ -265,8 +265,17 @@ export class MxpParser {
      * without the lock every definition tag would be ignored as unsafe.
      */
     lockSecureMode(locked: boolean): void {
-        this.lockedMode = locked ? "secure" : null;
-        this.lineMode = this.lockedMode ?? "open";
+        this.setLockedMode(locked ? "secure" : null);
+    }
+
+    /** Set the mode every line falls back to — the `ESC[5z`/`6z`/`7z` lock,
+     *  reachable from outside because a bare `IAC SB MXP IAC SE` starts the
+     *  processor locked (cTelnet sets MXP_MODE_CODE_LOCK_LOCKED for it): such
+     *  a server has negotiated nothing, so until it sends a mode of its own
+     *  nothing it writes is markup. */
+    setLockedMode(mode: "open" | "secure" | "locked" | null): void {
+        this.lockedMode = mode;
+        this.lineMode = mode ?? "open";
     }
 
     /** Clear all cross-line state. Called on (re)connect so a new session starts
@@ -571,10 +580,15 @@ export class MxpParser {
 
         if (trimmed.startsWith("!")) {
             if (secure) this.handleDefinition(trimmed);
+            else this.showAsText(raw);
             return;
         }
         if (trimmed.startsWith("/")) {
             const name = trimmed.slice(1).trim().split(/[\s>]/)[0].toLowerCase();
+            if (!secure && !this.openAllowed(name)) {
+                this.showAsText(raw);
+                return;
+            }
             this.handleCloseTag(name);
             return;
         }
@@ -583,8 +597,20 @@ export class MxpParser {
         const name = (sp === -1 ? trimmed : trimmed.slice(0, sp)).toLowerCase();
         const attrStr = sp === -1 ? "" : trimmed.slice(sp + 1);
 
-        if (!secure && !this.openAllowed(name)) return; // discard secure-only tag in open mode
+        if (!secure && !this.openAllowed(name)) {
+            this.showAsText(raw);
+            return;
+        }
         this.handleOpenTag(name, attrStr, depth);
+    }
+
+    /** A tag the current line mode does not allow is shown to the player as
+     *  the text it literally is, brackets and all — Mudlet re-inserts the raw
+     *  tag content the same way (HANDLER_INSERT_ENTITY_SYS). Swallowing it
+     *  instead would hide half a game's output on an OPEN line and leave the
+     *  other half — the text the tag wrapped — with no explanation. */
+    private showAsText(raw: string): void {
+        this.appendText("<" + raw + ">");
     }
 
     private openAllowed(name: string): boolean {
