@@ -114,6 +114,31 @@ function escapeHtml(s: string): string {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+/** The current selection's ranges, cloned so later collapsing cannot disturb
+ *  them. Empty when nothing is selected. */
+export function saveSelection(): Range[] {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) return [];
+    return Array.from({ length: sel.rangeCount }, (_, i) => sel.getRangeAt(i).cloneRange());
+}
+
+/**
+ * Put `saved` back when the selection has since been collapsed — the browser
+ * does that on a right-click outside the selection, and whenever a text field
+ * takes focus. A selection that survived is left alone, and so is one whose
+ * lines have since scrolled out of the buffer (restoring a detached range would
+ * select nothing at all).
+ */
+export function restoreSelection(container: HTMLElement, saved: Range[]): void {
+    if (saved.length === 0) return;
+    const sel = window.getSelection();
+    if (!sel || (sel.rangeCount > 0 && !sel.isCollapsed)) return;
+    const live = saved.filter(r => container.contains(r.commonAncestorContainer));
+    if (live.length === 0) return;
+    sel.removeAllRanges();
+    for (const range of live) sel.addRange(range);
+}
+
 /** Select every line in the container (Range over its contents). */
 export function selectAll(container: HTMLElement): void {
     const sel = window.getSelection();

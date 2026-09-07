@@ -140,6 +140,60 @@ describe('ContextMenu focus', () => {
         root = createRoot(container);
     });
 
+    it('hands focus to returnFocusTo instead, when one is given', () => {
+        const opener = document.createElement('button');
+        const elsewhere = document.createElement('button');
+        document.body.append(opener, elsewhere);
+        opener.focus();
+
+        renderMenu(threeItems(), { returnFocusTo: () => elsewhere });
+        act(() => root.unmount());
+        expect(document.activeElement).toBe(elsewhere);
+
+        root = createRoot(container);
+    });
+
+    it('falls back to the opener when returnFocusTo has no target', () => {
+        const opener = document.createElement('button');
+        document.body.appendChild(opener);
+        opener.focus();
+
+        // What the console passes on a touch phone, where focusing the command
+        // line would summon a keyboard over what the player was reading.
+        renderMenu(threeItems(), { returnFocusTo: () => null });
+        act(() => root.unmount());
+        expect(document.activeElement).toBe(opener);
+
+        root = createRoot(container);
+    });
+
+    // The console's copy entries act on the page selection, and the command line
+    // it hands focus back to is a text field — focusing one collapses the
+    // selection in Chrome, which silently undid the "Select all" that had just
+    // run. happy-dom does not model that collapse, so the target models it here.
+    it('carries the selection across the focus handover', () => {
+        const text = document.createElement('div');
+        text.textContent = 'selected output';
+        const field = document.createElement('textarea');
+        document.body.append(text, field);
+        const collapsesSelection = () => {
+            HTMLElement.prototype.focus.call(field);
+            window.getSelection()!.removeAllRanges();
+        };
+
+        const range = document.createRange();
+        range.selectNodeContents(text);
+        window.getSelection()!.addRange(range);
+
+        renderMenu(threeItems(), { returnFocusTo: () => ({ focus: collapsesSelection }) });
+        act(() => root.unmount());
+
+        expect(document.activeElement).toBe(field);
+        expect(window.getSelection()!.toString()).toBe('selected output');
+
+        root = createRoot(container);
+    });
+
     it('skips disabled entries when arrowing', () => {
         renderMenu(threeItems());
         act(() => {

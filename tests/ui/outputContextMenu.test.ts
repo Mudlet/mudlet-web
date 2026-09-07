@@ -3,6 +3,7 @@ import type { AnsiAwareBuffer } from '../../src/mud/text/FormatState';
 import { elementBuffers } from '../../src/ui/output/OutputRenderer';
 import {
     hasCopyableLines, searchSelectionOnline, copySelectionAsHtml, selectAll, selectionText,
+    saveSelection, restoreSelection,
 } from '../../src/ui/output/outputCopy';
 import { resolveSearchEngine, SEARCH_ENGINES, DEFAULT_SEARCH_ENGINE } from '../../src/storage/schema';
 import { createElement, act } from 'react';
@@ -114,6 +115,57 @@ describe('searchSelectionOnline', () => {
         searchSelectionOnline('Google');
 
         expect(open).not.toHaveBeenCalled();
+    });
+});
+
+// A right-click that lands outside the selection collapses it (the browser's
+// own mousedown behaviour), which opened the menu with Copy, Copy as HTML and
+// Search greyed out on text the player had only just selected. The panel saves
+// the selection on the right-button mousedown and puts it back before it reads
+// what the menu can offer.
+describe('saveSelection / restoreSelection', () => {
+    it('puts a collapsed selection back', () => {
+        addLine('a rusty key');
+        selectAll(container);
+        const saved = saveSelection();
+
+        window.getSelection()!.removeAllRanges();
+        restoreSelection(container, saved);
+
+        expect(selectionText()).toBe('a rusty key');
+    });
+
+    it('leaves a surviving selection alone', () => {
+        const first = addLine('first line');
+        addLine('second line');
+        const range = document.createRange();
+        range.selectNodeContents(first);
+        window.getSelection()!.addRange(range);
+        const saved = saveSelection();
+
+        // Right-clicking inside the selection keeps it; nothing to restore, and
+        // a re-selection here would be a no-op at best.
+        selectAll(container);
+        restoreSelection(container, saved);
+
+        expect(selectionText()).toContain('second line');
+    });
+
+    it('saves nothing when nothing is selected', () => {
+        addLine('a rusty key');
+        expect(saveSelection()).toEqual([]);
+    });
+
+    it('does not restore lines the scrollback has since dropped', () => {
+        const line = addLine('a rusty key');
+        selectAll(container);
+        const saved = saveSelection();
+
+        window.getSelection()!.removeAllRanges();
+        line.remove();
+        restoreSelection(container, saved);
+
+        expect(selectionText()).toBe('');
     });
 });
 

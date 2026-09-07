@@ -12,6 +12,11 @@ interface ContextMenuProps {
      *  colour picker is a grid of swatches, and calling that a menu when it holds
      *  no menuitem misdescribes it. */
     role?: 'menu' | 'group';
+    /** Where to hand focus back on close, when that is not the element the menu
+     *  was opened from. The output console needs this: a right-click focuses the
+     *  console (it is a tab stop), but the player types into the command line, so
+     *  returning focus to the opener would send their next keystroke nowhere. */
+    returnFocusTo?: () => HTMLElement | null | undefined;
     children: React.ReactNode;
 }
 
@@ -39,7 +44,7 @@ export function nextMenuIndex(count: number, current: number, key: string): numb
     }
 }
 
-export function ContextMenu({ x, y, onClose, label = 'Context menu', role = 'menu', children }: ContextMenuProps) {
+export function ContextMenu({ x, y, onClose, label = 'Context menu', role = 'menu', returnFocusTo, children }: ContextMenuProps) {
     const ref = useRef<HTMLDivElement>(null);
 
     // ARIA roles are stamped on here rather than written at each call site. The
@@ -59,14 +64,38 @@ export function ContextMenu({ x, y, onClose, label = 'Context menu', role = 'men
         }
     });
 
+    // Read at unmount, so the mount effect below can stay a mount/unmount pair
+    // while still seeing the current callback.
+    const returnFocusRef = useRef(returnFocusTo);
+    returnFocusRef.current = returnFocusTo;
+
     // Opening a menu must move focus into it, or a screen reader gets no
     // indication anything happened; closing it must hand focus back to whatever
     // opened it (usually the command line).
+    //
+    // Focusing the first entry is safe for the document selection — a selection
+    // survives focus moving to a button — but handing focus back may not be:
+    // focusing a text field collapses the page selection in Chrome, which would
+    // silently undo the selection the entry just acted on ("Select all" being the
+    // whole point). So carry the selection across the restore; re-applying it
+    // once the field holds focus sticks.
     useEffect(() => {
         const opener = document.activeElement as HTMLElement | null;
         enabledItems(ref.current)[0]?.focus();
         return () => {
-            if (opener && opener.isConnected) opener.focus();
+            const target = returnFocusRef.current?.()
+                ?? (opener?.isConnected ? opener : null);
+            if (!target) return;
+            const sel = window.getSelection();
+            const saved = sel && !sel.isCollapsed
+                ? Array.from({ length: sel.rangeCount }, (_, i) => sel.getRangeAt(i).cloneRange())
+                : [];
+            target.focus();
+            if (saved.length === 0) return;
+            const after = window.getSelection();
+            if (!after || (after.rangeCount > 0 && !after.isCollapsed)) return;
+            after.removeAllRanges();
+            for (const range of saved) after.addRange(range);
         };
     }, []);
 

@@ -4,13 +4,14 @@ import { useIsMobile, useIsTouch } from '../../hooks/useViewportMode';
 import { OutputContextMenu, type OutputMenuExtraItem } from './OutputContextMenu';
 import { restoreFocusAfterLinkClick } from './linkNavigation';
 import {
-    hasSelectionIn, hasCopyableLines, selectAll, copySelectionText,
+    hasSelectionIn, hasCopyableLines, selectAll, copySelectionText, saveSelection, restoreSelection,
     copySelectionAsHtml, copySelectionAsImage, searchSelectionOnline, selectionText,
 } from './outputCopy';
 import { TextAnalyzerModal } from './TextAnalyzerModal';
 import { useProfileField } from '../../storage';
 import { resolveSearchEngine } from '../../storage/schema';
 import { isClearSplitClick } from './clearSplit';
+import { clickMadeSelection } from './selectionGesture';
 
 const DEFAULT_STICKY_HEIGHT = 160;
 const MIN_STICKY_HEIGHT = 40;
@@ -75,6 +76,9 @@ export function StickyOutputPanel({
     const [contextMenu, setContextMenu] =
         useState<{ x: number; y: number; hasSelection: boolean; hasContent: boolean; extraItems: OutputMenuExtraItem[] } | null>(null);
     const stickyOuterRef = useRef<HTMLDivElement>(null);
+    // Where the left button went down, so the click that follows can be told
+    // apart from the end of a selection drag.
+    const pointerDownAt = useRef<{ x: number; y: number } | null>(null);
     // The selection is snapshotted when the menu entry is clicked, not read
     // when the modal renders: opening a dialog moves focus, and focusing
     // anything outside the console drops the selection that is being analysed.
@@ -117,13 +121,35 @@ export function StickyOutputPanel({
     // over the thing you were reading. Typing starts by tapping the box, which
     // is the platform convention anyway. (Matching opt-outs: CommandBar's
     // mount-focus effect and its blur-on-send.)
+    //
+    // The one click that must not take focus is the one that just finished
+    // selecting something, since focusing the command line would collapse it.
+    // "Is anything selected?" is the wrong question to ask here — see
+    // `clickMadeSelection`: a click *on* a selection still reads as selected at
+    // this point, and skipping it there left the player clicking twice, once to
+    // clear the selection and again for the focus.
     const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
         if (!commandInputRef || keyboardWouldCover) return;
         const target = e.target as Element;
         if (target.closest('a, button, input, select, textarea')) return;
-        if (window.getSelection()?.toString()) return;
+        if (clickMadeSelection(e, pointerDownAt.current, window.getSelection()?.toString() ?? '')) return;
         commandInputRef.current?.focus();
     };
+
+    // Chrome collapses the selection when a right-click lands outside it, which
+    // leaves every copy entry in the menu greyed out; Mudlet's console keeps it
+    // (TTextEdit::contextMenuEvent never touches the selection). The collapse is
+    // mousedown's default action, so at mousedown time the selection is still
+    // there to save — and the contextmenu handler that follows puts it back.
+    const rightClickSelection = useRef<Range[]>([]);
+
+    const takeSavedSelection = useCallback((container: HTMLElement | null) => {
+        const saved = rightClickSelection.current;
+        // Consumed either way: a menu opened later from the keyboard must not
+        // resurrect the selection some earlier right-click happened to save.
+        rightClickSelection.current = [];
+        if (container) restoreSelection(container, saved);
+    }, []);
 
     // Mudlet clears the split on a middle click anywhere in the console
     // (TTextEdit::mousePressEvent → TConsole::clearSplit). Gated on the split
@@ -131,6 +157,8 @@ export function StickyOutputPanel({
     // preventDefault suppresses the browser's middle-click autoscroll (and, on
     // Linux, the primary-selection paste).
     const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+        if (e.button === 2) rightClickSelection.current = saveSelection();
+        if (e.button === 0) pointerDownAt.current = { x: e.clientX, y: e.clientY };
         if (!isSplitView || !isClearSplitClick(e)) return;
         e.preventDefault();
         scrollToBottom();
@@ -146,20 +174,17 @@ export function StickyOutputPanel({
 
     const handleContextMenu = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
         e.preventDefault();
-        // The main console is a tab stop (see `regionLabel`) and Chrome focuses a
-        // focusable element on mousedown whichever button pressed it, so the
-        // right-click that opened this menu has already pulled focus off the
-        // command line — and the menu would faithfully hand it back to the
-        // console on close, leaving the player's next keystroke going nowhere.
-        // Put focus back before the menu records where to return it to. Cancelling
-        // the mousedown would do it too, but in Chrome that also cancels the
-        // contextmenu event, i.e. this menu. Same opt-out as `handleClick`: on a
-        // touch phone, focus summons a keyboard over what you were reading.
-        if (commandInputRef && !keyboardWouldCover) commandInputRef.current?.focus();
         // We own the output's right-click menu; stop it bubbling to ancestor
         // handlers (the OutputArea folds its script entries in via extraItems).
         e.stopPropagation();
         const container = outputRef.current;
+        // Before reading the selection, not after: focusing the command line here
+        // (as this handler used to, to steer where the menu returns focus) is
+        // exactly what a right-click must not do — Chrome collapses the page
+        // selection when a text field takes focus, so the menu would open with
+        // Copy, Copy as HTML and Search greyed out on text the player had just
+        // selected. `returnFocusTo` on the menu does that job on close instead.
+        takeSavedSelection(container);
         setContextMenu({
             x: e.clientX,
             y: e.clientY,
@@ -167,7 +192,7 @@ export function StickyOutputPanel({
             hasContent: container ? hasCopyableLines(container) : false,
             extraItems: getMenuExtraItems?.() ?? [],
         });
-    }, [outputRef, getMenuExtraItems, commandInputRef, keyboardWouldCover]);
+    }, [outputRef, getMenuExtraItems, takeSavedSelection]);
 
     const runCopyAction = useCallback((action: (container: HTMLElement) => void | Promise<void>) => {
         const container = outputRef.current;
@@ -310,6 +335,14 @@ export function StickyOutputPanel({
                     showTimestamps={showTimestamps ?? false}
                     onToggleTimestamps={onToggleTimestamps}
                     extraItems={contextMenu.extraItems}
+                    // The console is a tab stop (see `regionLabel`) and Chrome
+                    // focuses it on mousedown whichever button pressed it, so the
+                    // right-click pulled focus off the command line; handing it
+                    // back to the opener would leave the next keystroke going
+                    // nowhere. Same opt-out as `handleClick`: on a touch phone,
+                    // focus summons a keyboard over what you were reading.
+                    returnFocusTo={() =>
+                        (commandInputRef && !keyboardWouldCover) ? commandInputRef.current : null}
                     onClose={() => setContextMenu(null)}
                 />
             )}

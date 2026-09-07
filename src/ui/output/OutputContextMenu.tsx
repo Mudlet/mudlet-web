@@ -32,6 +32,9 @@ interface OutputContextMenuProps {
     onToggleTimestamps?: () => void;
     /** Script-provided entries (Mudlet addMouseEvent). */
     extraItems?: OutputMenuExtraItem[];
+    /** Where focus goes when the menu closes — the command line, not the console
+     *  that the right-click focused. See {@link ContextMenu}. */
+    returnFocusTo?: () => HTMLElement | null | undefined;
     onClose: () => void;
 }
 
@@ -51,6 +54,7 @@ export function OutputContextMenu({
     showTimestamps,
     onToggleTimestamps,
     extraItems,
+    returnFocusTo,
     onClose,
 }: OutputContextMenuProps) {
     const run = (fn: () => void) => () => { fn(); onClose(); };
@@ -60,7 +64,7 @@ export function OutputContextMenu({
     const noContent = hasContent ? undefined : 'This console is empty, there is nothing to copy.';
 
     return (
-        <ContextMenu x={x} y={y} onClose={onClose} label="Output actions">
+        <ContextMenu x={x} y={y} onClose={onClose} label="Output actions" returnFocusTo={returnFocusTo}>
             <button className="ctx-menu__item" type="button" onClick={run(onSelectAll)}>
                 <span className="ctx-menu__check" />
                 Select all
