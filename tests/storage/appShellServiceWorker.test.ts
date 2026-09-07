@@ -235,7 +235,7 @@ describe('app shell service worker', () => {
     });
 
     it('caches the shell on install so a navigation survives going offline', async () => {
-        expect(sw.cacheStorage.caches.get('mudix-app-v1')?.entries.has(`${SCOPE}`)).toBe(true);
+        expect(sw.cacheStorage.caches.get('mudlet-app-v1')?.entries.has(`${SCOPE}`)).toBe(true);
 
         sw.offline = true;
         const response = await navigation(sw, '/');
@@ -314,7 +314,7 @@ describe('app shell service worker', () => {
                 ],
             });
 
-            const cache = sw.cacheStorage.caches.get('mudix-app-v1')!;
+            const cache = sw.cacheStorage.caches.get('mudlet-app-v1')!;
             expect([...cache.entries.keys()].sort()).toEqual([
                 `${SCOPE}`,
                 `${SCOPE}__app-build`,
@@ -358,7 +358,7 @@ describe('app shell service worker', () => {
                 urls: [`${SCOPE}assets/index-Zz9Yy8Xx.js`],
             });
 
-            const cache = sw.cacheStorage.caches.get('mudix-app-v1')!;
+            const cache = sw.cacheStorage.caches.get('mudlet-app-v1')!;
             expect([...cache.entries.keys()]).not.toContain(`${SCOPE}assets/index-hf1D-FYj.js`);
             expect([...cache.entries.keys()]).toContain(`${SCOPE}assets/index-Zz9Yy8Xx.js`);
             // and the shell is back, not lost with the generation it was in
@@ -373,7 +373,7 @@ describe('app shell service worker', () => {
             });
             await sw.message({ type: 'app:precache', build: '0.6.0+def5678', urls: [] });
 
-            const cache = sw.cacheStorage.caches.get('mudix-app-v1')!;
+            const cache = sw.cacheStorage.caches.get('mudlet-app-v1')!;
             expect([...cache.entries.keys()]).toContain(`${SCOPE}assets/index-hf1D-FYj.js`);
         });
 
@@ -384,7 +384,7 @@ describe('app shell service worker', () => {
                 urls: [`${SCOPE}assets/gone-00000000.js`, `${SCOPE}assets/index-hf1D-FYj.js`],
             });
 
-            const cache = sw.cacheStorage.caches.get('mudix-app-v1')!;
+            const cache = sw.cacheStorage.caches.get('mudlet-app-v1')!;
             expect([...cache.entries.keys()]).toContain(`${SCOPE}assets/index-hf1D-FYj.js`);
         });
     });
@@ -395,10 +395,21 @@ describe('app shell service worker', () => {
         expect(await sw.cacheStorage.keys()).not.toContain('mudix-app-v0-stale');
     });
 
-    it('leaves the VFS cache alone on activate', async () => {
+    // These caches were named mudix-* before the storage rename. An old worker's
+    // leftovers hold a whole app shell, so they are reclaimed rather than left to
+    // sit against the origin's quota forever.
+    it('reclaims the caches from before the storage rename', async () => {
+        await sw.cacheStorage.open('mudix-app-v1');
         await sw.cacheStorage.open('mudix-vfs-v1');
         await sw.activate();
-        expect(await sw.cacheStorage.keys()).toContain('mudix-vfs-v1');
+        const keys = await sw.cacheStorage.keys();
+        expect(keys).not.toContain('mudix-app-v1');
+        expect(keys).not.toContain('mudix-vfs-v1');
+    });
+    it('leaves the VFS cache alone on activate', async () => {
+        await sw.cacheStorage.open('mudlet-vfs-v1');
+        await sw.activate();
+        expect(await sw.cacheStorage.keys()).toContain('mudlet-vfs-v1');
     });
 
     it('leaves another app on the origin alone — a branded build is a guest there', async () => {
@@ -417,7 +428,7 @@ describe('without the app-shell flag (a dev server registers the bare URL)', () 
     });
 
     it('caches nothing at install', () => {
-        expect(sw.cacheStorage.caches.has('mudix-app-v1')).toBe(false);
+        expect(sw.cacheStorage.caches.has('mudlet-app-v1')).toBe(false);
     });
 
     it('does not touch navigations or assets', async () => {
@@ -432,7 +443,7 @@ describe('without the app-shell flag (a dev server registers the bare URL)', () 
             build: '0.5.0+abc1234',
             urls: [`${SCOPE}assets/index-hf1D-FYj.js`],
         });
-        expect(sw.cacheStorage.caches.has('mudix-app-v1')).toBe(false);
+        expect(sw.cacheStorage.caches.has('mudlet-app-v1')).toBe(false);
     });
 
     it('still serves the VFS, which is the half every build wants', async () => {

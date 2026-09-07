@@ -12,8 +12,8 @@
 //     The manifest has advertised `display: standalone` since day one; this is
 //     what backs the promise (issue #71).
 
-const CACHE_NAME = 'mudix-vfs-v1';
-const APP_CACHE = 'mudix-app-v1';
+const CACHE_NAME = 'mudlet-vfs-v1';
+const APP_CACHE = 'mudlet-app-v1';
 // Scope path always ends with '/'. On a root-served deploy this is '/'; on
 // GitHub Pages or any subpath deploy it's '/<repo>/'. The intercept prefix is
 // '<scope>__vfs/' so SW-controlled URLs stay inside scope.
@@ -75,12 +75,16 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', (event) => event.waitUntil((async () => {
     // Anything left by an older worker of ours under a name this one no longer
-    // uses. Scoped to the `mudix-` prefix rather than "every cache on the
+    // uses. Both prefixes: these caches were named `mudix-*` before the storage
+    // rename, and an old worker's leftovers should be reclaimed rather than left
+    // to sit against the origin's quota forever. Scoped to our own prefixes
+    // rather than "every cache on the
     // origin": a branded build embeds this worker in somebody else's site, and
     // their caches are none of our business.
     const names = await caches.keys();
     await Promise.all(names
-        .filter((n) => n.startsWith('mudix-') && n !== CACHE_NAME && n !== APP_CACHE)
+        .filter((n) => (n.startsWith('mudlet-') || n.startsWith('mudix-'))
+            && n !== CACHE_NAME && n !== APP_CACHE)
         .map((n) => caches.delete(n)));
     await self.clients.claim();
 })()));
@@ -238,7 +242,7 @@ async function handle(event, url) {
     if (!client) {
         // Either there's no app tab loaded (direct URL hit in fresh tab) or
         // the only candidate is the tab currently navigating to this URL.
-        return new Response('No app tab loaded; open mudix first', { status: 503 });
+        return new Response('No app tab loaded; open Mudlet Web first', { status: 503 });
     }
 
     const reply = await ask(client, { type: 'vfs:read', connectionId, path: filePath });
