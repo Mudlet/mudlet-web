@@ -1,4 +1,4 @@
-// Mudlet spec assertions mudix deliberately does not satisfy.
+// Mudlet spec assertions Mudlet Web deliberately does not satisfy.
 //
 // Every entry here is a place where matching desktop Mudlet would make this
 // client *worse*, not a gap waiting to be closed. They are recorded here rather
@@ -9,7 +9,7 @@
 // These are **expected failures**, not skips: busted.spec.ts marks each with
 // `test.fail()`, so a run stays green while one keeps failing and turns RED the
 // moment one starts passing. That matters — an entry that quietly went stale
-// would hide the day mudix grew the behaviour, or the day upstream rewrote the
+// would hide the day Mudlet Web grew the behaviour, or the day upstream rewrote the
 // spec to test something else entirely. A guard test also checks every name here
 // still matches a live it(), so a rename upstream cannot leave a dead entry
 // papering over a real failure.
@@ -21,7 +21,7 @@
 export interface KnownDivergence {
     /** Full `describe / describe / it` name, exactly as busted reports it. */
     name: string;
-    /** Why mudix does not do this. Shown as the annotation on the expected failure. */
+    /** Why Mudlet Web does not do this. Shown as the annotation on the expected failure. */
     reason: string;
 }
 
@@ -33,7 +33,7 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
                 'It is the SCENARIO that is out of reach here, not the behaviour. The spec provokes a refusal '
                 + 'by opening a SECOND connection to the same database file and holding a read cursor on it, so '
                 + 'SQLite answers the writer with SQLITE_BUSY. That needs two connections contending over one '
-                + 'file and mudix has neither: a database lives in wasm memory (sqliteClient opens `:memory:` '
+                + 'file and mudlet has neither: a database lives in wasm memory (sqliteClient opens `:memory:` '
                 + 'and persists by snapshotting the bytes into the profile VFS), and `open()` hands every caller '
                 + 'naming the same path the one live handle — so the reader and the writer in this spec are '
                 + 'literally the same connection, which cannot lock itself out. Reproducing it would mean an '
@@ -53,7 +53,7 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
                 'The spec asserts saveMap("x.dat") lands in the profile directory AND that io.exists("x.dat") '
                 + 'is then false — i.e. that a relative path resolves somewhere the profile is not. That holds in '
                 + 'Mudlet because its process working directory is wherever the binary was launched (a build or '
-                + 'source tree for a spec run), which is exactly the mistake the spec is guarding against. mudix '
+                + 'source tree for a spec run), which is exactly the mistake the spec is guarding against. mudlet '
                 + 'has one filesystem and the Lua working directory IS the profile directory, so the relative and '
                 + 'absolute paths name the same file and the second assertion cannot hold while the first does. '
                 + 'Matching would mean pointing the Lua cwd at the VFS root, which changes where every relative '
@@ -77,7 +77,7 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
         // firing `end` on the utterance, and a browser delivers that through the
         // event loop — which a busted run, being one synchronous call, is
         // sitting on top of. Every other queue a spec waits on turned out to be
-        // one mudix owns and could therefore pump by hand: its own timers, its
+        // one Mudlet Web owns and could therefore pump by hand: its own timers, its
         // own replay scheduler, its own unzip. This one belongs to the platform,
         // and no amount of pumping reaches it.
         //
@@ -92,7 +92,7 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
         const reason =
             'Needs the utterance to finish. Web Speech reports that by firing `end` through the '
             + "browser's event loop, which a synchronous busted run is sitting on top of — unlike the "
-            + 'timer, replay and unzip queues, it is not one mudix owns and can pump by hand. Everything '
+            + 'timer, replay and unzip queues, it is not one mudlet owns and can pump by hand. Everything '
             + 'before the ending is implemented and is asserted by the neighbouring specs.';
         return [
             'Tests the text-to-speech Lua API / Tests the text-to-speech family / ttsSpeak speaks the text and reports it until the engine goes ready again',
@@ -105,7 +105,7 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
             name: 'Tests C++ functions in the Miscallaneous category / Tests the functionality of getProfiles / lists a profile that is not loaded',
             reason:
                 'The spec mkdir()s a bare folder under the profiles directory and expects getProfiles() to list it. '
-                + 'In Mudlet a folder IS a profile, so that is a fair test there. In mudix a profile is a record in '
+                + 'In Mudlet a folder IS a profile, so that is a fair test there. In mudlet a profile is a record in '
                 + 'the app store, and its VFS directory is named for the connection id rather than the profile name '
                 + '— so a folder someone creates has no name, no address, and nothing to open. Listing it would make '
                 + 'getProfiles() report a profile the connection screen does not show and the user cannot open, which '
@@ -135,14 +135,14 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
             name: 'stt bridge / getInfo / names the engine it would use',
             reason:
                 'The spec pins getInfo().backend to "Vosk", and its own comment says why that is the right test '
-                + 'THERE: "the contract worth holding is that the name is one this build actually has". mudix has '
+                + 'THERE: "the contract worth holding is that the name is one this build actually has". mudlet has '
                 + 'none. Vosk is a native library Mudlet dlopen()s beside a language-model directory on disk, and '
                 + 'neither survives the move to a browser tab — half of stt.* exists to manage exactly those two '
                 + 'things (getLibraryPath, getPlatformKey, reloadLibrary, unloadLibrary). Answering "Vosk" to '
                 + 'satisfy this line would be the very thing the spec guards against: a build claiming an engine '
                 + 'it does not have. That is worse than a truthful "none", because backend is what a package reads '
                 + 'to decide what it can do. Everything else in STT_spec passes, because the spec is written to '
-                + 'run on a machine with no engine installed and mudix is permanently in that state: available() '
+                + 'run on a machine with no engine installed and mudlet is permanently in that state: available() '
                 + 'is false, mudlet.supports.stt is false, and every call refuses clearly — engine refusals also '
                 + 'announcing on sysSTTError, a script\'s own mistakes not (Bridge.lua). If speech recognition is '
                 + 'ever wired up here it will be the Web Speech API, so the honest name then is that — still not '
@@ -169,7 +169,7 @@ export function knownDivergence(spec: string, name: string): KnownDivergence | u
  *
  * `pendingReason` is a substring of the skip message the corpus actually emits
  * today. A guard in busted.spec.ts asserts each one still matches at least one
- * pending test — if upstream rewrites the gate, or mudix somehow grows the
+ * pending test — if upstream rewrites the gate, or Mudlet Web somehow grows the
  * feature, the marker stops matching and the entry gets revisited rather than
  * quietly describing a world that no longer exists.
  *
@@ -218,12 +218,12 @@ export const UNSUPPORTED_AREAS: UnsupportedArea[] = [
             + 'unblock them. A spec issues a request and then waits for the event reporting it, but the whole '
             + 'busted run is one synchronous call sitting on top of the browser event loop — so the fetch can '
             + 'never settle while the spec waits, and the event never arrives. The pump that stands in for the '
-            + 'event loop drives the queues mudix owns (its timers, its replay scheduler, its unzip); a network '
+            + 'event loop drives the queues mudlet owns (its timers, its replay scheduler, its unzip); a network '
             + 'round-trip is not one of them. It was tried: a fixture server, mounted same-origin on the dev '
             + 'server so even Set-Cookie would have been readable, changed nothing. Making them run needs a '
             + 'second, synchronous transport (XMLHttpRequest with async=false) — and then the specs would '
             + 'exercise that transport rather than the fetch path every real caller takes, which is not testing '
-            + 'mudix but a shim written to satisfy the tests. What these specs would have checked — the response '
+            + 'mudlet but a shim written to satisfy the tests. What these specs would have checked — the response '
             + 'record on each event, and a nil upload body when a file is given — is covered instead by '
             + 'tests/scripting/httpResponseRecord.test.ts and httpFileUpload.test.ts, against the real path.',
     },
@@ -237,7 +237,7 @@ export const UNSUPPORTED_AREAS: UnsupportedArea[] = [
             + 'LISTENS on a port of its own. A browser tab cannot open a raw TCP socket, and certainly cannot '
             + 'accept an inbound connection — the proxy that carries the game connection is a tunnel to one '
             + 'known host, not a way to be dialed. Starting the peer fixture would not help: the specs would '
-            + 'stop skipping and start failing. mudix binds mmcp.* as stubs that report an empty peer list (the '
+            + 'stop skipping and start failing. mudlet binds mmcp.* as stubs that report an empty peer list (the '
             + 'true state of a client nobody can reach) and sets mudlet.supports.mmcp = false so feature-testing '
             + 'scripts route around it.',
     },

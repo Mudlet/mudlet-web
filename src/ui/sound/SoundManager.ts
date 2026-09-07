@@ -229,7 +229,7 @@ export class SoundManager {
      *
      * Fired after `source.start()` has actually been accepted, so a decode
      * failure or a rejected start never announces a playback that isn't
-     * happening. Mudlet withholds it for preload-volume loads; mudix has no
+     * happening. Mudlet withholds it for preload-volume loads; Mudlet Web has no
      * preload volume (`preload()` only warms the decode cache and never builds
      * a source), so there is nothing to withhold it for.
      */

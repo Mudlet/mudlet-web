@@ -6,7 +6,7 @@
 //    before the first button (TToolBar::finalize, Mudlet #9332) and had no
 //    equivalent here at all.
 // 6. Toolbar stylesheets were stored and never applied. Desktop hands
-//    `plainTextEdit_action_css` to the real widget; mudix applied it to
+//    `plainTextEdit_action_css` to the real widget; Mudlet Web applied it to
 //    buttons but not to the bar they sit on.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createElement, act } from 'react';
@@ -46,9 +46,9 @@ async function render(buttons: ButtonNode[]) {
 }
 
 const btn = (name: string) =>
-    [...container.querySelectorAll('.mudix-btn')].find(b => b.textContent === name) as HTMLElement;
-const bar = () => container.querySelector('.mudix-buttonbar') as HTMLElement;
-const filler = () => container.querySelector('.mudix-buttonbar__filler') as HTMLElement | null;
+    [...container.querySelectorAll('.mudlet-btn')].find(b => b.textContent === name) as HTMLElement;
+const bar = () => container.querySelector('.mudlet-buttonbar') as HTMLElement;
+const filler = () => container.querySelector('.mudlet-buttonbar__filler') as HTMLElement | null;
 
 beforeEach(() => { useAppStore.setState({ connectionButtons: {} } as never); });
 afterEach(async () => {
@@ -70,7 +70,7 @@ describe('button rotation', () => {
             button({ id: 'bar', name: 'bar', isGroup: true }),
             button({ id: 'b1', name: 'left', parentId: 'bar', rotation: 1 }),
         ]);
-        expect(btn('left').className).toContain('mudix-btn--rot-cw');
+        expect(btn('left').className).toContain('mudlet-btn--rot-cw');
     });
 
     it('turns index 2 the other way', async () => {
@@ -78,7 +78,7 @@ describe('button rotation', () => {
             button({ id: 'bar', name: 'bar', isGroup: true }),
             button({ id: 'b1', name: 'right', parentId: 'bar', rotation: 2 }),
         ]);
-        expect(btn('right').className).toContain('mudix-btn--rot-ccw');
+        expect(btn('right').className).toContain('mudlet-btn--rot-ccw');
     });
 });
 

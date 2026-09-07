@@ -166,19 +166,19 @@ describe('saveProfile — the XML save it writes', () => {
         expect(xml).not.toContain('HostPackage');
     });
 
-    it('bases the save on an existing Mudlet save, keeping what mudix does not model', () => {
-        // A <Host> field mudix has no idea about has to survive the round-trip;
+    it('bases the save on an existing Mudlet save, keeping what mudlet does not model', () => {
+        // A <Host> field Mudlet Web has no idea about has to survive the round-trip;
         // dropping it silently resets that setting in Mudlet. Only the profile's
         // own save carries a Host at all, so this is the unnamed form.
         const base = '<?xml version="1.0" encoding="UTF-8"?>'
             + '<MudletPackage version="1.001"><HostPackage>'
-            + '<Host mSomethingMudixNeverModels="yes"><mSomeUnmodelledField>keep me</mSomeUnmodelledField></Host>'
+            + '<Host mSomethingMudletNeverModels="yes"><mSomeUnmodelledField>keep me</mSomeUnmodelledField></Host>'
             + '</HostPackage><TriggerPackage/></MudletPackage>';
         const { vfs, files } = fakeVfs({ 'current/2020-01-01#00-00-00.xml': base });
 
         expect(makeEngine(vfs).saveProfileXml('out').ok).toBe(true);
         const xml = files.get([...files.keys()].find(k => k.startsWith('out/')) ?? '') ?? '';
-        expect(xml).toContain('mSomethingMudixNeverModels="yes"');
+        expect(xml).toContain('mSomethingMudletNeverModels="yes"');
         expect(xml).toContain('keep me');
     });
 

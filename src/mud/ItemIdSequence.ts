@@ -3,7 +3,7 @@
  *
  * Mudlet hands every trigger, alias, timer, key, button and script its id from
  * a single running number — temporary and permanent alike — so `tempAlias()`
- * followed by `permAlias()` followed by `tempAlias()` yields n, n+1, n+2. mudix
+ * followed by `permAlias()` followed by `tempAlias()` yields n, n+1, n+2. Mudlet Web
  * grew a counter per engine plus one for the permanent tree, which meant a
  * temporary item and a permanent one could be handed the *same* id: two
  * different things answering to one number, which `killAlias(id)` and

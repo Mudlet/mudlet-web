@@ -42,7 +42,7 @@ export interface RestoredNode<T> {
  *
  *  Mudlet restores from an XML snapshot instead, and has to fix up every id and
  *  parent reference afterwards because re-importing mints new ones
- *  (EditorDeleteItemCommand::undo). mudix's ids are stable strings, so the
+ *  (EditorDeleteItemCommand::undo). Mudlet Web's ids are stable strings, so the
  *  original nodes go back unchanged and no remapping is needed. */
 function spliceBack<T extends { id: string }>(current: T[], entries: ReadonlyArray<RestoredNode<T>>): T[] {
     const present = new Set(current.map(i => i.id));
@@ -181,8 +181,8 @@ interface PersistedConnectionData {
 // back over the user's real data. See storageMigration.ts.
 migrateLocalStorageNames();
 
-export const MUDIX_STORE_NAME = 'mudlet_v1';
-export const MUDIX_STORE_VERSION = 21;
+export const MUDLET_STORE_NAME = 'mudlet_v1';
+export const MUDLET_STORE_VERSION = 21;
 
 /** One-time localStorage key holding pre-v21 per-profile UI/layout/settings
  *  slices, stashed by the v21 migration so they can be moved into each profile's
@@ -814,8 +814,8 @@ export const useAppStore = create<AppStore>()(
             }),
         }),
         {
-            name: MUDIX_STORE_NAME,
-            version: MUDIX_STORE_VERSION,
+            name: MUDLET_STORE_NAME,
+            version: MUDLET_STORE_VERSION,
             // Coalesce rapid mutations (e.g. an enableTrigger that touches N
             // matching nodes, or a script edit firing on every keystroke) into
             // one JSON.stringify + localStorage write. createJSONStorage runs

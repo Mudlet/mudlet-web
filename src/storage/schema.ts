@@ -2,7 +2,7 @@ import type { WindowOpenOptions } from '../ui/windows/types';
 import type { MudletVariable } from '../import/mudletVariables';
 import { getBrand } from '../branding';
 
-export const DEFAULT_PROXY_URL = 'wss://mudix.delwing.workers.dev';
+export const DEFAULT_PROXY_URL = 'wss://mudlet.delwing.workers.dev';
 
 export type ConnectionMode = 'mud' | 'websocket';
 
@@ -30,8 +30,9 @@ export interface MudConnection {
      *
      *  {@link autoReconnect} above is Mudlet's `autologin` in spite of its name
      *  — it only decides whether *opening* the profile dials — and renaming it
-     *  would orphan every existing profile, same reasoning as the `mudix_*`
-     *  storage keys. So the second option gets a name of its own. See
+     *  would orphan every existing profile unless something moved them, the
+     *  way `storageMigration.ts` moved the storage keys. Nobody has written that
+     *  for this field, so the second option gets a name of its own. See
      *  `hooks/useAutoReconnect`. */
     reconnectOnDrop?: boolean;
     /** Profile icon shown on the connection-selection screen (Mudlet's profile
@@ -236,7 +237,7 @@ export interface ProfileSettings {
      *  flipped would never end. On by default: only an explicit `false`
      *  disables it, matching Mudlet's `= true` default. Unlike most of these,
      *  Mudlet exposes no `setConfig` key for it — preferences and the profile
-     *  XML only — so mudix doesn't invent one either. */
+     *  XML only — so Mudlet Web doesn't invent one either. */
     osc8Hyperlinks?: boolean;
     /** Mudlet 5.0's `Host::mUndoServerWrap` ("Undo the game's own wrapping",
      *  experimental). Rejoins the lines a game hard-wrapped itself before
@@ -261,7 +262,7 @@ export interface ProfileSettings {
      *  your system can handle", `checkBox_useMaxBufferSize`). When true the
      *  configured {@link consoleBufferSize} is ignored in favour of the ceiling.
      *  Desktop derives that ceiling from physical memory
-     *  (`TBuffer::getMaxBufferSize()`); a browser tab cannot ask, so mudix uses
+     *  (`TBuffer::getMaxBufferSize()`); a browser tab cannot ask, so Mudlet Web uses
      *  a fixed 1,000,000-line cap. Off unless explicitly true. */
     useMaxConsoleBufferSize?: boolean;
     /** Mudlet "Network packet timeout": how long (ms) to buffer a partial line
@@ -351,7 +352,7 @@ export interface ProfileSettings {
      *  to stop recording for this profile. */
     loggingEnabled?: boolean;
     /** Flash the browser tab title (Mudlet's taskbar-blink equivalent) when new
-     *  server data arrives while the mudix tab/window is unfocused. Off unless
+     *  server data arrives while the Mudlet Web tab/window is unfocused. Off unless
      *  explicitly set to true. */
     notifyOnNewData?: boolean;
     /** Mirror script/trigger/alias/timer errors into the main output window (in
@@ -401,7 +402,7 @@ export interface ProfileSettings {
     uninstalledPackages?: string[];
     /** Catch-all bag for Mudlet `setConfig`/`getConfig` option keys that have no
      *  dedicated structured home above (accessibility, input-line, and other
-     *  preferences mudix persists for round-trip fidelity but does not yet act
+     *  preferences Mudlet Web persists for round-trip fidelity but does not yet act
      *  on). Keys with a structured home — protocol toggles, mapper settings,
      *  autoClearInput — are NOT stored here; the registry in ScriptingAPI reads
      *  and writes their real fields so the Settings UI stays in sync. Merged
@@ -466,7 +467,7 @@ export interface ProtocolSettings {
      *  `Sec-WebSocket-Protocol` header (RFC 6455), in preference order — the
      *  server selects at most one. These are mutually-exclusive stream *modes*,
      *  not layers (see {@link WS_SUBPROTOCOL_CHOICES}). Defaults to `['binary']`:
-     *  the raw telnet stream over binary frames is exactly what mudix decodes,
+     *  the raw telnet stream over binary frames is exactly what Mudlet Web decodes,
      *  and `binary` is accepted by both FluffOS and servers like last-outpost.com.
      *  An empty list opens a bare socket (no header). Applies to direct
      *  `websocket`-mode connections; the bundled telnet proxy ignores it. */
@@ -495,18 +496,18 @@ export const PROTOCOL_DEFAULTS: Required<ProtocolSettings> = {
     wsSubprotocols: ['binary'],
 };
 
-/** The WebSocket subprotocol names mudix can advertise, in canonical preference
+/** The WebSocket subprotocol names Mudlet Web can advertise, in canonical preference
  *  order. Mutually-exclusive stream modes the server picks *one* of — not
  *  layers that stack:
  *  - `binary`  — raw telnet byte stream over WebSocket binary frames. Every byte
  *                (IAC, GMCP/MSDP, MCCP, high-bit charset) survives; this is the
- *                only mode mudix's binary-frame decoder actually consumes.
+ *                only mode Mudlet Web's binary-frame decoder actually consumes.
  *  - `telnet`  — FluffOS binds this to the same telnet handler as `binary`; an
  *                alternate name some servers register instead of `binary`.
  *  - `telnet.mudstandards.org` — the mudstandards.org WebSocket proposal, same
  *                on-the-wire profile under the standardised name.
  *  (`ascii` — text frames with telnet stripped — is deliberately omitted: it's a
- *  dumb-terminal mode mudix can't decode.) The Settings UI renders one checkbox
+ *  dumb-terminal mode Mudlet Web can't decode.) The Settings UI renders one checkbox
  *  per entry; the selection is passed to MudClient in this order so the server
  *  sees `binary` first. */
 export const WS_SUBPROTOCOL_CHOICES = ['binary', 'telnet', 'telnet.mudstandards.org'] as const;
@@ -541,7 +542,7 @@ export interface EditorSettings {
      *  visible marks" but currently only rules a separator under each row:
      *  `slot_changeShowLineFeedsAndParagraphs` sets edbee's `useLineSeparator`
      *  (dlgProfilePreferences.cpp:4073), which the method's own comment calls a
-     *  stand-in for the marks it was named for. mudix draws the marks. */
+     *  stand-in for the marks it was named for. Mudlet Web draws the marks. */
     showLineParagraphs?: boolean;
     /** "Show invisible Unicode control characters". Default off. */
     showControlChars?: boolean;
@@ -710,7 +711,7 @@ export const MAPPER_DEFAULTS: Required<MapperSettings> = {
     symbolFont: 'Bitstream Vera Sans Mono',
     // LOD budgets mirror the renderer's createSettings() defaults; `lodEnabled`
     // deliberately does NOT (the renderer defaults it off for back-compat,
-    // mudix opts in — see MapperSettings.lodEnabled).
+    // Mudlet Web opts in — see MapperSettings.lodEnabled).
     lodEnabled: true,
     lodRoomBudget: 16000,
     lodExitBudget: 12000,
@@ -803,7 +804,7 @@ export interface PackageManifest {
      * This is what `getPackageInfo`/`getModuleInfo` answer with, so it has to
      * stay the package author's own set: Mudlet reports what the manifest said
      * and nothing more, which means a package that shipped no config.lua has no
-     * info at all rather than a table of things mudix worked out for itself
+     * info at all rather than a table of things Mudlet Web worked out for itself
      * (the derived name, the install timestamp). Absent when there was no
      * config.lua to read.
      */

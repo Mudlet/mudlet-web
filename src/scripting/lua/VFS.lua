@@ -39,10 +39,10 @@ do
     -- Every io payload crosses the wasmoon bridge "armored" as pure ASCII,
     -- because that bridge is UTF-8-based and would otherwise truncate binary
     -- content at NUL and mangle 0x80–0xFF. The scheme, and why it is written the
-    -- way it is, lives in Bridge.lua next to __mudix_armor; the JS hooks in
+    -- way it is, lives in Bridge.lua next to __mudlet_armor; the JS hooks in
     -- LuaRuntime mirror it. Taken as locals here so the hot read/write paths do
     -- a local lookup rather than a global one.
-    local _armor, _unarmor = __mudix_armor, __mudix_unarmor
+    local _armor, _unarmor = __mudlet_armor, __mudlet_unarmor
 
     local function _make_handle(id)
         local mt = {

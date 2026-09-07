@@ -14,7 +14,7 @@
 // is granted ownership automatically the moment the first releases it.
 
 /** Shared prefix for every per-profile Web Lock name. */
-export const PROFILE_LOCK_PREFIX = 'mudix:profile:';
+export const PROFILE_LOCK_PREFIX = 'mudlet:profile:';
 
 /** Web Lock name for a profile. */
 export const profileLockName = (connectionId: string) => `${PROFILE_LOCK_PREFIX}${connectionId}`;

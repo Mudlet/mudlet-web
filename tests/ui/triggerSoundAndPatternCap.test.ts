@@ -208,7 +208,7 @@ describe('trigger pattern rows', () => {
 // one: `TAction::mLocation` 1 ("bottom") is dead in Mudlet — ActionUnit places
 // 0, 2, 3 and 4 and never 1 (ActionUnit.cpp:234-246) — so a profile saved on it
 // carries a bar desktop silently never draws, and a folder linked with a Mudlet
-// install writes that on every save. mudix can render it, so it is not removed
+// install writes that on every save. Mudlet Web can render it, so it is not removed
 // from the model; it is just never offered as a new choice.
 describe('toolbar location choices', () => {
     beforeEach(() => { useAppStore.setState({ connectionButtons: {} } as never); });

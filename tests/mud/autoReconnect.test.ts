@@ -6,7 +6,7 @@ import { useAutoReconnect, SETTLED_SESSION_MS } from '../../src/hooks/useAutoRec
 
 /**
  * Mudlet's "Reconnect automatically" (`autoreconnect`), which is a different
- * profile option from the one mudix has always called `autoReconnect` — that
+ * profile option from the one Mudlet Web has always called `autoReconnect` — that
  * one is Mudlet's `autologin` and only decides whether opening a profile dials.
  *
  * All of the behaviour under test is ctelnet.cpp:918-923:

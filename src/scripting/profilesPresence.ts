@@ -8,11 +8,11 @@ type PresenceMsg =
 
 /**
  * Cross-tab view of which profiles are open and which are connected — backs
- * Mudlet's `getProfiles()`. mudix runs one profile per browser tab, so two
+ * Mudlet's `getProfiles()`. Mudlet Web runs one profile per browser tab, so two
  * cross-tab signals are combined:
  *
  *  - **loaded** (open & editable): every open profile holds an exclusive Web
- *    Lock named `mudix:profile:<id>` (see profileLock.ts). `navigator.locks
+ *    Lock named `mudlet:profile:<id>` (see profileLock.ts). `navigator.locks
  *    .query()` lists held locks across all same-origin tabs, so the held
  *    profile locks ARE the loaded set. Authoritative and crash-safe (the browser
  *    auto-releases a lock when its tab closes/crashes). Polled on a slow interval
@@ -45,7 +45,7 @@ export class ProfilesPresence {
     ) {
         this.loaded = new Set([ownId]);
         if (typeof BroadcastChannel !== 'undefined') {
-            this.channel = new BroadcastChannel('mudix:profiles-presence');
+            this.channel = new BroadcastChannel('mudlet:profiles-presence');
             this.channel.onmessage = (e: MessageEvent) => this.onMessage(e.data as PresenceMsg);
             this.channel.postMessage({ t: 'query' } satisfies PresenceMsg); // ask peers to announce
             this.announce();                                                 // and announce ourselves

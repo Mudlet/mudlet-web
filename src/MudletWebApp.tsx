@@ -2,7 +2,7 @@ import { useState } from 'react';
 import App from './App';
 import { ConfirmProvider } from './ui/components';
 import { setBrand, getBrand, getThemeChoices, brandThemesCss, type BrandConfig } from './branding';
-import { useAppStore, MUDIX_STORE_NAME } from './storage/appStore';
+import { useAppStore, MUDLET_STORE_NAME } from './storage/appStore';
 import { registerVfsServiceWorker } from './scripting/vfs/vfsBridge';
 import { appShellCacheEnabled, primeAppShellCache } from './utils/appShellCache';
 import { installPinchZoomGuard } from './ui/preventPinchZoom';
@@ -39,7 +39,7 @@ function applyBrandTheming(): void {
     const css = brandThemesCss();
     if (css && typeof document !== 'undefined') {
         const style = document.createElement('style');
-        style.id = 'mudix-brand-themes';
+        style.id = 'mudlet-brand-themes';
         style.textContent = css;
         document.head.appendChild(style);
     }
@@ -47,7 +47,7 @@ function applyBrandTheming(): void {
     const fallback = brand.defaultTheme ?? choices[0]?.value;
     if (!fallback) return;
     const store = useAppStore.getState();
-    const firstLaunch = typeof localStorage !== 'undefined' && localStorage.getItem(MUDIX_STORE_NAME) === null;
+    const firstLaunch = typeof localStorage !== 'undefined' && localStorage.getItem(MUDLET_STORE_NAME) === null;
     if ((brand.defaultTheme && firstLaunch) || !choices.some(c => c.value === store.client.theme)) {
         store.patchClient({ theme: fallback });
     }

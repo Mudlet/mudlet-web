@@ -4,7 +4,7 @@
  * Mudlet round-trips the item and its subtree through XML — `slot_copyXml`
  * (dlgTriggerEditor.cpp:11777) exports it to `mpHost->mpEditorDialog`'s
  * clipboard buffer and `slot_pasteXml` (:11913) imports it back, which is why
- * the paste mints fresh ids there too. mudix's nodes are plain objects, so the
+ * the paste mints fresh ids there too. Mudlet Web's nodes are plain objects, so the
  * same job is a structured clone with remapped ids; the clipboard is an
  * in-memory snapshot rather than XML text, which keeps it exact (no lossy
  * element set) at the cost of not surviving a page reload — Mudlet's doesn't

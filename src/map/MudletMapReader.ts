@@ -10,7 +10,7 @@ import type {MapStore} from './MapStore';
 
 // The renderer's `MapData.Room` / `MapData.Map` types live in a global
 // namespace inside the package and aren't re-exported by name; derive the
-// concrete shapes from `MapReader`'s public surface so mudix's tsc resolves
+// concrete shapes from `MapReader`'s public surface so Mudlet Web's tsc resolves
 // them without needing the namespace.
 type RoomShape = ReturnType<MapReader['getRoom']>;
 type MapShape = ConstructorParameters<typeof MapReader>[0];
@@ -23,7 +23,7 @@ const UNBOUNDED: ViewportBounds = {
 };
 
 /**
- * Live {@link IMapReader} backed by Mudix's {@link MapStore}.
+ * Live {@link IMapReader} backed by Mudlet's {@link MapStore}.
  *
  * The renderer is constructed once on panel mount and held for the lifetime of
  * the panel. Whenever the store mutates (script-built rooms, binary load,
@@ -54,7 +54,7 @@ const UNBOUNDED: ViewportBounds = {
  * binary-reader pipeline applies. Doing it inside the reader (instead of in
  * the panel) keeps `MapPanel` pure-view: it never sees the wire format.
  */
-export class MudixMapReader implements IMapReader, ViewportDataSource, HashLookupCapable {
+export class MudletMapReader implements IMapReader, ViewportDataSource, HashLookupCapable {
     readonly viewportAware = true as const;
     readonly hashLookupCapable = true as const;
     private inner: SkeletonMapReader;

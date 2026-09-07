@@ -109,7 +109,7 @@ export function installSoundBindings({ lua, api }: BindingContext): void {
             tag: strOpt(o.tag),
         }, 'music');
     });
-    // getPausedSounds / getPausedMusic — mudix's Web Audio backend stops
+    // getPausedSounds / getPausedMusic — Mudlet Web's Web Audio backend stops
     // sources instead of pausing them (see SoundManager.pauseSounds), so
     // nothing ever sits in a paused state. These always report empty.
     lua.global.set('__getPausedSounds', () => [] as unknown[]);

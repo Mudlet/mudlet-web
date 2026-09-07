@@ -251,7 +251,7 @@ describe('setConfig / getConfig', () => {
     });
 
     it('routes the canonical / alias / charset / naws protocol keys', () => {
-        // enableNEWENVIRON (Mudlet's canonical all-caps key) and the mudix alias
+        // enableNEWENVIRON (Mudlet's canonical all-caps key) and the Mudlet Web alias
         // enableNewEnviron both drive protocols.newEnviron.
         h.run('setConfig("enableNEWENVIRON", false)');
         expect(useAppStore.getState().connectionProfile[CONN]?.protocols?.newEnviron).toBe(false);

@@ -74,7 +74,7 @@ export function installCommandLineBindings({ lua, api, emitEvent }: BindingConte
         cmdColorSetter((r, g, b, al, win) => api.setCommandForegroundColor(r, g, b, al, win)));
     // Mudlet enableCommandLine / disableCommandLine. For overlay cmd lines
     // this toggles the input's `disabled` attribute; for userwindows it
-    // shows/hides the docked <input> at the bottom of the panel. mudix
+    // shows/hides the docked <input> at the bottom of the panel. Mudlet Web
     // doesn't (yet) gate the main cmd bar this way — calling with no name
     // or "main" is a no-op that returns true so scripts targeting the main
     // bar don't crash.

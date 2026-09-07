@@ -617,15 +617,15 @@ export function Toolbar({ connectionName, status, ping, onDisconnect, onReconnec
         // buttons under them. The banner landmark is the pair of them, since
         // either row can be switched off.
         //
-        // `.mudix-toolbar` stays the menu row's class — it is a documented
+        // `.mudlet-toolbar` stays the menu row's class — it is a documented
         // brand-styling hook, and the brand's own className rides on it.
         <div
-            className={`mudix-topbar${showMenuRow && showButtonRow ? '' : ' mudix-topbar--single'}`}
+            className={`mudlet-topbar${showMenuRow && showButtonRow ? '' : ' mudlet-topbar--single'}`}
             role="banner"
             onContextMenu={onContextMenu}
         >
             {showMenuRow && (
-                <div className={`mudix-toolbar${toolbarCfg?.className ? ` ${toolbarCfg.className}` : ''}`}>
+                <div className={`mudlet-toolbar${toolbarCfg?.className ? ` ${toolbarCfg.className}` : ''}`}>
                     {brandMark}
                     {getBrand().toolbar?.menuBar !== false && <MenuBar menus={menus} />}
                     {statusBlock}
@@ -633,7 +633,7 @@ export function Toolbar({ connectionName, status, ping, onDisconnect, onReconnec
                 </div>
             )}
             {showButtonRow && (
-                <div className="mudix-buttonbar-row">
+                <div className="mudlet-buttonbar-row">
                     {!showMenuRow && brandMark}
                     {!showMenuRow && statusBlock}
                     <div className="toolbar-actions">{actions(false)}</div>

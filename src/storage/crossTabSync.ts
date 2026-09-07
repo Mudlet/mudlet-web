@@ -17,7 +17,7 @@
 // writes), and deletions always propagate.
 
 import type { AppSchema } from './schema';
-import { useAppStore, MUDIX_STORE_NAME, MUDIX_STORE_VERSION } from './appStore';
+import { useAppStore, MUDLET_STORE_NAME, MUDLET_STORE_VERSION } from './appStore';
 
 type PersistedSubset = Pick<AppSchema, 'connections' | 'client'>;
 
@@ -39,7 +39,7 @@ function reconcile(rawNewValue: string): void {
     if (!parsed || typeof parsed !== 'object' || !parsed.state) return;
     // Ignore writes from a different schema version (e.g. another tab still on an
     // old build during a deploy) — merging mismatched shapes could corrupt state.
-    if (parsed.version !== MUDIX_STORE_VERSION) return;
+    if (parsed.version !== MUDLET_STORE_VERSION) return;
     const incoming = parsed.state;
 
     const patch: Partial<PersistedSubset> = {};
@@ -56,7 +56,7 @@ export function initCrossTabSync(): void {
     if (attached || typeof window === 'undefined') return;
     attached = true;
     window.addEventListener('storage', e => {
-        if (e.key !== MUDIX_STORE_NAME || e.newValue == null) return;
+        if (e.key !== MUDLET_STORE_NAME || e.newValue == null) return;
         if (e.newValue === lastReconciledRaw) return; // dedupe identical events
         lastReconciledRaw = e.newValue;
         reconcile(e.newValue);

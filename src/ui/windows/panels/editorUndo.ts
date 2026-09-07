@@ -11,7 +11,7 @@
  *  * Mudlet snapshots each deleted item to XML and re-imports it on undo, which
  *    mints fresh ids — hence the id remapping, the `remapItemID` plumbing and
  *    the child-id fix-up loops all over `EditorDeleteItemCommand::undo()`.
- *    mudix's nodes are plain objects with stable string ids, so the very same
+ *    Mudlet Web's nodes are plain objects with stable string ids, so the very same
  *    objects go back and none of that is needed.
  *  * Mudlet restores parents before children (a topological sort) because a
  *    child needs a live parent pointer. Here the tree is a flat array plus

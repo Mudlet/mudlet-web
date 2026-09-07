@@ -1,7 +1,7 @@
 # Vendored busted (test corpus)
 
 This directory holds a **pure-Lua subset of [busted]** plus its runtime
-dependencies, vendored so mudix can run Mudlet's own `*_spec.lua` suite against
+dependencies, vendored so Mudlet Web can run Mudlet's own `*_spec.lua` suite against
 its `LuaRuntime`. It is **only bundled when `VITE_BUSTED=1`** (see
 `LuaRuntime.ts`) so production builds tree-shake it out.
 
@@ -22,7 +22,7 @@ they assume a CLI process (arg parsing, `io.stdout`, `os.exit`, file globbing).
 `runBusted.lua` drives busted through its programmatic core API instead, the
 same approach Mudlet took for its in-client `runTests` command.
 
-## Shims (mudix environment differs from a Lua CLI)
+## Shims (Mudlet Web environment differs from a Lua CLI)
 
 `busted/core` and friends `require` a handful of modules that don't exist or
 behave differently in wasmoon. These are thin local stand-ins, NOT full ports:

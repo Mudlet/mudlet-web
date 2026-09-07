@@ -2,7 +2,7 @@
 //
 // Regression for trigger `cecho`/`echo` placement during a multi-line flush
 // batch. Mudlet inserts a trigger's echoed text right after the line it fired
-// on (the cursor sits on the matching line). mudix used to defer EVERY echo in
+// on (the cursor sits on the matching line). Mudlet Web used to defer EVERY echo in
 // a flush batch to the very end of the batch, so an echo from a trigger on the
 // 6th line of a 10-line block landed below the 10th line instead of after the
 // 6th. This drove the Arkadia "package board" bug: `mail.lua:check_table`
@@ -75,7 +75,7 @@ describe('trigger echo placement within a flush batch', () => {
   // Mudlet's echo/cecho WITHOUT a leading newline appends to the matched line at
   // the output cursor (end of line), not a fresh line. The Arkadia `value.lua`
   // grade trigger does `replace(""); cecho("390 miedziakow, czyli ...")` — the
-  // appended money string was landing on the next row in mudix.
+  // appended money string was landing on the next row in mudlet.
   it('appends a leading-newline-less trigger cecho to the matched line', () => {
     feedLine(
       env,

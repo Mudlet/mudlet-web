@@ -14,7 +14,7 @@
  * This class owns the same bookkeeping — the frame records, the accumulated
  * borders, the parent/child hierarchy and the tab groups — and drives the UI
  * through {@link MxpFrameHost} so the geometry is testable without a DOM.
- * mudix maps a frame's console onto a mini-console (an overlay panel with
+ * Mudlet Web maps a frame's console onto a mini-console (an overlay panel with
  * script-controlled geometry); the tab strip is window chrome rendered by
  * ScriptWindow, and child frames nest by portalling into the parent panel's
  * viewport, so their coordinates are parent-relative.

@@ -2,7 +2,7 @@
 //
 // The editor's "Show Items' ID number" (desktop's `checkBox_showIdNumbers`)
 // reads off the id you then pass to `enableTrigger`, `killTimer` and friends.
-// mudix keys its store by UUID and hands Lua a number from a single per-profile
+// Mudlet Web keys its store by UUID and hands Lua a number from a single per-profile
 // sequence shared with temporary items, so the tree has to show *that* number —
 // a UUID is not an id any script would accept.
 //

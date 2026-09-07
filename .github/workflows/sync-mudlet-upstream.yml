@@ -229,7 +229,7 @@ jobs:
       # Two scripts fail in ways worth knowing about, and both fail loudly on
       # purpose: sync-mudlet-lua exits non-zero when a patch no longer applies,
       # having already written the tree (the file is pristine upstream and the
-      # mudix change it carried is gone), and sync-mudlet-games refuses to write
+      # Mudlet Web change it carried is gone), and sync-mudlet-games refuses to write
       # a catalogue whose logo could not be resolved anywhere. Neither may be
       # pushed, so this step failing skips everything below and goes straight to
       # the triage issue.
@@ -368,7 +368,7 @@ jobs:
             cat > issue.md <<'EOF'
           The sync run itself failed before it could reach a verdict — nothing was merged, and the recorded pin is unchanged.
 
-          Causes worth checking first: a patch under `scripts/mudlet-lua-patches/` that no longer applies (`sync-mudlet-lua` names it, and the mudix change it carried is gone from the tree until somebody re-applies it by hand); a game logo that resolved nowhere (`sync-mudlet-games` refuses to write a catalogue with one missing, rather than quietly committing the icon away); or the repository setting **Allow GitHub Actions to create and approve pull requests**, without which `gh pr create` is refused.
+          Causes worth checking first: a patch under `scripts/mudlet-lua-patches/` that no longer applies (`sync-mudlet-lua` names it, and the mudlet change it carried is gone from the tree until somebody re-applies it by hand); a game logo that resolved nowhere (`sync-mudlet-games` refuses to write a catalogue with one missing, rather than quietly committing the icon away); or the repository setting **Allow GitHub Actions to create and approve pull requests**, without which `gh pr create` is refused.
           EOF
           fi
           printf '\n[Run log](%s)\n\n<sub>Opened by `sync-mudlet-upstream.yml`. Close it once this sync is green again; the next red run opens a fresh one.</sub>\n' \

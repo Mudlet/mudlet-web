@@ -8,7 +8,7 @@ import type {
     ViewportBounds,
 } from 'mudlet-map-renderer';
 import type {MapStore, RoomHighlight} from './MapStore';
-import type {MudixMapReader} from './MudixMapReader';
+import type {MudletMapReader} from './MudletMapReader';
 
 /**
  * Mudlet-style room highlight overlay. Registered with the renderer via
@@ -37,13 +37,13 @@ export class MudletHighlightOverlay implements SceneOverlay {
 
     constructor(
         private readonly mapStore: MapStore,
-        private readonly reader: MudixMapReader,
+        private readonly reader: MudletMapReader,
     ) {}
 
     attach(ctx: SceneOverlayContext): void {
         this.ctx = ctx;
         // Use the dedicated highlight channel so highlightRoom / unHighlightRoom
-        // calls don't drag MudixMapReader and MapPanel.syncFromStore through a
+        // calls don't drag MudletMapReader and MapPanel.syncFromStore through a
         // full snapshot rebuild on every script-driven update (the per-move
         // speedwalk hot path). Area / level switches still flow through
         // MapState's 'area' event for the area-filtering reset.

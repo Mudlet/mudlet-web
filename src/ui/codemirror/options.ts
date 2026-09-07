@@ -4,7 +4,7 @@ import { autocompletion } from '@codemirror/autocomplete';
 import { luaCompletionSource } from '../../scripting/lua/luaCompletions';
 import { showLineParagraphs } from './lineParagraphMarks';
 
-/** Mudlet's Editor preference page, which mudix had no equivalent of: the
+/** Mudlet's Editor preference page, which Mudlet Web had no equivalent of: the
  *  display options and autocomplete were hard-coded on. Held in a compartment
  *  so a change reconfigures the live editor instead of remounting it, which is
  *  what the theme swap alongside it already does.

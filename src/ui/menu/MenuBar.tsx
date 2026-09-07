@@ -277,7 +277,7 @@ export function MenuBar({ menus, label = 'Main menu' }: MenuBarProps) {
 
     return (
         <div
-            className="mudix-menubar"
+            className="mudlet-menubar"
             role="menubar"
             aria-label={label}
             ref={rootRef}

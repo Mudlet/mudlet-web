@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { OverlayLayerOrder } from '../../src/ui/layout/overlayLayerOrder';
 
-// OverlayLayerOrder is a FLAT per-viewport z-order registry — the mudix
+// OverlayLayerOrder is a FLAT per-viewport z-order registry — the Mudlet Web
 // analogue of Mudlet's Qt widget stack, where raiseWindow/lowerWindow bring a
 // widget to the front/back of ALL widgets in a real console/userwindow (Geyser
 // containers are Lua geometry helpers, not Qt parents, so there is no per-

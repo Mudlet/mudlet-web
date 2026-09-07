@@ -37,7 +37,7 @@ describe('serializeMudletXml — Mudlet format', () => {
         }
     });
 
-    it('round-trips trigger flags through mudix import (export → import preserves them)', () => {
+    it('round-trips trigger flags through mudlet import (export → import preserves them)', () => {
         const xml = serializeMudletXml({ ...EMPTY, triggers: [trigger({ multiline: true, multipleMatches: true, isFilter: true })] });
         const back = parseMudletXml(xml).triggers[0];
         expect(back).toMatchObject({ multiline: true, multipleMatches: true, isFilter: true });

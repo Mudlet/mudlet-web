@@ -115,7 +115,7 @@ describe('deleteProfileStorage', () => {
         idb = fakeIndexedDB();
         (globalThis as { indexedDB?: unknown }).indexedDB = idb.api;
         localStorage.clear();
-        // Every openDb() waits on the mudix->mudlet rename. This suite is about
+        // Every openDb() waits on the mudlet->mudlet rename. This suite is about
         // deletion and hands over a stand-in IndexedDB, so say the rename is done
         // rather than make the stand-in able to perform it.
         markStorageMigrationDoneForTests();

@@ -7,11 +7,11 @@ import { loadMap as loadMapBytes } from '../storage/mapStorage';
 import type { WindowManager } from './windows/WindowManager';
 
 // Lazy boundary keeps the editor bundle (Monaco + Konva + i18next) and its
-// stylesheet out of mudix's startup. The editor's stylesheet ships with every
+// stylesheet out of Mudlet Web's startup. The editor's stylesheet ships with every
 // selector pre-prefixed with `.mudlet-editor-root` (postcss-prefix-selector
 // during the library build, see the editor's vite.lib.config.ts), so its
 // rules only match elements inside its own root subtree and there's nothing
-// for mudix to scope around. We can import the CSS as a normal side-effect.
+// for Mudlet Web to scope around. We can import the CSS as a normal side-effect.
 const EditorApp = lazy(async () => {
     await import('mudlet-map-editor/styles.css');
     const mod = await import('mudlet-map-editor');
@@ -33,7 +33,7 @@ export function MapEditorModal({ connectionId, connectionName, manager, onClose 
     // be stable across re-renders so the editor's `useMemo([plugins])` arrays
     // (sidebarTabs, swatchSets, roomPanelSections) don't tear down each render.
     const plugins = useMemo<EditorPlugin[]>(() => {
-        // Sync the editor's serialised bytes back into mudix's MapStore +
+        // Sync the editor's serialised bytes back into Mudlet Web's MapStore +
         // IndexedDB. Copy into a standalone ArrayBuffer first — the load hands
         // the buffer to the worker (which takes ownership) while the editor
         // still references its own.
@@ -47,10 +47,10 @@ export function MapEditorModal({ connectionId, connectionName, manager, onClose 
             });
         };
         return [{
-            id: 'mudix-bridge',
+            id: 'mudlet-bridge',
             // Editor 1.0 added pluggable map formats and a "Save as…" dropdown,
             // and the picked format becomes the editor's *active* one — which
-            // is what `getMapBytes()` below serialises with. mudix's bridge
+            // is what `getMapBytes()` below serialises with. Mudlet Web's bridge
             // feeds those bytes straight back into the binary map reader, so a
             // single "save as JSON" would silently break every later save.
             // Pin the editor to Mudlet's own .dat codec, the one format that
@@ -58,16 +58,16 @@ export function MapEditorModal({ connectionId, connectionName, manager, onClose 
             mapFormats: (formats) => formats.filter(f => f.id === 'mudlet-dat'),
             // Replace the editor's built-in Mudlet logo (a logo.png served
             // from the editor's public folder, which 404s when embedded)
-            // with mudix's own wordmark. `.brand` carries mudix's accent
+            // with Mudlet Web's own wordmark. `.brand` carries Mudlet Web's accent
             // colour, weight, and letter-spacing; `font-family: inherit`
             // overrides the brand class's own `var(--font-ui)` so the
             // wordmark uses the editor's Montserrat-style font and
             // baseline-aligns with the editor's h1 title beside it.
             renderLogo: () => <span className="brand" style={{ fontFamily: 'inherit' }}>{getBrand().appName}</span>,
-            // The map under edit was seeded from mudix's IndexedDB in
+            // The map under edit was seeded from Mudlet Web's IndexedDB in
             // onAppReady, so the URL-load action has no role here — drop
             // it. We also swap "save"'s onClick: the editor's default
-            // downloads a .dat file *and* fires onMapSave; mudix only
+            // downloads a .dat file *and* fires onMapSave; Mudlet Web only
             // needs the in-memory bytes to round-trip back into MapStore,
             // so we go straight through syncBytes (no browser download)
             // and update the editor's `savedUndoLength` ourselves — without
@@ -111,7 +111,7 @@ export function MapEditorModal({ connectionId, connectionName, manager, onClose 
             // Still wired so that *other* save paths (e.g. the load-file
             // action's reload-then-save chain, or any keyboard shortcut
             // that triggers the editor's internal handleSave) also sync
-            // back into mudix.
+            // back into mudlet.
             onMapSave: syncBytes,
         }];
     }, [connectionId, manager]);

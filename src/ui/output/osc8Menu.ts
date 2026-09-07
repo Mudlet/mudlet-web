@@ -9,7 +9,7 @@
 import type { MenuItem, LinkTitle } from "../../mud/text/hyperlinkConfig";
 import type { FormatColor } from "../../mud/text/FormatState";
 
-const MENU_ID = "mudix-popup-menu";
+const MENU_ID = "mudlet-popup-menu";
 
 /** Render a parsed OSC 8 config colour as a CSS colour string. Config colours
  *  come from `mxpColor`, so they're rgb/hex in practice. */

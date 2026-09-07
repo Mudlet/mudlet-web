@@ -87,7 +87,7 @@ describe('LuaRuntime variable bridge — restore + capture', () => {
         // the UI) and NOT recursed; internal helpers are excluded entirely.
         expect(byName['send']).toMatchObject({ saveable: false, builtin: true });
         expect(byName['send'].children).toBeUndefined();
-        expect(globals.some(g => g.name.startsWith('__mudix'))).toBe(false);
+        expect(globals.some(g => g.name.startsWith('__mudlet'))).toBe(false);
     });
 
     it('survives a reference cycle without hanging', () => {

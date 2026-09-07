@@ -120,7 +120,7 @@ export interface FormatStateSnapshot {
     /** SGR 8: the text is there and not drawn. */
     concealed?: boolean;
     /** SGR 11-19 select one of nine alternate fonts, SGR 10 the primary one.
-     *  Carried for parity with Mudlet's getTextFormat: mudix has no alternate
+     *  Carried for parity with Mudlet's getTextFormat: Mudlet Web has no alternate
      *  font to switch to, so the number is recorded and nothing renders
      *  differently — but a script reading it back gets the truth. */
     alternateFont?: number;
@@ -690,7 +690,7 @@ export class FormatState {
  *
  * The distinction matters for exactly one reason, but it matters a lot: `4:3` is
  * a *curly underline*, one parameter with a sub-parameter, while `4;3` is an
- * underline followed by italics. Flattening both — which mudix did, to make
+ * underline followed by italics. Flattening both — which Mudlet Web did, to make
  * `38:5:1` work alongside `38;5;1` — turned every styled underline into an
  * accidental italic. Extended colours still read either form, since applySgr
  * looks ahead across parameters for the `38;5;n` spelling.

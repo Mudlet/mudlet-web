@@ -50,7 +50,7 @@ describe('opaque (non-Error) throws out of Lua', () => {
             '[event "probeEvt"] {"code":"ENOTIME","detail":"no clock"}',
         ]);
         expect(spy).toHaveBeenCalledWith(
-            '[mudix] non-Error value thrown out of event "probeEvt":',
+            '[mudlet] non-Error value thrown out of event "probeEvt":',
             { code: 'ENOTIME', detail: 'no clock' },
         );
 

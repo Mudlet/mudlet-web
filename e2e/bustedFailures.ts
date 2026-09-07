@@ -56,7 +56,7 @@ test('report busted failures', async ({ page }) => {
         }
     }
 
-    // Assertions mudix deliberately does not satisfy are separated out rather
+    // Assertions Mudlet Web deliberately does not satisfy are separated out rather
     // than printed as failures: this runner exists to show what is left to fix,
     // and three permanent entries at the top of every run train the eye to skim
     // past exactly the section that matters. They are still listed, at the end,

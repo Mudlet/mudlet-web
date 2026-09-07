@@ -123,14 +123,14 @@ function Label({ l, manager, zIndex }: { l: LabelState; manager: LabelManager; z
         if (!l.styleSheet) return;
         const parts = cssTextToParts(l.styleSheet);
         if (parts.scoped.length === 0) return;
-        const id = `mudix-label-stylesheet--${l.name}`;
+        const id = `mudlet-label-stylesheet--${l.name}`;
         let el = document.getElementById(id) as HTMLStyleElement | null;
         if (!el) {
             el = document.createElement('style');
             el.id = id;
             document.head.appendChild(el);
         }
-        const sel = `[data-mudix-label="${cssEscape(l.name)}"]`;
+        const sel = `[data-mudlet-label="${cssEscape(l.name)}"]`;
         // !important: the base block lands as INLINE style on the label div,
         // and inline always beats a <style> rule — a hover rule setting e.g.
         // background-image would silently lose to the base `background`. In Qt
@@ -153,14 +153,14 @@ function Label({ l, manager, zIndex }: { l: LabelState; manager: LabelManager; z
     const visitedKey = l.visitedLinks ? [...l.visitedLinks].join('\n') : '';
     useEffect(() => {
         if (!linkStyle) return;
-        const id = `mudix-label-linkstyle--${l.name}`;
+        const id = `mudlet-label-linkstyle--${l.name}`;
         let el = document.getElementById(id) as HTMLStyleElement | null;
         if (!el) {
             el = document.createElement('style');
             el.id = id;
             document.head.appendChild(el);
         }
-        const sel = `[data-mudix-label="${cssEscape(l.name)}"] a`;
+        const sel = `[data-mudlet-label="${cssEscape(l.name)}"] a`;
         const decl: string[] = [`text-decoration: ${linkStyle.underline ? 'underline' : 'none'}`];
         if (linkStyle.color) decl.push(`color: ${linkStyle.color}`);
         const rules = [`${sel} { ${decl.join('; ')} }`];
@@ -367,7 +367,7 @@ function Label({ l, manager, zIndex }: { l: LabelState; manager: LabelManager; z
         <div
             className="label"
             style={style}
-            data-mudix-label={l.name}
+            data-mudlet-label={l.name}
             title={l.tooltip}
             onClick={onClick}
             onContextMenu={onContextMenu}

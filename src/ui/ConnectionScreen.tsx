@@ -160,7 +160,7 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
         setImportWarnings([]);
         void runImport(async () => {
             const bytes = new Uint8Array(await file.arrayBuffer());
-            // A mudix export holds every selected profile in one archive, so a
+            // A Mudlet Web export holds every selected profile in one archive, so a
             // zip can yield several bundles; a plain Mudlet profile yields one.
             const bundles = extractMudletProfileZipAll(bytes, file.name.replace(/\.zip$/i, ''));
             for (const bundle of bundles) await beginImport(bundle);

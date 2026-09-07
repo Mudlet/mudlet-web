@@ -1,4 +1,4 @@
-# Publishes mudix to npm when a version tag (v*) is pushed.
+# Publishes Mudlet Web to npm when a version tag (v*) is pushed.
 # Uses npm Trusted Publishing (OIDC) — no NPM_TOKEN secret needed. The package
 # must have a Trusted Publisher configured on npmjs.com (package Settings →
 # Trusted Publisher → GitHub Actions) pointing at this repo and this exact

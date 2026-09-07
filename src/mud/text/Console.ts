@@ -14,7 +14,7 @@ export const MAX_CHARACTERS_PER_ECHO = 1_000_000;
  * The default is `TBuffer::mLinesLimit` (src/TBuffer.h:386) and the spin box
  * default in `src/ui/profile_preferences.ui` — 10,000 lines — rather than
  * `Host.h:687`'s 100,000. Desktop can afford the larger figure because
- * `TTextEdit` paints only the visible viewport out of the buffer; mudix keeps a
+ * `TTextEdit` paints only the visible viewport out of the buffer; Mudlet Web keeps a
  * DOM row per line, so 100,000 rows is a cost the browser pays whether or not
  * they are on screen.
  *
@@ -58,7 +58,7 @@ export class Console {
      *
      * Mudlet's TBuffer always keeps one — the line being built — as the last
      * entry of lineBuffer, so a console that has printed nothing still holds a
-     * line and getLineCount() answers 0 rather than -1. mudix keeps that line in
+     * line and getLineCount() answers 0 rather than -1. Mudlet Web keeps that line in
      * `partial`, beside `history` instead of in it, which is why getLineNumber()
      * and moveTo() already treat it as living at index `history.length`; this
      * flag is what lets the READ side agree with them.
@@ -79,7 +79,7 @@ export class Console {
     private cursorCol = 0;
     private _maxLines = DEFAULT_CONSOLE_BUFFER_SIZE;
     // Mudlet's setConsoleBufferSize takes a "size of batch deletion" — how many
-    // lines it drops at once when the cap is exceeded. mudix evicts lazily down
+    // lines it drops at once when the cap is exceeded. Mudlet Web evicts lazily down
     // to _maxLines (the observable cap is identical), but we round-trip the
     // value so getConsoleBufferSize reports back what a script set.
     // Mudlet's own default is a tenth of the line limit, which is also the
@@ -94,7 +94,7 @@ export class Console {
     onBufferShrink: ((linesRemoved: number) => void) | undefined;
     // Mudlet's TConsole treats `\n` as cursor advance — `moveCursorEnd` followed
     // by `echo("\n")` advances past the last line without producing a blank row.
-    // Mudix completes the (empty) partial on `\n` and emits a blank message.
+    // Mudlet completes the (empty) partial on `\n` and emits a blank message.
     // Set after moveCursorEnd to consume one leading `\n` as cursor-advance.
     private consumeLeadingNewline = false;
 
@@ -640,7 +640,7 @@ export class Console {
     /**
      * Mudlet `wrapLine(lineNumber)` — re-display the line at `lineNumber`
      * (0-indexed, matching getLineNumber/getLineCount), re-interpreting its
-     * embedded `\n` characters and re-wrapping to the current width. mudix
+     * embedded `\n` characters and re-wrapping to the current width. Mudlet Web
      * renders each line buffer with CSS `white-space: pre-wrap`, and the
      * rendered DOM node holds the very same buffer object as history (set via
      * `notifyRender`), so re-rendering that buffer in place is what makes any

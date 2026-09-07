@@ -78,13 +78,13 @@ function ButtonView({ button, engineRef, vfs, onStateChange }: ButtonViewProps) 
     // downwards), index 2 rotates it -90° (content reads upwards). Both transpose
     // the button's size hint, which `writing-mode: vertical-rl` reproduces for
     // free — the icon needs its own turn on top, since writing mode only turns text.
-    const rotClass = button.rotation === 1 ? 'mudix-btn--rot-cw'
-        : button.rotation === 2 ? 'mudix-btn--rot-ccw'
+    const rotClass = button.rotation === 1 ? 'mudlet-btn--rot-cw'
+        : button.rotation === 2 ? 'mudlet-btn--rot-ccw'
         : '';
     const cls = [
-        'mudix-btn',
-        pressed ? 'mudix-btn--pressed' : '',
-        button.isPushDown ? 'mudix-btn--toggle' : '',
+        'mudlet-btn',
+        pressed ? 'mudlet-btn--pressed' : '',
+        button.isPushDown ? 'mudlet-btn--toggle' : '',
         rotClass,
     ].filter(Boolean).join(' ');
 
@@ -105,8 +105,8 @@ function ButtonView({ button, engineRef, vfs, onStateChange }: ButtonViewProps) 
             style={sheet}
         >
             {iconUrl
-                ? <img className="mudix-btn__icon" src={iconUrl} alt="" />
-                : <span className="mudix-btn__label">{button.name}</span>}
+                ? <img className="mudlet-btn__icon" src={iconUrl} alt="" />
+                : <span className="mudlet-btn__label">{button.name}</span>}
         </button>
     );
 }
@@ -136,8 +136,8 @@ function renderToolbarGroup(
     // implicit tracks and push every button out of the layout.
     const filler = clampFillerOffset(toolbar.fillerOffset ?? 0, cols);
     const tbCls = useGrid
-        ? `mudix-buttonbar mudix-buttonbar--grid mudix-buttonbar--${toolbar.orientation}`
-        : `mudix-buttonbar mudix-buttonbar--${toolbar.orientation}`;
+        ? `mudlet-buttonbar mudlet-buttonbar--grid mudlet-buttonbar--${toolbar.orientation}`
+        : `mudlet-buttonbar mudlet-buttonbar--${toolbar.orientation}`;
     // Mudlet's buttonColumn = cross-axis cell count, so the role flips:
     //   horizontal toolbar → N rows, buttons fill column-by-column
     //   vertical toolbar   → N columns, buttons fill row-by-row
@@ -154,7 +154,7 @@ function renderToolbarGroup(
         <div className={tbCls} style={{ ...sheet, ...gridStyle }} title={toolbar.name}>
             {filler > 0 && (
                 <div
-                    className="mudix-buttonbar__filler"
+                    className="mudlet-buttonbar__filler"
                     aria-hidden="true"
                     style={toolbar.orientation === 'horizontal'
                         ? { gridRow: `span ${filler}` }
@@ -176,7 +176,7 @@ function renderToolbarGroup(
 
 function ToolbarStrip({ side, toolbars, allButtons, engineRef, vfs, onStateChange }: ToolbarStripProps) {
     if (toolbars.length === 0) return null;
-    const cls = `mudix-toolbar-strip mudix-toolbar-strip--${side}`;
+    const cls = `mudlet-toolbar-strip mudlet-toolbar-strip--${side}`;
     return (
         <div className={cls}>
             {toolbars.map(toolbar => (
@@ -269,16 +269,16 @@ function FloatingToolbar({ toolbar, children, onPositionChange }: FloatingToolba
     };
 
     return (
-        <div ref={ref} className="mudix-floating-toolbar" style={{ left: pos.x, top: pos.y }}>
+        <div ref={ref} className="mudlet-floating-toolbar" style={{ left: pos.x, top: pos.y }}>
             <div
-                className="mudix-floating-toolbar__handle"
+                className="mudlet-floating-toolbar__handle"
                 onPointerDown={onPointerDown}
                 onPointerMove={onPointerMove}
                 onPointerUp={onPointerUp}
                 onPointerCancel={onPointerUp}
                 title={`Drag to move "${toolbar.name}"`}
             >
-                <span className="mudix-floating-toolbar__handle-label">{toolbar.name}</span>
+                <span className="mudlet-floating-toolbar__handle-label">{toolbar.name}</span>
             </div>
             {children}
         </div>
@@ -305,7 +305,7 @@ function FloatingToolbarsLayer({
     );
     if (renderable.length === 0) return null;
     return createPortal(
-        <div className="mudix-floating-toolbars-root">
+        <div className="mudlet-floating-toolbars-root">
             {renderable.map(({ toolbar, leaves }) => (
                 <FloatingToolbar
                     key={toolbar.id}

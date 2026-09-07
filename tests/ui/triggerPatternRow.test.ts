@@ -1,7 +1,7 @@
 // The trigger pattern editor's per-type controls. Mudlet swaps the widget in a
 // pattern row by type (dlgTriggerEditor.cpp:7196-7239): a line edit for the
 // text kinds, two colour buttons for REGEX_COLOR_PATTERN, and a spin box for
-// REGEX_LINE_SPACER. mudix rendered a *disabled, empty* text box for the
+// REGEX_LINE_SPACER. Mudlet Web rendered a *disabled, empty* text box for the
 // spacer, so its count could never be set and the pattern was worthless.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createElement, act } from 'react';

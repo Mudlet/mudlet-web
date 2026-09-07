@@ -1,13 +1,13 @@
 // Re-sync the vendored Mudlet trees from upstream Mudlet.
 //
 // Two upstream directories are mirrored, because Mudlet keeps two kinds of thing
-// mudix needs (see ROOTS below):
+// Mudlet Web needs (see ROOTS below):
 //
 //   src/mudlet-lua/lua  →  src/scripting/lua/mudlet-lua   the Lua runtime tree
 //   src/packages        →  src/import/defaults            the preinstalled packages
 //
 // Sibling of sync-mudlet-specs.mjs, but with one structural difference: the spec
-// corpus is a pure mirror, and these trees are not. mudix has to diverge from
+// corpus is a pure mirror, and these trees are not. Mudlet Web has to diverge from
 // upstream in a handful of places (no MMCP in a browser tab, a coroutine-aware
 // pcall for invokeFileDialog, …). Rather than let those edits sit in the tree as
 // invisible drift, every one of them lives as a patch file under
@@ -64,7 +64,7 @@ const ROOTS = [
         upstream: 'src/mudlet-lua/lua',
         dest: 'src/scripting/lua/mudlet-lua',
         // Mudlet keeps the Lua translation catalogue with the other translations
-        // and loads it from a resource path; mudix serves it from the same /lua/
+        // and loads it from a resource path; Mudlet Web serves it from the same /lua/
         // VFS the rest of the tree uses, so LuaGlobal's loadTranslations() finds
         // it in place.
         extra: { 'translations/lua/mudlet-lua.json': 'translations/mudlet-lua.json' },
@@ -85,7 +85,7 @@ const ROOTS = [
         // in, so it sits at the repo root instead.
         extra: { 'src/mudlet-mapper.xml': 'mudlet-mapper.xml' },
         exclude: [
-            ['README.md', 'documents Mudlet\'s own preinstall rules (mudlet.qrc, setupPreInstallPackages) — mudix decides in defaultPackages.ts'],
+            ['README.md', 'documents Mudlet\'s own preinstall rules (mudlet.qrc, setupPreInstallPackages) — mudlet decides in defaultPackages.ts'],
         ],
         localOnly: [],
     },
@@ -167,7 +167,7 @@ function localSource(repoPath) {
 }
 
 async function githubSource() {
-    const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'mudix-sync-mudlet-lua' };
+    const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'mudlet-sync-mudlet-lua' };
     // Unauthenticated is 60 requests/hour and the tree walk costs a handful — a
     // token is only needed on a shared/CI IP that's already burned the budget.
     const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
@@ -413,7 +413,7 @@ if (!dryRun) {
                 `- Synced from commit: \`${source.sha}\` `
                 + `(${source.sha.startsWith(ref) ? '' : `${ref}, `}${source.date})`],
             [/^- Vendored files: \d+.*$/m,
-                `- Vendored files: ${vendoredCount} (plus ${localOnlyCount} mudix-only`
+                `- Vendored files: ${vendoredCount} (plus ${localOnlyCount} Mudlet Web-only`
                 + (patchCount ? `, ${patchCount} patched)` : ')')],
         ];
         let next = md;
@@ -457,7 +457,7 @@ if (stale.length) {
 const failed = reports.flatMap(r => r.failed);
 if (failed.length) {
     console.error('\n! Patches that no longer apply — the file is now pristine upstream,');
-    console.error('  so the mudix change it carried is GONE from the tree:');
+    console.error('  so the mudlet change it carried is GONE from the tree:');
     for (const rel of failed) console.error(`    ${rel}`);
     console.error('\n  Re-apply the change by hand (the patch body says what it was), then:');
     console.error(`    node scripts/sync-mudlet-lua.mjs --make-patch ${failed[0]}`);

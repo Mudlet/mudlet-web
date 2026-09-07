@@ -1,6 +1,6 @@
 -- Minimal penlight `pl.path` shim. busted.core uses path.dirname for stack-frame
 -- trimming; busted.fixtures uses abspath/splitpath/join/normpath (only when a
--- spec calls the `fixtures` API). Paths in mudix are POSIX-style VFS paths, so
+-- spec calls the `fixtures` API). Paths in Mudlet Web are POSIX-style VFS paths, so
 -- the separator handling is intentionally `/`-only.
 local path = {}
 

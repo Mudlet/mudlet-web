@@ -5,7 +5,7 @@
 //
 // Mudlet has no unsaved-changes concept — a selection change saves the outgoing
 // item first (dlgTriggerEditor::slot_triggerSelected, dlgTriggerEditor.cpp:
-// 7703-7709) on top of its per-property autosaves — so mudix commits too.
+// 7703-7709) on top of its per-property autosaves — so Mudlet Web commits too.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';

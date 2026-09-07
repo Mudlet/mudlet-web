@@ -5,7 +5,7 @@ export interface DomTestRuntime extends TestRuntime {
   /** Container holding rendered `<div class="output-msg">` line elements (the
    *  real OutputRenderer output for the MAIN window). */
   outputWrapper: HTMLElement;
-  /** `document.body` — popup menus (`#mudix-popup-menu`) are appended here. */
+  /** `document.body` — popup menus (`#mudlet-popup-menu`) are appended here. */
   body: HTMLElement;
   controls: OutputRendererControls;
 }

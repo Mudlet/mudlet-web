@@ -121,7 +121,7 @@ export class HyperlinkVisibilityController {
 // The bookkeeping is simpler here than there. Mudlet remembers a line NUMBER,
 // so every buffer trim has to renumber the tracked links and a reveal has to
 // bounds-check itself against a buffer that may have thrown the line away. A
-// stored line is an object in mudix, so an entry holds the line itself: a trim
+// stored line is an object in Mudlet Web, so an entry holds the line itself: a trim
 // cannot move it, and a line that scrolled out of history is simply a line
 // nobody can see being written back to.
 
@@ -156,7 +156,7 @@ function armRevealTimer(delay: number): void {
  * Whether a link with these settings is written concealed and revealed later.
  *
  * Only the timed reveals are, unlike Mudlet, which also conceals a reveal armed
- * on an expire trigger. mudix drives expire triggers off the rendered element
+ * on an expire trigger. Mudlet Web drives expire triggers off the rendered element
  * (see {@link HyperlinkVisibilityController}), and that path only ever conceals
  * — a link the buffer blanked with nothing to un-blank it would lose its text
  * for good, which is worse than showing it early.

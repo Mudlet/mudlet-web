@@ -11,7 +11,7 @@ import { parseImageSize } from '../../src/scripting/lua/imageSize';
 
 /**
  * Mudlet scripts address its compiled-in Qt resources as `:/icons/mudlet.png`.
- * A browser has no such bundle, so mudix vendors a deliberate subset — see
+ * A browser has no such bundle, so Mudlet Web vendors a deliberate subset — see
  * src/assets/qt-resources for why it is a subset and not the whole 9.6 MB.
  *
  * These pin the two things the rest of the code assumes: that a vendored path

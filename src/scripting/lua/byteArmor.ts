@@ -11,8 +11,8 @@
  *
  * So every binding that carries game *bytes* rather than text crosses armored
  * as pure ASCII: a marker char (\2 = raw, \1 = encoded) followed by the payload
- * with NUL, '%' and 0x80–0xFF written as %XX escapes. `__mudix_armor` /
- * `__mudix_unarmor` in Bridge.lua are the Lua half of the same scheme, and
+ * with NUL, '%' and 0x80–0xFF written as %XX escapes. `__mudlet_armor` /
+ * `__mudlet_unarmor` in Bridge.lua are the Lua half of the same scheme, and
  * VFS.lua takes them as locals for its hot paths.
  *
  * A payload is a *byte-string*: one JS char per byte, 0x00–0xFF, which is what

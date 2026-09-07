@@ -49,7 +49,7 @@ describe('ScrollBoxOverlay — nested windows', () => {
     it('registers its scroll content as the overlay host for its own name', () => {
         boxes.create('sb', { x: 0, y: 0, width: 200, height: 300 });
         render();
-        const content = host.querySelector('[data-mudix-scrollbox="sb"] .scrollbox-content');
+        const content = host.querySelector('[data-mudlet-scrollbox="sb"] .scrollbox-content');
         expect(content).not.toBeNull();
         expect(windows.getOverlayHost('sb')).toBe(content);
     });
@@ -66,7 +66,7 @@ describe('ScrollBoxOverlay — nested windows', () => {
         boxes.create('sb', { x: 0, y: 0, width: 200, height: 300 });
         render();
         act(() => { boxes.hide('sb'); });
-        const box = host.querySelector('[data-mudix-scrollbox="sb"]') as HTMLElement;
+        const box = host.querySelector('[data-mudlet-scrollbox="sb"]') as HTMLElement;
         expect(box.style.display).toBe('none');
         expect(windows.getOverlayHost('sb')).not.toBeNull();
     });
@@ -80,7 +80,7 @@ describe('ScrollBoxOverlay — nested windows', () => {
             windows.setPosition('con', 10, 400);
             windows.setSize('con', 150, 80);
         });
-        const box = host.querySelector('[data-mudix-scrollbox="sb"]') as HTMLElement;
+        const box = host.querySelector('[data-mudlet-scrollbox="sb"]') as HTMLElement;
         const content = host.querySelector('.scrollbox-content') as HTMLElement;
         expect(box.style.overflowY).toBe('auto');
         expect(content.style.height).toBe('480px');

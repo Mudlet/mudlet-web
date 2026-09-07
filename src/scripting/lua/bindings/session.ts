@@ -110,7 +110,7 @@ export function installSessionBindings(
     lua.global.set('hasFocus', (name?: unknown) =>
         api.hasFocus(typeof name === 'string' ? name : undefined));
     // Mudlet alert([seconds]) — flash for attention. Browsers can't flash the
-    // taskbar, so mudix flashes the document title for `seconds` (default 10).
+    // taskbar, so Mudlet Web flashes the document title for `seconds` (default 10).
     lua.global.set('alert', (seconds?: unknown) => {
         api.alert(seconds === undefined ? undefined : Number(seconds));
     });
@@ -133,12 +133,12 @@ export function installSessionBindings(
     // Mudlet's C++ TLuaInterpreter::registerAnonymousEventHandler so module-
     // load-time registrations (Geyser etc.) made before Other.lua's Lua-side
     // override land in the native handler table dispatched from
-    // __mudix_dispatch_event.
+    // __mudlet_dispatch_event.
 
     // raiseEvent runs every handler synchronously. JS is single-threaded
     // so handler-A-before-handler-B ordering falls out of the call stack.
     // Mudlet returns `true` on success (the only failure mode is a missing
-    // event name); mudix matches.
+    // event name); Mudlet Web matches.
     lua.global.set('raiseEvent', (event: string, ...args: unknown[]) => {
         if (typeof event !== 'string' || event.length === 0) return false;
         emitEvent(event, args);

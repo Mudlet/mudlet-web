@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { SPECS, SHARD, loadRecordedRun } from './bustedHarness';
 import { KNOWN_DIVERGENCES, UNSUPPORTED_AREAS, knownDivergence } from './knownDivergences';
 
-// Mudlet's busted *_spec.lua suite, run against the real mudix app in a browser.
+// Mudlet's busted *_spec.lua suite, run against the real Mudlet Web app in a browser.
 // This is the single path for the whole corpus: because the live app wires the
 // full ScriptingEngine (trigger/alias dispatch, timer pump) and renders real
 // overlay/Geyser geometry, specs the node thin-layer couldn't exercise (triggers
@@ -53,7 +53,7 @@ if (!run) {
                 const title = occ === 1 ? name : `${name} (#${occ})`;
 
                 test(title, () => {
-                    // An assertion mudix deliberately does not satisfy is marked
+                    // An assertion Mudlet Web deliberately does not satisfy is marked
                     // expected-to-fail rather than skipped, so the day it starts
                     // passing is a red run telling us to delete the entry — see
                     // knownDivergences.ts.
@@ -112,7 +112,7 @@ if (!run) {
     // ── Divergence guard: every recorded divergence must still name a live it() ──
     // Without this, an it() renamed or dropped upstream would leave a dead entry in
     // knownDivergences.ts — and dead entries are worse than none: the next person
-    // reads the list as the complete account of where mudix differs from Mudlet, and
+    // reads the list as the complete account of where Mudlet Web differs from Mudlet, and
     // a stale line makes that account wrong.
     test(`known divergences all name a live spec${SHARD ? ` (shard ${SHARD.index}/${SHARD.total})` : ''}`, () => {
         const dead: string[] = [];

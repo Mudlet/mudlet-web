@@ -302,17 +302,17 @@ function qtWidgetSelectorToPseudo(sel: string): string | null {
 // every user window, `QToolButton:hover { … }`, and so on.
 //
 // Two tables cover the two forms: {@link QT_OBJECT_NAMES} lists the Mudlet
-// widgets that have a mudix DOM stand-in (each such node carries
+// widgets that have a Mudlet Web DOM stand-in (each such node carries
 // `data-qt-object="<objectName>"`), and {@link QT_TYPE_MAP} maps widget types and
-// their subcontrols onto mudix selectors. {@link rewriteQtSelectors} applies both.
+// their subcontrols onto Mudlet Web selectors. {@link rewriteQtSelectors} applies both.
 //
 // The rewrite is deliberately surgical: only a `Q<Type>#name` prefix, a bare
 // `#name` naming one of the widgets we expose, or a *mapped* widget type is
-// touched. Anything else — an unmapped Qt type, a `.mudix-*` rule — passes
-// through untouched, because app stylesheets are also mudix's documented
+// touched. Anything else — an unmapped Qt type, a `.mudlet-*` rule — passes
+// through untouched, because app stylesheets are also Mudlet Web's documented
 // brand-styling hook and already carry real CSS.
 
-/** Qt objectNames (from Mudlet's `.ui` files) that mudix mirrors onto a DOM node
+/** Qt objectNames (from Mudlet's `.ui` files) that Mudlet Web mirrors onto a DOM node
  *  via `data-qt-object`, so package stylesheets addressing them keep working.
  *  Reference these instead of writing the raw string at the render site. */
 export const QT_OBJECT_NAMES = {
@@ -369,7 +369,7 @@ interface QtTypeEntry {
 // Shared entries, so the aliases below are the same object (and the QWidget
 // union dedupes them for free).
 const QT_DOCK_WIDGET: QtTypeEntry = {
-    // Mudlet user windows are QDockWidgets, floating or docked. mudix renders
+    // Mudlet user windows are QDockWidgets, floating or docked. Mudlet Web renders
     // the two as separate components with parallel chrome.
     self: ['.script-window', '.docked-panel'],
     sub: {
@@ -379,7 +379,7 @@ const QT_DOCK_WIDGET: QtTypeEntry = {
     },
 };
 // Mudlet's toggle buttons expose their state through Qt's `:checked`/`:on`;
-// mudix's carry aria-pressed (see ButtonsBar), which concatenates onto every
+// Mudlet Web's carry aria-pressed (see ButtonsBar), which concatenates onto every
 // target the way a BEM modifier can't.
 const QT_BUTTON_STATES = {
     checked: '[aria-pressed="true"]',
@@ -400,7 +400,7 @@ const QT_TREE_VIEW: QtTypeEntry = {
 const QT_SPLITTER_HANDLES = ['.dock-edge-splitter', '.dock-panel-splitter', '.split-group-splitter'];
 
 /**
- * Qt *widget-type* selectors mapped onto the mudix DOM. Mudlet themes style
+ * Qt *widget-type* selectors mapped onto the Mudlet Web DOM. Mudlet themes style
  * whole widget classes rather than named instances — `QToolButton { … }` for
  * every toolbar button, `QDockWidget::title { … }` for user-window title bars —
  * so these rules are what a pasted Mudlet app stylesheet actually spends most of
@@ -414,7 +414,7 @@ const QT_SPLITTER_HANDLES = ['.dock-edge-splitter', '.dock-panel-splitter', '.sp
  * because Mudlet's docs teach the descendant form for narrowing a rule to the
  * game area: `TConsole QScrollBar:vertical { … }`.
  *
- * Deliberately absent, because mudix has no surface playing the part: `QStatusBar`
+ * Deliberately absent, because Mudlet Web has no surface playing the part: `QStatusBar`
  * (no status bar — connection state lives in the toolbar) and `QMdiArea`.
  */
 const QT_TYPE_MAP: Record<string, QtTypeEntry> = {
@@ -431,27 +431,27 @@ const QT_TYPE_MAP: Record<string, QtTypeEntry> = {
     // ── Toolbars and buttons ─────────────────────────────────────────────────
     // Mudlet's main toolbar plus the user-defined button bars (TEasyButtonBar).
     QToolBar: {
-        self: ['.mudix-toolbar', '.mudix-buttonbar', '.mudix-floating-toolbar', '.map-panel-toolbar'],
+        self: ['.mudlet-toolbar', '.mudlet-buttonbar', '.mudlet-floating-toolbar', '.map-panel-toolbar'],
         sub: {
             separator: ['.toolbar-sep'],
-            handle: ['.mudix-floating-toolbar__handle'],
+            handle: ['.mudlet-floating-toolbar__handle'],
         },
     },
-    TEasyButtonBar: { self: ['.mudix-buttonbar', '.mudix-floating-toolbar'] },
+    TEasyButtonBar: { self: ['.mudlet-buttonbar', '.mudlet-floating-toolbar'] },
     // Buttons *in* a bar are QToolButtons in Mudlet; the ones in dialogs are
     // QPushButtons. The descendant forms keep the two apart the way Qt's widget
     // tree does — and outrank the plain `.btn` rule on specificity, so a sheet
     // styling both lands the toolbar rule in the toolbar regardless of order.
     QToolButton: {
-        self: ['.mudix-toolbar .btn', '.mudix-btn', '.toolbar-hamburger-btn', '.map-panel-toolbar .btn'],
+        self: ['.mudlet-toolbar .btn', '.mudlet-btn', '.toolbar-hamburger-btn', '.map-panel-toolbar .btn'],
         states: QT_BUTTON_STATES,
     },
     QPushButton: { self: ['.btn'], states: QT_BUTTON_STATES },
-    QAbstractButton: { self: ['.btn', '.mudix-btn'], states: QT_BUTTON_STATES },
+    QAbstractButton: { self: ['.btn', '.mudlet-btn'], states: QT_BUTTON_STATES },
     QCheckBox: { self: ['input[type="checkbox"]', '.toggle'] },
 
     // ── Menus ────────────────────────────────────────────────────────────────
-    // mudix has no menu bar; the hamburger is what plays that part.
+    // Mudlet Web has no menu bar; the hamburger is what plays that part.
     QMenuBar: { self: ['.toolbar-hamburger'], sub: { item: ['.toolbar-hamburger-btn'] } },
     QMenu: {
         self: ['.ctx-menu', '.toolbar-hamburger-menu', '.map-hamburger-menu', '.map-context-menu'],
@@ -540,50 +540,50 @@ const QT_TYPE_MAP: Record<string, QtTypeEntry> = {
  * Elements a themed scrollbar must leave alone, appended to every host selector
  * a `QScrollBar` rule generates:
  *
- *  - `mudix-native-scrollbar` — surfaces that hide their scrollbar as part of
+ *  - `mudlet-native-scrollbar` — surfaces that hide their scrollbar as part of
  *    their design (the tab strip, the mobile switcher, the settings tabs). Also
  *    the documented escape hatch for anything else.
- *  - `mudix-no-scrollbar` — a console the script *asked* to have no scrollbar
+ *  - `mudlet-no-scrollbar` — a console the script *asked* to have no scrollbar
  *    (`disableScrollBar`). An explicit call outranks a theme, same as in Mudlet.
  *
  * Doubling as the host for a bare `QScrollBar` rule: a lone `*` would lose to
- * mudix's own `.output-wrapper::-webkit-scrollbar`, and this carries class-level
+ * Mudlet Web's own `.output-wrapper::-webkit-scrollbar`, and this carries class-level
  * specificity of its own.
  */
-const SCROLLBAR_OPT_OUT = ':not(.mudix-native-scrollbar):not(.mudix-no-scrollbar)';
+const SCROLLBAR_OPT_OUT = ':not(.mudlet-native-scrollbar):not(.mudlet-no-scrollbar)';
 
 /**
  * Declarations that hand scrollbar rendering back to the `::-webkit-scrollbar`
  * pseudo-elements. Chromium honours the *standard* `scrollbar-width` /
  * `scrollbar-color` in preference to them — set either one and the whole WebKit
- * pseudo-element family is ignored — and mudix sets both globally (`App.css`:
+ * pseudo-element family is ignored — and Mudlet Web sets both globally (`App.css`:
  * `* { scrollbar-width: thin }`). Without this a themed `QScrollBar` rule parses,
  * matches, and still paints nothing. Emitted once per sheet, for the hosts whose
  * scrollbars the sheet actually styles, so a stylesheet that says nothing about
- * scrollbars leaves mudix's own treatment alone.
+ * scrollbars leaves Mudlet Web's own treatment alone.
  */
 const SCROLLBAR_STANDARD_RESET = 'scrollbar-width: auto; scrollbar-color: auto';
 
 /**
- * Prefix that gives a rewritten Qt rule authority over mudix's own CSS.
+ * Prefix that gives a rewritten Qt rule authority over Mudlet Web's own CSS.
  *
  * The point of installing an app stylesheet is to *restyle the client*, and in
  * Qt it does: the QApplication sheet governs the widgets it names. Landing on
- * the right element isn't enough here — mudix's own rules often carry more
- * specificity than the class the type table maps to (`.mudix-btn:hover` beats a
- * bare `.mudix-btn`, `.map-level-dropdown .map-area-dropdown-btn` beats
+ * the right element isn't enough here — Mudlet Web's own rules often carry more
+ * specificity than the class the type table maps to (`.mudlet-btn:hover` beats a
+ * bare `.mudlet-btn`, `.map-level-dropdown .map-area-dropdown-btn` beats
  * `.map-area-dropdown-btn`), so a theme would land a base colour and then lose
  * every hover and every nested case.
  *
  * `:root:root` is a doubled pseudo-class on the html element: it matches exactly
  * what it matched before and adds two classes' worth of specificity, putting
- * every rewritten rule above anything mudix writes about the same element.
+ * every rewritten rule above anything Mudlet Web writes about the same element.
  * Deliberately *not* `!important` — that would also override inline style, and
  * inline style is how a widget's own stylesheet is applied (`setLabelStyleSheet`
  * on a Geyser label). Qt resolves that the same way round: the per-widget sheet
  * wins over the application one.
  *
- * Applied only to rules we rewrote. Plain `.mudix-*` CSS — the brand-styling
+ * Applied only to rules we rewrote. Plain `.mudlet-*` CSS — the brand-styling
  * hook — passes through with the specificity its author gave it.
  */
 const SPECIFICITY_BOOST = ':root:root';
@@ -658,7 +658,7 @@ const QT_STATE_TO_CSS: Record<string, string> = {
 };
 
 /** Qt states that carry no information here — they describe a position or a
- *  window property that is always true in mudix's fixed layout (a tab bar is
+ *  window property that is always true in Mudlet Web's fixed layout (a tab bar is
  *  always on top, the window is always the active one). Dropping the token keeps
  *  the rule; dropping the *rule* would lose styling the theme meant to apply. */
 const QT_STATE_IGNORED = new Set([
@@ -718,7 +718,7 @@ interface ExpandedPart {
 
 /**
  * Expand one comma-separated Qt type selector into DOM selectors, or null when
- * any part of it has no mudix stand-in. Descendant chains (`TConsole
+ * any part of it has no Mudlet Web stand-in. Descendant chains (`TConsole
  * QScrollBar::handle`) expand token by token, which is how Mudlet's docs tell
  * people to scope a rule to the game area.
  */
@@ -825,7 +825,7 @@ function rewriteSelectorText(selector: string): RewrittenSelector {
     const expanded = parts.map(expandQtTypePart);
     if (!expanded.some(e => e !== null)) {
         // An objectName rewrite still needs the authority boost — the DOM node it
-        // found is one mudix styles itself.
+        // found is one Mudlet Web styles itself.
         const standard = objectFormChanged
             ? lead + parts.map(p => boostSelector(p.trim())).join(', ') + tail
             : out;
@@ -857,9 +857,9 @@ const COMMENT_RE = /\/\*[\s\S]*?\*\//g;
 /**
  * Rewrite the Qt selectors in an app/profile-level stylesheet — objectName forms
  * (`QWidget#widget_panel`) and mapped widget types (`QDockWidget::title`) — onto
- * the DOM they correspond to in mudix. Returns the input unchanged when it holds
+ * the DOM they correspond to in mudlet. Returns the input unchanged when it holds
  * no Qt selector at all, which is the common case for CSS written against
- * mudix's own `.mudix-*` classes.
+ * Mudlet Web's own `.mudlet-*` classes.
  *
  * A rule whose selector we rewrote also gets its *declarations* translated
  * (`qtDeclarationsToCss`): that body was written for Qt, so it may carry

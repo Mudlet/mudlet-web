@@ -8,7 +8,7 @@ import { search, searchKeymap, highlightSelectionMatches } from '@codemirror/sea
 import { lua } from '@codemirror/legacy-modes/mode/lua';
 import { useEffectiveTheme, useEditorSettings } from '../../../storage';
 import { REFERENCE_GROUPS } from '../../../scripting/lua/luaCompletions';
-import { mudixCmTheme, paletteCompartment, paletteFor } from '../../codemirror/theme';
+import { mudletCmTheme, paletteCompartment, paletteFor } from '../../codemirror/theme';
 import { luaHover, luaHoverTheme } from '../../codemirror/luaHover';
 import { optionsCompartment, optionExtensions, type EditorOptions } from '../../codemirror/options';
 
@@ -57,7 +57,7 @@ function buildExtensions(onChangeFn: () => void, onSaveFn: () => void, theme: st
             if (update.transactions.some(tr => tr.annotation(valueSync))) return;
             onChangeFn();
         }),
-        mudixCmTheme,
+        mudletCmTheme,
         luaHoverTheme,
     ];
 }

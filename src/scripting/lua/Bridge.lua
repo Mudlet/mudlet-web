@@ -59,11 +59,11 @@ end
 -- recovery and the arrival message. Mudlet's mLuaInterpreter.call swallows an
 -- error raised in there (it lands in the error console) and the caller still
 -- returns its own result, so pcall + printError here.
-function __mudix_do_speedwalk()
+function __mudlet_do_speedwalk()
     if type(doSpeedWalk) ~= 'function' then
         -- No mapper package installed, so nothing owns the walk. Mudlet errors
         -- with "attempt to call a nil value" and the player simply doesn't
-        -- move; mudix instead sends the directions in order — what gotoRoom did
+        -- move; Mudlet Web instead sends the directions in order — what gotoRoom did
         -- before it delegated — so mapper-less profiles keep working.
         for i = 1, #speedWalkDir do
             send(speedWalkDir[i])
@@ -98,7 +98,7 @@ function gotoRoom(targetRoomID)
         speedWalkPath, speedWalkDir, speedWalkWeight = {}, {}, {}
         return false, "gotoRoom: no path found from current room to room with id " .. tostring(targetRoomID)
     end
-    __mudix_do_speedwalk()
+    __mudlet_do_speedwalk()
     return true
 end
 
@@ -112,20 +112,20 @@ end
 -- and a failure prints Mudlet's mapper message. `from` is -1 when the player
 -- room is unknown, which simply finds no path — as in Mudlet, where the missing
 -- profile entry pathfinds from room 0.
-function __mudix_start_speedwalk(from, to)
+function __mudlet_start_speedwalk(from, to)
     if mudlet and mudlet.custom_speedwalk == true then
         speedWalkFrom, speedWalkTo = from, to
-        __mudix_do_speedwalk()
+        __mudlet_do_speedwalk()
         return true
     end
     if not getPath(from, to) then
-        -- Mudlet prints this through printSystemMessage, which mudix has no
+        -- Mudlet prints this through printSystemMessage, which Mudlet Web has no
         -- equivalent of; the mapper packages echo their own notices the same way.
         cecho("<red>Mapper: Cannot find a path from " .. tostring(from)
             .. " to " .. tostring(to) .. " using known exits.\n")
         return false
     end
-    __mudix_do_speedwalk()
+    __mudlet_do_speedwalk()
     return true
 end
 
@@ -193,7 +193,7 @@ __mwGeo = {}
 -- no-op and is skipped, stranding it at whatever size it was created with. That
 -- is not only a delete-then-recreate problem: createMiniConsole on an existing
 -- name repositions it too.
-function __mudix_forget_geometry(name)
+function __mudlet_forget_geometry(name)
     if type(name) == 'string' then __mwGeo[name] = nil end
 end
 
@@ -224,7 +224,7 @@ end
 -- (Mudlet's #5272 crash guard rejects `{{}}`).
 function addCustomLine(roomID, id_to, direction, style, color, arrow)
     if type(id_to) ~= 'table' then
-        local roomTo = __mudix_int(id_to)
+        local roomTo = __mudlet_int(id_to)
         if roomTo == nil then
             error("addCustomLine: bad argument #2 type (target roomID as number or coordinate"
                 .. " list as table expected, got " .. type(id_to) .. "!)", 2)
@@ -286,7 +286,7 @@ function addCustomLine(roomID, id_to, direction, style, color, arrow)
     else
         target = 'R:' .. tostring(id_to)
     end
-    local reason = __mudix_addCustomLine(roomID, target, tostring(direction), tostring(style),
+    local reason = __mudlet_addCustomLine(roomID, target, tostring(direction), tostring(style),
         r, g, b, arrow and true or false)
     if reason then return nil, "addCustomLine: " .. tostring(reason) end
     return true
@@ -319,7 +319,7 @@ end
 -- actually given — without one the useMaximum flag would land where the batch
 -- size goes, and be silently used as a number.
 --
--- The numeric arguments go through __mudix_int rather than a bare type() test:
+-- The numeric arguments go through __mudlet_int rather than a bare type() test:
 -- Mudlet vets them with getVerifiedInt, which is lua_isnumber + lua_tointeger,
 -- so a numeric string counts as a number there and is truncated to an integer.
 -- Geyser.MiniConsole:setBufferSize forwards whatever the caller handed it, and
@@ -340,14 +340,14 @@ function setConsoleBufferSize(...)
         end
     end
     local argOffset = name and 1 or 0
-    local linesNum = __mudix_int(lines)
+    local linesNum = __mudlet_int(lines)
     if linesNum == nil then
         error("setConsoleBufferSize: bad argument #" .. (1 + argOffset) .. " type (lines limit as"
             .. " number expected, got " .. type(lines) .. "!)", 2)
     end
     local batchNum
     if batch ~= nil then
-        batchNum = __mudix_int(batch)
+        batchNum = __mudlet_int(batch)
         if batchNum == nil then
             error("setConsoleBufferSize: bad argument #" .. (2 + argOffset) .. " type (size of batch"
                 .. " deletion as number expected, got " .. type(batch) .. "!)", 2)
@@ -399,9 +399,9 @@ end
 -- Mudlet exportAreaImage(areaID, filePath [, zLevel]) → true on success, or
 -- (false, errMsg). JS returns a 0-indexed [ok, pathOrErr] array; unpack it into
 -- the documented multi-return (and surface the written path as the 2nd value on
--- success, which mudix adds for convenience).
+-- success, which Mudlet Web adds for convenience).
 function exportAreaImage(areaID, filePath, zLevel)
-    local t = __mudix_exportAreaImage(areaID, filePath, zLevel)
+    local t = __mudlet_exportAreaImage(areaID, filePath, zLevel)
     if t and t[0] then return true, t[1] end
     return nil, (t and t[1]) or "exportAreaImage failed"
 end
@@ -604,7 +604,7 @@ end
 do
     local function requireNumber(fn, who)
         return function(v, ...)
-            local num = __mudix_num(v)
+            local num = __mudlet_num(v)
             if num == nil then
                 error(who .. ": bad argument #1 type (number expected, got "
                     .. type(v) .. "!)", 2)
@@ -618,7 +618,7 @@ do
     setBorderRight  = requireNumber(setBorderRight,  "setBorderRight")
 
     -- Numbers are accepted the way Mudlet's lua_isstring accepts them (Lua
-    -- coerces), and nil keeps clearing the clipboard — mudix chose that so a
+    -- coerces), and nil keeps clearing the clipboard — Mudlet Web chose that so a
     -- script never blows up on a browser without a clipboard API. Anything else
     -- is a genuine type mistake.
     local _rawSetClipboardText = setClipboardText
@@ -718,7 +718,7 @@ do
     function setWindow(parent, element, ...)
         -- The TYPE is settled before the lookup: a table where a name belongs is
         -- a mistake in the call, not a window that could not be found.
-        element = __mudix_check_string(element, 'setWindow', 2, 'element name')
+        element = __mudlet_check_string(element, 'setWindow', 2, 'element name')
         if parent ~= 'main' and __windowType(parent) == nil then
             return nil, "window '" .. tostring(parent) .. "' not found"
         end
@@ -734,10 +734,10 @@ do
     -- window that is not there.
     local function userWindowGuard(fn, message, who, what, tailName, tailOptional)
         return function(name, ...)
-            name = __mudix_check_string(name, who, 1, what)
+            name = __mudlet_check_string(name, who, 1, what)
             local tail = ...
             if select('#', ...) > 0 and not (tailOptional and tail == nil) then
-                if __mudix_str(tail) == nil then
+                if __mudlet_str(tail) == nil then
                     error(who .. ': bad argument #2 type (' .. tailName .. ' as string '
                         .. (tailOptional and 'is optional' or 'expected') .. ', got ' .. type(tail) .. '!)', 2)
                 end
@@ -755,9 +755,9 @@ do
     local _rawWrapLine = wrapLine
     function wrapLine(...)
         local first = ...
-        if type(first) ~= 'string' and __mudix_num(first) == nil then
+        if type(first) ~= 'string' and __mudlet_num(first) == nil then
             error('wrapLine: bad argument #1 type (window name as string expected, got '
-                .. __mudix_typename(first, select('#', ...) > 0) .. '!)', 2)
+                .. __mudlet_typename(first, select('#', ...) > 0) .. '!)', 2)
         end
         return _rawWrapLine(...)
     end
@@ -772,7 +772,7 @@ do
     -- including the empty-name case, which the two word differently.
     local function userWindowGetter(fn, who, emptyMessage, message)
         return function(rawName)
-            local name = __mudix_str(rawName)
+            local name = __mudlet_str(rawName)
             if name == nil then
                 error(who .. ": bad argument #1 type (window name as string expected, got "
                     .. type(rawName) .. "!)", 2)
@@ -839,7 +839,7 @@ end
 do
     local function named(fn, who, void)
         return function(rawName, ...)
-            local name = __mudix_str(rawName)
+            local name = __mudlet_str(rawName)
             if name == nil then
                 error(who .. ": bad argument #1 type (window name as string expected, got "
                     .. type(rawName) .. "!)", 2)
@@ -862,7 +862,7 @@ end
 -- because the window name is required rather than optional, so a missing or
 -- mistyped one is a hard error instead of silently hitting the main window.
 function pasteWindow(windowName)
-    local name = __mudix_str(windowName)
+    local name = __mudlet_str(windowName)
     if name == nil then
         error("pasteWindow: bad argument #1 type (window name as string expected, got "
             .. type(windowName) .. "!)", 2)
@@ -956,7 +956,7 @@ end
 do
     local function toggle(raw, who)
         return function(rawName)
-            local name = __mudix_str(rawName)
+            local name = __mudlet_str(rawName)
             if name == nil then
                 error(who .. ": bad argument #1 type (script name as string expected, got "
                     .. type(rawName) .. "!)", 2)
@@ -978,7 +978,7 @@ end
 do
     local _raw = setScript
     function setScript(name, code, pos)
-        local newName = __mudix_str(name)
+        local newName = __mudlet_str(name)
         if newName == nil or newName == '' then
             error("setScript: bad argument #1 type (script name as string expected, got "
                 .. (newName == '' and 'empty string' or type(name)) .. "!)", 2)
@@ -986,9 +986,9 @@ do
         name = newName
         -- Mudlet checks the body at #2 — before the position at #3 — and the
         -- check is reportInvalidLuaCodeParam, so it both types and compiles.
-        code = __mudix_check_lua_code(code, "setScript", 2)
+        code = __mudlet_check_lua_code(code, "setScript", 2)
         if pos ~= nil then
-            local newPos = __mudix_int(pos)
+            local newPos = __mudlet_int(pos)
             if newPos == nil then
                 error("setScript: bad argument #3 type (script position as number expected, got "
                     .. type(pos) .. "!)", 2)
@@ -1014,14 +1014,14 @@ do
 end
 
 function getScript(name, pos)
-    local newName = __mudix_str(name)
+    local newName = __mudlet_str(name)
     if newName == nil then
         error("getScript: bad argument #1 type (script name as string expected, got "
             .. type(name) .. "!)", 2)
     end
     name = newName
     if pos ~= nil then
-        local newPos = __mudix_int(pos)
+        local newPos = __mudlet_int(pos)
         if newPos == nil then
             error("getScript: bad argument #2 type (script position as number expected, got "
                 .. type(pos) .. "!)", 2)
@@ -1303,7 +1303,7 @@ function searchRoom(...)
     -- a type error rather than a search that finds nothing. The two optional
     -- flags are booleans, and a string in either slot is the mistake that
     -- silently turned an inexact search exact.
-    if type(arg) ~= 'string' and __mudix_num(arg) == nil then
+    if type(arg) ~= 'string' and __mudlet_num(arg) == nil then
         error('searchRoom: bad argument #1 ("room name" as string expected, got '
             .. type(arg) .. '!)', 2)
     end
@@ -1486,7 +1486,7 @@ end
 -- Mudlet deleteLabel(name) → true on success, (false, errMsg) when the label
 -- doesn't exist.
 function deleteLabel(name)
-    __mudix_forget_geometry(name)
+    __mudlet_forget_geometry(name)
     if __deleteLabel(name) then return true end
     return false, "label name '" .. tostring(name) .. "' not found"
 end
@@ -1495,13 +1495,13 @@ end
 -- success, (false, errMsg) when the target doesn't exist. The main command line
 -- is protected (Mudlet refuses to delete it).
 function deleteMiniConsole(name)
-    __mudix_forget_geometry(name)
+    __mudlet_forget_geometry(name)
     if __deleteMiniConsole(name) then return true end
     return false, "miniconsole \"" .. tostring(name) .. "\" does not exist"
 end
 
 function deleteCommandLine(name)
-    __mudix_forget_geometry(name)
+    __mudlet_forget_geometry(name)
     if name == "main" then
         return false, "the main command line cannot be deleted"
     end
@@ -1510,7 +1510,7 @@ function deleteCommandLine(name)
 end
 
 function deleteScrollBox(name)
-    __mudix_forget_geometry(name)
+    __mudlet_forget_geometry(name)
     if __deleteScrollBox(name) then return true end
     return false, "scroll box \"" .. tostring(name) .. "\" does not exist"
 end
@@ -1548,7 +1548,7 @@ do
         local base = parented and 3 or 2
         local labels = { "x-coordinate", "y-coordinate", "width", "height" }
         for i = 1, 4 do
-            local v = __mudix_int(a[base + i - 1])
+            local v = __mudlet_int(a[base + i - 1])
             if v == nil then
                 error("createLabel: bad argument #" .. (base + i - 1) .. " type (label "
                     .. labels[i] .. " as number expected, got "
@@ -1576,7 +1576,7 @@ do
             return false, "a miniconsole/userwindow with the name '" .. tostring(name)
                 .. "' already exists"
         end
-        __mudix_forget_geometry(name)
+        __mudlet_forget_geometry(name)
         return _rawCreateLabel(unpack(a, 1, argc))
     end
 
@@ -1588,7 +1588,7 @@ do
             local parented = type(a[1]) == 'string' and type(a[2]) == 'string'
             local name = parented and a[2] or a[1]
             local existed = __windowType(name) == kind
-            __mudix_forget_geometry(name)
+            __mudlet_forget_geometry(name)
             local r = raw(...)
             if existed then
                 return false, noun .. " '" .. tostring(name) .. "' already exists, moving/resizing '"
@@ -1612,7 +1612,7 @@ do
         local name, loadLayout, autoDock, area = ...
         if type(name) ~= 'string' then
             error('openUserWindow:  bad argument #1 type (name as string expected, got '
-                .. __mudix_typename(name, top >= 1) .. '!)', 2)
+                .. __mudlet_typename(name, top >= 1) .. '!)', 2)
         end
         if top > 1 and loadLayout ~= nil and type(loadLayout) ~= 'boolean' then
             error('openUserWindow: bad argument #2 type (loadLayout as boolean is optional, got '
@@ -1629,7 +1629,7 @@ do
         if __windowType(name) == 'label' then
             return nil, "label with the name '" .. tostring(name) .. "' already exists"
         end
-        __mudix_forget_geometry(name)
+        __mudlet_forget_geometry(name)
         return _rawOpenUserWindow(...)
     end
 
@@ -1637,12 +1637,12 @@ do
     -- without it.
     local function requireName(raw, who)
         return function(rawName, ...)
-            local name = __mudix_str(rawName)
+            local name = __mudlet_str(rawName)
             if name == nil then
                 error(who .. ": bad argument #1 type (name as string expected, got "
                     .. type(rawName) .. "!)", 2)
             end
-            __mudix_forget_geometry(name)
+            __mudlet_forget_geometry(name)
             return raw(name, ...)
         end
     end
@@ -1663,7 +1663,7 @@ do
     -- Each checker returns the converted value; the coerced list is what gets
     -- forwarded, so the JS binding never sees the raw "255".
     local function checkNumber(v, argN)
-        local num = __mudix_num(v)
+        local num = __mudlet_num(v)
         if num == nil then
             error("setTextFormat: bad argument #" .. argN .. " type (number expected, got "
                 .. type(v) .. "!)", 3)
@@ -1674,7 +1674,7 @@ do
     -- enables), and lua_isnumber counts a numeric string among the numbers.
     local function checkFlag(v, argN)
         if type(v) == 'boolean' then return v end
-        local num = __mudix_num(v)
+        local num = __mudlet_num(v)
         if num == nil then
             error("setTextFormat: bad argument #" .. argN .. " type (boolean expected, got "
                 .. type(v) .. "!)", 3)
@@ -1694,7 +1694,7 @@ do
         if a[13] ~= nil then
             -- lua_isstring, so a number reaches the value check below and is
             -- rejected there as a bad blink mode rather than as a bad type.
-            local blink = __mudix_str(a[13])
+            local blink = __mudlet_str(a[13])
             if blink == nil then
                 error("setTextFormat: bad argument #14 type (string expected, got "
                     .. type(a[13]) .. "!)", 2)
@@ -1714,7 +1714,7 @@ end
 -- Existence is checked with __windowType rather than by trusting each binding's
 -- return value: several of these answer nothing at all on success (JS `void`
 -- arrives as nil), so "falsy" cannot distinguish "worked" from "no such label".
-__mudix_label_missing = function(name, message)
+__mudlet_label_missing = function(name, message)
     if name == "" then return "label name cannot be an empty string" end
     if __windowType(name) == 'label' then return nil end
     return (message:gsub("%%s", tostring(name)))
@@ -1723,8 +1723,8 @@ end
 do
     local function labelGuard(fn, message)
         return function(name, ...)
-            name = __mudix_str(name) or name
-            local err = __mudix_label_missing(name, message)
+            name = __mudlet_str(name) or name
+            local err = __mudlet_label_missing(name, message)
             if err then return nil, err end
             fn(name, ...)
             return true
@@ -1738,7 +1738,7 @@ do
     do
         local guarded = labelGuard(setLabelCursor, "label name '%s' not found")
         setLabelCursor = function(name, shape)
-            local num = __mudix_int(shape)
+            local num = __mudlet_int(shape)
             if num == nil then
                 error("setLabelCursor: bad argument #2 type (cursor shape as number expected, got "
                     .. type(shape) .. "!)", 2)
@@ -1763,13 +1763,13 @@ do
     -- getLabelToolTip: same lookup as the setter, so a label the setter accepts
     -- always reads back.
     function getLabelToolTip(name)
-        local labelName = __mudix_str(name)
+        local labelName = __mudlet_str(name)
         if labelName == nil then
             error("getLabelToolTip: bad argument #1 type (label name as string expected, got "
                 .. type(name) .. "!)", 2)
         end
         name = labelName
-        local err = __mudix_label_missing(name, "label name '%s' not found")
+        local err = __mudlet_label_missing(name, "label name '%s' not found")
         if err then
             -- the setter's wording for the empty case, which is not the
             -- "cannot be an empty string" phrasing the shared helper uses
@@ -1783,7 +1783,7 @@ do
     -- the miss has to be told apart by asking whether the label is there.
     local _rawGetLabelStyleSheet = getLabelStyleSheet
     function getLabelStyleSheet(name)
-        local err = __mudix_label_missing(name, "label '%s' does not exist")
+        local err = __mudlet_label_missing(name, "label '%s' does not exist")
         if err then return nil, err end
         return _rawGetLabelStyleSheet(name)
     end
@@ -1794,7 +1794,7 @@ end
 -- (nil, errMsg). The set/property functions → true, or (nil, errMsg) when the
 -- named text edit doesn't exist. The __* primitives return value-or-false.
 function deleteTextEdit(name)
-    __mudix_forget_geometry(name)
+    __mudlet_forget_geometry(name)
     if __deleteTextEdit(name) then return true end
     return false, "text edit name '" .. tostring(name) .. "' not found"
 end
@@ -1831,22 +1831,22 @@ end
 -- Mudlet's C++ bindings validate every argument up front (getVerifiedString and
 -- validateHttpHeaders in TLuaInterpreterNetworking.cpp) and raise before any
 -- request is built; only then is the url checked for validity, which is a
--- (nil, errMsg) return rather than a raise. mudix's JS primitives coerce
+-- (nil, errMsg) return rather than a raise. Mudlet Web's JS primitives coerce
 -- instead, so the checks live here. Level 3 puts the error on the caller's line,
 -- past this helper and the wrapper that called it.
 -- Both checkers COERCE, and both return the converted value — assign it back
--- (`x = __mudix_check_string(x, ...)`) rather than calling them for effect.
+-- (`x = __mudlet_check_string(x, ...)`) rather than calling them for effect.
 -- Mudlet's checkStringArg is lua_isstring and its checkIntArg/checkNumberArg are
 -- lua_isnumber, and in Lua 5.1 those follow the language's own string<->number
 -- coercion: a number is a valid string argument and a numeric string is a valid
 -- number one. Scripts rely on it — trigger captures are always strings, so
 -- `tempLineTrigger(matches[2], matches[3], code)` is ordinary Mudlet code — and a
 -- strict type() test here rejected calls that work in Mudlet.
-function __mudix_check_string(value, funcName, index, what, present)
-    local str = __mudix_str(value)
+function __mudlet_check_string(value, funcName, index, what, present)
+    local str = __mudlet_str(value)
     if str == nil then
         error(funcName .. ": bad argument #" .. index .. " type (" .. what
-            .. " as string expected, got " .. __mudix_typename(value, present) .. "!)", 3)
+            .. " as string expected, got " .. __mudlet_typename(value, present) .. "!)", 3)
     end
     return str
 end
@@ -1859,8 +1859,8 @@ end
 -- an alias that can never run, which is precisely the state Mudlet refuses to
 -- leave the tree in. Wording is Mudlet's ("bad argument #N (...)", no `type`
 -- word, and the raw loadstring message after "invalid Lua code: ").
-function __mudix_check_lua_code(value, funcName, index)
-    local str = __mudix_str(value)
+function __mudlet_check_lua_code(value, funcName, index)
+    local str = __mudlet_str(value)
     if str == nil then
         error(funcName .. ": bad argument #" .. index
             .. " (lua script as string expected, got " .. type(value) .. "!)", 3)
@@ -1876,11 +1876,11 @@ end
 -- `present` is optional and only matters when the caller counted its own
 -- arguments: false makes an absent one report as "no value" the way
 -- luaL_typename does, rather than as the "nil" a named parameter degrades to.
-function __mudix_check_number(value, funcName, index, what, present)
+function __mudlet_check_number(value, funcName, index, what, present)
     local num = tonumber(value)
     if num == nil then
         error(funcName .. ": bad argument #" .. index .. " type (" .. what
-            .. " as number expected, got " .. __mudix_typename(value, present) .. "!)", 3)
+            .. " as number expected, got " .. __mudlet_typename(value, present) .. "!)", 3)
     end
     return num
 end
@@ -1888,9 +1888,9 @@ end
 -- getVerifiedInt in full: the type check above, then the range check Mudlet has
 -- to make because lua_tointeger hands back a 64-bit value where the C++ side
 -- wants an int. Returns the truncated integer.
-function __mudix_check_int(value, funcName, index, what, present)
-    __mudix_check_number(value, funcName, index, what, present)
-    local num = __mudix_int(value)
+function __mudlet_check_int(value, funcName, index, what, present)
+    __mudlet_check_number(value, funcName, index, what, present)
+    local num = __mudlet_int(value)
     if num < -2147483648 or num > 2147483647 then
         error(funcName .. ": integer over/under-flow in argument #" .. index .. " (" .. what
             .. " as an integer, provided value " .. tostring(value)
@@ -1903,7 +1903,7 @@ end
 -- numeric string passes the check and is converted, and the result is truncated
 -- toward zero rather than rounded. Returns nil when the value is not a number
 -- at all, so callers can raise their own Mudlet-worded error.
-function __mudix_int(value)
+function __mudlet_int(value)
     local num = tonumber(value)
     if num == nil then return nil end
     if num >= 0 then return math.floor(num) end
@@ -1911,15 +1911,15 @@ function __mudix_int(value)
 end
 
 -- lua_isnumber + lua_tonumber, behind getVerifiedDouble/getVerifiedFloat. Same
--- acceptance as __mudix_int without the truncation.
-function __mudix_num(value)
+-- acceptance as __mudlet_int without the truncation.
+function __mudlet_num(value)
     return tonumber(value)
 end
 
 -- lua_isstring + lua_tostring, behind getVerifiedString/checkStringArg. A number
 -- is a string argument; nothing else is. Lua's tostring uses the same "%.14g"
 -- as lua_tostring, so the rendering matches Mudlet's.
-function __mudix_str(value)
+function __mudlet_str(value)
     local t = type(value)
     if t == 'string' then return value end
     if t == 'number' then return tostring(value) end
@@ -1933,7 +1933,7 @@ end
 -- say which they got; callers that do not can leave `present` out and get the
 -- plain type. Mudlet's own messages do make the distinction (UI_spec asserts
 -- "got no value" on a missing argument), so it is worth carrying.
-function __mudix_typename(value, present)
+function __mudlet_typename(value, present)
     if present == false then return 'no value' end
     return type(value)
 end
@@ -1971,14 +1971,14 @@ do
         hex2char[lo:sub(1, 1) .. up:sub(2, 2)] = c
     end
 
-    function __mudix_armor(s)
+    function __mudlet_armor(s)
         if s:find('[%z%%\128-\255]') then
             return ENC .. s:gsub('[%z%%\128-\255]', char2hex)
         end
         return RAW .. s
     end
 
-    function __mudix_unarmor(s)
+    function __mudlet_unarmor(s)
         local payload = s:sub(2)
         if s:sub(1, 1) == RAW then return payload end
         return (payload:gsub('%%(%x%x)', hex2char))
@@ -1996,7 +1996,7 @@ end
 -- present. Handing over a flat string keeps table traversal on the Lua side,
 -- where it is just `pairs`, and matches how the rest of this bridge moves
 -- structured values across the boundary. Nil headers stay nil.
-function __mudix_headers_to_string(headers)
+function __mudlet_headers_to_string(headers)
     if headers == nil then return nil end
     local parts = {}
     for k, v in pairs(headers) do
@@ -2007,7 +2007,7 @@ function __mudix_headers_to_string(headers)
     return table.concat(parts, "\1")
 end
 
-function __mudix_check_headers(headers, funcName, index)
+function __mudlet_check_headers(headers, funcName, index)
     if headers == nil then return end
     if type(headers) ~= 'table' then
         error(funcName .. ": bad argument #" .. index .. " type (headers as a table expected, got "
@@ -2024,8 +2024,8 @@ end
 
 -- Returns (nil, errMsg) when the url can't be used, else nil so the caller
 -- proceeds. Runs after the type/header checks, matching Mudlet's order.
-function __mudix_http_url_error(url, funcName)
-    local reason = __mudix_url_invalid_reason(url)
+function __mudlet_http_url_error(url, funcName)
+    local reason = __mudlet_url_invalid_reason(url)
     if reason then
         return funcName .. ": url is invalid, reason: " .. tostring(reason)
     end
@@ -2035,21 +2035,21 @@ end
 -- Mudlet waitForEvent(eventName [, timeoutMs]) — block until the named event is
 -- raised, returning (eventName, ...eventArgs), or (nil, errMsg) on timeout.
 --
--- Test-only, as in Mudlet (which gates it on MUDLET_TEST_MODE): __mudix_pump is
+-- Test-only, as in Mudlet (which gates it on MUDLET_TEST_MODE): __mudlet_pump is
 -- registered by the busted bridge alone, so a production build takes the early
 -- return below instead. Mudlet blocks in a nested QEventLoop; a browser can't
--- re-enter its event loop, so we drive mudix's timer queue by hand — see
--- __mudix_pump in LuaRuntime.ts and TimerEngine.pumpDue.
+-- re-enter its event loop, so we drive Mudlet Web's timer queue by hand — see
+-- __mudlet_pump in LuaRuntime.ts and TimerEngine.pumpDue.
 --
 -- Caveat worth knowing: this cannot observe an event raised from *inside* an
 -- event dispatch already in progress, because LuaRuntime.emitEvent queues those
 -- until the outer dispatch drains. Calling waitForEvent from an event handler
 -- will therefore time out. The specs call it from it() bodies.
 function waitForEvent(eventName, timeoutMs)
-    if type(__mudix_pump) ~= 'function' then
+    if type(__mudlet_pump) ~= 'function' then
         return nil, "waitForEvent: only available in test mode"
     end
-    eventName = __mudix_check_string(eventName, "waitForEvent", 1, "event name")
+    eventName = __mudlet_check_string(eventName, "waitForEvent", 1, "event name")
     if eventName == '' then
         return nil, "waitForEvent: event name cannot be empty"
     end
@@ -2076,9 +2076,9 @@ function waitForEvent(eventName, timeoutMs)
         end
     end)
 
-    local deadline = __mudix_now() + timeout
+    local deadline = __mudlet_now() + timeout
     while not slot.captured do
-        if __mudix_pump(deadline) then break end
+        if __mudlet_pump(deadline) then break end
     end
     killAnonymousEventHandler(id)
 
@@ -2091,10 +2091,10 @@ end
 
 -- Mudlet pumpEvents([durationMs]) — waitForEvent's sibling for when there is no
 -- named event to wait on: keep delivering queued work for a while. Test-only for
--- the same reason, and driven the same way (__mudix_pump fires the timers that
+-- the same reason, and driven the same way (__mudlet_pump fires the timers that
 -- have come due, since a browser cannot re-enter its own event loop).
 function pumpEvents(durationMs)
-    if type(__mudix_pump) ~= 'function' then
+    if type(__mudlet_pump) ~= 'function' then
         return nil, "pumpEvents: only available in test mode"
     end
     local timeout = 50
@@ -2107,28 +2107,28 @@ function pumpEvents(durationMs)
     end
     if timeout < 0 then timeout = 0 elseif timeout > 30000 then timeout = 30000 end
 
-    local deadline = __mudix_now() + timeout
-    repeat until __mudix_pump(deadline)
+    local deadline = __mudlet_now() + timeout
+    repeat until __mudlet_pump(deadline)
     return true
 end
 
 -- Mudlet wait(msec) — TLuaInterpreter::Wait, an internal blocking sleep. It
 -- blocks the whole interpreter there (msleep), and does here too: the loop burns
 -- real time without giving the browser its thread back, which is the semantics
--- the callers rely on. Nothing in mudix's own code calls it; it exists because
+-- the callers rely on. Nothing in Mudlet Web's own code calls it; it exists because
 -- Mudlet packages do.
 function wait(...)
     if select('#', ...) ~= 1 then
         error("Wait: wrong number of arguments", 0)
     end
     local raw = ...
-    local msec = __mudix_int(raw)
+    local msec = __mudlet_int(raw)
     if msec == nil then
         error("Wait: bad argument #1 type (sleep time in msec as number expected, got "
             .. type(raw) .. "!)", 2)
     end
-    local deadline = __mudix_uptime_ms() + math.max(0, msec)
-    while __mudix_uptime_ms() < deadline do end
+    local deadline = __mudlet_uptime_ms() + math.max(0, msec)
+    while __mudlet_uptime_ms() < deadline do end
 end
 
 -- Mudlet receiveMSP(text) — feed an MSP payload as if the server had sent it.
@@ -2137,20 +2137,20 @@ end
 -- enableMSP config). Mudlet tests the gate before the argument type, so a call
 -- on a non-MSP connection reports that rather than complaining about arguments.
 function receiveMSP(text)
-    if not __mudix_is_msp_enabled() then
+    if not __mudlet_is_msp_enabled() then
         return nil, "receiveMSP: MSP is not currently enabled"
     end
-    text = __mudix_check_string(text, "receiveMSP", 1, "message")
-    return __mudix_receiveMSP(text)
+    text = __mudlet_check_string(text, "receiveMSP", 1, "message")
+    return __mudlet_receiveMSP(text)
 end
 
 -- Mudlet connectToServer(host [, port [, save]]). The port is range-checked and
 -- reported as (nil, errMsg) rather than raising, since it's a value problem
 -- rather than a type one (TLuaInterpreterNetworking.cpp).
 function connectToServer(host, port, save)
-    host = __mudix_check_string(host, "connectToServer", 1, "url")
+    host = __mudlet_check_string(host, "connectToServer", 1, "url")
     if port ~= nil then
-        local num = __mudix_int(port)
+        local num = __mudlet_int(port)
         if num == nil then
             error("connectToServer: bad argument #2 type (port number as number is optional, got "
                 .. type(port) .. "!)", 2)
@@ -2162,7 +2162,7 @@ function connectToServer(host, port, save)
                 .. " {defaults to 23 if not provided}"
         end
     end
-    return __mudix_connectToServer(host, port, save)
+    return __mudlet_connectToServer(host, port, save)
 end
 
 -- ── Discord Rich Presence ──────────────────────────────────────────────────
@@ -2195,13 +2195,13 @@ do
     end
 end
 
--- setDiscordGameUrl sets the profile's invite-button url. mudix has no Discord
+-- setDiscordGameUrl sets the profile's invite-button url. Mudlet Web has no Discord
 -- integration so the action itself is a no-op stub, but the argument contract is
 -- still observable, and scripts feature-test with it.
 do
     local _raw = setDiscordGameUrl
     function setDiscordGameUrl(url)
-        url = __mudix_check_string(url, "setDiscordGameUrl", 1, "url")
+        url = __mudlet_check_string(url, "setDiscordGameUrl", 1, "url")
         return _raw(url)
     end
 end
@@ -2210,34 +2210,34 @@ end
 do
     local _raw = openUrl
     function openUrl(url)
-        url = __mudix_check_string(url, "openUrl", 1, "url")
+        url = __mudlet_check_string(url, "openUrl", 1, "url")
         return _raw(url)
     end
 end
 
 function downloadFile(saveTo, url)
-    saveTo = __mudix_check_string(saveTo, "downloadFile", 1, "local filename")
-    url = __mudix_check_string(url, "downloadFile", 2, "remote url")
-    local err = __mudix_http_url_error(url, "downloadFile")
+    saveTo = __mudlet_check_string(saveTo, "downloadFile", 1, "local filename")
+    url = __mudlet_check_string(url, "downloadFile", 2, "remote url")
+    local err = __mudlet_http_url_error(url, "downloadFile")
     if err then return nil, err end
     __downloadFile(saveTo, url)
     return true, url
 end
 
 function getHTTP(url, headers)
-    url = __mudix_check_string(url, "getHTTP", 1, "remote url")
-    __mudix_check_headers(headers, "getHTTP", 2)
-    local err = __mudix_http_url_error(url, "getHTTP")
+    url = __mudlet_check_string(url, "getHTTP", 1, "remote url")
+    __mudlet_check_headers(headers, "getHTTP", 2)
+    local err = __mudlet_http_url_error(url, "getHTTP")
     if err then return nil, err end
-    __getHTTP(url, __mudix_headers_to_string(headers))
+    __getHTTP(url, __mudlet_headers_to_string(headers))
     return true, url
 end
 
 -- Mudlet opens the upload file before issuing the request and reports
 -- (nil, "<fn>: couldn't open ...") when it can't — no request, no error event.
-local function __mudix_upload_error(file, who)
+local function __mudlet_upload_error(file, who)
     if file == nil then return nil end
-    local reason = __mudix_upload_file_error(file)
+    local reason = __mudlet_upload_file_error(file)
     if reason then return who .. ": " .. reason end
     return nil
 end
@@ -2246,64 +2246,64 @@ end
 -- contents ARE the body then, and demanding a string as well would mean passing
 -- one that is thrown away. Mudlet allows it, and a caller uploading a file has
 -- nothing sensible to put there.
-function __mudix_check_upload_data(data, who, what, file)
+function __mudlet_check_upload_data(data, who, what, file)
     if data == nil and type(file) == 'string' and file ~= '' then return end
-    data = __mudix_check_string(data, who, 1, what)
+    data = __mudlet_check_string(data, who, 1, what)
 end
 
 function postHTTP(data, url, headers, file)
-    __mudix_check_upload_data(data, "postHTTP", "post data", file)
-    url = __mudix_check_string(url, "postHTTP", 2, "remote url")
-    __mudix_check_headers(headers, "postHTTP", 3)
-    local err = __mudix_http_url_error(url, "postHTTP")
+    __mudlet_check_upload_data(data, "postHTTP", "post data", file)
+    url = __mudlet_check_string(url, "postHTTP", 2, "remote url")
+    __mudlet_check_headers(headers, "postHTTP", 3)
+    local err = __mudlet_http_url_error(url, "postHTTP")
     if err then return nil, err end
-    local ferr = __mudix_upload_error(file, "postHTTP")
+    local ferr = __mudlet_upload_error(file, "postHTTP")
     if ferr then return nil, ferr end
-    __postHTTP(data, url, __mudix_headers_to_string(headers), file)
+    __postHTTP(data, url, __mudlet_headers_to_string(headers), file)
     return true, url
 end
 
 function putHTTP(data, url, headers, file)
-    __mudix_check_upload_data(data, "putHTTP", "put data", file)
-    url = __mudix_check_string(url, "putHTTP", 2, "remote url")
-    __mudix_check_headers(headers, "putHTTP", 3)
-    local err = __mudix_http_url_error(url, "putHTTP")
+    __mudlet_check_upload_data(data, "putHTTP", "put data", file)
+    url = __mudlet_check_string(url, "putHTTP", 2, "remote url")
+    __mudlet_check_headers(headers, "putHTTP", 3)
+    local err = __mudlet_http_url_error(url, "putHTTP")
     if err then return nil, err end
-    local ferr = __mudix_upload_error(file, "putHTTP")
+    local ferr = __mudlet_upload_error(file, "putHTTP")
     if ferr then return nil, ferr end
-    __putHTTP(data, url, __mudix_headers_to_string(headers), file)
+    __putHTTP(data, url, __mudlet_headers_to_string(headers), file)
     return true, url
 end
 
 function deleteHTTP(url, headers)
-    url = __mudix_check_string(url, "deleteHTTP", 1, "remote url")
-    __mudix_check_headers(headers, "deleteHTTP", 2)
-    local err = __mudix_http_url_error(url, "deleteHTTP")
+    url = __mudlet_check_string(url, "deleteHTTP", 1, "remote url")
+    __mudlet_check_headers(headers, "deleteHTTP", 2)
+    local err = __mudlet_http_url_error(url, "deleteHTTP")
     if err then return nil, err end
-    __deleteHTTP(url, __mudix_headers_to_string(headers))
+    __deleteHTTP(url, __mudlet_headers_to_string(headers))
     return true, url
 end
 
 function customHTTP(method, data, url, headers, file)
-    method = __mudix_check_string(method, "customHTTP", 1, "custom method")
-    data = __mudix_check_string(data, "customHTTP", 2, "post data")
-    url = __mudix_check_string(url, "customHTTP", 3, "remote url")
-    __mudix_check_headers(headers, "customHTTP", 4)
+    method = __mudlet_check_string(method, "customHTTP", 1, "custom method")
+    data = __mudlet_check_string(data, "customHTTP", 2, "post data")
+    url = __mudlet_check_string(url, "customHTTP", 3, "remote url")
+    __mudlet_check_headers(headers, "customHTTP", 4)
     -- publicType here is "string location", not plain "string", so the message
-    -- is built inline rather than through __mudix_check_string.
+    -- is built inline rather than through __mudlet_check_string.
     if file ~= nil then
-        local path = __mudix_str(file)
+        local path = __mudlet_str(file)
         if path == nil then
             error("customHTTP: bad argument #5 type (file to send as string location expected, got "
                 .. type(file) .. "!)", 2)
         end
         file = path
     end
-    local err = __mudix_http_url_error(url, "customHTTP")
+    local err = __mudlet_http_url_error(url, "customHTTP")
     if err then return nil, err end
-    local ferr = __mudix_upload_error(file, "customHTTP")
+    local ferr = __mudlet_upload_error(file, "customHTTP")
     if ferr then return nil, ferr end
-    __customHTTP(method, data, url, __mudix_headers_to_string(headers), file)
+    __customHTTP(method, data, url, __mudlet_headers_to_string(headers), file)
     return true, url
 end
 
@@ -2596,7 +2596,7 @@ function getProfiles()
     return out
 end
 
--- Mudlet auditAreas() — repair area/room membership consistency. mudix returns
+-- Mudlet auditAreas() — repair area/room membership consistency. Mudlet Web returns
 -- a summary report: { checkedAreas, checkedRooms, fixedAreas, orphanRooms={...},
 -- danglingRefs={...} }. JS hands the id arrays over 0-indexed; rebuild them as
 -- 1-indexed Lua arrays.
@@ -2647,23 +2647,23 @@ end
 -- a zoom without a font size is the error Mudlet raises too.
 function createMapLabel(areaID, text, posx, posy, posz, fgR, fgG, fgB, bgR, bgG, bgB, ...)
     local n = select('#', ...) + 11
-    areaID = __mudix_check_int(areaID, 'createMapLabel', 1, 'areaID')
-    text = __mudix_check_string(text, 'createMapLabel', 2, 'text')
-    posx = __mudix_check_number(posx, 'createMapLabel', 3, 'posX')
-    posy = __mudix_check_number(posy, 'createMapLabel', 4, 'posY')
-    posz = __mudix_check_number(posz, 'createMapLabel', 5, 'posZ')
-    fgR = __mudix_check_int(fgR, 'createMapLabel', 6, 'fgRed')
-    fgG = __mudix_check_int(fgG, 'createMapLabel', 7, 'fgGreen')
-    fgB = __mudix_check_int(fgB, 'createMapLabel', 8, 'fgBlue')
-    bgR = __mudix_check_int(bgR, 'createMapLabel', 9, 'bgRed')
-    bgG = __mudix_check_int(bgG, 'createMapLabel', 10, 'bgGreen')
-    bgB = __mudix_check_int(bgB, 'createMapLabel', 11, 'bgBlue')
+    areaID = __mudlet_check_int(areaID, 'createMapLabel', 1, 'areaID')
+    text = __mudlet_check_string(text, 'createMapLabel', 2, 'text')
+    posx = __mudlet_check_number(posx, 'createMapLabel', 3, 'posX')
+    posy = __mudlet_check_number(posy, 'createMapLabel', 4, 'posY')
+    posz = __mudlet_check_number(posz, 'createMapLabel', 5, 'posZ')
+    fgR = __mudlet_check_int(fgR, 'createMapLabel', 6, 'fgRed')
+    fgG = __mudlet_check_int(fgG, 'createMapLabel', 7, 'fgGreen')
+    fgB = __mudlet_check_int(fgB, 'createMapLabel', 8, 'fgBlue')
+    bgR = __mudlet_check_int(bgR, 'createMapLabel', 9, 'bgRed')
+    bgG = __mudlet_check_int(bgG, 'createMapLabel', 10, 'bgGreen')
+    bgB = __mudlet_check_int(bgB, 'createMapLabel', 11, 'bgBlue')
 
     local zoom, fontSize, showOnTop, noScaling, fontName
     local fgTransparency, bgTransparency, temporary, olR, olG, olB
     if n > 11 then
-        zoom = __mudix_check_number(select(1, ...), 'createMapLabel', 12, 'zoom')
-        fontSize = __mudix_check_int(select(2, ...), 'createMapLabel', 13, 'fontSize')
+        zoom = __mudlet_check_number(select(1, ...), 'createMapLabel', 12, 'zoom')
+        fontSize = __mudlet_check_int(select(2, ...), 'createMapLabel', 13, 'fontSize')
     end
     if n > 13 then
         showOnTop = checkBoolArg(select(3, ...), 'createMapLabel', 14, 'showOnTop')
@@ -2672,21 +2672,21 @@ function createMapLabel(areaID, text, posx, posy, posz, fgR, fgG, fgB, bgR, bgG,
         noScaling = checkBoolArg(select(4, ...), 'createMapLabel', 15, 'noScaling')
     end
     if n > 15 then
-        fontName = __mudix_check_string(select(5, ...), 'createMapLabel', 16, 'fontName')
+        fontName = __mudlet_check_string(select(5, ...), 'createMapLabel', 16, 'fontName')
     end
     if n > 16 then
-        fgTransparency = __mudix_check_int(select(6, ...), 'createMapLabel', 17, 'foregroundTransparency')
+        fgTransparency = __mudlet_check_int(select(6, ...), 'createMapLabel', 17, 'foregroundTransparency')
     end
     if n > 17 then
-        bgTransparency = __mudix_check_int(select(7, ...), 'createMapLabel', 18, 'backgroundTransparency')
+        bgTransparency = __mudlet_check_int(select(7, ...), 'createMapLabel', 18, 'backgroundTransparency')
     end
     if n > 18 then
         temporary = checkBoolArg(select(8, ...), 'createMapLabel', 19, 'temporary')
     end
     if n > 19 then
-        olR = __mudix_check_int(select(9, ...), 'createMapLabel', 20, 'outlineRed')
-        olG = __mudix_check_int(select(10, ...), 'createMapLabel', 21, 'outlineGreen')
-        olB = __mudix_check_int(select(11, ...), 'createMapLabel', 22, 'outlineBlue')
+        olR = __mudlet_check_int(select(9, ...), 'createMapLabel', 20, 'outlineRed')
+        olG = __mudlet_check_int(select(10, ...), 'createMapLabel', 21, 'outlineGreen')
+        olB = __mudlet_check_int(select(11, ...), 'createMapLabel', 22, 'outlineBlue')
     end
 
     return __createMapLabel(areaID, text, posx, posy, posz, fgR, fgG, fgB, bgR, bgG, bgB,
@@ -2721,7 +2721,7 @@ end
 function setAreaName(idOrName, newName)
     -- An area is reached by id or by name; a boolean names neither, and Mudlet
     -- raises rather than reporting it as an area that could not be found.
-    if type(idOrName) ~= 'string' and __mudix_num(idOrName) == nil then
+    if type(idOrName) ~= 'string' and __mudlet_num(idOrName) == nil then
         error('setAreaName: bad argument #1 type (areaID as number or area name as string\n'
             .. 'expected, got ' .. type(idOrName) .. '!)', 2)
     end
@@ -2797,7 +2797,7 @@ end
 -- this wrapper kicks it off and returns immediately. sysSyncOnModule fires
 -- on completion.
 function syncModule(name)
-    __mudix_syncModule(name)
+    __mudlet_syncModule(name)
 end
 
 -- Mudlet getModuleInfo(name [, key]) — returns the manifest as a table when
@@ -2912,7 +2912,7 @@ do
                 .. type(asString) .. "!)", 2)
         end
         if format ~= nil then
-            local pattern = __mudix_str(format)
+            local pattern = __mudlet_str(format)
             if pattern == nil then
                 error("getTime: bad argument #2 type (format as string is optional, got "
                     .. type(format) .. "!)", 2)
@@ -2982,12 +2982,12 @@ end
 -- failure raises `sysSaveProfileError` instead, having no return left to use.
 function saveProfile(location, saveName)
     if location ~= nil then
-        location = __mudix_check_string(location, 'saveProfile', 1, 'location')
+        location = __mudlet_check_string(location, 'saveProfile', 1, 'location')
     end
     if saveName ~= nil then
-        saveName = __mudix_check_string(saveName, 'saveProfile', 2, 'file name')
+        saveName = __mudlet_check_string(saveName, 'saveProfile', 2, 'file name')
     end
-    local r = __mudix_saveProfile(location, saveName)
+    local r = __mudlet_saveProfile(location, saveName)
     if type(r) == 'table' then
         local ok = r[0]; if ok == nil then ok = r[1] end
         local val = r[1]; if r[0] == nil then val = r[2] end
@@ -3003,7 +3003,7 @@ end
 -- recorded telnet stream is fed through the normal parsing pipeline on its
 -- original timeline, so triggers/GMCP/rendering behave as they did live.
 function loadReplay(fileName)
-    local r = __mudix_loadReplay(fileName)
+    local r = __mudlet_loadReplay(fileName)
     if type(r) == 'table' then
         local ok = r[0]; if ok == nil then ok = r[1] end
         local val = r[1]; if r[0] == nil then val = r[2] end
@@ -3031,36 +3031,36 @@ function setProfileIcon(path)
 end
 
 -- Callback registry: stores Lua functions handed to tempTimer/Alias/Trigger/Key
--- so JS only ever sees a numeric ID. JS invokes __mudix_dispatch_cb(id) via
+-- so JS only ever sees a numeric ID. JS invokes __mudlet_dispatch_cb(id) via
 -- doStringSync, sidestepping wasmoon's broken Lua-function-from-JS proxy.
-__mudix_cb = {}
-__mudix_cb_next = 0
-function __mudix_register_cb(fn)
-    __mudix_cb_next = __mudix_cb_next + 1
-    __mudix_cb[__mudix_cb_next] = fn
-    return __mudix_cb_next
+__mudlet_cb = {}
+__mudlet_cb_next = 0
+function __mudlet_register_cb(fn)
+    __mudlet_cb_next = __mudlet_cb_next + 1
+    __mudlet_cb[__mudlet_cb_next] = fn
+    return __mudlet_cb_next
 end
-function __mudix_unregister_cb(id) __mudix_cb[id] = nil end
--- __mudix_cb_returned_true records whether the body asked to be kept alive. An
+function __mudlet_unregister_cb(id) __mudlet_cb[id] = nil end
+-- __mudlet_cb_returned_true records whether the body asked to be kept alive. An
 -- expiring temp trigger whose script returns true has its expiry count put back
 -- up (TTrigger::execute increments mExpiryCount, TTrigger::match then decrements
 -- it, so the two cancel and the trigger lives for another line). The chunk runs
 -- through doStringSync, which hands back nothing, so the answer is left here for
 -- the caller to read rather than returned.
-function __mudix_dispatch_cb(id)
-    local fn = __mudix_cb[id]
-    __mudix_cb_returned_true = false
+function __mudlet_dispatch_cb(id)
+    local fn = __mudlet_cb[id]
+    __mudlet_cb_returned_true = false
     if fn then
         local result = fn()
-        __mudix_cb_returned_true = result == true
+        __mudlet_cb_returned_true = result == true
         return result
     end
 end
 -- Variant for callbacks that receive a single argument (label mouse events
--- carry a {button, x, y, ...} table). JS sets __mudix_cb_arg before invoking.
-function __mudix_dispatch_cb_arg(id)
-    local fn = __mudix_cb[id]
-    if fn then return fn(__mudix_cb_arg) end
+-- carry a {button, x, y, ...} table). JS sets __mudlet_cb_arg before invoking.
+function __mudlet_dispatch_cb_arg(id)
+    local fn = __mudlet_cb[id]
+    if fn then return fn(__mudlet_cb_arg) end
 end
 
 -- Yield-transparent pcall. Runs `fn` on a private coroutine so a runtime
@@ -3072,7 +3072,7 @@ end
 -- observes a plain yield/resume round trip. Used by __exec (Exec.lua) and the
 -- event-dispatch loops below wherever plain pcall would sit between the JS
 -- entry point and user code.
-function __mudix_pcall_co(fn, ...)
+function __mudlet_pcall_co(fn, ...)
     -- coroutine.create rejects C functions (JS-bound API globals). Those can't
     -- yield across the C boundary anyway, so plain pcall is equivalent.
     local okc, co = pcall(coroutine.create, fn)
@@ -3104,7 +3104,7 @@ end
 -- fires while the picker is open, so snapshot and restore them around the
 -- suspension.
 do
-    local SENTINEL = '\1__mudix_file_dialog'
+    local SENTINEL = '\1__mudlet_file_dialog'
     function invokeFileDialog(fileOrFolder, dialogTitle, dialogLocation)
         -- Checked before the yield: suspending first would open a picker for a
         -- call that was never going to be valid, and the error would surface at
@@ -3113,7 +3113,7 @@ do
             error("invokeFileDialog: bad argument #1 type (file or folder as boolean expected, got "
                 .. type(fileOrFolder) .. "!)", 2)
         end
-        local title = __mudix_str(dialogTitle)
+        local title = __mudlet_str(dialogTitle)
         if title == nil then
             error("invokeFileDialog: bad argument #2 type (dialog title as string expected, got "
                 .. type(dialogTitle) .. "!)", 2)
@@ -3153,7 +3153,7 @@ function setMergeTables(...)
     end
 end
 
-function __mudix_set_gmcp(key, value)
+function __mudlet_set_gmcp(key, value)
     if type(gmcp) ~= 'table' then gmcp = {} end
     local parts = {}
     for part in string.gmatch(key, '[^.]+') do parts[#parts + 1] = part end
@@ -3180,16 +3180,16 @@ function __mudix_set_gmcp(key, value)
     end
 end
 
--- MSDP equivalent of __mudix_set_gmcp. MSDP variable names are flat (any
+-- MSDP equivalent of __mudlet_set_gmcp. MSDP variable names are flat (any
 -- nesting lives inside the value), so we replace the single top-level key.
-function __mudix_set_msdp(key, value)
+function __mudlet_set_msdp(key, value)
     if type(msdp) ~= 'table' then msdp = {} end
     msdp[key] = value
 end
 
 -- MSSP equivalent: flat scalar status fields keyed by variable name, mirroring
 -- Mudlet's `mssp` global (mssp.PLAYERS, mssp.UPTIME, ...).
-function __mudix_set_mssp(key, value)
+function __mudlet_set_mssp(key, value)
     if type(mssp) ~= 'table' then mssp = {} end
     mssp[key] = value
 end
@@ -3199,7 +3199,7 @@ end
 -- attributes as lowercased keys plus `text` and an `actions` list. JS flattens
 -- the attribute map to "key\2value\1key\2value" because the keys are arbitrary
 -- server text and wasmoon's table proxy can't be walked reliably.
-function __mudix_set_mxp(element, flatAttrs)
+function __mudlet_set_mxp(element, flatAttrs)
     if type(mxp) ~= 'table' then mxp = {} end
     local t = { text = "", actions = {} }
     for entry in tostring(flatAttrs or ""):gmatch("[^\1]+") do
@@ -3212,31 +3212,31 @@ end
 -- Mirrors Mudlet's C++ TLuaInterpreter::registerAnonymousEventHandler: stores
 -- (event name → list of Lua function names) keyed registrations made by scripts
 -- loaded before Other.lua's Lua-side override takes effect (notably
--- GeyserReposition). __mudix_dispatch_event reads from here and from
+-- GeyserReposition). __mudlet_dispatch_event reads from here and from
 -- dispatchEventToFunctions, just like Mudlet's C++ raiseEvent dispatches both
 -- C-side anonymous handlers and the wildcard ("*") Lua dispatcher.
-__mudix_native_handlers = __mudix_native_handlers or {}
+__mudlet_native_handlers = __mudlet_native_handlers or {}
 function registerAnonymousEventHandler(event, func)
-    event, func = __mudix_str(event), __mudix_str(func)
+    event, func = __mudlet_str(event), __mudlet_str(func)
     if event == nil or func == nil then return 0 end
-    local list = __mudix_native_handlers[event]
-    if not list then list = {}; __mudix_native_handlers[event] = list end
+    local list = __mudlet_native_handlers[event]
+    if not list then list = {}; __mudlet_native_handlers[event] = list end
     for _, existing in ipairs(list) do if existing == func then return 0 end end
     list[#list + 1] = func
     return 0
 end
 
--- JS event bridge. emitEvent() sets __mudix_evt_name + __mudix_evt_args
+-- JS event bridge. emitEvent() sets __mudlet_evt_name + __mudlet_evt_args
 -- (a JS array, so its keys are 0-indexed) and runs this dispatcher.
-function __mudix_dispatch_event()
-    local event = __mudix_evt_name
-    local raw = __mudix_evt_args
+function __mudlet_dispatch_event()
+    local event = __mudlet_evt_name
+    local raw = __mudlet_evt_args
     -- JS arrays push as Lua tables keyed 0..n-1; rebuild as a 1-indexed sequence.
     -- Driven by the count JS reports rather than by walking until a nil, so a
     -- payload containing nil or false keeps every argument in its own position
     -- (raiseEvent("x", nil, false, "y") must reach handlers as four values, not
     -- stop dead at the leading nil).
-    local args, argc = {}, tonumber(__mudix_evt_argc) or 0
+    local args, argc = {}, tonumber(__mudlet_evt_argc) or 0
     if type(raw) == 'table' then
         if argc > 0 then
             for i = 1, argc do args[i] = raw[i - 1] end
@@ -3246,24 +3246,24 @@ function __mudix_dispatch_event()
             argc = #args
         end
     end
-    -- __mudix_pcall_co, not pcall: handlers may suspend via invokeFileDialog,
+    -- __mudlet_pcall_co, not pcall: handlers may suspend via invokeFileDialog,
     -- which needs a pure-Lua path down to the JS resume boundary.
     -- Lua functions only: event names can collide with JS-bound API globals
     -- (event "disconnect" vs the disconnect() API) and those must not be
     -- treated as handlers.
     local handler = _G[event]
     if type(handler) == 'function' and debug.getinfo(handler, 'S').what ~= 'C' then
-        local ok, err = __mudix_pcall_co(handler, unpack(args, 1, argc))
+        local ok, err = __mudlet_pcall_co(handler, unpack(args, 1, argc))
         if not ok and type(showHandlerError) == 'function' then showHandlerError(event, err) end
     end
     -- Native handlers registered before Other.lua overrode registerAnonymousEventHandler.
     -- Mudlet's C++ raiseEvent passes `event` as the first argument followed by event args.
-    local nativeList = __mudix_native_handlers[event]
+    local nativeList = __mudlet_native_handlers[event]
     if nativeList then
         for _, funcName in ipairs(nativeList) do
             local f = _G[funcName]
             if type(f) == 'function' then
-                local ok, err = __mudix_pcall_co(f, event, unpack(args, 1, argc))
+                local ok, err = __mudlet_pcall_co(f, event, unpack(args, 1, argc))
                 if not ok and type(showHandlerError) == 'function' then showHandlerError(event, err) end
             end
         end
@@ -3274,10 +3274,10 @@ function __mudix_dispatch_event()
 end
 
 -- Per-script event-handler registry. wrapScript (in ScriptingEngine.ts) emits
--- code that calls __mudix_kill_script_handlers before re-registering, so
+-- code that calls __mudlet_kill_script_handlers before re-registering, so
 -- saving a script doesn't accumulate duplicate handlers. JS calls the same
 -- helper on disable/remove via LuaRuntime.killScriptHandlers.
-__mudix_script_handlers = __mudix_script_handlers or {}
+__mudlet_script_handlers = __mudlet_script_handlers or {}
 
 -- Resolve a script's event-handler function from its name.
 --
@@ -3291,7 +3291,7 @@ __mudix_script_handlers = __mudix_script_handlers or {}
 -- Walk the dotted path instead of loadstring()ing the name: same result for the
 -- names packages actually use, without letting a script name execute code.
 -- Returns nil unless the whole path resolves to a function.
-function __mudix_resolve_handler(name)
+function __mudlet_resolve_handler(name)
     local target = _G
     for part in string.gmatch(name, '[^.]+') do
         if type(target) ~= 'table' then return nil end
@@ -3301,27 +3301,27 @@ function __mudix_resolve_handler(name)
     return nil
 end
 
-function __mudix_kill_script_handlers(sid)
-    local ids = __mudix_script_handlers[sid]
+function __mudlet_kill_script_handlers(sid)
+    local ids = __mudlet_script_handlers[sid]
     if not ids then return end
     for i = 1, #ids do
         if type(killAnonymousEventHandler) == 'function' then
             pcall(killAnonymousEventHandler, ids[i])
         end
     end
-    __mudix_script_handlers[sid] = nil
+    __mudlet_script_handlers[sid] = nil
 end
 
 -- Mudlet REGEX_LUA_CODE pattern evaluator: run the body as a Lua chunk on
 -- every line. Side effects (raiseEvent, etc.) always execute; the trigger
 -- "matches" only when the body's return value is truthy.
-function __mudix_eval_pattern(code)
-    __mudix_pat_result = false
+function __mudlet_eval_pattern(code)
+    __mudlet_pat_result = false
     local fn = loadstring(code)
     if not fn then return end
     local ok, res = pcall(fn)
     if not ok then return end
-    __mudix_pat_result = (res and true) or false
+    __mudlet_pat_result = (res and true) or false
 end
 
 -- Mudlet accepts either a function or a Lua code string for temp* callbacks;
@@ -3334,7 +3334,7 @@ end
 -- instead made every temp* constructor reject a body it should have accepted,
 -- which is what LuaApiContracts_spec's "builds nothing when it refuses" reads as
 -- a consumed ID. So the compile error is deferred into the handler itself.
-function __mudix_to_fn(v, who, argN)
+function __mudlet_to_fn(v, who, argN)
     if type(v) == 'function' then return v end
     if type(v) == 'string' then
         local fn, err = loadstring(v)
@@ -3363,12 +3363,12 @@ local function timerDelayFits(time)
 end
 
 do
-    local _raw = __mudix_tempTimer
+    local _raw = __mudlet_tempTimer
     function tempTimer(seconds, fn, repeating)
         -- Validate the delay (arg #1) before the callback (arg #2) so the
         -- reported argument number matches Mudlet — IDManager.registerNamedTimer
         -- relies on this ordering to surface the right "#N" in its own error.
-        local delaySeconds = __mudix_num(seconds)
+        local delaySeconds = __mudlet_num(seconds)
         if delaySeconds == nil then
             error("tempTimer: bad argument #1 type (number expected, got " .. type(seconds) .. "!)")
         end
@@ -3392,7 +3392,7 @@ do
             end
             body = compiled
         end
-        return _raw(seconds, __mudix_register_cb(__mudix_to_fn(body, "tempTimer", 2)),
+        return _raw(seconds, __mudlet_register_cb(__mudlet_to_fn(body, "tempTimer", 2)),
             repeating or false)
     end
 end
@@ -3414,7 +3414,7 @@ do
     end
     local function named(raw, who)
         return function(rawName)
-            local name = __mudix_str(rawName)
+            local name = __mudlet_str(rawName)
             if name == nil then
                 error(who .. ": bad argument #1 type (timer name as string expected, got "
                     .. type(rawName) .. "!)", 2)
@@ -3427,9 +3427,9 @@ do
 end
 
 do
-    local _raw = __mudix_tempAlias
+    local _raw = __mudlet_tempAlias
     function tempAlias(pattern, fn)
-        return _raw(pattern, __mudix_register_cb(__mudix_to_fn(fn, "tempAlias", 2)))
+        return _raw(pattern, __mudlet_register_cb(__mudlet_to_fn(fn, "tempAlias", 2)))
     end
 end
 
@@ -3444,49 +3444,49 @@ do
     -- to reach the engine as `tostring(table)` and install a trigger nobody
     -- could ever match, instead of telling the caller (IDManager pcalls these
     -- and reports the failure rather than raising).
-    local _sub = __mudix_tempTrigger
+    local _sub = __mudlet_tempTrigger
     function tempTrigger(pattern, fn, expirationCount)
-        pattern = __mudix_check_string(pattern, "tempTrigger", 1, "pattern")
-        return _sub(pattern, __mudix_register_cb(__mudix_to_fn(fn, "tempTrigger", 2)), expirationCount)
+        pattern = __mudlet_check_string(pattern, "tempTrigger", 1, "pattern")
+        return _sub(pattern, __mudlet_register_cb(__mudlet_to_fn(fn, "tempTrigger", 2)), expirationCount)
     end
-    local _re = __mudix_tempRegexTrigger
+    local _re = __mudlet_tempRegexTrigger
     function tempRegexTrigger(pattern, fn, expirationCount)
-        pattern = __mudix_check_string(pattern, "tempRegexTrigger", 1, "pattern")
-        return _re(pattern, __mudix_register_cb(__mudix_to_fn(fn, "tempRegexTrigger", 2)), expirationCount)
+        pattern = __mudlet_check_string(pattern, "tempRegexTrigger", 1, "pattern")
+        return _re(pattern, __mudlet_register_cb(__mudlet_to_fn(fn, "tempRegexTrigger", 2)), expirationCount)
     end
-    local _ex = __mudix_tempExactMatchTrigger
+    local _ex = __mudlet_tempExactMatchTrigger
     function tempExactMatchTrigger(pattern, fn, expirationCount)
-        pattern = __mudix_check_string(pattern, "tempExactMatchTrigger", 1, "pattern")
-        return _ex(pattern, __mudix_register_cb(__mudix_to_fn(fn, "tempExactMatchTrigger", 2)), expirationCount)
+        pattern = __mudlet_check_string(pattern, "tempExactMatchTrigger", 1, "pattern")
+        return _ex(pattern, __mudlet_register_cb(__mudlet_to_fn(fn, "tempExactMatchTrigger", 2)), expirationCount)
     end
-    local _bol = __mudix_tempBeginOfLineTrigger
+    local _bol = __mudlet_tempBeginOfLineTrigger
     function tempBeginOfLineTrigger(pattern, fn, expirationCount)
-        pattern = __mudix_check_string(pattern, "tempBeginOfLineTrigger", 1, "pattern")
-        return _bol(pattern, __mudix_register_cb(__mudix_to_fn(fn, "tempBeginOfLineTrigger", 2)), expirationCount)
+        pattern = __mudlet_check_string(pattern, "tempBeginOfLineTrigger", 1, "pattern")
+        return _bol(pattern, __mudlet_register_cb(__mudlet_to_fn(fn, "tempBeginOfLineTrigger", 2)), expirationCount)
     end
     -- tempPromptTrigger(fn[, expirationCount]) — fires whenever the server sends
-    -- a prompt (no pattern). The callback is arg #1, so __mudix_to_fn looks there.
-    local _prompt = __mudix_tempPromptTrigger
+    -- a prompt (no pattern). The callback is arg #1, so __mudlet_to_fn looks there.
+    local _prompt = __mudlet_tempPromptTrigger
     function tempPromptTrigger(fn, expirationCount)
-        return _prompt(__mudix_register_cb(__mudix_to_fn(fn, "tempPromptTrigger", 1)), expirationCount)
+        return _prompt(__mudlet_register_cb(__mudlet_to_fn(fn, "tempPromptTrigger", 1)), expirationCount)
     end
     -- tempLineTrigger(from, howMany, code|fn) — position-based, no pattern. Fires
     -- on `howMany` lines starting `from` lines ahead (from=1 = next line), then
     -- self-expires. The code/function to run is arg #3.
-    local _line = __mudix_tempLineTrigger
+    local _line = __mudlet_tempLineTrigger
     function tempLineTrigger(from, howMany, fn)
-        return _line(from, howMany, __mudix_register_cb(__mudix_to_fn(fn, "tempLineTrigger", 3)))
+        return _line(from, howMany, __mudlet_register_cb(__mudlet_to_fn(fn, "tempLineTrigger", 3)))
     end
 end
 
 do
-    local _raw = __mudix_tempKey
+    local _raw = __mudlet_tempKey
     -- Mudlet tempKey([modifier,] keyCode, fn). The 2-arg form omits the
     -- modifier (no Ctrl/Shift/Alt/Meta required); we substitute 0 to keep
     -- the JS binding signature uniform.
     -- Source of the caller (script name + line), so a browser-reserved-key
     -- warning can point at what registered the binding. debug.getinfo(2) is the
-    -- function that called tempKey; short_src is the chunk name mudix loads the
+    -- function that called tempKey; short_src is the chunk name Mudlet Web loads the
     -- script under (see LuaRuntime.exec → loadString('@'..name)).
     local function _callerSource()
         local info = debug.getinfo(3, "Sl")
@@ -3500,9 +3500,9 @@ do
     function tempKey(a, b, c)
         local src = _callerSource()
         if c == nil then
-            return _raw(0, a, __mudix_register_cb(__mudix_to_fn(b, "tempKey", 2)), src)
+            return _raw(0, a, __mudlet_register_cb(__mudlet_to_fn(b, "tempKey", 2)), src)
         end
-        return _raw(a, b, __mudix_register_cb(__mudix_to_fn(c, "tempKey", 3)), src)
+        return _raw(a, b, __mudlet_register_cb(__mudlet_to_fn(c, "tempKey", 3)), src)
     end
 end
 
@@ -3512,7 +3512,7 @@ end
 -- that: it pcalls each perm* and turns a raise into a `false` return, so without
 -- the raise permGroup would claim success for a group it never created. Level 3
 -- puts the error on the user's call site, past this helper and the wrapper.
-function __mudix_perm_result(id, funcName, what, parent)
+function __mudlet_perm_result(id, funcName, what, parent)
     if id == -1 then
         -- Mudlet spells the reason out — "permTimer: cannot create timer
         -- (parent 'X' not found)" — and permGroup surfaces that text to the
@@ -3528,19 +3528,19 @@ end
 -- Mudlet permScript(name, parent, luaCode). mudlet-lua's permGroup invokes this
 -- with a 4th positional arg ("" type filler); Lua naturally drops it.
 do
-    local _raw = __mudix_permScript
+    local _raw = __mudlet_permScript
     function permScript(name, parent, code)
         -- A script's body runs as it is compiled into the tree, so both a body
         -- that won't parse AND one that raises on the way in fail creation
         -- outright — nothing is added in either case.
-        code = __mudix_check_lua_code(code, "permScript", 3)
+        code = __mudlet_check_lua_code(code, "permScript", 3)
         local compiled = loadstring(code)
-        local id = __mudix_perm_result(
+        local id = __mudlet_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), code),
             "permScript", "script", parent)
         local ok, rerr = pcall(compiled)
         if not ok then
-            __mudix_removeScriptById(id)
+            __mudlet_removeScriptById(id)
             -- `error({...})` leaves a non-string on the stack, and tostring()ing
             -- it yields "table: 0x…", naming an address instead of the problem.
             -- Mudlet describes the object instead (TLuaInterpreter.cpp), and
@@ -3562,14 +3562,14 @@ end
 -- An empty/missing regex table is the documented way to create a trigger
 -- folder, and is what `permGroup("name", "trigger")` ends up calling.
 do
-    local _raw = __mudix_permRegexTrigger
+    local _raw = __mudlet_permRegexTrigger
     local SEP = '\1'
     function permRegexTrigger(name, parent, regexes, code)
         local rs = {}
         if type(regexes) == 'table' then
             for _, r in ipairs(regexes) do rs[#rs + 1] = tostring(r) end
         end
-        return __mudix_perm_result(
+        return __mudlet_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), table.concat(rs, SEP), tostring(code or "")),
             "permRegexTrigger", "trigger", parent)
     end
@@ -3580,14 +3580,14 @@ end
 -- substring (literal `string.find`-style). An empty patterns table makes
 -- a trigger group.
 do
-    local _raw = __mudix_permSubstringTrigger
+    local _raw = __mudlet_permSubstringTrigger
     local SEP = '\1'
     function permSubstringTrigger(name, parent, patterns, code)
         local ps = {}
         if type(patterns) == 'table' then
             for _, p in ipairs(patterns) do ps[#ps + 1] = tostring(p) end
         end
-        return __mudix_perm_result(
+        return __mudlet_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), table.concat(ps, SEP), tostring(code or "")),
             "permSubstringTrigger", "trigger", parent)
     end
@@ -3598,14 +3598,14 @@ end
 -- appears at the start of the line. An empty patterns table makes a trigger
 -- group.
 do
-    local _raw = __mudix_permBeginOfLineStringTrigger
+    local _raw = __mudlet_permBeginOfLineStringTrigger
     local SEP = '\1'
     function permBeginOfLineStringTrigger(name, parent, patterns, code)
         local ps = {}
         if type(patterns) == 'table' then
             for _, p in ipairs(patterns) do ps[#ps + 1] = tostring(p) end
         end
-        return __mudix_perm_result(
+        return __mudlet_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), table.concat(ps, SEP), tostring(code or "")),
             "permBeginOfLineStringTrigger", "trigger", parent)
     end
@@ -3615,14 +3615,14 @@ end
 -- convention as permSubstringTrigger; each pattern matches only on full-line
 -- equality. An empty patterns table makes a trigger group.
 do
-    local _raw = __mudix_permExactMatchTrigger
+    local _raw = __mudlet_permExactMatchTrigger
     local SEP = '\1'
     function permExactMatchTrigger(name, parent, patterns, code)
         local ps = {}
         if type(patterns) == 'table' then
             for _, p in ipairs(patterns) do ps[#ps + 1] = tostring(p) end
         end
-        return __mudix_perm_result(
+        return __mudlet_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), table.concat(ps, SEP), tostring(code or "")),
             "permExactMatchTrigger", "trigger", parent)
     end
@@ -3631,8 +3631,8 @@ end
 -- Mudlet permPromptTrigger(name, parent, luaCode). Persistent trigger that
 -- fires on every server prompt line (GA/EOR); no text pattern.
 function permPromptTrigger(name, parent, code)
-    return __mudix_perm_result(
-        __mudix_permPromptTrigger(tostring(name or ""), tostring(parent or ""), tostring(code or "")),
+    return __mudlet_perm_result(
+        __mudlet_permPromptTrigger(tostring(name or ""), tostring(parent or ""), tostring(code or "")),
         "permPromptTrigger", "trigger", parent)
 end
 
@@ -3640,15 +3640,15 @@ end
 -- single regex pattern. Returns the new id or -1 if the parent group is
 -- missing.
 do
-    local _raw = __mudix_permAlias
+    local _raw = __mudlet_permAlias
     function permAlias(name, parent, regex, code)
         -- The pattern is read with getVerifiedString and the body goes through
         -- reportInvalidLuaCodeParam, so a missing or wrongly-typed pattern — and
         -- a body that will not compile — raises instead of being tostring()-ed
         -- into an alias that could never match (or a body of "999").
-        regex = __mudix_check_string(regex, "permAlias", 3, "regex")
-        code = __mudix_check_lua_code(code, "permAlias", 4)
-        return __mudix_perm_result(
+        regex = __mudlet_check_string(regex, "permAlias", 3, "regex")
+        code = __mudlet_check_lua_code(code, "permAlias", 4)
+        return __mudlet_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), regex, code),
             "permAlias", "alias", parent)
     end
@@ -3657,13 +3657,13 @@ end
 -- Mudlet permTimer(name, parent, seconds, luaCode). Creates a persistent
 -- one-shot timer. Returns the new id or -1 if the parent group is missing.
 do
-    local _raw = __mudix_permTimer
+    local _raw = __mudlet_permTimer
     function permTimer(name, parent, delay, code)
         -- Mudlet reads the interval with getVerifiedDouble and runs the body
         -- through reportInvalidLuaCodeParam before creating anything, so a
         -- missing interval or a body that won't compile raises rather than
         -- leaving a dead timer in the tree.
-        local delaySeconds = __mudix_num(delay)
+        local delaySeconds = __mudlet_num(delay)
         if delaySeconds == nil then
             error("permTimer: bad argument #3 type (time in seconds as number expected, got "
                 .. type(delay) .. "!)", 2)
@@ -3673,8 +3673,8 @@ do
             error("permTimer: bad argument #3 value (time in seconds must be at least 0 and less"
                 .. " than 86400, got " .. string.format("%f", delay) .. ")", 2)
         end
-        code = __mudix_check_lua_code(code, "permTimer", 4)
-        return __mudix_perm_result(
+        code = __mudlet_check_lua_code(code, "permTimer", 4)
+        return __mudlet_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), delay, code),
             "permTimer", "timer", parent)
     end
@@ -3688,7 +3688,7 @@ end
 -- Qt::Key int or a string keycode (KeyboardEvent.code). Returns the new id, and
 -- raises when the parent key group is missing.
 do
-    local _raw = __mudix_permKey
+    local _raw = __mudlet_permKey
     function permKey(name, parent, a3, a4, a5)
         local modifier, key, code
         if a5 == nil then
@@ -3699,8 +3699,8 @@ do
         -- Mudlet validates the body at ++argIndex — 4 in the four-argument form,
         -- 5 once a modifier has consumed argument 3 — and compiles it there, so
         -- a non-chunk body is refused before the key is created.
-        code = __mudix_check_lua_code(code, "permKey", a5 == nil and 4 or 5)
-        return __mudix_perm_result(
+        code = __mudlet_check_lua_code(code, "permKey", a5 == nil and 4 or 5)
+        return __mudlet_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), modifier, key, code),
             "permKey", "key", parent)
     end
@@ -3709,7 +3709,7 @@ end
 -- Mudlet tempButton(toolbar, name, luaCode [, orientation]). Returns the new
 -- id or -1 if no toolbar of that name exists.
 do
-    local _raw = __mudix_tempButton
+    local _raw = __mudlet_tempButton
     function tempButton(toolbar, name, code, orientation)
         return _raw(tostring(toolbar or ""), tostring(name or ""), tostring(code or ""), tonumber(orientation) or 0)
     end
@@ -3718,7 +3718,7 @@ end
 -- Mudlet tempButtonToolbar(name [, orientation [, location]]). Creates a
 -- transient toolbar group. Returns the new id, or -1 if the name is taken.
 do
-    local _raw = __mudix_tempButtonToolbar
+    local _raw = __mudlet_tempButtonToolbar
     function tempButtonToolbar(name, orientation, location)
         return _raw(tostring(name or ""), tonumber(orientation) or 0, tonumber(location) or 0)
     end
@@ -3729,17 +3729,17 @@ end
 -- invoked when any segment of the current rendered line carries the
 -- matching foreground/background.
 do
-    local _raw = __mudix_tempColorTrigger
+    local _raw = __mudlet_tempColorTrigger
     function tempColorTrigger(fg, bg, fn, expirationCount)
         return _raw(tonumber(fg) or -1, tonumber(bg) or -1,
-            __mudix_register_cb(__mudix_to_fn(fn, "tempColorTrigger", 3)),
+            __mudlet_register_cb(__mudlet_to_fn(fn, "tempColorTrigger", 3)),
             expirationCount)
     end
     -- Mudlet tempAnsiColorTrigger(ansiFg, ansiBg, code [, expirationCount]).
     -- ANSI 256-colour indices (0..255), plus the two sentinels TTrigger declares:
     -- -1 (scmIgnored) leaves that channel out of the match, and -2 (scmDefault)
     -- asks for the console's own default colour, which is a colour to match and
-    -- not an "any". mudix already matches tempColorTrigger against ANSI palette
+    -- not an "any". Mudlet Web already matches tempColorTrigger against ANSI palette
     -- indices, and the snapshot a colour trigger reads marks a segment left on
     -- the default with the same -2, so both go straight through; anything else
     -- negative is not a sentinel Mudlet defines and reads as ignore.
@@ -3749,7 +3749,7 @@ do
         if not nf or (nf < 0 and nf ~= -2) then nf = -1 end
         if not nb or (nb < 0 and nb ~= -2) then nb = -1 end
         return _raw(nf, nb,
-            __mudix_register_cb(__mudix_to_fn(fn, "tempAnsiColorTrigger", 3)),
+            __mudlet_register_cb(__mudlet_to_fn(fn, "tempAnsiColorTrigger", 3)),
             expirationCount)
     end
 end
@@ -3760,7 +3760,7 @@ end
 -- trigger is built with highlight / sound / fire-length / match-all options,
 -- so imported scripts and packages rely on it.
 --
--- mudix backs it with the temp regex-trigger primitive plus the existing
+-- Mudlet Web backs it with the temp regex-trigger primitive plus the existing
 -- highlight (selectString + setFgColor/setBgColor) and sound (playSoundFile)
 -- globals. The features that map cleanly onto a single-pattern temp trigger
 -- are honoured:
@@ -3784,7 +3784,7 @@ do
         if warned[feature] then return end
         warned[feature] = true
         printDebug("tempComplexRegexTrigger: '" .. feature .. "' is not supported "
-            .. "on a temp trigger in mudix — use permRegexTrigger / the trigger "
+            .. "on a temp trigger in Mudlet Web — use permRegexTrigger / the trigger "
             .. "editor for chain, filter, multiline-AND or colour-pattern triggers.")
     end
 
@@ -3855,7 +3855,7 @@ do
     function tempComplexRegexTrigger(name, regex, code, multiline, fgColor, bgColor,
                                      filter, matchAll, hlFgColor, hlBgColor, soundFile,
                                      fireLength, lineDelta, expireAfter)
-        local userFn = __mudix_to_fn(code, "tempComplexRegexTrigger", 3)
+        local userFn = __mudlet_to_fn(code, "tempComplexRegexTrigger", 3)
         local matchAllOn = tonumber(matchAll) == 1
 
         -- Arguments 5 and 6 decide what KIND of pattern argument 2 is, and
@@ -3889,11 +3889,11 @@ do
         -- the registry the same way a temp trigger's is. `matches` and
         -- `multimatches` are globals by then, which is where a Mudlet trigger
         -- script reads its captures from anyway.
-        local cbId = __mudix_register_cb(wrapper)
-        id = __mudix_tempComplexTrigger(
+        local cbId = __mudlet_register_cb(wrapper)
+        id = __mudlet_tempComplexTrigger(
             type(name) == 'string' and name or '',
             patterns,
-            'return __mudix_dispatch_cb(' .. cbId .. ')',
+            'return __mudlet_dispatch_cb(' .. cbId .. ')',
             tonumber(multiline) == 1,
             tonumber(filter) == 1,
             matchAllOn,
@@ -3907,50 +3907,50 @@ end
 -- Mudlet's label-event setters all share a shape: name + (function | code |
 -- nil) + optional trailing args that get baked into the closure. The JS side
 -- (LuaRuntime.setLabelCb) tracks the prior cb id per slot and frees it on
--- rebind so handlers don't leak in __mudix_cb. cb id 0 means "clear".
+-- rebind so handlers don't leak in __mudlet_cb. cb id 0 means "clear".
 do
     local function bind(name, who, fn, raw, ...)
         if fn == nil then return raw(name, 0) end
-        local f = __mudix_to_fn(fn, who, 2)
+        local f = __mudlet_to_fn(fn, who, 2)
         if select('#', ...) > 0 then
             local trailing = {...}
             local inner = f
             f = function(event) return inner(event, unpack(trailing)) end
         end
-        return raw(name, __mudix_register_cb(f))
+        return raw(name, __mudlet_register_cb(f))
     end
 
-    local _click = __mudix_setLabelClickCallback
+    local _click = __mudlet_setLabelClickCallback
     function setLabelClickCallback(name, fn, ...)
         return bind(name, "setLabelClickCallback", fn, _click, ...)
     end
 
-    local _dblclick = __mudix_setLabelDoubleClickCallback
+    local _dblclick = __mudlet_setLabelDoubleClickCallback
     function setLabelDoubleClickCallback(name, fn, ...)
         return bind(name, "setLabelDoubleClickCallback", fn, _dblclick, ...)
     end
 
-    local _release = __mudix_setLabelReleaseCallback
+    local _release = __mudlet_setLabelReleaseCallback
     function setLabelReleaseCallback(name, fn, ...)
         return bind(name, "setLabelReleaseCallback", fn, _release, ...)
     end
 
-    local _move = __mudix_setLabelMoveCallback
+    local _move = __mudlet_setLabelMoveCallback
     function setLabelMoveCallback(name, fn, ...)
         return bind(name, "setLabelMoveCallback", fn, _move, ...)
     end
 
-    local _enter = __mudix_setLabelOnEnter
+    local _enter = __mudlet_setLabelOnEnter
     function setLabelOnEnter(name, fn, ...)
         return bind(name, "setLabelOnEnter", fn, _enter, ...)
     end
 
-    local _leave = __mudix_setLabelOnLeave
+    local _leave = __mudlet_setLabelOnLeave
     function setLabelOnLeave(name, fn, ...)
         return bind(name, "setLabelOnLeave", fn, _leave, ...)
     end
 
-    local _wheel = __mudix_setLabelWheelCallback
+    local _wheel = __mudlet_setLabelWheelCallback
     function setLabelWheelCallback(name, fn, ...)
         return bind(name, "setLabelWheelCallback", fn, _wheel, ...)
     end
@@ -3967,7 +3967,7 @@ do
     }) do
         local raw = _G[setter]
         _G[setter] = function(name, ...)
-            local err = __mudix_label_missing(name, "label name '%s' not found")
+            local err = __mudlet_label_missing(name, "label name '%s' not found")
             if err then return nil, err end
             raw(name, ...)
             return true
@@ -3985,16 +3985,16 @@ end
 -- string name of a global function: `setCmdLineAction("win", "myHandler")`.
 -- We treat such a string — a bare Lua identifier whose global resolves to a
 -- function — as that function, so those scripts run without modification.
--- A non-identifier string falls through to __mudix_to_fn's loadstring path.
+-- A non-identifier string falls through to __mudlet_to_fn's loadstring path.
 do
-    local _set = __mudix_setCmdLineAction
-    local _reset = __mudix_resetCmdLineAction
+    local _set = __mudlet_setCmdLineAction
+    local _reset = __mudlet_resetCmdLineAction
     local function resolveFnArg(v, who, argN)
         if type(v) == 'string' and v:match('^[%w_][%w_%.]*$') then
             local g = _G[v]
             if type(g) == 'function' then return g end
         end
-        return __mudix_to_fn(v, who, argN)
+        return __mudlet_to_fn(v, who, argN)
     end
     function setCmdLineAction(...)
         local n = select('#', ...)
@@ -4023,7 +4023,7 @@ do
             local inner = f
             f = function(text) return inner(text, unpack(trailing)) end
         end
-        return _set(__mudix_register_cb(f), windowName)
+        return _set(__mudlet_register_cb(f), windowName)
     end
     function resetCmdLineAction(cmdLineName)
         return _reset(cmdLineName)
@@ -4036,7 +4036,7 @@ end
 -- all that index is 0, which Lua 5.1 resolves to the first free stack slot
 -- rather than rejecting — so the type check ran against whatever the previous
 -- call had left there, and a leftover string made the call quietly succeed on
--- it (upstream #9683). mudix reached the same place from the other direction:
+-- it (upstream #9683). Mudlet Web reached the same place from the other direction:
 -- `String(undefined)` put the literal text "undefined" on the command line.
 do
     local function requireTail(fn, who, what)
@@ -4069,7 +4069,7 @@ end
 -- action was already unset".
 do
     local function namedCmdLine(who, name)
-        if __mudix_str(name) == nil then
+        if __mudlet_str(name) == nil then
             error(who .. ": bad argument #1 type (command line name as string expected, got "
                 .. type(name) .. "!)", 3)
         end
@@ -4116,7 +4116,7 @@ do
                 return nil, (err:gsub("^command line name '(.*)' not found$",
                     'command line "%1" not found'))
             end
-        elseif cmdLineName ~= nil and __mudix_str(cmdLineName) == nil then
+        elseif cmdLineName ~= nil and __mudlet_str(cmdLineName) == nil then
             error("clearCmdLineSuggestions: bad argument #1 type (command line name as string"
                 .. " expected, got " .. type(cmdLineName) .. "!)", 2)
         end
@@ -4140,7 +4140,7 @@ end
 do
     local _fns = {}
     local _id  = 0
-    function __mudix_call_link(id) _fns[id]() end
+    function __mudlet_call_link(id) _fns[id]() end
 
     -- For echoLink / insertLink: cmd is at slot 3 when arg 4 is a string (window form),
     -- otherwise at slot 2 (no-window form, with optional useCurrentFormat at slot 4).
@@ -4153,7 +4153,7 @@ do
                 _id = _id + 1
                 local id = _id
                 _fns[id] = args[ci]
-                args[ci] = '__mudix_call_link(' .. id .. ')'
+                args[ci] = '__mudlet_call_link(' .. id .. ')'
             end
             return rawFn(unpack(args))
         end
@@ -4171,7 +4171,7 @@ do
             _id = _id + 1
             local id = _id
             _fns[id] = args[ci]
-            args[ci] = '__mudix_call_link(' .. id .. ')'
+            args[ci] = '__mudlet_call_link(' .. id .. ')'
         end
         return _rawSetLink(unpack(args))
     end
@@ -4180,7 +4180,7 @@ end
 -- Mudlet requires the command and hint tables to line up: equal sizes, or one
 -- extra hint (the trailing hint is used as the menu title). A mismatch is a
 -- (nil, errMsg) return rather than a raise, and no popup is created.
-function __mudix_popup_size_error(cmds, hints, funcName)
+function __mudlet_popup_size_error(cmds, hints, funcName)
     local nc, nh = #cmds, #hints
     if nh == nc or nh == nc + 1 then return nil end
     return funcName .. ": command table and hint table sizes do not match up ("
@@ -4229,7 +4229,7 @@ do
         if type(hints) == 'table' then
             for _, h in ipairs(hints) do hs[#hs+1] = tostring(h) end
         end
-        local sizeErr = __mudix_popup_size_error(cs, hs, "echoPopup")
+        local sizeErr = __mudlet_popup_size_error(cs, hs, "echoPopup")
         if sizeErr then return nil, sizeErr end
         return _raw(win, text, table.concat(cs, SEP), table.concat(hs, SEP), fmt)
     end
@@ -4271,7 +4271,7 @@ do
         if type(hints) == 'table' then
             for _, h in ipairs(hints) do hs[#hs+1] = tostring(h) end
         end
-        local sizeErr = __mudix_popup_size_error(cs, hs, "insertPopup")
+        local sizeErr = __mudlet_popup_size_error(cs, hs, "insertPopup")
         if sizeErr then return nil, sizeErr end
         return _raw(win, text, table.concat(cs, SEP), table.concat(hs, SEP), fmt)
     end
@@ -4320,18 +4320,18 @@ end
 -- string so the JS binding gets a stable shape regardless of wasmoon's
 -- vararg handling. An empty value list concats to "" → no MSDP_VAL groups.
 do
-    local _raw = __mudix_sendMSDP
+    local _raw = __mudlet_sendMSDP
     function sendMSDP(variable, ...)
-        variable = __mudix_check_string(variable, "sendMSDP", 1, "variable")
+        variable = __mudlet_check_string(variable, "sendMSDP", 1, "variable")
         local vals = {...}
         local parts = {}
         for i = 1, select('#', ...) do
             -- Mudlet validates every variadic value up front rather than
             -- tostring()-ing whatever arrives.
-            vals[i] = __mudix_check_string(vals[i], "sendMSDP", i + 1, "value")
+            vals[i] = __mudlet_check_string(vals[i], "sendMSDP", i + 1, "value")
             parts[i] = vals[i]
         end
-        if not __mudix_is_connected() then
+        if not __mudlet_is_connected() then
             return nil, "sendMSDP: not connected to game server - connect first before sending MSDP"
         end
         return _raw(variable, table.concat(parts, '\1'))
@@ -4343,25 +4343,25 @@ end
 -- reports a refusal as (nil, errMsg) rather than a bare false. Messages are
 -- Mudlet's verbatim — Networking_spec asserts several of them in full.
 function sendATCP(message, what)
-    message = __mudix_check_string(message, "sendATCP", 1, "message")
+    message = __mudlet_check_string(message, "sendATCP", 1, "message")
     if what ~= nil then
-        local payload = __mudix_str(what)
+        local payload = __mudlet_str(what)
         if payload == nil then
             error("sendATCP: bad argument #2 type (what as string is optional, got " .. type(what) .. "!)", 2)
         end
         what = payload
     end
-    if not __mudix_is_connected() then
+    if not __mudlet_is_connected() then
         return nil, "sendATCP: not connected to game server - connect first before sending ATCP"
     end
-    if not __mudix_sendATCP(message, what) then
+    if not __mudlet_sendATCP(message, what) then
         return nil, "sendATCP: ATCP is not currently enabled"
     end
     return true
 end
 
 function sendTelnetChannel102(msg)
-    msg = __mudix_check_string(msg, "sendTelnetChannel102", 1, "message")
+    msg = __mudlet_check_string(msg, "sendTelnetChannel102", 1, "message")
     if #msg ~= 2 then
         return nil, "sendTelnetChannel102: invalid message of length " .. #msg
             .. " supplied, it should be two bytes (may use lua \\### for each byte"
@@ -4372,7 +4372,7 @@ function sendTelnetChannel102(msg)
     -- payload of  arrived in JS as U+0001 U+0200 and went out as bytes
     -- 01 00. Numbers cross the bridge unchanged. The length is already
     -- pinned at 2 above, so there is nothing else to carry.
-    if not __mudix_sendTelnetChannel102(msg:byte(1), msg:byte(2)) then
+    if not __mudlet_sendTelnetChannel102(msg:byte(1), msg:byte(2)) then
         return nil, "sendTelnetChannel102: unable to send message as the 102 subchannel"
             .. " support has not been enabled by the game server"
     end
@@ -4380,8 +4380,8 @@ function sendTelnetChannel102(msg)
 end
 
 function sendSocket(data)
-    data = __mudix_check_string(data, "sendSocket", 1, "data")
-    if not __mudix_sendSocket(data) then
+    data = __mudlet_check_string(data, "sendSocket", 1, "data")
+    if not __mudlet_sendSocket(data) then
         return nil, "sendSocket: unable to send any/all of the data, is the Server connected?"
     end
     return true
@@ -4394,23 +4394,23 @@ end
 -- (TLuaInterpreter::errorArgumentType). The "value for " prefix is part of the
 -- field's public name, so it must not be doubled with the type constraint —
 -- Networking_spec pins several of these messages in full (upstream #9547).
-__mudix_media_field_types = {
+__mudlet_media_field_types = {
     name = 'string', url = 'string', key = 'string', tag = 'string', caption = 'string',
     volume = 'number', fadein = 'number', fadeout = 'number', start = 'number',
     loops = 'number', priority = 'number',
     ['continue'] = 'boolean', stream = 'boolean', close = 'boolean', fadeaway = 'boolean',
 }
 -- Fields that are durations/counts and cannot be negative.
-__mudix_media_nonnegative = { fadein = true, fadeout = true, start = true }
+__mudlet_media_nonnegative = { fadein = true, fadeout = true, start = true }
 
-function __mudix_check_media_table(t, funcName)
-    for field, expected in pairs(__mudix_media_field_types) do
+function __mudlet_check_media_table(t, funcName)
+    for field, expected in pairs(__mudlet_media_field_types) do
         local v = t[field]
         if v ~= nil and type(v) ~= expected then
             error(funcName .. ": bad argument #1 type (value for " .. field .. " as " .. expected
                 .. " expected, got " .. type(v) .. "!)", 3)
         end
-        if v ~= nil and __mudix_media_nonnegative[field] and v < 0 then
+        if v ~= nil and __mudlet_media_nonnegative[field] and v < 0 then
             error(funcName .. ": bad argument #1 value (value for " .. field
                 .. " must not be negative, got " .. tostring(v) .. "!)", 3)
         end
@@ -4419,26 +4419,26 @@ end
 
 -- The table form must name something to act on; Mudlet raises rather than
 -- silently playing nothing.
-function __mudix_check_media_name(t, funcName)
-    local n = __mudix_str(t.name or t.url)
+function __mudlet_check_media_name(t, funcName)
+    local n = __mudlet_str(t.name or t.url)
     if n == nil or n == '' then
         error(funcName .. ": bad argument #1 type (value for name as string expected, got "
             .. type(t.name) .. "!)", 3)
     end
     -- Write the rendered value back so everything downstream sees a string.
-    if t.name ~= nil then t.name = __mudix_str(t.name) end
-    if t.url ~= nil then t.url = __mudix_str(t.url) end
+    if t.name ~= nil then t.name = __mudlet_str(t.name) end
+    if t.url ~= nil then t.url = __mudlet_str(t.url) end
 end
 
 -- loadSoundFile / loadMusicFile / loadVideoFile are one preload request behind
 -- three names: they share these parsers, each call stamping its own name on
 -- whatever it complains about, so a script is told which load it got wrong.
 -- The table form's `name`/`url` are the only fields a load reads.
-function __mudix_check_media_load_table(t, funcName)
+function __mudlet_check_media_load_table(t, funcName)
     for _, field in ipairs({ 'name', 'url' }) do
         local v = t[field]
         if v ~= nil then
-            local str = __mudix_str(v)
+            local str = __mudlet_str(v)
             if str == nil then
                 error(funcName .. ": bad argument #1 type (value for " .. field
                     .. " as string expected, got " .. type(v) .. "!)", 3)
@@ -4476,11 +4476,11 @@ do
 
     -- Returns true when the caller should stop here and let the download
     -- finish the job.
-    function __mudix_media_deferred(opts, act)
+    function __mudlet_media_deferred(opts, act)
         if type(opts) ~= 'table' or type(opts.url) ~= 'string' or opts.url == '' then
             return false
         end
-        local saveTo = __mudix_media_fetch(opts.name or opts.url, opts.url)
+        local saveTo = __mudlet_media_fetch(opts.name or opts.url, opts.url)
         if saveTo == nil then return false end
         ensureHandler()
         -- The replay drops the url: the file is local by then, and keeping it
@@ -4501,7 +4501,7 @@ end
 -- fields are refused when negative. Each caller passes its own name through, so
 -- the message names the call that was made and not the parser (upstream #9785,
 -- where every music range error said playSoundFile).
-function __mudix_ordered_play_args(funcName, name, volume, fadein, fadeout, start, loops,
+function __mudlet_ordered_play_args(funcName, name, volume, fadein, fadeout, start, loops,
                                    key, tag, continueFlag, url, finish)
     local function want(v, field, expected)
         if v ~= nil and type(v) ~= expected then
@@ -4539,20 +4539,20 @@ end
 -- Arity matters, as it does for the play family: no arguments at all is a
 -- raise, while an explicit nil (or empty) file name is the softer
 -- (nil, "missing argument 1") return.
-function __mudix_media_load_args(funcName, ...)
+function __mudlet_media_load_args(funcName, ...)
     if select('#', ...) == 0 then
         error(funcName .. ": need at least one argument", 3)
     end
     local a, b = ...
     if type(a) == 'table' then
-        __mudix_check_media_load_table(a, funcName)
+        __mudlet_check_media_load_table(a, funcName)
         return tostring(a.name or a.url or ''), nil
     end
-    if b ~= nil and __mudix_str(b) == nil then
+    if b ~= nil and __mudlet_str(b) == nil then
         error(funcName .. ": bad argument #2 type (url as string expected, got "
             .. type(b) .. "!)", 3)
     end
-    local name = __mudix_str(a)
+    local name = __mudlet_str(a)
     if name == nil or name == '' then
         return nil, funcName .. ": missing argument 1 (file to load)"
     end
@@ -4575,19 +4575,19 @@ function playSoundFile(...)
     end
     local a = ...
     if type(a) == 'table' then
-        __mudix_check_media_table(a, "playSoundFile")
-        __mudix_check_media_name(a, "playSoundFile")
-        if __mudix_media_deferred(a, __playSoundFile) then return true end
+        __mudlet_check_media_table(a, "playSoundFile")
+        __mudlet_check_media_name(a, "playSoundFile")
+        if __mudlet_media_deferred(a, __playSoundFile) then return true end
         return __playSoundFile(a)
     end
-    local name = __mudix_str(a)
+    local name = __mudlet_str(a)
     if name == nil or name == '' then
         return nil, "playSoundFile: missing argument 1 (file to play)"
     end
     local n = select('#', ...)
     local args = { ... }
     args[1] = name
-    return __playSoundFile(__mudix_ordered_play_args("playSoundFile", unpack(args, 1, n)))
+    return __playSoundFile(__mudlet_ordered_play_args("playSoundFile", unpack(args, 1, n)))
 end
 
 -- Mudlet `playVideoFile`. Accepts either:
@@ -4596,9 +4596,9 @@ end
 -- The file resolves against the profile VFS or may be an http(s):// URL.
 function playVideoFile(a, b, c)
     if type(a) == 'table' then
-        __mudix_check_media_table(a, "playVideoFile")
-        __mudix_check_media_name(a, "playVideoFile")
-        if __mudix_media_deferred(a, __playVideoFile) then return true end
+        __mudlet_check_media_table(a, "playVideoFile")
+        __mudlet_check_media_name(a, "playVideoFile")
+        if __mudlet_media_deferred(a, __playVideoFile) then return true end
         return __playVideoFile(a)
     end
     return __playVideoFile({ name = tostring(a or ''), volume = b, loops = c })
@@ -4619,8 +4619,8 @@ function loadVideoFile(...)
     if type(a) ~= 'table' then
         error("loadVideoFile: needs to be a table", 2)
     end
-    __mudix_check_media_load_table(a, "loadVideoFile")
-    if __mudix_media_deferred(a, __loadVideoFile) then return true end
+    __mudlet_check_media_load_table(a, "loadVideoFile")
+    if __mudlet_media_deferred(a, __loadVideoFile) then return true end
     return __loadVideoFile({ name = tostring(a.name or a.url or '') })
 end
 
@@ -4636,33 +4636,33 @@ function playMusicFile(...)
     end
     local opts = ...
     if type(opts) == 'table' then
-        __mudix_check_media_table(opts, "playMusicFile")
-        __mudix_check_media_name(opts, "playMusicFile")
-        if __mudix_media_deferred(opts, __playMusicFile) then return true end
+        __mudlet_check_media_table(opts, "playMusicFile")
+        __mudlet_check_media_name(opts, "playMusicFile")
+        if __mudlet_media_deferred(opts, __playMusicFile) then return true end
         return __playMusicFile(opts)
     end
-    local name = __mudix_str(opts)
+    local name = __mudlet_str(opts)
     if name == nil or name == '' then
         return nil, "playMusicFile: missing argument 1 (file to play)"
     end
     local n = select('#', ...)
     local args = { ... }
     args[1] = name
-    return __playMusicFile(__mudix_ordered_play_args("playMusicFile", unpack(args, 1, n)))
+    return __playMusicFile(__mudlet_ordered_play_args("playMusicFile", unpack(args, 1, n)))
 end
 
 -- Mudlet `loadSoundFile`. Preloads a sound so the first playSoundFile has no
 -- decode latency. Accepts:
 --   loadSoundFile(name [, url])            -- positional
 --   loadSoundFile({name=..., url=...})     -- table
--- mudix resolves `name` against the profile VFS (or treats it as a URL); the
+-- Mudlet Web resolves `name` against the profile VFS (or treats it as a URL); the
 -- optional `url` is accepted for Mudlet compatibility and used only when no
 -- name is supplied.
 function loadSoundFile(...)
-    local name, err = __mudix_media_load_args("loadSoundFile", ...)
+    local name, err = __mudlet_media_load_args("loadSoundFile", ...)
     if err then return nil, err end
     local a = ...
-    if type(a) == 'table' and __mudix_media_deferred(a, __loadSoundFile) then return true end
+    if type(a) == 'table' and __mudlet_media_deferred(a, __loadSoundFile) then return true end
     return __loadSoundFile({ name = name })
 end
 
@@ -4671,10 +4671,10 @@ end
 --   loadMusicFile(name [, url])            -- positional
 --   loadMusicFile({name=..., url=...})     -- table
 function loadMusicFile(...)
-    local name, err = __mudix_media_load_args("loadMusicFile", ...)
+    local name, err = __mudlet_media_load_args("loadMusicFile", ...)
     if err then return nil, err end
     local a = ...
-    if type(a) == 'table' and __mudix_media_deferred(a, __loadMusicFile) then return true end
+    if type(a) == 'table' and __mudlet_media_deferred(a, __loadMusicFile) then return true end
     return __loadMusicFile({ name = name })
 end
 
@@ -4693,22 +4693,22 @@ do
     -- (name, key, tag [, priority [, fadeaway]]).
     function stopSounds(opts, key, tag, priority, fadeaway)
         if opts ~= nil and type(opts) ~= 'table' then
-            __mudix_check_media_filter_args("stopSounds", opts, key, tag, priority, fadeaway)
+            __mudlet_check_media_filter_args("stopSounds", opts, key, tag, priority, fadeaway)
         elseif opts ~= nil then
-            __mudix_check_media_table(opts, "stopSounds")
+            __mudlet_check_media_table(opts, "stopSounds")
         end
         _rawStopSounds()
         return true
     end
     -- Table form only, like the rest of the video family.
     function stopVideos(opts)
-        __mudix_check_media_filter_table(opts, "stopVideos")
+        __mudlet_check_media_filter_table(opts, "stopVideos")
         _rawStopVideos()
         return true
     end
     local _rawPauseVideos = pauseVideos
     function pauseVideos(opts)
-        __mudix_check_media_filter_table(opts, "pauseVideos")
+        __mudlet_check_media_filter_table(opts, "pauseVideos")
         _rawPauseVideos()
         return true
     end
@@ -4729,7 +4729,7 @@ do
         if type(opts) ~= 'table' then
             error(who .. ": needs to be a table", 2)
         end
-        __mudix_check_media_table(opts, who)
+        __mudlet_check_media_table(opts, who)
         raw(opts.tag)
         return true
     end
@@ -4741,18 +4741,18 @@ end
 -- take it in the *table* form only — Mudlet refuses anything else with this
 -- exact wording, so a script handed a number gets told rather than quietly
 -- matching everything.
-function __mudix_check_media_filter_table(v, funcName)
+function __mudlet_check_media_filter_table(v, funcName)
     if v == nil then return end
     if type(v) ~= 'table' then
         error(funcName .. ": needs to be a table", 3)
     end
-    __mudix_check_media_table(v, funcName)
+    __mudlet_check_media_table(v, funcName)
 end
 
 -- The ordered filter form: (name, key, tag [, priority [, fadeaway]]). Each
 -- position is type-checked by the name it carries, so the complaint names the
 -- argument rather than its index.
-function __mudix_check_media_filter_args(funcName, name, key, tag, priority, fadeaway)
+function __mudlet_check_media_filter_args(funcName, name, key, tag, priority, fadeaway)
     local function want(v, field, expected)
         if v ~= nil and type(v) ~= expected then
             error(funcName .. ": bad argument type (" .. field .. " as " .. expected
@@ -4769,10 +4769,10 @@ end
 function getPlayingSounds(a, b, c, d)
     local filter
     if type(a) == 'table' then
-        __mudix_check_media_table(a, "getPlayingSounds")
+        __mudlet_check_media_table(a, "getPlayingSounds")
         filter = { name = a.name, key = a.key, tag = a.tag }
     else
-        __mudix_check_media_filter_args("getPlayingSounds", a, b, c, d)
+        __mudlet_check_media_filter_args("getPlayingSounds", a, b, c, d)
         filter = { name = a, key = b, tag = c }
     end
     local raw = __getPlayingSounds(filter)
@@ -4790,10 +4790,10 @@ end
 function getPlayingMusic(a, b, c, d)
     local filter
     if type(a) == 'table' then
-        __mudix_check_media_table(a, "getPlayingMusic")
+        __mudlet_check_media_table(a, "getPlayingMusic")
         filter = { name = a.name, key = a.key, tag = a.tag }
     else
-        __mudix_check_media_filter_args("getPlayingMusic", a, b, c, d)
+        __mudlet_check_media_filter_args("getPlayingMusic", a, b, c, d)
         filter = { name = a, key = b, tag = c }
     end
     local raw = __getPlayingMusic(filter)
@@ -4806,16 +4806,16 @@ function getPlayingMusic(a, b, c, d)
     return out
 end
 
--- Mudlet `getPausedSounds([filter])` / `getPausedMusic([filter])`. mudix's Web
+-- Mudlet `getPausedSounds([filter])` / `getPausedMusic([filter])`. Mudlet Web's Web
 -- Audio backend stops rather than pauses sources, so these always return an
 -- empty list (kept for ported-script parity). The filter is accepted and
 -- ignored.
 function getPausedSounds(filter)
-    __mudix_check_media_filter_table(filter, "getPausedSounds")
+    __mudlet_check_media_filter_table(filter, "getPausedSounds")
     return {}
 end
 function getPausedMusic(filter)
-    __mudix_check_media_filter_table(filter, "getPausedMusic")
+    __mudlet_check_media_filter_table(filter, "getPausedMusic")
     return {}
 end
 
@@ -4833,11 +4833,11 @@ local function reindexVideos(raw)
     return out
 end
 function getPlayingVideos(a)
-    __mudix_check_media_filter_table(a, "getPlayingVideos")
+    __mudlet_check_media_filter_table(a, "getPlayingVideos")
     return reindexVideos(__getPlayingVideos({ name = a and a.name or nil }))
 end
 function getPausedVideos(a)
-    __mudix_check_media_filter_table(a, "getPausedVideos")
+    __mudlet_check_media_filter_table(a, "getPausedVideos")
     return reindexVideos(__getPausedVideos({ name = a and a.name or nil }))
 end
 
@@ -4854,8 +4854,8 @@ end
 function ancestors(...)
     local top = select('#', ...)
     local id, itemType = ...
-    id = __mudix_check_number(id, "ancestors", 1, "item ID", top >= 1)
-    itemType = __mudix_check_string(itemType, "ancestors", 2, "item type", top >= 2)
+    id = __mudlet_check_number(id, "ancestors", 1, "item ID", top >= 1)
+    itemType = __mudlet_check_string(itemType, "ancestors", 2, "item type", top >= 2)
     if id < 1 or id ~= math.floor(id) then
         return nil, "ancestors: item ID as " .. tostring(id)
             .. " does not seem to be parseable as a positive integer"
@@ -4885,8 +4885,8 @@ end
 -- caller mistake, and would otherwise be indistinguishable from "nothing
 -- matched".
 function findItems(name, itemType, exact, caseSensitive)
-    name = __mudix_check_string(name, "findItems", 1, "item name")
-    itemType = __mudix_check_string(itemType, "findItems", 2, "item type")
+    name = __mudlet_check_string(name, "findItems", 1, "item name")
+    itemType = __mudlet_check_string(itemType, "findItems", 2, "item type")
     if exact == nil then exact = true end
     if caseSensitive == nil then caseSensitive = true end
     local raw = __findItems(name, itemType, exact, caseSensitive)
@@ -4912,8 +4912,8 @@ end
 --   * a type there is no such family for,
 --   * a well-formed id no item of that type carries.
 function isAncestorsActive(id, itemType)
-    id = __mudix_check_number(id, "isAncestorsActive", 1, "item ID")
-    itemType = __mudix_check_string(itemType, "isAncestorsActive", 2, "item type")
+    id = __mudlet_check_number(id, "isAncestorsActive", 1, "item ID")
+    itemType = __mudlet_check_string(itemType, "isAncestorsActive", 2, "item type")
     if id < 1 or id ~= math.floor(id) then
         return nil, "isAncestorsActive: item ID as " .. tostring(id)
             .. " does not seem to be parseable as a positive integer"
@@ -4956,11 +4956,11 @@ end
 -- map widget repaints; its multi-return (text, isBold, isItalic, r, g, b)
 -- becomes the rendered line. New contributors land disabled — caller must
 -- enableMapInfo() to show them. Re-registering the same label replaces the
--- callback (JS frees the prior __mudix_cb slot).
+-- callback (JS frees the prior __mudlet_cb slot).
 do
-    local _raw = __mudix_registerMapInfo
+    local _raw = __mudlet_registerMapInfo
     function registerMapInfo(label, fn)
-        local name = __mudix_str(label)
+        local name = __mudlet_str(label)
         if name == nil or name == '' then
             error("registerMapInfo: bad argument #1 type (non-empty string expected, got " .. type(label) .. ")", 2)
         end
@@ -4968,7 +4968,7 @@ do
         if type(fn) ~= 'function' then
             error("registerMapInfo: bad argument #2 type (function expected, got " .. type(fn) .. ")", 2)
         end
-        return _raw(label, __mudix_register_cb(fn))
+        return _raw(label, __mudlet_register_cb(fn))
     end
 end
 
@@ -5014,20 +5014,20 @@ end
 -- The MapPanel re-evaluator drives one dispatch per enabled contributor and
 -- reads these globals immediately after each call — Lua coroutines share
 -- globals, so the chunk run inside runChunk writes to the same _G we read.
-__mudix_mapinfo_text = nil
-__mudix_mapinfo_bold = false
-__mudix_mapinfo_italic = false
-__mudix_mapinfo_r = nil
-__mudix_mapinfo_g = nil
-__mudix_mapinfo_b = nil
-function __mudix_dispatch_mapinfo(id, roomId, selectionSize, areaId, displayedAreaId)
-    __mudix_mapinfo_text = nil
-    __mudix_mapinfo_bold = false
-    __mudix_mapinfo_italic = false
-    __mudix_mapinfo_r = nil
-    __mudix_mapinfo_g = nil
-    __mudix_mapinfo_b = nil
-    local fn = __mudix_cb[id]
+__mudlet_mapinfo_text = nil
+__mudlet_mapinfo_bold = false
+__mudlet_mapinfo_italic = false
+__mudlet_mapinfo_r = nil
+__mudlet_mapinfo_g = nil
+__mudlet_mapinfo_b = nil
+function __mudlet_dispatch_mapinfo(id, roomId, selectionSize, areaId, displayedAreaId)
+    __mudlet_mapinfo_text = nil
+    __mudlet_mapinfo_bold = false
+    __mudlet_mapinfo_italic = false
+    __mudlet_mapinfo_r = nil
+    __mudlet_mapinfo_g = nil
+    __mudlet_mapinfo_b = nil
+    local fn = __mudlet_cb[id]
     if type(fn) ~= 'function' then return end
     local ok, text, isBold, isItalic, r, g, b = pcall(fn, roomId, selectionSize, areaId, displayedAreaId)
     if not ok then
@@ -5037,12 +5037,12 @@ function __mudix_dispatch_mapinfo(id, roomId, selectionSize, areaId, displayedAr
         return
     end
     if text == nil or text == '' then return end
-    __mudix_mapinfo_text = tostring(text)
-    __mudix_mapinfo_bold = isBold == true
-    __mudix_mapinfo_italic = isItalic == true
-    if type(r) == 'number' then __mudix_mapinfo_r = r end
-    if type(g) == 'number' then __mudix_mapinfo_g = g end
-    if type(b) == 'number' then __mudix_mapinfo_b = b end
+    __mudlet_mapinfo_text = tostring(text)
+    __mudlet_mapinfo_bold = isBold == true
+    __mudlet_mapinfo_italic = isItalic == true
+    if type(r) == 'number' then __mudlet_mapinfo_r = r end
+    if type(g) == 'number' then __mudlet_mapinfo_g = g end
+    if type(b) == 'number' then __mudlet_mapinfo_b = b end
 end
 
 -- ── Window state getters ───────────────────────────────────────────────────
@@ -5056,7 +5056,7 @@ end
 -- what Mudlet's own window-name argument resolves to when a script leaves it
 -- out of a call that still passes something. Neither is a window in the
 -- registry, so both getters below have to recognise them before the lookup.
-local function __mudix_is_main_window(name)
+local function __mudlet_is_main_window(name)
     return name == 'main' or name == ''
 end
 
@@ -5065,7 +5065,7 @@ function getWindowGeometry(name)
     if name == nil then
         error('getWindowGeometry: bad argument #1 type (window name as string expected, got nil!)', 2)
     end
-    if __mudix_is_main_window(name) then
+    if __mudlet_is_main_window(name) then
         local w, h = getMainWindowSize()
         return 0, 0, w, h
     end
@@ -5084,7 +5084,7 @@ function windowVisible(name)
     end
     -- The main window is always visible: there is no way to hide it, and it is
     -- the one every other window's visibility is measured against.
-    if __mudix_is_main_window(name) then return true end
+    if __mudlet_is_main_window(name) then return true end
     local v = __windowVisible(name)
     if v == nil then
         return nil, 'windowVisible: window "' .. tostring(name) .. '" not found'
@@ -5129,13 +5129,13 @@ end
 -- weight override clamped to [1, 2^31-1], and nil / true / anything else is
 -- ignored. A callback that errors is treated as "no opinion" so a broken
 -- filter degrades to plain pathfinding instead of breaking every route.
-__mudix_ewf_blocked = false
-__mudix_ewf_weight = nil
-__mudix_ewf_cmd = nil
-function __mudix_dispatch_exit_weight_filter(id, roomId, exitCommand)
-    __mudix_ewf_blocked = false
-    __mudix_ewf_weight = nil
-    local fn = __mudix_cb[id]
+__mudlet_ewf_blocked = false
+__mudlet_ewf_weight = nil
+__mudlet_ewf_cmd = nil
+function __mudlet_dispatch_exit_weight_filter(id, roomId, exitCommand)
+    __mudlet_ewf_blocked = false
+    __mudlet_ewf_weight = nil
+    local fn = __mudlet_cb[id]
     if type(fn) ~= 'function' then return end
     local ok, verdict = pcall(fn, roomId, exitCommand)
     if not ok then
@@ -5145,13 +5145,13 @@ function __mudix_dispatch_exit_weight_filter(id, roomId, exitCommand)
         return
     end
     if verdict == false then
-        __mudix_ewf_blocked = true
+        __mudlet_ewf_blocked = true
     elseif type(verdict) == 'number' then
         local w = verdict
         if w < 1 then w = 1 elseif w > 2147483647 then w = 2147483647 end
-        __mudix_ewf_weight = math.floor(w + 0.5)
+        __mudlet_ewf_weight = math.floor(w + 0.5)
     elseif type(verdict) == 'string' and verdict:lower() == 'block' then
-        __mudix_ewf_blocked = true
+        __mudlet_ewf_blocked = true
     end
 end
 
@@ -5167,7 +5167,7 @@ function setExitWeightFilter(fn)
         error('setExitWeightFilter: bad argument #1 type (callback as function expected, got '
             .. type(fn) .. '!)', 2)
     end
-    __setExitWeightFilter(__mudix_register_cb(fn))
+    __setExitWeightFilter(__mudlet_register_cb(fn))
     return true
 end
 
@@ -5179,9 +5179,9 @@ end
 -- has no priority to match on.
 function stopMusic(opts, key, tag, fadeaway, fadeout)
     if opts ~= nil and type(opts) ~= 'table' then
-        __mudix_check_media_filter_args("stopMusic", opts, key, tag, nil, fadeaway)
+        __mudlet_check_media_filter_args("stopMusic", opts, key, tag, nil, fadeaway)
         if fadeout ~= nil then
-            local ms = __mudix_num(fadeout)
+            local ms = __mudlet_num(fadeout)
             if ms == nil then
                 error("stopMusic: bad argument type (fadeout as number expected, got "
                     .. type(fadeout) .. "!)", 2)
@@ -5193,7 +5193,7 @@ function stopMusic(opts, key, tag, fadeaway, fadeout)
         __stopMusic({ name = opts, key = key, tag = tag, fadeout = fadeout })
         return true
     end
-    if opts ~= nil then __mudix_check_media_table(opts, "stopMusic") end
+    if opts ~= nil then __mudlet_check_media_table(opts, "stopMusic") end
     __stopMusic(opts)
     return true
 end
@@ -5322,16 +5322,16 @@ end
 -- The same block carries getConfig/setConfig's argument contract. Mudlet reads
 -- the key with getVerifiedString and each value with the getVerified* helper for
 -- its type, so a missing/empty key and a value of the WRONG TYPE raise, while an
--- unknown key or an out-of-range value are (nil, errMsg) returns. mudix's JS
+-- unknown key or an out-of-range value are (nil, errMsg) returns. Mudlet Web's JS
 -- primitives coerce and answer with a bare boolean, so the shaping lives here;
--- __mudix_config_kind reports the option's value type (or nil when the key names
+-- __mudlet_config_kind reports the option's value type (or nil when the key names
 -- no option) so the two cases can be told apart before calling through.
 do
     local _setConfig = setConfig
     local _getConfig = getConfig
 
     local function checkKey(key, funcName)
-        if __mudix_str(key) == nil then
+        if __mudlet_str(key) == nil then
             error(funcName .. ": bad argument #1 type (key as string expected, got "
                 .. type(key) .. "!)", 3)
         end
@@ -5342,7 +5342,7 @@ do
     function setConfig(key, value)
         local keyErr = checkKey(key, "setConfig")
         if keyErr then return nil, keyErr end
-        local kind = __mudix_config_kind(key)
+        local kind = __mudlet_config_kind(key)
         if kind == nil then
             return nil, "setConfig: '" .. key .. "' isn't a valid configuration option"
         end
@@ -5363,7 +5363,7 @@ do
         -- — which is false against both bounds, and would blank every room
         -- symbol if it got through — lands here with the infinities.
         if kind == 'num' then
-            local range = __mudix_config_range(key)
+            local range = __mudlet_config_range(key)
             local n = tonumber(value)
             if range ~= nil and not (n >= range[0] and n <= range[1]) then
                 return nil, "setConfig: " .. tostring(value) .. " is out of range for '"
@@ -5374,7 +5374,7 @@ do
         -- on a non-string; an out-of-range *string* is the (nil, errMsg) case
         -- below. Keys taking more than one type report kind 'any' and vet
         -- themselves.
-        if kind == 'str' and __mudix_str(value) == nil then
+        if kind == 'str' and __mudlet_str(value) == nil then
             error("setConfig: bad argument #2 type (value as string expected, got "
                 .. type(value) .. "!)", 2)
         end
@@ -5395,7 +5395,7 @@ do
             -- only place a script author is told what the option takes — there
             -- is no getter for it — so a refusal that names the rejected value
             -- and nothing else takes the documentation away with it.
-            local raw = __mudix_config_values(key)
+            local raw = __mudlet_config_values(key)
             if raw then
                 -- 0-indexed on the way over, as every wasmoon array is.
                 local accepted = {}
@@ -5471,7 +5471,7 @@ do
     local function warnOnce(name)
         if not warned then
             warned = true
-            print("[mudix] mmcp." .. name ..
+            print("[mudlet] mmcp." .. name ..
                 " is not available in this client (no peer-to-peer TCP in the browser);"
                 .. " MMCP calls report an empty peer list.")
         end
@@ -5481,7 +5481,7 @@ do
     local function requireArgs(name, count, ...)
         for i = 1, count do
             local v = select(i, ...)
-            if __mudix_str(v) == nil then
+            if __mudlet_str(v) == nil then
                 error("mmcp." .. name .. ": bad argument #" .. i
                     .. " type (string expected, got " .. type(v) .. "!)", 3)
             end
@@ -5528,7 +5528,7 @@ do
             warnOnce("call")
             requireArgs("call", 1, host)
             if port ~= nil then
-                local num = __mudix_int(port)
+                local num = __mudlet_int(port)
                 if num == nil then
                     error("mmcp.call: bad argument #2 type (port number as number is optional, got "
                         .. type(port) .. "!)", 2)
@@ -5544,19 +5544,19 @@ do
         -- The local chat name is real local state, so it round-trips; only the
         -- character restrictions are enforced.
         chatName = function(name)
-            if name == nil then return __mudix_mmcp_chat_name end
+            if name == nil then return __mudlet_mmcp_chat_name end
             requireArgs("chatName", 1, name)
             if name:find("~", 1, true) or name:find(",", 1, true) then
                 return nil, "mmcp.chatName: invalid chat name: tilde (~) and comma (,) are not allowed"
             end
-            __mudix_mmcp_chat_name = name
+            __mudlet_mmcp_chat_name = name
             return true
         end,
     }
 end
 -- Local chat name backing mmcp.chatName; defaults to the profile name the way
 -- Mudlet seeds it from the player's profile.
-__mudix_mmcp_chat_name = ""
+__mudlet_mmcp_chat_name = ""
 
 -- ── Reading a package's config.lua ─────────────────────────────────────────
 -- A manifest is a Lua chunk, and Mudlet reads it by RUNNING it in a bare
@@ -5571,18 +5571,18 @@ __mudix_mmcp_chat_name = ""
 -- The answer crosses as JSON in a global rather than as a table: a Lua table
 -- read back through the wasmoon proxy is fragile to iterate, and a manifest is
 -- a handful of short strings, so the encoding costs nothing.
-function __mudix_read_package_config(src)
-    __mudix_cfg_ok, __mudix_cfg_reason, __mudix_cfg_info = false, '', '{}'
+function __mudlet_read_package_config(src)
+    __mudlet_cfg_ok, __mudlet_cfg_reason, __mudlet_cfg_info = false, '', '{}'
     local chunk, syntaxError = loadstring(tostring(src or ''), 'config.lua')
     if not chunk then
-        __mudix_cfg_reason = tostring(syntaxError)
+        __mudlet_cfg_reason = tostring(syntaxError)
         return
     end
     local env = {}
     setfenv(chunk, env)
     local ok, runtimeError = pcall(chunk)
     if not ok then
-        __mudix_cfg_reason = tostring(runtimeError)
+        __mudlet_cfg_reason = tostring(runtimeError)
         return
     end
     local info = {}
@@ -5592,8 +5592,8 @@ function __mudix_read_package_config(src)
             info[key] = tostring(value)
         end
     end
-    __mudix_cfg_ok = true
-    __mudix_cfg_info = yajl.to_string(info)
+    __mudlet_cfg_ok = true
+    __mudlet_cfg_info = yajl.to_string(info)
 end
 
 -- ── JSON map import/export ─────────────────────────────────────────────────
@@ -5602,7 +5602,7 @@ end
 -- Only the type check needs Lua; the reasons come from the binding, which is
 -- what knows whether the file was missing, unparseable, or not a map.
 function saveJsonMap(location)
-    if __mudix_str(location) == nil then
+    if __mudlet_str(location) == nil then
         error("saveJsonMap: bad argument #1 type (destination as string expected, got "
             .. type(location) .. "!)", 2)
     end
@@ -5612,7 +5612,7 @@ function saveJsonMap(location)
 end
 
 function loadJsonMap(location)
-    if location ~= nil and __mudix_str(location) == nil then
+    if location ~= nil and __mudlet_str(location) == nil then
         error("loadJsonMap: bad argument #1 type (path as string expected, got "
             .. type(location) .. "!)", 2)
     end
@@ -5640,7 +5640,7 @@ do
     local function stringField(t, field)
         local value = t[field]
         if value == nil then return "" end
-        local s = __mudix_str(value)
+        local s = __mudlet_str(value)
         if s == nil then
             return nil, field .. " has to be a string and this one is a " .. type(value)
         end
@@ -5782,7 +5782,7 @@ do
     -- it reaches the value checks below instead of being caught here.
     local function requireOptionalString(name, value, argn)
         if value == nil then return nil end
-        local s = __mudix_str(value)
+        local s = __mudlet_str(value)
         if s == nil then
             error("stt." .. name .. ": bad argument #" .. argn
                 .. " type (path as string expected, got " .. type(value) .. "!)", 3)
@@ -5882,7 +5882,7 @@ do
 
         -- ── tuning ─────────────────────────────────────────────────────────
         setSilenceTimeout = function(seconds)
-            local n = __mudix_num(seconds)
+            local n = __mudlet_num(seconds)
             if n == nil then
                 error("stt.setSilenceTimeout: bad argument #1 type (timeout as number expected, got "
                     .. type(seconds) .. "!)", 2)
@@ -5894,7 +5894,7 @@ do
         end,
 
         setSensitivity = function(mode)
-            local name = __mudix_str(mode)
+            local name = __mudlet_str(mode)
             if name ~= "short" and name ~= "default" and name ~= "long" then
                 return nil, "stt.setSensitivity: unknown sensitivity " .. tostring(mode)
                     .. ", expected one of short, default, long"
@@ -5987,7 +5987,7 @@ do
     local function ansiGuard(fn, name)
         return function(...)
             local code = ...
-            local n = __mudix_check_int(code, name, 1, "ANSI color", select('#', ...) > 0)
+            local n = __mudlet_check_int(code, name, 1, "ANSI color", select('#', ...) > 0)
             if n < 0 or n > 16 then
                 return nil, "ANSI color " .. n .. " out of range (0 to 16)"
             end
@@ -6077,7 +6077,7 @@ end
 -- Mudlet validates these before creating anything and reports the failure the
 -- way Trigger_spec asserts: a wrong TYPE raises, while a wrong VALUE (an expiry
 -- count below one, an item type that names no collection) is a (nil, errMsg)
--- return. mudix's JS bindings coerce instead, so the checks live here.
+-- return. Mudlet Web's JS bindings coerce instead, so the checks live here.
 do
     local ITEM_TYPES = {
         alias = true, trigger = true, timer = true,
@@ -6105,9 +6105,9 @@ do
     -- `pos` is the argument position the expiry occupies for that function.
     -- Returns (errMsg, coercedValue): the caller substitutes the converted
     -- count back into the argument list so a "3" reaches the engine as 3.
-    function __mudix_check_expiry(value, funcName, pos)
+    function __mudlet_check_expiry(value, funcName, pos)
         if value == nil then return nil, nil end
-        local count = __mudix_int(value)
+        local count = __mudlet_int(value)
         if count == nil then
             error(funcName .. ": bad argument #" .. pos .. " type (expiration count as number"
                 .. " is optional, got " .. type(value) .. "!)", 3)
@@ -6122,7 +6122,7 @@ do
         return function(...)
             local n = select('#', ...)
             local args = {...}
-            local err, count = __mudix_check_expiry(args[pos], funcName, pos)
+            local err, count = __mudlet_check_expiry(args[pos], funcName, pos)
             if err then return nil, err end
             if count ~= nil then args[pos] = count end
             return fn(unpack(args, 1, n))
@@ -6139,7 +6139,7 @@ do
     -- setTriggerStayOpen(name, lines) — the line count is required and numeric.
     local _rawSetTriggerStayOpen = setTriggerStayOpen
     setTriggerStayOpen = function(name, lines, ...)
-        local count = __mudix_num(lines)
+        local count = __mudlet_num(lines)
         if count == nil then
             error("setTriggerStayOpen: bad argument #2 type (number of lines as number expected, got "
                 .. type(lines) .. "!)", 2)
@@ -6156,8 +6156,8 @@ do
     -- plain, "\229\254\13" reached JS as a single U+5F8D and the encoding
     -- specs were testing the decoder against data they had never sent.
     feedTelnet = function(data, ...)
-        data = __mudix_check_string(data, "feedTelnet", 1, "data")
-        local err = __feedTelnet(__mudix_armor(data), ...)
+        data = __mudlet_check_string(data, "feedTelnet", 1, "data")
+        local err = __feedTelnet(__mudlet_armor(data), ...)
         if err ~= nil then return nil, err end
         return true
     end
@@ -6178,7 +6178,7 @@ do
                 error(funcName .. ": bad argument #3 type (" .. what .. " as table expected, got "
                     .. type(patterns) .. "!)", 2)
             end
-            return fn(name, parent, patterns, __mudix_check_lua_code(code, funcName, 4))
+            return fn(name, parent, patterns, __mudlet_check_lua_code(code, funcName, 4))
         end
     end
     permRegexTrigger             = permPatternGuard(permRegexTrigger, "permRegexTrigger", "sub-strings list")
@@ -6191,7 +6191,7 @@ do
     do
         local _raw = permPromptTrigger
         permPromptTrigger = function(name, parent, code)
-            return _raw(name, parent, __mudix_check_lua_code(code, "permPromptTrigger", 3))
+            return _raw(name, parent, __mudlet_check_lua_code(code, "permPromptTrigger", 3))
         end
     end
 end
@@ -6200,12 +6200,12 @@ do
     -- tempLineTrigger(from, howMany, code) — the window bounds are line numbers.
     local _rawTempLineTrigger = tempLineTrigger
     tempLineTrigger = function(from, howMany, ...)
-        local first = __mudix_int(from)
+        local first = __mudlet_int(from)
         if first == nil then
             error("tempLineTrigger: bad argument #1 type (line number as number expected, got "
                 .. type(from) .. "!)", 2)
         end
-        local count = __mudix_int(howMany)
+        local count = __mudlet_int(howMany)
         if count == nil then
             error("tempLineTrigger: bad argument #2 type (line count as number expected, got "
                 .. type(howMany) .. "!)", 2)
@@ -6232,7 +6232,7 @@ do
         for i = 4, n do
             local v = args[i]
             if v ~= nil and COMPLEX_TRIGGER_FLAGS[i] then
-                local num = __mudix_num(v)
+                local num = __mudlet_num(v)
                 if num == nil then
                     error("tempComplexRegexTrigger: bad argument #" .. i .. " type (flag as number"
                         .. " expected, got " .. type(v) .. "!)", 2)
@@ -6270,13 +6270,13 @@ do
     local IGNORED, DEFAULT = -1, -2
 
     -- The body is read but never compiled here: an uncompilable string is a
-    -- trigger that errors when it fires, not a refusal (see __mudix_to_fn).
+    -- trigger that errors when it fires, not a refusal (see __mudlet_to_fn).
     local function checkTriggerBody(who, index, value, present)
         local t = type(value)
         if t ~= 'string' and t ~= 'function' then
             error(who .. ": bad argument #" .. index
                 .. " type (code to run as a string or a function expected, got "
-                .. __mudix_typename(value, present) .. "!)", 3)
+                .. __mudlet_typename(value, present) .. "!)", 3)
         end
     end
 
@@ -6287,7 +6287,7 @@ do
     -- unified: UI_spec and LuaApiContracts_spec both assert them verbatim.
     local function checkExpiry(who, index, value, present, refusal, wanted)
         if not present or value == nil then return nil end
-        local n = __mudix_int(value)
+        local n = __mudlet_int(value)
         if n == nil then
             error(who .. ": bad argument #" .. index .. " value (trigger expiration count must be "
                 .. wanted .. ", got " .. type(value) .. "!)", 3)
@@ -6306,8 +6306,8 @@ do
     tempColorTrigger = function(...)
         local top = select('#', ...)
         local fg, bg, body, expiry = ...
-        fg = __mudix_check_int(fg, "tempColorTrigger", 1, "foreground color")
-        bg = __mudix_check_int(bg, "tempColorTrigger", 2, "background color")
+        fg = __mudlet_check_int(fg, "tempColorTrigger", 1, "foreground color")
+        bg = __mudlet_check_int(bg, "tempColorTrigger", 2, "background color")
         fg, bg = remapLegacyColor(fg), remapLegacyColor(bg)
         if fg == IGNORED and bg == IGNORED then
             return nil, "tempColorTrigger: only one of foreground and background colors can be -1 (ignored)"
@@ -6336,7 +6336,7 @@ do
         local who = "tempAnsiColorTrigger"
         local function inRange(v) return v == IGNORED or v == DEFAULT or (v >= 0 and v <= 255) end
 
-        local fg = __mudix_check_int(a1, who, 1,
+        local fg = __mudlet_check_int(a1, who, 1,
             "foreground color as ANSI Color number {-1 = ignore foreground color, -2 = default color, 0 to 255 ANSI color}",
             top >= 1)
         if fg == IGNORED and top < 2 then
@@ -6350,17 +6350,17 @@ do
         -- "(omitted)" is the whole point of this branch: it fires only when the
         -- background really was left out, which is why it tests the argument
         -- count and the type of #2 rather than the value of the background.
-        if fg == IGNORED and top < 4 and __mudix_num(a2) == nil then
+        if fg == IGNORED and top < 4 and __mudlet_num(a2) == nil then
             return nil, who .. ": invalid ANSI color number " .. fg
                 .. ", you cannot ignore both foreground and background color (omitted)"
         end
 
         local bg, bodyIndex = IGNORED, 2
-        if top < 4 and __mudix_num(a2) == nil then
+        if top < 4 and __mudlet_num(a2) == nil then
             -- background omitted: the body is argument #2 and the expiry #3
             a3, a4 = a2, a3
         else
-            bg = __mudix_check_int(a2, who, 2,
+            bg = __mudlet_check_int(a2, who, 2,
                 "background color as ANSI Color number {-1 = ignore foreground color, -2 = default color, 0 to 255 ANSI color}")
             if not inRange(bg) then
                 return nil, who .. ": invalid ANSI color number " .. bg
@@ -6384,7 +6384,7 @@ end
 -- ── Mapper argument contracts ──────────────────────────────────────────────
 -- Mudlet's mapper API reports a bad *value* — a roomID or areaID that doesn't
 -- exist, an empty name, a component outside 0-255 — as `(nil, errMsg)` through
--- warnArgumentValue, and a bad *type* by raising. mudix's JS bindings mostly
+-- warnArgumentValue, and a bad *type* by raising. Mudlet Web's JS bindings mostly
 -- answered with a bare boolean, so the shaping lives here: a binding hands back
 -- either the refusal message or its normal value, and these wrappers turn the
 -- former into Mudlet's pair. Appended at the end of the file so every wrapper
@@ -6458,7 +6458,7 @@ do
         return function(...)
             local n = select('#', ...)
             local args = { ... }
-            local key = __mudix_str(args[pos])
+            local key = __mudlet_str(args[pos])
             if key == nil or key == '' then
                 return nil, funcName .. ": the key cannot be an empty string"
             end
@@ -6473,7 +6473,7 @@ do
     -- proxy can't be walked from JS, so the id list is flattened here.
     function setRoomArea(rooms, area)
         local ids
-        if type(rooms) ~= 'table' and __mudix_num(rooms) == nil then
+        if type(rooms) ~= 'table' and __mudlet_num(rooms) == nil then
             error('setRoomArea: bad argument #1 type (roomID as number or table of roomIDs\n'
                 .. 'expected, got ' .. type(rooms) .. '!)', 2)
         end
@@ -6647,7 +6647,7 @@ end
 -- as string`, raises when given anything else, and reports a subject it cannot
 -- resolve as (nil, errMsg) — Mudlet's messages are "stopwatch with ID %1 not
 -- found" / "stopwatch with name '%1' not found", with the empty name spelled
--- "no unnamed stopwatches found". mudix's JS bindings coerce and answer with a
+-- "no unnamed stopwatches found". Mudlet Web's JS bindings coerce and answer with a
 -- bare false, so the shaping lives here.
 do
     local function checkSubject(v, funcName, what)
@@ -6717,14 +6717,14 @@ end
 do
     local _rawSendCmdLine = sendCmdLine
     function sendCmdLine(a, b)
-        -- mudix accepts Mudlet's newer ([cmdLineName,] text) shape too; the name
+        -- Mudlet Web accepts Mudlet's newer ([cmdLineName,] text) shape too; the name
         -- is ignored (there is a single command bar), but both parts still have
         -- to be strings.
         if b ~= nil then
-            a = __mudix_check_string(a, "sendCmdLine", 1, "command line name")
-            b = __mudix_check_string(b, "sendCmdLine", 2, "command")
+            a = __mudlet_check_string(a, "sendCmdLine", 1, "command line name")
+            b = __mudlet_check_string(b, "sendCmdLine", 2, "command")
         else
-            a = __mudix_check_string(a, "sendCmdLine", 1, "command")
+            a = __mudlet_check_string(a, "sendCmdLine", 1, "command")
         end
         _rawSendCmdLine(a, b)
         return true
@@ -6734,7 +6734,7 @@ end
 -- ── Window primitive argument contracts ────────────────────────────────────
 -- Mudlet reads each of these with getVerifiedString/getVerifiedInt, so a
 -- missing or wrongly-typed name or coordinate raises rather than defaulting.
--- mudix's JS bindings coerce (an absent name became ""), so the checks live
+-- Mudlet Web's JS bindings coerce (an absent name became ""), so the checks live
 -- here. Both the five-argument (name, x, y, w, h) and six-argument
 -- (parent, name, x, y, w, h) shapes are accepted, as in Mudlet.
 do
@@ -6744,12 +6744,12 @@ do
             local args = {...}
             local nameIndex = (n >= 6) and 2 or 1
             if n >= 6 then
-                args[1] = __mudix_check_string(args[1], funcName, 1, "window name")
+                args[1] = __mudlet_check_string(args[1], funcName, 1, "window name")
             end
-            args[nameIndex] = __mudix_check_string(args[nameIndex], funcName, nameIndex,
+            args[nameIndex] = __mudlet_check_string(args[nameIndex], funcName, nameIndex,
                 funcName:sub(7):lower() .. " name")
             for i = nameIndex + 1, nameIndex + 4 do
-                local v = __mudix_num(args[i])
+                local v = __mudlet_num(args[i])
                 if v == nil then
                     error(funcName .. ": bad argument #" .. i .. " type (coordinate/dimension as"
                         .. " number expected, got " .. type(args[i]) .. "!)", 2)
@@ -6774,7 +6774,7 @@ end
 -- rather than being taken for its truthiness, since getting it backwards is
 -- exactly the mistake that shows up as double-encoded text.
 --
--- Armored across the bridge (see __mudix_armor): with isUtf8 false the caller
+-- Armored across the bridge (see __mudlet_armor): with isUtf8 false the caller
 -- is handing over bytes already in the game's encoding, which by definition are
 -- not UTF-8 and would not survive the crossing as text.
 do
@@ -6782,7 +6782,7 @@ do
     function feedTriggers(...)
         local top = select('#', ...)
         local data, isUtf8 = ...
-        data = __mudix_check_string(data, "feedTriggers", 1, "imitation game server text", top >= 1)
+        data = __mudlet_check_string(data, "feedTriggers", 1, "imitation game server text", top >= 1)
         if top > 1 then
             if type(isUtf8) ~= 'boolean' then
                 error("feedTriggers: bad argument #2 type (Utf8Encoded as boolean is optional, got "
@@ -6791,7 +6791,7 @@ do
         else
             isUtf8 = true
         end
-        local err = _rawFeedTriggers(__mudix_armor(data), isUtf8)
+        local err = _rawFeedTriggers(__mudlet_armor(data), isUtf8)
         if err ~= nil then return nil, err end
         return true
     end
@@ -6810,9 +6810,9 @@ do
     function announce(...)
         local top = select('#', ...)
         local text, processing = ...
-        text = __mudix_check_string(text, "announce", 1, "text to announce", top >= 1)
+        text = __mudlet_check_string(text, "announce", 1, "text to announce", top >= 1)
         if top > 1 then
-            processing = __mudix_check_string(processing, "announce", 2, "processing style")
+            processing = __mudlet_check_string(processing, "announce", 2, "processing style")
             local known = false
             for _, kind in ipairs(PROCESSING_KINDS) do
                 if processing == kind then known = true break end
@@ -6836,7 +6836,7 @@ do
     local _raw = alert
     function alert(...)
         if select('#', ...) == 0 then return _raw() end
-        local seconds = __mudix_check_number((...), "alert", 1, "alert duration in seconds", true)
+        local seconds = __mudlet_check_number((...), "alert", 1, "alert duration in seconds", true)
         if seconds < 0 then
             error("alert: duration, in seconds, is optional but if given must be zero or greater.", 2)
         end
@@ -6851,12 +6851,12 @@ end
 do
     local _raw = sendGMCP
     function sendGMCP(message, what)
-        message = __mudix_check_string(message, "sendGMCP", 1, "message")
-        if what ~= nil and __mudix_str(what) == nil then
+        message = __mudlet_check_string(message, "sendGMCP", 1, "message")
+        if what ~= nil and __mudlet_str(what) == nil then
             error("sendGMCP: bad argument #2 type (what as string is optional, got "
                 .. type(what) .. "!)", 2)
         end
-        if not __mudix_is_connected() then
+        if not __mudlet_is_connected() then
             return nil, "sendGMCP: not connected to game server - connect first before sending GMCP"
         end
         _raw(message, what)
@@ -6866,7 +6866,7 @@ end
 
 -- Mudlet remainingTime(timerID|name) → seconds left, or (nil, errMsg): a live
 -- timer that has been stopped reports "timer is inactive or expired", one that
--- never existed names the id/name it was asked for. mudix's engine answers -1
+-- never existed names the id/name it was asked for. Mudlet Web's engine answers -1
 -- for every miss, which a script could not tell from a real remaining time.
 do
     local _raw = remainingTime
@@ -6938,8 +6938,8 @@ end
 do
     local _rawSetAppStyleSheet = setAppStyleSheet
     function setAppStyleSheet(css, tag)
-        css = __mudix_check_string(css, "setAppStyleSheet", 1, "style sheet")
-        if tag ~= nil and __mudix_str(tag) == nil then
+        css = __mudlet_check_string(css, "setAppStyleSheet", 1, "style sheet")
+        if tag ~= nil and __mudlet_str(tag) == nil then
             error("setAppStyleSheet: bad argument #2 type (tag as string is optional, got "
                 .. type(tag) .. "!)", 2)
         end
@@ -6948,14 +6948,14 @@ do
 
     local _rawSetProfileStyleSheet = setProfileStyleSheet
     function setProfileStyleSheet(css)
-        css = __mudix_check_string(css, "setProfileStyleSheet", 1, "style sheet")
+        css = __mudlet_check_string(css, "setProfileStyleSheet", 1, "style sheet")
         return _rawSetProfileStyleSheet(css)
     end
 
     local _rawSetMainWindowSize = setMainWindowSize
     function setMainWindowSize(width, height)
-        width = __mudix_check_number(width, "setMainWindowSize", 1, "width")
-        height = __mudix_check_number(height, "setMainWindowSize", 2, "height")
+        width = __mudlet_check_number(width, "setMainWindowSize", 1, "width")
+        height = __mudlet_check_number(height, "setMainWindowSize", 2, "height")
         return _rawSetMainWindowSize(width, height)
     end
 end
@@ -6978,7 +6978,7 @@ do
 
     function saveMap(location, formatVersion)
         local path = mapPath("saveMap", location, 1)
-        local version = formatVersion ~= nil and __mudix_int(formatVersion) or nil
+        local version = formatVersion ~= nil and __mudlet_int(formatVersion) or nil
         if formatVersion ~= nil and version == nil then
             error("saveMap: bad argument #2 type (format version as number expected, got "
                 .. type(formatVersion) .. "!)", 2)
@@ -7009,7 +7009,7 @@ do
 end
 
 -- ── IRC configuration ──────────────────────────────────────────────────────
--- get/setIrcNick, get/setIrcServer, get/setIrcChannels. mudix has no IRC
+-- get/setIrcNick, get/setIrcServer, get/setIrcChannels. Mudlet Web has no IRC
 -- client — that is a separate service a browser tab cannot reach — but the
 -- settings are ordinary profile data, and Mudlet stores them whether or not
 -- its client has ever been opened. So these round-trip for real, through the
@@ -7039,8 +7039,8 @@ do
 
     local _rawSendIrc = sendIrc
     function sendIrc(target, message)
-        target = __mudix_check_string(target, "sendIrc", 1, "target")
-        message = __mudix_check_string(message, "sendIrc", 2, "message")
+        target = __mudlet_check_string(target, "sendIrc", 1, "target")
+        message = __mudlet_check_string(message, "sendIrc", 2, "message")
         _rawSendIrc(target, message)
         return false, "no client active"
     end
@@ -7058,7 +7058,7 @@ do
     end
 
     function setIrcNick(nick)
-        nick = __mudix_check_string(nick, "setIrcNick", 1, "nick")
+        nick = __mudlet_check_string(nick, "setIrcNick", 1, "nick")
         if nick == "" then return nil, "nick must not be empty" end
         setConfig("ircNick", nick)
         return true
@@ -7067,10 +7067,10 @@ do
     function setIrcServer(...)
         local n = select('#', ...)
         local hostName, port, secure, password = ...
-        hostName = __mudix_check_string(hostName, "setIrcServer", 1, "hostname")
+        hostName = __mudlet_check_string(hostName, "setIrcServer", 1, "hostname")
         if hostName == "" then return nil, "hostname must not be empty" end
         if port ~= nil then
-            local num = __mudix_int(port)
+            local num = __mudlet_int(port)
             if num == nil then
                 error("setIrcServer: bad argument #2 type (port number {default = 6667} as number"
                     .. " is optional, got " .. type(port) .. "!)", 2)
@@ -7093,7 +7093,7 @@ do
         -- was never given. Clearing one is asking for it, with "".
         local passwordGiven = n > 3 and password ~= nil
         if passwordGiven then
-            local secret = __mudix_str(password)
+            local secret = __mudlet_str(password)
             if secret == nil then
                 error("setIrcServer: bad argument #4 type (server password as string is optional, got "
                     .. type(password) .. "!)", 2)
@@ -7150,7 +7150,7 @@ end
 -- buffers alongside user windows. A label is the one thing it leaves alone,
 -- those living in a map of their own; only hideWindow reaches one.
 function closeUserWindow(name)
-    name = __mudix_check_string(name, "closeUserWindow", 1, "name")
+    name = __mudlet_check_string(name, "closeUserWindow", 1, "name")
     local kind = __windowType(name)
     if kind == 'userwindow' or kind == 'miniconsole' or kind == 'buffer' then
         hideWindow(name)
@@ -7175,7 +7175,7 @@ do
         -- look alike — and a label's setBackgroundImage(name, path) must not
         -- have its path read as a mode name.
         if modePos >= 3 and mode ~= nil then
-            local modeNum = __mudix_int(mode)
+            local modeNum = __mudlet_int(mode)
             if modeNum == nil then
                 error("setBackgroundImage: bad argument #" .. modePos
                     .. " type (mode as number expected, got " .. type(mode) .. "!)", 2)
@@ -7279,7 +7279,7 @@ end
 -- differently from the other five, and upstream's spec pins both.
 do
     local function checkLabel(who, name)
-        if __mudix_str(name) == nil then
+        if __mudlet_str(name) == nil then
             error(who .. ": bad argument #1 type (label name as string expected, got "
                 .. type(name) .. "!)", 3)
         end
@@ -7293,8 +7293,8 @@ do
     function setMovie(labelName, path)
         local err = checkLabel("setMovie", labelName)
         if err then return nil, err end
-        labelName = __mudix_str(labelName)
-        local moviePath = __mudix_str(path)
+        labelName = __mudlet_str(labelName)
+        local moviePath = __mudlet_str(path)
         if moviePath == nil then
             error("setMovie: bad argument #2 type (movie path as string expected, got "
                 .. type(path) .. "!)", 2)
@@ -7313,7 +7313,7 @@ do
         return function(labelName, ...)
             local err = checkLabel(who, labelName)
             if err then return nil, err end
-            labelName = __mudix_str(labelName)
+            labelName = __mudlet_str(labelName)
             local n = select('#', ...)
             local args = { ... }
             if __windowType(labelName) ~= 'label' then
@@ -7339,7 +7339,7 @@ do
 
     local function numberArg(what)
         return function(who, v)
-            local num = __mudix_int(v)
+            local num = __mudlet_int(v)
             if num == nil then
                 return who .. ": bad argument #2 type (" .. what .. " as number expected, got "
                     .. type(v) .. "!)"
@@ -7372,10 +7372,10 @@ end
 -- Mudlet insertHTML(text) — a thin alias for insertText(). The name (and the
 -- wiki) promise the markup is rendered, but upstream hands the text straight
 -- through, so it lands as literal characters; upstream's own spec marks that
--- pending rather than pinning it as the contract, and mudix matches the
+-- pending rather than pinning it as the contract, and Mudlet Web matches the
 -- behaviour rather than the name.
 function insertHTML(text)
-    text = __mudix_check_string(text, "insertHTML", 1, "text")
+    text = __mudlet_check_string(text, "insertHTML", 1, "text")
     insertText(text)
 end
 
@@ -7385,7 +7385,7 @@ end
 -- has open, constant for the life of this one, and positive, which is every
 -- property a script can actually rely on.
 do
-    local id = __mudix_processId()
+    local id = __mudlet_processId()
     function getProcessID()
         return id
     end
@@ -7453,7 +7453,7 @@ end
 -- "is not a push-down button" quite differently from "no button ... found" — and
 -- because only Lua can return the (nil, msg) pair they use to say so.
 --
--- An item ID never resolves here: mudix identifies stored items by uuid, so a
+-- An item ID never resolves here: Mudlet Web identifies stored items by uuid, so a
 -- number can only ever be a miss. The refusal it earns is still Mudlet's, since
 -- a script that kept an ID from somewhere deserves to be told what happened to
 -- it rather than to be handed a nil.
@@ -7473,7 +7473,7 @@ do
         if ref == '' then
             return nil, "item name must not be an empty string"
         end
-        local kind = __mudix_button_kind(ref)
+        local kind = __mudlet_button_kind(ref)
         if kind == 'missing' then
             return nil, "no button item with name '" .. ref .. "' found"
         end
@@ -7513,8 +7513,8 @@ end
 do
     local _rawSetButtonStyleSheet = setButtonStyleSheet
     function setButtonStyleSheet(name, css)
-        name = __mudix_check_string(name, "setButtonStyleSheet", 1, "button name")
-        css = __mudix_check_string(css, "setButtonStyleSheet", 2, "style sheet")
+        name = __mudlet_check_string(name, "setButtonStyleSheet", 1, "button name")
+        css = __mudlet_check_string(css, "setButtonStyleSheet", 2, "style sheet")
         if _rawSetButtonStyleSheet(name, css) then return true end
         return nil, "no button named '" .. name .. "' found"
     end
@@ -7525,14 +7525,14 @@ do
     -- was silent — see ActionUnit::setToolBarActive.)
     local _rawShowToolBar, _rawHideToolBar = showToolBar, hideToolBar
     function showToolBar(name)
-        name = __mudix_check_string(name, "showToolBar", 1, "toolbar name")
+        name = __mudlet_check_string(name, "showToolBar", 1, "toolbar name")
         local err = _rawShowToolBar(name)
         if err ~= nil then return nil, err end
         return true
     end
 
     function hideToolBar(name)
-        name = __mudix_check_string(name, "hideToolBar", 1, "toolbar name")
+        name = __mudlet_check_string(name, "hideToolBar", 1, "toolbar name")
         local err = _rawHideToolBar(name)
         if err ~= nil then return nil, err end
         return true
@@ -7551,7 +7551,7 @@ end
 do
     local function guardName(fn, who, what)
         return function(name, ...)
-            name = __mudix_check_string(name, who, 1, what)
+            name = __mudlet_check_string(name, who, 1, what)
             return fn(name, ...)
         end
     end
@@ -7559,16 +7559,16 @@ do
     -- calling with just the name asks for the whole table.
     local function guardNameAndKey(fn, who, what)
         return function(name, key, ...)
-            name = __mudix_check_string(name, who, 1, what)
-            if key ~= nil then key = __mudix_check_string(key, who, 2, "field name") end
+            name = __mudlet_check_string(name, who, 1, what)
+            if key ~= nil then key = __mudlet_check_string(key, who, 2, "field name") end
             return fn(name, key, ...)
         end
     end
     local function guardNameKeyValue(fn, who, what)
         return function(name, key, value, ...)
-            name = __mudix_check_string(name, who, 1, what)
-            key = __mudix_check_string(key, who, 2, "field name")
-            value = __mudix_check_string(value, who, 3, "value")
+            name = __mudlet_check_string(name, who, 1, what)
+            key = __mudlet_check_string(key, who, 2, "field name")
+            value = __mudlet_check_string(value, who, 3, "value")
             return fn(name, key, value, ...)
         end
     end
@@ -7592,8 +7592,8 @@ do
     do
         local _raw = setModulePriority
         function setModulePriority(name, priority, ...)
-            name = __mudix_check_string(name, "setModulePriority", 1, "module name")
-            priority = __mudix_check_number(priority, "setModulePriority", 2, "priority")
+            name = __mudlet_check_string(name, "setModulePriority", 1, "module name")
+            priority = __mudlet_check_number(priority, "setModulePriority", 2, "priority")
             return _raw(name, priority, ...)
         end
     end
@@ -7607,7 +7607,7 @@ end
 do
     local _rawAddFileWatch = addFileWatch
     function addFileWatch(path)
-        path = __mudix_check_string(path, "addFileWatch", 1, "path")
+        path = __mudlet_check_string(path, "addFileWatch", 1, "path")
         if _rawAddFileWatch(path) then return true end
         return nil, 'path "' .. tostring(path) .. '" does not exist'
     end
@@ -7616,20 +7616,20 @@ do
     -- nothing to explain, and "it wasn't watched" is the answer, not an error.
     local _rawRemoveFileWatch = removeFileWatch
     function removeFileWatch(path)
-        path = __mudix_check_string(path, "removeFileWatch", 1, "path")
+        path = __mudlet_check_string(path, "removeFileWatch", 1, "path")
         return _rawRemoveFileWatch(path) and true or false
     end
 
     local _rawUnzipAsync = unzipAsync
     function unzipAsync(zipPath, destination)
-        zipPath = __mudix_check_string(zipPath, "unzipAsync", 1, "zip file path")
-        destination = __mudix_check_string(destination, "unzipAsync", 2, "extraction path")
+        zipPath = __mudlet_check_string(zipPath, "unzipAsync", 1, "zip file path")
+        destination = __mudlet_check_string(destination, "unzipAsync", 2, "extraction path")
         return _rawUnzipAsync(zipPath, destination)
     end
 
     local _rawLoadReplay = loadReplay
     function loadReplay(fileName)
-        fileName = __mudix_check_string(fileName, "loadReplay", 1, "replay file name")
+        fileName = __mudlet_check_string(fileName, "loadReplay", 1, "replay file name")
         if fileName == "" then
             return nil, "a blank string is not a valid replay file name"
         end
@@ -7639,7 +7639,7 @@ do
 
     local _rawSetProfileIcon = setProfileIcon
     function setProfileIcon(path)
-        path = __mudix_check_string(path, "setProfileIcon", 1, "icon file path")
+        path = __mudlet_check_string(path, "setProfileIcon", 1, "icon file path")
         if path == "" then
             return nil, "a blank string is not a valid icon file path"
         end
@@ -7655,7 +7655,7 @@ do
         local n = select('#', ...)
         local args = { ... }
         for i = 1, n do
-            local v = __mudix_str(args[i])
+            local v = __mudlet_str(args[i])
             if v == nil then
                 error("setMergeTables: bad argument #" .. i .. " type (module name as string expected, got "
                     .. type(args[i]) .. "!)", 2)
@@ -7683,7 +7683,7 @@ end
 -- Returns nothing at all, as Mudlet does: whether the text reached a log is not
 -- something the caller is told, only whether logging was on when it asked.
 function appendLog(text)
-    text = __mudix_check_string(text, "appendLog", 1, "text")
+    text = __mudlet_check_string(text, "appendLog", 1, "text")
     __appendLog(text)
 end
 
@@ -7727,7 +7727,7 @@ do
         local n = select('#', ...)
         local args = { ... }
         if n > 2 then
-            local expiry = __mudix_num(args[3])
+            local expiry = __mudlet_num(args[3])
             if expiry == nil then
                 error("showNotification: bad argument #3 type (expiry time as number expected, got "
                     .. type(args[3]) .. "!)", 2)
@@ -7903,7 +7903,7 @@ end
 do
     local function checkName(who, name, argno)
         local t = type(name)
-        if t ~= 'nil' and __mudix_str(name) == nil then
+        if t ~= 'nil' and __mudlet_str(name) == nil then
             error(who .. ": bad argument #" .. argno .. " type (profile name as string expected, got "
                 .. t .. "!)", 3)
         end
@@ -8152,13 +8152,13 @@ end
 
 -- Mudlet addSupportedTelnetOption(option) reads its argument with
 -- getVerifiedInt and returns nothing at all. The binding underneath answers a
--- boolean ("newly registered"), which is mudix's own and not part of the
+-- boolean ("newly registered"), which is Mudlet Web's own and not part of the
 -- contract, so it is swallowed here — a script that saw `true` would be reading
 -- something desktop Mudlet never tells it.
 do
     local _raw = addSupportedTelnetOption
     function addSupportedTelnetOption(option, ...)
-        __mudix_check_int(option, "addSupportedTelnetOption", 1, "option")
+        __mudlet_check_int(option, "addSupportedTelnetOption", 1, "option")
         _raw(option, ...)
     end
 end
@@ -8174,7 +8174,7 @@ do
     local function components(funcName, count, ...)
         local out = {}
         for i = 1, count do
-            out[i] = __mudix_check_int((select(i, ...)), funcName, i, CHANNELS[i])
+            out[i] = __mudlet_check_int((select(i, ...)), funcName, i, CHANNELS[i])
         end
         return out
     end

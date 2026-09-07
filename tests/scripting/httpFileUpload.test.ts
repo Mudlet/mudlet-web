@@ -13,7 +13,7 @@ import type { ProfileVFS } from '../../src/scripting/vfs/ProfileVFS';
  *  - **file missing.** Building the body is synchronous, so its failure emitted
  *    `sysPostHttpError` — dispatching Lua handlers — while still inside the
  *    `__postHTTP` binding Lua had called. Re-entering the Lua state mid-call
- *    crashes wasmoon. Mudlet checks the file up front instead, so mudix does
+ *    crashes wasmoon. Mudlet checks the file up front instead, so Mudlet Web does
  *    too, and the error event is deferred off the call either way.
  *
  *  - **file present.** Nothing to do with the file: reading the headers table
@@ -76,7 +76,7 @@ describe('HTTP upload with an unreadable file', () => {
     // bounds". The cause was not the upload at all: reading the headers table
     // through wasmoon's `$detach` traps on this call shape, and the optional
     // file argument is what made postHTTP reach it. Headers cross the boundary
-    // as a flat string now (see __mudix_headers_to_string), so nothing detaches.
+    // as a flat string now (see __mudlet_headers_to_string), so nothing detaches.
     it('uploads a file that is actually there, with headers', () => {
         stub.writeBinaryFile('/profiles/test/upload.txt', new TextEncoder().encode('hi'));
         const out = call('postHTTP("payload", "http://localhost/", {["X-Test"] = "1"}, '

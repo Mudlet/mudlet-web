@@ -282,7 +282,7 @@ export function getRegisteredFontFamilies(): string[] {
     return [...out];
 }
 
-const LINK_DATA_ATTR = 'mudixFontUrl';
+const LINK_DATA_ATTR = 'mudletFontUrl';
 
 function ensureStylesheet(url: string): HTMLLinkElement {
     const existing = document.querySelector<HTMLLinkElement>(

@@ -8,7 +8,7 @@
 // the file and asks for the save back.
 //
 // Node env (createTestRuntime needs the WASM loaded off disk, see its header),
-// so localStorage — where mudix keeps the history — is stubbed in before
+// so localStorage — where Mudlet Web keeps the history — is stubbed in before
 // anything that reads it is imported.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 

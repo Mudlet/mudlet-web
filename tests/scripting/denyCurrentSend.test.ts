@@ -9,7 +9,7 @@ import { createTestRuntime, type TestRuntime } from '../createTestRuntime';
  * Mudlet keeps that as Host::mAllowToSendCommand, and cTelnet::sendData puts the
  * flag back only on the branch that refused a command — so a deny issued from a
  * key binding, a timer, or the command line survives until a send consumes it.
- * mudix used to clear the flag at the top of its sysDataSendRequest dispatch,
+ * Mudlet Web used to clear the flag at the top of its sysDataSendRequest dispatch,
  * which meant only a deny raised from inside a handler ever counted; every other
  * one was thrown away before the send it was meant to stop.
  */

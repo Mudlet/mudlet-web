@@ -37,7 +37,7 @@ const tokenPageUrl = () =>
     + '&accountId=*&zoneId=all'
     + '&name=' + encodeURIComponent(`${getBrand().appName} Proxy Deploy`);
 
-const DEFAULT_WORKER_NAME = 'mudix-proxy';
+const DEFAULT_WORKER_NAME = 'mudlet-proxy';
 const WORKER_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,62}$/;
 // Cloudflare account IDs are 32-char lowercase hex.
 const ACCOUNT_ID_PATTERN = /^[a-f0-9]{32}$/;

@@ -1,5 +1,5 @@
 // Assets the library build ships as plain files next to the bundle:
-// - vfs-sw.js: emitted into consumer builds by the mudix/vite plugin.
+// - vfs-sw.js: emitted into consumer builds by the Mudlet Web/vite plugin.
 // - default-package archives: referenced from dist-lib/index.js as external
 //   relative `?url` imports (see vite.lib.config.ts), resolved and emitted by the
 //   consumer's Vite. Rollup rewrites those specifiers relative to the output

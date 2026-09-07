@@ -512,7 +512,7 @@ export class TriggerEngine {
     // ── Unified ordering (Mudlet `mTriggerRootNodeList`) ──────────────────────
     // Mudlet keeps permanent and temporary triggers in ONE ordered list and
     // fires them front-to-back; runtime-created temps land after the package's
-    // permanent triggers (which were registered earlier). mudix mirrors that
+    // permanent triggers (which were registered earlier). Mudlet Web mirrors that
     // with a single monotonic registration counter shared by both:
     //   - permReg assigns a stable seq to each permanent node the first time it
     //     is seen, persisted across loadPerm rebuilds (so edits/toggles don't
@@ -531,7 +531,7 @@ export class TriggerEngine {
     // Mudlet walks its root list live, so a trigger a script arms mid-pass is
     // reached in the same iteration and gets a shot at the line being processed
     // — behaviour capture scripts lean on ("match the room title, then arm a
-    // trigger for the line it is on"). mudix iterates a snapshot, so those have
+    // trigger for the line it is on"). Mudlet Web iterates a snapshot, so those have
     // to be collected and offered the line afterwards, which is what
     // `addedWhileProcessing` is for.
     //
@@ -781,7 +781,7 @@ export class TriggerEngine {
         // TTrigger::setRegexCodeList sets the item's error to
         //   Error: in item %1, perl regex "%2" failed to compile, reason: "%3".
         // (src/TTrigger.cpp:149-152) and the editor paints the tree row and
-        // shows it. mudix swallowed the exception, so an invalid pattern was
+        // shows it. Mudlet Web swallowed the exception, so an invalid pattern was
         // saved and simply never matched, with nothing anywhere to say why
         // (mudlet-web#60). The report goes out once per compile: loadPerm caches
         // the negative result by signature, so it does not repeat until the
@@ -1178,7 +1178,7 @@ export class TriggerEngine {
      * `src/TTrigger.cpp:1083-1090`, where only a childless trigger re-runs its
      * own script; one with children is holding the chain open FOR them.
      *
-     * mudix used to arm it only in the AND branch, so fire length was inert on
+     * Mudlet Web used to arm it only in the AND branch, so fire length was inert on
      * single-line (OR) triggers even though the editor offers the field in both
      * modes (mudlet-web#61). Sharing the bookkeeping here keeps the two in step.
      */

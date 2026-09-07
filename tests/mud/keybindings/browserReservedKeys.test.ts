@@ -37,7 +37,7 @@ describe('classifyReservedKey', () => {
     });
 
     it('does NOT flag page-capturable shortcuts (Ctrl+R, Ctrl+S, F5, Ctrl+P)', () => {
-        // These work while mudix is focused, exactly like Mudlet — no warning.
+        // These work while Mudlet Web is focused, exactly like Mudlet — no warning.
         expect(classifyReservedKey({ key: 'KeyR', modifiers: ['ctrl'] }, 'ctrl')).toBeNull();
         expect(classifyReservedKey({ key: 'KeyR', modifiers: ['ctrl', 'shift'] }, 'ctrl')).toBeNull();
         expect(classifyReservedKey({ key: 'KeyS', modifiers: ['ctrl'] }, 'ctrl')).toBeNull();

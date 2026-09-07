@@ -3,7 +3,7 @@
 //
 // Mudlet's EditorDeleteItemCommand::undo() re-imports each item from an XML
 // snapshot at its recorded `positionInParent`, then has to fix up ids and
-// parent references because the re-import mints new ones. mudix's ids are
+// parent references because the re-import mints new ones. Mudlet Web's ids are
 // stable, so the original node objects go back at the indices they occupied in
 // the flat per-connection array — which is where sibling order lives here.
 import { describe, it, expect, beforeEach } from 'vitest';

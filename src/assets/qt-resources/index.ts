@@ -7,7 +7,7 @@
 // nothing at all.
 //
 // This vendors a deliberate subset rather than the whole bundle. `src/icons/` is
-// 9.6 MB and is overwhelmingly game logos for Mudlet's connection dialog — mudix
+// 9.6 MB and is overwhelmingly game logos for Mudlet's connection dialog — Mudlet Web
 // has its own — so shipping it would cost every user megabytes for artwork the
 // app never draws. What is here is what scripts actually reference.
 //

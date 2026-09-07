@@ -5,7 +5,7 @@
 // colour-tagged "[value/10]" gauge via creplace (→ GUIUtils xReplace →
 // delete selection, moveCursor(start), cinsertText). cinsertText's xEcho loop
 // advances the cursor itself with moveCursor(getColumnNumber + len) after each
-// colour segment; mudix's Console.insertText ALSO advanced the cursor, so every
+// colour segment; Mudlet Web's Console.insertText ALSO advanced the cursor, so every
 // segment after the first landed one segment-length too far right — the gauge
 // ended up inside the *next* word ("troch[8/10]e", "Jest es"). Console.insertText
 // now leaves the cursor at the insertion point (Mudlet's native behavior), so the

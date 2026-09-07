@@ -5,7 +5,7 @@
 // off for every database it makes: nothing lands until a commit goes through, so
 // a "true" over a refused one loses the work silently.
 //
-// mudix keeps a database in wasm memory rather than in a file, so it cannot
+// Mudlet Web keeps a database in wasm memory rather than in a file, so it cannot
 // reproduce the way DB_spec provokes a refusal — a second connection holding the
 // file's lock (see e2e/knownDivergences.ts). The refusals it CAN meet are the
 // ones SQLite raises at COMMIT on one connection: a DEFERRABLE constraint

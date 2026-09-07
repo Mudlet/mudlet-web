@@ -354,7 +354,7 @@ export class LabelManager {
     /** Mudlet `getLabelSizeHint(name)` → the label's preferred `{width,height}`.
      *  Mudlet returns the QLabel sizeHint (the size its content wants); the
      *  browser analogue is the rendered node's content extent
-     *  (`scrollWidth`/`scrollHeight`), read off the `data-mudix-label` element.
+     *  (`scrollWidth`/`scrollHeight`), read off the `data-mudlet-label` element.
      *  Falls back to the configured geometry when the label isn't in the DOM
      *  yet (hidden, or rendered before mount). null when no such label. */
     getSizeHint(name: string): { width: number; height: number } | null {
@@ -362,7 +362,7 @@ export class LabelManager {
         if (!lbl) return null;
         if (typeof document !== 'undefined') {
             const el = document.querySelector(
-                `[data-mudix-label="${cssEscape(name)}"]`,
+                `[data-mudlet-label="${cssEscape(name)}"]`,
             ) as HTMLElement | null;
             if (el) {
                 // Qt's sizeHint is what the widget *wants*, so it has to be able

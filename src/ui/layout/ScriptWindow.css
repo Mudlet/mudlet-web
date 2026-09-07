@@ -264,7 +264,7 @@
     scrollbar-width: none;            /* the bar scrolls; no visible track */
 }
 .mobile-switcher::-webkit-scrollbar { display: none; }
-/* The element also carries `mudix-native-scrollbar`, which keeps a Mudlet theme's
+/* The element also carries `mudlet-native-scrollbar`, which keeps a Mudlet theme's
    `QScrollBar { … }` rules off it — those reset scrollbar-width app-wide to hand
    rendering back to the ::-webkit-scrollbar family. See qtCss.ts SCROLLBAR_OPT_OUT. */
 
@@ -447,7 +447,7 @@
     gap: 1px;
 }
 .tab-group-tabbar::-webkit-scrollbar { display: none; }
-/* Also carries `mudix-native-scrollbar` — see the note on .mobile-switcher. */
+/* Also carries `mudlet-native-scrollbar` — see the note on .mobile-switcher. */
 
 .dock-area-left   .tab-group-panel { border-right:  1px solid var(--border); }
 .dock-area-right  .tab-group-panel { border-left:   1px solid var(--border); }

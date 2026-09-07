@@ -2,7 +2,7 @@
 
 These `*_spec.lua` files are copied **verbatim** from Mudlet's
 `src/mudlet-lua/tests/`. Keeping them byte-for-byte identical to upstream means
-every failing spec is a genuine mudix↔Mudlet parity gap, and re-syncing is a
+every failing spec is a genuine Mudlet Web↔Mudlet parity gap, and re-syncing is a
 clean copy + diff.
 
 - Upstream: https://github.com/Mudlet/Mudlet/tree/development/src/mudlet-lua/tests
@@ -41,7 +41,7 @@ records and asserts whatever it finds — there is no manifest to regenerate, si
 the test names and their results come from the same run.
 
 Don't edit the spec bodies — divergence from upstream should only ever come from
-a deliberate re-sync, so a failing spec always means a real mudix gap.
+a deliberate re-sync, so a failing spec always means a real Mudlet Web gap.
 
 ## Who runs it
 

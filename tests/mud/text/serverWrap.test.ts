@@ -192,7 +192,7 @@ describe('joinWrappedLines', () => {
             .toBe('the tall grass sways and rustles quietly.');
     });
 
-    // mudix keeps styling inline, so a plain concatenation carries each half's
+    // Mudlet Web keeps styling inline, so a plain concatenation carries each half's
     // colour across — no TChar-buffer splice needed. The space test still has to
     // read through the escapes, or a trailing reset would hide an existing space.
     it('preserves inline colour on both halves', () => {

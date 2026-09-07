@@ -100,7 +100,7 @@ and 37 impossible. Acting on it closed 29 rows, and
   symbol font, browser spell checking, clearing stored media, a usage-analytics opt-out,
   deleting the map, "force new line on empty commands", and an Editor category carrying
   five of desktop's six rows.
-- **One of those was a behaviour gap, not a missing switch.** mudix echoed empty
+- **One of those was a behaviour gap, not a missing switch.** Mudlet Web echoed empty
   commands unconditionally, so a GA game with the linebreak fix on still got the blank
   line that fix exists to remove. `MudSession` now applies Mudlet's own rule from
   `Host::send`, and the checkbox turns the echo back on.
@@ -149,7 +149,7 @@ that building them here is not the next move:
   right, and the shortcut editor has a ceiling besides — combinations the browser has
   claimed can never be bound, so the editor would have to refuse them.
 - *A knob attached to nothing* (2). Desktop's timer-size debug threshold and "Report all
-  Codepoint problems immediately" configure diagnostics mudix does not emit. The warning
+  Codepoint problems immediately" configure diagnostics Mudlet Web does not emit. The warning
   is the feature; the threshold only becomes worth adding once there is something to
   threshold.
 - *Cheaper as an export than as a setting* (2). Loading an older map version needs
@@ -291,7 +291,7 @@ unexposed — each row below is a decision taken away from the player.
 
 | Desktop | | Mudlet Web |
 |---|---|---|
-| Theme (colorsublime themes) | ✅ | Editor → Theme: Follow app theme / Atom One Dark / Atom One Light. Not desktop's downloadable colorsublime catalogue — the two palettes mudix already ships, pinnable, which is the part of that feature people use (a dark editor under a light interface, or the reverse) |
+| Theme (colorsublime themes) | ✅ | Editor → Theme: Follow app theme / Atom One Dark / Atom One Light. Not desktop's downloadable colorsublime catalogue — the two palettes Mudlet Web already ships, pinnable, which is the part of that feature people use (a dark editor under a light interface, or the reverse) |
 | Autocomplete Lua functions in code editor | ✅ | Editor → Display options. Held in a CodeMirror compartment, so a change reconfigures the open editor rather than remounting it |
 | Show Spaces/Tabs | ✅ | Editor → Display options (`highlightWhitespace`) |
 | Show Line/Paragraphs | ✅ | Editor → Display options. A custom CodeMirror decoration: `highlightWhitespace()` covers spaces and tabs only. Draws the marks the desktop tooltip promises (¶ at each line end, ␄ at the end of the script) rather than what desktop currently does, which is rule a line under each row — `slot_changeShowLineFeedsAndParagraphs` sets edbee's `useLineSeparator`, and its own comment calls that a stand-in |
@@ -341,7 +341,7 @@ The one page with **complete** parity, and then some.
 |---|---|---|
 | Use high quality graphics in 2D view | ❌ | The canvas renderer is always antialiased |
 | Draw rooms on upper and lower levels | 🚧 | Needs a renderer field. Its nearest neighbours are not it: `neighborSpill` draws rooms from adjacent *areas*, and `uniformLevelSize` only sizes the viewport across z-levels |
-| Invert zoom direction | 🚧 | Blocked upstream, not merely unbuilt: the renderer owns the wheel handler and its `Settings` has no zoom-direction field. mudix only snapshots the camera in a capture-phase listener, so inverting here would mean swallowing the event and synthesising a replacement |
+| Invert zoom direction | 🚧 | Blocked upstream, not merely unbuilt: the renderer owns the wheel handler and its `Settings` has no zoom-direction field. Mudlet Web only snapshots the camera in a capture-phase listener, so inverting here would mean swallowing the event and synthesising a replacement |
 | Show room borders | ✅ | Mapper → Map view |
 | Use large area exit arrows in 2D view | 🚧 | Needs a renderer field. `areaExitLabels` / `areaExitLabelFontSize` size the text label beside an area exit, not the arrow |
 | Show the default area in map area selection | ✅ | Mapper → Map view. `setDefaultAreaShown()` sets the same value |
@@ -355,7 +355,7 @@ The one page with **complete** parity, and then some.
 
 | Desktop | | Mudlet Web |
 |---|---|---|
-| 2D Map Room Symbol Font | ✅ | Mapper → Symbols. The renderer's `fontFamily` was there all along and mudix pinned it to the bundled Bitstream Vera Sans Mono; a profile family now wins, with that font still behind it as the fallback |
+| 2D Map Room Symbol Font | ✅ | Mapper → Symbols. The renderer's `fontFamily` was there all along and Mudlet Web pinned it to the bundled Bitstream Vera Sans Mono; a profile family now wins, with that font still behind it as the fallback |
 | Show symbol usage… | ⚠️ | **Four of desktop's six columns.** Mapper → Symbols → **Show** opens the report: each symbol drawn in the map's own symbol font, its code points, how many rooms carry it, and which (first 32, as desktop caps it), commonest first. Missing are desktop's pair of sample cells — the symbol in the chosen font alone, and in any font — and the status icon saying which worked. All three answer "can this font draw this symbol", which needs `QFontMetrics::inFontUcs4`: a browser has no counterpart, and the renderer draws the string and lets the browser fall back, so the client cannot tell its own glyph from the fallback's |
 | Only use symbols (glyphs) from chosen font | 🚧 | Needs per-glyph coverage testing the renderer does not expose — it draws the string and lets the browser fall back |
 
@@ -444,7 +444,7 @@ Absent, and correctly so — both halves need capabilities a browser tab does no
 | Desktop | | Mudlet Web |
 |---|---|---|
 | Force compression off | ✅ | Untick **MCCP** in Connection → Game protocols. The `specialForceCompressionOff` config key maps onto it, so scripts that set it keep working |
-| Force new line on empty commands | ✅ | Connection → Compatibility, beneath the linebreak fix it depends on and disabled without it. This was a behaviour gap as much as a missing switch: mudix echoed empty commands unconditionally, so a GA game with the fix on still got the blank line the fix exists to remove. Now mirrors `Host::send` (Host.cpp:1461) exactly |
+| Force new line on empty commands | ✅ | Connection → Compatibility, beneath the linebreak fix it depends on and disabled without it. This was a behaviour gap as much as a missing switch: Mudlet Web echoed empty commands unconditionally, so a GA game with the fix on still got the blank line the fix exists to remove. Now mirrors `Host::send` (Host.cpp:1461) exactly |
 | Force telnet GA signal interpretation off | ✅ | Connection → Compatibility |
 | Send Mudlet version in terminal type | ✅ | Same card |
 | Force MXP processing on | ✅ | Same card |
@@ -499,7 +499,7 @@ Ranked by how many players hit it, not by how much work it is.
 
 Three rows are deliberately *not* on this list. "Show debug messages for timers not
 smaller than" and "Report all Codepoint problems immediately" configure diagnostics
-mudix does not have: there is no timer-size warning and no codepoint-problem reporting
+Mudlet Web does not have: there is no timer-size warning and no codepoint-problem reporting
 to threshold. Adding the setting without the diagnostic would be a knob attached to
 nothing — the work is the diagnostic, and it is a feature request rather than a
 settings gap. **Map format version** is the third, and it is not waiting on anything:

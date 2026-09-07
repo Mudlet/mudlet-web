@@ -2,7 +2,7 @@
 //
 // Issue #128 item 3: desktop's "report map issues on screen" — the map's
 // sanity-check report, which Mudlet posts on the main console when the option
-// is on and files away otherwise. mudix already repaired three of these classes
+// is on and files away otherwise. Mudlet Web already repaired three of these classes
 // silently on a JSON import; the audit now says what it found, and can also run
 // without touching the map, which is what a `.dat` load needs.
 //

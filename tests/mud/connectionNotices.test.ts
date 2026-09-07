@@ -195,7 +195,7 @@ describe('connect/disconnect console notices', () => {
             expect(session.status).toBe('disconnected');
         });
 
-        // The window wins over the socket's error, which is the half mudix had
+        // The window wins over the socket's error, which is the half Mudlet Web had
         // backwards: a server that slams the door on login drops us with a
         // transport error inside those five seconds, and Mudlet still calls that
         // a rejection rather than repeating the transport's words.

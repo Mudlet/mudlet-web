@@ -66,8 +66,8 @@ const CATEGORY_ICON: Record<EditCategory, React.ElementType> = {
  * Mudlet's `TAction::mLocation` numbers these 0 top, 1 bottom, 2 left, 3 right,
  * 4 floating — but 1 is dead there: `ActionUnit` places 0, 2, 3 and 4 and never
  * 1 (ActionUnit.cpp:234-246), and `comboBox_action_bar_location` does not offer
- * it. mudix *can* render a bottom strip, so this is a capability rather than a
- * mistake — but it is not one that survives leaving mudix. A toolbar saved
+ * it. Mudlet Web *can* render a bottom strip, so this is a capability rather than a
+ * mistake — but it is not one that survives leaving mudlet. A toolbar saved
  * there exports into a profile whose bar desktop silently never draws, and a
  * folder linked with a Mudlet install writes that on every save. So it is not
  * offered: the profile stays something both clients agree about.
@@ -1273,7 +1273,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     const treeEntries = flattenTree(items, null, expanded);
     const selected = items.find(i => i.id === selectedId) ?? null;
 
-    // Live self-loop check for the open alias. Desktop refuses the save; mudix
+    // Live self-loop check for the open alias. Desktop refuses the save; Mudlet Web
     // warns and lets it through — see aliasLoop.ts for why.
     //
     // Debounced because the check runs the user's own half-typed pattern through

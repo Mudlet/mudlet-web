@@ -4,7 +4,7 @@ import { extractHostPackageXml, parseMudletProfile, type MudletProfileImport, ty
 import { parseMudletXml } from './mudletXmlImport';
 
 // Turn the raw files of a Mudlet profile — a directory the user picked, or a
-// .zip of one — into a structured bundle ready to provision a new mudix profile.
+// .zip of one — into a structured bundle ready to provision a new Mudlet Web profile.
 // Source-agnostic: callers hand in a {path -> bytes} map (from a File System
 // Access directory walk or an unzip), and this locates the newest saved profile
 // XML, the newest binary map, the remaining profile-root files, and the package
@@ -19,7 +19,7 @@ export interface MudletProfileBundle {
     /** Parsed settings + automation + variables from the newest current/*.xml. */
     profile: MudletProfileImport;
     /** That save's `<HostPackage>`, verbatim. `profile.settings` covers only the
-     *  Host fields mudix models; the other ~100 live here and nowhere else, so
+     *  Host fields Mudlet Web models; the other ~100 live here and nowhere else, so
      *  this is retained in the new profile's VFS for an export to base on.
      *  Undefined if the save carries no `<HostPackage>`. */
     hostPackageXml?: string;
@@ -148,7 +148,7 @@ function normalizeTree(
 /**
  * Every profile root in the tree — the prefix before each `current/` directory.
  *
- * A tree with profiles side by side (mudix's multi-profile export) yields one
+ * A tree with profiles side by side (Mudlet Web's multi-profile export) yields one
  * root each. Nesting is resolved by depth: a root at the top wins over anything
  * inside it, so a single profile that happens to contain another `current/*.xml`
  * deeper down still imports as one profile, matching the old shallowest-wins
@@ -256,7 +256,7 @@ export function extractMudletProfileZip(
     return buildMudletProfileBundle(unzipSync(bytes), fallbackName);
 }
 
-/** One bundle per profile in the tree — a mudix multi-profile export, or a
+/** One bundle per profile in the tree — a Mudlet Web multi-profile export, or a
  *  single Mudlet profile (in which case this is a one-element list). */
 export function buildAllMudletProfileBundles(
     files: Record<string, Uint8Array>,

@@ -89,7 +89,7 @@ export function logTelnetNegotiation(label: string, s: string): void {
         }
     }
     // eslint-disable-next-line no-console
-    console.debug(`[mudix.telnet ${label}] bytes=${s.length}`,
+    console.debug(`[mudlet.telnet ${label}] bytes=${s.length}`,
         seqs.length ? seqs.join(' | ') : '(no IAC sequences)');
 }
 
@@ -139,6 +139,6 @@ export function logOutboundBytes(s: string): void {
     }
     if (plainBytes > 0) parts.push(`<${plainBytes} text byte(s)>`);
     // eslint-disable-next-line no-console
-    console.debug(`[mudix.telnet out] bytes=${s.length}`,
+    console.debug(`[mudlet.telnet out] bytes=${s.length}`,
         parts.length ? parts.join(' | ') : '(empty)');
 }

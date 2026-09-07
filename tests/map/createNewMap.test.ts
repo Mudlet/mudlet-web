@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest';
 import { MapStore } from '../../src/map/MapStore';
-import { MudixMapReader } from '../../src/map/MudixMapReader';
+import { MudletMapReader } from '../../src/map/MudletMapReader';
 
 /**
  * Mudlet's mapper offers "Create new map" whenever the profile has no map at
@@ -30,7 +30,7 @@ describe('MapStore.createNewMap', () => {
     it('produces a map the renderer can see', () => {
         const store = new MapStore();
         const id = store.createNewMap();
-        const reader = new MudixMapReader(store);
+        const reader = new MudletMapReader(store);
 
         // The panel drops to its empty-state overlay when the reader reports no
         // areas, so a seed room filed only under `room.area` would leave the
@@ -67,7 +67,7 @@ describe('MapStore.resetRoomArea', () => {
         // Mudlet's TRoom::setArea adds the room to the target TArea's room
         // list; the renderer reads that list, so skipping it hides the room.
         // (The skeleton reader materialises rooms per plane, not per area.)
-        const plane = new MudixMapReader(store).getArea(-1).getPlane(0);
+        const plane = new MudletMapReader(store).getArea(-1).getPlane(0);
         expect(plane.getRooms().map(r => r.id)).toEqual([3]);
         // …and it leaves the old area behind.
         expect(store.getRoomsByPosition(areaId, 2, 2, 0)).toEqual([]);

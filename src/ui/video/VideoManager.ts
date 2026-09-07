@@ -1,4 +1,4 @@
-// Mudlet `playVideoFile / pauseVideos / stopVideos`. mudix mounts <video>
+// Mudlet `playVideoFile / pauseVideos / stopVideos`. Mudlet Web mounts <video>
 // elements as absolutely-positioned overlay children of the main viewport.
 // Video files are looked up through the same loader callback the SoundManager
 // uses, so VFS paths and http(s) URLs both work.

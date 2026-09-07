@@ -215,7 +215,7 @@ describe('default packages', () => {
 
         it('stays off profiles that predate the createdAt stamp', () => {
             // No stamp = the profile existed before the starter UI did, so
-            // someone may already have a layout. Mudix's stand-in for Mudlet's
+            // someone may already have a layout. Mudlet's stand-in for Mudlet's
             // experiencedMudletPlayer() check. Everything else still installs.
             const established = namesFor('elephant.org', {});
             expect(established).not.toContain('mudlet-base-ui');

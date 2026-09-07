@@ -376,7 +376,7 @@ export function SettingsShell({ cards, subpages, category, onCategory, subpage, 
                     )}
                     <h2 className="settings-titlerow__title">{title}</h2>
                 </div>
-                <div className="settings-pages mudix-native-scrollbar">
+                <div className="settings-pages mudlet-native-scrollbar">
                     {cards.map(card => {
                         const visible = isVisible(card);
                         let header: ReactNode = null;

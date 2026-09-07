@@ -38,7 +38,7 @@ describe.each(PLATFORMS)('tempKey browser-reserved warning on $name', ({ platfor
     env.run(`tempKey(${accelMod}, 0x54, function() end)`);
     const out = env.mainOutput.join('\n');
     expect(out).toContain(combo);
-    expect(out).toContain("can't reach mudix");
+    expect(out).toContain("can't reach mudlet");
   });
 
   it('reports the call site (script:line) that registered the key', () => {
@@ -49,7 +49,7 @@ describe.each(PLATFORMS)('tempKey browser-reserved warning on $name', ({ platfor
   });
 
   it(`does not warn for a page-capturable combo (${accelLabel}+R)`, () => {
-    // Reload is the browser's, but a page can preventDefault it, so mudix binds
+    // Reload is the browser's, but a page can preventDefault it, so Mudlet Web binds
     // it like Mudlet does — while the client has focus.
     env.run(`tempKey(${accelMod}, 0x52, function() end)`);
     expect(env.mainOutput.join('\n')).not.toContain('WARN');

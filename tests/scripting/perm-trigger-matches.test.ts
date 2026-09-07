@@ -4,7 +4,7 @@
 // URL *substring* of a line and does `selectString(matches[1], 1)` highlighted
 // the WHOLE line instead of just the URL. Root cause: the perm-trigger dispatch
 // passed the whole plain line as matches[1] (Lua) instead of the matched text,
-// diverging from Mudlet (matches[1] = whole match) and from mudix's own temp
+// diverging from Mudlet (matches[1] = whole match) and from Mudlet Web's own temp
 // trigger path. Anchored `^...$` test patterns hid it because there the whole
 // match equals the whole line.
 

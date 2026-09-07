@@ -5,7 +5,7 @@ import { HttpService } from '../../src/scripting/http/HttpService';
 /**
  * Mudlet hands every HTTP event a response record as its last argument —
  * `{ headers = {...}, cookies = {...} }` — and scripts read it to branch on what
- * came back. mudix passed an empty string, so `response.headers` was an index
+ * came back. Mudlet Web passed an empty string, so `response.headers` was an index
  * into nothing.
  *
  * Exercised against the real fetch path with fetch itself stubbed, which is the

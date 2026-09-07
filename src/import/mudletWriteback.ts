@@ -3,7 +3,7 @@ import { serializeMudletXml, type SerializeInput } from './mudletXmlExport';
 import { serializeVariablePackage, type MudletVariablePackage } from './mudletVariables';
 import { applyProfileSettingsToHost } from './mudletHost';
 
-// Link mode (phase 2): write the live mudix state back into a linked Mudlet
+// Link mode (phase 2): write the live Mudlet Web state back into a linked Mudlet
 // profile's XML *DOM-preservingly*. We parse the profile's current save, replace
 // only the parts we model — the six automation packages and the VariablePackage —
 // and leave everything else (the entire <HostPackage>/<Host> with its ~130

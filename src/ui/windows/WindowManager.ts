@@ -1029,7 +1029,7 @@ export class WindowManager {
     }
 
     /** Live zoom of the displayed 2D map, or null when no map panel is mounted.
-     *  mudix shows one area at a time through a single shared renderer, so the
+     *  Mudlet Web shows one area at a time through a single shared renderer, so the
      *  Mudlet `areaID` argument has no per-area analogue here — callers get the
      *  current view's zoom regardless. */
     getMapZoom(): number | null {
@@ -1212,7 +1212,7 @@ export class WindowManager {
      * Parse a Mudlet `.dat` buffer and apply it to this session's MapStore.
      * Rooms / areas / hashes / labels / env colours / map-level user data all
      * land in {@link MapStore} via {@link MapStore.loadFromBinary}; the
-     * renderer reads it back through the live {@link MudixMapReader}. Throws
+     * renderer reads it back through the live {@link MudletMapReader}. Throws
      * on parse failure so callers can surface the error (the file-upload path
      * in MapPanel turns it into status='error'; bootstrap logs and moves on).
      */
@@ -1887,7 +1887,7 @@ export class WindowManager {
     }
 
     /** Mudlet enable/disableHorizontalScrollBar — toggle a horizontal scrollbar
-     *  on a console wrapper. mudix wraps long lines by default so this is rarely
+     *  on a console wrapper. Mudlet Web wraps long lines by default so this is rarely
      *  needed; included for parity. */
     setHorizontalScrollBarVisible(id: string, visible: boolean): void {
         this.getScrollStateMut(id).horizontalScrollBarVisible = visible;
@@ -1975,7 +1975,7 @@ export class WindowManager {
      * Where `scrollTo` last parked each console, as a buffer line index; absent
      * means tail mode (or that only the user has scrolled it).
      *
-     * Mudlet's getScroll/scrollTo are buffer-index operations. mudix measured
+     * Mudlet's getScroll/scrollTo are buffer-index operations. Mudlet Web measured
      * the DOM instead, which is fine for a console the player is looking at but
      * answers nothing useful for one whose panel has not been laid out yet — and
      * a script that scrolls and reads back in the same breath never gives React
@@ -2071,9 +2071,9 @@ export class WindowManager {
         const el = this.elements.get(id);
         if (!el) return;
         const s = this.scrollState.get(id) ?? DEFAULT_SCROLL_STATE;
-        el.classList.toggle('mudix-no-scrollbar', !s.scrollBarVisible);
-        el.classList.toggle('mudix-h-scrollbar', s.horizontalScrollBarVisible);
-        el.classList.toggle('mudix-no-scrolling', !s.scrollingEnabled);
+        el.classList.toggle('mudlet-no-scrollbar', !s.scrollBarVisible);
+        el.classList.toggle('mudlet-h-scrollbar', s.horizontalScrollBarVisible);
+        el.classList.toggle('mudlet-no-scrolling', !s.scrollingEnabled);
     }
 
     /** Direct line-element children of the wrapper (skips the sticky-output
@@ -2780,7 +2780,7 @@ export class WindowManager {
     /**
      * The title a window carries when nobody has set one. Mudlet builds it from
      * the profile and the window's own name ("<profile> - <window>"), which is
-     * what a player sees on a freshly opened user window; mudix used to fall
+     * what a player sees on a freshly opened user window; Mudlet Web used to fall
      * back to the bare id, so resetting a title lost the profile half of it.
      * The profile name is injected by ScriptingAPI — the manager has no other
      * reason to know it.

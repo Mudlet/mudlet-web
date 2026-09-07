@@ -13,7 +13,7 @@ import { readHostBase } from '../../src/import/collectProfileExport';
 import type { PersistedProfileData } from '../../src/storage/profileVfsData';
 import type { MudConnection } from '../../src/storage/schema';
 
-// Mudlet's <Host> is ~120 attributes, 26 elements and 53 colours; mudix models
+// Mudlet's <Host> is ~120 attributes, 26 elements and 53 colours; Mudlet Web models
 // about a third. The rest survives a round-trip only by being carried verbatim,
 // so these tests pin what extraction keeps, what it deliberately drops, and that
 // the export writes it back out with the live identity stamped over it.
@@ -99,7 +99,7 @@ function host(xml: string): Element {
 describe('extractHostPackageXml', () => {
     const extracted = extractHostPackageXml(IMPORTED_SAVE)!;
 
-    it('keeps the Host fields mudix does not model', () => {
+    it('keeps the Host fields mudlet does not model', () => {
         // Attributes.
         expect(extracted).toContain('mProxyAddress="10.0.0.9"');
         expect(extracted).toContain('mProxyPort="8080"');
@@ -290,8 +290,8 @@ describe('readHostBase', () => {
         expect(RETAINED_HOST_PATH.startsWith('.mudlet/')).toBe(true);
     });
 
-    it('prefers the retained copy over a save mudix wrote itself', () => {
-        // saveProfile() puts mudix's own output in current/; basing on that
+    it('prefers the retained copy over a save mudlet wrote itself', () => {
+        // saveProfile() puts Mudlet Web's own output in current/; basing on that
         // would re-read what an earlier export already narrowed.
         const base = readHostBase(vfs({
             [RETAINED_HOST_PATH]: extractHostPackageXml(IMPORTED_SAVE)!,
@@ -305,7 +305,7 @@ describe('readHostBase', () => {
         expect(base).toContain('mProxyAddress="10.0.0.9"');
     });
 
-    it('answers nothing for a profile born in mudix', () => {
+    it('answers nothing for a profile born in mudlet', () => {
         expect(readHostBase(vfs({ 'lua-packages/thing.lua': 'return 1' }))).toBeUndefined();
     });
 });

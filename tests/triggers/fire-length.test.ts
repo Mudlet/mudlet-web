@@ -6,7 +6,7 @@
 //
 // Desktop arms mKeepFiring in BOTH branches of TTrigger::match — the
 // single-line one at src/TTrigger.cpp:995-999 and the multiline completion at
-// src/TTrigger.cpp:1016 — and spends it at src/TTrigger.cpp:1083-1090. mudix
+// src/TTrigger.cpp:1016 — and spends it at src/TTrigger.cpp:1083-1090. Mudlet Web
 // only armed it inside the AND (multiline) branch, so fire length was silently
 // inert on single-line (OR) triggers while the editor offered the field
 // identically in both modes (mudlet-web#61).

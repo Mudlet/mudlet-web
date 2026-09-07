@@ -59,7 +59,7 @@ type EngineInternals = {
 
 // Mudlet raises sysServerGuiInstalled once a game has supplied its own
 // interface through Client.GUI (ctelnet.cpp, right after installPackage), so a
-// starter UI can step aside. mudix ships mudlet-base-ui by default and it
+// starter UI can step aside. Mudlet Web ships mudlet-base-ui by default and it
 // listens for exactly this, so without the event both interfaces stay on
 // screen at once.
 describe('Client.GUI install raises sysServerGuiInstalled', () => {
@@ -111,7 +111,7 @@ describe('Client.GUI install raises sysServerGuiInstalled', () => {
     it('carries the manifest name — the one getPackages and sysUninstallPackage use', async () => {
         await install({ url: 'https://example.invalid/ui/game-ui.mpackage', version: '2.0' });
         const evt = raised.find(r => r.event === 'sysServerGuiInstalled');
-        // Not 'game-ui', the filename Mudlet would derive: mudix registers the
+        // Not 'game-ui', the filename Mudlet would derive: Mudlet Web registers the
         // package under its manifest name, and the base UI matches the name it
         // stored against getPackages() to decide when to come back.
         expect(evt?.args).toEqual(['GameUI']);

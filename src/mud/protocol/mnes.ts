@@ -167,7 +167,7 @@ export { CLIENT_NAME, CLIENT_VERSION, TERMINAL_TYPE };
  * always present; when `extended` is true the broader NEW-ENVIRON capability
  * set is appended (mirroring Mudlet's `getNewEnvironDataMap`): terminal
  * capabilities (ANSI, 256_COLORS, TRUECOLOR, UTF-8), transport/security (TLS),
- * and layout/accessibility hints (WORD_WRAP, SCREEN_READER). Capabilities mudix
+ * and layout/accessibility hints (WORD_WRAP, SCREEN_READER). Capabilities Mudlet Web
  * doesn't implement are reported honestly as "0" rather than omitted, so a
  * server gets a definite answer instead of inferring absence. The caller frames
  * the result with VAR (MNES) or USERVAR (NEW-ENVIRON) via encodeMnesIs.
@@ -196,7 +196,7 @@ export function buildNewEnvironVars(
         { name: "WORD_WRAP", value: String(state.wrapColumns) },
         { name: "SCREEN_READER", value: state.screenReader ? "1" : "0" },
         { name: "OSC_COLOR_PALETTE", value: "1" },
-        // OSC 8 hyperlinks. A flag reads "1" only once mudix actually honours
+        // OSC 8 hyperlinks. A flag reads "1" only once Mudlet Web actually honours
         // that part of Mudlet's OSC 8 extension; the rest stay "0" until the
         // corresponding feature lands (menus, spoilers, presets, …). Mudlet
         // reports the whole set as "1" because it implements all of them — and,
@@ -209,7 +209,7 @@ export function buildNewEnvironVars(
     ];
 }
 
-/** OSC 8 hyperlink capability flags and the value mudix currently reports for
+/** OSC 8 hyperlink capability flags and the value Mudlet Web currently reports for
  *  each. Kept as one table so each phase flips its flags in a single place as
  *  the matching feature is implemented. */
 const OSC_HYPERLINK_CAPS: ReadonlyArray<readonly [string, string]> = [
@@ -228,7 +228,7 @@ const OSC_HYPERLINK_CAPS: ReadonlyArray<readonly [string, string]> = [
     ["OSC_HYPERLINKS_VISIBILITY", "1"], // timed conceal/reveal + expire on input/prompt/output
 ];
 
-/** MNES names the standard defines that mudix deliberately does not supply.
+/** MNES names the standard defines that Mudlet Web deliberately does not supply.
  *  They are still *known*, so a server that asks for one is told it is
  *  undefined rather than left with silence — Mudlet's `isMNESVariable` lists
  *  IPADDRESS alongside the five it reports, and answers it with a name and no

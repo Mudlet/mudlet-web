@@ -220,7 +220,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // output window (red), not just the script editor's Errors tab. Off by default.
     const showErrorsInMainWindow = useAppStore(s => selectProfileField(s, connection.id, 'showErrorsInMainWindow')) === true;
     // Mudlet's `showTabConnectionIndicators` (config bag). Defaults to true; when
-    // on, the window title is prefixed with a connection-status dot. mudix has no
+    // on, the window title is prefixed with a connection-status dot. Mudlet Web has no
     // tab strip, so the indicator (and always the profile name) live in the title.
     const profileConfig = useAppStore(s => selectProfileField(s, connection.id, 'config'));
     const showConnectionIndicator = (profileConfig?.showTabConnectionIndicators as boolean | undefined) ?? true;
@@ -259,7 +259,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // raw telnet byte stream over binary frames negotiated out of band; it does
     // not select a subprotocol, and advertising one breaks proxies that don't
     // echo it back in the 101 (e.g. a Cloudflare Worker). Default ['binary']
-    // otherwise — the raw telnet stream mudix decodes.
+    // otherwise — the raw telnet stream Mudlet Web decodes.
     const subprotocols = connection.mode === 'mud' ? [] : [...wsSubprotocols];
     // The NEW-ENVIRON TLS variable describes the game-facing link: a direct
     // wss:// connection is TLS, and in proxy mode it depends on whether the
@@ -1271,7 +1271,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     };
 
     /** Decline: remember not to ask again for this profile. Mudlet also cycles
-     *  the connection here purely to flush its read buffer; mudix has no such
+     *  the connection here purely to flush its read buffer; Mudlet Web has no such
      *  need, so the session simply carries on undisturbed. */
     const handleDeclineTlsUpgrade = () => {
         setTlsOffer(null);

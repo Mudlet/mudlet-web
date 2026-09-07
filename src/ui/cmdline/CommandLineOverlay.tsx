@@ -75,7 +75,7 @@ function CommandLine({ c, manager, zIndex }: { c: CmdLineState; manager: Command
 
     if (!c.visible) return null;
 
-    const scope = `input[data-mudix-cmdline-overlay="${cssEscape(c.name)}"]`;
+    const scope = `input[data-mudlet-cmdline-overlay="${cssEscape(c.name)}"]`;
     const scopedCss = c.styleSheet ? cmdLineQssToScopedCss(c.styleSheet, scope) : '';
 
     const style: React.CSSProperties = {
@@ -88,7 +88,7 @@ function CommandLine({ c, manager, zIndex }: { c: CmdLineState; manager: Command
             {scopedCss && <style>{scopedCss}</style>}
             <input
                 ref={inputRef}
-                data-mudix-cmdline-overlay={c.name}
+                data-mudlet-cmdline-overlay={c.name}
                 className="cmdline-overlay-input"
                 style={style}
                 value={value}

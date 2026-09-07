@@ -69,7 +69,7 @@ describe('viewport meta', () => {
 describe('landmark ids', () => {
     it('are the ones the skip links and their targets both use', () => {
         // Guards against the two halves drifting apart if either is inlined again.
-        expect(MAIN_OUTPUT_ID).toBe('mudix-output');
-        expect(COMMAND_INPUT_ID).toBe('mudix-command-input');
+        expect(MAIN_OUTPUT_ID).toBe('mudlet-output');
+        expect(COMMAND_INPUT_ID).toBe('mudlet-command-input');
     });
 });

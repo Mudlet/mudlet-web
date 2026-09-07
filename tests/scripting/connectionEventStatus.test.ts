@@ -64,7 +64,7 @@ const CONN = 'connection-event-status-conn';
 // Mudlet raises sysConnectionEvent from cTelnet::slot_socketConnected() and
 // sysDisconnectionEvent from slot_socketDisconnected(), and getConnectionInfo()
 // reads the live QAbstractSocket state — so a Lua handler always sees the state
-// the event announces. mudix has to reproduce that through an EventBus, whose
+// the event announces. Mudlet Web has to reproduce that through an EventBus, whose
 // listeners fire in registration order: the session's own status latch must be
 // registered before the scripting engine's bridge, or every handler observes the
 // *previous* state (f2ce-tools' F2T_CONNECTED cache stuck at false forever).

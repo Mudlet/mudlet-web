@@ -173,7 +173,7 @@ export type MudClientEvents = {
      *  than the hardcoded GMCP/MSDP/TTYPE/MCCP/ECHO negotiations). */
     'telnet.event': [type: number, option: number, message: string];
     /** Mudlet `raiseProtocolEvent("sysProtocolRejected", name)` — a telnet
-     *  option mudix deliberately refuses. mudix, like Mudlet, operates in line
+     *  option Mudlet Web deliberately refuses. Mudlet Web, like Mudlet, operates in line
      *  mode only, so it rejects SUPPRESS_GO_AHEAD (option 3) and LINEMODE
      *  (option 34) rather than let the server switch it into character-at-a-
      *  time / server-driven line editing. The payload is the protocol name
@@ -182,7 +182,7 @@ export type MudClientEvents = {
     /** Mudlet `sysCharacterModeDetected`. Fires once per connection when the
      *  server has both asked to suppress go-ahead (IAC WILL SGA) *and* kept
      *  server-side echo on across a submitted game command — the
-     *  character-at-a-time signature that mudix, a line-based client, can't
+     *  character-at-a-time signature that Mudlet Web, a line-based client, can't
      *  drive well. The three-second delay is what separates it from an ordinary
      *  password mask, which negotiates the same pair but releases echo as soon
      *  as the masked line is in. Lets scripts / the UI warn the user that input

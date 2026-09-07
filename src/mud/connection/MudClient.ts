@@ -107,7 +107,7 @@ export interface MudClientOptions {
      *  client reports the five core variables plus an extended capability set
      *  (ANSI, 256_COLORS, TRUECOLOR, UTF-8, TLS, WORD_WRAP, …), framed as
      *  NEW_ENVIRON_USERVAR. Mudlet exposes MNES and NEW-ENVIRON as two separate
-     *  toggles over the same telnet option; mudix mirrors that. */
+     *  toggles over the same telnet option; Mudlet Web mirrors that. */
     newEnvironEnabled?: boolean;
     /** Whether the link to the *game server* is TLS-encrypted, reported as the
      *  NEW-ENVIRON `TLS` capability. Defaults to whether `url` is `wss://` — the
@@ -186,7 +186,7 @@ export interface MudClientOptions {
     /** WebSocket subprotocols to advertise in the opening handshake's
      *  `Sec-WebSocket-Protocol` header (RFC 6455), in preference order — the
      *  server selects at most one. Mutually-exclusive stream *modes*, not layers:
-     *  `binary` (raw telnet over binary frames — the mode mudix decodes),
+     *  `binary` (raw telnet over binary frames — the mode Mudlet Web decodes),
      *  `telnet` (FluffOS's equivalent name), `telnet.mudstandards.org` (the
      *  mudstandards.org proposal). Empty means open a bare socket. Advertising is
      *  a trade-off: some servers (FluffOS) route a *no-subprotocol* upgrade to a
@@ -198,7 +198,7 @@ export interface MudClientOptions {
 }
 
 /** The WebSocket subprotocol name for the mudstandards.org "full telnet stream
- *  over binary frames" profile (https://mudstandards.org/websocket/). mudix
+ *  over binary frames" profile (https://mudstandards.org/websocket/). Mudlet Web
  *  already speaks this wire format; advertising the name lets a conforming
  *  server confirm the dialect via the RFC 6455 handshake. */
 export const MUD_TELNET_SUBPROTOCOL = 'telnet.mudstandards.org';
@@ -996,7 +996,7 @@ export class MudClient {
      *  `{ account, password }` (account may be `"account:character"` for games
      *  with both); with no account it sends the empty `{}` form — the spec's
      *  "no credentials, fall back to your next auth method" signal, used when the
-     *  user cancels the popup. mudix never stores the password; it only relays it. */
+     *  user cancels the popup. Mudlet Web never stores the password; it only relays it. */
     sendCharLoginCredentials(account?: string, password?: string): void {
         const payload = account ? { account, password: password ?? '' } : {};
         this.sendGmcp('Char.Login.Credentials', payload);
@@ -1095,9 +1095,9 @@ export class MudClient {
         const commands = this.mspParser.feedSubneg(subneg);
         if (debugMspEnabled()) {
             if (commands.length === 0) {
-                console.debug('[mudix.msp] subneg arrived but parsed 0 commands; body=', JSON.stringify(subneg.substring(1)));
+                console.debug('[mudlet.msp] subneg arrived but parsed 0 commands; body=', JSON.stringify(subneg.substring(1)));
             } else {
-                console.debug(`[mudix.msp] subneg parsed ${commands.length} command(s):`, commands);
+                console.debug(`[mudlet.msp] subneg parsed ${commands.length} command(s):`, commands);
             }
         }
         for (const cmd of commands) this.eventBus.emit('msp', cmd);
@@ -1180,7 +1180,7 @@ export class MudClient {
             const { text, commands } = this.mspParser.feed(decodedRaw);
             decoded = text;
             if (commands.length > 0 && debugMspEnabled()) {
-                console.debug(`[mudix.msp] inline parsed ${commands.length} command(s):`, commands);
+                console.debug(`[mudlet.msp] inline parsed ${commands.length} command(s):`, commands);
             }
             for (const cmd of commands) this.eventBus.emit('msp', cmd);
         }
@@ -1192,14 +1192,14 @@ export class MudClient {
             const head = decoded.slice(0, 40).replace(/\n/g, '\\n').replace(/\x1B/g, '\\e');
             // eslint-disable-next-line no-console
             console.debug(
-                `[mudix.frame] bytes=${rawData.length} chars=${decoded.length} endsWithNl=${endsWithNl} hasPrompt=${hasPrompt}\n  head: ${JSON.stringify(head)}\n  tail: ${JSON.stringify(tail)}`,
+                `[mudlet.frame] bytes=${rawData.length} chars=${decoded.length} endsWithNl=${endsWithNl} hasPrompt=${hasPrompt}\n  head: ${JSON.stringify(head)}\n  tail: ${JSON.stringify(tail)}`,
             );
         }
         if (hasPrompt && debugGaEnabled()) {
             const marker = processable.includes(TELNET_GA) ? 'GA' : 'EOR';
             // eslint-disable-next-line no-console
             console.debug(
-                `[mudix.ga] prompt marker IAC ${marker} received` +
+                `[mudlet.ga] prompt marker IAC ${marker} received` +
                 (this.assembler.gaDriver ? '' : ' — latching into GA-driven prompt mode'),
             );
         }

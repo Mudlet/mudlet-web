@@ -15,7 +15,7 @@
 export type MediaKind = 'sound' | 'music' | 'video';
 
 /** The player-lifecycle verb shown in the caption. Mudlet also has pauses/fades,
- *  but mudix's Web Audio model collapses those into a stop, so we expose the two
+ *  but Mudlet Web's Web Audio model collapses those into a stop, so we expose the two
  *  transitions that map cleanly. */
 export type CaptionAction = 'plays' | 'stops';
 

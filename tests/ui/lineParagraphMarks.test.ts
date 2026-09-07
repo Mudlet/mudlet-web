@@ -1,5 +1,5 @@
 // Issue #128 item 2: desktop's Editor option "Show Line/Paragraphs", the one
-// row of that page mudix had no equivalent of. CodeMirror has no built-in for
+// row of that page Mudlet Web had no equivalent of. CodeMirror has no built-in for
 // it — `highlightWhitespace()` covers spaces and tabs only — so it is a
 // decoration, and this covers what it puts on screen.
 import { describe, it, expect, afterEach } from 'vitest';

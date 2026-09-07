@@ -8,7 +8,7 @@ import { isLightTheme } from '../../branding';
 // Chrome (background, gutter, autocomplete, scrollbar) using app CSS vars so
 // the editor adopts the active theme. Syntax highlighting is swapped via the
 // shared highlightCompartment below.
-export const mudixCmTheme = EditorView.theme({
+export const mudletCmTheme = EditorView.theme({
     '&': {
         height: '100%',
         fontSize: '13px',
@@ -221,7 +221,7 @@ export const paletteCompartment = new Compartment();
 
 /**
  * Mudlet's Editor → Theme, as far as it makes sense here. Desktop downloads a
- * catalogue from colorsublime; mudix ships the two palettes it already has and
+ * catalogue from colorsublime; Mudlet Web ships the two palettes it already has and
  * lets you pin one, which is the part of that feature people actually use — a
  * dark editor under a light app theme, or the reverse.
  *

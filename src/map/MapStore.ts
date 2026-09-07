@@ -103,7 +103,7 @@ const HIDDEN_FALLBACK_KEY = 'system.fallback_hidden';
 // userData under `system.fallback_map2DZoom` (TMap::serialize) and a v17-v20
 // load reads it straight back out (TMap::restore). We write v20, so using the
 // same key means an area's zoom survives a round trip through real Mudlet
-// instead of being a mudix-private annotation.
+// instead of being a Mudlet Web-private annotation.
 //
 // The value is in MUDLET UNITS — how many map units the shorter viewport edge
 // spans (larger = more map on screen = zoomed out) — never the renderer's
@@ -477,7 +477,7 @@ export function makeArea(): MudletArea {
 }
 
 /**
- * A map label as mudix stores it: the binary-map reader's shape plus the fields
+ * A map label as Mudlet Web stores it: the binary-map reader's shape plus the fields
  * Mudlet's `TMapLabel` carries that its map file never persists — the font, the
  * outline colour and the `temporary` flag. All optional, so labels read back
  * from a binary map (which have none of them) stay valid without conversion.
@@ -610,7 +610,7 @@ export interface MapInfoResult {
 /** A registered Mudlet `registerMapInfo` contributor.
  *
  *  Two kinds exist. Script-registered ones carry a `callbackId` that indexes
- *  into the Lua-side `__mudix_cb` registry; the LuaRuntime evaluator dispatches
+ *  into the Lua-side `__mudlet_cb` registry; the LuaRuntime evaluator dispatches
  *  to it, and they start disabled (Mudlet semantics — caller must
  *  `enableMapInfo(label)` to show it). Built-in ones (`builtin: true`,
  *  `callbackId: null`) mirror Mudlet's native "Short"/"Full" contributors —
@@ -643,7 +643,7 @@ export interface MapEventEntry {
     /** Label rendered in the context menu. Defaults to uniqueName when unspecified. */
     displayName: string;
     /** Extra arguments captured by addMapEvent. Mudlet's "selection" branch
-     *  (the one mudix mirrors, since the right-clicked room is treated as the
+     *  (the one Mudlet Web mirrors, since the right-clicked room is treated as the
      *  selection) discards these — kept for parity with the registration API. */
     args: unknown[];
 }
@@ -701,7 +701,7 @@ export class MapStore {
     private notifyPending = false;
     // Highlights are a paint-only overlay — they don't affect room/area/exit
     // data, so they go through their own subscription channel. Routing them
-    // through the general `notify()` would force MudixMapReader to rebuild
+    // through the general `notify()` would force MudletMapReader to rebuild
     // its entire snapshot (toMudletMap + readerExport cloneDeep) on every
     // highlightRoom/unHighlightRoom call, which during a speedwalk (where a
     // mapper script updates highlights per move) blocks the main thread for
@@ -710,7 +710,7 @@ export class MapStore {
     private highlightNotifyPending = false;
     // Map-room selection (Mudlet getMapSelection / clearMapSelection). Selection
     // is paint-only — it never touches room/area/exit data — so it rides its
-    // own channel just like highlights to keep MudixMapReader / MapPanel's
+    // own channel just like highlights to keep MudletMapReader / MapPanel's
     // syncFromStore out of the hot path on every click. `center` is the most
     // recently single-clicked room; Mudlet returns it in the selection table.
     private selectedRooms = new Set<number>();
@@ -752,7 +752,7 @@ export class MapStore {
     // right now. Mudlet models the enabled set as a plain QSet<QString> of names
     // (Host::mMapInfoContributors) kept entirely separate from the contributor
     // registry, so `setConfig("showMapInfo", label)` may name something that has
-    // not been registered yet — and it takes effect the moment it is. mudix hangs
+    // not been registered yet — and it takes effect the moment it is. Mudlet Web hangs
     // `enabled` off the contributor itself, so this set carries the other half of
     // Mudlet's model: names waiting for a contributor. It also survives Lua
     // teardown (see clearMapInfoContributors), matching the host-level lifetime
@@ -781,7 +781,7 @@ export class MapStore {
 
     /** Subscribe to highlight-set changes only (highlightRoom / unHighlightRoom
      *  and bulk clears via newEmptyMap / loadFromBinary). MudletHighlightOverlay
-     *  uses this so it re-renders without forcing a full MudixMapReader rebuild. */
+     *  uses this so it re-renders without forcing a full MudletMapReader rebuild. */
     subscribeHighlights(cb: () => void): () => void {
         this.highlightSubscribers.add(cb);
         return () => this.highlightSubscribers.delete(cb);
@@ -953,7 +953,7 @@ export class MapStore {
         for (const [k, labels] of Object.entries(header.labels ?? {})) {
             // Normalize pixmaps to base64 strings up-front. Heavy Buffer
             // payloads here would later get walked by lodash.cloneDeep inside
-            // readerExport on every renderer refresh — see MudixMapReader for
+            // readerExport on every renderer refresh — see MudletMapReader for
             // the strip/patch dance that depends on this normalization.
             const normalized = labels.map(l => {
                 const pm = l.pixMap as unknown;
@@ -1599,7 +1599,7 @@ export class MapStore {
      * rooms that lead INTO it, so removing the room alone leaves them pointing
      * at a number that no longer resolves. Mudlet walks its entrance map for
      * exactly this (TRoomDB::__removeRoom, then TRoom::removeAllSpecialExitsToRoom
-     * for the named ones), and mudix left them dangling: getRoomExits went on
+     * for the named ones), and Mudlet Web left them dangling: getRoomExits went on
      * reporting a north exit to a room that had been deleted, and the mapper
      * would happily route a player through it.
      *
@@ -2919,7 +2919,7 @@ export class MapStore {
     // Mudlet keeps the 2D zoom on the area itself (TArea::mLast2DMapZoom,
     // reached through TRoomDB::get2DMapZoom) rather than on the widget, so
     // getMapZoom/setMapZoom answer even with no mapper mounted and each area
-    // remembers its own. mudix already stores it per area — see
+    // remembers its own. Mudlet Web already stores it per area — see
     // {@link getAreaZoom} / {@link setAreaZoom} further down, which persist it
     // into the area's userData so it round-trips with the map file.
     /** Mudlet's T2DMap::csmDefaultXYZoom / csmMinXYZoom. */
@@ -3352,7 +3352,7 @@ export class MapStore {
      * exist or the text is empty (both are Mudlet's own refusals).
      *
      * `fontName`, `temporary` and the outline colour have nowhere to live in the
-     * binary map format, so they are mudix-only fields on the stored label (see
+     * binary map format, so they are Mudlet Web-only fields on the stored label (see
      * `MapLabel`); of the three only `temporary` is visible from Lua, because
      * Mudlet's getMapLabel doesn't publish the other two either.
      */
@@ -3444,12 +3444,12 @@ export class MapStore {
 
     /**
      * Mudlet `auditAreas()` — sweep the map for area/room consistency problems
-     * and repair what is safe to repair. mudix rebuilds every area's membership
+     * and repair what is safe to repair. Mudlet Web rebuilds every area's membership
      * list (`rooms[]`) from the authoritative `room.area` back-pointers, which
      * drops dangling room ids and re-files rooms that were missing from their
      * area's list. Rooms whose `area` points at a non-existent area are reported
      * but left untouched (they may be intentionally parked in the void area -1).
-     * Returns a summary report (Mudlet returns nothing; mudix surfaces the audit
+     * Returns a summary report (Mudlet returns nothing; Mudlet Web surfaces the audit
      * so scripts can act on it).
      */
     auditAreas(): {
@@ -3713,7 +3713,7 @@ export class MapStore {
     }
 
     /** Drop every script-registered contributor. Called on LuaRuntime teardown
-     *  — the callback IDs index into the dying runtime's __mudix_cb registry.
+     *  — the callback IDs index into the dying runtime's __mudlet_cb registry.
      *  Built-in contributors are native (no Lua dependency) so they survive,
      *  keeping the default "Short"/"Full" overlays available across reconnects
      *  and script reloads. */
@@ -3902,7 +3902,7 @@ export class MapStore {
     }
 
     // ── Map mode (Mudlet view/edit toggle, fires mapModeChangeEvent) ──────────
-    // Mudlet's 2D map widget supports a "viewing" and "editing" mode. mudix has
+    // Mudlet's 2D map widget supports a "viewing" and "editing" mode. Mudlet Web has
     // a single render path right now; the mode is stored here so scripts can
     // toggle it and listen for the change event, even though no chrome wires
     // visible behaviour to the value yet.
@@ -3933,7 +3933,7 @@ export class MapStore {
     // The MudletRoom shape from mudlet-map-binary-reader has no charColor field
     // (Mudlet stores it on the C++ TRoom side-by-side with the symbol). Mirror
     // that with a separate Map keyed by room id; the renderer's
-    // MudixMapReader can read this back when painting room symbols.
+    // MudletMapReader can read this back when painting room symbols.
     private roomCharColors = new Map<number, MudletColor>();
     // ── Hidden rooms (Mudlet setRoomHidden / getRoomHidden / getHiddenRooms) ──
     // Mudlet stores `isHidden` on the C++ TRoom; the binary reader's MudletRoom
@@ -4015,7 +4015,7 @@ export class MapStore {
     /**
      * Mudlet `getHiddenRooms()` — the hidden rooms of the whole map. Mudlet
      * takes no argument at all (TLuaInterpreter::getHiddenRooms walks the
-     * entire room map); mudix additionally accepts an areaID to scope the
+     * entire room map); Mudlet Web additionally accepts an areaID to scope the
      * answer, in which case `undefined` distinguishes "no such area" from "no
      * hidden rooms here".
      */

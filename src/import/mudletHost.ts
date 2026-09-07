@@ -4,10 +4,10 @@ import { MIN_CONSOLE_BUFFER_SIZE, MAX_CONSOLE_BUFFER_SIZE } from '../mud/text/Co
 import { parseMudletXml, type MudletImportResult } from './mudletXmlImport';
 import { parseVariablePackageXml, type MudletVariablePackage } from './mudletVariables';
 
-// Maps the `<HostPackage><Host>` block of a Mudlet profile XML onto mudix's
+// Maps the `<HostPackage><Host>` block of a Mudlet profile XML onto Mudlet Web's
 // ProfileSettings. This is the settings half of a full Mudlet-profile import —
 // the automation half is parseMudletXml, the saved-variables half is
-// parseVariablePackageXml. Only fields with a mudix home are mapped; the rest of
+// parseVariablePackageXml. Only fields with a Mudlet Web home are mapped; the rest of
 // Host (spell dictionary, profile shortcuts, Discord, MMCP, …) is ignored.
 
 function childText(host: Element, tag: string): string | undefined {
@@ -29,7 +29,7 @@ function attrNum(host: Element, attr: string): number | undefined {
     return Number.isFinite(n) ? n : undefined;
 }
 
-// Mudlet color element name → ansiPalette index. mudix's palette is 0–7 dark
+// Mudlet color element name → ansiPalette index. Mudlet Web's palette is 0–7 dark
 // (black,red,green,yellow,blue,magenta,cyan,white) then 8–15 bright; Mudlet
 // names them mBlack/mLightBlack/… so the indices are interleaved relative to
 // Mudlet's own document order.
@@ -40,7 +40,7 @@ const ANSI_COLOR_INDEX: ReadonlyArray<readonly [string, number]> = [
     ['mLightBlue', 12], ['mLightMagenta', 13], ['mLightCyan', 14], ['mLightWhite', 15],
 ];
 
-// Mudlet's `<Host mEnableX>` attribute → mudix ProtocolSettings field.
+// Mudlet's `<Host mEnableX>` attribute → Mudlet Web ProtocolSettings field.
 const PROTOCOL_ATTR: ReadonlyArray<readonly [string, BooleanProtocolKey]> = [
     ['mEnableGMCP', 'gmcp'], ['mEnableMSDP', 'msdp'], ['mEnableMSSP', 'mssp'],
     ['mEnableMSP', 'msp'], ['mEnableMTTS', 'mtts'], ['mEnableMNES', 'mnes'],
@@ -172,7 +172,7 @@ export function parseMudletHost(host: Element): Partial<ProfileSettings> {
 }
 
 /** The connection identity a Mudlet `<Host>` carries: the profile name and the
- *  MUD address (`<url>` host + `<port>`). Used to seed a new mudix connection. */
+ *  MUD address (`<url>` host + `<port>`). Used to seed a new Mudlet Web connection. */
 export interface MudletProfileIdentity {
     name?: string;
     host?: string;
@@ -196,7 +196,7 @@ export function parseMudletHostIdentity(host: Element): MudletProfileIdentity {
 /** What Mudlet's own exporter puts above `<MudletPackage>`, reproduced so a file
  *  written here is byte-shaped like one written there. Nothing reads it —
  *  Mudlet's QXmlStreamReader ignores the doctype — but dropping it would make
- *  mudix's saves gratuitously different. */
+ *  Mudlet Web's saves gratuitously different. */
 export const MUDLET_XML_PROLOG = '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE MudletPackage>';
 
 /** A Mudlet profile save has no namespace. `createElement` on a document some
@@ -215,7 +215,7 @@ function setHostEl(host: Element, tag: string, value: string): void {
     el.textContent = value;
 }
 
-// Mudlet's mDisplayFont is a serialized QFont: "family,pointSize,<tail>". mudix
+// Mudlet's mDisplayFont is a serialized QFont: "family,pointSize,<tail>". Mudlet Web
 // only models the family + size, so on write-back we replace those two fields and
 // keep the rest of the spec from the existing value (Mudlet's defaults when the
 // Host has none) rather than guessing the ~17 QFont params.
@@ -321,7 +321,7 @@ export function applyHostIdentity(host: Element, identity: MudletHostIdentity): 
  * `<HostPackage>`.
  *
  * Mudlet's `<Host>` is roughly 120 attributes, 26 child elements and 53 colour
- * elements (`XMLimport.cpp:723-1305`); mudix models about a third of that. The
+ * elements (`XMLimport.cpp:723-1305`); Mudlet Web models about a third of that. The
  * rest — proxy and TLS configuration, logging setup, the spell dictionary,
  * console buffer sizing, the map colours and sizes, `<stopwatches>`, `<MMCP>`,
  * the `<experiment>` flags, the second-console palette — has no home in
@@ -356,7 +356,7 @@ export function extractHostPackageXml(profileXml: string): string | null {
 
 /** Names from `<Host><mInstalledPackages>` — the packages Mudlet considers
  *  installed for this profile. Mudlet tracks these so package managers (mpkg) and
- *  `getPackageInfo`/`getInstalledPackages` work; mudix registers a manifest per
+ *  `getPackageInfo`/`getInstalledPackages` work; Mudlet Web registers a manifest per
  *  entry on import. */
 export function parseInstalledPackages(host: Element): string[] {
     const list = host.querySelector(':scope > mInstalledPackages');
@@ -366,7 +366,7 @@ export function parseInstalledPackages(host: Element): string[] {
         .filter(Boolean);
 }
 
-/** Everything a full Mudlet profile XML carries that mudix can import. */
+/** Everything a full Mudlet profile XML carries that Mudlet Web can import. */
 export interface MudletProfileImport {
     /** From `<Host>` — the profile name + MUD address for the connection record. */
     connection: MudletProfileIdentity;
@@ -408,7 +408,7 @@ export function parseInstalledModules(host: Element): MudletModuleRef[] {
 }
 
 /**
- * Parse a complete Mudlet profile XML (a `current/*.xml`) into the things mudix
+ * Parse a complete Mudlet profile XML (a `current/*.xml`) into the things Mudlet Web
  * can apply: the connection identity, profile settings, automation trees, and
  * saved variables. `<VariablePackage>` variable names become the seed of the
  * profile's save-list when applied. Throws on malformed XML.

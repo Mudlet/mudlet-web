@@ -197,7 +197,7 @@ export type HyperlinkAction =
     | { kind: "prompt"; command: string }
     | { kind: "url"; url: string };
 
-/** URI schemes mudix is willing to make clickable from server output. */
+/** URI schemes Mudlet Web is willing to make clickable from server output. */
 export const ALLOWED_HYPERLINK_SCHEMES = ["send", "prompt", "http", "https", "ftp"] as const;
 
 /** Percent-decode a send/prompt command, like Mudlet's `QUrl::fromPercentEncoding`,

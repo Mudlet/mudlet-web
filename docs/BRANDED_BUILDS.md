@@ -109,7 +109,7 @@ function MyLanding({ openProfile, ensureBrandProfile, openSettings }: LandingPro
 sequence — nothing is ever read from or written to persistent storage. If you
 just want the stock fields with different labels/classes, use
 `BrandLoginFields` instead of the hook — it's an unstyled form with stable
-`mudix-login-*` classes for your own CSS.
+`mudlet-login-*` classes for your own CSS.
 
 Pass your component as `brand.Landing`.
 
@@ -281,10 +281,10 @@ rather than things the build will tell you about. Five to check:
    stops propagation, so it wins over a Mudlet keybinding your packages set on
    the same key. Settings → Shortcuts rebinds or clears any of them, and the
    stored overrides are application-wide.
-5. **CSS.** `.mudix-toolbar` is now the *menu row* inside a `.mudix-topbar`
+5. **CSS.** `.mudlet-toolbar` is now the *menu row* inside a `.mudlet-topbar`
    wrapper, and the wrapper carries the background, blur and bottom border.
-   Brand rules that styled `.mudix-toolbar` as the whole bar should move to
-   `.mudix-topbar`. `toolbar.className` still lands on `.mudix-toolbar`;
+   Brand rules that styled `.mudlet-toolbar` as the whole bar should move to
+   `.mudlet-topbar`. `toolbar.className` still lands on `.mudlet-toolbar`;
    `.brand-logo`, `.brand` and `.toolbar-connection-name` are unchanged, and the
    connection name is still the row's `flex: 1` spacer.
 

@@ -22,7 +22,7 @@ export interface BrandLoginFieldsProps extends Pick<LandingProps, 'openProfile' 
 /**
  * Unstyled login form for custom branded landings: account (+ optional
  * password) input, Connect submit, optional Open-offline button. No CSS is
- * applied — every element carries a stable `mudix-login-*` class for the
+ * applied — every element carries a stable `mudlet-login-*` class for the
  * brand's own stylesheet to target. Wraps `useBrandLogin`; for full control
  * over markup, call that hook directly instead of using this component.
  */
@@ -49,10 +49,10 @@ export function BrandLoginFields({
 
     return (
         <form
-            className={['mudix-login-fields', className].filter(Boolean).join(' ')}
+            className={['mudlet-login-fields', className].filter(Boolean).join(' ')}
             onSubmit={handleSubmit}
         >
-            <label className="mudix-login-field mudix-login-account">
+            <label className="mudlet-login-field mudlet-login-account">
                 <span>{accountLabel}</span>
                 <input
                     name="username"
@@ -65,7 +65,7 @@ export function BrandLoginFields({
                 />
             </label>
             {showPassword && (
-                <label className="mudix-login-field mudix-login-password">
+                <label className="mudlet-login-field mudlet-login-password">
                     <span>{passwordLabel}</span>
                     <input
                         name="password"
@@ -77,11 +77,11 @@ export function BrandLoginFields({
                     />
                 </label>
             )}
-            <button type="submit" className="mudix-login-submit">{connectLabel}</button>
+            <button type="submit" className="mudlet-login-submit">{connectLabel}</button>
             {showOffline && (
                 <button
                     type="button"
-                    className="mudix-login-offline"
+                    className="mudlet-login-offline"
                     onClick={() => enter(false)}
                     title="Open the profile without connecting — scripts and settings stay available"
                 >

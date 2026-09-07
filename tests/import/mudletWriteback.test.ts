@@ -46,7 +46,7 @@ describe('buildLinkedWriteback', () => {
         { hidden: [], variables: [{ name: 'gold', keyKind: 'string', valueType: 'number', value: '500' }] },
     );
 
-    it('preserves the entire Host block, including fields mudix does not model', () => {
+    it('preserves the entire Host block, including fields mudlet does not model', () => {
         expect(out).toContain('mUnknownToggle="yes"');
         expect(out).toContain('<someUnknownElement>preserve me</someUnknownElement>');
         expect(out).toContain('<mCommandSeparator>;;</mCommandSeparator>');

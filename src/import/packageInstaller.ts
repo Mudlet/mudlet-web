@@ -110,7 +110,7 @@ function trimPackageFileEndings(name: string): string {
 }
 
 /** Trim as Mudlet does, then replace what is left that a VFS directory name
- *  cannot carry — a step mudix needs and desktop does not. */
+ *  cannot carry — a step Mudlet Web needs and desktop does not. */
 function sanitizePackageName(name: string): string {
     return trimPackageFileEndings(name).replace(/[:*?"<>|]/g, '_').trim();
 }

@@ -70,7 +70,7 @@ export function MobileLayout({ manager, windows, outputHost, commandBar }: Mobil
             </div>
 
             {panels.length > 0 && (
-                <nav className="mobile-switcher mudix-native-scrollbar" role="tablist" aria-label="Panels">
+                <nav className="mobile-switcher mudlet-native-scrollbar" role="tablist" aria-label="Panels">
                     <button
                         type="button"
                         role="tab"

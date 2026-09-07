@@ -81,7 +81,7 @@ describe('what each surface takes', () => {
         // The whole bug: the bar outranked the floating layer, so a window drawn
         // in its strip took no clicks at all. A floating user window is a
         // top-level window in Mudlet and may cover the menu bar.
-        expect(zIndexOf(appCss, '.mudix-topbar')).toBe('var(--z-chrome)');
+        expect(zIndexOf(appCss, '.mudlet-topbar')).toBe('var(--z-chrome)');
         expect(zIndexOf(scriptWindowCss, '.floating-window-root')).toBe('var(--z-window)');
         expect(LADDER.get('z-chrome')!).toBeLessThan(LADDER.get('z-window')!);
     });
@@ -103,7 +103,7 @@ describe('what each surface takes', () => {
     });
 
     it('floats a detached button bar just under the user windows', () => {
-        expect(zIndexOf(buttonsBarCss, '.mudix-floating-toolbars-root')).toBe('var(--z-toolbar-float)');
+        expect(zIndexOf(buttonsBarCss, '.mudlet-floating-toolbars-root')).toBe('var(--z-toolbar-float)');
         expect(LADDER.get('z-chrome')!).toBeLessThan(LADDER.get('z-toolbar-float')!);
         expect(LADDER.get('z-toolbar-float')!).toBeLessThan(LADDER.get('z-window')!);
     });

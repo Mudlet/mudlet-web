@@ -1,4 +1,4 @@
--- In-process busted runner for mudix.
+-- In-process busted runner for mudlet.
 --
 -- busted's own CLI runner (busted/runner.lua) assumes it owns an OS process —
 -- it parses `arg`, reads io.stdout, and exits with a status code. None of that
@@ -26,7 +26,7 @@ return function(specPaths)
   -- busted is designed to be require()'d once per OS process: busted/init.lua
   -- replaces its own metatable on first call (dropping the __call used to
   -- initialise it), and the core/luassert modules carry one-shot registration
-  -- state. To make the runner re-invokable in mudix's long-lived runtime, drop
+  -- state. To make the runner re-invokable in Mudlet Web's long-lived runtime, drop
   -- the whole busted ecosystem from package.loaded so each run re-evaluates from
   -- a clean slate — exactly what a fresh process would do. (runBusted itself is
   -- intentionally left loaded; we're executing inside it.)

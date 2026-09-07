@@ -1748,7 +1748,7 @@ describe("The IRC configuration functions round-trip through the profile", funct
   -- self-test profile is reused between runs. One thing the restore cannot
   -- reach, which matters to a developer running the suite against a config root
   -- that is not a throwaway one: the last-used nick, which setIrcNick() also
-  -- writes to a file shared by every profile (mudlet's data directory, not the
+  -- writes to a file shared by every profile (Mudlet Web's data directory, not the
   -- profile's). Putting the profile's nick back writes that file again rather
   -- than restoring it. The password is left alone by every call below that does
   -- not pass one, and the specs that do pass one put the profile's own back

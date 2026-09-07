@@ -50,7 +50,7 @@ type Syncable = FileSystem & { sync?: () => Promise<void> };
  * (vfs/file.js: readSync → closeSync → syncSync → touchSync → store write).
  * Boot scripts read many data files through `io.open`, which turned that
  * atime write-back into ~175ms of synchronous IndexedDB writes during startup
- * — and a store write on *every* file read thereafter. mudix never relies on
+ * — and a store write on *every* file read thereafter. Mudlet Web never relies on
  * atime (stat() and the Lua `lfs` `access` field only surface it), so we opt
  * out, the same trade-off as mounting a real filesystem `noatime`. The
  * `attributes` map is shared across the mixin stack (MutexedFS delegates to

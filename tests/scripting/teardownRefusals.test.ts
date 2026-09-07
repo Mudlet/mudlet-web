@@ -16,7 +16,7 @@ import { KeyEngine } from '../../src/mud/keybindings/KeyEngine';
  * sysExitEvent handler's connectToServer / reconnect / resetProfile are all
  * accepted, and only fail to land because the Qt event loop stops pumping.
  *
- * mudix deliberately diverges — its teardown is synchronous and cannot be
+ * Mudlet Web deliberately diverges — its teardown is synchronous and cannot be
  * interrupted, so a resurrected socket or profile would race disposal. These
  * tests pin that divergence, and pin that it is *audible* rather than silent:
  * the silent version made `if wantReconnect then connect(url) end` in an exit

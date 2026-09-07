@@ -68,7 +68,7 @@ export function WindowCmdLine({ id, manager, styleSheet, seedValue, seedSeq }: W
         }
     };
 
-    const scope = `input[data-mudix-cmdline="${cssEscape(id)}"]`;
+    const scope = `input[data-mudlet-cmdline="${cssEscape(id)}"]`;
     const scopedCss = styleSheet ? cmdLineQssToScopedCss(styleSheet, scope) : '';
 
     return (
@@ -76,7 +76,7 @@ export function WindowCmdLine({ id, manager, styleSheet, seedValue, seedSeq }: W
             {scopedCss && <style>{scopedCss}</style>}
             <input
                 ref={inputRef}
-                data-mudix-cmdline={id}
+                data-mudlet-cmdline={id}
                 className="window-cmdline"
                 value={value}
                 onChange={e => setValue(e.target.value)}

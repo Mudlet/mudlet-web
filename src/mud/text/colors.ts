@@ -1,7 +1,7 @@
 import xterm256 from "./xterm256";
 
 // Mudlet's own defaults (Host.h's mBlack/mRed/… QColorConstants), which are
-// also xterm's first sixteen. mudix used to ship a brighter set (#bb0000 and
+// also xterm's first sixteen. Mudlet Web used to ship a brighter set (#bb0000 and
 // friends), and that put the client at odds with itself: `color_table` — the
 // table Lua scripts read, vendored from Mudlet — says ansi_001 is (128,0,0),
 // while the renderer painted (187,0,0) for the same colour. A profile that has

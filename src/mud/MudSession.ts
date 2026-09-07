@@ -663,7 +663,7 @@ export class MudSession {
         this.encodingWarningIssued = false;
     }
 
-    /** Mudlet `getServerEncodingsList()`. The fixed set of encodings mudix can
+    /** Mudlet `getServerEncodingsList()`. The fixed set of encodings Mudlet Web can
      *  decode — available even before a connection is dialed. */
     getServerEncodingsList(): string[] {
         return [...SUPPORTED_SERVER_ENCODINGS];

@@ -4,7 +4,7 @@ import type { PersistedProfileData } from '../storage/profileVfsData';
 import { buildLinkedWriteback } from './mudletWriteback';
 import { applyHostIdentity, extractHostPackageXml, MUDLET_XML_PROLOG } from './mudletHost';
 
-// The inverse of mudletProfileImport: turn a mudix profile back into a *Mudlet
+// The inverse of mudletProfileImport: turn a Mudlet Web profile back into a *Mudlet
 // profile folder* — `current/<stamp>.xml`, `map/`, and the profile's loose VFS
 // files. The output is what `buildMudletProfileBundle` already knows how to
 // read, so export/import is one format rather than two, and the same folder can
@@ -15,7 +15,7 @@ import { applyHostIdentity, extractHostPackageXml, MUDLET_XML_PROLOG } from './m
 // VariablePackage and the ~30 modeled Host settings are serialized by tested
 // code instead of a second, parallel emitter. The base is the profile's own
 // retained `<Host>` when it has one (see RETAINED_HOST_PATH), so the ~100
-// settings mudix doesn't model survive the trip out; a profile born in mudix has
+// settings Mudlet Web doesn't model survive the trip out; a profile born in Mudlet Web has
 // nothing to retain and starts from the empty skeleton.
 
 /** Mudlet names its saves `YYYY-MM-DD#HH-mm-ss.xml`; the importer sorts by that
@@ -27,7 +27,7 @@ export function formatSaveStamp(date: Date): string {
 }
 
 /** Connection fields Mudlet's `<Host>` can't express (websocket mode, the proxy
- *  override, auto-reconnect). Written beside the XML so a mudix→mudix round-trip
+ *  override, auto-reconnect). Written beside the XML so a Mudlet Web→Mudlet Web round-trip
  *  keeps them; desktop Mudlet ignores the dot-directory entirely. */
 export const CONNECTION_SIDECAR_PATH = '.mudlet/connection.json';
 
@@ -37,11 +37,11 @@ export const LEGACY_CONNECTION_SIDECAR_PATH = '.mudix/connection.json';
 
 /** Where a profile imported from Mudlet keeps its original `<HostPackage>`,
  *  inside its own VFS. `extractHostPackageXml` produces it at import time; the
- *  export and `saveProfile()` base their `<Host>` on it so the settings mudix
+ *  export and `saveProfile()` base their `<Host>` on it so the settings Mudlet Web
  *  doesn't model don't revert to Mudlet's defaults. Dot-prefixed like the rest
- *  of mudix's bookkeeping, so desktop Mudlet ignores it.
+ *  of Mudlet Web's bookkeeping, so desktop Mudlet ignores it.
  *
- *  Absent for a profile created in mudix (nothing unmodeled to preserve), for a
+ *  Absent for a profile created in Mudlet Web (nothing unmodeled to preserve), for a
  *  linked folder (its own `current/*.xml` is the live original), and for
  *  profiles imported before this file existed — their `<Host>` was already
  *  dropped at import and can't be recovered. */
@@ -94,7 +94,7 @@ const EMPTY_HOST_XML = MUDLET_XML_PROLOG
 
 /**
  * The `<Host>` document an export starts from: the profile's retained original
- * when it has one — carrying the ~100 settings mudix doesn't model — else the
+ * when it has one — carrying the ~100 settings Mudlet Web doesn't model — else the
  * empty skeleton. A retained document that somehow has no `<Host>` falls back
  * too, so a hand-edited or truncated file degrades to today's behaviour instead
  * of failing the export.

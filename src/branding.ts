@@ -138,10 +138,10 @@ export interface BrandToolbarConfig {
      * removes them at runtime.
      */
     commands?: BrandCommand[];
-    /** Extra class on the menu row (`.mudix-toolbar`). NOTE: the top bar is two
-     *  rows now, wrapped in `.mudix-topbar`, which carries the background and
+    /** Extra class on the menu row (`.mudlet-toolbar`). NOTE: the top bar is two
+     *  rows now, wrapped in `.mudlet-topbar`, which carries the background and
      *  the bottom border — brand CSS written against the old single bar should
-     *  move those rules to `.mudix-topbar`. */
+     *  move those rules to `.mudlet-topbar`. */
     className?: string;
     /**
      * The menu bar: `false` to remove it, or a function to rebuild it.

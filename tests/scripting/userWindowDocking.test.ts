@@ -8,7 +8,7 @@ import type { ScriptWindowRenderData } from '../../src/ui/windows/types';
 // spelled out, and applies it on every call — not only the one that creates the
 // dock widget. Geyser leans on both halves: a UserWindow constructor passes
 // `dockPosition = "left"` verbatim, and `setDockPosition("left")` re-opens an
-// already-open window purely to move it. mudix understood neither, so every
+// already-open window purely to move it. Mudlet Web understood neither, so every
 // package asking for a left dock (the Discworld Companion's character column,
 // for one) got its panels stacked on the right instead.
 

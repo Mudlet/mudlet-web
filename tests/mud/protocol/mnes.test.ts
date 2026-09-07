@@ -147,7 +147,7 @@ describe('buildNewEnvironVars', () => {
     expect(byName.get('UTF-8')).toBe('0');
     expect(byName.get('TLS')).toBe('0');
     expect(byName.get('WORD_WRAP')).toBe('0');
-    // Static capabilities mudix always supports.
+    // Static capabilities Mudlet Web always supports.
     expect(byName.get('ANSI')).toBe('1');
     expect(byName.get('TRUECOLOR')).toBe('1');
     expect(byName.get('OSC_COLOR_PALETTE')).toBe('1');

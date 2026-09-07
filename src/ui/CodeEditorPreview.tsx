@@ -15,7 +15,7 @@ import { json } from '@codemirror/lang-json';
 import { lua } from '@codemirror/legacy-modes/mode/lua';
 import { xml, html } from '@codemirror/legacy-modes/mode/xml';
 import { Save, Undo2 } from 'lucide-react';
-import { mudixCmTheme, paletteCompartment, paletteFor } from './codemirror/theme';
+import { mudletCmTheme, paletteCompartment, paletteFor } from './codemirror/theme';
 import { optionsCompartment, optionExtensions } from './codemirror/options';
 import { luaHover, luaHoverTheme } from './codemirror/luaHover';
 import { useEffectiveTheme, useEditorSettings } from '../storage';
@@ -173,7 +173,7 @@ export function CodeEditorPreview({ content, filename, path, vfs, onDirtyChange,
                             setDirtyBoth(text !== originalRef.current);
                         }
                     }),
-                    mudixCmTheme,
+                    mudletCmTheme,
                 ],
             }),
             parent: hostRef.current,

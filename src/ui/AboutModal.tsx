@@ -16,7 +16,7 @@ interface Props {
 }
 
 /** Small "About" dialog reachable from the connection screen — wordmark,
- *  tagline and description come from the active brand (stock mudix by
+ *  tagline and description come from the active brand (stock Mudlet Web by
  *  default) plus a link to the source repository when the brand sets one. */
 export function AboutModal({ onClose }: Props) {
     const ref = useModalFocus<HTMLDivElement>(onClose);

@@ -6,7 +6,7 @@ import { domButtonToMudlet } from '../../src/ui/labels/LabelOverlay';
 // (csmMouseButtons in TLuaInterpreter), not an int. Geyser packages branch on
 // these literals (`if event.button == "LeftButton"`), so the DOM→Mudlet mapping
 // must produce the exact strings. Regression for the bug where Muxlet's
-// titlebar/split/drag buttons did nothing because mudix passed integers.
+// titlebar/split/drag buttons did nothing because Mudlet Web passed integers.
 describe('domButtonToMudlet', () => {
     it('maps DOM button codes to Mudlet button-name strings on press/click', () => {
         expect(domButtonToMudlet('click', 0)).toBe('LeftButton');

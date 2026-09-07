@@ -20,7 +20,7 @@ export function installDiagnosticsBindings({ lua, api }: BindingContext): void {
     });
     // Mudlet `debugc(content)` and `errorc(content, [debugInfo])` both
     // accept a single content arg (plus an optional debug-info string on
-    // errorc). They route to Mudlet's "Errors" console; mudix has no
+    // errorc). They route to Mudlet's "Errors" console; Mudlet Web has no
     // equivalent dock, so debugc lands in devtools and errorc routes
     // through the script log (same destination as printError).
     lua.global.set('debugc', (content: unknown) => {
@@ -46,7 +46,7 @@ export function installDiagnosticsBindings({ lua, api }: BindingContext): void {
     // Mudlet sendCmdLine([cmdLineName,] text) stages text into the command
     // bar (setPlainText + selectAll) without submitting it. Scripts use
     // this to pre-fill the input for the user to edit before pressing
-    // Enter. The cmdLineName arg is ignored — mudix has a single command
+    // Enter. The cmdLineName arg is ignored — Mudlet Web has a single command
     // bar.
     lua.global.set('sendCmdLine', (a: unknown, b?: unknown) => {
         // wasmoon hands an omitted Lua argument over as `null`, not `undefined`,

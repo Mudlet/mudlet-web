@@ -49,7 +49,7 @@ export function PopoutWindow({ id, title, width, height, manager, onClosed }: Po
         const h = Math.max(180, Math.round(height) || 480);
         const child = window.open(
             '',
-            `mudix-popout-${id}`,
+            `mudlet-popout-${id}`,
             `popup=yes,width=${w},height=${h}`,
         );
         // Popup blocked (no user gesture, or blocker) — fall back to docked.

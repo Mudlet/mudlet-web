@@ -8,7 +8,7 @@
 // line, and `newLine()` (`!(mLineCount > mDelta)`) drops the state at the end of
 // a line, after that line's completion check. So delta 0 is not "no limit": it
 // means every condition has to be met on the one line that opened the state.
-// mudix read 0 as unlimited, which made every AND trigger unbounded (its editor
+// Mudlet Web read 0 as unlimited, which made every AND trigger unbounded (its editor
 // defaults the field to 0) and broke the XML round-trip in both directions.
 
 import { describe, it, expect, beforeEach } from 'vitest';

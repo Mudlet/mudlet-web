@@ -76,7 +76,7 @@ describe('Mudlet 4.21 API additions', () => {
       expect(env.run('return (spellSuggestWord("qwerty"))')).toBeNull();
       expect(env.run('return type(getDictionaryWordList())')).toBe('table');
     });
-    // The IRC *client* is what mudix hasn't got; the settings behind it are
+    // The IRC *client* is what Mudlet Web hasn't got; the settings behind it are
     // ordinary profile data and round-trip for real, so the getters answer with
     // Mudlet's own defaults rather than with nothing.
     it('IRC getters answer with the configured settings', () => {

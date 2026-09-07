@@ -7,7 +7,7 @@ import { LabelManager } from '../../src/ui/labels/LabelManager';
 // it. This is exactly how Adjustable.Container + EleUI2 layer their stylesheets
 // — the container installs `AlignLeft | AlignTop` in the default adjLabel style,
 // then the EleUI2 theme replaces the whole sheet (border-image frame, negative
-// padding) without any alignment, and Mudlet keeps the title top-aligned. mudix
+// padding) without any alignment, and Mudlet keeps the title top-aligned. Mudlet Web
 // must do the same, or the title vertically centres in the middle of the frame.
 describe('LabelManager qproperty-alignment stickiness', () => {
     function make(): LabelManager {
@@ -92,7 +92,7 @@ describe('LabelManager qproperty-scaledContents stickiness', () => {
 // qproperty-wordWrap is the third sticky Qt widget property a label stylesheet
 // can carry. QLabel::wordWrap is false by default and TLabel never sets it, so
 // Mudlet lays label text out with QTextOption::ManualWrap — it runs past the
-// widget edge and gets clipped rather than folding onto a second line. mudix
+// widget edge and gets clipped rather than folding onto a second line. Mudlet Web
 // renders that as `white-space: nowrap`, and this property is the opt-out.
 describe('LabelManager qproperty-wordWrap stickiness', () => {
     function make(): LabelManager {

@@ -91,7 +91,7 @@ const BUSTED_ENABLED = !!(import.meta.env as Record<string, unknown>).VITE_BUSTE
 // the recorder reads that as 44 broken specs and retries every one of them.
 // e2e/bustedRecord.ts checks this first and stops with one message instead.
 if (BUSTED_ENABLED && typeof window !== 'undefined') {
-    (window as unknown as { __mudixBustedBuild?: boolean }).__mudixBustedBuild = true;
+    (window as unknown as { __mudletBustedBuild?: boolean }).__mudletBustedBuild = true;
 }
 const BUSTED_FILES = BUSTED_ENABLED
     ? (import.meta.glob('./busted/**/*.lua', { query: '?raw', import: 'default', eager: true }) as Record<string, string>)
@@ -128,7 +128,7 @@ const bustedSpecVfsPaths = (): string[] =>
  * which traps the whole runtime with "memory access out of bounds" on some call
  * shapes — `postHTTP(data, url, headers, file)` with the optional file argument
  * present was one, so every upload with headers took the Lua state down. The
- * table is walked on the Lua side now (see `__mudix_headers_to_string`), where
+ * table is walked on the Lua side now (see `__mudlet_headers_to_string`), where
  * it is an ordinary `pairs` loop.
  */
 function luaTableToHeaders(h: unknown): Record<string, string> | undefined {
@@ -173,11 +173,11 @@ function bytesToImageDataUrl(bytes: Uint8Array, path: string): string {
 // Rebuild saved globals (Mudlet <VariablePackage>) into _G. The value tree is
 // constructed on the Lua side so numeric table keys and nested/mixed-key tables
 // keep full fidelity — a JS→Lua object coercion would stringify numeric keys and
-// can't represent a table with both. `__mudix_var_payload` is the descriptor
+// can't represent a table with both. `__mudlet_var_payload` is the descriptor
 // array (set from JS); iterated with pairs() so the 0-indexed table wasmoon makes
 // from a JS array doesn't matter.
 const RESTORE_VARS_LUA = `
-local payload = __mudix_var_payload
+local payload = __mudlet_var_payload
 local function build(d)
   local vt = d.valueType
   if vt == 'table' then
@@ -204,7 +204,7 @@ if payload then
     if d.name ~= nil then _G[d.name] = build(d) end
   end
 end
-__mudix_var_payload = nil
+__mudlet_var_payload = nil
 `;
 
 // Walk the save-listed globals out of _G into a descriptor tree and hand it back
@@ -214,7 +214,7 @@ __mudix_var_payload = nil
 // itself) — cleared after each branch so a DAG (same table in sibling slots) is
 // still fully captured.
 const CAPTURE_VARS_LUA = `
-local names = __mudix_save_list
+local names = __mudlet_save_list
 local function capture(v, seen)
   local t = type(v)
   if t == 'table' then
@@ -255,7 +255,7 @@ if names then
     end
   end
 end
-__mudix_save_list = nil
+__mudlet_save_list = nil
 return yajl.to_string(out)
 `;
 
@@ -264,23 +264,23 @@ return yajl.to_string(out)
 // flag those as built-ins (hidden by default in the Variables view, matching
 // Mudlet, which only shows user-created variables). Run once at the end of init,
 // before any saved-variable restore or user script adds globals. The set's own
-// name starts with __mudix so it's excluded from the view.
+// name starts with __mudlet so it's excluded from the view.
 const CAPTURE_BASELINE_LUA = `
-__mudix_baseline = {}
+__mudlet_baseline = {}
 for k in pairs(_G) do
-  if type(k) == 'string' then __mudix_baseline[k] = true end
+  if type(k) == 'string' then __mudlet_baseline[k] = true end
 end
 `;
 
 // Enumerate globals for the Variables view as a full nested tree: name, Lua
 // type, a scalar value preview, whether it's a table, and whether it's flaggable
 // to save. Functions/userdata/threads are listed but not saveable (Mudlet greys
-// them). Built-in globals (in __mudix_baseline) are flagged and NOT recursed —
+// them). Built-in globals (in __mudlet_baseline) are flagged and NOT recursed —
 // only user globals get their contents walked, so the payload stays bounded to
 // user data while the view can expand any of it instantly (no re-fetch). `seen`
 // breaks reference cycles.
 const LIST_GLOBALS_LUA = `
-local baseline = __mudix_baseline or {}
+local baseline = __mudlet_baseline or {}
 local function describe(v, recurse, seen)
   local t = type(v)
   local e = { valueType = t }
@@ -312,7 +312,7 @@ local function describe(v, recurse, seen)
 end
 local out = {}
 for k, v in pairs(_G) do
-  if type(k) == 'string' and k:sub(1, 7) ~= '__mudix' then
+  if type(k) == 'string' and k:sub(1, 8) ~= '__mudlet' then
     local isBuiltin = baseline[k] == true
     local e = describe(v, not isBuiltin, {})
     e.name = k
@@ -333,8 +333,8 @@ return yajl.to_string(out)
 // Returns '' on success or a human-readable reason on failure — the view shows
 // it next to the row rather than silently doing nothing.
 const EDIT_VAR_LUA = `
-local req = yajl.to_value(__mudix_var_edit)
-__mudix_var_edit = nil
+local req = yajl.to_value(__mudlet_var_edit)
+__mudlet_var_edit = nil
 local function tokey(seg)
   if seg == nil or seg.key == nil then return nil, 'missing key' end
   if seg.kind == 'number' then
@@ -360,8 +360,8 @@ for i = 1, #path - 1 do
 end
 local key, keyErr = tokey(path[#path])
 if key == nil then return keyErr end
-if container == _G and type(key) == 'string' and key:sub(1, 7) == '__mudix' then
-  return 'names beginning with __mudix belong to the client'
+if container == _G and type(key) == 'string' and key:sub(1, 8) == '__mudlet' then
+  return 'names beginning with __mudlet belong to the client'
 end
 
 if req.op == 'delete' then
@@ -372,8 +372,8 @@ end
 if req.op == 'move' then
   local to, toErr = tokey(req.to)
   if to == nil then return toErr end
-  if container == _G and type(to) == 'string' and to:sub(1, 7) == '__mudix' then
-    return 'names beginning with __mudix belong to the client'
+  if container == _G and type(to) == 'string' and to:sub(1, 8) == '__mudlet' then
+    return 'names beginning with __mudlet belong to the client'
   end
   if to ~= key then
     if container[to] ~= nil then
@@ -451,7 +451,7 @@ export class LuaRuntime implements IScriptingRuntime {
     }>();
 
     // Tracks label callback ids per slot so re-binds can free the prior Lua-
-    // registry slot via __mudix_unregister_cb (avoids the leak the audit flagged
+    // registry slot via __mudlet_unregister_cb (avoids the leak the audit flagged
     // for setLabelClickCallback). Outer key: label name, inner key: slot id
     // ("click", "doubleClick", "release", ...). Value: registered cb id or 0
     // when cleared.
@@ -614,7 +614,7 @@ export class LuaRuntime implements IScriptingRuntime {
         // Native fast path for the color-echo family. The Lua wrapper installed
         // after LuaGlobal.lua (see FAST_COLOR_ECHO_LUA) calls this before falling
         // back to Mudlet's per-segment xEcho. Returns true iff handled natively.
-        this.lua.global.set('__mudixFastColorEcho', (kind: unknown, win: unknown, str: unknown): boolean => {
+        this.lua.global.set('__mudletFastColorEcho', (kind: unknown, win: unknown, str: unknown): boolean => {
             if (typeof kind !== 'string' || typeof win !== 'string' || typeof str !== 'string') return false;
             return this.api.fastColorEcho(kind, win, str);
         });
@@ -643,7 +643,7 @@ export class LuaRuntime implements IScriptingRuntime {
         // below take them through `bindings`.
         const dispatchCb = (cbId: number, label: string): void => this.dispatchCb(cbId, label);
         const releaseCb = (cbId: number): void => {
-            try { this.lua.doStringSync(`__mudix_unregister_cb(${cbId})`); } catch {}
+            try { this.lua.doStringSync(`__mudlet_unregister_cb(${cbId})`); } catch {}
         };
 
         // Handle passed to the extracted binding modules (./bindings/*). See
@@ -746,7 +746,7 @@ export class LuaRuntime implements IScriptingRuntime {
         this.lua.global.set('loadProfile', (name?: unknown) =>
             this.api.loadProfile(typeof name === 'string' ? name : ''),
         );
-        // Mudlet getCharacterName() — mudix maps this to the profile name.
+        // Mudlet getCharacterName() — Mudlet Web maps this to the profile name.
         this.lua.global.set('getCharacterName', () => this.api.getCharacterName());
         // Mudlet getMudletInfo() — echoes a diagnostic block, returns nothing.
         this.lua.global.set('getMudletInfo', () => { this.api.getMudletInfo(); });
@@ -767,18 +767,18 @@ export class LuaRuntime implements IScriptingRuntime {
         // Which value type an option takes (or null for an unknown key) — the
         // Bridge.lua wrappers need it to tell Mudlet's raise-on-wrong-type apart
         // from its (nil, errMsg) refuse-on-bad-value.
-        this.lua.global.set('__mudix_config_kind', (key: unknown) =>
+        this.lua.global.set('__mudlet_config_kind', (key: unknown) =>
             this.api.configKeyKind(String(key ?? '')));
         // The bounds a numeric option accepts, as [min, max], or nil. Separate
         // from the kind above because the refusal has to NAME them: "out of
         // range" is what a script greps for, and the generic "not a valid value"
         // does not say what the valid ones were.
-        this.lua.global.set('__mudix_config_range', (key: unknown) =>
+        this.lua.global.set('__mudlet_config_range', (key: unknown) =>
             this.api.configKeyRange(String(key ?? '')) ?? undefined);
         // Same reasoning for the options that take one of a fixed set of words:
         // the refusal is the only place their names appear, so it has to carry
         // them. Returned 0-indexed, as wasmoon hands arrays over.
-        this.lua.global.set('__mudix_config_values', (key: unknown) => {
+        this.lua.global.set('__mudlet_config_values', (key: unknown) => {
             const values = this.api.configKeyValues(String(key ?? ''));
             return values ? [...values] : undefined;
         });
@@ -856,23 +856,23 @@ export class LuaRuntime implements IScriptingRuntime {
         // per-tab stand-in: stable for the tab's lifetime and distinct from any
         // other tab's, which is what a script naming a temp file after it needs.
         // Kept inside int32 for the same reason the clocks above are.
-        this.lua.global.set('__mudix_processId', () => {
+        this.lua.global.set('__mudlet_processId', () => {
             // Held on the tab, not this runtime: a profile switch rebuilds the
             // runtime, and a "process id" that changed under a script would be
             // worse than useless. globalThis rather than window so the node-side
             // test runtime has somewhere to keep it too.
-            const g = globalThis as unknown as { __mudixProcessId?: number };
-            g.__mudixProcessId ??= 1 + Math.floor(Math.random() * 0x7ffffffe);
-            return g.__mudixProcessId;
+            const g = globalThis as unknown as { __mudletProcessId?: number };
+            g.__mudletProcessId ??= 1 + Math.floor(Math.random() * 0x7ffffffe);
+            return g.__mudletProcessId;
         });
         // Backs Bridge.lua's `wait()`, which has to burn real time rather than
         // schedule anything (Mudlet's Wait blocks the interpreter with msleep).
         // Milliseconds since this runtime was built, NOT epoch ms: wasmoon
         // truncates to 32-bit signed on the way into Lua, and a raw Date.now()
         // (~1.79e12) arrives as garbage — the same reason the busted bridge's
-        // __mudix_now is relative. Uptime stays comfortably inside int32.
+        // __mudlet_now is relative. Uptime stays comfortably inside int32.
         const waitOrigin = Date.now();
-        this.lua.global.set('__mudix_uptime_ms', () => Date.now() - waitOrigin);
+        this.lua.global.set('__mudlet_uptime_ms', () => Date.now() - waitOrigin);
 
         // Mudlet getOS() → osName, osVersion, [osType (Linux only)], processor.
         // We sniff the underlying OS so windows/mac-specific scripts behave. JS
@@ -987,9 +987,9 @@ export class LuaRuntime implements IScriptingRuntime {
         // setLabelReleaseCallback / setLabelMoveCallback / setLabelOnEnter /
         // setLabelOnLeave / setLabelWheelCallback all share a shape: name + a
         // Lua function (or `nil` to clear). Bridge.lua compiles the function
-        // and hands JS a numeric cb id (via `__mudix_register_cb`); cb id 0
+        // and hands JS a numeric cb id (via `__mudlet_register_cb`); cb id 0
         // means "clear". We track the prior id per label-per-slot so a rebind
-        // unregisters the prior chunk in `__mudix_cb` instead of leaking it.
+        // unregisters the prior chunk in `__mudlet_cb` instead of leaking it.
         type LabelCbSlot = 'click' | 'doubleClick' | 'release' | 'move' | 'enter' | 'leave' | 'wheel';
         const setLabelCb = (
             name: string,
@@ -1010,19 +1010,19 @@ export class LuaRuntime implements IScriptingRuntime {
                 this.dispatchCbWithArg(cbId, event, `label "${name}" ${slot}`));
         };
 
-        this.lua.global.set('__mudix_setLabelClickCallback', (name: string, cbId: number) =>
+        this.lua.global.set('__mudlet_setLabelClickCallback', (name: string, cbId: number) =>
             setLabelCb(name, 'click', cbId, fn => this.api.labels.setClickCallback(name, fn as never)));
-        this.lua.global.set('__mudix_setLabelDoubleClickCallback', (name: string, cbId: number) =>
+        this.lua.global.set('__mudlet_setLabelDoubleClickCallback', (name: string, cbId: number) =>
             setLabelCb(name, 'doubleClick', cbId, fn => this.api.labels.setDoubleClickCallback(name, fn as never)));
-        this.lua.global.set('__mudix_setLabelReleaseCallback', (name: string, cbId: number) =>
+        this.lua.global.set('__mudlet_setLabelReleaseCallback', (name: string, cbId: number) =>
             setLabelCb(name, 'release', cbId, fn => this.api.labels.setMouseUpCallback(name, fn as never)));
-        this.lua.global.set('__mudix_setLabelMoveCallback', (name: string, cbId: number) =>
+        this.lua.global.set('__mudlet_setLabelMoveCallback', (name: string, cbId: number) =>
             setLabelCb(name, 'move', cbId, fn => this.api.labels.setMouseMoveCallback(name, fn as never)));
-        this.lua.global.set('__mudix_setLabelOnEnter', (name: string, cbId: number) =>
+        this.lua.global.set('__mudlet_setLabelOnEnter', (name: string, cbId: number) =>
             setLabelCb(name, 'enter', cbId, fn => this.api.labels.setMouseEnterCallback(name, fn as never)));
-        this.lua.global.set('__mudix_setLabelOnLeave', (name: string, cbId: number) =>
+        this.lua.global.set('__mudlet_setLabelOnLeave', (name: string, cbId: number) =>
             setLabelCb(name, 'leave', cbId, fn => this.api.labels.setMouseLeaveCallback(name, fn as never)));
-        this.lua.global.set('__mudix_setLabelWheelCallback', (name: string, cbId: number) =>
+        this.lua.global.set('__mudlet_setLabelWheelCallback', (name: string, cbId: number) =>
             setLabelCb(name, 'wheel', cbId, fn => this.api.labels.setWheelCallback(name, fn as never)));
         // setLabelToolTip(name, text [, duration]) → bool. Mudlet returns false
         // when the named label doesn't exist; the duration arg is accepted for
@@ -1089,7 +1089,7 @@ export class LuaRuntime implements IScriptingRuntime {
         };
         this.lua.global.set('raiseWindow', raiseAny);
         this.lua.global.set('lowerWindow', lowerAny);
-        // raiseLabel / lowerLabel are mudix-only legacy names. Mudlet doesn't
+        // raiseLabel / lowerLabel are Mudlet Web-only legacy names. Mudlet doesn't
         // have them; ported scripts should use raiseWindow / lowerWindow. Kept
         // as aliases so existing user scripts don't break.
         this.lua.global.set('raiseLabel', raiseAny);
@@ -1175,7 +1175,7 @@ export class LuaRuntime implements IScriptingRuntime {
 
         // Mudlet setUserWindowStyleSheet(name, css) — install or replace a
         // per-window CSS block. `QWidget { … }` (the canonical Mudlet selector)
-        // and bare declarations auto-scope to `[data-mudix-window="name"]`, so
+        // and bare declarations auto-scope to `[data-mudlet-window="name"]`, so
         // a stylesheet like `QWidget { padding: 15 20; }` actually pads the
         // panel viewport. Script authors can also write the attribute selector
         // explicitly for rules that wouldn't be a plain QWidget block.
@@ -1217,7 +1217,7 @@ export class LuaRuntime implements IScriptingRuntime {
             this.lua.global.set(name, () => {
                 if (!stubWarned[name]) {
                     stubWarned[name] = true;
-                    console.warn(`[mudix] ${name} is not available in this client; call ignored.`);
+                    console.warn(`[mudlet] ${name} is not available in this client; call ignored.`);
                 }
                 return typeof result === 'function' ? (result as () => unknown)() : result;
             });
@@ -1225,7 +1225,7 @@ export class LuaRuntime implements IScriptingRuntime {
         // setLabelDoubleClickCallback / setLabelReleaseCallback /
         // setLabelMoveCallback / setLabelWheelCallback / setLabelOnEnter /
         // setLabelOnLeave: real bindings installed in Bridge.lua over the
-        // __mudix_setLabel* primitives above.
+        // __mudlet_setLabel* primitives above.
 
         // Warning-emitting no-op stubs for Mudlet APIs with no meaningful browser
         // implementation: Discord Rich Presence (needs the Discord SDK) and the
@@ -1247,7 +1247,7 @@ export class LuaRuntime implements IScriptingRuntime {
             'resetDiscordData',
             'setDiscordApplicationID', 'setDiscordGame', 'setDiscordGameUrl',
             'usingMudletsDiscordID',
-            // IRC client *actions* — there is no IRC client in mudix to open,
+            // IRC client *actions* — there is no IRC client in Mudlet Web to open,
             // restart or talk to. The settings those actions would read are a
             // different matter and are real; see Bridge.lua.
             'openIRC', 'restartIrc', 'sendIrc',
@@ -1266,9 +1266,9 @@ export class LuaRuntime implements IScriptingRuntime {
         // cmdLineName (or "main") the binding targets the single main command
         // bar; with a userwindow name it targets that window's per-window
         // command line (enabled via enableCommandLine). JS receives a numeric
-        // cb id; 0 clears. Prior cb ids are freed in __mudix_cb on rebind so
+        // cb id; 0 clears. Prior cb ids are freed in __mudlet_cb on rebind so
         // closures don't leak.
-        this.lua.global.set('__mudix_setCmdLineAction', (cbId: number, windowName?: unknown) => {
+        this.lua.global.set('__mudlet_setCmdLineAction', (cbId: number, windowName?: unknown) => {
             const name = typeof windowName === 'string' && windowName && windowName !== 'main' ? windowName : null;
             if (name && this.api.cmdLines.has(name)) {
                 const prev = this.overlayCmdLineActionCbIds.get(name);
@@ -1306,7 +1306,7 @@ export class LuaRuntime implements IScriptingRuntime {
             });
             return true;
         });
-        this.lua.global.set('__mudix_resetCmdLineAction', (windowName?: unknown) => {
+        this.lua.global.set('__mudlet_resetCmdLineAction', (windowName?: unknown) => {
             const name = typeof windowName === 'string' && windowName && windowName !== 'main' ? windowName : null;
             if (name && this.api.cmdLines.has(name)) {
                 const prev = this.overlayCmdLineActionCbIds.get(name);
@@ -1371,7 +1371,7 @@ export class LuaRuntime implements IScriptingRuntime {
         // since it needs access to the line's AnsiAwareBuffer (the trigger
         // engine itself only sees plain text). Self-expires after
         // `expirationCount` fires.
-        this.lua.global.set('__mudix_tempColorTrigger', (fg: unknown, bg: unknown, cbId: number, expirationCount?: number) => {
+        this.lua.global.set('__mudlet_tempColorTrigger', (fg: unknown, bg: unknown, cbId: number, expirationCount?: number) => {
             const wantFg = Number(fg);
             const wantBg = Number(bg);
             const max = (typeof expirationCount === 'number' && expirationCount > 0) ? expirationCount : -1;
@@ -1435,7 +1435,7 @@ export class LuaRuntime implements IScriptingRuntime {
         // packs the variadic values into a \x01-delimited string (wasmoon's
         // varargs handling is unreliable); we split them back here. Frames as
         // IAC SB MSDP MSDP_VAR var [MSDP_VAL val]... IAC SE.
-        this.lua.global.set('__mudix_sendMSDP', (variable: unknown, valuesStr?: unknown) => {
+        this.lua.global.set('__mudlet_sendMSDP', (variable: unknown, valuesStr?: unknown) => {
             const v = String(variable ?? '');
             if (!v) return false;
             const s = valuesStr != null ? String(valuesStr) : '';
@@ -1444,7 +1444,7 @@ export class LuaRuntime implements IScriptingRuntime {
         });
         // Mudlet `sendSocket(data)`: send literal bytes over the socket, no
         // telnet/encoding processing.
-        // `sendSocket` itself is a Bridge.lua wrapper over __mudix_sendSocket,
+        // `sendSocket` itself is a Bridge.lua wrapper over __mudlet_sendSocket,
         // which adds Mudlet's type check and (nil, errMsg) failure return.
         // Mudlet getServerEncoding/setServerEncoding/getServerEncodingsList —
         // the CHARSET (RFC 2066) decoder MudClient negotiates. The list is built
@@ -1463,21 +1463,21 @@ export class LuaRuntime implements IScriptingRuntime {
         // exactly as Mudlet frames it (TLuaInterpreterNetworking.cpp). Argument
         // validation and the (nil, errMsg) contracts live in the Bridge.lua
         // wrappers; these primitives just report success as a boolean.
-        this.lua.global.set('__mudix_sendATCP', (message: unknown, what?: unknown) => {
+        this.lua.global.set('__mudlet_sendATCP', (message: unknown, what?: unknown) => {
             const body = String(message ?? '');
             const tail = what != null && String(what) !== '' ? ' ' + String(what) : '';
             return this.api.sendATCP(body + tail);
         });
         // Two numbers, not a string — see the Bridge.lua wrapper: a string
         // payload is UTF-8-decoded in transit and the raw bytes are lost.
-        this.lua.global.set('__mudix_sendTelnetChannel102', (b1: unknown, b2: unknown) =>
+        this.lua.global.set('__mudlet_sendTelnetChannel102', (b1: unknown, b2: unknown) =>
             this.api.sendTelnetChannel102(
                 String.fromCharCode(Number(b1) & 0xff, Number(b2) & 0xff)));
-        this.lua.global.set('__mudix_sendSocket', (data: unknown) => this.api.sendSocket(String(data ?? '')));
+        this.lua.global.set('__mudlet_sendSocket', (data: unknown) => this.api.sendSocket(String(data ?? '')));
         /** Whether the session currently has a live connection — drives the
          *  "not connected to game server" guards Mudlet applies before sending
          *  ATCP/GMCP/MSDP. */
-        this.lua.global.set('__mudix_is_connected', () => this.api.getConnectionInfo().connected);
+        this.lua.global.set('__mudlet_is_connected', () => this.api.getConnectionInfo().connected);
         // Mudlet reconnect() — disconnect and redial the last URL.
         this.lua.global.set('reconnect', () => this.api.reconnect());
         // Mudlet `feedTelnet(data)`: inject raw server bytes into the inbound
@@ -1496,7 +1496,7 @@ export class LuaRuntime implements IScriptingRuntime {
         // MudSession; this binding just reads the bytes. Returns an
         // [ok, errMsg] tuple that Bridge.lua reshapes into Mudlet's documented
         // `true` / `(nil, errMsg)` multi-return.
-        this.lua.global.set('__mudix_loadReplay', (path: unknown): [boolean, string] => {
+        this.lua.global.set('__mudlet_loadReplay', (path: unknown): [boolean, string] => {
             const p = typeof path === 'string' ? path : '';
             if (!p) return [false, 'a blank string is not a valid replay file name'];
             if (!this.vfs) return [false, 'no profile filesystem available'];
@@ -1510,11 +1510,11 @@ export class LuaRuntime implements IScriptingRuntime {
         // sound/music commands as if the server had sent them.
         // The MSP-enabled guard and argument check live in the Bridge.lua
         // wrapper, matching Mudlet's order (enabled first, then type).
-        this.lua.global.set('__mudix_receiveMSP', (data: unknown) => this.api.receiveMSP(String(data ?? '')));
-        this.lua.global.set('__mudix_is_msp_enabled', () => this.api.isMspNegotiated());
+        this.lua.global.set('__mudlet_receiveMSP', (data: unknown) => this.api.receiveMSP(String(data ?? '')));
+        this.lua.global.set('__mudlet_is_msp_enabled', () => this.api.isMspNegotiated());
         // Mudlet `disconnect()`: drop the current connection.
         this.lua.global.set('disconnect', () => { this.api.disconnect(); });
-        // Mudlet `closeMudlet()`: mudix closes the active profile — disconnect
+        // Mudlet `closeMudlet()`: Mudlet Web closes the active profile — disconnect
         // and return to the connection screen.
         this.lua.global.set('closeMudlet', () => { this.api.closeMudlet(); });
         // Mudlet `resetProfile()`: reload the whole profile (UI cleared, fresh
@@ -1524,7 +1524,7 @@ export class LuaRuntime implements IScriptingRuntime {
         // Mudlet `exportAreaImage(areaID, filePath [, zLevel])`: render the area
         // to a PNG in the profile VFS. Returns a 0-indexed [ok, pathOrErr] array
         // that Bridge.lua unpacks into Mudlet's (bool[, errMsg]) multi-return.
-        this.lua.global.set('__mudix_exportAreaImage', (areaId: unknown, filePath: unknown, zLevel?: unknown): [boolean, string] => {
+        this.lua.global.set('__mudlet_exportAreaImage', (areaId: unknown, filePath: unknown, zLevel?: unknown): [boolean, string] => {
             const aid = Number(areaId);
             if (!Number.isFinite(aid)) return [false, 'exportAreaImage: areaID must be a number'];
             // A BOOLEAN z level means "every z level", and only `true` can mean
@@ -1545,14 +1545,14 @@ export class LuaRuntime implements IScriptingRuntime {
             );
         });
         // Mudlet `clearVisitedLinks()`: forgets which clickable links have been
-        // visited (Mudlet greys visited echoLink targets). mudix tracks no
+        // visited (Mudlet greys visited echoLink targets). Mudlet Web tracks no
         // visited-link state, so there is nothing to clear — a true no-op.
         this.lua.global.set('clearVisitedLinks', () => {});
         // Mudlet `connectToServer(host, port [, save])`: (re)connect through the
         // proxy; `save` persists host/port onto the active connection.
         // Argument validation and the invalid-port (nil, errMsg) return live in
         // the Bridge.lua wrapper, matching Mudlet's contract.
-        this.lua.global.set('__mudix_connectToServer', (host: unknown, port?: unknown, save?: unknown) =>
+        this.lua.global.set('__mudlet_connectToServer', (host: unknown, port?: unknown, save?: unknown) =>
             this.api.connectToServer(String(host ?? ''), port === undefined ? 23 : Number(port), !!save));
         // Cancels the in-flight sysDataSendRequest dispatch. Only meaningful while
         // a sysDataSendRequest handler is on the stack — flag is reset before each send.
@@ -1604,7 +1604,7 @@ export class LuaRuntime implements IScriptingRuntime {
 
         // Mudlet saveProfile([location [, saveName]]). Two halves, both of which
         // Host::saveProfile does: write the profile out as a Mudlet-format XML
-        // save, and force mudix's own pending state through to storage — the
+        // save, and force Mudlet Web's own pending state through to storage — the
         // zustand slices already auto-sync on every mutation, but debounced SQL
         // snapshots and VFS writes do not.
         //
@@ -1613,7 +1613,7 @@ export class LuaRuntime implements IScriptingRuntime {
         // returned path is the file actually written, which is what Mudlet
         // answers with. Async flush errors land after the return, so they raise
         // `sysSaveProfileError` (eventName, profilePath, errMsg) instead.
-        this.lua.global.set('__mudix_saveProfile', (
+        this.lua.global.set('__mudlet_saveProfile', (
             location?: unknown, saveName?: unknown,
         ): [boolean, string] => {
             this.flushPendingSqlSnapshots();
@@ -1674,7 +1674,7 @@ export class LuaRuntime implements IScriptingRuntime {
         // declared at the top of setup() alongside the binding context.
 
         // ── Timers ────────────────────────────────────────────────────────────
-        this.lua.global.set('__mudix_tempTimer', (seconds: number, cbId: number, repeating?: boolean) => {
+        this.lua.global.set('__mudlet_tempTimer', (seconds: number, cbId: number, repeating?: boolean) => {
             const isRepeat = repeating ?? false;
             return this.api.timers.addTemp(seconds, () => {
                 dispatchCb(cbId, 'tempTimer');
@@ -1689,7 +1689,7 @@ export class LuaRuntime implements IScriptingRuntime {
                 : this.api.timers.killTimer(idOrName));
 
         // ── Aliases ───────────────────────────────────────────────────────────
-        this.lua.global.set('__mudix_tempAlias', (pattern: string, cbId: number) => {
+        this.lua.global.set('__mudlet_tempAlias', (pattern: string, cbId: number) => {
             const id = this.api.allocateItemId();
             const unsub = this.api.aliases.addTemp(pattern, (m: RegExpMatchArray) => {
                 if (this.tempIds.get(id)?.enabled === false) return;
@@ -1773,26 +1773,26 @@ export class LuaRuntime implements IScriptingRuntime {
             this.tempIds.set(id, { kill, type: 'trigger', enabled: true, name });
             return id;
         };
-        this.lua.global.set('__mudix_tempTrigger', (pattern: string, cbId: number, expirationCount?: number) =>
+        this.lua.global.set('__mudlet_tempTrigger', (pattern: string, cbId: number, expirationCount?: number) =>
             installTempTrigger(pattern, cbId, 'substring', expirationCount, 'tempTrigger'));
-        this.lua.global.set('__mudix_tempRegexTrigger', (pattern: string, cbId: number, expirationCount?: number, name?: unknown) =>
+        this.lua.global.set('__mudlet_tempRegexTrigger', (pattern: string, cbId: number, expirationCount?: number, name?: unknown) =>
             installTempTrigger(pattern, cbId, 'regex', expirationCount, 'tempRegexTrigger',
                 typeof name === 'string' && name ? name : undefined));
-        this.lua.global.set('__mudix_tempExactMatchTrigger', (pattern: string, cbId: number, expirationCount?: number) =>
+        this.lua.global.set('__mudlet_tempExactMatchTrigger', (pattern: string, cbId: number, expirationCount?: number) =>
             installTempTrigger(pattern, cbId, 'exactMatch', expirationCount, 'tempExactMatchTrigger'));
-        this.lua.global.set('__mudix_tempBeginOfLineTrigger', (pattern: string, cbId: number, expirationCount?: number) =>
+        this.lua.global.set('__mudlet_tempBeginOfLineTrigger', (pattern: string, cbId: number, expirationCount?: number) =>
             installTempTrigger(pattern, cbId, 'startOfLine', expirationCount, 'tempBeginOfLineTrigger'));
         // tempPromptTrigger(fn[, expirationCount]) — fires on every line the
         // server flags as a prompt (GA/EOR). No pattern; the empty string is a
         // placeholder the 'prompt' kind ignores.
-        this.lua.global.set('__mudix_tempPromptTrigger', (cbId: number, expirationCount?: number) =>
+        this.lua.global.set('__mudlet_tempPromptTrigger', (cbId: number, expirationCount?: number) =>
             installTempTrigger('', cbId, 'prompt', expirationCount, 'tempPromptTrigger'));
         // tempLineTrigger(from, howMany, fn) — position-based, no pattern. Fires
         // on `howMany` lines starting `from` lines ahead (from=1 = next line),
         // then self-expires. The TriggerEngine handles the line countdown; here
         // we mirror it with a `fires` counter so the callback is released after
         // the final fire (or earlier via killTrigger).
-        this.lua.global.set('__mudix_tempLineTrigger', (from: unknown, howMany: unknown, cbId: number) => {
+        this.lua.global.set('__mudlet_tempLineTrigger', (from: unknown, howMany: unknown, cbId: number) => {
             const id = this.api.allocateItemId();
             const total = Math.max(1, Math.trunc(Number(howMany)) || 1);
             let fires = 0;
@@ -1833,7 +1833,7 @@ export class LuaRuntime implements IScriptingRuntime {
         // boardModifier bitmask (default 0 = no modifier); keyCode is a
         // Qt::Key int. The Bridge.lua wrapper resolves the optional-modifier
         // overload before passing here.
-        this.lua.global.set('__mudix_tempKey', (modifier: number, key: string | number, cbId: number, source?: string) => {
+        this.lua.global.set('__mudlet_tempKey', (modifier: number, key: string | number, cbId: number, source?: string) => {
             const mods = qtModifiersToList(modifier);
             const keyCode = qtKeyToDomCode(key, modifier);
             // Keep the raw Qt key/modifier so getKeyCode() can report them back
@@ -1985,7 +1985,7 @@ export class LuaRuntime implements IScriptingRuntime {
         // on this side) and let the Bridge.lua wrappers shape the tuple. The
         // scheme test mirrors fromUserInput's leniency: a bare "localhost/x" is
         // a valid url that means http://localhost/x.
-        this.lua.global.set('__mudix_url_invalid_reason', (url: unknown) => {
+        this.lua.global.set('__mudlet_url_invalid_reason', (url: unknown) => {
             const s = String(url ?? '').trim();
             if (!s) return 'empty url';
             try {
@@ -2002,7 +2002,7 @@ export class LuaRuntime implements IScriptingRuntime {
         // there surfaced as a *synchronous* emit from inside a Lua→JS call,
         // which re-enters the Lua state mid-call and takes the whole runtime
         // down with a wasm "memory access out of bounds".
-        this.lua.global.set('__mudix_upload_file_error', (file: unknown) => {
+        this.lua.global.set('__mudlet_upload_file_error', (file: unknown) => {
             const path = String(file ?? '');
             if (!path) return false;
             if (!this.vfs) return 'no profile VFS available for file upload';
@@ -2067,7 +2067,7 @@ export class LuaRuntime implements IScriptingRuntime {
         // A url that isn't http(s) never gets that far — downloadFile reports it
         // as a sysDownloadError naming the file, which is the same way a script
         // hears about a 404.
-        this.lua.global.set('__mudix_media_fetch', (name: unknown, url: unknown) => {
+        this.lua.global.set('__mudlet_media_fetch', (name: unknown, url: unknown) => {
             const file = String(name ?? '').split(/[\\/]/).pop() ?? '';
             const u = String(url ?? '');
             if (!file || !u || !this.vfs) return null;
@@ -2165,7 +2165,7 @@ export class LuaRuntime implements IScriptingRuntime {
         this.exec(
             `do local ok, mod = pcall(dofile, "/lua/3rdparty/lulpeg.lua")
                  if ok and mod then package.loaded["lpeg"] = mod
-                 else print("[mudix] lpeg (LuLPeg) failed to load: " .. tostring(mod)) end
+                 else print("[mudlet] lpeg (LuLPeg) failed to load: " .. tostring(mod)) end
              end`,
             'lpeg-register',
         );
@@ -2228,7 +2228,7 @@ end`,
     // The two places the browser can't match Mudlet's own Lua, fixed up from the
     // outside so the vendored mudlet-lua/ tree stays a verbatim mirror of
     // upstream — same tactic as installFastColorEcho below, and the reason
-    // re-syncing that tree can't silently drop a mudix change. Runs immediately
+    // re-syncing that tree can't silently drop a Mudlet Web change. Runs immediately
     // after LuaGlobal.lua, before any user script can observe either global.
     // See src/scripting/lua/mudlet-lua/SYNCED.md.
     private installMudletLuaOverrides(): void {
@@ -2252,9 +2252,9 @@ if mudlet and mudlet.supports then mudlet.supports.stt = false end
 -- (showHandlerError, pairs, ...) falls through to _G untouched. Rebuilding the
 -- closure instead would mean recreating \`handlers\`, a local upvalue of the
 -- do-block Other.lua defines it in.
-if __mudix_pcall_co and type(dispatchEventToFunctions) == 'function' then
+if __mudlet_pcall_co and type(dispatchEventToFunctions) == 'function' then
   setfenv(dispatchEventToFunctions, setmetatable(
-    { pcall = __mudix_pcall_co },
+    { pcall = __mudlet_pcall_co },
     -- __newindex too: a proxy env that only forwards reads would quietly
     -- swallow a global write, should upstream ever add one.
     { __index = _G, __newindex = _G }))
@@ -2314,7 +2314,7 @@ end`,
     }
 
     // Shadow the shared `xEcho` dispatcher (not decho/cecho/hecho themselves) so
-    // that a colour echo tries the native fast path (__mudixFastColorEcho) and
+    // that a colour echo tries the native fast path (__mudletFastColorEcho) and
     // falls back to the original xEcho for anything the fast path declines
     // (labels, style tags, combined fg/bg, backgrounds, unknown colour names,
     // trigger-time matched-line echo, etc). Wrapping xEcho — rather than the
@@ -2328,7 +2328,7 @@ end`,
     private installFastColorEcho(): void {
         this.exec(
             `do
-  local fast = __mudixFastColorEcho
+  local fast = __mudletFastColorEcho
   local orig_xEcho = xEcho
   local styleKind = { Decimal = 'decho', Color = 'cecho', Hex = 'hecho' }
   function xEcho(style, func, ...)
@@ -2349,7 +2349,7 @@ end`,
     return orig_xEcho(style, func, ...)
   end
 end
-__mudixFastColorEcho = nil`,
+__mudletFastColorEcho = nil`,
             'fast-color-echo',
         );
     }
@@ -2358,7 +2358,7 @@ __mudixFastColorEcho = nil`,
     // C++ does this; GUIUtils.lua only fills the *named* colours. ansi2decho,
     // closestColor and the colour-conversion helpers all read color_table
     // ["ansi_NNN"], so without these they produce wrong output. Sourced from
-    // mudix's own xterm256 palette (shared with the ANSI renderer, so the table
+    // Mudlet Web's own xterm256 palette (shared with the ANSI renderer, so the table
     // matches what's actually drawn) and only set where unset, so a runtime/theme
     // override survives. Must run after LuaGlobal.lua creates color_table.
     private setupAnsiColorTable(): void {
@@ -2533,8 +2533,8 @@ end`);
         // deadline computed from it is already in the past. Milliseconds since
         // the bridge was built stay comfortably inside int32.
         const clockOrigin = Date.now();
-        this.lua.global.set('__mudix_now', () => Date.now() - clockOrigin);
-        this.lua.global.set('__mudix_pump', (deadlineMs: unknown) => {
+        this.lua.global.set('__mudlet_now', () => Date.now() - clockOrigin);
+        this.lua.global.set('__mudlet_pump', (deadlineMs: unknown) => {
             const deadline = clockOrigin + Number(deadlineMs);
             this.api.timers.pumpDue();
             // Standing in for the event loop means standing in for all of it:
@@ -2570,11 +2570,11 @@ end`);
         // runtime that gets recreated (StrictMode remount, profile switch) can
         // never leave a stale "ready" behind for the next one.
         this.lua.doStringSync(
-            '__mudix_busted_loaded = false\n' +
-            'registerAnonymousEventHandler("sysLoadEvent", function() __mudix_busted_loaded = true end, true)',
+            '__mudlet_busted_loaded = false\n' +
+            'registerAnonymousEventHandler("sysLoadEvent", function() __mudlet_busted_loaded = true end, true)',
         );
-        (window as unknown as { __mudixBustedReady?: () => boolean }).__mudixBustedReady = () =>
-            this.lua.doStringSync('return __mudix_busted_loaded == true') === true;
+        (window as unknown as { __mudletBustedReady?: () => boolean }).__mudletBustedReady = () =>
+            this.lua.doStringSync('return __mudlet_busted_loaded == true') === true;
 
         const specPaths = bustedSpecVfsPaths();
         (window as unknown as { __runBusted?: (pattern?: string) => unknown }).__runBusted = (pattern?: string) => {
@@ -3094,7 +3094,7 @@ end`);
      */
     restoreVariables(vars: MudletVariable[]): void {
         if (!vars.length) return;
-        this.lua.global.set('__mudix_var_payload', vars);
+        this.lua.global.set('__mudlet_var_payload', vars);
         this.exec(RESTORE_VARS_LUA, 'restore-vars');
     }
 
@@ -3107,7 +3107,7 @@ end`);
      */
     captureVariables(saveList: string[]): MudletVariable[] {
         if (!saveList.length) return [];
-        this.lua.global.set('__mudix_save_list', saveList);
+        this.lua.global.set('__mudlet_save_list', saveList);
         const json = this.execInner(CAPTURE_VARS_LUA, 'capture-vars');
         if (typeof json !== 'string') return [];
         try {
@@ -3141,7 +3141,7 @@ end`);
      * rather than only after the next profile save.
      */
     editVariable(request: VariableEdit): string | null {
-        this.lua.global.set('__mudix_var_edit', JSON.stringify(request));
+        this.lua.global.set('__mudlet_var_edit', JSON.stringify(request));
         const result = this.execInner(EDIT_VAR_LUA, 'edit-var');
         if (typeof result !== 'string') return 'the Lua runtime refused the edit';
         return result === '' ? null : result;
@@ -3295,7 +3295,7 @@ end`);
         const detail = typeof (e as { message?: unknown }).message === 'string'
             ? (e as { message: string }).message
             : describeThrown(e);
-        console.error('[mudix] the Lua WASM module terminated:', e);
+        console.error('[mudlet] the Lua WASM module terminated:', e);
         this.api.printError(
             `[scripting] the Lua engine stopped (${detail}). Scripts, triggers, `
             + 'aliases and timers are disabled until this profile is reopened.');
@@ -3401,7 +3401,7 @@ end`);
     // call is synchronous; the client keeps running meanwhile — matching
     // Mudlet, where QFileDialog spins a nested event loop and triggers/timers
     // keep firing while the dialog is open.
-    private static readonly FILE_DIALOG_SENTINEL = '\x01__mudix_file_dialog';
+    private static readonly FILE_DIALOG_SENTINEL = '\x01__mudlet_file_dialog';
 
     /** Threads suspended in invokeFileDialog, tracked so destroy() forgets
      *  them (their registry refs die with the closed Lua state). */
@@ -3488,15 +3488,15 @@ end`);
     // Fire a registered Lua callback by id (label clicks, tempTimer/Alias/
     // Trigger/Key).
     private dispatchCb(cbId: number, label: string): void {
-        this.runChunk(`__mudix_dispatch_cb(${cbId})`, label);
+        this.runChunk(`__mudlet_dispatch_cb(${cbId})`, label);
         this.api.flushOutput();
     }
 
     /** Whether the callback {@link dispatchCb} last ran returned true — the way
-     *  an expiring temp trigger asks for another life. See __mudix_dispatch_cb. */
+     *  an expiring temp trigger asks for another life. See __mudlet_dispatch_cb. */
     private lastCbReturnedTrue(): boolean {
         try {
-            return this.lua.global.get('__mudix_cb_returned_true') === true;
+            return this.lua.global.get('__mudlet_cb_returned_true') === true;
         } catch {
             return false;
         }
@@ -3506,29 +3506,29 @@ end`);
     // label mouse callbacks to deliver the {button, x, y, ...} event table.
     private dispatchCbWithArg(cbId: number, arg: unknown, label: string): void {
         if (this.inert) return;
-        this.lua.global.set('__mudix_cb_arg', arg);
-        this.runChunk(`__mudix_dispatch_cb_arg(${cbId})`, label);
+        this.lua.global.set('__mudlet_cb_arg', arg);
+        this.runChunk(`__mudlet_dispatch_cb_arg(${cbId})`, label);
         this.api.flushOutput();
     }
 
     // Unregister a previously registered callback id (Lua side). Used to free
-    // entries in __mudix_cb on rebind so labels with rapidly-changing handlers
+    // entries in __mudlet_cb on rebind so labels with rapidly-changing handlers
     // don't leak refs.
     private unregisterCb(cbId: number): void {
         if (!cbId) return;
-        this.runChunk(`__mudix_unregister_cb(${cbId})`, 'unregister cb');
+        this.runChunk(`__mudlet_unregister_cb(${cbId})`, 'unregister cb');
     }
 
     /**
      * Mudlet `T2DMap::initiateSpeedWalk` / `Host::startSpeedWalk` — the map's
      * double-click-to-walk gesture. Pathfinds `from` → `to` (unless the mapper
      * opted into `mudlet.custom_speedwalk`) and calls the mapper package's
-     * `doSpeedWalk`; see `__mudix_start_speedwalk` in Bridge.lua. Errors inside
+     * `doSpeedWalk`; see `__mudlet_start_speedwalk` in Bridge.lua. Errors inside
      * the mapper are reported, never thrown at the UI caller.
      */
     startSpeedWalk(from: number, to: number): void {
         if (this.inert) return;
-        this.runChunk(`__mudix_start_speedwalk(${Math.trunc(from)}, ${Math.trunc(to)})`,
+        this.runChunk(`__mudlet_start_speedwalk(${Math.trunc(from)}, ${Math.trunc(to)})`,
             'speedwalk');
         this.api.flushOutput();
     }
@@ -3551,7 +3551,7 @@ end`);
      * distinct from nil's "not my pattern, use yours".
      */
     private installNativeUtf8Find(): void {
-        this.lua.global.set('__mudix_utf8_find', (
+        this.lua.global.set('__mudlet_utf8_find', (
             subject: unknown, pattern: unknown, init: unknown, plain: unknown,
         ) => {
             if (typeof subject !== 'string' || typeof pattern !== 'string') return undefined;
@@ -3606,14 +3606,14 @@ end`);
             this.lua.global.set('__mws_w', args[0]);
             this.lua.global.set('__mws_h', args[1]);
         }
-        this.lua.global.set('__mudix_evt_args', args);
+        this.lua.global.set('__mudlet_evt_args', args);
         // Explicit count: a nil/false-carrying payload (raiseEvent("x", nil,
         // false, "y")) lands in Lua as a table with holes, and neither `#` nor a
         // nil-terminated walk can recover the caller's real arity. Mudlet passes
         // every argument through positionally, so the count has to travel too.
-        this.lua.global.set('__mudix_evt_argc', args.length);
-        this.lua.global.set('__mudix_evt_name', event);
-        this.runChunk('__mudix_dispatch_event()', `event "${event}"`);
+        this.lua.global.set('__mudlet_evt_argc', args.length);
+        this.lua.global.set('__mudlet_evt_name', event);
+        this.runChunk('__mudlet_dispatch_event()', `event "${event}"`);
         this.api.flushOutput();
     }
 
@@ -3622,15 +3622,15 @@ end`);
     // The leaf is replaced; siblings under shared parents are preserved.
     setGmcpValue(path: string, value: unknown): void {
         if (this.inert || !path) return;
-        this.lua.global.set('__mudix_gmcp_path', path);
+        this.lua.global.set('__mudlet_gmcp_path', path);
         // Raw-push the (potentially large, deeply nested) decoded payload instead
         // of wasmoon's generic pushValue, whose ref/unref bookkeeping is O(n²) in
         // the node count (issue #2). pushJsValue mirrors toLuaValue's conventions
         // and delegates the yajl.null sentinel leaves back to wasmoon.
         const L = this.lua.global.address;
         this.pushJsValue(L, this.toLuaValue(value));
-        this.lua.global.luaApi.lua_setglobal(L, '__mudix_gmcp_val');
-        this.runChunk('__mudix_set_gmcp(__mudix_gmcp_path, __mudix_gmcp_val)', `set-gmcp "${path}"`);
+        this.lua.global.luaApi.lua_setglobal(L, '__mudlet_gmcp_val');
+        this.runChunk('__mudlet_set_gmcp(__mudlet_gmcp_path, __mudlet_gmcp_val)', `set-gmcp "${path}"`);
     }
 
     // Bridges a single MSDP variable into the Lua `msdp` global. `path` is the
@@ -3638,22 +3638,22 @@ end`);
     // the key); `value` is the decoded string / array / table.
     setMsdpValue(path: string, value: unknown): void {
         if (this.inert || !path) return;
-        this.lua.global.set('__mudix_msdp_path', path);
+        this.lua.global.set('__mudlet_msdp_path', path);
         // Raw-push the decoded value (see setGmcpValue) to avoid the O(n²)
         // generic pushValue on large nested MSDP tables (issue #2).
         const L = this.lua.global.address;
         this.pushJsValue(L, this.toLuaValue(value));
-        this.lua.global.luaApi.lua_setglobal(L, '__mudix_msdp_val');
-        this.runChunk('__mudix_set_msdp(__mudix_msdp_path, __mudix_msdp_val)', `set-msdp "${path}"`);
+        this.lua.global.luaApi.lua_setglobal(L, '__mudlet_msdp_val');
+        this.runChunk('__mudlet_set_msdp(__mudlet_msdp_path, __mudlet_msdp_val)', `set-msdp "${path}"`);
     }
 
     // Bridges a single MSSP variable into the Lua `mssp` global. `name` is the
     // flat variable name (e.g. "PLAYERS"); `value` is the reported string.
     setMsspValue(name: string, value: string): void {
         if (this.inert || !name) return;
-        this.lua.global.set('__mudix_mssp_name', name);
-        this.lua.global.set('__mudix_mssp_val', value);
-        this.runChunk('__mudix_set_mssp(__mudix_mssp_name, __mudix_mssp_val)', `set-mssp "${name}"`);
+        this.lua.global.set('__mudlet_mssp_name', name);
+        this.lua.global.set('__mudlet_mssp_val', value);
+        this.runChunk('__mudlet_set_mssp(__mudlet_mssp_name, __mudlet_mssp_val)', `set-mssp "${name}"`);
     }
 
     /**
@@ -3664,15 +3664,15 @@ end`);
      */
     setMxpElement(name: string, attrs: Record<string, string>): void {
         if (this.inert || !name) return;
-        this.lua.global.set('__mudix_mxp_name', name.toLowerCase());
+        this.lua.global.set('__mudlet_mxp_name', name.toLowerCase());
         // Flattened rather than handed over as an object: wasmoon's table proxy
         // is unreliable to iterate from Lua, and the keys are arbitrary server
         // text. \x01 separates entries, \x02 a key from its value.
         const flat = Object.entries(attrs)
             .map(([k, v]) => `${k.toLowerCase()}\x02${v}`)
             .join('\x01');
-        this.lua.global.set('__mudix_mxp_attrs', flat);
-        this.runChunk('__mudix_set_mxp(__mudix_mxp_name, __mudix_mxp_attrs)', `set-mxp "${name}"`);
+        this.lua.global.set('__mudlet_mxp_attrs', flat);
+        this.runChunk('__mudlet_set_mxp(__mudlet_mxp_name, __mudlet_mxp_attrs)', `set-mxp "${name}"`);
     }
 
     /**
@@ -3795,8 +3795,8 @@ end`);
 
     killScriptHandlers(scriptId: string): void {
         if (this.inert) return;
-        this.lua.global.set('__mudix_kill_sid', scriptId);
-        this.runChunk('__mudix_kill_script_handlers(__mudix_kill_sid)', 'kill-script-handlers');
+        this.lua.global.set('__mudlet_kill_sid', scriptId);
+        this.runChunk('__mudlet_kill_script_handlers(__mudlet_kill_sid)', 'kill-script-handlers');
     }
 
     /**
@@ -3807,16 +3807,16 @@ end`);
      * against and the reason a pattern match is not good enough here.
      */
     readPackageConfig(source: string): { ok: true; info: Record<string, string> } | { ok: false; reason: string } {
-        this.lua.global.set('__mudix_cfg_src', source);
-        this.runChunk('__mudix_read_package_config(__mudix_cfg_src)', 'package-config');
-        const ok = this.lua.global.get('__mudix_cfg_ok') === true;
+        this.lua.global.set('__mudlet_cfg_src', source);
+        this.runChunk('__mudlet_read_package_config(__mudlet_cfg_src)', 'package-config');
+        const ok = this.lua.global.get('__mudlet_cfg_ok') === true;
         if (!ok) {
-            const reason = String(this.lua.global.get('__mudix_cfg_reason') ?? '');
+            const reason = String(this.lua.global.get('__mudlet_cfg_reason') ?? '');
             return { ok: false, reason: reason || 'config.lua could not be read' };
         }
         let info: Record<string, string> = {};
         try {
-            const parsed = JSON.parse(String(this.lua.global.get('__mudix_cfg_info') ?? '{}'));
+            const parsed = JSON.parse(String(this.lua.global.get('__mudlet_cfg_info') ?? '{}'));
             if (parsed && typeof parsed === 'object') {
                 for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) info[k] = String(v);
             }
@@ -3830,15 +3830,15 @@ end`);
      * "matches" only when the body returns a truthy value.
      */
     evalTriggerPattern(code: string): boolean {
-        this.lua.global.set('__mudix_pat_code', code);
-        this.runChunk('__mudix_eval_pattern(__mudix_pat_code)', 'lua-pattern');
-        return this.lua.global.get('__mudix_pat_result') === true;
+        this.lua.global.set('__mudlet_pat_code', code);
+        this.runChunk('__mudlet_eval_pattern(__mudlet_pat_code)', 'lua-pattern');
+        return this.lua.global.get('__mudlet_pat_result') === true;
     }
 
     /**
      * Invoke a `registerMapInfo` contributor. The Lua dispatcher pcalls the
      * stashed callback and writes its multi-return into scalar globals
-     * (`__mudix_mapinfo_text` / _bold / _italic / _r / _g / _b). Returning
+     * (`__mudlet_mapinfo_text` / _bold / _italic / _r / _g / _b). Returning
      * `null` covers three cases: runtime is being torn down, callback id is
      * stale, or the callback returned a nil/empty text — the panel treats
      * all three the same (skip the entry).
@@ -3853,16 +3853,16 @@ end`);
         if (this.inert || !cbId) return null;
         const roomArg = roomId == null ? 'nil' : String(roomId | 0);
         this.runChunk(
-            `__mudix_dispatch_mapinfo(${cbId}, ${roomArg}, ${selectionSize | 0}, ${areaId | 0}, ${displayedAreaId | 0})`,
+            `__mudlet_dispatch_mapinfo(${cbId}, ${roomArg}, ${selectionSize | 0}, ${areaId | 0}, ${displayedAreaId | 0})`,
             'registerMapInfo callback',
         );
-        const text = this.lua.global.get('__mudix_mapinfo_text');
+        const text = this.lua.global.get('__mudlet_mapinfo_text');
         if (typeof text !== 'string' || !text) return null;
-        const isBold = this.lua.global.get('__mudix_mapinfo_bold') === true;
-        const isItalic = this.lua.global.get('__mudix_mapinfo_italic') === true;
-        const r = this.lua.global.get('__mudix_mapinfo_r');
-        const g = this.lua.global.get('__mudix_mapinfo_g');
-        const b = this.lua.global.get('__mudix_mapinfo_b');
+        const isBold = this.lua.global.get('__mudlet_mapinfo_bold') === true;
+        const isItalic = this.lua.global.get('__mudlet_mapinfo_italic') === true;
+        const r = this.lua.global.get('__mudlet_mapinfo_r');
+        const g = this.lua.global.get('__mudlet_mapinfo_g');
+        const b = this.lua.global.get('__mudlet_mapinfo_b');
         const ch = (v: unknown): number | null => {
             if (typeof v !== 'number' || !Number.isFinite(v)) return null;
             const i = Math.round(v);
@@ -3891,13 +3891,13 @@ end`);
         exitCommand: string,
     ): { blocked?: boolean; weightOverride?: number } {
         if (this.inert || !cbId) return {};
-        this.lua.global.set('__mudix_ewf_cmd', exitCommand);
+        this.lua.global.set('__mudlet_ewf_cmd', exitCommand);
         this.runChunk(
-            `__mudix_dispatch_exit_weight_filter(${cbId}, ${roomId | 0}, __mudix_ewf_cmd)`,
+            `__mudlet_dispatch_exit_weight_filter(${cbId}, ${roomId | 0}, __mudlet_ewf_cmd)`,
             'setExitWeightFilter callback',
         );
-        if (this.lua.global.get('__mudix_ewf_blocked') === true) return { blocked: true };
-        const w = this.lua.global.get('__mudix_ewf_weight');
+        if (this.lua.global.get('__mudlet_ewf_blocked') === true) return { blocked: true };
+        const w = this.lua.global.get('__mudlet_ewf_weight');
         if (typeof w === 'number' && Number.isFinite(w)) return { weightOverride: w };
         return {};
     }
@@ -3989,7 +3989,7 @@ end`);
             try {
                 return fn(L);
             } catch (err) {
-                console.error(`[mudix] raw lua binding "${name}" threw (ignored):`, err);
+                console.error(`[mudlet] raw lua binding "${name}" threw (ignored):`, err);
                 api.lua_pushnil(L);
                 return 1;
             }
@@ -4019,7 +4019,7 @@ end`);
         try {
             this.lua.global.close();
         } catch (err) {
-            console.error('[mudix] error closing Lua runtime (ignored):', err);
+            console.error('[mudlet] error closing Lua runtime (ignored):', err);
         }
         // Release the Emscripten function-table slots for the raw map getters.
         // The module survives lua_close, so the slots would otherwise leak for
@@ -4031,7 +4031,7 @@ end`);
             for (const ptr of this.rawFnPtrs) mod.removeFunction(ptr);
             this.rawFnPtrs.length = 0;
         } catch (err) {
-            console.error('[mudix] error freeing raw lua bindings (ignored):', err);
+            console.error('[mudlet] error freeing raw lua bindings (ignored):', err);
         }
     }
 }

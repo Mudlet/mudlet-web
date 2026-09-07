@@ -117,7 +117,7 @@ export async function exportSessionsZip(sessions: LogSession[]): Promise<void> {
     const zipped = zipSync(files, { level: 6 });
     const stamp = formatSessionFileStamp(Date.now());
     // Copy into a fresh ArrayBuffer-backed view so Blob gets a plain BlobPart.
-    downloadBlob(`mudix-logs ${stamp}.zip`, new Blob([zipped.slice()], { type: 'application/zip' }));
+    downloadBlob(`mudlet-logs ${stamp}.zip`, new Blob([zipped.slice()], { type: 'application/zip' }));
 }
 
 /** Shape of the JSON export/import payload. */
@@ -135,7 +135,7 @@ export async function exportSessionsJson(sessions: LogSession[]): Promise<void> 
         payload.sessions.push({ session, entries });
     }
     const stamp = formatSessionFileStamp(Date.now());
-    downloadBlob(`mudix-logs ${stamp}.json`, new Blob([JSON.stringify(payload)], { type: 'application/json' }));
+    downloadBlob(`mudlet-logs ${stamp}.json`, new Blob([JSON.stringify(payload)], { type: 'application/json' }));
 }
 
 /**

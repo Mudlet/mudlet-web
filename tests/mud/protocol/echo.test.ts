@@ -16,7 +16,7 @@ function makeHandler() {
 }
 
 // The rule is cTelnet's: the server taking ECHO is the server saying "do not
-// show what is typed", and nothing else is consulted. mudix used to mask only
+// show what is typed", and nothing else is consulted. Mudlet Web used to mask only
 // for an ECHO that engaged AFTER the server had printed something, so that a
 // full-server-echo MUD would not hide the player's name — but nothing was ever
 // recorded as running into that, and the reading left a server which negotiates

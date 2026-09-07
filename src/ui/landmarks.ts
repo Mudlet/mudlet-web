@@ -5,5 +5,5 @@
  * rendered into a detached host by `ContentLayout`, the command line by
  * `CommandBar` — so a literal in each file would silently drift apart.
  */
-export const MAIN_OUTPUT_ID = 'mudix-output';
-export const COMMAND_INPUT_ID = 'mudix-command-input';
+export const MAIN_OUTPUT_ID = 'mudlet-output';
+export const COMMAND_INPUT_ID = 'mudlet-command-input';

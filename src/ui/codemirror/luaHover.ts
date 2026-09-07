@@ -40,7 +40,7 @@ export const luaHover = hoverTooltip((view, pos) => {
     const label = view.state.sliceDoc(word.from, word.to);
     if (!label || !/^[a-zA-Z_]/.test(label)) return null;
 
-    // Walk left to pick up any dotted namespace prefix (e.g. "mudix.windows.")
+    // Walk left to pick up any dotted namespace prefix (e.g. "mudlet.windows.")
     const lookback = view.state.sliceDoc(Math.max(0, word.from - 60), word.from);
     const prefixMatch = lookback.match(/([\w.]+\.)$/);
     const prefix = prefixMatch ? prefixMatch[1] : '';

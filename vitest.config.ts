@@ -39,7 +39,7 @@ export default defineConfig({
   // A Mudlet package archive is a zip, not source — LuaRuntime carries the
   // busted fixture archives into the VFS with `?inline`, which reaches the
   // asset pipeline and needs the extension declared. The app build gets this
-  // from the mudix Vite plugin; the test runner doesn't load that plugin.
+  // from the Mudlet Web Vite plugin; the test runner doesn't load that plugin.
   // The map fixtures are plain `.zip`; scoped to the fixture tree so a bare
   // `.zip` import anywhere else keeps meaning what it means today.
   assetsInclude: ['**/*.mpackage', '**/specs/fixtures/**/*.zip'],

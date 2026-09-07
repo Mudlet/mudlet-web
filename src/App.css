@@ -344,10 +344,10 @@ html, body, #root {
    bar reads as a floating widget, which is the wrong thing for something
    carrying a menu bar — a menu bar belongs to the window frame. (The
    outlined look was an accident to begin with: ButtonsBar.css styled
-   `.mudix-toolbar` for Mudlet button bars and leaked onto the app toolbar.
-   That collision is long fixed — the button-bar rule is `.mudix-buttonbar`
+   `.mudlet-toolbar` for Mudlet button bars and leaked onto the app toolbar.
+   That collision is long fixed — the button-bar rule is `.mudlet-buttonbar`
    — so nothing else depends on it.) */
-.mudix-topbar {
+.mudlet-topbar {
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
@@ -370,9 +370,9 @@ html, body, #root {
 /* Namespaced class so this rule's flex layout (align-items: center, fixed
    height, padding) doesn't cascade into the embedded mudlet-map-editor's
    own `.toolbar` element, which only sets a subset of these properties
-   and would otherwise inherit mudix's row layout. */
-.mudix-toolbar,
-.mudix-buttonbar-row {
+   and would otherwise inherit Mudlet Web's row layout. */
+.mudlet-toolbar,
+.mudlet-buttonbar-row {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -381,11 +381,11 @@ html, body, #root {
 
 /* Two rows: the menu row is the shorter of the pair, the way a desktop menu
    bar is shorter than the toolbar under it. */
-.mudix-toolbar {
+.mudlet-toolbar {
     height: var(--menurow-h);
 }
 
-.mudix-buttonbar-row {
+.mudlet-buttonbar-row {
     height: var(--buttonrow-h);
 }
 
@@ -397,14 +397,14 @@ html, body, #root {
    The button row does take the full height alone, and there is no jump there:
    alone it is also carrying the profile name and status dot, which the menu row
    was carrying a moment ago — the row genuinely changes what it holds. */
-.mudix-topbar--single > .mudix-buttonbar-row {
+.mudlet-topbar--single > .mudlet-buttonbar-row {
     height: var(--toolbar-h);
 }
 
 /* Under the menu row the buttons are the row's only content, so the extra
    left margin that separates them from the profile name is just an indent
    that fails to line up with the menu titles above. */
-.mudix-buttonbar-row > .toolbar-actions:first-child {
+.mudlet-buttonbar-row > .toolbar-actions:first-child {
     margin-left: 0;
 }
 
@@ -506,7 +506,7 @@ html, body, #root {
    rides about a pixel high however the line-heights are set, which is exactly
    what "something is not vertically centred" looks like. The weight and the gap
    are what keep the two apart. */
-.mudix-buttonbar-row > .toolbar-connection-name {
+.mudlet-buttonbar-row > .toolbar-connection-name {
     font-size: 15px;
     line-height: 22.5px;
 }
@@ -733,7 +733,7 @@ html, body, #root {
 
 /* mudlet-map-editor's <App> renders a `.mudlet-editor-root` wrapper whose CSS
    ships pre-scoped to that class (built with postcss-prefix-selector), so it
-   can't leak onto mudix's chrome. The body just needs to be a same-stacking
+   can't leak onto Mudlet Web's chrome. The body just needs to be a same-stacking
    context flex parent for the editor's `height:100%` root to size against. */
 .map-editor-modal-body {
     position: relative;
@@ -2126,10 +2126,10 @@ body.is-sorting {
 .output-wrapper::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
 /* Mudlet scrollbar / scrolling APIs apply these classes to the wrapper. */
-.output-wrapper.mudix-no-scrollbar { scrollbar-width: none; }
-.output-wrapper.mudix-no-scrollbar::-webkit-scrollbar:vertical { display: none; }
-.output-wrapper.mudix-h-scrollbar { overflow-x: auto; }
-.output-wrapper.mudix-no-scrolling { overflow-y: hidden; }
+.output-wrapper.mudlet-no-scrollbar { scrollbar-width: none; }
+.output-wrapper.mudlet-no-scrollbar::-webkit-scrollbar:vertical { display: none; }
+.output-wrapper.mudlet-h-scrollbar { overflow-x: auto; }
+.output-wrapper.mudlet-no-scrolling { overflow-y: hidden; }
 
 /* ── Output messages ────────────────────────────────────────── */
 .output-msg {
@@ -5224,7 +5224,7 @@ body.is-sorting {
     }
     /* Only the menu row exists at this width (the component does not render
        the button row at all), so it takes the single-bar height. */
-    .mudix-toolbar {
+    .mudlet-toolbar {
         height: var(--toolbar-h);
     }
 }
@@ -5246,8 +5246,8 @@ body.is-sorting {
 
     /* Toolbar tightens horizontal padding; the connection name stays visible
        (it tells you which MUD you're on), only the ping readout drops.
-       Vertical/safe-area handling stays on the .mudix-topbar wrapper. */
-    .mudix-toolbar {
+       Vertical/safe-area handling stays on the .mudlet-topbar wrapper. */
+    .mudlet-toolbar {
         padding-left: calc(8px + var(--safe-left));
         padding-right: calc(8px + var(--safe-right));
     }
@@ -5266,8 +5266,8 @@ body.is-sorting {
        sharing that same overlay stack kept rendering. */
     .dock-area,
     .floating-window-root:not(.floating-window-root--nested),
-    .mudix-toolbar-strip--left,
-    .mudix-toolbar-strip--right {
+    .mudlet-toolbar-strip--left,
+    .mudlet-toolbar-strip--right {
         display: none !important;
     }
 

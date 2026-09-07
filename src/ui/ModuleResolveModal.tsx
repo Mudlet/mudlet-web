@@ -72,7 +72,7 @@ export function ModuleResolveModal({ modules, onComplete, onCancel }: Props) {
                 </div>
                 <div className="modal-body">
                     <p style={{ marginTop: 0, opacity: 0.8, fontSize: 13 }}>
-                        These modules load from a file on your computer that mudix can't read. Upload each module's
+                        These modules load from a file on your computer that mudlet can't read. Upload each module's
                         <code> .xml</code>, or drop it from the profile.
                     </p>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>

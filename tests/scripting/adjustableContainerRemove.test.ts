@@ -9,7 +9,7 @@
 // screen and still in the container.
 //
 // Upstream defines the override (GeyserAdjustableContainer.lua:879 on
-// development) at a commit newer than the vendored tree's pin, so mudix
+// development) at a commit newer than the vendored tree's pin, so Mudlet Web
 // backports it in `LuaRuntime.installMudletLuaOverrides()`. These tests are what
 // says the backport is still doing its job — and they go on passing unchanged
 // once a re-sync brings the real one in.

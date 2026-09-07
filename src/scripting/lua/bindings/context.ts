@@ -50,7 +50,7 @@ export interface BindingContext {
     channel(v: unknown): number | null;
 
     /**
-     * Invoke a Lua callback previously registered through `__mudix_register_cb`.
+     * Invoke a Lua callback previously registered through `__mudlet_register_cb`.
      * `what` names the call site and is used only to attribute errors.
      */
     dispatchCb(id: number, what: string): void;
@@ -67,7 +67,7 @@ export interface BindingContext {
     readonly vfs: ProfileVFS | null;
 
     /** Drop a Lua-side callback registration by id (the registry slot behind
-     *  `__mudix_register_cb`). Distinct from {@link releaseCb}, which goes
+     *  `__mudlet_register_cb`). Distinct from {@link releaseCb}, which goes
      *  through Lua; this is the direct JS-side removal. */
     unregisterCb(cbId: number): void;
 

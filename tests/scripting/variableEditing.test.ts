@@ -83,7 +83,7 @@ describe('editVariable — set', () => {
     });
 
     it('refuses to write over the client\'s own globals', () => {
-        expect(t.rt.editVariable({ op: 'set', path: [seg('__mudix_thing')], valueType: 'string', value: 'x' }))
+        expect(t.rt.editVariable({ op: 'set', path: [seg('__mudlet_thing')], valueType: 'string', value: 'x' }))
             .toContain('belong to the client');
     });
 

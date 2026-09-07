@@ -395,7 +395,7 @@ describe('app shell service worker', () => {
         expect(await sw.cacheStorage.keys()).not.toContain('mudix-app-v0-stale');
     });
 
-    // These caches were named mudix-* before the storage rename. An old worker's
+    // These caches were named mudlet-* before the storage rename. An old worker's
     // leftovers hold a whole app shell, so they are reclaimed rather than left to
     // sit against the origin's quota forever.
     it('reclaims the caches from before the storage rename', async () => {

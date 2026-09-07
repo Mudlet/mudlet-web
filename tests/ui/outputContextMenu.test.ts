@@ -208,7 +208,9 @@ describe('copySelectionAsHtml', () => {
         const html = clip.html();
         expect(html).toContain('<title>Mudlet Web, console extract from Achaea</title>');
         expect(html).toContain('name="generator"');
-        expect(html).not.toContain('Mudix');
+        // The pre-donation codename. It is gone from the source now, so this
+        // guards against it coming back into something a user hands to someone.
+        expect(html).not.toMatch(/mudix/i);
     });
 
     it('omits the profile clause when the console has no name to give', async () => {

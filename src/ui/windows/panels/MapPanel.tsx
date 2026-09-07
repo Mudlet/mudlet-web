@@ -4,7 +4,7 @@ import { MapRenderer, createSettings } from 'mudlet-map-renderer';
 import type { AreaExitClickEventDetail, LodEventDetail, RoomClickEventDetail, RoomContextMenuEventDetail, RoomLens } from 'mudlet-map-renderer';
 import type { WindowManager, MapControl, MapLoadProgress } from '../WindowManager';
 import type { MapEventEntry, MapInfoResult, MapInfoContributor, MapStore } from '../../../map/MapStore';
-import { MudixMapReader } from '../../../map/MudixMapReader';
+import { MudletMapReader } from '../../../map/MudletMapReader';
 import {
     MUDLET_MIN_MAP_ZOOM, applyAreaZoom, fitAreaWithHeadroom, toMudletZoom, toRendererZoom,
 } from '../../../map/mapZoom';
@@ -85,7 +85,7 @@ interface MapPanelProps {
 export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const rendererRef = useRef<MapRenderer | null>(null);
-    const readerRef = useRef<MudixMapReader | null>(null);
+    const readerRef = useRef<MudletMapReader | null>(null);
     const highlightOverlayRef = useRef<MudletHighlightOverlay | null>(null);
     const selectionOverlayRef = useRef<MapSelectionOverlay | null>(null);
     const needsFitRef = useRef<boolean>(false);
@@ -461,7 +461,7 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
         // guard the same scene is built two or three times. Skip the rebuild
         // when area + level + the reader's area instance/version all match what
         // the renderer last drew, mirroring the guard MapState.setPosition
-        // already applies (instance identity catches a MudixMapReader inner
+        // already applies (instance identity catches a MudletMapReader inner
         // rebuild; version catches an in-place markDirty).
         const targetArea = reader.getArea(restoredArea);
         const st = renderer.state;
@@ -506,7 +506,7 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
         needsFitRef.current = false;
         viewAppliedRef.current = false;
         setLod(null);
-        const reader = new MudixMapReader(manager.mapStore);
+        const reader = new MudletMapReader(manager.mapStore);
         readerRef.current = reader;
         const settings = createSettings();
         settings.areaName = false;
@@ -559,7 +559,7 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
         // clearMapSelection. Self-subscribes to the dedicated selection
         // channel; renderer.destroy() detaches it.
         const selectionOverlay = new MapSelectionOverlay(manager.mapStore, reader);
-        renderer.addSceneOverlay('mudix-selection', selectionOverlay);
+        renderer.addSceneOverlay('mudlet-selection', selectionOverlay);
         selectionOverlayRef.current = selectionOverlay;
 
         const mapContainer = containerRef.current;
@@ -602,7 +602,7 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
             lastClickTarget = null;
             manager.mapStore.clearMapSelection();
         });
-        // Mudlet ignores a double-click carrying any other button, and mudix
+        // Mudlet ignores a double-click carrying any other button, and Mudlet Web
         // additionally ignores the modifier chords that mean "extend selection".
         const onDoubleClick = (e: MouseEvent) => {
             if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return;
@@ -878,7 +878,7 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
     useEffect(() => {
         if (!contextMenu) return;
         const onDown = (e: MouseEvent) => {
-            const root = document.getElementById('mudix-map-context-menu');
+            const root = document.getElementById('mudlet-map-context-menu');
             if (root && !root.contains(e.target as Node)) setContextMenu(null);
         };
         const onClose = () => setContextMenu(null);
@@ -899,7 +899,7 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
     // — and lets the room pixel size follow the panel, which is what Mudlet does:
     // T2DMap::paintEvent re-derives `mRoomWidth = widgetWidth / xspan` from the
     // area's stored xyzoom on every paint and never writes the zoom back, so a
-    // taller panel shows *more* map at the same room size. mudix used to scale
+    // taller panel shows *more* map at the same room size. Mudlet Web used to scale
     // the zoom by the width ratio instead ("preserve the visible world bounds"),
     // which not only inverted that but silently rewrote the opening view: a
     // floating map window reaches its final size over several observed frames,
@@ -1046,7 +1046,7 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
     useEffect(() => { if (!menuOpen) setInfoOverlaysOpen(false); }, [menuOpen]);
 
     // Selection ride its own subscribe channel so the paint-only overlay
-    // doesn't drag MudixMapReader through a snapshot rebuild on every click.
+    // doesn't drag MudletMapReader through a snapshot rebuild on every click.
     // registerMapInfo contributors still receive the selection size/center in
     // their args, so re-evaluate them when the selection changes.
     useEffect(() => {
@@ -1670,7 +1670,7 @@ function MapContextMenu({ x, y, items, builtinItems, onSelect }: MapContextMenuP
 
     return (
         <div
-            id="mudix-map-context-menu"
+            id="mudlet-map-context-menu"
             className="map-context-menu"
             style={{ left: x, top: y }}
             onContextMenu={(e) => e.preventDefault()}

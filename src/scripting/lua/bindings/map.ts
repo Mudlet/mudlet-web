@@ -13,7 +13,7 @@ import { parseXmlMapResult } from '../../../map/xmlMapImport';
  * alse where Mudlet returns nil, which Bridge.lua unpacks into the
  * documented (nil, errMsg) multi-returns).
  */
-/** The Mudlet binary map format versions mudix's reader/writer covers. Outside
+/** The Mudlet binary map format versions Mudlet Web's reader/writer covers. Outside
  *  this range a save is refused rather than written in a shape nothing reads. */
 /** Coerce an optional numeric arg: nil stays nil so the store's own Mudlet
  *  default applies, rather than collapsing to 0 the way `Number(nil)` would. */
@@ -106,7 +106,7 @@ export function installMapBindings({
     lua.global.set('__centerview', (id: number, viewId?: unknown) =>
         api.centerView(id, viewId == null || viewId === '' ? undefined : Number(viewId)));
     // Mudlet getMapZoom([areaID]) / setMapZoom(zoom[, areaID]) / updateMap().
-    // mudix has a single shared 2D view, so areaID is accepted for compat but
+    // Mudlet Web has a single shared 2D view, so areaID is accepted for compat but
     // applies to the current view. getMapZoom returns false (→ nil) with no
     // map panel open. The zoom value is Mudlet-compatible: the number of map
     // units across the viewport's shorter edge (must be >= 3.0 to set).
@@ -634,7 +634,7 @@ export function installMapBindings({
     //   target = "R:<toId>"  OR  "P:x,y,z;x,y,z;..."  (P: with no points → "")
     // direction arrives as a string; a numeric direction is coerced back so
     // MapStore's parseDirection recognizes it.
-    lua.global.set('__mudix_addCustomLine', (
+    lua.global.set('__mudlet_addCustomLine', (
         id: unknown, targetStr: unknown, direction: unknown, style: unknown,
         r: unknown, g: unknown, b: unknown, arrow: unknown,
     ) => {
@@ -670,7 +670,7 @@ export function installMapBindings({
         return r === undefined ? null : r;
     });
     // Mudlet clearSpecialExits(roomID) — remove all special exits. We return a
-    // bool (mudix extension; Mudlet returns nothing) so scripts can detect a
+    // bool (Mudlet Web extension; Mudlet returns nothing) so scripts can detect a
     // bad roomID.
     lua.global.set('clearSpecialExits', (id: unknown) => api.map.clearSpecialExits(Number(id)));
     // Mudlet lockSpecialExit / hasSpecialExitLock take (from, to, command) —
@@ -733,7 +733,7 @@ export function installMapBindings({
     // Mudlet addMapEvent(uniqueName, eventName [, parent [, displayName [, ...args]]]).
     // Right-click on a room → context menu of registered entries; clicking one
     // fires raiseEvent(eventName, uniqueName, roomId) — matching Mudlet's
-    // T2DMap::slot_userAction selection branch. mudix treats the right-clicked
+    // T2DMap::slot_userAction selection branch. Mudlet Web treats the right-clicked
     // room as the selection (we don't have multi-select); the extra args
     // registered with addMapEvent are dropped, same as Mudlet does here.
     api.map.setMapEventDispatcher((event, args) => emitEvent(event, args));
@@ -837,15 +837,15 @@ export function installMapBindings({
 
 
     // ── Map info contributors (Mudlet registerMapInfo) ────────────────────
-    // Bridge.lua compiles the callback into the `__mudix_cb` registry and
+    // Bridge.lua compiles the callback into the `__mudlet_cb` registry and
     // hands JS only the numeric id (same pattern as label/timer callbacks).
     // Re-registering an existing label frees the prior cb slot to avoid
     // leaks. The evaluator is invoked from MapPanel via evaluateMapInfos
-    // — see __mudix_dispatch_mapinfo in Bridge.lua for the multi-return
+    // — see __mudlet_dispatch_mapinfo in Bridge.lua for the multi-return
     // unpacking dance.
     api.map.setMapInfoEvaluator((cbId, roomId, selectionSize, areaId, displayedAreaId) =>
         evaluateMapInfo(cbId, roomId, selectionSize, areaId, displayedAreaId));
-    lua.global.set('__mudix_registerMapInfo', (label: unknown, cbId: unknown) => {
+    lua.global.set('__mudlet_registerMapInfo', (label: unknown, cbId: unknown) => {
         const id = Number(cbId);
         if (typeof label !== 'string' || !label || !Number.isFinite(id)) return false;
         const { prevCallbackId } = api.map.registerMapInfo(label, id);

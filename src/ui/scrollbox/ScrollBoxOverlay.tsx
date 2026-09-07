@@ -122,7 +122,7 @@ function ScrollBox({ sb, manager, labels, cmdLines, windows }: { sb: ScrollBoxSt
     };
 
     return (
-        <div className="scrollbox-overlay" data-mudix-scrollbox={sb.name} style={style}>
+        <div className="scrollbox-overlay" data-mudlet-scrollbox={sb.name} style={style}>
             <div className="scrollbox-content" ref={contentRef} style={contentStyle}>
                 {/* Children are positioned relative to this content box. */}
                 <LabelOverlay manager={labels} parent={sb.name} />

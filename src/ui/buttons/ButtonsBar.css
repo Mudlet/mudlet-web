@@ -1,4 +1,4 @@
-.mudix-toolbar-strip {
+.mudlet-toolbar-strip {
     display: flex;
     flex-shrink: 0;
     background: var(--bg-glass);
@@ -7,7 +7,7 @@
     z-index: 5;
 }
 
-.mudix-toolbar-strip--top {
+.mudlet-toolbar-strip--top {
     flex-direction: row;
     border-bottom: 1px solid var(--border);
     box-shadow: inset 0 -1px 0 var(--border-hi);
@@ -16,7 +16,7 @@
     align-items: center;
 }
 
-.mudix-toolbar-strip--bottom {
+.mudlet-toolbar-strip--bottom {
     flex-direction: row;
     border-top: 1px solid var(--border);
     box-shadow: inset 0 1px 0 var(--border-hi);
@@ -25,7 +25,7 @@
     align-items: center;
 }
 
-.mudix-toolbar-strip--left {
+.mudlet-toolbar-strip--left {
     flex-direction: column;
     border-right: 1px solid var(--border);
     box-shadow: inset -1px 0 0 var(--border-hi);
@@ -34,7 +34,7 @@
     align-items: center;
 }
 
-.mudix-toolbar-strip--right {
+.mudlet-toolbar-strip--right {
     flex-direction: column;
     border-left: 1px solid var(--border);
     box-shadow: inset 1px 0 0 var(--border-hi);
@@ -43,7 +43,7 @@
     align-items: center;
 }
 
-.mudix-buttonbar {
+.mudlet-buttonbar {
     display: flex;
     gap: 3px;
     padding: 2px 4px;
@@ -52,15 +52,15 @@
     background: color-mix(in srgb, var(--bg-surface) 50%, transparent);
 }
 
-.mudix-buttonbar--horizontal { flex-direction: row;    align-items: center; }
-.mudix-buttonbar--vertical   { flex-direction: column; align-items: stretch; }
+.mudlet-buttonbar--horizontal { flex-direction: row;    align-items: center; }
+.mudlet-buttonbar--vertical   { flex-direction: column; align-items: stretch; }
 
-.mudix-buttonbar--grid {
+.mudlet-buttonbar--grid {
     display: grid;
     gap: 3px;
 }
 
-.mudix-btn {
+.mudlet-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -79,26 +79,26 @@
     transition: background 0.1s, border-color 0.1s, color 0.1s;
 }
 
-.mudix-btn:hover {
+.mudlet-btn:hover {
     background: var(--hover-bg-strong);
     border-color: var(--accent-dim);
     color: var(--accent);
 }
 
-.mudix-btn:active,
-.mudix-btn--pressed {
+.mudlet-btn:active,
+.mudlet-btn--pressed {
     background: color-mix(in srgb, var(--accent) 18%, var(--bg-input));
     border-color: var(--accent);
     color: var(--accent);
     box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 
-.mudix-btn--toggle {
+.mudlet-btn--toggle {
     /* Subtle hint that this is a stateful (push-down) button. */
     border-style: dashed;
 }
 
-.mudix-btn--toggle.mudix-btn--pressed {
+.mudlet-btn--toggle.mudlet-btn--pressed {
     border-style: solid;
 }
 
@@ -107,36 +107,36 @@
  * `size.transpose()` does; the 180° turn flips the clockwise default into the
  * anticlockwise one. The icon is turned separately because writing mode only
  * affects text. */
-.mudix-btn--rot-cw,
-.mudix-btn--rot-ccw {
+.mudlet-btn--rot-cw,
+.mudlet-btn--rot-ccw {
     writing-mode: vertical-rl;
     padding: 8px 3px;
 }
 
-.mudix-btn--rot-ccw {
+.mudlet-btn--rot-ccw {
     transform: rotate(180deg);
 }
 
-.mudix-btn--rot-cw .mudix-btn__icon,
-.mudix-btn--rot-ccw .mudix-btn__icon {
+.mudlet-btn--rot-cw .mudlet-btn__icon,
+.mudlet-btn--rot-ccw .mudlet-btn__icon {
     transform: rotate(90deg);
 }
 
-.mudix-btn--rot-cw .mudix-btn__label,
-.mudix-btn--rot-ccw .mudix-btn__label {
+.mudlet-btn--rot-cw .mudlet-btn__label,
+.mudlet-btn--rot-ccw .mudlet-btn__label {
     max-width: none;
     max-height: 160px;
 }
 
 /* Empty lead-in cells before the first button — Mudlet's filler widget. Sized
  * like a button so the offset is measured in button-widths, as it is there. */
-.mudix-buttonbar__filler {
+.mudlet-buttonbar__filler {
     min-width: 24px;
     min-height: 24px;
     pointer-events: none;
 }
 
-.mudix-btn__icon {
+.mudlet-btn__icon {
     display: block;
     width: 18px;
     height: 18px;
@@ -145,7 +145,7 @@
     pointer-events: none;
 }
 
-.mudix-btn__label {
+.mudlet-btn__label {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -155,14 +155,14 @@
 /* Floating toolbars — position:fixed portal. A detached Mudlet button bar is a
    floating QToolBar: a top-level window, so it clears the client's own bars,
    and it sits just under the floating user windows. See layers.css. */
-.mudix-floating-toolbars-root {
+.mudlet-floating-toolbars-root {
     position: fixed;
     inset: 0;
     pointer-events: none;
     z-index: var(--z-toolbar-float);
 }
 
-.mudix-floating-toolbar {
+.mudlet-floating-toolbar {
     position: fixed;
     display: inline-flex;
     flex-direction: column;
@@ -175,7 +175,7 @@
     pointer-events: auto;
 }
 
-.mudix-floating-toolbar__handle {
+.mudlet-floating-toolbar__handle {
     cursor: grab;
     padding: 2px 8px;
     background: color-mix(in srgb, var(--bg-surface) 80%, transparent);
@@ -185,9 +185,9 @@
     touch-action: none;
 }
 
-.mudix-floating-toolbar__handle:active { cursor: grabbing; }
+.mudlet-floating-toolbar__handle:active { cursor: grabbing; }
 
-.mudix-floating-toolbar__handle-label {
+.mudlet-floating-toolbar__handle-label {
     display: block;
     font-family: var(--font-ui), sans-serif;
     font-size: 10.5px;
@@ -199,7 +199,7 @@
     pointer-events: none;
 }
 
-.mudix-floating-toolbar > .mudix-buttonbar {
+.mudlet-floating-toolbar > .mudlet-buttonbar {
     border: none;
     border-radius: 0 0 var(--radius) var(--radius);
     background: transparent;

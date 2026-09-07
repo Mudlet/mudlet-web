@@ -60,7 +60,7 @@ describe('WebSocket subprotocol advertisement', () => {
     expect(MockWebSocket.instances[0].requestedProtocols).toEqual([MUD_TELNET_SUBPROTOCOL]);
   });
 
-  it("defaults to advertising ['binary'] — the mode mudix decodes", () => {
+  it("defaults to advertising ['binary'] — the mode mudlet decodes", () => {
     // ProfileSession feeds PROTOCOL_DEFAULTS.wsSubprotocols straight through when
     // a profile hasn't overridden it.
     expect(PROTOCOL_DEFAULTS.wsSubprotocols).toEqual(['binary']);

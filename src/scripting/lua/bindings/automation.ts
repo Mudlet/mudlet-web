@@ -23,18 +23,18 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
     // must leave nothing behind, and Mudlet deletes the half-built TScript for
     // exactly that reason. Takes the numeric id permScript just returned so it
     // can only ever remove the one it created, never a same-named sibling.
-    lua.global.set('__mudix_removeScriptById', (id: unknown) => api.removeScriptById(Number(id)));
+    lua.global.set('__mudlet_removeScriptById', (id: unknown) => api.removeScriptById(Number(id)));
     // Mudlet permScript(name, parent, luaCode) — creates a persisted script
     // under an existing script group (parent="" → root). Returns the new
     // script's id (UUID string) or -1 on failure. The Bridge.lua wrapper
     // coerces nil args before calling.
-    lua.global.set('__mudix_permScript', (name: unknown, parent: unknown, code: unknown) =>
+    lua.global.set('__mudlet_permScript', (name: unknown, parent: unknown, code: unknown) =>
         api.permScript(String(name ?? ''), String(parent ?? ''), String(code ?? '')));
     // Mudlet permRegexTrigger(name, parent, regexes, luaCode). The Bridge.lua
     // wrapper flattens the regex table to a \x01-delimited string (wasmoon's
     // JS proxy for Lua tables doesn't iterate reliably from JS); we split it
     // back here. An empty regexes string means "create a group".
-    lua.global.set('__mudix_permRegexTrigger', (name: unknown, parent: unknown, regexesStr: unknown, code: unknown) => {
+    lua.global.set('__mudlet_permRegexTrigger', (name: unknown, parent: unknown, regexesStr: unknown, code: unknown) => {
         const s = String(regexesStr ?? '');
         const regexes = s.length === 0 ? [] : s.split('\x01');
         return api.permRegexTrigger(String(name ?? ''), String(parent ?? ''), regexes, String(code ?? ''));
@@ -48,7 +48,7 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
      * ask for — the same flatten/split convention permRegexTrigger uses, with
      * the pattern kind alongside each entry.
      */
-    lua.global.set('__mudix_tempComplexTrigger', (
+    lua.global.set('__mudlet_tempComplexTrigger', (
         name: unknown, patternsStr: unknown, code: unknown,
         multiline: unknown, isFilter: unknown, multipleMatches: unknown,
         fireLength: unknown, delta: unknown, hlFg: unknown, hlBg: unknown,
@@ -82,7 +82,7 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
     // Mudlet permSubstringTrigger(name, parent, patterns, luaCode). Same
     // flatten/split convention as permRegexTrigger — Bridge.lua hands a
     // \x01-delimited string and we split it back here.
-    lua.global.set('__mudix_permSubstringTrigger', (name: unknown, parent: unknown, patternsStr: unknown, code: unknown) => {
+    lua.global.set('__mudlet_permSubstringTrigger', (name: unknown, parent: unknown, patternsStr: unknown, code: unknown) => {
         const s = String(patternsStr ?? '');
         const patterns = s.length === 0 ? [] : s.split('\x01');
         return api.permSubstringTrigger(String(name ?? ''), String(parent ?? ''), patterns, String(code ?? ''));
@@ -90,7 +90,7 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
     // Mudlet permBeginOfLineStringTrigger(name, parent, patterns, luaCode).
     // Same flatten/split convention as permSubstringTrigger; each pattern
     // matches only at the start of the line. Empty patterns → trigger group.
-    lua.global.set('__mudix_permBeginOfLineStringTrigger', (name: unknown, parent: unknown, patternsStr: unknown, code: unknown) => {
+    lua.global.set('__mudlet_permBeginOfLineStringTrigger', (name: unknown, parent: unknown, patternsStr: unknown, code: unknown) => {
         const s = String(patternsStr ?? '');
         const patterns = s.length === 0 ? [] : s.split('\x01');
         return api.permBeginOfLineStringTrigger(String(name ?? ''), String(parent ?? ''), patterns, String(code ?? ''));
@@ -98,28 +98,28 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
     // Mudlet permExactMatchTrigger(name, parent, patterns, luaCode). Same
     // flatten/split convention as permSubstringTrigger; each pattern matches
     // only on full-line equality. Empty patterns → trigger group.
-    lua.global.set('__mudix_permExactMatchTrigger', (name: unknown, parent: unknown, patternsStr: unknown, code: unknown) => {
+    lua.global.set('__mudlet_permExactMatchTrigger', (name: unknown, parent: unknown, patternsStr: unknown, code: unknown) => {
         const s = String(patternsStr ?? '');
         const patterns = s.length === 0 ? [] : s.split('\x01');
         return api.permExactMatchTrigger(String(name ?? ''), String(parent ?? ''), patterns, String(code ?? ''));
     });
     // Mudlet permPromptTrigger(name, parent, luaCode). Persistent trigger
     // that fires on every server prompt line (GA/EOR); no text pattern.
-    lua.global.set('__mudix_permPromptTrigger', (name: unknown, parent: unknown, code: unknown) =>
+    lua.global.set('__mudlet_permPromptTrigger', (name: unknown, parent: unknown, code: unknown) =>
         api.permPromptTrigger(String(name ?? ''), String(parent ?? ''), String(code ?? '')));
     // Mudlet permAlias(name, parent, regex, luaCode). Pattern is a single
     // PCRE string (Mudlet's TAlias.mRegexCode). Returns the new id or -1.
-    lua.global.set('__mudix_permAlias', (name: unknown, parent: unknown, pattern: unknown, code: unknown) =>
+    lua.global.set('__mudlet_permAlias', (name: unknown, parent: unknown, pattern: unknown, code: unknown) =>
         api.permAlias(String(name ?? ''), String(parent ?? ''), String(pattern ?? ''), String(code ?? '')));
     // Mudlet permTimer(name, parent, seconds, luaCode). One-shot timer
     // creation; the persistent-timer scheduler picks it up via the
     // store-subscription pipeline.
-    lua.global.set('__mudix_permTimer', (name: unknown, parent: unknown, delay: unknown, code: unknown) =>
+    lua.global.set('__mudlet_permTimer', (name: unknown, parent: unknown, delay: unknown, code: unknown) =>
         api.permTimer(String(name ?? ''), String(parent ?? ''), Number(delay) || 0, String(code ?? '')));
     // Mudlet permKey(name, parent, modifier, key, luaCode). modifier is the
     // Qt::KeyboardModifier int; -1 means "no modifier" (group form). key is
     // either a Qt::Key int or a string keycode — the JS side translates.
-    lua.global.set('__mudix_permKey', (name: unknown, parent: unknown, mod: unknown, key: unknown, code: unknown) => {
+    lua.global.set('__mudlet_permKey', (name: unknown, parent: unknown, mod: unknown, key: unknown, code: unknown) => {
         // A Qt::Key int must stay a NUMBER: stringifying it here made it look
         // like a DOM code, so "F9" was stored as the literal "16777272" and
         // getKeyCode could never map it back.
@@ -136,14 +136,14 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
     // tempButton / tempButtonToolbar create transient entries; setButtonState
     // / getButtonState / setButtonStyleSheet / showToolBar / hideToolBar
     // mutate or read existing entries by name.
-    lua.global.set('__mudix_tempButton', (toolbar: unknown, name: unknown, code: unknown, orientation?: unknown) =>
+    lua.global.set('__mudlet_tempButton', (toolbar: unknown, name: unknown, code: unknown, orientation?: unknown) =>
         api.tempButton(
             String(toolbar ?? ''),
             String(name ?? ''),
             String(code ?? ''),
             Number(orientation) || 0,
         ));
-    lua.global.set('__mudix_tempButtonToolbar', (name: unknown, orientation?: unknown, location?: unknown) =>
+    lua.global.set('__mudlet_tempButtonToolbar', (name: unknown, orientation?: unknown, location?: unknown) =>
         api.tempButtonToolbar(
             String(name ?? ''),
             Number(orientation) || 0,
@@ -151,7 +151,7 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
         ));
     // Bridge.lua owns the argument contract and every refusal wording — see
     // "Button state" there. These only report what is present.
-    lua.global.set('__mudix_button_kind', (name: unknown) => api.buttonKind(String(name ?? '')));
+    lua.global.set('__mudlet_button_kind', (name: unknown) => api.buttonKind(String(name ?? '')));
     lua.global.set('__setButtonState', (name: unknown, state: unknown) =>
         api.setButtonState(String(name ?? ''), !!state));
     lua.global.set('__getButtonState', (name: unknown) =>

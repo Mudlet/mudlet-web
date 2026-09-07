@@ -75,7 +75,7 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', (event) => event.waitUntil((async () => {
     // Anything left by an older worker of ours under a name this one no longer
-    // uses. Both prefixes: these caches were named `mudix-*` before the storage
+    // uses. Both prefixes: these caches were named `mudlet-*` before the storage
     // rename, and an old worker's leftovers should be reclaimed rather than left
     // to sit against the origin's quota forever. Scoped to our own prefixes
     // rather than "every cache on the

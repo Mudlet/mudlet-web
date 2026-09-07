@@ -283,7 +283,7 @@ describe('shouldCloseSearchOnEscape', () => {
     }
 
     /** An element nested inside the profile-session shell, mirroring the real
-     *  chain (e.g. `.app > .mudix-toolbar > .toolbar-actions > button`). */
+     *  chain (e.g. `.app > .mudlet-toolbar > .toolbar-actions > button`). */
     function inApp(...classes: string[]): HTMLElement {
         const app = document.createElement('div');
         app.className = 'app';
@@ -311,7 +311,7 @@ describe('shouldCloseSearchOnEscape', () => {
         expect(shouldCloseSearchOnEscape(escapeFrom(inApp('main-viewport', 'output-area-content')))).toBe(true);
         // The toolbar counts too — closing a modal returns focus to the button
         // that opened it, and Escape from there should still dismiss the bar.
-        expect(shouldCloseSearchOnEscape(escapeFrom(inApp('mudix-toolbar', 'toolbar-actions')))).toBe(true);
+        expect(shouldCloseSearchOnEscape(escapeFrom(inApp('mudlet-toolbar', 'toolbar-actions')))).toBe(true);
     });
 
     it('closes when nothing more specific holds focus', () => {

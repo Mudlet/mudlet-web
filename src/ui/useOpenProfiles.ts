@@ -4,7 +4,7 @@ import { connectionIdFromLockName } from '../utils/profileLock';
 /**
  * Connection ids currently open in *another* browser tab.
  *
- * Every open profile holds an exclusive Web Lock named `mudix:profile:<id>`
+ * Every open profile holds an exclusive Web Lock named `mudlet:profile:<id>`
  * (see profileLock.ts), and `navigator.locks.query()` lists held locks across
  * all same-origin tabs — so the held profile locks are exactly the open set.
  * The connection screen renders with no profile active, so this tab holds no

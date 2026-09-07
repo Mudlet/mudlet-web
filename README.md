@@ -123,7 +123,7 @@ A deeper tour of the internals lives in [`CLAUDE.md`](./CLAUDE.md); the full Mud
 
 Mudlet Web is also published as an npm library for shipping a **white-label client for one specific MUD** — your own name, login screen, theme, toolbar, and bundled Lua packages, without forking the repo. See [`docs/BRANDED_BUILDS.md`](docs/BRANDED_BUILDS.md) for the setup guide, or [embervale-web](https://github.com/Delwing/embervale-web) for a live example.
 
-> The package is published as [`@mudlet/mudlet-web`](https://www.npmjs.com/package/@mudlet/mudlet-web). It was previously `@delwing/mudix` (now deprecated) — the app root export was renamed `MudixApp` → `MudletWebApp` with the move.
+> The package is published as [`@mudlet/mudlet-web`](https://www.npmjs.com/package/@mudlet/mudlet-web). It was previously `@delwing/Mudlet Web` (now deprecated) — the app root export was renamed `MudletApp` → `MudletWebApp` with the move.
 
 ## ⚠️ Limitations & known constraints
 

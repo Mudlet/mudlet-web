@@ -15,7 +15,7 @@ import type { CmdLineMenuEntry, CmdLineMenuRegistry } from './CmdLineMenuRegistr
  *  honoured — and replacing the node is still the DOM addition that triggers it. */
 const ANNOUNCE_HISTORY = 1;
 
-const HINT_ID = 'mudix-cmdline-hint';
+const HINT_ID = 'mudlet-cmdline-hint';
 
 interface CommandBarProps {
     command: string;
@@ -210,7 +210,7 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
     useEffect(() => {
         if (!menu) return;
         const onDown = (e: MouseEvent) => {
-            const root = document.getElementById('mudix-cmdline-menu');
+            const root = document.getElementById('mudlet-cmdline-menu');
             if (root && !root.contains(e.target as Node)) setMenu(null);
         };
         const onClose = () => setMenu(null);
@@ -536,7 +536,7 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
 
             {menu && (
                 <div
-                    id="mudix-cmdline-menu"
+                    id="mudlet-cmdline-menu"
                     className="map-context-menu"
                     style={{ position: 'fixed', left: menu.x, top: menu.y, zIndex: 'var(--z-popup)' }}
                     onContextMenu={(e) => e.preventDefault()}

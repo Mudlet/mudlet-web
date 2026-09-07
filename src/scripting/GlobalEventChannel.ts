@@ -29,7 +29,7 @@ export class GlobalEventChannel {
         private readonly senderName: () => string,
     ) {
         if (typeof BroadcastChannel === 'undefined') return;
-        this.channel = new BroadcastChannel('mudix:global-events');
+        this.channel = new BroadcastChannel('mudlet:global-events');
         this.channel.onmessage = (e: MessageEvent) => {
             const msg = e.data as GlobalEventMessage | null;
             if (!msg || typeof msg.name !== 'string') return;

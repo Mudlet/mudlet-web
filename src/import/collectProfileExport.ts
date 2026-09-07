@@ -12,10 +12,12 @@ import { readNewestParseableXml, type VfsReader } from './mudletLink';
 // mudletProfileExport turns into a Mudlet profile folder. Split from the pure
 // builders so those stay testable without ZenFS/IndexedDB.
 
-/** Files under this directory are mudix bookkeeping, not user content: the
+/** Files under this directory are Mudlet Web bookkeeping, not user content: the
  *  profile JSON is re-serialized into the profile XML, and the connection
- *  sidecar is written fresh on export. */
-const VFS_INTERNAL_DIR = '.mudix';
+ *  sidecar is written fresh on export. Both names: a profile not opened since
+ *  the storage rename still keeps them in `.mudix/` (moved on open, see
+ *  migrateLegacyDotDir), and that is bookkeeping too. */
+const VFS_INTERNAL_DIRS = ['.mudlet', '.mudix'];
 
 /** Depth cap for the VFS walk. Profile trees are shallow (packages/<pkg>/…);
  *  the cap is a cheap guard against a pathological or cyclic tree hanging the
@@ -32,7 +34,7 @@ function walk(vfs: ProfileVFS, dir: string, depth: number, out: Record<string, U
     }
     for (const name of names) {
         const rel = dir ? `${dir}/${name}` : name;
-        if (rel === VFS_INTERNAL_DIR || rel.startsWith(`${VFS_INTERNAL_DIR}/`)) continue;
+        if (VFS_INTERNAL_DIRS.some(d => rel === d || rel.startsWith(`${d}/`))) continue;
         const st = vfs.stat(rel);
         if (!st) continue;
         if (st.type === 'dir') {
@@ -63,15 +65,15 @@ function readProfileData(vfs: ProfileVFS): PersistedProfileData {
 
 /**
  * The `<Host>` this profile's export should base on, so the ~100 Mudlet settings
- * mudix doesn't model don't revert to Mudlet's defaults on the way out.
+ * Mudlet Web doesn't model don't revert to Mudlet's defaults on the way out.
  *
  * The retained copy comes first. A profile that has one was imported from
- * Mudlet, and any `current/*.xml` in its VFS is a save mudix itself wrote via
+ * Mudlet, and any `current/*.xml` in its VFS is a save Mudlet Web itself wrote via
  * `saveProfile()` — basing on that would just re-read our own output. A linked
  * folder has no retained copy and its `current/*.xml` *is* the live original,
  * kept current by write-back, so it's the right base there.
  *
- * Undefined for a profile born in mudix: nothing beyond the modeled settings to
+ * Undefined for a profile born in Mudlet Web: nothing beyond the modeled settings to
  * preserve, and the export falls back to the empty skeleton as before.
  *
  * Takes the same minimal reader surface as the link-mode loader, so it's

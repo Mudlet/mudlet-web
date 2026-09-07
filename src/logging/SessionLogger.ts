@@ -113,7 +113,7 @@ export class SessionLogger {
     /**
      * Mudlet's `startLogging(true)` — begin mirroring output to a file as well.
      * Deliberately separate from {@link start}: recording to the log browser is
-     * a mudix profile setting that is on by default, whereas Mudlet's file log
+     * a Mudlet Web profile setting that is on by default, whereas Mudlet's file log
      * is something a player or script asks for. Sharing one switch would have
      * every profile quietly writing a file nobody asked for, and would make
      * `startLogging(true)` report "already on" for ever.

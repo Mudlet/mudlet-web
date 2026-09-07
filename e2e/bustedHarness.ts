@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-// Shared harness for Mudlet's busted *_spec.lua suite, run against the real mudix
+// Shared harness for Mudlet's busted *_spec.lua suite, run against the real Mudlet Web
 // app in a browser. Imported by bustedRecord.ts (globalSetup, which records the
 // corpus), by busted.spec.ts (which turns that recording into tests) and by
 // bustedFailures.ts (the triage runner).
@@ -137,7 +137,7 @@ export async function seedProfile(page: Page): Promise<void> {
         // the CURRENT store version. A lower one sends it through appStore's
         // migrate, which drops every automation slice on purpose (they moved
         // into the VFS at v20), and the fixture silently never arrives. Keep
-        // this in step with MUDIX_STORE_VERSION.
+        // this in step with MUDLET_STORE_VERSION.
         const t = (
             id: string, name: string, parentId: string | null, pattern: string,
             code: string, isFilter: boolean, isGroup = false,
@@ -146,7 +146,7 @@ export async function seedProfile(page: Page): Promise<void> {
             patterns: pattern ? [{ text: pattern, type: 'regex' }] : [], code, language: 'lua',
             fireLength: 0, multipleMatches: false, multiline: false, delta: 0, isFilter,
         });
-        localStorage.setItem('mudix_v1', JSON.stringify({
+        localStorage.setItem('mudlet_v1', JSON.stringify({
             version: 21,
             state: {
                 // Mirror Mudlet's own test setup: the suite is designed to run
@@ -200,7 +200,7 @@ export async function seedProfile(page: Page): Promise<void> {
 }
 
 // (Re)navigate to the seeded profile and wait for a stable runtime. Also resets
-// state between specs: busted insulates Lua _G but NOT mudix's JS console
+// state between specs: busted insulates Lua _G but NOT Mudlet Web's JS console
 // (history/partial/cursor/selection), so running specs back-to-back in one page
 // leaks console content between them. A fresh navigation rebuilds runtime+console.
 //
@@ -217,7 +217,7 @@ export async function seedProfile(page: Page): Promise<void> {
 // at its very end; triggers additionally compile only once PCRE wasm resolves.
 // Since a busted run is one synchronous doStringSync, a queued apply can never
 // catch up mid-run — so a run started early makes every perm* spec (and the
-// seeded nested-trigger fixture below) fail nondeterministically. __mudixBustedReady
+// seeded nested-trigger fixture below) fail nondeterministically. __mudletBustedReady
 // reports whether sysLoadEvent has fired, which the engine raises only once all
 // of that is in place.
 export async function reopen(page: Page, timeout = READY_TIMEOUT_MS): Promise<void> {
@@ -226,11 +226,11 @@ export async function reopen(page: Page, timeout = READY_TIMEOUT_MS): Promise<vo
         () => {
             const w = window as unknown as {
                 __runBusted?: (p: string) => { total?: number };
-                __mudixBustedReady?: () => boolean;
+                __mudletBustedReady?: () => boolean;
             };
-            if (typeof w.__mudixBustedReady !== 'function') return false;
+            if (typeof w.__mudletBustedReady !== 'function') return false;
             try {
-                if (!w.__mudixBustedReady()) return false;
+                if (!w.__mudletBustedReady()) return false;
             } catch {
                 return false; // runtime torn down mid-poll
             }

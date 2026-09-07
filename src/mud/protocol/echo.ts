@@ -57,7 +57,7 @@ export class EchoHandler {
      * which is what cTelnet does — setRemoteEchoingActive(true) on WILL ECHO,
      * with nothing else consulted.
      *
-     * mudix used to mask only for an ECHO that engaged AFTER the server had
+     * Mudlet Web used to mask only for an ECHO that engaged AFTER the server had
      * printed something, on the reading that a connect-time one is session-wide
      * remote echo rather than a password prompt, and that masking it would hide
      * the player's name as they typed it. Nothing was ever recorded as running
@@ -132,7 +132,7 @@ export class EchoHandler {
             const mode = !this._serverEchoing ? 'OFF (normal)'
                 : this.passwordMode ? 'ON (password mode)'
                 : 'ON (server-wide echo, input not masked)';
-            console.debug(`[mudix.echo] committed → ${mode}`);
+            console.debug(`[mudlet.echo] committed → ${mode}`);
         }
     }
 
@@ -157,7 +157,7 @@ export class EchoHandler {
             this.sendRaw(ECHO_DONT);
             this.onEchoChange(false);
             if (debugEchoEnabled()) {
-                console.warn(`[mudix.echo] password-mode safety timeout (${PASSWORD_TIMEOUT_MS}ms) — server never sent WONT ECHO, forcing OFF`);
+                console.warn(`[mudlet.echo] password-mode safety timeout (${PASSWORD_TIMEOUT_MS}ms) — server never sent WONT ECHO, forcing OFF`);
             }
         }, PASSWORD_TIMEOUT_MS);
     }
@@ -195,7 +195,7 @@ export class EchoHandler {
         }
         this.onAnomalyDetected?.();
         if (debugEchoEnabled()) {
-            console.warn(`[mudix.echo] anomaly detected — refusing ECHO for the session`);
+            console.warn(`[mudlet.echo] anomaly detected — refusing ECHO for the session`);
         }
     }
 
@@ -217,7 +217,7 @@ export class EchoHandler {
 
 function debugEchoEnabled(): boolean {
     try {
-        return typeof localStorage !== 'undefined' && localStorage.getItem('mudix.debugEcho') === '1';
+        return typeof localStorage !== 'undefined' && localStorage.getItem('mudlet.debugEcho') === '1';
     } catch {
         return false;
     }

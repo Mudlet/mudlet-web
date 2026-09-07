@@ -7,7 +7,7 @@
 //     if (!cmd.isEmpty() || !mUSE_IRE_DRIVER_BUGFIX || mUSE_FORCE_LF_AFTER_PROMPT)
 //
 // i.e. the echo is skipped only for an empty command, only while the fix is on,
-// and only while the force flag is off. mudix echoed empty commands
+// and only while the force flag is off. Mudlet Web echoed empty commands
 // unconditionally before this, so a GA game with the fix on got the second
 // blank line the fix exists to remove.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';

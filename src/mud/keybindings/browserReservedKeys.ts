@@ -2,7 +2,7 @@
  * Some keyboard shortcuts are owned by the browser (or the OS) and are handled
  * *above* the web page — Ctrl+T opens a new tab, Ctrl+W closes it, F12 opens
  * devtools. The page never receives the keydown (or can't suppress it), so a MUD
- * keybinding on one of these can never fire in mudix.
+ * keybinding on one of these can never fire in mudlet.
  *
  * Real Mudlet runs natively and binds these freely; opened in a browser they
  * silently do nothing, which is baffling. We scan the loaded keybindings on
@@ -11,7 +11,7 @@
  *
  * We deliberately do NOT warn about page-level shortcuts the browser owns but a
  * page can still capture with preventDefault — Ctrl+R (reload), Ctrl+S (save),
- * Ctrl+P (print), Ctrl+F (find), F5, Ctrl+L, etc. mudix intercepts those, so they
+ * Ctrl+P (print), Ctrl+F (find), F5, Ctrl+L, etc. Mudlet Web intercepts those, so they
  * work exactly like they do in Mudlet: while the client has keyboard focus.
  *
  * Keys are stored as DOM `KeyboardEvent.code` strings (see {@link KeyNode}), so we
@@ -69,7 +69,7 @@ export function formatKeyCombo(node: Pick<KeyNode, 'key' | 'modifiers'>): string
 
 /** Explanation appended to each warning line. */
 export function reservedKeyNote(action: string): string {
-    return `the browser will ${action} — this key can't reach mudix`;
+    return `the browser will ${action} — this key can't reach mudlet`;
 }
 
 interface ReservedDef {

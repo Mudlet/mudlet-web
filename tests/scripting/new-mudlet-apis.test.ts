@@ -46,8 +46,8 @@ describe('setMergeTables (GMCP merge keys)', () => {
 
   it('merges registered keys into the existing gmcp sub-table', () => {
     rt.run('setMergeTables("Char.Status")');
-    rt.run('__mudix_set_gmcp("Char.Status", {hp = 10, mp = 5})');
-    rt.run('__mudix_set_gmcp("Char.Status", {hp = 20})');
+    rt.run('__mudlet_set_gmcp("Char.Status", {hp = 10, mp = 5})');
+    rt.run('__mudlet_set_gmcp("Char.Status", {hp = 20})');
     // mp survives the second update because the key is a merge key.
     expect(rt.run('return gmcp.Char.Status.mp')).toBe(5);
     expect(rt.run('return gmcp.Char.Status.hp')).toBe(20);
@@ -55,8 +55,8 @@ describe('setMergeTables (GMCP merge keys)', () => {
   });
 
   it('replaces (does not merge) keys that were never registered', () => {
-    rt.run('__mudix_set_gmcp("Char.Vitals", {hp = 1, mp = 2})');
-    rt.run('__mudix_set_gmcp("Char.Vitals", {hp = 9})');
+    rt.run('__mudlet_set_gmcp("Char.Vitals", {hp = 1, mp = 2})');
+    rt.run('__mudlet_set_gmcp("Char.Vitals", {hp = 9})');
     expect(rt.run('return gmcp.Char.Vitals.mp')).toBeNull();
     expect(rt.run('return gmcp.Char.Vitals.hp')).toBe(9);
   });

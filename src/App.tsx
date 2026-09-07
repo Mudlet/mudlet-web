@@ -244,8 +244,8 @@ export default function App() {
                 mountedVfs = vfs;
                 // A linked Mudlet folder (current/*.xml present) is loaded from its
                 // newest save on every open, so Mudlet-side edits show up; the
-                // .mudix sidecar layers mudix-only state on top. Otherwise seed
-                // from .mudix/profile.json (and run the one-time v21 migration)
+                // .mudlet sidecar layers Mudlet Web-only state on top. Otherwise seed
+                // from .mudlet/profile.json (and run the one-time v21 migration)
                 // before the session renders, so the profile's settings/layout/
                 // protocols are present for the synchronous reads.
                 if (isMudletProfileVfs(vfs)) {

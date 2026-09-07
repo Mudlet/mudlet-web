@@ -21,7 +21,7 @@ export function TabGroupPanel({ side, panels, activeId, manager, onDragStateChan
     return (
         <div className={`tab-group-panel tab-group-panel--${side}`}>
             {sorted.length > 1 && (
-                <div className="tab-group-tabbar mudix-native-scrollbar" onContextMenu={onTitlebarContextMenu}>
+                <div className="tab-group-tabbar mudlet-native-scrollbar" onContextMenu={onTitlebarContextMenu}>
                     {sorted.map(p => (
                         <TabItem
                             key={p.id}

@@ -41,7 +41,7 @@
          shows the message instead of reloading forever. -->
     <script>
       (function () {
-        var RETRY_KEY = 'mudix_boot_retry';
+        var RETRY_KEY = 'mudlet_boot_retry';
         var GRACE_MS = 3000;
         var settled = false;
         var observer = null;
@@ -101,13 +101,13 @@
             '<div style="max-width:34em;color:#aaa">This is usually a half-updated copy left ' +
             'in the browser cache. Reloading normally clears it. Your profiles, scripts and ' +
             'maps are stored separately and are not affected.</div>' +
-            '<button id="mudix-boot-retry" style="font:inherit;padding:8px 18px;color:#fff;' +
+            '<button id="mudlet-boot-retry" style="font:inherit;padding:8px 18px;color:#fff;' +
             'background:#1f6f6b;border:0;border-radius:6px;cursor:pointer">Reload</button>' +
-            '<div id="mudix-boot-detail" style="font-size:12px;color:#666"></div></div>';
+            '<div id="mudlet-boot-detail" style="font-size:12px;color:#666"></div></div>';
           // Textual, not interpolated: `reason` carries a filename off the page.
-          var detail = document.getElementById('mudix-boot-detail');
+          var detail = document.getElementById('mudlet-boot-detail');
           if (detail) detail.textContent = 'Details: ' + reason;
-          var button = document.getElementById('mudix-boot-retry');
+          var button = document.getElementById('mudlet-boot-retry');
           if (button) {
             button.onclick = function () {
               session(function (s) { s.removeItem(RETRY_KEY); });
@@ -168,7 +168,7 @@
         var h = location.hostname;
         if (h !== 'mudlet.github.io' && h !== 'mudlet.org' && !/\.mudlet\.org$/.test(h)) return;
         // Settings -> Privacy and security -> "Send anonymous usage statistics".
-        // Its own localStorage key, not the mudix_v1 store: that store is read
+        // Its own localStorage key, not the mudlet_v1 store: that store is read
         // and hydrated by a module, which is far too late — this script has
         // already fired the page view by then. Kept in step with
         // src/analytics.ts, which is what writes it.

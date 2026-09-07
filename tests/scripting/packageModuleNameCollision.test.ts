@@ -9,7 +9,7 @@
 //
 // Desktop refuses both directions (`Host::installPackage`, Host.cpp:2567 and
 // :2584), and deliberately exempts profile loading so a profile saved before
-// the check existed goes on opening. mudix gets that exemption structurally:
+// the check existed goes on opening. Mudlet Web gets that exemption structurally:
 // reopening a profile replays its modules through `reloadModuleFromVfs`, which
 // is not an install path and reaches none of this.
 //

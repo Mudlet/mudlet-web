@@ -3,7 +3,7 @@
    own: a browser tab has 44px of chrome to spend and Mudlet's second row would
    double it for six words. Titles are quiet until hovered so the bar reads as
    chrome rather than as a row of buttons competing with the toolbar's. */
-.mudix-menubar {
+.mudlet-menubar {
     display: flex;
     align-items: center;
     gap: 1px;
@@ -242,7 +242,7 @@
    Same threshold the toolbar's inline action row uses: below it the bar has no
    room, and everything the menus reach is in the hamburger instead. */
 @media (max-width: 900px) {
-    .mudix-menubar {
+    .mudlet-menubar {
         display: none;
     }
 }

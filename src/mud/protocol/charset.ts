@@ -20,7 +20,7 @@ import { decodeMultiByte, isMultiByteFramed, type MultiByteLabel } from "./multi
 
 /**
  * Map a wire-format charset name (case-insensitive, with various dash/underscore
- * spellings) onto the label mudix decodes it with, or null when it is not an
+ * spellings) onto the label Mudlet Web decodes it with, or null when it is not an
  * encoding this client speaks.
  *
  * The label is not always an IANA one, because not every encoding here is the
@@ -118,7 +118,7 @@ export const SUPPORTED_SERVER_ENCODINGS: readonly string[] = [
 ];
 
 /** The {@link SUPPORTED_SERVER_ENCODINGS} entry a caller's spelling means, or
- *  null when mudix cannot decode it. Dash/space/case differences are all the
+ *  null when Mudlet Web cannot decode it. Dash/space/case differences are all the
  *  same encoding — the profile XML, the wire, and Mudlet's own list disagree
  *  about which to use — so the answer is always the list's own spelling and
  *  `getServerEncoding()` reports one canonical name whatever was set. */
@@ -193,7 +193,7 @@ const MULTI_BYTE_LABELS = new Set(['utf-8', 'gbk', 'gb18030', 'big5', 'euc-kr'])
  * `serverEncoding` — Mudlet's TEncodingHelper::canEncode, which is what decides
  * whether a send gets the "unlikely to understand it" warning.
  *
- * Anything mudix cannot judge (an unknown label) is called encodable: the point
+ * Anything Mudlet Web cannot judge (an unknown label) is called encodable: the point
  * is to warn about a loss that will certainly happen, not to guess.
  */
 export function canEncodeForServer(text: string, serverEncoding: string): boolean {
@@ -222,7 +222,7 @@ export function canEncodeForServer(text: string, serverEncoding: string): boolea
  * bytes are pre-encoded and Mudlet must pass them through untouched rather than
  * reading them as UTF-8.
  *
- * An encoding mudix cannot name falls back to UTF-8, which is what the session
+ * An encoding Mudlet Web cannot name falls back to UTF-8, which is what the session
  * starts on; a label the browser refuses hands the bytes back unchanged rather
  * than losing them.
  */
@@ -319,7 +319,7 @@ export class SessionCodec {
     private decoder = new TextDecoder('utf-8', { fatal: false });
     /** Set instead of {@link decoder} while a single-byte encoding is in use. */
     private table: readonly string[] | null = null;
-    /** Set instead of both while an encoding mudix frames itself is in use. */
+    /** Set instead of both while an encoding Mudlet Web frames itself is in use. */
     private framed: MultiByteLabel | null = null;
     /** Bytes of a framed sequence cut short by the end of a frame, waiting for
      *  the rest of it. TextDecoder holds this itself for the encodings it

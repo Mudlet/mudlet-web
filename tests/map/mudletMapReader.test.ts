@@ -2,10 +2,10 @@
 import { describe, it, expect } from 'vitest';
 import { isViewportDataSource, isHashLookupCapable } from 'mudlet-map-renderer';
 import { MapStore } from '../../src/map/MapStore';
-import { MudixMapReader } from '../../src/map/MudixMapReader';
+import { MudletMapReader } from '../../src/map/MudletMapReader';
 
 /**
- * MudixMapReader wraps a viewport-virtualized `SkeletonMapReader`, which is
+ * MudletMapReader wraps a viewport-virtualized `SkeletonMapReader`, which is
  * what keeps a large map's scene builds proportional to what's on screen
  * rather than to the whole level. That only works if the wrapper preserves the
  * two things the renderer looks for — the `ViewportDataSource` capability
@@ -28,9 +28,9 @@ function gridStore(side: number): MapStore {
     return store;
 }
 
-describe('MudixMapReader', () => {
+describe('MudletMapReader', () => {
     it('advertises the capabilities the renderer duck-types for', () => {
-        const reader = new MudixMapReader(gridStore(4));
+        const reader = new MudletMapReader(gridStore(4));
         // Without these the interactive backend treats it as an ordinary
         // reader: no viewport push, no rebuild-on-pan, whole-plane builds.
         expect(isViewportDataSource(reader)).toBe(true);
@@ -39,7 +39,7 @@ describe('MudixMapReader', () => {
 
     it('materialises only the viewport for a plane, but resolves any room by id', () => {
         const store = gridStore(10);
-        const reader = new MudixMapReader(store);
+        const reader = new MudletMapReader(store);
         const areaId = reader.getAreas()[0].getAreaId();
 
         reader.setViewport({ minX: -0.5, maxX: 2.5, minY: -2.5, maxY: 0.5 });
@@ -55,7 +55,7 @@ describe('MudixMapReader', () => {
 
     it('keeps the viewport across the rebuild a store mutation forces', () => {
         const store = gridStore(10);
-        const reader = new MudixMapReader(store);
+        const reader = new MudletMapReader(store);
         const areaId = reader.getAreas()[0].getAreaId();
         const window = { minX: -0.5, maxX: 2.5, minY: -2.5, maxY: 0.5 };
         reader.setViewport(window);
@@ -76,7 +76,7 @@ describe('MudixMapReader', () => {
         // The export path builds its own reader and never narrows it — an
         // exporter driven by a viewport-scoped reader would crop the image to
         // whatever happened to be on screen.
-        const fresh = new MudixMapReader(store);
+        const fresh = new MudletMapReader(store);
         const areaId = fresh.getAreas()[0].getAreaId();
         const all = fresh.getArea(areaId).getPlane(0).getRooms().length;
         expect(all).toBe(100);
@@ -91,7 +91,7 @@ describe('MudixMapReader', () => {
     it('resolves a room hash without scanning (getRooms is empty here)', () => {
         const store = gridStore(4);
         store.setRoomIDbyHash(7, 'deadbeefdeadbeefdeadbeefdeadbeef');
-        const reader = new MudixMapReader(store);
+        const reader = new MudletMapReader(store);
 
         expect(reader.getRoomIdByHash('deadbeefdeadbeefdeadbeefdeadbeef')).toBe(7);
         expect(reader.getRoomIdByHash('nope')).toBeUndefined();
@@ -100,7 +100,7 @@ describe('MudixMapReader', () => {
     it('keeps rooms that carry visual detail materialised in full', () => {
         const store = gridStore(4);
         store.setRoomChar(3, '#');
-        const reader = new MudixMapReader(store);
+        const reader = new MudletMapReader(store);
 
         // Skeleton-synthesised rooms come back with an empty roomChar; a room
         // with a symbol has to be promoted to a full detail room or it would
@@ -109,7 +109,7 @@ describe('MudixMapReader', () => {
     });
 
     it('reports no data for an empty store without throwing', () => {
-        const reader = new MudixMapReader(new MapStore());
+        const reader = new MudletMapReader(new MapStore());
         expect(reader.hasData()).toBe(false);
         expect(reader.getAreas()).toEqual([]);
     });

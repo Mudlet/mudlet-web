@@ -1,7 +1,7 @@
 /**
  * Flat per-viewport z-order for every kind of overlay content: nested windows /
  * mini-consoles (including the embedded mapper), labels, overlay command lines,
- * and scroll boxes. This is the mudix analogue of Mudlet's Qt widget stack.
+ * and scroll boxes. This is the Mudlet Web analogue of Mudlet's Qt widget stack.
  *
  * ## Why flat (and not a container tree)
  *
@@ -17,7 +17,7 @@
  * an opened config menu rendered *under* a sibling mapper. Flat is correct.)
  *
  * Correct z-order alone is not enough: every overlay leaf must also render into
- * the SAME CSS stacking context for these ranks to take visual effect. mudix
+ * the SAME CSS stacking context for these ranks to take visual effect. Mudlet Web
  * ensures that by rendering all four overlay kinds under one wrapper per
  * viewport (`.main-overlay-root` for main; the panel viewport for a userwindow)
  * whose descendants' inline z-indices all compete directly. See

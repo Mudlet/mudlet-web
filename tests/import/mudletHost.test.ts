@@ -3,7 +3,7 @@ import { parseMudletHost, parseMudletProfile, applyProfileSettingsToHost } from 
 import { MIN_CONSOLE_BUFFER_SIZE, MAX_CONSOLE_BUFFER_SIZE } from '../../src/mud/text/Console';
 
 // A <Host> block with the real attribute/element values from a Mudlet 4.x
-// profile export (test profile, 2026-06-26), trimmed to the fields mudix maps.
+// profile export (test profile, 2026-06-26), trimmed to the fields Mudlet Web maps.
 const HOST = `<Host autoClearCommandLineAfterSend="no" mEnableGMCP="yes" mEnableMSSP="yes" mEnableMSDP="no" mEnableMSP="yes" mEnableMTTS="yes" mEnableMNES="no" mEnableMXP="yes" mEnableNAWS="yes" mEnableCHARSET="yes" mEnableNEWENVIRON="yes" mServerMayRedefineColors="no" NetworkPacketTimeout="300">
   <name>test profile</name>
   <borderTopHeight>0</borderTopHeight>
@@ -65,7 +65,7 @@ describe('parseMudletHost', () => {
         expect(s.inputBackground).toBe('#000000');
     });
 
-    it('maps the 16 ANSI colors into mudix palette order (dark 0–7, bright 8–15)', () => {
+    it('maps the 16 ANSI colors into mudlet palette order (dark 0–7, bright 8–15)', () => {
         expect(s.ansiPalette).toEqual([
             '#000000', '#800000', '#008000', '#808000', '#000080', '#800080', '#008080', '#c0c0c0',
             '#808080', '#ff0000', '#00ff00', '#ffff00', '#0000ff', '#ff00ff', '#00ffff', '#ffffff',

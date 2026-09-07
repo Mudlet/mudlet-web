@@ -110,7 +110,7 @@ function migrateTriggerDelta(triggers: TriggerNode[] | undefined): TriggerNode[]
 }
 
 /** The dot-directory this app kept its per-profile bookkeeping in while the
- *  project's storage was namespaced `mudix`: profile.json, and the export
+ *  project's storage was namespaced `Mudlet Web`: profile.json, and the export
  *  sidecars connection.json and host.xml. */
 const LEGACY_DOT_DIR = '.mudix';
 const DOT_DIR = '.mudlet';

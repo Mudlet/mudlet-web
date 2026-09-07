@@ -14,7 +14,7 @@ import { createTestRuntime, type TestRuntime } from '../createTestRuntime';
  * on every later drop.
  *
  * Upstream's guard only rewrote names made *entirely* of digits, so
- * `20260803_164803.jpg` — what phone cameras produce — slipped through. mudix
+ * `20260803_164803.jpg` — what phone cameras produce — slipped through. Mudlet Web
  * carried the fix as a patch until Mudlet/Mudlet#9628 landed it upstream; this
  * stays as the regression guard over the vendored package.
  *

@@ -21,7 +21,7 @@ import baseUiUrl from './defaults/mudlet-base-ui/mudlet-base-ui.mpackage?url';
 // the sync pulls it in from the repo root and drops it here loose. Plain XML,
 // not a zip: the installer parses it into tree nodes and writes nothing to the VFS.
 import mudletMapperUrl from './defaults/mudlet-mapper.xml?url';
-// Mudlet preinstalls gui-drop as `gui-drop.mpackage`, and so do we. mudix ran
+// Mudlet preinstalls gui-drop as `gui-drop.mpackage`, and so do we. Mudlet Web ran
 // off the loose `gui-drop.xml` beside it for a while, because a `.mpackage` is a
 // zip the sync script round-trips byte-for-byte and the digit-prefix fix it
 // needed couldn't be patched inside one; Mudlet/Mudlet#9628 landed that fix
@@ -94,7 +94,7 @@ const MPKG: DefaultPackage = {
 };
 
 /**
- * Whether this build is the one that carries Mudlet's spec corpus — mudix's
+ * Whether this build is the one that carries Mudlet's spec corpus — Mudlet Web's
  * MUDLET_TEST_MODE, the same `VITE_BUSTED` flag LuaRuntime gates the busted
  * bridge (and its `os.getenv('MUDLET_TEST_MODE')` answer) on.
  *
@@ -151,7 +151,7 @@ export const ALL_DEFAULTS: DefaultPackage[] = [RUN_LUA_CODE, MUDLET_MAPPER, GENE
  * The starter UI is the one host-conditional pick: Mudlet skips it for players
  * who aren't new (`experiencedMudletPlayer()` — any profile folder older than
  * six months) because "veterans will have their own layouts already", and for
- * games whose own loader installs a full interface. mudix has no profile-age
+ * games whose own loader installs a full interface. Mudlet Web has no profile-age
  * signal to mirror the first, so `createdAt` stands in for it — see
  * {@link isNewProfile}.
  *
@@ -174,7 +174,7 @@ export function stockDefaults(host?: string, conn?: { createdAt?: string }): Def
  *
  * `addConnection` stamps `createdAt` on every profile it creates, so a profile
  * without one was made before the field existed — i.e. someone has already been
- * using it, quite possibly with a layout of their own. That's mudix's stand-in
+ * using it, quite possibly with a layout of their own. That's Mudlet Web's stand-in
  * for Mudlet's "no profile folder older than six months" check: it errs the safe
  * way, since dropping a dock, gauges and a chat window onto an established
  * profile is far more disruptive than withholding them from a new one.

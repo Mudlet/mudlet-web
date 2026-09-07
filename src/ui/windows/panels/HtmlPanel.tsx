@@ -50,7 +50,7 @@ export function HtmlPanel({ id, manager, labels, cmdLines, scrollBoxes, backgrou
     const htmlContent = <div ref={ref} className="window-html-panel" style={innerStyle} />;
 
     return (
-        <div ref={viewportRef} data-mudix-window={id} style={WRAPPER_STYLE}>
+        <div ref={viewportRef} data-mudlet-window={id} style={WRAPPER_STYLE}>
             {cmdLineEnabled ? (
                 <div style={STACK_STYLE}>
                     <div style={OUTPUT_FILL_STYLE}>{htmlContent}</div>

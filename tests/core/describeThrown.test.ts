@@ -56,6 +56,6 @@ describe('describeThrown', () => {
 
         describeThrown(raw, 'timer "Update top bar"');
         expect(spy).toHaveBeenCalledWith(
-            '[mudix] non-Error value thrown out of timer "Update top bar":', raw);
+            '[mudlet] non-Error value thrown out of timer "Update top bar":', raw);
     });
 });

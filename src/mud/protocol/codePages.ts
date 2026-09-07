@@ -2,7 +2,7 @@
  * Single-byte code pages the browser cannot decode on its own.
  *
  * TextDecoder covers the WHATWG encoding set, which is where charset.ts gets
- * every other encoding mudix speaks: the ISO 8859 family, KOI8-R/U, the
+ * every other encoding Mudlet Web speaks: the ISO 8859 family, KOI8-R/U, the
  * WINDOWS-125x pages, CP866 (as `ibm866`) and MACINTOSH. The DOS code pages
  * below are not in that set and never will be — they are legacy MUD encodings,
  * not web ones — so the only way to read a game that speaks one is to carry the

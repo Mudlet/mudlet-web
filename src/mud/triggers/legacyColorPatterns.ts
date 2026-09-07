@@ -126,7 +126,7 @@ function toLegacy(channel: string): number {
  * Mudlet converts in both directions — `remapColorsToAnsiNumber` on the way in
  * (XMLimport.cpp:1425) and `remapAnsiToColorNumber` on the way out
  * (XMLexport.cpp:1031, "Revert the first 16 ANSI colour codes back to the wrong
- * values that are still used in the save files"). mudix had only the reading
+ * values that are still used in the save files"). Mudlet Web had only the reading
  * half, so an exported colour trigger carried the in-memory text into the file
  * — where desktop's reader does not recognise it, and the trigger comes back as
  * a colour pattern nothing can parse.

@@ -2,7 +2,7 @@
 // from upstream Mudlet.
 //
 // The specs are kept byte-for-byte identical to Mudlet's own
-// `src/mudlet-lua/tests/`, so a failing spec is always a genuine mudix↔Mudlet
+// `src/mudlet-lua/tests/`, so a failing spec is always a genuine Mudlet Web↔Mudlet
 // parity gap and never local drift (see specs/SYNCED.md). This script is the
 // "clean copy + diff" that provenance note describes: it pins a commit, pulls
 // every `*_spec.lua` verbatim, reports what changed, and rewrites the SYNCED.md
@@ -37,7 +37,7 @@ const SYNCED_MD = `${SPECS_DIR}SYNCED.md`;
 /**
  * Upstream files that are Mudlet-runner housekeeping rather than corpus: its
  * busted config, the readmes, and the shell script that rebuilds the package
- * fixtures from `sources/` (which mudix has no use for either — the built
+ * fixtures from `sources/` (which Mudlet Web has no use for either — the built
  * archives are what the specs install).
  */
 const IGNORED = new Set([
@@ -118,7 +118,7 @@ function localSource(repoPath) {
 }
 
 async function githubSource() {
-    const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'mudix-sync-specs' };
+    const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'mudlet-sync-specs' };
     // Unauthenticated is 60 requests/hour and this makes two — a token is only
     // needed on a shared/CI IP that's already burned through the budget.
     const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
@@ -172,7 +172,7 @@ console.log(`Source: ${source.origin} @ ${source.sha.slice(0, 8)} (${source.date
     + `${source.files.length} file(s)\n`);
 
 mkdirSync(SPECS_DIR, { recursive: true });
-// Recursive, because the fixtures sit in subdirectories. SYNCED.md is mudix's
+// Recursive, because the fixtures sit in subdirectories. SYNCED.md is Mudlet Web's
 // own and is never a candidate for the "gone upstream" sweep below.
 const walk = (dir, prefix = '') => readdirSync(dir, { withFileTypes: true }).flatMap(e =>
     e.isDirectory() ? walk(`${dir}${e.name}/`, `${prefix}${e.name}/`) : [`${prefix}${e.name}`]);

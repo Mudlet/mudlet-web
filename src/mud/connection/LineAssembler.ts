@@ -87,7 +87,7 @@ export class LineAssembler {
     // ── server-wrap join (Mudlet TBuffer::append's mUndoServerWrap block) ────
     // A whole line the game may only have *appeared* to end, held back until its
     // continuation arrives to be joined onto it — or until the game goes quiet
-    // and the flush timer commits it alone. Held raw (escapes and all): mudix's
+    // and the flush timer commits it alone. Held raw (escapes and all): Mudlet Web's
     // styling is inline, so concatenation carries each half's colour across.
     private undoServerWrap: boolean;
     private undoServerWrapWidth: number;

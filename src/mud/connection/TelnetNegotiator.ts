@@ -64,7 +64,7 @@ const HARDCODED = new Set<number>([
  *  Such a server parses a decimal version out of the TTYPE client-name reply
  *  and silently caps colour support at 16 without one, so matching this order
  *  is Mudlet's cue to switch `versionInTTYPE` on. ATCP (200) is in the middle:
- *  the snippet offers it even though mudix doesn't speak it, and the whole
+ *  the snippet offers it even though Mudlet Web doesn't speak it, and the whole
  *  point of the fingerprint is that it is *this* list in *this* order — so it
  *  is spelled out here rather than derived from the options we handle. */
 const OPT_ATCP_NUM = 200;
@@ -207,7 +207,7 @@ export class TelnetNegotiator {
      *  so a reconnect keeps reporting the current grid. */
     private windowSize: { cols: number; rows: number } | null = null;
     /** Latches true once the server has asked us to suppress go-ahead (IAC WILL
-     *  SGA). mudix refuses SGA (line mode only), but records the request:
+     *  SGA). Mudlet Web refuses SGA (line mode only), but records the request:
      *  combined with active server echo it's the character-at-a-time signature
      *  the owner uses to raise `sysCharacterModeDetected`. Reset on connect(). */
     private serverRequestedSGA = false;
@@ -399,10 +399,10 @@ export class TelnetNegotiator {
                 return;
             case OPT_SGA:
                 // Server offers Suppress-Go-Ahead (IAC WILL SGA, option 3) →
-                // we REFUSE it (IAC DONT SGA), matching Mudlet: mudix operates
+                // we REFUSE it (IAC DONT SGA), matching Mudlet: Mudlet Web operates
                 // in line mode only. A DONT is still a definitive answer, so
                 // strict servers don't stall; and refusing keeps `IAC GA`
-                // un-suppressed, which mudix's prompt detection relies on.
+                // un-suppressed, which Mudlet Web's prompt detection relies on.
                 // We record the request — SGA plus active server echo is the
                 // character-at-a-time signature the owner watches for.
                 if (cmd === WILL) {
@@ -413,7 +413,7 @@ export class TelnetNegotiator {
                 return;
             case OPT_LINEMODE:
                 // LINEMODE (RFC 1184, option 34) would hand line editing /
-                // forwarding policy to the server. mudix does its own local
+                // forwarding policy to the server. Mudlet Web does its own local
                 // line editing and never delegates it, so — like Mudlet — we
                 // refuse in both directions: DONT to the server's WILL, WONT
                 // to its DO.
@@ -531,18 +531,18 @@ export class TelnetNegotiator {
                     this.hooks.sendRaw(MSP_DO);
                     this.mspNegotiated = true;
                     this.eventBus.emit('msp.negotiated');
-                    if (debugMspEnabled()) console.debug('[mudix.msp] negotiated: server WILL → client DO');
+                    if (debugMspEnabled()) console.debug('[mudlet.msp] negotiated: server WILL → client DO');
                 } else if (cmd === DO) {
                     this.hooks.sendRaw(MSP_WILL);
                     this.mspNegotiated = true;
                     this.eventBus.emit('msp.negotiated');
-                    if (debugMspEnabled()) console.debug('[mudix.msp] negotiated: server DO → client WILL');
+                    if (debugMspEnabled()) console.debug('[mudlet.msp] negotiated: server DO → client WILL');
                 } else if (cmd === WONT || cmd === DONT) {
                     // The server can withdraw MSP mid-session; Mudlet clears its
                     // enableMSP here too, so the latch must be able to go false
                     // without waiting for a disconnect.
                     this.mspNegotiated = false;
-                    if (debugMspEnabled()) console.debug('[mudix.msp] server withdrew MSP');
+                    if (debugMspEnabled()) console.debug('[mudlet.msp] server withdrew MSP');
                 }
                 return;
             case OPT_MXP:
@@ -701,7 +701,7 @@ export class TelnetNegotiator {
         if (debugTelnetEnabled()) {
             const fallback = this.windowSize ? '' : ' (fallback — no size measured yet)';
             // eslint-disable-next-line no-console
-            console.debug(`[mudix.telnet OUT] SB NAWS ${cols}x${rows}${fallback}`);
+            console.debug(`[mudlet.telnet OUT] SB NAWS ${cols}x${rows}${fallback}`);
         }
         this.hooks.sendRaw(encodeNaws(cols, rows));
     }

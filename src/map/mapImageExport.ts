@@ -1,6 +1,6 @@
 import { MapRenderer, createSettings, PngBytesExporter } from 'mudlet-map-renderer';
 import type { RoomLens, Settings as MapRendererSettings } from 'mudlet-map-renderer';
-import { MudixMapReader } from './MudixMapReader';
+import { MudletMapReader } from './MudletMapReader';
 import type { MapStore } from './MapStore';
 // Pulled straight from the schema module rather than the ../storage barrel:
 // the barrel also re-exports the Zustand store, and this file is loaded by the
@@ -66,7 +66,7 @@ export function applyMapperSettings(target: MapRendererSettings, mapper: MapperS
     // window showed the page/window through it. A user-picked colour in the
     // Mapper tab still wins.
     target.backgroundColor = mapper?.backgroundColor ?? '#000000';
-    // Mudlet draws room symbols (and, in mudix, the area-name header) with
+    // Mudlet draws room symbols (and, in Mudlet Web, the area-name header) with
     // `mMapSymbolFont` — bundled "Bitstream Vera Sans Mono" by default, and
     // changeable from its Mapper page ("2D Map Room Symbol Font"). That default
     // matters: the renderer's own is a generic 'sans-serif', which picks a
@@ -82,7 +82,7 @@ export function applyMapperSettings(target: MapRendererSettings, mapper: MapperS
     if (mapper?.lodRoomBudget !== undefined) target.lodRoomBudget = mapper.lodRoomBudget;
     if (mapper?.lodExitBudget !== undefined) target.lodExitBudget = mapper.lodExitBudget;
     // The hit-test budget is measured against the rooms a plane materialises,
-    // which for MudixMapReader (viewport-virtualized) is the visible slice —
+    // which for MudletMapReader (viewport-virtualized) is the visible slice —
     // so it behaves as designed: picking drops out only while enough rooms are
     // on screen to make the index expensive, and zooming in brings it back.
     if (mapper?.lodHitTestBudget !== undefined) target.lodHitTestBudget = mapper.lodHitTestBudget;
@@ -145,11 +145,11 @@ export function exportAreaImage(
     areaId: number,
     zLevel?: number,
 ): Uint8Array | null {
-    // Ask the store first: MudixMapReader synthesises an empty area rather than
+    // Ask the store first: MudletMapReader synthesises an empty area rather than
     // failing for an id it doesn't know, which would export a blank PNG instead
     // of reporting the bad areaID.
     if (!mapStore.hasArea(areaId)) return null;
-    const reader = new MudixMapReader(mapStore);
+    const reader = new MudletMapReader(mapStore);
     let area;
     try { area = reader.getArea(areaId); } catch { return null; }
     if (!area) return null;

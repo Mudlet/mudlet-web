@@ -55,13 +55,13 @@ import { type EngineHost, type TempComplexTriggerSpec, NULL_ENGINE_HOST } from '
 import { findBundledGame } from '../mud/games/bundledGames';
 
 // Mudlet's TChar always carries baked-in fg/bg colors (the rendered pair), so
-// getFgColor/getBgColor never return "no color" for in-bounds positions. mudix
+// getFgColor/getBgColor never return "no color" for in-bounds positions. Mudlet Web
 // buffer segments are sparse — plain text has no explicit color — so we fall
 // back to these defaults.
 //
 // The foreground is Qt::lightGray, which is what Host::mFgColor starts as and
 // what App.css already paints uncoloured console text (`--console-text`). It
-// used to be #d4d4d4 here, so mudix RENDERED plain text at #c0c0c0 and REPORTED
+// used to be #d4d4d4 here, so Mudlet Web RENDERED plain text at #c0c0c0 and REPORTED
 // it as #d4d4d4 — a script comparing getFgColor() against what it could see was
 // told they differed.
 const DEFAULT_FG_RGB: [number, number, number] = [0xc0, 0xc0, 0xc0];
@@ -70,7 +70,7 @@ const DEFAULT_BG_RGB: [number, number, number] = [0x09, 0x09, 0x09];
 /**
  * The ANSI palette index (0-15) a segment colour corresponds to, or -2 when it
  * has none. Colour triggers compare palette indices — Mudlet keeps the ANSI
- * number on every TChar — but mudix stores SGR 30-37/40-47 as the hex value
+ * number on every TChar — but Mudlet Web stores SGR 30-37/40-47 as the hex value
  * they render as, so those are resolved back through the same palette here.
  * A 256-colour (38;5;N) segment already carries its index.
  */
@@ -196,7 +196,7 @@ function configBool(v: unknown): boolean {
  *  A NUMBER is not a mode. Mudlet reads the value with `lua_isboolean` first and
  *  `lua_isstring` second, and in Lua 5.1 a number is string-convertible — so 42
  *  becomes "42", fails the three-way match and is refused. Treating it as the
- *  boolean toggle instead (which is what mudix did) meant any number at all
+ *  boolean toggle instead (which is what Mudlet Web did) meant any number at all
  *  silently turned command echo on. */
 function parseShowSentText(value: unknown): ShowSentTextMode | null {
     if (typeof value === 'boolean') return value ? 'script' : 'never';
@@ -309,7 +309,7 @@ const CONFIG_PERSIST_ONLY: Record<string, {
     // by default in 2024. The KaVir auto-detect turns it on for the servers that
     // actually want it — see ProfileSession's `kavir.detected` handler.
     versionInTTYPE:                 { type: 'bool', default: false },
-    // IRC client settings. mudix has no IRC client (that's a separate service a
+    // IRC client settings. Mudlet Web has no IRC client (that's a separate service a
     // browser tab can't reach), but the *configuration* is ordinary profile
     // data — Mudlet stores it whether or not the client has ever been opened,
     // and get/setIrcNick and friends read and write exactly this. Defaults are
@@ -317,7 +317,7 @@ const CONFIG_PERSIST_ONLY: Record<string, {
     // answers with something usable.
     //
     // Named as Mudlet names them (TLuaInterpreter's getConfig map, defaults from
-    // dlgIRC.h). The shorter ircNick/ircHost/ircPort/ircSecure spellings mudix
+    // dlgIRC.h). The shorter ircNick/ircHost/ircPort/ircSecure spellings Mudlet Web
     // used first are kept as aliases below — get/setIrcNick and the settings UI
     // were written against them, and a script that found them working has no
     // reason to be broken for the sake of the rename.
@@ -330,7 +330,7 @@ const CONFIG_PERSIST_ONLY: Record<string, {
     ircChannels:                    { type: 'str',  default: '#mudlet' },
 };
 
-/** The mudix spellings of the IRC keys, and the Mudlet ones they now mean.
+/** The Mudlet Web spellings of the IRC keys, and the Mudlet ones they now mean.
  *  Resolved before every get and set, so both names read and write one value. */
 /** Distinguishes "this key is not an experiment" from an experiment that reads
  *  as nil — `<group>.active` answers nil when nothing in the group is on. */
@@ -347,7 +347,7 @@ const CONFIG_KEY_ALIASES: Record<string, string> = {
 };
 
 /** Mudlet's valid experiments (Host::mValidExperiments). An experiment is a
- *  rendering or mapper behaviour a build can be asked to try; mudix implements
+ *  rendering or mapper behaviour a build can be asked to try; Mudlet Web implements
  *  none of them, but the switches are ordinary profile state and scripts feature-
  *  test through them, so they are answered rather than refused. Grouped by the
  *  first two dot-segments, and at most one per group may be on. */
@@ -422,7 +422,7 @@ if (typeof document !== 'undefined') {
  * Measures the pixel size of an average character cell for `family` at `size`
  * points. Backs Mudlet's `calcFontSize(...)` — scripts use the returned (w, h)
  * to pre-size miniconsoles for a column/row count. Font sizes are Qt point
- * sizes everywhere in the Mudlet API, and mudix renders them as CSS `pt`
+ * sizes everywhere in the Mudlet API, and Mudlet Web renders them as CSS `pt`
  * (StickyOutputPanel), so the cell is measured at the CSS-px equivalent
  * (1pt = 4/3 px at 96dpi) to match both Mudlet's QFontMetrics numbers and what
  * the DOM actually paints. The width is measured via a canvas 2D context
@@ -883,7 +883,7 @@ export class ScriptingAPI {
 
     // True while the trigger pipeline is running for the current line. Drives
     // echo deferral and rerender suppression — Mudlet's TLuaInterpreter has no
-    // analogous flag (the renderer reads the buffer at paint time), but mudix
+    // analogous flag (the renderer reads the buffer at paint time), but Mudlet Web
     // renders via 'message' events, so we have to suppress per-mutation
     // rerenders during trigger processing and let the post-trigger render
     // pick up the final state in one shot.
@@ -921,7 +921,7 @@ export class ScriptingAPI {
     /** Mudlet `appendLog(text)`. Forwarded to the active SessionLogger (wired by
      *  ProfileSession, which owns the logger lifecycle). */
     private logAppender: ((text: string) => void) | null = null;
-    /** Mudlet `closeMudlet()`. mudix maps it to "close the active profile":
+    /** Mudlet `closeMudlet()`. Mudlet Web maps it to "close the active profile":
      *  disconnect, then return to the connection screen. Wired by ProfileSession. */
     private closeProfileCallback: (() => void) | null = null;
 
@@ -1203,12 +1203,12 @@ export class ScriptingAPI {
         return this.session.setServerEncoding(name);
     }
 
-    /** Mudlet `getServerEncodingsList()`. The encodings mudix can decode. */
+    /** Mudlet `getServerEncodingsList()`. The encodings Mudlet Web can decode. */
     getServerEncodingsList(): string[] {
         return this.session.getServerEncodingsList();
     }
 
-    /** Mudlet `getCharacterName()`. mudix uses one character per profile, so
+    /** Mudlet `getCharacterName()`. Mudlet Web uses one character per profile, so
      *  this returns the active profile name (same value as getProfileName());
      *  empty string when unset. */
     getCharacterName(): string {
@@ -1398,7 +1398,7 @@ export class ScriptingAPI {
             case 'enableMXP':  return this.getProtocol('mxp');
             case 'enableMNES': return this.getProtocol('mnes');
             // Mudlet's canonical key is the all-caps `enableNEWENVIRON`; the
-            // mixed-case `enableNewEnviron` is kept as a mudix alias.
+            // mixed-case `enableNewEnviron` is kept as a Mudlet Web alias.
             case 'enableNEWENVIRON':
             case 'enableNewEnviron': return this.getProtocol('newEnviron');
             case 'enableCHARSET': return this.getProtocol('charset');
@@ -1631,7 +1631,7 @@ export class ScriptingAPI {
             case 'enableMXP':  this.setProtocol('mxp',  configBool(value)); return true;
             case 'enableMNES': this.setProtocol('mnes', configBool(value)); return true;
             // Mudlet's canonical key is `enableNEWENVIRON`; `enableNewEnviron` is
-            // a mudix alias. Both route to the same NEW-ENVIRON protocol flag.
+            // a Mudlet Web alias. Both route to the same NEW-ENVIRON protocol flag.
             case 'enableNEWENVIRON':
             case 'enableNewEnviron': this.setProtocol('newEnviron', configBool(value)); return true;
             case 'enableCHARSET': this.setProtocol('charset', configBool(value)); return true;
@@ -1896,7 +1896,7 @@ export class ScriptingAPI {
             return conn.description ?? findBundledGame(conn.name)?.description ?? '';
         }
         // No profile by that name, but the getter still answers for a game
-        // mudix ships in its catalogue: Mudlet reads the description straight
+        // Mudlet Web ships in its catalogue: Mudlet reads the description straight
         // out of TGameDetails, so "Achaea" resolves whether or not anyone has
         // ever opened an Achaea profile. Only the *writers* refuse it.
         if (profileName !== undefined) {
@@ -2117,7 +2117,7 @@ export class ScriptingAPI {
         this.closeProfileCallback = fn;
     }
 
-    /** Mudlet `closeMudlet()`. mudix maps it to closing the active profile:
+    /** Mudlet `closeMudlet()`. Mudlet Web maps it to closing the active profile:
      *  disconnect, then return to the connection screen. */
     closeMudlet(): void {
         this.disconnect();
@@ -2350,7 +2350,7 @@ export class ScriptingAPI {
     }
 
     /** Mudlet `getProfileStats()`. Per-family total/active counts (+ trigger
-     *  patterns). See ScriptingEngine.getProfileStats for mudix's caveats. */
+     *  patterns). See ScriptingEngine.getProfileStats for Mudlet Web's caveats. */
     getProfileStats(): Record<string, unknown> {
         return this.host.getProfileStats();
     }
@@ -2570,7 +2570,7 @@ export class ScriptingAPI {
         if (!this.echoOnMatchedLine && this.injectOsc8Docs(text)) return;
         // During trigger processing Mudlet's echo/cecho appends to the matched
         // line at the output cursor (the line's end); only a `\n` advances to a
-        // fresh line. mudix seeds the matched line into mainConsole.history
+        // fresh line. Mudlet Web seeds the matched line into mainConsole.history
         // (beginLine) and defers script echoes, so without this every trigger
         // echo opened a new line — breaking Arkadia's grade/value triggers,
         // which `replace()`/`prefix()` then append text to the same line.
@@ -2693,10 +2693,10 @@ export class ScriptingAPI {
     ): FormatHyperlink {
         const onContextMenu = (ev: MouseEvent) => {
             ev.preventDefault();
-            document.getElementById('mudix-popup-menu')?.remove();
+            document.getElementById('mudlet-popup-menu')?.remove();
 
             const menu = document.createElement('div');
-            menu.id = 'mudix-popup-menu';
+            menu.id = 'mudlet-popup-menu';
             menu.style.cssText = 'position:fixed;z-index:9999;background:#1e1e1e;border:1px solid #444;border-radius:4px;padding:2px 0;box-shadow:0 2px 10px rgba(0,0,0,0.7);min-width:120px;font-family:monospace;font-size:13px';
             menu.style.left = `${ev.clientX}px`;
             menu.style.top = `${ev.clientY}px`;
@@ -3113,7 +3113,7 @@ export class ScriptingAPI {
      * A selection that does not fit the line is REFUSED, not trimmed to fit:
      * TConsole::selectSection rejects a negative start, a start past the end of
      * the line, and a length that runs off it, and leaves the previous selection
-     * standing in each case. Clamping instead — which mudix did — turned
+     * standing in each case. Clamping instead — which Mudlet Web did — turned
      * "selectSection(5, 1)" on a four-character line into a silent selection of
      * its last character, so a script checking the return value was told its
      * out-of-range request had succeeded and then styled the wrong text.
@@ -3180,7 +3180,7 @@ export class ScriptingAPI {
     /**
      * Mudlet `getFgColor([window])` / `getBgColor([window])`. Reads the fg/bg
      * color at the current selection's start position (Mudlet's P_begin). Each
-     * console tracks its own selection in Mudlet; mudix has a single global
+     * console tracks its own selection in Mudlet; Mudlet Web has a single global
      * selection, so when `window` is given it must match the selection's
      * owning window — otherwise we treat it as "no selection in that window"
      * and return null (Mudlet's "no values" shape, surfaced as nil/nil/nil in
@@ -3204,7 +3204,7 @@ export class ScriptingAPI {
      * Mudlet `isAnsiFgColor(ansiColor)` / `isAnsiBgColor(ansiColor)`. True when
      * the foreground/background color at the current selection's start equals
      * ANSI/xterm color index `ansiColor` (0..7 normal, 8..15 bright, 16..255 the
-     * xterm-256 palette). mudix stores rendered RGB rather than the original
+     * xterm-256 palette). Mudlet Web stores rendered RGB rather than the original
      * ANSI index, so the comparison is against the palette entry's RGB — exact
      * for the 256 standard slots. Returns false when there's no selection (or it
      * belongs to another window) or `ansiColor` is out of range.
@@ -3253,7 +3253,7 @@ export class ScriptingAPI {
      *
      * Mudlet has no "no selection" state — deselect() collapses P_begin and
      * P_end to (0, 0) rather than unsetting them, so the getters go on reading
-     * the first column of the cursor's line. mudix models the selection as
+     * the first column of the cursor's line. Mudlet Web models the selection as
      * absent instead, so that case is spelled out here: with nothing selected
      * the column is zero, and the answer is "nothing at all" only when there is
      * no character there to read — an empty console, or a line the selection
@@ -3323,7 +3323,7 @@ export class ScriptingAPI {
      *
      * `foreground`/`background` resolve through the same logic as getFgColor /
      * getBgColor (falling back to the profile defaults for unstyled segments).
-     * `alternateFont` is recorded but never rendered — mudix has no alternate
+     * `alternateFont` is recorded but never rendered — Mudlet Web has no alternate
      * font to switch to — so a script reads back the number the game asked for
      * and sees no difference on screen.
      */
@@ -3402,7 +3402,7 @@ export class ScriptingAPI {
      * hyperlink to the current selection — preserves existing colors/attributes
      * on each segment (unlike setFgColor & friends which homogenize). `command`
      * is the Lua code run on click; the Bridge.lua wrapper converts function
-     * arguments into a `__mudix_call_link(id)` string before reaching here.
+     * arguments into a `__mudlet_call_link(id)` string before reaching here.
      * Returns false if there is no selection (or it doesn't belong to `win`).
      */
     setLink(cmd: string, tooltip: string, win?: string): boolean {
@@ -3779,7 +3779,7 @@ export class ScriptingAPI {
     // two are equal rather than off by one, and why a buffer-scan loop
     // `for i = getLineCount() - 1, 0, -1` starts on the last complete line.
     //
-    // mudix's history holds only complete lines, so Console.getLineCount()
+    // Mudlet Web's history holds only complete lines, so Console.getLineCount()
     // (history.length - 1) is the last complete index and both Lua-facing
     // numbers add one to reach Mudlet's convention. Missing windows report -1
     // (Mudlet's "no such window" sentinel).
@@ -4801,7 +4801,7 @@ export class ScriptingAPI {
 
     /**
      * Mudlet selectCmdLineText([commandLine]). Selects (highlights) all text in
-     * the command bar so the next keystroke overtypes it. mudix has a single
+     * the command bar so the next keystroke overtypes it. Mudlet Web has a single
      * main command bar; a named overlay command-line arg is accepted for
      * compatibility but only "main"/omitted is acted upon. The actual DOM
      * selection happens in ProfileSession, which owns the input ref.
@@ -4813,7 +4813,7 @@ export class ScriptingAPI {
 
     /**
      * Mudlet setCommandBackgroundColor([windowName], r, g, b, [transparency]).
-     * Recolors the command bar's background. mudix only has the main command
+     * Recolors the command bar's background. Mudlet Web only has the main command
      * bar, so a non-"main" windowName is ignored. `a` is Mudlet's 0..255 alpha;
      * the CommandBar reads the `inputBackground` profile field as a CSS color.
      */
@@ -5003,7 +5003,7 @@ export class ScriptingAPI {
      * the profile-wide save size. Both switches have to be on: the size, and the
      * command line's own flag.
      *
-     * Only the main bar has a history to write. mudix's Geyser command lines
+     * Only the main bar has a history to write. Mudlet Web's Geyser command lines
      * keep none, so unlike Mudlet there are no numbered files beside it — the
      * shape is here rather than a bare `saveMainHistory()` so that one gaining a
      * history is a change in this function alone.
@@ -5075,9 +5075,9 @@ export class ScriptingAPI {
     // keyed by `tag` (app-wide) or window name (per-window). App/profile-level
     // CSS goes in verbatim apart from `rewriteQtSelectors`, which
     // redirects Qt objectName selectors (`QWidget#widget_panel { … }`) onto the
-    // `data-qt-object` hooks mudix's DOM carries — see qtCss.ts. Per-window CSS is
+    // `data-qt-object` hooks Mudlet Web's DOM carries — see qtCss.ts. Per-window CSS is
     // translated through `userWindowQssToScopedCss`: `QWidget { … }` (the
-    // canonical Mudlet selector) auto-scopes to `[data-mudix-window="name"]`,
+    // canonical Mudlet selector) auto-scopes to `[data-mudlet-window="name"]`,
     // so a stylesheet like `QWidget { padding: 15 20; }` actually pads the
     // window viewport. Scripts can still write the attribute selector
     // explicitly for non-`QWidget` rules. After a successful app-level install
@@ -5089,23 +5089,23 @@ export class ScriptingAPI {
     /**
      * Get (or create) a `<style>` tag in `document.head` owned by this profile.
      *
-     * Every tag mudix installs on a script's behalf is stamped with the owning
-     * connection id, both in its element id and in `data-mudix-style-owner`, so
+     * Every tag Mudlet Web installs on a script's behalf is stamped with the owning
+     * connection id, both in its element id and in `data-mudlet-style-owner`, so
      * {@link destroy} can take them all down again. Mudlet's `setAppStyleSheet`
      * is genuinely application-wide (a QApplication stylesheet shared by every
-     * open profile), but a mudix tab hosts one profile at a time: leaving a
+     * open profile), but a Mudlet Web tab hosts one profile at a time: leaving a
      * closed profile's CSS installed silently restyled the *next* profile opened
      * in that tab. So all three setters — app, profile and per-window — are
      * profile-local here, and torn down with the profile.
      */
     private styleTag(kind: string, key: string, dataKey: string, dataValue: string): HTMLStyleElement {
-        const id = `mudix-${kind}-stylesheet--${this.connectionId}--${key}`;
+        const id = `mudlet-${kind}-stylesheet--${this.connectionId}--${key}`;
         let el = document.getElementById(id) as HTMLStyleElement | null;
         if (!el) {
             el = document.createElement('style');
             el.id = id;
             el.dataset[dataKey] = dataValue;
-            el.dataset.mudixStyleOwner = this.connectionId;
+            el.dataset.mudletStyleOwner = this.connectionId;
             document.head.appendChild(el);
         }
         return el;
@@ -5113,13 +5113,13 @@ export class ScriptingAPI {
 
     /** Remove every `<style>` tag this profile's scripts installed. */
     private removeOwnedStyleTags(): void {
-        const owned = document.querySelectorAll(`style[data-mudix-style-owner="${cssEscape(this.connectionId)}"]`);
+        const owned = document.querySelectorAll(`style[data-mudlet-style-owner="${cssEscape(this.connectionId)}"]`);
         for (const el of owned) el.remove();
     }
 
     setAppStyleSheet(css: string, tag?: string): boolean {
         const key = tag && tag.length > 0 ? tag : 'default';
-        const el = this.styleTag('app', key, 'mudixAppStylesheet', key);
+        const el = this.styleTag('app', key, 'mudletAppStylesheet', key);
         el.textContent = rewriteQtSelectors(css ?? '');
         // Mudlet's event carries (tag, profileName) — which sheet changed and
         // whose — not the CSS itself. A handler that wants the text has it
@@ -5131,11 +5131,11 @@ export class ScriptingAPI {
 
     setUserWindowStyleSheet(name: string, css: string): boolean {
         if (!name) return false;
-        const el = this.styleTag('userwindow', name, 'mudixUserwindowStylesheet', name);
-        const scope = `[data-mudix-window="${cssEscape(name)}"]`;
+        const el = this.styleTag('userwindow', name, 'mudletUserwindowStylesheet', name);
+        const scope = `[data-mudlet-window="${cssEscape(name)}"]`;
         el.textContent = userWindowQssToScopedCss(css ?? '', scope);
         // Remembered verbatim: the tag holds the *scoped* translation, and a
-        // getter has to answer what the script wrote, not what mudix made of it.
+        // getter has to answer what the script wrote, not what Mudlet Web made of it.
         this.userWindowCss.set(name, css ?? '');
         return true;
     }
@@ -5177,11 +5177,11 @@ export class ScriptingAPI {
      *
      * Deliberately raises NO sysAppStyleSheetChange: that event announces an
      * *application*-level change, and a profile sheet is not one. Raising it
-     * here (as mudix used to) told every profile-agnostic theme handler to
+     * here (as Mudlet Web used to) told every profile-agnostic theme handler to
      * re-apply itself over a change that was never theirs.
      */
     setProfileStyleSheet(css: string): boolean {
-        const el = this.styleTag('profile', 'default', 'mudixProfileStylesheet', 'true');
+        const el = this.styleTag('profile', 'default', 'mudletProfileStylesheet', 'true');
         el.textContent = rewriteQtSelectors(css ?? '');
         return true;
     }
@@ -5258,7 +5258,7 @@ export class ScriptingAPI {
      * Mudlet `getMapZoom([areaID])` — the number of map units visible across the
      * viewport's shorter edge. Mudlet keeps this on the area (TArea's
      * `mLast2DMapZoom`, reached via TRoomDB::get2DMapZoom), so it answers with
-     * no mapper mounted and each area remembers its own; mudix stores it the
+     * no mapper mounted and each area remembers its own; Mudlet Web stores it the
      * same way. Without an areaID the live renderer's current zoom wins when one
      * is mounted. Undefined for an areaID that doesn't exist — the binding
      * reports that as `(nil, errMsg)`.
@@ -5510,7 +5510,7 @@ export class ScriptingAPI {
      * Mudlet-shaped copy, so a script (or a person poking at the profile
      * filesystem) finds the layout where Mudlet puts it and can read it. It is
      * JSON rather than Mudlet's `QMainWindow::saveState` blob: nothing outside
-     * mudix reads it, and those bytes describe Qt dock widgets that have no
+     * Mudlet Web reads it, and those bytes describe Qt dock widgets that have no
      * counterpart here.
      */
     private writeWindowLayoutFile(snapshot: unknown): void {
@@ -5616,7 +5616,7 @@ export class ScriptingAPI {
     /**
      * Mudlet `hasFocus([window])` → bool. Reports whether the named console (or
      * the main command bar / output area when omitted) currently holds keyboard
-     * focus. mudix maps "main"/omitted to the command input, and a named window
+     * focus. Mudlet Web maps "main"/omitted to the command input, and a named window
      * to its registered overlay element. Returns false when nothing matches.
      */
     hasFocus(windowName?: string): boolean {
@@ -5664,7 +5664,7 @@ export class ScriptingAPI {
 
     /**
      * Mudlet `getConnectionInfo()` → `host, port, connected`. Mudlet reports the
-     * MUD's telnet host/port; mudix reads them off the active connection config.
+     * MUD's telnet host/port; Mudlet Web reads them off the active connection config.
      * For a `mud`-mode connection those are the stored host/port; for a raw
      * `websocket` connection we parse them out of the endpoint URL (port falls
      * back to the ws/wss default). `connected` reflects the live session status.
@@ -5676,7 +5676,7 @@ export class ScriptingAPI {
     }
 
     /**
-     * Mudlet `connectToServer(host, port [, save])`. mudix tunnels MUD traffic
+     * Mudlet `connectToServer(host, port [, save])`. Mudlet Web tunnels MUD traffic
      * through a WebSocket proxy, so this builds the same `proxy?host=&port=` URL
      * the connection screen uses and (re)connects the live session. With `save`,
      * the host/port are persisted onto the active connection (switching it to
@@ -5723,7 +5723,7 @@ export class ScriptingAPI {
     announce(text: string, processing?: string): void {
         if (typeof document === 'undefined' || !text) return;
         const assertive = processing === 'importantall' || processing === 'importantmostrecent';
-        const id = assertive ? 'mudix-aria-live-assertive' : 'mudix-aria-live-polite';
+        const id = assertive ? 'mudlet-aria-live-assertive' : 'mudlet-aria-live-polite';
         let region = document.getElementById(id);
         if (!region) {
             region = document.createElement('div');

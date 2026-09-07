@@ -7,7 +7,7 @@
  * (dlgTriggerEditor.cpp:6174-6178, :15054, :15090), implemented at :6269 as an
  * unanchored match of the pattern against the substitution.
  *
- * Here it only warns. mudix already stops the damage at runtime — send()
+ * Here it only warns. Mudlet Web already stops the damage at runtime — send()
  * refuses past `MAX_SEND_DEPTH` with a message naming the alias — and that
  * guard catches indirect loops (A → B → A) this one cannot see. Refusing the
  * save on top of it would block the direct case while still letting the

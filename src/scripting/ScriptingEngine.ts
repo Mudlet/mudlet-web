@@ -99,24 +99,24 @@ function hexToRgb(hex: string): RgbColor | null {
     return { space: 'rgb', r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) };
 }
 
-/** Mirrors `debugMspEnabled` in MudClient.ts — same `mudix.debugMsp`
+/** Mirrors `debugMspEnabled` in MudClient.ts — same `mudlet.debugMsp`
  *  localStorage gate, duplicated here because the engine and the client
  *  don't share a debug-flags module. Toggle in the browser console:
- *  `localStorage.setItem('mudix.debugMsp', '1')`. */
+ *  `localStorage.setItem('mudlet.debugMsp', '1')`. */
 function debugMspEnabled(): boolean {
     try {
-        return typeof localStorage !== 'undefined' && localStorage.getItem('mudix.debugMsp') === '1';
+        return typeof localStorage !== 'undefined' && localStorage.getItem('mudlet.debugMsp') === '1';
     } catch {
         return false;
     }
 }
 
-/** `mudix.debugGmcp` — log each incoming GMCP message's path + truncated body,
+/** `mudlet.debugGmcp` — log each incoming GMCP message's path + truncated body,
  *  so we can see exactly which modules a server drives (e.g. whether audio
  *  arrives over `Client.Media.*` GMCP or MSP tags). */
 function debugGmcpEnabled(): boolean {
     try {
-        return typeof localStorage !== 'undefined' && localStorage.getItem('mudix.debugGmcp') === '1';
+        return typeof localStorage !== 'undefined' && localStorage.getItem('mudlet.debugGmcp') === '1';
     } catch {
         return false;
     }
@@ -682,7 +682,7 @@ export class ScriptingEngine implements EngineHost {
             // into an already-running profile (only sysInstallPackage fires) or
             // a profile with already-installed packages is opened (only
             // sysLoadEvent fires, against a package whose saved state already
-            // reflects a prior real install). mudix's default/brand-package
+            // reflects a prior real install). Mudlet Web's default/brand-package
             // bootstrap is the one case that fires both, synchronously, for the
             // same freshly-installed package — and a package's own sysLoadEvent
             // handler commonly restores saved UI/layout state (e.g. Mudlet's
@@ -899,7 +899,7 @@ export class ScriptingEngine implements EngineHost {
      * Write the live store state back into a linked Mudlet folder's profile save.
      * Bases on the newest parseable save (so external Mudlet edits to Host/unknown
      * fields are preserved), replaces the automation + variable packages with
-     * mudix's current data, and writes a Mudlet-style timestamped file in current/
+     * Mudlet Web's current data, and writes a Mudlet-style timestamped file in current/
      * — one per session, overwritten on subsequent saves (the overwrite is safe
      * now that the folder backend truncates). Mudlet loads the newest such file.
      */
@@ -930,11 +930,11 @@ export class ScriptingEngine implements EngineHost {
      * automation and variable packages replaced by the live store state, and its
      * `<Host>` settings updated in place.
      *
-     * Basing on an existing save is what keeps the ~130 `<Host>` fields mudix
+     * Basing on an existing save is what keeps the ~130 `<Host>` fields Mudlet Web
      * doesn't model — and any element it doesn't understand — from being dropped
      * on the way out. With no save to base on, a profile imported from Mudlet
-     * falls back to the `<Host>` retained at import; one born in mudix gets the
-     * empty skeleton, so its `<Host>` carries only the settings mudix does model.
+     * falls back to the `<Host>` retained at import; one born in Mudlet Web gets the
+     * empty skeleton, so its `<Host>` carries only the settings Mudlet Web does model.
      */
     private buildProfileXml(baseXml?: string, omitHostSettings = false): string {
         const s = useAppStore.getState();
@@ -1311,7 +1311,7 @@ export class ScriptingEngine implements EngineHost {
             this.raiseEvent('sysInstallModule', [manifest.name]);
             this.raiseEvent('sysLuaInstallModule', [manifest.name, path]);
             // Mudlet raises sysSyncInstallModule for modules flagged to sync
-            // (so sibling profiles reload them). mudix is single-profile, so
+            // (so sibling profiles reload them). Mudlet Web is single-profile, so
             // this fires locally for ported scripts that listen on it.
             if (manifest.sync) this.raiseEvent('sysSyncInstallModule', [manifest.name, path]);
             void vfs.flush();
@@ -1414,8 +1414,8 @@ export class ScriptingEngine implements EngineHost {
      * On profile open, warn about enabled keybindings the browser intercepts
      * above the page (Ctrl+T new tab, Ctrl+W close tab, F12 devtools, …). Native
      * Mudlet packages bind these freely, but in a browser they can never reach
-     * mudix — the warning explains why they "do nothing". Page-level shortcuts
-     * mudix can still capture (Ctrl+R, Ctrl+S, F5, …) are intentionally not
+     * Mudlet Web — the warning explains why they "do nothing". Page-level shortcuts
+     * Mudlet Web can still capture (Ctrl+R, Ctrl+S, F5, …) are intentionally not
      * flagged: they work while the client is focused, same as in Mudlet.
      * Fired once at load (not on every store change) so it can't spam the output.
      */
@@ -1618,7 +1618,7 @@ export class ScriptingEngine implements EngineHost {
 
     /** What the module's config.lua declared, with Lua-set overrides applied.
      *  The same contract as getPackageInfo — see manifestInfoBase. This used to
-     *  hand back the whole manifest, so callers saw mudix's own bookkeeping
+     *  hand back the whole manifest, so callers saw Mudlet Web's own bookkeeping
      *  (installedAt, sourceFile, and latterly declaredInfo itself) alongside the
      *  fields the module author actually wrote. */
     getModuleInfoRecord(name: string): Record<string, unknown> | null {
@@ -1674,7 +1674,7 @@ export class ScriptingEngine implements EngineHost {
         if (!v) return null;
         // Mudlet works this out the same way round: the profile directory is
         // <config>/profiles/<name>, so the configuration directory is what is
-        // left when that tail comes off. mudix mounts profiles at
+        // left when that tail comes off. Mudlet Web mounts profiles at
         // /profiles/<connectionId>, which leaves the VFS root.
         const dir = v.profilePath.replace(/\/profiles\/[^/]*$/, '');
         return dir === v.profilePath ? null : dir;
@@ -1730,7 +1730,7 @@ export class ScriptingEngine implements EngineHost {
                 }
             });
             this.session.videos.setMountPoint(() => this.session.windows.getMainViewportElement());
-            // Videos carry no key or tag in mudix (PlayVideoOptions has no
+            // Videos carry no key or tag in Mudlet Web (PlayVideoOptions has no
             // field for either), so those two arguments are the empty strings
             // Mudlet sends for an unset key/tag rather than anything read back.
             this.session.videos.onStarted = (file, path) => this.raiseEvent('sysMediaStarted', [file, path, 'video', '', '']);
@@ -2060,7 +2060,7 @@ export class ScriptingEngine implements EngineHost {
         if (isOff) {
             if (command.kind === 'sound') this.session.sounds.stopSounds();
             else this.session.sounds.stopMusic(command.type ? { tag: command.type } : {});
-            if (debug) console.debug(`[mudix.msp] dispatch stop ${command.kind}`, command.type ? `tag=${command.type}` : '');
+            if (debug) console.debug(`[mudlet.msp] dispatch stop ${command.kind}`, command.type ? `tag=${command.type}` : '');
             return;
         }
         const name = await this.resolveMspMedia(command);
@@ -2072,10 +2072,10 @@ export class ScriptingEngine implements EngineHost {
         if (command.type) opts.tag = command.type;
         if (command.kind === 'music') {
             if (command.continueIfPlaying) opts.continue = true;
-            if (debug) console.debug('[mudix.msp] dispatch playMusic', opts);
+            if (debug) console.debug('[mudlet.msp] dispatch playMusic', opts);
             void this.session.sounds.playMusic(opts);
         } else {
-            if (debug) console.debug('[mudix.msp] dispatch playSound', opts);
+            if (debug) console.debug('[mudlet.msp] dispatch playSound', opts);
             void this.session.sounds.playSound(opts);
         }
     }
@@ -2091,7 +2091,7 @@ export class ScriptingEngine implements EngineHost {
         // Per-command U= wins; otherwise use the default set by an earlier tag
         // (often the Alteraeon-style `Off U=...` boot directive).
         const baseUrl = command.url ?? this.mspBaseUrl;
-        return this.resolveMediaFile(command.file ?? '', baseUrl, '[mudix.msp]', debugMspEnabled());
+        return this.resolveMediaFile(command.file ?? '', baseUrl, '[mudlet.msp]', debugMspEnabled());
     }
 
     /**
@@ -2210,7 +2210,7 @@ export class ScriptingEngine implements EngineHost {
         // still advertises "Client.Media 1" in Core.Supports.Set either way,
         // so MudClient's handshake stays untouched.
         if (useAppStore.getState().connectionProfile[this.connectionId]?.allowServerMedia === false) {
-            if (debug) console.debug(`[mudix.gmcp] media ${action} ignored (disabled in settings)`);
+            if (debug) console.debug(`[mudlet.gmcp] media ${action} ignored (disabled in settings)`);
             return;
         }
         const obj: Record<string, unknown> =
@@ -2239,7 +2239,7 @@ export class ScriptingEngine implements EngineHost {
             // later Play/Load messages that omit their own url.
             const url = str('url');
             if (url) this.gmcpMediaDefaultUrl = url;
-            if (debug) console.debug(`[mudix.gmcp] media default url=${url || '(none)'}`);
+            if (debug) console.debug(`[mudlet.gmcp] media default url=${url || '(none)'}`);
             return;
         }
 
@@ -2257,7 +2257,7 @@ export class ScriptingEngine implements EngineHost {
             if (type !== 'music') {
                 this.session.sounds.stopSounds();
             }
-            if (debug) console.debug(`[mudix.gmcp] media stop type=${type || 'all'}`);
+            if (debug) console.debug(`[mudlet.gmcp] media stop type=${type || 'all'}`);
             return;
         }
 
@@ -2265,13 +2265,13 @@ export class ScriptingEngine implements EngineHost {
         const name = str('name');
         if (!name) return;
         const baseUrl = str('url') || this.gmcpMediaDefaultUrl || undefined;
-        const resolved = await this.resolveMediaFile(name, baseUrl, '[mudix.gmcp] media', debug);
+        const resolved = await this.resolveMediaFile(name, baseUrl, '[mudlet.gmcp] media', debug);
         if (!resolved) return;
 
         if (action === 'load') {
             // Client.Media.Load — preload/cache only, don't play.
             this.session.sounds.preload(resolved);
-            if (debug) console.debug(`[mudix.gmcp] media load ${resolved}`);
+            if (debug) console.debug(`[mudlet.gmcp] media load ${resolved}`);
             return;
         }
 
@@ -2297,10 +2297,10 @@ export class ScriptingEngine implements EngineHost {
             // Mudlet's music `continue` defaults to true — a repeat Play of the
             // same track is ignored while it's already playing.
             opts.continue = bool('continue') ?? true;
-            if (debug) console.debug('[mudix.gmcp] media playMusic', opts);
+            if (debug) console.debug('[mudlet.gmcp] media playMusic', opts);
             void this.session.sounds.playMusic(opts);
         } else {
-            if (debug) console.debug('[mudix.gmcp] media playSound', opts);
+            if (debug) console.debug('[mudlet.gmcp] media playSound', opts);
             void this.session.sounds.playSound(opts);
         }
     }
@@ -2568,12 +2568,12 @@ export class ScriptingEngine implements EngineHost {
         this.profileSaveInFlight = true;
         // Scheduled on the TIMER ENGINE rather than a plain setTimeout, because
         // a spec never gives the browser its thread back: pumpEvents() stands in
-        // for the event loop by firing mudix's own due timers in a synchronous
+        // for the event loop by firing Mudlet Web's own due timers in a synchronous
         // loop, so a setTimeout callback would not run until the spec was over
         // and every later install would be held behind it.
         //
         // The window itself is the turn that asked for the save. Mudlet's save
-        // runs off the event loop and installs during it are put off; mudix
+        // runs off the event loop and installs during it are put off; Mudlet Web
         // writes the profile synchronously, so what an install can still race is
         // the write it just started. Tying it to the VFS flush instead — the
         // durability step — is unbounded, and held installs for good.
@@ -3875,7 +3875,7 @@ export class ScriptingEngine implements EngineHost {
      * profile VFS at `filePath` (relative paths resolve under the profile root,
      * the same convention as `io.open`/`downloadFile`). Returns the absolute
      * path written, or an error string (no VFS, mapper not open, or write
-     * failure). Mudlet requires the mapper open; mudix's renderer lives in the
+     * failure). Mudlet requires the mapper open; Mudlet Web's renderer lives in the
      * map widget, so the same precondition applies.
      */
     exportAreaImageToVfs(areaId: number, filePath: string, zLevel?: number): { path: string } | { error: string } {
@@ -3984,7 +3984,7 @@ export class ScriptingEngine implements EngineHost {
     /**
      * Report a script-initiated call that teardown refused.
      *
-     * Mudlet and mudix reach the same end state by opposite routes, and it is
+     * Mudlet and Mudlet Web reach the same end state by opposite routes, and it is
      * worth being precise about which:
      *
      *   Mudlet guards the ARRIVAL side. `TMainConsole::closeEvent` raises
@@ -3996,14 +3996,14 @@ export class ScriptingEngine implements EngineHost {
      *   postMessage all early-return. The connection is accepted, then
      *   discarded.
      *
-     *   mudix guards the INITIATION side, because its teardown is synchronous:
+     *   Mudlet Web guards the INITIATION side, because its teardown is synchronous:
      *   destroy() runs start to finish with no yield point, and MudSession
      *   disposes the client immediately after, so a socket opened here would
      *   be torn down microseconds later regardless. Refusing up front is the
      *   same outcome without the pointless socket.
      *
      * The observable difference is only what the script is told, and there
-     * mudix is deliberately the more honest of the two: Mudlet returns success
+     * Mudlet Web is deliberately the more honest of the two: Mudlet returns success
      * for a connection that will never deliver a byte. Hence this log line —
      * the divergence is intentional, but it must not be silent.
      *
@@ -4014,9 +4014,9 @@ export class ScriptingEngine implements EngineHost {
     private refuseDuringTeardown(call: string): void {
         const msg = `${call} ignored — the profile is shutting down. `
             + '(Mudlet accepts this during sysExitEvent but then discards the '
-            + 'resulting connection; mudix refuses it up front.)';
+            + 'resulting connection; mudlet refuses it up front.)';
         this.session.events.emit('script.log', msg, 'error');
-        console.warn(`[mudix] ${msg}`);
+        console.warn(`[mudlet] ${msg}`);
     }
 
     requestConnect(url: string): void {
@@ -4157,13 +4157,13 @@ export class ScriptingEngine implements EngineHost {
     // function reference) so re-saving the script picks up the new function,
     // and so missing/mistyped names silently no-op like Mudlet.
     //
-    // The lookup goes through __mudix_resolve_handler, which walks dotted names
+    // The lookup goes through __mudlet_resolve_handler, which walks dotted names
     // the way Mudlet's `return <name>` evaluation does — packages commonly name
     // a script after the table field it defines (`mmp.centerRoominfo`), and a
     // flat _G[name] lookup would never find those.
     //
     // The wrapper also kills any previously-registered handlers for this
-    // script (Bridge.lua's __mudix_script_handlers tracks IDs by script id)
+    // script (Bridge.lua's __mudlet_script_handlers tracks IDs by script id)
     // so re-saving doesn't accumulate duplicate registrations.
     private wrapScript(script: ScriptNode): string {
         if (script.eventHandlers.length === 0) return script.code;
@@ -4171,15 +4171,15 @@ export class ScriptingEngine implements EngineHost {
         const nameLiteral = JSON.stringify(script.name);
         const registrations = script.eventHandlers
             .map(e =>
-                `__mudix_script_handlers[${sidLiteral}][#__mudix_script_handlers[${sidLiteral}]+1] = ` +
+                `__mudlet_script_handlers[${sidLiteral}][#__mudlet_script_handlers[${sidLiteral}]+1] = ` +
                 `registerAnonymousEventHandler(${JSON.stringify(e)}, function(...) ` +
-                `local __fn = __mudix_resolve_handler(${nameLiteral}); ` +
+                `local __fn = __mudlet_resolve_handler(${nameLiteral}); ` +
                 `if __fn then return __fn(...) end ` +
                 `end)`)
             .join('\n');
         return [
-            `__mudix_kill_script_handlers(${sidLiteral})`,
-            `__mudix_script_handlers[${sidLiteral}] = {}`,
+            `__mudlet_kill_script_handlers(${sidLiteral})`,
+            `__mudlet_script_handlers[${sidLiteral}] = {}`,
             script.code,
             registrations,
         ].join('\n');
@@ -4245,7 +4245,7 @@ export class ScriptingEngine implements EngineHost {
         // with capture groups recolours its groups and leaves the rest of the
         // match alone; a pattern without them recolours the match itself; and a
         // match-all pattern does that for every occurrence, not just the first.
-        // mudix painted `matches[1]` and stopped, which got the no-groups
+        // Mudlet Web painted `matches[1]` and stopped, which got the no-groups
         // single-match case right and the other two wrong.
         if (isColorizing(trigger) && trigger.highlight && matchedText) {
             const { fg, bg } = trigger.highlight;
@@ -4547,7 +4547,7 @@ export class ScriptingEngine implements EngineHost {
             this.triggerEngine.process(plain, isPrompt, (m) => {
                 this.executePermTrigger(
                     m.trigger,
-                    // Mudlet (and mudix's temp-trigger path) put the whole regex
+                    // Mudlet (and Mudlet Web's temp-trigger path) put the whole regex
                     // MATCH at matches[1], not the whole line — they only differ
                     // for an unanchored pattern that matches a substring. Passing
                     // `plain` here made `selectString(matches[1])` highlight the
@@ -4579,7 +4579,7 @@ export class ScriptingEngine implements EngineHost {
 
     private bridgeEvents(session: MudSession): void {
         // Mudlet `sysProfileFocusChangeEvent(focused)` — fires on tab/window
-        // focus transitions for this profile. mudix has one active profile at
+        // focus transitions for this profile. Mudlet Web has one active profile at
         // a time, so we map it to document.visibilitychange (the cheapest
         // signal that fires both on Alt-Tab and tab switches).
         const onVisibility = () => {
@@ -4634,13 +4634,13 @@ export class ScriptingEngine implements EngineHost {
                 this.raiseEvent('sysEchoAnomalyDetected', []);
             }),
             // Mudlet `raiseProtocolEvent("sysProtocolRejected", name)` — fired
-            // when mudix refuses a telnet option it deliberately doesn't support
+            // when Mudlet Web refuses a telnet option it deliberately doesn't support
             // (SUPPRESS_GO_AHEAD, LINEMODE — line mode only, like Mudlet).
             session.events.on('protocol.rejected', (protocol) => {
                 this.raiseEvent('sysProtocolRejected', [protocol]);
             }),
             // Mudlet `sysCharacterModeDetected` — the server requested SGA and
-            // enabled server-side echo (character-at-a-time), which mudix can't
+            // enabled server-side echo (character-at-a-time), which Mudlet Web can't
             // drive well. Raised once per connection, and — matching Mudlet's
             // cTelnet::checkCharacterModePattern — accompanied by a visible
             // [ WARN ] line in the main output.
@@ -4653,11 +4653,11 @@ export class ScriptingEngine implements EngineHost {
                     'warn', Date.now());
             }),
             session.events.on('flushLines', (groups) => {
-                // TEMP DIAGNOSTIC: set window.__MUDIX_DEBUG_FLUSH = true in the
+                // TEMP DIAGNOSTIC: set window.__MUDLET_DEBUG_FLUSH = true in the
                 // devtools console to log each network flush batch's raw line
                 // groups (newlines escaped) so we can see the exact order lines
                 // arrive relative to trigger echoes. Remove once diagnosed.
-                if ((globalThis as { __MUDIX_DEBUG_FLUSH?: boolean }).__MUDIX_DEBUG_FLUSH) {
+                if ((globalThis as { __MUDLET_DEBUG_FLUSH?: boolean }).__MUDLET_DEBUG_FLUSH) {
                     // eslint-disable-next-line no-console
                     console.log('[FLUSH BATCH]', groups.map(g => ({ type: g.type, text: g.text })));
                 }
@@ -4691,7 +4691,7 @@ export class ScriptingEngine implements EngineHost {
                 this.setForceMxpProcessorOn(
                     useAppStore.getState().connectionProfile[this.connectionId]?.config?.specialForceMXPProcessorOn === true,
                 );
-                // mudix's native `connect` plus the Mudlet-standard name — the
+                // Mudlet Web's native `connect` plus the Mudlet-standard name — the
                 // bundled generic mapper and ported scripts register a
                 // sysConnectionEvent handler, so both must fire.
                 this.emit('connect', []);
@@ -4701,7 +4701,7 @@ export class ScriptingEngine implements EngineHost {
                 this.emit('disconnect', []);
                 this.emit('sysDisconnectionEvent', []);
                 // Mudlet raises sysProtocolDisabled as protocols tear down. GMCP
-                // is the only protocol mudix negotiates, and it ends with the
+                // is the only protocol Mudlet Web negotiates, and it ends with the
                 // socket, so mirror the enabled/disabled pair here.
                 if (this.gmcpNegotiated) {
                     this.gmcpNegotiated = false;
@@ -4749,7 +4749,7 @@ export class ScriptingEngine implements EngineHost {
                 if (!path) return;
                 if (debugGmcpEnabled()) {
                     const body = JSON.stringify(value);
-                    console.debug(`[mudix.gmcp] ${path}`,
+                    console.debug(`[mudlet.gmcp] ${path}`,
                         body.length > 200 ? body.slice(0, 200) + '…' : body);
                 }
                 this.runtimes.lua?.setGmcpValue(path, value);
@@ -4849,7 +4849,7 @@ export class ScriptingEngine implements EngineHost {
 }
 
 /**
- * Diagnostic gate — enable via `localStorage.setItem('mudix.debugMxp', '1')` in
+ * Diagnostic gate — enable via `localStorage.setItem('mudlet.debugMxp', '1')` in
  * the browser console to log every raw MXP line (escapes visible) alongside the
  * colour the parser assigned to each rendered segment. Use this to tell whether
  * a colour (e.g. the green object-id digits in a clickable item list) comes from
@@ -4857,7 +4857,7 @@ export class ScriptingEngine implements EngineHost {
  */
 function debugMxpEnabled(): boolean {
     try {
-        return typeof localStorage !== 'undefined' && localStorage.getItem('mudix.debugMxp') === '1';
+        return typeof localStorage !== 'undefined' && localStorage.getItem('mudlet.debugMxp') === '1';
     } catch {
         return false;
     }
@@ -4888,5 +4888,5 @@ function logMxpLine(raw: string, segments: BufferSegment[]): void {
             + ` bg=${describeColor(st?.background)}${flags ? ` [${flags}]` : ''}`;
     });
     // eslint-disable-next-line no-console
-    console.debug(`[mudix.mxp] raw=${JSON.stringify(raw)}\n${segs.join('\n')}`);
+    console.debug(`[mudlet.mxp] raw=${JSON.stringify(raw)}\n${segs.join('\n')}`);
 }

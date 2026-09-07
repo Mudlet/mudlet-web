@@ -3,7 +3,7 @@ import { MapRenderer, MapReader, createSettings } from 'mudlet-map-renderer';
 import { applyMapperSettings } from '../map/mapImageExport';
 import { MAPPER_DEFAULTS, PLAYER_MARKER_DEFAULTS, type MapperSettings } from '../storage';
 
-// Same trick MudixMapReader uses: the renderer's `MapData.*` types live in a
+// Same trick MudletMapReader uses: the renderer's `MapData.*` types live in a
 // global namespace the package doesn't re-export by name, so derive the shapes
 // from MapReader's constructor instead of naming them.
 type PreviewMap = ConstructorParameters<typeof MapReader>[0];

@@ -50,7 +50,7 @@ export function installPackageBindings({ lua, api }: BindingContext): void {
     lua.global.set('__reloadModule', (name: unknown) => {
         api.reloadModule(String(name ?? ''));
     });
-    lua.global.set('__mudix_syncModule', (name: unknown) => {
+    lua.global.set('__mudlet_syncModule', (name: unknown) => {
         // Fire-and-forget; Lua callers don't get a promise. The underlying
         // flush is async but the in-app effect (sysSyncOnModule) will fire
         // on success.

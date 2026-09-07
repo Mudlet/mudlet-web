@@ -11,9 +11,9 @@ import type { MudConnection } from '../storage/schema';
 import { describeThrown } from '../utils/describeThrown';
 
 // Apply a parsed Mudlet profile bundle (see mudletProfileImport.ts) as a NEW
-// native mudix profile: create the connection, provision its VFS (copy map +
+// native Mudlet Web profile: create the connection, provision its VFS (copy map +
 // loose files), and seed its store slices (settings, automation, variables).
-// This is a one-time copy — mudix owns the result; the original Mudlet folder is
+// This is a one-time copy — Mudlet Web owns the result; the original Mudlet folder is
 // never touched and there is no write-back. (Live "link" mode, where the Mudlet
 // XML stays the source of truth, is a separate feature.)
 
@@ -91,7 +91,7 @@ export function bundleToConnectionRecord(bundle: MudletProfileBundle): Omit<MudC
 }
 
 /**
- * Create a new mudix profile from a Mudlet profile bundle. Returns the new
+ * Create a new Mudlet Web profile from a Mudlet profile bundle. Returns the new
  * connection id. The profile opens offline like any other; its data is durable
  * in the new VFS (`.mudlet/profile.json`) and map store before this resolves.
  *
@@ -126,7 +126,7 @@ export async function importMudletProfile(bundle: MudletProfileBundle): Promise<
                 console.warn('[importMudletProfile] failed to retain <Host>', err);
             }
         }
-        // Seed the store, then flush it to the profile's .mudix/profile.json so
+        // Seed the store, then flush it to the profile's .mudlet/profile.json so
         // it's durable for when the user opens the profile (which re-hydrates
         // from that file). Hydrating a non-active connection doesn't disturb any
         // open session — its subscription keys on its own connection id.
@@ -213,7 +213,7 @@ async function newestFileIn(
 }
 
 /**
- * Link a Mudlet profile *directory* as a new mudix profile (Link mode): the
+ * Link a Mudlet profile *directory* as a new Mudlet Web profile (Link mode): the
  * folder stays the source of truth — its `current/*.xml` is re-read on every
  * open — rather than being copied in. Reads the connection identity from the
  * newest save, registers the connection, persists the folder handle so the VFS

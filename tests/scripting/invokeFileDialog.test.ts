@@ -5,7 +5,7 @@ import { createTestRuntime, type TestRuntime } from '../createTestRuntime';
 import type { FileDialogRequest } from '../../src/mud/events';
 
 // invokeFileDialog is synchronous in Mudlet (QFileDialog blocks the script).
-// mudix implements it by parking the calling handler's coroutine at the JS
+// Mudlet Web implements it by parking the calling handler's coroutine at the JS
 // resume boundary (LuaRuntime.parkDialogThread) and resuming it with the
 // picked path once the UI resolves the 'script.filedialog' request. These
 // tests drive that full loop: park → request emitted → resume with a path /
@@ -190,10 +190,10 @@ describe('invokeFileDialog — coroutine park/resume', () => {
   });
 });
 
-// __mudix_pcall_co is the pcall replacement that lets a yield pass through a
+// __mudlet_pcall_co is the pcall replacement that lets a yield pass through a
 // protected call (Lua 5.1 pcall is a C frame — yields can't cross it). It must
 // still behave exactly like pcall for the error/return contract.
-describe('__mudix_pcall_co — yield-transparent pcall', () => {
+describe('__mudlet_pcall_co — yield-transparent pcall', () => {
   let t: TestRuntime;
 
   beforeEach(async () => {
@@ -205,32 +205,32 @@ describe('__mudix_pcall_co — yield-transparent pcall', () => {
   });
 
   it('returns true + results on success', () => {
-    expect(t.run(`local ok, a = __mudix_pcall_co(function() return 42 end) return ok and a`)).toBe(42);
+    expect(t.run(`local ok, a = __mudlet_pcall_co(function() return 42 end) return ok and a`)).toBe(42);
   });
 
   it('catches errors like pcall', () => {
-    expect(t.run(`local ok = __mudix_pcall_co(function() error('nope') end) return ok`)).toBe(false);
+    expect(t.run(`local ok = __mudlet_pcall_co(function() error('nope') end) return ok`)).toBe(false);
     expect(
-      t.run(`local ok, err = __mudix_pcall_co(function() error('nope') end) return tostring(err)`),
+      t.run(`local ok, err = __mudlet_pcall_co(function() error('nope') end) return tostring(err)`),
     ).toContain('nope');
   });
 
   it('passes arguments through', () => {
-    expect(t.run(`local ok, s = __mudix_pcall_co(function(a, b) return a .. b end, 'x', 'y') return s`)).toBe('xy');
+    expect(t.run(`local ok, s = __mudlet_pcall_co(function(a, b) return a .. b end, 'x', 'y') return s`)).toBe('xy');
   });
 
   it('falls back to plain pcall for C functions (coroutine.create rejects them)', () => {
     // JS-bound API globals are C functions to Lua; they can't run on a
     // coroutine but must still get pcall semantics instead of erroring.
-    expect(t.run(`local ok, s = __mudix_pcall_co(string.rep, 'ab', 2) return ok and s`)).toBe('abab');
-    expect(t.run(`local ok = __mudix_pcall_co(error, 'from C') return ok`)).toBe(false);
+    expect(t.run(`local ok, s = __mudlet_pcall_co(string.rep, 'ab', 2) return ok and s`)).toBe('abab');
+    expect(t.run(`local ok = __mudlet_pcall_co(error, 'from C') return ok`)).toBe(false);
   });
 
   it('forwards a nested yield outward and feeds the resume value back in', () => {
     // Simulate the JS boundary with a plain coroutine wrapping the trampoline.
     const result = t.run(`
       local co = coroutine.create(function()
-        local ok, v = __mudix_pcall_co(function()
+        local ok, v = __mudlet_pcall_co(function()
           return coroutine.yield('ping')
         end)
         return ok and v

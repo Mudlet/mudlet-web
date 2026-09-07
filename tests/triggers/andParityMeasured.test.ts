@@ -11,7 +11,7 @@
 // counts to a file and called `closeMudlet()`. Launched as
 // `Mudlet.exe --profile=<name>`, which auto-opens the profile.
 //
-// Two things this settles, both of which mudix had wrong:
+// Two things this settles, both of which Mudlet Web had wrong:
 //   * a line spacer of N is a *minimum* gap, not an exact one — spacer 1 fires
 //     whether the second condition arrives 1, 2 or 3 lines later (S1..S3), so
 //     the expectation in mudlet-web#57 ("only the middle case fires") was not

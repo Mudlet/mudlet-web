@@ -1,6 +1,6 @@
 // Issue #70 item 5: button rotation had no control and no home in the model,
 // and the exporter hard-coded `<buttonRotation>0</buttonRotation>` — so a
-// package authored in Mudlet lost its rotated buttons the first time mudix
+// package authored in Mudlet lost its rotated buttons the first time Mudlet Web
 // saved it back. The toolbar's filler offset (`<buttonFillerOffset>`, Mudlet
 // #9332) had never been modelled at all.
 import { describe, it, expect } from 'vitest';

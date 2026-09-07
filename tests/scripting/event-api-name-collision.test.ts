@@ -7,7 +7,7 @@ import { createTestRuntime, type TestRuntime } from '../createTestRuntime';
 // which collides with the JS-bound disconnect() API global. The dispatcher's
 // "call a global named after the event" convenience must skip C/JS-bound
 // functions — with pcall it silently re-invoked the API; after the
-// __mudix_pcall_co switch it errored ("bad argument #1 to 'create'").
+// __mudlet_pcall_co switch it errored ("bad argument #1 to 'create'").
 describe('event dispatch — event names colliding with API globals', () => {
   let t: TestRuntime;
   let errors: string[];

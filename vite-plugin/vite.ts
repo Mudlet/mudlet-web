@@ -25,7 +25,7 @@ const require = createRequire(import.meta.url);
 const POLYFILLS: ('buffer' | 'stream' | 'events' | 'util')[] = ['buffer', 'stream', 'events', 'util'];
 
 /** vfs-sw.js ships next to the compiled plugin in dist-lib (consumers) and in
- *  public/ when running from the mudix repo itself (source import). */
+ *  public/ when running from the Mudlet Web repo itself (source import). */
 function resolveVfsSwPath(): string | null {
     for (const rel of ['./vfs-sw.js', '../public/vfs-sw.js']) {
         const p = fileURLToPath(new URL(rel, import.meta.url));
@@ -36,13 +36,13 @@ function resolveVfsSwPath(): string | null {
 
 /** Serves libpcre2.wasm at the root URL in dev (where emscripten looks for it
  *  when document.currentScript is null) and emits it to the build output.
- *  Resolved from wherever pcre2-wasm-universal lives relative to mudix. */
+ *  Resolved from wherever pcre2-wasm-universal lives relative to mudlet. */
 function pcre2WasmPlugin(): Plugin {
     // The wasm file isn't in the package's exports map — resolve the exported
     // ./libpcre2 entry (dist/libpcre2.js) and take its sibling.
     const wasmPath = join(dirname(require.resolve('pcre2-wasm-universal/libpcre2')), 'libpcre2.wasm');
     return {
-        name: 'mudix:pcre2-wasm',
+        name: 'mudlet:pcre2-wasm',
         configureServer(server) {
             server.middlewares.use((req, res, next) => {
                 if (req.url === '/libpcre2.wasm') {
@@ -66,12 +66,12 @@ function pcre2WasmPlugin(): Plugin {
 /** Serves/emits the VFS service worker at the site root so
  *  `registerVfsServiceWorker()` (called by MudletWebApp) finds it. Skipped when
  *  the consumer already ships its own copy in public/ — as the standalone
- *  mudix app does. */
+ *  Mudlet Web app does. */
 function vfsServiceWorkerPlugin(): Plugin {
     const swPath = resolveVfsSwPath();
     let skip = false;
     return {
-        name: 'mudix:vfs-sw',
+        name: 'mudlet:vfs-sw',
         configResolved(config) {
             skip = !swPath || (!!config.publicDir && existsSync(join(config.publicDir, 'vfs-sw.js')));
         },
@@ -96,17 +96,17 @@ function vfsServiceWorkerPlugin(): Plugin {
     };
 }
 
-export default function mudix(): PluginOption[] {
+export default function mudlet(): PluginOption[] {
     return [
         {
-            name: 'mudix:config',
+            name: 'mudlet:config',
             config: () => ({
                 resolve: {
                     // Exactly one instance of each, always. `mudlet-map-editor`
                     // used to declare these as plain *dependencies*, so the
                     // moment its range outran the range the app resolved, the
                     // package manager nested a second copy under the editor.
-                    // The editor's `App` was then rendered by mudix's React
+                    // The editor's `App` was then rendered by Mudlet Web's React
                     // while its hooks came from the nested one, whose
                     // dispatcher is null — "Invalid hook call", and with no
                     // error boundary above the lazy boundary the throw
@@ -132,14 +132,14 @@ export default function mudix(): PluginOption[] {
                 // what it means today.
                 assetsInclude: ['**/*.mpackage', '**/specs/fixtures/**/*.zip'],
                 optimizeDeps: {
-                    // 'mudix': the library entry carries relative `?url` asset
+                    // 'Mudlet Web': the library entry carries relative `?url` asset
                     // imports (external in the lib build); the dep optimizer's
                     // scanner treats the query as part of a filesystem path and
-                    // dies on Windows (os error 123). Excluded, mudix is served
+                    // dies on Windows (os error 123). Excluded, Mudlet Web is served
                     // through Vite's transform pipeline in dev, where `?url`
-                    // works. Harmless in mudix's own repo (not a dep there).
+                    // works. Harmless in Mudlet Web's own repo (not a dep there).
                     exclude: ['pcre2-wasm-universal', '@mudlet/mudlet-web'],
-                    // CJS deps reached from the excluded mudix entry must be
+                    // CJS deps reached from the excluded Mudlet Web entry must be
                     // pre-bundled explicitly (Vite doesn't interop CJS served
                     // raw). Extend this list if dev mode reports "does not
                     // provide an export named ..." for another dependency.
@@ -150,7 +150,7 @@ export default function mudix(): PluginOption[] {
                     // html-parse-stringify > void-elements) are CJS, and which
                     // of them trips first depends on evaluation order. Listing
                     // the editor pre-bundles the lot in one go — and mirrors
-                    // mudix's own dev server, where the scanner finds the
+                    // Mudlet Web's own dev server, where the scanner finds the
                     // `import('mudlet-map-editor')` in MapEditorModal and
                     // pre-bundles it anyway. Bare package names only, no
                     // subpaths: `mudlet-map-renderer/bigmap` and friends only

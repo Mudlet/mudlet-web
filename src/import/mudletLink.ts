@@ -5,9 +5,9 @@ import { buildPackageManifests } from './mudletProfileImport';
 
 // Link mode (read-only, phase 1): a profile whose VFS is a *linked Mudlet folder*
 // loads its settings/automation/variables/packages from the newest current/*.xml
-// on every open — so edits made in Mudlet show up in mudix. The .mudlet/profile.json
-// sidecar holds only mudix-only state (layout/dock/mapper/…), applied over the
-// XML. Automation write-back to current/*.xml is phase 2; until then mudix's own
+// on every open — so edits made in Mudlet show up in mudlet. The .mudlet/profile.json
+// sidecar holds only Mudlet Web-only state (layout/dock/mapper/…), applied over the
+// XML. Automation write-back to current/*.xml is phase 2; until then Mudlet Web's own
 // automation edits aren't persisted to a linked profile.
 //
 // We read through the already-mounted ProfileVFS, so only this minimal surface
@@ -90,7 +90,7 @@ function readSidecar(vfs: VfsReader): Partial<PersistedProfileData> {
 
 /**
  * Hydrate the store for a Mudlet-linked profile from the newest current/*.xml,
- * layering the .mudix sidecar's mudix-only slices on top. Returns false if the
+ * layering the .mudlet sidecar's Mudlet Web-only slices on top. Returns false if the
  * VFS isn't a Mudlet profile (caller falls back to the normal profile.json load).
  * `installedAt` stamps the package manifests (pass an ISO timestamp).
  */
@@ -117,10 +117,10 @@ export function loadMudletLinkedProfile(vfs: VfsReader, connectionId: string, in
         buttons: data.automation.buttons,
         packages,
         variables: { saveList: vars.map(v => v.name), values: vars, hidden: data.variables.hidden },
-        // XML settings as the base; mudix-only profile fields (mapper, font source,
+        // XML settings as the base; Mudlet Web-only profile fields (mapper, font source,
         // mapViewStates, …) from the sidecar win where set.
         profile: { ...data.settings, ...(sidecar.profile ?? {}) },
-        // Pure mudix-only UI/layout slices come entirely from the sidecar.
+        // Pure Mudlet Web-only UI/layout slices come entirely from the sidecar.
         windowHints: sidecar.windowHints,
         dockExtents: sidecar.dockExtents,
         scriptEditorBounds: sidecar.scriptEditorBounds,

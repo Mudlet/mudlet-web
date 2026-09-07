@@ -358,7 +358,7 @@ export function ConnectionFormModal({ connection, preset, firstConnection, title
                                 id="cs-proxy"
                                 value={proxyUrl}
                                 onChange={e => setProxyUrl(e.target.value)}
-                                placeholder={effectiveDefaultProxy || 'wss://mudix-proxy.yourname.workers.dev'}
+                                placeholder={effectiveDefaultProxy || 'wss://mudlet-proxy.yourname.workers.dev'}
                                 spellCheck={false}
                                 aria-invalid={!proxyCheck.ok || undefined}
                                 aria-describedby={proxyCheck.ok ? undefined : 'cs-proxy-error'}

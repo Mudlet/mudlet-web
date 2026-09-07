@@ -332,7 +332,7 @@ export function parseConfigJson(json: string): HyperlinkConfig | null {
 
 // ── URI query extraction ──────────────────────────────────────────────────
 
-/** The reserved query keys mudix consumes (and strips from outgoing URLs). */
+/** The reserved query keys Mudlet Web consumes (and strips from outgoing URLs). */
 const RESERVED_PARAMS = new Set(["config", "preset"]);
 
 interface ExtractedQuery {

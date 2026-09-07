@@ -13,7 +13,7 @@
  * tested directly, and so the pipeline glue in `ScriptingEngine` stays readable.
  *
  * **Visible text, not raw.** Mudlet judges `mMudLine`, which is plain characters
- * with the styling held alongside in a `TChar` buffer. mudix keeps styling
+ * with the styling held alongside in a `TChar` buffer. Mudlet Web keeps styling
  * inline as ANSI escapes, so every predicate here takes text that has been put
  * through {@link visibleText} first — otherwise a colour-heavy line would be
  * measured as far longer than the player sees, and its escape punctuation would
@@ -295,7 +295,7 @@ export function shouldCommitPendingBeforeJoin(
  * and its continuation, restoring the space the game's wrapper swallowed when
  * neither side already carries one.
  *
- * Operates on the **raw** lines (escapes and all): mudix's styling is inline, so
+ * Operates on the **raw** lines (escapes and all): Mudlet Web's styling is inline, so
  * a plain concatenation carries each half's colour across untouched — the
  * `TChar`-buffer splice Mudlet needs has no equivalent here. The space-insertion
  * test looks at the visible text so a trailing colour reset can't hide the space

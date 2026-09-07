@@ -4,7 +4,7 @@
 // triggers in one ordered list (`mTriggerRootNodeList`) and fires them
 // front-to-back; a temp created at runtime is appended after the permanent
 // triggers that already exist, so a permanent trigger on a line fires BEFORE a
-// later-created temp that also matches it. mudix used to run all temps first,
+// later-created temp that also matches it. Mudlet Web used to run all temps first,
 // then all perms — which drove the Arkadia "deposit" double-print: the temp
 // (boxes.lua update_box) ran before the permanent container trigger, nulled the
 // guard, and made the permanent trigger re-run update_box.

@@ -59,11 +59,11 @@ describe('wrapLine — in-place DOM re-render', () => {
 });
 
 describe('setProfileStyleSheet — installs a <style> block in document.head', () => {
-  // The tags are keyed per connection (and stamped with data-mudix-style-owner)
+  // The tags are keyed per connection (and stamped with data-mudlet-style-owner)
   // so a closed profile's CSS can be torn down instead of following the tab into
   // the next profile — look them up by kind rather than a fixed global id.
   const profileTags = () =>
-    [...env.body.ownerDocument.querySelectorAll('style[data-mudix-profile-stylesheet]')] as HTMLStyleElement[];
+    [...env.body.ownerDocument.querySelectorAll('style[data-mudlet-profile-stylesheet]')] as HTMLStyleElement[];
 
   it('creates a single profile-keyed style tag and replaces its content on re-call', () => {
     expect(env.run('return (setProfileStyleSheet(".foo { color: red; }"))')).toBe(true);
@@ -73,7 +73,7 @@ describe('setProfileStyleSheet — installs a <style> block in document.head', (
     expect(el.parentElement).toBe(env.body.ownerDocument.head);
     expect(el.textContent).toBe('.foo { color: red; }');
     // Owned by this profile, so destroy() can find it.
-    expect(el.dataset.mudixStyleOwner).toBeTruthy();
+    expect(el.dataset.mudletStyleOwner).toBeTruthy();
 
     // A second call replaces the content in place — no duplicate tag.
     env.run('setProfileStyleSheet(".bar { color: blue; }")');
@@ -84,7 +84,7 @@ describe('setProfileStyleSheet — installs a <style> block in document.head', (
     env.run('setAppStyleSheet(".app { margin: 0; }")');
     expect(profileTags().length).toBe(1);
     expect(profileTags()[0].textContent).toBe('.bar { color: blue; }');
-    const appTags = env.body.ownerDocument.querySelectorAll('style[data-mudix-app-stylesheet]');
+    const appTags = env.body.ownerDocument.querySelectorAll('style[data-mudlet-app-stylesheet]');
     expect(appTags.length).toBe(1);
   });
 
@@ -102,16 +102,16 @@ describe('setProfileStyleSheet — installs a <style> block in document.head', (
 
   it('gives setAppStyleSheet the same scope and Qt bridge as setProfileStyleSheet', () => {
     // Mudlet separates the two because one QApplication hosts several profiles.
-    // A mudix tab hosts one, so both are profile-local and profile-owned —
+    // A Mudlet Web tab hosts one, so both are profile-local and profile-owned —
     // identical in scope, differing only in which tag they replace. Anything
     // else would leave a closed profile's CSS restyling the next one opened.
     env.run('setAppStyleSheet("QDockWidget::title { background: #b8731b; }")');
     env.run('setProfileStyleSheet("QDockWidget::title { background: #b8731b; }")');
     const appTag = env.body.ownerDocument
-      .querySelector('style[data-mudix-app-stylesheet]') as HTMLStyleElement;
+      .querySelector('style[data-mudlet-app-stylesheet]') as HTMLStyleElement;
     expect(appTag.textContent).toBe(profileTags()[0].textContent);
     expect(appTag.textContent).toContain('.script-window-titlebar');
-    expect(appTag.dataset.mudixStyleOwner).toBe(profileTags()[0].dataset.mudixStyleOwner);
+    expect(appTag.dataset.mudletStyleOwner).toBe(profileTags()[0].dataset.mudletStyleOwner);
     env.run('setAppStyleSheet("")');
     env.run('setProfileStyleSheet("")');
   });
@@ -155,10 +155,10 @@ describe('echoPopup — right-click menu in the real DOM', () => {
     expect(span!.textContent).toBe('look');
 
     // No menu until the user right-clicks.
-    expect(env.body.querySelector('#mudix-popup-menu')).toBeNull();
+    expect(env.body.querySelector('#mudlet-popup-menu')).toBeNull();
     span!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 10, clientY: 10 }));
 
-    const menu = env.body.querySelector('#mudix-popup-menu');
+    const menu = env.body.querySelector('#mudlet-popup-menu');
     expect(menu).toBeTruthy();
     const items = [...menu!.querySelectorAll('div')];
     expect(items.map((i) => i.textContent)).toEqual(['Look at statue']);

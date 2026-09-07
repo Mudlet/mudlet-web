@@ -9,7 +9,7 @@
 //   2. split it on the profile's command separator (SkipEmptyParts),
 //   3. run each part through the aliases, wire-send what no alias consumed.
 //
-// mudix used to do none of it in one place: item commands passed `echo = false`
+// Mudlet Web used to do none of it in one place: item commands passed `echo = false`
 // (pinning them to "never echo" whatever the user configured), the separator was
 // split only for typed input, the echo happened per-part *after* the alias pass
 // — so a line an alias swallowed was never echoed at all — and an item's command

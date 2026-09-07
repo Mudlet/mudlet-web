@@ -2852,7 +2852,7 @@ describe("Tests the open and closed states of the map widget", function()
   end)
 
   -- Neither of these can be reached from Lua, so they are recorded rather than
-  -- covered: the dock's own title bar close button and mudlet's map toolbar
+  -- covered: the dock's own title bar close button and Mudlet Web's map toolbar
   -- button both hide the same dock, and Host::mapWidget() reads the dock's
   -- hidden state so that it follows them without either having to know.
   pending("the map dock's title bar close button leaves the map window functions reporting no map window - needs GUI automation")

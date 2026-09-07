@@ -70,13 +70,13 @@ describe('effectiveProxyUrl', () => {
  *  certificate — the Node proxy. Workers cannot, so the UI hides the options. */
 describe('proxyCanInspectCertificates', () => {
     it('says no for a Cloudflare Worker, including the built-in default', () => {
-        expect(proxyCanInspectCertificates('wss://mudix.delwing.workers.dev')).toBe(false);
+        expect(proxyCanInspectCertificates('wss://mudlet.delwing.workers.dev')).toBe(false);
         expect(proxyCanInspectCertificates(DEFAULT_PROXY_URL)).toBe(false);
         expect(proxyCanInspectCertificates('wss://anything.someone.workers.dev')).toBe(false);
     });
 
     it('is case-insensitive about the hostname', () => {
-        expect(proxyCanInspectCertificates('wss://Mudix.Delwing.Workers.Dev')).toBe(false);
+        expect(proxyCanInspectCertificates('wss://Mudlet.Delwing.Workers.Dev')).toBe(false);
     });
 
     it('says yes for a self-hosted proxy', () => {

@@ -83,7 +83,7 @@ function hexToRgb(s: string): { r: number; g: number; b: number } | null {
 // brand's own — see getThemeChoices), so they're resolved at render time.
 
 /** The one subpage the web client has: Mudlet puts its ten telnet protocols
- *  behind a chevron on the Connection page, and mudix has twelve rows there. */
+ *  behind a chevron on the Connection page, and Mudlet Web has twelve rows there. */
 const SUBPAGES: SubpageDefinition[] = [
     { key: 'protocols', category: 'connection', title: 'Game protocols' },
 ];
@@ -115,7 +115,7 @@ const DEFAULT_COMMAND_SEPARATOR = ';;';
 // name in WS_SUBPROTOCOL_CHOICES; the server selects at most one of the checked
 // names (they're alternative stream modes, not layers).
 const WS_SUBPROTOCOL_HINTS: Record<string, string> = {
-    'binary': 'Raw telnet stream over binary frames — the mode mudix decodes. Accepted by FluffOS and last-outpost.com.',
+    'binary': 'Raw telnet stream over binary frames — the mode mudlet decodes. Accepted by FluffOS and last-outpost.com.',
     'telnet': "FluffOS's telnet handler (same wire format as binary, different name). Some servers reject it — e.g. last-outpost.com returns HTTP 400.",
     'telnet.mudstandards.org': 'The mudstandards.org WebSocket proposal — the same profile under the standardised name.',
 };
@@ -361,7 +361,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     const rawBlankLines = config?.blankLinesBehaviour;
     const blankLinesBehaviour: BlankLinesBehaviour =
         rawBlankLines === 'hide' || rawBlankLines === 'replacewithspace' ? rawBlankLines : 'show';
-    // Mudlet's Special Options tab, minus the compression toggle mudix already
+    // Mudlet's Special Options tab, minus the compression toggle Mudlet Web already
     // carries as the positive MCCP protocol switch above.
     const inputLineStrictUnixEndings = (config?.inputLineStrictUnixEndings as boolean | undefined) ?? false;
     const specialForceGAOff = (config?.specialForceGAOff as boolean | undefined) ?? false;
@@ -1309,7 +1309,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                                 of the figure above (Mudlet's
                                 {' '}<code>useMaxConsoleBufferSize</code>). Desktop Mudlet
                                 works this out from your machine's memory; a browser tab
-                                cannot ask, so mudix uses a fixed cap. Every retained line
+                                cannot ask, so mudlet uses a fixed cap. Every retained line
                                 costs memory and slows down redraws — raise this only if
                                 you really scroll that far back.
                             </HelpTip>
@@ -2753,7 +2753,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                             selects at most one of the checked names — these are
                             mutually-exclusive stream modes, not layers. Leave{' '}
                             <code>binary</code> checked in almost all cases: it's the raw
-                            telnet stream mudix decodes, and it's accepted the most
+                            telnet stream mudlet decodes, and it's accepted the most
                             widely. Some servers (FluffOS) route a no-subprotocol
                             connection to a non-MUD handler and send no data, so an empty
                             selection can leave the terminal blank; others reject an
@@ -2839,7 +2839,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                             <HelpTip label="About forcing GA off">
                                 Stop treating the telnet <code>GA</code>/<code>EOR</code> marker as
                                 an end-of-prompt signal (Mudlet's <code>specialForceGAOff</code>).
-                                Normally the first such marker switches mudix into GA-driven prompt
+                                Normally the first such marker switches mudlet into GA-driven prompt
                                 mode, where the marker — not a newline — is what ends a prompt line.
                                 A few older drivers emit it in the wrong places, which chops output
                                 into odd fragments; with this on the marker just becomes a line
@@ -2862,7 +2862,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                                 default, because the period it contains is not a legal TTYPE
                                 character per RFC 1091 — Mudlet stopped sending it in 2024. Servers
                                 running KaVir's protocol snippet read a version out of that field
-                                and fall back to 16 colours without one, so mudix detects those
+                                and fall back to 16 colours without one, so mudlet detects those
                                 servers and turns this on for you.
                             </HelpTip>
                         </span>
@@ -2883,7 +2883,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                                 send secure tags like <code>&lt;SEND&gt;</code> without ever
                                 switching mode, and those are discarded otherwise. To turn MXP off
                                 entirely, leave this off and also switch off <strong>MXP</strong>
-                                on the game protocols page. Off by default; mudix turns it on
+                                on the game protocols page. Off by default; mudlet turns it on
                                 automatically when it sees in-band MXP.
                             </HelpTip>
                         </span>

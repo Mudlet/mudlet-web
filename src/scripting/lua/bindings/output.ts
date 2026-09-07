@@ -39,7 +39,7 @@ export function installOutputBindings({ lua, api }: BindingContext): void {
         if (typeof a === 'string') return api.wrapLine(Number(b), a);
         return api.wrapLine(Number(a));
     });
-    // Mudlet `printError(msg, [showStackTrace], [haltExecution])`. mudix
+    // Mudlet `printError(msg, [showStackTrace], [haltExecution])`. Mudlet Web
     // routes every script-emitted error through the same logging path so
     // there's no JS-level stack to render; we accept the optional flags for
     // signature parity and honour `haltExecution=true` by raising a Lua

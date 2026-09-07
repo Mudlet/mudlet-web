@@ -38,7 +38,7 @@ describe('a terminated Lua WASM module', () => {
             + 'Scripts, triggers, aliases and timers are disabled until this profile is reopened.',
         ]);
         expect(fatalNotices).toBe(1);
-        expect(spy).toHaveBeenCalledWith('[mudix] the Lua WASM module terminated:', exitStatus());
+        expect(spy).toHaveBeenCalledWith('[mudlet] the Lua WASM module terminated:', exitStatus());
 
         spy.mockRestore();
         t.dispose();

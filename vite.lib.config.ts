@@ -14,9 +14,9 @@ import { buildDefine } from './buildInfo';
  * supplies the same WASM/polyfill handling the app build gets here.
  */
 
-/** Bundle relative/absolute ids (mudix source + emitted assets) and the
+/** Bundle relative/absolute ids (Mudlet Web source + emitted assets) and the
  *  node-polyfill shims the nodePolyfills plugin injects (they're a devDep of
- *  mudix, so consumers can't resolve them); externalize every other bare
+ *  Mudlet Web, so consumers can't resolve them); externalize every other bare
  *  import. Virtual modules (\0-prefixed) are plugin-internal — keep those. */
 function isExternal(id: string): boolean {
     // Default-package assets stay external so the consumer's Vite emits them

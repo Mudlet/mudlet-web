@@ -30,17 +30,17 @@ export const EOR_DO   = "\xFF\xFD\x19";     // IAC DO EOR   - client accepts EOR
 
 // Telnet SGA (Suppress Go Ahead, RFC 858, option 3). Enabling SGA suppresses
 // the `IAC GA` prompt marker and is the classic character-at-a-time signal.
-// mudix — matching Mudlet (cTelnet.cpp) — operates in line mode only, so it
+// Mudlet Web — matching Mudlet (cTelnet.cpp) — operates in line mode only, so it
 // *rejects* SGA: on `IAC WILL SGA` it replies `IAC DONT SGA`. A DONT is still a
 // definitive answer (strict servers don't stall on it), and refusing keeps
 // `IAC GA` un-suppressed so it can continue to drive prompt detection.
 export const TELOPT_SGA  = "\x03";          // 3
 export const SGA_WILL = "\xFF\xFB\x03";     // IAC WILL SGA  - server offers to suppress go-ahead
-export const SGA_DO   = "\xFF\xFD\x03";     // IAC DO SGA    - (accept form; unused — mudix rejects SGA)
+export const SGA_DO   = "\xFF\xFD\x03";     // IAC DO SGA    - (accept form; unused — mudlet rejects SGA)
 export const SGA_DONT = "\xFF\xFE\x03";     // IAC DONT SGA  - client refuses (stay in line mode)
 
 // Telnet LINEMODE (RFC 1184, option 34). Negotiates who performs line editing
-// and when a line is forwarded to the server. mudix — matching Mudlet — always
+// and when a line is forwarded to the server. Mudlet Web — matching Mudlet — always
 // does its own local line editing and sends whole lines on Enter, and never
 // delegates that to the server, so it refuses LINEMODE in *both* directions:
 // `IAC DONT LINEMODE` to the server's WILL, `IAC WONT LINEMODE` to its DO.
@@ -92,7 +92,7 @@ export const GMCP_WILL = "\xFF\xFB\xC9"; // IAC WILL GMCP - server offers GMCP
 export const GMCP_DO   = "\xFF\xFD\xC9"; // IAC DO GMCP   - client requests GMCP
 
 // ATCP (Achaea Telnet Client Protocol) — telnet option 200, GMCP's predecessor.
-// Same `IAC SB <opt> <payload> IAC SE` framing as GMCP. mudix only sends it
+// Same `IAC SB <opt> <payload> IAC SE` framing as GMCP. Mudlet Web only sends it
 // (sendATCP); it doesn't negotiate ATCP inbound.
 export const ATCP_COMMAND_CODE = 200;
 export const OPT_ATCP = "\xC8"; // 200
@@ -197,9 +197,9 @@ export interface MttsCapabilities {
 }
 
 /**
- * Compose the MTTS bitvector mudix advertises. Mirrors Mudlet's
+ * Compose the MTTS bitvector Mudlet Web advertises. Mirrors Mudlet's
  * `getNewEnvironMTTS`: ANSI + 256 COLORS + OSC COLOR PALETTE + TRUECOLOR are
- * always present (mudix's static terminal capabilities); UTF-8, SSL/TLS, MNES
+ * always present (Mudlet Web's static terminal capabilities); UTF-8, SSL/TLS, MNES
  * and SCREEN READER are added from live state. With UTF-8 + TLS this yields
  * 2349, matching a default Mudlet connection.
  */

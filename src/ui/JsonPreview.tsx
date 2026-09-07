@@ -6,7 +6,7 @@ import { bracketMatching } from '@codemirror/language';
 import { search, searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import { json } from '@codemirror/lang-json';
 import { CodeEditorPreview } from './CodeEditorPreview';
-import { mudixCmTheme, paletteCompartment, paletteFor } from './codemirror/theme';
+import { mudletCmTheme, paletteCompartment, paletteFor } from './codemirror/theme';
 import { optionsCompartment, optionExtensions } from './codemirror/options';
 import { useEffectiveTheme, useEditorSettings } from '../storage';
 import type { ProfileVFS } from '../scripting/vfs/ProfileVFS';
@@ -64,7 +64,7 @@ function JsonReadOnlyView({ text }: { text: string }) {
                     keymap.of(searchKeymap),
                     EditorState.readOnly.of(true),
                     EditorView.editable.of(false),
-                    mudixCmTheme,
+                    mudletCmTheme,
                 ],
             }),
             parent: hostRef.current,

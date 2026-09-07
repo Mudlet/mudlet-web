@@ -668,7 +668,7 @@ describe('gotoRoom', () => {
   });
 
   // Mudlet raises "attempt to call a nil value" here and the player doesn't
-  // move; mudix keeps the pre-delegation behaviour so a profile with no mapper
+  // move; Mudlet Web keeps the pre-delegation behaviour so a profile with no mapper
   // package installed still walks.
   it('falls back to sending the moves when no mapper defines doSpeedWalk', () => {
     env.run('addRoom(1); addRoom(2); setExit(1, 2, "north"); centerview(1)');
@@ -1004,7 +1004,7 @@ describe('Mudlet-API batch — Lua bindings', () => {
 
   it('pauseMusic takes no arguments or a filter table, never a bare channel', () => {
     // Mudlet's signature (TLuaInterpreterMedia.cpp): pauseSounds/pauseMusic
-    // accept nothing or a table, and reject anything else. mudix used to take a
+    // accept nothing or a table, and reject anything else. Mudlet Web used to take a
     // bare channel string; Media_spec pins the upstream contract, so the string
     // form is gone rather than quietly accepted alongside it.
     expect(() => env.run('pauseMusic(); pauseMusic({tag = "ambient"})')).not.toThrow();

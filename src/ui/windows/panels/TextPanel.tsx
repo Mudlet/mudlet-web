@@ -63,7 +63,7 @@ export function TextPanel({ id, title, manager, labels, cmdLines, scrollBoxes, f
         : 'rgb(0, 0, 0)';
     const backgroundExtra = backgroundImageStyle(backgroundImage) ?? undefined;
 
-    // The viewport div carries the data-mudix-window attribute and is the
+    // The viewport div carries the data-mudlet-window attribute and is the
     // target of setUserWindowStyleSheet (padding, background, etc). LabelOverlay
     // must be a direct child so its `inset: 0` spans the padding box — labels
     // positioned at (0,0) sit at the userwindow's visible top-left, not inside
@@ -93,7 +93,7 @@ export function TextPanel({ id, title, manager, labels, cmdLines, scrollBoxes, f
     return (
         <div
             ref={viewportRef}
-            data-mudix-window={id}
+            data-mudlet-window={id}
             style={VIEWPORT_STYLE}
             role="region"
             aria-label={`${title || id} window`}

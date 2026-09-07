@@ -3,7 +3,7 @@
  * module's find/match/gmatch/gsub.
  *
  * Mudlet links the C `luautf8` (starwing) for `utf8`; the browser has no such
- * library, so mudix bundles Stepets' pure-Lua `utf8.lua`. That shim is correct
+ * library, so Mudlet Web bundles Stepets' pure-Lua `utf8.lua`. That shim is correct
  * enough for the sub/len/char half of the module but not for the pattern half,
  * in two ways that both matter:
  *

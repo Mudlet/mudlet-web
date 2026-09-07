@@ -27,7 +27,7 @@ export function describeThrown(err: unknown, label?: string): string {
     if (typeof err !== 'object') return String(err);
 
     if (label !== undefined) {
-        console.error(`[mudix] non-Error value thrown out of ${label}:`, err);
+        console.error(`[mudlet] non-Error value thrown out of ${label}:`, err);
     }
 
     const ctor = (err as { constructor?: { name?: string } }).constructor?.name;

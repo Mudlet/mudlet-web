@@ -7,7 +7,7 @@ import type {
     ViewportBounds,
 } from 'mudlet-map-renderer';
 import type {MapStore} from './MapStore';
-import type {MudixMapReader} from './MudixMapReader';
+import type {MudletMapReader} from './MudletMapReader';
 
 /**
  * Map-room selection overlay backing Mudlet `getMapSelection` /
@@ -34,13 +34,13 @@ export class MapSelectionOverlay implements SceneOverlay {
 
     constructor(
         private readonly mapStore: MapStore,
-        private readonly reader: MudixMapReader,
+        private readonly reader: MudletMapReader,
     ) {}
 
     attach(ctx: SceneOverlayContext): void {
         this.ctx = ctx;
         // Selection rides its own subscribe channel so single-click repaints
-        // don't drag MudixMapReader through a snapshot rebuild on every click.
+        // don't drag MudletMapReader through a snapshot rebuild on every click.
         this.mapStoreUnsub = this.mapStore.subscribeSelection(() => ctx.invalidate());
         this.areaHandler = () => ctx.invalidate();
         ctx.state.events.on('area', this.areaHandler);

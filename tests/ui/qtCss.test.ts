@@ -16,8 +16,8 @@ import {
 // App/profile stylesheets: packages address Mudlet widgets by Qt objectName
 // (`QWidget#widget_panel`) and themes style whole widget types (`QDockWidget`).
 // Both parse as valid CSS but match nothing in the DOM, so they're redirected
-// onto our `data-qt-object` hooks / mudix classes. Anything we don't recognise
-// must pass through untouched — app stylesheets double as mudix's `.mudix-*`
+// onto our `data-qt-object` hooks / Mudlet Web classes. Anything we don't recognise
+// must pass through untouched — app stylesheets double as Mudlet Web's `.mudlet-*`
 // brand-styling surface.
 describe('qtCss Qt selector rewrite', () => {
     it('redirects a Q<Type>#objectName selector onto the data-qt-object hook', () => {
@@ -77,7 +77,7 @@ describe('qtCss Qt selector rewrite', () => {
     });
 
     it('leaves an unmapped Qt widget type alone rather than guessing', () => {
-        // mudix has no status bar, so the rule stays inert rather than landing
+        // Mudlet Web has no status bar, so the rule stays inert rather than landing
         // on whichever surface looks vaguely similar.
         expect(rewriteQtSelectors('QStatusBar { background: #b8731b; }'))
             .toBe('QStatusBar { background: #b8731b; }');
@@ -92,7 +92,7 @@ describe('qtCss Qt selector rewrite', () => {
         // QPushButtons — the descendant form keeps them apart the way Qt's
         // widget tree does.
         expect(rewriteQtSelectors('QToolButton:hover { background-color: grey; }'))
-            .toBe(':root:root .mudix-toolbar .btn:hover, :root:root .mudix-btn:hover, '
+            .toBe(':root:root .mudlet-toolbar .btn:hover, :root:root .mudlet-btn:hover, '
                 + ':root:root .toolbar-hamburger-btn:hover, '
                 + ':root:root .map-panel-toolbar .btn:hover { background-color: grey }');
         expect(rewriteQtSelectors('QTreeView { color: white; }'))
@@ -100,7 +100,7 @@ describe('qtCss Qt selector rewrite', () => {
         // A tab's `:selected` has no CSS pseudo — it's a modifier class.
         expect(rewriteQtSelectors('QTabBar::tab:top:selected { color: red; }'))
             .toBe(':root:root .tab-group-tab--active, :root:root .mobile-switcher__tab--active { color: red }');
-        // …and `:top` is dropped rather than dropping the rule: mudix's tab bar
+        // …and `:top` is dropped rather than dropping the rule: Mudlet Web's tab bar
         // is always on top, so the state carries no information.
         expect(rewriteQtSelectors('QTabBar::tab:top { color: red; }'))
             .toBe(':root:root .tab-group-tab, :root:root .mobile-switcher__tab { color: red }');
@@ -121,7 +121,7 @@ describe('qtCss Qt selector rewrite', () => {
         // coat. The union is computed from the type table.
         const out = rewriteQtSelectors('QWidget { background: #26192f; color: white; }');
         expect(out).toContain(':root:root .app,');
-        expect(out).toContain(':root:root .mudix-toolbar,');
+        expect(out).toContain(':root:root .mudlet-toolbar,');
         expect(out).toContain(':root:root .script-window,');
         expect(out).toContain(':root:root .command-bar');
         expect(out).toContain('background: #26192f; color: white');
@@ -139,8 +139,8 @@ describe('qtCss Qt selector rewrite', () => {
         // No `:root:root` boost here: it would put a descendant combinator in
         // front of the pseudo-element, and Chromium then stops matching
         // `:vertical`. The `:not()` pair already carries the specificity needed
-        // to outrank mudix's own per-element scrollbar CSS.
-        const HOST = ':not(.mudix-native-scrollbar):not(.mudix-no-scrollbar)';
+        // to outrank Mudlet Web's own per-element scrollbar CSS.
+        const HOST = ':not(.mudlet-native-scrollbar):not(.mudlet-no-scrollbar)';
         // Chromium ignores the ::-webkit-scrollbar family entirely once the
         // standard scrollbar-width/-color are set — and App.css sets both
         // globally — so a themed scrollbar needs them switched off first.
@@ -156,7 +156,7 @@ describe('qtCss Qt selector rewrite', () => {
         // Two Qt subcontrols, one DOM stand-in — emitted once.
         expect(rules('QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }')[1])
             .toBe(`${HOST}::-webkit-scrollbar-track-piece:vertical { background: none }`);
-        // A sheet that says nothing about scrollbars leaves mudix's own alone.
+        // A sheet that says nothing about scrollbars leaves Mudlet Web's own alone.
         expect(rewriteQtSelectors('QDockWidget { background: #111; }'))
             .not.toContain('scrollbar-width');
     });
@@ -167,7 +167,7 @@ describe('qtCss Qt selector rewrite', () => {
         // *scroller* as a single compound — `.output-container ::-webkit-…` would
         // put a combinator in front of the pseudo-element and Chromium would stop
         // matching `:vertical` entirely.
-        const scroller = '.output-wrapper:not(.mudix-native-scrollbar):not(.mudix-no-scrollbar)';
+        const scroller = '.output-wrapper:not(.mudlet-native-scrollbar):not(.mudlet-no-scrollbar)';
         expect(rewriteQtSelectors('TConsole QScrollBar:vertical { width: 15px; }').trim().split('\n')).toEqual([
             `${scroller} { scrollbar-width: auto; scrollbar-color: auto }`,
             `${scroller}::-webkit-scrollbar:vertical { width: 15px }`,
@@ -184,26 +184,26 @@ describe('qtCss Qt selector rewrite', () => {
         const lines = rewriteQtSelectors('QDockWidget, QScrollBar { background: #111; }').trim().split('\n');
         expect(lines).toHaveLength(3);
         expect(lines[1]).toBe(':root:root .script-window, :root:root .docked-panel { background: #111 }');
-        expect(lines[2]).toBe(':not(.mudix-native-scrollbar):not(.mudix-no-scrollbar)'
+        expect(lines[2]).toBe(':not(.mudlet-native-scrollbar):not(.mudlet-no-scrollbar)'
             + '::-webkit-scrollbar { background: #111 }');
     });
 
-    it('outranks mudix\'s own CSS for the elements it lands on', () => {
-        // Landing on the right element isn't enough — mudix's own rules often
+    it('outranks mudlet\'s own CSS for the elements it lands on', () => {
+        // Landing on the right element isn't enough — Mudlet Web's own rules often
         // carry more specificity than the class the table maps to. The boost is
         // specificity, not !important: inline style (how a widget's own
         // stylesheet is applied) still wins, exactly as in Qt.
         expect(rewriteQtSelectors('QToolButton { color: red; }'))
-            .toContain(':root:root .mudix-btn');
+            .toContain(':root:root .mudlet-btn');
         expect(rewriteQtSelectors('QToolButton { color: red; }'))
             .not.toContain('!important');
     });
 
     it('leaves CSS with no Qt selector byte-identical', () => {
-        const css = '.mudix-toolbar { background: #222; }\n.mudix-output a:hover { color: #8cf; }';
+        const css = '.mudlet-toolbar { background: #222; }\n.mudlet-output a:hover { color: #8cf; }';
         expect(rewriteQtSelectors(css)).toBe(css);
         // Untouched rules keep their own semantics — no overflow fix-up.
-        const zero = '.mudix-thing { max-height: 0px; }';
+        const zero = '.mudlet-thing { max-height: 0px; }';
         expect(rewriteQtSelectors(zero)).toBe(zero);
         expect(rewriteQtSelectors('')).toBe('');
     });

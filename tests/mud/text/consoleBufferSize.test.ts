@@ -53,7 +53,7 @@ describe('MudSession.setConsoleBufferSize', () => {
         expect(main.batchDeleteSize).toBe(10_000);
     });
 
-    it('clamps to Mudlet\'s floor and mudix\'s ceiling', () => {
+    it('clamps to Mudlet\'s floor and mudlet\'s ceiling', () => {
         const { session, main } = sessionWithMain();
         session.setConsoleBufferSize(1);
         expect(main.maxLines).toBe(MIN_CONSOLE_BUFFER_SIZE);

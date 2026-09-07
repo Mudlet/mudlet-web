@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test';
 import { BUSTED_DEVICE } from './e2e/bustedHarness';
 import { isFresh } from './e2e/bustedRecord';
 
-// Single execution path for Mudlet's busted suite: drive the REAL mudix app in a
+// Single execution path for Mudlet's busted suite: drive the REAL Mudlet Web app in a
 // browser (not the node thin-layer), so the full ScriptingEngine — trigger/alias
 // dispatch, timer pump, overlay/Geyser geometry — is wired exactly as in
 // production. The dev server runs with VITE_BUSTED=1 (via `vite --mode busted`),

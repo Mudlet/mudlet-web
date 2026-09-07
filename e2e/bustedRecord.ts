@@ -70,7 +70,7 @@ const failedToRecord = (r: BustedResults) => r.failures.some(f => f.name.endsWit
 // so a second one started while 5173 is taken walks to 5174, and
 // webServer.reuseExistingServer adopts whatever answers there.
 //
-// __mudixBustedBuild is set at LuaRuntime module scope in busted builds, so it
+// __mudletBustedBuild is set at LuaRuntime module scope in busted builds, so it
 // is there as soon as the bundle evaluates — no profile, no runtime, no race
 // with a boot that might be slow for honest reasons.
 async function assertBustedServer(
@@ -81,7 +81,7 @@ async function assertBustedServer(
         const page = await context.newPage();
         await page.goto('/');
         await page.waitForFunction(
-            () => (window as unknown as { __mudixBustedBuild?: boolean }).__mudixBustedBuild === true,
+            () => (window as unknown as { __mudletBustedBuild?: boolean }).__mudletBustedBuild === true,
             undefined,
             { timeout: 30_000, polling: 250 },
         );
@@ -133,7 +133,7 @@ export default async function record(config: FullConfig): Promise<void> {
 
         // A spec that could not be recorded gets one more try with the machine to
         // itself. A boot that lost a race for the CPU is the one failure here
-        // that says nothing about mudix, and it would otherwise fail the spec's
+        // that says nothing about Mudlet Web, and it would otherwise fail the spec's
         // guard — a red run for a reason no one can act on. A spec that fails
         // this pass too has something real to answer for.
         for (const spec of SPECS.filter(s => failedToRecord(results[s]))) {

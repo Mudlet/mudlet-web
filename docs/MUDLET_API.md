@@ -155,7 +155,7 @@ Transactions are driven through the Luasql connection (`conn:commit()`/`conn:rol
 | `closeMapWidget()` | ✅ | Closes the dockable map widget (id `map`); returns false if none open |
 | `connectExitStub(fromID, dir)` / `(fromID, toID[, dir])` | ✅ | Direction-only finds the nearest in-area room with a matching reverse stub (Mudlet's unit-vector/compSign search); toID-only requires exactly one reverse-stub pair |
 | `createMapLabel(areaID, text, x, y, z, fg, bg, …)` | ✅ | Adds a text label (new per-area id) to `MapStore`; round-trips through `getMapLabels`/`getMapLabel` and binary save, and is painted by the renderer (`mudlet-map-renderer` `ScenePipeline.renderLabels` → `labelToShape`, default `labelRenderMode:"image"`). `-1` when the area is missing |
-| `createMapImageLabel(areaID, imagePath, x, y, z, w, h, zoom, …)` | ✅ | Image-label sibling of `createMapLabel`; stores the image in the label `pixMap` (surfaced as `Pixmap`), which `MudixMapReader` patches through to the renderer so it paints. `scaling` arg is the inverse of the stored `noScaling`. `-1` when the area is missing |
+| `createMapImageLabel(areaID, imagePath, x, y, z, w, h, zoom, …)` | ✅ | Image-label sibling of `createMapLabel`; stores the image in the label `pixMap` (surfaced as `Pixmap`), which `MudletMapReader` patches through to the renderer so it paints. `scaling` arg is the inverse of the stored `noScaling`. `-1` when the area is missing |
 | `createMapper(x, y, w, h)` | ✅ | Singleton embedded mapper widget sharing MapStore with the dock |
 | `createRoomID([minimumID])` | ✅ | JS-exposed |
 | `deleteArea(areaID\|name)` | ✅ | JS-exposed |
@@ -341,12 +341,12 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `registerNamedEventHandler(name, event, code)` | ✅ | IDManager.lua |
 | `reloadModule(name)` | ✅ | JS-exposed |
 | `removeFileWatch(path)` | ✅ | Stops watching a path |
-| `resetLinkStyle(labelName)` / `setLinkStyle(labelName, linkColor, visitedColor[, underline])` | ✅ | Styles the `<a>` links inside a label. `LabelManager` stores the per-label `linkStyle`; `LabelOverlay` injects a `<style>` scoped via the label's `data-mudix-label` selector (`a { color; text-decoration }`, `a:visited { color }`). `underline` defaults to true. Visited links are tracked per label (`LabelState.visitedLinks`, populated on click like Mudlet's `TLabel::mVisitedLinks`) and get an explicit `a[href="…"]` rule, since CSS `:visited` only matches real browser history and so never fires for `send:`/`prompt:` links |
+| `resetLinkStyle(labelName)` / `setLinkStyle(labelName, linkColor, visitedColor[, underline])` | ✅ | Styles the `<a>` links inside a label. `LabelManager` stores the per-label `linkStyle`; `LabelOverlay` injects a `<style>` scoped via the label's `data-mudlet-label` selector (`a { color; text-decoration }`, `a:visited { color }`). `underline` defaults to true. Visited links are tracked per label (`LabelState.visitedLinks`, populated on click like Mudlet's `TLabel::mVisitedLinks`) and get an explicit `a[href="…"]` rule, since CSS `:visited` only matches real browser history and so never fires for `send:`/`prompt:` links |
 | `resetProfile()` | ✅ | Reloads the profile as if just reopened: clears every UI surface (windows, labels, gauges, command lines, scroll boxes; stops sound/video), recreates the Lua runtime (fresh globals + event handlers), and re-runs all scripts/aliases/triggers/timers/keys from current profile state, re-firing `sysLoadEvent`. Deferred to a fresh task (it closes the running `lua_State`), so call it from an alias / command line, not a script-item — matching Mudlet's own guidance. Mudlet Web reloads from the live store, not a re-read of disk |
 | `resumeNamedEventHandler(name)` | ✅ | IDManager.lua |
-| `saveProfile([name])` | ✅ | Bridge.lua → `__mudix_saveProfile` forces the debounced VFS flush through to IndexedDB; `(nil, errMsg)` when no VFS, else `true, path`. `name` ignored (single-profile) |
+| `saveProfile([name])` | ✅ | Bridge.lua → `__mudlet_saveProfile` forces the debounced VFS flush through to IndexedDB; `(nil, errMsg)` when no VFS, else `true, path`. `name` ignored (single-profile) |
 | `setConfig(key, value)` | ✅ | Config registry in `ScriptingAPI` (base global; Other.lua adds the table-form/no-arg wrappers). Enforced: protocol enables + `specialForce*Off`/`forceNewEnvironNegotiationOff` (next connect), `mapRoomSize`/`mapExitSize`/`mapRoundRooms`/`mapShowRoomBorders`/`mapShowGrid`, `autoClearInputLine`, `showSentText`, `mapperPanelVisible`, `showMapInfo`/`hideMapInfo` (live), `commandLineHistorySaveSize`/`showTabConnectionIndicators`/`f3SearchEnabled` (config bag, consumed by UI). Other keys persist only. Read-only/unknown → false. Absent: the six `irc*` keys (no IRC client) and `undoServerWrap`/`undoServerWrapWidth`. Details: [`docs/config-api.md`](config-api.md) |
-| `setMergeTables(...)` | ✅ | Pure Lua (Bridge.lua), mirroring `Host::mGMCP_merge_table_keys`. Accumulates GMCP keys (dotted, e.g. `"Char.Status"`) into `mudlet.mergeTables`; `__mudix_set_gmcp` merges those keys' incoming payloads into the existing `gmcp` sub-table instead of replacing it |
+| `setMergeTables(...)` | ✅ | Pure Lua (Bridge.lua), mirroring `Host::mGMCP_merge_table_keys`. Accumulates GMCP keys (dotted, e.g. `"Char.Status"`) into `mudlet.mergeTables`; `__mudlet_set_gmcp` merges those keys' incoming payloads into the existing `gmcp` sub-table instead of replacing it |
 | `setModuleInfo(name, key, value)` | ✅ | Stores a custom info field (in-memory override map) surfaced by `getModuleInfo`; always true |
 | `setModulePriority(name, n)` | ✅ | JS-exposed |
 | `setPackageInfo(name, key, value)` | ✅ | Stores a custom info field (in-memory override map) surfaced by `getPackageInfo`; always true |
@@ -410,7 +410,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `getStopWatchTime(id\|name)` | ✅ | Elapsed seconds without stopping |
 | `getStopWatchBrokenDownTime(id\|name)` | ✅ | `{negative, days, hours, minutes, seconds, milliSeconds, decimalSeconds}` off the proxy; `false` on miss |
 | `getScript(name [, pos])` | ✅ | → `code, count` for the pos-th (1-indexed) script named `name`; ("", 0) on miss. Bridge.lua unpacks the `{code,count}` from `__getScript`. Unblocks `appendScript`'s code-preserving path (Other.lua) |
-| `invokeFileDialog(fileOrFolder, title [, location])` | ✅ | Synchronous from the script's view: the handler's coroutine parks at the JS resume boundary while an in-app picker browses the profile VFS, then resumes with the picked path ('' on cancel). The client keeps running meanwhile — matching Mudlet's nested QFileDialog event loop. Caveat: can't be called inside a user `pcall` (Lua 5.1 can't yield across C frames); `__exec`/event dispatch use the yield-transparent `__mudix_pcall_co` instead |
+| `invokeFileDialog(fileOrFolder, title [, location])` | ✅ | Synchronous from the script's view: the handler's coroutine parks at the JS resume boundary while an in-app picker browses the profile VFS, then resumes with the picked path ('' on cancel). The client keeps running meanwhile — matching Mudlet's nested QFileDialog event loop. Caveat: can't be called inside a user `pcall` (Lua 5.1 can't yield across C frames); `__exec`/event dispatch use the yield-transparent `__mudlet_pcall_co` instead |
 | `isActive(name, type [, checkAncestors])` | ✅ | Count active items by name/id |
 | `isAncestorsActive(id, type)` | ✅ | True when every ancestor group of the item is enabled (item's own state ignored). `(false, errMsg)` when no item of that type has the id |
 | `isPrompt()` | ✅ | True when the current trigger fired against a prompt line |
@@ -426,7 +426,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `permBeginOfLineStringTrigger(name, parent, patterns, code)` | ✅ | Like `permSubstringTrigger` but each literal pattern matches only at the start of the line (`startOfLine` kind). Empty patterns array → trigger group |
 | `permSubstringTrigger(name, parent, patterns, code)` | ✅ | Each pattern is a literal substring. Empty patterns array creates a trigger group |
 | `permExactMatchTrigger(name, parent, patterns, code)` | ✅ | (Mudlet 4.21) Like `permSubstringTrigger` but each pattern matches only on full-line equality (`exactMatch` kind). Empty patterns array → trigger group |
-| `permScript(name, parent, code)` | ✅ | `ScriptingEngine.createPermScript` creates a saved Lua script node under a script group (parent `""` → root). Returns the new id or -1. Bound via `__mudix_permScript` + Bridge.lua wrapper |
+| `permScript(name, parent, code)` | ✅ | `ScriptingEngine.createPermScript` creates a saved Lua script node under a script group (parent `""` → root). Returns the new id or -1. Bound via `__mudlet_permScript` + Bridge.lua wrapper |
 | `permTimer(name, parent, delay, code)` | ✅ | Persistent one-shot timer; returns the new id or -1 |
 | `permKey(name, parent, modifier, key, code)` | ✅ | `modifier` is the Qt::KeyboardModifier int (1=shift, 2=ctrl, 4=alt, 8=meta; -1 → none). `key` accepts a Qt::Key int or a KeyboardEvent.code string |
 | `printCmdLine([name,] text)` | ✅ | Routes to overlay cmd lines, per-userwindow cmd lines, or the main bar |
@@ -466,11 +466,11 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `tempKey(modifier, key, code)` | ✅ | |
 | `tempLineTrigger(from, count, code)` | ✅ | Position-based: fires on `count` lines starting `from` lines ahead, then self-expires |
 | `tempPromptTrigger(code)` | ✅ | Fires on GA/EOR-flagged prompt lines; expirationCount honoured |
-| `tempRegexTrigger(pattern, code)` | ✅ | Bridge.lua wraps `__mudix_tempRegexTrigger` |
+| `tempRegexTrigger(pattern, code)` | ✅ | Bridge.lua wraps `__mudlet_tempRegexTrigger` |
 | `tempTimer(delay, code [, repeat])` | ✅ | One-shot or repeating timer |
 | `tempTrigger(pattern, code)` | ✅ | Temporary substring/regex trigger |
 
-> Earlier revisions of this file documented a `mudix.windows.*` / `mudix.timers.*` / `mudix.aliases.*` Lua namespace. **No such table has ever been bound** — use the Mudlet-native globals.
+> Earlier revisions of this file documented a `mudlet.windows.*` / `mudlet.timers.*` / `mudlet.aliases.*` Lua namespace. **No such table has ever been bound** — use the Mudlet-native globals.
 
 ---
 
@@ -617,7 +617,7 @@ Qt *objectName* (`QWidget#widget_panel { … }`). Both forms are syntactically v
 the browser parses them happily and they match nothing. `rewriteQtSelectors`
 (`src/ui/labels/qtCss.ts`) bridges them onto the DOM; the same pass Qt→CSS translates the
 declarations of any rule it rewrote (0–255 `rgba()` alpha, unitless lengths,
-`QLinearGradient`, Qt-only `subcontrol-*`). Unmapped types and plain `.mudix-*` CSS pass
+`QLinearGradient`, Qt-only `subcontrol-*`). Unmapped types and plain `.mudlet-*` CSS pass
 through byte-identical — app stylesheets are also Mudlet Web's brand-styling hook.
 
 - **objectName forms** — `QWidget#widget_panel` and bare `#widget_panel` map onto the
@@ -646,8 +646,8 @@ through byte-identical — app stylesheets are also Mudlet Web's brand-styling h
   item's `:selected` with no modifier class to hang off — leaves the whole rule inert
   instead.
 - **Rewritten rules outrank Mudlet Web's own CSS.** Landing on the right element isn't
-  enough — mudix's rules often carry more specificity than the class the table maps to
-  (`.mudix-btn:hover` beats a bare `.mudix-btn`), so a theme would set a base colour and
+  enough — Mudlet Web's rules often carry more specificity than the class the table maps to
+  (`.mudlet-btn:hover` beats a bare `.mudlet-btn`), so a theme would set a base colour and
   then lose every hover. Every rewritten selector is prefixed with `:root:root`, which
   matches the same elements and adds two classes' worth of specificity. Deliberately *not*
   `!important`: that would also override inline style, and inline style is how a widget's
@@ -669,9 +669,9 @@ through byte-identical — app stylesheets are also Mudlet Web's brand-styling h
   nothing, and paints nothing. A widget with no scroller of its own can't host a scoped
   rule, and one is left inert rather than widened to every scrollbar in the app. Two escape
   hatches are
-  excluded from all of it: `mudix-native-scrollbar` (surfaces that hide their scrollbar by
+  excluded from all of it: `mudlet-native-scrollbar` (surfaces that hide their scrollbar by
   design — the tab strip, the mobile switcher, the settings tabs — and the documented opt-out
-  for anything else) and `mudix-no-scrollbar` (a console that called `disableScrollBar`; an
+  for anything else) and `mudlet-no-scrollbar` (a console that called `disableScrollBar`; an
   explicit call outranks a theme).
 
 | Function | Status | Notes |
