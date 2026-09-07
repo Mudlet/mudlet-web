@@ -21,6 +21,132 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Mudlet Web" />
     <title>Mudlet Web</title>
+
+    <!-- Blank-page guard.
+
+         A deploy replaces every content-hashed asset and deletes the old ones,
+         but GitHub Pages serves index.html with `max-age=600` and offers no way
+         to change that. So for up to ten minutes a browser can hold a document
+         naming assets that now 404. The entry module then never runs — which
+         means no React, no error boundary, and nothing on screen at all.
+
+         That is why this is inline, in the head, rather than a component: it is
+         the only script guaranteed to run when the bundle itself is what failed.
+         It also catches the other way a boot dies silently — the entry loads and
+         throws — because the test is only ever "did anything render".
+
+         Recovery is one reload under a URL the HTTP cache has never seen, which
+         is the single bust that works with or without the service worker. It
+         happens at most once per tab per reason, so a genuinely broken build
+         shows the message instead of reloading forever. -->
+    <script>
+      (function () {
+        var RETRY_KEY = 'mudix_boot_retry';
+        var GRACE_MS = 3000;
+        var settled = false;
+        var observer = null;
+
+        function session(fn, fallback) {
+          try { return fn(sessionStorage); } catch (e) { return fallback; }
+        }
+        function rendered() {
+          var root = document.getElementById('root');
+          return !!root && root.childNodes.length > 0;
+        }
+        function bust() {
+          var url = new URL(location.href);
+          url.searchParams.set('reload', Date.now().toString(36));
+          location.replace(url.toString());
+        }
+
+        // Booted cleanly: forget the retry, and drop the cache-busting param so
+        // it neither sticks in the address bar nor rides along into the profile
+        // deep links App.tsx writes with history.replaceState.
+        function succeed() {
+          if (settled) return;
+          settled = true;
+          if (observer) observer.disconnect();
+          session(function (s) { s.removeItem(RETRY_KEY); });
+          try {
+            var url = new URL(location.href);
+            if (url.searchParams.has('reload')) {
+              url.searchParams.delete('reload');
+              history.replaceState(history.state, '', url.toString());
+            }
+          } catch (e) { /* older browser; a stale param is harmless */ }
+        }
+
+        function fail(reason) {
+          if (settled) return;
+          settled = true;
+          if (observer) observer.disconnect();
+          // Keyed on the reason, so a second, different failure still earns one
+          // reload — but the same one repeating cannot loop. With sessionStorage
+          // unavailable we cannot tell, so assume retried and show the message
+          // rather than risk looping.
+          var already = session(function (s) { return s.getItem(RETRY_KEY); }, reason) === reason;
+          session(function (s) { s.setItem(RETRY_KEY, reason); });
+          if (already) { message(reason); return; }
+          try { bust(); } catch (e) { message(reason); }
+        }
+
+        function message(reason) {
+          var root = document.getElementById('root') || document.body;
+          if (!root) return;
+          root.innerHTML =
+            '<div style="font:14px/1.5 system-ui,sans-serif;color:#ddd;background:#090909;' +
+            'position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;' +
+            'justify-content:center;gap:16px;text-align:center;padding:24px">' +
+            '<div style="font-size:18px;color:#fff">Mudlet Web could not start</div>' +
+            '<div style="max-width:34em;color:#aaa">This is usually a half-updated copy left ' +
+            'in the browser cache. Reloading normally clears it. Your profiles, scripts and ' +
+            'maps are stored separately and are not affected.</div>' +
+            '<button id="mudix-boot-retry" style="font:inherit;padding:8px 18px;color:#fff;' +
+            'background:#1f6f6b;border:0;border-radius:6px;cursor:pointer">Reload</button>' +
+            '<div id="mudix-boot-detail" style="font-size:12px;color:#666"></div></div>';
+          // Textual, not interpolated: `reason` carries a filename off the page.
+          var detail = document.getElementById('mudix-boot-detail');
+          if (detail) detail.textContent = 'Details: ' + reason;
+          var button = document.getElementById('mudix-boot-retry');
+          if (button) {
+            button.onclick = function () {
+              session(function (s) { s.removeItem(RETRY_KEY); });
+              bust();
+            };
+          }
+        }
+
+        // A script or stylesheet that failed to load. Capture phase: these fire
+        // on the element and do not bubble. This is the fast, unambiguous path —
+        // it names the asset that went missing.
+        window.addEventListener('error', function (event) {
+          var el = event.target;
+          if (!el || el === window || !el.tagName) return;
+          var tag = el.tagName.toLowerCase();
+          if (tag !== 'script' && !(tag === 'link' && el.rel === 'stylesheet')) return;
+          var src = el.src || el.href || '';
+          if (src.indexOf('stats.mudlet.org') !== -1) return; // analytics is not the app
+          fail('could not load ' + src.split('/').pop());
+        }, true);
+
+        // Nothing rendered by the time the page has finished loading. `load`
+        // waits for every subresource, so a slow connection cannot trip this —
+        // only a bundle that failed or threw can. The grace period is for
+        // React's first paint after the module executes.
+        window.addEventListener('load', function () {
+          if (rendered()) { succeed(); return; }
+          var root = document.getElementById('root');
+          if (root && window.MutationObserver) {
+            observer = new MutationObserver(function () { if (rendered()) succeed(); });
+            observer.observe(root, { childList: true });
+          }
+          setTimeout(function () {
+            if (rendered()) succeed();
+            else fail('nothing rendered');
+          }, GRACE_MS);
+        });
+      })();
+    </script>
     <!-- Matomo.
          Nothing here reaches the library build: `build:lib` bundles src/index.ts
          and publishes dist-lib only, so it never reads this file. Branded builds

@@ -95,9 +95,10 @@ self.addEventListener('fetch', (event) => {
         return;
     }
     if (!APP_SHELL) return;
-    // Navigations go to the network first, so a deploy is picked up on the next
-    // load rather than whenever the cache happens to turn over; the cached shell
-    // is strictly the offline answer.
+    // Navigations revalidate against the server, so a deploy is picked up on the
+    // next load rather than whenever the cache happens to turn over; the cached
+    // shell is strictly the offline answer. See shellFirst for why "network
+    // first" is not enough on its own here.
     if (request.mode === 'navigate' && url.pathname.startsWith(SCOPE_PATH)) {
         event.respondWith(shellFirst(request));
         return;
@@ -128,7 +129,17 @@ async function cacheShell() {
 async function shellFirst(request) {
     const cache = await caches.open(APP_CACHE);
     try {
-        const response = await fetch(request);
+        // Revalidate rather than `fetch(request)`. A navigation request carries
+        // cache mode `default`, so the plain form is answered from the browser
+        // HTTP cache — and GitHub Pages stamps every file it serves, index.html
+        // included, with `max-age=600`. That turned this "network first" branch
+        // into "ten-minute-old document first": the shell it returned could name
+        // content-hashed assets that the deploy had already deleted, so the entry
+        // module 404'd and the page came up blank. `no-cache` means revalidate,
+        // not refetch — the usual answer is a 304 on a 4KB document — and a
+        // server that cannot be reached still throws, so the offline path below
+        // is unchanged.
+        const response = await fetch(new Request(request, { cache: 'no-cache' }));
         if (response.ok && response.type === 'basic') {
             cache.put(SHELL_URL, response.clone()).catch(() => {});
         }
