@@ -141,7 +141,11 @@ export interface IScriptingRuntime {
      *  tempComplexRegexTrigger is the one temp API that takes one), or null. */
     tempItemIdByName(name: string, type: string): number | null;
     /** Publish one use of a server-defined MXP element as `mxp.<element>`. */
-    setMxpElement(name: string, attrs: Record<string, string>): void;
+    setMxpElement(
+        name: string,
+        attrs: Record<string, string>,
+        body?: { text: string; actions: string[] },
+    ): void;
     /** Whether a live temp item is enabled — backs `isActive(id, type)`. */
     tempItemEnabled(id: number): boolean;
     /** enable/disable a live temp item by id — backs enableTrigger/disableTrigger

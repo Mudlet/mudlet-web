@@ -100,6 +100,25 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
             'Tests the text-to-speech Lua API / Tests the text-to-speech family / a queued line starts speaking when the current one ends',
         ].map(name => ({ name, reason }));
     })(),
+    MXPTags: [
+        {
+            name: 'Tests the tags MXP handles / Tests what MXP tells the game about the client / answers a VERSION tag with the client name and its version',
+            reason:
+                'The spec pins the whole answer, CLIENT and all: `<VERSION MXP=1.0 CLIENT=Mudlet '
+                + 'VERSION=…>`. This client answers CLIENT=MUDLET-WEB, and that is the one thing in the '
+                + 'line it should not borrow. A game reads CLIENT to decide what to send — Discworld and '
+                + 'the IRE games branch on it — so the name has to identify the client that will actually '
+                + 'render what comes back. This is the same name it gives in TTYPE, in MNES and in GMCP\'s '
+                + 'Core.Hello, which is what makes a server\'s logs and its per-client branches agree with '
+                + 'each other; answering Mudlet here alone would leave a game told two different things '
+                + 'about who it is talking to. Everything else the spec pins about the answer IS matched: '
+                + 'the MXP=1.0 protocol version, the unquoted attribute form, the VERSION value, the '
+                + 'ESC[1z secure prefix, and the STYLE a game can name and have carried on every answer '
+                + 'afterwards (the last spec in this file, which passes). If Mudlet Web ever wants games to '
+                + 'treat it as Mudlet proper, that is a decision about every one of those handshakes at '
+                + 'once, not about this line.',
+        },
+    ],
     Miscallaneous: [
         {
             name: 'Tests C++ functions in the Miscallaneous category / Tests the functionality of getProfiles / lists a profile that is not loaded',

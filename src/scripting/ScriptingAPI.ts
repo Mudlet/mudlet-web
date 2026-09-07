@@ -2765,7 +2765,7 @@ export class ScriptingAPI {
      * Used by ScriptingEngine when rendering MXP-parsed lines.
      */
     createMxpHyperlink(
-        kind: 'command' | 'url',
+        kind: 'command' | 'url' | 'prompt',
         payload: string,
         hint?: string,
         promptCmds?: string[],
@@ -2778,7 +2778,13 @@ export class ScriptingAPI {
                 autoUnderline: true,
             };
         }
-        const sendCmd = (cmd: string) => { this.send(cmd); };
+        // A SEND carrying PROMPT is asking for the command to be put in front
+        // of the player rather than run — the game means it to be edited (the
+        // canonical example is `<SEND "tell Zugg " PROMPT>`, which wants a
+        // message typed after it). Same as the OSC 8 `prompt:` scheme.
+        const sendCmd = kind === 'prompt'
+            ? (cmd: string) => { this.printCmdLine(cmd); }
+            : (cmd: string) => { this.send(cmd); };
         if (promptCmds && promptCmds.length > 1) {
             const hl = this.buildPopupHyperlink(promptCmds, promptHints ?? [], sendCmd);
             hl.onClick = () => sendCmd(payload);

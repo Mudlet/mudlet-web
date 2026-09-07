@@ -3210,12 +3210,15 @@ end
 -- attributes as lowercased keys plus `text` and an `actions` list. JS flattens
 -- the attribute map to "key\2value\1key\2value" because the keys are arbitrary
 -- server text and wasmoon's table proxy can't be walked reliably.
-function __mudlet_set_mxp(element, flatAttrs)
+function __mudlet_set_mxp(element, flatAttrs, text, flatActions)
     if type(mxp) ~= 'table' then mxp = {} end
-    local t = { text = "", actions = {} }
+    local t = { text = tostring(text or ""), actions = {} }
     for entry in tostring(flatAttrs or ""):gmatch("[^\1]+") do
         local k, v = entry:match("^([^\2]*)\2(.*)$")
         if k and k ~= "" then t[k] = v end
+    end
+    for action in tostring(flatActions or ""):gmatch("[^\1]+") do
+        t.actions[#t.actions + 1] = action
     end
     mxp[element] = t
 end

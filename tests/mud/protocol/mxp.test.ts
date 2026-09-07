@@ -190,7 +190,9 @@ describe('MxpParser — handshake', () => {
   it('replies to <VERSION> with a secure-prefixed reply', () => {
     const { parser, sent } = makeParser();
     parser.parseLine(`${SECURE}<version>`);
-    expect(sent[0]).toMatch(/^\x1b\[1z<VERSION .*CLIENT="MUDLET-WEB"/);
+    // Unquoted, as Mudlet sends it — a game's parser may be no more than a
+    // split on spaces.
+    expect(sent[0]).toMatch(/^\x1b\[1z<VERSION MXP=1\.0 CLIENT=MUDLET-WEB VERSION=[^\s>]+>$/);
   });
 });
 

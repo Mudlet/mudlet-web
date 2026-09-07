@@ -277,11 +277,7 @@ export class ScriptingEngine implements EngineHost {
      *  script can drive MXP markup through feedTriggers on a profile that never
      *  negotiated it. Does NOT enable the handshake replies. */
     forceMxpProcessorOn = false;
-    /** Whether MXP `<SUPPORTS>`/`<VERSION>` handshake replies may be sent. Only
-     *  true when MXP was started via the telnet option-91 handshake — an
-     *  in-band-detected server's inbound MXP isn't confirmed, so we'd otherwise
-     *  spam it with text it reads as invalid commands. */
-    private mxpHandshakeEnabled = false;
+
     /** Per-session OSC 8 preset registry (`preset:NAME` definitions). Shared
      *  between the MXP parser and the plain-ANSI render path so a preset defined
      *  in either mode resolves in both. */
@@ -292,21 +288,28 @@ export class ScriptingEngine implements EngineHost {
         () => (typeof document !== 'undefined' ? document : null),
     );
     /** Per-session MXP parser. The send callback carries the in-band
-     *  `<SUPPORTS>`/`<VERSION>` handshake replies (gated on
-     *  `mxpHandshakeEnabled`); `api` is read lazily at call time so this
-     *  initializer is safe before the constructor body runs. */
+     *  `<SUPPORTS>`/`<VERSION>` answers; `api` is read lazily at call time so
+     *  this initializer is safe before the constructor body runs. */
     private readonly mxp = new MxpParser({
-        // sendData, not send: a handshake reply is a protocol string, not a
-        // player command — it must never echo, and it must never be chopped up
-        // by whatever the profile happens to use as a command separator.
-        send: (raw) => { if (this.mxpHandshakeEnabled) this.api.sendData(raw); },
+        // sendData, not send: an answer is a protocol string, not a player
+        // command — it must never echo, and it must never be chopped up by
+        // whatever the profile happens to use as a command separator.
+        //
+        // Sent whenever the parser has read the tag, however MXP came on: a
+        // game that sends <VERSION> is asking, and it is asking in MXP, so it
+        // is speaking MXP whether or not it negotiated option 91. Mudlet
+        // answers on the same terms. Gating this on the handshake meant a
+        // game that skips negotiation — the very reason the in-band detector
+        // exists — never learned what this client supports, and so kept its
+        // markup to itself.
+        send: (raw) => { this.api.sendData(raw); },
         presets: this.osc8Presets,
         // <HR> draws its rule as wide as the main window wraps.
         wrapWidth: () => this.api.getWindowWrap('main'),
         // Mudlet publishes every use of a server-defined element as
         // `mxp.<element>` and raises an event of the same name.
-        onElementEvent: (name, attrs) => {
-            this.runtimes.lua?.setMxpElement(name, attrs);
+        onElementEvent: (name, attrs, body) => {
+            this.runtimes.lua?.setMxpElement(name, attrs, body);
             this.raiseEvent(`mxp.${name.toLowerCase()}`);
         },
     });
@@ -4690,7 +4693,6 @@ export class ScriptingEngine implements EngineHost {
                 // open tags/modes and wait for the new session's mxp.negotiated.
                 this.mxp.reset();
                 this.mxpActive = false;
-                this.mxpHandshakeEnabled = false;
                 // Frames belong to the session that declared them, so the new
                 // one starts from an unsplit main window (Mudlet resets its
                 // TMxpFrameManager on connect for the same reason).
@@ -4784,10 +4786,9 @@ export class ScriptingEngine implements EngineHost {
             // sysProtocolEnabled('MXP').
             session.events.on('mxp.negotiated', (viaTelnet, viaSubnegotiation) => {
                 this.mxpActive = true;
-                // Only a real option-91 handshake authorizes sending the
-                // <SUPPORTS>/<VERSION> replies (see ScriptingAPI / event doc).
-                if (viaTelnet) this.mxpHandshakeEnabled = true;
-                else this.autoEnableMxpProcessor();
+                // MXP inferred from in-band line modes rather than negotiated:
+                // Mudlet turns the processor on for good and says so.
+                if (!viaTelnet) this.autoEnableMxpProcessor();
                 // A bare IAC SB MXP IAC SE starts the processor in locked mode:
                 // the server has said nothing about what it will send, so nothing
                 // it sends is markup until it switches modes itself (cTelnet sets
