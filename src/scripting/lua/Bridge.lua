@@ -3189,6 +3189,17 @@ end
 
 -- MSSP equivalent: flat scalar status fields keyed by variable name, mirroring
 -- Mudlet's `mssp` global (mssp.PLAYERS, mssp.UPTIME, ...).
+-- Mudlet's `channel102` table (LuaGlobal.lua declares it upstream; this
+-- client does not vendor the file that holds it). Aardwolf's out-of-band
+-- channel reports one numbered variable at a time, so a message is a single
+-- integer key and an integer value.
+channel102 = channel102 or {}
+
+function __mudlet_set_channel102(variable, value)
+    if type(channel102) ~= 'table' then channel102 = {} end
+    channel102[variable] = value
+end
+
 function __mudlet_set_mssp(key, value)
     if type(mssp) ~= 'table' then mssp = {} end
     mssp[key] = value

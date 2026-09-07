@@ -1,4 +1,5 @@
 import type { MudSession, ScriptLogSource, ShowSentTextMode, BlankLinesBehaviour } from '../mud/MudSession';
+import type { TelnetNegotiatorFlags } from '../mud/connection/TelnetNegotiator';
 import { splitCommands } from '../mud/commandSplit';
 import type { AliasEngine } from '../mud/aliases/AliasEngine';
 import type { TriggerEngine } from '../mud/triggers/TriggerEngine';
@@ -1330,6 +1331,22 @@ export class ScriptingAPI {
         useAppStore.getState().patchConnectionProfile(this.connectionId, { config: { ...prev, [key]: value } });
     }
 
+    /** The negotiator flag each profile protocol toggle drives. MCCP is
+     *  absent on purpose: its handler owns its own switch and isn't part of
+     *  the negotiator flag set. */
+    private static readonly LIVE_PROTOCOL_FLAG: Partial<Record<BooleanProtocolKey, keyof TelnetNegotiatorFlags>> = {
+        gmcp: 'gmcpEnabled',
+        mtts: 'mttsEnabled',
+        msdp: 'msdpEnabled',
+        mssp: 'msspEnabled',
+        charset: 'charsetEnabled',
+        msp: 'mspEnabled',
+        mxp: 'mxpEnabled',
+        mnes: 'mnesEnabled',
+        newEnviron: 'newEnvironEnabled',
+        naws: 'nawsEnabled',
+    };
+
     private getProtocol(key: BooleanProtocolKey): boolean {
         const p = useAppStore.getState().connectionProfile[this.connectionId]?.protocols;
         return p?.[key] ?? PROTOCOL_DEFAULTS[key];
@@ -1338,6 +1355,13 @@ export class ScriptingAPI {
     private setProtocol(key: BooleanProtocolKey, value: boolean): void {
         const prev = useAppStore.getState().connectionProfile[this.connectionId]?.protocols ?? {};
         useAppStore.getState().patchConnectionProfile(this.connectionId, { protocols: { ...prev, [key]: value } });
+        // The store change reaches the session through ProfileSession, but not
+        // until the next render — and a script that turns a protocol off and
+        // then reads the wire is still inside this call. Mudlet has no such
+        // gap (setConfig writes the very flag cTelnet reads), so the session
+        // is told directly as well; the effect's later re-apply is a no-op.
+        const flag = ScriptingAPI.LIVE_PROTOCOL_FLAG[key];
+        if (flag) this.session.setProtocolOptions({ [flag]: value });
     }
 
     private getMapperField<K extends keyof MapperSettings>(key: K): MapperSettings[K] {

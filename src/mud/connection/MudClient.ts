@@ -27,6 +27,7 @@ import {
     NEW_ENVIRON_COMMAND_CODE,
     OPT_ATCP,
     OPT_TELNET_102,
+    TELNET_102_COMMAND_CODE,
     SessionCodec,
     toByteString,
     stripTelnetSequences,
@@ -36,7 +37,7 @@ import {
 } from "../protocol";
 import type { MudClientEvents, TlsEstablished, TlsError } from "../events";
 import { LineAssembler } from "./LineAssembler";
-import { TelnetNegotiator } from "./TelnetNegotiator";
+import { TelnetNegotiator, type TelnetNegotiatorFlags } from "./TelnetNegotiator";
 import {
     debugFramesEnabled,
     debugGaEnabled,
@@ -241,6 +242,13 @@ export class MudClient {
     private readonly mccpHandler: MccpHandler;
     private readonly echoHandler: EchoHandler;
     private readonly negotiator: TelnetNegotiator;
+    /** The negotiator's option toggles, held here because they are the
+     *  profile's and the profile can change under a live connection. Mudlet
+     *  reads `mEnableMSSP` and friends at negotiation time, so a setting
+     *  switched off mid-session must be obeyed by the next offer rather than
+     *  by the next dial. Mutated in place by setProtocolFlags — the
+     *  negotiator holds this same object. */
+    private readonly negotiatorFlags: TelnetNegotiatorFlags;
     /** Latches once `sysCharacterModeDetected` has fired for this connection so
      *  the warning isn't repeated. Reset on each connect(). See
      *  {@link checkCharacterModePattern}. */
@@ -362,29 +370,30 @@ export class MudClient {
             onNegotiated: (displayName) => this.eventBus.emit('charset.negotiated', displayName),
         });
 
+        this.negotiatorFlags = {
+            gmcpEnabled,
+            mttsEnabled,
+            msdpEnabled,
+            msspEnabled,
+            charsetEnabled,
+            mspEnabled,
+            mxpEnabled,
+            mnesEnabled,
+            newEnvironEnabled,
+            nawsEnabled,
+            // Fall back to the URL scheme when the caller doesn't say —
+            // correct for a direct websocket connection; proxy mode passes
+            // its own answer, since a wss:// proxy URL says nothing about
+            // whether the proxy↔game leg is encrypted.
+            secureTransport: secureTransport ?? /^wss:/i.test(url),
+            screenReaderAdvertised,
+            osc8HyperlinksEnabled,
+            versionInTTYPE,
+            versionInTTYPEPrompted: promptForVersionInTTYPE,
+            mxpInBandDetectionEnabled: specialForceMXPProcessorOn || !promptForMXPProcessorOn,
+        };
         this.negotiator = new TelnetNegotiator(
-            {
-                gmcpEnabled,
-                mttsEnabled,
-                msdpEnabled,
-                msspEnabled,
-                charsetEnabled,
-                mspEnabled,
-                mxpEnabled,
-                mnesEnabled,
-                newEnvironEnabled,
-                nawsEnabled,
-                // Fall back to the URL scheme when the caller doesn't say —
-                // correct for a direct websocket connection; proxy mode passes
-                // its own answer, since a wss:// proxy URL says nothing about
-                // whether the proxy↔game leg is encrypted.
-                secureTransport: secureTransport ?? /^wss:/i.test(url),
-                screenReaderAdvertised,
-                osc8HyperlinksEnabled,
-                versionInTTYPE,
-                versionInTTYPEPrompted: promptForVersionInTTYPE,
-                mxpInBandDetectionEnabled: specialForceMXPProcessorOn || !promptForMXPProcessorOn,
-            },
+            this.negotiatorFlags,
             eventBus,
             {
                 sendRaw: (data) => this.sendRaw(data),
@@ -452,6 +461,7 @@ export class MudClient {
             else if (code === MSP_COMMAND_CODE) this.handleMspSubneg(subneg);
             else if (code === MXP_COMMAND_CODE) this.negotiator.handleMxpSubneg();
             else if (code === NEW_ENVIRON_COMMAND_CODE) this.negotiator.handleNewEnvironSubneg(subneg);
+            else if (code === TELNET_102_COMMAND_CODE) this.handleChannel102Subneg(subneg);
         }, this.telnetParserOpts);
         this.mccpHandler = new MccpHandler((data) => this.sendRaw(data));
         this.mccpHandler.enabled = mccpEnabled;
@@ -1044,15 +1054,30 @@ export class MudClient {
     }
 
     /** Mudlet `sendTelnetChannel102(msg)`. Frames `IAC SB 102 <msg> IAC SE`
-     *  (the zMUD generic out-of-band channel) and sends it raw. Returns false
-     *  when the socket isn't open. */
+     *  (the zMUD generic out-of-band channel) and sends it raw. False only
+     *  when the server has not enabled the channel: Mudlet gates on that
+     *  alone and reports success whatever the socket then does with the
+     *  bytes, so a script is told about the option and not the connection. */
     sendTelnetChannel102(msg: string): boolean {
+        if (!this.negotiator.isChannel102Enabled()) return false;
         // Not transcoded: the payload is two raw bytes the caller picked, which
         // Mudlet deliberately leaves unencoded, so UTF-8 would re-expand anything
         // above 0x7F. Only 0xFF needs handling, and it needs doubling. Mudlet runs
         // that replace over the whole framed string, doubling the framing IACs too;
         // applying it to the payload alone is what that was meant to be.
-        return this.sendSubnegotiation(OPT_TELNET_102, msg.replace(/\xFF/g, '\xFF\xFF'), 'telnet channel 102');
+        this.sendSubnegotiation(OPT_TELNET_102, msg.replace(/\xFF/g, '\xFF\xFF'), 'telnet channel 102');
+        return true;
+    }
+
+    /** An `IAC SB 102 <var> <value> IAC SE` body: the option byte, then the
+     *  two payload bytes Aardwolf's channel carries. Mudlet reads them as
+     *  numbers (`setChannel102Variables`) and ignores anything shorter. */
+    private handleChannel102Subneg(subneg: string): void {
+        if (subneg.length < 3) return;
+        this.eventBus.emit('channel102', {
+            variable: subneg.charCodeAt(1) & 0xff,
+            value: subneg.charCodeAt(2) & 0xff,
+        });
     }
 
     /** Frame an `IAC SB <opt> <payload> IAC SE` subnegotiation and send it.
@@ -1126,6 +1151,14 @@ export class MudClient {
         }
     }
 
+    /** Apply changed profile protocol toggles to the live connection. Only
+     *  the ones the negotiator reads: the rest of MudClientOptions is either
+     *  fixed at dial time (the URL, the subprotocols) or owned by a handler
+     *  with a setter of its own (MCCP). */
+    setProtocolFlags(flags: Partial<TelnetNegotiatorFlags>): void {
+        Object.assign(this.negotiatorFlags, flags);
+    }
+
     /** Mudlet `feedTelnet(data)`. Injects raw bytes into the inbound pipeline
      *  as if they had arrived from the server — they pass through telnet
      *  stripping, ANSI parsing, the trigger pipeline, and rendering. `data` is
@@ -1137,6 +1170,14 @@ export class MudClient {
         // the stream itself, because a GMCP payload can carry the same three
         // bytes — and that scan hung off the socket's onmessage alone, so an
         // injected password prompt engaged nothing at all.
+        // The option negotiator hung off the same place, which left every
+        // injected WILL/WONT/DO/DONT inert: no protocol ever came on, so a
+        // CHARSET request changed no encoding, MXP stayed off and channel 102
+        // stayed shut. Mudlet feeds injected bytes through the whole of
+        // processSocketData (cTelnet::loopbackTest), so negotiation is answered
+        // exactly as the socket's would be — the replies go nowhere while
+        // unconnected, which sendRaw()'s readyState guard already ensures.
+        this.negotiator.processFrame(data);
         this.echoHandler.processData(data);
         this.processIncomingData(data);
     }

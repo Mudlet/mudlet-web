@@ -3647,6 +3647,17 @@ end`);
         this.runChunk('__mudlet_set_msdp(__mudlet_msdp_path, __mudlet_msdp_val)', `set-msdp "${path}"`);
     }
 
+    /** Records one channel-102 report in the Lua `channel102` global. Both
+     *  halves are bytes, so there is nothing to marshal — Mudlet's
+     *  setChannel102Table does the same rawset. */
+    setChannel102Value(variable: number, value: number): void {
+        if (this.inert) return;
+        this.lua.global.set('__mudlet_channel102_var', variable);
+        this.lua.global.set('__mudlet_channel102_val', value);
+        this.runChunk('__mudlet_set_channel102(__mudlet_channel102_var, __mudlet_channel102_val)',
+            `set-channel102 ${variable}`);
+    }
+
     // Bridges a single MSSP variable into the Lua `mssp` global. `name` is the
     // flat variable name (e.g. "PLAYERS"); `value` is the reported string.
     setMsspValue(name: string, value: string): void {

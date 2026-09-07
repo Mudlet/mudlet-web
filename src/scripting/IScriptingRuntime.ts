@@ -67,6 +67,11 @@ export interface IScriptingRuntime {
      * `name` is the flat variable name; the value is a scalar string.
      */
     setMsspValue(name: string, value: string): void;
+    /**
+     * Write one zMUD channel-102 report into the runtime's `channel102` table.
+     * Both halves are the raw bytes the subnegotiation carried.
+     */
+    setChannel102Value(variable: number, value: number): void;
     runWithMatches(
         code: string,
         name: string,

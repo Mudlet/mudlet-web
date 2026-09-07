@@ -261,14 +261,12 @@ export class ScriptingEngine implements EngineHost {
     // subsequent lines inherit that colour until the next SGR — without a
     // persistent carry, a blank line or frame boundary drops the colour.
     private mudCarryState: FormatStateSnapshot | undefined = undefined;
-    // Tracks whether GMCP/MSDP finished negotiating on the live connection, so
-    // the symmetric sysProtocolDisabled can fire on disconnect. Reset on
-    // disconnect.
-    private gmcpNegotiated = false;
-    private msdpNegotiated = false;
-    private msspNegotiated = false;
-    private mnesNegotiated = false;
-    private mxpNegotiated = false;
+    // The protocols negotiated on the live connection, by the name Mudlet
+    // gives them in sysProtocolEnabled/sysProtocolDisabled. The negotiator
+    // announces each one coming and going; this set is what the symmetric
+    // disabled sweep on disconnect works from, since a socket that drops takes
+    // every negotiated protocol with it without any WONT/DONT arriving.
+    private readonly enabledProtocols = new Set<string>();
     /** True once MXP (telnet option 91) has been negotiated on the live
      *  connection. Gates in-band MXP markup parsing in processFlushBatch so
      *  non-MXP MUDs (where `<grin>` is literal text) are untouched. Reset on
@@ -4639,6 +4637,23 @@ export class ScriptingEngine implements EngineHost {
             session.events.on('protocol.rejected', (protocol) => {
                 this.raiseEvent('sysProtocolRejected', [protocol]);
             }),
+            // Mudlet `raiseProtocolEvent("sysProtocolEnabled"/"sysProtocolDisabled",
+            // name)` — every telnet option the negotiator takes up or loses,
+            // under the name Mudlet gives it. Scripts hang their protocol setup
+            // off these (the bundled GMCP.lua re-subscribes its modules on the
+            // enabled event), so they must fire for a protocol that comes back
+            // mid-session and not only once per connection.
+            session.events.on('protocol.enabled', (protocol) => {
+                this.enabledProtocols.add(protocol);
+                this.raiseEvent('sysProtocolEnabled', [protocol]);
+            }),
+            session.events.on('protocol.disabled', (protocol) => {
+                this.enabledProtocols.delete(protocol);
+                // Mudlet stops the MXP processor when the option goes away,
+                // unless the profile forces it on (cTelnet, TN_WONT/TN_DONT).
+                if (protocol === 'MXP' && !this.forceMxpProcessorOn) this.mxpActive = false;
+                this.raiseEvent('sysProtocolDisabled', [protocol]);
+            }),
             // Mudlet `sysCharacterModeDetected` — the server requested SGA and
             // enabled server-side echo (character-at-a-time), which Mudlet Web can't
             // drive well. Raised once per connection, and — matching Mudlet's
@@ -4700,37 +4715,14 @@ export class ScriptingEngine implements EngineHost {
             session.events.on('client.disconnect', () => {
                 this.emit('disconnect', []);
                 this.emit('sysDisconnectionEvent', []);
-                // Mudlet raises sysProtocolDisabled as protocols tear down. GMCP
-                // is the only protocol Mudlet Web negotiates, and it ends with the
-                // socket, so mirror the enabled/disabled pair here.
-                if (this.gmcpNegotiated) {
-                    this.gmcpNegotiated = false;
-                    this.emit('sysProtocolDisabled', ['GMCP']);
+                // Mudlet raises sysProtocolDisabled as protocols tear down. A
+                // dropped socket sends no WONT/DONT, so the pair each protocol
+                // announced on the way in is closed here instead.
+                for (const protocol of this.enabledProtocols) {
+                    if (protocol === 'MXP') this.mxpActive = false;
+                    this.emit('sysProtocolDisabled', [protocol]);
                 }
-                if (this.msdpNegotiated) {
-                    this.msdpNegotiated = false;
-                    this.emit('sysProtocolDisabled', ['MSDP']);
-                }
-                if (this.msspNegotiated) {
-                    this.msspNegotiated = false;
-                    this.emit('sysProtocolDisabled', ['MSSP']);
-                }
-                if (this.mxpNegotiated) {
-                    this.mxpNegotiated = false;
-                    this.mxpActive = false;
-                    this.emit('sysProtocolDisabled', ['MXP']);
-                }
-                if (this.mnesNegotiated) {
-                    this.mnesNegotiated = false;
-                    this.emit('sysProtocolDisabled', ['MNES']);
-                }
-            }),
-            // GMCP finished negotiating (server WILL → client DO). Mudlet's
-            // bundled GMCP.lua re-subscribes its registered modules on this
-            // event; without it Core.Supports.Add is never re-sent on reconnect.
-            session.events.on('gmcp.negotiated', () => {
-                this.gmcpNegotiated = true;
-                this.emit('sysProtocolEnabled', ['GMCP']);
+                this.enabledProtocols.clear();
             }),
             // Built-in Client.GUI handler — Mudlet semantics. One entry point
             // for both wire formats: the client emits this after the gmcp.*
@@ -4777,13 +4769,6 @@ export class ScriptingEngine implements EngineHost {
                     void this.handleClientMedia(action || 'play', value);
                 }
             }),
-            // MSDP finished negotiating (server WILL → client DO). Mirrors the
-            // GMCP pair so scripts can hook sysProtocolEnabled('MSDP') to send
-            // their LIST / REPORT requests.
-            session.events.on('msdp.negotiated', () => {
-                this.msdpNegotiated = true;
-                this.emit('sysProtocolEnabled', ['MSDP']);
-            }),
             session.events.on('msdp', ({ path, value }) => {
                 // Mirror Mudlet: write the decoded value into the Lua `msdp`
                 // global, then raise a single `msdp.<VARNAME>` event with args
@@ -4794,21 +4779,6 @@ export class ScriptingEngine implements EngineHost {
                 const token = `msdp.${path}`;
                 this.emit(token, [token, token]);
             }),
-            // MSSP finished negotiating — mirrors the GMCP/MSDP pair so scripts
-            // can hook sysProtocolEnabled('MSSP').
-            session.events.on('mssp.negotiated', () => {
-                this.msspNegotiated = true;
-                this.emit('sysProtocolEnabled', ['MSSP']);
-            }),
-            // MNES / NEW-ENVIRON finished negotiating (server DO → client WILL).
-            // Mirror the GMCP/MSDP/MSSP pair so scripts can hook
-            // sysProtocolEnabled. The payload names the active mode ('MNES' or
-            // 'NEW-ENVIRON') — both ride telnet option 39 but report different
-            // variable sets.
-            session.events.on('mnes.negotiated', (protocol) => {
-                this.mnesNegotiated = true;
-                this.emit('sysProtocolEnabled', [protocol]);
-            }),
             // MXP finished negotiating (telnet option 91). Flip on in-band markup
             // parsing and mirror the GMCP/MSDP/MSSP pair so scripts can hook
             // sysProtocolEnabled('MXP').
@@ -4818,10 +4788,13 @@ export class ScriptingEngine implements EngineHost {
                 // <SUPPORTS>/<VERSION> replies (see ScriptingAPI / event doc).
                 if (viaTelnet) this.mxpHandshakeEnabled = true;
                 else this.autoEnableMxpProcessor();
-                if (!this.mxpNegotiated) {
-                    this.mxpNegotiated = true;
-                    this.emit('sysProtocolEnabled', ['MXP']);
-                }
+            }),
+            // Mudlet `setChannel102Table` — the zMUD out-of-band channel writes
+            // its numbered variable into the Lua `channel102` table and raises
+            // `channel102Message` with the variable and its value as numbers.
+            session.events.on('channel102', ({ variable, value }) => {
+                this.runtimes.lua?.setChannel102Value(variable, value);
+                this.emit('channel102Message', [variable, value]);
             }),
             session.events.on('mssp', ({ name, value }) => {
                 // Mirror Mudlet TLuaInterpreter::parseMSSP: write the value into

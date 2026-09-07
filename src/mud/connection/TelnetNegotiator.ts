@@ -1,32 +1,18 @@
 import type { EventBus } from "../../core/EventBus";
 import {
     buildNewEnvironVars,
-    CHARSET_DO,
-    CHARSET_WILL,
     computeMtts,
     encodeMnesIs,
     encodeNaws,
     EOR_DO,
-    GMCP_DO,
     GMCP_IAC,
     GMCP_SB,
     GMCP_SE,
-    GMCP_WILL,
     LINEMODE_DONT,
     LINEMODE_WONT,
-    MSDP_DO,
-    MSDP_WILL,
-    MSP_DO,
-    MSP_WILL,
-    MSSP_DO,
-    MSSP_WILL,
-    MXP_DO,
-    MXP_WILL,
     NAWS_WILL,
     NEW_ENVIRON_USERVAR,
     NEW_ENVIRON_VAR,
-    NEW_ENVIRON_WILL,
-    NEW_ENVIRON_WONT,
     OPT_TTYPE,
     parseMnesRequest,
     selectMnesVars,
@@ -50,13 +36,15 @@ const SE = 0xF0, SB = 0xFA, WILL = 0xFB, WONT = 0xFC, DO = 0xFD, DONT = 0xFE;
 // registry or is surfaced as a `telnet.event`.
 const OPT_ECHO = 1, OPT_SGA = 3, OPT_TTYPE_NUM = 24, OPT_EOR = 25, OPT_NAWS = 31,
     OPT_LINEMODE = 34, OPT_NEW_ENVIRON_NUM = 39, OPT_CHARSET_NUM = 42, OPT_MSDP = 69,
-    OPT_MSSP = 70, OPT_MCCP1 = 85, OPT_MCCP2 = 86, OPT_MSP = 90, OPT_MXP = 91, OPT_GMCP = 201;
+    OPT_MSSP = 70, OPT_MCCP1 = 85, OPT_MCCP2 = 86, OPT_MSP = 90, OPT_MXP = 91,
+    OPT_TELNET_102_NUM = 102, OPT_GMCP = 201;
 
 /** Options the client negotiates natively — excluded from `sysTelnetEvent`
  *  so script handlers see only "everything else". */
 const HARDCODED = new Set<number>([
     OPT_ECHO, OPT_SGA, OPT_TTYPE_NUM, OPT_EOR, OPT_NAWS, OPT_LINEMODE, OPT_NEW_ENVIRON_NUM,
-    OPT_CHARSET_NUM, OPT_MSDP, OPT_MSSP, OPT_MCCP1, OPT_MCCP2, OPT_MSP, OPT_MXP, OPT_GMCP,
+    OPT_CHARSET_NUM, OPT_MSDP, OPT_MSSP, OPT_MCCP1, OPT_MCCP2, OPT_MSP, OPT_MXP,
+    OPT_TELNET_102_NUM, OPT_GMCP,
 ]);
 
 /** The exact sequence of options a server running KaVir's protocol snippet
@@ -71,6 +59,32 @@ const OPT_ATCP_NUM = 200;
 const KAVIR_NEGOTIATION_ORDER: readonly number[] = [
     OPT_TTYPE_NUM, OPT_NAWS, OPT_CHARSET_NUM, OPT_MSDP, OPT_MSSP, OPT_ATCP_NUM, OPT_MSP, OPT_MXP,
 ];
+
+/** Mudlet's name for each option that carries a sysProtocolEnabled /
+ *  sysProtocolDisabled pair (`cTelnet::raiseProtocolEvent`). The spelling is
+ *  what reaches Lua as the event's second argument, so it is Mudlet's and not
+ *  ours: `NEW_ENVIRON` with underscores, `channel102` in lower camel case. */
+const PROTOCOL_NAMES: ReadonlyMap<number, string> = new Map([
+    [OPT_NAWS, 'NAWS'],
+    [OPT_NEW_ENVIRON_NUM, 'NEW_ENVIRON'],
+    [OPT_CHARSET_NUM, 'CHARSET'],
+    [OPT_MSDP, 'MSDP'],
+    [OPT_MSSP, 'MSSP'],
+    [OPT_MSP, 'MSP'],
+    [OPT_MXP, 'MXP'],
+    [OPT_TELNET_102_NUM, 'channel102'],
+    [OPT_GMCP, 'GMCP'],
+]);
+
+/** The answer that takes `opt` up, from whichever direction the server asked:
+ *  a WILL is agreed to with DO, a DO with WILL. */
+const agreement = (cmd: number, opt: number): string =>
+    String.fromCharCode(IAC, cmd === WILL ? DO : WILL, opt);
+
+/** The answer that turns `opt` down: DONT to a WILL, WONT to a DO. Silence is
+ *  never an option — a strict server waits on the reply before it continues. */
+const refusal = (cmd: number, opt: number): string =>
+    String.fromCharCode(IAC, cmd === WILL ? DONT : WONT, opt);
 
 /** In-band MXP line-mode sequence `ESC[<n>z` (n optional). Its presence means
  *  the server is speaking MXP even if it skipped the telnet option-91 handshake.
@@ -212,6 +226,14 @@ export class TelnetNegotiator {
      *  the owner uses to raise `sysCharacterModeDetected`. Reset on connect(). */
     private serverRequestedSGA = false;
 
+    /** Option bytes currently negotiated on, for the protocols that carry a
+     *  sysProtocolEnabled / sysProtocolDisabled pair. Mudlet keeps one bool per
+     *  protocol (enableGMCP, enableMSSP, …) and reads it to decide whether
+     *  turning an offer down is news; this is that set. Cleared by reset() with
+     *  the rest of the per-connection latches.
+     *  @see PROTOCOL_NAMES */
+    private readonly enabledProtocols = new Set<number>();
+
     constructor(
         private readonly flags: TelnetNegotiatorFlags,
         private readonly eventBus: EventBus<MudClientEvents>,
@@ -230,12 +252,22 @@ export class TelnetNegotiator {
         this.serverRequestedSGA = false;
         this.negotiationOrder = [];
         this.kaVirDetected = false;
+        this.enabledProtocols.clear();
     }
 
     /** Whether MSP was actually negotiated with the server this connection —
      *  Mudlet's `ctelnet::enableMSP`, distinct from the profile's `enableMSP`
      *  config (which only decides whether we agree to negotiate at all). Gates
      *  `receiveMSP`, which Mudlet refuses unless the option is live. */
+    /** Whether the server has taken zMUD channel 102 up this connection —
+     *  Mudlet's `isChannel102Enabled()`. It is the only gate on
+     *  `sendTelnetChannel102`: Mudlet frames and writes the subnegotiation
+     *  whether or not a socket is still there and answers true either way, so
+     *  a caller is told about the option rather than about the connection. */
+    isChannel102Enabled(): boolean {
+        return this.enabledProtocols.has(OPT_TELNET_102_NUM);
+    }
+
     isMspNegotiated(): boolean {
         return this.mspNegotiated;
     }
@@ -390,6 +422,31 @@ export class TelnetNegotiator {
 
     private respondToKnownOption(cmd: number, opt: number): void {
         const f = this.flags;
+        // The server withdrawing an option is the same act for every protocol:
+        // clear whatever state rode on it, then announce the loss. Mudlet raises
+        // sysProtocolDisabled here whether or not the protocol was on (only a
+        // WONT/DONT answering a request of our own is quiet), so this does too.
+        if (cmd === WONT || cmd === DONT) {
+            switch (opt) {
+                case OPT_NAWS: this.nawsNegotiated = false; break;
+                case OPT_MSP:
+                    // The server can withdraw MSP mid-session; Mudlet clears its
+                    // enableMSP here too, so the latch must be able to go false
+                    // without waiting for a disconnect.
+                    this.mspNegotiated = false;
+                    if (debugMspEnabled()) console.debug('[mudlet.msp] server withdrew MSP');
+                    break;
+                case OPT_MXP:
+                    // Mudlet stops the processor unless the profile forces it on;
+                    // that call belongs to the owner (it holds the forced-on
+                    // flag), so this only clears the latch that would otherwise
+                    // refuse a later restart.
+                    this.mxpStarted = false;
+                    break;
+            }
+            if (PROTOCOL_NAMES.has(opt)) this.withdrawProtocol(opt);
+            return;
+        }
         switch (opt) {
             case OPT_ECHO:
             case OPT_MCCP1:
@@ -442,7 +499,18 @@ export class TelnetNegotiator {
                 if (f.mttsEnabled && cmd === DO) this.hooks.sendRaw(TTYPE_WILL);
                 return;
             case OPT_NAWS:
-                if (!f.nawsEnabled) return;
+                // The refusal here is announced whether or not NAWS was on —
+                // Mudlet raises sysProtocolDisabled from its "user preference"
+                // branch unconditionally, so a script waiting on window-size
+                // reporting learns the profile turned the offer down.
+                if (!f.nawsEnabled) {
+                    if (cmd === DO) {
+                        this.hooks.sendRaw(String.fromCharCode(IAC, WONT, OPT_NAWS));
+                        this.enabledProtocols.delete(OPT_NAWS);
+                        this.eventBus.emit('protocol.disabled', 'NAWS');
+                    }
+                    return;
+                }
                 if (cmd === DO) {
                     // Server accepted our WILL NAWS (or requested it outright)
                     // → start reporting window size. If the server initiated
@@ -454,11 +522,10 @@ export class TelnetNegotiator {
                     }
                     const firstAccept = !this.nawsNegotiated;
                     this.nawsNegotiated = true;
+                    this.enabledProtocols.add(OPT_NAWS);
+                    this.eventBus.emit('protocol.enabled', 'NAWS');
                     this.sendNawsSize();
                     if (firstAccept) this.eventBus.emit('naws.negotiated');
-                } else if (cmd === DONT) {
-                    // Server declined window-size reporting — stop pushing it.
-                    this.nawsNegotiated = false;
                 }
                 return;
             case OPT_NEW_ENVIRON_NUM:
@@ -471,14 +538,14 @@ export class TelnetNegotiator {
                 // answer the option. MNES takes precedence when both are on.
                 if (cmd !== DO) return;
                 if (f.mnesEnabled || f.newEnvironEnabled) {
-                    this.hooks.sendRaw(NEW_ENVIRON_WILL);
+                    this.enableProtocol(cmd, opt);
                     this.eventBus.emit('mnes.negotiated', f.mnesEnabled ? 'MNES' : 'NEW-ENVIRON');
                 } else {
                     // Both disabled → explicitly decline (IAC WONT NEW-ENVIRON).
                     // A bare DO with no WILL/WONT answer leaves strict servers
                     // waiting on the option before they continue (e.g. before
                     // sending the login prompt), so silence is not an option here.
-                    this.hooks.sendRaw(NEW_ENVIRON_WONT);
+                    this.refuseProtocol(cmd, opt);
                 }
                 return;
             case OPT_CHARSET_NUM:
@@ -487,93 +554,108 @@ export class TelnetNegotiator {
                 // encodings (UTF-8 first). Mudlet does the same — without the
                 // REQUEST many servers stay on their default codec and never
                 // switch.
-                if (!f.charsetEnabled) return;
-                if (cmd === WILL) {
-                    this.hooks.sendRaw(CHARSET_DO);
-                    this.hooks.onCharsetNegotiated();
-                } else if (cmd === DO) {
-                    this.hooks.sendRaw(CHARSET_WILL);
-                    this.hooks.onCharsetNegotiated();
+                if (!f.charsetEnabled) {
+                    this.refuseProtocol(cmd, opt);
+                    return;
                 }
+                this.enableProtocol(cmd, opt);
+                this.hooks.onCharsetNegotiated();
                 return;
             case OPT_MSDP:
                 // Telnet negotiation is symmetric and many servers (e.g.
                 // Legends of Kallisti) start MSDP with IAC DO MSDP; without the
                 // DO branch we'd never reply and never fire msdp.negotiated.
-                if (!f.msdpEnabled) return;
-                if (cmd === WILL) {
-                    this.hooks.sendRaw(MSDP_DO);
-                    this.eventBus.emit('msdp.negotiated');
-                } else if (cmd === DO) {
-                    this.hooks.sendRaw(MSDP_WILL);
-                    this.eventBus.emit('msdp.negotiated');
+                if (!f.msdpEnabled) {
+                    this.refuseProtocol(cmd, opt);
+                    return;
                 }
+                this.enableProtocol(cmd, opt);
+                this.eventBus.emit('msdp.negotiated');
                 return;
             case OPT_MSSP:
                 // Server offers MSSP → accept; it then sends its status fields
                 // in a single SB MSSP … SE subnegotiation handled by msspStream.
-                if (!f.msspEnabled) return;
-                if (cmd === WILL) {
-                    this.hooks.sendRaw(MSSP_DO);
-                    this.eventBus.emit('mssp.negotiated');
-                } else if (cmd === DO) {
-                    this.hooks.sendRaw(MSSP_WILL);
-                    this.eventBus.emit('mssp.negotiated');
+                if (!f.msspEnabled) {
+                    this.refuseProtocol(cmd, opt);
+                    return;
                 }
+                this.enableProtocol(cmd, opt);
+                this.eventBus.emit('mssp.negotiated');
                 return;
             case OPT_MSP:
                 // In practice most MUDs just inline `!!SOUND(...)` tags without
                 // ever negotiating, so this is rarely hit; when it is, we want
                 // the option enabled so subnegotiated tags route through the
                 // MSP parser.
-                if (!f.mspEnabled) return;
-                if (cmd === WILL) {
-                    this.hooks.sendRaw(MSP_DO);
-                    this.mspNegotiated = true;
-                    this.eventBus.emit('msp.negotiated');
-                    if (debugMspEnabled()) console.debug('[mudlet.msp] negotiated: server WILL → client DO');
-                } else if (cmd === DO) {
-                    this.hooks.sendRaw(MSP_WILL);
-                    this.mspNegotiated = true;
-                    this.eventBus.emit('msp.negotiated');
-                    if (debugMspEnabled()) console.debug('[mudlet.msp] negotiated: server DO → client WILL');
-                } else if (cmd === WONT || cmd === DONT) {
-                    // The server can withdraw MSP mid-session; Mudlet clears its
-                    // enableMSP here too, so the latch must be able to go false
-                    // without waiting for a disconnect.
-                    this.mspNegotiated = false;
-                    if (debugMspEnabled()) console.debug('[mudlet.msp] server withdrew MSP');
+                if (!f.mspEnabled) {
+                    this.refuseProtocol(cmd, opt);
+                    return;
+                }
+                this.enableProtocol(cmd, opt);
+                this.mspNegotiated = true;
+                this.eventBus.emit('msp.negotiated');
+                if (debugMspEnabled()) {
+                    console.debug(cmd === WILL
+                        ? '[mudlet.msp] negotiated: server WILL → client DO'
+                        : '[mudlet.msp] negotiated: server DO → client WILL');
                 }
                 return;
             case OPT_MXP:
                 // From here the server embeds in-band MXP markup; the scripting
                 // engine parses it once it sees mxp.negotiated. Symmetric —
                 // many servers (e.g. Aardwolf) start MXP with IAC DO MXP.
-                if (!f.mxpEnabled) return;
-                if (cmd === WILL) {
-                    this.hooks.sendRaw(MXP_DO);
-                    this.startMxp(true);
-                } else if (cmd === DO) {
-                    this.hooks.sendRaw(MXP_WILL);
-                    this.startMxp(true);
+                if (!f.mxpEnabled) {
+                    this.refuseProtocol(cmd, opt);
+                    return;
                 }
+                this.enableProtocol(cmd, opt);
+                this.startMxp(true);
+                return;
+            case OPT_TELNET_102_NUM:
+                // zMUD's generic out-of-band channel. Mudlet takes it up from
+                // either direction and has no profile toggle to consult — there
+                // is no "enable channel 102" setting.
+                this.enableProtocol(cmd, opt);
                 return;
             case OPT_GMCP:
                 // Symmetric: server offers (WILL) or requests (DO) GMCP; either
                 // way we agree and announce ourselves via the Core.Hello
                 // handshake (latched by the owner).
-                if (!f.gmcpEnabled) return;
-                if (cmd === WILL) {
-                    this.hooks.sendRaw(GMCP_DO);
-                    this.hooks.onGmcpNegotiated();
-                    this.eventBus.emit('gmcp.negotiated');
-                } else if (cmd === DO) {
-                    this.hooks.sendRaw(GMCP_WILL);
-                    this.hooks.onGmcpNegotiated();
-                    this.eventBus.emit('gmcp.negotiated');
+                if (!f.gmcpEnabled) {
+                    this.refuseProtocol(cmd, opt);
+                    return;
                 }
+                this.enableProtocol(cmd, opt);
+                this.hooks.onGmcpNegotiated();
+                this.eventBus.emit('gmcp.negotiated');
                 return;
         }
+    }
+
+    /** Take the option up: answer the server, latch it on and announce it as
+     *  Mudlet's `sysProtocolEnabled`. Raised on every acceptance rather than
+     *  only the first, matching `raiseProtocolEvent` — a server that re-offers
+     *  mid-session re-announces. */
+    private enableProtocol(cmd: number, opt: number): void {
+        this.hooks.sendRaw(agreement(cmd, opt));
+        this.enabledProtocols.add(opt);
+        this.eventBus.emit('protocol.enabled', PROTOCOL_NAMES.get(opt) ?? String(opt));
+    }
+
+    /** Turn an offer down because the profile has that protocol switched off.
+     *  The refusal is announced only if we had the option on: declining one
+     *  that was never taken up is not news, and Mudlet guards it the same way. */
+    private refuseProtocol(cmd: number, opt: number): void {
+        this.hooks.sendRaw(refusal(cmd, opt));
+        if (this.enabledProtocols.delete(opt)) {
+            this.eventBus.emit('protocol.disabled', PROTOCOL_NAMES.get(opt) ?? String(opt));
+        }
+    }
+
+    /** The server withdrew the option (IAC WONT / IAC DONT). */
+    private withdrawProtocol(opt: number): void {
+        this.enabledProtocols.delete(opt);
+        this.eventBus.emit('protocol.disabled', PROTOCOL_NAMES.get(opt) ?? String(opt));
     }
 
     /** Raise `telnet.event` for an SB of an option we neither handle natively
@@ -626,6 +708,10 @@ export class TelnetNegotiator {
      *  scripting engine. */
     handleMxpSubneg(): void {
         if (!this.flags.mxpEnabled) return;
+        // No telnet reply is due — the server asked for nothing — but the
+        // option is on from here, so it announces itself like any other.
+        this.enabledProtocols.add(OPT_MXP);
+        this.eventBus.emit('protocol.enabled', 'MXP');
         this.startMxp(true);
     }
 
