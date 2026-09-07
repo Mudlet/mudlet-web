@@ -2,7 +2,7 @@ import type { WindowOpenOptions } from '../ui/windows/types';
 import type { MudletVariable } from '../import/mudletVariables';
 import { getBrand } from '../branding';
 
-export const DEFAULT_PROXY_URL = 'wss://mudlet.delwing.workers.dev';
+export const DEFAULT_PROXY_URL = 'wss://mudix.delwing.workers.dev';
 
 export type ConnectionMode = 'mud' | 'websocket';
 
