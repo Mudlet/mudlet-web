@@ -193,3 +193,66 @@ describe('SoundManager media event payloads', () => {
         expect(started).toEqual([]);
     });
 });
+
+// Closing a profile tears the session down synchronously, but a play that is
+// still fetching + decoding its file has not created a source yet — so the stop
+// pass finds nothing, and the sound starts a moment later with no manager left
+// to reach it. The symptom is music that keeps playing after the profile is
+// gone. Both stopAll() and destroy() have to reach in-flight plays too.
+describe('SoundManager teardown during an in-flight play', () => {
+    beforeAll(() => {
+        (window as unknown as { AudioContext: unknown }).AudioContext = FakeAudioContext;
+    });
+
+    /** A manager whose loader hangs until the returned `release` is called, so a
+     *  test can tear down while a play is parked mid-decode. */
+    function makePendingManager() {
+        let release!: () => void;
+        const gate = new Promise<void>((r) => { release = r; });
+        const mgr = new SoundManager();
+        mgr.setLoader(async () => { await gate; return new ArrayBuffer(8); });
+        return { mgr, release };
+    }
+
+    it('abandons a play whose decode finishes after destroy()', async () => {
+        const { mgr, release } = makePendingManager();
+        const started: string[] = [];
+        mgr.onMediaStarted = (file) => started.push(file);
+
+        const pending = mgr.playMusic({ name: 'late/theme.mp3', volume: 50 });
+        mgr.destroy();          // profile closed while the file was still loading
+        release();
+
+        expect(await pending).toBe(-1);
+        expect(started).toEqual([]);
+        expect(mgr.getPlaying({}, 'music')).toEqual([]);
+    });
+
+    it('abandons a play whose decode finishes after stopAll()', async () => {
+        const { mgr, release } = makePendingManager();
+        const started: string[] = [];
+        mgr.onMediaStarted = (file) => started.push(file);
+
+        const pending = mgr.playSound({ name: 'late/hit.wav', volume: 50 });
+        mgr.stopAll();          // e.g. resetProfile
+        release();
+
+        expect(await pending).toBe(-1);
+        expect(started).toEqual([]);
+        expect(mgr.getPlaying()).toEqual([]);
+    });
+
+    it('refuses a play started after destroy()', async () => {
+        const mgr = new SoundManager();
+        mgr.setLoader(async () => new ArrayBuffer(8));
+        mgr.destroy();
+        expect(await mgr.playSound({ name: 'after-close.wav', volume: 50 })).toBe(-1);
+    });
+
+    it('still plays normally after a stopAll that caught nothing', async () => {
+        const mgr = new SoundManager();
+        mgr.setLoader(async () => new ArrayBuffer(8));
+        mgr.stopAll();
+        expect(await mgr.playSound({ name: 'after-reset.wav', volume: 50 })).toBeGreaterThan(0);
+    });
+});

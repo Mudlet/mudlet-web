@@ -199,6 +199,18 @@ export class SoundManager {
     private nextId = 1;
     private active = new Map<number, ActiveSource>();
     private loader: LoaderFn = defaultLoader;
+    /**
+     * Bumped by every {@link stopAll}. `play()` has to await a fetch + decode
+     * before it can build a source, and a profile close (or resetProfile)
+     * landing inside that window would otherwise start the sound *after*
+     * teardown stopped everything — the manager has nothing to stop yet, so the
+     * track begins playing over a closed profile with no way left to reach it.
+     * A play captures the epoch before awaiting and abandons itself if it moved.
+     */
+    private epoch = 0;
+    /** Set by {@link destroy}. Unlike an epoch bump this is permanent: the
+     *  session is gone, so no in-flight or later play may start. */
+    private destroyed = false;
     /** 0..1, applied as an extra multiplier on every source's gain. */
     private masterVolume = 1;
     /**
@@ -411,8 +423,11 @@ export class SoundManager {
         return true;
     }
 
-    /** Stop everything this manager owns. Call on engine teardown. */
+    /** Stop everything this manager owns — including plays still awaiting a
+     *  decode, which abandon themselves rather than starting afterwards. Call
+     *  on engine teardown. */
     stopAll(): void {
+        this.epoch++;
         const ctx = sharedContext;
         if (!ctx) return;
         for (const a of [...this.active.values()]) {
@@ -423,16 +438,19 @@ export class SoundManager {
     }
 
     destroy(): void {
+        this.destroyed = true;
         this.stopAll();
     }
 
     // ── internal ──────────────────────────────────────────────────────────────
 
     private async play(kind: 'sound' | 'music', opts: PlaySoundOptions): Promise<number> {
+        if (this.destroyed) return -1;
         const ctx = getContext();
         if (!ctx) return -1;
         const name = opts.name;
         if (!name) return -1;
+        const epoch = this.epoch;
 
         // Replace any source with the same explicit key in this kind.
         if (opts.key) {
@@ -455,6 +473,11 @@ export class SoundManager {
             console.warn(`[sound] decode failed for "${name}":`, e);
             return -1;
         }
+        // The fetch + decode above is the whole race window: a profile close or
+        // resetProfile in here already ran its stop pass, so building a source
+        // now would leave it playing unreachably. Nothing has been created yet,
+        // so dropping out is all the cleanup needed.
+        if (this.destroyed || this.epoch !== epoch) return -1;
 
         const volume = clamp01((opts.volume ?? 50) / 100);
         const fadein = Math.max(0, opts.fadein ?? 0);

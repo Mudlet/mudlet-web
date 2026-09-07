@@ -55,6 +55,13 @@ export class VideoManager {
      * still reports what the script asked for.
      */
     private muted: Record<MediaOrigin, boolean> = { api: false, game: false };
+    /** Bumped by every {@link stopAll}. `play()` awaits a fetch before it can
+     *  build the element, and a profile close inside that window would mount a
+     *  video after teardown already cleared them — the sound-side twin is
+     *  `SoundManager`'s epoch. */
+    private epoch = 0;
+    /** Set by {@link destroy} — permanent, unlike an epoch bump. */
+    private destroyed = false;
     /** Fires once the element has actually begun playing — mirrors Mudlet's
      *  sysMediaStarted. Deliberately after `el.play()` resolves rather than
      *  beside the caption below it: autoplay policy can reject the play, and an
@@ -107,10 +114,12 @@ export class VideoManager {
     }
 
     async play(path: string, opts: PlayVideoOptions): Promise<boolean> {
+        if (this.destroyed) return false;
         const mount = this.getMount?.() ?? null;
         if (!mount) return false;
         const name = opts.name || path.split(/[/\\]/).pop() || path;
         const origin: MediaOrigin = opts.origin ?? 'api';
+        const epoch = this.epoch;
         this.stopByName(name);
 
         let src: string;
@@ -123,6 +132,12 @@ export class VideoManager {
             const blob = new Blob([buf as BlobPart], { type: 'video/mp4' });
             objectUrl = URL.createObjectURL(blob);
             src = objectUrl;
+        }
+        // Teardown during the fetch above: the stop pass has already run, so an
+        // element mounted now would play on with nothing tracking it.
+        if (this.destroyed || this.epoch !== epoch) {
+            if (objectUrl) URL.revokeObjectURL(objectUrl);
+            return false;
         }
 
         const el = document.createElement('video');
@@ -166,6 +181,9 @@ export class VideoManager {
         this.onMediaCaption?.({ kind: 'video', name, caption: opts.caption, action: 'plays' });
         try {
             await el.play();
+            // A stop landing inside el.play() detached this element already;
+            // announcing a start for it would be a lie.
+            if (this.active.get(name) !== entry) return true;
             this.onStarted?.(name.split(/[\\/]/).pop() || name, path);
         } catch {
             // Autoplay may be blocked by user-gesture policy; the element still
@@ -198,6 +216,7 @@ export class VideoManager {
     }
 
     stopAll(): void {
+        this.epoch++;
         for (const name of Array.from(this.active.keys())) this.stopByName(name);
     }
 
@@ -211,6 +230,7 @@ export class VideoManager {
     }
 
     destroy(): void {
+        this.destroyed = true;
         this.stopAll();
         this.prefetched.clear();
         this.loader = null;
