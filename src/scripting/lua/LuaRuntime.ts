@@ -3647,6 +3647,17 @@ end`);
         this.runChunk('__mudlet_set_msdp(__mudlet_msdp_path, __mudlet_msdp_val)', `set-msdp "${path}"`);
     }
 
+    /** Records one channel-102 report in the Lua `channel102` global. Both
+     *  halves are bytes, so there is nothing to marshal — Mudlet's
+     *  setChannel102Table does the same rawset. */
+    setChannel102Value(variable: number, value: number): void {
+        if (this.inert) return;
+        this.lua.global.set('__mudlet_channel102_var', variable);
+        this.lua.global.set('__mudlet_channel102_val', value);
+        this.runChunk('__mudlet_set_channel102(__mudlet_channel102_var, __mudlet_channel102_val)',
+            `set-channel102 ${variable}`);
+    }
+
     // Bridges a single MSSP variable into the Lua `mssp` global. `name` is the
     // flat variable name (e.g. "PLAYERS"); `value` is the reported string.
     setMsspValue(name: string, value: string): void {
@@ -3660,9 +3671,14 @@ end`);
      * Bridges one use of a server-defined MXP element into the Lua `mxp` global
      * as `mxp.<element>` — a fresh table each time, with every attribute key
      * lowercased and a `text` field, exactly as Mudlet's signalMXPEvent builds
-     * it. Values keep their case.
+     * it. Values keep their case. `body` carries what a tag that wraps text
+     * reports about it: the text itself, and the Lua its click would run.
      */
-    setMxpElement(name: string, attrs: Record<string, string>): void {
+    setMxpElement(
+        name: string,
+        attrs: Record<string, string>,
+        body?: { text: string; actions: string[] },
+    ): void {
         if (this.inert || !name) return;
         this.lua.global.set('__mudlet_mxp_name', name.toLowerCase());
         // Flattened rather than handed over as an object: wasmoon's table proxy
@@ -3672,7 +3688,13 @@ end`);
             .map(([k, v]) => `${k.toLowerCase()}\x02${v}`)
             .join('\x01');
         this.lua.global.set('__mudlet_mxp_attrs', flat);
-        this.runChunk('__mudlet_set_mxp(__mudlet_mxp_name, __mudlet_mxp_attrs)', `set-mxp "${name}"`);
+        // Flattened for the same reason as the attributes: a Lua-side split is
+        // cheaper and steadier than walking a proxy. Both are server text, so
+        // both use the separators no MXP attribute can contain.
+        this.lua.global.set('__mudlet_mxp_text', body?.text ?? '');
+        this.lua.global.set('__mudlet_mxp_actions', (body?.actions ?? []).join('\x01'));
+        this.runChunk('__mudlet_set_mxp(__mudlet_mxp_name, __mudlet_mxp_attrs,'
+            + ' __mudlet_mxp_text, __mudlet_mxp_actions)', `set-mxp "${name}"`);
     }
 
     /**

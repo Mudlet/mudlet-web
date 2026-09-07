@@ -29,6 +29,17 @@ import { parseOsc8Uri, HyperlinkPresetRegistry } from "../text/hyperlinkConfig";
 import type { MspCommand, MspKind } from "./msp";
 import { CLIENT_NAME, CLIENT_VERSION } from "../../version";
 
+/** A link tag that is open — everything the close needs to finish it, since
+ *  the command may only be resolvable once the wrapped text is known (`&text;`
+ *  stands for it). */
+interface LinkState {
+    start: number;
+    href?: string;
+    hint?: string;
+    kind: "command" | "url" | "prompt";
+    destName: string | null;
+}
+
 /** A clickable region the parser found, expressed as offsets into `plain`. The
  *  engine builds the actual `FormatHyperlink` (with session/URL behaviour). */
 export interface MxpLink {
@@ -36,8 +47,10 @@ export interface MxpLink {
     start: number;
     /** End offset into the line's plain text (exclusive). */
     end: number;
-    /** `url` → open in a browser tab; `command` → send to the MUD. */
-    kind: "command" | "url";
+    /** `url` → open in a browser tab; `command` → send to the MUD;
+     *  `prompt` → write it to the command line and leave it there for the
+     *  player to edit and submit (a SEND carrying the PROMPT flag). */
+    kind: "command" | "url" | "prompt";
     /** The single command or URL fired on left-click. */
     payload: string;
     /** Tooltip / title text. */
@@ -133,7 +146,7 @@ interface OpenTag {
      *  names which text sink `start` indexes into: redirected text accrues to
      *  `destPlain`, so a link inside a `<DEST>` measured against the main line
      *  would span nothing and be dropped. */
-    link?: { start: number; href?: string; hint?: string; isUrl: boolean; destName: string | null };
+    link?: LinkState;
     /** Set for `<V name>` — captures the enclosed plain text into `entities`. */
     varName?: string;
     varStart?: number;
@@ -158,24 +171,68 @@ const MXP_SECURE_REPLY_PREFIX = "\x1b[1z";
 const OPEN_MODE_TAGS = new Set<string>([
     "b", "bold", "strong", "i", "italic", "em", "u", "underline",
     "s", "strikeout", "strike", "del", "h", "high", "color", "c", "font",
-    "br", "sbr", "nobr", "p", "hr", "version", "support",
+    "br", "sbr", "nobr", "p", "hr",
 ]);
 
-/** Reported back to the server in response to `<SUPPORT>`. `+tag` = implemented,
- *  `-tag` = explicitly unsupported. Kept in sync with the dispatch in
- *  {@link MxpParser.handleOpenTag}. */
-const SUPPORTED_TAGS = [
-    "+b", "+i", "+u", "+s", "+h", "+high", "+strikeout", "+color", "+c", "+font",
-    "+send", "+a", "+br", "+sbr", "+nobr", "+p", "+hr", "+var", "+version", "+support",
-    "+frame", "+dest", "+sound", "+music",
-    "-image", "-relocate", "-filter", "-gauge", "-stat",
-];
+/** What `<SUPPORT>` answers with: every element this parser acts on, and for
+ *  each the attributes it reads. `+element` / `+element.attribute` for what is
+ *  here, `-name` for anything asked about that is not — so a game can tell a
+ *  client that ignores FRAME from one that has no idea what FRAME is.
+ *
+ *  Kept beside the dispatch in {@link MxpParser.handleOpenTag}: it is that
+ *  dispatch this describes, and a tag added there without an entry here is a
+ *  tag games are told this client does not have. Mirrors the shape of Mudlet's
+ *  mSupportedMxpElements (TMxpTagProcessor), minus what this client does not do
+ *  — EXPIRE, and the IMAGE that Mudlet deliberately leaves unadvertised too. */
+const SUPPORTED_ELEMENTS: ReadonlyMap<string, readonly string[]> = new Map([
+    // Version control
+    ['version', []],
+    ['support', []],
+    // Variables and entities
+    ['var', ['publish']],
+    ['v', ['publish']],
+    ['entity', ['name', 'value', 'desc', 'private', 'publish', 'delete', 'add', 'remove']],
+    ['element', ['name', 'definition', 'att', 'tag', 'flag', 'open', 'delete', 'empty']],
+    // Status bars: consumed without being drawn, as they are in Mudlet
+    ['stat', ['max', 'caption']],
+    ['gauge', ['max', 'caption', 'color']],
+    // Line spacing
+    ['br', []],
+    ['sbr', []],
+    ['nobr', []],
+    ['p', []],
+    ['hr', []],
+    // Links
+    ['send', ['href', 'hint', 'prompt']],
+    ['a', ['href', 'hint']],
+    // Colour and font
+    ['color', ['fore', 'back']],
+    ['c', ['fore', 'back']],
+    ['font', ['color', 'back']],
+    // Media (MSP compatibility)
+    ['sound', ['fname', 'v', 'l', 'p', 't', 'u']],
+    ['music', ['fname', 'v', 'l', 'p', 'c', 't', 'u']],
+    // Frames and redirection
+    ['frame', ['name', 'action', 'internal', 'external', 'align', 'left', 'right',
+        'top', 'bottom', 'width', 'height', 'scrolling', 'floating', 'title']],
+    ['dest', ['name', 'eol', 'eof']],
+    // Text formatting
+    ['b', []], ['bold', []], ['strong', []],
+    ['i', []], ['italic', []], ['em', []],
+    ['u', []], ['underline', []],
+    ['s', []], ['strikeout', []], ['strike', []], ['del', []],
+    ['h', []], ['high', []],
+]);
 
 /** Built-in XML/HTML entities. User and `<V>`-defined entities augment these via
  *  the per-session `entities` map. */
 const BUILTIN_ENTITIES: Record<string, string> = {
     lt: "<", gt: ">", amp: "&", quot: '"', apos: "'", nbsp: " ",
 };
+
+/** Valueless words a `<SEND>` may carry alongside its command, so the command
+ *  is the first positional that is none of them (`<SEND "look" PROMPT>`). */
+const SEND_FLAGS = new Set(["prompt", "hint", "expire"]);
 
 /** Cap on a held partial tag/entity. Beyond this it was never real markup, so it
  *  is flushed as literal text rather than swallowing the rest of the stream. */
@@ -194,7 +251,12 @@ const HR_MIN_WIDTH = 40;
 export class MxpParser {
     private readonly opts: {
         send: (raw: string) => void;
-        onElementEvent?: (name: string, attrs: Record<string, string>) => void;
+        onElementEvent?: (
+            name: string,
+            attrs: Record<string, string>,
+            body?: { text: string; actions: string[] },
+        ) => void;
+        onFrame?: (frame: MxpFrameCommand) => boolean;
         wrapWidth?: () => number;
     };
 
@@ -247,8 +309,20 @@ export class MxpParser {
         presets?: HyperlinkPresetRegistry;
         /** Fired whenever a server-defined custom element is used, with the
          *  tag's attributes resolved the way Mudlet resolves them (see
-         *  {@link elementEventAttrs}). Backs the Lua `mxp` table. */
-        onElementEvent?: (name: string, attrs: Record<string, string>) => void;
+         *  {@link elementEventAttrs}). Backs the Lua `mxp` table. `body` is
+         *  carried by the tags that wrap text and act on it — a `<SEND>` reports
+         *  the text it wrapped and the commands its click would run. */
+        onElementEvent?: (
+            name: string,
+            attrs: Record<string, string>,
+            body?: { text: string; actions: string[] },
+        ) => void;
+        /** Carry out a `<FRAME>` as it is read, answering whether it could be:
+         *  false leaves the tag in the line as text, which is what a game sees
+         *  when it names a frame that is not open or a name that is not a plain
+         *  word. Without this the commands are collected into the result for a
+         *  caller to run afterwards, which cannot report a refusal in time. */
+        onFrame?: (frame: MxpFrameCommand) => boolean;
         /** Columns the main window wraps at — how wide `<HR>` draws its rule.
          *  Mudlet's `TMxpClient::getWrapWidth`, whose own fallback is 80. */
         wrapWidth?: () => number;
@@ -265,8 +339,17 @@ export class MxpParser {
      * without the lock every definition tag would be ignored as unsafe.
      */
     lockSecureMode(locked: boolean): void {
-        this.lockedMode = locked ? "secure" : null;
-        this.lineMode = this.lockedMode ?? "open";
+        this.setLockedMode(locked ? "secure" : null);
+    }
+
+    /** Set the mode every line falls back to — the `ESC[5z`/`6z`/`7z` lock,
+     *  reachable from outside because a bare `IAC SB MXP IAC SE` starts the
+     *  processor locked (cTelnet sets MXP_MODE_CODE_LOCK_LOCKED for it): such
+     *  a server has negotiated nothing, so until it sends a mode of its own
+     *  nothing it writes is markup. */
+    setLockedMode(mode: "open" | "secure" | "locked" | null): void {
+        this.lockedMode = mode;
+        this.lineMode = mode ?? "open";
     }
 
     /** Clear all cross-line state. Called on (re)connect so a new session starts
@@ -553,6 +636,12 @@ export class MxpParser {
         }
     }
 
+    /** The style id a game named with `<VERSION styleId>`, stamped onto every
+     *  later VERSION answer. Nothing takes it back off — an empty attribute is
+     *  dropped by the parser before it gets here, so `<VERSION "">` is just a
+     *  bare VERSION — and it lasts as long as the session that set it. */
+    private mxpStyle: string | null = null;
+
     private closeAllTags(): void {
         this.flushRun();
         for (let k = this.stack.length - 1; k >= 0; k--) this.finalizeTag(this.stack[k]);
@@ -571,10 +660,15 @@ export class MxpParser {
 
         if (trimmed.startsWith("!")) {
             if (secure) this.handleDefinition(trimmed);
+            else this.showAsText(raw);
             return;
         }
         if (trimmed.startsWith("/")) {
             const name = trimmed.slice(1).trim().split(/[\s>]/)[0].toLowerCase();
+            if (!secure && !this.openAllowed(name)) {
+                this.showAsText(raw);
+                return;
+            }
             this.handleCloseTag(name);
             return;
         }
@@ -583,8 +677,20 @@ export class MxpParser {
         const name = (sp === -1 ? trimmed : trimmed.slice(0, sp)).toLowerCase();
         const attrStr = sp === -1 ? "" : trimmed.slice(sp + 1);
 
-        if (!secure && !this.openAllowed(name)) return; // discard secure-only tag in open mode
-        this.handleOpenTag(name, attrStr, depth);
+        if (!secure && !this.openAllowed(name)) {
+            this.showAsText(raw);
+            return;
+        }
+        this.handleOpenTag(name, attrStr, depth, raw);
+    }
+
+    /** A tag the current line mode does not allow is shown to the player as
+     *  the text it literally is, brackets and all — Mudlet re-inserts the raw
+     *  tag content the same way (HANDLER_INSERT_ENTITY_SYS). Swallowing it
+     *  instead would hide half a game's output on an OPEN line and leave the
+     *  other half — the text the tag wrapped — with no explanation. */
+    private showAsText(raw: string): void {
+        this.appendText("<" + raw + ">");
     }
 
     private openAllowed(name: string): boolean {
@@ -593,7 +699,7 @@ export class MxpParser {
         return def ? def.open : false;
     }
 
-    private handleOpenTag(name: string, attrStr: string, depth: number): void {
+    private handleOpenTag(name: string, attrStr: string, depth: number, raw = ""): void {
         const def = this.elements.get(name);
         if (def) {
             this.expandElement(def, attrStr, depth);
@@ -615,14 +721,29 @@ export class MxpParser {
             case "color": case "c":
                 this.openColor(name, named.get("fore") ?? positional[0], named.get("back") ?? positional[1]); break;
             case "font":
-                this.openColor(name, named.get("color") ?? named.get("fore"), named.get("back") ?? named.get("bgcolor")); break;
-            case "send":
-                this.openLink("send", named.get("href") ?? named.get("hr") ?? positional[0],
-                    named.get("hint") ?? named.get("title"), false); break;
+                // FACE and SIZE are read and thrown away — a MUD does not get to
+                // pick the font — but they still hold the first two positions the
+                // colours are counted from (TMxpFontTagHandler: FACE 0, SIZE 1,
+                // COLOR 2, BACK 3).
+                this.openColor(name, named.get("color") ?? named.get("fore") ?? positional[2],
+                    named.get("back") ?? named.get("bgcolor") ?? positional[3]); break;
+            case "send": {
+                // <SEND "look" PROMPT> — the command is the first positional
+                // that is not one of the flags, and PROMPT switches the click
+                // from sending to seeding the command line.
+                const flags = new Set(positional.map(p => p.toLowerCase()));
+                const href = named.get("href") ?? named.get("hr")
+                    ?? positional.find(p => !SEND_FLAGS.has(p.toLowerCase()));
+                const hint = named.get("hint") ?? named.get("title");
+                const prompt = flags.has("prompt") || named.has("prompt");
+                this.openLink("send", href, hint, prompt ? "prompt" : "command");
+                break;
+            }
             case "a": {
                 const href = named.get("href") ?? positional[0];
                 const isUrl = !!href && /^(https?|mailto):/i.test(href);
-                this.openLink("a", href, named.get("hint") ?? named.get("title"), isUrl);
+                this.openLink("a", href, named.get("hint") ?? named.get("title"),
+                    isUrl ? "url" : "command");
                 break;
             }
             case "v": case "var":
@@ -640,7 +761,7 @@ export class MxpParser {
                 this.appendText(`\n${"-".repeat(Math.max(this.opts.wrapWidth?.() ?? 80, HR_MIN_WIDTH))}\n`);
                 break;
             case "frame":
-                this.handleFrameTag(named, positional); break;
+                this.handleFrameTag(named, positional, raw); break;
             case "dest":
                 this.handleDestTag(named, positional); break;
             case "sound":
@@ -648,11 +769,9 @@ export class MxpParser {
             case "music":
                 this.handleSoundTag("music", named, positional); break;
             case "support":
-                this.opts.send(`${MXP_SECURE_REPLY_PREFIX}<SUPPORTS ${SUPPORTED_TAGS.join(" ")}>`); break;
+                this.answerSupport(positional); break;
             case "version":
-                // MXP="1.0" is the *protocol* version we speak; CLIENT/VERSION
-                // are our own identity (see src/version.ts).
-                this.opts.send(`${MXP_SECURE_REPLY_PREFIX}<VERSION MXP="1.0" CLIENT="${CLIENT_NAME}" VERSION="${CLIENT_VERSION}">`); break;
+                this.answerVersion(positional); break;
             default:
                 // Structural no-ops (p, nobr) and discarded heavy tags (image,
                 // gauge, relocate, …): consume the tag, render nothing for it.
@@ -662,16 +781,92 @@ export class MxpParser {
         }
     }
 
+
+
+    /** Hand a finished `<SEND>` to Lua the way Mudlet does: the `mxp.send`
+     *  table and an `mxp.send` event, carrying the tag's attributes, the text it
+     *  wrapped, and the Lua each of its commands would run — `send([[…]])`, or
+     *  `printCmdLine([[…]])` for a PROMPT. Queued on the closing tag because
+     *  until then the caption is not known, and the caption is what `&text;`
+     *  resolves to in every one of those (TMxpMudlet::setCaptionForSendEvent).
+     *
+     *  A script reads this to act on a link the game drew — to relabel it, to
+     *  run something of its own alongside it, or to count what a shop offered.
+     *  The command list is reported whole even where the click can only fire
+     *  the first of them. */
+    private reportSend(link: LinkState, text: string, resolvedHref: string): void {
+        const report = this.opts.onElementEvent;
+        if (!report) return;
+        const command = link.kind === "prompt" ? "printCmdLine" : "send";
+        const cmds = resolvedHref.split("|").filter(c => c.trim().length > 0);
+        const actions = (cmds.length > 0 ? cmds : [text]).map(c => `${command}([[${c}]])`);
+        const attrs: Record<string, string> = {};
+        if (link.href !== undefined) attrs.href = resolvedHref;
+        if (link.hint !== undefined) attrs.hint = link.hint.replace(/&text;/gi, text);
+        if (link.kind === "prompt") attrs.prompt = "";
+        report("send", attrs, { text, actions });
+    }
+    /** `<SUPPORT>` asks what this client can do. Bare, it lists everything;
+     *  named, it answers about exactly what was asked, in the order it was asked
+     *  — `element` for the whole element and its attributes, `element.attribute`
+     *  for one of them, `element.*` for the whole element again, and a leading
+     *  minus for anything not here. A game reads this to decide which of its
+     *  markup to send, so answering about something we do not do would cost it
+     *  the fallback it has for clients that lack it. */
+    private answerSupport(requested: string[]): void {
+        const out: string[] = [];
+        const whole = (element: string) => {
+            out.push(`+${element}`);
+            for (const attr of SUPPORTED_ELEMENTS.get(element) ?? []) out.push(`+${element}.${attr}`);
+        };
+        if (requested.length === 0) {
+            for (const element of SUPPORTED_ELEMENTS.keys()) whole(element);
+        } else {
+            for (const raw of requested) {
+                const asked = raw.toLowerCase();
+                const dot = asked.indexOf(".");
+                if (dot === -1) {
+                    if (SUPPORTED_ELEMENTS.has(asked)) whole(asked);
+                    else out.push(`-${asked}`);
+                    continue;
+                }
+                const element = asked.slice(0, dot);
+                const attr = asked.slice(dot + 1);
+                const attrs = SUPPORTED_ELEMENTS.get(element);
+                if (!attrs) out.push(`-${asked}`);
+                else if (attr === "*") whole(element);
+                else if (attrs.includes(attr)) out.push(`+${element}.${attr}`);
+                else out.push(`-${element}.${attr}`);
+            }
+        }
+        this.opts.send(`${MXP_SECURE_REPLY_PREFIX}<SUPPORTS ${out.join(" ")}>`);
+    }
+
+    /** `<VERSION>` asks who this client is; `<VERSION styleId>` instead names a
+     *  style the game wants its answers stamped with from then on, and is not
+     *  answered at all. MXP=1.0 is the protocol version we speak; CLIENT and
+     *  VERSION are our own identity (see src/version.ts). Unquoted, as Mudlet
+     *  sends it — a game's parser may be no more than a split on spaces. */
+    private answerVersion(positional: string[]): void {
+        const style = positional[0];
+        if (style !== undefined && style !== "") {
+            this.mxpStyle = style;
+            return;
+        }
+        const styleAttr = this.mxpStyle === null ? "" : ` STYLE=${this.mxpStyle}`;
+        this.opts.send(`${MXP_SECURE_REPLY_PREFIX}<VERSION MXP=1.0 CLIENT=${CLIENT_NAME}`
+            + ` VERSION=${CLIENT_VERSION}${styleAttr}>`);
+    }
     /** `<FRAME name [action] [internal|external|floating] [left|top|width|height]
      *  [scrolling] [title]>` — record a window create/close request for the
      *  consumer. NAME is the first positional or the NAME attribute; valueless
      *  flags (INTERNAL/EXTERNAL/FLOATING) become `"true"`. */
-    private handleFrameTag(named: Map<string, string>, positional: string[]): void {
+    private handleFrameTag(named: Map<string, string>, positional: string[], raw: string): void {
         let name = named.get("name");
         let flagStart = 0;
         if (!name) { name = positional[0]; flagStart = 1; }
         name = (name ?? "").trim();
-        if (name === "") return; // a nameless FRAME is ignored (matches Mudlet)
+        if (name === "") { this.showAsText(raw); return; }
         this.flushRun(); // commit any preceding main text before the command
         const attrs: Record<string, string> = {};
         for (const [k, v] of named) if (k !== "name") attrs[k.toUpperCase()] = v;
@@ -679,7 +874,17 @@ export class MxpParser {
         attrs.NAME = name;
         const cmd: MxpFrameCommand = { name, attrs };
         if (this.destName !== null) cmd.dest = this.destName;
-        this.frames.push(cmd);
+        if (!this.opts.onFrame) {
+            this.frames.push(cmd);
+            return;
+        }
+        // Acted on here rather than collected, because whether it worked
+        // decides what the line says: a FRAME naming a window that is not
+        // there, or a name that is not a plain word, is a tag the client
+        // could not carry out, and Mudlet leaves such a tag in the stream as
+        // text rather than swallowing it (MXP_TAG_NOT_HANDLED). Doing that
+        // after the line was assembled would put the tag on the wrong line.
+        if (!this.opts.onFrame(cmd)) this.showAsText(raw);
     }
 
     /** `<DEST name [eol] [eof]>` — start redirecting enclosed text into `name`.
@@ -779,7 +984,12 @@ export class MxpParser {
         this.stack.push({ name, closeFmt: before, colorOverride: true });
     }
 
-    private openLink(name: string, href: string | undefined, hint: string | undefined, isUrl: boolean): void {
+    private openLink(
+        name: string,
+        href: string | undefined,
+        hint: string | undefined,
+        kind: "command" | "url" | "prompt",
+    ): void {
         const before = this.fmt.toSnapshot();
         this.flushRun();
         // Visual cue: underline the link text. Colour is left to whatever the
@@ -787,7 +997,7 @@ export class MxpParser {
         // the pointer cursor + click handler.
         this.fmt.underline = true;
         const sink = this.destName === null ? this.plain : this.destPlain;
-        this.stack.push({ name, closeFmt: before, link: { start: sink.length, href, hint, isUrl, destName: this.destName } });
+        this.stack.push({ name, closeFmt: before, link: { start: sink.length, href, hint, kind, destName: this.destName } });
     }
 
     private openVar(varName: string): void {
@@ -830,12 +1040,15 @@ export class MxpParser {
             if (payload === undefined || payload === "") payload = text;
             else payload = payload.replace(/&text;/gi, text);
             if (payload && end > tag.link.start) {
-                const cmds = payload.split("|").map(c => c.trim()).filter(c => c.length > 0);
+                // Split, but not trimmed: a trailing space is part of the command a
+                // game means to be completed (<SEND "tell Zugg " PROMPT>), and Mudlet
+                // keeps it. Only a segment that is nothing but space is dropped.
+                const cmds = payload.split("|").filter(c => c.trim().length > 0);
                 const hintParts = tag.link.hint !== undefined ? tag.link.hint.split("|") : [];
                 if (cmds.length > 1) {
                     collect.push({
                         start: tag.link.start, end,
-                        kind: tag.link.isUrl ? "url" : "command",
+                        kind: tag.link.kind,
                         payload: cmds[0],
                         hint: hintParts[0] ?? text,
                         prompts: { cmds, hints: hintParts.slice(1) },
@@ -843,12 +1056,13 @@ export class MxpParser {
                 } else {
                     collect.push({
                         start: tag.link.start, end,
-                        kind: tag.link.isUrl ? "url" : "command",
+                        kind: tag.link.kind,
                         payload: cmds[0] ?? text,
                         hint: hintParts[0] ?? tag.link.hint,
                     });
                 }
             }
+            if (tag.name === "send") this.reportSend(tag.link, text, payload);
         }
         if (tag.varName !== undefined && tag.varName !== "") {
             this.entities.set(tag.varName, this.plain.slice(tag.varStart ?? this.plain.length, this.plain.length));

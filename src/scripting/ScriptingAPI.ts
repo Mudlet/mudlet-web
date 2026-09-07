@@ -1,4 +1,5 @@
 import type { MudSession, ScriptLogSource, ShowSentTextMode, BlankLinesBehaviour } from '../mud/MudSession';
+import type { TelnetNegotiatorFlags } from '../mud/connection/TelnetNegotiator';
 import { splitCommands } from '../mud/commandSplit';
 import type { AliasEngine } from '../mud/aliases/AliasEngine';
 import type { TriggerEngine } from '../mud/triggers/TriggerEngine';
@@ -1330,6 +1331,22 @@ export class ScriptingAPI {
         useAppStore.getState().patchConnectionProfile(this.connectionId, { config: { ...prev, [key]: value } });
     }
 
+    /** The negotiator flag each profile protocol toggle drives. MCCP is
+     *  absent on purpose: its handler owns its own switch and isn't part of
+     *  the negotiator flag set. */
+    private static readonly LIVE_PROTOCOL_FLAG: Partial<Record<BooleanProtocolKey, keyof TelnetNegotiatorFlags>> = {
+        gmcp: 'gmcpEnabled',
+        mtts: 'mttsEnabled',
+        msdp: 'msdpEnabled',
+        mssp: 'msspEnabled',
+        charset: 'charsetEnabled',
+        msp: 'mspEnabled',
+        mxp: 'mxpEnabled',
+        mnes: 'mnesEnabled',
+        newEnviron: 'newEnvironEnabled',
+        naws: 'nawsEnabled',
+    };
+
     private getProtocol(key: BooleanProtocolKey): boolean {
         const p = useAppStore.getState().connectionProfile[this.connectionId]?.protocols;
         return p?.[key] ?? PROTOCOL_DEFAULTS[key];
@@ -1338,6 +1355,13 @@ export class ScriptingAPI {
     private setProtocol(key: BooleanProtocolKey, value: boolean): void {
         const prev = useAppStore.getState().connectionProfile[this.connectionId]?.protocols ?? {};
         useAppStore.getState().patchConnectionProfile(this.connectionId, { protocols: { ...prev, [key]: value } });
+        // The store change reaches the session through ProfileSession, but not
+        // until the next render — and a script that turns a protocol off and
+        // then reads the wire is still inside this call. Mudlet has no such
+        // gap (setConfig writes the very flag cTelnet reads), so the session
+        // is told directly as well; the effect's later re-apply is a no-op.
+        const flag = ScriptingAPI.LIVE_PROTOCOL_FLAG[key];
+        if (flag) this.session.setProtocolOptions({ [flag]: value });
     }
 
     private getMapperField<K extends keyof MapperSettings>(key: K): MapperSettings[K] {
@@ -2741,7 +2765,7 @@ export class ScriptingAPI {
      * Used by ScriptingEngine when rendering MXP-parsed lines.
      */
     createMxpHyperlink(
-        kind: 'command' | 'url',
+        kind: 'command' | 'url' | 'prompt',
         payload: string,
         hint?: string,
         promptCmds?: string[],
@@ -2754,7 +2778,13 @@ export class ScriptingAPI {
                 autoUnderline: true,
             };
         }
-        const sendCmd = (cmd: string) => { this.send(cmd); };
+        // A SEND carrying PROMPT is asking for the command to be put in front
+        // of the player rather than run — the game means it to be edited (the
+        // canonical example is `<SEND "tell Zugg " PROMPT>`, which wants a
+        // message typed after it). Same as the OSC 8 `prompt:` scheme.
+        const sendCmd = kind === 'prompt'
+            ? (cmd: string) => { this.printCmdLine(cmd); }
+            : (cmd: string) => { this.send(cmd); };
         if (promptCmds && promptCmds.length > 1) {
             const hl = this.buildPopupHyperlink(promptCmds, promptHints ?? [], sendCmd);
             hl.onClick = () => sendCmd(payload);
@@ -4340,9 +4370,9 @@ export class ScriptingAPI {
      * and `DOCK` tab groups. This just owns the manager and satisfies its host
      * interface below. `dest` is the `<DEST>` frame open when the tag was parsed.
      */
-    mxpFrame(name: string, attrs: Record<string, string>, dest?: string): void {
-        if (!name) return;
-        this.mxpFrames.createFrame(name, attrs, dest);
+    mxpFrame(name: string, attrs: Record<string, string>, dest?: string): boolean {
+        if (!name) return false;
+        return this.mxpFrames.createFrame(name, attrs, dest);
     }
 
     /** Tear every MXP frame down. MXP frames are per-connection state in Mudlet
@@ -4449,9 +4479,18 @@ export class ScriptingAPI {
             this.session.windows.setLineHeight(id, measureMonospaceCell(font?.family ?? '', size)[1]);
         },
         openExternalFrame: (name, title, width, height) => {
-            this.session.windows.open(mxpWindowId(name), {
+            const id = mxpWindowId(name);
+            this.session.windows.open(id, {
                 kind: 'text', title, autoDock: false, lockFloating: true, ignoreHint: true, width, height,
             });
+            // A frame is a frame whichever side of the main window it is on:
+            // EXTERNAL only decides that it floats rather than taking space out
+            // of the console, so it answers windowType() as the mini-console it
+            // is — the same as an internal one, and the same as in Mudlet, where
+            // both are a TConsole the frame manager owns. A script asking what a
+            // frame is should not have to know how the game placed it.
+            this.session.windows.markAsMiniConsole(id);
+            this.session.windows.markAsMxpFrame(id);
         },
         destroyFrameConsole: (name) => this.session.windows.close(mxpWindowId(name)),
         showFrameConsole: (name) => { this.session.windows.show(mxpWindowId(name)); },

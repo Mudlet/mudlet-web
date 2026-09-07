@@ -27,18 +27,19 @@ describe('GMCP payload parsing', () => {
 
   it('accepts a bodyless message (no space) instead of dropping it', () => {
     // GMCP spec: the data part is optional. The server's canonical Core.Ping
-    // reply has no body at all.
+    // reply has no body at all, and reaches Lua as an empty table — a script
+    // reading gmcp.Core.Ping is reading a table (cTelnet passes on "{}").
     const seen: Array<{ path: string; value: unknown }> = [];
     const stream = createGmcpStream({ onEnvelope: e => seen.push(e) });
     stream(frame('Core.Ping'));
-    expect(seen).toEqual([{ path: 'Core.Ping', value: '' }]);
+    expect(seen).toEqual([{ path: 'Core.Ping', value: {} }]);
   });
 
   it('accepts a message with a trailing space but empty body', () => {
     const seen: Array<{ path: string; value: unknown }> = [];
     const stream = createGmcpStream({ onEnvelope: e => seen.push(e) });
     stream(frame('Core.Ping '));
-    expect(seen).toEqual([{ path: 'Core.Ping', value: '' }]);
+    expect(seen).toEqual([{ path: 'Core.Ping', value: {} }]);
   });
 
   it('accepts an explicit empty-string body', () => {

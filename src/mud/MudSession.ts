@@ -189,6 +189,13 @@ export class MudSession {
         // handler writes anything of its own, which is the order cTelnet
         // produces (postMessage precedes raiseEvent in both slots).
         this.events.on('client.connect', () => { this.setStatus('connected'); this.announceConnected(); });
+        // A CHARSET exchange decides what encoding the session reads its game in,
+        // and the answer belongs to the profile rather than to the socket that
+        // happened to negotiate it. Subscribed here, for the session's lifetime:
+        // feedTelnet parses through a client that was never connected, and a
+        // dial-time subscription left an injected REQUEST changing the decoder
+        // while getServerEncoding() went on reporting the old name.
+        this.events.on('charset.negotiated', (name) => this.noteNegotiatedEncoding(name));
         // Mudlet's `mConnectionTimer.start()` (ctelnet.cpp:723). It hangs off
         // the *game* socket, not the proxy one: `client.connect` in `mud` mode
         // only means the proxy accepted our WebSocket, so timing a session from
@@ -279,10 +286,12 @@ export class MudSession {
         );
 
         // Per-client subscriptions only — the status latch lives in the
-        // constructor so it always runs before the scripting engine's handlers.
+        // constructor so it always runs before the scripting engine's handlers,
+        // and so does the encoding latch (the encoding is the profile's and
+        // survives a socket, and a CHARSET negotiation can reach a client that
+        // was never dialled — see ensureParsingClient).
         this.stateUnsubs = [
             this.events.on('client.error', (message) => this.reportConnectionError(message)),
-            this.events.on('charset.negotiated', (name) => this.noteNegotiatedEncoding(name)),
         ];
         // Carry the profile's encoding onto the new socket, so a script that set
         // one before dialing isn't silently overridden by the client default.
@@ -834,9 +843,10 @@ export class MudSession {
         setActiveControlCharacterMode(mode);
     }
 
-    /** Update the telnet protocol toggles applied on the next connect.
-     *  Mid-session changes do not retroactively renegotiate — the values are
-     *  read by MudClient's constructor, so the next dial sees them. */
+    /** Update the telnet protocol toggles. A live client is told too, so a
+     *  toggle switched off mid-session is obeyed by the next offer the server
+     *  makes (Mudlet reads its equivalents at negotiation time). Options
+     *  already negotiated are not retroactively withdrawn. */
     setProtocolOptions(opts: { gmcpEnabled?: boolean; mttsEnabled?: boolean; msdpEnabled?: boolean; msspEnabled?: boolean; charsetEnabled?: boolean; mspEnabled?: boolean; mccpEnabled?: boolean; mxpEnabled?: boolean; mnesEnabled?: boolean; newEnvironEnabled?: boolean; secureTransport?: boolean; screenReaderAdvertised?: boolean; osc8HyperlinksEnabled?: boolean; nawsEnabled?: boolean; subprotocols?: string[] }): void {
         if (opts.gmcpEnabled !== undefined) this.options.gmcpEnabled = opts.gmcpEnabled;
         if (opts.mttsEnabled !== undefined) this.options.mttsEnabled = opts.mttsEnabled;
@@ -853,6 +863,24 @@ export class MudSession {
         if (opts.osc8HyperlinksEnabled !== undefined) this.options.osc8HyperlinksEnabled = opts.osc8HyperlinksEnabled;
         if (opts.nawsEnabled !== undefined) this.options.nawsEnabled = opts.nawsEnabled;
         if (opts.subprotocols !== undefined) this.options.subprotocols = opts.subprotocols;
+        // Everything the negotiator reads, by the name it reads it under. The
+        // undefined-guarded assignments above have already dropped the keys
+        // the caller left out, so this passes on what actually changed.
+        this.client?.setProtocolFlags({
+            ...(opts.gmcpEnabled !== undefined && { gmcpEnabled: opts.gmcpEnabled }),
+            ...(opts.mttsEnabled !== undefined && { mttsEnabled: opts.mttsEnabled }),
+            ...(opts.msdpEnabled !== undefined && { msdpEnabled: opts.msdpEnabled }),
+            ...(opts.msspEnabled !== undefined && { msspEnabled: opts.msspEnabled }),
+            ...(opts.charsetEnabled !== undefined && { charsetEnabled: opts.charsetEnabled }),
+            ...(opts.mspEnabled !== undefined && { mspEnabled: opts.mspEnabled }),
+            ...(opts.mxpEnabled !== undefined && { mxpEnabled: opts.mxpEnabled }),
+            ...(opts.mnesEnabled !== undefined && { mnesEnabled: opts.mnesEnabled }),
+            ...(opts.newEnvironEnabled !== undefined && { newEnvironEnabled: opts.newEnvironEnabled }),
+            ...(opts.nawsEnabled !== undefined && { nawsEnabled: opts.nawsEnabled }),
+            ...(opts.secureTransport !== undefined && { secureTransport: opts.secureTransport }),
+            ...(opts.screenReaderAdvertised !== undefined && { screenReaderAdvertised: opts.screenReaderAdvertised }),
+            ...(opts.osc8HyperlinksEnabled !== undefined && { osc8HyperlinksEnabled: opts.osc8HyperlinksEnabled }),
+        });
     }
 
     /** Record the main output area's character grid (columns × rows) and forward

@@ -74,25 +74,35 @@ const parseGmcpPayload = (
     const { text: gmcpData, malformed } = fromByteString(rawBody);
     if (!gmcpData.length) return;
 
-    // The data part is optional per the GMCP spec — a message may be just a
-    // module name with no body (e.g. the server's `Core.Ping` reply, which is
-    // documented to carry no body). Treat a missing/blank body as an empty
-    // value rather than dropping the whole message.
-    const spaceIndex = gmcpData.indexOf(" ");
-    const type = (spaceIndex === -1 ? gmcpData : gmcpData.substring(0, spaceIndex)).trim();
-    let payload = spaceIndex === -1 ? "" : gmcpData.substring(spaceIndex + 1);
+    // Name and body are separated by the first space — unless a newline comes
+    // first, in which case that is the separator instead. Games do pretty-print
+    // their GMCP, and `Room.Info\n{...}` is a name and a body, not a module name
+    // with a newline in it (cTelnet::setGMCPVariables makes the same choice).
+    const firstSpace = gmcpData.indexOf(" ");
+    const firstNewline = gmcpData.indexOf("\n");
+    const sep = (firstSpace !== -1 && (firstNewline === -1 || firstSpace < firstNewline))
+        ? firstSpace
+        : firstNewline;
+    const type = (sep === -1 ? gmcpData : gmcpData.substring(0, sep)).trim();
+    let payload = sep === -1 ? "" : gmcpData.substring(sep + 1);
 
     if (malformed) onMalformedEncoding?.(type, rawBody);
 
+    // The data part is optional per the GMCP spec — a message may be just a
+    // module name with no body (`Core.Ping` is the one every game sends). An
+    // empty object, not an empty string: a script reading gmcp.Core.Ping is
+    // reading a table, and Mudlet hands it `{}`.
     if (payload.trim() === "") {
-        onMessage(type, "");
+        onMessage(type, {});
         return;
     }
 
-    // Replace literal ESC characters inside JSON strings so JSON.parse succeeds
-    if (type.toLowerCase() === "gmcp_msgs") {
-        payload = payload.replace(//g, "\\u001B");
-    }
+    // A raw ESC is not valid inside a JSON string, and games leak them —
+    // colour codes inside a message's text. Escaping rather than stripping keeps
+    // the byte the game sent, which the script can then act on; without it
+    // JSON.parse rejects the whole message over one character it could have
+    // read. Mudlet does the same replace, for every module and not just one.
+    payload = payload.replace(/\x1B/g, "\\u001B");
 
     let gmcp: unknown;
     try {

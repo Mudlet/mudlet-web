@@ -50,6 +50,17 @@ describe('raw subnegotiation encoding (sendATCP / sendTelnetChannel102)', () => 
     return { client, sock };
   }
 
+  /** Aardwolf opens channel 102 with IAC DO 102; sendTelnetChannel102 is
+   *  refused until it has (Mudlet gates it on `isChannel102Enabled`). */
+  function withChannel102() {
+    const { client, sock } = connected();
+    sock.onmessage?.({
+      data: Uint8Array.from([0xFF, 0xFD, 102]).buffer,
+    });
+    sock.sent.length = 0; // discard our IAC WILL 102
+    return { client, sock };
+  }
+
   it('frames an ASCII ATCP message unchanged', () => {
     const { client, sock } = connected();
     expect(client.sendATCP('Char.Login')).toBe(true);
@@ -76,15 +87,23 @@ describe('raw subnegotiation encoding (sendATCP / sendTelnetChannel102)', () => 
     expect(body).not.toContain(GMCP_IAC);
   });
 
-  it('sends channel-102 payload bytes verbatim, without UTF-8 expansion', () => {
+  it('refuses channel 102 until the server has enabled it', () => {
+    // Mudlet answers false for the option, not for the socket: the refusal
+    // is about the server never having offered the channel.
     const { client, sock } = connected();
+    expect(client.sendTelnetChannel102('\x01\xC8')).toBe(false);
+    expect(sentText(sock)).toBe('');
+  });
+
+  it('sends channel-102 payload bytes verbatim, without UTF-8 expansion', () => {
+    const { client, sock } = withChannel102();
     // Aardwolf's documented usage: two raw bytes, chosen numerically.
     expect(client.sendTelnetChannel102('\x01\xC8')).toBe(true);
     expect(sentText(sock)).toBe(`${GMCP_IAC}${GMCP_SB}${OPT_TELNET_102}\x01\xC8${GMCP_IAC}${GMCP_SE}`);
   });
 
   it('doubles a 0xFF payload byte on channel 102 without touching the framing', () => {
-    const { client, sock } = connected();
+    const { client, sock } = withChannel102();
     client.sendTelnetChannel102('\x01\xFF');
     const wire = sentText(sock);
     expect(wire).toBe(`${GMCP_IAC}${GMCP_SB}${OPT_TELNET_102}\x01\xFF\xFF${GMCP_IAC}${GMCP_SE}`);

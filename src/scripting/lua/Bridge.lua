@@ -3189,6 +3189,17 @@ end
 
 -- MSSP equivalent: flat scalar status fields keyed by variable name, mirroring
 -- Mudlet's `mssp` global (mssp.PLAYERS, mssp.UPTIME, ...).
+-- Mudlet's `channel102` table (LuaGlobal.lua declares it upstream; this
+-- client does not vendor the file that holds it). Aardwolf's out-of-band
+-- channel reports one numbered variable at a time, so a message is a single
+-- integer key and an integer value.
+channel102 = channel102 or {}
+
+function __mudlet_set_channel102(variable, value)
+    if type(channel102) ~= 'table' then channel102 = {} end
+    channel102[variable] = value
+end
+
 function __mudlet_set_mssp(key, value)
     if type(mssp) ~= 'table' then mssp = {} end
     mssp[key] = value
@@ -3199,12 +3210,15 @@ end
 -- attributes as lowercased keys plus `text` and an `actions` list. JS flattens
 -- the attribute map to "key\2value\1key\2value" because the keys are arbitrary
 -- server text and wasmoon's table proxy can't be walked reliably.
-function __mudlet_set_mxp(element, flatAttrs)
+function __mudlet_set_mxp(element, flatAttrs, text, flatActions)
     if type(mxp) ~= 'table' then mxp = {} end
-    local t = { text = "", actions = {} }
+    local t = { text = tostring(text or ""), actions = {} }
     for entry in tostring(flatAttrs or ""):gmatch("[^\1]+") do
         local k, v = entry:match("^([^\2]*)\2(.*)$")
         if k and k ~= "" then t[k] = v end
+    end
+    for action in tostring(flatActions or ""):gmatch("[^\1]+") do
+        t.actions[#t.actions + 1] = action
     end
     mxp[element] = t
 end
@@ -4397,11 +4411,12 @@ end
 __mudlet_media_field_types = {
     name = 'string', url = 'string', key = 'string', tag = 'string', caption = 'string',
     volume = 'number', fadein = 'number', fadeout = 'number', start = 'number',
-    loops = 'number', priority = 'number',
+    finish = 'number', loops = 'number', priority = 'number',
     ['continue'] = 'boolean', stream = 'boolean', close = 'boolean', fadeaway = 'boolean',
 }
--- Fields that are durations/counts and cannot be negative.
-__mudlet_media_nonnegative = { fadein = true, fadeout = true, start = true }
+-- The positions in the track that a request may name. All four are offsets
+-- or durations in milliseconds, so none of them can be negative.
+__mudlet_media_nonnegative = { fadein = true, fadeout = true, start = true, finish = true }
 
 function __mudlet_check_media_table(t, funcName)
     for field, expected in pairs(__mudlet_media_field_types) do
@@ -4411,8 +4426,12 @@ function __mudlet_check_media_table(t, funcName)
                 .. " expected, got " .. type(v) .. "!)", 3)
         end
         if v ~= nil and __mudlet_media_nonnegative[field] and v < 0 then
-            error(funcName .. ": bad argument #1 value (value for " .. field
-                .. " must not be negative, got " .. tostring(v) .. "!)", 3)
+            -- Mudlet words a range refusal differently from a type one, and
+            -- names the field rather than the argument position: the table
+            -- form has only one argument, so "#1" says nothing.
+            error(funcName .. ": bad argument range for " .. field
+                .. " (values must be greater than or equal to 0, got value: "
+                .. tostring(v) .. ")", 3)
         end
     end
 end
@@ -4422,8 +4441,10 @@ end
 function __mudlet_check_media_name(t, funcName)
     local n = __mudlet_str(t.name or t.url)
     if n == nil or n == '' then
-        error(funcName .. ": bad argument #1 type (value for name as string expected, got "
-            .. type(t.name) .. "!)", 3)
+        -- Not a type error: a table that names nothing has left the one
+        -- required field out, and Mudlet says so in those words (and says
+        -- which field would fix it).
+        error(funcName .. ': missing name (add name = "file to play")', 3)
     end
     -- Write the rendered value back so everything downstream sees a string.
     if t.name ~= nil then t.name = __mudlet_str(t.name) end
@@ -4495,14 +4516,17 @@ end
 
 -- The ordered play form, in Mudlet's argument order:
 --   name [, volume [, fadein [, fadeout [, start [, loops [, key [, tag
---        [, continue [, url [, finish ]]]]]]]]]]
+--        [, continue|priority [, url [, finish ]]]]]]]]]]
+-- The ninth argument is where the two calls differ: music continues or
+-- restarts, so playMusicFile reads a boolean there, while a sound's ninth is
+-- its priority (playSoundFileAsOrderedArguments, TLuaInterpreterMedia.cpp).
 -- Every position is checked by the name it carries — a complaint that names
 -- "volume" is far more use than one naming argument #2 — and the four time
 -- fields are refused when negative. Each caller passes its own name through, so
 -- the message names the call that was made and not the parser (upstream #9785,
 -- where every music range error said playSoundFile).
 function __mudlet_ordered_play_args(funcName, name, volume, fadein, fadeout, start, loops,
-                                   key, tag, continueFlag, url, finish)
+                                   key, tag, ninth, url, finish)
     local function want(v, field, expected)
         if v ~= nil and type(v) ~= expected then
             error(funcName .. ": bad argument type (" .. field .. " as " .. expected
@@ -4512,7 +4536,8 @@ function __mudlet_ordered_play_args(funcName, name, volume, fadein, fadeout, sta
     local function range(v, field)
         if v ~= nil and v < 0 then
             error(funcName .. ": bad argument range for " .. field
-                .. ", got " .. tostring(v) .. "!", 3)
+                .. " (values must be greater than or equal to 0, got value: "
+                .. tostring(v) .. ")", 3)
         end
     end
     want(volume, "volume", 'number')
@@ -4522,7 +4547,14 @@ function __mudlet_ordered_play_args(funcName, name, volume, fadein, fadeout, sta
     want(loops, "loops", 'number')
     want(key, "key", 'string')
     want(tag, "tag", 'string')
-    want(continueFlag, "continue", 'boolean')
+    local continueFlag, priority
+    if funcName == 'playMusicFile' then
+        want(ninth, "continue", 'boolean')
+        continueFlag = ninth
+    else
+        want(ninth, "priority", 'number')
+        priority = ninth
+    end
     want(url, "url", 'string')
     want(finish, "finish", 'number')
     range(fadein, "fadein")
@@ -4532,7 +4564,8 @@ function __mudlet_ordered_play_args(funcName, name, volume, fadein, fadeout, sta
     return {
         name = name, volume = volume, fadein = fadein, fadeout = fadeout,
         start = start, loops = loops, key = key, tag = tag,
-        ["continue"] = continueFlag, url = url, finish = finish,
+        ["continue"] = continueFlag, priority = priority,
+        url = url, finish = finish,
     }
 end
 

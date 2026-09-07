@@ -77,10 +77,13 @@ describe('MxpParser — formatting & entities', () => {
 });
 
 describe('MxpParser — secure-mode gating', () => {
-  it('ignores <SEND> in OPEN mode (no link, text rendered literally)', () => {
+  it('shows <SEND> as text in OPEN mode rather than acting on it', () => {
     const { parser } = makeParser();
     const r = parser.parseLine('<send>north</send>'); // default OPEN mode
-    expect(r.plain).toBe('north');
+    // Both halves of the tag reach the player as the text they are — that is
+    // what Mudlet does with a tag the line mode does not allow, and dropping
+    // them would hide half a game's output with no sign anything went by.
+    expect(r.plain).toBe('<send>north</send>');
     expect(r.links).toHaveLength(0);
   });
 
@@ -174,7 +177,9 @@ describe('MxpParser — custom definitions', () => {
 describe('MxpParser — handshake', () => {
   it('replies to <SUPPORT> with a secure-prefixed <SUPPORTS> list', () => {
     const { parser, sent } = makeParser();
-    parser.parseLine('<support>');
+    // SUPPORT is a secure tag (MXP puts everything but text formatting in
+    // that class), so it is only answered on a secure line.
+    parser.parseLine(`${SECURE}<support>`);
     expect(sent).toHaveLength(1);
     // The ESC[1z secure-line marker must lead the reply so the server parses it
     // as MXP input rather than a command (Discworld login otherwise reads it as
@@ -184,8 +189,10 @@ describe('MxpParser — handshake', () => {
 
   it('replies to <VERSION> with a secure-prefixed reply', () => {
     const { parser, sent } = makeParser();
-    parser.parseLine('<version>');
-    expect(sent[0]).toMatch(/^\x1b\[1z<VERSION .*CLIENT="MUDLET-WEB"/);
+    parser.parseLine(`${SECURE}<version>`);
+    // Unquoted, as Mudlet sends it — a game's parser may be no more than a
+    // split on spaces.
+    expect(sent[0]).toMatch(/^\x1b\[1z<VERSION MXP=1\.0 CLIENT=MUDLET-WEB VERSION=[^\s>]+>$/);
   });
 });
 

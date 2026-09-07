@@ -124,7 +124,7 @@ export type MudClientEvents = {
      *  `<SUPPORTS>`/`<VERSION>` handshake replies — an in-band-only server's
      *  inbound MXP channel isn't confirmed, so replying would spam it with
      *  invalid commands. */
-    'mxp.negotiated': [viaTelnet: boolean];
+    'mxp.negotiated': [viaTelnet: boolean, viaSubnegotiation?: boolean];
     /** Fired for every `!!SOUND` / `!!MUSIC` tag parsed from the in-band text
      *  stream (or an `IAC SB MSP ... IAC SE` subnegotiation body). The
      *  scripting engine wires this to the SoundManager. */
@@ -147,6 +147,10 @@ export type MudClientEvents = {
     'clientGui': [payload: unknown];
     'msdp': [payload: { path: string; value: unknown }];
     'mssp': [payload: { name: string; value: string }];
+    /** A zMUD channel-102 subnegotiation (telnet option 102), which carries
+     *  exactly two bytes: Aardwolf's variable number and its value. Reaches Lua
+     *  as the `channel102` table plus a `channel102Message` event. */
+    'channel102': [payload: { variable: number; value: number }];
     'gmcp.core.ping': [value: unknown];
     /** Fires when the server requests GMCP login (Char.Login.Default). The
      *  argument is the list of supported authentication methods it advertised
@@ -179,6 +183,17 @@ export type MudClientEvents = {
      *  time / server-driven line editing. The payload is the protocol name
      *  (`'SUPPRESS_GO_AHEAD'` or `'LINEMODE'`). */
     'protocol.rejected': [protocol: string];
+    /** Mudlet `raiseProtocolEvent("sysProtocolEnabled", name)` — a telnet
+     *  option the client has just agreed to (the server offered it with WILL,
+     *  or asked for it with DO, and the profile allows it). The payload is
+     *  Mudlet's name for the protocol, which is what reaches Lua as the second
+     *  argument of `sysProtocolEnabled`: `GMCP`, `MSDP`, `MSSP`, `MSP`, `MXP`,
+     *  `CHARSET`, `NEW_ENVIRON`, `NAWS` or `channel102`. */
+    'protocol.enabled': [protocol: string];
+    /** The other half of the pair: the option is off again, because the server
+     *  withdrew it (WONT/DONT) or because the profile refuses an offer it had
+     *  previously taken up. Same names as `protocol.enabled`. */
+    'protocol.disabled': [protocol: string];
     /** Mudlet `sysCharacterModeDetected`. Fires once per connection when the
      *  server has both asked to suppress go-ahead (IAC WILL SGA) *and* kept
      *  server-side echo on across a submitted game command — the

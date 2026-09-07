@@ -146,7 +146,9 @@ describe('telnet option negotiation (TelnetNegotiator via MudClient)', () => {
     bus.on('charset.negotiated', (name) => seen.push(name));
     sock.deliver(CHARSET_WILL);
     sock.deliver('\xFF\xFA' + OPT_CHARSET + CHARSET_ACCEPTED + 'ISO-8859-2' + '\xFF\xF0');
-    expect(seen).toEqual(['ISO-8859-2']);
+    // Reported under this client's own name for the encoding, which is the
+    // spelling getServerEncoding() answers with however it was set.
+    expect(seen).toEqual(['ISO 8859-2']);
     expect(client.getServerEncoding()).toBe('iso-8859-2');
   });
 
@@ -155,9 +157,10 @@ describe('telnet option negotiation (TelnetNegotiator via MudClient)', () => {
     sock.deliver(CHARSET_WILL);
     sock.sent.length = 0;
     sock.deliver('\xFF\xFA' + OPT_CHARSET + CHARSET_REQUEST + ';KOI8-R;ISO-8859-2' + '\xFF\xF0');
-    // ISO-8859-2 outranks KOI8-R in the priority list; reply echoes the wire spelling.
-    expect(sentText(sock)).toContain(CHARSET_ACCEPTED + 'ISO-8859-2');
-    expect(client.getServerEncoding()).toBe('iso-8859-2');
+    // The server's order decides — the first name we can decode wins, as it
+    // does in Mudlet — and the reply echoes the wire spelling back.
+    expect(sentText(sock)).toContain(CHARSET_ACCEPTED + 'KOI8-R');
+    expect(client.getServerEncoding()).toBe('koi8-r');
   });
 
   it('reports the window size once the server accepts NAWS', () => {
