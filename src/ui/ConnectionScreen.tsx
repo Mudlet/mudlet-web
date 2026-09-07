@@ -79,6 +79,7 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
     // several profiles that each need modules, and a slot would drop all but the last.
     const [pendingImports, setPendingImports] = useState<{ bundle: MudletProfileBundle; unresolved: MudletModuleRef[] }[]>([]);
     const zipInputRef = useRef<HTMLInputElement>(null);
+    const backupInputRef = useRef<HTMLInputElement>(null);
     // Directory import needs the File System Access API; fall back to .zip elsewhere.
     const dirPicker = (window as unknown as { showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker;
 
@@ -132,6 +133,24 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
         if (!dirPicker) return;
         setImportWarnings([]);
         void runImport(async () => { await linkMudletFolder(await dirPicker.call(window)); });
+    };
+
+    // A whole-origin backup taken from a previous Mudlet Web address, written by
+    // the notice page left at the old one. Not a Mudlet artefact — it holds the
+    // browser's own storage rather than a profile folder — so it gets its own
+    // input and does not go through the bundle path above.
+    const handleBackupChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        e.target.value = '';
+        if (!file) return;
+        setImportWarnings([]);
+        void runImport(async () => {
+            const { parseBackup, importBackup } = await import('../import/backupImport');
+            const result = await importBackup(parseBackup(await file.text()));
+            if (result.warnings.length > 0) {
+                setImportWarnings(w => [...w, { profile: 'Backup', warnings: result.warnings }]);
+            }
+        });
     };
 
     const handleZipChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -298,6 +317,10 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
                             Link Mudlet folder…
                         </Button>
                     )}
+                    <Button variant="secondary" size="sm" onClick={() => backupInputRef.current?.click()} disabled={connecting || importing}
+                        title="Restore a .json backup downloaded from a previous Mudlet Web address. Profiles are added alongside anything already here">
+                        Import backup…
+                    </Button>
                     {connections.length > 0 && (
                         <Button variant="secondary" size="sm" onClick={() => setExportOpen(true)} disabled={connecting || importing}
                             title="Download profiles as a Mudlet-format .zip — importable here, on another Mudlet Web address, or in desktop Mudlet">
@@ -357,6 +380,7 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
                 )}
 
                 <input ref={zipInputRef} type="file" accept=".zip" style={{ display: 'none' }} onChange={handleZipChange} />
+                <input ref={backupInputRef} type="file" accept=".json,application/json" style={{ display: 'none' }} onChange={handleBackupChange} />
             </div>
         </div>
         {editor && (
