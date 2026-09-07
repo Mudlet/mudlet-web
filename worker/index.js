@@ -33,6 +33,26 @@ function safeClose(server, code, reason) {
     }
 }
 
+/**
+ * The bytes of an inbound WebSocket message, whichever shape the runtime
+ * delivered it in.
+ *
+ * A binary frame is an ArrayBuffer or a Blob depending on the socket's
+ * `binaryType`, which in turn depends on the compatibility date the worker was
+ * deployed with. Both are handled here rather than trusted, because getting it
+ * wrong is silent: `new Uint8Array(blob)` is an empty array, not an error, so a
+ * mismatch costs every byte the player sends with nothing at all in the log to
+ * say so. A text frame is encoded as UTF-8 — the client never sends one, but a
+ * hand-driven session (a browser console, a test) does.
+ */
+async function toBytes(data) {
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    if (typeof data === 'string') return new TextEncoder().encode(data);
+    if (data && typeof data.arrayBuffer === 'function') return new Uint8Array(await data.arrayBuffer());
+    return new Uint8Array(0);
+}
+
 /** Out-of-band control message to the client, as a **text** frame; MUD bytes
  *  always travel as binary. Mirrors the Node proxy's control channel. */
 function sendControl(server, payload) {
@@ -121,6 +141,16 @@ export default {
         const pair = new WebSocketPair();
         const [client, server] = [pair[0], pair[1]];
         server.accept();
+        // Ask for ArrayBuffers rather than taking whatever the runtime
+        // defaults to. On compatibility dates from 2025 on, the default
+        // `binaryType` is the web-standard "blob", and every frame a player
+        // types arrives as a Blob — which `new Uint8Array(...)` turns into an
+        // EMPTY array rather than throwing. The game then sees a connection
+        // that never says anything: the banner arrives, the login prompt
+        // arrives, and nothing the player types ever gets there. Setting this
+        // pins the shape the read path below is written for, whatever date the
+        // worker is deployed with (the normaliser handles the rest).
+        try { server.binaryType = 'arraybuffer'; } catch { /* older runtimes: already arraybuffer */ }
 
         const useTls = boolParam(url.searchParams, 'tls');
         // The Workers runtime's connect() exposes only `secureTransport` and
@@ -236,16 +266,25 @@ export default {
         })();
 
         // WebSocket → TCP
-        server.addEventListener('message', async (event) => {
+        //
+        // Frames are written strictly in the order they arrived: each one
+        // chains onto the last, because the runtime does not wait for one
+        // handler to finish before delivering the next, and a Blob has to be
+        // unwrapped with an await. Two commands sent in the same breath would
+        // otherwise be able to reach the game the wrong way round.
+        let writeChain = Promise.resolve();
+        server.addEventListener('message', (event) => {
             if (tcpClosed) return;
-            try {
-                // Client sends binary frames; event.data is an ArrayBuffer.
-                const bytes = new Uint8Array(event.data);
-                await writer.write(bytes);
-            } catch (err) {
-                tcpClosed = true;
-                safeClose(server, 1011, `Proxy: TCP write error: ${describeError(err)}`);
-            }
+            writeChain = writeChain.then(async () => {
+                if (tcpClosed) return;
+                try {
+                    const bytes = await toBytes(event.data);
+                    if (bytes.length) await writer.write(bytes);
+                } catch (err) {
+                    tcpClosed = true;
+                    safeClose(server, 1011, `Proxy: TCP write error: ${describeError(err)}`);
+                }
+            });
         });
 
         server.addEventListener('close', () => {
