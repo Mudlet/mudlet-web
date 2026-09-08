@@ -2472,6 +2472,16 @@ export class ScriptingEngine implements EngineHost {
             // Mudlet silently no-ops when the package isn't installed.
             return false;
         }
+        // ...and a module by that name is not this function's business, however
+        // exactly the name matches: desktop looks the name up in
+        // mInstalledPackages alone (`Host::uninstallPackage`, Host.cpp:2353) and
+        // answers false when only mInstalledModules holds it. The mirror of the
+        // guard uninstallModuleByName already applies to packages, and without
+        // it a script that clears an older package-shaped install of its own
+        // name — a routine step in a loader that installs the same thing as a
+        // module now — silently unlinked the module it was never aimed at,
+        // taking its triggers and aliases with it, on every profile open.
+        if (manifest.kind === 'module') return false;
         // Brand-bundled packages marked removable:false can't be uninstalled
         // (and would reinstall on next open anyway).
         if (!isPackageRemovable(packageName)) return false;

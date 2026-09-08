@@ -198,4 +198,22 @@ describe('a package and a module may not share one name', () => {
         expect(engine.installPackageFromVfsPath(PKG_ARCHIVE)).toEqual({ ok: true, error: null });
         expect(engine.installModuleFromPath(MOD_ARCHIVE).error).toBe(REFUSED_BY_PACKAGE);
     });
+
+    // The same separation, one step later: refusing the *install* is no use if
+    // an uninstall crosses the line instead. Desktop looks the name up in
+    // mInstalledPackages alone (`Host::uninstallPackage`, Host.cpp:2353) and
+    // answers false when only mInstalledModules holds it. Ours matched any
+    // manifest by name, so a script clearing an older package-shaped install of
+    // its own name — a routine step in a loader that installs the same thing as
+    // a module now — unlinked the module instead, dropping it from Packages and
+    // its items from the store on every profile open.
+    it('leaves a module alone when uninstallPackage is called on its name', () => {
+        expect(engine.installModuleFromPath(MOD_ARCHIVE)).toEqual({ ok: true, error: null });
+
+        expect(engine.uninstallPackageByName(NAME)).toBe(false);
+
+        expect(engine.getModuleNames()).toContain(NAME);
+        const names = (useAppStore.getState().connectionScripts[CONN] ?? []).map(s => s.name);
+        expect(names).toContain('fromModule');
+    });
 });
