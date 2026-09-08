@@ -1557,13 +1557,17 @@ export class AnsiAwareBuffer {
                         link.onClick!(e);
                     });
                 }
-                if (link.onContextMenu) {
-                    element.addEventListener('contextmenu', (e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        link.onContextMenu!(e);
-                    });
-                }
+                // Mudlet swallows a right-click over *any* link, menu or not:
+                // TTextEdit::mouseReleaseEvent returns as soon as it finds a
+                // linkIndex under the cursor — before it ever reaches the code
+                // that builds the console's Copy/Select all menu, and on the
+                // disabled and unrevealed-spoiler paths too. So every link takes
+                // the event; one without a menu just stops it here.
+                element.addEventListener('contextmenu', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    link.onContextMenu?.(e);
+                });
                 if (link.onMouseEnter) {
                     element.addEventListener('mouseenter', (e) => { link.onMouseEnter!(e); });
                 }

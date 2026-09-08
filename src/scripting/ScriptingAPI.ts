@@ -2704,19 +2704,37 @@ export class ScriptingAPI {
     }
 
     /**
-     * Build a {@link FormatHyperlink} whose right-click handler opens a context
-     * menu listing `cmds` (labelled by `hints`, falling back to the command
-     * text). Shared by `echoPopup`/`insertPopup`/`setPopup` — those three differ
-     * only in whether the styled span is appended, inserted at the cursor, or
-     * applied to the current selection.
+     * Build a {@link FormatHyperlink} for the popup family — shared by
+     * `echoPopup`/`insertPopup`/`setPopup`, which differ only in whether the
+     * styled span is appended, inserted at the cursor, or applied to the
+     * current selection.
+     *
+     * Mudlet keeps links and popups in one link store and decides per click, so
+     * a popup is a link that *also* carries a menu:
+     *  - Left-click runs `cmds[0]`, whatever the entry count. `TTextEdit::
+     *    mousePressEvent` has no popup branch at all — it executes the first
+     *    command of whichever link was hit.
+     *  - Right-click opens the menu only when there is more than one command,
+     *    or the hints list is longer than the commands list (a leading tooltip
+     *    hint marking the rest as menu items). A one-entry popup is therefore
+     *    indistinguishable from `echoLink`, which is what scripts calling
+     *    `cechoPopup(win, text, {code}, {label}, true)` rely on.
+     *  - Right-clicking a link never falls through to the console's own copy
+     *    menu (Mudlet sets `mIsCommandPopup` and returns), but that holds for
+     *    every link, so the renderer swallows it — see FormatBuffer.toDom.
      */
     private buildPopupHyperlink(
         cmds: string[],
         hints: string[],
         action: (cmd: string) => void = (cmd) => { this.host.runLinkCode(cmd); },
     ): FormatHyperlink {
-        const onContextMenu = (ev: MouseEvent) => {
-            ev.preventDefault();
+        // More hints than commands means hints[0] is a tooltip and the menu
+        // labels start one later; otherwise every hint labels its command and
+        // the tooltip is all of them, one per line.
+        const hintOffset = hints.length > cmds.length ? 1 : 0;
+        const hasMenu = cmds.length > 1 || hintOffset === 1;
+
+        const openMenu = (ev: MouseEvent) => {
             document.getElementById('mudlet-popup-menu')?.remove();
 
             const menu = document.createElement('div');
@@ -2726,8 +2744,23 @@ export class ScriptingAPI {
             menu.style.top = `${ev.clientY}px`;
 
             cmds.forEach((cmd, i) => {
+                const label = hints[i + hintOffset] ?? cmd;
+                // Mudlet's rules for an entry that runs nothing: a bare command
+                // with no label at all becomes a separator, one with a label
+                // becomes a disabled item.
+                if (!cmd && !label) {
+                    const sep = document.createElement('div');
+                    sep.style.cssText = 'height:1px;margin:3px 0;background:#444';
+                    menu.appendChild(sep);
+                    return;
+                }
                 const item = document.createElement('div');
-                item.textContent = hints[i] ?? cmd;
+                item.textContent = label;
+                if (!cmd) {
+                    item.style.cssText = 'padding:5px 14px;color:#777;white-space:nowrap';
+                    menu.appendChild(item);
+                    return;
+                }
                 item.style.cssText = 'padding:5px 14px;cursor:pointer;color:#ddd;white-space:nowrap';
                 item.addEventListener('mouseenter', () => { item.style.background = '#2a4a6e'; });
                 item.addEventListener('mouseleave', () => { item.style.background = ''; });
@@ -2750,7 +2783,12 @@ export class ScriptingAPI {
             setTimeout(() => document.addEventListener('mousedown', dismiss), 0);
         };
 
-        return { onContextMenu, title: hints[0] ?? '' };
+        const first = cmds[0];
+        return {
+            onClick: first ? () => { action(first); } : undefined,
+            onContextMenu: hasMenu ? openMenu : undefined,
+            title: hintOffset ? hints[0] : hints.join('\n'),
+        };
     }
 
     /**

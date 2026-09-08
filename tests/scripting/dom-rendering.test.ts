@@ -143,14 +143,21 @@ describe('setProfileStyleSheet — installs a <style> block in document.head', (
   });
 });
 
-describe('echoPopup — right-click menu in the real DOM', () => {
-  it('opens a popup on contextmenu and runs the chosen command', () => {
+describe('echoPopup — click and right-click in the real DOM', () => {
+  const clickable = () =>
+    env.outputWrapper.querySelector('[data-output-clickable="true"]') as HTMLElement | null;
+
+  it('opens a menu on contextmenu and runs the chosen command', () => {
     env.run('clicked = nil');
-    env.run('echoPopup("look\\n", {"clicked = \\"statue\\""}, {"Look at statue"})');
+    env.run([
+      'echoPopup("look\\n",',
+      '  {"clicked = \\"statue\\"", "clicked = \\"fountain\\""},',
+      '  {"Look at statue", "Look at fountain"})',
+    ].join('\n'));
 
     // The clickable segment span (carries the contextmenu handler) is marked
     // data-output-clickable; the outer .output-msg-content span is not.
-    const span = env.outputWrapper.querySelector('[data-output-clickable="true"]');
+    const span = clickable();
     expect(span).toBeTruthy();
     expect(span!.textContent).toBe('look');
 
@@ -161,10 +168,72 @@ describe('echoPopup — right-click menu in the real DOM', () => {
     const menu = env.body.querySelector('#mudlet-popup-menu');
     expect(menu).toBeTruthy();
     const items = [...menu!.querySelectorAll('div')];
-    expect(items.map((i) => i.textContent)).toEqual(['Look at statue']);
+    expect(items.map((i) => i.textContent)).toEqual(['Look at statue', 'Look at fountain']);
 
     // Choosing the entry runs its command (wired to run as Lua).
-    items[0].dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    items[1].dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    expect(env.run('return clicked')).toBe('fountain');
+    expect(env.body.querySelector('#mudlet-popup-menu')).toBeNull();
+  });
+
+  // Mudlet's mousePressEvent runs commands[0] for any link it hits, popup or
+  // not — so the first entry is also the left-click action.
+  it('runs the first command on a left click', () => {
+    env.run('clicked = nil');
+    env.run([
+      'echoPopup("look\\n",',
+      '  {"clicked = \\"statue\\"", "clicked = \\"fountain\\""},',
+      '  {"Look at statue", "Look at fountain"})',
+    ].join('\n'));
+
+    clickable()!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(env.run('return clicked')).toBe('statue');
+  });
+
+  // A one-entry popup is a link: TTextEdit only builds the menu when there is
+  // more than one command (or a leading tooltip hint), so a right-click here
+  // opens nothing at all — and still doesn't fall through to the copy menu.
+  it('treats a single-entry popup as a plain link', () => {
+    env.run('clicked = nil');
+    env.run('echoPopup("build\\n", {"clicked = \\"herbs\\""}, {"Build herbs"})');
+    const span = clickable()!;
+    expect(span.getAttribute('title')).toBe('Build herbs');
+
+    const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 });
+    span.dispatchEvent(ev);
+    expect(env.body.querySelector('#mudlet-popup-menu')).toBeNull();
+    expect(ev.defaultPrevented).toBe(true);
+
+    span.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(env.run('return clicked')).toBe('herbs');
+  });
+
+  // More hints than commands: hints[1] is the tooltip and the menu labels start
+  // one later, so even a single command gets a menu.
+  it('honours a leading tooltip hint', () => {
+    env.run('echoPopup("cast\\n", {"say one"}, {"Spells", "Cast one"})');
+    const span = clickable()!;
+    expect(span.getAttribute('title')).toBe('Spells');
+
+    span.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 5, clientY: 5 }));
+    const items = [...env.body.querySelectorAll('#mudlet-popup-menu div')];
+    expect(items.map((i) => i.textContent)).toEqual(['Cast one']);
+    env.body.querySelector('#mudlet-popup-menu')!.remove();
+  });
+});
+
+// Mudlet's mouseReleaseEvent bails the moment it finds a link under the
+// cursor, so the console's own Copy/Select all menu never opens over one —
+// an echoLink swallows the right-click exactly like a one-entry popup does.
+describe('echoLink — right-click', () => {
+  it('swallows the event instead of falling through to the console menu', () => {
+    env.run('echoLink("open door\\n", "send(\\"open door\\")", "Open it")');
+    const span = env.outputWrapper.querySelector('[data-output-clickable="true"]') as HTMLElement;
+    expect(span.textContent).toBe('open door');
+
+    const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 });
+    span.dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(true);
+    expect(env.body.querySelector('#mudlet-popup-menu')).toBeNull();
   });
 });
