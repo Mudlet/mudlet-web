@@ -28,13 +28,12 @@ name: CI
 
 on:
   pull_request:
-  # For sync-mudlet-upstream.yml, which cannot rely on the trigger above: a PR
-  # opened with GITHUB_TOKEN raises no `pull_request` event, and
-  # `workflow_dispatch` is the documented exception to that rule. Dispatched at
-  # the sync branch, these jobs report their check runs against that commit —
-  # the same sha the PR's required checks are read from — so the bot PR is gated
-  # by this file rather than by a copy of it. Harmless to anyone else: a manual
-  # run on a branch is just a re-run of the PR gate.
+  # A manual re-run of the gate on any branch, for when a suite is being chased
+  # rather than a PR. It cannot substitute for the trigger above: a dispatched
+  # run's check runs land on the commit but are never associated with the PR, so
+  # they are absent from its rollup and satisfy none of master's required checks.
+  # sync-mudlet-upstream.yml tried exactly that and could never merge — see its
+  # header, and issue #155.
   workflow_dispatch:
 
 permissions:
