@@ -121,3 +121,41 @@ describe('retypePatternText', () => {
         expect(retypePatternText('^x$', 'regex', 'substring')).toBe('^x$');
     });
 });
+
+describe('trigger pattern row: colour trigger', () => {
+    beforeEach(() => { useAppStore.setState({ connectionTriggers: {} } as never); });
+    afterEach(async () => {
+        await act(async () => { root.unmount(); });
+        container.remove();
+    });
+
+    /** The colour names the two channel buttons are showing. */
+    function channelNames() {
+        return [...container.querySelectorAll('.script-editor__pattern-color-name')]
+            .map(n => n.textContent);
+    }
+
+    it('shows the colours of a pattern that arrived in Mudlet\'s wire form', async () => {
+        // mudlet-web#158: a colour trigger installed with a package fired
+        // correctly but read "any / any" in the editor, because the panel's own
+        // parser only understood the plain `fg,bg` pair.
+        seedTrigger([{ type: 'colorTrigger', text: 'ANSI_COLORS_F{009}_B{IGNORE}' }]);
+        await mountAndSelectTrigger();
+
+        expect(channelNames()).toEqual(['red', 'any']);
+    });
+
+    it('shows the colours of a pre-3.17 pattern, remapped to ANSI', async () => {
+        seedTrigger([{ type: 'colorTrigger', text: 'FG4BG2' }]);
+        await mountAndSelectTrigger();
+
+        expect(channelNames()).toEqual(['maroon', 'black']);
+    });
+
+    it('still shows a plain pair, which is what the editor seeds a new row with', async () => {
+        seedTrigger([{ type: 'colorTrigger', text: '-1,-1' }]);
+        await mountAndSelectTrigger();
+
+        expect(channelNames()).toEqual(['any', 'any']);
+    });
+});

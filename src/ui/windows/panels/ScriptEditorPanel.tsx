@@ -9,6 +9,7 @@ import { cloneSubtree, collectSubtree, type EditorClipboard } from './editorClip
 import { aliasLoopWarning, aliasSubstitutionLoops } from './aliasLoop';
 import { isPackageRemovable } from '../../../branding';
 import { DEFAULT_ANSI_PALETTE } from '../../../mud/text/colors';
+import { colorPatternText, parseColorPattern } from '../../../mud/triggers/legacyColorPatterns';
 import type { AliasNode, ButtonLocation, ButtonNode, ButtonOrientation, ButtonRotation, KeyNode, PackageManifest, ScriptNode, TimerNode, TriggerNode, TriggerPattern, TriggerPatternType } from '../../../storage/schema';
 import { asButtonRotation, clampFillerOffset, isColorizing, isEffectivelyEnabled, MAX_CONDITION_LINE_DELTA } from '../../../storage/schema';
 import type { MudSession, ScriptLogSource, ScriptLogSourceKind } from '../../../mud/MudSession';
@@ -293,21 +294,17 @@ const ANSI_NAMES_16: ReadonlyArray<string> = [
     'gray', 'red', 'lime', 'yellow', 'blue', 'fuchsia', 'cyan', 'white',
 ];
 
-/** Parse a `"fg,bg"` colour-trigger pattern text into a `[fg, bg]` pair. Both
- *  default to -1 ("any") when missing or non-numeric. Mirrors the parser in
- *  TriggerEngine. */
-function parseColorPattern(text: string): [number, number] {
-    const parts = text.split(',').map(s => s.trim());
-    const parse = (s: string | undefined): number => {
-        if (s === undefined || s === '') return -1;
-        const n = Number(s);
-        return Number.isFinite(n) ? Math.trunc(n) : -1;
-    };
-    return [parse(parts[0]), parse(parts[1])];
-}
-
+/** The text a colour-pattern row stores once the picker has been used.
+ *
+ *  Desktop's own wire form, so an edited pattern exports as something desktop
+ *  can read back — `toSaveFileColorPattern` only recognises that spelling, and
+ *  a `"3,-1"` pair went into the XML verbatim, where Mudlet's reader does not
+ *  match it. Both channels on "any" has no wire form at all
+ *  (`createColorPatternText` returns ""), so the plain pair stays the
+ *  placeholder for a row that names no colour yet — the same text
+ *  `retypePatternText` seeds one with. */
 function formatColorPattern(fg: number, bg: number): string {
-    return `${fg},${bg}`;
+    return colorPatternText(fg, bg) || `${fg},${bg}`;
 }
 
 function colorPickerLabel(index: number): string {
