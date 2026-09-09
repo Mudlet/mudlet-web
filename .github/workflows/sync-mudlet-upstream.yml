@@ -31,21 +31,28 @@
 # ## Why there is no bot token here
 #
 # The obvious shape for this — a PAT that opens a PR which ci.yml then gates —
-# is not used, because `GITHUB_TOKEN` can do the whole job. The catch it usually
-# runs into is that a PR opened with `GITHUB_TOKEN` does not trigger
-# `pull_request` workflows, so ci.yml would never run on it and master's required
-# status checks (Typecheck, Unit tests, E2E (busted) 1..3/3, Build) would block
-# the merge forever.
+# is not used, because `GITHUB_TOKEN` can do the whole job. A PR it opens does
+# raise the `pull_request` event, but the run that event creates is held at
+# `action_required`: github-actions[bot] authored the PR, so its workflows wait
+# for a human to press **Approve and run** before a single job starts. Left
+# alone, master's required checks (Typecheck, Unit tests, E2E (busted) 1..3/3,
+# Build) never report and the merge is blocked forever — which is what somebody
+# was approving by hand every morning.
 #
-# `workflow_dispatch` is the documented exception to that rule: events raised
-# with `GITHUB_TOKEN` create no new workflow run *except* `workflow_dispatch` and
-# `repository_dispatch`. So this dispatches ci.yml directly at the pushed commit
-# (hence `workflow_dispatch:` on ci.yml and `actions: write` below). Those jobs
-# report check runs named exactly `Typecheck`, `Unit tests`, … against that sha,
-# which is the sha the PR's protection rules are evaluated on — so the PR is
-# gated by the real ci.yml, on the real commit, and the merge is allowed. No
-# second copy of the suite lives here to drift out of step, and no credential
-# needs rotating.
+# So the run is approved from here, with the `actions: write` below, and watched
+# for its verdict. That gate is the PR's own ci.yml run, on the PR's own commit,
+# so its check runs are the ones master's protection reads. No second copy of the
+# suite lives here to drift out of step, and no credential needs rotating.
+#
+# What does *not* work, and was tried: dispatching ci.yml at the pushed commit
+# instead. `workflow_dispatch` is the documented exception to "events raised with
+# `GITHUB_TOKEN` create no new run", and those jobs do report check runs named
+# exactly `Typecheck`, `Unit tests`, … against the PR's head sha — but a
+# dispatched run's checks are never associated with the PR. They are absent from
+# its check rollup and count for nothing: measured on #154, all six required
+# checks green on the head sha and `gh pr merge` still refused with "the base
+# branch policy prohibits the merge" (issue #155). Only a `pull_request` run
+# satisfies a required check, whoever dispatches the other one.
 #
 # One repository setting is required, in Settings → Actions → General → Workflow
 # permissions: **Allow GitHub Actions to create and approve pull requests**.
@@ -85,7 +92,7 @@ permissions:
   contents: write        # push the sync branch, merge the PR
   pull-requests: write   # open, update and merge it
   issues: write          # the triage issue when it goes red
-  actions: write         # dispatch ci.yml at the pushed commit
+  actions: write         # approve the PR's held ci.yml run
 
 jobs:
   sync:
@@ -290,7 +297,7 @@ jobs:
           cat >> body.md <<'EOF'
 
           <sub>Opened by `.github/workflows/sync-mudlet-upstream.yml` for #65. It
-          dispatches ci.yml at this commit and merges once that is green.</sub>
+          approves this PR's own ci.yml run and merges once that is green.</sub>
 
           ---
 
@@ -316,11 +323,15 @@ jobs:
           echo "Pull request #$number" >> "$GITHUB_STEP_SUMMARY"
           rm -f body.md
 
-      # The dispatch is the whole trick that makes a bot token enough here — see
-      # the header. It is asynchronous and returns no id, so the run is found by
-      # the commit it is for; filtering on the sha (not just the branch) is what
-      # keeps a leftover run from a previous day off this verdict.
-      - name: Run ci.yml at the pushed commit
+      # The PR's own ci.yml run is the only verdict master's protection reads —
+      # see the header — and it arrives held at `action_required`, because a bot
+      # authored the PR. Approving it is what makes a bot token enough here.
+      #
+      # The run is found by the commit it is for, never by branch alone, so a
+      # leftover run from a previous day cannot become this verdict. Approval may
+      # hand back the same run id or a fresh one, so the loop re-reads the list
+      # each pass and takes whatever is newest for that sha.
+      - name: Approve the PR's CI gate and watch it
         id: ci
         if: steps.sync.outputs.changed == 'true' && (inputs.merge == null || inputs.merge)
         continue-on-error: true
@@ -328,17 +339,45 @@ jobs:
         run: |
           set -uo pipefail
           head='${{ steps.push.outputs.sha }}'
-          gh workflow run ci.yml --ref "$BRANCH" || exit 1
-          for _ in $(seq 1 30); do
-            id=$(gh run list --workflow ci.yml --branch "$BRANCH" --event workflow_dispatch \
-              --json databaseId,headSha \
-              --jq "map(select(.headSha == \"$head\")) | .[0].databaseId // empty")
-            [ -n "${id:-}" ] && break
-            echo "ci.yml has not started on $head yet — waiting."
-            sleep 10
+          approved=''
+          ready=''
+          for _ in $(seq 1 60); do
+            run=$(gh run list --workflow ci.yml --branch "$BRANCH" --event pull_request \
+              --json databaseId,headSha,status,conclusion \
+              --jq "map(select(.headSha == \"$head\")) | .[0] // empty | \"\(.databaseId) \(.status)/\(.conclusion)\"")
+            if [ -z "$run" ]; then
+              echo "No ci.yml run for $head yet — waiting."
+              sleep 10
+              continue
+            fi
+            read -r id state <<<"$run"
+            # A held run reports `action_required` — as the conclusion of a
+            # "completed" run in the REST shape, as the status in others — so
+            # both fields are read.
+            case "$state" in
+              *action_required*)
+                if [ -z "$approved" ]; then
+                  echo "Run $id is waiting for approval — approving it."
+                  if ! gh api --silent -X POST "repos/$GH_REPO/actions/runs/$id/approve"; then
+                    echo "::error::Approving run $id was refused. Without it the PR" \
+                      "gate never runs and the merge stays blocked; a human can press" \
+                      "Approve and run on it, and the next day's sync will pick the" \
+                      "verdict up from there."
+                    echo "blocked=1" >> "$GITHUB_OUTPUT"
+                    exit 1
+                  fi
+                  approved=1
+                fi
+                sleep 10
+                continue
+                ;;
+            esac
+            ready=1
+            break
           done
-          if [ -z "${id:-}" ]; then
-            echo "::error::ci.yml did not start on $BRANCH at $head."
+          if [ -z "${ready:-}" ]; then
+            echo "::error::ci.yml never started on $BRANCH at $head."
+            echo "blocked=1" >> "$GITHUB_OUTPUT"
             exit 1
           fi
           echo "Watching $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$id"
@@ -361,7 +400,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ '${{ steps.ci.outcome }}' = 'failure' ]; then
+          if [ '${{ steps.ci.outputs.blocked }}' = '1' ]; then
+            # The gate never reached a verdict, so this says nothing about parity
+            # — sending it to the triage notes below would point at the wrong
+            # thing entirely.
+            printf 'The PR gate never ran on #%s, syncing Mudlet/Mudlet@`%s` — its ci.yml run could not be started, so nothing was merged.\n\nA PR opened by github-actions[bot] has its workflows held at `action_required` until somebody approves them, and this workflow approves its own. If that call was refused, press **Approve and run** on the run for that commit: the suite is the real gate, and the next sync merges once it is green.\n' \
+              '${{ steps.pr.outputs.number }}' '${{ steps.upstream.outputs.short }}' > issue.md
+          elif [ '${{ steps.ci.outcome }}' = 'failure' ]; then
             printf 'ci.yml is red on #%s, syncing Mudlet/Mudlet@`%s`.\n\n%s\n' \
               '${{ steps.pr.outputs.number }}' '${{ steps.upstream.outputs.short }}' "$TRIAGE" > issue.md
           else
