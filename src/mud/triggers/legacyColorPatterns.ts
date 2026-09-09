@@ -136,3 +136,41 @@ export function toSaveFileColorPattern(text: string): string {
     if (!m) return text;
     return `FG${toLegacy(m[1])}BG${toLegacy(m[2])}`;
 }
+
+/**
+ * Parse a colour-trigger pattern into its `[fg, bg]` ANSI pair, in any of the
+ * three spellings one can arrive in:
+ *
+ *  - `ANSI_COLORS_F{003}_B{IGNORE}` — the wire form desktop writes, and so what
+ *    every imported package and profile carries;
+ *  - `FG4BG0` — the pre-3.17 save-file numbering, remapped on the way through;
+ *  - `3,-1` — the plain pair the editor writes.
+ *
+ * `IGNORE` and a missing/unparsable channel are {@link COLOR_IGNORED} ("any",
+ * -1); `DEFAULT` is {@link COLOR_DEFAULT} (-2), the console's own colour, which
+ * is a colour to match rather than an "any".
+ *
+ * Shared so the trigger engine and the editor cannot disagree about what a
+ * pattern says. They did: the editor read only the plain pair, so a colour
+ * trigger that came in with a package fired correctly but showed up in the
+ * pattern row as "any/any" (mudlet-web#158).
+ */
+export function parseColorPattern(text: string): [number, number] {
+    // The legacy form first, because everything below would read it as garbage.
+    // The importer normalises these as it reads a profile, the way desktop does,
+    // but a profile imported before that landed still holds the old text and a
+    // `permColorTrigger`-style caller can pass one directly.
+    const remapped = remapLegacyColorPattern(text);
+    const modern = MODERN_COLOR_PATTERN.exec(remapped.trim());
+    if (modern) {
+        const channel = (token: string) =>
+            token === 'IGNORE' ? COLOR_IGNORED
+                : token === 'DEFAULT' ? COLOR_DEFAULT
+                    : Math.trunc(Number(token));
+        return [channel(modern[1]), channel(modern[2])];
+    }
+    const parts = remapped.split(',').map(s => s.trim());
+    const channel = (s: string | undefined): number =>
+        s !== undefined && s !== '' && Number.isFinite(Number(s)) ? Math.trunc(Number(s)) : COLOR_IGNORED;
+    return [channel(parts[0]), channel(parts[1])];
+}

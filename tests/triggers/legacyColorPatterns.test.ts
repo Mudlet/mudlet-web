@@ -17,6 +17,7 @@ import {
     COLOR_DEFAULT,
     COLOR_IGNORED,
     colorPatternText,
+    parseColorPattern,
     remapLegacyColorPattern,
 } from '../../src/mud/triggers/legacyColorPatterns';
 
@@ -63,5 +64,36 @@ describe('remapLegacyColorPattern', () => {
     it('spells the two sentinels out and zero-pads everything else', () => {
         expect(colorPatternText(1, COLOR_DEFAULT)).toBe('ANSI_COLORS_F{001}_B{DEFAULT}');
         expect(colorPatternText(COLOR_IGNORED, 15)).toBe('ANSI_COLORS_F{IGNORE}_B{015}');
+    });
+});
+
+describe('parseColorPattern', () => {
+    // mudlet-web#158: the editor carried its own parser that read only the
+    // plain pair, so a colour trigger that arrived with a package fired
+    // correctly (the engine understood the wire form) but showed up in the
+    // pattern row as "any/any". One parser, all three spellings.
+    it('reads the wire form desktop writes', () => {
+        expect(parseColorPattern('ANSI_COLORS_F{003}_B{IGNORE}')).toEqual([3, COLOR_IGNORED]);
+        expect(parseColorPattern('ANSI_COLORS_F{DEFAULT}_B{012}')).toEqual([COLOR_DEFAULT, 12]);
+    });
+
+    it('reads the pre-3.17 save-file form, remapped to ANSI', () => {
+        expect(parseColorPattern('FG4BG0')).toEqual([1, COLOR_DEFAULT]);
+    });
+
+    it('reads the plain pair the editor used to write', () => {
+        expect(parseColorPattern('3,-1')).toEqual([3, COLOR_IGNORED]);
+        expect(parseColorPattern(' 7 , 0 ')).toEqual([7, 0]);
+    });
+
+    it('falls back to "any" for anything it cannot read', () => {
+        expect(parseColorPattern('')).toEqual([COLOR_IGNORED, COLOR_IGNORED]);
+        expect(parseColorPattern('FG(4)BG(2)')).toEqual([COLOR_IGNORED, COLOR_IGNORED]);
+    });
+
+    it('round-trips whatever colorPatternText writes', () => {
+        for (const pair of [[1, 2], [255, COLOR_DEFAULT], [COLOR_DEFAULT, COLOR_IGNORED]] as const) {
+            expect(parseColorPattern(colorPatternText(pair[0], pair[1]))).toEqual([pair[0], pair[1]]);
+        }
     });
 });

@@ -1,7 +1,7 @@
 import PCRE from './pcre/Pcre2';
 import type { TriggerNode, TriggerPattern } from '../../storage/schema';
 import { buildEffectivelyEnabledIds } from '../../storage/schema';
-import { COLOR_IGNORED, remapLegacyColorPattern } from './legacyColorPatterns';
+import { COLOR_IGNORED, parseColorPattern } from './legacyColorPatterns';
 
 export type { TriggerNode };
 
@@ -33,6 +33,25 @@ type TempFn = (
  * matchers (substring/exactMatch/etc.) don't produce capture-group spans.
  */
 type CaptureSpan = { start: number; length: number };
+
+/**
+ * What a filter trigger hands down to its children when THIS pattern kind is
+ * the one that matched. Mudlet decides it per pattern kind rather than per
+ * trigger, in the `if (mFilterTrigger)` tail of each `process*Match`:
+ *
+ *  - `'captures'` — the regex path (`TTrigger::processRegexMatch`,
+ *    src/TTrigger.cpp:419-438). It offers the CAPTURE GROUPS only, and a
+ *    pattern with no groups offers nothing at all: the tail is guarded by
+ *    `captureList.size() > 1`, and the capture list is the whole match
+ *    followed by the groups. This is why a filter on `test\d+$` never reaches
+ *    its children on desktop (mudlet-web#157).
+ *  - `'whole'` — substring, start-of-line, exact-match and colour patterns
+ *    (src/TTrigger.cpp:498, :630, :757, :900), which offer the matched text.
+ *  - `'none'` — `match_lua_code` (:797) and `match_prompt` (:819) never call
+ *    `filter()`, so a filter matching on one of those offers nothing.
+ */
+type FilterMode = 'captures' | 'whole' | 'none';
+
 type MatchResult = {
     captures: Capture[];
     matchedText: string;
@@ -45,6 +64,9 @@ type MatchResult = {
      *  capture list before the match-all loop appends to it, and the highlight
      *  uses it to tell a whole-match entry from a group one. */
     groupCount?: number;
+    /** What this match offers a filter trigger's children. Defaults to
+     *  `'whole'` when a matcher doesn't say. */
+    filterMode?: FilterMode;
 };
 
 type Matcher = (line: string, isPrompt: boolean) => MatchResult | null;
@@ -105,9 +127,55 @@ function mergeAllMatches(results: MatchResult[]): MatchResult | null {
         matchStart: first.matchStart,
         captureSpans,
         groupCount: 1 + first.captures.length,
+        filterMode: 'captures',
         namedGroups: Object.keys(namedGroups).length > 0 ? namedGroups : undefined,
         namedSpans: Object.keys(namedSpans).length > 0 ? namedSpans : undefined,
     };
+}
+
+/**
+ * What a filter trigger hands down to its children, given the match it just
+ * made. This is the `if (mFilterTrigger)` tail of `TTrigger::processRegexMatch`
+ * (src/TTrigger.cpp:419-438) and its siblings, transcribed.
+ *
+ * Desktop works from ONE flat capture list — the whole match followed by its
+ * groups, repeated per occurrence for a "match all" pattern — and:
+ *
+ *  - offers nothing at all when that list holds only the whole match
+ *    (`if (captureList.size() > 1)`), which is every group-less regex. This is
+ *    why a filter on `test\d+$` never reaches its children on desktop, while
+ *    Mudlet Web used to hand them the whole match (mudlet-web#157);
+ *  - otherwise walks the list, skipping the whole-match entries: those sit at
+ *    the positions where `p % numberOfCaptureGroups == 1`, counting from 1,
+ *    where `numberOfCaptureGroups` is what ONE occurrence contributes. With no
+ *    groups that count is 1 and `p % 1` is never 1, so a group-less match-all
+ *    offers every occurrence instead of none.
+ *
+ * `filter()` itself returns on an empty capture (:549), so groups that did not
+ * participate — and ones that matched nothing — drop out.
+ */
+function filterOfferings(result: MatchResult): { text: string; start: number }[] {
+    const mode = result.filterMode ?? 'whole';
+    if (mode === 'none') return [];
+    if (mode === 'whole') {
+        return result.matchedText
+            ? [{ text: result.matchedText, start: result.matchStart ?? 0 }]
+            : [];
+    }
+    const list: { text: Capture; start: number }[] = [
+        { text: result.matchedText, start: result.matchStart ?? 0 },
+        ...result.captures.map((text, i) => ({ text, start: result.captureSpans?.[i]?.start ?? 0 })),
+    ];
+    if (list.length < 2) return [];
+    const perOccurrence = result.groupCount ?? list.length;
+    const out: { text: string; start: number }[] = [];
+    for (let i = 0; i < list.length; i++) {
+        if (perOccurrence > 0 && (i + 1) % perOccurrence === 1) continue;
+        const { text, start } = list[i];
+        if (!text) continue;
+        out.push({ text, start });
+    }
+    return out;
 }
 
 function matchResultToTriggerMatch(trigger: TriggerNode, r: MatchResult): TriggerMatch {
@@ -325,9 +393,6 @@ const MAX_SAME_LINE_CREATIONS_PER_LINE = 20000;
 /** Minimum gap between two runaway reports. */
 const RUNAWAY_REPORT_INTERVAL_MS = 10000;
 
-/** Parse a `"fg,bg"` colour-trigger pattern text into a `[fg, bg]` pair. Both
- *  default to -1 ("any") when missing or non-numeric. Mudlet uses ANSI
- *  palette indices 0..255 plus -1 for "any". */
 /** The engine hands the matchers the line with the newline that ended it still
  *  attached (Host::runTriggers appends one), so a pattern may anchor on it —
  *  `foo\n$` is a legitimate way to say "and nothing followed". The `line`
@@ -339,30 +404,6 @@ function withEol(line: string): string {
 
 function stripEol(line: string): string {
     return line.endsWith('\n') ? line.slice(0, -1) : line;
-}
-
-function parseColorPattern(text: string): [number, number] {
-    // A pre-3.17 `FG<n>BG<n>` pattern first, because everything below would read
-    // it as garbage. The importer normalises these as it reads a profile, the
-    // way desktop does, but a profile imported before that landed still holds
-    // the old text and a `permColorTrigger`-style caller can pass one directly.
-    text = remapLegacyColorPattern(text);
-    // Mudlet's own wire form, which is what an imported package or profile
-    // carries: `ANSI_COLORS_F{003}_B{IGNORE}`. IGNORE is "any colour here", the
-    // same as the -1 the plain form uses; DEFAULT is TTrigger's scmDefault
-    // (-2), the console's own colour — a colour to match, not an "any". The
-    // colour snapshot marks a segment left on the default with the same -2, so
-    // the sentinel needs no translation.
-    const mudlet = /^ANSI_COLORS_F\{(\d+|DEFAULT|IGNORE)\}_B\{(\d+|DEFAULT|IGNORE)\}$/.exec(text.trim());
-    if (mudlet) {
-        const channel = (token: string) =>
-            token === 'IGNORE' ? -1 : token === 'DEFAULT' ? -2 : Math.trunc(Number(token));
-        return [channel(mudlet[1]), channel(mudlet[2])];
-    }
-    const parts = text.split(',').map(s => s.trim());
-    const fg = parts[0] !== undefined && parts[0] !== '' && Number.isFinite(Number(parts[0])) ? Math.trunc(Number(parts[0])) : -1;
-    const bg = parts[1] !== undefined && parts[1] !== '' && Number.isFinite(Number(parts[1])) ? Math.trunc(Number(parts[1])) : -1;
-    return [fg, bg];
 }
 
 function pcreToMatchResult(m: PcreMatch): MatchResult {
@@ -395,6 +436,7 @@ function pcreToMatchResult(m: PcreMatch): MatchResult {
         matchedText: m[0].match,
         matchStart: m[0].start,
         captureSpans,
+        filterMode: 'captures',
         namedGroups: Object.keys(namedGroups).length > 0 ? namedGroups : undefined,
         namedSpans: Object.keys(namedSpans).length > 0 ? namedSpans : undefined,
     };
@@ -458,13 +500,17 @@ function buildMatcher(
             // chops one for the same reason).
             return (line) => stripEol(line) === p.text ? { captures: [], matchedText: p.text } : null;
         case 'prompt':
-            return (_line, isPrompt) => isPrompt ? { captures: [], matchedText: '' } : null;
+            // match_prompt never calls filter(), so a filter that fired on its
+            // prompt pattern hands its children nothing.
+            return (_line, isPrompt) =>
+                isPrompt ? { captures: [], matchedText: '', filterMode: 'none' } : null;
         case 'luaFunction': {
             const code = p.text;
+            // Nor does match_lua_code — same reason.
             return (line) => {
                 if (!luaEvalRef.fn) return null;
                 const text = stripEol(line);
-                return luaEvalRef.fn(code, text) ? { captures: [], matchedText: text } : null;
+                return luaEvalRef.fn(code, text) ? { captures: [], matchedText: text, filterMode: 'none' } : null;
             };
         }
         case 'colorTrigger': {
@@ -575,6 +621,18 @@ export class TriggerEngine {
     // without scanning the full tree per call.
     private hasChildren = new Set<string>();
 
+    /**
+     * IDs that are effectively enabled (own flag set, and every ancestor's too).
+     *
+     * Enabled-ness is checked HERE, on each node as the walk reaches it, rather
+     * than by leaving disabled triggers out of the processing list — desktop
+     * reads it live off `TTrigger::isActive()` inside the tree walk, so a
+     * trigger switched on by another trigger's script gets a look at the same
+     * line (mudlet-web#156). Filtering the list instead meant the enable was
+     * only visible from the NEXT line, because the pass walks a snapshot.
+     */
+    private enabledIds = new Set<string>();
+
     // AND state: per-trigger progress for multiline AND triggers
     private andStates = new Map<string, AndState[]>();
     /** Triggers still firing on their own after completing, and the match they
@@ -583,9 +641,18 @@ export class TriggerEngine {
 
     // Filter state: chainHeadId → last matched/captured text
     private filterActiveText = new Map<string, string>();
-    /** Every offering a filter makes to its children this line: one per
-     *  capture group, or the whole match when it has none. See openChain. */
+    /** Every offering a filter makes to its children this line — see openChain.
+     *  Empty means "matched, but there is nothing to hand down", which on
+     *  desktop keeps the children out of the line entirely. */
     private filterCaptures = new Map<string, { text: string; offset: number }[]>();
+    /** The line each filter's offering in {@link filterCaptures} was made for.
+     *  A filter only stands between its children and the line on the line it
+     *  MATCHED: when the chain is merely being held open by the fire length,
+     *  desktop reaches the children from the `mKeepFiring` branch of
+     *  `TTrigger::match` (src/TTrigger.cpp:1083-1093), which passes the
+     *  unfiltered haystack straight down. Without this the children kept
+     *  matching against a capture from an earlier line (mudlet-web#160). */
+    private filterOfferLine = new Map<string, number>();
     // Parallel to filterActiveText: the offset of that text within the ORIGINAL
     // line. A descendant matching against the filtered text produces spans
     // relative to it, so selectCaptureGroup/selectString need this offset added
@@ -746,7 +813,10 @@ export class TriggerEngine {
 
             nextCache.set(item.id, entry);
 
-            if (entry.compiled && enabledIds.has(item.id)) {
+            // Disabled items go into the list too; the walk checks
+            // `enabledIds` as it reaches each one, so a trigger enabled
+            // mid-line is already in the snapshot when its turn comes.
+            if (entry.compiled) {
                 newCompiled.push(entry.compiled);
                 compiledIds.add(item.id);
             }
@@ -763,10 +833,37 @@ export class TriggerEngine {
         newCompiled.sort((a, b) => a.depth - b.depth);
         this.permCompiled = newCompiled;
 
-        // Clean up AND states for triggers no longer compiled
+        this.enabledIds = enabledIds;
+
+        // Clean up AND states for triggers that are gone or switched off — a
+        // disabled multiline trigger starts over when it comes back, rather
+        // than completing on conditions met before it was switched off.
         for (const id of this.andStates.keys()) {
-            if (!compiledIds.has(id)) this.andStates.delete(id);
+            if (!compiledIds.has(id) || !enabledIds.has(id)) this.andStates.delete(id);
         }
+    }
+
+    /** Whether a line is being walked right now. `updateEnabled` is only worth
+     *  its cost inside one — outside, the store's own coalesced reload lands
+     *  before the next line arrives. */
+    get isProcessing(): boolean {
+        return this.processingDepth > 0;
+    }
+
+    /**
+     * Refresh which triggers count as enabled, without recompiling anything.
+     *
+     * `enableTrigger`/`disableTrigger` write to the store, and the reload that
+     * carries the change into the engine is coalesced onto a microtask — which
+     * lands after the line that called it has finished. Desktop reads the flag
+     * live inside its tree walk, so a trigger enabled by another trigger's
+     * script fires on the SAME line (mudlet-web#156). This is that read: the
+     * caller hands over the current node list the moment it changes the flag,
+     * and the pass in flight sees it when it reaches the node. loadPerm
+     * recomputes the same set from scratch a moment later.
+     */
+    updateEnabled(items: TriggerNode[]): void {
+        this.enabledIds = buildEffectivelyEnabledIds(items);
     }
 
     /** Fresh compile for an item not present in the cache. Returns a CachedEntry
@@ -1031,7 +1128,7 @@ export class TriggerEngine {
         // per capture — see openChain. The offering is swapped in around each
         // run so getEffectiveLine/getEffectiveOffset, and everything that reads
         // them, need know nothing about it.
-        const filterId = this.innermostFilterId(entry.item);
+        const filterId = this.activeFilterId(entry.item, currentLine);
         const captures = filterId ? this.filterCaptures.get(filterId) : undefined;
         if (!filterId || !captures || captures.length < 2) {
             this.matchPermEntryOnce(entry, line, isPrompt, currentLine, seen, out, '');
@@ -1048,13 +1145,20 @@ export class TriggerEngine {
         this.filterActiveOffset.set(filterId, captures[0].offset);
     }
 
-    /** The nearest filter ancestor of `item`, or null when it has none. */
-    private innermostFilterId(item: TriggerNode): string | null {
+    /**
+     * The filter ancestor whose offering `item` matches against on this line:
+     * the innermost one that MATCHED it. A filter merely holding the chain open
+     * with its fire length is passed over — desktop reaches its children from
+     * the `mKeepFiring` branch of `TTrigger::match` (src/TTrigger.cpp:1090-1093),
+     * which hands them the haystack it was itself given, so what they see is the
+     * next filter further out or, failing that, the whole line (mudlet-web#160).
+     */
+    private activeFilterId(item: TriggerNode, currentLine: number): string | null {
         let parentId = item.parentId;
         while (parentId) {
             const parent = this.allById.get(parentId);
             if (!parent) return null;
-            if (parent.isFilter) return parent.id;
+            if (parent.isFilter && this.filterOfferLine.get(parent.id) === currentLine) return parent.id;
             parentId = parent.parentId;
         }
         return null;
@@ -1070,17 +1174,20 @@ export class TriggerEngine {
         seenSuffix: string,
     ): void {
         const { item } = entry;
+        // Desktop's `if (isActive())` at the top of TTrigger::match, read live
+        // rather than by leaving the trigger out of the list — see enabledIds.
+        if (!this.enabledIds.has(item.id)) return;
         if (!this.isChainAccessible(item, currentLine)) return;
         const seenKey = item.id + seenSuffix;
         // A colour trigger under a filter may only look at the stretch of the
         // line its parent captured — see colorWindowRef.
         const previousColorWindow = colorWindowRef.window;
 
-        const effectiveLine = this.getEffectiveLine(item, line);
+        const effectiveLine = this.getEffectiveLine(item, line, currentLine);
         // Offset of effectiveLine within the original line (non-zero only under a
         // filter ancestor). openChain consumes the UNSHIFTED result (it adds this
         // offset itself); pushed matches are re-based onto the original line.
-        const effOffset = this.getEffectiveOffset(item);
+        const effOffset = this.getEffectiveOffset(item, currentLine);
         const isChainHead = item.isGroup || this.hasChildren.has(item.id);
         colorWindowRef.window = effectiveLine === line
             ? null
@@ -1122,6 +1229,10 @@ export class TriggerEngine {
                         this.openChain(item, currentLine, {
                             captures: r.captures,
                             matchedText: r.matchedText,
+                            // Desktop's multiline filter tail (src/TTrigger.cpp:1026-1046)
+                            // walks each completed row skipping its whole-match entry,
+                            // so what goes down is the capture groups.
+                            filterMode: 'captures',
                         });
                     }
                     out.push(r);
@@ -1516,6 +1627,8 @@ export class TriggerEngine {
         this.filterActiveText.clear();
         this.filterActiveOffset.clear();
         this.filterCaptures.clear();
+        this.filterOfferLine.clear();
+        this.enabledIds.clear();
         this.hasChildren.clear();
         this.permReg.clear();
         this.unified = [];
@@ -1637,34 +1750,29 @@ export class TriggerEngine {
 
     /**
      * Record a chain-head match: open the chain for `fireLength` more lines and,
-     * if the trigger is also a filter, stash the captured/matched text so
-     * descendants see it as their effective input.
+     * if the trigger is also a filter, work out what it offers its children on
+     * this line and stash that as their effective input.
      */
-    private openChain(item: TriggerNode, currentLine: number, result: { captures: Capture[]; matchedText: string; captureSpans?: CaptureSpan[]; matchStart?: number }): void {
+    private openChain(item: TriggerNode, currentLine: number, result: MatchResult): void {
         this.chainOpenUntil.set(item.id, currentLine + (item.fireLength ?? 0));
         if (item.isFilter) {
-            // Every capture is offered to the children, not just the first:
-            // Mudlet's TTrigger::match runs `filter()` once per capture group
-            // when there is more than one, so a parent matching `hit (\\w+) for
-            // (\\d+)` hands its children "orc" and then "12". With no capture
-            // group at all there is one offering, the whole match.
-            const base = this.getEffectiveOffset(item);
-            const captured: { text: string; span?: CaptureSpan }[] = [];
-            result.captures.forEach((text, i) => {
-                if (text !== undefined) captured.push({ text, span: result.captureSpans?.[i] });
-            });
-            this.filterCaptures.set(item.id, captured.length > 0
-                ? captured.map(c => ({ text: c.text, offset: base + (c.span?.start ?? result.matchStart ?? 0) }))
-                : [{ text: result.matchedText, offset: base + (result.matchStart ?? 0) }]);
-            this.filterActiveText.set(item.id, result.captures[0] ?? result.matchedText);
-            // Where the filtered text starts in the ORIGINAL line: this item's own
-            // effective offset, plus where the captured/matched text sits within
-            // the (possibly already filtered) line this item matched against. A
-            // filter on the first capture group uses that group's span; one with
-            // no capture group passes its whole match, so use the match start.
-            const usesCapture = result.captures[0] !== undefined && result.captureSpans?.[0] !== undefined;
-            const spanStart = usesCapture ? result.captureSpans![0].start : (result.matchStart ?? 0);
-            this.filterActiveOffset.set(item.id, this.getEffectiveOffset(item) + spanStart);
+            // Every offering goes to the children, not just the first: desktop
+            // calls `filter()` once per entry it decides to pass on, so a parent
+            // matching `hit (\w+) for (\d+)` hands them "orc" and then "12". An
+            // EMPTY list is meaningful — it means the children get no look at this
+            // line at all. See filterOfferings and isChainAccessible.
+            const base = this.getEffectiveOffset(item, currentLine);
+            const offerings = filterOfferings(result)
+                .map(o => ({ text: o.text, offset: base + o.start }));
+            this.filterCaptures.set(item.id, offerings);
+            this.filterOfferLine.set(item.id, currentLine);
+            if (offerings.length > 0) {
+                this.filterActiveText.set(item.id, offerings[0].text);
+                this.filterActiveOffset.set(item.id, offerings[0].offset);
+            } else {
+                this.filterActiveText.delete(item.id);
+                this.filterActiveOffset.delete(item.id);
+            }
         }
     }
 
@@ -1711,42 +1819,23 @@ export class TriggerEngine {
     }
 
     /**
-     * Returns the effective line to match against for `item`.
-     * If a filter-trigger ancestor has active filter text, that text is used instead.
-     * Innermost filter wins.
+     * The line `item` matches against: the offering of the innermost filter
+     * ancestor that matched THIS line, or the whole line when no filter is
+     * standing in front of it. See activeFilterId.
      */
-    private getEffectiveLine(item: TriggerNode, originalLine: string): string {
-        let effective = originalLine;
-        let parentId = item.parentId;
-        while (parentId) {
-            const parent = this.allById.get(parentId);
-            if (!parent) break;
-            if (parent.isFilter) {
-                const filtered = this.filterActiveText.get(parentId);
-                if (filtered !== undefined) effective = filtered;
-                // innermost filter wins, so break after first filter ancestor we find going up
-                // (we walk from child up so first one found IS the innermost)
-                break;
-            }
-            parentId = parent.parentId;
-        }
-        return effective;
+    private getEffectiveLine(item: TriggerNode, originalLine: string, currentLine: number): string {
+        const filterId = this.activeFilterId(item, currentLine);
+        if (filterId === null) return originalLine;
+        return this.filterActiveText.get(filterId) ?? originalLine;
     }
 
     /** The offset within the ORIGINAL line at which `item`'s effective (filtered)
-     *  input begins — 0 unless it sits under a filter ancestor. Mirrors
-     *  getEffectiveLine: the innermost filter ancestor's recorded offset. */
-    private getEffectiveOffset(item: TriggerNode): number {
-        let parentId = item.parentId;
-        while (parentId) {
-            const parent = this.allById.get(parentId);
-            if (!parent) break;
-            if (parent.isFilter) {
-                return this.filterActiveOffset.get(parentId) ?? 0;
-            }
-            parentId = parent.parentId;
-        }
-        return 0;
+     *  input begins — 0 unless a filter ancestor is standing in front of it on
+     *  this line. Mirrors getEffectiveLine. */
+    private getEffectiveOffset(item: TriggerNode, currentLine: number): number {
+        const filterId = this.activeFilterId(item, currentLine);
+        if (filterId === null) return 0;
+        return this.filterActiveOffset.get(filterId) ?? 0;
     }
 
     /** Return a copy of `r` with every span (matchStart, captureSpans, namedSpans)
@@ -1782,6 +1871,14 @@ export class TriggerEngine {
                 const openUntil = this.chainOpenUntil.get(parentId);
                 if (openUntil === undefined || openUntil < currentLine) return false;
             }
+            // A filter that matched this line but had nothing to hand down keeps
+            // its children out of it. Desktop reaches a filter's children only
+            // through `filter()` (the children loop at src/TTrigger.cpp:1072 is
+            // guarded by `!mFilterTrigger`), and the regex path does not call it
+            // when the pattern has no capture groups (mudlet-web#157).
+            if (parent.isFilter
+                && this.filterOfferLine.get(parentId) === currentLine
+                && (this.filterCaptures.get(parentId)?.length ?? 0) === 0) return false;
             parentId = parent.parentId;
         }
         return true;

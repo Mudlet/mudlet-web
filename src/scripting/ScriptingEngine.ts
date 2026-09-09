@@ -2534,7 +2534,20 @@ export class ScriptingEngine implements EngineHost {
         const patches = targets
             .filter(t => t.enabled !== enabled)
             .map(t => ({ id: t.id, patch: { enabled } }));
-        if (patches.length > 0) store.updateTriggers(this.connectionId, patches);
+        if (patches.length > 0) {
+            store.updateTriggers(this.connectionId, patches);
+            // The store subscription rebuilds the engine on a microtask, which
+            // lands after the line being processed is done. Mudlet reads a
+            // trigger's active flag live inside its tree walk, so a child a
+            // parent's script switches on fires on that same line — hand the
+            // engine the new flags now so the pass in flight sees them
+            // (mudlet-web#156). Only while a line is actually being walked:
+            // outside one the coalesced reload gets there first anyway.
+            if (this.triggerEngine.isProcessing) {
+                this.triggerEngine.updateEnabled(
+                    useAppStore.getState().connectionTriggers[this.connectionId] ?? []);
+            }
+        }
         return true;
     }
 
@@ -4450,10 +4463,17 @@ export class ScriptingEngine implements EngineHost {
                         // line is the prompt (e.g. just the "> ", not the room).
                         const isPrompt = lineIsPrompt && u === units.length - 1;
 
-                        if (plain.length > 0) {
-                            this.processLineTriggers(plain, buffer, isPrompt);
-                            this.emit('output', [outputLine, type]);
-                        }
+                        // Every line goes to the triggers, blank ones included.
+                        // Mudlet's TMainConsole::runTriggers appends a '\n' to
+                        // the line before handing it over, so an empty line
+                        // arrives as "\n" and a `^(.*)$` pattern matches it with
+                        // an empty capture — which is how a chain that collects a
+                        // room description gets its blank separator lines
+                        // (mudlet-web#159). Skipping them here also shortened
+                        // every fire-length and line-delta window by however many
+                        // blanks the server sent.
+                        this.processLineTriggers(plain, buffer, isPrompt);
+                        if (plain.length > 0) this.emit('output', [outputLine, type]);
 
                         let shouldRender =
                             !buffer.deleted &&
