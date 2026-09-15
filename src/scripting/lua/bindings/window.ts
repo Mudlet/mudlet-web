@@ -17,17 +17,13 @@ export function installWindowBindings({ lua, api, channel }: BindingContext): vo
     /**
      * Mudlet `setMainWindowSize(width, height)` resizes the application window.
      * A browser tab cannot resize itself — `window.resizeTo` is refused for
-     * anything the script did not open — so this reports the attempt and changes
-     * nothing.
-     *
-     * Bound rather than left out: Bridge.lua wraps it for its argument contract
-     * and captured a nil, so every call died on "attempt to call upvalue" rather
-     * than doing nothing. Doing nothing is the honest answer, and callers that
-     * measure afterwards (Mudlet's own specs among them) see the size did not
-     * move and take the "this display does not honour a resize" path a tiling
-     * window manager would put them on.
+     * anything the script did not open — so what this sizes is the main
+     * viewport, which is the rectangle `getMainWindowSize` has always reported.
+     * The two agree exactly here, with none of the window chrome between them
+     * that desktop has to account for.
      */
-    lua.global.set('setMainWindowSize', () => true);
+    lua.global.set('setMainWindowSize', (width: unknown, height: unknown) =>
+        api.setMainWindowSize(Number(width), Number(height)));
     lua.global.set('__getMousePosition', () => api.getMousePosition());
     lua.global.set('__getUserWindowSize', (name: unknown) => {
         const n = String(name ?? '');

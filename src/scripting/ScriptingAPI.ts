@@ -5690,6 +5690,13 @@ export class ScriptingAPI {
         return [window.innerWidth, window.innerHeight];
     }
 
+    /** Mudlet `setMainWindowSize(width, height)`. Sizes the main viewport —
+     *  the rectangle {@link getMainWindowSize} reports — since a browser tab
+     *  cannot resize itself. See WindowManager.setMainWindowSize. */
+    setMainWindowSize(width: number, height: number): boolean {
+        return this.session.windows.setMainWindowSize(width, height);
+    }
+
     /**
      * Mudlet `hasFocus([window])` → bool. Reports whether the named console (or
      * the main command bar / output area when omitted) currently holds keyboard
@@ -6276,35 +6283,52 @@ export class ScriptingAPI {
     }
 
     /** Mudlet `getSubsystemMemoryStats()` → a diagnostic table of heap metrics
-     *  plus per-subsystem counts. Browser-adapted: heap figures come from
-     *  `performance.memory` (Chromium; 0 elsewhere); the Lua GC figure
-     *  (`luaMemoryKb`) is added by the Bridge.lua wrapper via
-     *  `collectgarbage("count")`. Counts are best-effort snapshots. */
+     *  plus per-subsystem counts, under Mudlet's own snake_case key names — the
+     *  table is read by key, so a browser-flavoured spelling would just make
+     *  every existing diagnostic script read nil.
+     *
+     *  Browser-adapted where the C++ figure has no equivalent: the heap sizes
+     *  come from `performance.memory` (Chromium only, and left out entirely
+     *  elsewhere, as Mudlet leaves them out on a platform whose allocator it
+     *  cannot ask); `heap_limit_mb` and `loaded_fonts` are browser-only extras.
+     *  `event_handlers` is absent: Other.lua keeps its handler registry in a
+     *  local upvalue, with no reachable count. The Lua GC figures
+     *  (`lua_heap_kb`/`lua_heap_mb`) are added by the Bridge.lua wrapper.
+     *  Counts are best-effort snapshots. */
     getSubsystemMemoryStats(): Record<string, number> {
         const mem = (performance as unknown as {
             memory?: { usedJSHeapSize: number; totalJSHeapSize: number; jsHeapSizeLimit: number };
         }).memory;
         const map = this.map;
-        const state = useAppStore.getState();
-        const triggers = state.connectionTriggers[this.connectionId] ?? [];
-        let triggerPatterns = 0;
-        for (const t of triggers) if (!t.isGroup) triggerPatterns += t.patterns?.length ?? 0;
-        const aliasPatterns = (state.connectionAliases[this.connectionId] ?? []).filter(a => !a.isGroup).length;
-        const activeMediaPlayers =
-            this.session.sounds.getPlaying().length +
-            this.session.sounds.getPlaying({}, 'music').length +
-            this.session.videos.getByState(false).length;
-        const loadedFonts = (typeof document !== 'undefined' && document.fonts) ? document.fonts.size : 0;
+        const stats = this.host.getProfileStats() as Record<string, { total?: number; temp?: number } | undefined>;
+        const family = (name: string, field: 'total' | 'temp') => stats[name]?.[field] ?? 0;
+        // Mudlet's buffer keeps an always-open line past the last line feed;
+        // getLineCount() leaves that one out, and this count takes it in. A
+        // missing console reports -1, which must not become 0 lines.
+        const lines = this.getLineCount();
+        const kBytesPerMb = 1024 * 1024;
         return {
-            heapUsedKb: mem ? Math.round(mem.usedJSHeapSize / 1024) : 0,
-            heapTotalKb: mem ? Math.round(mem.totalJSHeapSize / 1024) : 0,
-            heapLimitKb: mem ? Math.round(mem.jsHeapSizeLimit / 1024) : 0,
-            mapRooms: Object.keys(map.getRooms()).length,
-            mapAreas: Object.keys(map.getAreaTable()).length,
-            activeMediaPlayers,
-            loadedFonts,
-            triggerPatterns,
-            aliasPatterns,
+            triggers_total: family('triggers', 'total'),
+            triggers_temp: family('triggers', 'temp'),
+            timers_total: family('timers', 'total'),
+            timers_temp: family('timers', 'temp'),
+            aliases_total: family('aliases', 'total'),
+            aliases_temp: family('aliases', 'temp'),
+            map_rooms: Object.keys(map.getRooms()).length,
+            map_areas: Object.keys(map.getAreaTable()).length,
+            console_buffer_lines: lines < 0 ? 0 : lines + 1,
+            media_sound_players: this.session.sounds.getPlaying().length,
+            media_music_players: this.session.sounds.getPlaying({}, 'music').length,
+            // Mudlet counts the players it keeps pooled but idle. Nothing is
+            // pooled here, so the nearest live thing is media that exists and
+            // is not playing: a paused video element.
+            media_stopped_players: this.session.videos.getByState(true).length,
+            ...(mem ? {
+                heap_in_use_mb: mem.usedJSHeapSize / kBytesPerMb,
+                heap_allocated_mb: mem.totalJSHeapSize / kBytesPerMb,
+                heap_limit_mb: mem.jsHeapSizeLimit / kBytesPerMb,
+            } : {}),
+            loaded_fonts: (typeof document !== 'undefined' && document.fonts) ? document.fonts.size : 0,
         };
     }
 

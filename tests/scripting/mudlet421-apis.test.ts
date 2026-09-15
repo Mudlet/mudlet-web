@@ -37,10 +37,13 @@ describe('Mudlet 4.21 API additions', () => {
 
     it('getSubsystemMemoryStats returns a table with the documented keys', () => {
       expect(env.run('return type(getSubsystemMemoryStats())')).toBe('table');
-      // mapRooms is 0 on a fresh (empty) map; the key must still be present.
-      expect(env.run('return getSubsystemMemoryStats().mapRooms')).toBe(0);
-      // luaMemoryKb is folded in by the Bridge wrapper via collectgarbage.
-      expect(env.run('return getSubsystemMemoryStats().luaMemoryKb > 0')).toBe(true);
+      // map_rooms is 0 on a fresh (empty) map; the key must still be present.
+      expect(env.run('return getSubsystemMemoryStats().map_rooms')).toBe(0);
+      // lua_heap_kb is folded in by the Bridge wrapper via collectgarbage.
+      expect(env.run('return getSubsystemMemoryStats().lua_heap_kb > 0')).toBe(true);
+      // The console buffer always holds the always-open line past the last
+      // line feed, so this is never zero on a live profile.
+      expect(env.run('return getSubsystemMemoryStats().console_buffer_lines > 0')).toBe(true);
     });
   });
 

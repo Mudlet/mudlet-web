@@ -216,6 +216,10 @@ function keyCodeFromMudletKey(key: string | number): string {
 /** Mudlet `tempButtonToolbar` location int → ButtonLocation. */
 const BUTTON_LOCATIONS = ['top', 'bottom', 'left', 'right', 'floating'] as const;
 
+/** The ProfileSettings field holding ScriptingAPI's catch-all setConfig bag.
+ *  One store field, many getConfig keys — see the sysSettingChanged bridge. */
+const CONFIG_BAG_FIELD = 'config';
+
 /**
  * Compare the slice of nodes tagged with `pkgName` between two arrays. Returns
  * true if any tagged node was added, removed, or replaced (Zustand mutators
@@ -4629,20 +4633,43 @@ export class ScriptingEngine implements EngineHost {
         // per-setting granularity).
         const seedProfile = useAppStore.getState().connectionProfile[this.connectionId];
         let lastProfile: Record<string, unknown> = (seedProfile ?? {}) as Record<string, unknown>;
+        const asBag = (v: unknown) => (v ?? {}) as Record<string, unknown>;
+        // Raise one event per changed key of a plain object, in both directions
+        // (a key that went away is reported as having become nil).
+        const raiseKeyChanges = (prev: Record<string, unknown>, next: Record<string, unknown>) => {
+            for (const key of Object.keys(next)) {
+                if (next[key] !== prev[key]) this.raiseEvent('sysSettingChanged', [key, next[key]]);
+            }
+            for (const key of Object.keys(prev)) {
+                if (!(key in next) && prev[key] !== undefined) this.raiseEvent('sysSettingChanged', [key, undefined]);
+            }
+        };
         this.unsubs.push(useAppStore.subscribe((state) => {
             const next = (state.connectionProfile[this.connectionId] ?? {}) as Record<string, unknown>;
             if (next === lastProfile) return;
-            for (const key of Object.keys(next)) {
-                if (next[key] !== lastProfile[key]) {
-                    this.raiseEvent('sysSettingChanged', [key, next[key]]);
-                }
-            }
-            for (const key of Object.keys(lastProfile)) {
-                if (!(key in next) && lastProfile[key] !== undefined) {
-                    this.raiseEvent('sysSettingChanged', [key, undefined]);
-                }
-            }
+            const prev = lastProfile;
+            // Adopted before anything is raised, not after: a handler is allowed
+            // to write a setting back from inside the event, and that write
+            // re-enters this subscriber. Diffing it against the pre-change
+            // snapshot would either re-raise the change it is responding to or,
+            // once the outer call finally assigned, leave `lastProfile` holding
+            // a value the store no longer has.
             lastProfile = next;
+            for (const key of Object.keys(next)) {
+                if (next[key] === prev[key]) continue;
+                // `config` is not a setting — it is the catch-all bag one store
+                // field wide that holds most of the getConfig keys. Reporting it
+                // by its store name would hand every handler the string "config"
+                // and the whole bag, so it is diffed a level down and each key
+                // inside raised under the name getConfig knows it by.
+                if (key === CONFIG_BAG_FIELD) raiseKeyChanges(asBag(prev[key]), asBag(next[key]));
+                else this.raiseEvent('sysSettingChanged', [key, next[key]]);
+            }
+            for (const key of Object.keys(prev)) {
+                if (key in next || prev[key] === undefined) continue;
+                if (key === CONFIG_BAG_FIELD) raiseKeyChanges(asBag(prev[key]), {});
+                else this.raiseEvent('sysSettingChanged', [key, undefined]);
+            }
         }));
 
         this.unsubs.push(

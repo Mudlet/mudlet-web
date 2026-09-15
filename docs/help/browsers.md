@@ -44,9 +44,10 @@ whenever it can be, so reloading online is all it takes to move to a new version
 will open a tab or close one — the browser sees those first and a web page cannot
 override them. Pick combinations the browser doesn't use.
 
-**The window is the window.** `setMainWindowSize` and friends are no-ops; the
-browser viewport is the main window. Everything inside it — docks, floats, splits,
-tab groups — works.
+**The window is the window.** A page cannot resize the tab it is in, so
+`setMainWindowSize` sizes the main viewport instead — the same rectangle
+`getMainWindowSize` reports, with none of the window chrome between the two that
+desktop has. Everything inside it — docks, floats, splits, tab groups — works.
 
 **The clipboard is asynchronous.** Browsers gate clipboard access on a user gesture
 and a secure context, while Mudlet's `getClipboardText`/`setClipboardText` are

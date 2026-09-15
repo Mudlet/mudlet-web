@@ -636,8 +636,10 @@ export class TriggerEngine {
     // AND state: per-trigger progress for multiline AND triggers
     private andStates = new Map<string, AndState[]>();
     /** Triggers still firing on their own after completing, and the match they
-     *  re-report while they do. See the fire-length branch in matchPermEntryOnce. */
-    private keepFiring = new Map<string, { until: number; match: TriggerMatch }>();
+     *  re-report while they do — `null` when setTriggerStayOpen opened the
+     *  window and there is no match to replay. See the fire-length branch in
+     *  matchPermEntryOnce. */
+    private keepFiring = new Map<string, { until: number; match: TriggerMatch | null }>();
 
     // Filter state: chainHeadId → last matched/captured text
     private filterActiveText = new Map<string, string>();
@@ -1270,7 +1272,7 @@ export class TriggerEngine {
                     }
                 }
             }
-            this.applyFireLength(item, currentLine, lastMatch, out);
+            this.applyFireLength(item, currentLine, effectiveLine, lastMatch, out);
         } finally {
             colorWindowRef.window = previousColorWindow;
         }
@@ -1296,23 +1298,36 @@ export class TriggerEngine {
     private applyFireLength(
         item: TriggerNode,
         currentLine: number,
+        effectiveLine: string,
         lastMatch: TriggerMatch | null,
         out: TriggerMatch[],
     ): void {
         if (lastMatch) {
-            // Mudlet's `mKeepFiring = mStayOpen` — re-armed on every match, and
-            // (like desktop's `!conditionMet` guard below) never spent on the
-            // same line the trigger matched on.
+            // Mudlet's `mKeepFiring = mStayOpen` — an assignment, not a bump, so
+            // a match on a trigger whose fire length is zero CLOSES a window
+            // setTriggerStayOpen opened. Re-armed on every match, and (like
+            // desktop's `!conditionMet` guard below) never spent on the same
+            // line the trigger matched on.
             const fireLength = item.fireLength ?? 0;
-            if (fireLength > 0 && !this.hasChildren.has(item.id)) {
-                this.keepFiring.set(item.id, { until: currentLine + fireLength, match: lastMatch });
-            }
+            if (fireLength > 0) this.keepFiring.set(item.id, { until: currentLine + fireLength, match: lastMatch });
+            else this.keepFiring.delete(item.id);
             return;
         }
         const keep = this.keepFiring.get(item.id);
         if (!keep) return;
-        if (currentLine <= keep.until) out.push(keep.match);
-        else this.keepFiring.delete(item.id);
+        if (currentLine > keep.until) {
+            this.keepFiring.delete(item.id);
+            return;
+        }
+        // Desktop re-runs the script only for a childless trigger
+        // (src/TTrigger.cpp:1085); one with children is holding the chain open
+        // FOR them, and they are reached through `chainOpenUntil`.
+        if (this.hasChildren.has(item.id)) return;
+        // No match to replay when the window was opened by setTriggerStayOpen
+        // rather than by a hit — the trigger may never have matched at all. The
+        // whole line stands in, so `matches[1]` is the line that kept it firing
+        // rather than a stale capture from an earlier one.
+        out.push(keep.match ?? { trigger: item, captures: [], matchedText: stripEol(effectiveLine) });
     }
 
     // ── Unified pass (permanent + temporary, in registration order) ───────────
@@ -1777,12 +1792,21 @@ export class TriggerEngine {
     }
 
     /**
-     * Mudlet `setTriggerStayOpen(name, lines)`: keep the named chain head(s)
-     * open for `lines` more lines of input, starting from the line currently
-     * being processed. This is transient runtime state — it mutates only the
-     * `chainOpenUntil` window, never the persisted `fireLength` on the node, so
-     * the trigger's stored definition is untouched and the override expires
-     * naturally as input scrolls past.
+     * Mudlet `setTriggerStayOpen(name, lines)`: keep the named trigger(s) open
+     * for `lines` more lines of input, starting from the line currently being
+     * processed. This is transient runtime state — it mutates only the runtime
+     * windows, never the persisted `fireLength` on the node, so the trigger's
+     * stored definition is untouched and the override expires naturally as
+     * input scrolls past.
+     *
+     * Desktop writes one counter, `mKeepFiring`, and it does two jobs at once
+     * (src/TriggerUnit.cpp:455, spent at src/TTrigger.cpp:1083-1093): the
+     * trigger FIRES on each of those lines whether or not its pattern is in
+     * them, and its children get a look at them. Mudlet Web keeps the two
+     * windows apart — `chainOpenUntil` for the children, `keepFiring` for the
+     * trigger itself — so both are opened here, over the same span. Arming only
+     * the first left a stay-open trigger silent on the lines it was opened for
+     * (upstream Trigger_spec, "large plain-text trigger sets").
      *
      * `matchPerm` post-increments `lineCounter`, so during a trigger's script
      * the line just matched is `lineCounter - 1`; the window math then mirrors
@@ -1794,6 +1818,10 @@ export class TriggerEngine {
         const openUntil = currentLine + Math.max(0, Math.trunc(lines));
         for (const id of ids) {
             this.chainOpenUntil.set(id, openUntil);
+            // No match to replay: the trigger may never have matched at all, and
+            // one opened this way is being fired by the caller, not by its own
+            // pattern. applyFireLength stands the line in for it.
+            this.keepFiring.set(id, { until: openUntil, match: null });
         }
     }
 

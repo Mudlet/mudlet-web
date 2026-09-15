@@ -574,6 +574,56 @@ export class WindowManager {
         return this.mainViewportEl;
     }
 
+    /** The `.main-viewport` box the console viewport and the overlay root both
+     *  span (`inset: 0`). It is the one element that can be given a size — the
+     *  two inside it are absolutely positioned against it, so sizing either of
+     *  those alone would move the console out from under the labels. */
+    private mainViewportHostEl: HTMLElement | null = null;
+    private mainViewportSize: { width: number; height: number } | null = null;
+    registerMainViewportHost(element: HTMLElement | null): void {
+        this.mainViewportHostEl = element;
+        // A remount arrives with the override still in force — re-apply it, or a
+        // script's sizing would silently come undone by a layout switch.
+        if (element && this.mainViewportSize) {
+            this.applyMainViewportSize(element, this.mainViewportSize.width, this.mainViewportSize.height);
+        }
+    }
+
+    private applyMainViewportSize(host: HTMLElement, width: number, height: number): void {
+        // `.main-viewport` is `flex: 1` in a row, so a width alone would lose to
+        // the flex basis; the height is free to be set outright (an explicit
+        // cross size beats `align-items: stretch`).
+        host.style.flex = `0 0 ${width}px`;
+        host.style.width = `${width}px`;
+        host.style.height = `${height}px`;
+    }
+
+    /**
+     * Mudlet `setMainWindowSize(width, height)`. Desktop resizes the application
+     * window; a browser tab cannot resize itself — `window.resizeTo` is refused
+     * for anything the script did not open — so what is sized is the main
+     * viewport, which is what `getMainWindowSize` has always measured. The two
+     * therefore agree exactly, with none of the window chrome between them that
+     * desktop has to account for.
+     *
+     * Returns false only when there is no viewport to size (before mount).
+     */
+    setMainWindowSize(width: number, height: number): boolean {
+        const host = this.mainViewportHostEl;
+        if (!host) return false;
+        const w = Math.max(0, Math.round(width));
+        const h = Math.max(0, Math.round(height));
+        this.mainViewportSize = { width: w, height: h };
+        this.applyMainViewportSize(host, w, h);
+        // ResizeObserver would deliver this through the browser's event loop,
+        // and a script that resizes and then measures is still sitting on top of
+        // that loop — so it would read the old size and Geyser would not have
+        // repositioned yet. Measuring here is synchronous (getBoundingClientRect
+        // forces the layout) and the observer's later tick dedupes to a no-op.
+        if (this.mainViewportEl) this.measureAndEmitResize('main', this.mainViewportEl);
+        return true;
+    }
+
     /**
      * The DOM element main-parented nested windows (mini-consoles, embedded
      * mapper) portal into. This is `.main-overlay-root` — the SAME wrapper the
