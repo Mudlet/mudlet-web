@@ -432,14 +432,18 @@ if (typeof document !== 'undefined') {
  * size which matches the line-height Qt's QFontMetrics reports for common
  * fonts.
  *
- * The numbers are NOT rounded, even though Mudlet's are (QFontMetrics answers
- * in whole pixels). Qt can round because TTextEdit then *lays the text out* on
- * that same integer grid; the DOM lays it out on the font's real fractional
- * advance, so a rounded-down cell hands scripts a column that does not exist.
- * The classic caller is `setWindowWrap(win, math.floor(pixelWidth / cellW))`:
- * at 11pt Fira Code the true advance is 9.02px, and rounding it to 9 wraps a
- * 234px console at 26 columns when only 25 fit — every padded row then folds
- * its right-hand value onto the next line.
+ * The numbers here are NOT rounded, even though Mudlet's are (QFontMetrics
+ * answers in whole pixels). Qt can round because TTextEdit then *lays the text
+ * out* on that same integer grid; the DOM lays it out on the font's real
+ * fractional advance, so a rounded-down cell would hand this client's own
+ * column arithmetic a column that does not exist. The classic case is
+ * `getColumnCount`, which is `floor(usableWidth / cellW)`: at 11pt Fira Code
+ * the true advance is 9.02px, and rounding it to 9 reports 26 columns for a
+ * 234px console when only 25 fit — every padded row then folds its right-hand
+ * value onto the next line.
+ *
+ * `calcFontSize` is the one caller that DOES round, because a Lua script
+ * multiplies what it returns back up into a widget size — see the note there.
  */
 // Geyser calls calcFontSize on the per-constraint path (character-unit
 // constraints), so a single re-layout of a large widget tree can reach it
@@ -6418,6 +6422,18 @@ export class ScriptingAPI {
      *
      * Returns `null` when the size is invalid or the named window doesn't
      * exist; the Lua wrapper turns that into Mudlet's `(nil, errMsg)` shape.
+     *
+     * Whole pixels, like the `QSize` Mudlet builds out of
+     * `QFontMetrics::averageCharWidth()` and `::height()` — and unlike the
+     * fractional cell {@link measureMonospaceCell} hands this client's own
+     * column arithmetic. The rounding is what makes the number multipliable:
+     * every caller of this one is a script scaling it back up into a widget
+     * size (Geyser resolves a `"20c"` constraint as `20 * calcFontSize(...)`,
+     * GUIUtils sizes a `createConsole` the same way), and widget geometry is
+     * whole pixels in Mudlet and here alike. A fractional cell makes that
+     * product land between pixels, where it is truncated — so the size a script
+     * computed and the size `getWindowGeometry` reports back silently disagree,
+     * by an amount that depends on which fonts the machine happens to have.
      */
     calcFontSize(arg: number | string, fontName?: string): [number, number] | null {
         const mainFamily = (): string =>
@@ -6442,7 +6458,10 @@ export class ScriptingAPI {
             if (!Number.isFinite(size) || size < 1) return null;
             family = fontName && String(fontName).trim() ? String(fontName) : mainFamily();
         }
-        return measureMonospaceCell(family, size);
+        const [width, height] = measureMonospaceCell(family, size);
+        // qRound, which is what QFontMetrics::averageCharWidth() applies to the
+        // fractional advance — so the answer matches Mudlet's for a given font.
+        return [Math.round(width), Math.round(height)];
     }
 
     /**
