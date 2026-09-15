@@ -682,7 +682,7 @@ through byte-identical — app stylesheets are also Mudlet Web's brand-styling h
 | `ansi2string(text)` | ✅ | Pure Lua via GUIUtils.lua |
 | `appendBuffer([window])` | ✅ | Appends the clipboard (from `copy()`) as a new line to the named console |
 | `bg([window,] colorname)` | ✅ | Set background color by name |
-| `calcFontSize(size[, family]) \| calcFontSize(windowName)` | ✅ | Canvas-2D monospace cell measurement, falls back to App.css `--font-mono` |
+| `calcFontSize(size[, family]) \| calcFontSize(windowName)` | ✅ | Canvas-2D monospace cell measurement, falls back to App.css `--font-mono`. Rounded to whole pixels like `QFontMetrics`, so `N * width` lands on a real widget size |
 | `cecho([window,] text)` | ✅ | `<colorname>text` syntax |
 | `cechoLink([window,] text, cmd, hint)` | ✅ | Pure Lua via GUIUtils.lua |
 | `cecho2ansi(text)` | ✅ | Pure Lua via GUIUtils.lua |
