@@ -148,10 +148,13 @@ end
 
 -- Mudlet getSubsystemMemoryStats() → table. The JS primitive supplies heap
 -- figures and subsystem counts; collectgarbage("count") (Kb of live Lua data)
--- is only observable from Lua, so we fold it in here.
+-- is only observable from Lua, so we fold it in here under Mudlet's own two
+-- names for it.
 function getSubsystemMemoryStats()
     local t = __getSubsystemMemoryStats()
-    t.luaMemoryKb = collectgarbage("count")
+    local kb = collectgarbage("count")
+    t.lua_heap_kb = kb
+    t.lua_heap_mb = kb / 1024
     return t
 end
 
@@ -6989,7 +6992,9 @@ do
     function setMainWindowSize(width, height)
         width = __mudlet_check_number(width, "setMainWindowSize", 1, "width")
         height = __mudlet_check_number(height, "setMainWindowSize", 2, "height")
-        return _rawSetMainWindowSize(width, height)
+        -- Deliberately swallowed: Mudlet's C++ setMainWindowSize returns no
+        -- values at all, and UI_spec pins that with select("#", ...).
+        _rawSetMainWindowSize(width, height)
     end
 end
 

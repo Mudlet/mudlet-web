@@ -60,6 +60,13 @@ export function ContentLayout({
     }
     const outputHost = outputHostRef.current;
 
+    // The box setMainWindowSize sizes — the one both the console viewport and
+    // the overlay root are `inset: 0` inside, so sizing it moves them together.
+    useLayoutEffect(() => {
+        manager.registerMainViewportHost(outputHost);
+        return () => manager.registerMainViewportHost(null);
+    }, [manager, outputHost]);
+
     const handleTitlebarContextMenu = useCallback((e: React.MouseEvent) => {
         e.preventDefault();
         setMenuPos({ x: e.clientX, y: e.clientY });

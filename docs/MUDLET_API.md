@@ -306,7 +306,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `getNewIDManager()` | ✅ | IDManager.lua factory |
 | `getOS()` | ✅ | Sniffed from user agent → `"windows"`/`"mac"`/`"linux"`/`"freebsd"`/`"openbsd"`/`"netbsd"`/`"unknown"` |
 | `getProcessMemoryUsage()` | ✅ | (Mudlet 4.21) Memory in Kb. Browser-adapted: the JS heap in use (`performance.memory`, Chromium only), else 0 |
-| `getSubsystemMemoryStats()` | ✅ | (Mudlet 4.21) Diagnostic table: `heapUsedKb`/`heapTotalKb`/`heapLimitKb` (`performance.memory`), `luaMemoryKb` (Bridge.lua via `collectgarbage("count")`), and counts `mapRooms`/`mapAreas`/`activeMediaPlayers`/`loadedFonts`/`triggerPatterns`/`aliasPatterns`. Best-effort |
+| `getSubsystemMemoryStats()` | ✅ | (Mudlet 4.21) Diagnostic table under Mudlet's own key names: `lua_heap_kb`/`lua_heap_mb` (Bridge.lua via `collectgarbage("count")`), `triggers_total`/`triggers_temp`, `timers_total`/`timers_temp`, `aliases_total`/`aliases_temp`, `map_rooms`/`map_areas`, `console_buffer_lines`, `media_sound_players`/`media_music_players`/`media_stopped_players`, plus `heap_in_use_mb`/`heap_allocated_mb`/`heap_limit_mb` from `performance.memory` (Chromium only, absent elsewhere) and the browser-only `loaded_fonts`. No `event_handlers` — Other.lua's registry is a local upvalue. Best-effort |
 | `lpeg` (library) | ✅ | (Mudlet 4.21 bundles C lpeg) Mudlet Web bundles the pure-Lua **LuLPeg** port at `mudlet-lua/3rdparty/lulpeg.lua`, registered as `package.loaded["lpeg"]` before `LuaGlobal.lua`'s guard publishes the `lpeg` global. Full PEG API (`P`/`R`/`S`/`C`/`Ct`/`match`/…) |
 | `getPackages()` | ✅ | JS-exposed |
 | `getPackageInfo(name [, key])` | ✅ | Merged table: manifest fields (name/title/author/version/description/created/icon/installed) overlaid with `setPackageInfo` overrides; single-key form returns `""` when absent |
@@ -860,7 +860,7 @@ through byte-identical — app stylesheets are also Mudlet Web's brand-styling h
 | `setLabelCustomCursor(name, path[, hotX, hotY])` | ✅ | CSS `cursor: url(...) hotX hotY, auto`; path resolved through the VFS-aware rewriter |
 | `setLabelWheelCallback(name, fn)` | ✅ | Bridge.lua |
 | `setLink([window,] cmd, hint)` | ✅ | Bridge.lua maps function `cmd` to a callback id |
-| `setMainWindowSize(w, h)` | 🚧 | The main window IS the browser viewport |
+| `setMainWindowSize(w, h)` | ✅ | Sizes the main viewport — the rectangle `getMainWindowSize` reports — since a tab cannot resize itself. No window chrome between the two |
 | `setMapWindowTitle(title)` | ✅ | Sets the dockable map panel (`id "map"`) tab title via `WindowManager.setTitle`; empty title resets to default. False when the map widget is closed. Unblocks `resetMapWindowTitle` (GUIUtils) and `Geyser.Mapper` |
 | `setMiniConsoleFontSize(name, size)` | ✅ | Bridge.lua; rejects non-miniconsole targets (CONSOLE-only, matches Mudlet) |
 | `setMovie(name, path)` / `setMovieFrame(name, n)` / `setMovieSpeed(name, factor)` / `startMovie(name)` | ✅ | QMovie replaced by an in-browser GIF decoder (`gifMovie.ts`) rendering to a `<canvas>` in the label — full pause/frame/speed/scale control; path resolves through the profile VFS. Animated WebP / APNG also decode via WebCodecs `ImageDecoder` where available (Chromium/Safari; frames land async into a pending player). Geyser `Label:setMovie` etc. work via the bundled wrappers. mp4 is NOT a QMovie format — video goes through `playVideoFile` (already ✅) |
