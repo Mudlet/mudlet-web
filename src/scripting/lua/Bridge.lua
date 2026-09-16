@@ -8070,8 +8070,26 @@ do
         return v
     end
 
+    -- Mudlet (#10809) refuses a word the ".dic" file cannot give back as itself:
+    -- a blank word, a line break, a tab or "/" (hunspell reads those as the
+    -- start of the morphological description and the affix flags), or leading
+    -- whitespace. A trailing space does survive, but is refused for not being a
+    -- word.
+    local function storableWord(w)
+        return w ~= "" and not w:find("^%s") and not w:find("%s$")
+            and not w:find("[\n\r\t/]")
+    end
+
+    local function unstorableWordMessage(w)
+        return 'the word "' .. w .. '" cannot be stored in the user dictionary, it must have some text in it, '
+            .. 'fit on a single line, not start or end with whitespace, and contain no tab or "/" character'
+    end
+
     function addWordToDictionary(word)
         local w = checkWord("addWordToDictionary", word)
+        if not storableWord(w) then
+            return nil, unstorableWordMessage(w)
+        end
         local words, set = readDict()
         if set[w] then
             return nil, 'the word "' .. w .. '" already seems to be in the user dictionary'
@@ -8086,6 +8104,11 @@ do
         local w = checkWord("removeWordFromDictionary", word)
         local words, set = readDict()
         if not set[w] then
+            -- Removal itself stays permissive, so a word an older build stored
+            -- can still be taken out; only the reason it is missing changes.
+            if not storableWord(w) then
+                return nil, unstorableWordMessage(w)
+            end
             return nil, 'the word "' .. w .. '" does not seem to be in the user dictionary'
         end
         local kept = {}

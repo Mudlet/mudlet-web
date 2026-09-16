@@ -3398,11 +3398,15 @@ export class ScriptingEngine implements EngineHost {
         // modifier is only read when there are more than four arguments). Testing
         // the modifier instead meant permGroup(name, "key") produced a keybind.
         //
-        // A folder also starts INACTIVE, as setIsActive(keycode != -1) has it.
+        //
+        // Folders and keys alike start ACTIVE. Mudlet used to create the folder
+        // inactive (the same -1 read as "inactive" too), and since a disabled
+        // folder is never descended into, every key permGroup put inside it
+        // silently never fired (Mudlet #10764, fixed in #10802).
         const isGroup = Number(key) === -1 || (modifier < 0 && (!key || key === ''));
         const uuid = store.addKeybinding(this.connectionId, {
             name,
-            enabled: !isGroup,
+            enabled: true,
             isGroup,
             parentId,
             key: isGroup ? '' : keyCodeFromMudletKey(key),

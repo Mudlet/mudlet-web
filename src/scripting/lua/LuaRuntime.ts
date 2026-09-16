@@ -2546,6 +2546,8 @@ end`);
             this.api.pumpServerWrap();
             // And the OSC 8 link written concealed until its reveal delay is up.
             this.api.pumpHyperlinkReveals();
+            // And the size a user window just opened arrives at.
+            this.api.pumpCreatedWindowSizes();
             if (Date.now() >= deadline) return true;
             // Let real time advance a little so pending timers come due, without
             // overshooting the caller's deadline.

@@ -152,7 +152,7 @@ describe('getTimestamp', () => {
   beforeEach(async () => { env = await createTestRuntime(); });
   afterEach(() => env.dispose());
 
-  it('returns an "hh:mm:ss.zzz" string for an in-range (1-based) line', () => {
+  it('returns an "hh:mm:ss.zzz" string for an in-range line', () => {
     env.run('createBuffer("tb"); cecho("tb", "hi\\n")');
     const ts = env.run('return (getTimestamp("tb", 1))');
     expect(ts).toMatch(/^\d{2}:\d{2}:\d{2}\.\d{3}$/);

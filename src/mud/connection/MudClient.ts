@@ -1217,6 +1217,37 @@ export class MudClient {
         const hasPrompt = !this.forceGaOff
             && (processable.includes(TELNET_GA) || processable.includes(TELNET_EOR));
         const sanitized = stripTelnetSequences(processable, this.telnetOptionHandler).replace(/\r/g, '');
+        const ts = typeof timestamp === 'number' ? timestamp : Date.now();
+        if (hasPrompt && debugGaEnabled()) {
+            const marker = processable.includes(TELNET_GA) ? 'GA' : 'EOR';
+            // eslint-disable-next-line no-console
+            console.debug(
+                `[mudlet.ga] prompt marker IAC ${marker} received` +
+                (this.assembler.gaDriver ? '' : ' — latching into GA-driven prompt mode'),
+            );
+        }
+
+        // A trigger fires while its packet is still being decoded, and one that
+        // calls setServerEncoding() has to change how the REST of that packet
+        // reads, as it does in Mudlet (TBuffer settles the decoder per line).
+        // Triggers only run when the message buffer is flushed, so the packet is
+        // decoded and flushed a line at a time up to the last byte an encoding
+        // could read differently. Everything past that is ASCII, which every
+        // encoding offered here decodes alike, so an all-ASCII packet — and the
+        // ASCII tail of any other — still goes through in one piece.
+        let lastHighByte = sanitized.length - 1;
+        while (lastHighByte >= 0 && sanitized.charCodeAt(lastHighByte) < 0x80) lastHighByte--;
+        let start = 0;
+        for (let nl = sanitized.indexOf('\n'); nl !== -1 && nl < lastHighByte; nl = sanitized.indexOf('\n', start)) {
+            this.decodeAndAssemble(sanitized.substring(start, nl + 1), false, ts);
+            this.flushMessageBuffer();
+            start = nl + 1;
+        }
+        this.decodeAndAssemble(start === 0 ? sanitized : sanitized.substring(start), hasPrompt, ts);
+        this.flushMessageBuffer();
+    }
+
+    private decodeAndAssemble(sanitized: string, hasPrompt: boolean, ts: number): void {
         const decodedRaw = this.codec.decode(sanitized);
         // MSP in-band parsing: strip `!!SOUND(...)` / `!!MUSIC(...)` triplets
         // and dispatch them as events. Gated on mspEnabled because the tag
@@ -1231,7 +1262,6 @@ export class MudClient {
             }
             for (const cmd of commands) this.eventBus.emit('msp', cmd);
         }
-        const ts = typeof timestamp === 'number' ? timestamp : Date.now();
 
         if (debugFramesEnabled() && decoded.length > 0) {
             const endsWithNl = decoded.endsWith('\n');
@@ -1239,20 +1269,10 @@ export class MudClient {
             const head = decoded.slice(0, 40).replace(/\n/g, '\\n').replace(/\x1B/g, '\\e');
             // eslint-disable-next-line no-console
             console.debug(
-                `[mudlet.frame] bytes=${rawData.length} chars=${decoded.length} endsWithNl=${endsWithNl} hasPrompt=${hasPrompt}\n  head: ${JSON.stringify(head)}\n  tail: ${JSON.stringify(tail)}`,
+                `[mudlet.frame] bytes=${sanitized.length} chars=${decoded.length} endsWithNl=${endsWithNl} hasPrompt=${hasPrompt}\n  head: ${JSON.stringify(head)}\n  tail: ${JSON.stringify(tail)}`,
             );
         }
-        if (hasPrompt && debugGaEnabled()) {
-            const marker = processable.includes(TELNET_GA) ? 'GA' : 'EOR';
-            // eslint-disable-next-line no-console
-            console.debug(
-                `[mudlet.ga] prompt marker IAC ${marker} received` +
-                (this.assembler.gaDriver ? '' : ' — latching into GA-driven prompt mode'),
-            );
-        }
-
         this.assembler.feed(decoded, hasPrompt, ts);
-        this.flushMessageBuffer();
     }
 
     flushMessageBuffer(): void {

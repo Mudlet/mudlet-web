@@ -601,6 +601,11 @@ class ScriptingWindowsAPI {
         }
     }
 
+    /** Queue the sysUserWindowResizeEvent a freshly opened user window is owed. */
+    announceCreatedSize(id: string): void {
+        this.session.windows.announceCreatedSize(id);
+    }
+
     bringToFront(id: string): void {
         this.session.windows.bringToFront(id);
     }
@@ -1152,6 +1157,12 @@ export class ScriptingAPI {
      *  reveal timer would have fired on. */
     pumpHyperlinkReveals(): boolean {
         return pumpDelayedReveals();
+    }
+
+    /** Report the size of a user window just opened. Same reason again: the
+     *  runner blocks the turn that report was queued for. */
+    pumpCreatedWindowSizes(): boolean {
+        return this.session.windows.pumpCreatedSizes();
     }
 
     /** Mudlet `receiveMSP(text)`. Parses an MSP payload (`!!SOUND(...)` /
@@ -3940,15 +3951,16 @@ export class ScriptingAPI {
 
     /**
      * Mudlet `getTimestamp([window,] lineNumber)` — the wall-clock time the line
-     * entered the buffer, formatted "HH:MM:SS.mmm" (Mudlet's "hh:mm:ss.zzz").
-     * `lineNumber` is 1-based to match `getLines`; omit it for the current
-     * cursor line. Returns null when the window or line doesn't exist — the Lua
+     * entered the buffer, formatted "HH:MM:SS.mmm" (Mudlet's "hh:mm:ss.zzz"),
+     * or a blank of dashes for a line wrapping continued. `lineNumber` counts
+     * from 0 as getLineNumber() does, 0 itself refused (see
+     * Console.getLineTimestamp); omit it for the current cursor line. Returns null when the window or line doesn't exist — the Lua
      * binding maps that to Mudlet's `(nil, errMsg)` shape.
      */
     getTimestamp(lineNumber?: number, windowName?: string): string | null {
         if (!this.consoleExists(windowName)) return null;
         const ms = this.getConsole(windowName)?.getLineTimestamp(lineNumber) ?? null;
-        return ms == null ? null : formatLineTimestamp(ms);
+        return ms == null || typeof ms === 'string' ? ms : formatLineTimestamp(ms);
     }
 
     /**

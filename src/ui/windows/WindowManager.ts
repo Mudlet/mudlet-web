@@ -164,6 +164,8 @@ export class WindowManager {
     private portalHolding: HTMLDivElement | null = null;
     private readonly resizeObservers = new Map<string, ResizeObserver>();
     private readonly lastEmittedSize = new Map<string, { w: number; h: number }>();
+    /** User windows opened but not yet reported by {@link pumpCreatedSizes}. */
+    private readonly createdSizesDue = new Set<string>();
     /** Per-window last reported character grid (cols, rows) — used to gate
      *  sysConsoleSizeChanged so the event fires only on actual grid changes. */
     private readonly lastEmittedGrid = new Map<string, { cols: number; rows: number }>();
@@ -819,6 +821,18 @@ export class WindowManager {
         // Skip the initial 0×0 frame and any spurious zero-size entries
         // that happen during portal moves between dock/floating shells.
         if (w <= 0 && h <= 0) return;
+        this.emitWindowSize(id, w, h);
+        // Mudlet sysConsoleSizeChanged(name, columns, rows) — fires when
+        // the char-grid changes. cols is the wrap setting (falling back to
+        // an estimate from element width); rows is derived from element
+        // height. Both axes use the rendered monospace cell size so the
+        // event values match what scripts can use to lay out output.
+        this.emitConsoleGridIfChanged(id, w, h, element);
+    }
+
+    /** Raise sysWindowResizeEvent/sysUserWindowResizeEvent for `id` at w×h,
+     *  unless that is the size last reported for it. */
+    private emitWindowSize(id: string, w: number, h: number): void {
         const last = this.lastEmittedSize.get(id);
         const sizeChanged = !last || last.w !== w || last.h !== h;
         // Only record the size as "reported" once there's actually a listener
@@ -837,12 +851,40 @@ export class WindowManager {
             if (id === 'main') this.onRaiseEvent('sysWindowResizeEvent', [w, h]);
             else               this.onRaiseEvent('sysUserWindowResizeEvent', [w, h, id]);
         }
-        // Mudlet sysConsoleSizeChanged(name, columns, rows) — fires when
-        // the char-grid changes. cols is the wrap setting (falling back to
-        // an estimate from element width); rows is derived from element
-        // height. Both axes use the rendered monospace cell size so the
-        // event values match what scripts can use to lay out output.
-        this.emitConsoleGridIfChanged(id, w, h, element);
+    }
+
+    /**
+     * Mudlet raises sysUserWindowResizeEvent as a new user window is first laid
+     * out, so a handler registered before openUserWindow() hears the size the
+     * window arrives at. Here that report would wait for the panel to mount and
+     * its ResizeObserver to tick — which a script that blocks the event loop
+     * (a busted run, a pumpEvents() wait) never lets happen. So opening a window
+     * queues a report of its own, delivered on the next turn or by
+     * {@link pumpCreatedSizes}, whichever comes first. It carries the size
+     * getUserWindowSize() gives at that moment, the mounted box or the stored
+     * one, and the dedup in emitWindowSize keeps the observer's own first tick
+     * from repeating it.
+     */
+    announceCreatedSize(id: string): void {
+        this.createdSizesDue.add(id);
+        setTimeout(() => this.pumpCreatedSizes(), 0);
+    }
+
+    /** Deliver the reports {@link announceCreatedSize} queued. */
+    pumpCreatedSizes(): boolean {
+        if (this.createdSizesDue.size === 0 || !this.onRaiseEvent) return false;
+        const due = [...this.createdSizesDue];
+        this.createdSizesDue.clear();
+        for (const id of due) {
+            const element = this.viewports.get(id);
+            if (element) {
+                this.measureAndEmitResize(id, element);
+                continue;
+            }
+            const size = this.getSize(id);
+            if (size) this.emitWindowSize(id, Math.round(size.width), Math.round(size.height));
+        }
+        return true;
     }
 
     /** Measure one monospace cell (px) by probing `el` with its own inherited

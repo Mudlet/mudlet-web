@@ -21,7 +21,7 @@ export function installCursorBindings({ lua, api }: BindingContext): void {
     // the miss case; Bridge.lua re-shapes it into the documented multi-return.
     lua.global.set('__getCurrentLine', (win?: string) => api.getCurrentLine(win));
     // Mudlet `getTimestamp([console_name,] lineNumber)`. Optional leading
-    // window name; lineNumber is 1-based. Returns the formatted time string
+    // window name; lineNumber counts from 0 but 0 is refused. Returns the formatted time string
     // or false (miss) — Bridge.lua maps false to Mudlet's (nil, errMsg).
     lua.global.set('__getTimestamp', (a?: unknown, b?: unknown) => {
         if (typeof a === 'string') {
