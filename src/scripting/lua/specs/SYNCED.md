@@ -6,11 +6,11 @@ every failing spec is a genuine Mudlet Web↔Mudlet parity gap, and re-syncing i
 clean copy + diff.
 
 - Upstream: https://github.com/Mudlet/Mudlet/tree/development/src/mudlet-lua/tests
-- Synced from commit: `7383ed6c9b01d72d6e9677d456b8a2f6cb71b1ef` (2026-09-15)
+- Synced from commit: `40ca0b7e6b5976ecc2d19d8fe8957b867f9d0d0b` (2026-09-16)
 
 ## Files
 
-All 61 `*_spec.lua` files from Mudlet's tests directory are synced verbatim,
+All 63 `*_spec.lua` files from Mudlet's tests directory are synced verbatim,
 together with the `fixtures/` several of them read — a map to import, packages
 to install. A spec without its fixture fails on a missing file rather than on a
 parity gap, so the fixtures are as much part of the corpus as the specs.
