@@ -158,6 +158,34 @@ export class KeyEngine {
         return this.perm.filter(b => matchesEvent(b.key, b.modifiers, event));
     }
 
+    /**
+     * Which binding of this profile holds `key` + `modifiers` — Mudlet's
+     * `KeyUnit::firstMatch`, asked with a key rather than an event.
+     *
+     * What needs it is `addCommand`: a key binding is the one holder a
+     * command's shortcut cannot see, since it lives here and is matched from
+     * the command line's key handling rather than by any menu or widget, so a
+     * command placed on a binding's key takes the event and the binding simply
+     * stops firing. Temporary and permanent are searched alike (they are one
+     * list in Mudlet's key unit), and a temporary one answers with no name: it
+     * is named after its own id, which names nothing a player could go and look
+     * for.
+     */
+    holderOf(key: string, modifiers: string[]): { name: string; temporary: boolean } | null {
+        const same = (bindingKey: string, bindingMods: string[]): boolean =>
+            bindingKey === key
+            && bindingMods.length === modifiers.length
+            && bindingMods.every(m => modifiers.includes(m));
+        for (const t of this.temp.values()) {
+            if (!t.enabled || t.dead) continue;
+            if (same(t.key, t.modifiers)) return { name: '', temporary: true };
+        }
+        for (const binding of this.perm) {
+            if (same(binding.key, binding.modifiers)) return { name: binding.name, temporary: false };
+        }
+        return null;
+    }
+
     destroy(): void {
         this.temp.clear();
         this.perm = [];

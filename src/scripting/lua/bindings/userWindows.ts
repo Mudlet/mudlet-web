@@ -94,6 +94,7 @@ export function installUserWindowBindings({
         // Geyser.UserWindow:setDockPosition, so without it a package could
         // never move a panel out of the side it was born in.
         if (existed && area) api.windows.setDockArea(window, area);
+        else if (!existed) api.windows.announceCreatedSize(window);
         return true;
     });
     // Mudlet `openMapWidget([dockingArea | x, y [, w, h]]) → true`.

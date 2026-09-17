@@ -917,6 +917,12 @@ export class AnsiAwareBuffer {
      *  time is the line's timestamp. */
     timestamp = Date.now();
 
+    /** True for a line that wrapping split off the end of the one above it.
+     *  Mudlet marks those by giving them a blank timestamp rather than a time,
+     *  which is both what getTimestamp() hands back for them and how a later
+     *  wrapLine() knows to give them the hanging indent rather than the first. */
+    continuation = false;
+
     removeFromDom(): void {
         // The row, when the renderer registered one; otherwise whatever single
         // element it did register (mini-console/user-window renderers hand us

@@ -2,6 +2,7 @@ import { FormatState } from './FormatState';
 import { AnsiAwareBuffer } from './FormatState';
 import type { FormatStateSnapshot } from './FormatState';
 import { concealDelayedReveals } from './hyperlinkVisibility';
+import { codePointWidth, isPlainAscii, segmentCells } from './wcwidth';
 
 /** Longest run of characters one echo or insert may add to a line. Mudlet's
  *  `TBuffer::MAX_CHARACTERS_PER_ECHO`. */
@@ -625,16 +626,26 @@ export class Console {
 
     /**
      * Mudlet `getTimestamp(lineNumber)` — the wall-clock time (epoch ms) the
-     * line entered the buffer. `lineNumber` is 1-based to match `getLines`
-     * (Mudlet's timeBuffer reserves index 0); omit it to read the current
-     * cursor line. Returns null when the line is out of range or the buffer
-     * is empty. Formatting into Mudlet's "hh:mm:ss.zzz" string happens one
-     * layer up, in ScriptingAPI.
+     * line entered the buffer, or {@link BLANK_TIMESTAMP} for a line wrapping
+     * continued from the one above. `lineNumber` indexes the buffer as
+     * getLineNumber() does, from 0 — Mudlet reads `timeBuffer.at(lineNumber)`
+     * but refuses 0 — and the open line after the last complete one counts,
+     * having a time of its own. Omit it to read the current cursor line.
+     * Returns null when the line is out of range or the buffer is empty.
+     * Formatting into Mudlet's "hh:mm:ss.zzz" string happens one layer up, in
+     * ScriptingAPI.
      */
-    getLineTimestamp(lineNumber?: number): number | null {
-        const idx = lineNumber === undefined ? this.cursor : Math.trunc(lineNumber) - 1;
-        if (idx < 0) return null;
-        return this.history[idx]?.timestamp ?? null;
+    getLineTimestamp(lineNumber?: number): number | typeof BLANK_TIMESTAMP | null {
+        let line: AnsiAwareBuffer | undefined;
+        if (lineNumber === undefined) {
+            line = this.history[this.cursor];
+        } else {
+            const idx = Math.trunc(lineNumber);
+            if (!(idx >= 1)) return null;
+            line = idx === this.history.length && this.hasOpenLine ? this.partial : this.history[idx];
+        }
+        if (!line) return null;
+        return line.continuation ? BLANK_TIMESTAMP : line.timestamp;
     }
 
     /**
@@ -686,15 +697,7 @@ export class Console {
      */
     private toStoredLines(buf: AnsiAwareBuffer): AnsiAwareBuffer[] {
         if (this.wrapWidth <= 0) return [buf];
-        const breaks = wrapBreaks(buf.text, this.wrapWidth, this.wrapIndent, this.wrapHangingIndent);
-        if (breaks.length === 0 && this.wrapIndent <= 0) return [buf];
-        const hang = this.wrapHangingIndent > 0 ? ' '.repeat(this.wrapHangingIndent) : '';
-        for (let i = breaks.length - 1; i >= 0; i--) {
-            const at = breaks[i];
-            buf.insert(buf.text[at] === ' ' ? at + 1 : at, `\n${hang}`);
-        }
-        if (this.wrapIndent > 0) buf.insert(0, ' '.repeat(this.wrapIndent));
-        return buf.splitLines();
+        return wrapBuffer(buf, this.wrapWidth, this.wrapIndent, this.wrapHangingIndent) ?? [buf];
     }
 
     wrapLine(lineNumber: number, wrapAt = 0, indent = 0, hangingIndent = 0): boolean {
@@ -705,21 +708,8 @@ export class Console {
         const width = Math.trunc(wrapAt);
         if (!(width > 0)) { buf.rerender(); return true; }
 
-        const text = buf.text;
-        const breaks = wrapBreaks(text, width, indent, hangingIndent);
-        if (breaks.length === 0 && indent <= 0) { buf.rerender(); return true; }
-
-        // Applied back-to-front so each insertion leaves the earlier offsets
-        // valid. A break on a space keeps the space at the end of its line
-        // (Mudlet trims at the break; rejoining normalises it away either way).
-        const hang = hangingIndent > 0 ? ' '.repeat(hangingIndent) : '';
-        for (let i = breaks.length - 1; i >= 0; i--) {
-            const at = breaks[i];
-            buf.insert(text[at] === ' ' ? at + 1 : at, `\n${hang}`);
-        }
-        if (indent > 0) buf.insert(0, ' '.repeat(indent));
-
-        const lines = buf.splitLines();
+        const lines = wrapBuffer(buf, width, indent, hangingIndent);
+        if (!lines) { buf.rerender(); return true; }
         buf.removeFromDom();
         this.history.splice(idx, 1, ...lines);
         // The cursor tracked a line index that may have moved down.
@@ -728,25 +718,177 @@ export class Console {
     }
 }
 
+/** What getTimestamp() answers for a continued line — Mudlet's
+ *  `smBlankTimeStamp`, cut to the width of the times this client formats. */
+export const BLANK_TIMESTAMP = '------------';
+
 /**
- * Where a line has to break to fit `width` columns.
- *
- * Positions are on the ORIGINAL text: the indents shrink the usable width but
- * are not inserted until afterwards, so they are accounted for here rather than
- * by re-measuring after each edit. A word boundary is preferred, but a single
- * word longer than the width is split hard — otherwise it could never be placed.
+ * Split `buf` into the lines a console of `width` columns stores it as, or
+ * null when it needs no splitting. Mudlet's TBuffer::wrapLine: an indent as
+ * wide as the window is dropped rather than wrapping the text into single
+ * characters, the first line takes `indent` and the continuations
+ * `hangingIndent` (a line that is itself a continuation takes the latter
+ * throughout), and every continuation is marked as one.
  */
-function wrapBreaks(text: string, width: number, indent: number, hangingIndent: number): number[] {
-    const breaks: number[] = [];
-    let lineStart = 0;
-    let usable = Math.max(1, width - Math.max(0, indent));
-    while (text.length - lineStart > usable) {
-        const limit = lineStart + usable;
-        const space = text.lastIndexOf(' ', limit);
-        const at = space > lineStart ? space : limit;
-        breaks.push(at);
-        lineStart = text[at] === ' ' ? at + 1 : at;
-        usable = Math.max(1, width - Math.max(0, hangingIndent));
+function wrapBuffer(buf: AnsiAwareBuffer, width: number, indent: number, hangingIndent: number): AnsiAwareBuffer[] | null {
+    const firstIndent = indent > 0 && indent < width ? Math.trunc(indent) : 0;
+    const hang = hangingIndent > 0 && hangingIndent < width ? Math.trunc(hangingIndent) : 0;
+    const pieces = wrapInfo(buf.text, !buf.continuation, width, firstIndent, hang);
+    if (pieces.length === 0) return null;
+
+    // Back to front, so each edit leaves the earlier offsets valid. What lies
+    // between two pieces — the spaces a break dropped, or an embedded newline —
+    // becomes the line break and whatever indent the later piece is owed.
+    const indentFor = (piece: WrapPiece) =>
+        piece.needsIndent ? ' '.repeat(piece.isNewline ? firstIndent : hang) : '';
+    for (let i = pieces.length - 1; i >= 1; i--) {
+        buf.replace([pieces[i - 1].last, pieces[i].first], `\n${indentFor(pieces[i])}`);
     }
-    return breaks;
+    const lead = indentFor(pieces[0]);
+    if (lead) buf.insert(0, lead);
+
+    const lines = buf.splitLines();
+    // splitLines() has no line to give a trailing newline, so a piece that
+    // came out empty at the very end has to be put back by hand.
+    while (lines.length < pieces.length) lines.push(new AnsiAwareBuffer());
+    lines.forEach((line, i) => {
+        line.timestamp = buf.timestamp;
+        line.isPrompt = buf.isPrompt;
+        line.continuation = !pieces[i].isNewline;
+    });
+    return lines;
+}
+
+interface WrapPiece {
+    /** Starts a line of its own rather than continuing the one above. */
+    isNewline: boolean;
+    /** Gets the indent for its kind of line put in front of it. */
+    needsIndent: boolean;
+    first: number;
+    last: number;
+}
+
+/**
+ * Where `text` breaks to fit `maxWidth` columns — a port of Mudlet's
+ * TBuffer::getWrapInfo, so the answer has to agree with it piece for piece.
+ * Width is counted per grapheme in terminal columns, an east asian character
+ * taking two. A break falls at the last opportunity that fits: before a space
+ * (the run of spaces it lands in is then skipped rather than starting the next
+ * line), or wherever the line-break rules allow one, and a word longer than
+ * the whole width is broken hard. An empty answer means the line stays as it
+ * is — including a line that would only have been broken by its indent.
+ */
+function wrapInfo(text: string, isNewline: boolean, maxWidth: number, indent: number, hangingIndent: number): WrapPiece[] {
+    const output: WrapPiece[] = [];
+    if (text.length === 0) return output;
+    // Most lines are short printable ASCII, one column a character, and those
+    // need none of the grapheme work below.
+    if (text.length <= (isNewline ? maxWidth - indent : maxWidth) && text.length <= maxWidth && isPlainAscii(text)) {
+        return output;
+    }
+
+    // The grapheme starting at each offset: where it ends, and how wide it is.
+    const cellEnd = new Int32Array(text.length + 1).fill(-1);
+    const cellWidth = new Uint8Array(text.length + 1);
+    let offset = 0;
+    for (const cell of segmentCells(text)) {
+        cellEnd[offset] = offset + cell.text.length;
+        cellWidth[offset] = cell.width;
+        offset += cell.text.length;
+    }
+
+    let xPos = 0;
+    let totalWidth = 0;
+    let firstChar = 0;
+    let needsIndent = isNewline;
+    let hasNewline = false;
+    for (let index = 0; index < text.length;) {
+        const c = text[index];
+        // a continued line does not start with the spaces its break landed in
+        if (xPos === 0 && !isNewline && output.length > 0 && c === ' ') {
+            firstChar = ++index;
+            continue;
+        }
+        if (c === '\n') {
+            hasNewline = true;
+            output.push({ isNewline, needsIndent, first: firstChar, last: index });
+            firstChar = ++index;
+            isNewline = true;
+            needsIndent = false;
+            xPos = 0;
+            continue;
+        }
+        const isCellStart = cellEnd[index] > index;
+        const next = isCellStart ? cellEnd[index] : index + 1;
+        const charWidth = isCellStart ? cellWidth[index] : 1;
+        const indentationHere = isNewline ? indent : hangingIndent;
+        if (xPos + charWidth > maxWidth - (needsIndent ? indentationHere : 0)) {
+            if (isNewline) needsIndent = true;
+            const firstNonIndentChar = firstChar + (needsIndent ? 0 : indentationHere);
+            if (c !== ' ' && !isLineBreakAt(text, index, cellEnd)) {
+                const previous = previousLineBreak(text, index, cellEnd);
+                if (previous > firstNonIndentChar) index = previous;
+            }
+            if (index <= firstChar) {
+                // no room for even one grapheme: keep one on the line, or the
+                // scan would never move on
+                index = next > firstChar ? next : firstChar + 1;
+                totalWidth += charWidth;
+            }
+            output.push({ isNewline, needsIndent, first: firstChar, last: index });
+            isNewline = false;
+            needsIndent = true;
+            xPos = 0;
+            firstChar = index;
+            continue;
+        }
+        xPos += charWidth;
+        totalWidth += charWidth;
+        index = next;
+    }
+    if (totalWidth <= maxWidth && !hasNewline) return [];
+    if (output.length > 0) output.push({ isNewline, needsIndent: !isNewline, first: firstChar, last: text.length });
+    return output;
+}
+
+// East asian punctuation a line may not start with, and the kind it may not end
+// on — the few UAX #14 rules that decide where ideographic text can break.
+const NO_BREAK_BEFORE = new Set([...'、。，．：；！？）］｝〕〉》」』】〙〗〟ー々〻ぁぃぅぇぉっゃゅょゎゕゖァィゥェォッャュョヮヵヶ・…‥']);
+const NO_BREAK_AFTER = new Set([...'（［｛〔〈《「『【〘〖〝']);
+
+function codePointBefore(text: string, index: number): number {
+    const low = text.charCodeAt(index - 1);
+    if (index >= 2 && low >= 0xdc00 && low <= 0xdfff) {
+        const high = text.charCodeAt(index - 2);
+        if (high >= 0xd800 && high <= 0xdbff) return text.codePointAt(index - 2)!;
+    }
+    return low;
+}
+
+/**
+ * Whether a line may break before `index` — what Mudlet asks
+ * QTextBoundaryFinder::Line. The rules that matter for game text: after a run
+ * of spaces, after a hyphen inside a word, and between east asian characters,
+ * short of the punctuation that has to stay with its neighbour.
+ */
+function isLineBreakAt(text: string, index: number, cellEnd: Int32Array): boolean {
+    if (index <= 0 || index >= text.length || cellEnd[index] <= index) return false;
+    const current = text.codePointAt(index)!;
+    const previous = codePointBefore(text, index);
+    if (current === 0x20) return false;
+    if (previous === 0x20) return true;
+    if (previous === 0x2d) return /\p{L}/u.test(String.fromCodePoint(current));
+    if (codePointWidth(current) === 2 || codePointWidth(previous) === 2) {
+        return !NO_BREAK_BEFORE.has(String.fromCodePoint(current))
+            && !NO_BREAK_AFTER.has(String.fromCodePoint(previous));
+    }
+    return false;
+}
+
+/** The last line-break opportunity before `index`, or 0 for none. */
+function previousLineBreak(text: string, index: number, cellEnd: Int32Array): number {
+    for (let i = index - 1; i > 0; i--) {
+        if (isLineBreakAt(text, i, cellEnd)) return i;
+    }
+    return 0;
 }

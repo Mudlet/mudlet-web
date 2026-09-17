@@ -3398,11 +3398,15 @@ export class ScriptingEngine implements EngineHost {
         // modifier is only read when there are more than four arguments). Testing
         // the modifier instead meant permGroup(name, "key") produced a keybind.
         //
-        // A folder also starts INACTIVE, as setIsActive(keycode != -1) has it.
+        //
+        // Folders and keys alike start ACTIVE. Mudlet used to create the folder
+        // inactive (the same -1 read as "inactive" too), and since a disabled
+        // folder is never descended into, every key permGroup put inside it
+        // silently never fired (Mudlet #10764, fixed in #10802).
         const isGroup = Number(key) === -1 || (modifier < 0 && (!key || key === ''));
         const uuid = store.addKeybinding(this.connectionId, {
             name,
-            enabled: !isGroup,
+            enabled: true,
             isGroup,
             parentId,
             key: isGroup ? '' : keyCodeFromMudletKey(key),
@@ -3784,22 +3788,22 @@ export class ScriptingEngine implements EngineHost {
         // matching Mudlet's AliasUnit::processDataStream. Persists between inputs
         // so the stock "Repeat Last Command" key (`send(command)`) works.
         this.runtimes.lua?.setCommand(text);
+        // Every alias the command matches fires, not just the first: Mudlet's
+        // pass walks the whole unit and matches each active alias in turn, so a
+        // command two aliases claim runs both of them. The command is consumed
+        // if any of them matched.
+        //
         // JS temp aliases
-        if (this.aliasEngine.processTemp(text)) {
-            this.api.flushOutput();
-            return true;
-        }
+        let consumed = this.aliasEngine.processTemp(text);
         // Permanent aliases
-        const permMatch = this.aliasEngine.matchPerm(text);
-        if (permMatch) {
+        for (const permMatch of this.aliasEngine.matchAllPerm(text)) {
             // matches[1] is the matched portion (Mudlet semantics), not the
             // whole input — see the perm-trigger note above (issue #4).
             this.executePermAlias(permMatch.alias, [permMatch.matchedText, ...permMatch.captures], permMatch.named);
-            this.api.flushOutput();
-            return true;
+            consumed = true;
         }
         this.api.flushOutput();
-        return false;
+        return consumed;
     }
 
     /** Process a keyboard event. Returns true if a keybinding consumed it. */

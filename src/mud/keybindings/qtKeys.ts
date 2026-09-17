@@ -207,3 +207,55 @@ export function domCodeToQtKey(code: string): number | undefined {
     if (numpad) return numpad[1].charCodeAt(0);
     return DOM_CODE_TO_QT_KEY[code];
 }
+
+/**
+ * The names Qt's `QKeySequence` gives the keys that are more than one character
+ * long, and the DOM `KeyboardEvent.code` each one means — so a shortcut written
+ * the way Qt writes one ("Alt+F9", "Ctrl+Left") can be compared against a key
+ * binding, which is stored as a DOM code.
+ *
+ * `null` where Qt can name a key the browser has no code for: no binding can
+ * hold one, so nothing can clash over it. Function keys and the printable
+ * single characters are not here — they go through {@link keyNameToDomCode}'s
+ * own arms, which reach the ASCII half of QT_KEY_TO_DOM_CODE above.
+ */
+const KEY_NAME_TO_DOM_CODE: Record<string, string | null> = {
+    space: 'Space', tab: 'Tab', backtab: 'Tab', backspace: 'Backspace',
+    return: 'Enter', enter: 'NumpadEnter',
+    ins: 'Insert', insert: 'Insert', del: 'Delete', delete: 'Delete',
+    pause: 'Pause', print: 'PrintScreen', sysreq: null, clear: 'NumLock',
+    home: 'Home', end: 'End',
+    left: 'ArrowLeft', up: 'ArrowUp', right: 'ArrowRight', down: 'ArrowDown',
+    pgup: 'PageUp', pageup: 'PageUp', pgdown: 'PageDown', pagedown: 'PageDown',
+    capslock: 'CapsLock', numlock: 'NumLock', scrolllock: 'ScrollLock',
+    esc: 'Escape', escape: 'Escape', menu: 'ContextMenu', help: 'Help',
+    back: 'BrowserBack', forward: 'BrowserForward', stop: 'BrowserStop',
+    refresh: 'BrowserRefresh',
+    volumedown: 'AudioVolumeDown', volumemute: 'AudioVolumeMute', volumeup: 'AudioVolumeUp',
+    mediaplay: 'MediaPlayPause', mediastop: 'MediaStop',
+    mediaprevious: 'MediaTrackPrevious', medianext: 'MediaTrackNext',
+    mediarecord: null, mediapause: null,
+};
+
+/** Every key name a Qt key sequence can spell out — what a shortcut parser has
+ *  to recognise as the key half of a step. */
+export const QT_KEY_NAMES: ReadonlySet<string> = new Set(Object.keys(KEY_NAME_TO_DOM_CODE));
+
+/**
+ * One key of a Qt key sequence ("F9", "Left", ",", "k") as the DOM
+ * `KeyboardEvent.code` a key binding stores it under. Null when the name is not
+ * a key Qt would read, or names one the browser cannot report.
+ */
+export function keyNameToDomCode(name: string): string | null {
+    const lower = name.toLowerCase();
+    if (lower in KEY_NAME_TO_DOM_CODE) return KEY_NAME_TO_DOM_CODE[lower];
+    const fkey = /^f([1-9]|[12]\d|3[0-5])$/.exec(lower);
+    if (fkey) return Number(fkey[1]) <= 24 ? `F${fkey[1]}` : null;
+    if (name.length !== 1) return null;
+    // A single character IS its Qt key code in the ASCII range, which is how
+    // QT_KEY_TO_DOM_CODE spells the punctuation keys; letters are upper-cased
+    // because Qt::Key_A is 'A'.
+    const qt = name.toUpperCase().charCodeAt(0);
+    const code = qtKeyToDomCode(qt);
+    return code === String(qt) ? null : code;
+}

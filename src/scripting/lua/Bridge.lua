@@ -6191,9 +6191,15 @@ do
     -- are not valid UTF-8 — which is all the wasmoon bridge will carry. Sent
     -- plain, "\229\254\13" reached JS as a single U+5F8D and the encoding
     -- specs were testing the decoder against data they had never sent.
-    feedTelnet = function(data, ...)
-        data = __mudlet_check_string(data, "feedTelnet", 1, "data")
-        local err = __feedTelnet(__mudlet_armor(data), ...)
+    -- The refusal names argument #1 as Mudlet's own does, and on ONE line: a
+    -- raised error is one string, and the places that carry it onwards work a
+    -- line at a time, so a newline inside one hides everything after it
+    -- (upstream #10807, which is where the wording comes from).
+    feedTelnet = function(...)
+        local data = ...
+        data = __mudlet_check_string(data, "feedTelnet", 1, "imitation game server data",
+            select('#', ...) >= 1)
+        local err = __feedTelnet(__mudlet_armor(data), select(2, ...))
         if err ~= nil then return nil, err end
         return true
     end
@@ -7062,6 +7068,84 @@ do
         return out
     end
 
+    -- ── What may go on an IRC wire ─────────────────────────────────────────
+    -- A CR or an LF ends an IRC command and a NUL may not appear in one at
+    -- all, so text holding any of them cannot be sent as it stands: the server
+    -- reads a second, caller-chosen command out of a single send. The realistic
+    -- caller here is a script relaying what a game server said to a channel,
+    -- which would hand the game the choice of command (upstream #10770).
+    --
+    -- Refused rather than stripped: a stripped message is not the one the
+    -- caller asked to send and nothing would say so, whereas a refusal leaves
+    -- the caller holding the text to split itself, which is what the protocol
+    -- wants anyway. The formatting codes an IRC message may legitimately carry
+    -- (bold, colour, the CTCP delimiter) are left alone — only what the line
+    -- protocol itself forbids is refused.
+    local function breaksIrcLine(text)
+        return text:find("[\r\n%z]") ~= nil
+    end
+
+    -- A nick and a channel name are each a single IRC parameter, and a
+    -- parameter ends at the first space.
+    local function hasSpace(text)
+        return text:find("%s") ~= nil
+    end
+
+    -- A refusal that quotes the text it is refusing must not break its own line
+    -- doing it, and a game server can make that text arbitrarily long.
+    local function escapedForError(text)
+        local escaped = (text:gsub("%z", "\\0"):gsub("\r", "\\r"):gsub("\n", "\\n"))
+        if #escaped > 40 then escaped = escaped:sub(1, 40) .. "..." end
+        return escaped
+    end
+
+    -- dlgIRC::validateMsgArguments: what goes out is one command whose
+    -- parameters are separated by spaces and ended by a CR LF, so either
+    -- argument carrying one of those separators makes the server read more than
+    -- was meant. Answers (true) or (false, reason).
+    local function validateMsgArguments(target, message)
+        if target == "" then
+            return false, "no target given, name the channel or the nick to send the message to"
+        end
+        if breaksIrcLine(target) then
+            return false, 'target "' .. escapedForError(target)
+                .. '" must not contain a line break or a null character'
+        end
+        -- a comma-separated list of targets is still one PRIVMSG in the
+        -- protocol, so it is allowed — but every name in that list has to be a
+        -- name
+        for name in (target .. ","):gmatch("([^,]*),") do
+            if name == "" then
+                return false, 'target "' .. escapedForError(target) .. '" has an empty name in its list'
+            end
+            if hasSpace(name) then
+                return false, 'target "' .. escapedForError(name)
+                    .. '" must be a channel or a nick name, which holds no spaces'
+            end
+            if name:sub(1, 1) == ":" then
+                return false, 'target "' .. escapedForError(name) .. '" must not start with a colon'
+            end
+        end
+        if message == "" then
+            return false, "no message given to send"
+        end
+        if breaksIrcLine(message) then
+            return false, 'message "' .. escapedForError(message)
+                .. '" must not contain a line break or a null character'
+        end
+        return true
+    end
+
+    -- dlgIRC::validateIrcPassword: this goes out as the trailing parameter of
+    -- "PASS :<password>", so an injected line could hold spaces too. The
+    -- password itself is never quoted back.
+    local function validateIrcPassword(password)
+        if breaksIrcLine(password) then
+            return false, "password must not contain a line break or a null character"
+        end
+        return true
+    end
+
     -- The one genuinely unavailable half: there is no client, so nothing is
     -- connected and nothing can be restarted or sent. Each says so the way
     -- Mudlet does when its own client isn't up.
@@ -7079,6 +7163,11 @@ do
     function sendIrc(target, message)
         target = __mudlet_check_string(target, "sendIrc", 1, "target")
         message = __mudlet_check_string(message, "sendIrc", 2, "message")
+        -- Judged before anything else happens, as Mudlet judges it before the
+        -- call can bring an IRC client into being: a send that cannot go out
+        -- is refused rather than half-made.
+        local ok, why = validateMsgArguments(target, message)
+        if not ok then return nil, "sendIrc: " .. why end
         _rawSendIrc(target, message)
         return false, "no client active"
     end
@@ -7098,6 +7187,14 @@ do
     function setIrcNick(nick)
         nick = __mudlet_check_string(nick, "setIrcNick", 1, "nick")
         if nick == "" then return nil, "nick must not be empty" end
+        -- What is stored here goes on the wire as "NICK <nick>" when the client
+        -- registers, and only the first space-separated word of it is taken —
+        -- which leaves a line break inside that word free to end the NICK and
+        -- start a command of the storer's choosing.
+        if breaksIrcLine(nick) or hasSpace(nick) then
+            return nil, 'unable to save nick name, reason: nick name "' .. escapedForError(nick)
+                .. '" must be a single word, without a line break or a null character'
+        end
         setConfig("ircNick", nick)
         return true
     end
@@ -7137,6 +7234,15 @@ do
                     .. type(password) .. "!)", 2)
             end
             password = secret
+        end
+        -- Everything that can be judged without touching the profile is judged
+        -- here, before the first write: setIrcServer stores either all of what
+        -- it was given or none of it, and a password refused after the host and
+        -- port had been written would leave the new server address paired with
+        -- the old credential.
+        if passwordGiven then
+            local ok, why = validateIrcPassword(password)
+            if not ok then return nil, "unable to save password, reason: " .. why end
         end
         setConfig("ircHost", hostName)
         setConfig("ircPort", port)
@@ -8070,8 +8176,26 @@ do
         return v
     end
 
+    -- Mudlet (#10809) refuses a word the ".dic" file cannot give back as itself:
+    -- a blank word, a line break, a tab or "/" (hunspell reads those as the
+    -- start of the morphological description and the affix flags), or leading
+    -- whitespace. A trailing space does survive, but is refused for not being a
+    -- word.
+    local function storableWord(w)
+        return w ~= "" and not w:find("^%s") and not w:find("%s$")
+            and not w:find("[\n\r\t/]")
+    end
+
+    local function unstorableWordMessage(w)
+        return 'the word "' .. w .. '" cannot be stored in the user dictionary, it must have some text in it, '
+            .. 'fit on a single line, not start or end with whitespace, and contain no tab or "/" character'
+    end
+
     function addWordToDictionary(word)
         local w = checkWord("addWordToDictionary", word)
+        if not storableWord(w) then
+            return nil, unstorableWordMessage(w)
+        end
         local words, set = readDict()
         if set[w] then
             return nil, 'the word "' .. w .. '" already seems to be in the user dictionary'
@@ -8086,6 +8210,11 @@ do
         local w = checkWord("removeWordFromDictionary", word)
         local words, set = readDict()
         if not set[w] then
+            -- Removal itself stays permissive, so a word an older build stored
+            -- can still be taken out; only the reason it is missing changes.
+            if not storableWord(w) then
+                return nil, unstorableWordMessage(w)
+            end
             return nil, 'the word "' .. w .. '" does not seem to be in the user dictionary'
         end
         local kept = {}
