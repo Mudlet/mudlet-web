@@ -48,29 +48,53 @@ function matchAllCaptures(input: string, re: RegExp): { all: string[]; index: nu
 export class AliasEngine extends PatternEngine<AliasNode> {
     // ── Temp aliases (session-scoped, created by scripts) ─────────────────────
 
-    /** Returns true and fires the first matching temp alias. Stops at first match. */
+    /**
+     * Fire EVERY matching temp alias, and report whether any did.
+     *
+     * Not "the first one": `AliasUnit::processDataStream` walks the whole unit
+     * and calls `match()` on each active alias, so two aliases on one command
+     * both run — which is how a package can add its own handling of a command
+     * the player already has an alias for, and what the corpus pins by putting
+     * two aliases on one pattern and expecting both to see it.
+     *
+     * The walk is over a snapshot, as Mudlet's is (issue #4297): an alias's
+     * script may create or kill one, and mutating the map underneath the
+     * iterator is precisely what the deferred reap exists to avoid. One killed
+     * by an earlier fire is skipped rather than run, which is what `isActive()`
+     * decides on the desktop side.
+     */
     processTemp(input: string): boolean {
-        for (const { pattern, fn } of this.temp.values()) {
+        let fired = false;
+        for (const [id, { pattern }] of [...this.temp]) {
             // A null pattern is an alias that exists but can never match — see
             // PatternEngine.addTemp.
             if (!pattern) continue;
             const hit = matchAllCaptures(input, pattern);
-            if (hit) { fn(asMatchArray(hit.all, hit.index, input, hit.named)); return true; }
+            if (!hit) continue;
+            // Re-read rather than trusting the snapshot's entry: killAlias
+            // unsubscribes, and an alias taken out while this pass was running
+            // must not still fire.
+            const live = this.temp.get(id);
+            if (!live) continue;
+            live.fn(asMatchArray(hit.all, hit.index, input, hit.named));
+            fired = true;
         }
-        return false;
+        return fired;
     }
 
     // ── Perm aliases (persisted, visible in UI) ────────────────────────────────
 
-    /** Returns the first matching perm alias, or null. `matchedText` is the
-     *  portion of `input` the regex actually matched (Mudlet's `matches[1]`),
-     *  which differs from the whole input for an unanchored pattern. */
-    matchPerm(input: string): { alias: AliasNode; matchedText: string; captures: string[]; named: Record<string, string> } | null {
+    /** Every perm alias the input matches, in tree order — all of them fire,
+     *  for the reason {@link processTemp} gives. `matchedText` is the portion of
+     *  `input` the regex actually matched (Mudlet's `matches[1]`), which differs
+     *  from the whole input for an unanchored pattern. */
+    matchAllPerm(input: string): { alias: AliasNode; matchedText: string; captures: string[]; named: Record<string, string> }[] {
+        const hits: { alias: AliasNode; matchedText: string; captures: string[]; named: Record<string, string> }[] = [];
         for (const { item, re } of this.permCompiled) {
             const hit = matchAllCaptures(input, re);
-            if (hit) return { alias: item, matchedText: hit.all[0], captures: hit.all.slice(1), named: hit.named };
+            if (hit) hits.push({ alias: item, matchedText: hit.all[0], captures: hit.all.slice(1), named: hit.named });
         }
-        return null;
+        return hits;
     }
 }
 

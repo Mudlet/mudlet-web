@@ -8,7 +8,9 @@ import { describeThrown } from '../../../utils/describeThrown';
  * than with the console: raising a script error the editor can attribute, and
  * expanding an alias without executing it.
  */
-export function installDiagnosticsBindings({ lua, api }: BindingContext): void {
+export function installDiagnosticsBindings(
+    { lua, api, pushNestedDispatchState, popNestedDispatchState }: BindingContext,
+): void {
     // ── Error / debug ─────────────────────────────────────────────────────
     // showHandlerError is called by Other.lua's dispatchEventToFunctions when
     // a handler throws — it's a C++ function in Mudlet, bridged here.
@@ -38,9 +40,25 @@ export function installDiagnosticsBindings({ lua, api }: BindingContext): void {
     // and only honours an explicit boolean 2nd arg. The command is echoed
     // in the main window the same way a typed-in alias would be. Passing
     // `false` opts out. Returns true once the expansion is dispatched.
+    //
+    // The pass this starts sets `command` and the capture globals for the
+    // scripts IT runs, so whatever the calling script was given is parked for
+    // the duration and handed back — an alias or trigger script would otherwise
+    // resume holding the nested command and an emptied `matches` table, the
+    // full match included (Mudlet's TLuaInterpreter::expandAlias, upstream
+    // #10799). It sits here, at the only Lua-reachable way to begin an alias
+    // pass, rather than around the dispatch itself: that covers every
+    // script-initiated nesting (alias, trigger, timer, event handler) while
+    // leaving the top-level path alone, where a command the player typed is
+    // meant to leave `command` holding it.
     lua.global.set('expandAlias', (text: unknown, echo?: unknown) => {
-        api.expandAlias(String(text ?? ''), echo == null ? true : !!echo);
-        api.flushOutput();
+        const depth = pushNestedDispatchState();
+        try {
+            api.expandAlias(String(text ?? ''), echo == null ? true : !!echo);
+            api.flushOutput();
+        } finally {
+            popNestedDispatchState(depth);
+        }
         return true;
     });
     // Mudlet sendCmdLine([cmdLineName,] text) stages text into the command

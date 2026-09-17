@@ -1,5 +1,6 @@
+import { LuaType } from 'wasmoon-lua5.1';
 import type { GlobalEventChannel } from '../../GlobalEventChannel';
-import type { BindingContext } from './context';
+import type { BindingContext, LuaState } from './context';
 
 /**
  * Session-level introspection and event raising: stopwatches, the console
@@ -15,7 +16,7 @@ import type { BindingContext } from './context';
  * name, neither of which belongs in this module.
  */
 export function installSessionBindings(
-    { lua, api, emitEvent }: BindingContext,
+    { lua, api, emitEvent, registerRawGlobal }: BindingContext,
     globalEvents: GlobalEventChannel,
 ): void {
     // Mudlet getWindowsCodepage() → active ANSI code page string. The browser
@@ -58,10 +59,29 @@ export function installSessionBindings(
         return api.stopwatches.start(arg, resetAndRestart);
     });
     // stopStopWatch / getStopWatchTime return elapsed seconds (false on miss).
-    lua.global.set('stopStopWatch', (a: unknown) =>
-        api.stopwatches.stop(resolveWatchArg(a)) ?? false);
-    lua.global.set('getStopWatchTime', (a: unknown) =>
-        api.stopwatches.getTime(resolveWatchArg(a)) ?? false);
+    //
+    // Raw-marshalled, unlike the rest of the family: wasmoon pushes an integral
+    // JS number with lua_pushinteger, and lua_Integer is 32 bits in this wasm
+    // build, so a whole-numbered elapsed time past ~2.1e9 s arrived in Lua as
+    // garbage of whatever sign the wraparound produced (1e12 s came back as
+    // -727379968). A stopwatch holds far more than that on purpose — see
+    // MAX_STOPWATCH_MS — and pushing the double directly is what carries it.
+    const pushWatchTime = (L: LuaState, value: number | string | null): number => {
+        if (value === null) lua.global.luaApi.lua_pushboolean(L, 0);
+        else if (typeof value === 'string') lua.global.luaApi.lua_pushstring(L, value);
+        else lua.global.luaApi.lua_pushnumber(L, value);
+        return 1;
+    };
+    // The subject is read off the stack rather than through wasmoon: a raw
+    // lua_CFunction gets no converted arguments.
+    const watchArg = (L: LuaState): number | string =>
+        resolveWatchArg(lua.global.luaApi.lua_type(L, 1) === LuaType.String
+            ? lua.global.luaApi.lua_tolstring(L, 1, null)
+            : lua.global.luaApi.lua_tonumber(L, 1));
+    registerRawGlobal('stopStopWatch', (L) =>
+        pushWatchTime(L, api.stopwatches.stop(watchArg(L))));
+    registerRawGlobal('getStopWatchTime', (L) =>
+        pushWatchTime(L, api.stopwatches.getTime(watchArg(L))));
     lua.global.set('resetStopWatch', (a: unknown) =>
         api.stopwatches.reset(resolveWatchArg(a)));
     lua.global.set('adjustStopWatch', (a: unknown, b: unknown) =>

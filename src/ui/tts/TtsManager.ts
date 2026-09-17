@@ -105,7 +105,11 @@ export class TtsManager {
         if (at < 0) at = 0;
         if (at > this.pending.length) at = this.pending.length;
         this.pending.splice(at, 0, clean);
-        this.emit('ttsSpeechQueued', [clean, at]);
+        // The 1-based position the rest of the queue API takes — ttsGetQueue()
+        // and ttsClearQueue() both count from one, so a handler can hand the
+        // number it is given straight back to them. It is the CLAMPED position
+        // rather than the index asked for (upstream #10805).
+        this.emit('ttsSpeechQueued', [clean, at + 1]);
         if (this.current === null) this.advance();
     }
 

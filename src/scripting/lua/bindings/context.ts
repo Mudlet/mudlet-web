@@ -61,6 +61,12 @@ export interface BindingContext {
     /** Raise a Mudlet event on the Lua side (deferred if a dispatch is live). */
     emitEvent(name: string, args: unknown[]): void;
 
+    /** Park the dispatch state (`command`, `matches`, …) the calling script is
+     *  holding before running an alias pass of its own, and hand it back at the
+     *  depth the push answered with. See LuaRuntime.pushNestedDispatchState. */
+    pushNestedDispatchState(): number;
+    popNestedDispatchState(depth: number): void;
+
     /** This profile's virtual filesystem, or null before one is mounted.
      *  Never reassigned after the runtime is constructed, so a plain reference
      *  is safe here. */

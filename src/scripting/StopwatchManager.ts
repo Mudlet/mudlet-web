@@ -81,6 +81,20 @@ const MS_PER_HOUR = 3_600_000;
 const MS_PER_MIN = 60_000;
 const MS_PER_SEC = 1000;
 
+/**
+ * How much time a stopwatch can hold, in either direction — Mudlet's
+ * `stopWatch::csmMaximumMilliSeconds`. A little under 31,700 years, which is
+ * past any use a stopwatch has and well inside what a double counts exactly, so
+ * no arithmetic on a stopwatch's time can run off the end of the range and land
+ * on a time of the opposite sign. Time reaching the bound is clamped to it; an
+ * adjustment asking for more than the whole range outright is refused instead
+ * of quietly flattened (upstream #10793).
+ */
+const MAX_STOPWATCH_MS = 1_000_000_000_000_000;
+
+const clampToRange = (ms: number): number =>
+    Math.min(MAX_STOPWATCH_MS, Math.max(-MAX_STOPWATCH_MS, ms));
+
 /** Decompose signed milliseconds into Mudlet's day/hour/minute/second table. */
 function breakDown(ms: number): BrokenDownTime {
     const decimalSeconds = ms / 1000;
@@ -104,8 +118,11 @@ export class StopwatchManager {
         return Date.now();
     }
 
+    // Clamped, because a stopwatch adjusted close to the end of the range runs
+    // out of it as time passes — so this is what a RUNNING one reports, not
+    // only what an adjustment stores.
     private elapsedMs(w: Stopwatch): number {
-        return w.accumulatedMs + (w.running ? this.now() - w.startEpochMs : 0);
+        return clampToRange(w.accumulatedMs + (w.running ? this.now() - w.startEpochMs : 0));
     }
 
     /**
@@ -225,7 +242,9 @@ export class StopwatchManager {
         const w = this.resolve(arg);
         if (!w) return null;
         if (!w.running) return `${this.describe(w)} was already stopped`;
-        w.accumulatedMs += this.now() - w.startEpochMs;
+        // Read while it still counts as running, so the stored time is the
+        // clamped one elapsedMs reports rather than an unbounded sum.
+        w.accumulatedMs = this.elapsedMs(w);
         w.running = false;
         if (w.persistent) this.persist();
         return this.elapsedMs(w) / 1000;
@@ -285,11 +304,37 @@ export class StopwatchManager {
         return true;
     }
 
-    /** Mudlet adjustStopWatch — add `seconds` (may be negative) to the elapsed time. */
-    adjust(arg: number | string, seconds: number): boolean {
+    /**
+     * Mudlet `adjustStopWatch` — add `seconds` (may be negative) to the elapsed
+     * time. Time that accumulates past the end of the range stops there; an
+     * adjustment asking for more than the whole range is refused with the
+     * reason, as every other out-of-range stopwatch argument is.
+     *
+     * It is the MILLISECONDS the adjustment rounds to that are bounded, since
+     * that is what a stopwatch keeps its time in, and the comparison is written
+     * so that a NaN or an infinity fails it too.
+     */
+    adjust(arg: number | string, seconds: number): boolean | string {
         const w = this.resolve(arg);
-        if (!w || !Number.isFinite(seconds)) return false;
-        w.accumulatedMs += Math.round(seconds * 1000);
+        // false is "no such stopwatch" — the guard in Bridge.lua phrases that
+        // miss itself, and a string is a refusal it passes through.
+        if (!w) return false;
+        const milliSeconds = Math.round(seconds * 1000);
+        if (!(milliSeconds >= -MAX_STOPWATCH_MS && milliSeconds <= MAX_STOPWATCH_MS)) {
+            const limit = MAX_STOPWATCH_MS / MS_PER_SEC;
+            return `modification in seconds must be a finite number from ${-limit} to ${limit}, got ${seconds}`;
+        }
+        if (w.running) {
+            // A running stopwatch measures from an effective start time, so the
+            // shift goes through the total elapsed time: moving that start time
+            // by the adjustment instead would carry it PAST the end of the
+            // range rather than stopping at it.
+            const now = this.now();
+            w.accumulatedMs = clampToRange(this.elapsedMs(w) + milliSeconds);
+            w.startEpochMs = now;
+        } else {
+            w.accumulatedMs = clampToRange(w.accumulatedMs + milliSeconds);
+        }
         if (w.persistent) this.persist();
         return true;
     }
