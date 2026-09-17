@@ -1,5 +1,5 @@
 import type { BindingContext } from './context';
-import { shortcutProblemMessage } from '../../../ui/commands/keySequence';
+import { shortcutAsBinding, shortcutProblemMessage } from '../../../ui/commands/keySequence';
 import { mxpColor } from '../../../mud/text/colorParsers';
 import type { CommandSurface } from '../../../ui/commands/addonCommands';
 
@@ -44,11 +44,26 @@ export function installCommandBindings({ lua, api }: BindingContext): void {
 
         const badSequence = shortcutProblemMessage(keys);
         if (badSequence) return badSequence;
+        // Only a single-step sequence can be what a key binding holds — see
+        // shortcutAsBinding.
+        const keyBinding = shortcutAsBinding(keys);
 
         // Two things on one key is not a tie Qt breaks — it disables both — so
         // the second asker is refused and told who to ask about.
         const holder = registry.holderOf(keys);
         if (holder) return `the shortcut "${keys}" is already taken by "${holder}"`;
+
+        // The profile's own key bindings are the holder none of that can see:
+        // they live in the key unit and are matched from the command line's key
+        // handling, so a command placed over one gets the key event first and
+        // the binding silently stops firing — the package was told its command
+        // went on fine (upstream #10757).
+        const binding = keyBinding && api.keys.holderOf(keyBinding.code, keyBinding.modifiers);
+        if (binding) {
+            return binding.name
+                ? `the shortcut "${keys}" is already taken by the "${binding.name}" key binding`
+                : `the shortcut "${keys}" is already taken by a key binding in this profile`;
+        }
 
         return registry.add({
             name: String(name ?? ''),

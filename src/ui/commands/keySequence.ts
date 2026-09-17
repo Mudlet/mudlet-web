@@ -21,20 +21,27 @@
  * produces — is the steps it names and not one more of nothing.
  */
 
+import { QT_KEY_NAMES, keyNameToDomCode } from '../../mud/keybindings/qtKeys';
+
 /** Qt's QKeySequence holds this many steps and silently drops the rest. */
 export const MAX_STEPS = 4;
 
-const MODIFIERS = new Set(['ctrl', 'alt', 'shift', 'meta', 'cmd', 'command', 'option', 'control']);
+/** Every modifier word a step can carry, and what each means to a key binding
+ *  — whose modifiers are the {ctrl,shift,alt,meta} names a KeyboardEvent
+ *  reports. */
+const MODIFIER_NAMES: Record<string, string> = {
+    ctrl: 'ctrl', control: 'ctrl',
+    alt: 'alt', option: 'alt',
+    shift: 'shift',
+    meta: 'meta', cmd: 'meta', command: 'meta',
+};
+
+const MODIFIERS = new Set(Object.keys(MODIFIER_NAMES));
 
 /** Key names Qt knows that are more than one character long. Function keys are
- *  matched separately, being open-ended. */
-const NAMED_KEYS = new Set([
-    'space', 'tab', 'backtab', 'backspace', 'return', 'enter', 'ins', 'insert', 'del', 'delete',
-    'pause', 'print', 'sysreq', 'clear', 'home', 'end', 'left', 'up', 'right', 'down',
-    'pgup', 'pageup', 'pgdown', 'pagedown', 'capslock', 'numlock', 'scrolllock', 'esc', 'escape',
-    'menu', 'help', 'back', 'forward', 'stop', 'refresh', 'volumedown', 'volumemute', 'volumeup',
-    'mediaplay', 'mediastop', 'mediaprevious', 'medianext', 'mediarecord', 'mediapause',
-]);
+ *  matched separately, being open-ended. Shared with the Qt→DOM translation,
+ *  which has to spell the same set (see qtKeys.KEY_NAME_TO_DOM_CODE). */
+const NAMED_KEYS = QT_KEY_NAMES;
 
 export interface SequenceProblem {
     /** 'length' when the sequence has more steps than Qt can hold, 'key' when a
@@ -103,6 +110,33 @@ export function parseKeySequence(shortcut: string): { steps: string[] } | { prob
 
     if (steps.length > MAX_STEPS) return { problem: { kind: 'length' } };
     return { steps };
+}
+
+/**
+ * A shortcut as a key binding would hold it: one DOM `KeyboardEvent.code` plus
+ * the modifiers pressed with it.
+ *
+ * Null for anything a binding cannot be: a sequence of more than one step (a
+ * binding is one key and its modifiers, so a two-step sequence can never be the
+ * one holding it — as `mudlet::addonShortcutUsable` decides with
+ * `sequence.count() == 1`), an empty shortcut, or a key the browser has no code
+ * for.
+ */
+export function shortcutAsBinding(shortcut: string): { code: string; modifiers: string[] } | null {
+    const parsed = parseKeySequence(shortcut);
+    if ('problem' in parsed) return null;
+    if (parsed.steps.length !== 1) return null;
+    const modifiers: string[] = [];
+    let rest = parsed.steps[0];
+    for (;;) {
+        const match = /^([A-Za-z]+)\+/.exec(rest);
+        const name = match && MODIFIER_NAMES[match[1].toLowerCase()];
+        if (!match || !name) break;
+        if (!modifiers.includes(name)) modifiers.push(name);
+        rest = rest.slice(match[0].length);
+    }
+    const code = keyNameToDomCode(rest);
+    return code ? { code, modifiers } : null;
 }
 
 /** The refusal a package should read, or null when the sequence is fine. */

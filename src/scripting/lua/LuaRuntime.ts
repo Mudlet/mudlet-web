@@ -1,4 +1,4 @@
-import {Lua, LuaReturn, LUA_REGISTRYINDEX, type LuaThread} from 'wasmoon-lua5.1';
+import {Lua, LuaReturn, LuaType, LUA_GLOBALSINDEX, LUA_REGISTRYINDEX, type LuaThread} from 'wasmoon-lua5.1';
 // Self-host the Lua interpreter WASM as a build asset. Without this, wasmoon
 // fetches liblua5.1.wasm from unpkg.com at runtime (its hardcoded default) —
 // a third-party supply-chain + availability risk for the executable that runs
@@ -66,6 +66,13 @@ interface ParkedDialogThread {
      *  'chunk' threads (dispatch chunks) return nothing meaningful. */
     kind: 'exec' | 'chunk';
 }
+
+// The globals one dispatch sets for the scripts it runs, and so the ones an
+// alias pass a script asked for has to hand back when it returns — see
+// LuaRuntime.pushNestedDispatchState. `namedCaptures` is on the list because
+// setMatches writes it alongside the other two; Mudlet has no such global and
+// parks only the three it does have.
+const NESTED_DISPATCH_GLOBALS = ['matches', 'multimatches', 'namedCaptures', 'command'] as const;
 
 // All *.lua and *.json files under mudlet-lua/ are served via the VFS at
 // /lua/<relative-path>. Adding a new file to the directory tree automatically
@@ -478,6 +485,10 @@ export class LuaRuntime implements IScriptingRuntime {
     // full-match entry. Empty when matches come from a non-PCRE source.
     private currentCaptureSpans: CaptureSpan[] = [];
     private currentNamedSpans: Record<string, CaptureSpan> = {};
+    // One entry per level of nesting: the registry refs holding the dispatch
+    // globals a script was given before it asked for an alias pass of its own.
+    // See pushNestedDispatchState.
+    private nestedDispatchStates: (number | null)[][] = [];
     // Span of the whole regex match (Mudlet's `selectCaptureGroup(1)` target).
     // Null when the matcher can't produce one (e.g. a perm substring trigger
     // doesn't report a position) — selectCaptureGroup(1) then falls back to
@@ -655,6 +666,8 @@ export class LuaRuntime implements IScriptingRuntime {
             dispatchCb,
             releaseCb,
             emitEvent: (name, args) => this.emitEvent(name, args),
+            pushNestedDispatchState: () => this.pushNestedDispatchState(),
+            popNestedDispatchState: (depth) => this.popNestedDispatchState(depth),
             vfs: this.vfs,
             overlayCmdLineActionCbIds: this.overlayCmdLineActionCbIds,
             unregisterCb: (cbId) => this.unregisterCb(cbId),
@@ -3199,7 +3212,7 @@ end`);
         const api = this.lua.global.luaApi;
         const L = this.lua.global.address;
         this.pushMatchesTable(L, matches, namedGroups);
-        api.lua_setglobal(L, 'matches');
+        this.rawSetGlobal('matches');
         api.lua_createtable(L, multimatches?.length ?? 0, 0);
         if (multimatches) {
             for (let i = 0; i < multimatches.length; i++) {
@@ -3209,10 +3222,115 @@ end`);
                 api.lua_rawseti(L, -2, i + 1);
             }
         }
-        api.lua_setglobal(L, 'multimatches');
+        this.rawSetGlobal('multimatches');
         // Mudlet also exposes a separate `namedCaptures` table; keep parity.
         this.pushJsValue(L, namedGroups ?? {});
-        api.lua_setglobal(L, 'namedCaptures');
+        this.rawSetGlobal('namedCaptures');
+    }
+
+    /**
+     * Store the value on top of the stack as the global `name`, raw.
+     *
+     * This is how a dispatch hands the scripts it runs their own `command`,
+     * `line`, `matches` and `multimatches`, and it runs with the whole dispatch
+     * on the JS stack below it. `lua_setglobal` honours a metatable on the
+     * globals table, so a `__newindex` a package installed there runs from
+     * inside this call on the first write of a name that is absent — and a Lua
+     * error raised by one does not longjmp to the nearest pcall the way it does
+     * on desktop, it unwinds through wasmoon's C closure and takes the whole
+     * lua_State with it. Mudlet writes these raw for the milder version of the
+     * same reason (`set_lua_string`, upstream #10799), and intercepting them
+     * was never something a package could usefully do: the name is absent only
+     * until the first dispatch writes it.
+     */
+    private rawSetGlobal(name: string): void {
+        const api = this.lua.global.luaApi;
+        const L = this.lua.global.address;
+        api.lua_pushstring(L, name);
+        // lua_rawset wants the key under the value; the value is already there,
+        // so the key pushed on top of it has to go below it.
+        api.lua_insert(L, -2);
+        api.lua_rawset(L, LUA_GLOBALSINDEX);
+    }
+
+    /**
+     * Park the dispatch state the calling script is holding, and answer the
+     * depth the matching {@link popNestedDispatchState} has to unwind to.
+     *
+     * `expandAlias()` runs a whole alias pass inside whatever script called it,
+     * and that pass claims the per-dispatch globals for the scripts IT runs:
+     * `command` before any pattern is tried, `matches`/`multimatches` on every
+     * fire. Nothing used to put the caller's back, so a script resumed holding
+     * the nested command and an emptied matches table — even `matches[1]`, the
+     * full match, was gone (Mudlet's TLuaInterpreter::pushNestedDispatchState,
+     * upstream #10799).
+     *
+     * The tables are parked by reference rather than rebuilt from the capture
+     * list: a script is free to write into the `matches` it was handed, and it
+     * has to get that same table back. Every read is raw, so a package's
+     * `__index` on the globals table can neither be run by the parking nor
+     * raise from inside it — `multimatches` really is absent from a fresh
+     * profile's globals, which is exactly when an `__index` would answer.
+     *
+     * The JS mirror of the same state (`currentMatches` and the capture spans
+     * `selectCaptureGroup` reads) needs nothing here: every dispatch entry
+     * point already saves and restores it around the script it runs.
+     */
+    pushNestedDispatchState(): number {
+        if (this.inert) return -1;
+        const api = this.lua.global.luaApi;
+        const L = this.lua.global.address;
+        const top = api.lua_gettop(L);
+        // Every Lua call is made before the entry goes onto the stack: an entry
+        // that is not parked yet cannot be handed to the wrong caller by a pop.
+        const refs = NESTED_DISPATCH_GLOBALS.map(name => {
+            api.lua_pushstring(L, name);
+            api.lua_rawget(L, LUA_GLOBALSINDEX);
+            // luaL_ref answers LUA_REFNIL for a nil value, and reading that ref
+            // back is not the same thing — a global that was absent has to go
+            // back absent, so nil is recorded as one rather than referenced.
+            if (api.lua_type(L, -1) === LuaType.Nil) { api.lua_pop(L, 1); return null; }
+            return api.luaL_ref(L, LUA_REGISTRYINDEX);
+        });
+        api.lua_settop(L, top);
+        this.nestedDispatchStates.push(refs);
+        return this.nestedDispatchStates.length - 1;
+    }
+
+    /** Hand the caller at `depth` back the state {@link
+     *  pushNestedDispatchState} parked for it. Anything parked above that depth
+     *  belongs to a dispatch that never reached its own restore; it is stale,
+     *  and handing one back here would give this caller some other script's
+     *  captures and command, so it is discarded. */
+    popNestedDispatchState(depth: number): void {
+        if (this.inert || depth < 0 || depth >= this.nestedDispatchStates.length) return;
+        while (this.nestedDispatchStates.length > depth + 1) {
+            this.releaseNestedDispatchState(this.nestedDispatchStates.pop()!);
+        }
+        const refs = this.nestedDispatchStates.pop()!;
+        const api = this.lua.global.luaApi;
+        const L = this.lua.global.address;
+        const top = api.lua_gettop(L);
+        // Raw again, and for the same reason as the save: a reference to a
+        // global that was nil reads back as nil, which is what it has to be put
+        // back as — and that write is the one an absent name's `__newindex`
+        // would answer.
+        NESTED_DISPATCH_GLOBALS.forEach((name, i) => {
+            const ref = refs[i];
+            api.lua_pushstring(L, name);
+            if (ref === null) api.lua_pushnil(L);
+            else api.lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+            api.lua_rawset(L, LUA_GLOBALSINDEX);
+        });
+        api.lua_settop(L, top);
+        this.releaseNestedDispatchState(refs);
+    }
+
+    private releaseNestedDispatchState(refs: (number | null)[]): void {
+        const api = this.lua.global.luaApi;
+        for (const ref of refs) {
+            if (ref !== null) api.luaL_unref(this.lua.global.address, LUA_REGISTRYINDEX, ref);
+        }
     }
 
     /** Push a 1-indexed Lua table of capture strings (`matches[1]` = whole match),
@@ -3793,15 +3911,20 @@ end`);
         // triggers can read it without going through getCurrentLine. The
         // per-line prompt flag now travels on the buffer itself via
         // ScriptingAPI.beginLine, so we no longer need to mirror it here.
-        this.lua.global.set('line', line);
+        // Raw — see rawSetGlobal.
+        if (this.inert) return;
+        this.lua.global.luaApi.lua_pushstring(this.lua.global.address, line);
+        this.rawSetGlobal('line');
     }
 
     // Mudlet sets the global `command` to the raw command-bar input at the start
     // of alias processing (AliasUnit::processDataStream). It persists between
     // inputs so keys/scripts like the stock "Repeat Last Command" can `send(command)`.
+    // Raw — see rawSetGlobal.
     setCommand(command: string): void {
         if (this.inert) return;
-        this.lua.global.set('command', command);
+        this.lua.global.luaApi.lua_pushstring(this.lua.global.address, command);
+        this.rawSetGlobal('command');
     }
 
     dispatchSendRequest(text: string): boolean {
@@ -3952,7 +4075,12 @@ end`);
         }
         switch (typeof value) {
             case 'number':
-                if (Number.isInteger(value)) api.lua_pushinteger(L, value);
+                // lua_Integer is 32 bits in this wasm build, so an integral
+                // value past its range wraps around to garbage of whatever
+                // sign falls out (an elapsed time of 1e12 came back as
+                // -727379968). Lua 5.1 numbers are doubles either way, so
+                // anything that does not fit goes in as one.
+                if (Number.isInteger(value) && Math.abs(value) <= 0x7fffffff) api.lua_pushinteger(L, value);
                 else api.lua_pushnumber(L, value);
                 return;
             case 'string':
@@ -4029,6 +4157,9 @@ end`);
         // Parked invokeFileDialog threads (and their registry refs) die with
         // the state below; a picker resolving later hits the destroyed guard.
         this.parkedDialogs.clear();
+        // Likewise every reference a parked nested dispatch holds: they belong
+        // to the state about to go, and nothing may hand one back afterwards.
+        this.nestedDispatchStates = [];
         this.globalEvents?.close();
         this.tts?.destroy();
         this.api.map.setMapEventDispatcher(null);

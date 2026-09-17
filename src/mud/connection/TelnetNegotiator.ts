@@ -86,10 +86,18 @@ const agreement = (cmd: number, opt: number): string =>
 const refusal = (cmd: number, opt: number): string =>
     String.fromCharCode(IAC, cmd === WILL ? DONT : WONT, opt);
 
-/** In-band MXP line-mode sequence `ESC[<n>z` (n optional). Its presence means
- *  the server is speaking MXP even if it skipped the telnet option-91 handshake.
- *  Non-global so `.test()` stays stateless. */
-const MXP_LINE_MODE_RE = /\x1b\[[0-9]*z/;
+/**
+ * In-band MXP line-mode sequence `ESC[<n>z`. Its presence means the server is
+ * speaking MXP even if it skipped the telnet option-91 handshake.
+ *
+ * Exactly one digit, and only the eight modes MXP defines: 0 open, 1 secure,
+ * 2 locked, 3 reset, 4 temp secure, 5 lock open, 6 lock secure, 7 lock locked
+ * (cTelnet::containsMxpModeSwitch). A number MXP does not define is some other
+ * escape sequence that happens to end in `z`, and turning MXP on for the rest
+ * of the connection off the back of one is not something a WONT can be relied
+ * on to undo. Non-global so `.test()` stays stateless.
+ */
+const MXP_LINE_MODE_RE = /\x1b\[[0-7]z/;
 
 export interface TelnetNegotiatorFlags {
     gmcpEnabled: boolean;
