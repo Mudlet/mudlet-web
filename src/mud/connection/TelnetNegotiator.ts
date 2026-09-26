@@ -637,13 +637,16 @@ export class TelnetNegotiator {
             case OPT_GMCP:
                 // Symmetric: server offers (WILL) or requests (DO) GMCP; either
                 // way we agree and announce ourselves via the Core.Hello
-                // handshake (latched by the owner).
+                // handshake (latched by the owner). The handshake goes out
+                // *before* sysProtocolEnabled is raised, as in Mudlet's
+                // ctelnet.cpp: Core.Supports.Set replaces the server's whole
+                // module list, so a `Core.Supports.Add` a script sends from its
+                // sysProtocolEnabled handler must follow it or it is wiped.
                 if (!f.gmcpEnabled) {
                     this.refuseProtocol(cmd, opt);
                     return;
                 }
-                this.enableProtocol(cmd, opt);
-                this.hooks.onGmcpNegotiated();
+                this.enableProtocol(cmd, opt, () => this.hooks.onGmcpNegotiated());
                 this.eventBus.emit('gmcp.negotiated');
                 return;
         }
@@ -652,10 +655,13 @@ export class TelnetNegotiator {
     /** Take the option up: answer the server, latch it on and announce it as
      *  Mudlet's `sysProtocolEnabled`. Raised on every acceptance rather than
      *  only the first, matching `raiseProtocolEvent` — a server that re-offers
-     *  mid-session re-announces. */
-    private enableProtocol(cmd: number, opt: number): void {
+     *  mid-session re-announces. `beforeAnnounce` runs after the agreement is
+     *  on the wire but before the event, for handshakes that must precede
+     *  anything a script sends in response. */
+    private enableProtocol(cmd: number, opt: number, beforeAnnounce?: () => void): void {
         this.hooks.sendRaw(agreement(cmd, opt));
         this.enabledProtocols.add(opt);
+        beforeAnnounce?.();
         this.eventBus.emit('protocol.enabled', PROTOCOL_NAMES.get(opt) ?? String(opt));
     }
 

@@ -44,6 +44,15 @@ describe('setMergeTables (GMCP merge keys)', () => {
   beforeAll(async () => { rt = await createTestRuntime(); });
   afterAll(() => rt.dispose());
 
+  it('merges Char.Status by default, like Mudlet', () => {
+    expect(rt.run('return table.contains(mudlet.mergeTables, "Char.Status")')).toBe(true);
+    rt.run('__mudlet_set_gmcp("Char.Status", {name = "Tester", level = "10", hp = "1"})');
+    rt.run('__mudlet_set_gmcp("Char.Status", {hp = "2"})');
+    expect(rt.run('return gmcp.Char.Status.name')).toBe('Tester');
+    expect(rt.run('return gmcp.Char.Status.level')).toBe('10');
+    expect(rt.run('return gmcp.Char.Status.hp')).toBe('2');
+  });
+
   it('merges registered keys into the existing gmcp sub-table', () => {
     rt.run('setMergeTables("Char.Status")');
     rt.run('__mudlet_set_gmcp("Char.Status", {hp = 10, mp = 5})');
