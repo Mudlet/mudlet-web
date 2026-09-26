@@ -4396,6 +4396,18 @@ function sendTelnetChannel102(msg)
     return true
 end
 
+-- Mudlet's setServerEncoding (TLuaInterpreter::setServerEncoding): a non-string
+-- is an error, and a name cTelnet::setEncoding does not have is refused with
+-- nil and a message listing the ones it does.
+function setServerEncoding(newEncoding)
+    newEncoding = __mudlet_check_string(newEncoding, "setServerEncoding", 1, "newEncoding")
+    local result = __mudlet_setServerEncoding(newEncoding)
+    if result ~= true then
+        return nil, result
+    end
+    return true
+end
+
 function sendSocket(data)
     data = __mudlet_check_string(data, "sendSocket", 1, "data")
     if not __mudlet_sendSocket(data) then

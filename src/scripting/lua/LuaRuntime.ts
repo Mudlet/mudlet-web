@@ -1463,7 +1463,9 @@ export class LuaRuntime implements IScriptingRuntime {
         // the CHARSET (RFC 2066) decoder MudClient negotiates. The list is built
         // 1-indexed (sparse array → wasmoon lands it at t[1..n]).
         this.lua.global.set('getServerEncoding', () => this.api.getServerEncoding());
-        this.lua.global.set('setServerEncoding', (name: unknown) => this.api.setServerEncoding(String(name ?? '')));
+        // setServerEncoding itself is a Bridge.lua wrapper: Mudlet's type check
+        // and its (nil, refusal) return for a name it does not have.
+        this.lua.global.set('__mudlet_setServerEncoding', (name: unknown) => this.api.setServerEncoding(String(name ?? '')));
         this.lua.global.set('getServerEncodingsList', () => {
             const list = this.api.getServerEncodingsList();
             const out: string[] = [];

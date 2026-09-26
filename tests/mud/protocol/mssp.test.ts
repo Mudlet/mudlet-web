@@ -34,9 +34,13 @@ describe('parseMssp', () => {
     ]);
   });
 
-  it('treats a variable with no value byte as empty string', () => {
-    expect(parseMssp(MSSP_VAR + 'CRAWL DELAY')).toEqual([
-      { name: 'CRAWL DELAY', value: '' },
+  it('skips a variable with no value byte, like Mudlet (#4233)', () => {
+    expect(parseMssp(MSSP_VAR + 'CRAWL DELAY')).toEqual([]);
+  });
+
+  it('keeps reading past a variable with no value byte', () => {
+    expect(parseMssp(MSSP_VAR + 'NOVALUE' + MSSP_VAR + 'PLAYERS' + MSSP_VAL + '3')).toEqual([
+      { name: 'PLAYERS', value: '3' },
     ]);
   });
 

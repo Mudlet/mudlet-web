@@ -2314,6 +2314,15 @@ export class ScriptingEngine implements EngineHost {
         }
     }
 
+    /** Mudlet's `cTelnet::postMessage`: a client notice on the main console,
+     *  written to the buffer as well as the renderer so getLines() and the
+     *  cursor APIs see the line the player reads (see ScriptingAPI.postInfo). */
+    private postMainMessage(text: string): void {
+        const styled = mudletPostMessage(text);
+        this.session.consoles.get('main')?.appendLine(new AnsiAwareBuffer(styled));
+        this.session.events.emit('message', styled, 'info', Date.now());
+    }
+
     private async handleClientGuiInstall(value: unknown): Promise<void> {
         const parsed = parseClientGuiPayload(value);
         if (!parsed) return;
@@ -2343,16 +2352,16 @@ export class ScriptingEngine implements EngineHost {
         }
 
         const displayName = filenameFromUrl(url).replace(/\.[^.]+$/, '') || 'package';
-        this.session.events.emit('message',
-            mudletInfo(`Downloading and installing package '${displayName}' (url='${url}').`),
-            'info', Date.now());
+        this.postMainMessage(`[ INFO ]  - Downloading and installing package '${displayName}' (url='${url}').`);
 
         let bytes: Uint8Array;
         try {
             bytes = await downloadFromUrl(url, this.proxyUrlGetter());
         } catch (err) {
+            // cTelnet::slot_replyFinished posts this whether or not the profile
+            // shows script errors in main: the game's offer failed, not a script.
             const msg = err instanceof Error ? err.message : String(err);
-            this.api.printError(`[Client.GUI] download failed: ${msg}`);
+            this.postMainMessage(`[ WARN ]  - Package download failed from '${url}', reason: ${msg}`);
             return;
         }
 

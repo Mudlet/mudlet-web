@@ -98,7 +98,16 @@ class MsdpParser {
                 this.i++;
                 const key = this.readScalar();
                 let value: unknown = "";
-                if (this.i < n && this.data.charCodeAt(this.i) === VAL) {
+                const next = this.i < n ? this.data.charCodeAt(this.i) : -1;
+                if (next === TABLE_OPEN || next === ARRAY_OPEN) {
+                    // A name running straight into a structure, with no value
+                    // marker between them, is malformed: Mudlet's reassembled
+                    // JSON fails to decode and the variable never reaches Lua.
+                    // Consume the structure here so its inner keys are not read
+                    // as top-level variables of their own.
+                    this.malformed = true;
+                    this.readValue();
+                } else if (next === VAL) {
                     this.i++;
                     value = this.readValue();
                     if (this.i < n && this.data.charCodeAt(this.i) === VAL) {
@@ -162,8 +171,15 @@ class MsdpParser {
         const out: unknown[] = [];
         const n = this.data.length;
         while (this.i < n && this.data.charCodeAt(this.i) !== ARRAY_CLOSE) {
-            if (this.data.charCodeAt(this.i) === VAL) {
+            const c = this.data.charCodeAt(this.i);
+            if (c === VAL) {
                 this.i++;
+                out.push(this.readValue());
+            } else if (c === TABLE_OPEN || c === ARRAY_OPEN) {
+                // A nested element with no value marker of its own: games send
+                // rosters as ARRAY_OPEN TABLE_OPEN .. TABLE_CLOSE TABLE_OPEN ..,
+                // and Mudlet's msdp2Lua separates adjacent elements itself, so
+                // the structure is a sibling rather than bytes to skip.
                 out.push(this.readValue());
             } else {
                 this.i++; // skip stray bytes

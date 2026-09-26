@@ -55,3 +55,66 @@ export const toHex = (s: string): string => {
     const shown = [...s.slice(0, 64)].map(c => (c.charCodeAt(0) & 0xff).toString(16).padStart(2, "0"));
     return shown.join(" ") + (s.length > 64 ? " …" : "");
 };
+
+/** Decode a byte-string as UTF-8 the way Mudlet's `TBuffer::processUtf8Sequence`
+ *  does, for text that reaches the buffer without cTelnet in front of it
+ *  (`feedTriggers` under UTF-8 hands its bytes straight to the buffer). It
+ *  differs from the WHATWG decoder in how much a bad sequence eats: the lead
+ *  byte declares a length, and a malformed sequence — bad continuation,
+ *  overlong, surrogate, past U+10FFFF, 5/6-byte — becomes ONE replacement mark
+ *  spanning all of it, where WHATWG re-reads the offending byte as the start of
+ *  something new. That is what makes a carriage return after a truncated lead
+ *  byte part of the rejected sequence instead of a line ending. A UTF-8 BOM
+ *  arrives as U+FEFF rather than vanishing. A sequence cut short by the end of
+ *  the input keeps the lenient decoder's answer, as before. */
+export const decodeUtf8AsTBuffer = (s: string): string => {
+    const n = s.length;
+    const byte = (i: number) => s.charCodeAt(i) & 0xff;
+    let out = "";
+    let run = 0; // start of the pending ASCII run, copied in bulk
+    let i = 0;
+    while (i < n) {
+        const b0 = byte(i);
+        if (b0 < 0x80) { i++; continue; }
+        out += s.substring(run, i);
+        const len = (b0 & 0xe0) === 0xc0 ? 2
+            : (b0 & 0xf0) === 0xe0 ? 3
+            : (b0 & 0xf8) === 0xf0 ? 4
+            : (b0 & 0xfc) === 0xf8 ? 5
+            : (b0 & 0xfe) === 0xfc ? 6
+            : 1;
+        if (i + len > n) {
+            out += fromByteString(s.substring(i)).text;
+            return out;
+        }
+        let valid = len >= 2 && len <= 4;
+        for (let k = 1; valid && k < len; k++) {
+            if ((byte(i + k) & 0xc0) !== 0x80) valid = false;
+        }
+        let bom = false;
+        if (valid) {
+            const b1 = byte(i + 1);
+            if ((b0 & 0xfe) === 0xc0 || (b0 === 0xe0 && (b1 & 0xe0) === 0x80) || (b0 === 0xf0 && (b1 & 0xf0) === 0x80)) {
+                valid = false; // overlong
+            } else if (len === 3 && (b0 & 0x0f) === 0x0d && (b1 & 0x20) === 0x20) {
+                valid = false; // UTF-16 surrogate
+            } else if (len === 4 && ((b0 & 0x07) > 0x04 || ((b0 & 0x07) === 0x04 && (b1 & 0x3f) > 0x0f))) {
+                valid = false; // past U+10FFFF
+            } else if (len === 3 && b0 === 0xef && b1 === 0xbb && byte(i + 2) === 0xbf) {
+                bom = true;
+            }
+        }
+        if (bom) {
+            out += "\uFEFF";
+        } else if (valid) {
+            let cp = b0 & (len === 2 ? 0x1f : len === 3 ? 0x0f : 0x07);
+            for (let k = 1; k < len; k++) cp = (cp << 6) | (byte(i + k) & 0x3f);
+            out += String.fromCodePoint(cp);
+        } else {
+            out += "\uFFFD";
+        }
+        i += len;
+        run = i;
+    }
+    return out + s.substring(run);
+};

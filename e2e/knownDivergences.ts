@@ -149,6 +149,31 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
                 + 'instead (tests/import/packageConfigRename.test.ts), which can assert it directly.',
         },
     ],
+    Telnet: (() => {
+        // Both specs offer a package at a URL nothing serves, check the offer
+        // reached the downloader, and then wait - pumping events for up to three
+        // seconds - for the download to fail, so its notice cannot land in a later
+        // test. The first two steps pass: the raw telnet form reaches the
+        // downloader, the "Downloading and installing package" notice is on the
+        // main console where getLines() reads it, and the offer is kept out of the
+        // gmcp table. The wait cannot: the download is a fetch, and a fetch settles
+        // through the browser's event loop, which the synchronous busted run is
+        // sitting on top of. That is the same wall as Networking's HTTP specs
+        // (UNSUPPORTED_AREAS below), and the answer is the same: a synchronous XHR
+        // just for the test build would test that shim rather than the path a game's
+        // offer takes.
+        const reason =
+            'Needs the package download to finish. It is a fetch, which settles through the browser\'s '
+            + 'event loop that a synchronous busted run is sitting on top of - pumpEvents drives the '
+            + 'queues mudlet owns, not the network. Everything before the ending is matched here: the '
+            + 'raw telnet offer reaches the downloader, its notice is on the main console, and the gmcp '
+            + 'table is left alone. The failure notice Mudlet posts ("Package download failed from ...") '
+            + 'is implemented and is asserted instead by tests/scripting/clientGuiNotices.test.ts.';
+        return [
+            'Tests the Client.GUI package offer / acts on a Client.GUI offer sent as raw telnet rather than JSON (#7704)',
+            'Tests the Client.GUI package offer / keeps a raw telnet Client.GUI out of the gmcp table (#7034)',
+        ].map(name => ({ name, reason }));
+    })(),
     STT: [
         {
             name: 'stt bridge / getInfo / names the engine it would use',
