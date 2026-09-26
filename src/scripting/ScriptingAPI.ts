@@ -35,7 +35,7 @@ import { colorCodes } from '../mud/text/colors';
 import { Console, MIN_CONSOLE_BUFFER_SIZE, MAX_CONSOLE_BUFFER_SIZE } from '../mud/text/Console';
 import { flashTitle } from '../utils/documentTitle';
 import { MspParser } from '../mud/protocol';
-import { fromByteString } from '../mud/protocol/byteString';
+import { decodeUtf8AsTBuffer, fromByteString } from '../mud/protocol/byteString';
 import { canEncodeForServer, decodeForServer } from '../mud/protocol/charset';
 import { StopwatchManager, localStorageStopwatchStore } from './StopwatchManager';
 import { MxpFrameManager } from './MxpFrameManager';
@@ -1213,10 +1213,14 @@ export class ScriptingAPI {
     }
 
     /** Mudlet `setServerEncoding(name)`. Switch the server stream decoder to
-     *  `name` (one of getServerEncodingsList()); false when unsupported or no
-     *  connection is active. */
-    setServerEncoding(name: string): boolean {
-        return this.session.setServerEncoding(name);
+     *  `name` (one of getServerEncodingsList()). Returns true, or the refusal
+     *  cTelnet::setEncoding gives — the only place a script author is shown
+     *  every name they could have asked for, so it lists them all, ASCII first
+     *  as Mudlet does. */
+    setServerEncoding(name: string): true | string {
+        if (this.session.setServerEncoding(name)) return true;
+        const names = ['ASCII', ...this.session.getServerEncodingsList().filter(e => e !== 'ASCII')];
+        return `Encoding "${name}" does not exist;\nuse one of the following:\n"${names.join('", "')}".`;
     }
 
     /** Mudlet `getServerEncodingsList()`. The encodings Mudlet Web can decode. */
@@ -3771,7 +3775,11 @@ export class ScriptingAPI {
     feedTriggers(data: string, utf8Encoded = true): string | null {
         const encoding = this.session.getServerEncoding();
         let text: string;
-        if (utf8Encoded) {
+        if (utf8Encoded && encoding === 'UTF-8') {
+            // Mudlet's simple case: the bytes go to the buffer as they are and
+            // its own UTF-8 decoder reads them, a carriage return included.
+            text = decodeUtf8AsTBuffer(data);
+        } else if (utf8Encoded) {
             text = fromByteString(data).text;
             // ASCII is the strictest case and the one Mudlet checks by hand:
             // it has no encoder to ask, so the test is simply that nothing has

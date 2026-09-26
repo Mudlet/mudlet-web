@@ -182,7 +182,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('sendGMCP',     '(message)',        'Send a GMCP message (e.g. `Module.Sub args`)'),
     fn('sendMSDP',     '(variable [, value, ...])', 'Send an MSDP variable request/update (IAC SB MSDP …)'),
     fn('getServerEncoding', '() → string', 'IANA name of the encoding used to decode the server stream (default "utf-8").'),
-    fn('setServerEncoding', '(name) → bool', 'Switch the server-stream decoder to name (one of getServerEncodingsList()). Returns false when the name is unsupported or no connection is active.'),
+    fn('setServerEncoding', '(name) → true | nil, err', 'Switch the server-stream decoder to name (one of getServerEncodingsList()). Returns nil and a message listing the known encodings when the name is not one of them.'),
     fn('getServerEncodingsList', '() → {names}', '1-indexed list of every encoding mudlet can decode (ASCII, UTF-8, ISO-8859-x, Windows-125x, KOI8-R/U).'),
     fn('sendATCP',     '(message) → bool', "Send an ATCP subnegotiation (telnet option 200, GMCP's predecessor). False when the socket is closed."),
     fn('sendTelnetChannel102', '(msg) → bool', 'Send a zMUD "channel 102" subnegotiation (telnet option 102). False when the socket is closed.'),

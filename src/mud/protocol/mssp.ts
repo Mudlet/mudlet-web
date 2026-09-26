@@ -26,8 +26,9 @@ export interface MsspEnvelope {
  * `MSSP_VAR <name> MSSP_VAL <value>` pairs; names/values are scalar byte runs
  * terminated by the next control byte. Tolerant of truncation and stray bytes.
  *
- * Mirrors Mudlet's TLuaInterpreter::parseMSSP: scalar string values, and a
- * variable with extra `MSSP_VAL` runs keeps only its first value.
+ * Mirrors Mudlet's TLuaInterpreter::parseMSSP: scalar string values, a
+ * variable with no `MSSP_VAL` is skipped, and a variable with extra `MSSP_VAL`
+ * runs keeps only its first value.
  */
 export function parseMssp(body: string, decode: (bytes: string) => string = defaultDecode): MsspEnvelope[] {
     const out: MsspEnvelope[] = [];
@@ -43,15 +44,16 @@ export function parseMssp(body: string, decode: (bytes: string) => string = defa
         const nameStart = i;
         while (i < n && body.charCodeAt(i) !== VAR && body.charCodeAt(i) !== VAL) i++;
         const name = decode(body.substring(nameStart, i));
-        let value = "";
-        if (i < n && body.charCodeAt(i) === VAL) {
-            i++; // consume VAL
-            const valStart = i;
-            while (i < n && body.charCodeAt(i) !== VAR && body.charCodeAt(i) !== VAL) i++;
-            value = decode(body.substring(valStart, i));
-            // Any further VAL runs for this variable (list-valued MSSP) are left
-            // for the outer loop to skip — we keep the first value, like Mudlet.
-        }
+        // Mudlet's parseMSSP skips a variable that arrives without a value
+        // rather than recording it as empty (#4233), and keeps reading the
+        // variables behind it.
+        if (i >= n || body.charCodeAt(i) !== VAL) continue;
+        i++; // consume VAL
+        const valStart = i;
+        while (i < n && body.charCodeAt(i) !== VAR && body.charCodeAt(i) !== VAL) i++;
+        const value = decode(body.substring(valStart, i));
+        // Any further VAL runs for this variable (list-valued MSSP) are left
+        // for the outer loop to skip — we keep the first value, like Mudlet.
         if (name) out.push({ name, value });
     }
     return out;
