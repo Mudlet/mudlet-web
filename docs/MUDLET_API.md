@@ -757,7 +757,7 @@ through byte-identical — app stylesheets are also Mudlet Web's brand-styling h
 | `getHTMLformat(text)` | ✅ | Mudlet-format → HTML serialisation |
 | `getImageSize(path)` | ✅ | Synchronous — reads dimensions straight out of the VFS file's header (`imageSize.ts` parses PNG/GIF/JPEG/BMP/WebP), no `Image.onload` decode needed. Returns `width, height` or nil; Bridge.lua unpacks the 0-indexed `[w,h]` array |
 | `getLabelFormat(name)` | ✅ | GUIUtils.lua |
-| `getLabelSizeHint(name)` | ✅ | Bridge.lua → `width, height`. Browser analogue of Qt sizeHint (rendered content extent) |
+| `getLabelSizeHint(name)` | ✅ | Bridge.lua → `width, height`. Browser analogue of Qt sizeHint (rendered content extent); a label showing only an SVG answers the document size plus its stylesheet chrome, as TLabel::sizeHint does |
 | `getLabelStyleSheet(name)` | ✅ | Reads the CSS last set via `setLabelStyleSheet` |
 | `getLastLineNumber([window])` | ✅ | JS-exposed |
 | `getLineCount([window])` | ✅ | JS-exposed |
@@ -859,6 +859,8 @@ through byte-identical — app stylesheets are also Mudlet Web's brand-styling h
 | `setLabelCursor(name, shape)` | ✅ | JS-exposed |
 | `setLabelCustomCursor(name, path[, hotX, hotY])` | ✅ | CSS `cursor: url(...) hotX hotY, auto`; path resolved through the VFS-aware rewriter |
 | `setLabelWheelCallback(name, fn)` | ✅ | Bridge.lua |
+| `setSvgTint(name, r, g, b \| colour)` / `resetSvgTint(name)` | ✅ | Bridge.lua; Mudlet colour name (Geyser.Color matching), QColor string (`qColor.ts`) or r,g,b. Drawn as a CSS mask of the SVG over a fill (QPainter SourceIn). Belongs to the label: survives a reset and a new image |
+| `setSvgRotation(name, deg)` / `setSvgShear(name, sx, sy)` / `resetSvgRotation` / `resetSvgShear` / `resetSvgTransform` | ✅ | Bridge.lua; CSS transform about the SVG's centre, clipped to the contents rect. Non-finite values refused with (nil, reason) |
 | `setLink([window,] cmd, hint)` | ✅ | Bridge.lua maps function `cmd` to a callback id |
 | `setMainWindowSize(w, h)` | ✅ | Sizes the main viewport — the rectangle `getMainWindowSize` reports — since a tab cannot resize itself. No window chrome between the two |
 | `setMapWindowTitle(title)` | ✅ | Sets the dockable map panel (`id "map"`) tab title via `WindowManager.setTitle`; empty title resets to default. False when the map widget is closed. Unblocks `resetMapWindowTitle` (GUIUtils) and `Geyser.Mapper` |

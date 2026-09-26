@@ -259,6 +259,8 @@ type TempEntryBase = {
      *  the id isActive() reads. Not called for an ordinary disposal, where the
      *  owner is the one doing the stopping. */
     onStopped?: () => void;
+    /** See {@link TempOptions.accept}. */
+    accept?: () => boolean;
 };
 
 /** What a caller can tell the engine about a temp trigger beyond its pattern. */
@@ -267,6 +269,11 @@ export interface TempOptions {
      *  call carried no name of its own. */
     name?: string;
     onStopped?: () => void;
+    /** A further condition the line has to meet once the pattern matched —
+     *  a colour trigger's colour, which the engine cannot see. A line that
+     *  fails it is a line the trigger did NOT match, so a stay-open window
+     *  (keepFiring) still fires on it. */
+    accept?: () => boolean;
 }
 
 type TempEntry =
@@ -701,11 +708,11 @@ export class TriggerEngine {
     ): () => void {
         const id = this.nextInternalId++;
         const seq = this.regCounter++;
-        const { name, onStopped } = opts;
+        const { name, onStopped, accept } = opts;
         if (kind === 'prompt') {
-            this.temp.set(id, { kind, fn, seq, name, onStopped });
+            this.temp.set(id, { kind, fn, seq, name, onStopped, accept });
         } else if (kind === 'substring' || kind === 'startOfLine' || kind === 'exactMatch') {
-            this.temp.set(id, { kind, pattern, fn, seq, name, onStopped });
+            this.temp.set(id, { kind, pattern, fn, seq, name, onStopped, accept });
         } else {
             const re = compilePcre(pattern, reason => {
                 // Same channel as a permanent trigger's bad pattern — a
@@ -717,7 +724,7 @@ export class TriggerEngine {
                     `Error: perl regex "${pattern}"${who} failed to compile, reason: "${reason}".`);
             });
             if (!re) return () => {};
-            this.temp.set(id, { kind: 'regex', re, fn, seq, name, onStopped });
+            this.temp.set(id, { kind: 'regex', re, fn, seq, name, onStopped, accept });
         }
         this.registerSameLineCreation(id);
         this.orderDirty = true;
@@ -1073,29 +1080,30 @@ export class TriggerEngine {
             if (entry.remaining <= 0) { this.temp.delete(id); this.orderDirty = true; }
             return true;
         }
+        const accepted = () => !entry.accept || entry.accept();
         if (entry.kind === 'prompt') {
-            if (!isPrompt) return false;
+            if (!isPrompt || !accepted()) return false;
             entry.fn([stripEol(line)]);
             return true;
         }
         if (entry.kind === 'substring') {
-            if (!line.includes(entry.pattern)) return false;
+            if (!line.includes(entry.pattern) || !accepted()) return false;
             entry.fn([entry.pattern]);
             return true;
         }
         if (entry.kind === 'startOfLine') {
-            if (!line.startsWith(entry.pattern)) return false;
+            if (!line.startsWith(entry.pattern) || !accepted()) return false;
             entry.fn([entry.pattern]);
             return true;
         }
         if (entry.kind === 'exactMatch') {
             const text = stripEol(line);
-            if (text !== entry.pattern) return false;
+            if (text !== entry.pattern || !accepted()) return false;
             entry.fn([text]);
             return true;
         }
         const m = entry.re.match(line) as PcreMatch | null;
-        if (!m) return false;
+        if (!m || !accepted()) return false;
         const result = pcreToMatchResult(m);
         entry.fn(
             [result.matchedText, ...result.captures],

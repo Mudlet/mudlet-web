@@ -129,6 +129,7 @@ export class SessionLogger {
     startFileLog(format?: LogFormat): string | null {
         if (this.logFilePath) return this.logFilePath;
         this.logHtml = format?.html ?? false;
+        this.logBackground = format?.background ?? { r: 0, g: 0, b: 0 };
         this.openLogFile(format);
         return this.logFilePath;
     }
@@ -144,6 +145,8 @@ export class SessionLogger {
 
     /** Whether the open file log is HTML rather than plain text. */
     private logHtml = false;
+    /** The console background the HTML log paints transparent text with. */
+    private logBackground = { r: 0, g: 0, b: 0 };
 
     private openLogFile(format?: LogFormat): void {
         if (!this.vfs) return;
@@ -205,7 +208,9 @@ export class SessionLogger {
         // colour and formatting survive into the document; a text log takes the
         // plain line.
         if (this.logFilePath) {
-            this.fileBuffer.push((this.logHtml ? buffer.toHtml() : buffer.text) + '\n');
+            this.fileBuffer.push((this.logHtml
+                ? buffer.toHtml({ transparentBackground: this.logBackground })
+                : buffer.text) + '\n');
         }
         if (this.buffer.length >= FLUSH_AT) void this.flush();
     }

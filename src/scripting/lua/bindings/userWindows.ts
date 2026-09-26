@@ -176,6 +176,10 @@ export function installUserWindowBindings({
     const mapWidgetOpen = () =>
         api.windows.has(MAP_WIDGET_ID) && api.windows.isVisible(MAP_WIDGET_ID);
 
+    // Mudlet's mapWidgetCreated(): once made, the map dock exists for good —
+    // closeMapWidget only hides it — so this is presence, not visibility.
+    // setWindow refuses to move the map out of it, or anything into it.
+    lua.global.set('__mapWidgetCreated', () => api.windows.has(MAP_WIDGET_ID));
     lua.global.set('__getUserWindowTitle', (name: unknown) =>
         api.windows.getTitle(String(name ?? '')));
     lua.global.set('__getUserWindowStyleSheet', (name: unknown) =>

@@ -1,4 +1,4 @@
-import {Lua, LuaReturn, LuaType, LUA_GLOBALSINDEX, LUA_REGISTRYINDEX, type LuaThread} from 'wasmoon-lua5.1';
+import {Lua, LuaReturn, LuaType, LUA_GLOBALSINDEX, LUA_REGISTRYINDEX, LuaThread} from 'wasmoon-lua5.1';
 // Self-host the Lua interpreter WASM as a build asset. Without this, wasmoon
 // fetches liblua5.1.wasm from unpkg.com at runtime (its hardcoded default) —
 // a third-party supply-chain + availability risk for the executable that runs
@@ -24,6 +24,7 @@ import YAJL_LUA from './Yajl.lua?raw';
 import {setupRex} from './rex';
 import {setupYajl, type LuaValueTransform} from './yajl';
 import {parseImageSize} from './imageSize';
+import {parseQColor} from '../../ui/labels/qColor';
 import {isQtResourcePath, qtResourceBytes} from '../../assets/qt-resources';
 import {getSqliteClient, sqliteReady} from '../../db/sqliteClient';
 import {QT_CURSOR_NAME_TO_INT, QT_CURSOR_TO_CSS} from '../../ui/labels/cursorShapes';
@@ -74,6 +75,25 @@ interface ParkedDialogThread {
 // LuaRuntime.pushNestedDispatchState. `namedCaptures` is on the list because
 // setMatches writes it alongside the other two; Mudlet has no such global and
 // parks only the three it does have.
+// wasmoon pushes every integral JS number with lua_pushinteger, and lua_Integer
+// is 32 bits in this wasm build, so a whole number past int32 reached Lua as the
+// wraparound: a map zoom of 1e40 read back as 0, an elapsed time of 1e12 as
+// -727379968. Lua 5.1 numbers are doubles either way, so anything that does not
+// fit goes in as one. Patched on the prototype because every binding's return
+// value — and every number inside a table one returns — funnels through here;
+// pushJsValue below applies the same rule on its own raw path.
+{
+    const proto = LuaThread.prototype;
+    const pushBasicValue = proto.pushBasicValue;
+    proto.pushBasicValue = function (this: LuaThread, target, options) {
+        if (typeof target === 'number' && Number.isInteger(target) && Math.abs(target) > 0x7fffffff) {
+            this.luaApi.lua_pushnumber(this.address, target);
+            return true;
+        }
+        return pushBasicValue.call(this, target, options);
+    };
+}
+
 const NESTED_DISPATCH_GLOBALS = ['matches', 'multimatches', 'namedCaptures', 'command'] as const;
 
 // All *.lua and *.json files under mudlet-lua/ are served via the VFS at
@@ -1013,6 +1033,21 @@ export class LuaRuntime implements IScriptingRuntime {
             const s = this.api.getLabelSizeHint(typeof name === 'string' ? name : '');
             return s ? [s.width, s.height] : false;
         });
+        // Mudlet's SVG tint/transform family. The argument checks, the colour
+        // table lookup and the (nil, errMsg) shapes live in Bridge.lua; these
+        // primitives only apply the value and answer whether the label exists.
+        this.lua.global.set('__parseQColor', (s: unknown) =>
+            (typeof s === 'string' ? parseQColor(s) : null) ?? false);
+        const labelName = (name: unknown) => (typeof name === 'string' ? name : '');
+        this.lua.global.set('__setSvgTint', (name: unknown, r: unknown, g: unknown, b: unknown) =>
+            this.api.labels.setSvgTint(labelName(name), `rgb(${Number(r)}, ${Number(g)}, ${Number(b)})`));
+        this.lua.global.set('__resetSvgTint', (name: unknown) => this.api.labels.resetSvgTint(labelName(name)));
+        this.lua.global.set('__setSvgRotation', (name: unknown, angle: unknown) =>
+            this.api.labels.setSvgRotation(labelName(name), Number(angle)));
+        this.lua.global.set('__setSvgShear', (name: unknown, x: unknown, y: unknown) =>
+            this.api.labels.setSvgShear(labelName(name), Number(x), Number(y)));
+        this.lua.global.set('__resetSvgTransform', (name: unknown) =>
+            this.api.labels.resetSvgTransform(labelName(name)));
         // Mudlet's setLabelClickCallback / setLabelDoubleClickCallback /
         // setLabelReleaseCallback / setLabelMoveCallback / setLabelOnEnter /
         // setLabelOnLeave / setLabelWheelCallback all share a shape: name + a
@@ -1409,15 +1444,18 @@ export class LuaRuntime implements IScriptingRuntime {
             let fires = 0;
             let killed = false;
             // Empty-string substring trigger fires once per line; the colour
-            // check then runs against the live buffer to gate the callback.
-            const unsub = this.api.triggers.addTemp('', () => {
+            // check gates it as the engine's `accept`, so a line of the wrong
+            // colour counts as a miss rather than a match that did nothing —
+            // which is what lets a stay-open window fire on it.
+            const unsub = this.api.triggers.addTemp('', (matches) => {
                 if (killed || this.tempIds.get(id)?.enabled === false) return;
                 // matches[1] is the coloured RUN, not the whole line — the
                 // empty-substring pattern this rides on has no match text of
-                // its own, so the colour lookup supplies it.
-                const run = this.api.currentLineColorMatch(wantFg, wantBg);
-                if (run === null) return;
-                this.setMatches([run]);
+                // its own, so the colour lookup supplies it. A fire with no
+                // matches at all is a stay-open window (setTriggerStayOpen)
+                // firing on a line it did not match, with nothing captured.
+                const run = matches.length === 0 ? null : this.api.currentLineColorMatch(wantFg, wantBg);
+                this.setMatches(run === null ? [] : [run]);
                 dispatchCb(cbId, 'tempColorTrigger');
                 fires++;
                 if (max > 0 && fires >= max) {
@@ -1426,7 +1464,12 @@ export class LuaRuntime implements IScriptingRuntime {
                     releaseCb(cbId);
                     this.tempIds.delete(id);
                 }
-            }, 'substring');
+            }, 'substring', {
+                // Named after its id, as every temp trigger is, so
+                // setTriggerStayOpen(tostring(id), n) finds it.
+                name: String(id),
+                accept: () => this.api.currentLineColorMatch(wantFg, wantBg) !== null,
+            });
             this.tempIds.set(id, { kill: () => { unsub(); releaseCb(cbId); }, type: 'trigger', enabled: true });
             return id;
         });
@@ -1480,7 +1523,9 @@ export class LuaRuntime implements IScriptingRuntime {
         // the CHARSET (RFC 2066) decoder MudClient negotiates. The list is built
         // 1-indexed (sparse array → wasmoon lands it at t[1..n]).
         this.lua.global.set('getServerEncoding', () => this.api.getServerEncoding());
-        this.lua.global.set('setServerEncoding', (name: unknown) => this.api.setServerEncoding(String(name ?? '')));
+        // setServerEncoding itself is a Bridge.lua wrapper: Mudlet's type check
+        // and its (nil, refusal) return for a name it does not have.
+        this.lua.global.set('__mudlet_setServerEncoding', (name: unknown) => this.api.setServerEncoding(String(name ?? '')));
         this.lua.global.set('getServerEncodingsList', () => {
             const list = this.api.getServerEncodingsList();
             const out: string[] = [];
@@ -3167,7 +3212,17 @@ end`);
     // ── IScriptingRuntime ─────────────────────────────────────────────────────
 
     load(code: string, name: string): void {
-        this.exec(code, name);
+        // Mudlet's own chunk name for a script, so an error reads as
+        // [string "Script: name"]:LINE: exactly as it does there — package
+        // authors and the install report quote it.
+        this.execInner(code, name, `Script: ${name}`);
+    }
+
+    syntaxError(code: string, chunkName: string): string | null {
+        if (this.inert) return null;
+        const check = this.lua.global.get('__mudlet_syntax_error') as ((c: string, n: string) => unknown) | undefined;
+        const err = check?.(code, chunkName);
+        return typeof err === 'string' ? err : null;
     }
 
     run(code: string, name: string): void {
@@ -3509,18 +3564,18 @@ end`);
     // Both halves of execOnThread can hit a dead module — newThread() allocates,
     // and so does the `finally` that pops it — so the whole thing runs inside
     // the markFatal guard rather than just the chunk.
-    private execInner(code: string, name: string): unknown {
+    private execInner(code: string, name: string, chunkName?: string): unknown {
         if (this.inert) return undefined;
         this.checkMemoryPressure();
         try {
-            return this.execOnThread(code, name);
+            return this.execOnThread(code, name, chunkName);
         } catch (e) {
             if (this.markFatal(e)) return undefined;
             throw e;
         }
     }
 
-    private execOnThread(code: string, name: string): unknown {
+    private execOnThread(code: string, name: string, chunkName?: string): unknown {
         const g = this.lua.global;
         const t = g.newThread();
         const threadIndex = g.getTop();
@@ -3528,7 +3583,8 @@ end`);
             t.loadString('return __exec(...)', '@' + name);
             t.pushValue(code);
             t.pushValue(name);
-            const res = t.resume(2);
+            if (chunkName !== undefined) t.pushValue(chunkName);
+            const res = t.resume(chunkName !== undefined ? 3 : 2);
             if (res.result === LuaReturn.Yield) {
                 // invokeFileDialog suspended the handler; resumeDialogThread
                 // finishes it later and reports its errors. There is no result

@@ -6,7 +6,18 @@ mudlet = {
   mergeTables = { "Char.Status" },
   translations = {
     interfacelanguage = "en_US",
-    en_US = {},
+    -- The direction names Mudlet builds for its interface language at startup
+    -- (TLuaInterpreter::setupLanguageData), which translateTable() falls back
+    -- to. The interface is English here, so each name is its own translation.
+    en_US = (function()
+      local t = {}
+      for _, d in ipairs({
+        "north", "northeast", "east", "southeast", "south", "southwest", "west", "northwest",
+        "up", "down", "in", "out",
+        "n", "ne", "e", "se", "s", "sw", "w", "nw", "u", "d",
+      }) do t[d] = d end
+      return t
+    end)(),
   },
   Locale = {
     prefixOk = { message = "[  OK  ]  - " },

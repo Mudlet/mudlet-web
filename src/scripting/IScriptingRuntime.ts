@@ -50,6 +50,9 @@ export interface IScriptingRuntime {
     load(code: string, name: string): void;
     /** Execute a code chunk once, without match context. Used for timers and keybindings. */
     run(code: string, name: string): void;
+    /** The error compiling `code` gives, without running it, or null when it
+     *  compiles. `chunkName` is used as Lua's chunk name verbatim. */
+    syntaxError?(code: string, chunkName: string): string | null;
     /** Dispatch an event to user-registered handlers. Handlers run synchronously. */
     emitEvent(event: string, args: unknown[]): void;
     /**

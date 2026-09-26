@@ -33,6 +33,10 @@ export interface AddonCommand {
     surfaces: CommandSurface;
     enabled: boolean;
     checked: boolean;
+    /** Mudlet shows a pinned command in every profile's window, not just its
+     *  own. A page here holds one profile, so this is kept and reported but
+     *  there is no second window for it to appear in. */
+    pinned: boolean;
     pulse: { colour: string; altColour: string; intervalMs: number } | null;
 }
 
@@ -220,6 +224,7 @@ export class AddonCommandRegistry {
             surfaces: request.surfaces ?? 'both',
             enabled: true,
             checked: false,
+            pinned: false,
             pulse: null,
         });
         this.notify();
@@ -238,6 +243,10 @@ export class AddonCommandRegistry {
 
     setChecked(id: number, checked: boolean): boolean {
         return this.mutate(id, c => { c.checked = checked; });
+    }
+
+    setPinned(id: number, pinned: boolean): boolean {
+        return this.mutate(id, c => { c.pinned = pinned; });
     }
 
     setIcon(id: number, icon: string): boolean {

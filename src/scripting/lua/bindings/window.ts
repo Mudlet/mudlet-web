@@ -97,7 +97,10 @@ export function installWindowBindings({ lua, api, channel }: BindingContext): vo
     // JS; Bridge.lua unpacks to two values and shapes the miss case.
     lua.global.set('__calcFontSize', (a: unknown, b?: unknown) => {
         let arg: number | string;
-        if (typeof a === 'number') {
+        // No argument at all measures the main window — WINDOW_NAME's default.
+        if (a === undefined || a === null) {
+            arg = 'main';
+        } else if (typeof a === 'number') {
             arg = a;
         } else if (typeof a === 'string') {
             const n = Number(a);

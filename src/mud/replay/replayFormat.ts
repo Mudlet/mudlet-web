@@ -5,7 +5,7 @@
  * The on-disk layout is a bare sequence of chunk records with no header:
  *
  *     int32 BE  offsetMs   milliseconds elapsed since the previous chunk
- *     int32 BE  length     payload byte count (1..REPLAY_MAX_CHUNK)
+ *     int32 BE  length     payload byte count (0..REPLAY_MAX_CHUNK)
  *     bytes     payload    the network data verbatim — post-MCCP-decompression,
  *                          pre-telnet-parsing, IAC sequences and all
  *
@@ -53,7 +53,7 @@ export function replayBytesToLatin1(bytes: Uint8Array): string {
 /** Serialize chunks to the original (current-Mudlet) replay format. Payloads
  *  larger than {@link REPLAY_MAX_CHUNK} are split into continuation records
  *  with a 0ms offset so Mudlet itself can read the file back. Empty payloads
- *  are dropped — Mudlet's loader treats a 0-length record as corruption. */
+ *  are dropped — there is nothing in them to play. */
 export function encodeReplay(chunks: ReplayChunk[]): Uint8Array {
     const records: ReplayChunk[] = [];
     for (const chunk of chunks) {
@@ -106,12 +106,18 @@ function tryParse(bytes: Uint8Array, offsetSize: 4 | 8): ReplayChunk[] | null {
             offsetMs = low;
         }
         const amount = view.getInt32(pos + offsetSize, false);
-        if (offsetMs < 0 || amount < 1 || amount > REPLAY_MAX_CHUNK) return null;
+        // A length of zero is an empty chunk, not corruption: older Mudlets
+        // recorded one whenever a compressed read inflated to nothing, and
+        // Mudlet plays on past it, keeping its delay.
+        if (offsetMs < 0 || amount < 0 || amount > REPLAY_MAX_CHUNK) return null;
         pos += offsetSize + 4;
         if (pos + amount > bytes.length) return null;
         chunks.push({ offsetMs, data: bytes.subarray(pos, pos + amount) });
         pos += amount;
     }
+    // Chunks that are ALL empty are not a recording, they are a run of zero
+    // bytes read as one: nothing would ever reach the console.
+    if (chunks.length > 0 && chunks.every(c => c.data.length === 0)) return null;
     return chunks;
 }
 
