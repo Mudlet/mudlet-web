@@ -111,8 +111,10 @@ export function installCursorBindings({ lua, api }: BindingContext): void {
     // getLines([window,] from, to) — JS array crosses wasmoon as a
     // 0-indexed Lua table; the Bridge.lua wrapper rebuilds it as a
     // 1-indexed sequence so `ipairs` works as Mudlet scripts expect.
-    lua.global.set('__getLines', (a: string | number, b: number, c?: number) => {
-        return c !== undefined
+    // Bridge.lua always forwards three slots, so the two-argument form arrives
+    // with `c` as nil — which wasmoon hands over as null, not undefined.
+    lua.global.set('__getLines', (a: string | number, b: number, c?: number | null) => {
+        return c !== undefined && c !== null
             ? api.getLines(b, c, a as string)
             : api.getLines(a as number, b);
     });

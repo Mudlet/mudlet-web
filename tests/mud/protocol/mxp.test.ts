@@ -66,6 +66,12 @@ describe('MxpParser — formatting & entities', () => {
     expect(r.plain).toBe('<tag> & AB');
   });
 
+  it('resolves &nbsp; to a plain space, as Mudlet does (#175)', () => {
+    const { parser } = makeParser();
+    const r = parser.parseLine(`${SECURE}&nbsp;x&nbsp;`);
+    expect(r.plain).toBe(' x ');
+  });
+
   it('layers MXP formatting on top of interspersed ANSI SGR', () => {
     const { parser } = makeParser();
     // ANSI red, then MXP bold — the 'hi' run should be both.
@@ -211,6 +217,19 @@ describe('MxpParser — robustness', () => {
     const { parser } = makeParser();
     const r = parser.parseLine(`${SECURE}5 < 10 and 10 > 5`);
     expect(r.plain).toBe('5 < 10 and 10 > 5');
+  });
+
+  it('shows a tag MXP does not define as the text it is (#175)', () => {
+    const { parser } = makeParser();
+    const r = parser.parseLine(`${SECURE}X09 <unknowntag>UK</unknowntag> after`);
+    expect(r.plain).toBe('X09 <unknowntag>UK</unknowntag> after');
+  });
+
+  it('still consumes spec tags it does not act on, and custom elements', () => {
+    const { parser } = makeParser();
+    parser.parseLine(`${SECURE}<!ELEMENT hp '<color red>'>`);
+    const r = parser.parseLine(`${SECURE}<p><image foo.png>a<nobr></p> <hp>9</hp>`);
+    expect(r.plain).toBe('a 9');
   });
 
   it('carries open formatting across lines via trailingSnapshot', () => {
