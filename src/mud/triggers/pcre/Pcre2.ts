@@ -26,6 +26,13 @@
  * These are constant-factor wins (the engine is still interpreted — the wasm
  * build has no JIT), but they remove the redundant work the scan was repeating.
  *
+ * A third one is not constant: {@link Pcre2.matchAll} checks the subject is
+ * valid UTF-16 once and skips the check for the rest of the loop. The shipped
+ * `_match` export takes no options argument, so the pcre2 wasm is patched as it
+ * is served (vite-plugin/pcre2Wasm.ts) to take one; without the patch every
+ * call re-checks from its start offset to the end of the line, which makes a
+ * global match quadratic in the line's length.
+ *
  * The alias engine compiles its patterns with it too (PatternEngine). Anything
  * else (e.g. the Lua `rex` module) keeps using the upstream package directly;
  * all of them share the same wasm module instance.
@@ -33,6 +40,10 @@
 import libpcre2 from 'pcre2-wasm-universal/libpcre2';
 
 const PCRE2_NO_MATCH = -1;
+
+/** pcre2_match option: the subject has already been checked for valid UTF, so
+ *  don't scan it again. Only honoured by a patched wasm — see the header. */
+export const PCRE2_NO_UTF_CHECK = 0x40000000;
 
 type Cfunc = (...args: number[]) => number;
 interface CFuncs {
@@ -42,7 +53,9 @@ interface CFuncs {
     destroyCode: Cfunc;
     lastErrorMessage: Cfunc;
     lastErrorOffset: Cfunc;
-    /** match(codePtr, subjectPtr, lengthInCodeUnits, startOffset, matchDataPtr) */
+    /** match(codePtr, subjectPtr, lengthInCodeUnits, startOffset, matchDataPtr, options) —
+     *  `options` reaches pcre2_match only in the patched wasm; the shipped one
+     *  drops the sixth argument and always passes 0. */
     match: Cfunc;
     createMatchData: Cfunc;
     destroyMatchData: Cfunc;
@@ -116,7 +129,7 @@ export default class Pcre2 {
             lastErrorOffset: w('lastErrorOffset', 'number', []),
             // Subject is passed as a pointer ('number'), not an 'array' — we
             // supply the pre-encoded shared buffer, so no per-call stack copy.
-            match: w('match', 'number', ['number', 'number', 'number', 'number', 'number']),
+            match: w('match', 'number', ['number', 'number', 'number', 'number', 'number', 'number']),
             createMatchData: w('createMatchData', 'number', ['number']),
             destroyMatchData: w('destroyMatchData', null, ['number']),
             getOvectorCount: w('getOvectorCount', 'number', ['number']),
@@ -180,12 +193,12 @@ export default class Pcre2 {
      * empty match. That is where TAlias::match's global loop tries after a
      * match that ran to the end of the command.
      */
-    matchFrom(subject: string, startOffset: number): Pcre2Match | null {
+    matchFrom(subject: string, startOffset: number, options = 0): Pcre2Match | null {
         if (this.codePtr === 0) return null;
         ensureLineEncoded(subject);
         if (this.matchData === 0) this.matchData = cfunc.createMatchData(this.codePtr);
 
-        const result = cfunc.match(this.codePtr, bufPtr, bufLen, startOffset, this.matchData);
+        const result = cfunc.match(this.codePtr, bufPtr, bufLen, startOffset, this.matchData, options);
         if (result < 0) {
             if (result === PCRE2_NO_MATCH) return null;
             const err = new Error(`PCRE2 match error ${result}`) as Error & { code?: number };
@@ -237,9 +250,18 @@ export default class Pcre2 {
         // the cap has to scale with the subject. It is only here so that a bug
         // in the loop terminates instead of hanging the tab.
         let safety = 2 * subject.length + 1000;
+        // The first call checks the whole subject is valid UTF-16 — from offset
+        // 0 to the end — and throws if it isn't, as before. Every later call
+        // would repeat that check from its own offset to the end of the line,
+        // once per match, so it is skipped: pcre2_substitute's global loop does
+        // the same. The loop only resumes at the end of a match or a whole code
+        // point further on, so no offset it hands over splits a surrogate pair,
+        // which is the other thing the check guards.
+        let options = 0;
         let iter: Pcre2Match | null;
         while ((start < subject.length || (includeEnd && start === subject.length))
-            && (iter = this.matchFrom(subject, start)) !== null) {
+            && (iter = this.matchFrom(subject, start, options)) !== null) {
+            options = PCRE2_NO_UTF_CHECK;
             results.push(iter);
             const whole = iter[0];
             if (whole.end > whole.start) {

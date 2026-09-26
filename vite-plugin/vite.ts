@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import type { Plugin, PluginOption } from 'vite';
 import { nodePolyfills } from 'vite-plugin-node-polyfills';
+import { patchLibpcre2Wasm } from './pcre2Wasm.js';
 
 /**
  * The `@mudlet/mudlet-web/vite` companion plugin. The library leaves all of its
@@ -36,18 +37,25 @@ function resolveVfsSwPath(): string | null {
 
 /** Serves libpcre2.wasm at the root URL in dev (where emscripten looks for it
  *  when document.currentScript is null) and emits it to the build output.
- *  Resolved from wherever pcre2-wasm-universal lives relative to mudlet. */
+ *  Resolved from wherever pcre2-wasm-universal lives relative to mudlet, and
+ *  patched on the way out so `_match` takes an options argument — without it a
+ *  trigger's match-all is quadratic in the line's length (see pcre2Wasm.ts).
+ *  A binary the patch doesn't recognise goes out as shipped: slower, not wrong. */
 function pcre2WasmPlugin(): Plugin {
     // The wasm file isn't in the package's exports map — resolve the exported
     // ./libpcre2 entry (dist/libpcre2.js) and take its sibling.
     const wasmPath = join(dirname(require.resolve('pcre2-wasm-universal/libpcre2')), 'libpcre2.wasm');
+    const wasm = (): Uint8Array => {
+        const shipped = readFileSync(wasmPath);
+        return patchLibpcre2Wasm(shipped) ?? shipped;
+    };
     return {
         name: 'mudlet:pcre2-wasm',
         configureServer(server) {
             server.middlewares.use((req, res, next) => {
                 if (req.url === '/libpcre2.wasm') {
                     res.setHeader('Content-Type', 'application/wasm');
-                    res.end(readFileSync(wasmPath));
+                    res.end(wasm());
                     return;
                 }
                 next();
@@ -57,7 +65,7 @@ function pcre2WasmPlugin(): Plugin {
             this.emitFile({
                 type: 'asset',
                 fileName: 'libpcre2.wasm',
-                source: readFileSync(wasmPath),
+                source: wasm(),
             });
         },
     };
