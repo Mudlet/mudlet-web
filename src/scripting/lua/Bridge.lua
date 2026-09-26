@@ -2763,7 +2763,12 @@ end
 -- `local ok, err = installPackage(...)`) get the error string instead of nil.
 local function installOutcome(r)
     if type(r) == 'table' then
-        if r.ok then return true end
+        -- A package that installed with scripts or triggers that do not work
+        -- is still installed, and says which alongside the true.
+        if r.ok then
+            if r.error then return true, r.error end
+            return true
+        end
         -- nil, not false: Mudlet refuses through warnArgumentValue, which pushes
         -- nil + the message. Both are falsy so an `if installPackage(p) then`
         -- caller could not tell, but the documented contract is nil and scripts

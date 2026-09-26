@@ -3103,7 +3103,17 @@ end`);
     // ── IScriptingRuntime ─────────────────────────────────────────────────────
 
     load(code: string, name: string): void {
-        this.exec(code, name);
+        // Mudlet's own chunk name for a script, so an error reads as
+        // [string "Script: name"]:LINE: exactly as it does there — package
+        // authors and the install report quote it.
+        this.execInner(code, name, `Script: ${name}`);
+    }
+
+    syntaxError(code: string, chunkName: string): string | null {
+        if (this.inert) return null;
+        const check = this.lua.global.get('__mudlet_syntax_error') as ((c: string, n: string) => unknown) | undefined;
+        const err = check?.(code, chunkName);
+        return typeof err === 'string' ? err : null;
     }
 
     run(code: string, name: string): void {
@@ -3445,18 +3455,18 @@ end`);
     // Both halves of execOnThread can hit a dead module — newThread() allocates,
     // and so does the `finally` that pops it — so the whole thing runs inside
     // the markFatal guard rather than just the chunk.
-    private execInner(code: string, name: string): unknown {
+    private execInner(code: string, name: string, chunkName?: string): unknown {
         if (this.inert) return undefined;
         this.checkMemoryPressure();
         try {
-            return this.execOnThread(code, name);
+            return this.execOnThread(code, name, chunkName);
         } catch (e) {
             if (this.markFatal(e)) return undefined;
             throw e;
         }
     }
 
-    private execOnThread(code: string, name: string): unknown {
+    private execOnThread(code: string, name: string, chunkName?: string): unknown {
         const g = this.lua.global;
         const t = g.newThread();
         const threadIndex = g.getTop();
@@ -3464,7 +3474,8 @@ end`);
             t.loadString('return __exec(...)', '@' + name);
             t.pushValue(code);
             t.pushValue(name);
-            const res = t.resume(2);
+            if (chunkName !== undefined) t.pushValue(chunkName);
+            const res = t.resume(chunkName !== undefined ? 3 : 2);
             if (res.result === LuaReturn.Yield) {
                 // invokeFileDialog suspended the handler; resumeDialogThread
                 // finishes it later and reports its errors. There is no result

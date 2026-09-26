@@ -1122,8 +1122,15 @@ export class ScriptingEngine implements EngineHost {
             // reporting a title the script had replaced, from a config.lua that
             // no longer said it.
             this.moduleInfoOverrides.delete(moduleName);
-            useAppStore.getState().installPackage(id, pkg, data);
+            const problems = this.collectInstallProblems(
+                () => useAppStore.getState().installPackage(id, pkg, data), data.triggers);
             this.raiseEvent('sysReadModuleEvent', [moduleName]);
+            // A reload is Mudlet's module sync (Host::reloadModule installs it
+            // again as one), so it says so the way a sync does — on the event,
+            // with whatever in the module does not work, and never on the
+            // console, where it would come back on every reload.
+            const file = moduleXmlAbsolutePath(pkg, vfs) ?? '';
+            this.raiseEvent('sysSyncInstallModule', problems ? [moduleName, file, problems] : [moduleName, file]);
             return true;
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -1325,16 +1332,17 @@ export class ScriptingEngine implements EngineHost {
             }
             prepared.commit();
             const { manifest, data } = prepared;
-            useAppStore.getState().installPackage(this.connectionId, manifest, data);
-            this.notifyPackageInstalled(manifest.name);
+            const problems = this.collectInstallProblems(
+                () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data.triggers);
+            this.notifyPackageInstalled(manifest.name, undefined, problems);
             this.raiseEvent('sysInstallModule', [manifest.name]);
             this.raiseEvent('sysLuaInstallModule', [manifest.name, path]);
             // Mudlet raises sysSyncInstallModule for modules flagged to sync
             // (so sibling profiles reload them). Mudlet Web is single-profile, so
             // this fires locally for ported scripts that listen on it.
-            if (manifest.sync) this.raiseEvent('sysSyncInstallModule', [manifest.name, path]);
+            if (manifest.sync) this.raiseEvent('sysSyncInstallModule', problems ? [manifest.name, path, problems] : [manifest.name, path]);
             void vfs.flush();
-            return { ok: true, error: null };
+            return { ok: true, error: problems };
         } catch (err) {
             const error = err instanceof Error ? err.message : String(err);
             this.api.printError(`[installModule] ${error}`);
@@ -1809,7 +1817,7 @@ export class ScriptingEngine implements EngineHost {
      * loads the new scripts synchronously inside that commit, so by the time
      * this method runs the package's event handlers are already registered.
      */
-    notifyPackageInstalled(packageName: string, fileName?: string): void {
+    notifyPackageInstalled(packageName: string, fileName?: string, problems?: string | null): void {
         this.flushPendingApplies();
         this.registerPackageFonts(packageName);
         // sysInstall carries the name; the detailed event carries the file it
@@ -1818,6 +1826,13 @@ export class ScriptingEngine implements EngineHost {
         // own resources, or to tell the user where it came from — and had no way
         // to get it. Omitted rather than sent empty when unknown, which is the
         // case for the packages seeded on profile open.
+        // What does not work in the package rides along as the last argument,
+        // for a handler that installs on a script's behalf and reports it.
+        if (problems) {
+            this.raiseEvent('sysInstall', [packageName, problems]);
+            this.raiseEvent('sysInstallPackage', [packageName, fileName ?? '', problems]);
+            return;
+        }
         this.raiseEvent('sysInstall', [packageName]);
         this.raiseEvent('sysInstallPackage', fileName ? [packageName, fileName] : [packageName]);
     }
@@ -2031,10 +2046,11 @@ export class ScriptingEngine implements EngineHost {
             }
             prepared.commit();
             const { manifest, data } = prepared;
-            useAppStore.getState().installPackage(this.connectionId, manifest, data);
-            this.notifyPackageInstalled(manifest.name, path);
+            const problems = this.collectInstallProblems(
+                () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data.triggers);
+            this.notifyPackageInstalled(manifest.name, path, problems);
             void vfs.flush();
-            return { ok: true, error: null };
+            return { ok: true, error: problems };
         } catch (err) {
             const error = err instanceof Error ? err.message : String(err);
             this.api.printError(`[installPackage] ${error}`);
@@ -4190,6 +4206,40 @@ export class ScriptingEngine implements EngineHost {
     // Tag a Lua error with the source entity (kind + id + name + line) so the
     // error log can render a jump-to-source button. `printError` forwards the
     // source through the script.log event into the session buffer.
+    /** Scripts and triggers of the package being installed that do not work,
+     *  gathered while it installs; null when no install is under way. */
+    private installProblems: string[] | null = null;
+
+    /**
+     * Commit a package's (or module's) items with `commit` and answer what in
+     * them does not work, as Host::installPackage does: every script whose body
+     * stopped with an error as it ran, in the order the package lists them,
+     * then every trigger whose body will not even compile — a trigger's body
+     * does not run until its pattern matches, so compiling it is the only way
+     * to find out now. Plain text, joined with "; ", or null when all is well.
+     *
+     * The console is left alone: a script asked for this install and has the
+     * answer to report however it likes, and a module sync would otherwise
+     * repeat it on every save for as long as the module stays broken.
+     */
+    private collectInstallProblems(commit: () => void, triggers: TriggerNode[]): string | null {
+        const outer = this.installProblems;
+        const problems: string[] = [];
+        this.installProblems = problems;
+        try {
+            commit();
+        } finally {
+            this.installProblems = outer;
+        }
+        const rt = this.runtimes.lua;
+        for (const trigger of triggers) {
+            if (trigger.isGroup || !trigger.code || trigger.language !== 'lua') continue;
+            const err = rt?.syntaxError?.(trigger.code, `Trigger: ${trigger.name}`);
+            if (err) problems.push(`${trigger.name}: ${err}`);
+        }
+        return problems.length > 0 ? problems.join('; ') : null;
+    }
+
     private reportEntityError(
         kind: ScriptLogSourceKind,
         id: string,
@@ -4198,6 +4248,10 @@ export class ScriptingEngine implements EngineHost {
     ): void {
         const prefix = formatErrorPrefix(kind, name);
         const msg = describeThrown(err, prefix);
+        // A script that stops with an error while its package is installing
+        // is reported to whoever asked for the install, too — see
+        // collectInstallProblems.
+        if (kind === 'script' && this.installProblems) this.installProblems.push(`${name}: ${msg}`);
         const source: ScriptLogSource = { kind, id, name };
         const line = parseLuaErrorLine(msg);
         if (line !== undefined) source.line = line;
