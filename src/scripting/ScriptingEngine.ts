@@ -8,7 +8,7 @@ import {TriggerEngine, type TriggerNode} from '../mud/triggers/TriggerEngine';
 import type {TimerEngine} from '../mud/timers/TimerEngine';
 import type {KeyEngine, KeyNode} from '../mud/keybindings/KeyEngine';
 import {findReservedKeybindings, reservedKeyNote} from '../mud/keybindings/browserReservedKeys';
-import type {ButtonNode, ScriptNode} from '../storage/schema';
+import type {ButtonNode, ScriptNode, TimerNode} from '../storage/schema';
 import {buildEffectivelyEnabledIds, isColorizing, isEffectivelyEnabled} from '../storage/schema';
 import {useAppStore, connectionUrl, selectProfileField} from '../storage';
 import {isPackageRemovable} from '../branding';
@@ -2718,25 +2718,21 @@ export class ScriptingEngine implements EngineHost {
         const timers = store.connectionTimers[this.connectionId] ?? [];
         const targets = timers.filter(t => t.name === name);
         if (targets.length === 0) return false;
-        // Toggling a GROUP writes its descendants' own switches too, not just
-        // the effective state the readers compute. A timer is a running object,
-        // and Mudlet's tree stops the descendants outright when a folder above
-        // them goes off — "its QTimer really has to stop", as the spec puts it.
-        // Triggers and aliases stay read-time only, having nothing to stop:
-        // they are consulted when a line or a command arrives, and a group that
-        // is off is simply never consulted.
-        const doomed = new Set(targets.filter(t => t.isGroup).map(t => t.id));
-        if (doomed.size > 0) {
-            // Parents always precede their children in store order, so one pass
-            // down the list reaches every descendant.
-            for (const node of timers) {
-                if (node.parentId && doomed.has(node.parentId)) doomed.add(node.id);
-            }
-        }
-        const patches = timers
-            .filter(t => (t.name === name || doomed.has(t.id)) && t.enabled !== enabled)
+        // Only the named timers' own switches are written, as in Mudlet
+        // (TimerUnit::enableTimer/disableTimer set the user state of the named
+        // timer alone). What a group does to the timers beneath it — stopping
+        // them, and starting again the ones whose whole ancestry is back on — is
+        // runtime state: the timer engine's active flags, which applyPermSwitch
+        // moves and the effective-enabled walk in loadPerm turns into running
+        // handles. Writing the descendants' switches as well would switch a
+        // child the user had turned off back on when its folder is enabled.
+        const patches = targets
+            .filter(t => t.enabled !== enabled)
             .map(t => ({ id: t.id, patch: { enabled } }));
         if (patches.length > 0) store.updateTimers(this.connectionId, patches);
+        this.timerEngine.applyPermSwitch(
+            targets.map(t => t.id), enabled,
+            useAppStore.getState().connectionTimers[this.connectionId] ?? []);
         return true;
     }
 
@@ -2911,8 +2907,14 @@ export class ScriptingEngine implements EngineHost {
                 default:        return [];
             }
         })();
+        // A timer answers from the engine's runtime active flag, not its switch:
+        // Mudlet reports TTimer::isActive(), which an enabled timer imported
+        // under a disabled folder does not have, and an explicit enableTimer()
+        // raises regardless of the folder (mudlet-web#217).
         const isOn = (item: { enabled: boolean; parentId: string | null; id: string }): boolean =>
-            checkAncestors ? isEffectivelyEnabled(item, list) : item.enabled;
+            type === 'timer'
+                ? this.timerEngine.permReportsActive(item as TimerNode, list as TimerNode[], checkAncestors)
+                : checkAncestors ? isEffectivelyEnabled(item, list) : item.enabled;
         if (typeof nameOrId === 'number' && Number.isFinite(nameOrId)) {
             for (const item of list) {
                 const n = this.uuidToNumericId.get(item.id);
@@ -3077,6 +3079,10 @@ export class ScriptingEngine implements EngineHost {
                 || ((type === 'key' || type === 'keybind') && this.api.keys.hasTemp(id));
             return isTemp ? true : null;
         }
+        // Timers ask the ancestors' runtime active flags (TTimer::ancestorsActive).
+        if (type.toLowerCase() === 'timer') {
+            return this.timerEngine.permAncestorsActive(start as TimerNode, list as TimerNode[]);
+        }
         let node = start.parentId ? byUuid.get(start.parentId) : undefined;
         while (node) {
             if (!node.enabled) return false;
@@ -3103,12 +3109,12 @@ export class ScriptingEngine implements EngineHost {
         const keys = store.connectionKeybindings[cid] ?? [];
         const scripts = store.connectionScripts[cid] ?? [];
 
-        const tally = (list: BaseTreeNode[], tempCount: number) => {
+        const tally = (list: BaseTreeNode[], tempCount: number, active = list.filter(i => !i.isGroup && i.enabled).length) => {
             const items = list.filter(i => !i.isGroup);
             return {
                 total: items.length + tempCount,
                 temp: tempCount,
-                active: items.filter(i => i.enabled).length + tempCount,
+                active: active + tempCount,
             };
         };
 
@@ -3125,7 +3131,8 @@ export class ScriptingEngine implements EngineHost {
         return {
             triggers: { ...tally(triggers, tempTriggers), patterns: { total: patternsTotal, active: patternsActive } },
             aliases: tally(aliases, this.aliasEngine.tempCount),
-            timers: tally(timers, this.timerEngine.tempCount),
+            // Mudlet counts a timer by the same state isActive reports.
+            timers: tally(timers, this.timerEngine.tempCount, this.timerEngine.countPermActive(timers)),
             keys: tally(keys, this.keyEngine.tempCount),
             scripts: tally(scripts, 0),
             // Every label carrying a movie counts; the ones actually running
