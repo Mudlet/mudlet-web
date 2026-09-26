@@ -6367,6 +6367,14 @@ export class ScriptingAPI {
         if (cur && cur.top === next.top && cur.right === next.right
             && cur.bottom === next.bottom && cur.left === next.left) return;
         useAppStore.getState().patchConnectionProfile(this.connectionId, { outputBorders: next });
+        // Host::setBorders raises sysWindowResizeEvent at the unchanged window
+        // size whenever a border moves: the console inside it did resize, and
+        // Adjustable.Container's resize handler is how a container attached to
+        // the facing border re-measures (or detaches) before that border is
+        // written. Borders carve insets out of the viewport without resizing it,
+        // so the viewport's ResizeObserver never reports this one.
+        const [w, h] = this.getMainWindowSize();
+        this.host.raiseEvent('sysWindowResizeEvent', [Math.round(w), Math.round(h)]);
     }
 
     private normalizeBorder(n: unknown): number | null {
