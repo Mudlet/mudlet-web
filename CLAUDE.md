@@ -31,6 +31,13 @@ Mudlet Web is a **web-based MUD (Multi-User Dungeon) client** built with React +
 
 Key libraries: `wasmoon-lua5.1` (WASM-compiled Lua 5.1), `pcre2-wasm-universal` (PCRE regex for triggers/aliases), `@sqlite.org/sqlite-wasm` (the `db:*` API), `@zenfs/core` + `@zenfs/dom` (the profile VFS), `mudlet-map-binary-reader`/`-renderer`/`-editor` (map files), `zustand` (state), `pako`/`fflate` (compression), `@codemirror/*` (the script editor), `dompurify` + `marked` (HTML/markdown panels).
 
+> **`pcre2-wasm-universal`'s wasm is byte-patched at build time** (`vite-plugin/pcre2Wasm.ts`, mirrored in
+> `vitest.config.ts`) so `_match` takes an options argument and match loops can pass `PCRE2_NO_UTF_CHECK` —
+> without it every match-all on a long line is quadratic. The patch expects the exact bytes of the pinned build
+> and ships an unrecognised binary unchanged, so **bumping the package means re-deriving the patch** (see
+> "UPGRADING" in `pcre2Wasm.ts`). `tests/triggers/pcreMatchAllLinear.test.ts` fails with "pcre2 wasm patch did
+> not apply" until you do.
+
 > **`konva`, `i18next` and `react-i18next` are dependencies nothing here imports** — do not sweep them
 > as unused. `mudlet-map-editor` (2.0.0 and up) leaves every library it renders with external and
 > declares it as a peer dependency, so the host tree has to supply them; Yarn 1 does not install peers

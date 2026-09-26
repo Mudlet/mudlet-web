@@ -36,6 +36,11 @@
  * The alias engine compiles its patterns with it too (PatternEngine). Anything
  * else (e.g. the Lua `rex` module) keeps using the upstream package directly;
  * all of them share the same wasm module instance.
+ *
+ * Bumping pcre2-wasm-universal means re-deriving that wasm patch for the new
+ * binary — see "UPGRADING" in vite-plugin/pcre2Wasm.ts. An unrecognised binary
+ * still works, just quadratically, and tests/triggers/pcreMatchAllLinear.test.ts
+ * fails so the bump can't land without it.
  */
 import libpcre2 from 'pcre2-wasm-universal/libpcre2';
 
