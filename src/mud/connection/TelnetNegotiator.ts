@@ -3,44 +3,44 @@ import {
     buildNewEnvironVars,
     computeMtts,
     encodeMnesIs,
+    encodeMsdp,
     encodeNaws,
-    EOR_DO,
     GMCP_IAC,
     GMCP_SB,
     GMCP_SE,
-    LINEMODE_DONT,
-    LINEMODE_WONT,
-    NAWS_WILL,
+    MSDP_VAL,
+    MSDP_VAR,
     NEW_ENVIRON_USERVAR,
     NEW_ENVIRON_VAR,
     OPT_TTYPE,
     parseMnesRequest,
     selectMnesVars,
     MNES_UNMAINTAINED,
-    SGA_DONT,
+    OPT_MSDP as OPT_MSDP_BYTE,
+    toByteString,
     TTYPE_IS,
     TTYPE_SEND,
-    TTYPE_WILL,
     type MnesVar,
 } from "../protocol";
+import { fromByteString } from "../protocol/byteString";
 import { CLIENT_NAME, CLIENT_VERSION, TERMINAL_TYPE } from "../../version";
 import type { MudClientEvents } from "../events";
 import { debugMspEnabled, debugTelnetEnabled } from "./telnetDebug";
 
 // Telnet command bytes.
 const IAC = 0xFF;
-const SE = 0xF0, SB = 0xFA, WILL = 0xFB, WONT = 0xFC, DO = 0xFD, DONT = 0xFE;
+const SE = 0xF0, EOR = 0xEF, GA = 0xF9, SB = 0xFA, WILL = 0xFB, WONT = 0xFC, DO = 0xFD, DONT = 0xFE;
 
 // Telnet option bytes the negotiator handles natively (or deliberately leaves
-// to a sibling handler). Everything else goes through the supported-options
-// registry or is surfaced as a `telnet.event`.
-const OPT_ECHO = 1, OPT_SGA = 3, OPT_TTYPE_NUM = 24, OPT_EOR = 25, OPT_NAWS = 31,
+// to a sibling handler). Everything else gets the generic answer, which the
+// supported-options registry and STATUS / TIMING-MARK adjust.
+const OPT_ECHO = 1, OPT_SGA = 3, OPT_STATUS = 5, OPT_TIMING_MARK = 6, OPT_TTYPE_NUM = 24, OPT_EOR = 25, OPT_NAWS = 31,
     OPT_LINEMODE = 34, OPT_NEW_ENVIRON_NUM = 39, OPT_CHARSET_NUM = 42, OPT_MSDP = 69,
     OPT_MSSP = 70, OPT_MCCP1 = 85, OPT_MCCP2 = 86, OPT_MSP = 90, OPT_MXP = 91,
     OPT_TELNET_102_NUM = 102, OPT_GMCP = 201;
 
-/** Options the client negotiates natively — excluded from `sysTelnetEvent`
- *  so script handlers see only "everything else". */
+/** Options the client negotiates natively, each by its own rule below.
+ *  Everything else takes the generic answer (see `respondToOtherOption`). */
 const HARDCODED = new Set<number>([
     OPT_ECHO, OPT_SGA, OPT_TTYPE_NUM, OPT_EOR, OPT_NAWS, OPT_LINEMODE, OPT_NEW_ENVIRON_NUM,
     OPT_CHARSET_NUM, OPT_MSDP, OPT_MSSP, OPT_MCCP1, OPT_MCCP2, OPT_MSP, OPT_MXP,
@@ -75,16 +75,6 @@ const PROTOCOL_NAMES: ReadonlyMap<number, string> = new Map([
     [OPT_TELNET_102_NUM, 'channel102'],
     [OPT_GMCP, 'GMCP'],
 ]);
-
-/** The answer that takes `opt` up, from whichever direction the server asked:
- *  a WILL is agreed to with DO, a DO with WILL. */
-const agreement = (cmd: number, opt: number): string =>
-    String.fromCharCode(IAC, cmd === WILL ? DO : WILL, opt);
-
-/** The answer that turns `opt` down: DONT to a WILL, WONT to a DO. Silence is
- *  never an option — a strict server waits on the reply before it continues. */
-const refusal = (cmd: number, opt: number): string =>
-    String.fromCharCode(IAC, cmd === WILL ? DONT : WONT, opt);
 
 /**
  * In-band MXP line-mode sequence `ESC[<n>z`. Its presence means the server is
@@ -146,12 +136,12 @@ export interface TelnetNegotiatorFlags {
 
 export interface TelnetNegotiatorHooks {
     sendRaw(data: string): void;
-    /** GMCP came up — send the Core.Hello / Core.Supports.Set handshake
-     *  (latched by the owner so a re-offer doesn't re-announce). */
-    onGmcpNegotiated(): void;
-    /** CHARSET came up — kick off the client-driven REQUEST listing our
-     *  preferred encodings. */
-    onCharsetNegotiated(): void;
+    /** GMCP came up — send the Core.Hello / Core.Supports.Set handshake.
+     *  `offered` is true when the server offered it (IAC WILL GMCP), which
+     *  Mudlet answers with the handshake every time, re-offers included — a
+     *  server that switched GMCP off and on again has forgotten our modules.
+     *  False for a server's IAC DO GMCP. */
+    onGmcpNegotiated(offered: boolean): void;
     /** Current inbound encoding (IANA label) — drives the MTTS UTF-8 bit and
      *  the MNES/NEW-ENVIRON CHARSET variable. */
     getEncoding(): string;
@@ -165,7 +155,7 @@ export interface TelnetNegotiatorHooks {
  * Telnet option negotiation for a MUD session. Owns the WILL/WONT/DO/DONT
  * response policy, the per-session negotiation latches (TTYPE cycle position,
  * MXP started, NAWS accepted), the Mudlet `addSupportedTelnetOption` registry,
- * and the `telnet.event` (sysTelnetEvent) surface for everything unrecognized.
+ * and the `telnet.event` (sysTelnetEvent) surface raised for every command.
  *
  * `processFrame` makes a single position-aware walk over each incoming frame's
  * IAC sequences — skipping subnegotiation payloads and escaped `IAC IAC` bytes
@@ -181,13 +171,6 @@ export class TelnetNegotiator {
      *  own response logic. Survives reconnects (matches the old client-field
      *  lifetime: the registry lives as long as the client instance). */
     private readonly supportedTelnetOptions = new Set<number>();
-    /** Per-incoming-frame dedupe. Keys below 0x100 mark a natively-handled
-     *  option as already answered this frame (mirroring the old one-response-
-     *  per-frame `includes()` behavior); keys `(cmd << 8) | opt` mark a
-     *  `telnet.event` as already raised. Telnet sequences can repeat across
-     *  frames, so we only suppress duplicates within a single frame to avoid
-     *  event storms. */
-    private readonly frameSeen = new Set<number>();
     /** Trailing bytes of a frame that might be the start of a split IAC
      *  sequence (a bare IAC, IAC WILL with no option byte yet, or an IAC SB
      *  whose IAC SE hasn't arrived) — prepended to the next frame so
@@ -242,6 +225,16 @@ export class TelnetNegotiator {
      *  @see PROTOCOL_NAMES */
     private readonly enabledProtocols = new Set<number>();
 
+    /** Mudlet's four per-option bitsets (`cTelnet::sendTelnetOption` keeps
+     *  them), which decide whether a WONT/DONT or a repeated offer is answered:
+     *  `hisOn` — we sent DO; `heAnnounced` — the server has sent WILL or WONT;
+     *  `myOn` — we sent WILL; `announced` — we have sent WILL or WONT. Cleared by
+     *  reset(). */
+    private readonly hisOn = new Set<number>();
+    private readonly heAnnounced = new Set<number>();
+    private readonly myOn = new Set<number>();
+    private readonly announced = new Set<number>();
+
     constructor(
         private readonly flags: TelnetNegotiatorFlags,
         private readonly eventBus: EventBus<MudClientEvents>,
@@ -250,7 +243,6 @@ export class TelnetNegotiator {
 
     /** Clear the per-connection latches (call on connect). */
     reset(): void {
-        this.frameSeen.clear();
         this.carry = "";
         this.ttypeStep = 0;
         this.mxpStarted = false;
@@ -261,6 +253,10 @@ export class TelnetNegotiator {
         this.negotiationOrder = [];
         this.kaVirDetected = false;
         this.enabledProtocols.clear();
+        this.hisOn.clear();
+        this.heAnnounced.clear();
+        this.myOn.clear();
+        this.announced.clear();
     }
 
     /** Whether MSP was actually negotiated with the server this connection —
@@ -307,7 +303,7 @@ export class TelnetNegotiator {
      *  Harmless if the server doesn't support it (it answers DONT or ignores us). */
     onSocketOpen(): void {
         if (this.flags.nawsEnabled && !this.nawsWillSent) {
-            this.hooks.sendRaw(NAWS_WILL);
+            this.sendOption(WILL, OPT_NAWS);
             this.nawsWillSent = true;
         }
     }
@@ -339,14 +335,13 @@ export class TelnetNegotiator {
     }
 
     /** Walk one incoming frame (post-MCCP Latin-1 byte-string) for telnet IAC
-     *  sequences: answer WILL/WONT/DO/DONT per the option policy, auto-respond
-     *  to registered supported options, raise `telnet.event` for everything
-     *  else (including SB of unrecognized options), and watch for in-band MXP
-     *  line-mode sequences on servers that skip the option-91 handshake. */
+     *  sequences: answer WILL/WONT/DO/DONT per the option policy, raise
+     *  `telnet.event` for every command but GA/EOR (as Mudlet's
+     *  `processTelnetCommand` does), and watch for in-band MXP line-mode
+     *  sequences on servers that skip the option-91 handshake. */
     processFrame(data: string): void {
         const buf = this.carry + data;
         this.carry = "";
-        this.frameSeen.clear();
         const n = buf.length;
         let i = 0;
         while (i < n) {
@@ -370,17 +365,21 @@ export class TelnetNegotiator {
                     }
                 }
                 if (end === -1) { this.carry = buf.slice(i); break; }
-                if (i + 2 < n) this.noticeSubnegotiation(buf.charCodeAt(i + 2));
+                this.emitTelnetEvent(buf.slice(i, end + 2));
                 i = end + 2;
                 continue;
             }
             if (cmd >= WILL && cmd <= DONT) {
                 if (i + 2 >= n) { this.carry = buf.slice(i); break; } // split negotiation — wait
                 this.handleNegotiationCommand(cmd, buf.charCodeAt(i + 2));
+                this.emitTelnetEvent(buf.slice(i, i + 3));
                 i += 3;
                 continue;
             }
-            i += 2; // 2-byte command (GA, EOR, NOP, …) — nothing to negotiate
+            // 2-byte command (NOP, AYT, …) — nothing to negotiate. A stray SE
+            // with no SB before it is dropped by Mudlet without an event.
+            if (cmd !== SE) this.emitTelnetEvent(buf.slice(i, i + 2));
+            i += 2;
         }
 
         if (this.flags.mxpEnabled && this.flags.mxpInBandDetectionEnabled
@@ -396,24 +395,65 @@ export class TelnetNegotiator {
         }
     }
 
-    /** One WILL/WONT/DO/DONT for `opt`. Natively-handled options are answered
-     *  at most once per frame (matching the old `includes()`-based scan); the
-     *  supported-options registry answers every occurrence; anything left is
-     *  surfaced as a `telnet.event`. */
+    /** One WILL/WONT/DO/DONT for `opt`. Natively-handled options follow their
+     *  own rules; everything else gets Mudlet's generic answer. Every
+     *  occurrence is answered on its merits — no per-frame dedupe — so a
+     *  server that turns an option off and on again within one packet is
+     *  answered for each step, as Mudlet does. */
     private handleNegotiationCommand(cmd: number, opt: number): void {
         this.trackKaVirNegotiation(cmd, opt);
+        if (cmd === WILL) this.heAnnounced.add(opt);
         if (HARDCODED.has(opt)) {
-            if (this.frameSeen.has(opt)) return;
-            this.frameSeen.add(opt);
             this.respondToKnownOption(cmd, opt);
             return;
         }
-        if (this.supportedTelnetOptions.has(opt)) {
-            if (cmd === WILL) this.hooks.sendRaw(String.fromCharCode(IAC, DO, opt));
-            if (cmd === DO) this.hooks.sendRaw(String.fromCharCode(IAC, WILL, opt));
-            return;
+        this.respondToOtherOption(cmd, opt);
+    }
+
+    /** Send `IAC <cmd> <opt>` and keep the four option bitsets in step, as
+     *  Mudlet's `cTelnet::sendTelnetOption` does. */
+    private sendOption(cmd: number, opt: number): void {
+        switch (cmd) {
+            case WILL: this.announced.add(opt); this.myOn.add(opt); break;
+            case WONT: this.announced.add(opt); this.myOn.delete(opt); break;
+            case DO: this.hisOn.add(opt); break;
+            case DONT: this.hisOn.delete(opt); break;
         }
-        this.emitTelnetEvent(cmd, opt);
+        this.hooks.sendRaw(String.fromCharCode(IAC, cmd, opt));
+    }
+
+    /** The answer every option gets once nothing specific to it applies —
+     *  Mudlet's fall-through branches in `processTelnetCommand`:
+     *   - WILL: DO for STATUS, TERMINAL-TYPE and anything registered with
+     *     `addSupportedTelnetOption`, DONT for the rest — unless we already
+     *     sent DO, in which case the offer is only a repeat.
+     *   - DO: WONT to TIMING-MARK always; otherwise, unless we already said
+     *     WILL, WILL for STATUS, TERMINAL-TYPE and registered options, WONT
+     *     for the rest.
+     *   - WONT: DONT when we had it on or the server had announced it before
+     *     (RFC 854's acknowledgement), silence for a first unprompted WONT.
+     *   - DONT: WONT when we had it on or have never said anything about it.
+     *  Silence to an offer is what leaves a strict server waiting. */
+    private respondToOtherOption(cmd: number, opt: number): void {
+        const accepted = opt === OPT_STATUS || opt === OPT_TTYPE_NUM || this.supportedTelnetOptions.has(opt);
+        switch (cmd) {
+            case WILL:
+                if (!this.hisOn.has(opt)) this.sendOption(accepted ? DO : DONT, opt);
+                return;
+            case DO:
+                if (opt === OPT_TIMING_MARK) this.sendOption(WONT, opt);
+                else if (!this.myOn.has(opt)) this.sendOption(accepted ? WILL : WONT, opt);
+                return;
+            case WONT:
+                if (this.hisOn.has(opt) || this.heAnnounced.has(opt)) this.sendOption(DONT, opt);
+                this.heAnnounced.add(opt);
+                return;
+            case DONT:
+                if (this.myOn.has(opt) || !this.announced.has(opt)) this.sendOption(WONT, opt);
+                this.announced.add(opt);
+                this.myOn.delete(opt);
+                return;
+        }
     }
 
     /** Mudlet `cTelnet::trackKaVirNegotiation`. Records the option of each
@@ -460,14 +500,19 @@ export class TelnetNegotiator {
                     break;
             }
             if (PROTOCOL_NAMES.has(opt)) this.withdrawProtocol(opt);
+            // Then acknowledge it like any other option. WONT ECHO is the one
+            // exception: EchoHandler answers it, with the anomaly guard.
+            if (!(cmd === WONT && opt === OPT_ECHO)) this.respondToOtherOption(cmd, opt);
             return;
         }
         switch (opt) {
             case OPT_ECHO:
             case OPT_MCCP1:
             case OPT_MCCP2:
-                // Negotiated by EchoHandler / MccpHandler, which see the same
-                // frame independently — nothing to do here.
+                // The server's WILL is negotiated by EchoHandler / MccpHandler,
+                // which see the same frame independently. A DO asks us to echo
+                // or compress, which we don't: refused like any other option.
+                if (cmd === DO) this.respondToOtherOption(cmd, opt);
                 return;
             case OPT_SGA:
                 // Server offers Suppress-Go-Ahead (IAC WILL SGA, option 3) →
@@ -478,9 +523,13 @@ export class TelnetNegotiator {
                 // We record the request — SGA plus active server echo is the
                 // character-at-a-time signature the owner watches for.
                 if (cmd === WILL) {
-                    this.hooks.sendRaw(SGA_DONT);
+                    this.sendOption(DONT, opt);
                     this.serverRequestedSGA = true;
                     this.eventBus.emit('protocol.rejected', 'SUPPRESS_GO_AHEAD');
+                } else {
+                    // Asked to suppress go-ahead ourselves: nothing we send
+                    // uses GA, so this is refused like any other option.
+                    this.respondToOtherOption(cmd, opt);
                 }
                 return;
             case OPT_LINEMODE:
@@ -489,13 +538,8 @@ export class TelnetNegotiator {
                 // line editing and never delegates it, so — like Mudlet — we
                 // refuse in both directions: DONT to the server's WILL, WONT
                 // to its DO.
-                if (cmd === WILL) {
-                    this.hooks.sendRaw(LINEMODE_DONT);
-                    this.eventBus.emit('protocol.rejected', 'LINEMODE');
-                } else if (cmd === DO) {
-                    this.hooks.sendRaw(LINEMODE_WONT);
-                    this.eventBus.emit('protocol.rejected', 'LINEMODE');
-                }
+                this.sendOption(cmd === WILL ? DONT : WONT, opt);
+                this.eventBus.emit('protocol.rejected', 'LINEMODE');
                 return;
             case OPT_EOR:
                 // Server announces it will mark prompts with IAC EOR (telnet
@@ -503,7 +547,8 @@ export class TelnetNegotiator {
                 // markers then drive prompt detection the same way IAC GA does.
                 // Many Diku/Circle-derived servers (e.g. The Last Outpost) won't
                 // send the login prompt until this option is acknowledged.
-                if (cmd === WILL) this.hooks.sendRaw(EOR_DO);
+                if (cmd === WILL) this.sendOption(DO, opt);
+                else this.respondToOtherOption(cmd, opt);
                 return;
             case OPT_TTYPE_NUM:
                 // Server asks us to identify our terminal (IAC DO TTYPE).
@@ -513,47 +558,59 @@ export class TelnetNegotiator {
                 // MSDP/GMCP until this handshake completes. Agreed whether or
                 // not MTTS is on: that toggle only trims the SEND cycle below,
                 // and silence left the server unable to identify us (#188).
-                if (cmd === DO) this.hooks.sendRaw(TTYPE_WILL);
+                // The server offering its own terminal type (WILL) is taken up
+                // by the generic answer, as in Mudlet.
+                if (cmd === DO) this.sendOption(WILL, opt);
+                else this.respondToOtherOption(cmd, opt);
                 return;
-            case OPT_NAWS:
+            case OPT_NAWS: {
                 // The refusal here is announced whether or not NAWS was on —
                 // Mudlet raises sysProtocolDisabled from its "user preference"
                 // branch unconditionally, so a script waiting on window-size
-                // reporting learns the profile turned the offer down.
-                if (!f.nawsEnabled) {
-                    if (cmd === DO) {
-                        this.hooks.sendRaw(String.fromCharCode(IAC, WONT, OPT_NAWS));
-                        this.enabledProtocols.delete(OPT_NAWS);
-                        this.eventBus.emit('protocol.disabled', 'NAWS');
-                    }
+                // reporting learns the profile turned the offer down. NAWS is
+                // ours to report, so a server's WILL NAWS takes the generic
+                // refusal.
+                if (cmd !== DO) {
+                    this.respondToOtherOption(cmd, opt);
                     return;
                 }
-                if (cmd === DO) {
-                    // Server accepted our WILL NAWS (or requested it outright)
-                    // → start reporting window size. If the server initiated
-                    // without seeing our WILL (rare), send WILL first. Then
-                    // push the current dimensions and re-send on every resize.
-                    if (!this.nawsWillSent) {
-                        this.hooks.sendRaw(NAWS_WILL);
-                        this.nawsWillSent = true;
-                    }
-                    const firstAccept = !this.nawsNegotiated;
-                    this.nawsNegotiated = true;
-                    this.enabledProtocols.add(OPT_NAWS);
-                    this.eventBus.emit('protocol.enabled', 'NAWS');
-                    this.sendNawsSize();
-                    if (firstAccept) this.eventBus.emit('naws.negotiated');
+                if (!f.nawsEnabled) {
+                    this.sendOption(WONT, opt);
+                    this.enabledProtocols.delete(OPT_NAWS);
+                    this.eventBus.emit('protocol.disabled', 'NAWS');
+                    return;
                 }
+                // Server accepted our WILL NAWS (or requested it outright)
+                // → start reporting window size. If the server initiated
+                // without seeing our WILL, or after we took it back, send
+                // WILL first. Then push the current dimensions and re-send
+                // on every resize.
+                if (!this.myOn.has(OPT_NAWS)) {
+                    this.sendOption(WILL, OPT_NAWS);
+                    this.nawsWillSent = true;
+                }
+                const firstAccept = !this.nawsNegotiated;
+                this.nawsNegotiated = true;
+                this.enabledProtocols.add(OPT_NAWS);
+                this.eventBus.emit('protocol.enabled', 'NAWS');
+                this.sendNawsSize();
+                if (firstAccept) this.eventBus.emit('naws.negotiated');
                 return;
+            }
             case OPT_NEW_ENVIRON_NUM:
                 // NEW-ENVIRON is asymmetric — the client owns the variables —
-                // so we only handle the DO direction (a WILL would mean the
-                // server has env vars, which this protocol doesn't use). MNES
-                // and plain NEW-ENVIRON share telnet option 39 and differ only
-                // in the variable set reported (handled in
-                // handleNewEnvironSubneg); either toggle being on means we
-                // answer the option. MNES takes precedence when both are on.
-                if (cmd !== DO) return;
+                // so only the DO direction starts the MNES exchange. A WILL is
+                // still answered by the same toggle, as Mudlet does, so a
+                // server offering it isn't left waiting. MNES and plain
+                // NEW-ENVIRON share telnet option 39 and differ only in the
+                // variable set reported (handled in handleNewEnvironSubneg);
+                // either toggle being on means we answer the option. MNES
+                // takes precedence when both are on.
+                if (cmd !== DO) {
+                    if (f.mnesEnabled || f.newEnvironEnabled) this.enableProtocol(cmd, opt);
+                    else this.refuseProtocol(cmd, opt);
+                    return;
+                }
                 if (f.mnesEnabled || f.newEnvironEnabled) {
                     this.enableProtocol(cmd, opt);
                     this.eventBus.emit('mnes.negotiated', f.mnesEnabled ? 'MNES' : 'NEW-ENVIRON');
@@ -566,17 +623,16 @@ export class TelnetNegotiator {
                 }
                 return;
             case OPT_CHARSET_NUM:
-                // Accept CHARSET from either direction and drive the exchange
-                // by proactively sending our REQUEST listing preferred
-                // encodings (UTF-8 first). Mudlet does the same — without the
-                // REQUEST many servers stay on their default codec and never
-                // switch.
+                // Accept CHARSET from either direction and wait for the
+                // server's REQUEST, which CharsetHandler answers. Mudlet never
+                // sends a REQUEST of its own ("Mudlet does not initiate
+                // negotiations yet", ctelnet.cpp), and one crossing the
+                // server's is a collision RFC 2066 makes the client lose.
                 if (!f.charsetEnabled) {
                     this.refuseProtocol(cmd, opt);
                     return;
                 }
                 this.enableProtocol(cmd, opt);
-                this.hooks.onCharsetNegotiated();
                 return;
             case OPT_MSDP:
                 // Telnet negotiation is symmetric and many servers (e.g.
@@ -586,7 +642,10 @@ export class TelnetNegotiator {
                     this.refuseProtocol(cmd, opt);
                     return;
                 }
-                this.enableProtocol(cmd, opt);
+                // A server's offer is answered, after the DO, with the MSDP
+                // start sequence Mudlet sends: ask for the command list, then
+                // report our name and version. A server's DO gets only WILL.
+                this.enableProtocol(cmd, opt, cmd === WILL ? () => this.sendMsdpHello() : undefined);
                 this.eventBus.emit('msdp.negotiated');
                 return;
             case OPT_MSSP:
@@ -637,7 +696,7 @@ export class TelnetNegotiator {
             case OPT_GMCP:
                 // Symmetric: server offers (WILL) or requests (DO) GMCP; either
                 // way we agree and announce ourselves via the Core.Hello
-                // handshake (latched by the owner). The handshake goes out
+                // handshake (see onGmcpNegotiated). The handshake goes out
                 // *before* sysProtocolEnabled is raised, as in Mudlet's
                 // ctelnet.cpp: Core.Supports.Set replaces the server's whole
                 // module list, so a `Core.Supports.Add` a script sends from its
@@ -646,7 +705,7 @@ export class TelnetNegotiator {
                     this.refuseProtocol(cmd, opt);
                     return;
                 }
-                this.enableProtocol(cmd, opt, () => this.hooks.onGmcpNegotiated());
+                this.enableProtocol(cmd, opt, () => this.hooks.onGmcpNegotiated(cmd === WILL));
                 this.eventBus.emit('gmcp.negotiated');
                 return;
         }
@@ -659,7 +718,7 @@ export class TelnetNegotiator {
      *  on the wire but before the event, for handshakes that must precede
      *  anything a script sends in response. */
     private enableProtocol(cmd: number, opt: number, beforeAnnounce?: () => void): void {
-        this.hooks.sendRaw(agreement(cmd, opt));
+        this.sendOption(cmd === WILL ? DO : WILL, opt);
         this.enabledProtocols.add(opt);
         beforeAnnounce?.();
         this.eventBus.emit('protocol.enabled', PROTOCOL_NAMES.get(opt) ?? String(opt));
@@ -669,7 +728,7 @@ export class TelnetNegotiator {
      *  The refusal is announced only if we had the option on: declining one
      *  that was never taken up is not news, and Mudlet guards it the same way. */
     private refuseProtocol(cmd: number, opt: number): void {
-        this.hooks.sendRaw(refusal(cmd, opt));
+        this.sendOption(cmd === WILL ? DONT : WONT, opt);
         if (this.enabledProtocols.delete(opt)) {
             this.eventBus.emit('protocol.disabled', PROTOCOL_NAMES.get(opt) ?? String(opt));
         }
@@ -681,23 +740,31 @@ export class TelnetNegotiator {
         this.eventBus.emit('protocol.disabled', PROTOCOL_NAMES.get(opt) ?? String(opt));
     }
 
-    /** Raise `telnet.event` for an SB of an option we neither handle natively
-     *  nor auto-negotiate (type 5 in Mudlet's sysTelnetEvent mapping). */
-    private noticeSubnegotiation(opt: number): void {
-        if (HARDCODED.has(opt) || this.supportedTelnetOptions.has(opt)) return;
-        this.emitTelnetEvent(SB, opt);
+    /** Mudlet's MSDP start sequence, sent after `IAC DO MSDP`:
+     *  `LIST COMMANDS`, then `CLIENT_NAME` / `CLIENT_VERSION` in one frame. */
+    private sendMsdpHello(): void {
+        this.hooks.sendRaw(encodeMsdp('LIST', ['COMMANDS']));
+        this.hooks.sendRaw(GMCP_IAC + GMCP_SB + OPT_MSDP_BYTE
+            + MSDP_VAR + 'CLIENT_NAME' + MSDP_VAL + toByteString(CLIENT_NAME)
+            + MSDP_VAR + 'CLIENT_VERSION' + MSDP_VAL + toByteString(CLIENT_VERSION)
+            + GMCP_IAC + GMCP_SE);
     }
 
-    /** `type` mirrors Mudlet's TLuaInterpreter mapping: 1=WILL, 2=WONT, 3=DO,
-     *  4=DONT, 5=SB. Deduped per (command, option) within the frame so a server
-     *  that spams the same option doesn't flood handlers. */
-    private emitTelnetEvent(cmd: number, opt: number): void {
-        const key = (cmd << 8) | opt;
-        if (this.frameSeen.has(key)) return;
-        this.frameSeen.add(key);
-        const typeNum = cmd === WILL ? 1 : cmd === WONT ? 2 : cmd === DO ? 3 : cmd === DONT ? 4 : 5;
-        const cmdName = cmd === WILL ? 'WILL' : cmd === WONT ? 'WONT' : cmd === DO ? 'DO' : cmd === DONT ? 'DONT' : 'SB';
-        this.eventBus.emit('telnet.event', typeNum, opt, `IAC ${cmdName} ${opt}`);
+    /** Raise `telnet.event` (Mudlet's `sysTelnetEvent`) for one complete
+     *  command, `raw` being its bytes from the IAC on. Mirrors the tail of
+     *  `cTelnet::processTelnetCommand`: raised for every command — handled
+     *  options included — except GA and EOR, which end nearly every prompt.
+     *  `type` is the command byte itself (251 WILL, 250 SB, …), `option` the
+     *  byte after it (0 for a two-byte command), and `message` the SB body
+     *  between the option byte and IAC SE, or for anything shorter than a
+     *  six-byte subnegotiation the whole command. Decoded as UTF-8, as Mudlet's
+     *  QString conversion does. */
+    private emitTelnetEvent(raw: string): void {
+        const type = raw.charCodeAt(1);
+        if (type === GA || type === EOR) return;
+        const option = raw.length > 2 ? raw.charCodeAt(2) : 0;
+        const body = raw.length >= 6 ? raw.slice(3, -2) : raw;
+        this.eventBus.emit('telnet.event', type, option, fromByteString(body).text);
     }
 
     /** Reply to a TERMINAL-TYPE / MTTS subnegotiation. `subneg` is the SB body

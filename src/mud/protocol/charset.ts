@@ -479,19 +479,6 @@ export class CharsetHandler {
         private readonly hooks: CharsetHandlerHooks,
     ) {}
 
-    /** Send `IAC SB CHARSET REQUEST ;UTF-8;ISO-8859-2;ISO-8859-1 IAC SE` —
-     *  advertising the encodings we can decode, in preference order. Each name
-     *  is prefixed by the separator (`;`) per RFC 2066 (the separator comes
-     *  before each charset, not between them). The server replies ACCEPTED
-     *  <name> or REJECTED; handleSubneg() processes either. */
-    sendRequest(): void {
-        if (!this.enabled) return;
-        const PREFS = ['UTF-8', 'ISO-8859-2', 'ISO-8859-1'];
-        const sep = ';';
-        const body = OPT_CHARSET + CHARSET_REQUEST + sep + PREFS.join(sep);
-        this.hooks.sendRaw(GMCP_IAC + GMCP_SB + body + GMCP_IAC + GMCP_SE);
-    }
-
     /** Route an `IAC SB CHARSET ... IAC SE` subnegotiation body (leading byte
      *  is the option code, 42). Handles REQUEST (server lists charsets, we
      *  ACCEPT one or REJECT), ACCEPTED (server picked one of ours — switch

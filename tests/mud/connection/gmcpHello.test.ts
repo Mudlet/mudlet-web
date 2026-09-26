@@ -101,12 +101,50 @@ describe('GMCP Core.Hello handshake', () => {
     expect(out).toContain('Core.Hello');
   });
 
-  it('announces only once even if the server re-offers GMCP', () => {
+  // Copyover / reboot flows: the server turns GMCP off and on again and has
+  // forgotten our module list. Mudlet acknowledges the WONT with DONT and
+  // answers the fresh WILL with the whole handshake again (#179).
+  it('redoes the handshake when the server switches GMCP off and on again', () => {
+    const { sock } = connected();
+    sock.deliver(GMCP_WILL);
+    sock.sent.length = 0;
+    sock.deliver('\xFF\xFC\xC9'); // IAC WONT GMCP
+    expect(sentText(sock)).toBe('\xFF\xFE\xC9'); // IAC DONT GMCP
+    sock.sent.length = 0;
+    sock.deliver(GMCP_WILL);
+    const out = sentText(sock);
+    expect(out.indexOf(GMCP_DO)).toBe(0);
+    expect(out).toContain('Core.Hello');
+    expect(out).toContain('Core.Supports.Set');
+  });
+
+  it('answers all three steps when the off-and-on arrives in one packet', () => {
+    const { sock } = connected();
+    sock.deliver(GMCP_WILL + '\xFF\xFC\xC9' + GMCP_WILL);
+    const out = sentText(sock);
+    expect(out.split(GMCP_DO).length - 1).toBe(2);
+    expect(out).toContain('\xFF\xFE\xC9');
+    expect(out.split('Core.Hello').length - 1).toBe(2);
+  });
+
+  it('re-announces on every server offer, as Mudlet does', () => {
     const { sock } = connected();
     sock.deliver(GMCP_WILL);
     sock.deliver(GMCP_WILL);
-    const helloCount = sentText(sock).split('Core.Hello').length - 1;
-    expect(helloCount).toBe(1);
+    expect(sentText(sock).split('Core.Hello').length - 1).toBe(2);
+  });
+
+  it('announces once per connection when the server only asks (DO)', () => {
+    const { sock } = connected();
+    sock.deliver(GMCP_DO);
+    sock.deliver(GMCP_DO);
+    expect(sentText(sock).split('Core.Hello').length - 1).toBe(1);
+  });
+
+  it('advertises Char.Login version 1, since version 2 is not implemented', () => {
+    const { sock } = connected();
+    sock.deliver(GMCP_WILL);
+    expect(sentText(sock)).toContain('"Char.Login 1"');
   });
 
   it('does not announce when GMCP is disabled', () => {

@@ -4935,7 +4935,7 @@ export class ScriptingEngine implements EngineHost {
                 else if (type !== 'error') this.visibility.onOutput();
             }),
             // Mudlet `sysTelnetEvent(type, option, message)` — fired by
-            // MudClient for any unsupported telnet IAC sequence.
+            // MudClient for every telnet IAC command but GA/EOR.
             session.events.on('telnet.event', (type, option, message) => {
                 this.raiseEvent('sysTelnetEvent', [type, option, message]);
             }),
