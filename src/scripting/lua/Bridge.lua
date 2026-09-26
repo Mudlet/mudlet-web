@@ -4078,6 +4078,36 @@ do
     setCmdLineStyleSheet    = requireTail(setCmdLineStyleSheet,    "setCmdLineStyleSheet",    "style sheet")
 end
 
+-- ── Command-line text: naming one that isn't there ─────────────────────────
+-- print/append/get/clearCmdLine take an optional command-line name. The
+-- bindings resolve a known name to its widget and anything else to the main
+-- bar, so a script that named a command line it hadn't created yet overwrote -
+-- or read back - whatever the player was typing. Mudlet refuses the name with
+-- (nil, 'command line "<name>" not found') instead. print/appendCmdLine name
+-- one only in their two-argument form; a lone argument is the text.
+do
+    local function cmdLineNotFound(name)
+        if type(name) ~= 'string' or name == '' or name == 'main' then return nil end
+        local t = __windowType(name)
+        if t == 'commandline' or t == 'miniconsole' or t == 'userwindow' then return nil end
+        return 'command line "' .. name .. '" not found'
+    end
+
+    local function namedGuard(fn, nameArgs)
+        return function(...)
+            if select('#', ...) >= nameArgs then
+                local err = cmdLineNotFound((...))
+                if err then return nil, err end
+            end
+            return fn(...)
+        end
+    end
+    printCmdLine  = namedGuard(printCmdLine,  2)
+    appendCmdLine = namedGuard(appendCmdLine, 2)
+    getCmdLine    = namedGuard(getCmdLine,    1)
+    clearCmdLine  = namedGuard(clearCmdLine,  1)
+end
+
 -- ── Command-line name contracts ────────────────────────────────────────────
 -- Only a command line made with createCommandLine can carry an action, so the
 -- main bar is refused in the same words as a name that doesn't exist: from a
