@@ -88,6 +88,7 @@ function ansiPaletteIndex(color: FormatColor | undefined): number {
     if (!color) return COLOR_DEFAULT;
     if (color.space === 'indexed') return color.index;
     if (color.space !== 'hex') return COLOR_UNPALETTED;
+    if (typeof color.color !== 'string') return COLOR_UNPALETTED;
     const hex = color.color.toLowerCase();
     const dark = colorCodes.ansi.dark.findIndex(c => c.toLowerCase() === hex);
     if (dark >= 0) return dark;

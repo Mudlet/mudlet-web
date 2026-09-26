@@ -4391,124 +4391,131 @@ export class ScriptingEngine implements EngineHost {
                     carryEnabled ? this.mudCarryState : undefined;
 
                 for (let i = 0; i < lines.length; i++) {
-                    const line = lines[i];
-                    const lineIsPrompt = this.promptPending && i === lines.length - 1;
-                    if (lineIsPrompt) this.promptPending = false;
+                    try {
+                        const line = lines[i];
+                        const lineIsPrompt = this.promptPending && i === lines.length - 1;
+                        if (lineIsPrompt) this.promptPending = false;
 
-                    // Build the render units for this network line. Normally one
-                    // unit per line, but when MXP is active a single line can carry
-                    // several visual lines via <BR> tags — splitMxpResultLines
-                    // breaks the parsed result on those newlines so each renders
-                    // (and fires triggers) on its own. `blankRenders` forces a
-                    // blank line to render (true for an intentional <BR>-split gap;
-                    // for a single line it mirrors the old `line === ''` rule so a
-                    // text-free MXP line — e.g. pure <!ENTITY> defs — stays hidden).
-                    const units: { plain: string; buffer: AnsiAwareBuffer; outputLine: string; blankRenders: boolean }[] = [];
-                    if ((this.mxpActive || this.forceMxpProcessorOn) && type === 'mud') {
-                        // MXP is live: parse the in-band markup into styled
-                        // segments + clean (tag/entity-decoded) plain text, and
-                        // wire any <SEND>/<A> links into clickable hyperlinks.
-                        // The parser owns SGR carry on these lines (it walked
-                        // every byte), so computeTrailingState is bypassed.
-                        const r = this.mxp.parseLine(line, carryState, fromServer !== false);
-                        if (debugMxpEnabled()) logMxpLine(line, r.segments);
-                        carryState = r.trailingSnapshot;
-                        const parts = splitMxpResultLines(r);
-                        const multiLine = parts.length > 1;
-                        for (const part of parts) {
-                            const buffer = new AnsiAwareBuffer(part.segments);
-                            this.wireMxpLinks(buffer, part.links);
+                        // Build the render units for this network line. Normally one
+                        // unit per line, but when MXP is active a single line can carry
+                        // several visual lines via <BR> tags — splitMxpResultLines
+                        // breaks the parsed result on those newlines so each renders
+                        // (and fires triggers) on its own. `blankRenders` forces a
+                        // blank line to render (true for an intentional <BR>-split gap;
+                        // for a single line it mirrors the old `line === ''` rule so a
+                        // text-free MXP line — e.g. pure <!ENTITY> defs — stays hidden).
+                        const units: { plain: string; buffer: AnsiAwareBuffer; outputLine: string; blankRenders: boolean }[] = [];
+                        if ((this.mxpActive || this.forceMxpProcessorOn) && type === 'mud') {
+                            // MXP is live: parse the in-band markup into styled
+                            // segments + clean (tag/entity-decoded) plain text, and
+                            // wire any <SEND>/<A> links into clickable hyperlinks.
+                            // The parser owns SGR carry on these lines (it walked
+                            // every byte), so computeTrailingState is bypassed.
+                            const r = this.mxp.parseLine(line, carryState, fromServer !== false);
+                            if (debugMxpEnabled()) logMxpLine(line, r.segments);
+                            carryState = r.trailingSnapshot;
+                            const parts = splitMxpResultLines(r);
+                            const multiLine = parts.length > 1;
+                            for (const part of parts) {
+                                const buffer = new AnsiAwareBuffer(part.segments);
+                                this.wireMxpLinks(buffer, part.links);
+                                this.wireOsc8Links(buffer);
+                                units.push({
+                                    plain: part.plain,
+                                    buffer,
+                                    outputLine: multiLine ? part.plain : line,
+                                    blankRenders: multiLine ? true : line === '',
+                                });
+                            }
+                            // <DEST> writes redirected text into a frame. A redirect to
+                            // a frame that doesn't exist falls back to inline main
+                            // rendering (the parser already pulled it out of the main
+                            // line), matching Mudlet's degradation when
+                            // setMxpDestination fails. (<FRAME> itself was carried out
+                            // during the parse — see the onFrame hook.)
+                            if (r.redirects) for (const rd of r.redirects) {
+                                const fbuf = new AnsiAwareBuffer(rd.segments);
+                                // A <SEND>/<A> inside the <DEST> is offset into the
+                                // redirected text, not the main line, so it has to be
+                                // wired onto the frame's own buffer — otherwise the
+                                // frame renders underlined text that does nothing.
+                                this.wireMxpLinks(fbuf, rd.links);
+                                this.wireOsc8Links(fbuf);
+                                if (!this.api.mxpWriteToFrame(rd.frame, fbuf, rd.eof, rd.eol)) {
+                                    units.push({ plain: rd.plain, buffer: fbuf, outputLine: rd.plain, blankRenders: rd.plain === '' });
+                                }
+                            }
+                            // MXP <SOUND>/<MUSIC> are the same server-driven audio
+                            // triggers as MSP, so route them through the identical
+                            // resolve-and-play path (media/ cache, U= download, game
+                            // mute gate).
+                            if (r.sounds) for (const s of r.sounds) void this.handleMspCommand(s);
+                        } else {
+                            const buffer = new AnsiAwareBuffer(line, carryState, this.osc8Presets);
                             this.wireOsc8Links(buffer);
-                            units.push({
-                                plain: part.plain,
-                                buffer,
-                                outputLine: multiLine ? part.plain : line,
-                                blankRenders: multiLine ? true : line === '',
-                            });
+                            // The buffer's text is the line with every escape
+                            // sequence (SGR, OSC 8 links, cursor moves, …) already
+                            // consumed — exactly what's rendered — so trigger
+                            // matching sees the same plain text the user sees.
+                            const plain = buffer.text;
+                            // computeTrailingState reflects the *actual* end-of-line
+                            // SGR — including trailing resets, and unchanged across
+                            // blank lines — unlike buffer.trailingState() which only
+                            // sees the last text segment's state.
+                            carryState = computeTrailingState(line, carryState);
+                            units.push({ plain, buffer, outputLine: line, blankRenders: line === '' });
                         }
-                        // <DEST> writes redirected text into a frame. A redirect to
-                        // a frame that doesn't exist falls back to inline main
-                        // rendering (the parser already pulled it out of the main
-                        // line), matching Mudlet's degradation when
-                        // setMxpDestination fails. (<FRAME> itself was carried out
-                        // during the parse — see the onFrame hook.)
-                        if (r.redirects) for (const rd of r.redirects) {
-                            const fbuf = new AnsiAwareBuffer(rd.segments);
-                            // A <SEND>/<A> inside the <DEST> is offset into the
-                            // redirected text, not the main line, so it has to be
-                            // wired onto the frame's own buffer — otherwise the
-                            // frame renders underlined text that does nothing.
-                            this.wireMxpLinks(fbuf, rd.links);
-                            this.wireOsc8Links(fbuf);
-                            if (!this.api.mxpWriteToFrame(rd.frame, fbuf, rd.eof, rd.eol)) {
-                                units.push({ plain: rd.plain, buffer: fbuf, outputLine: rd.plain, blankRenders: rd.plain === '' });
+
+                        for (let u = 0; u < units.length; u++) {
+                            const { plain, buffer, outputLine, blankRenders } = units[u];
+                            // Only the final visual line of a prompt-bearing network
+                            // line is the prompt (e.g. just the "> ", not the room).
+                            const isPrompt = lineIsPrompt && u === units.length - 1;
+
+                            // Every line goes to the triggers, blank ones included.
+                            // Mudlet's TMainConsole::runTriggers appends a '\n' to
+                            // the line before handing it over, so an empty line
+                            // arrives as "\n" and a `^(.*)$` pattern matches it with
+                            // an empty capture — which is how a chain that collects a
+                            // room description gets its blank separator lines
+                            // (mudlet-web#159). Skipping them here also shortened
+                            // every fire-length and line-delta window by however many
+                            // blanks the server sent.
+                            this.processLineTriggers(plain, buffer, isPrompt);
+                            if (plain.length > 0) this.emit('output', [outputLine, type]);
+
+                            let shouldRender =
+                                !buffer.deleted &&
+                                (blankRenders || plain.length > 0 || !FILTER_ANSI_ONLY_LINES);
+                            // Mudlet `blankLinesBehaviour` (TBuffer): for empty server
+                            // lines, either hide them or replace them with a single
+                            // space. Scoped to mud-typed output — echoes/errors are
+                            // unaffected, matching Mudlet's TBuffer-only handling.
+                            let renderBuffer = buffer;
+                            if (shouldRender && type === 'mud' && plain.length === 0) {
+                                const behaviour = this.session.blankLinesBehaviour;
+                                if (behaviour === 'hide') {
+                                    shouldRender = false;
+                                } else if (behaviour === 'replacewithspace') {
+                                    renderBuffer = new AnsiAwareBuffer(' ');
+                                }
                             }
-                        }
-                        // MXP <SOUND>/<MUSIC> are the same server-driven audio
-                        // triggers as MSP, so route them through the identical
-                        // resolve-and-play path (media/ cache, U= download, game
-                        // mute gate).
-                        if (r.sounds) for (const s of r.sounds) void this.handleMspCommand(s);
-                    } else {
-                        const buffer = new AnsiAwareBuffer(line, carryState, this.osc8Presets);
-                        this.wireOsc8Links(buffer);
-                        // The buffer's text is the line with every escape
-                        // sequence (SGR, OSC 8 links, cursor moves, …) already
-                        // consumed — exactly what's rendered — so trigger
-                        // matching sees the same plain text the user sees.
-                        const plain = buffer.text;
-                        // computeTrailingState reflects the *actual* end-of-line
-                        // SGR — including trailing resets, and unchanged across
-                        // blank lines — unlike buffer.trailingState() which only
-                        // sees the last text segment's state.
-                        carryState = computeTrailingState(line, carryState);
-                        units.push({ plain, buffer, outputLine: line, blankRenders: line === '' });
-                    }
-
-                    for (let u = 0; u < units.length; u++) {
-                        const { plain, buffer, outputLine, blankRenders } = units[u];
-                        // Only the final visual line of a prompt-bearing network
-                        // line is the prompt (e.g. just the "> ", not the room).
-                        const isPrompt = lineIsPrompt && u === units.length - 1;
-
-                        // Every line goes to the triggers, blank ones included.
-                        // Mudlet's TMainConsole::runTriggers appends a '\n' to
-                        // the line before handing it over, so an empty line
-                        // arrives as "\n" and a `^(.*)$` pattern matches it with
-                        // an empty capture — which is how a chain that collects a
-                        // room description gets its blank separator lines
-                        // (mudlet-web#159). Skipping them here also shortened
-                        // every fire-length and line-delta window by however many
-                        // blanks the server sent.
-                        this.processLineTriggers(plain, buffer, isPrompt);
-                        if (plain.length > 0) this.emit('output', [outputLine, type]);
-
-                        let shouldRender =
-                            !buffer.deleted &&
-                            (blankRenders || plain.length > 0 || !FILTER_ANSI_ONLY_LINES);
-                        // Mudlet `blankLinesBehaviour` (TBuffer): for empty server
-                        // lines, either hide them or replace them with a single
-                        // space. Scoped to mud-typed output — echoes/errors are
-                        // unaffected, matching Mudlet's TBuffer-only handling.
-                        let renderBuffer = buffer;
-                        if (shouldRender && type === 'mud' && plain.length === 0) {
-                            const behaviour = this.session.blankLinesBehaviour;
-                            if (behaviour === 'hide') {
-                                shouldRender = false;
-                            } else if (behaviour === 'replacewithspace') {
-                                renderBuffer = new AnsiAwareBuffer(' ');
+                            if (shouldRender) {
+                                this.session.events.emit('message', renderBuffer, type, Date.now(), isPrompt);
                             }
-                        }
-                        if (shouldRender) {
-                            this.session.events.emit('message', renderBuffer, type, Date.now(), isPrompt);
-                        }
 
-                        // Flush this line's trigger echoes right after it renders so
-                        // they land in Mudlet's position — directly after the line
-                        // they fired on — instead of being deferred to the end of
-                        // the whole batch (which dumped every line's echo below the
-                        // last rendered line).
-                        this.api.flushDeferredEcho();
+                            // Flush this line's trigger echoes right after it renders so
+                            // they land in Mudlet's position — directly after the line
+                            // they fired on — instead of being deferred to the end of
+                            // the whole batch (which dumped every line's echo below the
+                            // last rendered line).
+                            this.api.flushDeferredEcho();
+                        }
+                    } catch (err) {
+                        // One line that fails to process must not take the rest of the
+                        // network flush down with it — every later line would otherwise
+                        // vanish unseen and untriggered (mudlet-web#174).
+                        this.api.printError(`[scripting] line flush failed: ${err instanceof Error ? err.message : String(err)}`);
                     }
                 }
 
