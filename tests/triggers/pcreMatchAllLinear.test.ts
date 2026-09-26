@@ -15,6 +15,12 @@
 //
 // Timing is too noisy for a unit test, so this counts the checks instead: every
 // `_match` call with options 0 is one full scan of the rest of the line.
+//
+// This file is also the guard on that patch. It only fits the exact binary it
+// was written against, and an unrecognised one ships unchanged, correct but
+// quadratic again, without a word. So a pcre2-wasm-universal bump that changes
+// the wasm must fail here, with PATCH_FAILED, until the patch is re-derived
+// (see "UPGRADING" in vite-plugin/pcre2Wasm.ts).
 
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -24,6 +30,14 @@ import libpcre2 from 'pcre2-wasm-universal/libpcre2';
 import Pcre2, { PCRE2_NO_UTF_CHECK } from '../../src/mud/triggers/pcre/Pcre2';
 import { TriggerEngine, type TriggerNode } from '../../src/mud/triggers/TriggerEngine';
 import { patchLibpcre2Wasm } from '../../vite-plugin/pcre2Wasm';
+
+const PATCH_FAILED = 'pcre2 wasm patch did not apply; see vite-plugin/pcre2Wasm.ts';
+
+const installedVersion = (): string => {
+    const require = createRequire(import.meta.url);
+    const pkg = join(dirname(require.resolve('pcre2-wasm-universal/libpcre2')), '..', 'package.json');
+    return (JSON.parse(readFileSync(pkg, 'utf8')) as { version: string }).version;
+};
 
 const shippedWasm = () => {
     const require = createRequire(import.meta.url);
@@ -47,19 +61,21 @@ describe('patching the pcre2 wasm', () => {
         // otherwise go out unpatched without a word, and the trigger engine
         // would quietly go back to quadratic.
         const patched = patchLibpcre2Wasm(shippedWasm());
-        expect(patched).not.toBeNull();
-        expect(WebAssembly.validate(patched!)).toBe(true);
+        const why = `${PATCH_FAILED} (installed pcre2-wasm-universal ${installedVersion()}: `;
+        expect(patched, `${why}its libpcre2.wasm is not the build the patch was derived against)`).not.toBeNull();
+        expect(WebAssembly.validate(patched!), `${why}the patched module does not validate)`).toBe(true);
     });
 
     it('changes nothing but the options argument, and only once', () => {
         const shipped = shippedWasm();
-        const patched = patchLibpcre2Wasm(shipped)!;
-        expect(patched.length).toBe(shipped.length);
+        const patched = patchLibpcre2Wasm(shipped);
+        expect(patched, PATCH_FAILED).not.toBeNull();
+        expect(patched!.length).toBe(shipped.length);
         let changed = 0;
-        for (let i = 0; i < shipped.length; i++) if (shipped[i] !== patched[i]) changed++;
+        for (let i = 0; i < shipped.length; i++) if (shipped[i] !== patched![i]) changed++;
         // the type index, and `i32.const 0` becoming `local.get 5`
-        expect(changed).toBe(3);
-        expect(patchLibpcre2Wasm(patched)).toEqual(patched);
+        expect(changed, PATCH_FAILED).toBe(3);
+        expect(patchLibpcre2Wasm(patched!)).toEqual(patched);
     });
 
     it('turns down bytes it was not written for', () => {
@@ -78,9 +94,19 @@ describe('match-all checks the line once', () => {
         // actually received the option. The shipped `_match` drops it and
         // reports PCRE2_ERROR_UTF16_ERR1 (-24, a high surrogate ending the
         // subject) instead.
+        // This is the end-to-end half of the guard: the patcher can recognise
+        // the bytes and the module that actually loads can still be the
+        // shipped one (vitest.config.ts falls back to it as silently as the
+        // app build does).
         const re = new Pcre2('x');
         try {
-            expect(re.matchFrom('x\uD800', 0, PCRE2_NO_UTF_CHECK)?.[0].start).toBe(0);
+            let start: number | undefined;
+            try {
+                start = re.matchFrom('x\uD800', 0, PCRE2_NO_UTF_CHECK)?.[0].start;
+            } catch (e) {
+                expect.fail(`${PATCH_FAILED} (the loaded module ignored PCRE2_NO_UTF_CHECK: ${String(e)})`);
+            }
+            expect(start, `${PATCH_FAILED} (the loaded module ignored PCRE2_NO_UTF_CHECK)`).toBe(0);
             // Without the option the check still runs and still refuses it.
             expect(() => re.matchFrom('x\uD800', 0)).toThrow(/PCRE2 match error -24/);
         } finally {

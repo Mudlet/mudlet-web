@@ -34,6 +34,22 @@
  * was written against (anything unexpected, so the caller falls back to the
  * module as shipped rather than a guess). Already-patched input comes back
  * unchanged, so it is safe to apply twice.
+ *
+ * UPGRADING pcre2-wasm-universal. This was derived against 1.0.0's
+ * dist/libpcre2.wasm (sha256 5ea911ab…0dc99e). The fallback keeps a new build
+ * correct, but at runtime it is silent: the speed-up is simply gone, and long
+ * lines go back to quadratic. So a bump that changes the wasm must re-derive
+ * the patch: disassemble the new binary (e.g. `wasm2wat`), find `_match`'s
+ * export and body, check it is still the pass-through above with options
+ * hard-coded to 0 and that a 6×i32 → i32 signature still exists, and adjust
+ * what `patch`/`bodyMatches` expect. If upstream grew a real options argument,
+ * drop this patch (and the transform in vitest.config.ts) instead.
+ *
+ * The bump can't slip through unnoticed: tests/triggers/pcreMatchAllLinear.test.ts
+ * ("recognises the installed pcre2-wasm-universal build" and "runs the wasm
+ * this suite patched") fails in `yarn test` with "pcre2 wasm patch did not
+ * apply; see vite-plugin/pcre2Wasm.ts" when the installed binary isn't
+ * recognised or the loaded module ignores PCRE2_NO_UTF_CHECK.
  */
 export function patchLibpcre2Wasm(input: Uint8Array): Uint8Array<ArrayBuffer> | null {
     try {

@@ -40,7 +40,10 @@ function resolveVfsSwPath(): string | null {
  *  Resolved from wherever pcre2-wasm-universal lives relative to mudlet, and
  *  patched on the way out so `_match` takes an options argument — without it a
  *  trigger's match-all is quadratic in the line's length (see pcre2Wasm.ts).
- *  A binary the patch doesn't recognise goes out as shipped: slower, not wrong. */
+ *  A binary the patch doesn't recognise goes out as shipped: slower, not wrong.
+ *  That fallback is silent here on purpose (a consumer's build shouldn't break
+ *  over speed); tests/triggers/pcreMatchAllLinear.test.ts is what turns a
+ *  pcre2-wasm-universal bump the patch no longer fits into a red CI run. */
 function pcre2WasmPlugin(): Plugin {
     // The wasm file isn't in the package's exports map — resolve the exported
     // ./libpcre2 entry (dist/libpcre2.js) and take its sibling.
