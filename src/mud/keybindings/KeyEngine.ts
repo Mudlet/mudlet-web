@@ -139,8 +139,10 @@ export class KeyEngine {
 
     // ── Perm keybindings (persisted, visible in UI) ────────────────────────────
 
-    loadPerm(keybindings: KeyNode[]): void {
-        const enabledIds = buildEffectivelyEnabledIds(keybindings);
+    /** `blocked`: bindings whose code will not compile, which Mudlet leaves
+     *  inactive — see buildEffectivelyEnabledIds. */
+    loadPerm(keybindings: KeyNode[], blocked?: ReadonlySet<string>): void {
+        const enabledIds = buildEffectivelyEnabledIds(keybindings, blocked);
         this.perm = keybindings.filter(k => enabledIds.has(k.id) && k.key);
     }
 

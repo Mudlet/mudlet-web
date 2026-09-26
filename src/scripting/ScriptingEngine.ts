@@ -147,6 +147,47 @@ function formatErrorPrefix(kind: ScriptLogSourceKind, name: string): string {
     }
 }
 
+/**
+ * Mudlet's chunk name for each kind of item's code — "Trigger: %1" in
+ * TTrigger::compileScript, and likewise TAlias, TTimer, TKey and TAction
+ * ("Button: %1"). Lua then reports an error in it as
+ * `[string "Trigger: name"]:LINE: msg`, which is what scripts that parse their
+ * own errors, or look up their own name via debug.getinfo, expect.
+ */
+const ITEM_CHUNK_PREFIX = {
+    trigger: 'Trigger',
+    alias: 'Alias',
+    timer: 'Timer',
+    key: 'Key',
+    button: 'Button',
+} as const;
+type CodeItemKind = keyof typeof ITEM_CHUNK_PREFIX;
+
+function itemChunkName(kind: CodeItemKind, name: string): string {
+    return `${ITEM_CHUNK_PREFIX[kind]}: ${name}`;
+}
+
+/**
+ * The error compiling an item's code gives, compiled as desktop compiles it: as
+ * the body of a function (`function Trigger5() <code>\nend`,
+ * TTrigger::compileScript) under the chunk name it runs with. The body starts
+ * on the wrapper's first line, so line numbers are the code's own; and what a
+ * function body may not hold — a top-level `...` — fails here as it does there.
+ * Null when it compiles, or when the runtime cannot say.
+ */
+function itemSyntaxError(rt: IScriptingRuntime | null | undefined, code: string, chunkName: string): string | null {
+    return rt?.syntaxError?.(`function __mudlet_item() ${code}\nend`, chunkName) ?? null;
+}
+
+/** What the compile check needs of an item — see ScriptingEngine.cannotCompile. */
+type CompilableItem = {
+    id: string;
+    name: string;
+    code?: string;
+    language?: string;
+    patterns?: readonly { type: string; text: string }[];
+};
+
 // Some MUDs send lines that carry only ANSI colour codes (no visible text) between
 // real output lines — an artifact of how they format their output.  Filtering them
 // removes unintended blank lines, but also removes intentional spacing in MUDs that
@@ -1418,13 +1459,13 @@ export class ScriptingEngine implements EngineHost {
 
     private applyAliasesFromStore(): void {
         const aliases = useAppStore.getState().connectionAliases[this.connectionId] ?? [];
-        this.aliasEngine.loadPerm(aliases);
+        this.aliasEngine.loadPerm(aliases, this.uncompilableIds('alias', aliases));
     }
 
     private applyTriggersFromStore(): void {
         this.triggersDirty = false;
         const triggers = useAppStore.getState().connectionTriggers[this.connectionId] ?? [];
-        this.triggerEngine.loadPerm(triggers);
+        this.triggerEngine.loadPerm(triggers, this.uncompilableIds('trigger', triggers));
     }
 
     private scheduleTriggerApply(): void {
@@ -1456,18 +1497,18 @@ export class ScriptingEngine implements EngineHost {
             if (timer.command) this.hostSend(timer.command);
             if (timer.code && timer.language === 'lua') {
                 try {
-                    this.runtimes.lua?.run(timer.code, `timer "${timer.name}"`);
+                    this.runtimes.lua?.run(timer.code, `timer "${timer.name}"`, itemChunkName('timer', timer.name));
                 } catch (err) {
                     this.reportEntityError('timer', timer.id, timer.name, err);
                 }
             }
             this.api.flushOutput();
-        });
+        }, this.uncompilableIds('timer', timers));
     }
 
     private applyKeybindingsFromStore(): void {
         const keys = useAppStore.getState().connectionKeybindings[this.connectionId] ?? [];
-        this.keyEngine.loadPerm(keys);
+        this.keyEngine.loadPerm(keys, this.uncompilableIds('key', keys));
     }
 
     /**
@@ -2977,11 +3018,27 @@ export class ScriptingEngine implements EngineHost {
         // A timer answers from the engine's runtime active flag, not its switch:
         // Mudlet reports TTimer::isActive(), which an enabled timer imported
         // under a disabled folder does not have, and an explicit enableTimer()
-        // raises regardless of the folder (mudlet-web#217).
-        const isOn = (item: { enabled: boolean; parentId: string | null; id: string }): boolean =>
-            type === 'timer'
-                ? this.timerEngine.permReportsActive(item as TimerNode, list as TimerNode[], checkAncestors)
-                : checkAncestors ? isEffectivelyEnabled(item, list) : item.enabled;
+        // raises regardless of the folder (mudlet-web#217). The engine also
+        // knows which timers' code will not compile.
+        //
+        // Anything else is active by its switch, unless its code or pattern
+        // failed to compile: Tree::isActive wants state() as well, and so does
+        // every ancestor's when checkAncestors asks about them too.
+        const kind: CodeItemKind | null =
+            type === 'alias' || type === 'trigger' ? type
+            : type === 'key' || type === 'keybind' ? 'key'
+            : null;
+        let reachable: Set<string> | null = null;
+        const isOn = (item: (typeof list)[number]): boolean => {
+            if (type === 'timer') {
+                return this.timerEngine.permReportsActive(item as TimerNode, list as TimerNode[], checkAncestors);
+            }
+            if (!kind) return checkAncestors ? isEffectivelyEnabled(item, list) : item.enabled;
+            if (!checkAncestors) return item.enabled && !this.itemCannotBeActive(kind, item as CompilableItem);
+            reachable ??= buildEffectivelyEnabledIds(list,
+                new Set(list.filter(i => this.itemCannotBeActive(kind, i as CompilableItem)).map(i => i.id)));
+            return reachable.has(item.id);
+        };
         if (typeof nameOrId === 'number' && Number.isFinite(nameOrId)) {
             for (const item of list) {
                 const n = this.uuidToNumericId.get(item.id);
@@ -4368,6 +4425,107 @@ export class ScriptingEngine implements EngineHost {
         });
     }
 
+    /**
+     * Each item's last compile check, per kind: what it was run on (chunk name
+     * and code) and the error, or null. Kept so an item is compiled again only
+     * when its code or name changes, not on every reload of its unit.
+     */
+    private readonly compileChecks =
+        new Map<CodeItemKind, Map<string, { code: string; chunkName: string; err: string | null }>>();
+    /** Compile errors already put in the error log, by kind, chunk and code —
+     *  not by id, so a module re-read under new ids does not report again. */
+    private readonly reportedCompileErrors = new Set<string>();
+
+    /**
+     * The error compiling a piece of an item's code gives (see itemSyntaxError),
+     * or null when it compiles — or when there is no runtime to ask yet, which
+     * lets the item be. A new error is handed to `report`, once.
+     */
+    private compileError(kind: CodeItemKind, key: string, code: string, chunkName: string,
+        report: (err: string) => void): string | null {
+        const rt = this.runtimes.lua;
+        if (!rt?.syntaxError) return null;
+        let checks = this.compileChecks.get(kind);
+        if (!checks) this.compileChecks.set(kind, checks = new Map());
+        const prev = checks.get(key);
+        if (prev && prev.code === code && prev.chunkName === chunkName) return prev.err;
+        const err = itemSyntaxError(rt, code, chunkName);
+        checks.set(key, { code, chunkName, err });
+        if (err !== null) {
+            const reported = `${kind}\0${chunkName}\0${code}`;
+            if (!this.reportedCompileErrors.has(reported)) {
+                this.reportedCompileErrors.add(reported);
+                report(err);
+            }
+        }
+        return err;
+    }
+
+    /**
+     * Whether an item's code will not compile — Mudlet's `mOK_code = false`,
+     * or for a trigger's Lua-function pattern `mOK_init = false`. Either way
+     * `Tree::canBeActivated` refuses it: the item never matches or fires, its
+     * command is not sent, and `isActive` reports it off, whatever its switch
+     * says. Fixing the code brings it back as its switch has it.
+     *
+     * The error goes in the error log once: desktop shows it on the item in
+     * the editor, where it is found when the item "does nothing".
+     */
+    private cannotCompile(kind: CodeItemKind, node: CompilableItem): boolean {
+        let broken = false;
+        if (node.code && node.language === 'lua') {
+            const chunkName = itemChunkName(kind, node.name);
+            broken = this.compileError(kind, node.id, node.code, chunkName, err => {
+                const source: ScriptLogSource = { kind, id: node.id, name: node.name };
+                const line = parseLuaErrorLine(err);
+                if (line !== undefined) source.line = line;
+                this.api.printError(`[${formatErrorPrefix(kind, node.name)}] Lua syntax error: ${err}`, source);
+            }) !== null;
+        }
+        if (kind === 'trigger' && node.patterns) {
+            node.patterns.forEach((p, i) => {
+                if (p.type !== 'luaFunction' || !p.text) return;
+                // TTrigger::setRegexCodeList's function name doubles as the chunk name.
+                const chunkName = `trigger${this.uuidToNumericId.get(node.id) ?? 0}condition${i}`;
+                const err = this.compileError(kind, `${node.id}#${i}`, p.text, chunkName, reason => {
+                    this.api.printError(
+                        `[${formatErrorPrefix(kind, node.name)}] Error: in item ${i + 1}, lua function "${p.text}" `
+                        + `failed to compile, reason: "${reason}".`,
+                        { kind, id: node.id, name: node.name });
+                });
+                if (err !== null) broken = true;
+            });
+        }
+        return broken;
+    }
+
+    /** The ids of `items` whose code will not compile (see cannotCompile), for
+     *  their engine to leave inactive. Checks for items no longer in the list
+     *  are forgotten. */
+    private uncompilableIds(kind: CodeItemKind, items: readonly CompilableItem[]): Set<string> {
+        const out = new Set<string>();
+        for (const node of items) if (this.cannotCompile(kind, node)) out.add(node.id);
+        const checks = this.compileChecks.get(kind);
+        if (checks) {
+            const live = new Set(items.map(i => i.id));
+            for (const key of [...checks.keys()]) {
+                if (!live.has(key.split('#')[0])) checks.delete(key);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Whether a permanent item of `kind` cannot be active because something in
+     * it failed to compile: its code, or (triggers and aliases) a pattern.
+     */
+    private itemCannotBeActive(kind: CodeItemKind, node: CompilableItem): boolean {
+        if (this.cannotCompile(kind, node)) return true;
+        if (kind === 'trigger') return this.triggerEngine.hasInvalidPattern(node.id);
+        if (kind === 'alias') return this.aliasEngine.hasInvalidPattern(node.id);
+        return false;
+    }
+
     /** Scripts and triggers of the package being installed that do not work,
      *  gathered while it installs; null when no install is under way. */
     private installProblems: string[] | null = null;
@@ -4399,7 +4557,7 @@ export class ScriptingEngine implements EngineHost {
         const rt = this.runtimes.lua;
         for (const trigger of triggers) {
             if (trigger.isGroup || !trigger.code || trigger.language !== 'lua') continue;
-            const err = rt?.syntaxError?.(trigger.code, `Trigger: ${trigger.name}`);
+            const err = itemSyntaxError(rt, trigger.code, itemChunkName('trigger', trigger.name));
             if (err) problems.push(`${trigger.name}: ${err}`);
         }
         return problems.length > 0 ? problems.join('; ') : null;
@@ -4469,7 +4627,8 @@ export class ScriptingEngine implements EngineHost {
         }
         if (alias.code && alias.language === 'lua') {
             try {
-                this.runtimes.lua?.runWithMatches(alias.code, alias.name, matches, undefined, named);
+                this.runtimes.lua?.runWithMatches(alias.code, alias.name, matches, undefined, named,
+                    undefined, undefined, undefined, undefined, itemChunkName('alias', alias.name));
             } catch (err) {
                 this.reportEntityError('alias', alias.id, alias.name, err);
             }
@@ -4557,7 +4716,8 @@ export class ScriptingEngine implements EngineHost {
                     : undefined;
                 this.runtimes.lua?.runWithMatches(
                     trigger.code, trigger.name, matches, multimatches, namedGroups,
-                    captureSpans, namedSpans, fullMatchSpan, multiNamedGroups);
+                    captureSpans, namedSpans, fullMatchSpan, multiNamedGroups,
+                    itemChunkName('trigger', trigger.name));
             } catch (err) {
                 this.reportEntityError('trigger', trigger.id, trigger.name, err);
             }
@@ -4571,7 +4731,7 @@ export class ScriptingEngine implements EngineHost {
         if (binding.command) this.hostSend(binding.command);
         if (binding.code && binding.language === 'lua') {
             try {
-                this.runtimes.lua?.run(binding.code, `key "${binding.name}"`);
+                this.runtimes.lua?.run(binding.code, `key "${binding.name}"`, itemChunkName('key', binding.name));
             } catch (err) {
                 this.reportEntityError('key', binding.id, binding.name, err);
             }
@@ -4596,7 +4756,7 @@ export class ScriptingEngine implements EngineHost {
         if (cmd) this.hostSend(cmd);
         if (button.code && button.language === 'lua') {
             try {
-                this.runtimes.lua?.run(button.code, `button "${button.name}"`);
+                this.runtimes.lua?.run(button.code, `button "${button.name}"`, itemChunkName('button', button.name));
             } catch (err) {
                 this.reportEntityError('button', button.id, button.name, err);
             }

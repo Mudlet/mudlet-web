@@ -1085,6 +1085,10 @@ export function isEffectivelyEnabled<T extends { id: string; enabled: boolean; p
  */
 export function buildEffectivelyEnabledIds<T extends { id: string; enabled: boolean; parentId: string | null }>(
     items: T[],
+    /** Ids that cannot be active whatever their switch says — Mudlet's items
+     *  whose code or pattern failed to compile (`Tree::state()` false). They
+     *  count as switched off, so their descendants are left out too. */
+    blocked?: ReadonlySet<string>,
 ): Set<string> {
     const byId = new Map<string, T>(items.map(i => [i.id, i]));
     const memo = new Map<string, boolean>();
@@ -1094,7 +1098,7 @@ export function buildEffectivelyEnabledIds<T extends { id: string; enabled: bool
         // Tentatively mark enabled so a malformed cycle resolves rather than
         // recursing forever; overwritten below with the real answer.
         memo.set(item.id, true);
-        if (!item.enabled) { memo.set(item.id, false); return false; }
+        if (!item.enabled || blocked?.has(item.id)) { memo.set(item.id, false); return false; }
         if (!item.parentId) return true;
         const parent = byId.get(item.parentId);
         const ok = !parent || visit(parent);
