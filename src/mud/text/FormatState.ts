@@ -90,6 +90,24 @@ export interface HexColor {
 
 export type FormatColor = IndexedColor | RgbColor | HexColor
 
+/** What `38;5;n` names past the 256-colour table, where Mudlet's own reading
+ *  of it (TBuffer::decodeSGR38/48) gives no colour at all: black. */
+const OUT_OF_RANGE_FOREGROUND: RgbColor = {space: "rgb", r: 0, g: 0, b: 0};
+
+/** The colour `38;5;n` / `48;5;n` picks, or undefined when there is none.
+ *  Past 255 Mudlet keeps running its greyscale formula, `(n - 232) * 10 + 8`,
+ *  so 256 is still a grey (248) and every index above it overflows a channel
+ *  into an invalid colour. The table lookup alone gave `color: undefined`,
+ *  which threw in the trigger engine and dropped the rest of the packet
+ *  (mudlet-web#174). */
+function xtermColor(index: number): FormatColor | undefined {
+    const hex = colorCodes.xterm[index];
+    if (hex !== undefined) return {space: "hex", color: hex};
+    const grey = (index - 232) * 10 + 8;
+    if (index > 255 && grey <= 255) return {space: "rgb", r: grey, g: grey, b: grey};
+    return undefined;
+}
+
 /** One SGR parameter: a number, or its sub-parameters when it carried any
  *  (`4:3` → `[4, 3]`). See {@link parseSgrCodes}. */
 export type SgrParam = number | number[];
@@ -516,12 +534,18 @@ export class FormatState {
                         // is a zero — the same as writing `38;5;0`.
                         const index = present(2) ? at(2) : 0;
                         if (index !== undefined) {
-                            const color: HexColor = {space: "hex", color: colorCodes.xterm[index]};
+                            const color = xtermColor(index);
                             // A colour chosen out of the 256-colour cube names
                             // itself exactly; there is no brighter twin to pick,
                             // so bold leaves it alone. Same for 24-bit below.
-                            if (isForeground) this.setForeground(color, color);
-                            else this.background = color;
+                            // An index Mudlet cannot make a colour of leaves the
+                            // foreground black and the background default.
+                            if (isForeground) {
+                                const fg = color ?? OUT_OF_RANGE_FOREGROUND;
+                                this.setForeground(fg, fg);
+                            } else {
+                                this.background = color;
+                            }
                         }
                         i += 2;
                     } else if (mode === 2) {
@@ -652,7 +676,10 @@ export class FormatState {
             else this.background = color;
         };
         if (group[1] === 5 && group[2] !== undefined) {
-            put({space: "hex", color: colorCodes.xterm[group[2]]});
+            const color = xtermColor(group[2]);
+            if (color) put(color);
+            else if (isForeground) put(OUT_OF_RANGE_FOREGROUND);
+            else this.background = undefined;
         } else if (group[1] === 2) {
             put({space: "rgb", r: group[3] ?? 0, g: group[4] ?? 0, b: group[5] ?? 0});
         }
