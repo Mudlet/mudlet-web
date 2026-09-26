@@ -3139,13 +3139,15 @@ end
 -- whose incoming payloads should be merged into the existing gmcp sub-table on
 -- update instead of wholesale-replaced. Mirrors Host::mGMCP_merge_table_keys —
 -- pure Lua, no host call. The accumulated list is visible as mudlet.mergeTables.
+-- Seeded with "Char.Status" like Host.cpp's mGMCP_merge_table_keys, so IRE-style
+-- partial Char.Status updates keep name/level/class from the first full one.
 mudlet = mudlet or {}
-mudlet.mergeTables = mudlet.mergeTables or {}
+mudlet.mergeTables = mudlet.mergeTables or { "Char.Status" }
 function setMergeTables(...)
     -- Re-assert at call time: bundled Lua (LuaGlobal/Other) may reinitialise the
     -- `mudlet` table after this file loads, so don't rely on the load-time init.
     mudlet = mudlet or {}
-    mudlet.mergeTables = mudlet.mergeTables or {}
+    mudlet.mergeTables = mudlet.mergeTables or { "Char.Status" }
     for _, name in ipairs({...}) do
         name = tostring(name)
         local dup = false

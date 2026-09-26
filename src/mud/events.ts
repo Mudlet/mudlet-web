@@ -100,6 +100,9 @@ export type MudClientEvents = {
      *  proxy where a rejected certificate hangs silently instead of reporting. */
     'tls.timeout': [info: { host: string; port: number }];
     'gmcp.negotiated': void;
+    /** Round trip (ms) from a game command to the next GA/EOR prompt marker —
+     *  Mudlet's command-reply network latency measurement. */
+    'network.latency': [duration: number];
     'msdp.negotiated': void;
     'mssp.negotiated': void;
     'msp.negotiated': void;

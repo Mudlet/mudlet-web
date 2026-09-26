@@ -292,6 +292,10 @@ export class MudSession {
         // was never dialled — see ensureParsingClient).
         this.stateUnsubs = [
             this.events.on('client.error', (message) => this.reportConnectionError(message)),
+            // Command → prompt-marker round trips feed the same reading the
+            // Core.Ping tracker does, as Mudlet measures latency on every
+            // GA/EOR game and not only ones that answer Core.Ping.
+            this.events.on('network.latency', (duration) => this.setPing(duration)),
         ];
         // Carry the profile's encoding onto the new socket, so a script that set
         // one before dialing isn't silently overridden by the client default.

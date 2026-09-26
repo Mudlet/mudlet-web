@@ -5675,8 +5675,9 @@ export class ScriptingAPI {
     }
 
     /**
-     * Mudlet `getNetworkLatency()` — round-trip time of the most recent
-     * keep-alive ping. Returns the last measured value (in ms) for as long as
+     * Mudlet `getNetworkLatency()` — the most recent round trip measured,
+     * either a command to the game's next GA/EOR prompt marker (as Mudlet
+     * times it) or a GMCP `Core.Ping` keep-alive. Returns the last measured value (in ms) for as long as
      * the connection is up; -1 when no measurement has been made yet (mirrors
      * Mudlet's "not yet measured" sentinel — better than a fake 0 which would
      * read as "instant" in scripts charting latency).

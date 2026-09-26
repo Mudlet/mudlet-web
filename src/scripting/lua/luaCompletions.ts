@@ -581,7 +581,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('invokeFileDialog',   '(fileOrFolder, title [, location]) → path', 'Ask the user to pick a file (true) or folder (false) via an in-app picker over the profile VFS. Returns the picked absolute VFS path, or "" if cancelled. The calling handler is suspended until the user answers (the rest of the client keeps running, like Mudlet\'s nested dialog event loop); calling it inside your own pcall fails — Lua 5.1 cannot yield across pcall.'),
     fn('getProfileName',     '() → name',        'The active profile\'s name'),
     fn('getProcessID',       '() → number',      'Mudlet answers the OS process id. A browser tab has no pid, so this is a stable positive number unique to this tab for its lifetime — every property a script can rely on.'),
-    fn('getNetworkLatency',  '() → ms',          'Round-trip time of the most recent keep-alive ping, in milliseconds. -1 when nothing has been measured yet.'),
+    fn('getNetworkLatency',  '() → seconds',     'Most recent network round trip in seconds — from a command to the game\'s next GA/EOR prompt, or a GMCP Core.Ping. 0 when nothing has been measured yet.'),
     fn('handleWindowResizeEvent', '()',          'Legacy no-op kept for old scripts — resizes raise sysWindowResizeEvent on their own.'),
     fn('downloadFile',       '(saveTo, url) → true, url | nil, errMsg', 'Download a URL into the profile filesystem. Asynchronous: the return only says the request was accepted, and the outcome arrives as sysDownloadDone / sysDownloadError. (nil, errMsg) for a URL that is malformed or of an unusable scheme — no request is made.'),
     fn('getNewIDManager',    '() → manager',     'A fresh ID manager object handing out unique ids (mudlet-lua IDManager).'),

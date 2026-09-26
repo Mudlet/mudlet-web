@@ -276,6 +276,16 @@ export class MudClient {
      *  announce ourselves twice. Reset on each connect(). */
     private gmcpHelloSent = false;
 
+    /** When the game command now awaiting a reply went out (`performance.now()`),
+     *  or null when nothing is being timed. Mudlet's
+     *  `cTelnet::begin/finishNetworkLatencyMeasurement`: on a server that marks
+     *  its prompts with GA/EOR, the time from a command to the next prompt
+     *  marker is the network latency `getNetworkLatency()` reports, whether or
+     *  not the game answers GMCP `Core.Ping`. Timed from the first command of a
+     *  burst, so a queued speedwalk isn't credited with the replies to its
+     *  earlier steps. */
+    private latencyStartedAt: number | null = null;
+
     /** Set when this dial asked the proxy for TLS (`&tls=1` in the URL), so the
      *  client knows to expect a `tls.established` control frame and to police
      *  the deadline below. */
@@ -615,6 +625,7 @@ export class MudClient {
         this.charModeDetected = false;
         this.cancelCharacterModeDetection();
         this.gmcpHelloSent = false;
+        this.latencyStartedAt = null;
         // Redialling re-runs the handshake, so the previous verdict is stale.
         this.tlsResolved = false;
         this.gameEstablished = false;
@@ -637,6 +648,7 @@ export class MudClient {
             this.socket.binaryType = "arraybuffer";
 
             this.socket.onmessage = (event: MessageEvent<ArrayBuffer | string>) => {
+                const receivedAt = performance.now();
                 try {
                     // Text frames are the proxy's out-of-band control channel;
                     // game bytes only ever arrive as binary. Proxies predating
@@ -661,6 +673,7 @@ export class MudClient {
                     }
                     this.negotiator.processFrame(data);
                     this.echoHandler.processData(data);
+                    this.finishLatencyMeasurement(data, receivedAt);
                     this.eventBus.emit('socket.incoming', data);
                     try {
                         this.processIncomingData(data);
@@ -853,6 +866,7 @@ export class MudClient {
         this.mspParser.reset();
         this.negotiator.clearMspNegotiated();
         this.cancelCharacterModeDetection();
+        this.latencyStartedAt = null;
     }
 
     /** Whether MSP is live on this connection (negotiated, not merely allowed
@@ -897,11 +911,32 @@ export class MudClient {
             // off, so strict-Unix mode submits the bare LF telnet would normally
             // pair it with.
             this.sendBytes(this.codec.encodeOutgoing(message + (this.strictUnixEndings ? "\n" : "\r\n")));
-            if (isGameCommand) this.armCharacterModeDetection();
+            if (isGameCommand) {
+                this.armCharacterModeDetection();
+                this.beginLatencyMeasurement();
+            }
         } catch (error) {
             console.error('Error sending message:', error);
             this.eventBus.emit('error', error);
         }
+    }
+
+    /** Start timing a command's round trip — only once the server has shown it
+     *  marks prompts (GA/EOR latched), since without a marker there is no
+     *  "reply arrived" to stop at. See {@link latencyStartedAt}. */
+    private beginLatencyMeasurement(): void {
+        if (this.latencyStartedAt !== null || this.forceGaOff || !this.assembler.gaDriver) return;
+        this.latencyStartedAt = performance.now();
+    }
+
+    /** Stop the clock at the first prompt marker after a timed command and
+     *  publish the reading (ms) as `network.latency`. */
+    private finishLatencyMeasurement(data: string, receivedAt: number): void {
+        if (this.latencyStartedAt === null) return;
+        if (!data.includes(TELNET_GA) && !data.includes(TELNET_EOR)) return;
+        const duration = Math.max(0, receivedAt - this.latencyStartedAt);
+        this.latencyStartedAt = null;
+        this.eventBus.emit('network.latency', duration);
     }
 
     private sendRaw(data: string): void {
