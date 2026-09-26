@@ -31,6 +31,34 @@ interface TimerEntry {
     arm?: () => void;
 }
 
+/** A permanent timer list indexed the ways the engine walks it. */
+interface PermTree {
+    timers: TimerNode[];
+    byId: Map<string, TimerNode>;
+    children: Map<string, TimerNode[]>;
+    /** Ids switched on along with every ancestor (canBeUnlocked). */
+    enabledIds: Set<string>;
+    /** A timer nested under another *timer* rather than a folder (TTimer.h). */
+    isOffset: (t: TimerNode) => boolean;
+}
+
+function permTree(timers: TimerNode[]): PermTree {
+    const byId = new Map(timers.map(t => [t.id, t]));
+    const children = new Map<string, TimerNode[]>();
+    for (const t of timers) {
+        if (!t.parentId || !byId.has(t.parentId)) continue;
+        const list = children.get(t.parentId) ?? [];
+        list.push(t);
+        children.set(t.parentId, list);
+    }
+    const isOffset = (t: TimerNode): boolean => {
+        if (t.isGroup || !t.parentId) return false;
+        const parent = byId.get(t.parentId);
+        return !!parent && !parent.isGroup;
+    };
+    return { timers, byId, children, enabledIds: buildEffectivelyEnabledIds(timers), isOffset };
+}
+
 export class TimerEngine {
     private readonly temp = new Map<number, TimerEntry>();
     /** Permanent timers keyed by stored TimerNode id (uuid). Two timers can
@@ -205,14 +233,27 @@ export class TimerEngine {
      */
     private readonly offsetChildren = new Map<string, TimerNode[]>();
 
+    /**
+     * Permanent timers whose *runtime* active flag is up — TTimer's `mActive`
+     * (Tree.h), kept apart from the user's switch (`enabled`, Mudlet's
+     * `mUserActiveState`). The two disagree in exactly the cases `isActive`
+     * can see: a timer imported enabled under a disabled folder is left
+     * inactive, while an explicit `enableTimer()` on it raises the flag even
+     * though a disabled ancestor keeps it from running. Only non-offset timers
+     * are tracked; Mudlet reports an offset timer by its switch alone.
+     * See {@link applyPermSwitch} for the transitions and {@link loadPerm} for
+     * how the flag is seeded.
+     */
+    private readonly activePerm = new Set<string>();
+    /** Each permanent timer's switch and parent as of the last
+     *  {@link loadPerm}, so the next one can tell a switch flipped behind the
+     *  engine's back (the editor) from one that never moved. */
+    private readonly seenPerm = new Map<string, { enabled: boolean; parentId: string | null }>();
+
     loadPerm(timers: TimerNode[], executeFn: ExecuteFn): void {
-        const enabledIds = buildEffectivelyEnabledIds(timers);
-        const byId = new Map(timers.map(t => [t.id, t]));
-        const isOffset = (t: TimerNode): boolean => {
-            if (t.isGroup || !t.parentId) return false;
-            const parent = byId.get(t.parentId);
-            return !!parent && !parent.isGroup;
-        };
+        const tree = permTree(timers);
+        const { enabledIds, isOffset } = tree;
+        this.reconcileActive(tree);
         this.knownPermNames.clear();
         for (const t of timers) if (!t.isGroup) this.knownPermNames.add(t.name);
         this.offsetChildren.clear();
@@ -274,6 +315,144 @@ export class TimerEngine {
         for (const [k, v] of nextDesc) this.prevDesc.set(k, v);
         this.permNameToId.clear();
         for (const [k, v] of nextNames) this.permNameToId.set(k, v);
+    }
+
+    /**
+     * Bring the runtime active flags in line with a new node list.
+     *
+     * - A timer seen for the first time is set as Mudlet's loader leaves it:
+     *   XMLimport::readTimer only activates a root that is switched on, and
+     *   TTimer::enableTimer(int) carries that down through folders to each
+     *   child whose whole ancestry is switched on (canBeUnlocked). So it is
+     *   active exactly when effectively enabled. A flag an explicit
+     *   {@link applyPermSwitch} raised before this first sight is kept, as
+     *   long as the timer is still switched on.
+     * - A timer that moved to another parent is re-seeded the same way,
+     *   strictly: TimerUnit::reParentTimer disables it and re-enables it by id,
+     *   which only activates it if it can be unlocked where it now sits.
+     * - A timer whose switch flipped without going through enable/disableTimer
+     *   (the editor's checkbox) gets the same transition those would apply.
+     */
+    private reconcileActive(tree: PermTree): void {
+        const { timers, enabledIds, children } = tree;
+        const ids = new Set(timers.map(t => t.id));
+        for (const id of [...this.activePerm]) if (!ids.has(id)) this.activePerm.delete(id);
+        for (const id of [...this.seenPerm.keys()]) if (!ids.has(id)) this.seenPerm.delete(id);
+
+        const reseat = new Set<string>();
+        const flipped: TimerNode[] = [];
+        for (const t of timers) {
+            const prev = this.seenPerm.get(t.id);
+            if (!prev) {
+                if (enabledIds.has(t.id)) this.activePerm.add(t.id);
+                else if (!t.enabled) this.activePerm.delete(t.id);
+            } else if (prev.parentId !== t.parentId) {
+                reseat.add(t.id);
+            } else if (prev.enabled !== t.enabled) {
+                flipped.push(t);
+            }
+        }
+        // A moved timer takes its subtree with it; re-seed all of it.
+        const stack = [...reseat];
+        while (stack.length > 0) {
+            const id = stack.pop()!;
+            if (enabledIds.has(id)) this.activePerm.add(id);
+            else this.activePerm.delete(id);
+            for (const c of children.get(id) ?? []) if (!reseat.has(c.id)) { reseat.add(c.id); stack.push(c.id); }
+        }
+        for (const t of flipped) this.switchOne(t, t.enabled, tree);
+
+        this.seenPerm.clear();
+        for (const t of timers) this.seenPerm.set(t.id, { enabled: t.enabled, parentId: t.parentId });
+    }
+
+    /**
+     * Mudlet `enableTimer(name)` / `disableTimer(name)` on permanent timers, as
+     * far as the runtime active flag goes (TimerUnit::enableTimer/disableTimer).
+     * `timers` is the node list *after* the switches were written. Applied even
+     * when a switch did not move: enabling an already switched-on timer under a
+     * disabled folder still raises its flag, and disabling an already
+     * switched-off folder still lowers the flags beneath it.
+     */
+    applyPermSwitch(ids: readonly string[], on: boolean, timers: TimerNode[]): void {
+        const tree = permTree(timers);
+        for (const id of ids) {
+            const t = tree.byId.get(id);
+            if (t) this.switchOne(t, on, tree);
+        }
+        // Record the switches as seen, so the reload the same write triggers
+        // does not apply the transition a second time.
+        for (const t of timers) this.seenPerm.set(t.id, { enabled: t.enabled, parentId: t.parentId });
+    }
+
+    private switchOne(t: TimerNode, on: boolean, tree: PermTree): void {
+        const { enabledIds, children, isOffset } = tree;
+        if (!on) {
+            // setIsActive(false), then TTimer::disableTimer() deactivates every
+            // descendant without touching their own switches.
+            this.activePerm.delete(t.id);
+            const stack = [...(children.get(t.id) ?? [])];
+            while (stack.length > 0) {
+                const c = stack.pop()!;
+                this.activePerm.delete(c.id);
+                stack.push(...(children.get(c.id) ?? []));
+            }
+            return;
+        }
+        // An offset timer is reported by its switch, and its own flag belongs
+        // to its parent's firing (TTimer::execute).
+        if (isOffset(t)) return;
+        // setIsActive(true) raises the flag whatever the ancestors say...
+        if (t.enabled) this.activePerm.add(t.id);
+        // ...and a folder then walks its non-offset descendants with
+        // TTimer::enableTimer(), which activates each one only if it and every
+        // ancestor are switched on (canBeUnlocked).
+        if (!t.isGroup) return;
+        const stack = (children.get(t.id) ?? []).filter(c => !isOffset(c));
+        while (stack.length > 0) {
+            const c = stack.pop()!;
+            if (enabledIds.has(c.id)) this.activePerm.add(c.id);
+            stack.push(...(children.get(c.id) ?? []).filter(g => !isOffset(g)));
+        }
+    }
+
+    /**
+     * What Mudlet's `isActive(name, "timer" [, checkAncestors])` reports for a
+     * permanent timer: an offset timer by its switch (shouldBeActive), any
+     * other by its runtime flag (TTimer::isActive). With `checkAncestors`, every
+     * ancestor has to report active by the same rule (shouldAncestorsBeActive).
+     */
+    permReportsActive(node: TimerNode, timers: TimerNode[], checkAncestors = false): boolean {
+        const tree = permTree(timers);
+        if (!this.reportsActive(node, tree)) return false;
+        return !checkAncestors || this.permAncestorsActive(node, timers, tree);
+    }
+
+    /** Mudlet `isAncestorsActive(id, "timer")`: every ancestor reports active,
+     *  by the rule {@link permReportsActive} uses. */
+    permAncestorsActive(node: TimerNode, timers: TimerNode[], tree = permTree(timers)): boolean {
+        const seen = new Set<string>([node.id]);
+        let p = node.parentId ? tree.byId.get(node.parentId) : undefined;
+        while (p && !seen.has(p.id)) {
+            if (!this.reportsActive(p, tree)) return false;
+            seen.add(p.id);
+            p = p.parentId ? tree.byId.get(p.parentId) : undefined;
+        }
+        return true;
+    }
+
+    /** How many non-folder permanent timers report active — the timer half of
+     *  getProfileStats' active count, by the rule {@link permReportsActive} uses. */
+    countPermActive(timers: TimerNode[]): number {
+        const tree = permTree(timers);
+        let n = 0;
+        for (const t of timers) if (!t.isGroup && this.reportsActive(t, tree)) n++;
+        return n;
+    }
+
+    private reportsActive(node: TimerNode, tree: PermTree): boolean {
+        if (!node.enabled) return false;
+        return tree.isOffset(node) || this.activePerm.has(node.id);
     }
 
     /** (Re)start every enabled offset timer hanging off `parentId`, each due
@@ -372,6 +551,8 @@ export class TimerEngine {
         }
         this.perm.clear();
         this.offsetChildren.clear();
+        this.activePerm.clear();
+        this.seenPerm.clear();
         this.permNameToId.clear();
         this.knownPermNames.clear();
         this.prevDesc.clear();
