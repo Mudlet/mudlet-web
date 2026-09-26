@@ -148,3 +148,20 @@ Mudlet Web installs **Mudlet packages/modules** (`.mpackage`/`.zip`/XML). `src/i
 ### JS API Parity with Mudlet
 
 Every Mudlet API feature needs a JS/Lua equivalent in `ScriptingAPI`, but it should be structured idiomatically for this client — not a 1:1 copy of Mudlet's API surface.
+
+### Vendored Mudlet trees — never edit by hand
+
+These paths mirror Mudlet/Mudlet and change **only** by syncing, via `scripts/sync-mudlet-lua.mjs`, `scripts/sync-mudlet-specs.mjs` and `scripts/sync-mudlet-games.mjs`, which `.github/workflows/sync-mudlet-upstream.yml` runs daily:
+
+| Path | Synced by |
+|------|-----------|
+| `src/scripting/lua/mudlet-lua/` | `sync-mudlet-lua.mjs` |
+| `src/import/defaults/` | `sync-mudlet-lua.mjs` |
+| `src/scripting/lua/specs/` | `sync-mudlet-specs.mjs` |
+| `src/mud/games/bundledGames.ts`, `src/mud/games/icons/` | `sync-mudlet-games.mjs` |
+
+**Exempt** — Mudlet Web's own files, which the sync scripts leave alone: `src/scripting/lua/mudlet-lua/SYNCED.md`, `src/scripting/lua/mudlet-lua/3rdparty/lulpeg.lua` (the `localOnly` list in `sync-mudlet-lua.mjs`), and `src/scripting/lua/specs/SYNCED.md`. Each SYNCED.md's pinned-commit lines are still rewritten by its sync; edit only the prose. The rest of `src/mud/games/` (`gameIcons.ts`, `gameLinks.ts`, `websiteLinks.ts`) is ordinary source.
+
+When Mudlet Web doesn't match Mudlet, **close the gap in Mudlet Web's own code** — `ScriptingAPI`, the `LuaRuntime` bindings, the exempt files. A gap that can't or shouldn't be closed is recorded in `e2e/knownDivergences.ts`, or fixed upstream in Mudlet and brought in by the next sync. A bug in generated output (`bundledGames.ts`) is fixed in its sync script. The `--make-patch` mechanism in `sync-mudlet-lua.mjs` is not a way around this.
+
+CI enforces it: the **Vendored trees** job in `ci.yml` runs `scripts/check-vendored-paths.mjs` (`yarn check:vendored` locally), which fails a PR whose diff against its merge base touches a vendored path. Only the sync workflow's own branches — `chore/sync-mudlet-upstream` (lua + specs) and `chore/sync-mudlet-games` (games) — are exempt, from this repo only and only for their own scripts' paths. A triage PR based on `chore/sync-mudlet-upstream` is checked against that base, so the sync content isn't its change and a hand edit in it still fails. Changing the vendored set or the exemptions means updating that script; `tests/scripts/checkVendoredPaths.test.ts` checks it against the sync scripts and workflow.
