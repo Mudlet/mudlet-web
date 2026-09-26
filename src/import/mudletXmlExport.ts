@@ -367,8 +367,10 @@ function emitButtons(xml: XmlBuilder, nodes: ButtonNode[], opts: ExportOptions):
             xml.leaf('packageName', n.packageName ?? '');
             xml.leaf('script', n.code ?? '');
             xml.leaf('css', n.styleSheet ?? '');
-            xml.leaf('commandButtonUp', n.command ?? '');
-            xml.leaf('commandButtonDown', n.commandDown ?? '');
+            // A plain button's command is desktop's commandButtonDown (the only
+            // one TAction::execute sends for it); see parseButtons.
+            xml.leaf('commandButtonUp', n.isPushDown ? n.command ?? '' : '');
+            xml.leaf('commandButtonDown', (n.isPushDown ? n.commandDown : n.command) ?? '');
             xml.leaf('icon', n.icon ?? '');
             xml.leaf('orientation', idx(BUTTON_ORIENTATIONS, n.orientation));
             xml.leaf('location', idx(BUTTON_LOCATIONS, n.location));

@@ -475,6 +475,10 @@ export class ScriptingEngine implements EngineHost {
         session.windows.onRaiseEvent = (event, args) => this.raiseEvent(event, args);
         // Map UI "download map from game" → the Client.Map/MMP download flow.
         session.windows.onDownloadMap = () => void this.downloadMap();
+        // A command line with no setCmdLineAction bound sends what was typed,
+        // as Mudlet's TCommandLine::enterCommand falls back to Host::send.
+        session.windows.onCmdLineDefaultSend = (text) => this.hostSend(text);
+        session.cmdLines.onDefaultSend = (text) => this.hostSend(text);
         // Mudlet's postMessage(): client messages for the player (e.g. a map file
         // whose format version can't be read) go on the main console, coloured off
         // their "[ PREFIX ] -" the way cTelnet::postMessage does.
@@ -4118,6 +4122,8 @@ export class ScriptingEngine implements EngineHost {
         this.unsubs.length = 0;
         this.session.windows.onRaiseEvent = undefined;
         this.session.windows.onDownloadMap = undefined;
+        this.session.windows.onCmdLineDefaultSend = undefined;
+        this.session.cmdLines.onDefaultSend = undefined;
         this.session.windows.onStartSpeedWalk = undefined;
         this.session.windows.onFileDrop = undefined;
         this.session.sounds.onMediaStarted = undefined;
@@ -4349,11 +4355,16 @@ export class ScriptingEngine implements EngineHost {
     /**
      * Run a button's command + code. The Lua `code` runs on every click.
      * For two-state buttons, `nextState=true` (going DOWN) sends `commandDown`,
-     * otherwise (going UP, or single-state click) sends `command`.
+     * otherwise (going UP) sends `command`. A single-state button sends
+     * `command` — its desktop commandButtonDown, which the importer moves
+     * there. A plain button imported before that still carries the desktop
+     * down command in `commandDown`, and that is the one desktop sends.
      */
     executeButton(button: ButtonNode, nextState: boolean): void {
-        const goingDown = button.isPushDown && nextState;
-        const cmd = goingDown ? button.commandDown : button.command;
+        const cmd = button.isPushDown
+            ? (nextState ? button.commandDown : button.command)
+            : (button.commandDown || button.command);
+        this.api.clickedButtonState = button.isPushDown && nextState ? 2 : 1;
         // Echoed, split and alias-expanded, matching TAction::execute's
         // Host::send call.
         if (cmd) this.hostSend(cmd);

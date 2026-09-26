@@ -2531,6 +2531,15 @@ export class ScriptingAPI {
         return this.host.getButtonStateByName(name);
     }
 
+    /**
+     * The console's own button state, which no-argument `getButtonState()`
+     * reads: 2 when the last clicked button went down, 1 when it came up or
+     * was a plain button. Mudlet's TToolBar/TEasyButtonBar write
+     * `mpConsole->mButtonState` just before running the button, so it holds
+     * the click being handled — ScriptingEngine.executeButton does the same.
+     */
+    clickedButtonState: 1 | 2 = 1;
+
     /** Which of Mudlet's button refusals applies to `name` — see
      *  ScriptingEngine.buttonKindByName. */
     buttonKind(name: string): 'missing' | 'plain' | 'pushdown' {

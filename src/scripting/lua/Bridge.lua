@@ -3926,15 +3926,23 @@ end
 -- (LuaRuntime.setLabelCb) tracks the prior cb id per slot and frees it on
 -- rebind so handlers don't leak in __mudlet_cb. cb id 0 means "clear".
 do
-    local function bind(name, who, fn, raw, ...)
+    -- `noEvent`: the callback gets only the trailing args, no event table.
+    -- That is TLabel::leaveEvent, which has no mouse position to report.
+    local function bindWith(noEvent, name, who, fn, raw, ...)
         if fn == nil then return raw(name, 0) end
         local f = __mudlet_to_fn(fn, who, 2)
-        if select('#', ...) > 0 then
-            local trailing = {...}
-            local inner = f
-            f = function(event) return inner(event, unpack(trailing)) end
+        local n = select('#', ...)
+        local trailing = {...}
+        local inner = f
+        if noEvent then
+            f = function() return inner(unpack(trailing, 1, n)) end
+        elseif n > 0 then
+            f = function(event) return inner(event, unpack(trailing, 1, n)) end
         end
         return raw(name, __mudlet_register_cb(f))
+    end
+    local function bind(name, who, fn, raw, ...)
+        return bindWith(false, name, who, fn, raw, ...)
     end
 
     local _click = __mudlet_setLabelClickCallback
@@ -3964,7 +3972,7 @@ do
 
     local _leave = __mudlet_setLabelOnLeave
     function setLabelOnLeave(name, fn, ...)
-        return bind(name, "setLabelOnLeave", fn, _leave, ...)
+        return bindWith(true, name, "setLabelOnLeave", fn, _leave, ...)
     end
 
     local _wheel = __mudlet_setLabelWheelCallback
@@ -4159,6 +4167,16 @@ do
     local _id  = 0
     function __mudlet_call_link(id) _fns[id]() end
 
+    -- Store a Lua function and return the Lua code that calls it, so a link or
+    -- popup entry holding a function survives the trip to JS as a string. The
+    -- popup wrappers below go through this too: tostring() on the function
+    -- would give "function: 0x…", which runs as nothing when clicked.
+    function __mudlet_link_ref(fn)
+        _id = _id + 1
+        _fns[_id] = fn
+        return '__mudlet_call_link(' .. _id .. ')'
+    end
+
     -- For echoLink / insertLink: cmd is at slot 3 when arg 4 is a string (window form),
     -- otherwise at slot 2 (no-window form, with optional useCurrentFormat at slot 4).
     local function wrapLink(rawFn)
@@ -4192,6 +4210,13 @@ do
         end
         return _rawSetLink(unpack(args))
     end
+end
+
+-- A popup command is Lua code or a Lua function, as in Mudlet: functions are
+-- stored and replaced by the code that calls them.
+function __mudlet_popup_cmd(c)
+    if type(c) == 'function' then return __mudlet_link_ref(c) end
+    return tostring(c)
 end
 
 -- Mudlet requires the command and hint tables to line up: equal sizes, or one
@@ -4241,7 +4266,7 @@ do
         if not text or text == '' then return end
         local cs, hs = {}, {}
         if type(cmds) == 'table' then
-            for _, c in ipairs(cmds) do cs[#cs+1] = tostring(c) end
+            for _, c in ipairs(cmds) do cs[#cs+1] = __mudlet_popup_cmd(c) end
         end
         if type(hints) == 'table' then
             for _, h in ipairs(hints) do hs[#hs+1] = tostring(h) end
@@ -4283,7 +4308,7 @@ do
         if not text or text == '' then return end
         local cs, hs = {}, {}
         if type(cmds) == 'table' then
-            for _, c in ipairs(cmds) do cs[#cs+1] = tostring(c) end
+            for _, c in ipairs(cmds) do cs[#cs+1] = __mudlet_popup_cmd(c) end
         end
         if type(hints) == 'table' then
             for _, h in ipairs(hints) do hs[#hs+1] = tostring(h) end
@@ -4326,7 +4351,7 @@ do
             return nil, "setPopup: command table and hint table sizes do not match up"
         end
         local cs, hs = {}, {}
-        for _, x in ipairs(cmds) do cs[#cs+1] = tostring(x) end
+        for _, x in ipairs(cmds) do cs[#cs+1] = __mudlet_popup_cmd(x) end
         for _, x in ipairs(hints) do hs[#hs+1] = tostring(x) end
         if _raw(win, table.concat(cs, SEP), table.concat(hs, SEP)) == false then return false end
         return true
@@ -7630,9 +7655,9 @@ do
     function getButtonState(...)
         -- With no argument at all this is a different question: Mudlet answers
         -- the console's own mButtonState, which is 1 or 2 rather than a boolean
-        -- and which only a real click writes. Nothing here can click, so it
-        -- stays at the "not pressed" end.
-        if select('#', ...) == 0 then return 1 end
+        -- and which only a real click writes — 2 when the clicked button went
+        -- down, 1 when it came up or was a plain button.
+        if select('#', ...) == 0 then return __mudlet_clicked_button_state() end
         local name, err = buttonTarget("getButtonState", ..., 1)
         if not name then return nil, err end
         return __getButtonState(name) and true or false

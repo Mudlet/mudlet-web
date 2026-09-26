@@ -433,6 +433,21 @@ function normalizeGlobalEntry(raw: unknown): LuaGlobalEntry {
     return entry;
 }
 
+/**
+ * A label mouse event as Lua sees it. `buttons` is a Lua list in Mudlet
+ * (`event.buttons[1] == "LeftButton"`), but wasmoon pushes a JS array
+ * 0-indexed — so it is moved up one into a sparse array, which lands at
+ * t[1..n] (see setMatches).
+ */
+function labelEventForLua(event: unknown): unknown {
+    if (!event || typeof event !== 'object') return event;
+    const buttons = (event as { buttons?: unknown }).buttons;
+    if (!Array.isArray(buttons)) return event;
+    const list: string[] = [];
+    buttons.forEach((b: string, i) => { list[i + 1] = b; });
+    return { ...event, buttons: list };
+}
+
 export class LuaRuntime implements IScriptingRuntime {
 
     // Temp alias/trigger IDs → { kill fn, type }. Engines return unsub, not
@@ -1020,7 +1035,7 @@ export class LuaRuntime implements IScriptingRuntime {
             }
             slots.set(slot, cbId);
             return install((event: unknown) =>
-                this.dispatchCbWithArg(cbId, event, `label "${name}" ${slot}`));
+                this.dispatchCbWithArg(cbId, labelEventForLua(event), `label "${name}" ${slot}`));
         };
 
         this.lua.global.set('__mudlet_setLabelClickCallback', (name: string, cbId: number) =>
