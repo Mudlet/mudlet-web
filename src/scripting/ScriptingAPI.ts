@@ -1244,7 +1244,15 @@ export class ScriptingAPI {
      *  every name they could have asked for, so it lists them all, ASCII first
      *  as Mudlet does. */
     setServerEncoding(name: string): true | string {
-        if (this.session.setServerEncoding(name)) return true;
+        if (this.session.setServerEncoding(name)) {
+            // Saved to the profile, as cTelnet::setEncoding(…, saveValue = true)
+            // writes it for a script — the next session opens on it, and the
+            // Settings dropdown shows it.
+            useAppStore.getState().patchConnectionProfile(this.connectionId, {
+                serverEncoding: this.session.getServerEncoding(),
+            });
+            return true;
+        }
         const names = ['ASCII', ...this.session.getServerEncodingsList().filter(e => e !== 'ASCII')];
         return `Encoding "${name}" does not exist;\nuse one of the following:\n"${names.join('", "')}".`;
     }

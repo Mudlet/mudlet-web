@@ -25,6 +25,7 @@ import {
     CHAR_LOGIN_SILENT_DROP_MESSAGE, charLoginFailureMessage, decideCharLoginRequest,
 } from './mud/protocol/charLoginFlow';
 import { describeCertCode, describeTlsFailure } from './mud/protocol/tlsCodes';
+import { savedServerEncoding } from './mud/protocol/charset';
 import type { TlsStatus } from './mud/events';
 import { QuickOpenPalette } from './ui/QuickOpenPalette';
 import { MAIN_OUTPUT_ID, COMMAND_INPUT_ID } from './ui/landmarks';
@@ -382,10 +383,11 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     }, [promptTimeoutMs, session]);
 
     // The profile's decoder choice, for games that never negotiate CHARSET.
-    // MudSession keeps it across reconnects and lets a CHARSET agreement or a
-    // script override it for the session, so this only has to push the value.
+    // MudSession keeps it across reconnects and lets a CHARSET agreement
+    // override it for the session, so this only has to push the value. (A
+    // script's setServerEncoding() writes it back here, as Mudlet's does.)
     useEffect(() => {
-        if (serverEncoding) session.setServerEncoding(serverEncoding);
+        if (serverEncoding) session.setServerEncoding(savedServerEncoding(serverEncoding));
     }, [serverEncoding, session]);
 
     // Two text-pipeline switches held as module state (one tab renders one

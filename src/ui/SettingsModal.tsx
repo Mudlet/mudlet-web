@@ -28,7 +28,7 @@ import { MapSymbolUsageModal } from './MapSymbolUsageModal';
 import { analyticsOptedOut, setAnalyticsOptedOut } from '../analytics';
 import { formatBytes } from '../utils/formatBytes';
 import { EDITOR_THEME_CHOICES } from './codemirror/theme';
-import { SUPPORTED_SERVER_ENCODINGS, DEFAULT_SERVER_ENCODING } from '../mud/protocol';
+import { SUPPORTED_SERVER_ENCODINGS, DEFAULT_SERVER_ENCODING, savedServerEncoding } from '../mud/protocol';
 import { VaultManageButton } from './VaultManageButton';
 import { getVault } from '../vault/vaultAccess';
 import { useVault } from '../vault/useVault';
@@ -875,13 +875,13 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                             Games that negotiate CHARSET agree an encoding with Mudlet Web on
                             connect and this setting is not consulted. Games that don't send
                             raw bytes with no label, and this says how to read them. A script's
-                            <code> setServerEncoding()</code> changes it for the session only.
+                            <code> setServerEncoding()</code> changes it here too, as it does in Mudlet.
                         </HelpTip>
                     </label>
                     <select
                         id="server-encoding"
                         className="settings-select"
-                        value={serverEncoding ?? DEFAULT_SERVER_ENCODING}
+                        value={savedServerEncoding(serverEncoding) ?? DEFAULT_SERVER_ENCODING}
                         onChange={e => patchProfile({ serverEncoding: e.target.value })}
                     >
                         {SUPPORTED_SERVER_ENCODINGS.map(name => (

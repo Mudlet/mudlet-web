@@ -50,6 +50,12 @@ export function normalizeCharsetName(raw: string): string | null {
     // apart downstream — see SessionCodec.trySetEncoding.
     const vendored = VENDORED_CODE_PAGES.find(page => page.toLowerCase() === n);
     if (vendored) return vendored;
+    // The other spellings of two of them: the WHATWG/IANA labels a CHARSET
+    // offer is likelier to carry than Mudlet's own name.
+    if (n === 'ibm866' || n === 'cp-866' || n === '866' || n === 'csibm866') return 'CP866';
+    if (n === 'mac' || n === 'macroman' || n === 'mac-roman' || n === 'x-mac-roman' || n === 'csmacintosh') {
+        return 'MACINTOSH';
+    }
     // The CJK multi-byte encodings. The browser maps their characters, but the
     // sequences are framed in multiByte.ts — its header says why. BIG5-HKSCS
     // rides Big5's decoder (the browser's big5 already covers the HKSCS
@@ -77,7 +83,7 @@ export function normalizeCharsetName(raw: string): string | null {
         return map[latin[1]] ?? null;
     }
     if (/^windows-125\d$/.test(n)) return n;        // 1250..1258 all valid TextDecoder labels
-    if (n === 'koi8-r' || n === 'koi8-u') return n;
+    if (n === 'koi8-r') return n;
     return null;
 }
 
@@ -95,15 +101,32 @@ export const SUPPORTED_SERVER_ENCODINGS: readonly string[] = [
     'ISO 8859-1', 'ISO 8859-2', 'ISO 8859-3', 'ISO 8859-4', 'ISO 8859-5',
     'ISO 8859-6', 'ISO 8859-7', 'ISO 8859-8', 'ISO 8859-9', 'ISO 8859-10',
     'ISO 8859-11', 'ISO 8859-13', 'ISO 8859-14', 'ISO 8859-15', 'ISO 8859-16',
-    // The DOS code pages, and Medievia's private-use map alphabet. TextDecoder
-    // has none of them; codePages.ts carries the tables.
-    'CP437', 'CP667', 'CP737', 'CP850', 'CP866', 'CP869', 'CP1161',
+    // The DOS code pages, KOI8, Macintosh and Medievia's private-use map
+    // alphabet. codePages.ts carries every table here but KOI8-R's.
+    'CP437', 'CP667', 'CP737', 'CP850', 'CP866', 'CP869', 'CP1162',
     'KOI8-R', 'KOI8-U', 'MACINTOSH', 'MEDIEVIA',
     'WINDOWS-1250', 'WINDOWS-1251', 'WINDOWS-1252', 'WINDOWS-1253', 'WINDOWS-1254',
     'WINDOWS-1255', 'WINDOWS-1256', 'WINDOWS-1257', 'WINDOWS-1258',
     // The multi-byte East Asian encodings, which the browser decodes for us.
     'GBK', 'GB18030', 'BIG5', 'BIG5-HKSCS', 'EUC-KR',
 ];
+
+/** Names Mudlet Web once listed and saved to profiles that Mudlet itself never
+ *  used. Mudlet Web offered the Thai page as CP1161 — the table was always
+ *  Mudlet's CP1162, only the name was wrong — so a profile set to it then still
+ *  says so. Not accepted from a script: Mudlet refuses CP1161, and so does
+ *  setServerEncoding() here. */
+const LEGACY_SAVED_SERVER_ENCODINGS: Readonly<Record<string, string>> = {
+    CP1161: 'CP1162',
+};
+
+/** A profile's saved `serverEncoding`, with any name only an older Mudlet Web
+ *  wrote brought up to the one it meant. */
+export function savedServerEncoding(saved: string): string;
+export function savedServerEncoding(saved: string | undefined): string | undefined;
+export function savedServerEncoding(saved: string | undefined): string | undefined {
+    return saved === undefined ? undefined : LEGACY_SAVED_SERVER_ENCODINGS[saved] ?? saved;
+}
 
 /** The {@link SUPPORTED_SERVER_ENCODINGS} entry a caller's spelling means, or
  *  null when Mudlet Web cannot decode it. Dash/space/case differences are all the
@@ -119,8 +142,11 @@ export function canonicalServerEncoding(raw: string): string | null {
     // would answer with a name the caller never asked for. Spelling differences
     // that are only separators or case are the same name for this purpose.
     const key = (s: string) => s.toUpperCase().replace(/[-_ ]/g, '');
+    // A listed name still has to be one there is a decoder for: the list is what
+    // CHARSET offers are accepted against, and accepting a name that the codec
+    // then refuses leaves the game sending bytes we read as UTF-8.
     const direct = SUPPORTED_SERVER_ENCODINGS.find(e => key(e) === key(given));
-    if (direct) return direct;
+    if (direct) return normalizeCharsetName(direct) ? direct : null;
     // Otherwise it is an alias — "Latin-1", "us-ascii", a wire spelling from
     // CHARSET — and the decoder it resolves to names the list entry.
     const iana = normalizeCharsetName(given);
