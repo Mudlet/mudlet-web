@@ -274,8 +274,9 @@ export class MudClient {
     private opened = false;
 
     /** True once we've sent the GMCP `Core.Hello` / `Core.Supports.Set`
-     *  handshake this session, so a server that re-offers GMCP doesn't make us
-     *  announce ourselves twice. Reset on each connect(). */
+     *  handshake this session. Only a server's IAC DO GMCP consults it — an
+     *  IAC WILL GMCP always re-announces (see sendGmcpHandshake). Reset on
+     *  each connect(). */
     private gmcpHelloSent = false;
 
     /** When the game command now awaiting a reply went out (`performance.now()`),
@@ -410,8 +411,7 @@ export class MudClient {
             eventBus,
             {
                 sendRaw: (data) => this.sendRaw(data),
-                onGmcpNegotiated: () => this.sendGmcpHandshake(),
-                onCharsetNegotiated: () => this.charsetHandler.sendRequest(),
+                onGmcpNegotiated: (offered) => this.sendGmcpHandshake(offered),
                 getEncoding: () => this.codec.encoding,
                 onKaVirProtocolDetected: () => this.eventBus.emit('kavir.detected'),
             },
@@ -985,11 +985,16 @@ export class MudClient {
      *  Mudlet does: `Core.Hello` identifies the client (name + version) and
      *  `Core.Supports.Set` lists the GMCP modules we understand. Many servers
      *  won't push any GMCP data (room, char, vitals, …) until they've received
-     *  this hello, so without it GMCP effectively does nothing. Latched so a
-     *  repeated WILL/DO GMCP doesn't re-announce. Reports our own identity
-     *  (see src/version.ts), matching the TTYPE/MNES/MXP handshakes. */
-    private sendGmcpHandshake(): void {
-        if (this.gmcpHelloSent) return;
+     *  this hello, so without it GMCP effectively does nothing. Every server
+     *  offer (IAC WILL GMCP) is answered with it, as Mudlet does: a server that
+     *  turned GMCP off and on again — copyover, reboot — has dropped the module
+     *  list and would otherwise never send another packet. Mudlet sends nothing
+     *  on a server's IAC DO GMCP; Mudlet Web still announces there once per
+     *  connection, since a server that only ever asks would otherwise never
+     *  hear from us. Reports our own identity (see src/version.ts), matching
+     *  the TTYPE/MNES/MXP handshakes. */
+    private sendGmcpHandshake(offered: boolean): void {
+        if (!offered && this.gmcpHelloSent) return;
         if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
         this.gmcpHelloSent = true;
         try {
@@ -999,7 +1004,12 @@ export class MudClient {
             }));
             // Mudlet's default Core.Supports.Set, minus "External.Discord 1"
             // (Mudlet only sends that when its Discord integration is active —
-            // we have none) and minus the modules gated on Discord.
+            // we have none) and minus the modules gated on Discord. Char.Login
+            // stays at version 1 where Mudlet now says 2: version 2 is the
+            // OAuth / sign-in-token flow (Char.Login.URL, .AuthCode, .Token,
+            // .Reconnect — Mudlet's GMCPAuthenticator), none of which is
+            // implemented here, and a server told we speak it may hand the
+            // login to a flow we would silently drop.
             this.sendBytes(encodeGmcp('Core.Supports.Set', [
                 'Char 1',
                 'Char.Skills 1',

@@ -132,12 +132,18 @@ describe('telnet option negotiation (TelnetNegotiator via MudClient)', () => {
     expect(sentText(sock)).toContain(TTYPE_IS + 'MTTS 301');
   });
 
-  it('accepts WILL CHARSET with DO CHARSET and sends our REQUEST', () => {
+  // Mudlet only answers the server's REQUEST ("Mudlet does not initiate
+  // negotiations yet", ctelnet.cpp) — it never sends one of its own (#179).
+  it('accepts WILL CHARSET with DO CHARSET and waits for the server to REQUEST', () => {
     const { sock } = connected();
     sock.deliver(CHARSET_WILL);
-    const out = sentText(sock);
-    expect(out).toContain(CHARSET_DO);
-    expect(out).toContain(CHARSET_REQUEST + ';UTF-8;ISO-8859-2;ISO-8859-1');
+    expect(sentText(sock)).toBe(CHARSET_DO);
+  });
+
+  it('accepts DO CHARSET with WILL CHARSET and sends no REQUEST', () => {
+    const { sock } = connected();
+    sock.deliver(CHARSET_DO);
+    expect(sentText(sock)).toBe(CHARSET_WILL);
   });
 
   it('switches the inbound decoder when the server ACCEPTS a charset', () => {
@@ -195,13 +201,13 @@ describe('telnet option negotiation (TelnetNegotiator via MudClient)', () => {
     expect(sentText(sock)).toContain('\xFF\xFB\x5D'); // IAC WILL ZMP
   });
 
-  it('raises telnet.event for unrecognized options instead of answering', () => {
+  it('refuses an unregistered option and still raises telnet.event for it', () => {
     const events: [number, number][] = [];
     const { sock, bus } = connected();
     bus.on('telnet.event', (type, option) => events.push([type, option]));
     sock.deliver('\xFF\xFB\x5D'); // IAC WILL ZMP (not registered)
-    expect(events).toEqual([[1, 93]]);
-    expect(sentText(sock)).toBe('');
+    expect(events).toEqual([[251, 93]]);
+    expect(sentText(sock)).toBe('\xFF\xFE\x5D'); // IAC DONT ZMP
   });
 
   it('answers a negotiation command split across two WebSocket frames', () => {
