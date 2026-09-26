@@ -3656,13 +3656,15 @@ export class ScriptingEngine implements EngineHost {
     }
 
     /**
-     * Mudlet `tempButton(toolbar, name, code[, orientation])`. Appends a
-     * transient button under an existing toolbar group. Returns the new id, or
-     * -1 when no toolbar of that name exists. `orientation` is round-tripped
+     * Mudlet `tempButton(toolbar, name, orientation)`. Appends a transient
+     * button under an existing toolbar group, with no command and no script:
+     * TLuaInterpreter::tempButton gives it an empty one, and its third
+     * argument is the orientation. Returns the new id, or -1 when no toolbar
+     * of that name exists. `orientation` is round-tripped
      * onto the leaf for parity with Mudlet — the renderer doesn't use it at the
      * leaf, but ports that read it back via the store get a stable value.
      */
-    createTempButton(toolbar: string, name: string, code: string, _orientation: number): number {
+    createTempButton(toolbar: string, name: string, _orientation: number): number {
         if (!toolbar || !name) return -1;
         const store = useAppStore.getState();
         const buttons = store.connectionButtons[this.connectionId] ?? [];
@@ -3678,7 +3680,7 @@ export class ScriptingEngine implements EngineHost {
             columns: 0,
             isPushDown: false,
             buttonState: false,
-            code,
+            code: '',
             language: 'lua',
         });
         return this.numericIdFor(uuid);

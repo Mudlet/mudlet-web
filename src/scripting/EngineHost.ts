@@ -201,7 +201,7 @@ export interface EngineHost {
     /** `modifier` arrives as a Qt::KeyboardModifier int; the engine translates
      *  it back into `["ctrl", …]` strings to store on the KeyNode. */
     createPermKey(name: string, parent: string, modifier: number, key: string | number, code: string): number;
-    createTempButton(toolbar: string, name: string, code: string, orientation: number): number;
+    createTempButton(toolbar: string, name: string, orientation: number): number;
     createTempButtonToolbar(name: string, orientation: number, location: number): number;
 
     // ── Buttons & scripts ────────────────────────────────────────────────────

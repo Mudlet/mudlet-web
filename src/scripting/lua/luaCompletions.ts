@@ -954,8 +954,8 @@ const MUDLET_GLOBALS: Completion[] = [
     // Toolbar / button APIs — operate on the existing ButtonNode tree.
     fn('showToolBar',         '(name) → bool',                       'Enable a toolbar group so the button strip renders it. False when no toolbar of that name exists.'),
     fn('hideToolBar',         '(name) → bool',                       'Disable a toolbar group so the button strip hides it. False when no toolbar of that name exists.'),
-    fn('tempButton',          '(toolbar, name, code [, orientation]) → id',
-       'Append a transient button under an existing toolbar group. Returns the new id, or -1 if no toolbar of that name exists.'),
+    fn('tempButton',          '(toolbar, name, orientation) → id',
+       'Append a transient button, with no command or script, under an existing toolbar group. orientation: 0=horizontal, 1=vertical. Returns the new id, or -1 if no toolbar of that name exists.'),
     fn('tempButtonToolbar',   '(name [, orientation [, location]]) → id',
        'Create a transient toolbar group. orientation: 0=horizontal, 1=vertical. location: 0=top, 1=bottom, 2=left, 3=right, 4=floating. Returns the new id, or -1 on duplicate name.'),
     fn('setButtonState',      '(name, state) → bool',                'Set the pressed state of a two-state (push-down) button by name. False when no such button.'),

@@ -136,11 +136,10 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
     // tempButton / tempButtonToolbar create transient entries; setButtonState
     // / getButtonState / setButtonStyleSheet / showToolBar / hideToolBar
     // mutate or read existing entries by name.
-    lua.global.set('__mudlet_tempButton', (toolbar: unknown, name: unknown, code: unknown, orientation?: unknown) =>
+    lua.global.set('__mudlet_tempButton', (toolbar: unknown, name: unknown, orientation?: unknown) =>
         api.tempButton(
             String(toolbar ?? ''),
             String(name ?? ''),
-            String(code ?? ''),
             Number(orientation) || 0,
         ));
     lua.global.set('__mudlet_tempButtonToolbar', (name: unknown, orientation?: unknown, location?: unknown) =>
