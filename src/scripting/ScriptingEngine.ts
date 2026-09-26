@@ -1114,6 +1114,12 @@ export class ScriptingEngine implements EngineHost {
             this.api.printError(`[module] not a module: ${moduleName}`);
             return false;
         }
+        // A module's own install-time script asking for it to be reloaded —
+        // by the name its config.lua gave it, which the install could not have
+        // known to refuse by the file's — would import the file again on top
+        // of the copy still being read in, a second set of every item per
+        // round. Refused while it is installing (or already reloading).
+        if (this.installing.has(moduleName)) return false;
         try {
             const data = reloadModuleFromVfs(pkg, vfs, this.readPackageConfig);
             // A reload re-reads the module from disk, so anything a script had
@@ -1122,7 +1128,7 @@ export class ScriptingEngine implements EngineHost {
             // reporting a title the script had replaced, from a config.lua that
             // no longer said it.
             this.moduleInfoOverrides.delete(moduleName);
-            const problems = this.collectInstallProblems(
+            const problems = this.collectInstallProblems(moduleName,
                 () => useAppStore.getState().installPackage(id, pkg, data), data.triggers);
             this.raiseEvent('sysReadModuleEvent', [moduleName]);
             // A reload is Mudlet's module sync (Host::reloadModule installs it
@@ -1332,7 +1338,7 @@ export class ScriptingEngine implements EngineHost {
             }
             prepared.commit();
             const { manifest, data } = prepared;
-            const problems = this.collectInstallProblems(
+            const problems = this.collectInstallProblems(manifest.name,
                 () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data.triggers);
             this.notifyPackageInstalled(manifest.name, undefined, problems);
             this.raiseEvent('sysInstallModule', [manifest.name]);
@@ -1361,10 +1367,16 @@ export class ScriptingEngine implements EngineHost {
             this.api.printError(`[uninstallModule] not a module: ${moduleName}`);
             return false;
         }
-        this.notifyPackageUninstalled(moduleName);
-        this.raiseEvent('sysUninstallModule', [moduleName]);
-        // Reached only via the Lua `uninstallModule()` binding — also raise
-        // Mudlet's Lua-specific event for ported-script parity.
+        // Held over while the module is still being read in — see
+        // holdRemovalIfInstalling.
+        if (this.holdRemovalIfInstalling(moduleName, 'module')) return true;
+        // sysUninstall, then the event for the kind of removal that was asked
+        // for — reached only via the Lua `uninstallModule()` binding, so
+        // Mudlet's Lua-specific one. Not sysUninstallPackage: Host::
+        // uninstallPackage raises that for a package alone, and a handler
+        // listening for its own package going would take a module of the
+        // same name for it.
+        this.raiseEvent('sysUninstall', [moduleName]);
         this.raiseEvent('sysLuaUninstallModule', [moduleName]);
         // Mudlet's sync-module counterpart, fired for sync-flagged modules
         // (see sysSyncInstallModule above for the single-profile caveat).
@@ -2046,7 +2058,7 @@ export class ScriptingEngine implements EngineHost {
             }
             prepared.commit();
             const { manifest, data } = prepared;
-            const problems = this.collectInstallProblems(
+            const problems = this.collectInstallProblems(manifest.name,
                 () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data.triggers);
             this.notifyPackageInstalled(manifest.name, path, problems);
             void vfs.flush();
@@ -2515,6 +2527,7 @@ export class ScriptingEngine implements EngineHost {
         // Brand-bundled packages marked removable:false can't be uninstalled
         // (and would reinstall on next open anyway).
         if (!isPackageRemovable(packageName)) return false;
+        if (this.holdRemovalIfInstalling(packageName, 'package')) return true;
         this.notifyPackageUninstalled(packageName);
         useAppStore.getState().uninstallPackage(this.connectionId, packageName);
         if (this.vfs) {
@@ -4206,6 +4219,47 @@ export class ScriptingEngine implements EngineHost {
     // Tag a Lua error with the source entity (kind + id + name + line) so the
     // error log can render a jump-to-source button. `printError` forwards the
     // source through the script.log event into the session buffer.
+    /** Packages and modules whose items are being read in right now — their
+     *  scripts are running as part of the install. */
+    private readonly installing = new Set<string>();
+    /** Removals asked of a package or module by its own install-time scripts,
+     *  waiting for that install to finish. */
+    private readonly heldRemovals: { name: string; kind: 'package' | 'module' }[] = [];
+
+    /**
+     * A package's scripts run while its install is still reading it in, and a
+     * one-shot installer package asks for its own removal from one of them.
+     * Carried out there and then, that took the items out from under the
+     * install (Mudlet #10867 — a crash there, a half-installed package here),
+     * so a removal of the package being installed is held over and carried
+     * out once the install is done: the install is announced, and then the
+     * removal. Removing any OTHER package still happens at once. Answers
+     * whether it was held; asking twice holds it once.
+     */
+    private holdRemovalIfInstalling(name: string, kind: 'package' | 'module'): boolean {
+        if (!this.installing.has(name)) return false;
+        if (!this.heldRemovals.some(r => r.name === name && r.kind === kind)) {
+            this.heldRemovals.push({ name, kind });
+        }
+        return true;
+    }
+
+    /** Carry out the held removals once nothing they name is installing, on the
+     *  next pass of the event loop — after the install that held them has
+     *  answered and raised its events. On the timer engine, as the postponed
+     *  installs are, so a spec's pumpEvents() reaches it. */
+    private carryOutHeldRemovals(): void {
+        if (this.heldRemovals.length === 0) return;
+        this.timerEngine.addTemp(0, () => {
+            const due = this.heldRemovals.filter(r => !this.installing.has(r.name));
+            for (const removal of due) {
+                this.heldRemovals.splice(this.heldRemovals.indexOf(removal), 1);
+                if (removal.kind === 'module') this.uninstallModuleByName(removal.name);
+                else this.uninstallPackageByName(removal.name);
+            }
+        });
+    }
+
     /** Scripts and triggers of the package being installed that do not work,
      *  gathered while it installs; null when no install is under way. */
     private installProblems: string[] | null = null;
@@ -4222,15 +4276,18 @@ export class ScriptingEngine implements EngineHost {
      * answer to report however it likes, and a module sync would otherwise
      * repeat it on every save for as long as the module stays broken.
      */
-    private collectInstallProblems(commit: () => void, triggers: TriggerNode[]): string | null {
+    private collectInstallProblems(name: string, commit: () => void, triggers: TriggerNode[]): string | null {
         const outer = this.installProblems;
         const problems: string[] = [];
         this.installProblems = problems;
+        this.installing.add(name);
         try {
             commit();
         } finally {
             this.installProblems = outer;
+            this.installing.delete(name);
         }
+        this.carryOutHeldRemovals();
         const rt = this.runtimes.lua;
         for (const trigger of triggers) {
             if (trigger.isGroup || !trigger.code || trigger.language !== 'lua') continue;
