@@ -2218,12 +2218,21 @@ export class ScriptingAPI {
         return this.host.toggleTriggerByName(nameOrId, false);
     }
 
+    // A temp timer's name is the id tempTimer returned (Mudlet names it so), so
+    // `disableTimer(id)` reaches it — whether the id arrives as a number or as
+    // its string form. Every timer sharing the name is toggled, as in Mudlet.
     enableTimer(name: string): boolean {
-        return this.host.toggleTimerByName(name, true);
+        return this.toggleTimer(name, true);
     }
 
     disableTimer(name: string): boolean {
-        return this.host.toggleTimerByName(name, false);
+        return this.toggleTimer(name, false);
+    }
+
+    private toggleTimer(name: string, enabled: boolean): boolean {
+        const perm = this.host.toggleTimerByName(name, enabled);
+        const temp = /^\d+$/.test(name) && this.timers.setTempEnabled(Number(name), enabled);
+        return perm || temp;
     }
 
     enableAlias(nameOrId: string | number): boolean {

@@ -2273,6 +2273,52 @@ if __mudlet_pcall_co and type(dispatchEventToFunctions) == 'function' then
     { __index = _G, __newindex = _G }))
 end
 
+-- dispatchEventToFunctions walks the live handler table with pairs(), so a
+-- handler registered while an event is dispatching — directly, or by an event
+-- raised from inside a handler, which Mudlet dispatches synchronously — could
+-- be called with the very event that was in flight when it registered (the
+-- EleUI2 GitUpdater regression: registered during the sysDownloadDone that
+-- installed its package, it took that download for an update). Replace it with
+-- one that snapshots each list first and skips any entry killed since, reaching
+-- \`handlers\` — a local of the do-block Other.lua defines it in — through the
+-- function's upvalues. If that ever fails to find it, the original stays.
+do
+  local original = dispatchEventToFunctions
+  local handlers
+  if type(original) == 'function' then
+    local i = 1
+    while true do
+      local name, value = debug.getupvalue(original, i)
+      if name == nil then break end
+      if name == 'handlers' then handlers = value; break end
+      i = i + 1
+    end
+  end
+  if type(handlers) == 'table' then
+    local pcall_co = __mudlet_pcall_co or pcall
+    local function run(event, list, ...)
+      if not list then return end
+      local keys, funcs, n = {}, {}, 0
+      for key, func in pairs(list) do
+        n = n + 1
+        keys[n], funcs[n] = key, func
+      end
+      for i = 1, n do
+        -- Killed by an earlier handler of this same dispatch: skip it, as the
+        -- live walk did.
+        if list[keys[i]] == funcs[i] then
+          local success, err = pcall_co(funcs[i], event, ...)
+          if not success then showHandlerError(event, err) end
+        end
+      end
+    end
+    function dispatchEventToFunctions(event, ...)
+      run(event, handlers[event], ...)
+      run(event, handlers["*"], ...)
+    end
+  end
+end
+
 -- Replace the placeholder mudlet.Locale with the real catalogue.
 --
 -- LuaGlobalSetup.lua has to define one before the bundle loads, because
@@ -3682,37 +3728,21 @@ end`);
         });
     }
 
-    // Mudlet parity (Host::raiseEvent): an event raised while another event is
-    // still dispatching — installPackage inside a sysDownloadDone handler
-    // raising sysInstallPackage, any handler calling raiseEvent — is queued and
-    // dispatched after the in-flight event finishes. Synchronous nested
-    // dispatch let a handler registered mid-dispatch see the event already in
-    // flight: EleUI2's GitUpdater (registered while its package installed
-    // inside the sysDownloadDone dispatch) received that same sysDownloadDone,
-    // mistook the package's own install download for a finished update, and
-    // uninstalled the package.
-    private dispatchingEvent = false;
-    private readonly pendingEvents: Array<{ event: string; args: unknown[] }> = [];
-
+    // Mudlet parity (Host::raiseEvent): an event is dispatched the moment it is
+    // raised, even from inside another event's handler — the nested handlers
+    // have run by the time the raise returns. What must NOT happen is a handler
+    // registered mid-dispatch receiving the event already in flight (EleUI2's
+    // GitUpdater, registered while its package installed inside the
+    // sysDownloadDone dispatch, took that same sysDownloadDone for a finished
+    // update and uninstalled the package). The Lua dispatcher prevents that by
+    // snapshotting each handler list before calling it — see __mudlet_dispatch
+    // in Bridge.lua — so nesting itself is safe.
     emitEvent(event: string, args: unknown[]): void {
         // HTTP callbacks fire from background fetches and may resolve after the
         // owning ScriptingEngine tore us down; emitting on a closed lua_State
         // throws a confusing wasm error. Drop the event silently in that case.
         if (this.inert) return;
-        this.pendingEvents.push({ event, args });
-        if (this.dispatchingEvent) return;
-        this.dispatchingEvent = true;
-        try {
-            while (this.pendingEvents.length > 0 && !this.inert) {
-                const next = this.pendingEvents.shift()!;
-                this.dispatchEventNow(next.event, next.args);
-            }
-        } finally {
-            this.dispatchingEvent = false;
-            // A throw mid-drain would otherwise leak stale events into the
-            // next dispatch.
-            this.pendingEvents.length = 0;
-        }
+        this.dispatchEventNow(event, args);
     }
 
     private dispatchEventNow(event: string, args: unknown[]): void {

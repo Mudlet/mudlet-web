@@ -707,7 +707,8 @@ export class ScriptingEngine implements EngineHost {
             // and still see the firing for the boot-time load.
             // Map-open notification keeps map-aware scripts in sync if the
             // map is already visible at connection time.
-            this.raiseEvent('sysLoadEvent');
+            // Mudlet passes `true` for a profile load, `false` after resetProfile().
+            this.raiseEvent('sysLoadEvent', [true]);
             if (mapLoaded) this.raiseEvent('sysMapLoadEvent');
             if (this.api.windows.isVisible(MAP_WIDGET_ID)) this.mapOpen.notify();
             // Default/brand packages installed just above never go through
@@ -3987,7 +3988,7 @@ export class ScriptingEngine implements EngineHost {
             this.applyTriggersFromStore();
             this.applyTimersFromStore();
             this.applyKeybindingsFromStore();
-            this.raiseEvent('sysLoadEvent');
+            this.raiseEvent('sysLoadEvent', [false]);
             this.api.flushOutput();
         } catch (err) {
             console.warn('[ScriptingEngine] resetProfile failed:', err);
@@ -4782,13 +4783,11 @@ export class ScriptingEngine implements EngineHost {
             session.events.on('client.disconnect', () => {
                 this.emit('disconnect', []);
                 this.emit('sysDisconnectionEvent', []);
-                // Mudlet raises sysProtocolDisabled as protocols tear down. A
-                // dropped socket sends no WONT/DONT, so the pair each protocol
-                // announced on the way in is closed here instead.
-                for (const protocol of this.enabledProtocols) {
-                    if (protocol === 'MXP') this.mxpActive = false;
-                    this.emit('sysProtocolDisabled', [protocol]);
-                }
+                // A dropped socket sends no WONT/DONT, so the protocols the
+                // connection enabled are forgotten here. Mudlet raises only
+                // sysDisconnectionEvent for it — no sysProtocolDisabled per
+                // protocol — so nothing more is announced.
+                if (this.enabledProtocols.has('MXP')) this.mxpActive = false;
                 this.enabledProtocols.clear();
             }),
             // Built-in Client.GUI handler — Mudlet semantics. One entry point
@@ -4805,6 +4804,8 @@ export class ScriptingEngine implements EngineHost {
                 // replaced, siblings survive), then raise gmcp.Char,
                 // gmcp.Char.Items, gmcp.Char.Items.List for an incoming
                 // "Char.Items.List", each with args (eventName, fullKey).
+                // emit() supplies the event name itself, so only fullKey is
+                // passed — a parent-node handler must see the leaf's key.
                 if (!path) return;
                 if (debugGmcpEnabled()) {
                     const body = JSON.stringify(value);
@@ -4816,7 +4817,7 @@ export class ScriptingEngine implements EngineHost {
                 let token = 'gmcp';
                 for (const segment of path.split('.')) {
                     token += `.${segment}`;
-                    this.emit(token, [token, fullKey]);
+                    this.emit(token, [fullKey]);
                 }
                 // Built-in Client.Map handler — Mudlet Host::setMmpMapLocation.
                 // Records the game's published map URL; the actual download is
@@ -4844,7 +4845,7 @@ export class ScriptingEngine implements EngineHost {
                 if (!path) return;
                 this.runtimes.lua?.setMsdpValue(path, value);
                 const token = `msdp.${path}`;
-                this.emit(token, [token, token]);
+                this.emit(token, [token]);
             }),
             // MXP finished negotiating (telnet option 91). Flip on in-band markup
             // parsing and mirror the GMCP/MSDP/MSSP pair so scripts can hook
@@ -4875,7 +4876,7 @@ export class ScriptingEngine implements EngineHost {
                 if (!name) return;
                 this.runtimes.lua?.setMsspValue(name, value);
                 const token = `mssp.${name}`;
-                this.emit(token, [token, token]);
+                this.emit(token, [token]);
             }),
             // MSP — translate parsed `!!SOUND` / `!!MUSIC` tags into
             // SoundManager calls. `Off` stops the matching kind; otherwise
