@@ -35,6 +35,17 @@ const SKIP_KEY: Record<string, string> = {
     output: "oscVisSkipOutput",
 };
 
+/**
+ * Every link armed to expire on a session event and not yet concealed. The
+ * controller used to find these with a `querySelectorAll` over the whole
+ * document, and it runs for every output line — under a flood with a full
+ * scrollback that scan was most of the time spent per line, and the client fell
+ * tens of seconds behind the server (#195). Arming only happens on a click, so
+ * this is nearly always empty and the per-line check costs nothing; like
+ * Mudlet's THyperlinkVisibilityManager, only registered links are looked at.
+ */
+const armedLinks = new Set<HTMLElement>();
+
 function concealElement(el: HTMLElement, deleteLine: boolean): void {
     if (deleteLine) (el.closest(OUTPUT_LINE_SELECTOR) ?? el).remove();
     else el.style.visibility = "hidden";
@@ -55,6 +66,7 @@ export function applyVisibility(el: HTMLElement, vis: VisibilitySettings): void 
 
     const armExpire = (): void => {
         el.dataset.oscVisExpire = expires.join(" ");
+        armedLinks.add(el);
         if (deleteLine) el.dataset.oscVisDelete = "1";
         for (const t of expires) el.dataset[SKIP_KEY[t]] = "1";
     };
@@ -96,16 +108,21 @@ export class HyperlinkVisibilityController {
     onOutput(): void { this.fire("output"); }
 
     private fire(trigger: "input" | "prompt" | "output"): void {
+        if (armedLinks.size === 0) return;
         const root = this.getRoot();
         if (!root) return;
         const skipKey = SKIP_KEY[trigger];
-        // Snapshot — concealing with deleteLine removes nodes mid-iteration.
-        for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-osc-vis-expire]"))) {
-            const triggers = (el.dataset.oscVisExpire ?? "").split(" ");
+        // Snapshot — concealing removes entries mid-iteration.
+        for (const el of Array.from(armedLinks)) {
+            if (el.dataset.oscVisExpire === undefined) { armedLinks.delete(el); continue; }
+            // Another session's output, or a line not (or no longer) on screen.
+            if (!root.contains(el)) continue;
+            const triggers = el.dataset.oscVisExpire.split(" ");
             if (!triggers.includes(trigger)) continue;
             if (el.dataset[skipKey]) { delete el.dataset[skipKey]; continue; }
             concealElement(el, el.dataset.oscVisDelete === "1");
             el.removeAttribute("data-osc-vis-expire"); // fire once
+            armedLinks.delete(el);
         }
     }
 }

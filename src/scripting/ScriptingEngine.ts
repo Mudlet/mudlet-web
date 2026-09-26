@@ -287,7 +287,7 @@ export class ScriptingEngine implements EngineHost {
      *  in either mode resolves in both. */
     private readonly osc8Presets = new HyperlinkPresetRegistry();
     /** Drives expire-on-event OSC 8 visibility links (conceal on the next user
-     *  input / prompt / output after they're clicked). Scans the live output. */
+     *  input / prompt / output after they're clicked) within the live output. */
     private readonly visibility = new HyperlinkVisibilityController(
         () => (typeof document !== 'undefined' ? document : null),
     );
@@ -4682,8 +4682,8 @@ export class ScriptingEngine implements EngineHost {
                 this.visibility.onPrompt();
             }),
             // OSC 8 visibility expiry: a user command (echo) is "input", any
-            // other non-error line is "output". Concealment of armed links is
-            // handled by the controller scanning the live output.
+            // other non-error line is "output". Concealing the armed links is
+            // the controller's job; with none armed each call is a no-op.
             session.events.on('message', (_text, type) => {
                 if (type === 'echo') this.visibility.onInput();
                 else if (type !== 'error') this.visibility.onOutput();
