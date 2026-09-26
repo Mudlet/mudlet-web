@@ -2223,6 +2223,7 @@ function downloadFile(saveTo, url)
     url = __mudlet_check_string(url, "downloadFile", 2, "remote url")
     local err = __mudlet_http_url_error(url, "downloadFile")
     if err then return nil, err end
+    url = __mudlet_normalize_url(url)
     __downloadFile(saveTo, url)
     return true, url
 end
@@ -2232,6 +2233,7 @@ function getHTTP(url, headers)
     __mudlet_check_headers(headers, "getHTTP", 2)
     local err = __mudlet_http_url_error(url, "getHTTP")
     if err then return nil, err end
+    url = __mudlet_normalize_url(url)
     __getHTTP(url, __mudlet_headers_to_string(headers))
     return true, url
 end
@@ -2260,6 +2262,7 @@ function postHTTP(data, url, headers, file)
     __mudlet_check_headers(headers, "postHTTP", 3)
     local err = __mudlet_http_url_error(url, "postHTTP")
     if err then return nil, err end
+    url = __mudlet_normalize_url(url)
     local ferr = __mudlet_upload_error(file, "postHTTP")
     if ferr then return nil, ferr end
     __postHTTP(data, url, __mudlet_headers_to_string(headers), file)
@@ -2272,6 +2275,7 @@ function putHTTP(data, url, headers, file)
     __mudlet_check_headers(headers, "putHTTP", 3)
     local err = __mudlet_http_url_error(url, "putHTTP")
     if err then return nil, err end
+    url = __mudlet_normalize_url(url)
     local ferr = __mudlet_upload_error(file, "putHTTP")
     if ferr then return nil, ferr end
     __putHTTP(data, url, __mudlet_headers_to_string(headers), file)
@@ -2283,6 +2287,7 @@ function deleteHTTP(url, headers)
     __mudlet_check_headers(headers, "deleteHTTP", 2)
     local err = __mudlet_http_url_error(url, "deleteHTTP")
     if err then return nil, err end
+    url = __mudlet_normalize_url(url)
     __deleteHTTP(url, __mudlet_headers_to_string(headers))
     return true, url
 end
@@ -2304,6 +2309,7 @@ function customHTTP(method, data, url, headers, file)
     end
     local err = __mudlet_http_url_error(url, "customHTTP")
     if err then return nil, err end
+    url = __mudlet_normalize_url(url)
     local ferr = __mudlet_upload_error(file, "customHTTP")
     if ferr then return nil, ferr end
     __customHTTP(method, data, url, __mudlet_headers_to_string(headers), file)
