@@ -82,6 +82,8 @@ export function installCommandBindings({ lua, api }: BindingContext): void {
     lua.global.set('__disableCommand', (id: unknown) => registry.setEnabled(asId(id), false));
     lua.global.set('__setCommandChecked', (id: unknown, checked: unknown) =>
         registry.setChecked(asId(id), checked === true));
+    lua.global.set('__setCommandPinned', (id: unknown, pinned: unknown) =>
+        registry.setPinned(asId(id), pinned === true));
     lua.global.set('__setCommandIcon', (id: unknown, icon: unknown) =>
         registry.setIcon(asId(id), String(icon ?? '')));
     lua.global.set('__setCommandTooltip', (id: unknown, tooltip: unknown) =>
@@ -131,6 +133,6 @@ export function installCommandBindings({ lua, api }: BindingContext): void {
     lua.global.set('__getCommands', () => registry.list().map(c => ({
         id: c.id, name: c.name, icon: c.icon, tooltip: c.tooltip,
         menuPath: c.menuPath, shortcut: c.shortcut, surfaces: c.surfaces,
-        enabled: c.enabled, checked: c.checked,
+        enabled: c.enabled, checked: c.checked, pinned: c.pinned,
     })));
 }

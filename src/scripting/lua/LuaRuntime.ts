@@ -1392,15 +1392,18 @@ export class LuaRuntime implements IScriptingRuntime {
             let fires = 0;
             let killed = false;
             // Empty-string substring trigger fires once per line; the colour
-            // check then runs against the live buffer to gate the callback.
-            const unsub = this.api.triggers.addTemp('', () => {
+            // check gates it as the engine's `accept`, so a line of the wrong
+            // colour counts as a miss rather than a match that did nothing —
+            // which is what lets a stay-open window fire on it.
+            const unsub = this.api.triggers.addTemp('', (matches) => {
                 if (killed || this.tempIds.get(id)?.enabled === false) return;
                 // matches[1] is the coloured RUN, not the whole line — the
                 // empty-substring pattern this rides on has no match text of
-                // its own, so the colour lookup supplies it.
-                const run = this.api.currentLineColorMatch(wantFg, wantBg);
-                if (run === null) return;
-                this.setMatches([run]);
+                // its own, so the colour lookup supplies it. A fire with no
+                // matches at all is a stay-open window (setTriggerStayOpen)
+                // firing on a line it did not match, with nothing captured.
+                const run = matches.length === 0 ? null : this.api.currentLineColorMatch(wantFg, wantBg);
+                this.setMatches(run === null ? [] : [run]);
                 dispatchCb(cbId, 'tempColorTrigger');
                 fires++;
                 if (max > 0 && fires >= max) {
@@ -1409,7 +1412,12 @@ export class LuaRuntime implements IScriptingRuntime {
                     releaseCb(cbId);
                     this.tempIds.delete(id);
                 }
-            }, 'substring');
+            }, 'substring', {
+                // Named after its id, as every temp trigger is, so
+                // setTriggerStayOpen(tostring(id), n) finds it.
+                name: String(id),
+                accept: () => this.api.currentLineColorMatch(wantFg, wantBg) !== null,
+            });
             this.tempIds.set(id, { kill: () => { unsub(); releaseCb(cbId); }, type: 'trigger', enabled: true });
             return id;
         });

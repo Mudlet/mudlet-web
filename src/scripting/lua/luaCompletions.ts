@@ -381,6 +381,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('clearCmdLine',  '([window])',      'Clear the command bar (or per-window command line when name given)'),
     fn('getCmdLine',    '([window]) → string', 'Return the current command bar text (or per-window text when name given)'),
     fn('selectCmdLineText', '([window])',      'Select (highlight) all text in the command bar so the next keystroke overtypes it. Only the main bar is wired in mudlet.'),
+    fn('setCommandPinned', '(id, pinned) → bool', 'Pin an addon command placed by addCommand so it shows in every profile\'s window (one profile per page here, so it is recorded only). false for an unknown id.'),
     fn('setCommandBackgroundColor', '([window,] r, g, b [, a])', 'Set the command bar background color (rgba 0..255). Only the main bar is targeted in mudlet.'),
     fn('setCommandForegroundColor', '([window,] r, g, b [, a])', 'Set the command bar text color (rgba 0..255). Only the main bar is targeted in mudlet.'),
     fn('enableCommandLine',  '(window)',   'Show a per-window command line input below the named userwindow'),

@@ -5759,6 +5759,7 @@ do
     function setCommandChecked(id, checked) return __setCommandChecked(id, checked) end
     function setCommandIcon(id, icon)       return __setCommandIcon(id, icon) end
     function setCommandTooltip(id, tooltip) return __setCommandTooltip(id, tooltip) end
+    function setCommandPinned(id, pinned)   return __setCommandPinned(id, pinned) end
 
     function setCommandPulse(id, on, colour, altColour, intervalMs)
         local result = __setCommandPulse(id, on, colour, altColour, intervalMs)
