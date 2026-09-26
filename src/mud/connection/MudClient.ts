@@ -381,7 +381,7 @@ export class MudClient {
 
         this.charsetHandler = new CharsetHandler(this.codec, charsetEnabled, {
             sendRaw: (data) => this.sendRaw(data),
-            onNegotiated: (displayName) => this.eventBus.emit('charset.negotiated', displayName),
+            onNegotiated: (displayName, acceptedRequest) => this.eventBus.emit('charset.negotiated', displayName, acceptedRequest),
         });
 
         this.negotiatorFlags = {

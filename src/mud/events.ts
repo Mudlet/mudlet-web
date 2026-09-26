@@ -135,8 +135,9 @@ export type MudClientEvents = {
     /** Fires when a CHARSET (RFC 2066) negotiation completes — either the
      *  server's REQUEST was ACCEPTED or our advertised REQUEST was ACCEPTED.
      *  Argument is the IANA charset name as agreed (the wire spelling, e.g.
-     *  "UTF-8"). */
-    'charset.negotiated': [encoding: string];
+     *  "UTF-8"). `acceptedRequest` is true only when it was the server's
+     *  REQUEST that this client ACCEPTED — the one case Mudlet saves. */
+    'charset.negotiated': [encoding: string, acceptedRequest?: boolean];
     'socket.incoming': [data: string];
     'socket.outgoing': [data: string];
     'message': [text?: string | AnsiAwareBuffer, type?: string, timestamp?: number, isPrompt?: boolean];
@@ -221,6 +222,11 @@ export type MudClientEvents = {
 
 export type MudEvents = MudClientEvents & {
     'status': [status: SessionStatus];
+    /** The client ACCEPTed a server's CHARSET REQUEST and that changed the
+     *  session's encoding. Argument is the `SUPPORTED_SERVER_ENCODINGS`
+     *  spelling. Raised by MudSession for ScriptingAPI to save to the profile,
+     *  as cTelnet does with `setEncoding(acceptedEncoding, true)`. */
+    'charset.accepted': [encoding: string];
     'ping': [duration: number | null];
     'script.log': [text: string, level: 'error' | 'info', source?: ScriptLogSource];
     'output.ready': void;

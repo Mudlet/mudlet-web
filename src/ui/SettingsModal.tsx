@@ -873,7 +873,8 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                         Server data encoding:
                         <HelpTip label="About server data encoding">
                             Games that negotiate CHARSET agree an encoding with Mudlet Web on
-                            connect and this setting is not consulted. Games that don't send
+                            connect: this one is kept if the game offers it, and otherwise the
+                            one agreed is saved here, as Mudlet saves it. Games that don't send
                             raw bytes with no label, and this says how to read them. A script's
                             <code> setServerEncoding()</code> changes it here too, as it does in Mudlet.
                         </HelpTip>
@@ -2538,10 +2539,11 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                             CHARSET: Character Encoding Standard
                             <HelpTip label="About CHARSET">
                                 Telnet option 42 (RFC 2066). Negotiates the character
-                                encoding for the session — typically switches to UTF-8
-                                so non-ASCII text (Polish, Cyrillic, box-drawing) renders
-                                correctly. Disable to stay on the UTF-8 baseline without
-                                negotiation.
+                                encoding with the game — typically UTF-8 — so non-ASCII
+                                text (Polish, Cyrillic, box-drawing) renders correctly,
+                                and saves the one agreed as the server data encoding, as
+                                Mudlet does. Disable to keep the server data encoding you
+                                chose without negotiation.
                             </HelpTip>
                         </span>
                         <Toggle
