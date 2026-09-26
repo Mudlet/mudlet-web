@@ -29,6 +29,7 @@ import {QT_CURSOR_NAME_TO_INT, QT_CURSOR_TO_CSS} from '../../ui/labels/cursorSha
 import {qtKeyToDomCode, qtModifiersToList, domCodeToQtKey, listToQtModifiers} from '../../mud/keybindings/qtKeys';
 import xterm256 from '../../mud/text/xterm256';
 import {HttpService} from '../http/HttpService';
+import {normalizeUserUrl, userUrlInvalidReason} from '../http/userUrl';
 import {TtsManager} from '../../ui/tts/TtsManager';
 import {GlobalEventChannel} from '../GlobalEventChannel';
 import {type MudletVariable, normalizeVariableTree} from '../../import/mudletVariables';
@@ -1998,16 +1999,11 @@ export class LuaRuntime implements IScriptingRuntime {
         // on this side) and let the Bridge.lua wrappers shape the tuple. The
         // scheme test mirrors fromUserInput's leniency: a bare "localhost/x" is
         // a valid url that means http://localhost/x.
-        this.lua.global.set('__mudlet_url_invalid_reason', (url: unknown) => {
-            const s = String(url ?? '').trim();
-            if (!s) return 'empty url';
-            try {
-                new URL(/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(s) ? s : `http://${s}`);
-                return false;
-            } catch (e) {
-                return e instanceof Error ? e.message : 'malformed url';
-            }
-        });
+        this.lua.global.set('__mudlet_url_invalid_reason', (url: unknown) =>
+            userUrlInvalidReason(String(url ?? '')) ?? false);
+        // What the url means once fromUserInput has read it — the string the
+        // request goes to and the one Mudlet hands back as the second return.
+        this.lua.global.set('__mudlet_normalize_url', (url: unknown) => normalizeUserUrl(String(url ?? '')));
         // Mudlet opens the upload file before issuing the request and reports
         // (nil, "couldn't open '<path>'...") when it can't, without emitting an
         // error event (TLuaInterpreter.cpp, performHttpRequest). Checking here
