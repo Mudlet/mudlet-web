@@ -69,31 +69,47 @@ const DEFAULT_FG_RGB: [number, number, number] = [0xc0, 0xc0, 0xc0];
 const DEFAULT_BG_RGB: [number, number, number] = [0x09, 0x09, 0x09];
 
 /**
- * The ANSI palette index (0-15) a segment colour corresponds to, or -2 when it
- * has none. Colour triggers compare palette indices — Mudlet keeps the ANSI
- * number on every TChar — but Mudlet Web stores SGR 30-37/40-47 as the hex value
- * they render as, so those are resolved back through the same palette here.
- * A 256-colour (38;5;N) segment already carries its index.
+ * A colour as colour triggers compare it: packed `0xRRGGBB`. Desktop Mudlet
+ * matches a colour trigger by RGB, not by ANSI number (TTrigger's `colorsMatch`
+ * compares each TChar's rgba against the pattern's QColor, which
+ * `Host::getAnsiColor` resolves from the ANSI code). So a trigger for 196 fires
+ * on `38;5;196` text and on truecolor text of the same RGB, and one for 7 fires
+ * on uncoloured text, which is drawn in the same light grey.
  */
-/** No colour set on the segment, i.e. the console's default. Mudlet calls this
- *  `TTrigger::scmDefault` and a colour trigger may ask for it by name. */
+type RgbKey = number;
+/** Pattern codes with a meaning of their own: Mudlet's `TTrigger::scmIgnored`
+ *  ("any colour") and `TTrigger::scmDefault` (the console's default). */
+const COLOR_IGNORED = -1;
 const COLOR_DEFAULT = -2;
-/** A colour that is set but is not a palette index (a 24-bit RGB value). It is
- *  neither the default nor any ANSI number, so nothing matches it — keeping it
- *  apart from {@link COLOR_DEFAULT} is what stops `e[38;2;…m` text answering a
- *  default-foreground trigger. */
-const COLOR_UNPALETTED = -3;
+/** No colour at all: an ANSI code outside 0-255, or a colour that does not
+ *  parse. NaN, so it equals nothing — itself included — and a pattern holding
+ *  it matches nothing, as desktop's invalid QColor does. */
+const RGB_KEY_NONE: RgbKey = NaN;
 
-function ansiPaletteIndex(color: FormatColor | undefined): number {
-    if (!color) return COLOR_DEFAULT;
-    if (color.space === 'indexed') return color.index;
-    if (color.space !== 'hex') return COLOR_UNPALETTED;
-    if (typeof color.color !== 'string') return COLOR_UNPALETTED;
-    const hex = color.color.toLowerCase();
-    const dark = colorCodes.ansi.dark.findIndex(c => c.toLowerCase() === hex);
-    if (dark >= 0) return dark;
-    const bright = colorCodes.ansi.bright.findIndex(c => c.toLowerCase() === hex);
-    return bright >= 0 ? bright + 8 : COLOR_UNPALETTED;
+function packRgb(r: number, g: number, b: number): RgbKey {
+    return ((r & 0xff) << 16) | ((g & 0xff) << 8) | (b & 0xff);
+}
+
+function hexKey(hex: string | undefined): RgbKey {
+    const rgb = parseHexToRgb(hex);
+    return rgb ? packRgb(rgb[0], rgb[1], rgb[2]) : RGB_KEY_NONE;
+}
+
+/** The RGB key of a segment colour, or null when it carries none (the
+ *  console's default, which the caller resolves). */
+function segmentColorKey(color: FormatColor | undefined): RgbKey | null {
+    if (!color) return null;
+    if (color.space === 'indexed') return hexKey(colorCodes.xterm[color.index]);
+    if (color.space === 'rgb') return packRgb(color.r, color.g, color.b);
+    return typeof color.color === 'string' ? hexKey(color.color) : RGB_KEY_NONE;
+}
+
+/** The RGB an ANSI code (0-255) names, from the palette the renderer paints
+ *  it with — `Host::getAnsiColor`. Codes 0-15 are the profile's own sixteen,
+ *  which `colorCodes.xterm` mirrors. */
+function ansiCodeKey(code: number): RgbKey {
+    if (!Number.isInteger(code) || code < 0 || code > 255) return RGB_KEY_NONE;
+    return hexKey(colorCodes.xterm[code]);
 }
 
 const HEX_RE = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i;
@@ -3571,9 +3587,10 @@ export class ScriptingAPI {
         // Pushed, not assigned: a trigger may call feedTriggers itself, and the
         // outer line's snapshot has to survive the nested pass.
         this.triggerLinePrompts.push(isPrompt);
+        const defaults = this.triggerDefaultColorKeys();
         this.lineColorSnapshots.push(buffer.getSegments().map(seg => ({
-            fg: ansiPaletteIndex(seg.state?.foreground),
-            bg: ansiPaletteIndex(seg.state?.background),
+            fg: segmentColorKey(seg.state?.foreground) ?? defaults.fg,
+            bg: segmentColorKey(seg.state?.background) ?? defaults.bg,
             text: seg.text ?? '',
         })));
         // Which line the cursor was on before this one was appended, so a line
@@ -3632,10 +3649,9 @@ export class ScriptingAPI {
     /**
      * Mudlet `tempColorTrigger(fg, bg)` colour-scan helper. Walks the
      * just-appended line buffer (the one beginLine() seeded mainConsole with)
-     * and returns true if any segment carries the requested ANSI palette
-     * indices. `wantFg`/`wantBg` accept -1 as "any colour"; non-indexed
-     * (RGB) segments never match a positive index, matching Mudlet's
-     * palette-only semantics.
+     * and returns true if any segment carries the requested ANSI colours.
+     * `wantFg`/`wantBg` accept -1 as "any colour" and -2 as the console's
+     * default; anything else is compared by the RGB it names, as desktop does.
      */
     currentLineMatchesColor(
         wantFg: number, wantBg: number, window: { start: number; length: number } | null = null,
@@ -3663,6 +3679,12 @@ export class ScriptingAPI {
         // so a colour elsewhere on the line is not a match for it.
         const from = window ? window.start : 0;
         const to = window ? window.start + window.length : Infinity;
+        // Compared by RGB, as TTrigger::match_color_pattern does: the codes
+        // resolve to the colour they paint, and the default (-2) to the
+        // console's own — which is also why plain text answers a trigger for 7.
+        const defaults = this.triggerDefaultColorKeys();
+        const fgKey = wantFg === COLOR_DEFAULT ? defaults.fg : ansiCodeKey(wantFg);
+        const bgKey = wantBg === COLOR_DEFAULT ? defaults.bg : ansiCodeKey(wantBg);
         let run: string | null = null;
         let at = 0;
         for (const seg of snapshot) {
@@ -3677,21 +3699,27 @@ export class ScriptingAPI {
                 continue;
             }
             const visible = text.slice(start - (at - text.length), end - (at - text.length));
-            const hit = (wantFg === -1 || seg.fg === wantFg)
-                && (wantBg === -1 || seg.bg === wantBg);
+            const hit = (wantFg === COLOR_IGNORED || seg.fg === fgKey)
+                && (wantBg === COLOR_IGNORED || seg.bg === bgKey);
             if (hit && visible) run = (run ?? '') + visible;
             else if (run !== null) return run;
         }
         return run;
     }
 
-    /** Per-segment ANSI palette indices (and text) of each line currently being
-     *  processed, as it arrived — see {@link beginLine}. {@link COLOR_DEFAULT}
-     *  marks a segment left on the console's default colour, which is what a
-     *  trigger asking for `-2` matches; {@link COLOR_UNPALETTED} marks an RGB
-     *  colour outside the palette, which matches nothing. A stack, because a
-     *  trigger can feedTriggers another line. */
-    private lineColorSnapshots: { fg: number; bg: number; text: string }[][] = [];
+    /** Per-segment colours (as {@link RgbKey}s) and text of each line currently
+     *  being processed, as it arrived — see {@link beginLine}. A segment left
+     *  on the console's default colour holds the default's RGB, as a desktop
+     *  TChar does. A stack, because a trigger can feedTriggers another line. */
+    private lineColorSnapshots: { fg: RgbKey; bg: RgbKey; text: string }[][] = [];
+
+    /** The console's default foreground/background as {@link RgbKey}s — what
+     *  uncoloured text is drawn in, and what a `-2` pattern asks for. */
+    private triggerDefaultColorKeys(): { fg: RgbKey; bg: RgbKey } {
+        const [fr, fg, fb] = this.defaultColorRgb('foreground');
+        const [br, bg, bb] = this.defaultColorRgb('background');
+        return { fg: packRgb(fr, fg, fb), bg: packRgb(br, bg, bb) };
+    }
 
     /**
      * Keep the colour snapshot aligned with a line a trigger has just edited.
@@ -3713,14 +3741,24 @@ export class ScriptingAPI {
     /** The snapshot's colours at a character offset — what a `keepColor`
      *  replacement inherits. Defaults to the reset pair when the line is
      *  shorter than the offset. */
-    private snapshotColorAt(at: number): { fg: number; bg: number } {
+    private snapshotColorAt(at: number): { fg: RgbKey; bg: RgbKey } {
         const snapshot = this.lineColorSnapshots[this.lineColorSnapshots.length - 1] ?? [];
         let seen = 0;
         for (const seg of snapshot) {
             seen += seg.text.length;
             if (at < seen) return { fg: seg.fg, bg: seg.bg };
         }
-        return { fg: -1, bg: -1 };
+        return this.triggerDefaultColorKeys();
+    }
+
+    /** A pen state's colours as {@link RgbKey}s, unset channels resolved to
+     *  the console's defaults. */
+    private stateColorKeys(state: { foreground?: FormatColor; background?: FormatColor }): { fg: RgbKey; bg: RgbKey } {
+        const defaults = this.triggerDefaultColorKeys();
+        return {
+            fg: segmentColorKey(state.foreground) ?? defaults.fg,
+            bg: segmentColorKey(state.background) ?? defaults.bg,
+        };
     }
 
     private spliceLineColorSnapshot(
@@ -3846,6 +3884,10 @@ export class ScriptingAPI {
 
     /** The feed itself, once {@link feedTriggers} has settled what the bytes say. */
     private feedTriggersText(text: string): boolean {
+        // Carriage returns never reach a line, as with text from the server
+        // (MudClient drops every '\r' before parsing): a package fed
+        // "line\r\n" must match `^line$` exactly as the game's own copy does.
+        text = text.replace(/\r/g, '');
         // Trigger reloads are coalesced onto a microtask, which cannot run while
         // the calling Lua chunk is still on the stack. Mudlet applies perm* and
         // enable/disableTrigger immediately, so a script that creates or toggles
@@ -4326,11 +4368,7 @@ export class ScriptingAPI {
                 // the captures do — the inserted characters are not the ones
                 // the server coloured, and a later colour trigger must not
                 // sweep them into its run.
-                this.spliceLineColorSnapshot(at, 0, {
-                    fg: ansiPaletteIndex(state.foreground),
-                    bg: ansiPaletteIndex(state.background),
-                    text,
-                });
+                this.spliceLineColorSnapshot(at, 0, { ...this.stateColorKeys(state), text });
             }
             if (!this.inTriggerProcessing) con.getBuffer()?.rerender();
             return;
@@ -4901,8 +4939,7 @@ export class ScriptingAPI {
             // replacement wears whatever the snapshot already had at that
             // offset, which is what "keep" means here.
             this.spliceLineColorSnapshot(sel.start, sel.length, newText ? {
-                fg: state ? ansiPaletteIndex(state.foreground) : this.snapshotColorAt(sel.start).fg,
-                bg: state ? ansiPaletteIndex(state.background) : this.snapshotColorAt(sel.start).bg,
+                ...(state ? this.stateColorKeys(state) : this.snapshotColorAt(sel.start)),
                 text: newText,
             } : undefined);
         }

@@ -512,8 +512,9 @@ export class LuaRuntime implements IScriptingRuntime {
     // windowCmdLineActionCbIds but keyed by createCommandLine names. Cleared on
     // resetCmdLineAction(name) and when the cmd line is deleted.
     private overlayCmdLineActionCbIds = new Map<string, number>();
-    // [fullMatch, cap1, cap2, ...]; an entry is `undefined` for a capture group
-    // that didn't participate (→ nil in the Lua `matches` table, Mudlet parity).
+    // [fullMatch, cap1, cap2, ...]. A regex trigger gives a group that didn't
+    // participate an empty string (trailing ones are left out, as in Mudlet);
+    // an `undefined` entry that does arrive becomes nil in the Lua table.
     private currentMatches: (string | undefined)[] = [];
     // selectCaptureGroup needs the actual offset of each capture in the
     // source line; without these spans it falls back to selectString(text, 1)
@@ -1431,7 +1432,8 @@ export class LuaRuntime implements IScriptingRuntime {
 
         // Mudlet `tempColorTrigger(fg, bg, code)`. The trigger fires when the
         // current rendered line carries a span whose foreground / background
-        // matches the requested ANSI palette index (or -1 for "any colour").
+        // is the RGB the requested ANSI code (0-255) names, as desktop compares
+        // it (-1 for "any colour", -2 for the console's default).
         // The actual colour scan lives in ScriptingAPI.currentLineMatchesColor
         // since it needs access to the line's AnsiAwareBuffer (the trigger
         // engine itself only sees plain text). Self-expires after
