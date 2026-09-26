@@ -29,9 +29,11 @@ export interface LineAssemblerCallbacks {
     /** Deliver assembled whole lines (or a flushed prompt tail) downstream —
      *  the trigger pipeline and rendering treat each chunk as complete lines. */
     onChunk(text: string, ts: number): void;
-    /** Fired after a prompt marker (IAC GA/EOR) flushed the held tail — the
-     *  owner emits its `prompt` event here. */
-    onPrompt(): void;
+    /** Fired for every prompt marker (IAC GA/EOR), after it flushed the held
+     *  tail — the owner emits its `prompt` event here. `promptLine` is false
+     *  for a bare marker that had no text to end: there is no prompt line then,
+     *  and the next line the game sends is not one either. */
+    onPrompt(promptLine: boolean): void;
     /** Fired after an idle-timer flush so the owner can render any messages
      *  the flushed chunk produced (MudClient.flushMessageBuffer). */
     onIdleFlush(): void;
@@ -194,13 +196,19 @@ export class LineAssembler {
         }
 
         if (hasPrompt) {
-            this.flush(ts);
+            const promptLine = this.flush(ts);
             this._gaDriver = true;
             // The next data block (the next transmission) starts fresh, so its
             // leading newline is again a candidate for the IRE-bug strip above.
             this.atPromptBlockStart = true;
-            this.callbacks.onPrompt();
-        } else if (this.pendingLineTail.length > 0) {
+            this.callbacks.onPrompt(promptLine);
+        } else if (this.pendingLineTail.length > 0 && !this._gaDriver) {
+            // Once GA-driven, only a newline or the next prompt marker ends a
+            // line — Mudlet's gotRest posts the fragment into TBuffer's open
+            // line and nothing times it out. A line trickling in slower than
+            // the prompt timeout stays one line instead of being cut in two.
+            // (Mudlet also shows the open line while it waits; we hold it
+            // unseen — see docs/line-assembly-tbuffer-port.md.)
             this.scheduleTailFlush();
         }
     }
@@ -208,10 +216,11 @@ export class LineAssembler {
     /** Flush a held-back partial line (text after the final `\n` of a frame).
      *  Triggered by prompt markers (IAC GA/EOR), the idle-flush timer, or
      *  socket close. Pushes the tail through the normal chunk path so triggers
-     *  and rendering treat it as a complete line. */
-    flush(ts: number, final = false): void {
+     *  and rendering treat it as a complete line. Returns whether any text was
+     *  emitted. */
+    flush(ts: number, final = false): boolean {
         this.clearTailTimer();
-        if (this.pendingLineTail.length === 0) return;
+        if (this.pendingLineTail.length === 0) return false;
         let tail = this.pendingLineTail;
         // A prompt tail can end mid-ANSI-escape when the server splits e.g.
         // `…known? \x1b[K` across frames so the bare `\x1b` lands at the end of
@@ -233,7 +242,7 @@ export class LineAssembler {
         // Nothing renderable before the held escape — keep holding it (don't
         // reschedule: a never-completing escape would spin the timer forever;
         // the next inbound frame recombines it).
-        if (tail.length === 0) return;
+        if (tail.length === 0) return false;
         // A flushed tail is a prompt, a timer-flushed fragment or the end of the
         // stream — every one of them a real line boundary, so anything held for
         // a wrap continuation was a complete line after all and goes first.
@@ -242,6 +251,7 @@ export class LineAssembler {
         // full-width line above it.
         this.commitServerWrapPending(ts);
         this.callbacks.onChunk(tail, ts);
+        return true;
     }
 
     // ── server-wrap join ────────────────────────────────────────────────────

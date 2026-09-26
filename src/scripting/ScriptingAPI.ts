@@ -88,6 +88,7 @@ function ansiPaletteIndex(color: FormatColor | undefined): number {
     if (!color) return COLOR_DEFAULT;
     if (color.space === 'indexed') return color.index;
     if (color.space !== 'hex') return COLOR_UNPALETTED;
+    if (typeof color.color !== 'string') return COLOR_UNPALETTED;
     const hex = color.color.toLowerCase();
     const dark = colorCodes.ansi.dark.findIndex(c => c.toLowerCase() === hex);
     if (dark >= 0) return dark;
@@ -2218,12 +2219,21 @@ export class ScriptingAPI {
         return this.host.toggleTriggerByName(nameOrId, false);
     }
 
+    // A temp timer's name is the id tempTimer returned (Mudlet names it so), so
+    // `disableTimer(id)` reaches it — whether the id arrives as a number or as
+    // its string form. Every timer sharing the name is toggled, as in Mudlet.
     enableTimer(name: string): boolean {
-        return this.host.toggleTimerByName(name, true);
+        return this.toggleTimer(name, true);
     }
 
     disableTimer(name: string): boolean {
-        return this.host.toggleTimerByName(name, false);
+        return this.toggleTimer(name, false);
+    }
+
+    private toggleTimer(name: string, enabled: boolean): boolean {
+        const perm = this.host.toggleTimerByName(name, enabled);
+        const temp = /^\d+$/.test(name) && this.timers.setTempEnabled(Number(name), enabled);
+        return perm || temp;
     }
 
     enableAlias(nameOrId: string | number): boolean {
@@ -2531,6 +2541,15 @@ export class ScriptingAPI {
         return this.host.getButtonStateByName(name);
     }
 
+    /**
+     * The console's own button state, which no-argument `getButtonState()`
+     * reads: 2 when the last clicked button went down, 1 when it came up or
+     * was a plain button. Mudlet's TToolBar/TEasyButtonBar write
+     * `mpConsole->mButtonState` just before running the button, so it holds
+     * the click being handled — ScriptingEngine.executeButton does the same.
+     */
+    clickedButtonState: 1 | 2 = 1;
+
     /** Which of Mudlet's button refusals applies to `name` — see
      *  ScriptingEngine.buttonKindByName. */
     buttonKind(name: string): 'missing' | 'plain' | 'pushdown' {
@@ -2607,12 +2626,22 @@ export class ScriptingAPI {
         // through the append path, so it prints the phrase as ordinary text —
         // Mudlet draws the same line, and UI_spec asserts it.
         if (!this.echoOnMatchedLine && this.injectOsc8Docs(text)) return;
-        // During trigger processing Mudlet's echo/cecho appends to the matched
-        // line at the output cursor (the line's end); only a `\n` advances to a
-        // fresh line. Mudlet Web seeds the matched line into mainConsole.history
-        // (beginLine) and defers script echoes, so without this every trigger
-        // echo opened a new line — breaking Arkadia's grade/value triggers,
-        // which `replace()`/`prefix()` then append text to the same line.
+        this.echoMain(text);
+        this.drainMain();
+    }
+
+    /**
+     * Write `text` to the main console in the current pen, honouring the
+     * matched line. During trigger processing Mudlet's echo/cecho appends to
+     * the matched line at the output cursor (the line's end); only a `\n`
+     * advances to a fresh line. Mudlet Web seeds the matched line into
+     * mainConsole.history (beginLine) and defers script echoes, so without this
+     * every trigger echo opened a new line — breaking Arkadia's grade/value
+     * triggers, which `replace()`/`prefix()` then append text to the same line,
+     * and the "add a clickable link after the line" pattern `echoLink` and
+     * `echoPopup` are used for. The caller drains.
+     */
+    private echoMain(text: string): void {
         if (this.echoOnMatchedLine) {
             const buf = this.mainConsole.getBuffer();
             if (buf) {
@@ -2627,7 +2656,13 @@ export class ScriptingAPI {
             }
         }
         this.mainConsole.echo(text);
-        this.drainMain();
+    }
+
+    /** Echo into `con` — through {@link echoMain} when it is the main console,
+     *  so a link or popup echoed from a trigger lands on the matched line. */
+    private echoTo(con: Console, text: string): void {
+        if (con === this.mainConsole) this.echoMain(text);
+        else con.echo(text);
     }
 
     echoToWindow(win: string, text: string): void {
@@ -2704,11 +2739,11 @@ export class ScriptingAPI {
             const prevUnderline = con.format.underline;
             con.format.foreground = this.linkColor(win);
             con.format.underline = true;
-            con.echo(text);
+            this.echoTo(con, text);
             con.format.foreground = prevFg;
             con.format.underline = prevUnderline;
         } else {
-            con.echo(text);
+            this.echoTo(con, text);
         }
         con.format.hyperlink = undefined;
         if (!win || win === 'main') {
@@ -2954,11 +2989,11 @@ export class ScriptingAPI {
             const prevUnderline = con.format.underline;
             con.format.foreground = this.linkColor(win);
             con.format.underline = true;
-            con.echo(text);
+            this.echoTo(con, text);
             con.format.foreground = prevFg;
             con.format.underline = prevUnderline;
         } else {
-            con.echo(text);
+            this.echoTo(con, text);
         }
         con.format.hyperlink = undefined;
         if (!win || win === 'main') {
@@ -3533,6 +3568,7 @@ export class ScriptingAPI {
         this.outerTriggerLines.push(this.triggerLineDepth > 0 ? this.mainConsole.getLineNumber() : -1);
         this.mainConsole.appendLine(buffer);
         this.inTriggerProcessing = true;
+        this.session.triggerCursorPinned = true;
         this.triggerLineDepth++;
         this.selection = null;
         this.setDeferringEcho(true);
@@ -3568,6 +3604,7 @@ export class ScriptingAPI {
             return;
         }
         this.inTriggerProcessing = false;
+        this.session.triggerCursorPinned = false;
         this.echoOnMatchedLine = false;
         // NB: the trigger selection is intentionally NOT cleared here. Mudlet
         // leaves a selection made inside a trigger in place, so a script can read
@@ -3866,18 +3903,32 @@ export class ScriptingAPI {
     // (history.length - 1) is the last complete index and both Lua-facing
     // numbers add one to reach Mudlet's convention. Missing windows report -1
     // (Mudlet's "no such window" sentinel).
+    //
+    // The exception is the main window while a trigger is still writing onto
+    // the matched line: Mudlet runs triggers before that line's terminator
+    // opens the next one, so the matched line IS the last line and the count
+    // equals getLineNumber(). Adding one there made
+    // `getLines("main", getLineCount() - 1, getLineCount())` miss the matched
+    // line. Once a trigger echo has advanced past it with a `\n`, the line it
+    // opened is the open one again and the usual +1 applies.
     getLineNumber(windowName?: string): number {
         return this.getConsole(windowName)?.getLineNumber() ?? -1;
     }
 
     getLineCount(windowName?: string): number {
         const con = this.getConsole(windowName);
-        return con ? con.getLineCount() + 1 : -1;
+        if (!con) return -1;
+        return con.getLineCount() + (this.onOpenMatchedLine(con) ? 0 : 1);
     }
 
     getLastLineNumber(windowName?: string): number {
-        const con = this.getConsole(windowName);
-        return con ? con.getLineCount() + 1 : -1;
+        return this.getLineCount(windowName);
+    }
+
+    /** Whether `con` is the main console with a trigger still on its matched
+     *  line — the one moment it has no open line past the last complete one. */
+    private onOpenMatchedLine(con: Console): boolean {
+        return this.echoOnMatchedLine && con === this.mainConsole;
     }
 
     // ── Scrolling / scrollbars ────────────────────────────────────────────────

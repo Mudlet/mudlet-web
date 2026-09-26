@@ -29,6 +29,7 @@ import {QT_CURSOR_NAME_TO_INT, QT_CURSOR_TO_CSS} from '../../ui/labels/cursorSha
 import {qtKeyToDomCode, qtModifiersToList, domCodeToQtKey, listToQtModifiers} from '../../mud/keybindings/qtKeys';
 import xterm256 from '../../mud/text/xterm256';
 import {HttpService} from '../http/HttpService';
+import {normalizeUserUrl, userUrlInvalidReason} from '../http/userUrl';
 import {TtsManager} from '../../ui/tts/TtsManager';
 import {GlobalEventChannel} from '../GlobalEventChannel';
 import {type MudletVariable, normalizeVariableTree} from '../../import/mudletVariables';
@@ -431,6 +432,21 @@ function normalizeGlobalEntry(raw: unknown): LuaGlobalEntry {
         entry.children = o.children.map(normalizeGlobalEntry);
     }
     return entry;
+}
+
+/**
+ * A label mouse event as Lua sees it. `buttons` is a Lua list in Mudlet
+ * (`event.buttons[1] == "LeftButton"`), but wasmoon pushes a JS array
+ * 0-indexed — so it is moved up one into a sparse array, which lands at
+ * t[1..n] (see setMatches).
+ */
+function labelEventForLua(event: unknown): unknown {
+    if (!event || typeof event !== 'object') return event;
+    const buttons = (event as { buttons?: unknown }).buttons;
+    if (!Array.isArray(buttons)) return event;
+    const list: string[] = [];
+    buttons.forEach((b: string, i) => { list[i + 1] = b; });
+    return { ...event, buttons: list };
 }
 
 export class LuaRuntime implements IScriptingRuntime {
@@ -1020,7 +1036,7 @@ export class LuaRuntime implements IScriptingRuntime {
             }
             slots.set(slot, cbId);
             return install((event: unknown) =>
-                this.dispatchCbWithArg(cbId, event, `label "${name}" ${slot}`));
+                this.dispatchCbWithArg(cbId, labelEventForLua(event), `label "${name}" ${slot}`));
         };
 
         this.lua.global.set('__mudlet_setLabelClickCallback', (name: string, cbId: number) =>
@@ -1998,16 +2014,11 @@ export class LuaRuntime implements IScriptingRuntime {
         // on this side) and let the Bridge.lua wrappers shape the tuple. The
         // scheme test mirrors fromUserInput's leniency: a bare "localhost/x" is
         // a valid url that means http://localhost/x.
-        this.lua.global.set('__mudlet_url_invalid_reason', (url: unknown) => {
-            const s = String(url ?? '').trim();
-            if (!s) return 'empty url';
-            try {
-                new URL(/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(s) ? s : `http://${s}`);
-                return false;
-            } catch (e) {
-                return e instanceof Error ? e.message : 'malformed url';
-            }
-        });
+        this.lua.global.set('__mudlet_url_invalid_reason', (url: unknown) =>
+            userUrlInvalidReason(String(url ?? '')) ?? false);
+        // What the url means once fromUserInput has read it — the string the
+        // request goes to and the one Mudlet hands back as the second return.
+        this.lua.global.set('__mudlet_normalize_url', (url: unknown) => normalizeUserUrl(String(url ?? '')));
         // Mudlet opens the upload file before issuing the request and reports
         // (nil, "couldn't open '<path>'...") when it can't, without emitting an
         // error event (TLuaInterpreter.cpp, performHttpRequest). Checking here
@@ -2080,13 +2091,26 @@ export class LuaRuntime implements IScriptingRuntime {
         // A url that isn't http(s) never gets that far — downloadFile reports it
         // as a sysDownloadError naming the file, which is the same way a script
         // hears about a 404.
+        //
+        // `url` is the directory the file lives in, not the file itself: the
+        // request fetches `url/name`, the way Mudlet's TMedia::getFileUrl joins
+        // them. A name with subdirectories is mirrored under media/ so the
+        // replay (which plays `name` against media/) finds it; one that is
+        // absolute, or that climbs out with `..`, keeps only its filename.
         this.lua.global.set('__mudlet_media_fetch', (name: unknown, url: unknown) => {
-            const file = String(name ?? '').split(/[\\/]/).pop() ?? '';
             const u = String(url ?? '');
-            if (!file || !u || !this.vfs) return null;
-            const saveTo = `${this.vfs.profilePath}/media/${file}`;
+            const n = String(name ?? '').replace(/\\/g, '/');
+            if (!n || !u || !this.vfs) return null;
+            const joined = n !== u;
+            const segments = n.split('/').filter(s => s.length > 0);
+            const rel = !joined || n.startsWith('/') || segments.some(s => s === '.' || s === '..')
+                ? segments.pop() ?? ''
+                : segments.join('/');
+            if (!rel) return null;
+            const saveTo = `${this.vfs.profilePath}/media/${rel}`;
             if (this.vfs.exists(saveTo)) return null;
-            this.http.downloadFile(saveTo, u);
+            const fileUrl = !joined ? u : `${u.endsWith('/') ? u : `${u}/`}${rel}`;
+            this.http.downloadFile(saveTo, fileUrl);
             return saveTo;
         });
         this.tts = new TtsManager((event, args) => this.emitEvent(event, args));
@@ -2271,6 +2295,52 @@ if __mudlet_pcall_co and type(dispatchEventToFunctions) == 'function' then
     -- __newindex too: a proxy env that only forwards reads would quietly
     -- swallow a global write, should upstream ever add one.
     { __index = _G, __newindex = _G }))
+end
+
+-- dispatchEventToFunctions walks the live handler table with pairs(), so a
+-- handler registered while an event is dispatching — directly, or by an event
+-- raised from inside a handler, which Mudlet dispatches synchronously — could
+-- be called with the very event that was in flight when it registered (the
+-- EleUI2 GitUpdater regression: registered during the sysDownloadDone that
+-- installed its package, it took that download for an update). Replace it with
+-- one that snapshots each list first and skips any entry killed since, reaching
+-- \`handlers\` — a local of the do-block Other.lua defines it in — through the
+-- function's upvalues. If that ever fails to find it, the original stays.
+do
+  local original = dispatchEventToFunctions
+  local handlers
+  if type(original) == 'function' then
+    local i = 1
+    while true do
+      local name, value = debug.getupvalue(original, i)
+      if name == nil then break end
+      if name == 'handlers' then handlers = value; break end
+      i = i + 1
+    end
+  end
+  if type(handlers) == 'table' then
+    local pcall_co = __mudlet_pcall_co or pcall
+    local function run(event, list, ...)
+      if not list then return end
+      local keys, funcs, n = {}, {}, 0
+      for key, func in pairs(list) do
+        n = n + 1
+        keys[n], funcs[n] = key, func
+      end
+      for i = 1, n do
+        -- Killed by an earlier handler of this same dispatch: skip it, as the
+        -- live walk did.
+        if list[keys[i]] == funcs[i] then
+          local success, err = pcall_co(funcs[i], event, ...)
+          if not success then showHandlerError(event, err) end
+        end
+      end
+    end
+    function dispatchEventToFunctions(event, ...)
+      run(event, handlers[event], ...)
+      run(event, handlers["*"], ...)
+    end
+  end
 end
 
 -- Replace the placeholder mudlet.Locale with the real catalogue.
@@ -3682,37 +3752,21 @@ end`);
         });
     }
 
-    // Mudlet parity (Host::raiseEvent): an event raised while another event is
-    // still dispatching — installPackage inside a sysDownloadDone handler
-    // raising sysInstallPackage, any handler calling raiseEvent — is queued and
-    // dispatched after the in-flight event finishes. Synchronous nested
-    // dispatch let a handler registered mid-dispatch see the event already in
-    // flight: EleUI2's GitUpdater (registered while its package installed
-    // inside the sysDownloadDone dispatch) received that same sysDownloadDone,
-    // mistook the package's own install download for a finished update, and
-    // uninstalled the package.
-    private dispatchingEvent = false;
-    private readonly pendingEvents: Array<{ event: string; args: unknown[] }> = [];
-
+    // Mudlet parity (Host::raiseEvent): an event is dispatched the moment it is
+    // raised, even from inside another event's handler — the nested handlers
+    // have run by the time the raise returns. What must NOT happen is a handler
+    // registered mid-dispatch receiving the event already in flight (EleUI2's
+    // GitUpdater, registered while its package installed inside the
+    // sysDownloadDone dispatch, took that same sysDownloadDone for a finished
+    // update and uninstalled the package). The Lua dispatcher prevents that by
+    // snapshotting each handler list before calling it — see __mudlet_dispatch
+    // in Bridge.lua — so nesting itself is safe.
     emitEvent(event: string, args: unknown[]): void {
         // HTTP callbacks fire from background fetches and may resolve after the
         // owning ScriptingEngine tore us down; emitting on a closed lua_State
         // throws a confusing wasm error. Drop the event silently in that case.
         if (this.inert) return;
-        this.pendingEvents.push({ event, args });
-        if (this.dispatchingEvent) return;
-        this.dispatchingEvent = true;
-        try {
-            while (this.pendingEvents.length > 0 && !this.inert) {
-                const next = this.pendingEvents.shift()!;
-                this.dispatchEventNow(next.event, next.args);
-            }
-        } finally {
-            this.dispatchingEvent = false;
-            // A throw mid-drain would otherwise leak stale events into the
-            // next dispatch.
-            this.pendingEvents.length = 0;
-        }
+        this.dispatchEventNow(event, args);
     }
 
     private dispatchEventNow(event: string, args: unknown[]): void {

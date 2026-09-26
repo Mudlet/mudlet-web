@@ -85,4 +85,20 @@ describe('TriggerEngine unified perm/temp ordering', () => {
 
     expect(order).toEqual(['g', 'c']);
   });
+
+  it('keeps saved triggers ahead of a temp a script creates before they compile (mudlet-web#180)', () => {
+    // Profile load runs the scripts before PCRE is ready to compile the saved
+    // triggers. Desktop builds those from the profile XML first, so a temp a
+    // script creates at load sorts after them; reserveOrder is what holds
+    // their place until loadPerm arrives.
+    const order: string[] = [];
+    const saved = [trig({ id: 'perm', patterns: [{ type: 'substring', text: 'ORDER' }] })];
+    te.reserveOrder(saved);
+    te.addTemp('ORDER', () => order.push('temp'), 'substring');
+    te.loadPerm(saved);
+
+    te.process('ORDER', false, (m) => order.push(`perm:${m.trigger.id}`));
+
+    expect(order).toEqual(['perm:perm', 'temp']);
+  });
 });

@@ -5,7 +5,15 @@ const CORS_HEADERS = {
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS',
     'Access-Control-Allow-Headers': '*',
     'Access-Control-Max-Age': '86400',
+    // Without this a script sees only the handful of headers every browser
+    // exposes (Content-Type and friends), not what the target actually sent.
+    'Access-Control-Expose-Headers': '*',
 };
+
+// Marks a reply that is the proxy's own failure to reach the target, carrying
+// the reason — the client reports that text instead of a generic 502. Must
+// match PROXY_ERROR_HEADER in src/scripting/http/HttpService.ts.
+const PROXY_ERROR_HEADER = 'X-Mudlet-Proxy-Error';
 
 // Hop-by-hop headers and a few that the browser auto-sets on cross-origin
 // requests but the upstream server should not see (Origin/Referer leak the
@@ -96,7 +104,10 @@ async function forwardHttp(request, target) {
     try {
         upstream = await fetch(targetUrl.toString(), init);
     } catch (err) {
-        return new Response(`Proxy fetch failed: ${describeError(err)}`, { status: 502, headers: CORS_HEADERS });
+        // A header value: printable ASCII on one line.
+        const reason = describeError(err).replace(/[^\x20-\x7e]+/g, ' ').trim() || 'Network error';
+        return new Response(`Proxy fetch failed: ${reason}`,
+            { status: 502, headers: { ...CORS_HEADERS, [PROXY_ERROR_HEADER]: reason } });
     }
 
     return new Response(upstream.body, {

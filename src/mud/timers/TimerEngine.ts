@@ -24,6 +24,11 @@ interface TimerEntry {
      *  rather than unknown, and a second `killTimer` has a corpse to find and
      *  so answers false. See {@link reapKilled}. */
     dead?: boolean;
+    /** Switched off by `disableTimer(id)`. The pending timeout is cleared; the
+     *  timer stays findable and `enableTimer(id)` re-arms it. */
+    disabled?: boolean;
+    /** Re-arms the timer for a full interval from now — what enableTimer does. */
+    arm?: () => void;
 }
 
 export class TimerEngine {
@@ -69,7 +74,7 @@ export class TimerEngine {
         };
         const arm = (): void => {
             const handle = setTimeout(fire, intervalMs);
-            this.temp.set(id, { handle, repeat, start: Date.now(), intervalMs, fire });
+            this.temp.set(id, { handle, repeat, start: Date.now(), intervalMs, fire, arm });
         };
         arm();
         return id;
@@ -98,7 +103,7 @@ export class TimerEngine {
         // map underneath a live iteration would skip or revisit entries.
         const due: Array<() => void> = [];
         for (const [, entry] of this.temp) {
-            if (entry.dead || now < entry.start + entry.intervalMs) continue;
+            if (entry.dead || entry.disabled || now < entry.start + entry.intervalMs) continue;
             // Cancel the pending timeout and let `fire` do the bookkeeping — it
             // retires a one-shot and re-arms a repeat, so a repeating timer ends
             // up correctly scheduled for its next tick instead of double-firing.
@@ -123,9 +128,8 @@ export class TimerEngine {
      * temp triggers and aliases — aren't tracked in LuaRuntime's tempIds either,
      * so this map is the only thing that knows.
      *
-     * There is no enable/disable for a temporary timer, so this used to answer
-     * `isActive` too. A killed one splits the two apart: it is still present
-     * here until the reap, but no longer running — see {@link tempIsActive}.
+     * Present is not running: a killed timer stays here until the reap, and a
+     * disabled one until it is killed — see {@link tempIsActive}.
      */
     hasTemp(id: number): boolean {
         return this.temp.has(id);
@@ -135,7 +139,27 @@ export class TimerEngine {
      *  "timer")`. False for one killed since the last reap. */
     tempIsActive(id: number): boolean {
         const entry = this.temp.get(id);
-        return !!entry && !entry.dead;
+        return !!entry && !entry.dead && !entry.disabled;
+    }
+
+    /**
+     * Mudlet `enableTimer(id)` / `disableTimer(id)` on a temporary timer. Mudlet
+     * names a temp timer by the id tempTimer returned, so its name-based toggles
+     * reach temp timers too. Disabling stops the pending tick; enabling re-arms
+     * it for a full interval, as Mudlet restarts the QTimer. Returns false for
+     * an unknown or killed timer.
+     */
+    setTempEnabled(id: number, enabled: boolean): boolean {
+        const entry = this.temp.get(id);
+        if (!entry || entry.dead) return false;
+        if (!enabled) {
+            if (!entry.disabled) clearTimeout(entry.handle);
+            entry.disabled = true;
+        } else if (entry.disabled) {
+            // arm() replaces the entry, which drops the disabled flag.
+            entry.arm?.();
+        }
+        return true;
     }
 
     killTimer(id: number): boolean {
@@ -281,7 +305,7 @@ export class TimerEngine {
         // A killed timer is still present until the reap, but it is stopped — so
         // it reports as inactive, not as an unknown id. That distinction is what
         // tells a caller the timer it just killed is really the one it found.
-        if (entry.dead) return -1;
+        if (entry.dead || entry.disabled) return -1;
         const elapsed = Date.now() - entry.start;
         const ms = entry.repeat
             ? entry.intervalMs - (elapsed % entry.intervalMs)

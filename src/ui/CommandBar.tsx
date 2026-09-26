@@ -4,7 +4,7 @@ import { useConnectionId, useProfileField } from '../storage';
 import { useIsMobile, useIsTouch } from '../hooks/useViewportMode';
 import { useCommandHistory } from './useCommandHistory';
 import { matchHistory, type Match } from './commandHistory';
-import { hasPrecedingWord, matchWordCandidates, splitTrailingWord, type ActiveWord, type BufferWordIndex } from './bufferWords';
+import { matchWordCandidates, splitTrailingWord, type ActiveWord, type BufferWordIndex } from './bufferWords';
 import { flushScreenReaderLines } from './output/ScreenReaderLog';
 import { COMMAND_INPUT_ID } from './landmarks';
 import type { CmdLineMenuEntry, CmdLineMenuRegistry } from './CmdLineMenuRegistry';
@@ -41,9 +41,9 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
     const [menu, setMenu] = useState<{ x: number; y: number; items: CmdLineMenuEntry[] } | null>(null);
     const inputBackground = useProfileField('inputBackground');
     const inputForeground = useProfileField('inputForeground');
-    // Mudlet's "Highlight history" and "Disable password masking", both off by
-    // default as they are on desktop.
-    const highlightHistory = useProfileField('highlightHistory') ?? false;
+    // Mudlet's "Highlight history" (on by default — XMLimport reads it with
+    // readDefaultTrueBool) and "Disable password masking" (off by default).
+    const highlightHistory = useProfileField('highlightHistory') ?? true;
     const disablePasswordMasking = useProfileField('disablePasswordMasking') ?? false;
     const spellCheckInput = useProfileField('spellCheckInput') ?? false;
     const inputStyle = (inputBackground || inputForeground) ? {
@@ -83,6 +83,14 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
     // newline mid-text via Ctrl/Shift+Enter). Takes precedence over the
     // pin-to-end behaviour above.
     const pendingCaretPosRef = useRef<number | null>(null);
+
+    // A selection to restore after a re-render: the completed tail of a history
+    // prefix search, selected so the next Up/Down (or keystroke) replaces it.
+    const pendingSelectionRef = useRef<[number, number] | null>(null);
+
+    // Desktop's mAutoCompletionCount: the history index the last prefix search
+    // landed on, -1 when none is in progress. See completeFromHistory.
+    const autoCompleteRef = useRef(-1);
 
     // In-progress argument-word Tab cycle. `lastValue` is the value we last wrote
     // — if the box no longer matches it, the user has edited and the cycle is
@@ -151,10 +159,17 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         setCursor(-1);
         setGhostHidden(false);
         cycleRef.current = null;
+        autoCompleteRef.current = -1;
     }, [command]);
 
     useLayoutEffect(() => {
         const el = commandInputRef.current;
+        if (pendingSelectionRef.current !== null) {
+            const [from, to] = pendingSelectionRef.current;
+            pendingSelectionRef.current = null;
+            if (el) el.setSelectionRange(from, to);
+            return;
+        }
         if (pendingCaretPosRef.current !== null) {
             const pos = pendingCaretPosRef.current;
             pendingCaretPosRef.current = null;
@@ -235,6 +250,7 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         setCursor(-1);
         setGhostHidden(false);
         resetCycle();
+        autoCompleteRef.current = -1;
         setValue(val);
     };
 
@@ -248,6 +264,7 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         setCursor(-1);
         setGhostHidden(false);
         resetCycle();
+        autoCompleteRef.current = -1;
         onSubmit();
         // Hand the screen back after each command on a phone: keeping focus
         // keeps the on-screen keyboard up over the output, so the player never
@@ -269,10 +286,9 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         submit();
     };
 
-    // Insert a newline at the caret. Mudlet binds Ctrl+Enter to this so the user
+    // Insert a newline at the caret. Mudlet binds Shift+Enter to this so the user
     // can stage several commands in the box; a plain Enter then sends each line
-    // (split downstream in handleSend). Shift+Enter is accepted too as the more
-    // common editor convention.
+    // (split downstream in handleSend).
     const insertNewlineAtCaret = () => {
         const el = commandInputRef.current;
         const start = el?.selectionStart ?? command.length;
@@ -291,11 +307,9 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
     // press computes + caches the candidate list from the typed word; subsequent
     // presses just advance the cached index (the snapshot survives until the user
     // edits, which clears cycleRef). `lists` are the candidate pools in priority
-    // order — for the first word: suggestions, history (whole commands), buffer
-    // words; for an argument word: suggestions, buffer words.
+    // order: suggestions, then buffer words.
     //
-    // Returns false when there was nothing to complete, which is the caller's
-    // cue to let the Tab through as an ordinary focus move.
+    // Returns false when there was nothing to complete.
     const cycleWord = (active: ActiveWord, dir: 1 | -1, lists: string[][]): boolean => {
         let state = cycleRef.current;
         if (!state || state.lastValue !== command) {
@@ -334,6 +348,48 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         }
     };
 
+    /**
+     * Desktop's history prefix search — `TCommandLine::historyMove` hands off to
+     * `handleAutoCompletion` when "Highlight history" is on and the line holds
+     * typed text rather than a whole-line selection. The text before any
+     * selected tail is the prefix; Up steps to the next older history entry
+     * that starts with it, Down back towards newer ones, and the completed tail
+     * comes back selected so the next press (or keystroke) replaces it. Running
+     * out of matches leaves just the prefix. Returns false when the press is a
+     * plain history step instead.
+     */
+    const completeFromHistory = (shift: 1 | -1): boolean => {
+        const el = commandInputRef.current;
+        if (!el || !highlightHistory || passwordMode) return false;
+        const value = el.value;
+        if (value === '' || value.includes('\n')) return false;
+        const start = el.selectionStart ?? value.length;
+        const end = el.selectionEnd ?? value.length;
+        if (start === 0 && end === value.length) return false;
+        if (history.length === 0) return false;
+        const prefix = end === value.length ? value.slice(0, start) : value;
+        resetCycle();
+        const show = (next: string) => {
+            draftRef.current = next;
+            // An unchanged value doesn't re-render, so the layout effect would
+            // never pick the selection up — set it here instead.
+            if (next === value) el.setSelectionRange(prefix.length, next.length);
+            else pendingSelectionRef.current = [prefix.length, next.length];
+            setValue(next);
+            announce(next);
+        };
+        const from = Math.min(Math.max(autoCompleteRef.current + shift, 0), history.length - 1);
+        for (let i = from; i < history.length; i++) {
+            if (!history[i].startsWith(prefix)) continue;
+            autoCompleteRef.current = i;
+            show(history[i]);
+            return true;
+        }
+        autoCompleteRef.current = -1;
+        show(prefix);
+        return true;
+    };
+
     const qualifiesForTraversal = (dir: 'up' | 'down'): boolean => {
         const el = commandInputRef.current;
         if (!el) return false;
@@ -365,12 +421,17 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         }
 
         if (e.key === 'Enter') {
-            // Ctrl/Shift/etc.+Enter stages a newline instead of sending, so the
-            // user can compose several commands at once. Passwords stay single
-            // line. A plain Enter always sends; we preventDefault so the textarea
-            // doesn't insert its own newline first.
+            // TCommandLine::event: a plain Enter sends; Ctrl(/Cmd)+Enter is
+            // clearSplit (OutputArea's capture-phase handler does that while
+            // the split is up) and otherwise does nothing; any other modified
+            // Enter a keybinding didn't claim (ProfileSession offers it first)
+            // stages a newline, as the text edit underneath does on desktop,
+            // so several commands can be composed at once. Passwords stay
+            // single line. preventDefault so the textarea never inserts its own.
             e.preventDefault();
-            if (!passwordMode && (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey)) {
+            const ctrl = e.ctrlKey || e.metaKey;
+            if (ctrl && !e.shiftKey && !e.altKey) return;
+            if (!passwordMode && (ctrl || e.shiftKey || e.altKey)) {
                 insertNewlineAtCaret();
             } else {
                 submit();
@@ -387,29 +448,36 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
             // that does nothing is exactly what WCAG 2.1.2 objects to. See the
             // hint span below, which tells a screen-reader user it is there.
             if (!active) return;
-            const sugg = suggestions ?? [];
-            const words = bufferWords?.getWords() ?? [];
-            // First word: complete commands you've run (history) + suggestions +
-            // buffer words. Argument word: suggestions + buffer words only.
-            // History is prefix-matched too, so it never "completes" to an
-            // unrelated command the way subsequence matching used to.
-            const lists = hasPrecedingWord(active.prefix)
-                ? [sugg, words]
-                : [sugg, history, words];
+            // From here on Tab belongs to the command line, completion or not,
+            // as on desktop. Letting a Tab with no match move focus away sent
+            // the player's next keystrokes somewhere else, and their typing
+            // was lost (#188). The empty box and a trailing space above stay
+            // the way out.
+            e.preventDefault();
+            // Candidates are suggestions + words seen in the output, for the
+            // first word and arguments alike. Command history is not one:
+            // TCommandLine::handleTabCompletion completes only from the buffer
+            // and setCmdLineSuggestions, so a Tab never recalls an old command.
+            const lists = [suggestions ?? [], bufferWords?.getWords() ?? []];
             // The blacklist subtracts from every list, matched case-insensitively
-            // (TCommandLine::tabComplete does the same) — a word blacklisted once
-            // must not come back via history or the output buffer.
+            // (TCommandLine::tabComplete does the same).
             const banned = new Set((blacklist ?? []).map(w => w.toLowerCase()));
             const allowed = banned.size === 0
                 ? lists
                 : lists.map(l => l.filter(w => !banned.has(w.toLowerCase())));
-            // Only consume the key if something was actually completed; a word
-            // with no candidates leaves Tab as a focus move, same as above.
-            if (cycleWord(active, e.shiftKey ? -1 : 1, allowed)) e.preventDefault();
+            cycleWord(active, e.shiftKey ? -1 : 1, allowed);
             return;
         }
 
         if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+            // Only a plain arrow walks history. Ctrl+Up/Down just moves the
+            // caret on desktop (TCommandLine::event), and any other modifier is
+            // a keybinding's or the textarea's.
+            if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+            if (completeFromHistory(e.key === 'ArrowUp' ? 1 : -1)) {
+                e.preventDefault();
+                return;
+            }
             if (!qualifiesForTraversal(e.key === 'ArrowUp' ? 'up' : 'down')) return;
             if (history.length === 0 && cursor === -1) return;
 
@@ -514,7 +582,7 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
                 error (WCAG 2.1.2). */}
             <span id={HINT_ID} className="sr-only">
                 Tab completes the word you are typing; press it again to cycle.
-                With nothing to complete, Tab moves on to the next control.
+                On an empty line, or after a space, Tab moves on to the next control.
                 Up and Down recall earlier commands.
             </span>
 

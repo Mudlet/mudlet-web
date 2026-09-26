@@ -256,3 +256,176 @@ describe('SoundManager teardown during an in-flight play', () => {
         expect(await mgr.playSound({ name: 'after-reset.wav', volume: 50 })).toBeGreaterThan(0);
     });
 });
+
+// Issue #185: media drift against desktop Mudlet. Each block pins one of the
+// behaviours the side-by-side comparison found missing.
+describe('SoundManager finite loop counts', () => {
+    beforeAll(() => {
+        (window as unknown as { AudioContext: unknown }).AudioContext = FakeAudioContext;
+    });
+
+    function makeManager() {
+        const mgr = new SoundManager();
+        mgr.setLoader(async () => new ArrayBuffer(8));
+        return mgr;
+    }
+
+    it('plays each pass on its own source and ends after the last one', async () => {
+        const mgr = makeManager();
+        const events: string[] = [];
+        mgr.onMediaStarted = () => events.push('started');
+        mgr.onMediaFinished = () => events.push('finished');
+
+        createdSources.length = 0;
+        await mgr.playSound({ name: 'short.wav', loops: 2 });
+        // Never the loop flag: that only repeats forever, which is the bug.
+        expect(createdSources).toHaveLength(1);
+        expect(createdSources[0].loop).toBe(false);
+
+        createdSources[0].onended?.();
+        expect(createdSources).toHaveLength(2);
+        expect(mgr.getPlaying()).toHaveLength(1);
+
+        createdSources[1].onended?.();
+        expect(createdSources).toHaveLength(2);
+        expect(mgr.getPlaying()).toEqual([]);
+        expect(events).toEqual(['started', 'finished', 'started', 'finished']);
+    });
+
+    it('keeps the loop flag for -1 and plays a single pass for 0 or below -1', async () => {
+        const mgr = makeManager();
+        createdSources.length = 0;
+        await mgr.playSound({ name: 'forever.wav', loops: -1 });
+        expect(createdSources[0].loop).toBe(true);
+
+        for (const loops of [0, -5]) {
+            createdSources.length = 0;
+            await mgr.playSound({ name: `once${loops}.wav`, loops });
+            expect(createdSources[0].loop).toBe(false);
+            createdSources[0].onended?.();
+            expect(createdSources).toHaveLength(1);
+        }
+    });
+
+    it('does not start another pass once the sound is stopped', async () => {
+        const mgr = makeManager();
+        createdSources.length = 0;
+        await mgr.playSound({ name: 'stopped.wav', loops: 3 });
+        mgr.stopSounds();
+        createdSources[0].onended?.();
+        expect(createdSources).toHaveLength(1);
+        expect(mgr.getPlaying()).toEqual([]);
+    });
+});
+
+describe('SoundManager stop and pause filters', () => {
+    beforeAll(() => {
+        (window as unknown as { AudioContext: unknown }).AudioContext = FakeAudioContext;
+    });
+
+    async function twoSounds(extraA: object = {}, extraB: object = {}) {
+        const mgr = new SoundManager();
+        mgr.setLoader(async () => new ArrayBuffer(8));
+        await mgr.playSound({ name: 'media/long.wav', tag: 'a', key: 'ka', ...extraA });
+        await mgr.playSound({ name: 'media/long2.wav', tag: 'b', key: 'kb', ...extraB });
+        return mgr;
+    }
+    const names = (mgr: SoundManager) => mgr.getPlaying().map(p => p.name).sort();
+
+    it('stops only the sound a tag names', async () => {
+        const mgr = await twoSounds();
+        mgr.stopSounds({ tag: 'a' });
+        expect(names(mgr)).toEqual(['media/long2.wav']);
+    });
+
+    it('matches a name by its path or its trailing filename', async () => {
+        const mgr = await twoSounds();
+        mgr.stopSounds({ name: 'long.wav' });
+        expect(names(mgr)).toEqual(['media/long2.wav']);
+        mgr.stopSounds({ name: '/profiles/x/media/long2.wav' });
+        expect(names(mgr)).toEqual([]);
+    });
+
+    it('stops by key, and everything with no filter', async () => {
+        const mgr = await twoSounds();
+        mgr.stopSounds({ key: 'kb' });
+        expect(names(mgr)).toEqual(['media/long.wav']);
+        mgr.stopSounds();
+        expect(names(mgr)).toEqual([]);
+    });
+
+    it('treats a priority filter as a ceiling', async () => {
+        const mgr = await twoSounds({ priority: 90 });
+        // long2 has no priority, which counts as 0, so it sits under any ceiling.
+        mgr.stopSounds({ priority: 10 });
+        expect(names(mgr)).toEqual(['media/long.wav']);
+        mgr.stopSounds({ priority: 95 });
+        expect(names(mgr)).toEqual([]);
+    });
+
+    it('narrows to one origin', async () => {
+        const mgr = await twoSounds({ origin: 'game' }, { origin: 'api' });
+        mgr.stopSounds({ origin: 'game' });
+        expect(names(mgr)).toEqual(['media/long2.wav']);
+    });
+
+    it('pauses only what a filter names', async () => {
+        const mgr = await twoSounds();
+        mgr.pauseSounds({ key: 'ka' });
+        expect(names(mgr)).toEqual(['media/long2.wav']);
+    });
+
+    it('lists only the origin asked for', async () => {
+        const mgr = await twoSounds({ origin: 'game' }, { origin: 'api' });
+        expect(mgr.getPlaying({ origin: 'api' }).map(p => p.name)).toEqual(['media/long2.wav']);
+        expect(mgr.getPlaying()).toHaveLength(2);
+    });
+});
+
+describe('SoundManager priority', () => {
+    beforeAll(() => {
+        (window as unknown as { AudioContext: unknown }).AudioContext = FakeAudioContext;
+    });
+
+    function makeManager() {
+        const mgr = new SoundManager();
+        mgr.setLoader(async () => new ArrayBuffer(8));
+        return mgr;
+    }
+
+    it('refuses a sound while one of equal or higher priority plays', async () => {
+        const mgr = makeManager();
+        await mgr.playSound({ name: 'long.wav', priority: 60 });
+        expect(await mgr.playSound({ name: 'long2.wav', priority: 50 })).toBe(-1);
+        expect(await mgr.playSound({ name: 'long3.wav', priority: 60 })).toBe(-1);
+        expect(mgr.getPlaying().map(p => p.name)).toEqual(['long.wav']);
+    });
+
+    it('takes over from lower-priority sounds, including those with none', async () => {
+        const mgr = makeManager();
+        await mgr.playSound({ name: 'none.wav' });
+        await mgr.playSound({ name: 'low.wav', priority: 10 });
+        expect(await mgr.playSound({ name: 'high.wav', priority: 90 })).toBeGreaterThan(0);
+        expect(mgr.getPlaying().map(p => p.name)).toEqual(['high.wav']);
+    });
+
+    it('leaves a sound without a priority unaffected by one that has it', async () => {
+        const mgr = makeManager();
+        await mgr.playSound({ name: 'high.wav', priority: 90 });
+        expect(await mgr.playSound({ name: 'plain.wav' })).toBeGreaterThan(0);
+        expect(mgr.getPlaying()).toHaveLength(2);
+    });
+
+    it('clamps a priority into 1..100 and reports it', async () => {
+        const mgr = makeManager();
+        await mgr.playSound({ name: 'top.wav', priority: 500 });
+        expect(mgr.getPlaying()[0].priority).toBe(100);
+    });
+
+    it('compares priority only within one origin', async () => {
+        const mgr = makeManager();
+        await mgr.playSound({ name: 'game.wav', priority: 90, origin: 'game' });
+        expect(await mgr.playSound({ name: 'api.wav', priority: 10, origin: 'api' })).toBeGreaterThan(0);
+        expect(mgr.getPlaying()).toHaveLength(2);
+    });
+});

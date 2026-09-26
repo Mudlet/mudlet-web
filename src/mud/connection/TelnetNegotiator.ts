@@ -510,8 +510,10 @@ export class TelnetNegotiator {
                 // Agree (IAC WILL TTYPE); the actual name/type/MTTS values
                 // follow via the SB TTYPE SEND subnegotiation handled in
                 // handleTtypeSubneg(). Many MUDs (e.g. Kallisti) won't offer
-                // MSDP/GMCP until this handshake completes.
-                if (f.mttsEnabled && cmd === DO) this.hooks.sendRaw(TTYPE_WILL);
+                // MSDP/GMCP until this handshake completes. Agreed whether or
+                // not MTTS is on: that toggle only trims the SEND cycle below,
+                // and silence left the server unable to identify us (#188).
+                if (cmd === DO) this.hooks.sendRaw(TTYPE_WILL);
                 return;
             case OPT_NAWS:
                 // The refusal here is announced whether or not NAWS was on —
@@ -702,9 +704,10 @@ export class TelnetNegotiator {
      *  with the option byte (24) at [0]; [1] is the request kind (1 = SEND). We
      *  answer `IAC SB TTYPE IS <value> IAC SE`, cycling client name → terminal
      *  type → MTTS capability bitvector on successive SENDs, then repeating the
-     *  last value to signal the list is exhausted (RFC 1091 + the MTTS standard). */
+     *  last value to signal the list is exhausted (RFC 1091 + the MTTS standard).
+     *  With MTTS off the cycle is just the client name, repeated — desktop
+     *  Mudlet still identifies itself, it only skips the MTTS steps. */
     handleTtypeSubneg(subneg: string): void {
-        if (!this.flags.mttsEnabled) return;
         if (subneg.charCodeAt(1) !== TTYPE_SEND.charCodeAt(0)) return; // only handle SEND
         // MTTS bitvector tracks live state (UTF-8 encoding, TLS transport); the
         // static bits (ANSI, 256 colours, OSC colour palette, truecolour) are
@@ -717,7 +720,7 @@ export class TelnetNegotiator {
         // `mVersionInTTYPE`: append our version to the client-name step only —
         // the terminal-type and MTTS steps are unchanged (ctelnet.cpp case 0).
         const clientName = this.flags.versionInTTYPE ? `${CLIENT_NAME} ${CLIENT_VERSION}` : CLIENT_NAME;
-        const cycle = [clientName, TERMINAL_TYPE, `MTTS ${mtts}`];
+        const cycle = this.flags.mttsEnabled ? [clientName, TERMINAL_TYPE, `MTTS ${mtts}`] : [clientName];
         const value = cycle[Math.min(this.ttypeStep, cycle.length - 1)];
         if (this.ttypeStep < cycle.length - 1) this.ttypeStep++;
         this.hooks.sendRaw(GMCP_IAC + GMCP_SB + OPT_TTYPE + TTYPE_IS + value + GMCP_IAC + GMCP_SE);

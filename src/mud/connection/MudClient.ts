@@ -31,7 +31,6 @@ import {
     SessionCodec,
     toByteString,
     stripTelnetSequences,
-    TELNET_EOR,
     TELNET_GA,
     TTYPE_COMMAND_CODE,
 } from "../protocol";
@@ -84,11 +83,12 @@ export interface MudClientOptions {
      *  MUDs render as replacement chars). */
     charsetEnabled?: boolean;
     /** Whether to enable MSP (MUD Sound Protocol, telnet option 90). Default
-     *  false. When true the client negotiates the option and strips inline
-     *  `!!SOUND(...)` / `!!MUSIC(...)` tags from MUD text, dispatching them
-     *  as `msp` events. Always parses subnegotiations regardless of this flag
-     *  once negotiated, but in-band parsing is gated to avoid eating literal
-     *  text on MUDs that don't speak MSP. */
+     *  false. When true the client negotiates the option and, once the server
+     *  has agreed to it, strips inline `!!SOUND(...)` / `!!MUSIC(...)` tags
+     *  from MUD text, dispatching them as `msp` events. Always parses
+     *  subnegotiations regardless of this flag once negotiated, but in-band
+     *  parsing is gated to avoid eating literal text on MUDs that don't speak
+     *  MSP. */
     mspEnabled?: boolean;
     /** Whether to accept MXP (telnet option 91) negotiation. Default true.
      *  When false, IAC WILL/DO MXP is ignored so the server never sees a
@@ -265,8 +265,10 @@ export class MudClient {
      *  GA-driven prompt flushing, the idle-flush safety net). */
     private readonly assembler: LineAssembler;
     private readonly url: string;
-    /** Buffers the start of a subnegotiation that arrived without its closing IAC SE. */
-    private pendingSubneg = "";
+    /** Buffers a telnet sequence the frame ended in the middle of — a lone
+     *  IAC, an option command missing its option byte, or a subnegotiation
+     *  without its closing IAC SE — until the next frame completes it. */
+    private pendingTelnet = "";
     /** True once the WebSocket handshake has completed; used to differentiate
      *  "failed to connect" from "connection lost mid-session" in close events. */
     private opened = false;
@@ -303,8 +305,9 @@ export class MudClient {
     private gameEstablished = false;
 
     commandEcho: boolean;
-    /** Gates the in-band `!!SOUND(...)` / `!!MUSIC(...)` tag parsing — the tag
-     *  bytes are legitimate text on non-MSP MUDs. */
+    /** Gates the in-band `!!SOUND(...)` / `!!MUSIC(...)` tag parsing, together
+     *  with the option actually being negotiated — the tag bytes are
+     *  legitimate text on non-MSP MUDs. */
     private readonly mspEnabled: boolean;
     private readonly mspParser = new MspParser();
     /** WebSocket subprotocols advertised on connect (see MudClientOptions). */
@@ -369,7 +372,7 @@ export class MudClient {
         this.assembler = new LineAssembler(
             {
                 onChunk: (text, ts) => this.chunkProcessor.processChunk(text, ts, this),
-                onPrompt: () => this.eventBus.emit('prompt'),
+                onPrompt: (promptLine) => this.eventBus.emit('prompt', promptLine),
                 onIdleFlush: () => this.flushMessageBuffer(),
             },
             { promptTimeoutMs, fixUnnecessaryLinebreaks, undoServerWrap, undoServerWrapWidth },
@@ -673,10 +676,9 @@ export class MudClient {
                     }
                     this.negotiator.processFrame(data);
                     this.echoHandler.processData(data);
-                    this.finishLatencyMeasurement(data, receivedAt);
                     this.eventBus.emit('socket.incoming', data);
                     try {
-                        this.processIncomingData(data);
+                        this.processIncomingData(data, undefined, receivedAt);
                     } catch (processingError) {
                         console.error('Error during data processing:', processingError);
                     }
@@ -707,7 +709,7 @@ export class MudClient {
                 this.opened = false;
                 this.mccpHandler.reset();
                 this.echoHandler.reset();
-                this.pendingSubneg = "";
+                this.pendingTelnet = "";
                 this.mspParser.reset();
                 this.negotiator.clearMspNegotiated();
                 this.cancelCharacterModeDetection();
@@ -862,7 +864,7 @@ export class MudClient {
         this.opened = false;
         this.mccpHandler.reset();
         this.echoHandler.reset();
-        this.pendingSubneg = '';
+        this.pendingTelnet = '';
         this.mspParser.reset();
         this.negotiator.clearMspNegotiated();
         this.cancelCharacterModeDetection();
@@ -909,8 +911,11 @@ export class MudClient {
         try {
             // `cTelnet::sendData`: the CR is appended only when mUSE_UNIX_EOL is
             // off, so strict-Unix mode submits the bare LF telnet would normally
-            // pair it with.
-            this.sendBytes(this.codec.encodeOutgoing(message + (this.strictUnixEndings ? "\n" : "\r\n")));
+            // pair it with. A 0xFF data byte (`я` in CP1251, `ÿ` in Latin-1) is
+            // doubled to IAC IAC as `escapeIac` does there; sent bare, the server
+            // reads it as a telnet command and eats the byte after it too.
+            const encoded = this.codec.encodeOutgoing(message + (this.strictUnixEndings ? "\n" : "\r\n"));
+            this.sendBytes(encoded.replace(/\xFF/g, '\xFF\xFF'));
             if (isGameCommand) {
                 this.armCharacterModeDetection();
                 this.beginLatencyMeasurement();
@@ -931,9 +936,8 @@ export class MudClient {
 
     /** Stop the clock at the first prompt marker after a timed command and
      *  publish the reading (ms) as `network.latency`. */
-    private finishLatencyMeasurement(data: string, receivedAt: number): void {
+    private finishLatencyMeasurement(receivedAt: number): void {
         if (this.latencyStartedAt === null) return;
-        if (!data.includes(TELNET_GA) && !data.includes(TELNET_EOR)) return;
         const duration = Math.max(0, receivedAt - this.latencyStartedAt);
         this.latencyStartedAt = null;
         this.eventBus.emit('network.latency', duration);
@@ -1233,28 +1237,43 @@ export class MudClient {
         this.messageBuffer.push({ text, type });
     }
 
-    private processIncomingData(rawData: string, timestamp?: number): void {
-        const data = this.pendingSubneg + rawData;
-        this.pendingSubneg = "";
-
-        const incompleteAt = findIncompleteSubnegStart(data);
-        let processable = data;
-        if (incompleteAt !== -1) {
-            this.pendingSubneg = data.substring(incompleteAt);
-            processable = data.substring(0, incompleteAt);
-        }
+    /** `receivedAt` (`performance.now()`) is given only for bytes read off the
+     *  socket, so injected ones (feedTelnet, replay) never stop the latency
+     *  clock. */
+    private processIncomingData(rawData: string, timestamp?: number, receivedAt?: number): void {
+        const data = this.pendingTelnet + rawData;
+        const { complete, markers } = scanTelnetFrame(data);
+        this.pendingTelnet = data.substring(complete);
+        const processable = complete === data.length ? data : data.substring(0, complete);
+        const ts = typeof timestamp === 'number' ? timestamp : Date.now();
 
         // `mFORCE_GA_OFF`: the marker is still received, but it stops meaning
         // "prompt". The session never latches into GA-driven mode, and the
         // option parser has already turned the marker into a newline in the
         // sanitized text (see createTelnetOptionParser), matching the `'\n'`
         // Mudlet pushes in the else branch of its GA handling.
-        const hasPrompt = !this.forceGaOff
-            && (processable.includes(TELNET_GA) || processable.includes(TELNET_EOR));
+        if (this.forceGaOff || markers.length === 0) {
+            this.processSegment(processable, false, ts);
+            return;
+        }
+        if (receivedAt !== undefined) this.finishLatencyMeasurement(receivedAt);
+        // Every GA/EOR ends the line it follows, wherever it falls in the
+        // frame: a prompt bundled with the next output (or two prompts in one
+        // read) are separate lines, the way Mudlet's gotPrompt cuts them.
+        let start = 0;
+        for (const end of markers) {
+            this.processSegment(processable.substring(start, end), true, ts);
+            start = end;
+        }
+        if (start < processable.length) this.processSegment(processable.substring(start), false, ts);
+    }
+
+    /** Strip, decode and assemble one run of a frame. `hasPrompt` means the run
+     *  ends in an IAC GA/EOR. */
+    private processSegment(processable: string, hasPrompt: boolean, ts: number): void {
         const sanitized = stripTelnetSequences(processable, this.telnetOptionHandler).replace(/\r/g, '');
-        const ts = typeof timestamp === 'number' ? timestamp : Date.now();
         if (hasPrompt && debugGaEnabled()) {
-            const marker = processable.includes(TELNET_GA) ? 'GA' : 'EOR';
+            const marker = processable.endsWith(TELNET_GA) ? 'GA' : 'EOR';
             // eslint-disable-next-line no-console
             console.debug(
                 `[mudlet.ga] prompt marker IAC ${marker} received` +
@@ -1285,11 +1304,13 @@ export class MudClient {
     private decodeAndAssemble(sanitized: string, hasPrompt: boolean, ts: number): void {
         const decodedRaw = this.codec.decode(sanitized);
         // MSP in-band parsing: strip `!!SOUND(...)` / `!!MUSIC(...)` triplets
-        // and dispatch them as events. Gated on mspEnabled because the tag
-        // bytes are legitimate text on non-MSP MUDs (rare in practice but
-        // possible inside log dumps and quoted strings).
+        // and dispatch them as events. Gated on MSP having actually been
+        // negotiated, not merely allowed by the profile: on a server that never
+        // agreed to MSP the tag bytes are ordinary text, and Mudlet leaves them
+        // in the line — which is what lets the usual recipe (a trigger on
+        // `!!SOUND` that calls receiveMSP and deleteLine) work at all.
         let decoded = decodedRaw;
-        if (this.mspEnabled && decodedRaw.length > 0) {
+        if (this.mspEnabled && this.negotiator.isMspNegotiated() && decodedRaw.length > 0) {
             const { text, commands } = this.mspParser.feed(decodedRaw);
             decoded = text;
             if (commands.length > 0 && debugMspEnabled()) {
@@ -1401,32 +1422,47 @@ export function formatCloseError(event: CloseEvent, wasOpened: boolean, viaProxy
 }
 
 /**
- * Returns the index of the first IAC SB that has no matching IAC SE later in
- * the string, or -1 if every subnegotiation is complete.
- * Used to detect subnegotiations split across WebSocket frames.
+ * Walk one frame's telnet stream the way the strip regex (TELNET_OPTION_REGEX)
+ * will consume it and report two things:
+ *
+ * - `complete`: where an unfinished telnet sequence starts at the end of the
+ *   frame — a lone trailing IAC, `IAC WILL/WONT/DO/DONT` without its option
+ *   byte, or `IAC SB` with no `IAC SE` yet — or `data.length` when nothing is
+ *   unfinished. Everything from there on belongs with the next frame: TCP can
+ *   split a sequence at any byte, and stripping half of one would drop the IAC
+ *   and leak the command byte that follows as text (Mudlet's cTelnet keeps its
+ *   parse state across reads for the same reason).
+ * - `markers`: the index just past each IAC GA / IAC EOR, in order. Each one
+ *   ends a line in Mudlet (cTelnet::processSocketData calls gotPrompt right
+ *   where the marker sits), so a frame is cut at every one of them rather than
+ *   treated as one "has a prompt" blob. Markers inside a subnegotiation
+ *   payload are skipped along with it.
  */
-function findIncompleteSubnegStart(data: string): number {
-    const IAC = 0xFF;
-    const SB  = 0xFA;
-    const SE  = 0xF0;
-    let i = 0;
-    while (i < data.length - 1) {
-        if (data.charCodeAt(i) === IAC && data.charCodeAt(i + 1) === SB) {
-            // Found start of subneg — scan forward for IAC SE
-            let j = i + 2;
-            let found = false;
-            while (j < data.length - 1) {
-                if (data.charCodeAt(j) === IAC && data.charCodeAt(j + 1) === SE) {
-                    found = true;
-                    i = j + 2;
-                    break;
-                }
-                j++;
-            }
-            if (!found) return i;
+function scanTelnetFrame(data: string): { complete: number; markers: number[] } {
+    const SB = 0xFA;
+    const WILL = 0xFB;
+    const DONT = 0xFE;
+    const GA = 0xF9;
+    const EOR = 0xEF;
+    const markers: number[] = [];
+    let i = data.indexOf('\xFF');
+    while (i !== -1) {
+        if (i + 1 >= data.length) return { complete: i, markers };
+        const cmd = data.charCodeAt(i + 1);
+        let next: number;
+        if (cmd === SB) {
+            // Same terminator the regex's lazy SB branch stops at.
+            const se = data.indexOf('\xFF\xF0', i + 2);
+            if (se === -1) return { complete: i, markers };
+            next = se + 2;
+        } else if (cmd >= WILL && cmd <= DONT) {
+            if (i + 2 >= data.length) return { complete: i, markers };
+            next = i + 3;
         } else {
-            i++;
+            next = i + 2;
+            if (cmd === GA || cmd === EOR) markers.push(next);
         }
+        i = data.indexOf('\xFF', next);
     }
-    return -1;
+    return { complete: data.length, markers };
 }

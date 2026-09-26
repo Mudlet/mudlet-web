@@ -64,13 +64,9 @@ function CommandLine({ c, manager, zIndex }: { c: CmdLineState; manager: Command
     const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key !== 'Enter') return;
         e.preventDefault();
-        const text = valueRef.current;
-        const cb = manager.getAction(c.name);
-        if (cb) {
-            try { cb(text); } catch (err) { console.warn(`[CommandLine ${c.name}] action threw:`, err); }
-            // Match WindowCmdLine: clear after Enter when an action is bound.
-            setValue('');
-        }
+        // Match WindowCmdLine: the line clears once the text went somewhere —
+        // the bound action, or the game when there is none.
+        if (manager.submit(c.name, valueRef.current)) setValue('');
     };
 
     if (!c.visible) return null;

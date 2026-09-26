@@ -21,8 +21,8 @@ interface WindowCmdLineProps {
  * with WindowManager so getCmdLine([name]) can read the live text.
  *
  * Enter dispatches to the bound Lua callback (setCmdLineAction). When no
- * callback is bound, Enter is a no-op — userwindow command lines don't
- * automatically send to the MUD the way the main command bar does.
+ * callback is bound, the text is sent to the game as typed input, the way
+ * Mudlet's TCommandLine::enterCommand falls back to Host::send.
  */
 export function WindowCmdLine({ id, manager, styleSheet, seedValue, seedSeq }: WindowCmdLineProps) {
     const [value, setValue] = useState(seedValue ?? '');
@@ -56,16 +56,11 @@ export function WindowCmdLine({ id, manager, styleSheet, seedValue, seedSeq }: W
     const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key !== 'Enter') return;
         e.preventDefault();
-        const text = valueRef.current;
-        const cb = manager.getCmdLineAction(id);
-        if (cb) {
-            try { cb(text); } catch (err) { console.warn(`[WindowCmdLine ${id}] action threw:`, err); }
-            // Mudlet auto-clears a userwindow command line after Enter when an
-            // action is bound (mirrors TCommandLine::handleEnter for sub-cmd
-            // lines). Without this, scripts written for Mudlet that don't
-            // explicitly clearCmdLine would leave the prior text in the input.
-            setValue('');
-        }
+        // Mudlet auto-clears a userwindow command line after Enter (mirrors
+        // TCommandLine::handleEnter for sub-cmd lines). Without this, scripts
+        // written for Mudlet that don't explicitly clearCmdLine would leave the
+        // prior text in the input.
+        if (manager.submitCmdLine(id, valueRef.current)) setValue('');
     };
 
     const scope = `input[data-mudlet-cmdline="${cssEscape(id)}"]`;

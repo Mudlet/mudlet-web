@@ -4,6 +4,7 @@ import {
     canonicalServerEncoding,
     canEncodeForServer,
     SessionCodec,
+    CharsetHandler,
 } from '../../../src/mud/protocol/charset';
 
 /**
@@ -95,5 +96,100 @@ describe('SessionCodec.encodeOutgoing', () => {
         const codec = new SessionCodec();
         codec.trySetEncoding('iso-8859-2');
         expect(codec.encodeOutgoing('a一b')).toBe('a?b');
+    });
+});
+
+/**
+ * The browser decodes the East Asian multi-byte encodings but cannot encode
+ * them, and outgoing text used to go out as the low byte of each UTF-16 unit —
+ * 中文 under GBK as `2d 87`. The expected bytes here are what desktop Mudlet
+ * puts on the wire for the same text.
+ */
+describe('SessionCodec.encodeOutgoing — multi-byte encodings', () => {
+    const bytes = (s: string) => [...s].map(c => c.charCodeAt(0));
+    const via = (name: string) => {
+        const codec = new SessionCodec();
+        const handler = new CharsetHandler(codec, true, { sendRaw: () => {}, onNegotiated: () => {} });
+        expect(handler.setServerEncoding(name), name).toBe(true);
+        return codec;
+    };
+
+    it.each([
+        ['GBK', '中文', [0xd6, 0xd0, 0xce, 0xc4]],
+        ['BIG5', '中文', [0xa4, 0xa4, 0xa4, 0xe5]],
+        ['EUC-KR', '한국어', [0xc7, 0xd1, 0xb1, 0xb9, 0xbe, 0xee]],
+        ['GB18030', '中€', [0xd6, 0xd0, 0xa2, 0xe3]],
+    ])('writes %s the way Mudlet does', (name, text, expected) => {
+        expect(bytes(via(name).encodeOutgoing(`say ${text}`))).toEqual([...bytes('say '), ...expected]);
+    });
+
+    it('never writes GBK\'s lone 0x80 for the euro sign, which Mudlet will not read', () => {
+        expect(bytes(via('GBK').encodeOutgoing('€'))).toEqual([0xa2, 0xe3]);
+    });
+
+    it('uses GB18030\'s four-byte form for what has no pair', () => {
+        // U+00A5 ¥: 0x81 30 84 36; U+1F600 😀: the supplementary line, 0x94 39 FC 36
+        expect(bytes(via('GB18030').encodeOutgoing('¥'))).toEqual([0x81, 0x30, 0x84, 0x36]);
+        expect(bytes(via('GB18030').encodeOutgoing('😀'))).toEqual([0x94, 0x39, 0xfc, 0x36]);
+        // GBK has no four-byte form, so what needs one is not writable there
+        expect(via('GBK').encodeOutgoing('😀')).toBe('?');
+    });
+
+    // 嘅 is HKSCS 9D EF, which desktop Mudlet writes. The browser's Big5 table
+    // also has it at FB 48, in the user-defined area, and that must not win.
+    // The character is taken from the decoder rather than written out because
+    // Node's ICU Big5 is not the WHATWG one a browser has (it reads 9D EF as a
+    // private-use character); what must hold either way is that 9D EF comes back.
+    it('writes the HKSCS codes for BIG5-HKSCS', () => {
+        const hkscs = new TextDecoder('big5').decode(new Uint8Array([0x9d, 0xef]));
+        expect(bytes(via('BIG5-HKSCS').encodeOutgoing(hkscs))).toEqual([0x9d, 0xef]);
+        expect(canEncodeForServer(hkscs, 'BIG5-HKSCS')).toBe(true);
+        expect(canEncodeForServer(hkscs, 'big5_hkscs')).toBe(true);
+        // and a character standard Big5 has keeps its standard code there
+        expect(bytes(via('BIG5-HKSCS').encodeOutgoing('中'))).toEqual([0xa4, 0xa4]);
+    });
+
+    it('never writes an HKSCS lead byte for plain Big5', () => {
+        const codec = via('BIG5');
+        const hkscs = new TextDecoder('big5').decode(new Uint8Array([0x9d, 0xef]));
+        const out = bytes(codec.encodeOutgoing(hkscs));
+        expect(out[0] === 0x3f || out[0] >= 0xa1).toBe(true);
+    });
+
+    it('takes the WHATWG encoder\'s choice where Big5 has two codes for one character', () => {
+        // ═ (U+2550) is both A2 A4 and F9 F9, and is one of the six the encoder
+        // takes the last code for; 十 (U+5341) is A2 CC and A4 51, another
+        expect(bytes(via('BIG5').encodeOutgoing('═'))).toEqual([0xf9, 0xf9]);
+        expect(bytes(via('BIG5').encodeOutgoing('十'))).toEqual([0xa4, 0x51]);
+        // and everything else takes the first: ╭ (U+256D) is A2 7E and F9 FA
+        expect(bytes(via('BIG5').encodeOutgoing('╭'))).toEqual([0xa2, 0x7e]);
+    });
+
+    it('holds EUC-KR to KS X 1001, which is all Mudlet reads', () => {
+        // 똠 is UHC-only (0x8C 0x63): the browser decodes it, but a game that
+        // declared EUC-KR need not
+        expect(via('EUC-KR').encodeOutgoing('똠')).toBe('?');
+    });
+
+    it('round-trips through the inbound decoder', () => {
+        for (const [name, text] of [['GBK', '中文字'], ['GB18030', '中é😀'], ['BIG5', '中文'], ['EUC-KR', '한국어']]) {
+            const codec = via(name);
+            expect(codec.decode(codec.encodeOutgoing(text)), name).toBe(text);
+        }
+    });
+
+    it('drops back to UTF-8 on reset', () => {
+        const codec = via('GBK');
+        codec.reset();
+        expect(bytes(codec.encodeOutgoing('中'))).toEqual([0xe4, 0xb8, 0xad]);
+    });
+});
+
+describe('canEncodeForServer — multi-byte encodings', () => {
+    it('judges them rather than waving everything through', () => {
+        expect(canEncodeForServer('中文', 'GBK')).toBe(true);
+        expect(canEncodeForServer('한국어', 'GBK')).toBe(false);
+        expect(canEncodeForServer('한국어', 'EUC-KR')).toBe(true);
+        expect(canEncodeForServer('😀', 'GB18030')).toBe(true);
     });
 });
