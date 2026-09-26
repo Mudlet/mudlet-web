@@ -1368,6 +1368,9 @@ describe('createScrollBox / deleteScrollBox — overlay container + routing', ()
   });
 
   it('honours an explicit parent viewport argument', () => {
+    // The parent has to exist: a name that matches nothing is refused rather
+    // than resolved to main (ParentWindowChildren_spec).
+    env.run('openUserWindow("uw", false)');
     expect(env.run('return (createScrollBox("uw", "sb2", 5, 5, 120, 90))')).toBe(true);
     expect(env.session.scrollBoxes.get('sb2')!.parent).toBe('uw');
     // The 6-arg form lists under the named parent, not main.

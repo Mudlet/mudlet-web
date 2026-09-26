@@ -493,6 +493,99 @@ function getLabelSizeHint(name)
     return t[0], t[1]
 end
 
+-- Mudlet's SVG tint/transform family (TLuaInterpreterUI). Each reports a label
+-- that isn't there as (nil, "label '<name>' not found"), and every value it
+-- cannot use as (nil, reason) rather than raising; only a value of the wrong
+-- TYPE raises. The tint and transforms are the label's, not the image's, so
+-- they may be set before any SVG arrives.
+do
+    local function labelNotFound(name)
+        return nil, "label '" .. name .. "' not found"
+    end
+
+    -- colorFromColorTable: Geyser.Color.find_color_name's matching, so the global
+    -- and the Geyser wrapper resolve the same names — lower-cased, underscores
+    -- dropped, compared against every key lower-cased ("alice_blue" finds
+    -- "AliceBlue", and "LightGoldenrod" is found though QColor has no such name).
+    local function colorFromColorTable(name)
+        if type(color_table) ~= 'table' then return nil end
+        local wanted = name:lower():gsub('_', '')
+        for key, rgb in pairs(color_table) do
+            if type(key) == 'string' and key:lower() == wanted then
+                if type(rgb) == 'table' and tonumber(rgb[1]) and tonumber(rgb[2]) and tonumber(rgb[3]) then
+                    return __mudlet_int(rgb[1]), __mudlet_int(rgb[2]), __mudlet_int(rgb[3])
+                end
+                return nil
+            end
+        end
+        return nil
+    end
+
+    function setSvgTint(name, ...)
+        name = __mudlet_check_string(name, 'setSvgTint', 1, 'label name')
+        local first = ...
+        local r, g, b
+        if type(first) == 'string' then
+            r, g, b = colorFromColorTable(first)
+            if r == nil then
+                local parsed = __parseQColor(first)
+                if not parsed then
+                    return nil, "'" .. first .. "' is not a valid color - use a Mudlet color name like "
+                        .. "'alice_blue', an SVG color name like 'aliceblue', or a '#rrggbb' hex value"
+                end
+                r, g, b = parsed[0], parsed[1], parsed[2]
+            end
+        else
+            local n = select('#', ...)
+            local rr, gg, bb = ...
+            r = __mudlet_check_int(rr, 'setSvgTint', 2, 'red value 0-255', n >= 1)
+            g = __mudlet_check_int(gg, 'setSvgTint', 3, 'green value 0-255', n >= 2)
+            b = __mudlet_check_int(bb, 'setSvgTint', 4, 'blue value 0-255', n >= 3)
+            if r < 0 or r > 255 then return nil, "red value " .. r .. " needs to be between 0-255" end
+            if g < 0 or g > 255 then return nil, "green value " .. g .. " needs to be between 0-255" end
+            if b < 0 or b > 255 then return nil, "blue value " .. b .. " needs to be between 0-255" end
+        end
+        if not __setSvgTint(name, r, g, b) then return labelNotFound(name) end
+        return true
+    end
+
+    -- A NaN or infinite angle or factor is refused: QTransform maps the whole
+    -- document nowhere with one, leaving the SVG invisible until it is reset.
+    local function finite(v)
+        return v == v and v ~= math.huge and v ~= -math.huge
+    end
+
+    function setSvgRotation(name, angle)
+        name = __mudlet_check_string(name, 'setSvgRotation', 1, 'label name')
+        angle = __mudlet_check_number(angle, 'setSvgRotation', 2, 'angle')
+        if not finite(angle) then return nil, "angle must be a finite number" end
+        if not __setSvgRotation(name, angle) then return labelNotFound(name) end
+        return true
+    end
+
+    function setSvgShear(name, shearX, shearY)
+        name = __mudlet_check_string(name, 'setSvgShear', 1, 'label name')
+        shearX = __mudlet_check_number(shearX, 'setSvgShear', 2, 'shearX')
+        shearY = __mudlet_check_number(shearY, 'setSvgShear', 3, 'shearY')
+        if not finite(shearX) then return nil, "shearX must be a finite number" end
+        if not finite(shearY) then return nil, "shearY must be a finite number" end
+        if not __setSvgShear(name, shearX, shearY) then return labelNotFound(name) end
+        return true
+    end
+
+    local function resetter(who, apply)
+        return function(name)
+            name = __mudlet_check_string(name, who, 1, 'label name')
+            if not apply(name) then return labelNotFound(name) end
+            return true
+        end
+    end
+    resetSvgTint      = resetter('resetSvgTint', __resetSvgTint)
+    resetSvgRotation  = resetter('resetSvgRotation', function(name) return __setSvgRotation(name, 0) end)
+    resetSvgShear     = resetter('resetSvgShear', function(name) return __setSvgShear(name, 0, 0) end)
+    resetSvgTransform = resetter('resetSvgTransform', __resetSvgTransform)
+end
+
 function getMousePosition()
     local t = __getMousePosition()
     return t[0], t[1]
@@ -646,6 +739,24 @@ do
     end
     getColumnCount = countGuard(getColumnCount)
     getRowCount    = countGuard(getRowCount)
+
+    -- A negative indent is refused with a reason rather than clamped to 0: the
+    -- indent already in force stays, so a caller can tell a refusal from a reset.
+    -- The console is resolved first, as TLuaInterpreterUI does.
+    local function indentGuard(fn)
+        return function(win, indent, ...)
+            local n = tonumber(indent)
+            if n ~= nil and n < 0 then
+                if win ~= nil and win ~= 'main' and __windowType(win) == nil then
+                    return fn(win, indent, ...)
+                end
+                return nil, "indent " .. string.format("%d", n) .. " is not valid, it must be 0 or more"
+            end
+            return fn(win, indent, ...)
+        end
+    end
+    setWindowWrapIndent        = indentGuard(setWindowWrapIndent)
+    setWindowWrapHangingIndent = indentGuard(setWindowWrapHangingIndent)
 end
 
 -- Mudlet timeStampsEnabled(window) / enableTimeStamps(window) /
@@ -722,6 +833,17 @@ do
         -- The TYPE is settled before the lookup: a table where a name belongs is
         -- a mistake in the call, not a window that could not be found.
         element = __mudlet_check_string(element, 'setWindow', 2, 'element name')
+        -- The map lives in a dock widget it cannot be put back into once taken
+        -- out, and naming that dock as a destination would otherwise read as a
+        -- plain "not found" — as though the profile had no map (Host::setWindow).
+        if __mapWidgetCreated() then
+            if type(element) == 'string' and element:lower() == 'mapper' then
+                return nil, "element '" .. element .. "' is the map in a floating/dockable window and may not be moved"
+            end
+            if type(parent) == 'string' and parent:lower() == 'mapper' then
+                return nil, "window '" .. parent .. "' is the map in a floating/dockable window and may not receive other elements"
+            end
+        end
         if parent ~= 'main' and __windowType(parent) == nil then
             return nil, "window '" .. tostring(parent) .. "' not found"
         end
@@ -1614,7 +1736,7 @@ do
         local top = select('#', ...)
         local name, loadLayout, autoDock, area = ...
         if type(name) ~= 'string' then
-            error('openUserWindow:  bad argument #1 type (name as string expected, got '
+            error('openUserWindow: bad argument #1 type (name as string expected, got '
                 .. __mudlet_typename(name, top >= 1) .. '!)', 2)
         end
         if top > 1 and loadLayout ~= nil and type(loadLayout) ~= 'boolean' then
@@ -6714,6 +6836,49 @@ do
         end
         return _rawCreateMapper(...)
     end
+end
+
+-- A parent window name that matches nothing is refused by every create...()
+-- call, before the element's own name is even looked at: resolving it to the
+-- main console instead painted the element over the game text under the name
+-- the caller passed second, while answering true (Host::parentWindowMissing).
+-- Only "main" (any case), a user window or a scroll box can hold an element;
+-- an embedded map needs a user window. createScrollBox and createMiniConsole
+-- refuse with false, createCommandLine / createTextEdit / createMapper with nil
+-- — Mudlet's shapes, inconsistent as they are.
+do
+    local function isMain(parent)
+        return parent == '' or parent:lower() == 'main'
+    end
+    local function parentWindowMissing(parent)
+        if isMain(parent) then return false end
+        local kind = __windowType(parent)
+        return kind ~= 'userwindow' and kind ~= 'scrollbox'
+    end
+
+    -- `argc` is the argument count of the parented form: fewer means no parent.
+    local function parentGuard(raw, argc, refusal, userWindowOnly)
+        return function(...)
+            local parent = ...
+            if select('#', ...) >= argc and type(parent) == 'string' then
+                local missing
+                if userWindowOnly then
+                    missing = not isMain(parent) and __windowType(parent) ~= 'userwindow'
+                else
+                    missing = parentWindowMissing(parent)
+                end
+                if missing then
+                    return refusal, "window '" .. parent .. "' not found"
+                end
+            end
+            return raw(...)
+        end
+    end
+    createScrollBox   = parentGuard(createScrollBox,   6, false)
+    createMiniConsole = parentGuard(createMiniConsole, 6, false)
+    createCommandLine = parentGuard(createCommandLine, 6, nil)
+    createTextEdit    = parentGuard(createTextEdit,    6, nil)
+    createMapper      = parentGuard(createMapper,      5, nil, true)
 end
 
 -- ── Stopwatch argument contracts ───────────────────────────────────────────

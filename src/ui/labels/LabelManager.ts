@@ -1,5 +1,5 @@
 import {
-    cssEscape, extractQtAlignment, extractQtScaledContents, extractQtWordWrap,
+    cssEscape, cssTextToParts, extractQtAlignment, extractQtScaledContents, extractQtWordWrap,
     patchStyleSheetBackgroundColor,
 } from './qtCss';
 import type { MoviePlayer } from './gifMovie';
@@ -40,7 +40,18 @@ export interface LabelState {
      *  size (filled in asynchronously for SVGs, which otherwise have no CSS
      *  intrinsic size — see backgroundImageSize.ts); until resolved, or for
      *  formats CSS already sizes natively, they're left unset. */
-    backgroundImage?: { url: string; width?: number; height?: number };
+    backgroundImage?: { url: string; width?: number; height?: number; svg?: boolean };
+    /** Mudlet setSvgTint / setSvgRotation / setSvgShear. Like TLabel's, these
+     *  belong to the label rather than to its SVG: they outlive a
+     *  resetBackgroundImage and a new image, and one set before any SVG arrives
+     *  applies the moment one does — only their own reset functions clear them.
+     *  The tint is a CSS colour painted over the SVG's opaque pixels
+     *  (CompositionMode_SourceIn); rotation is in degrees and the shear factors
+     *  are QTransform::shear's. */
+    svgTint?: string;
+    svgRotation?: number;
+    svgShearX?: number;
+    svgShearY?: number;
     /** Qt-style CSS string set via setLabelStyleSheet; parsed at render time. */
     styleSheet?: string;
     /** Family set via `setFont(labelName, family)` — the widget font, which in
@@ -176,6 +187,45 @@ function styleAnchors(
         const rest = otherAttrs.replace(/style=(["'][^"']*["'])/g, '');
         return `<a href=${hrefPart} style="${decls.join(' ')}"${rest}>`;
     });
+}
+
+/** The text `html` renders to, trimmed — QTextDocumentFragment::toPlainText
+ *  as TLabel::sizeHint reads it. */
+function renderedText(html: string): string {
+    if (!html) return '';
+    if (typeof document === 'undefined') return html.replace(/<[^>]*>/g, '').trim();
+    const probe = document.createElement('div');
+    probe.innerHTML = html;
+    return (probe.textContent ?? '').trim();
+}
+
+/** Width and height a label stylesheet's margin, border and padding add around
+ *  the contents — what QStyleSheetStyle makes the QLabel's contentsMargins. Read
+ *  off a detached probe, because a hint asked for straight after a restyle runs
+ *  before React has rendered it. */
+function stylesheetChrome(styleSheet?: string): { width: number; height: number } {
+    if (!styleSheet || typeof document === 'undefined' || !document.body) return { width: 0, height: 0 };
+    const parts = cssTextToParts(styleSheet);
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:absolute;left:-99999px;top:0;visibility:hidden;box-sizing:content-box;';
+    for (const [key, value] of Object.entries(parts.inline)) {
+        if (value == null) continue;
+        (probe.style as unknown as Record<string, string>)[key] = typeof value === 'number' ? `${value}px` : String(value);
+    }
+    document.body.appendChild(probe);
+    try {
+        const cs = getComputedStyle(probe);
+        const sum = (...vals: string[]): number => vals.reduce((n, v) => n + (parseFloat(v) || 0), 0);
+        const m = parts.margin;
+        return {
+            width: sum(cs.paddingLeft, cs.paddingRight, cs.borderLeftWidth, cs.borderRightWidth)
+                + (m ? m.left + m.right : 0),
+            height: sum(cs.paddingTop, cs.paddingBottom, cs.borderTopWidth, cs.borderBottomWidth)
+                + (m ? m.top + m.bottom : 0),
+        };
+    } finally {
+        probe.remove();
+    }
 }
 
 function safeCoord(n: number): number {
@@ -360,6 +410,8 @@ export class LabelManager {
     getSizeHint(name: string): { width: number; height: number } | null {
         const lbl = this.labels.get(name);
         if (!lbl) return null;
+        const svgHint = this.svgSizeHint(lbl);
+        if (svgHint) return svgHint;
         if (typeof document !== 'undefined') {
             const el = document.querySelector(
                 `[data-mudlet-label="${cssEscape(name)}"]`,
@@ -404,6 +456,57 @@ export class LabelManager {
             if (measured) return measured;
         }
         return { width: lbl.width, height: lbl.height };
+    }
+
+    /**
+     * TLabel::sizeHint for a label whose only content is an SVG background: the
+     * document's own size plus the chrome (stylesheet margin, border and
+     * padding) QLabel adds around its contents. QLabel's hint cannot see the
+     * SVG layer, and Geyser's autoAdjustSize() sizes a label from the hint. A
+     * label that does carry text or a movie keeps the ordinary hint, because
+     * the SVG scales to fit whatever that asks for. Geyser.Label:new always
+     * echoes an empty rich-text div, so "text" is what the HTML renders to, not
+     * whether the string is empty. Null when this is not that case.
+     */
+    private svgSizeHint(lbl: LabelState): { width: number; height: number } | null {
+        const img = lbl.backgroundImage;
+        if (!img?.svg || img.width == null || img.height == null) return null;
+        if (lbl.movie || renderedText(lbl.html) !== '') return null;
+        const chrome = stylesheetChrome(lbl.styleSheet);
+        return { width: img.width + chrome.width, height: img.height + chrome.height };
+    }
+
+    /** Mudlet setSvgTint(label, colour) — `color` is any CSS colour. */
+    setSvgTint(name: string, color: string): boolean {
+        return this.patchSvg(name, { svgTint: color });
+    }
+
+    /** Mudlet resetSvgTint(label). */
+    resetSvgTint(name: string): boolean {
+        return this.patchSvg(name, { svgTint: undefined });
+    }
+
+    /** Mudlet setSvgRotation(label, degrees); resetSvgRotation passes 0. */
+    setSvgRotation(name: string, degrees: number): boolean {
+        return this.patchSvg(name, { svgRotation: degrees || undefined });
+    }
+
+    /** Mudlet setSvgShear(label, shearX, shearY); resetSvgShear passes 0, 0. */
+    setSvgShear(name: string, shearX: number, shearY: number): boolean {
+        return this.patchSvg(name, { svgShearX: shearX || undefined, svgShearY: shearY || undefined });
+    }
+
+    /** Mudlet resetSvgTransform(label) — rotation and shear together; the tint stays. */
+    resetSvgTransform(name: string): boolean {
+        return this.patchSvg(name, { svgRotation: undefined, svgShearX: undefined, svgShearY: undefined });
+    }
+
+    private patchSvg(name: string, patch: Partial<LabelState>): boolean {
+        const lbl = this.labels.get(name);
+        if (!lbl) return false;
+        Object.assign(lbl, patch);
+        this.notify(lbl.parent);
+        return true;
     }
 
     show(name: string): boolean {
@@ -495,10 +598,14 @@ export class LabelManager {
         return this.labels.get(name)?.backgroundColor ?? null;
     }
 
-    setBackgroundImage(name: string, url: string): boolean {
+    /** `size` is the image's intrinsic size when it is already known (an SVG
+     *  read synchronously out of the VFS); `svg` marks an SVG document, which
+     *  is drawn as a layer of its own that fits the label rather than as a
+     *  native-size pixmap. */
+    setBackgroundImage(name: string, url: string, svg = false, size?: { width: number; height: number }): boolean {
         const lbl = this.labels.get(name);
         if (!lbl) return false;
-        lbl.backgroundImage = { url };
+        lbl.backgroundImage = { url, ...(svg ? { svg } : {}), ...(size ?? {}) };
         this.notify(lbl.parent);
         return true;
     }
@@ -509,7 +616,7 @@ export class LabelManager {
     setBackgroundImageSize(name: string, url: string, width: number, height: number): boolean {
         const lbl = this.labels.get(name);
         if (!lbl?.backgroundImage || lbl.backgroundImage.url !== url) return false;
-        lbl.backgroundImage = { url, width, height };
+        lbl.backgroundImage = { ...lbl.backgroundImage, url, width, height };
         this.notify(lbl.parent);
         return true;
     }

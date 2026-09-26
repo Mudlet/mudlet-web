@@ -1,4 +1,4 @@
-import {Lua, LuaReturn, LuaType, LUA_GLOBALSINDEX, LUA_REGISTRYINDEX, type LuaThread} from 'wasmoon-lua5.1';
+import {Lua, LuaReturn, LuaType, LUA_GLOBALSINDEX, LUA_REGISTRYINDEX, LuaThread} from 'wasmoon-lua5.1';
 // Self-host the Lua interpreter WASM as a build asset. Without this, wasmoon
 // fetches liblua5.1.wasm from unpkg.com at runtime (its hardcoded default) —
 // a third-party supply-chain + availability risk for the executable that runs
@@ -23,6 +23,7 @@ import YAJL_LUA from './Yajl.lua?raw';
 import {setupRex} from './rex';
 import {setupYajl, type LuaValueTransform} from './yajl';
 import {parseImageSize} from './imageSize';
+import {parseQColor} from '../../ui/labels/qColor';
 import {isQtResourcePath, qtResourceBytes} from '../../assets/qt-resources';
 import {getSqliteClient, sqliteReady} from '../../db/sqliteClient';
 import {QT_CURSOR_NAME_TO_INT, QT_CURSOR_TO_CSS} from '../../ui/labels/cursorShapes';
@@ -72,6 +73,25 @@ interface ParkedDialogThread {
 // LuaRuntime.pushNestedDispatchState. `namedCaptures` is on the list because
 // setMatches writes it alongside the other two; Mudlet has no such global and
 // parks only the three it does have.
+// wasmoon pushes every integral JS number with lua_pushinteger, and lua_Integer
+// is 32 bits in this wasm build, so a whole number past int32 reached Lua as the
+// wraparound: a map zoom of 1e40 read back as 0, an elapsed time of 1e12 as
+// -727379968. Lua 5.1 numbers are doubles either way, so anything that does not
+// fit goes in as one. Patched on the prototype because every binding's return
+// value — and every number inside a table one returns — funnels through here;
+// pushJsValue below applies the same rule on its own raw path.
+{
+    const proto = LuaThread.prototype;
+    const pushBasicValue = proto.pushBasicValue;
+    proto.pushBasicValue = function (this: LuaThread, target, options) {
+        if (typeof target === 'number' && Number.isInteger(target) && Math.abs(target) > 0x7fffffff) {
+            this.luaApi.lua_pushnumber(this.address, target);
+            return true;
+        }
+        return pushBasicValue.call(this, target, options);
+    };
+}
+
 const NESTED_DISPATCH_GLOBALS = ['matches', 'multimatches', 'namedCaptures', 'command'] as const;
 
 // All *.lua and *.json files under mudlet-lua/ are served via the VFS at
@@ -996,6 +1016,21 @@ export class LuaRuntime implements IScriptingRuntime {
             const s = this.api.getLabelSizeHint(typeof name === 'string' ? name : '');
             return s ? [s.width, s.height] : false;
         });
+        // Mudlet's SVG tint/transform family. The argument checks, the colour
+        // table lookup and the (nil, errMsg) shapes live in Bridge.lua; these
+        // primitives only apply the value and answer whether the label exists.
+        this.lua.global.set('__parseQColor', (s: unknown) =>
+            (typeof s === 'string' ? parseQColor(s) : null) ?? false);
+        const labelName = (name: unknown) => (typeof name === 'string' ? name : '');
+        this.lua.global.set('__setSvgTint', (name: unknown, r: unknown, g: unknown, b: unknown) =>
+            this.api.labels.setSvgTint(labelName(name), `rgb(${Number(r)}, ${Number(g)}, ${Number(b)})`));
+        this.lua.global.set('__resetSvgTint', (name: unknown) => this.api.labels.resetSvgTint(labelName(name)));
+        this.lua.global.set('__setSvgRotation', (name: unknown, angle: unknown) =>
+            this.api.labels.setSvgRotation(labelName(name), Number(angle)));
+        this.lua.global.set('__setSvgShear', (name: unknown, x: unknown, y: unknown) =>
+            this.api.labels.setSvgShear(labelName(name), Number(x), Number(y)));
+        this.lua.global.set('__resetSvgTransform', (name: unknown) =>
+            this.api.labels.resetSvgTransform(labelName(name)));
         // Mudlet's setLabelClickCallback / setLabelDoubleClickCallback /
         // setLabelReleaseCallback / setLabelMoveCallback / setLabelOnEnter /
         // setLabelOnLeave / setLabelWheelCallback all share a shape: name + a

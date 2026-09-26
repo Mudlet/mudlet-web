@@ -241,7 +241,7 @@ function Label({ l, manager, zIndex }: { l: LabelState; manager: LabelManager; z
     }
     // Layer setBackgroundImage on top so it shows over the fillBackground color
     // (and ignores it when a stylesheet already painted the background).
-    if (l.backgroundImage) {
+    if (l.backgroundImage && !l.backgroundImage.svg) {
         const url = l.backgroundImage.url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
         style.backgroundImage = `url("${url}")`;
         style.backgroundRepeat = 'no-repeat';
@@ -379,6 +379,7 @@ function Label({ l, manager, zIndex }: { l: LabelState; manager: LabelManager; z
             onMouseLeave={l.onMouseLeave && (e => ref.current.onMouseLeave?.(buildMouseEvent(e)))}
             onWheel={l.onWheel && (e => ref.current.onWheel?.(buildWheelEvent(e)))}
         >
+            {l.backgroundImage?.svg && <SvgLayer l={l} />}
             {movie
                 ? <MovieCanvas player={movie} />
                 // Qt lays label rich text out in a QTextDocument whose default
@@ -387,6 +388,57 @@ function Label({ l, manager, zIndex }: { l: LabelState; manager: LabelManager; z
                 // carries it so a stylesheet padding (applied inline on the
                 // outer div) adds to it instead of replacing it.
                 : <div className="label-doc" dangerouslySetInnerHTML={{ __html: l.html }} />}
+        </div>
+    );
+}
+
+/**
+ * A label's SVG background, drawn the way TLabel paints it: as a layer of its
+ * own inside the contents rect (inside the stylesheet border and padding),
+ * scaled to fit with its aspect ratio kept and centred — over the label's
+ * background colour and under its text. The outer box takes the label's padding
+ * (`padding: inherit`) so the clip box inside it is exactly the contents rect,
+ * which is also all TLabel's pixmap covers: a rotated or sheared document is cut
+ * off there rather than spilling into the padding.
+ *
+ * The tint is QPainter's CompositionMode_SourceIn: the colour, wherever the
+ * document is opaque — a CSS mask of the SVG over a fill. The rotation and shear
+ * turn it about its centre; `rotate() matrix()` applies the shear first, as
+ * QPainter::rotate() followed by shear() does, and QTransform::shear(sh, sv)
+ * is the matrix (1, sv, sh, 1). Negative z-index keeps the layer under the
+ * label's in-flow text while the label's own z-index keeps it above the
+ * label's background.
+ */
+function SvgLayer({ l }: { l: LabelState }) {
+    const url = `url("${l.backgroundImage!.url.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}")`;
+    const outer: React.CSSProperties = {
+        position: 'absolute',
+        inset: 0,
+        padding: 'inherit',
+        boxSizing: 'border-box',
+        zIndex: -1,
+        pointerEvents: 'none',
+    };
+    const clip: React.CSSProperties = { position: 'relative', width: '100%', height: '100%', overflow: 'hidden' };
+    const doc: React.CSSProperties = { position: 'absolute', inset: 0 };
+    const fit = { size: 'contain', position: 'center', repeat: 'no-repeat' };
+    if (l.svgTint) {
+        Object.assign(doc, {
+            backgroundColor: l.svgTint,
+            maskImage: url, maskSize: fit.size, maskPosition: fit.position, maskRepeat: fit.repeat,
+            WebkitMaskImage: url, WebkitMaskSize: fit.size, WebkitMaskPosition: fit.position, WebkitMaskRepeat: fit.repeat,
+        });
+    } else {
+        Object.assign(doc, {
+            backgroundImage: url, backgroundSize: fit.size, backgroundPosition: fit.position, backgroundRepeat: fit.repeat,
+        });
+    }
+    if (l.svgRotation || l.svgShearX || l.svgShearY) {
+        doc.transform = `rotate(${l.svgRotation ?? 0}deg) matrix(1, ${l.svgShearY ?? 0}, ${l.svgShearX ?? 0}, 1, 0, 0)`;
+    }
+    return (
+        <div className="label-svg" style={outer}>
+            <div style={clip}><div style={doc} /></div>
         </div>
     );
 }

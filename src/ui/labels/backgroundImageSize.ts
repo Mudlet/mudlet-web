@@ -22,7 +22,7 @@ export async function resolveSvgIntrinsicSize(url: string): Promise<{ width: num
     }
 }
 
-function isSvgUrl(url: string): boolean {
+export function isSvgUrl(url: string): boolean {
     if (url.startsWith('data:')) return /^data:image\/svg\+xml/i.test(url);
     // Strip query/hash before checking the extension (e.g. `?v=2`).
     return /\.svg(?:[?#]|$)/i.test(url);
@@ -53,4 +53,48 @@ function parseSvgLength(v: string | null): number | null {
     if (!v || v.endsWith('%')) return null;
     const n = parseFloat(v);
     return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * Whether `bytes` are worth handing to an SVG parser, the way TLabel::svgCandidate
+ * decides it: gzip magic, or the first character past any byte order mark and
+ * whitespace being `<`. Mudlet reads a file by its content rather than its
+ * name, so a raster saved as `.svg` is still a raster, and an SVG under any
+ * name is still an SVG. The parser is the authority on what really is one.
+ */
+export function isSvgCandidate(bytes: Uint8Array): boolean {
+    if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) return true;
+    let at = 0;
+    let utf16 = false;
+    if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) at = 3;
+    else if ((bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff)) {
+        at = 2;
+        utf16 = true;
+    }
+    for (const end = Math.min(bytes.length, 64); at < end; at++) {
+        const byte = bytes[at];
+        // In UTF-16 every ASCII character is half of a code unit whose other
+        // half is a NUL, whichever way round the byte order mark put them.
+        if (utf16 && byte === 0) continue;
+        if (byte === 0x20 || (byte >= 0x09 && byte <= 0x0d)) continue;
+        return byte === 0x3c; // '<'
+    }
+    return false;
+}
+
+/**
+ * The document size of an SVG held in `bytes`, synchronously — or null when it
+ * is not an SVG the browser can parse, or has no size to offer (no width,
+ * height or viewBox). Gzipped documents are not inflated here; they resolve
+ * through {@link resolveSvgIntrinsicSize} like a remote URL does.
+ */
+export function svgIntrinsicSizeFromBytes(bytes: Uint8Array): { width: number; height: number } | null {
+    if (!isSvgCandidate(bytes) || bytes[0] === 0x1f) return null;
+    try {
+        const utf16 = (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff);
+        const text = new TextDecoder(utf16 ? (bytes[0] === 0xff ? 'utf-16le' : 'utf-16be') : 'utf-8').decode(bytes);
+        return parseSvgIntrinsicSize(text);
+    } catch {
+        return null;
+    }
 }

@@ -14,7 +14,7 @@ import type { LabelManager, LabelCreateOptions, LabelMouseEvent, LabelWheelEvent
 import { classifyLabelLink } from '../ui/labels/labelLinks';
 import { AddonCommandRegistry } from '../ui/commands/addonCommands';
 import { decodeGif, decodeAnimatedImage, sniffDecodableImage, supportsImageDecoder, MoviePlayer } from '../ui/labels/gifMovie';
-import { resolveSvgIntrinsicSize } from '../ui/labels/backgroundImageSize';
+import { isSvgCandidate, isSvgUrl, resolveSvgIntrinsicSize, svgIntrinsicSizeFromBytes } from '../ui/labels/backgroundImageSize';
 import type { CommandLineManager } from '../ui/cmdline/CommandLineManager';
 import type { ScrollBoxManager } from '../ui/scrollbox/ScrollBoxManager';
 import { TextEditManager } from '../ui/textedit/TextEditManager';
@@ -691,6 +691,15 @@ class ScriptingLabelsAPI {
         return this.manager.create(name, opts);
     }
     has(name: string): boolean { return this.manager.has(name); }
+    // Mudlet's SVG tint/transform family. Argument and colour checks live in
+    // the Lua binding; these only answer whether the label exists.
+    setSvgTint(name: string, color: string): boolean { return this.manager.setSvgTint(name, color); }
+    resetSvgTint(name: string): boolean { return this.manager.resetSvgTint(name); }
+    setSvgRotation(name: string, degrees: number): boolean { return this.manager.setSvgRotation(name, degrees); }
+    setSvgShear(name: string, shearX: number, shearY: number): boolean {
+        return this.manager.setSvgShear(name, shearX, shearY);
+    }
+    resetSvgTransform(name: string): boolean { return this.manager.resetSvgTransform(name); }
     /** Whether a movie is installed on this label — the movie functions report
      *  "no movie here" separately from "no such label". */
     hasMovie(name: string): boolean { return this.manager.getMovie(name) !== null; }
@@ -6190,8 +6199,20 @@ export class ScriptingAPI {
      *  Qt's QSvgRenderer::defaultSize()) and patch it in. */
     private applyLabelBackgroundImage(name: string, path: string): boolean {
         const url = this.resolveImageUrl(path);
-        const ok = this.session.labels.setBackgroundImage(name, url);
-        if (ok) {
+        // A profile file is read here and now, the way TLabel sniffs it: by its
+        // content, not its name. That both decides whether it is drawn as an
+        // SVG layer and hands getLabelSizeHint() the document's size in the same
+        // chunk — a script sizing a label to its SVG asks straight after
+        // setting it. A remote URL can only be judged by its name, and sized
+        // once it has been fetched.
+        let bytes: Uint8Array | null = null;
+        if (!isQtResourcePath(path)) {
+            try { bytes = this.host.readFileBytes(path); } catch { bytes = null; }
+        }
+        const svg = bytes ? isSvgCandidate(bytes) : isSvgUrl(url);
+        const size = bytes && svg ? svgIntrinsicSizeFromBytes(bytes) ?? undefined : undefined;
+        const ok = this.session.labels.setBackgroundImage(name, url, svg, size);
+        if (ok && svg && !size) {
             resolveSvgIntrinsicSize(url).then(size => {
                 if (size) this.session.labels.setBackgroundImageSize(name, url, size.width, size.height);
             });
@@ -6375,6 +6396,14 @@ export class ScriptingAPI {
         if (cur && cur.top === next.top && cur.right === next.right
             && cur.bottom === next.bottom && cur.left === next.left) return;
         useAppStore.getState().patchConnectionProfile(this.connectionId, { outputBorders: next });
+        // Host::setBorders raises sysWindowResizeEvent at the unchanged window
+        // size whenever a border moves: the console inside it did resize, and
+        // Adjustable.Container's resize handler is how a container attached to
+        // the facing border re-measures (or detaches) before that border is
+        // written. Borders carve insets out of the viewport without resizing it,
+        // so the viewport's ResizeObserver never reports this one.
+        const [w, h] = this.getMainWindowSize();
+        this.host.raiseEvent('sysWindowResizeEvent', [Math.round(w), Math.round(h)]);
     }
 
     private normalizeBorder(n: unknown): number | null {
