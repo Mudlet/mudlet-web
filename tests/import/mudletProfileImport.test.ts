@@ -151,9 +151,9 @@ describe('extractMudletProfileZip', () => {
 // that every later stage appends to, which is what the import UI reads.
 describe('bundle warnings', () => {
     // An unbound Qt key code (999999 maps to nothing) is the parser's own
-    // long-standing warning, and an offset timer — a timer nested under a
-    // non-folder timer, TTimer.h:75-84 — is a structure this client cannot
-    // represent at all.
+    // long-standing warning. An offset timer — a timer nested under a
+    // non-folder timer, TTimer.h:75-84 — used to be warned about too, until
+    // TimerEngine learned to schedule them (#181).
     const lossyXml = `<?xml version="1.0" encoding="UTF-8"?>
 <MudletPackage version="1.001">
   <HostPackage><Host><name>Lossy</name></Host></HostPackage>
@@ -182,12 +182,9 @@ describe('bundle warnings', () => {
         expect(bundle.warnings.some(w => w.includes('"weird"'))).toBe(true);
     });
 
-    it('warns that an offset timer cannot keep its relationship to its parent', () => {
+    it('no longer warns about an offset timer, which is now scheduled (#181)', () => {
         const bundle = buildMudletProfileBundle(lossyFiles());
-        const w = bundle.warnings.find(w => w.includes('"heartbeat"'));
-        expect(w).toBeDefined();
-        expect(w).toContain('"followup"');
-        expect(w).toContain('offset timer');
+        expect(bundle.warnings.some(w => w.includes('"heartbeat"'))).toBe(false);
     });
 
     it('is a copy, so appending to it does not mutate the parsed automation', () => {

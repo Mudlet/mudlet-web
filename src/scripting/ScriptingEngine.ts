@@ -2830,7 +2830,8 @@ export class ScriptingEngine implements EngineHost {
      * Mudlet `isActive(nameOrId, type [, checkAncestors])`. Returns the count of
      * *active* items matching the name (1 or 0 for a numeric id). An item is
      * active when its own enabled flag is set; with `checkAncestors` every
-     * ancestor group must be enabled too (isEffectivelyEnabled). Type aliases
+     * ancestor group must be enabled too (isEffectivelyEnabled). Timers always
+     * get the ancestor check, since desktop reports their running state. Type aliases
      * and the collection lookup mirror `existsByName`. Unknown types return 0.
      */
     isActiveByName(nameOrId: string | number, type: string, checkAncestors: boolean): number {
@@ -2848,8 +2849,11 @@ export class ScriptingEngine implements EngineHost {
                 default:        return [];
             }
         })();
+        // A timer's active flag is its real running state in Mudlet, and a timer
+        // inside a disabled folder (or under a disabled parent timer) is not
+        // running — so desktop answers 0 for it even without checkAncestors.
         const isOn = (item: { enabled: boolean; parentId: string | null; id: string }): boolean =>
-            checkAncestors ? isEffectivelyEnabled(item, list) : item.enabled;
+            checkAncestors || type === 'timer' ? isEffectivelyEnabled(item, list) : item.enabled;
         if (typeof nameOrId === 'number' && Number.isFinite(nameOrId)) {
             for (const item of list) {
                 const n = this.uuidToNumericId.get(item.id);

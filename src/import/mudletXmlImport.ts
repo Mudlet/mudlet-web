@@ -26,8 +26,10 @@ function getText(el: Element, tag: string): string {
     return desanitizeControlChars(el.querySelector(`:scope > ${tag}`)?.textContent?.trim() ?? '');
 }
 
-// Like getText but preserves leading/trailing whitespace — use for fields where
-// whitespace is semantic (trigger pattern strings, alias regex patterns).
+// Like getText but preserves leading/trailing whitespace, as desktop's
+// readElementText does for every field. Use it wherever whitespace is semantic:
+// patterns, item names (name-based calls like enableTrigger("  TN  ") have to
+// find the item) and commands (a deliberate trailing space is sent as-is).
 function getRawText(el: Element, tag: string): string {
     return desanitizeControlChars(el.querySelector(`:scope > ${tag}`)?.textContent ?? '');
 }
@@ -115,7 +117,7 @@ function parseScripts(els: Element[], parentId: string | null, out: ScriptNode[]
         const eventHandlers = Array.from(handlerListEl?.children ?? [])
             .filter(c => c.tagName === 'string')
             .map(s => s.textContent?.trim() ?? '').filter(Boolean);
-        out.push({ id, parentId, isGroup: group, name: getText(el, 'name'), enabled: isYes(el, 'isActive'), code: getText(el, 'script'), language: 'lua', eventHandlers, packageName: getText(el, 'packageName') || undefined });
+        out.push({ id, parentId, isGroup: group, name: getRawText(el, 'name'), enabled: isYes(el, 'isActive'), code: getText(el, 'script'), language: 'lua', eventHandlers, packageName: getText(el, 'packageName') || undefined });
         // Scripts (like triggers) can nest under a NON-folder parent: Mudlet's
         // TScript model lets a script carry both its own body and child scripts,
         // and its export nests the children directly inside the parent <Script>
@@ -132,7 +134,7 @@ function parseAliases(els: Element[], parentId: string | null, out: AliasNode[])
     for (const el of els) {
         const id = crypto.randomUUID();
         const group = isGroup(el);
-        out.push({ id, parentId, isGroup: group, name: getText(el, 'name'), enabled: isYes(el, 'isActive'), pattern: getRawText(el, 'regex'), command: getText(el, 'command'), code: getText(el, 'script'), language: 'lua', packageName: getText(el, 'packageName') || undefined });
+        out.push({ id, parentId, isGroup: group, name: getRawText(el, 'name'), enabled: isYes(el, 'isActive'), pattern: getRawText(el, 'regex'), command: getRawText(el, 'command'), code: getText(el, 'script'), language: 'lua', packageName: getText(el, 'packageName') || undefined });
         // Recurse unconditionally: desktop's readers descend into nested children
         // whatever `isFolder` says (XMLimport.cpp:1587 for Alias), and a non-folder
         // parent with children is a shape real packages ship. directChildren is
@@ -172,7 +174,7 @@ function parseTriggers(els: Element[], parentId: string | null, out: TriggerNode
         const patternEls = Array.from(codeListEl?.children ?? []).filter(c => c.tagName === 'string');
         const typeEls    = Array.from(propListEl?.children ?? []).filter(c => c.tagName === 'integer');
 
-        const triggerName = getText(el, 'name');
+        const triggerName = getRawText(el, 'name');
         const patterns: TriggerPattern[] = patternEls.map((p, i) => {
             // A pattern type this build cannot read is REPORTED and then treated
             // as a substring, rather than dropped: patterns and their types are
@@ -210,12 +212,12 @@ function parseTriggers(els: Element[], parentId: string | null, out: TriggerNode
 
         out.push({
             id, parentId, isGroup: group,
-            name: getText(el, 'name'),
+            name: getRawText(el, 'name'),
             enabled: isYes(el, 'isActive'),
             patterns,
             code: getText(el, 'script'),
             language: 'lua',
-            command: getText(el, 'mCommand'),
+            command: getRawText(el, 'mCommand'),
             fireLength: parseInt(getText(el, 'mStayOpen')) || 0,
             multipleMatches: isYes(el, 'isPerlSlashGOption'),
             multiline: isYes(el, 'isMultiline'),
@@ -257,7 +259,7 @@ function parseTimers(els: Element[], parentId: string | null, out: TimerNode[]):
         if (isYes(el, 'isTempTimer')) continue;
         const id = crypto.randomUUID();
         const group = isGroup(el);
-        out.push({ id, parentId, isGroup: group, name: getText(el, 'name'), enabled: isYes(el, 'isActive'), seconds: parseTimerTime(getText(el, 'time')), code: getText(el, 'script'), language: 'lua', command: getText(el, 'command'), repeat: true, packageName: getText(el, 'packageName') || undefined });
+        out.push({ id, parentId, isGroup: group, name: getRawText(el, 'name'), enabled: isYes(el, 'isActive'), seconds: parseTimerTime(getText(el, 'time')), code: getText(el, 'script'), language: 'lua', command: getRawText(el, 'command'), repeat: true, packageName: getText(el, 'packageName') || undefined });
         // Unconditional, as in desktop's readTimerGroup (XMLimport.cpp:1517).
         parseTimers(directChildren(el, 'Timer', 'TimerGroup'), id, out);
     }
@@ -277,7 +279,7 @@ function parseButtons(els: Element[], parentId: string | null, out: ButtonNode[]
 
         const node: ButtonNode = {
             id, parentId, isGroup: group,
-            name: getText(el, 'name'),
+            name: getRawText(el, 'name'),
             enabled: isYes(el, 'isActive'),
             orientation: MUDLET_BUTTON_ORIENTATIONS[oriIdx] ?? 'horizontal',
             location: MUDLET_BUTTON_LOCATIONS[locIdx] ?? 'top',
@@ -295,8 +297,8 @@ function parseButtons(els: Element[], parentId: string | null, out: ButtonNode[]
             tooltip: getText(el, 'tooltipText') || undefined,
             code: getText(el, 'script'),
             language: 'lua',
-            command:     getText(el, 'commandButtonUp')   || undefined,
-            commandDown: getText(el, 'commandButtonDown') || undefined,
+            command:     getRawText(el, 'commandButtonUp')   || undefined,
+            commandDown: getRawText(el, 'commandButtonDown') || undefined,
             styleSheet,
             packageName: getText(el, 'packageName') || undefined,
         };
@@ -322,42 +324,11 @@ function parseKeys(els: Element[], parentId: string | null, out: KeyNode[], warn
         const mapped = unbound ? '' : qtKeyToDomCode(qtKey, qtMod);
         const key = /^[A-Za-z]/.test(mapped) ? mapped : '';
         if (!group && !key && !unbound) {
-            warnings.push(`Key "${getText(el, 'name')}": unknown Qt key code ${qtKey} — keybinding imported with no key set`);
+            warnings.push(`Key "${getRawText(el, 'name')}": unknown Qt key code ${qtKey} — keybinding imported with no key set`);
         }
-        out.push({ id, parentId, isGroup: group, name: getText(el, 'name'), enabled: isYes(el, 'isActive'), key, modifiers: qtModifiersToList(qtMod), code: getText(el, 'script'), language: 'lua', command: getText(el, 'command'), packageName: getText(el, 'packageName') || undefined });
+        out.push({ id, parentId, isGroup: group, name: getRawText(el, 'name'), enabled: isYes(el, 'isActive'), key, modifiers: qtModifiersToList(qtMod), code: getText(el, 'script'), language: 'lua', command: getRawText(el, 'command'), packageName: getText(el, 'packageName') || undefined });
         // Unconditional, as in desktop's readKeyGroup (XMLimport.cpp:1816).
         parseKeys(directChildren(el, 'Key', 'KeyGroup'), id, out, warnings);
-    }
-}
-
-/**
- * Warn about offset timers, which this client has no equivalent for.
- *
- * There is no `isOffsetTimer` element to read: in Mudlet a timer is an *offset*
- * timer purely by where it sits in the tree — "children of folder = regular
- * timers, children of timers = offset timers" (TTimer.h:75-84). Such a timer
- * never runs on its own clock. Its interval is measured from the moment its
- * parent fires (TTimer.cpp:255-265), and the normal start/stop walk skips it
- * entirely (TTimer.cpp:314, :329). Nothing here reproduces that, so whatever
- * happens to the nested timer, it is not what the profile asked for.
- *
- * Read off the document rather than the parsed tree so the warning does not
- * depend on whether the reader descended into the nested elements — the
- * shape is visible in the XML either way.
- */
-function collectOffsetTimerWarnings(doc: Document, warnings: string[]): void {
-    for (const pkg of Array.from(doc.getElementsByTagName('TimerPackage'))) {
-        for (const el of Array.from(pkg.getElementsByTagName('Timer'))) {
-            if (isGroup(el)) continue;
-            const nested = directChildren(el, 'Timer', 'TimerGroup');
-            if (nested.length === 0) continue;
-            const names = nested.map(c => `"${getText(c, 'name')}"`).join(', ');
-            warnings.push(
-                `Timer "${getText(el, 'name')}" contains ${names}: Mudlet runs a timer nested under `
-                + 'another timer as an offset timer, counting its interval from when the parent fires. '
-                + 'This client has no offset timers, so those will not keep that relationship',
-            );
-        }
     }
 }
 
@@ -457,7 +428,6 @@ export function parseMudletXml(xml: string, opts: ParseOptions = {}): MudletImpo
     parseKeys(    pkgChildren('KeyPackage',     'Key',     'KeyGroup'),     null, result.keys, result.warnings);
     parseButtons( pkgChildren('ActionPackage',  'Action',  'ActionGroup'),  null, result.buttons);
 
-    collectOffsetTimerWarnings(doc, result.warnings);
 
     // The globals a package carries. Kept off the six unit lists deliberately:
     // they are not items, cannot be tagged, and an uninstall does not take them
