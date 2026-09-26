@@ -1689,6 +1689,49 @@ export class ScriptingEngine implements EngineHost {
         return dir === v.profilePath ? null : dir;
     }
 
+    /**
+     * The VFS paths a media name may refer to, most likely first. An absolute
+     * path is taken as it stands (getMudletHomeDir().."/media/x.wav" is the
+     * common package idiom), falling back to reading it as profile-relative
+     * for the older "/media/x.wav" spelling. A relative name is looked up in
+     * the profile's media/ directory first, where Mudlet resolves it, then
+     * against the profile root ("media/x.wav" as packages have long written it).
+     */
+    private mediaPathCandidates(path: string): string[] {
+        const v = this.vfs;
+        if (!v) return [];
+        if (path.startsWith('/')) {
+            return path === v.profilePath || path.startsWith(`${v.profilePath}/`)
+                ? [path]
+                : [path, `${v.profilePath}${path}`];
+        }
+        return [`${v.profilePath}/media/${path}`, `${v.profilePath}/${path}`];
+    }
+
+    /** Sound/video loader: absolute URLs hit the network; everything else is
+     *  read from the mounted profile VFS (see {@link mediaPathCandidates}). */
+    private async loadMediaBytes(path: string): Promise<ArrayBuffer | null> {
+        if (/^https?:|^data:|^blob:/.test(path)) {
+            const res = await fetch(path);
+            if (!res.ok) return null;
+            return await res.arrayBuffer();
+        }
+        const v = this.vfs;
+        if (!v) return null;
+        for (const abs of this.mediaPathCandidates(path)) {
+            try {
+                if (!v.exists(abs)) continue;
+                const bytes = v.readBinaryFile(abs);
+                const out = new ArrayBuffer(bytes.byteLength);
+                new Uint8Array(out).set(bytes);
+                return out;
+            } catch {
+                /* try the next candidate */
+            }
+        }
+        return null;
+    }
+
     private createRuntime(vfs: ProfileVFS | null): Promise<IScriptingRuntime> {
         return LuaRuntime.create(this.api, vfs, this.proxyUrlGetter).then(rt => {
             this.runtimes.lua = rt;
@@ -1700,44 +1743,10 @@ export class ScriptingEngine implements EngineHost {
             // Sound loader: absolute URLs hit the network; everything else is
             // resolved against the mounted profile VFS so package-bundled sounds
             // work out of the box.
-            this.session.sounds.setLoader(async (path) => {
-                if (/^https?:|^data:|^blob:/.test(path)) {
-                    const res = await fetch(path);
-                    if (!res.ok) return null;
-                    return await res.arrayBuffer();
-                }
-                const v = this.vfs;
-                if (!v) return null;
-                const abs = path.startsWith('/') ? `${v.profilePath}${path}` : `${v.profilePath}/${path}`;
-                try {
-                    const bytes = v.readBinaryFile(abs);
-                    const out = new ArrayBuffer(bytes.byteLength);
-                    new Uint8Array(out).set(bytes);
-                    return out;
-                } catch {
-                    return null;
-                }
-            });
+            this.session.sounds.setLoader(path => this.loadMediaBytes(path));
             // VideoManager reuses the same VFS-or-URL loader as sounds, and
             // emits sysMediaFinished on natural end (matching Mudlet).
-            this.session.videos.setLoader(async (path) => {
-                if (/^https?:|^data:|^blob:/.test(path)) {
-                    const res = await fetch(path);
-                    if (!res.ok) return null;
-                    return await res.arrayBuffer();
-                }
-                const v = this.vfs;
-                if (!v) return null;
-                const abs = path.startsWith('/') ? `${v.profilePath}${path}` : `${v.profilePath}/${path}`;
-                try {
-                    const bytes = v.readBinaryFile(abs);
-                    const out = new ArrayBuffer(bytes.byteLength);
-                    new Uint8Array(out).set(bytes);
-                    return out;
-                } catch {
-                    return null;
-                }
-            });
+            this.session.videos.setLoader(path => this.loadMediaBytes(path));
             this.session.videos.setMountPoint(() => this.session.windows.getMainViewportElement());
             // Videos carry no key or tag in Mudlet Web (PlayVideoOptions has no
             // field for either), so those two arguments are the empty strings
@@ -2075,9 +2084,10 @@ export class ScriptingEngine implements EngineHost {
         const name = await this.resolveMspMedia(command);
         if (!name) return;
         // MSP is server-driven, so it rides the 'game' mute gate (muteMediaGame).
-        const opts: { name: string; volume?: number; loops?: number; tag?: string; continue?: boolean; origin?: 'api' | 'game' } = { name, origin: 'game' };
+        const opts: PlayMusicOptions = { name, origin: 'game' };
         if (command.volume !== undefined) opts.volume = command.volume;
         if (command.loops !== undefined) opts.loops = command.loops;
+        if (command.priority !== undefined) opts.priority = command.priority;
         if (command.type) opts.tag = command.type;
         if (command.kind === 'music') {
             if (command.continueIfPlaying) opts.continue = true;
@@ -2203,11 +2213,12 @@ export class ScriptingEngine implements EngineHost {
     }
 
     /**
-     * Handle a GMCP media message (`Client.Media.Play/Load/Stop/Default`).
+     * Handle a GMCP media message (`Client.Media.Play/Load/Stop/Pause/Default`).
      * Mirrors Mudlet's `TMedia` MediaProtocolGMCP. The payload is the already-
      * parsed JSON body; `action` is the lowercased segment after `Client.Media`
-     * (defaulting to `play`, matching Mudlet's bare `Client.Media`). Server-
-     * driven, so playback rides the `game` mute gate like MSP.
+     * (a bare `Client.Media` is Default, as in TMedia::parseGMCP). Server-
+     * driven, so playback rides the `game` mute gate like MSP, and a Stop or
+     * Pause reaches only server media — never what a script started.
      */
     private async handleClientMedia(action: string, value: unknown): Promise<void> {
         const debug = debugGmcpEnabled();
@@ -2243,6 +2254,10 @@ export class ScriptingEngine implements EngineHost {
             return undefined;
         };
 
+        // Mudlet lowercases a tag as it parses one (parseJSONByMediaTag), so a
+        // server's "A" and "a" name the same group in events and filters alike.
+        const tagOf = (): string | undefined => str('tag').toLowerCase() || undefined;
+
         if (action === 'default') {
             // Client.Media.Default { url } — remember the base directory for
             // later Play/Load messages that omit their own url.
@@ -2258,15 +2273,50 @@ export class ScriptingEngine implements EngineHost {
             const type = str('type').toLowerCase();
             const name = str('name') || undefined;
             const key = str('key') || undefined;
-            const tag = str('tag') || undefined;
+            const tag = tagOf();
+            const priority = num('priority');
             const fadeout = num('fadeout');
             if (type !== 'sound') {
-                this.session.sounds.stopMusic({ name, key, tag, fadeout });
+                this.session.sounds.stopMusic({ name, key, tag, fadeout, origin: 'game' });
             }
             if (type !== 'music') {
-                this.session.sounds.stopSounds();
+                this.session.sounds.stopSounds({ name, key, tag, priority, fadeout, origin: 'game' });
             }
             if (debug) console.debug(`[mudlet.gmcp] media stop type=${type || 'all'}`);
+            return;
+        }
+
+        if (action === 'pause') {
+            // Client.Media.Pause [{ name, type, tag, key }] — Web Audio can't
+            // hold a source mid-track, so matching media is stopped (see
+            // SoundManager.pauseSounds). It must never fall through to Play.
+            const type = str('type').toLowerCase();
+            const filter = {
+                name: str('name') || undefined,
+                key: str('key') || undefined,
+                tag: tagOf(),
+                priority: num('priority'),
+                origin: 'game' as const,
+            };
+            if (type !== 'sound') this.session.sounds.pauseMusic(filter);
+            if (type !== 'music') this.session.sounds.pauseSounds(filter);
+            if (debug) console.debug(`[mudlet.gmcp] media pause type=${type || 'all'}`);
+            return;
+        }
+
+        if (action !== 'play' && action !== 'load') {
+            if (debug) console.debug(`[mudlet.gmcp] media ${action} ignored (unknown message)`);
+            return;
+        }
+
+        // A type is matched case-insensitively; one Mudlet doesn't know — or one
+        // that isn't a string at all — is refused rather than played as a sound.
+        // Absent, null and "" all mean sound.
+        const rawType = obj.type;
+        if (rawType !== undefined && rawType !== null && typeof rawType !== 'string') return;
+        const type = (typeof rawType === 'string' && rawType ? rawType : 'sound').toLowerCase();
+        if (type !== 'sound' && type !== 'music' && type !== 'video') {
+            if (debug) console.debug(`[mudlet.gmcp] media ${action} refused: unknown type "${type}"`);
             return;
         }
 
@@ -2284,8 +2334,7 @@ export class ScriptingEngine implements EngineHost {
             return;
         }
 
-        // action === 'play' (or bare Client.Media).
-        const type = (str('type') || 'sound').toLowerCase();
+        // action === 'play'.
         const opts: PlayMusicOptions = { name: resolved, origin: 'game' };
         const volume = num('volume');
         if (volume !== undefined) opts.volume = volume;
@@ -2299,8 +2348,10 @@ export class ScriptingEngine implements EngineHost {
         if (start !== undefined) opts.start = start;
         const key = str('key');
         if (key) opts.key = key;
-        const tag = str('tag');
+        const tag = tagOf();
         if (tag) opts.tag = tag;
+        const priority = num('priority');
+        if (priority !== undefined) opts.priority = priority;
 
         if (type === 'music') {
             // Mudlet's music `continue` defaults to true — a repeat Play of the
@@ -4833,7 +4884,7 @@ export class ScriptingEngine implements EngineHost {
                 const lowerPath = path.toLowerCase();
                 if (lowerPath === 'client.media' || lowerPath.startsWith('client.media.')) {
                     const action = lowerPath.slice('client.media'.length).replace(/^\./, '');
-                    void this.handleClientMedia(action || 'play', value);
+                    void this.handleClientMedia(action || 'default', value);
                 }
             }),
             session.events.on('msdp', ({ path, value }) => {

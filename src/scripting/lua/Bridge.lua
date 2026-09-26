@@ -4726,14 +4726,27 @@ do
     local _rawStopSounds = stopSounds
     local _rawStopVideos = stopVideos
     -- Either form: a filter table, or the ordered
-    -- (name, key, tag [, priority [, fadeaway]]).
-    function stopSounds(opts, key, tag, priority, fadeaway)
+    -- (name, key, tag [, priority [, fadeaway [, fadeout]]]). Only the sounds
+    -- the filter matches are stopped; no filter stops them all.
+    function stopSounds(opts, key, tag, priority, fadeaway, fadeout)
+        local filter
         if opts ~= nil and type(opts) ~= 'table' then
             __mudlet_check_media_filter_args("stopSounds", opts, key, tag, priority, fadeaway)
+            if fadeout ~= nil and type(fadeout) ~= 'number' then
+                error("stopSounds: bad argument type (fadeout as number expected, got "
+                    .. type(fadeout) .. "!)", 2)
+            end
+            filter = { name = opts, key = key, tag = tag, priority = priority, fadeout = fadeout }
         elseif opts ~= nil then
             __mudlet_check_media_table(opts, "stopSounds")
+            filter = { name = opts.name, key = opts.key, tag = opts.tag,
+                priority = opts.priority, fadeout = opts.fadeout }
+        else
+            -- A positional call may leave the name out and filter on the rest.
+            filter = { key = key, tag = tag, priority = priority, fadeout = fadeout }
+            __mudlet_check_media_filter_args("stopSounds", nil, key, tag, priority, fadeaway)
         end
-        _rawStopSounds()
+        _rawStopSounds(filter)
         return true
     end
     -- Table form only, like the rest of the video family.
@@ -4806,16 +4819,17 @@ function getPlayingSounds(a, b, c, d)
     local filter
     if type(a) == 'table' then
         __mudlet_check_media_table(a, "getPlayingSounds")
-        filter = { name = a.name, key = a.key, tag = a.tag }
+        filter = { name = a.name, key = a.key, tag = a.tag, priority = a.priority }
     else
         __mudlet_check_media_filter_args("getPlayingSounds", a, b, c, d)
-        filter = { name = a, key = b, tag = c }
+        filter = { name = a, key = b, tag = c, priority = d }
     end
     local raw = __getPlayingSounds(filter)
     local out = {}
     if type(raw) == 'table' then
         for _, v in pairs(raw) do
-            out[#out + 1] = { name = v.name, key = v.key, tag = v.tag, volume = v.volume }
+            out[#out + 1] = { name = v.name, key = v.key, tag = v.tag, volume = v.volume,
+                priority = v.priority }
         end
     end
     return out

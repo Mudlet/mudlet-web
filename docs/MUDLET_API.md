@@ -314,7 +314,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `getPausedVideos()` | ✅ | Lists genuinely-paused `<video>` elements (`element.paused`), optionally name-filtered. 1-indexed `{name, path, volume}` |
 | `getPlayingMusic()` | ✅ | Sister of `getPlayingSounds` for the music channel; 1-indexed `{name, key, tag, volume}` |
 | `getPlayingVideos()` | ✅ | Currently-playing `<video>` elements, optionally name-filtered. 1-indexed `{name, path, volume}` |
-| `getPlayingSounds([filter])` | ✅ | 1-based array of `{name, key, tag, volume}`; optional name/key/tag filter |
+| `getPlayingSounds([filter])` | ✅ | 1-based array of `{name, key, tag, volume, priority}`; optional name/key/tag/priority filter; lists only media the Lua API started (not MSP/GMCP) |
 | `getProfileName()` | ✅ | JS-exposed |
 | `getServerEncoding()` / `setServerEncoding(name)` / `getServerEncodingsList()` | ✅ | Exposes `MudClient`'s CHARSET (RFC 2066) decoder. `getServerEncoding` → current IANA name (default "utf-8"); `setServerEncoding` validates via `normalizeCharsetName` and swaps the `TextDecoder` (false when unsupported); `getServerEncodingsList` → 1-indexed `SUPPORTED_SERVER_ENCODINGS` (UTF-8, ISO-8859-x, Windows-125x, KOI8-R/U) |
 | `getWindowsCodepage()` | ✅ | Returns `"65001"` (UTF-8) on every platform |
@@ -356,7 +356,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `stopAllNamedEventHandlers([type])` | ✅ | IDManager.lua |
 | `stopMusic([channel])` | ✅ | `SoundManager` |
 | `stopNamedEventHandler(name)` | ✅ | IDManager.lua |
-| `stopSounds([channel])` | ✅ | JS-exposed |
+| `stopSounds([filter])` | ✅ | Table or ordered `(name, key, tag, priority, fadeaway, fadeout)` filter; priority is a ceiling; no filter stops every sound |
 | `stopVideos()` | ✅ | Removes every active `<video>` element; revokes blob: URLs |
 | `timeframe(s)` | ✅ | Other.lua humanises seconds |
 | `translateTable(t)` | ✅ | Other.lua |
