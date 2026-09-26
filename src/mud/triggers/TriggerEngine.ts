@@ -5,11 +5,10 @@ import { COLOR_IGNORED, parseColorPattern } from './legacyColorPatterns';
 
 export type { TriggerNode };
 
-// A capture-group value. `undefined` marks a group that did not participate in
-// the match (e.g. an optional `(...)?` that wasn't present) — Mudlet surfaces
-// those as `nil` in the `matches` table, which a JS `undefined` becomes when
-// pushed to Lua. (PCRE2 reports such groups as PCRE2_UNSET; JS RegExp already
-// yields `undefined`, so this keeps both matcher paths consistent.)
+// A capture-group value. The regex path never yields `undefined` — Mudlet gives
+// a non-participating group before the last participating one an empty string
+// and leaves trailing ones out (see pcreToMatchResult) — but a caller may still
+// hand one in, and it becomes `nil` in the Lua `matches` table.
 type Capture = string | undefined;
 
 type TempFn = (
@@ -423,15 +422,19 @@ function pcreToMatchResult(m: PcreMatch): MatchResult {
     const namedSpans: Record<string, CaptureSpan> = {};
     // pcre2-wasm-universal reports `m.length` as ovector pair count, which includes
     // the full match at index 0 — so capture groups are at 1..length-1, not 1..length.
-    for (let i = 1; i < m.length; i++) {
+    // TTrigger::processRegexMatch copies the first `rc` pairs, and pcre2_match
+    // returns one more than the highest group that took part: a group that did
+    // not participate (PCRE2_UNSET, start === -1) BEFORE a participating one
+    // still holds its place as an empty string, while trailing ones add no
+    // entry at all. So `^mid (y)?(x) end$` on "mid x end" gives
+    // {"mid x end", "", "x"}. The span of an empty slot is a zero-length
+    // placeholder that keeps span indices aligned.
+    let last = m.length - 1;
+    while (last > 0 && ((m[last] as PcreMatchGroup | undefined)?.start ?? -1) < 0) last--;
+    for (let i = 1; i <= last; i++) {
         const cap = m[i] as PcreMatchGroup | undefined;
-        // PCRE2 sets ovector to PCRE2_UNSET (start === -1) for groups that didn't
-        // participate (e.g. an absent optional `(...)?`). Surface those as
-        // `undefined` so the `matches` table reports `nil` at that slot — Mudlet's
-        // behaviour (and what JS RegExp already yields for unmatched groups). The
-        // span stays a zero-length placeholder to keep span indices aligned.
         const matched = cap && cap.start >= 0;
-        captures.push(matched ? cap!.match : undefined);
+        captures.push(matched ? cap!.match : '');
         captureSpans.push({
             start: matched ? cap!.start : 0,
             length: matched ? cap!.end - cap!.start : 0,
