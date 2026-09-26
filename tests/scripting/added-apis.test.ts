@@ -1254,9 +1254,10 @@ describe('setOverline — Lua binding round-trips through getTextFormat', () => 
   });
 
   it('setTextFormat carries the overline flag through to getTextFormat', () => {
-    env.run('createBuffer("tb2"); cecho("tb2", "X\\n"); selectCurrentLine("tb2")');
     // setTextFormat(win, r1,g1,b1, r2,g2,b2, bold, underline, italics, strikeout, overline, reverse)
-    env.run('setTextFormat("tb2", 0,0,0, 255,255,255, false, false, false, false, true, false)');
+    // sets the pen, so it is the text written afterwards that carries the flag.
+    env.run('createBuffer("tb2"); setTextFormat("tb2", 0,0,0, 255,255,255, false, false, false, false, true, false)');
+    env.run('echo("tb2", "X\\n"); moveCursor("tb2", 0, 0); selectCurrentLine("tb2")');
     expect(env.run('return (getTextFormat("tb2")).overline')).toBe(true);
   });
 });

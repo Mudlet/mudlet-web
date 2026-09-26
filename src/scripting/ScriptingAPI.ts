@@ -3148,8 +3148,8 @@ export class ScriptingAPI {
      * the full pen state in one call. r1/g1/b1 is BACKGROUND, r2/g2/b2 is
      * FOREGROUND (a Mudlet quirk — preserved here for parity). `blinkMode` is
      * "none" / "slow" / "fast". Returns false when the named window doesn't
-     * resolve. Mirrors setFgColor & friends: the pen is updated on the resolved
-     * console AND applied to the current selection when one is active on it.
+     * resolve. Unlike setFgColor & friends it touches the pen only — a
+     * selection active on the console keeps its formatting, as in Mudlet.
      */
     setTextFormat(
         windowName: string | undefined,
@@ -3178,9 +3178,8 @@ export class ScriptingAPI {
             rapidBlink: blinkMode === 'fast' || undefined,
         };
 
-        if (this.selectionMatches(windowName)) {
-            this.applyStateToSelection(snapshot);
-        }
+        // Only the pen: TConsole::setTextFormat sets the format later writes
+        // use and leaves the selection alone, unlike setFgColor & friends.
         const con = this.outputConsole(windowName);
         con.format.foreground = snapshot.foreground;
         con.format.background = snapshot.background;
@@ -3646,6 +3645,12 @@ export class ScriptingAPI {
         this.mainConsole.markCursorAtEnd(false);
     }
 
+    /** The lines a network line is stored as once its triggers are done — see
+     *  Console.wrapAppendedLine. */
+    wrapNetworkLine(buffer: AnsiAwareBuffer): AnsiAwareBuffer[] {
+        return this.mainConsole.wrapAppendedLine(buffer);
+    }
+
     /**
      * Mudlet `tempColorTrigger(fg, bg)` colour-scan helper. Walks the
      * just-appended line buffer (the one beginLine() seeded mainConsole with)
@@ -4055,8 +4060,10 @@ export class ScriptingAPI {
         return this.session.windows.scrollToLine(windowName ?? 'main', lineNumber);
     }
 
-    getLines(from: number, to: number, windowName?: string): string[] {
-        return this.getConsole(windowName)?.getLines(from, to) ?? [];
+    /** Null when the window doesn't exist — the binding answers Mudlet's
+     *  `(nil, errMsg)` then, not an empty table a `if not t` check can't see. */
+    getLines(from: number, to: number, windowName?: string): string[] | null {
+        return this.getConsole(windowName)?.getLines(from, to) ?? null;
     }
 
     /**
@@ -6022,13 +6029,13 @@ export class ScriptingAPI {
      * the per-window output font size on WindowManager (saved into the hint).
      */
     setFontSize(size: number, win?: string): boolean {
-        if (!Number.isFinite(size) || size < 1 || size > 99) return false;
-        const rounded = Math.round(size);
+        const whole = fontSizePoints(size);
+        if (whole === null) return false;
         if (!win || win === 'main') {
-            useAppStore.getState().patchConnectionProfile(this.connectionId, { fontSize: rounded });
+            useAppStore.getState().patchConnectionProfile(this.connectionId, { fontSize: whole });
             return true;
         }
-        return this.session.windows.setFontSize(win, rounded);
+        return this.session.windows.setFontSize(win, whole);
     }
 
     /**
@@ -6041,8 +6048,9 @@ export class ScriptingAPI {
         // Geyser.UserWindow:setFontSize goes through here, and refusing left a
         // window created with `fontSize = 12` showing the profile default.
         if (!name || !this.session.windows.has(name)) return false;
-        if (!Number.isFinite(size) || size < 1 || size > 99) return false;
-        return this.session.windows.setFontSize(name, Math.round(size));
+        const whole = fontSizePoints(size);
+        if (whole === null) return false;
+        return this.session.windows.setFontSize(name, whole);
     }
 
     /**
@@ -6846,4 +6854,15 @@ export class ScriptingAPI {
             }
         }
     }
+}
+
+/**
+ * The whole point size a font-size argument names, or null when it names none.
+ * Mudlet reads the argument with getVerifiedInt, which drops the fraction rather
+ * than rounding — 11.5 and 11.9 are both 11 — and sets no ceiling on it.
+ */
+function fontSizePoints(size: number): number | null {
+    if (!Number.isFinite(size)) return null;
+    const whole = Math.trunc(size);
+    return whole >= 1 ? whole : null;
 }

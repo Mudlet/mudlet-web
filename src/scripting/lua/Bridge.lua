@@ -2943,8 +2943,13 @@ end
 
 -- Mudlet getLines([window,] from, to) → 1-indexed table of line strings.
 -- JS hands back a 0-indexed array via wasmoon; rebuild as ipairs-friendly.
+-- A window that doesn't exist is (nil, errMsg), in Mudlet's wording.
 function getLines(a, b, c)
-    return rebuildJsArray(__getLines(a, b, c))
+    local lines = __getLines(a, b, c)
+    if lines == nil then
+        return nil, "mini console, user window or buffer '" .. tostring(a) .. "' not found"
+    end
+    return rebuildJsArray(lines)
 end
 
 -- Mudlet syncModule(name). The JS side runs the actual write asynchronously;
