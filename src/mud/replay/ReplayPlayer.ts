@@ -81,7 +81,7 @@ export class ReplayPlayer {
         // A parsing hiccup on one chunk shouldn't kill the rest of the
         // replay — the live socket path has the same isolation.
         try {
-            this.callbacks.feed(replayBytesToLatin1(chunk.data));
+            if (chunk.data.length > 0) this.callbacks.feed(replayBytesToLatin1(chunk.data));
         } catch (error) {
             console.error('Error processing replay chunk:', error);
         }

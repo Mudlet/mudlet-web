@@ -1011,6 +1011,16 @@ export class ScriptingEngine implements EngineHost {
     saveProfileXml(location?: string, saveName?: string): { ok: true; path: string } | { ok: false; err: string } {
         const vfs = this.vfs;
         if (!vfs) return { ok: false, err: 'no profile VFS available' };
+        // A file name that names a place of its own would win the join below
+        // outright and land the save outside the folder it was given, so it is
+        // refused — an argument problem, and so answered before whether a save
+        // is already running. A drive-letter or backslash-rooted name counts
+        // too: getOS() reports the player's own platform, and on Windows those
+        // are what an absolute path looks like.
+        const rawName = (saveName ?? '').trim();
+        if (/^(?:[/\\]|[A-Za-z]:[/\\])/.test(rawName)) {
+            return { ok: false, err: `the file name "${rawName}" is an absolute path, not a name within the folder to save to` };
+        }
         // One at a time. A save is only durable once its flush has settled, and
         // a second one starting meanwhile would race the first over the same
         // profile state — so the second is refused rather than queued, and
@@ -1020,7 +1030,7 @@ export class ScriptingEngine implements EngineHost {
         // A trailing slash would double up against the separator below.
         let dir = (location ?? '').trim();
         while (dir.endsWith('/')) dir = dir.slice(0, -1);
-        let name = (saveName ?? '').trim();
+        let name = rawName;
         const generated = name === '';
         if (generated) {
             name = `${mudletTimestamp(new Date())}.xml`;
