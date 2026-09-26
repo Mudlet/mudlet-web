@@ -127,7 +127,8 @@ export function makeRoom(areaId: number): MudletRoom {
         north: -1, northeast: -1, northwest: -1, east: -1, west: -1,
         south: -1, southeast: -1, southwest: -1, up: -1, down: -1,
         in: -1, out: -1,
-        environment: 0, weight: 1, name: '', isLocked: false,
+        // Mudlet's TRoom defaults: environment -1 means "no environment set".
+        environment: -1, weight: 1, name: '', isLocked: false,
         mSpecialExits: {}, mSpecialExitLocks: [],
         symbol: '', userData: {},
         customLines: {}, customLinesArrow: {}, customLinesColor: {}, customLinesStyle: {},
@@ -1559,8 +1560,19 @@ export class MapStore {
         if (this.rooms.has(id)) return false;
         const requested = areaId != null && Number.isFinite(areaId) ? Number(areaId) : undefined;
         const known = requested !== undefined && this.areas.has(requested);
-        this.rooms.set(id, makeRoom(known ? requested : (requested === undefined ? 0 : -1)));
-        if (known) this.areas.get(requested)!.rooms.push(id);
+        // Mudlet's TRoom starts in area -1 and addRoom files it there (in the
+        // default area's own room list, like resetRoomArea) whenever no known
+        // area was asked for. Area 0 isn't an area: a room left in it would be
+        // orphaned from getAreaTable/getAreaRooms and written into the map file.
+        const placedIn = known ? requested : -1;
+        this.rooms.set(id, makeRoom(placedIn));
+        let area = this.areas.get(placedIn);
+        if (!area) {
+            area = makeArea();
+            this.areas.set(-1, area);
+            if (!this.areaNames.has(-1)) this.areaNames.set(-1, 'Default Area');
+        }
+        area.rooms.push(id);
         this.notify();
         if (requested !== undefined && !known) {
             return { err: `addRoom: created roomID ${id} but failed to place it in areaID ${requested},`
