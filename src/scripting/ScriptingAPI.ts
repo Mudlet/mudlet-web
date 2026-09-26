@@ -32,7 +32,7 @@ import { decodeTelnetByteTags } from '../mud/connection/telnetByteTags';
 import { openOsc8Menu } from '../ui/output/osc8Menu';
 import { namedColorToState, dechoToAnsiFast, cechoToAnsiFast, hechoToAnsiFast } from '../mud/text/colorParsers';
 import { colorCodes } from '../mud/text/colors';
-import { Console, MIN_CONSOLE_BUFFER_SIZE, MAX_CONSOLE_BUFFER_SIZE } from '../mud/text/Console';
+import { Console, MIN_CONSOLE_BUFFER_SIZE, MAX_CONSOLE_BUFFER_SIZE, WINDOW_WRAP_DEFAULT } from '../mud/text/Console';
 import { flashTitle } from '../utils/documentTitle';
 import { MspParser } from '../mud/protocol';
 import { decodeUtf8AsTBuffer, fromByteString } from '../mud/protocol/byteString';
@@ -1041,6 +1041,20 @@ export class ScriptingAPI {
         // Mudlet `sysBufferShrinkEvent("main", linesRemoved)` — named user
         // windows have the same hook wired in WindowManager.registerConsole.
         this.mainConsole.onBufferShrink = (n) => this.host.raiseEvent('sysBufferShrinkEvent', ['main', n]);
+        // Mudlet gives the main console the profile's wrap (Host::mWrapAt, 100
+        // by default) when it is created, and again whenever the preferences
+        // change it (TConsole::changeColors). The Settings UI writes the store
+        // directly, so follow the store rather than only setWindowWrap.
+        this.applyStoredWrap(undefined);
+        this.apiUnsubs.push(useAppStore.subscribe((state, prev) => {
+            if (state.connectionProfile === prev.connectionProfile) return;
+            const next = state.connectionProfile[this.connectionId];
+            const old = prev.connectionProfile[this.connectionId];
+            if (next?.outputWrapAt === old?.outputWrapAt
+                && next?.outputWrapIndent === old?.outputWrapIndent
+                && next?.outputWrapHangingIndent === old?.outputWrapHangingIndent) return;
+            this.applyStoredWrap(undefined);
+        }));
         // Re-apply the one persisted config key that drives a live session
         // side-effect (suppressing local command echo) so it survives reloads.
         // Older profiles persisted this as a boolean; parseShowSentText maps that
@@ -4109,16 +4123,7 @@ export class ScriptingAPI {
         const con = this.getConsole(windowName);
         if (!con) return false;
         const isMain = !windowName || windowName === 'main';
-        const state = useAppStore.getState();
-        const wrapAt = isMain
-            ? (selectProfileField(state, this.connectionId, 'outputWrapAt') ?? 0)
-            : (this.session.windows.getWrap(windowName!) ?? 0);
-        const indent = isMain
-            ? (selectProfileField(state, this.connectionId, 'outputWrapIndent') ?? 0)
-            : this.session.windows.getWrapIndent(windowName!);
-        const hanging = isMain
-            ? (selectProfileField(state, this.connectionId, 'outputWrapHangingIndent') ?? 0)
-            : this.session.windows.getWrapHangingIndent(windowName!);
+        const [wrapAt, indent, hanging] = this.wrapSettings(windowName, con);
         if (!con.wrapLine(lineNumber, wrapAt, indent, hanging)) return false;
         if (isMain) this.drainMain();
         else this.drainWindowConsole(windowName!, con);
@@ -4269,17 +4274,30 @@ export class ScriptingAPI {
     }
 
     /**
-     * Mudlet setWindowWrap(name, charsPerLine). Sets the visual wrap width
-     * (in monospace columns) for the named window or "main". 0 clears the
-     * setting. Returns false when the named window does not exist; main always
-     * succeeds (persisted on the active profile).
+     * Mudlet setWindowWrap(name, charsPerLine). Sets the wrap width (in
+     * monospace columns) for the named window, buffer or "main", and re-applies
+     * it to the lines the console stores from then on. 0 clears the setting,
+     * back to the default (100 for main, no wrap for a window); the Lua binding
+     * refuses it as Mudlet does. Returns false when the named window does not
+     * exist; main always succeeds (persisted on the active profile, as Mudlet
+     * keeps it in Host::mWrapAt).
      */
     setWindowWrap(name: string, wrapAt: number): boolean {
         if (!Number.isFinite(wrapAt)) return false;
         const v = Math.max(0, Math.round(wrapAt));
         if (!name || name === 'main') {
+            // The store subscription in the constructor re-applies it, but not
+            // when the value is unchanged, so apply it here too.
             useAppStore.getState().patchConnectionProfile(this.connectionId, { outputWrapAt: v > 0 ? v : undefined });
             this.applyStoredWrap(undefined);
+            return true;
+        }
+        if (this.buffers.has(name)) {
+            // An off-screen buffer has no WindowManager entry: its Console holds
+            // the width. Clearing it goes back to the width it was created with.
+            const con = this.outputConsole(name);
+            const [, indent, hanging] = this.wrapSettings(name, con);
+            con.setWrapWidth(v > 0 ? v : this.mainWrapAt(), indent, hanging);
             return true;
         }
         if (!this.session.windows.setWrap(name, v)) return false;
@@ -4287,39 +4305,56 @@ export class ScriptingAPI {
         return true;
     }
 
+    /** The main console's wrap width: the profile's `outputWrapAt`, which is
+     *  Mudlet's Host::mWrapAt (100 unless changed). 0 means the Settings UI
+     *  turned character wrapping off. */
+    private mainWrapAt(): number {
+        return selectProfileField(useAppStore.getState(), this.connectionId, 'outputWrapAt') ?? 0;
+    }
+
+    /** `[wrapAt, indent, hangingIndent]` for a console, 0 meaning off. Main
+     *  reads the profile, an on-screen window its WindowManager entry, and a
+     *  createBuffer buffer the Console it lives in. */
+    private wrapSettings(windowName: string | undefined, con: Console): [number, number, number] {
+        if (!windowName || windowName === 'main') {
+            const state = useAppStore.getState();
+            return [
+                this.mainWrapAt(),
+                selectProfileField(state, this.connectionId, 'outputWrapIndent') ?? 0,
+                selectProfileField(state, this.connectionId, 'outputWrapHangingIndent') ?? 0,
+            ];
+        }
+        if (this.buffers.has(windowName)) {
+            return [con.getWrapWidth(), con.getWrapIndent(), con.getWrapHangingIndent()];
+        }
+        return [
+            this.session.windows.getWrap(windowName) ?? 0,
+            this.session.windows.getWrapIndent(windowName),
+            this.session.windows.getWrapHangingIndent(windowName),
+        ];
+    }
+
     /** Tell the console the width to break stored lines at, so what `getLines`
      *  reports matches what the window shows. Called whenever the wrap width or
-     *  either indent moves. */
+     *  either indent moves, and for main when the API is created. */
     private applyStoredWrap(windowName?: string): void {
         const con = this.getConsole(windowName);
         if (!con) return;
-        const isMain = !windowName || windowName === 'main';
-        const state = useAppStore.getState();
-        con.setWrapWidth(
-            isMain
-                ? (selectProfileField(state, this.connectionId, 'outputWrapAt') ?? 0)
-                : (this.session.windows.getWrap(windowName!) ?? 0),
-            isMain
-                ? (selectProfileField(state, this.connectionId, 'outputWrapIndent') ?? 0)
-                : this.session.windows.getWrapIndent(windowName!),
-            isMain
-                ? (selectProfileField(state, this.connectionId, 'outputWrapHangingIndent') ?? 0)
-                : this.session.windows.getWrapHangingIndent(windowName!),
-        );
+        con.setWrapWidth(...this.wrapSettings(windowName, con));
     }
 
     /**
-     * Mudlet `getWindowWrap(name) → cols`. Reports the visual wrap width set by
-     * setWindowWrap (0 when unset). For "main" reads the profile's stored
-     * override; for a named window reads the WindowManager hint. Returns -1 when
-     * the named window does not exist (Mudlet's invalid-window sentinel).
+     * Mudlet `getWindowWrap(name) → cols` — TConsole::getWrapAt, the width the
+     * console's buffer wraps at. Main defaults to 100 (Host::mWrapAt) and a
+     * createBuffer buffer to main's width when it was made; a miniconsole or
+     * user window no script has set reports TBuffer's own 99999999. Returns -1
+     * when the named window does not exist (Mudlet's invalid-window sentinel).
      */
     getWindowWrap(name: string): number {
-        if (!name || name === 'main') {
-            return selectProfileField(useAppStore.getState(), this.connectionId, 'outputWrapAt') ?? 0;
-        }
+        if (!name || name === 'main') return this.mainWrapAt();
+        if (this.buffers.has(name)) return this.outputConsole(name).getWrapWidth();
         if (!this.session.windows.has(name)) return -1;
-        return this.session.windows.getWrap(name) ?? 0;
+        return this.session.windows.getWrap(name) ?? WINDOW_WRAP_DEFAULT;
     }
 
     /**
@@ -4333,6 +4368,12 @@ export class ScriptingAPI {
         if (!name || name === 'main') {
             useAppStore.getState().patchConnectionProfile(this.connectionId, { outputWrapIndent: v > 0 ? v : undefined });
             this.applyStoredWrap(undefined);
+            return true;
+        }
+        if (this.buffers.has(name)) {
+            const con = this.outputConsole(name);
+            const [width, , hanging] = this.wrapSettings(name, con);
+            con.setWrapWidth(width, v, hanging);
             return true;
         }
         if (!this.session.windows.setWrapIndent(name, v)) return false;
@@ -4351,6 +4392,12 @@ export class ScriptingAPI {
         if (!name || name === 'main') {
             useAppStore.getState().patchConnectionProfile(this.connectionId, { outputWrapHangingIndent: v > 0 ? v : undefined });
             this.applyStoredWrap(undefined);
+            return true;
+        }
+        if (this.buffers.has(name)) {
+            const con = this.outputConsole(name);
+            const [width, firstIndent] = this.wrapSettings(name, con);
+            con.setWrapWidth(width, firstIndent, v);
             return true;
         }
         if (!this.session.windows.setWrapHangingIndent(name, v)) return false;
@@ -4700,9 +4747,20 @@ export class ScriptingAPI {
     createBuffer(name: string): void {
         if (!name || name === 'main') return;
         if (this.session.windows.has(name)) return;
+        const fresh = !this.buffers.has(name);
         this.buffers.add(name);
         // Register the backing console so echo/selection resolve it by name.
-        this.outputConsole(name);
+        const con = this.outputConsole(name);
+        // A buffer wraps like the main console (TConsole::changeColors gives
+        // MainConsole and Buffer types the profile's Host::mWrapAt).
+        if (fresh) {
+            const state = useAppStore.getState();
+            con.setWrapWidth(
+                this.mainWrapAt(),
+                selectProfileField(state, this.connectionId, 'outputWrapIndent') ?? 0,
+                selectProfileField(state, this.connectionId, 'outputWrapHangingIndent') ?? 0,
+            );
+        }
     }
 
     /** True when `name` is an off-screen buffer created via createBuffer. */
@@ -5880,17 +5938,15 @@ export class ScriptingAPI {
      * Mudlet `getMainConsoleWidth()` — pixel width of the main console's text
      * area. Mudlet computes `averageCharWidth * (wrapAt + 1)`; we mirror that
      * with a canvas-measured monospace cell for the profile's output font, and
-     * resolve the wrap column from the profile's `outputWrapAt` override (the
-     * value `setWindowWrap("main", n)` writes), falling back to the live
-     * measured column count when no explicit wrap is set.
+     * the main wrap column (`outputWrapAt`, 100 by default), falling back to
+     * the live measured column count when the Settings turned wrapping off.
      */
     getMainConsoleWidth(): number {
         const state = useAppStore.getState();
         const family = selectProfileField(state, this.connectionId, 'outputFont')?.family ?? '';
         const size = selectProfileField(state, this.connectionId, 'fontSize') ?? 12;
         const [cellW] = measureMonospaceCell(family, size);
-        const wrapAt = selectProfileField(state, this.connectionId, 'outputWrapAt')
-            ?? this.getColumnCount('main');
+        const wrapAt = this.mainWrapAt() || this.getColumnCount('main');
         return Math.round(cellW * (wrapAt + 1));
     }
 
@@ -6808,6 +6864,10 @@ export class ScriptingAPI {
             const name = win;
             con.onBufferShrink = (n) => this.host.raiseEvent('sysBufferShrinkEvent', [name, n]);
             this.session.consoles.set(win, con);
+            // The Console is made on first use, but a window can already carry
+            // a width (setWindowWrap before any echo, or one restored with the
+            // layout) that its stored lines have to follow from the first line.
+            if (!this.buffers.has(win)) con.setWrapWidth(...this.wrapSettings(win, con));
         }
         return con;
     }

@@ -687,15 +687,29 @@ export class Console {
      * own `setWindowWrap` width, so a line longer than it becomes several
      * buffer lines rather than one long one that only *looks* wrapped.
      *
-     * Off (width 0) unless a script sets one, which is the state nearly every
-     * console is in: the renderer wraps to the panel's real pixel width, and
-     * splitting on a column nobody chose would only fight it. Mudlet always
-     * splits because its buffer IS its layout.
+     * Width 0 is off. A bare Console starts there; ScriptingAPI gives the main
+     * console the profile's `outputWrapAt` (100 unless changed, Mudlet's
+     * Host::mWrapAt) as soon as it exists and again whenever that setting
+     * moves. Miniconsoles and user windows stay off until a script sets a
+     * width, which is what desktop's {@link WINDOW_WRAP_DEFAULT} amounts to.
      */
     setWrapWidth(width: number, indent = 0, hangingIndent = 0): void {
         this.wrapWidth = Math.max(0, Math.trunc(width) || 0);
         this.wrapIndent = Math.max(0, Math.trunc(indent) || 0);
         this.wrapHangingIndent = Math.max(0, Math.trunc(hangingIndent) || 0);
+    }
+
+    /** The stored-line wrap width set by {@link setWrapWidth}; 0 when off. */
+    getWrapWidth(): number {
+        return this.wrapWidth;
+    }
+
+    getWrapIndent(): number {
+        return this.wrapIndent;
+    }
+
+    getWrapHangingIndent(): number {
+        return this.wrapHangingIndent;
     }
 
     private wrapWidth = 0;
@@ -748,6 +762,11 @@ export class Console {
         return true;
     }
 }
+
+/** What getWindowWrap reports for a miniconsole or user window no script has
+ *  set a width on — Mudlet's TBuffer::mWrapAt default. Only the main console
+ *  and createBuffer buffers take the profile's width (TConsole::changeColors). */
+export const WINDOW_WRAP_DEFAULT = 99999999;
 
 /** What getTimestamp() answers for a continued line — Mudlet's
  *  `smBlankTimeStamp`, cut to the width of the times this client formats. */

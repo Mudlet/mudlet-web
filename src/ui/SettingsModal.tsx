@@ -1341,8 +1341,12 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                             Wrap lines at:
                             <HelpTip label="About line wrapping">
                                 Wraps main-window output at that many characters
-                                (Mudlet's <code>setWindowWrap("main", N)</code>).
-                                Default <code>0</code> disables wrapping so lines fill
+                                (Mudlet's <code>setWindowWrap("main", N)</code>): a
+                                longer line is stored and shown as several lines, so{' '}
+                                <code>getLines</code> and the cursor functions count
+                                them the way Mudlet does. Default <code>100</code>, as
+                                in Mudlet; leave it blank to go back to that.{' '}
+                                <code>0</code> turns this wrapping off so lines fill
                                 the window width.
                             </HelpTip>
                         </label>
@@ -1354,7 +1358,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                                 max={MAX_WRAP_AT}
                                 step={1}
                                 value={wrapAtText}
-                                placeholder="0"
+                                placeholder="100"
                                 onChange={e => setWrapAtText(e.target.value)}
                                 onBlur={handleWrapAtBlur}
                             />

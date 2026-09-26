@@ -8,8 +8,10 @@
 // pairs a wasmoon Lua state with a happy-dom Window, and spinning up a fresh
 // pair per test accumulates enough memory to get the worker OOM-killed.
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { createDomRuntime, type DomTestRuntime } from '../createDomRuntime';
+import { TEST_CONNECTION_ID } from '../createTestRuntime';
+import { useAppStore } from '../../src/storage/appStore';
 
 let env: DomTestRuntime;
 beforeAll(async () => { env = await createDomRuntime(); });
@@ -41,6 +43,13 @@ describe('OutputRenderer DOM — basic echo', () => {
 });
 
 describe('wrapLine — in-place DOM re-render', () => {
+  // The path under test is the repaint wrapLine falls back to when the main
+  // window's character wrap is off (Settings, width 0). At the default width of
+  // 100 it splits the line at the \n instead, as TBuffer::wrapLine does — see
+  // the next case.
+  beforeEach(() => { useAppStore.getState().patchConnectionProfile(TEST_CONNECTION_ID, { outputWrapAt: 0 }); });
+  afterEach(() => { useAppStore.getState().patchConnectionProfile(TEST_CONNECTION_ID, { outputWrapAt: undefined }); });
+
   it('re-renders a line whose buffer changed without a render, interpreting \\n', () => {
     env.run('cecho("hello\\n")');
     expect(lineEls()[0].textContent).toBe('hello');
@@ -55,6 +64,19 @@ describe('wrapLine — in-place DOM re-render', () => {
     // wrapLine re-renders the shared buffer in place; pre-wrap shows the \n.
     expect(env.run('return (wrapLine("main", getLineCount() - 1))')).toBe(true);
     expect(lineEls()[0].textContent).toBe('hello\nworld');
+  });
+
+  it('splits the line at its \\n into two buffer lines at the default wrap width', () => {
+    useAppStore.getState().patchConnectionProfile(TEST_CONNECTION_ID, { outputWrapAt: undefined });
+    const main = env.session.consoles.get('main')!;
+    const before = main.getLineCount() + 1;
+    env.run('cecho("hello\\n")');
+    const count = main.getLineCount();
+    main.getBuffer()!.insert(5, '\nworld', {});
+
+    expect(env.run('return (wrapLine("main", getLineCount() - 1))')).toBe(true);
+    expect(main.getLineCount()).toBe(count + 1);
+    expect(main.getLines(before, main.getLineCount() + 1).slice(0, 2)).toEqual(['hello', 'world']);
   });
 });
 
