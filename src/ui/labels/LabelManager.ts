@@ -198,11 +198,30 @@ function styleAnchors(
     });
 }
 
+/** `html` with every `<…>` run dropped: from each `<` up to the next `>`, and
+ *  text after a `<` that never closes kept as is. The same string the regex
+ *  `/<[^>]*>/g` replace gave, as a scanner — only renderedText's no-DOM
+ *  fallback reads it, to decide whether a label is empty, and it never goes
+ *  back into HTML. Exported for tests. */
+export function stripTagsNoDom(html: string): string {
+    let out = '';
+    let i = 0;
+    while (i < html.length) {
+        const open = html.indexOf('<', i);
+        if (open === -1) return out + html.slice(i);
+        const close = html.indexOf('>', open + 1);
+        if (close === -1) return out + html.slice(i);
+        out += html.slice(i, open);
+        i = close + 1;
+    }
+    return out;
+}
+
 /** The text `html` renders to, trimmed — QTextDocumentFragment::toPlainText
- *  as TLabel::sizeHint reads it. */
-function renderedText(html: string): string {
+ *  as TLabel::sizeHint reads it. Exported for tests. */
+export function renderedText(html: string): string {
     if (!html) return '';
-    if (typeof document === 'undefined') return html.replace(/<[^>]*>/g, '').trim();
+    if (typeof document === 'undefined') return stripTagsNoDom(html).trim();
     const probe = document.createElement('div');
     probe.innerHTML = html;
     return (probe.textContent ?? '').trim();
