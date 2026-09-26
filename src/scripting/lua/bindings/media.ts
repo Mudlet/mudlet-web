@@ -55,6 +55,7 @@ export function installSoundBindings({ lua, api }: BindingContext): void {
             loops: numOpt(o.loops),
             key: strOpt(o.key),
             tag: strOpt(o.tag),
+            priority: numOpt(o.priority),
             caption: strOpt(o.caption),
             origin: 'api',
         });
@@ -77,7 +78,18 @@ export function installSoundBindings({ lua, api }: BindingContext): void {
         });
         return true;
     });
-    lua.global.set('stopSounds', () => { sounds.stopSounds(); });
+    // stopSounds([filter]) — Bridge.lua normalises the ordered
+    // (name, key, tag, priority, fadeaway, fadeout) form into a table.
+    lua.global.set('stopSounds', (t?: unknown) => {
+        const o = detachOpts(t);
+        sounds.stopSounds({
+            name: strOpt(o.name),
+            key: strOpt(o.key),
+            tag: strOpt(o.tag),
+            priority: numOpt(o.priority),
+            fadeout: numOpt(o.fadeout),
+        });
+    });
     lua.global.set('__stopMusic', (t?: unknown) => {
         const o = detachOpts(t);
         sounds.stopMusic({
@@ -90,13 +102,16 @@ export function installSoundBindings({ lua, api }: BindingContext): void {
     // getPlayingSounds([filter]) — Bridge.lua normalises both the positional
     // (name[,key][,tag]) and the options-table forms into a single options
     // table, then re-indexes the JS 0-indexed array of {name,key,tag,volume}
-    // into a 1-based Lua array.
+    // into a 1-based Lua array. Like Mudlet, only media the Lua API started
+    // is listed — a server's MSP/GMCP sounds are not the script's to see.
     lua.global.set('__getPlayingSounds', (t?: unknown) => {
         const o = detachOpts(t);
         return sounds.getPlaying({
             name: strOpt(o.name),
             key: strOpt(o.key),
             tag: strOpt(o.tag),
+            priority: numOpt(o.priority),
+            origin: 'api',
         });
     });
     // getPlayingMusic([filter]) — sister of getPlayingSounds for the music
@@ -107,6 +122,7 @@ export function installSoundBindings({ lua, api }: BindingContext): void {
             name: strOpt(o.name),
             key: strOpt(o.key),
             tag: strOpt(o.tag),
+            origin: 'api',
         }, 'music');
     });
     // getPausedSounds / getPausedMusic — Mudlet Web's Web Audio backend stops

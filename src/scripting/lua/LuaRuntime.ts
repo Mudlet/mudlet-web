@@ -2091,13 +2091,26 @@ export class LuaRuntime implements IScriptingRuntime {
         // A url that isn't http(s) never gets that far — downloadFile reports it
         // as a sysDownloadError naming the file, which is the same way a script
         // hears about a 404.
+        //
+        // `url` is the directory the file lives in, not the file itself: the
+        // request fetches `url/name`, the way Mudlet's TMedia::getFileUrl joins
+        // them. A name with subdirectories is mirrored under media/ so the
+        // replay (which plays `name` against media/) finds it; one that is
+        // absolute, or that climbs out with `..`, keeps only its filename.
         this.lua.global.set('__mudlet_media_fetch', (name: unknown, url: unknown) => {
-            const file = String(name ?? '').split(/[\\/]/).pop() ?? '';
             const u = String(url ?? '');
-            if (!file || !u || !this.vfs) return null;
-            const saveTo = `${this.vfs.profilePath}/media/${file}`;
+            const n = String(name ?? '').replace(/\\/g, '/');
+            if (!n || !u || !this.vfs) return null;
+            const joined = n !== u;
+            const segments = n.split('/').filter(s => s.length > 0);
+            const rel = !joined || n.startsWith('/') || segments.some(s => s === '.' || s === '..')
+                ? segments.pop() ?? ''
+                : segments.join('/');
+            if (!rel) return null;
+            const saveTo = `${this.vfs.profilePath}/media/${rel}`;
             if (this.vfs.exists(saveTo)) return null;
-            this.http.downloadFile(saveTo, u);
+            const fileUrl = !joined ? u : `${u.endsWith('/') ? u : `${u}/`}${rel}`;
+            this.http.downloadFile(saveTo, fileUrl);
             return saveTo;
         });
         this.tts = new TtsManager((event, args) => this.emitEvent(event, args));

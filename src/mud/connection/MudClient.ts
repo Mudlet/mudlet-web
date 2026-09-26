@@ -83,11 +83,12 @@ export interface MudClientOptions {
      *  MUDs render as replacement chars). */
     charsetEnabled?: boolean;
     /** Whether to enable MSP (MUD Sound Protocol, telnet option 90). Default
-     *  false. When true the client negotiates the option and strips inline
-     *  `!!SOUND(...)` / `!!MUSIC(...)` tags from MUD text, dispatching them
-     *  as `msp` events. Always parses subnegotiations regardless of this flag
-     *  once negotiated, but in-band parsing is gated to avoid eating literal
-     *  text on MUDs that don't speak MSP. */
+     *  false. When true the client negotiates the option and, once the server
+     *  has agreed to it, strips inline `!!SOUND(...)` / `!!MUSIC(...)` tags
+     *  from MUD text, dispatching them as `msp` events. Always parses
+     *  subnegotiations regardless of this flag once negotiated, but in-band
+     *  parsing is gated to avoid eating literal text on MUDs that don't speak
+     *  MSP. */
     mspEnabled?: boolean;
     /** Whether to accept MXP (telnet option 91) negotiation. Default true.
      *  When false, IAC WILL/DO MXP is ignored so the server never sees a
@@ -294,8 +295,9 @@ export class MudClient {
     private gameEstablished = false;
 
     commandEcho: boolean;
-    /** Gates the in-band `!!SOUND(...)` / `!!MUSIC(...)` tag parsing — the tag
-     *  bytes are legitimate text on non-MSP MUDs. */
+    /** Gates the in-band `!!SOUND(...)` / `!!MUSIC(...)` tag parsing, together
+     *  with the option actually being negotiated — the tag bytes are
+     *  legitimate text on non-MSP MUDs. */
     private readonly mspEnabled: boolean;
     private readonly mspParser = new MspParser();
     /** WebSocket subprotocols advertised on connect (see MudClientOptions). */
@@ -1265,11 +1267,13 @@ export class MudClient {
     private decodeAndAssemble(sanitized: string, hasPrompt: boolean, ts: number): void {
         const decodedRaw = this.codec.decode(sanitized);
         // MSP in-band parsing: strip `!!SOUND(...)` / `!!MUSIC(...)` triplets
-        // and dispatch them as events. Gated on mspEnabled because the tag
-        // bytes are legitimate text on non-MSP MUDs (rare in practice but
-        // possible inside log dumps and quoted strings).
+        // and dispatch them as events. Gated on MSP having actually been
+        // negotiated, not merely allowed by the profile: on a server that never
+        // agreed to MSP the tag bytes are ordinary text, and Mudlet leaves them
+        // in the line — which is what lets the usual recipe (a trigger on
+        // `!!SOUND` that calls receiveMSP and deleteLine) work at all.
         let decoded = decodedRaw;
-        if (this.mspEnabled && decodedRaw.length > 0) {
+        if (this.mspEnabled && this.negotiator.isMspNegotiated() && decodedRaw.length > 0) {
             const { text, commands } = this.mspParser.feed(decodedRaw);
             decoded = text;
             if (commands.length > 0 && debugMspEnabled()) {
