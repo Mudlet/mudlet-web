@@ -4684,8 +4684,10 @@ export class ScriptingEngine implements EngineHost {
         }));
 
         this.unsubs.push(
-            session.events.on('prompt', () => {
-                this.promptPending = true;
+            session.events.on('prompt', (promptLine) => {
+                // A bare GA ended no line; flagging now would make the next,
+                // ordinary line the prompt.
+                if (promptLine !== false) this.promptPending = true;
                 this.visibility.onPrompt();
             }),
             // OSC 8 visibility expiry: a user command (echo) is "input", any
