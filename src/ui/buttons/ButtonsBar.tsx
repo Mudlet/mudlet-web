@@ -1,10 +1,11 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { useAppStore } from '../../storage';
-import { clampFillerOffset, isEffectivelyEnabled, type ButtonLocation, type ButtonNode } from '../../storage/schema';
+import { buildEffectivelyEnabledIds, clampFillerOffset, type ButtonLocation, type ButtonNode } from '../../storage/schema';
 import type { ScriptingEngine } from '../../scripting/ScriptingEngine';
 import type { ProfileVFS } from '../../scripting/vfs/ProfileVFS';
 import { cssTextToStyle } from '../labels/qtCss';
+import { inactiveButtons } from './inactiveButtons';
 import './ButtonsBar.css';
 
 const ICON_MIME: Record<string, string> = {
@@ -24,6 +25,8 @@ interface ToolbarStripProps {
     side: ButtonLocation;
     toolbars: ButtonNode[];
     allButtons: ButtonNode[];
+    /** Ids of the buttons that are active — see useButtonStrips. */
+    shown: ReadonlySet<string>;
     engineRef: RefObject<ScriptingEngine | null>;
     vfs: ProfileVFS | null;
     onStateChange: (id: string, next: boolean) => void;
@@ -111,10 +114,8 @@ function ButtonView({ button, engineRef, vfs, onStateChange }: ButtonViewProps) 
     );
 }
 
-function leavesOf(toolbar: ButtonNode, allButtons: ButtonNode[]): ButtonNode[] {
-    return allButtons.filter(b =>
-        b.parentId === toolbar.id && !b.isGroup && isEffectivelyEnabled(b, allButtons),
-    );
+function leavesOf(toolbar: ButtonNode, allButtons: ButtonNode[], shown: ReadonlySet<string>): ButtonNode[] {
+    return allButtons.filter(b => b.parentId === toolbar.id && !b.isGroup && shown.has(b.id));
 }
 
 function renderToolbarGroup(
@@ -174,14 +175,14 @@ function renderToolbarGroup(
     );
 }
 
-function ToolbarStrip({ side, toolbars, allButtons, engineRef, vfs, onStateChange }: ToolbarStripProps) {
+function ToolbarStrip({ side, toolbars, allButtons, shown, engineRef, vfs, onStateChange }: ToolbarStripProps) {
     if (toolbars.length === 0) return null;
     const cls = `mudlet-toolbar-strip mudlet-toolbar-strip--${side}`;
     return (
         <div className={cls}>
             {toolbars.map(toolbar => (
                 <Fragment key={toolbar.id}>
-                    {renderToolbarGroup(toolbar, leavesOf(toolbar, allButtons), engineRef, vfs, onStateChange)}
+                    {renderToolbarGroup(toolbar, leavesOf(toolbar, allButtons, shown), engineRef, vfs, onStateChange)}
                 </Fragment>
             ))}
         </div>
@@ -288,6 +289,7 @@ function FloatingToolbar({ toolbar, children, onPositionChange }: FloatingToolba
 interface FloatingToolbarsLayerProps {
     toolbars: ButtonNode[];
     allButtons: ButtonNode[];
+    shown: ReadonlySet<string>;
     engineRef: RefObject<ScriptingEngine | null>;
     vfs: ProfileVFS | null;
     onStateChange: (id: string, next: boolean) => void;
@@ -295,13 +297,13 @@ interface FloatingToolbarsLayerProps {
 }
 
 function FloatingToolbarsLayer({
-    toolbars, allButtons, engineRef, vfs, onStateChange, onPositionChange,
+    toolbars, allButtons, shown, engineRef, vfs, onStateChange, onPositionChange,
 }: FloatingToolbarsLayerProps) {
     const renderable = useMemo(
         () => toolbars
-            .map(t => ({ toolbar: t, leaves: leavesOf(t, allButtons) }))
+            .map(t => ({ toolbar: t, leaves: leavesOf(t, allButtons, shown) }))
             .filter(({ leaves }) => leaves.length > 0),
-        [toolbars, allButtons],
+        [toolbars, allButtons, shown],
     );
     if (renderable.length === 0) return null;
     return createPortal(
@@ -342,9 +344,21 @@ export function useButtonStrips({ connectionId, engineRef, vfs }: ButtonsLayerPr
         updateButton(connectionId, id, { posX: Math.round(x), posY: Math.round(y) });
     };
 
+    // A button is shown when it and every toolbar or menu above it is active:
+    // switched on, and with code that compiles (desktop's Tree::isActive, which
+    // TToolBar/TEasyButtonBar::addActionButtons and ActionUnit's
+    // constructToolbar ask). The compile check is the engine's — inactiveButtons.
+    const uncompilable = useSyncExternalStore(
+        inactiveButtons.subscribe,
+        () => inactiveButtons.get(connectionId),
+    );
+    const shown = useMemo(
+        () => buildEffectivelyEnabledIds(buttons, uncompilable),
+        [buttons, uncompilable],
+    );
     const enabledToolbars = useMemo(
-        () => buttons.filter(b => b.isGroup && isEffectivelyEnabled(b, buttons)),
-        [buttons],
+        () => buttons.filter(b => b.isGroup && shown.has(b.id)),
+        [buttons, shown],
     );
 
     const byLocation = (loc: ButtonLocation) => enabledToolbars.filter(t => t.location === loc);
@@ -354,6 +368,7 @@ export function useButtonStrips({ connectionId, engineRef, vfs }: ButtonsLayerPr
             side={side}
             toolbars={byLocation(side)}
             allButtons={buttons}
+            shown={shown}
             engineRef={engineRef}
             vfs={vfs}
             onStateChange={onStateChange}
@@ -364,6 +379,7 @@ export function useButtonStrips({ connectionId, engineRef, vfs }: ButtonsLayerPr
         <FloatingToolbarsLayer
             toolbars={byLocation('floating')}
             allButtons={buttons}
+            shown={shown}
             engineRef={engineRef}
             vfs={vfs}
             onStateChange={onStateChange}

@@ -458,7 +458,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `tempAlias(pattern, code)` | ✅ | |
 | `tempAnsiColorTrigger(fg, bg, code)` | ✅ | ANSI 256-colour-index variant of `tempColorTrigger` (shares the palette-matching engine); any negative index (Mudlet ColorIgnore/ColorDefault) → match any |
 | `tempBeginOfLineTrigger(pattern, code)` | ✅ | Literal prefix (`String.prototype.startsWith`), NOT regex `^` — matches Mudlet's `match_begin_of_line_substring` |
-| `tempButton(toolbar, name, code, orientation)` | ✅ | Appends a transient ButtonNode under the named toolbar |
+| `tempButton(toolbar, name, orientation)` | ✅ | Appends a transient ButtonNode, with no command or script, under the named toolbar |
 | `tempButtonToolbar(name, orientation, location)` | ✅ | `orientation`: 0=horizontal, 1=vertical. `location`: 0=top, 1=bottom, 2=left, 3=right, 4=floating |
 | `tempColorTrigger(fg, bg, code)` | ✅ | Matches on ANSI palette indices on the current rendered line (`-1` = any). Non-indexed RGB segments never match a positive index, matching Mudlet's palette-only semantics |
 | `tempComplexRegexTrigger(...)` | ✅ | Bridge.lua over the temp regex-trigger primitive. Honours regex + code/fn, **highlight** (`hlFgColor`/`hlBgColor` — colour name / `#rrggbb` / `"r,g,b"`; all occurrences when `matchAll`), **soundFile**, **expireAfter**, and **named triggers** (re-call with an existing name replaces it; `killTrigger(name)` removes it). `multiline`-AND, `filter`, `fireLength`, `lineDelta` and colour-pattern (`fgColor`/`bgColor`) need a permanent trigger (`permRegexTrigger` + editor) and emit a one-time `printDebug` warning when requested |

@@ -3912,12 +3912,14 @@ do
     end
 end
 
--- Mudlet tempButton(toolbar, name, luaCode [, orientation]). Returns the new
--- id or -1 if no toolbar of that name exists.
+-- Mudlet tempButton(toolbar, name, orientation). Makes a button with no
+-- command and no script (TLuaInterpreter::tempButton sets an empty one) - the
+-- third argument is the orientation, not code. Returns the new id or -1 if no
+-- toolbar of that name exists.
 do
     local _raw = __mudlet_tempButton
-    function tempButton(toolbar, name, code, orientation)
-        return _raw(tostring(toolbar or ""), tostring(name or ""), tostring(code or ""), tonumber(orientation) or 0)
+    function tempButton(toolbar, name, orientation)
+        return _raw(tostring(toolbar or ""), tostring(name or ""), tonumber(orientation) or 0)
     end
 end
 

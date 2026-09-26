@@ -2574,13 +2574,12 @@ export class ScriptingAPI {
             'info', Date.now());
     }
 
-    /** Mudlet `tempButton(toolbarName, name, code [, orientation])`. Appends a
-     *  transient button under an existing toolbar group; returns the new id, or
-     *  -1 when the toolbar doesn't exist. `orientation` is Mudlet's int form
-     *  (0=horizontal/1=vertical) — accepted for compat, applied to the
-     *  button row inside the toolbar grid. */
-    tempButton(toolbar: string, name: string, code: string, orientation: number): number {
-        return this.host.createTempButton(toolbar, name, code, orientation);
+    /** Mudlet `tempButton(toolbarName, name, orientation)`. Appends a
+     *  transient button, with no command or script, under an existing toolbar
+     *  group; returns the new id, or -1 when the toolbar doesn't exist.
+     *  `orientation` is Mudlet's int form (0=horizontal/1=vertical). */
+    tempButton(toolbar: string, name: string, orientation: number): number {
+        return this.host.createTempButton(toolbar, name, orientation);
     }
 
     /** Mudlet `tempButtonToolbar(name [, orientation [, location]])`. Creates
@@ -2627,7 +2626,7 @@ export class ScriptingAPI {
 
     /** Mudlet `showToolBar(name)` / `hideToolBar(name)`. Toggles the toolbar's
      *  effective enabled flag — the existing button bar already gates render
-     *  on `isEffectivelyEnabled`, so flipping the group's `enabled` field is
+     *  on its toolbars being switched on, so flipping the group's `enabled` field is
      *  the show/hide hook. Returns null on success, or why nothing moved. */
     setToolBarVisibility(name: string, show: boolean): string | null {
         return this.host.toggleToolBarByName(name, show);
