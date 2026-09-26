@@ -1330,7 +1330,11 @@ export class AnsiAwareBuffer {
      * configured colour/decoration paints over the underlying run. With no
      * overlay this reproduces the plain SGR rendering exactly.
      */
-    private visualDecls(state: FormatStateSnapshot, overlay?: LinkStateStyle): string[] {
+    private visualDecls(
+        state: FormatStateSnapshot,
+        overlay?: LinkStateStyle,
+        transparentBackground?: { r: number; g: number; b: number },
+    ): string[] {
         const styles: string[] = [];
         const fgSrc = state.inverse ? state.background : state.foreground;
         const bgSrc = state.inverse ? state.foreground : state.background;
@@ -1344,7 +1348,10 @@ export class AnsiAwareBuffer {
         // `background`, not `background-color`: this markup is Mudlet's log
         // format as much as it is CSS, and TBuffer::bufferToHtml writes the
         // shorthand. Both mean the same thing to a browser.
-        if (bg) styles.push(`background: ${this.colorToCss(bg)}`);
+        if (bg && transparentBackground && bg.space === "rgb" && bg.a === 0) {
+            const { r, g, b } = transparentBackground;
+            styles.push(`background: rgb(${r},${g},${b})`);
+        } else if (bg) styles.push(`background: ${this.colorToCss(bg)}`);
         else if (state.inverse && overlay?.background === undefined) styles.push("background: var(--console-text)");
         if (overlay?.bold ?? state.bold) styles.push("font-weight: bold");
         if (overlay?.italic ?? state.italic) styles.push("font-style: italic");
@@ -1373,7 +1380,13 @@ export class AnsiAwareBuffer {
         return styles;
     }
 
-    toHtml(): string {
+    /**
+     * `transparentBackground` is what a fully transparent background stands
+     * for. On screen the console shows through it, but a log document has no
+     * console behind it, so TBuffer::bufferToHtml paints the console's own
+     * colour there instead (#10592) — otherwise it reads as black.
+     */
+    toHtml(opts: { transparentBackground?: { r: number; g: number; b: number } } = {}): string {
         let html = "";
 
         const escape = (s: string) => this.escapeHtml(s);
@@ -1391,7 +1404,7 @@ export class AnsiAwareBuffer {
 
             const state = segment.state;
             const link = state.hyperlink;
-            const styles = this.visualDecls(state, link?.config?.style);
+            const styles = this.visualDecls(state, link?.config?.style, opts.transparentBackground);
 
             if (link) {
                 const disabled = link.config?.disabled === true;

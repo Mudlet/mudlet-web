@@ -1392,15 +1392,18 @@ export class LuaRuntime implements IScriptingRuntime {
             let fires = 0;
             let killed = false;
             // Empty-string substring trigger fires once per line; the colour
-            // check then runs against the live buffer to gate the callback.
-            const unsub = this.api.triggers.addTemp('', () => {
+            // check gates it as the engine's `accept`, so a line of the wrong
+            // colour counts as a miss rather than a match that did nothing —
+            // which is what lets a stay-open window fire on it.
+            const unsub = this.api.triggers.addTemp('', (matches) => {
                 if (killed || this.tempIds.get(id)?.enabled === false) return;
                 // matches[1] is the coloured RUN, not the whole line — the
                 // empty-substring pattern this rides on has no match text of
-                // its own, so the colour lookup supplies it.
-                const run = this.api.currentLineColorMatch(wantFg, wantBg);
-                if (run === null) return;
-                this.setMatches([run]);
+                // its own, so the colour lookup supplies it. A fire with no
+                // matches at all is a stay-open window (setTriggerStayOpen)
+                // firing on a line it did not match, with nothing captured.
+                const run = matches.length === 0 ? null : this.api.currentLineColorMatch(wantFg, wantBg);
+                this.setMatches(run === null ? [] : [run]);
                 dispatchCb(cbId, 'tempColorTrigger');
                 fires++;
                 if (max > 0 && fires >= max) {
@@ -1409,7 +1412,12 @@ export class LuaRuntime implements IScriptingRuntime {
                     releaseCb(cbId);
                     this.tempIds.delete(id);
                 }
-            }, 'substring');
+            }, 'substring', {
+                // Named after its id, as every temp trigger is, so
+                // setTriggerStayOpen(tostring(id), n) finds it.
+                name: String(id),
+                accept: () => this.api.currentLineColorMatch(wantFg, wantBg) !== null,
+            });
             this.tempIds.set(id, { kill: () => { unsub(); releaseCb(cbId); }, type: 'trigger', enabled: true });
             return id;
         });
@@ -3095,7 +3103,17 @@ end`);
     // ── IScriptingRuntime ─────────────────────────────────────────────────────
 
     load(code: string, name: string): void {
-        this.exec(code, name);
+        // Mudlet's own chunk name for a script, so an error reads as
+        // [string "Script: name"]:LINE: exactly as it does there — package
+        // authors and the install report quote it.
+        this.execInner(code, name, `Script: ${name}`);
+    }
+
+    syntaxError(code: string, chunkName: string): string | null {
+        if (this.inert) return null;
+        const check = this.lua.global.get('__mudlet_syntax_error') as ((c: string, n: string) => unknown) | undefined;
+        const err = check?.(code, chunkName);
+        return typeof err === 'string' ? err : null;
     }
 
     run(code: string, name: string): void {
@@ -3437,18 +3455,18 @@ end`);
     // Both halves of execOnThread can hit a dead module — newThread() allocates,
     // and so does the `finally` that pops it — so the whole thing runs inside
     // the markFatal guard rather than just the chunk.
-    private execInner(code: string, name: string): unknown {
+    private execInner(code: string, name: string, chunkName?: string): unknown {
         if (this.inert) return undefined;
         this.checkMemoryPressure();
         try {
-            return this.execOnThread(code, name);
+            return this.execOnThread(code, name, chunkName);
         } catch (e) {
             if (this.markFatal(e)) return undefined;
             throw e;
         }
     }
 
-    private execOnThread(code: string, name: string): unknown {
+    private execOnThread(code: string, name: string, chunkName?: string): unknown {
         const g = this.lua.global;
         const t = g.newThread();
         const threadIndex = g.getTop();
@@ -3456,7 +3474,8 @@ end`);
             t.loadString('return __exec(...)', '@' + name);
             t.pushValue(code);
             t.pushValue(name);
-            const res = t.resume(2);
+            if (chunkName !== undefined) t.pushValue(chunkName);
+            const res = t.resume(chunkName !== undefined ? 3 : 2);
             if (res.result === LuaReturn.Yield) {
                 // invokeFileDialog suspended the handler; resumeDialogThread
                 // finishes it later and reports its errors. There is no result

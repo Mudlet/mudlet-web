@@ -8,7 +8,7 @@ import {TriggerEngine, type TriggerNode} from '../mud/triggers/TriggerEngine';
 import type {TimerEngine} from '../mud/timers/TimerEngine';
 import type {KeyEngine, KeyNode} from '../mud/keybindings/KeyEngine';
 import {findReservedKeybindings, reservedKeyNote} from '../mud/keybindings/browserReservedKeys';
-import type {ButtonNode, ScriptNode} from '../storage/schema';
+import type {ButtonNode, ScriptNode, TimerNode} from '../storage/schema';
 import {buildEffectivelyEnabledIds, isColorizing, isEffectivelyEnabled} from '../storage/schema';
 import {useAppStore, connectionUrl, selectProfileField} from '../storage';
 import {isPackageRemovable} from '../branding';
@@ -765,6 +765,7 @@ export class ScriptingEngine implements EngineHost {
             if (pkg.kind !== 'module') continue;
             try {
                 const data = reloadModuleFromVfs(pkg, vfs, this.readPackageConfig);
+                this.noteModuleLoaded(pkg.name, data);
                 useAppStore.getState().installPackage(id, pkg, data);
             } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);
@@ -782,7 +783,7 @@ export class ScriptingEngine implements EngineHost {
     private scheduleModuleSyncForChanges(state: ReturnType<typeof useAppStore.getState>, prevState: ReturnType<typeof useAppStore.getState>): void {
         const id = this.connectionId;
         const packages = state.connectionPackages[id] ?? [];
-        const dirtyModules = packages.filter(p => p.kind === 'module' && p.sync);
+        const dirtyModules = packages.filter(p => p.kind === 'module' && p.sync && !this.unloadedModules.has(p.name));
         if (dirtyModules.length === 0) return;
 
         for (const pkg of dirtyModules) {
@@ -1011,6 +1012,16 @@ export class ScriptingEngine implements EngineHost {
     saveProfileXml(location?: string, saveName?: string): { ok: true; path: string } | { ok: false; err: string } {
         const vfs = this.vfs;
         if (!vfs) return { ok: false, err: 'no profile VFS available' };
+        // A file name that names a place of its own would win the join below
+        // outright and land the save outside the folder it was given, so it is
+        // refused — an argument problem, and so answered before whether a save
+        // is already running. A drive-letter or backslash-rooted name counts
+        // too: getOS() reports the player's own platform, and on Windows those
+        // are what an absolute path looks like.
+        const rawName = (saveName ?? '').trim();
+        if (/^(?:[/\\]|[A-Za-z]:[/\\])/.test(rawName)) {
+            return { ok: false, err: `the file name "${rawName}" is an absolute path, not a name within the folder to save to` };
+        }
         // One at a time. A save is only durable once its flush has settled, and
         // a second one starting meanwhile would race the first over the same
         // profile state — so the second is refused rather than queued, and
@@ -1020,7 +1031,7 @@ export class ScriptingEngine implements EngineHost {
         // A trailing slash would double up against the separator below.
         let dir = (location ?? '').trim();
         while (dir.endsWith('/')) dir = dir.slice(0, -1);
-        let name = (saveName ?? '').trim();
+        let name = rawName;
         const generated = name === '';
         if (generated) {
             name = `${mudletTimestamp(new Date())}.xml`;
@@ -1066,6 +1077,10 @@ export class ScriptingEngine implements EngineHost {
         const pkg = (state.connectionPackages[id] ?? []).find(p => p.name === moduleName);
         if (!pkg) throw new Error(`module not installed: ${moduleName}`);
         if (pkg.kind !== 'module') throw new Error(`not a module: ${moduleName}`);
+        if (this.unloadedModules.has(moduleName)) {
+            throw new Error(`module "${moduleName}" never finished loading from its file,`
+                + ' so writing it back would destroy the part that did not load');
+        }
         const path = moduleXmlAbsolutePath(pkg, vfs);
         if (!path) throw new Error(`module "${moduleName}" has no xmlPath`);
 
@@ -1104,6 +1119,12 @@ export class ScriptingEngine implements EngineHost {
             this.api.printError(`[module] not a module: ${moduleName}`);
             return false;
         }
+        // A module's own install-time script asking for it to be reloaded —
+        // by the name its config.lua gave it, which the install could not have
+        // known to refuse by the file's — would import the file again on top
+        // of the copy still being read in, a second set of every item per
+        // round. Refused while it is installing (or already reloading).
+        if (this.installing.has(moduleName)) return false;
         try {
             const data = reloadModuleFromVfs(pkg, vfs, this.readPackageConfig);
             // A reload re-reads the module from disk, so anything a script had
@@ -1112,8 +1133,16 @@ export class ScriptingEngine implements EngineHost {
             // reporting a title the script had replaced, from a config.lua that
             // no longer said it.
             this.moduleInfoOverrides.delete(moduleName);
-            useAppStore.getState().installPackage(id, pkg, data);
+            this.noteModuleLoaded(moduleName, data);
+            const problems = this.collectInstallProblems(moduleName,
+                () => useAppStore.getState().installPackage(id, pkg, data), data.triggers);
             this.raiseEvent('sysReadModuleEvent', [moduleName]);
+            // A reload is Mudlet's module sync (Host::reloadModule installs it
+            // again as one), so it says so the way a sync does — on the event,
+            // with whatever in the module does not work, and never on the
+            // console, where it would come back on every reload.
+            const file = moduleXmlAbsolutePath(pkg, vfs) ?? '';
+            this.raiseEvent('sysSyncInstallModule', problems ? [moduleName, file, problems] : [moduleName, file]);
             return true;
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -1176,6 +1205,7 @@ export class ScriptingEngine implements EngineHost {
     saveSyncedModules(): void {
         for (const name of this.getModuleNames()) {
             if (!this.getModuleInfo(name)?.sync) continue;
+            if (this.unloadedModules.has(name)) continue;
             this.syncModuleToFile(name).catch(err => {
                 const msg = err instanceof Error ? err.message : String(err);
                 this.api.printError(`[saveProfile] sync failed for module "${name}": ${msg}`);
@@ -1315,16 +1345,18 @@ export class ScriptingEngine implements EngineHost {
             }
             prepared.commit();
             const { manifest, data } = prepared;
-            useAppStore.getState().installPackage(this.connectionId, manifest, data);
-            this.notifyPackageInstalled(manifest.name);
+            this.noteModuleLoaded(manifest.name, data);
+            const problems = this.collectInstallProblems(manifest.name,
+                () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data.triggers);
+            this.notifyPackageInstalled(manifest.name, undefined, problems);
             this.raiseEvent('sysInstallModule', [manifest.name]);
             this.raiseEvent('sysLuaInstallModule', [manifest.name, path]);
             // Mudlet raises sysSyncInstallModule for modules flagged to sync
             // (so sibling profiles reload them). Mudlet Web is single-profile, so
             // this fires locally for ported scripts that listen on it.
-            if (manifest.sync) this.raiseEvent('sysSyncInstallModule', [manifest.name, path]);
+            if (manifest.sync) this.raiseEvent('sysSyncInstallModule', problems ? [manifest.name, path, problems] : [manifest.name, path]);
             void vfs.flush();
-            return { ok: true, error: null };
+            return { ok: true, error: problems };
         } catch (err) {
             const error = err instanceof Error ? err.message : String(err);
             this.api.printError(`[installModule] ${error}`);
@@ -1343,14 +1375,21 @@ export class ScriptingEngine implements EngineHost {
             this.api.printError(`[uninstallModule] not a module: ${moduleName}`);
             return false;
         }
-        this.notifyPackageUninstalled(moduleName);
-        this.raiseEvent('sysUninstallModule', [moduleName]);
-        // Reached only via the Lua `uninstallModule()` binding — also raise
-        // Mudlet's Lua-specific event for ported-script parity.
+        // Held over while the module is still being read in — see
+        // holdRemovalIfInstalling.
+        if (this.holdRemovalIfInstalling(moduleName, 'module')) return true;
+        // sysUninstall, then the event for the kind of removal that was asked
+        // for — reached only via the Lua `uninstallModule()` binding, so
+        // Mudlet's Lua-specific one. Not sysUninstallPackage: Host::
+        // uninstallPackage raises that for a package alone, and a handler
+        // listening for its own package going would take a module of the
+        // same name for it.
+        this.raiseEvent('sysUninstall', [moduleName]);
         this.raiseEvent('sysLuaUninstallModule', [moduleName]);
         // Mudlet's sync-module counterpart, fired for sync-flagged modules
         // (see sysSyncInstallModule above for the single-profile caveat).
         if (pkg.sync) this.raiseEvent('sysSyncUninstallModule', [moduleName]);
+        this.unloadedModules.delete(moduleName);
         useAppStore.getState().uninstallPackage(this.connectionId, moduleName);
         if (this.vfs) {
             const vfs = this.vfs;
@@ -1799,7 +1838,7 @@ export class ScriptingEngine implements EngineHost {
      * loads the new scripts synchronously inside that commit, so by the time
      * this method runs the package's event handlers are already registered.
      */
-    notifyPackageInstalled(packageName: string, fileName?: string): void {
+    notifyPackageInstalled(packageName: string, fileName?: string, problems?: string | null): void {
         this.flushPendingApplies();
         this.registerPackageFonts(packageName);
         // sysInstall carries the name; the detailed event carries the file it
@@ -1808,6 +1847,13 @@ export class ScriptingEngine implements EngineHost {
         // own resources, or to tell the user where it came from — and had no way
         // to get it. Omitted rather than sent empty when unknown, which is the
         // case for the packages seeded on profile open.
+        // What does not work in the package rides along as the last argument,
+        // for a handler that installs on a script's behalf and reports it.
+        if (problems) {
+            this.raiseEvent('sysInstall', [packageName, problems]);
+            this.raiseEvent('sysInstallPackage', [packageName, fileName ?? '', problems]);
+            return;
+        }
         this.raiseEvent('sysInstall', [packageName]);
         this.raiseEvent('sysInstallPackage', fileName ? [packageName, fileName] : [packageName]);
     }
@@ -2021,10 +2067,11 @@ export class ScriptingEngine implements EngineHost {
             }
             prepared.commit();
             const { manifest, data } = prepared;
-            useAppStore.getState().installPackage(this.connectionId, manifest, data);
-            this.notifyPackageInstalled(manifest.name, path);
+            const problems = this.collectInstallProblems(manifest.name,
+                () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data.triggers);
+            this.notifyPackageInstalled(manifest.name, path, problems);
             void vfs.flush();
-            return { ok: true, error: null };
+            return { ok: true, error: problems };
         } catch (err) {
             const error = err instanceof Error ? err.message : String(err);
             this.api.printError(`[installPackage] ${error}`);
@@ -2489,6 +2536,7 @@ export class ScriptingEngine implements EngineHost {
         // Brand-bundled packages marked removable:false can't be uninstalled
         // (and would reinstall on next open anyway).
         if (!isPackageRemovable(packageName)) return false;
+        if (this.holdRemovalIfInstalling(packageName, 'package')) return true;
         this.notifyPackageUninstalled(packageName);
         useAppStore.getState().uninstallPackage(this.connectionId, packageName);
         if (this.vfs) {
@@ -2670,8 +2718,16 @@ export class ScriptingEngine implements EngineHost {
                 if (node.parentId && doomed.has(node.parentId)) doomed.add(node.id);
             }
         }
+        // A timer with no time is still found, and so still answers true, but
+        // Mudlet will not start it: it would fire on every pass of the event
+        // loop and keep a core busy. An offset timer (one nested under another
+        // timer rather than a folder) is the exception — its zero means "as
+        // soon as the parent fires", so it never spins on its own.
+        const byId = new Map(timers.map(t => [t.id, t]));
+        const cannotRun = (t: TimerNode) => enabled && !t.isGroup && !(t.seconds > 0)
+            && !(t.parentId && byId.get(t.parentId)?.isGroup === false);
         const patches = timers
-            .filter(t => (t.name === name || doomed.has(t.id)) && t.enabled !== enabled)
+            .filter(t => (t.name === name || doomed.has(t.id)) && t.enabled !== enabled && !cannotRun(t))
             .map(t => ({ id: t.id, patch: { enabled } }));
         if (patches.length > 0) store.updateTimers(this.connectionId, patches);
         return true;
@@ -4172,6 +4228,97 @@ export class ScriptingEngine implements EngineHost {
     // Tag a Lua error with the source entity (kind + id + name + line) so the
     // error log can render a jump-to-source button. `printError` forwards the
     // source through the script.log event into the session buffer.
+    /** Packages and modules whose items are being read in right now — their
+     *  scripts are running as part of the install. */
+    private readonly installing = new Set<string>();
+    /**
+     * Modules whose XML stopped part-way through (#8696). The items read in
+     * before the break are in the profile and running, but they are only part
+     * of the module, so writing them back out over its file — which is what a
+     * sync does — would destroy the rest. Kept until a read gets all the way
+     * through.
+     */
+    private readonly unloadedModules = new Set<string>();
+
+    private noteModuleLoaded(name: string, data: { parseError?: string }): void {
+        if (data.parseError) this.unloadedModules.add(name);
+        else this.unloadedModules.delete(name);
+    }
+    /** Removals asked of a package or module by its own install-time scripts,
+     *  waiting for that install to finish. */
+    private readonly heldRemovals: { name: string; kind: 'package' | 'module' }[] = [];
+
+    /**
+     * A package's scripts run while its install is still reading it in, and a
+     * one-shot installer package asks for its own removal from one of them.
+     * Carried out there and then, that took the items out from under the
+     * install (Mudlet #10867 — a crash there, a half-installed package here),
+     * so a removal of the package being installed is held over and carried
+     * out once the install is done: the install is announced, and then the
+     * removal. Removing any OTHER package still happens at once. Answers
+     * whether it was held; asking twice holds it once.
+     */
+    private holdRemovalIfInstalling(name: string, kind: 'package' | 'module'): boolean {
+        if (!this.installing.has(name)) return false;
+        if (!this.heldRemovals.some(r => r.name === name && r.kind === kind)) {
+            this.heldRemovals.push({ name, kind });
+        }
+        return true;
+    }
+
+    /** Carry out the held removals once nothing they name is installing, on the
+     *  next pass of the event loop — after the install that held them has
+     *  answered and raised its events. On the timer engine, as the postponed
+     *  installs are, so a spec's pumpEvents() reaches it. */
+    private carryOutHeldRemovals(): void {
+        if (this.heldRemovals.length === 0) return;
+        this.timerEngine.addTemp(0, () => {
+            const due = this.heldRemovals.filter(r => !this.installing.has(r.name));
+            for (const removal of due) {
+                this.heldRemovals.splice(this.heldRemovals.indexOf(removal), 1);
+                if (removal.kind === 'module') this.uninstallModuleByName(removal.name);
+                else this.uninstallPackageByName(removal.name);
+            }
+        });
+    }
+
+    /** Scripts and triggers of the package being installed that do not work,
+     *  gathered while it installs; null when no install is under way. */
+    private installProblems: string[] | null = null;
+
+    /**
+     * Commit a package's (or module's) items with `commit` and answer what in
+     * them does not work, as Host::installPackage does: every script whose body
+     * stopped with an error as it ran, in the order the package lists them,
+     * then every trigger whose body will not even compile — a trigger's body
+     * does not run until its pattern matches, so compiling it is the only way
+     * to find out now. Plain text, joined with "; ", or null when all is well.
+     *
+     * The console is left alone: a script asked for this install and has the
+     * answer to report however it likes, and a module sync would otherwise
+     * repeat it on every save for as long as the module stays broken.
+     */
+    private collectInstallProblems(name: string, commit: () => void, triggers: TriggerNode[]): string | null {
+        const outer = this.installProblems;
+        const problems: string[] = [];
+        this.installProblems = problems;
+        this.installing.add(name);
+        try {
+            commit();
+        } finally {
+            this.installProblems = outer;
+            this.installing.delete(name);
+        }
+        this.carryOutHeldRemovals();
+        const rt = this.runtimes.lua;
+        for (const trigger of triggers) {
+            if (trigger.isGroup || !trigger.code || trigger.language !== 'lua') continue;
+            const err = rt?.syntaxError?.(trigger.code, `Trigger: ${trigger.name}`);
+            if (err) problems.push(`${trigger.name}: ${err}`);
+        }
+        return problems.length > 0 ? problems.join('; ') : null;
+    }
+
     private reportEntityError(
         kind: ScriptLogSourceKind,
         id: string,
@@ -4180,6 +4327,10 @@ export class ScriptingEngine implements EngineHost {
     ): void {
         const prefix = formatErrorPrefix(kind, name);
         const msg = describeThrown(err, prefix);
+        // A script that stops with an error while its package is installing
+        // is reported to whoever asked for the install, too — see
+        // collectInstallProblems.
+        if (kind === 'script' && this.installProblems) this.installProblems.push(`${name}: ${msg}`);
         const source: ScriptLogSource = { kind, id, name };
         const line = parseLuaErrorLine(msg);
         if (line !== undefined) source.line = line;

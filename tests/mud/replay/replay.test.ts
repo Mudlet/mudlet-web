@@ -79,6 +79,16 @@ describe('replayFormat', () => {
         expect(parseReplay(latin1('This is a plain text file, not a replay.'))).toBeNull();
     });
 
+    it('plays on past a chunk with no bytes in it', () => {
+        const bytes = new Uint8Array([
+            0, 0, 0, 0, 0, 0, 0, 1, 0x61,
+            0, 0, 0, 10, 0, 0, 0, 0,
+            0, 0, 0, 10, 0, 0, 0, 1, 0x62,
+        ]);
+        const parsed = parseReplay(bytes)!;
+        expect(parsed.map(c => [c.offsetMs, replayBytesToLatin1(c.data)])).toEqual([[0, 'a'], [10, ''], [10, 'b']]);
+    });
+
     it('accepts an empty file as a zero-chunk replay (Mudlet does too)', () => {
         expect(parseReplay(new Uint8Array(0))).toEqual([]);
     });

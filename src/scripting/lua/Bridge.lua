@@ -2763,7 +2763,12 @@ end
 -- `local ok, err = installPackage(...)`) get the error string instead of nil.
 local function installOutcome(r)
     if type(r) == 'table' then
-        if r.ok then return true end
+        -- A package that installed with scripts or triggers that do not work
+        -- is still installed, and says which alongside the true.
+        if r.ok then
+            if r.error then return true, r.error end
+            return true
+        end
         -- nil, not false: Mudlet refuses through warnArgumentValue, which pushes
         -- nil + the message. Both are falsy so an `if installPackage(p) then`
         -- caller could not tell, but the documented contract is nil and scripts
@@ -5638,7 +5643,8 @@ end
 -- Only the type check needs Lua; the reasons come from the binding, which is
 -- what knows whether the file was missing, unparseable, or not a map.
 function saveJsonMap(location)
-    if __mudlet_str(location) == nil then
+    -- Left out altogether, it saves into the profile's map folder.
+    if location ~= nil and __mudlet_str(location) == nil then
         error("saveJsonMap: bad argument #1 type (destination as string expected, got "
             .. type(location) .. "!)", 2)
     end
@@ -5759,6 +5765,7 @@ do
     function setCommandChecked(id, checked) return __setCommandChecked(id, checked) end
     function setCommandIcon(id, icon)       return __setCommandIcon(id, icon) end
     function setCommandTooltip(id, tooltip) return __setCommandTooltip(id, tooltip) end
+    function setCommandPinned(id, pinned)   return __setCommandPinned(id, pinned) end
 
     function setCommandPulse(id, on, colour, altColour, intervalMs)
         local result = __setCommandPulse(id, on, colour, altColour, intervalMs)
@@ -5808,8 +5815,19 @@ do
     local NO_ENGINE = "the speech recognition library is not available in this client"
 
     -- Announced as well as returned. Only for engine refusals; see above.
+    --
+    -- Except from inside a sysSTTError handler: a handler's own stt.* calls
+    -- answer it through their return values alone, as Mudlet's do. Announcing
+    -- there would run the handler again, which makes the same call again, until
+    -- the C stack gives out.
+    local announcing = false
     local function refuse(message)
-        raiseEvent("sysSTTError", message)
+        if not announcing then
+            announcing = true
+            local ok, err = pcall(raiseEvent, "sysSTTError", message)
+            announcing = false
+            if not ok then error(err, 0) end
+        end
         return nil, message
     end
 
@@ -5852,6 +5870,7 @@ do
                     biasing  = false,
                     grammar  = false,
                     words    = false,
+                    sensitivityTuning = false,
                     onDevice = false,
                 },
                 silenceTimeout = 0,
@@ -5902,10 +5921,11 @@ do
         start  = function() return refuse(NO_ENGINE) end,
         toggle = function() return refuse(NO_ENGINE) end,
 
-        -- Stopping nothing and closing nothing are not errors — the state is
+        -- Stopping, cancelling and closing nothing are not errors — the state is
         -- never "error" here, so these always take the clean-stop branch.
-        stop  = function() return true end,
-        close = function() return true end,
+        stop   = function() return true end,
+        cancel = function() return true end,
+        close  = function() return true end,
 
         -- Re-running detection is a probe, not something the engine can
         -- refuse: it answers whether the library is available now, which here
@@ -7039,6 +7059,9 @@ do
         -- fixture in the read-only /lua/ namespace), and io.open sees both.
         local xml
         if path and path:lower():sub(-4) == ".xml" then
+            -- A bare name is resolved against the profile directory, as saveMap
+            -- and loadMap resolve theirs, and the refusal names where it looked.
+            if path:sub(1, 1) ~= "/" then path = getMudletHomeDir() .. "/" .. path end
             local f = io.open(path, "r")
             if not f then
                 return nil, 'loadMap: the file "' .. path .. '" was not found'
