@@ -66,14 +66,14 @@ export function installMapBindings({
 
     /** `<profile>/map/<yyyy-MM-dd#hh-mm-ss>map.dat`, the name Mudlet gives a
      *  save that was not told where to go. */
-    const defaultMapPath = (): string | null => {
+    const defaultMapPath = (suffix = 'map.dat'): string | null => {
         if (!vfs) return null;
         const d = new Date();
         const p = (n: number) => String(n).padStart(2, '0');
         const stamp = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
             + `#${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
         try { vfs.mkdir(`${vfs.profilePath}/map`); } catch { /* already there */ }
-        return `${vfs.profilePath}/map/${stamp}map.dat`;
+        return `${vfs.profilePath}/map/${stamp}${suffix}`;
     };
 
     /** The most recently written map file in the profile's map folder, which is
@@ -253,10 +253,14 @@ export function installMapBindings({
     // second into Mudlet's (nil, why). The destination's TYPE is checked there
     // too, because Mudlet reads it with getVerifiedString, which raises.
     lua.global.set('__saveJsonMap', (location?: unknown): string | undefined => {
+        if (!vfs) return 'saveJsonMap: no profile filesystem to write to';
+        // No destination at all saves into the profile's map folder under a
+        // timestamped name, making the folder if it is not there (#5955) —
+        // unlike a destination the player named, below.
+        if (location == null) location = defaultMapPath('map.json');
         if (typeof location !== 'string' || location.length === 0) {
             return 'saveJsonMap: a non-empty path and file name is needed to save the map to';
         }
-        if (!vfs) return 'saveJsonMap: no profile filesystem to write to';
         // Mudlet appends the suffix itself rather than writing a file the
         // loader will not recognise later.
         const path = /\.json$/i.test(location) ? location : `${location}.json`;

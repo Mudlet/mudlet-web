@@ -5638,7 +5638,8 @@ end
 -- Only the type check needs Lua; the reasons come from the binding, which is
 -- what knows whether the file was missing, unparseable, or not a map.
 function saveJsonMap(location)
-    if __mudlet_str(location) == nil then
+    -- Left out altogether, it saves into the profile's map folder.
+    if location ~= nil and __mudlet_str(location) == nil then
         error("saveJsonMap: bad argument #1 type (destination as string expected, got "
             .. type(location) .. "!)", 2)
     end
@@ -7053,6 +7054,9 @@ do
         -- fixture in the read-only /lua/ namespace), and io.open sees both.
         local xml
         if path and path:lower():sub(-4) == ".xml" then
+            -- A bare name is resolved against the profile directory, as saveMap
+            -- and loadMap resolve theirs, and the refusal names where it looked.
+            if path:sub(1, 1) ~= "/" then path = getMudletHomeDir() .. "/" .. path end
             local f = io.open(path, "r")
             if not f then
                 return nil, 'loadMap: the file "' .. path .. '" was not found'

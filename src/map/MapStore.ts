@@ -687,6 +687,9 @@ export class MapStore {
     private envColors = new Map<number, number>();
     private nextRoomId = 1;
     private nextAreaId = 1;
+    /** Where TRoomDB::createNewAreaID starts looking: just past the last id it
+     *  handed out, so a deleted area's number is not handed straight back. */
+    private areaIdHint = 1;
     /** Installed by `setExitWeightFilter`; consulted per exit in findPath. */
     private exitWeightFilter: ExitWeightFilter | null = null;
     // In-flight state for a three-phase binary load (beginBinaryLoad →
@@ -859,6 +862,7 @@ export class MapStore {
         this.lastAuditIssues = [];
         this.nextRoomId = 1;
         this.nextAreaId = 2;        // -1 is reserved below
+        this.areaIdHint = 1;
         const defaultArea = makeArea();
         defaultArea.zLevels = [0];
         this.areas.set(-1, defaultArea);
@@ -2837,11 +2841,14 @@ export class MapStore {
                 return { ok: false, err: `addAreaName: area names may not be duplicated and areaID ${aid} already has the name '${name}'` };
             }
         }
-        // The lowest free id, as TRoomDB::createNewAreaID counts it — so the
-        // number of a deleted area is handed back rather than being lost for
-        // the rest of the session.
-        let id = 1;
+        // The first free id from the hint on, as TRoomDB::createNewAreaID
+        // counts it, and the hint moves past what it returns. Rescanning from
+        // 1 every time reused a deleted area's number — which anything still
+        // holding that id would then read as the new area — and made bulk
+        // area creation quadratic in the area count.
+        let id = Math.max(1, this.areaIdHint);
         while (this.areas.has(id) || this.areaNames.has(id)) id++;
+        this.areaIdHint = id + 1;
         if (id >= this.nextAreaId) this.nextAreaId = id + 1;
         this.areas.set(id, makeArea());
         this.areaNames.set(id, name);
