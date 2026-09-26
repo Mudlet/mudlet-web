@@ -252,14 +252,20 @@ function parseTriggers(els: Element[], parentId: string | null, out: TriggerNode
     }
 }
 
-function parseTimers(els: Element[], parentId: string | null, out: TimerNode[]): void {
+function parseTimers(els: Element[], parentId: string | null, out: TimerNode[], underTimer = false): void {
     for (const el of els) {
         if (isYes(el, 'isTempTimer')) continue;
         const id = crypto.randomUUID();
         const group = isGroup(el);
-        out.push({ id, parentId, isGroup: group, name: getText(el, 'name'), enabled: isYes(el, 'isActive'), seconds: parseTimerTime(getText(el, 'time')), code: getText(el, 'script'), language: 'lua', command: getText(el, 'command'), repeat: true, packageName: getText(el, 'packageName') || undefined });
+        const seconds = parseTimerTime(getText(el, 'time'));
+        // A timer with no time would fire on every pass of the event loop, so
+        // Mudlet will not start one that arrives switched on — unless it is an
+        // offset timer (nested under another timer), whose zero means "as soon
+        // as the parent fires". TTimer refuses the same way on enableTimer().
+        const enabled = isYes(el, 'isActive') && (group || seconds > 0 || underTimer);
+        out.push({ id, parentId, isGroup: group, name: getText(el, 'name'), enabled, seconds, code: getText(el, 'script'), language: 'lua', command: getText(el, 'command'), repeat: true, packageName: getText(el, 'packageName') || undefined });
         // Unconditional, as in desktop's readTimerGroup (XMLimport.cpp:1517).
-        parseTimers(directChildren(el, 'Timer', 'TimerGroup'), id, out);
+        parseTimers(directChildren(el, 'Timer', 'TimerGroup'), id, out, !group);
     }
 }
 

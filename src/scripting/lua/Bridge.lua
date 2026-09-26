@@ -5808,8 +5808,19 @@ do
     local NO_ENGINE = "the speech recognition library is not available in this client"
 
     -- Announced as well as returned. Only for engine refusals; see above.
+    --
+    -- Except from inside a sysSTTError handler: a handler's own stt.* calls
+    -- answer it through their return values alone, as Mudlet's do. Announcing
+    -- there would run the handler again, which makes the same call again, until
+    -- the C stack gives out.
+    local announcing = false
     local function refuse(message)
-        raiseEvent("sysSTTError", message)
+        if not announcing then
+            announcing = true
+            local ok, err = pcall(raiseEvent, "sysSTTError", message)
+            announcing = false
+            if not ok then error(err, 0) end
+        end
         return nil, message
     end
 
@@ -5852,6 +5863,7 @@ do
                     biasing  = false,
                     grammar  = false,
                     words    = false,
+                    sensitivityTuning = false,
                     onDevice = false,
                 },
                 silenceTimeout = 0,
@@ -5902,10 +5914,11 @@ do
         start  = function() return refuse(NO_ENGINE) end,
         toggle = function() return refuse(NO_ENGINE) end,
 
-        -- Stopping nothing and closing nothing are not errors — the state is
+        -- Stopping, cancelling and closing nothing are not errors — the state is
         -- never "error" here, so these always take the clean-stop branch.
-        stop  = function() return true end,
-        close = function() return true end,
+        stop   = function() return true end,
+        cancel = function() return true end,
+        close  = function() return true end,
 
         -- Re-running detection is a probe, not something the engine can
         -- refuse: it answers whether the library is available now, which here

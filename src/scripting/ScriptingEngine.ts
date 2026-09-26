@@ -8,7 +8,7 @@ import {TriggerEngine, type TriggerNode} from '../mud/triggers/TriggerEngine';
 import type {TimerEngine} from '../mud/timers/TimerEngine';
 import type {KeyEngine, KeyNode} from '../mud/keybindings/KeyEngine';
 import {findReservedKeybindings, reservedKeyNote} from '../mud/keybindings/browserReservedKeys';
-import type {ButtonNode, ScriptNode} from '../storage/schema';
+import type {ButtonNode, ScriptNode, TimerNode} from '../storage/schema';
 import {buildEffectivelyEnabledIds, isColorizing, isEffectivelyEnabled} from '../storage/schema';
 import {useAppStore, connectionUrl, selectProfileField} from '../storage';
 import {isPackageRemovable} from '../branding';
@@ -2670,8 +2670,16 @@ export class ScriptingEngine implements EngineHost {
                 if (node.parentId && doomed.has(node.parentId)) doomed.add(node.id);
             }
         }
+        // A timer with no time is still found, and so still answers true, but
+        // Mudlet will not start it: it would fire on every pass of the event
+        // loop and keep a core busy. An offset timer (one nested under another
+        // timer rather than a folder) is the exception — its zero means "as
+        // soon as the parent fires", so it never spins on its own.
+        const byId = new Map(timers.map(t => [t.id, t]));
+        const cannotRun = (t: TimerNode) => enabled && !t.isGroup && !(t.seconds > 0)
+            && !(t.parentId && byId.get(t.parentId)?.isGroup === false);
         const patches = timers
-            .filter(t => (t.name === name || doomed.has(t.id)) && t.enabled !== enabled)
+            .filter(t => (t.name === name || doomed.has(t.id)) && t.enabled !== enabled && !cannotRun(t))
             .map(t => ({ id: t.id, patch: { enabled } }));
         if (patches.length > 0) store.updateTimers(this.connectionId, patches);
         return true;
