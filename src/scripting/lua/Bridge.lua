@@ -6,11 +6,21 @@ matches = {}; multimatches = {}
 -- until first call but most scripts assume they exist.
 speedWalkPath, speedWalkDir, speedWalkWeight = {}, {}, {}
 
--- Mudlet getPath(from, to) — A* over the map graph. Always clears the three
--- speedWalk* globals; on success repopulates them 1-indexed and returns
--- (true, totalWeight). On argument-validation failure returns (nil, errMsg);
--- on no-path returns (false, -1, errMsg) — matching Mudlet's multi-return.
+-- Mudlet getPath(from, to) — A* over the map graph. A non-number roomID is a
+-- Lua argument error, raised before anything is touched (TLuaInterpreter's
+-- getVerifiedInt). Otherwise always clears the three speedWalk* globals; on
+-- success repopulates them 1-indexed and returns (true, totalWeight). An
+-- unknown roomID returns (nil, errMsg); no path returns (false, -1, errMsg) —
+-- matching Mudlet's multi-return.
 function getPath(from, to)
+    if tonumber(from) == nil then
+        error("getPath: bad argument #1 type (starting roomID as number expected, got "
+            .. type(from) .. "!)", 2)
+    end
+    if tonumber(to) == nil then
+        error("getPath: bad argument #2 type (target roomID as number expected, got "
+            .. type(to) .. "!)", 2)
+    end
     speedWalkPath, speedWalkDir, speedWalkWeight = {}, {}, {}
     local res = __getPath(from, to)
     if type(res) == 'string' then
@@ -36,6 +46,14 @@ function getPath(from, to)
         end
     end
     return true, res.totalWeight or 0
+end
+
+-- Mudlet getPlayerRoom() — the player's room id, or (nil, errMsg) when there
+-- is none. The JS side hands back the id or the message.
+function getPlayerRoom()
+    local r = __getPlayerRoom()
+    if type(r) == 'number' then return r end
+    return nil, r
 end
 
 -- Mudlet centerview(roomID) — center the map on a room and set it as the

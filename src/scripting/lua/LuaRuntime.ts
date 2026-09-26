@@ -2982,16 +2982,30 @@ end`);
                     resolvedPath = vfs.resolvePath(filename);
                     if (m === 'r' || m === 'r+') {
                         if (!vfs.exists(filename)) {
-                            lastError = `cannot open '${filename}': No such file or directory`;
+                            lastError = `${filename}: No such file or directory`;
                             return null;
                         }
                         content = readAsLatin1(filename);
-                    } else if (m === 'a' || m === 'a+') {
+                    } else {
+                        // Creating a file never creates its directory: stock
+                        // Lua's fopen fails, and Mudlet scripts (table.save
+                        // included, which goes through io.open) rely on that
+                        // failure to notice a missing directory. The handle is
+                        // only written on close, where ProfileVFS would mkdir
+                        // the parent on its own, so refuse here up front.
+                        const parent = resolvedPath.substring(0, resolvedPath.lastIndexOf('/')) || '/';
+                        const parentType = vfs.stat(parent)?.type;
+                        if (parentType !== 'dir') {
+                            lastError = `${filename}: ${parentType ? 'Not a directory' : 'No such file or directory'}`;
+                            return null;
+                        }
+                    }
+                    if (m === 'a' || m === 'a+') {
                         if (vfs.exists(filename)) content = readAsLatin1(filename);
                     }
                     dirty = m === 'w' || m === 'w+';
                 } else {
-                    lastError = `cannot open '${filename}': No such file or directory`;
+                    lastError = `${filename}: No such file or directory`;
                     return null;
                 }
 

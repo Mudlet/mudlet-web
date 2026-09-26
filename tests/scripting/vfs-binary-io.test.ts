@@ -28,6 +28,14 @@ class StubVFS {
     readFile(p: string): string { return new TextDecoder().decode(this.readBinaryFile(p)); }
     writeFile(p: string, content: string): void { this.writeBinaryFile(p, new TextEncoder().encode(content)); }
     deleteFile(p: string): void { this.files.delete(this.resolvePath(p)); }
+    /** io.open checks the parent directory exists before creating a file;
+     *  the profile root and everything above it are the only directories. */
+    stat(p: string): { type: 'file' | 'dir' } | null {
+        const abs = this.resolvePath(p);
+        if (this.files.has(abs)) return { type: 'file' };
+        return this.profilePath === abs || this.profilePath.startsWith(`${abs}/`) || abs === '/'
+            ? { type: 'dir' } : null;
+    }
 }
 
 describe('VFS binary-safe Lua io', () => {
