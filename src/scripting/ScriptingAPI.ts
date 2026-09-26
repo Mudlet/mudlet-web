@@ -2602,7 +2602,7 @@ export class ScriptingAPI {
 
     /** Mudlet `showToolBar(name)` / `hideToolBar(name)`. Toggles the toolbar's
      *  effective enabled flag — the existing button bar already gates render
-     *  on `isEffectivelyEnabled`, so flipping the group's `enabled` field is
+     *  on its toolbars being switched on, so flipping the group's `enabled` field is
      *  the show/hide hook. Returns null on success, or why nothing moved. */
     setToolBarVisibility(name: string, show: boolean): string | null {
         return this.host.toggleToolBarByName(name, show);

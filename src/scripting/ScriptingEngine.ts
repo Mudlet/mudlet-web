@@ -89,6 +89,7 @@ import {isMudletProfileVfs, readNewestParseableXml} from '../import/mudletLink';
 import {buildLinkedWriteback, mudletTimestamp} from '../import/mudletWriteback';
 import {buildHostBaseXml, RETAINED_HOST_PATH, LEGACY_RETAINED_HOST_PATH} from '../import/mudletProfileExport';
 import {describeThrown} from '../utils/describeThrown';
+import {inactiveButtons} from '../ui/buttons/inactiveButtons';
 
 // Linked-profile write-back. serializeMudletXml now emits Mudlet's exact format
 // (node flags as attributes, correct child elements/order — matched to Mudlet's
@@ -685,6 +686,7 @@ export class ScriptingEngine implements EngineHost {
             this.applyAliasesFromStore();
             this.applyTimersFromStore();
             this.applyKeybindingsFromStore();
+            this.applyButtonsFromStore();
             this.warnBrowserReservedKeybindings();
             this.storeUnsub = useAppStore.subscribe((state, prevState) => {
                 const id = this.connectionId;
@@ -700,6 +702,7 @@ export class ScriptingEngine implements EngineHost {
                 if (aliasesChanged) this.applyAliasesFromStore();
                 if (timersChanged)  this.applyTimersFromStore();
                 if (keysChanged)    this.applyKeybindingsFromStore();
+                if (buttonsChanged) this.applyButtonsFromStore();
                 if (this.triggersReady && triggersChanged) this.scheduleTriggerApply();
 
                 const automationChanged = scriptsChanged || aliasesChanged || timersChanged
@@ -1527,6 +1530,22 @@ export class ScriptingEngine implements EngineHost {
     private applyKeybindingsFromStore(): void {
         const keys = useAppStore.getState().connectionKeybindings[this.connectionId] ?? [];
         this.keyEngine.loadPerm(keys, this.uncompilableIds('key', keys));
+    }
+
+    /** What this engine last told the button bar cannot be active, so that
+     *  destroy() takes back only its own answer. */
+    private publishedInactiveButtons: ReadonlySet<string> | null = null;
+
+    /**
+     * Tell the button bar which buttons, toolbars and menus will not compile.
+     * Desktop's TAction::compileScript leaves such a one with `mOK_code` false
+     * and Tree::activate refuses it, so the toolbar builders leave it off —
+     * a toolbar or menu with its buttons — while its switch stays as it was.
+     */
+    private applyButtonsFromStore(): void {
+        const buttons = useAppStore.getState().connectionButtons[this.connectionId] ?? [];
+        inactiveButtons.set(this.connectionId, this.uncompilableIds('button', buttons));
+        this.publishedInactiveButtons = inactiveButtons.get(this.connectionId);
     }
 
     /**
@@ -3043,7 +3062,7 @@ export class ScriptingEngine implements EngineHost {
         // failed to compile: Tree::isActive wants state() as well, and so does
         // every ancestor's when checkAncestors asks about them too.
         const kind: CodeItemKind | null =
-            type === 'alias' || type === 'trigger' ? type
+            type === 'alias' || type === 'trigger' || type === 'button' ? type
             : type === 'key' || type === 'keybind' ? 'key'
             : null;
         let reachable: Set<string> | null = null;
@@ -3723,7 +3742,9 @@ export class ScriptingEngine implements EngineHost {
 
     /** Mudlet `getButtonState(name)`. Reads the pressed state on a two-state
      *  button by name. Returns null when no such button (the Lua binding maps
-     *  that to nil — Mudlet returns false/error). */
+     *  that to nil — Mudlet returns false/error). A button whose code will not
+     *  compile still answers its state: TLuaInterpreter::getButtonState reads
+     *  mButtonState without asking whether the button is active. */
     getButtonStateByName(name: string): boolean | null {
         if (!name) return null;
         const store = useAppStore.getState();
@@ -3747,7 +3768,7 @@ export class ScriptingEngine implements EngineHost {
 
     /**
      * Mudlet `showToolBar(name)` / `hideToolBar(name)`. Toggles the toolbar's
-     * own enabled flag — the ButtonsBar filters by isEffectivelyEnabled, so that
+     * own enabled flag — the ButtonsBar shows only buttons whose toolbar is on, so that
      * is the show/hide hook. Returns null on success, or the reason it moved
      * nothing (which the Bridge shapes into Mudlet's `(nil, errMsg)`).
      *
@@ -4209,6 +4230,7 @@ export class ScriptingEngine implements EngineHost {
             this.applyTriggersFromStore();
             this.applyTimersFromStore();
             this.applyKeybindingsFromStore();
+            this.applyButtonsFromStore();
             this.raiseEvent('sysLoadEvent', [false]);
             this.api.flushOutput();
         } catch (err) {
@@ -4364,6 +4386,10 @@ export class ScriptingEngine implements EngineHost {
         this.timerEngine.destroy();
         this.runtimes.lua?.destroy();
         this.runtimes.lua = null;
+        if (this.publishedInactiveButtons
+            && inactiveButtons.get(this.connectionId) === this.publishedInactiveButtons) {
+            inactiveButtons.clear(this.connectionId);
+        }
         this.triggerEngine.setLuaEval(null);
         this.triggerEngine.setColorMatcher(null);
         this.triggerEngine.setRunawayReporter(null);
@@ -4775,6 +4801,9 @@ export class ScriptingEngine implements EngineHost {
      * down command in `commandDown`, and that is the one desktop sends.
      */
     executeButton(button: ButtonNode, nextState: boolean): void {
+        // A button whose code will not compile cannot be active, and desktop
+        // does not put it on a toolbar to be clicked (see applyButtonsFromStore).
+        if (this.cannotCompile('button', button)) return;
         const cmd = button.isPushDown
             ? (nextState ? button.commandDown : button.command)
             : (button.commandDown || button.command);

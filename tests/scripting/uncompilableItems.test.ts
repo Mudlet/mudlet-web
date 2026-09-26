@@ -49,6 +49,8 @@ const { KeyEngine } = await import('../../src/mud/keybindings/KeyEngine');
 const { ScriptingAPI } = await import('../../src/scripting/ScriptingAPI');
 const { ScriptingEngine } = await import('../../src/scripting/ScriptingEngine');
 const { useAppStore } = await import('../../src/storage/appStore');
+const { inactiveButtons } = await import('../../src/ui/buttons/inactiveButtons');
+const { buildEffectivelyEnabledIds } = await import('../../src/storage/schema');
 const { RealLuaRuntime } = await import('../../src/scripting/lua/LuaRuntime') as unknown as {
     RealLuaRuntime: typeof import('../../src/scripting/lua/LuaRuntime').LuaRuntime;
 };
@@ -69,6 +71,7 @@ type EngineInternals = {
     applyAliasesFromStore: () => void;
     applyTimersFromStore: () => void;
     applyKeybindingsFromStore: () => void;
+    applyButtonsFromStore: () => void;
     api: { printError: (msg: string) => void };
 };
 
@@ -92,8 +95,24 @@ const keyEvent = (code: string) => ({
 type Slices = {
     connectionTriggers?: unknown[]; connectionAliases?: unknown[];
     connectionTimers?: unknown[]; connectionKeybindings?: unknown[];
+    connectionButtons?: unknown[];
 };
-const SLICES = ['connectionTriggers', 'connectionAliases', 'connectionTimers', 'connectionKeybindings'] as const;
+const SLICES = [
+    'connectionTriggers', 'connectionAliases', 'connectionTimers', 'connectionKeybindings', 'connectionButtons',
+] as const;
+
+const toolbar = (over: Record<string, unknown>) => ({
+    ...base, isGroup: true, orientation: 'horizontal', location: 'top', columns: 0,
+    isPushDown: false, buttonState: false, code: '', ...over,
+});
+const button = (over: Record<string, unknown>) => ({
+    ...base, orientation: 'horizontal', location: 'top', columns: 0,
+    isPushDown: false, buttonState: false, code: '', ...over,
+});
+const B_BAR = toolbar({ id: 'bBar', name: 'bBar' });
+const B_BAD = button({ id: 'bBad', name: 'bBad', parentId: 'bBar', code: 'x = = 7', command: 'RESULT bBad',
+    isPushDown: true, buttonState: true });
+const B_OK = button({ id: 'bOk', name: 'bOk', parentId: 'bBar', code: 'x = 7', command: 'RESULT bOk' });
 
 describe('items whose code or pattern will not compile are inactive (mudlet-web#192)', () => {
     let real: Awaited<ReturnType<typeof RealLuaRuntime.create>>;
@@ -140,6 +159,7 @@ describe('items whose code or pattern will not compile are inactive (mudlet-web#
         internals().applyAliasesFromStore();
         internals().applyTimersFromStore();
         internals().applyKeybindingsFromStore();
+        internals().applyButtonsFromStore();
     };
 
     beforeEach(() => {
@@ -165,7 +185,13 @@ describe('items whose code or pattern will not compile are inactive (mudlet-web#
             return next as never;
         });
         try { engine.destroy(); } catch { /* teardown best-effort */ }
+        inactiveButtons.clear(CONN);
     });
+
+    const buttons = () => useAppStore.getState().connectionButtons[CONN] ?? [];
+    const click = (id: string, next = true) => engine.executeButton(buttons().find(b => b.id === id)!, next);
+    /** What the button bar puts on screen: active, with every ancestor active. */
+    const shownButtons = () => buildEffectivelyEnabledIds(buttons(), inactiveButtons.get(CONN));
 
     const line = (text: string) =>
         engine.processFlushBatch([{ text: `${text}\n`, type: 'mud', fromServer: true }]);
@@ -285,5 +311,50 @@ describe('items whose code or pattern will not compile are inactive (mudlet-web#
 
         expect(engine.isActiveByName('va', 'trigger', false)).toBe(0);
         expect(errors[0]).toContain("cannot use '...' outside a vararg function");
+    });
+
+    it('a button with bad code is left off its toolbar and does nothing', async () => {
+        await boot({ connectionButtons: [B_BAR, B_BAD, B_OK] });
+
+        expect(inactiveButtons.get(CONN)).toEqual(new Set(['bBad']));
+        expect(shownButtons()).toEqual(new Set(['bBar', 'bOk']));
+        expect(engine.isActiveByName('bBad', 'button', false)).toBe(0);
+        expect(engine.isActiveByName('bOk', 'button', true)).toBe(1);
+        click('bBad', false);
+        click('bOk');
+        expect(wire).toEqual(['RESULT bOk']);
+        expect(hooks.runs).toEqual([{ kind: 'run', name: 'button "bOk"', chunkName: 'Button: bOk' }]);
+        // getButtonState reads the stored state, active or not, as desktop's does.
+        expect(engine.getButtonStateByName('bBad')).toBe(true);
+        expect(buttons().find(b => b.id === 'bBad')?.enabled).toBe(true);
+        internals().applyButtonsFromStore();
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toMatch(/^\[button "bBad"\] Lua syntax error: \[string "Button: bBad"\]:1: /);
+    });
+
+    it('a button comes back once its code is fixed, its switch untouched', async () => {
+        await boot({ connectionButtons: [B_BAR, B_BAD, B_OK] });
+        useAppStore.getState().updateButton(CONN, 'bBad', { code: 'x = 8' });
+        internals().applyButtonsFromStore();
+
+        expect(inactiveButtons.get(CONN).size).toBe(0);
+        expect(shownButtons()).toEqual(new Set(['bBar', 'bBad', 'bOk']));
+        expect(engine.isActiveByName('bBad', 'button', false)).toBe(1);
+        click('bBad', false);
+        expect(wire).toEqual(['RESULT bBad']);
+        expect(hooks.runs).toEqual([{ kind: 'run', name: 'button "bBad"', chunkName: 'Button: bBad' }]);
+    });
+
+    it('a toolbar with bad code takes its buttons with it', async () => {
+        await boot({ connectionButtons: [{ ...B_BAR, code: 'x = = 9' }, B_OK] });
+
+        expect(inactiveButtons.get(CONN)).toEqual(new Set(['bBar']));
+        expect(shownButtons().size).toBe(0);
+        expect(engine.isActiveByName('bBar', 'button', false)).toBe(0);
+        // The button's own code is fine; only its toolbar is not.
+        expect(engine.isActiveByName('bOk', 'button', false)).toBe(1);
+        expect(engine.isActiveByName('bOk', 'button', true)).toBe(0);
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toContain('[string "Button: bBar"]:1:');
     });
 });
