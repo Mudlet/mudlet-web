@@ -895,8 +895,11 @@ export class MudClient {
         try {
             // `cTelnet::sendData`: the CR is appended only when mUSE_UNIX_EOL is
             // off, so strict-Unix mode submits the bare LF telnet would normally
-            // pair it with.
-            this.sendBytes(this.codec.encodeOutgoing(message + (this.strictUnixEndings ? "\n" : "\r\n")));
+            // pair it with. A 0xFF data byte (`я` in CP1251, `ÿ` in Latin-1) is
+            // doubled to IAC IAC as `escapeIac` does there; sent bare, the server
+            // reads it as a telnet command and eats the byte after it too.
+            const encoded = this.codec.encodeOutgoing(message + (this.strictUnixEndings ? "\n" : "\r\n"));
+            this.sendBytes(encoded.replace(/\xFF/g, '\xFF\xFF'));
             if (isGameCommand) this.armCharacterModeDetection();
         } catch (error) {
             console.error('Error sending message:', error);
