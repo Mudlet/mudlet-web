@@ -200,8 +200,10 @@ export interface ProfileSettings {
     /** Background color for the local echo of commands you send. Empty/undefined = none. */
     commandEchoBackground?: string;
     outputFont?: OutputFontSource;
-    /** Mudlet setWindowWrap("main", N). 0/undefined disables character-based wrap
-     *  (text fills the window width). */
+    /** Mudlet setWindowWrap("main", N) — Host::mWrapAt. Defaults to 100, as on
+     *  desktop: lines longer than it are stored and drawn as several lines. 0
+     *  turns the character wrap off (text fills the window width), a Mudlet Web
+     *  escape hatch the Settings field offers and setWindowWrap refuses. */
     outputWrapAt?: number;
     /** Mudlet setWindowWrapIndent("main", N). Indent (chars) of newline-started lines. */
     outputWrapIndent?: number;
@@ -756,6 +758,8 @@ export const PROFILE_DEFAULTS: ProfileSettings = {
     outputBackground: '',
     autoClearInput: false,
     commandSeparator: ';;',
+    // Mudlet's Host::mWrapAt.
+    outputWrapAt: 100,
 };
 
 // ── Tree node base ────────────────────────────────────────────────────────────

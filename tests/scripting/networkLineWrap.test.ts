@@ -96,7 +96,7 @@ describe('network line wrap', () => {
             const { [CONN]: _drop, ...rest } = s.connectionTriggers;
             return { connectionTriggers: rest };
         });
-        useAppStore.getState().patchConnectionProfile(CONN, { outputWrapAt: undefined });
+        useAppStore.getState().patchConnectionProfile(CONN, { outputWrapAt: undefined, outputWrapHangingIndent: undefined });
         try { engine.destroy(); } catch { /* teardown best-effort */ }
     });
 
@@ -123,7 +123,61 @@ describe('network line wrap', () => {
         expect(rendered).toEqual(lines);
     });
 
-    it('leaves the line whole when no wrap width is set', async () => {
+    // Desktop wraps the main console at Host::mWrapAt, 100 unless changed, so
+    // the issue's line splits the same way with no setWindowWrap at all.
+    it('wraps an over-long line at 100 by default', async () => {
+        await boot();
+        expect((engine as unknown as { api: { getWindowWrap: (n: string) => number } }).api.getWindowWrap('main')).toBe(100);
+        const before = main().getLineCount() + 1;
+        const rendered: string[] = [];
+        session.events.on('message', (m) => { if (m !== undefined) rendered.push(typeof m === 'string' ? m : m.text); });
+
+        engine.processFlushBatch([{ text: `${long}\n`, type: 'mud', fromServer: true }]);
+
+        expect(seen).toEqual([long]);
+        const lines = main().getLines(before, main().getLineCount() + 1);
+        expect(lines).toHaveLength(2);
+        expect(lines[1]).toHaveLength(83);
+        expect(lines[1].indexOf('w25xx') + 1).toBe(55);
+        expect(rendered).toEqual(lines);
+    });
+
+    it('applies a saved outputWrapAt when the profile loads', async () => {
+        useAppStore.getState().patchConnectionProfile(CONN, { outputWrapAt: 60 });
+        await boot();
+        expect(main().getWrapWidth()).toBe(60);
+        const before = main().getLineCount() + 1;
+
+        engine.processFlushBatch([{ text: `${long}\n`, type: 'mud', fromServer: true }]);
+
+        const lines = main().getLines(before, main().getLineCount() + 1);
+        expect(lines).toHaveLength(3);
+        expect(lines.every(l => l.length <= 60)).toBe(true);
+    });
+
+    // The Settings field writes the store directly, never through setWindowWrap.
+    it('applies a changed outputWrapAt at once, indents included', async () => {
+        await boot();
+        useAppStore.getState().patchConnectionProfile(CONN, { outputWrapAt: 50, outputWrapHangingIndent: 2 });
+        expect(main().getWrapWidth()).toBe(50);
+        expect(main().getWrapHangingIndent()).toBe(2);
+        const before = main().getLineCount() + 1;
+
+        engine.processFlushBatch([{ text: `${long}\n`, type: 'mud', fromServer: true }]);
+
+        const lines = main().getLines(before, main().getLineCount() + 1);
+        expect(lines.length).toBeGreaterThan(3);
+        expect(lines.every(l => l.length <= 50)).toBe(true);
+        expect(lines.slice(1).every(l => l.startsWith('  '))).toBe(true);
+
+        // Cleared → back to the default of 100.
+        useAppStore.getState().patchConnectionProfile(CONN, { outputWrapAt: undefined, outputWrapHangingIndent: undefined });
+        expect(main().getWrapWidth()).toBe(100);
+        expect(main().getWrapHangingIndent()).toBe(0);
+    });
+
+    it('leaves the line whole when the Settings turned wrapping off', async () => {
+        useAppStore.getState().patchConnectionProfile(CONN, { outputWrapAt: 0 });
         await boot();
         const before = main().getLineCount() + 1;
 

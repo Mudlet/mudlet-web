@@ -138,8 +138,26 @@ describe('setWindowWrap / getWindowWrap (main window)', () => {
   beforeAll(async () => { rt = await createTestRuntime(); });
   afterAll(() => rt.dispose());
 
-  it('defaults the main window to 0 (wrap disabled)', () => {
-    expect(rt.run('return getWindowWrap("main")')).toBe(0);
+  // Desktop Mudlet: the main console takes Host::mWrapAt (100), a miniconsole
+  // or user window keeps TBuffer's own 99999999, and a createBuffer buffer
+  // takes the host's width like main (TConsole::changeColors) — mudlet-web#189.
+  it('defaults the main window to 100, as desktop Mudlet does', () => {
+    expect(rt.run('return getWindowWrap("main")')).toBe(100);
+  });
+
+  it('defaults a new miniconsole and user window to 99999999', () => {
+    rt.run('createMiniConsole("wrapDefaultMini", 0, 0, 400, 200)');
+    expect(rt.run('return getWindowWrap("wrapDefaultMini")')).toBe(99999999);
+    rt.run('openUserWindow("wrapDefaultUser")');
+    expect(rt.run('return getWindowWrap("wrapDefaultUser")')).toBe(99999999);
+    expect(rt.run('setWindowWrap("wrapDefaultMini", 40) return getWindowWrap("wrapDefaultMini")')).toBe(40);
+  });
+
+  it('gives a createBuffer buffer the main width, and lets a script change it', () => {
+    rt.run('createBuffer("wrapDefaultBuf")');
+    expect(rt.run('return getWindowWrap("wrapDefaultBuf")')).toBe(100);
+    expect(rt.run('return setWindowWrap("wrapDefaultBuf", 30)')).toBe(true);
+    expect(rt.run('return getWindowWrap("wrapDefaultBuf")')).toBe(30);
   });
 
   it('round-trips an explicit wrap width', () => {

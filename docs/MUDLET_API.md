@@ -773,7 +773,7 @@ through byte-identical — app stylesheets are also Mudlet Web's brand-styling h
 | `getSelection([window])` | ✅ | Bridge.lua wraps `__getSelection` |
 | `getTextFormat([window])` | ✅ | Bridge.lua → documented attribute table |
 | `getUserWindowSize(name)` | ✅ | Bridge.lua → `__getUserWindowSize` |
-| `getWindowWrap(name)` | ✅ | → wrap columns (0 = unset/disabled). "main" reads the profile `outputWrapAt`; a named window reads the `WindowManager` hint. -1 when the window is missing. Used by `Geyser.MiniConsole:getWindowWrap` |
+| `getWindowWrap(name)` | ✅ | → wrap columns, with desktop's defaults: "main" reads the profile `outputWrapAt`, **100** unless changed (`Host::mWrapAt`); a miniconsole or user window reads the `WindowManager` hint, **99999999** when unset (`TBuffer::mWrapAt`); a `createBuffer` buffer takes main's width when it is made. 0 only when the Settings turned main's wrapping off. -1 when the window is missing. Used by `Geyser.MiniConsole:getWindowWrap` |
 | `handleWindowResizeEvent()` | ✅ | Fires the resize listener chain (no-op shim that's part of the public API) |
 | `hasFocus([window])` | ✅ | `document.activeElement` check. No name = command bar; a name targets the registered overlay element |
 | `hecho([window,] text)` | ✅ | `#RRGGBBtext` syntax |
@@ -876,7 +876,7 @@ through byte-identical — app stylesheets are also Mudlet Web's brand-styling h
 | `setUserWindowTitle(name, title)` | ✅ | JS-exposed |
 | `setUserWindowStyleSheet(name, css)` | ✅ | JS-exposed |
 | `setWindow(windowName, name[, x, y, show])` | ✅ | Reparents a label / overlay cmdline / text edit / scroll box (manager `setParent`, notifies old + new parent overlays) or a miniconsole / mapper panel (`WindowManager.setParent` re-portals it) into `main`, a userwindow, or a scroll box. `show=false` keeps it hidden after the move (Qt reparent semantics). Userwindow bases refuse to move; scroll-box cycles refused |
-| `setWindowWrap(name, col)` | ✅ | JS-exposed. "main" stores `ProfileSettings.outputWrapAt`; `col = 0` clears it (wrap off, the default). Also settable from the Settings → Appearance UI |
+| `setWindowWrap(name, col)` | ✅ | JS-exposed. "main" stores `ProfileSettings.outputWrapAt` (default 100, as desktop). A server line or echo longer than the width is stored as several buffer lines (`Console.wrapAppendedLine`, after the triggers saw it whole), so `getLines`/`getLineCount`/cursor positions match desktop. `col < 1` is refused from Lua, as desktop does. Also settable from Settings → Main display → Word wrapping, which applies at once, and a saved width is applied whenever the profile loads; only that field can set 0, which turns the stored-line wrap off |
 | `setWindowWrapHangingIndent(name, n)` | ✅ | Indent (chars) of wrapped continuation lines. Stored on `ProfileSettings.outputWrapHangingIndent` ("main") or the `WindowManager` hint (named windows); `StickyOutputPanel` applies it as the `--wrap-hanging` CSS var (`.output-msg-content` `padding-left`). 0 clears |
 | `setWindowWrapIndent(name, n)` | ✅ | Indent (chars) of newline-started lines. Stored on `ProfileSettings.outputWrapIndent` ("main") or the `WindowManager` hint; applied via the `--wrap-indent` CSS var (`text-indent`, relative to the hanging indent). 0 clears |
 | `showCaptureGroups()` | ✅ | Pure Lua via DebugTools.lua (uses `matches`) |
