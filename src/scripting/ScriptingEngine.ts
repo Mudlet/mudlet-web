@@ -611,6 +611,13 @@ export class ScriptingEngine implements EngineHost {
             // Saved Lua globals go back into _G before any script runs, so script
             // bodies and sysLoadEvent handlers see their persisted state.
             this.restoreSavedVariables();
+            // The saved triggers are compiled only once PCRE is ready, below —
+            // after the scripts have run. Reserve their firing order now so a
+            // temp trigger a script creates at load time fires after them, as
+            // on desktop where they are built from the profile before any
+            // script runs.
+            this.triggerEngine.reserveOrder(
+                useAppStore.getState().connectionTriggers[this.connectionId] ?? []);
             this.applyScriptsFromStore();
             this.applyAliasesFromStore();
             this.applyTimersFromStore();
@@ -3982,6 +3989,9 @@ export class ScriptingEngine implements EngineHost {
             this.prevScripts = [];
             this.triggersReady = true; // PCRE wasm resolved long before any reset
             this.restoreSavedVariables();
+            // Saved triggers keep their place ahead of temps the scripts create.
+            this.triggerEngine.reserveOrder(
+                useAppStore.getState().connectionTriggers[this.connectionId] ?? []);
             this.applyScriptsFromStore();
             this.applyAliasesFromStore();
             this.applyTriggersFromStore();
@@ -4223,14 +4233,12 @@ export class ScriptingEngine implements EngineHost {
 
     private executePermAlias(alias: AliasNode, matches: string[], named?: Record<string, string>): void {
         if (alias.command) {
-            const cmd = alias.command.replace(/%(\d)/g, (_, d) => {
-                const idx = Number(d);
-                return idx === 0 ? matches[0] : (matches[idx] ?? '');
-            });
             // Host::send again — TAlias::execute is no different from the
             // others, so an alias whose command names another alias chains, and
-            // each expansion is echoed as its own line.
-            this.hostSend(cmd);
+            // each expansion is echoed as its own line. Sent exactly as written:
+            // desktop does no %1…%9 capture substitution in the command field
+            // (captures are the script's, via `matches`).
+            this.hostSend(alias.command);
         }
         if (alias.code && alias.language === 'lua') {
             try {
@@ -4263,14 +4271,11 @@ export class ScriptingEngine implements EngineHost {
 
         // Built-in command send
         if (trigger.command) {
-            const cmd = trigger.command.replace(/%(\d)/g, (_, d) => {
-                const idx = Number(d);
-                return (idx === 0 ? matches[0] : matches[idx]) ?? '';
-            });
             // Echoed, separator-split and alias-expanded like every other item's
             // built-in command — TTrigger::execute takes both Host::send
-            // defaults.
-            this.hostSend(cmd);
+            // defaults. Sent literally, with no %1…%9 capture substitution, as
+            // desktop does.
+            this.hostSend(trigger.command);
         }
 
         // Built-in highlight.

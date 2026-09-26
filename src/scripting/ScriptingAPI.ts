@@ -3533,6 +3533,7 @@ export class ScriptingAPI {
         this.outerTriggerLines.push(this.triggerLineDepth > 0 ? this.mainConsole.getLineNumber() : -1);
         this.mainConsole.appendLine(buffer);
         this.inTriggerProcessing = true;
+        this.session.triggerCursorPinned = true;
         this.triggerLineDepth++;
         this.selection = null;
         this.setDeferringEcho(true);
@@ -3568,6 +3569,7 @@ export class ScriptingAPI {
             return;
         }
         this.inTriggerProcessing = false;
+        this.session.triggerCursorPinned = false;
         this.echoOnMatchedLine = false;
         // NB: the trigger selection is intentionally NOT cleared here. Mudlet
         // leaves a selection made inside a trigger in place, so a script can read

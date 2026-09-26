@@ -269,6 +269,20 @@ describe('hostSend — Mudlet Host::send', () => {
             expect(wire).toEqual(['gg']);
         });
 
+        it('sends an alias\'s command field as written, with no %1 substitution (mudlet-web#180)', () => {
+            // TAlias::execute hands mCommand to Host::send unchanged; captures
+            // belong to the alias's script, through `matches`.
+            aliasEngine.loadPerm([{ ...ALIAS, pattern: '^sayit (\\w+)$', command: 'say %1' } as never]);
+            engine.sendCommand('sayit hello');
+            expect(wire).toEqual(['say %1']);
+        });
+
+        it('sends a trigger\'s command field as written too', () => {
+            (engine as unknown as EngineInternals).executePermTrigger(
+                { ...TRIGGER, command: 'wave %1' }, ['hello bob', 'bob'], 'hello bob');
+            expect(wire).toEqual(['wave %1']);
+        });
+
         it('still splits a Lua send() on the separator', () => {
             (engine as unknown as EngineInternals).api.send('north;;south');
             expect(echoed).toEqual(['north;;south']);

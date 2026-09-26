@@ -112,9 +112,8 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
 
     // Mudlet binds Ctrl+Return in the command line to TConsole::clearSplit —
     // it drops the split view and jumps back to the tail. Only while the split
-    // is actually up, so with the console at the tail Ctrl+Enter still stages a
-    // newline in the command bar. Capture phase so it beats the command bar's
-    // own Enter handling; stopPropagation keeps that newline from being staged.
+    // is actually up; at the tail the command bar swallows Ctrl+Enter itself.
+    // Capture phase so it beats the command bar's own Enter handling.
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             if (!isSplitViewRef.current || !matchClearSplitKey(e)) return;
