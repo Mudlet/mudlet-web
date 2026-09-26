@@ -6,7 +6,11 @@
 `processIncomingData` holds the trailing text after the last `\n` in
 `pendingLineTail` and only emits whole lines downstream; the tail is flushed on
 an `IAC GA`/`EOR` prompt marker or the idle timer. This runs even in GA-driver
-mode. It fixes the reported Discworld bug where a room line split across two
+mode, except that once GA-driven the idle timer no longer flushes the tail: only
+a `\n` or the next prompt marker ends a line, as in Mudlet. Each GA/EOR ends the
+line at the exact byte it arrives, even mid-frame (`MudClient.processIncomingData`
+cuts the frame at every marker), and a telnet sequence split across frames is
+held until the next frame completes it. It fixes the reported Discworld bug where a room line split across two
 WebSocket frames rendered as two lines (the split fell mid-word: `Str` + `en`).
 Tests: `tests/mud/connection/lineAssembly.test.ts`.
 
@@ -21,8 +25,9 @@ The shipped fix already makes every normal MUD line correct, because a line
 split across frames is reassembled before it is emitted. The **only** behaviour
 the TBuffer port adds on top is the rare case of a single line streamed in
 chunks over more than `promptTimeoutMs` (300 ms) with no `\n` and no GA in
-between: Mudlet shows that line growing live; Approach A either delays it until
-the terminator or (if the idle timer fires mid-line) splits it. This is
+between: Mudlet shows that line growing live; Approach A delays it until the
+terminator (GA-driven mode) or, before GA has latched, splits it when the idle
+timer fires mid-line. This is
 uncommon, so the work was deferred. Do it if we want pixel-exact Mudlet parity
 for live-streamed output.
 

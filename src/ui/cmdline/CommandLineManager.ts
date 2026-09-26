@@ -240,6 +240,27 @@ export class CommandLineManager {
         return this.cmdLines.get(name)?.action ?? null;
     }
 
+    /** Where Enter goes on a command line with no action bound: the game, as
+     *  typed input. Set by the ScriptingEngine (its `hostSend`). */
+    onDefaultSend?: (text: string) => void;
+
+    /**
+     * The user pressed Enter on `name` with `text` in it. Runs the bound
+     * action, or else sends the text the way Mudlet's
+     * TCommandLine::enterCommand falls back to `Host::send`. Returns whether
+     * anything took the text, i.e. whether the line should clear.
+     */
+    submit(name: string, text: string): boolean {
+        const cb = this.getAction(name);
+        if (cb) {
+            try { cb(text); } catch (err) { console.warn(`[CommandLine ${name}] action threw:`, err); }
+            return true;
+        }
+        if (!this.onDefaultSend) return false;
+        this.onDefaultSend(text);
+        return true;
+    }
+
     hasAction(name: string): boolean {
         return !!this.cmdLines.get(name)?.action;
     }

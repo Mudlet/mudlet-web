@@ -297,8 +297,16 @@ function parseButtons(els: Element[], parentId: string | null, out: ButtonNode[]
             tooltip: getText(el, 'tooltipText') || undefined,
             code: getText(el, 'script'),
             language: 'lua',
-            command:     getRawText(el, 'commandButtonUp')   || undefined,
-            commandDown: getRawText(el, 'commandButtonDown') || undefined,
+            // A plain button's one command lives in commandButtonDown: that is
+            // the only field desktop's editor offers for it and the only one
+            // TAction::execute sends. Mudlet Web keeps a plain button's command
+            // in `command`, so it moves there and commandButtonUp is dropped.
+            ...(isYes(el, 'isPushButton')
+                ? {
+                    command:     getRawText(el, 'commandButtonUp')   || undefined,
+                    commandDown: getRawText(el, 'commandButtonDown') || undefined,
+                }
+                : { command: getRawText(el, 'commandButtonDown') || undefined }),
             styleSheet,
             packageName: getText(el, 'packageName') || undefined,
         };

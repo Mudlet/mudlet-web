@@ -47,7 +47,7 @@ import { DEFAULT_CONSOLE_BUFFER_SIZE } from './mud/text/Console';
 import type { MudSession, ControlCharacterMode } from './mud/MudSession';
 import type { FileDialogRequest } from './mud/events';
 import { replayFileName } from './mud/replay/replayFormat';
-import { isTextEntryTarget } from './mud/keybindings/keyEventTarget';
+import { listenForKeybindings } from './mud/keybindings/keyEventTarget';
 import { FilePickerModal } from './ui/FilePickerModal';
 import type { ProfileVFS } from './scripting/vfs/ProfileVFS';
 
@@ -1158,15 +1158,11 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // Global keydown listener — fires keybindings, but not while the user is
     // typing into a real text field (script editor, modal inputs). The command
     // line is not one of those: it is a textarea that holds focus all session,
-    // so it has to pass keys through — see isTextEntryTarget.
-    useEffect(() => {
-        const handleKeyDown = (e: KeyboardEvent) => {
-            if (isTextEntryTarget(e.target)) return;
-            if (engineRef.current?.processKey(e)) e.preventDefault();
-        };
-        document.addEventListener('keydown', handleKeyDown);
-        return () => document.removeEventListener('keydown', handleKeyDown);
-    }, [engineRef]);
+    // so it has to pass keys through — see listenForKeybindings.
+    useEffect(
+        () => listenForKeybindings(document, e => engineRef.current?.processKey(e) ?? false),
+        [engineRef],
+    );
 
     // Quick-open (Cmd+Shift+P / Ctrl+Shift+P). Fires regardless of focus so it
     // also works from inside CodeMirror editors and the command bar.

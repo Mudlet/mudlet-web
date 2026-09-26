@@ -346,3 +346,31 @@ describe('server-redefine-colors gate', () => {
     expect(colorCodes.xterm[196]).toBe('#0000ff');
   });
 });
+
+describe('256-colour SGR past index 255 (mudlet-web#174)', () => {
+  const ESC = '\x1b';
+  const fgAt = (seq: string) => new AnsiAwareBuffer(`${ESC}[${seq}mX`).getStateAt(0)?.foreground;
+  const bgAt = (seq: string) => new AnsiAwareBuffer(`${ESC}[${seq}mX`).getStateAt(0)?.background;
+
+  it('continues the greyscale ramp to 256, as Mudlet does', () => {
+    expect(fgAt('38;5;256')).toEqual({ space: 'rgb', r: 248, g: 248, b: 248 });
+    expect(bgAt('48;5;256')).toEqual({ space: 'rgb', r: 248, g: 248, b: 248 });
+    expect(fgAt('38:5:256')).toEqual({ space: 'rgb', r: 248, g: 248, b: 248 });
+  });
+
+  it('turns a foreground with no colour black and a background default', () => {
+    expect(fgAt('38;5;300')).toEqual({ space: 'rgb', r: 0, g: 0, b: 0 });
+    expect(fgAt('38:5:300')).toEqual({ space: 'rgb', r: 0, g: 0, b: 0 });
+    expect(bgAt('41;48;5;999')).toBeUndefined();
+    expect(bgAt('41;48:5:999')).toBeUndefined();
+  });
+
+  it('never yields a hex colour without a value', () => {
+    for (const seq of ['38;5;300', '48;5;300', '38;5;257', '38:5:1000']) {
+      const buf = new AnsiAwareBuffer(`${ESC}[${seq}mX`);
+      for (const c of [buf.getStateAt(0)?.foreground, buf.getStateAt(0)?.background]) {
+        if (c?.space === 'hex') expect(typeof c.color).toBe('string');
+      }
+    }
+  });
+});

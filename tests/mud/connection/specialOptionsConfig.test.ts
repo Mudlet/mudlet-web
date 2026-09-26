@@ -186,6 +186,30 @@ describe('telnet-layer setConfig options', () => {
     });
   });
 
+  // ── enableMTTS = false ────────────────────────────────────────────────────
+
+  describe('with MTTS disabled', () => {
+    // Desktop still answers DO TTYPE and identifies itself; the toggle only
+    // drops the terminal-type and MTTS steps of the cycle (#188).
+    it('still agrees to DO TTYPE', () => {
+      const { sock } = connected({ mttsEnabled: false });
+      sock.deliver('\xFF\xFD' + OPT_TTYPE);
+      expect(sentText(sock)).toContain('\xFF\xFB' + OPT_TTYPE);
+    });
+
+    it('answers every SEND with the client name and never reports MTTS', () => {
+      const { sock } = connected({ mttsEnabled: false });
+      const send = '\xFF\xFA' + OPT_TTYPE + TTYPE_SEND + '\xFF\xF0';
+      const is = '\xFF\xFA' + OPT_TTYPE + TTYPE_IS + CLIENT_NAME + '\xFF\xF0';
+      sock.deliver(send);
+      sock.deliver(send);
+      sock.deliver(send);
+      const reply = sentText(sock);
+      expect(reply.split(is).length - 1).toBe(3);
+      expect(reply).not.toContain('MTTS');
+    });
+  });
+
   // ── promptForVersionInTTYPE / KaVir detection ─────────────────────────────
 
   describe('KaVir protocol detection', () => {

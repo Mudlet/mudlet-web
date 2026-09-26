@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest';
-import { domButtonToMudlet } from '../../src/ui/labels/LabelOverlay';
+import { classifyPress, domButtonToMudlet, domButtonsToMudlet } from '../../src/ui/labels/LabelOverlay';
 
 // Mudlet reports `event.button` to label callbacks as a Qt button NAME string
 // (csmMouseButtons in TLuaInterpreter), not an int. Geyser packages branch on
@@ -32,5 +32,38 @@ describe('domButtonToMudlet', () => {
 
     it('falls back to NoButton for unknown button codes', () => {
         expect(domButtonToMudlet('click', 9)).toBe('NoButton');
+    });
+});
+
+describe('domButtonsToMudlet', () => {
+    it('lists held buttons in Qt bit order', () => {
+        expect(domButtonsToMudlet(0)).toEqual([]);
+        expect(domButtonsToMudlet(1)).toEqual(['LeftButton']);
+        expect(domButtonsToMudlet(1 | 2 | 4)).toEqual(['LeftButton', 'RightButton', 'MidButton']);
+        expect(domButtonsToMudlet(8 | 16)).toEqual(['BackButton', 'ForwardButton']);
+    });
+});
+
+// Qt delivers the second press of a double-click as mouseDoubleClickEvent
+// instead of a press, so desktop's sequence is click, release, double-click,
+// release — the click callback runs once, not twice (issue #186).
+describe('classifyPress', () => {
+    it('uses the click count when the browser supplies one', () => {
+        expect(classifyPress(1, 0, 0, null).double).toBe(false);
+        expect(classifyPress(2, 0, 0, null).double).toBe(true);
+        // The press after a double-click is an ordinary press again.
+        expect(classifyPress(3, 0, 0, null).double).toBe(false);
+        expect(classifyPress(4, 0, 0, null).double).toBe(true);
+    });
+
+    it('falls back to timing when detail is 0', () => {
+        const first = classifyPress(0, 0, 1000, null);
+        expect(first.double).toBe(false);
+        const second = classifyPress(0, 0, 1200, first);
+        expect(second.double).toBe(true);
+        expect(classifyPress(0, 0, 1300, second).double).toBe(false);
+        // Too slow, or a different button: two single presses.
+        expect(classifyPress(0, 0, 2000, first).double).toBe(false);
+        expect(classifyPress(0, 2, 1200, first).double).toBe(false);
     });
 });

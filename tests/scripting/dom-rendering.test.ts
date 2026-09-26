@@ -208,6 +208,37 @@ describe('echoPopup — click and right-click in the real DOM', () => {
     expect(env.run('return clicked')).toBe('herbs');
   });
 
+  // Mudlet takes a Lua function as a popup command just as echoLink does.
+  // tostring() on it used to give "function: 0x…", which ran as nothing.
+  it('runs Lua functions given as commands, on left click and from the menu', () => {
+    env.run('clicked = nil');
+    env.run([
+      'echoPopup("POP\\n",',
+      '  {function() clicked = "a" end, function() clicked = "b" end},',
+      '  {"a", "b"})',
+    ].join('\n'));
+    const span = clickable()!;
+    span.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(env.run('return clicked')).toBe('a');
+
+    span.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 5, clientY: 5 }));
+    const items = [...env.body.querySelectorAll('#mudlet-popup-menu div')];
+    items[1].dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    expect(env.run('return clicked')).toBe('b');
+  });
+
+  it('runs Lua functions given to insertPopup and cechoPopup too', () => {
+    env.run('clicked = nil; echo("\\n")');
+    env.run('insertPopup("INS", {function() clicked = "ins" end}, {"i"})');
+    clickable()!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(env.run('return clicked')).toBe('ins');
+
+    env.run('cechoPopup("<red>CE\\n", {function() clicked = "ce" end}, {"c"})');
+    const all = env.outputWrapper.querySelectorAll('[data-output-clickable="true"]');
+    (all[all.length - 1] as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(env.run('return clicked')).toBe('ce');
+  });
+
   // More hints than commands: hints[1] is the tooltip and the menu labels start
   // one later, so even a single command gets a menu.
   it('honours a leading tooltip hint', () => {

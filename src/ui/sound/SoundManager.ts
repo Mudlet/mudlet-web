@@ -47,6 +47,11 @@ export interface PlaySoundOptions {
     key?: string;
     /** Group tag — stopMusic({tag=...}) and stopSounds() filter on this. */
     tag?: string;
+    /** 1..100 — Mudlet's media priority (sounds only). A sound with a priority
+     *  is refused while one of equal or higher priority is playing, and stops
+     *  the lower-priority ones when it does play (TMedia::
+     *  doesMediaHavePriorityToPlay). Absent → no priority, never refused. */
+    priority?: number;
     /** Which mute gate governs this playback. Default 'api'. */
     origin?: MediaOrigin;
     /** Optional closed-caption text (Mudlet's media `caption`). Shown verbatim
@@ -68,6 +73,26 @@ export interface StopMusicOptions {
     fadeout?: number;
 }
 
+/**
+ * Which playing media a stop, pause or query applies to. Every field that is
+ * set must match. `name` matches the path a source was played under or its
+ * trailing filename; `priority` is a ceiling — a source whose own priority is
+ * above it is passed over, and a source without one counts as 0; `origin`
+ * narrows to script- or server-started media.
+ */
+export interface MediaFilter {
+    name?: string;
+    key?: string;
+    tag?: string;
+    priority?: number;
+    origin?: MediaOrigin;
+}
+
+export interface StopSoundsOptions extends MediaFilter {
+    /** Fade-out duration in milliseconds. Overrides the source's own fadeout. */
+    fadeout?: number;
+}
+
 interface ActiveSource {
     id: number;
     kind: 'sound' | 'music';
@@ -76,6 +101,8 @@ interface ActiveSource {
     tag?: string;
     origin: MediaOrigin;
     caption?: string;
+    priority?: number;
+    /** The pass currently playing; replaced on each pass of a finite loop. */
     source: AudioBufferSourceNode;
     gain: GainNode;
     fadeout: number;
@@ -312,11 +339,14 @@ export class SoundManager {
         return this.play('music', opts);
     }
 
-    stopSounds(): void {
+    /** Mudlet `stopSounds([filter])` — stop the sounds matching `filter`
+     *  (every sound when it is empty). */
+    stopSounds(opts: StopSoundsOptions = {}): void {
         const ctx = sharedContext;
         if (!ctx) return;
         for (const a of [...this.active.values()]) {
-            if (a.kind === 'sound') this.fadeAndStop(ctx, a, a.fadeout);
+            if (a.kind !== 'sound' || !matchesFilter(a, opts)) continue;
+            this.fadeAndStop(ctx, a, opts.fadeout !== undefined ? opts.fadeout : a.fadeout);
         }
     }
 
@@ -331,12 +361,12 @@ export class SoundManager {
      * passed to playSoundFile). Music sources are untouched — they have a
      * separate `stopMusic` codepath.
      */
-    pauseSounds(channel?: string): void {
+    pauseSounds(channel?: string | MediaFilter): void {
         const ctx = sharedContext;
         if (!ctx) return;
+        const filter = typeof channel === 'string' ? { tag: channel } : channel ?? {};
         for (const a of [...this.active.values()]) {
-            if (a.kind !== 'sound') continue;
-            if (channel && a.tag !== channel) continue;
+            if (a.kind !== 'sound' || !matchesFilter(a, filter)) continue;
             this.fadeAndStop(ctx, a, a.fadeout);
         }
     }
@@ -348,25 +378,22 @@ export class SoundManager {
      * `playMusicFile` to "resume". The optional `channel`/tag filters which
      * music tracks are affected; sound effects are untouched.
      */
-    pauseMusic(channel?: string): void {
+    pauseMusic(channel?: string | MediaFilter): void {
         const ctx = sharedContext;
         if (!ctx) return;
+        const filter = typeof channel === 'string' ? { tag: channel } : channel ?? {};
         for (const a of [...this.active.values()]) {
-            if (a.kind !== 'music') continue;
-            if (channel && a.tag !== channel) continue;
+            if (a.kind !== 'music' || !matchesFilter(a, filter)) continue;
             this.fadeAndStop(ctx, a, a.fadeout);
         }
         this.updateMediaSessionState();
     }
 
-    stopMusic(opts: StopMusicOptions = {}): void {
+    stopMusic(opts: StopMusicOptions & { origin?: MediaOrigin } = {}): void {
         const ctx = sharedContext;
         if (!ctx) return;
         for (const a of [...this.active.values()]) {
-            if (a.kind !== 'music') continue;
-            if (opts.name && a.name !== opts.name) continue;
-            if (opts.key && a.key !== opts.key) continue;
-            if (opts.tag && a.tag !== opts.tag) continue;
+            if (a.kind !== 'music' || !matchesFilter(a, opts)) continue;
             const fade = opts.fadeout !== undefined ? opts.fadeout : a.fadeout;
             this.fadeAndStop(ctx, a, fade);
         }
@@ -376,22 +403,20 @@ export class SoundManager {
     /**
      * Mudlet getPlayingSounds / getPlayingMusic. Returns the currently-playing
      * sources of the requested `kind` (default 'sound' — music is reported
-     * separately by getPlayingMusic) optionally filtered by name/key/tag.
-     * Volume is reported on Mudlet's 0..100 scale.
+     * separately by getPlayingMusic) optionally filtered. Mudlet lists only
+     * the media its Lua API started, so the Lua bindings pass
+     * `origin: 'api'`. Volume is reported on Mudlet's 0..100 scale.
      */
     getPlaying(
-        filter: { name?: string; key?: string; tag?: string } = {},
+        filter: MediaFilter = {},
         kind: 'sound' | 'music' = 'sound',
     ): Array<{
-        name: string; key?: string; tag?: string; volume: number;
+        name: string; key?: string; tag?: string; volume: number; priority?: number;
     }> {
-        const out: Array<{ name: string; key?: string; tag?: string; volume: number }> = [];
+        const out: Array<{ name: string; key?: string; tag?: string; volume: number; priority?: number }> = [];
         for (const a of this.active.values()) {
-            if (a.kind !== kind || a.stopping) continue;
-            if (filter.name && a.name !== filter.name) continue;
-            if (filter.key && a.key !== filter.key) continue;
-            if (filter.tag && a.tag !== filter.tag) continue;
-            out.push({ name: a.name, key: a.key, tag: a.tag, volume: Math.round(a.volume * 100) });
+            if (a.kind !== kind || a.stopping || !matchesFilter(a, filter)) continue;
+            out.push({ name: a.name, key: a.key, tag: a.tag, volume: Math.round(a.volume * 100), priority: a.priority });
         }
         return out;
     }
@@ -451,6 +476,20 @@ export class SoundManager {
         const name = opts.name;
         if (!name) return -1;
         const epoch = this.epoch;
+        const origin: MediaOrigin = opts.origin ?? 'api';
+
+        // Priority (sounds only): refused while a sound of this origin with an
+        // equal or higher priority is playing; otherwise it takes over from the
+        // lower-priority ones, including those that have no priority at all.
+        const priority = kind === 'sound' && opts.priority !== undefined && Number.isFinite(opts.priority)
+            ? Math.max(1, Math.min(100, Math.round(opts.priority)))
+            : undefined;
+        if (priority !== undefined) {
+            const rivals = [...this.active.values()]
+                .filter(a => a.kind === 'sound' && a.origin === origin && !a.stopping);
+            if (rivals.some(a => (a.priority ?? 0) >= priority)) return -1;
+            for (const a of rivals) this.fadeAndStop(ctx, a, 0);
+        }
 
         // Replace any source with the same explicit key in this kind.
         if (opts.key) {
@@ -482,14 +521,21 @@ export class SoundManager {
         const volume = clamp01((opts.volume ?? 50) / 100);
         const fadein = Math.max(0, opts.fadein ?? 0);
         const fadeout = Math.max(0, opts.fadeout ?? 0);
-        const loops = opts.loops ?? 1;
+        // -1 repeats forever and N>0 plays N passes; 0 and anything below -1
+        // mean nothing, and fall back to a single pass as Mudlet does.
+        const rawLoops = opts.loops ?? 1;
+        const loops = rawLoops === -1 ? -1 : rawLoops >= 1 ? Math.floor(rawLoops) : 1;
         const startOffset = Math.max(0, (opts.start ?? 0) / 1000);
-        const origin: MediaOrigin = opts.origin ?? 'api';
 
-        const source = ctx.createBufferSource();
-        source.buffer = buffer;
         const gain = ctx.createGain();
-        source.connect(gain).connect(ctx.destination);
+        gain.connect(ctx.destination);
+        const newSource = (): AudioBufferSourceNode => {
+            const src = ctx.createBufferSource();
+            src.buffer = buffer;
+            src.connect(gain);
+            return src;
+        };
+        const source = newSource();
 
         // A muted origin plays silently from the start; unmuting later restores it.
         const target = this.muted[origin] ? 0 : volume * this.masterVolume;
@@ -501,17 +547,11 @@ export class SoundManager {
             gain.gain.setValueAtTime(target, now);
         }
 
-        // Loops: -1 → infinite, 1 → one-shot, N>1 → repeat (N-1) more times.
-        // Web Audio loop is binary; for finite N>1 we set loop=true and stop
-        // the source after N*duration. Source.duration accounts for sampleRate
-        // mismatches between buffer and context.
-        if (loops === -1) {
-            source.loop = true;
-        } else if (loops > 1) {
-            source.loop = true;
-            const stopAt = now + (buffer.duration - startOffset) * loops;
-            try { source.stop(stopAt); } catch { /* offset out of range, ignore */ }
-        }
+        // Web Audio's loop flag only repeats forever, so it serves -1 alone. A
+        // finite count plays each pass on a fresh source node (a node can be
+        // started once), and each pass is reported with its own
+        // sysMediaStarted / sysMediaFinished, as Mudlet's playlist does.
+        if (loops === -1) source.loop = true;
 
         try {
             source.start(now, startOffset);
@@ -529,6 +569,7 @@ export class SoundManager {
             tag: opts.tag,
             origin,
             caption: opts.caption,
+            priority,
             source,
             gain,
             fadeout,
@@ -546,12 +587,32 @@ export class SoundManager {
         const filename = name.split(/[\\/]/).pop() || name;
         this.onMediaStarted?.(filename, name, kind, opts.key ?? '', opts.tag ?? '');
 
-        source.onended = () => {
+        let passesLeft = loops === -1 ? 0 : loops - 1;
+        const onPassEnded = () => {
+            if (!record.stopping && passesLeft > 0 && this.active.get(id) === record) {
+                passesLeft--;
+                this.onMediaFinished?.(filename, name, kind, opts.key ?? '', opts.tag ?? '');
+                const next = newSource();
+                next.onended = onPassEnded;
+                try {
+                    next.start(ctx.currentTime);
+                    record.source = next;
+                    this.onMediaStarted?.(filename, name, kind, opts.key ?? '', opts.tag ?? '');
+                    return;
+                } catch (e) {
+                    console.warn(`[sound] start failed for "${name}":`, e);
+                    this.active.delete(id);
+                    if (kind === 'music') this.updateMediaSessionState();
+                    this.onMediaCaption?.({ kind, name, key: opts.key, caption: opts.caption, action: 'stops' });
+                    return;
+                }
+            }
             this.active.delete(id);
             if (kind === 'music') this.updateMediaSessionState();
             this.onMediaCaption?.({ kind, name, key: opts.key, caption: opts.caption, action: 'stops' });
             this.onMediaFinished?.(filename, name, kind, opts.key ?? '', opts.tag ?? '');
         };
+        source.onended = onPassEnded;
 
         if (kind === 'music') this.updateMediaSessionState(name);
         return id;
@@ -614,6 +675,19 @@ export class SoundManager {
         }
         return null;
     }
+}
+
+function baseName(path: string): string {
+    return path.split(/[\\/]/).pop() || path;
+}
+
+function matchesFilter(a: ActiveSource, f: MediaFilter): boolean {
+    if (f.name && a.name !== f.name && baseName(a.name) !== baseName(f.name)) return false;
+    if (f.key && a.key !== f.key) return false;
+    if (f.tag && a.tag !== f.tag) return false;
+    if (f.priority !== undefined && (a.priority ?? 0) > f.priority) return false;
+    if (f.origin && a.origin !== f.origin) return false;
+    return true;
 }
 
 function clamp01(v: number): number {

@@ -210,6 +210,9 @@ export type MudClientEvents = {
      *  redials. Fires at most once per connection, and never once the profile's
      *  `promptForVersionInTTYPE` latch is set. */
     'kavir.detected': void;
+    /** An IAC GA/EOR arrived. `promptLine` is false when the marker had no
+     *  text in front of it to end, so no line was flagged as a prompt. */
+    'prompt': [promptLine?: boolean];
 } & Record<string, any>;
 
 export type MudEvents = MudClientEvents & {
@@ -234,7 +237,6 @@ export type MudEvents = MudClientEvents & {
      *  (ProfileSession) shows the in-app VFS picker and resolves the request
      *  via `request.onPick`. See {@link FileDialogRequest}. */
     'script.filedialog': [request: FileDialogRequest];
-    'prompt': void;
     'script.movecursorup': void;
     'script.movecursordown': void;
     /** A Mudlet-format replay started playing. Payload is the recording's

@@ -279,7 +279,9 @@ export interface ProfileSettings {
     serverEncoding?: string;
     /** Mudlet's "Highlight history": a command recalled with Up/Down comes back
      *  selected rather than with the caret at its end, so the next keystroke
-     *  replaces it. Off unless explicitly true, as on desktop. */
+     *  replaces it, and Up/Down with typed text searches history by prefix.
+     *  On unless explicitly false, as on desktop (XMLimport's
+     *  readDefaultTrueBool). */
     highlightHistory?: boolean;
     /** Mudlet's "Disable password masking": show the characters in the command
      *  line while the game has echo off. Off unless explicitly true. */
@@ -852,7 +854,7 @@ export interface ScriptNode extends BaseNode {
 
 export interface AliasNode extends BaseNode {
     pattern: string;   // single regex string (Mudlet TAlias.mRegexCode)
-    command: string;   // plain command to send (%1..%9 = capture groups); Mudlet TAlias.mCommand
+    command: string;   // plain command to send, verbatim (no capture substitution); Mudlet TAlias.mCommand
     code: string;
     language: 'lua' | 'js';
 }
@@ -914,7 +916,7 @@ export interface TriggerNode extends BaseNode {
         fg?: string;             // hex color e.g. "#ff0000"
         bg?: string;             // a channel left unset is Mudlet's "keep" (transparent)
     };
-    command?: string;            // plain command to send on fire (%1..%9 = capture groups)
+    command?: string;            // plain command to send on fire, verbatim (no capture substitution)
     /**
      * Mudlet TTrigger::mTriggerType (TTrigger.h:204) — one of the REGEX_* kinds
      * defined at TTrigger.h:49-56, the same numbering `patterns[].type` uses.
