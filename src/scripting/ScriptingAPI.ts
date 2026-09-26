@@ -65,8 +65,13 @@ import { findBundledGame } from '../mud/games/bundledGames';
 // used to be #d4d4d4 here, so Mudlet Web RENDERED plain text at #c0c0c0 and REPORTED
 // it as #d4d4d4 — a script comparing getFgColor() against what it could see was
 // told they differed.
+//
+// The background is Qt::black, Host::mBgColor's default, and App.css paints
+// every stock theme's console (`--console-bg`) the same. It used to be #090909,
+// the app chrome's colour, so a colour trigger for background 0 never matched
+// uncoloured text until the profile set its background to black by hand.
 const DEFAULT_FG_RGB: [number, number, number] = [0xc0, 0xc0, 0xc0];
-const DEFAULT_BG_RGB: [number, number, number] = [0x09, 0x09, 0x09];
+const DEFAULT_BG_RGB: [number, number, number] = [0x00, 0x00, 0x00];
 
 /**
  * A colour as colour triggers compare it: packed `0xRRGGBB`. Desktop Mudlet
