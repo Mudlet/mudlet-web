@@ -1,23 +1,34 @@
 /**
- * Single-byte code pages the browser cannot decode on its own.
+ * Single-byte code pages whose table Mudlet Web carries rather than asks the
+ * browser for.
  *
  * TextDecoder covers the WHATWG encoding set, which is where charset.ts gets
- * every other encoding Mudlet Web speaks: the ISO 8859 family, KOI8-R/U, the
- * WINDOWS-125x pages, CP866 (as `ibm866`) and MACINTOSH. The DOS code pages
+ * the ISO 8859 family, KOI8-R and the WINDOWS-125x pages. The DOS code pages
  * below are not in that set and never will be — they are legacy MUD encodings,
  * not web ones — so the only way to read a game that speaks one is to carry the
  * table.
+ *
+ * Three here do have a WHATWG label, and are carried anyway:
+ *
+ *  - KOI8-U, because the WHATWG `koi8-u` is really KOI8-RU: it puts `ў`/`Ў` at
+ *    0xAE/0xBE, where KOI8-U (RFC 2319) and desktop Mudlet have the box-drawing
+ *    `╝`/`╬`. Every other byte agrees.
+ *  - CP866 and MACINTOSH, so that every page Mudlet reads from its own table is
+ *    read from the same table here, rather than from whichever decoder the
+ *    browser happens to ship under that label.
  *
  * MEDIEVIA is not a code page at all: it is Medievia's own mapping of the upper
  * half onto a private use area that the game's font draws as map symbols. It
  * lives here because it behaves like one.
  *
- * Transcribed from Mudlet's `src/TEncodingTable.cpp` (Mudlet/Mudlet@2f2749fc),
- * which is the same table Mudlet's own decoder reads, so a game rendered here
- * and in desktop Mudlet agrees byte for byte. Each entry covers 0x80-0xFF only
- * — every one of these pages is ASCII below that — as 128 four-digit code
- * points, eight per line, matching the row layout of the C++ so the two can be
- * diffed against each other.
+ * Generated from Mudlet's `src/TEncodingTable.cpp` (Mudlet/Mudlet@cd281132) —
+ * parsed, not typed — which is the same table Mudlet's own decoder reads, so a
+ * game rendered here and in desktop Mudlet agrees byte for byte. Every page but
+ * CP667 and MEDIEVIA was also checked against the Unicode mapping files (CP869
+ * differs only at 0x87, where Mudlet adds the euro sign). Each entry covers
+ * 0x80-0xFF only — every one of these pages is ASCII below that — as 128
+ * four-digit code points, eight per line, matching the row layout of the C++ so
+ * the two can be diffed against each other.
  */
 
 const CODE_PAGES: Record<string, string> = {
@@ -43,7 +54,7 @@ const CODE_PAGES: Record<string, string> = {
         + '00EA00EB00E800EF00EE010700C40104' // 88-8F
         + '01180119014200F400F6010600FB00F9' // 90-97
         + '015A00D600DC00A2014100A5015B0192' // 98-9F
-        + '0179017B00F301440143017A017C00BA' // A0-A7
+        + '0179017B00F300D301440143017A017C' // A0-A7
         + '00BF231000AC00BD00BC00A100AB00BB' // A8-AF
         + '25912592259325022524256125622556' // B0-B7
         + '2555256325512557255D255C255B2510' // B8-BF
@@ -59,9 +70,9 @@ const CODE_PAGES: Record<string, string> = {
         '03910392039303940395039603970398' // 80-87
         + '0399039A039B039C039D039E039F03A0' // 88-8F
         + '03A103A303A403A503A603A703A803A9' // 90-97
-        + '00FF00D600DC00A200A300A520A70192' // 98-9F
-        + '00E100ED00F300FA00F100D100AA00BA' // A0-A7
-        + '00BF231000AC00BD00BC00A100AB00BB' // A8-AF
+        + '03B103B203B303B403B503B603B703B8' // 98-9F
+        + '03B903BA03BB03BC03BD03BE03BF03C0' // A0-A7
+        + '03C103C303C203C403C503C603C703C8' // A8-AF
         + '25912592259325022524256125622556' // B0-B7
         + '2555256325512557255D255C255B2510' // B8-BF
         + '25142534252C251C2500253C255E255F' // C0-C7
@@ -70,7 +81,7 @@ const CODE_PAGES: Record<string, string> = {
         + '256A2518250C25882584258C25902580' // D8-DF
         + '03C903AC03AD03AE03CA03AF03CC03CD' // E0-E7
         + '03CB03CE038603880389038A038C038E' // E8-EF
-        + '03C900B12265226403AA03AB00F72248' // F0-F7
+        + '038F00B12265226403AA03AB00F72248' // F0-F7
         + '00B0221900B7221A207F00B225A000A0', // F8-FF
     'CP850':
         '00C700FC00E900E200E400E000E500E7' // 80-87
@@ -89,6 +100,23 @@ const CODE_PAGES: Record<string, string> = {
         + '00DE00DA00DB00D900FD00DD00AF00B4' // E8-EF
         + '00AD00B1201700BE00B600A700F700B8' // F0-F7
         + '00B000A800B700B900B300B225A000A0', // F8-FF
+    'CP866':
+        '04100411041204130414041504160417' // 80-87
+        + '04180419041A041B041C041D041E041F' // 88-8F
+        + '04200421042204230424042504260427' // 90-97
+        + '04280429042A042B042C042D042E042F' // 98-9F
+        + '04300431043204330434043504360437' // A0-A7
+        + '04380439043A043B043C043D043E043F' // A8-AF
+        + '25912592259325022524256125622556' // B0-B7
+        + '2555256325512557255D255C255B2510' // B8-BF
+        + '25142534252C251C2500253C255E255F' // C0-C7
+        + '255A25542569256625602550256C2567' // C8-CF
+        + '2568256425652559255825522553256B' // D0-D7
+        + '256A2518250C25882584258C25902580' // D8-DF
+        + '04400441044204430444044504460447' // E0-E7
+        + '04480449044A044B044C044D044E044F' // E8-EF
+        + '040104510404045404070457040E045E' // F0-F7
+        + '00B0221900B7221A211600A425A000A0', // F8-FF
     'CP869':
         'FFFDFFFDFFFDFFFDFFFDFFFD038620AC' // 80-87
         + '00B700AC00A620182019038820150389' // 88-8F
@@ -106,7 +134,7 @@ const CODE_PAGES: Record<string, string> = {
         + '03BE03BF03C003C103C303C203C40384' // E8-EF
         + '00AD00B103C503C603C700A703C80385' // F0-F7
         + '00B000A803C903CB03B003CE25A000A0', // F8-FF
-    'CP1161':
+    'CP1162':
         '20ACFFFDFFFDFFFDFFFD2026FFFDFFFD' // 80-87
         + 'FFFDFFFDFFFDFFFDFFFDFFFDFFFDFFFD' // 88-8F
         + 'FFFD20182019201C201D202220132014' // 90-97
@@ -123,6 +151,40 @@ const CODE_PAGES: Record<string, string> = {
         + '0E480E490E4A0E4B0E4C0E4D0E4E0E4F' // E8-EF
         + '0E500E510E520E530E540E550E560E57' // F0-F7
         + '0E580E590E5A0E5BFFFDFFFDFFFDFFFD', // F8-FF
+    'KOI8-U':
+        '25002502250C251025142518251C2524' // 80-87
+        + '252C2534253C258025842588258C2590' // 88-8F
+        + '259125922593232025A02219221A2248' // 90-97
+        + '2264226500A0232100B000B200B700F7' // 98-9F
+        + '25502551255204510454255404560457' // A0-A7
+        + '255725582559255A255B0491255D255E' // A8-AF
+        + '255F2560256104010404256304060407' // B0-B7
+        + '2566256725682569256A0490256C00A9' // B8-BF
+        + '044E0430043104460434043504440433' // C0-C7
+        + '044504380439043A043B043C043D043E' // C8-CF
+        + '043F044F044004410442044304360432' // D0-D7
+        + '044C044B04370448044D04490447044A' // D8-DF
+        + '042E0410041104260414041504240413' // E0-E7
+        + '042504180419041A041B041C041D041E' // E8-EF
+        + '041F042F042004210422042304160412' // F0-F7
+        + '042C042B04170428042D04290427042A', // F8-FF
+    'MACINTOSH':
+        '00C400C500C700C900D100D600DC00E1' // 80-87
+        + '00E000E200E400E300E500E700E900E8' // 88-8F
+        + '00EA00EB00ED00EC00EE00EF00F100F3' // 90-97
+        + '00F200F400F600F500FA00F900FB00FC' // 98-9F
+        + '202000B000A200A300A7202200B600DF' // A0-A7
+        + '00AE00A9212200B400A8226000C600D8' // A8-AF
+        + '221E00B12264226500A500B522022211' // B0-B7
+        + '220F03C0222B00AA00BA03A900E600F8' // B8-BF
+        + '00BF00A100AC221A01922248220600AB' // C0-C7
+        + '00BB202600A000C000C300D501520153' // C8-CF
+        + '20132014201C201D2018201900F725CA' // D0-D7
+        + '00FF0178204420AC2039203AFB01FB02' // D8-DF
+        + '202100B7201A201E203000C200CA00C1' // E0-E7
+        + '00CB00C800CD00CE00CF00CC00D300D4' // E8-EF
+        + 'F8FF00D200DA00DB00D9013102C602DC' // F0-F7
+        + '00AF02D802D902DA00B802DD02DB02C7', // F8-FF
     'MEDIEVIA':
         '256E256D256F2570E100E101E102E103' // 80-87
         + 'E104E105E106E107E108E10926FCE10A' // 88-8F
@@ -138,7 +200,7 @@ const CODE_PAGES: Record<string, string> = {
         + '256A2518250C25882584258C25902580' // D8-DF
         + 'E129E12AE12B2620E12CE12D2690E12E' // E0-E7
         + 'E12FE130E131E13221E721E921E821E6' // E8-EF
-        + '25BAE11425AC21A8E1192193E1392194' // F0-F7
+        + '25BAE11425AC21A8E1192193221F2194' // F0-F7
         + '25B2E124E125E137E13825BC2660FFFD', // F8-FF
 };
 

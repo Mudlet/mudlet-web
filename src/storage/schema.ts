@@ -273,9 +273,10 @@ export interface ProfileSettings {
     /** Mudlet's "Server data encoding": how the game's bytes are decoded into
      *  text, for games that don't negotiate CHARSET. One of
      *  `SUPPORTED_SERVER_ENCODINGS`, spelled as that list spells it. Applied on
-     *  profile open and carried across reconnects by `MudSession`; a CHARSET
-     *  negotiation or a script's `setServerEncoding()` overrides it for the
-     *  session without rewriting this. `undefined` = UTF-8. */
+     *  profile open and carried across reconnects by `MudSession`. A script's
+     *  `setServerEncoding()` rewrites it, as cTelnet::setEncoding saves it in
+     *  Mudlet; a CHARSET negotiation overrides it for the session only. Older
+     *  saves may say `CP1161` — see `savedServerEncoding`. `undefined` = UTF-8. */
     serverEncoding?: string;
     /** Mudlet's "Highlight history": a command recalled with Up/Down comes back
      *  selected rather than with the caret at its end, so the next keystroke

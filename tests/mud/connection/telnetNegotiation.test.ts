@@ -169,6 +169,22 @@ describe('telnet option negotiation (TelnetNegotiator via MudClient)', () => {
     expect(client.getServerEncoding()).toBe('koi8-r');
   });
 
+  // Mudlet/mudlet-web#191: CP866 was offered, ACCEPTED on the wire, and then
+  // refused by the decoder, so the game's Russian came out as U+FFFD.
+  it('decodes in the CP866 it accepted', () => {
+    const { client, sock, bus } = connected();
+    const lines: string[] = [];
+    bus.on('flushLines', groups => lines.push(...groups.map(g => g.text)));
+    sock.deliver(CHARSET_WILL);
+    sock.sent.length = 0;
+    sock.deliver('\xFF\xFA' + OPT_CHARSET + CHARSET_REQUEST + ';CP866' + '\xFF\xF0');
+    expect(sentText(sock)).toBe('\xFF\xFA' + OPT_CHARSET + CHARSET_ACCEPTED + 'CP866' + '\xFF\xF0');
+    expect(client.getServerEncoding()).toBe('CP866');
+    sock.deliver('\x8F\xE0\xA8\xA2\xA5\xE2\r\n');
+    client.flushMessageBuffer();
+    expect(lines.join('\n')).toContain('Привет');
+  });
+
   it('reports the window size once the server accepts NAWS', () => {
     const seen: string[] = [];
     const { client, sock, bus } = connected();

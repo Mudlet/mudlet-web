@@ -3,6 +3,8 @@ import {
     SUPPORTED_SERVER_ENCODINGS,
     canonicalServerEncoding,
     canEncodeForServer,
+    decodeForServer,
+    savedServerEncoding,
     SessionCodec,
     CharsetHandler,
 } from '../../../src/mud/protocol/charset';
@@ -191,5 +193,73 @@ describe('canEncodeForServer — multi-byte encodings', () => {
         expect(canEncodeForServer('한국어', 'GBK')).toBe(false);
         expect(canEncodeForServer('한국어', 'EUC-KR')).toBe(true);
         expect(canEncodeForServer('😀', 'GB18030')).toBe(true);
+    });
+});
+
+/**
+ * Mudlet/mudlet-web#191. The expected characters are desktop Mudlet's, read out
+ * of the Unicode mapping files for each page — not out of codePages.ts, which is
+ * what is under test.
+ */
+describe('the code pages Mudlet reads from its own tables', () => {
+    const bytes = (...b: number[]) => String.fromCharCode(...b);
+    const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
+
+    // CP866 and MACINTOSH were listed and then refused, because nothing mapped
+    // either name onto a decoder.
+    it('can switch to every encoding it lists', () => {
+        for (const name of SUPPORTED_SERVER_ENCODINGS) {
+            const handler = new CharsetHandler(new SessionCodec(), true, { sendRaw: () => {}, onNegotiated: () => {} });
+            expect(handler.setServerEncoding(name), name).toBe(true);
+        }
+    });
+
+    it('reads CP866 and MACINTOSH', () => {
+        // "Привет" and "Ça marche"
+        expect(decodeForServer(bytes(0x8f, 0xe0, 0xa8, 0xa2, 0xa5, 0xe2), 'CP866')).toBe('Привет');
+        expect(decodeForServer(bytes(0x82, 0x61, 0x20, 0x8e, 0x74, 0xe9), 'MACINTOSH')).toBe('Ça étÈ');
+    });
+
+    it('takes the WHATWG and IANA spellings of them from a game', () => {
+        expect(canonicalServerEncoding('IBM866')).toBe('CP866');
+        expect(canonicalServerEncoding('cp866')).toBe('CP866');
+        expect(canonicalServerEncoding('x-mac-roman')).toBe('MACINTOSH');
+        expect(canonicalServerEncoding('macintosh')).toBe('MACINTOSH');
+    });
+
+    // The Greek lower case sat where CP437 has its accented Latin letters.
+    it('reads CP737\'s Greek lower case', () => {
+        expect(decodeForServer(bytes(0x98, 0x99, 0x9a, 0x9b), 'CP737')).toBe('αβγδ');
+        expect(decodeForServer(bytes(...range(0x98, 0xaf)), 'CP737')).toBe('αβγδεζηθικλμνξοπρσςτυφχψ');
+        expect(decodeForServer(bytes(0xe0, 0xf0), 'CP737')).toBe('ωΏ');
+    });
+
+    it('reads CP667\'s Ó, which it lost by shifting the row after it', () => {
+        expect(decodeForServer(bytes(...range(0xa0, 0xa7)), 'CP667')).toBe('ŹŻóÓńŃźż');
+    });
+
+    // The WHATWG koi8-u is KOI8-RU, which has ў/Ў where KOI8-U has box drawing.
+    it('reads KOI8-U as KOI8-U, not as the browser\'s KOI8-RU', () => {
+        expect(decodeForServer(bytes(0xae, 0xbe), 'KOI8-U')).toBe('╝╬');
+        expect(decodeForServer(bytes(0xa4, 0xa6, 0xa7, 0xad, 0xb4, 0xb6, 0xb7, 0xbd), 'KOI8-U')).toBe('єіїґЄІЇҐ');
+    });
+
+    it('draws MEDIEVIA\'s 0xF6 as Mudlet does', () => {
+        expect(decodeForServer(bytes(0xf6), 'MEDIEVIA')).toBe('∟');
+    });
+
+    // Mudlet's Thai page is CP1162; Mudlet Web offered the same table as CP1161,
+    // which desktop Mudlet refuses.
+    it('names the Thai page CP1162', () => {
+        expect(SUPPORTED_SERVER_ENCODINGS).toContain('CP1162');
+        expect(SUPPORTED_SERVER_ENCODINGS).not.toContain('CP1161');
+        expect(canonicalServerEncoding('CP1161')).toBeNull();
+        expect(decodeForServer(bytes(0xa1, 0xb2, 0x80), 'CP1162')).toBe('กฒ€');
+    });
+
+    it('still opens a profile saved as CP1161, on the page it meant', () => {
+        expect(savedServerEncoding('CP1161')).toBe('CP1162');
+        expect(savedServerEncoding('CP437')).toBe('CP437');
+        expect(savedServerEncoding(undefined)).toBeUndefined();
     });
 });
