@@ -45,8 +45,11 @@ const ANSI_LABELS = [
     'Light blue', 'Light magenta', 'Light cyan', 'Light white',
 ] as const;
 
-const DEFAULT_BG_FALLBACK = '#090909';
-const DEFAULT_FG_FALLBACK = '#d4d4d4';
+// What the console draws when the profile sets neither: desktop's
+// Host::mBgColor / mFgColor (black, Qt::lightGray), as App.css's
+// --console-bg / --console-text paint them.
+const DEFAULT_BG_FALLBACK = '#000000';
+const DEFAULT_FG_FALLBACK = '#c0c0c0';
 const DEFAULT_INPUT_BG_FALLBACK = '#141414';
 const DEFAULT_INPUT_FG_FALLBACK = '#d4d4d4';
 const DEFAULT_CMD_ECHO_FG_FALLBACK = '#717100';

@@ -15,7 +15,8 @@
 //     `$`-anchored pattern still matches.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { createTestRuntime, type TestRuntime } from '../createTestRuntime';
+import { createTestRuntime, TEST_CONNECTION_ID, type TestRuntime } from '../createTestRuntime';
+import { useAppStore } from '../../src/storage/appStore';
 import { AnsiAwareBuffer } from '../../src/mud/text/FormatState';
 import { TriggerEngine, type TriggerNode } from '../../src/mud/triggers/TriggerEngine';
 import { NULL_ENGINE_HOST } from '../../src/scripting/EngineHost';
@@ -62,6 +63,28 @@ describe('colour triggers compare by RGB (#184)', () => {
     it('answers a trigger for 7 on uncoloured text, drawn in the same grey', () => {
         expect(colorRun('plain', 7, -1)).toBe('plain');
         expect(colorRun('plain', -2, -1)).toBe('plain');
+    });
+
+    it('answers a trigger for background 0 on uncoloured text, drawn on black', () => {
+        // Host::mBgColor starts as Qt black, the same RGB as ANSI 0, so desktop
+        // fires `tempAnsiColorTrigger(-1, 0)` on plain text out of the box.
+        // Mudlet Web's default console used to be #090909 and never did.
+        useAppStore.getState().patchConnectionProfile(TEST_CONNECTION_ID,
+            { outputBackground: '', outputBackgroundColor: undefined });
+        expect(colorRun('plain', -1, 0)).toBe('plain');
+        expect(colorRun('plain', 7, 0)).toBe('plain');
+        // ...but not on text given a background of its own.
+        expect(colorRun('x \x1b[44mBLUEBG\x1b[0m', -1, 0)).toBe('x ');
+    });
+
+    it('keeps a background the profile chose for itself', () => {
+        useAppStore.getState().patchConnectionProfile(TEST_CONNECTION_ID, { outputBackground: '#090909' });
+        try {
+            expect(colorRun('plain', -1, 0)).toBeNull();
+            expect(colorRun('plain', -1, -2)).toBe('plain');
+        } finally {
+            useAppStore.getState().patchConnectionProfile(TEST_CONNECTION_ID, { outputBackground: '' });
+        }
     });
 
     it('matches nothing for a code outside 0-255', () => {

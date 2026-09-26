@@ -25,7 +25,7 @@ function readConsoleStyle(container: HTMLElement): ConsoleStyle {
     const bg = cs.backgroundColor;
     const opaque = bg && bg !== 'transparent' && bg !== 'rgba(0, 0, 0, 0)';
     return {
-        background: (opaque ? bg : consoleBg) || '#1a1a1a',
+        background: (opaque ? bg : consoleBg) || '#000000',
         color: cs.color || consoleText || '#c0c0c0',
         fontFamily: cs.fontFamily || 'monospace',
         fontSize: parseFloat(cs.fontSize) || 14,
