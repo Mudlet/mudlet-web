@@ -4738,7 +4738,14 @@ export class ScriptingEngine implements EngineHost {
                                 }
                             }
                             if (shouldRender) {
-                                this.session.events.emit('message', renderBuffer, type, Date.now(), isPrompt);
+                                // A line longer than the main window's wrap width
+                                // is stored as several buffer lines once its
+                                // triggers have run, and drawn as those lines.
+                                const pieces = renderBuffer === buffer
+                                    ? this.api.wrapNetworkLine(buffer) : [renderBuffer];
+                                const now = Date.now();
+                                pieces.forEach((piece, i) => this.session.events.emit(
+                                    'message', piece, type, now, isPrompt && i === pieces.length - 1));
                             }
 
                             // Flush this line's trigger echoes right after it renders so

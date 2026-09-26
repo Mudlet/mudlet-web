@@ -711,6 +711,26 @@ export class Console {
         return wrapBuffer(buf, this.wrapWidth, this.wrapIndent, this.wrapHangingIndent) ?? [buf];
     }
 
+    /**
+     * Break a line that came in through {@link appendLine} to the console's wrap
+     * width once the triggers are done with it, and hand back the lines it is now
+     * stored as (just `buffer` when it needed no breaking, or is no longer in the
+     * buffer). Mudlet's TBuffer::translateToPlainText does the same: the triggers
+     * see the whole line as the server sent it, and only then does wrapLine() cut
+     * it into the buffer lines getLines() and the cursor APIs count.
+     */
+    wrapAppendedLine(buffer: AnsiAwareBuffer): AnsiAwareBuffer[] {
+        if (this.wrapWidth <= 0) return [buffer];
+        const idx = this.history.lastIndexOf(buffer);
+        if (idx < 0) return [buffer];
+        const lines = wrapBuffer(buffer, this.wrapWidth, this.wrapIndent, this.wrapHangingIndent);
+        if (!lines) return [buffer];
+        this.history.splice(idx, 1, ...lines);
+        if (this.cursorIdx > idx) this.cursorIdx += lines.length - 1;
+        this.evict();
+        return lines;
+    }
+
     wrapLine(lineNumber: number, wrapAt = 0, indent = 0, hangingIndent = 0): boolean {
         if (!Number.isFinite(lineNumber)) return false;
         const idx = Math.trunc(lineNumber);

@@ -1862,8 +1862,8 @@ export class WindowManager {
     setFontSize(id: string, size: number): boolean {
         const win = this.windows.get(id);
         if (!win) return false;
-        if (!Number.isFinite(size) || size < 1 || size > 99) return false;
-        win.fontSize = Math.round(size);
+        if (!Number.isFinite(size) || size < 1) return false;
+        win.fontSize = Math.trunc(size);
         this.notify();
         this.saveHint(id, win);
         return true;
