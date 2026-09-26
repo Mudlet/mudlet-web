@@ -194,20 +194,58 @@ export class TimerEngine {
         return `${t.seconds}|${t.repeat ? 1 : 0}|${t.isGroup ? 1 : 0}|${t.code ? 1 : 0}|${t.command ?? ''}|${t.language ?? ''}|${t.name}`;
     }
 
+    /**
+     * Offset timers keyed by the id of the timer they hang off. In Mudlet a
+     * timer nested under another *timer* (not a folder) is an offset timer
+     * purely by where it sits (TTimer.h:75-84): it never runs on its own clock
+     * and is skipped by the normal start walk (TTimer.cpp:314, :329). Each time
+     * its parent fires it is started once, due its own interval later
+     * (TTimer.cpp:255-265). Rebuilt on every {@link loadPerm}; only holds
+     * children that are effectively enabled.
+     */
+    private readonly offsetChildren = new Map<string, TimerNode[]>();
+
     loadPerm(timers: TimerNode[], executeFn: ExecuteFn): void {
         const enabledIds = buildEffectivelyEnabledIds(timers);
+        const byId = new Map(timers.map(t => [t.id, t]));
+        const isOffset = (t: TimerNode): boolean => {
+            if (t.isGroup || !t.parentId) return false;
+            const parent = byId.get(t.parentId);
+            return !!parent && !parent.isGroup;
+        };
         this.knownPermNames.clear();
         for (const t of timers) if (!t.isGroup) this.knownPermNames.add(t.name);
+        this.offsetChildren.clear();
+        for (const t of timers) {
+            if (!isOffset(t) || !enabledIds.has(t.id)) continue;
+            const list = this.offsetChildren.get(t.parentId!) ?? [];
+            list.push(t);
+            this.offsetChildren.set(t.parentId!, list);
+        }
         const nextIds = new Set<string>();
         const nextDesc = new Map<string, string>();
         const nextNames = new Map<string, string>();
 
         for (const timer of timers) {
-            const wantRun = enabledIds.has(timer.id) && !(timer.isGroup && !timer.code);
             const desc = this.descOf(timer);
             const prevDesc = this.prevDesc.get(timer.id);
             const isLive = this.perm.has(timer.id);
 
+            if (isOffset(timer)) {
+                // Never started from here — only its parent's firing arms it.
+                // One already armed by that survives a reload unchanged, as
+                // long as it is still enabled and still the same timer.
+                if (isLive && enabledIds.has(timer.id) && prevDesc === desc) {
+                    nextIds.add(timer.id);
+                    nextDesc.set(timer.id, desc);
+                    if (!nextNames.has(timer.name)) nextNames.set(timer.name, timer.id);
+                } else if (isLive) {
+                    this.killPermHandle(timer.id);
+                }
+                continue;
+            }
+
+            const wantRun = enabledIds.has(timer.id) && !(timer.isGroup && !timer.code);
             if (!wantRun) {
                 // Drop any live handle for an item that is no longer enabled.
                 if (isLive) this.killPermHandle(timer.id);
@@ -222,7 +260,7 @@ export class TimerEngine {
                 // remainingTime keeps reporting against the original schedule.
             } else {
                 if (isLive) this.killPermHandle(timer.id);
-                this.startPerm(timer, executeFn);
+                this.startPerm(timer, executeFn, timer.repeat);
             }
             if (!nextNames.has(timer.name)) nextNames.set(timer.name, timer.id);
         }
@@ -238,11 +276,25 @@ export class TimerEngine {
         for (const [k, v] of nextNames) this.permNameToId.set(k, v);
     }
 
-    private startPerm(timer: TimerNode, executeFn: ExecuteFn): void {
-        const fire = () => executeFn(timer);
+    /** (Re)start every enabled offset timer hanging off `parentId`, each due
+     *  its own interval from now. A child still pending from the previous
+     *  parent tick is restarted, as QTimer::start does on a running timer. */
+    private armOffsetChildren(parentId: string, executeFn: ExecuteFn): void {
+        for (const child of this.offsetChildren.get(parentId) ?? []) {
+            this.killPermHandle(child.id);
+            this.startPerm(child, executeFn, false);
+            this.prevDesc.set(child.id, this.descOf(child));
+            if (!this.permNameToId.has(child.name)) this.permNameToId.set(child.name, child.id);
+        }
+    }
+
+    private startPerm(timer: TimerNode, executeFn: ExecuteFn, repeat: boolean): void {
+        // Children are armed before the body runs, so a script that disables
+        // one of them in the same tick (and so reloads the engine) cancels it.
+        const fire = () => { this.armOffsetChildren(timer.id, executeFn); executeFn(timer); };
         const intervalMs = timer.seconds * 1000;
         const start = Date.now();
-        if (timer.repeat) {
+        if (repeat) {
             const handle = setInterval(fire, intervalMs) as unknown as ReturnType<typeof setTimeout>;
             this.perm.set(timer.id, { handle, repeat: true, start, intervalMs, fire });
         } else {
@@ -319,6 +371,7 @@ export class TimerEngine {
             else clearTimeout(handle);
         }
         this.perm.clear();
+        this.offsetChildren.clear();
         this.permNameToId.clear();
         this.knownPermNames.clear();
         this.prevDesc.clear();
