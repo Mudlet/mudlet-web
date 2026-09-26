@@ -765,6 +765,7 @@ export class ScriptingEngine implements EngineHost {
             if (pkg.kind !== 'module') continue;
             try {
                 const data = reloadModuleFromVfs(pkg, vfs, this.readPackageConfig);
+                this.noteModuleLoaded(pkg.name, data);
                 useAppStore.getState().installPackage(id, pkg, data);
             } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);
@@ -782,7 +783,7 @@ export class ScriptingEngine implements EngineHost {
     private scheduleModuleSyncForChanges(state: ReturnType<typeof useAppStore.getState>, prevState: ReturnType<typeof useAppStore.getState>): void {
         const id = this.connectionId;
         const packages = state.connectionPackages[id] ?? [];
-        const dirtyModules = packages.filter(p => p.kind === 'module' && p.sync);
+        const dirtyModules = packages.filter(p => p.kind === 'module' && p.sync && !this.unloadedModules.has(p.name));
         if (dirtyModules.length === 0) return;
 
         for (const pkg of dirtyModules) {
@@ -1076,6 +1077,10 @@ export class ScriptingEngine implements EngineHost {
         const pkg = (state.connectionPackages[id] ?? []).find(p => p.name === moduleName);
         if (!pkg) throw new Error(`module not installed: ${moduleName}`);
         if (pkg.kind !== 'module') throw new Error(`not a module: ${moduleName}`);
+        if (this.unloadedModules.has(moduleName)) {
+            throw new Error(`module "${moduleName}" never finished loading from its file,`
+                + ' so writing it back would destroy the part that did not load');
+        }
         const path = moduleXmlAbsolutePath(pkg, vfs);
         if (!path) throw new Error(`module "${moduleName}" has no xmlPath`);
 
@@ -1128,6 +1133,7 @@ export class ScriptingEngine implements EngineHost {
             // reporting a title the script had replaced, from a config.lua that
             // no longer said it.
             this.moduleInfoOverrides.delete(moduleName);
+            this.noteModuleLoaded(moduleName, data);
             const problems = this.collectInstallProblems(moduleName,
                 () => useAppStore.getState().installPackage(id, pkg, data), data.triggers);
             this.raiseEvent('sysReadModuleEvent', [moduleName]);
@@ -1199,6 +1205,7 @@ export class ScriptingEngine implements EngineHost {
     saveSyncedModules(): void {
         for (const name of this.getModuleNames()) {
             if (!this.getModuleInfo(name)?.sync) continue;
+            if (this.unloadedModules.has(name)) continue;
             this.syncModuleToFile(name).catch(err => {
                 const msg = err instanceof Error ? err.message : String(err);
                 this.api.printError(`[saveProfile] sync failed for module "${name}": ${msg}`);
@@ -1338,6 +1345,7 @@ export class ScriptingEngine implements EngineHost {
             }
             prepared.commit();
             const { manifest, data } = prepared;
+            this.noteModuleLoaded(manifest.name, data);
             const problems = this.collectInstallProblems(manifest.name,
                 () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data.triggers);
             this.notifyPackageInstalled(manifest.name, undefined, problems);
@@ -1381,6 +1389,7 @@ export class ScriptingEngine implements EngineHost {
         // Mudlet's sync-module counterpart, fired for sync-flagged modules
         // (see sysSyncInstallModule above for the single-profile caveat).
         if (pkg.sync) this.raiseEvent('sysSyncUninstallModule', [moduleName]);
+        this.unloadedModules.delete(moduleName);
         useAppStore.getState().uninstallPackage(this.connectionId, moduleName);
         if (this.vfs) {
             const vfs = this.vfs;
@@ -4222,6 +4231,19 @@ export class ScriptingEngine implements EngineHost {
     /** Packages and modules whose items are being read in right now — their
      *  scripts are running as part of the install. */
     private readonly installing = new Set<string>();
+    /**
+     * Modules whose XML stopped part-way through (#8696). The items read in
+     * before the break are in the profile and running, but they are only part
+     * of the module, so writing them back out over its file — which is what a
+     * sync does — would destroy the rest. Kept until a read gets all the way
+     * through.
+     */
+    private readonly unloadedModules = new Set<string>();
+
+    private noteModuleLoaded(name: string, data: { parseError?: string }): void {
+        if (data.parseError) this.unloadedModules.add(name);
+        else this.unloadedModules.delete(name);
+    }
     /** Removals asked of a package or module by its own install-time scripts,
      *  waiting for that install to finish. */
     private readonly heldRemovals: { name: string; kind: 'package' | 'module' }[] = [];
