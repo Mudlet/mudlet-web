@@ -161,9 +161,9 @@ export default class Pcre2 {
 
     match(subject: string, start?: number): Pcre2Match | null {
         if (this.codePtr === 0) return null;
-        // Preserve upstream semantics: the guard only bites when `start` is a
-        // number (matchAll); a plain match(line) leaves it undefined.
-        if (start !== undefined && start >= subject.length) return null;
+        // An offset AT the end of the subject is legal — PCRE2 can still find an
+        // empty match there (`$`, `x*`); only past the end is out of range.
+        if (start !== undefined && start > subject.length) return null;
         const startOffset = start || 0;
 
         ensureLineEncoded(subject);
@@ -196,7 +196,12 @@ export default class Pcre2 {
         return results;
     }
 
-    matchAll(subject: string): Pcre2Match[] {
+    /**
+     * `includeEnd` also tries the offset at the very end of the subject, so a
+     * trailing empty match is reported — what lrexlib's `gmatch`/`gsub`/`count`
+     * do (`rex.count("abc", "x*")` is 4). The trigger engine leaves it off.
+     */
+    matchAll(subject: string, includeEnd = false): Pcre2Match[] {
         // Mudlet's global-match loop (TAlias::match, TTrigger::match_perl):
         // resume at the end of the last match, and when that match was
         // zero-width step past the position rather than asking PCRE2 for the
@@ -217,7 +222,8 @@ export default class Pcre2 {
         // in the loop terminates instead of hanging the tab.
         let safety = 2 * subject.length + 1000;
         let iter: Pcre2Match | null;
-        while ((iter = this.match(subject, start)) !== null) {
+        while ((start < subject.length || (includeEnd && start === subject.length))
+            && (iter = this.match(subject, start)) !== null) {
             results.push(iter);
             const whole = iter[0];
             if (whole.end > whole.start) {

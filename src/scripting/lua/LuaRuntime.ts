@@ -11,6 +11,7 @@ import type {ScriptingAPI} from '../ScriptingAPI';
 import type {ProfileVFS} from '../vfs/ProfileVFS';
 import UTF8 from './utf8.lua?raw';
 import {findLuaPattern} from './utf8Patterns';
+import {utf8CaseMap} from './utf8CaseMap';
 import {armor, unarmor} from './byteArmor';
 import VFS_LUA from './VFS.lua?raw';
 import LUAGLOBAL from './LuaGlobal.lua?raw';
@@ -2113,6 +2114,7 @@ export class LuaRuntime implements IScriptingRuntime {
         await setupRex(this.lua);
         this.lua.doStringSync(EXEC_LUA);
         this.installNativeUtf8Find();
+        this.lua.global.set('__mudlet_utf8_casemap', utf8CaseMap);
         this.execModule(UTF8, 'utf8', 'utf8');
 
         // Built-in Lua files served read-only via the VFS at /lua/<relative-path>.
