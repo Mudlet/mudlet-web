@@ -3239,8 +3239,10 @@ end`);
         return typeof err === 'string' ? err : null;
     }
 
-    run(code: string, name: string): void {
-        this.exec(code, name);
+    /** `chunkName`, when given, is what Lua reports the code under — Mudlet's
+     *  "Timer: <name>" / "Key: <name>" — rather than "@name". */
+    run(code: string, name: string, chunkName?: string): void {
+        this.execInner(code, name, chunkName);
     }
 
     /**
@@ -3312,9 +3314,10 @@ end`);
         captureSpans?: CaptureSpan[],
         namedSpans?: Record<string, CaptureSpan>,
         fullMatchSpan?: CaptureSpan,
-        /** Named captures per multimatches row, aligned with it. Last, so the
-         *  positional callers ahead of it are undisturbed. */
+        /** Named captures per multimatches row, aligned with it. */
         multiNamedGroups?: (Record<string, string> | undefined)[],
+        /** See IScriptingRuntime.runWithMatches. */
+        chunkName?: string,
     ): void {
         const prevMatches = this.currentMatches;
         const prevSpans = this.currentCaptureSpans;
@@ -3326,7 +3329,7 @@ end`);
         this.currentFullMatchSpan = fullMatchSpan ?? null;
         this.setMatches(matches, multimatches, namedGroups, multiNamedGroups);
         try {
-            this.execInner(code, name);
+            this.execInner(code, name, chunkName);
         } finally {
             this.currentMatches = prevMatches;
             this.currentCaptureSpans = prevSpans;

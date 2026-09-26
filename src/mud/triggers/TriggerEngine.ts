@@ -320,6 +320,9 @@ type CachedEntry = {
     signature: string;
     compiled: CompiledEntry | null;
     pcreInstances: PcreInstance[];
+    /** A pattern failed to compile — Mudlet's `mOK_init = false`, which
+     *  leaves the whole trigger inactive, its good patterns included. */
+    invalid: boolean;
 };
 
 // JSON.stringify on every node every loadPerm is the dominant self-time cost
@@ -533,7 +536,7 @@ function buildMatcher(
             // legacy pattern the remap above could not rescue arrives in — and
             // treating that as "match anything" fired the trigger's script on
             // every line of output (issue #102).
-            if (fg === COLOR_IGNORED && bg === COLOR_IGNORED) return () => null;
+            if (isIgnoredColorPattern(p.text)) return () => null;
             return (line) => {
                 if (!line) return null;
                 if (!colorMatchRef.fn) return null;
@@ -548,6 +551,12 @@ function buildMatcher(
         case 'lineSpacer':
             return null;
     }
+}
+
+/** A colour pattern that asks for neither colour — see buildMatcher. */
+function isIgnoredColorPattern(text: string): boolean {
+    const [fg, bg] = parseColorPattern(text);
+    return fg === COLOR_IGNORED && bg === COLOR_IGNORED;
 }
 
 export class TriggerEngine {
@@ -639,6 +648,11 @@ export class TriggerEngine {
      * only visible from the NEXT line, because the pass walks a snapshot.
      */
     private enabledIds = new Set<string>();
+    /** What the last {@link loadPerm} was told cannot be active (code that will
+     *  not compile), so {@link updateEnabled} keeps them out too. */
+    private blocked: ReadonlySet<string> = new Set();
+    /** Triggers with a pattern that failed to compile, as of the last loadPerm. */
+    private invalidPatterns = new Set<string>();
 
     // AND state: per-trigger progress for multiline AND triggers
     private andStates = new Map<string, AndState[]>();
@@ -781,9 +795,14 @@ export class TriggerEngine {
         this.orderDirty = true;
     }
 
-    loadPerm(items: TriggerNode[]): void {
+    /**
+     * `blocked`: triggers whose code (or a Lua-function pattern) will not
+     * compile. Those and every trigger with a pattern PCRE rejects are
+     * inactive, as desktop's `Tree::isActive` wants `state()` — they never
+     * match, so their children are never looked at either.
+     */
+    loadPerm(items: TriggerNode[], blocked: ReadonlySet<string> = new Set()): void {
         this.allById = new Map(items.map(i => [i.id, i]));
-        const enabledIds = buildEffectivelyEnabledIds(items);
 
         // Assign each permanent node a stable registration seq the first time we
         // see it (in store/document order, where a parent always precedes its
@@ -849,6 +868,10 @@ export class TriggerEngine {
         }
         this.cache = nextCache;
 
+        this.blocked = blocked;
+        this.invalidPatterns = new Set([...nextCache].filter(([, e]) => e.invalid).map(([id]) => id));
+        const enabledIds = this.buildEnabledIds(items);
+
         // Sort by depth so parents (chain heads) are always processed before children.
         newCompiled.sort((a, b) => a.depth - b.depth);
         this.permCompiled = newCompiled;
@@ -883,7 +906,20 @@ export class TriggerEngine {
      * recomputes the same set from scratch a moment later.
      */
     updateEnabled(items: TriggerNode[]): void {
-        this.enabledIds = buildEffectivelyEnabledIds(items);
+        this.enabledIds = this.buildEnabledIds(items);
+    }
+
+    private buildEnabledIds(items: TriggerNode[]): Set<string> {
+        const inactive = this.invalidPatterns.size === 0
+            ? this.blocked
+            : new Set([...this.blocked, ...this.invalidPatterns]);
+        return buildEffectivelyEnabledIds(items, inactive);
+    }
+
+    /** Whether the permanent trigger `id` has a pattern that failed to compile
+     *  and so cannot be active. */
+    hasInvalidPattern(id: string): boolean {
+        return this.invalidPatterns.has(id);
     }
 
     /** Fresh compile for an item not present in the cache. Returns a CachedEntry
@@ -893,6 +929,7 @@ export class TriggerEngine {
         const instances: PcreInstance[] = [];
         const register = (re: PcreInstance) => { instances.push(re); };
         let compiled: CompiledEntry | null = null;
+        let invalid = false;
         // A pattern that will not compile is dropped, and a trigger whose every
         // pattern was dropped never fires. Mudlet says so out loud —
         // TTrigger::setRegexCodeList sets the item's error to
@@ -904,6 +941,7 @@ export class TriggerEngine {
         // the negative result by signature, so it does not repeat until the
         // pattern is edited.
         const reportPatternError = (pattern: TriggerPattern, reason: string) => {
+            invalid = true;
             const itemNumber = item.patterns.indexOf(pattern) + 1;
             compileErrorRef.fn?.(
                 `Error: in item ${itemNumber}, perl regex "${pattern.text}" failed to compile, `
@@ -1006,7 +1044,12 @@ export class TriggerEngine {
             }
         }
 
-        return { signature, compiled, pcreInstances: instances };
+        // A colour pattern with both colours ignored matches nothing, and
+        // setRegexCodeList counts it as a failure like a bad regex (state =
+        // false: "no colors to match were set").
+        if (patterns.some(p => p.type === 'colorTrigger' && isIgnoredColorPattern(p.text))) invalid = true;
+
+        return { signature, compiled, pcreInstances: instances, invalid };
     }
 
     // ── Temp triggers (session-scoped, created by scripts) ────────────────────

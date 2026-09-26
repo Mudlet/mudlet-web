@@ -48,6 +48,12 @@ export class AliasPattern {
         return this.re;
     }
 
+    /** Whether PCRE has rejected the pattern — Mudlet's `mOK_init = false`,
+     *  which leaves the alias inactive. False while PCRE is still loading. */
+    invalid(): boolean {
+        return Pcre2.ready && this.compiled() === null;
+    }
+
     /** Free the wasm-side pattern. It never matches again afterwards. */
     destroy(): void {
         this.failed = true;
@@ -97,16 +103,23 @@ export class PatternEngine<T extends PatternItem> {
         };
     }
 
-    loadPerm(items: T[]): void {
+    /** `blocked`: items whose code will not compile, which Mudlet leaves
+     *  inactive — see buildEffectivelyEnabledIds. */
+    loadPerm(items: T[], blocked?: ReadonlySet<string>): void {
         for (const { re } of this.permCompiled) re.destroy();
         this.permCompiled = [];
-        const enabledIds = buildEffectivelyEnabledIds(items);
+        const enabledIds = buildEffectivelyEnabledIds(items, blocked);
         for (const item of items) {
             if (!enabledIds.has(item.id)) continue;
             if (!item.pattern) continue;
             // An invalid pattern is kept and simply never matches.
             this.permCompiled.push({ item, re: new AliasPattern(item.pattern) });
         }
+    }
+
+    /** Whether the permanent item `id` is loaded with a pattern PCRE rejects. */
+    hasInvalidPattern(id: string): boolean {
+        return this.permCompiled.some(({ item, re }) => item.id === id && re.invalid());
     }
 
     destroy(): void {

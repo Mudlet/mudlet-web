@@ -250,15 +250,27 @@ export class TimerEngine {
      *  engine's back (the editor) from one that never moved. */
     private readonly seenPerm = new Map<string, { enabled: boolean; parentId: string | null }>();
 
-    loadPerm(timers: TimerNode[], executeFn: ExecuteFn): void {
+    /**
+     * Permanent timers whose code will not compile. Mudlet's `activate()`
+     * refuses them (`Tree::canBeActivated` wants `state()`), so such a timer
+     * neither runs nor reports active, whatever its switch says, and never
+     * fires to arm its offset children. Unlike a trigger's, the gate is the
+     * timer's own: a folder's other timers run on their own clocks, and
+     * `canBeUnlocked` asks only the ancestors' switches.
+     */
+    private broken: ReadonlySet<string> = new Set();
+
+    loadPerm(timers: TimerNode[], executeFn: ExecuteFn, broken: ReadonlySet<string> = new Set()): void {
+        this.broken = broken;
         const tree = permTree(timers);
         const { enabledIds, isOffset } = tree;
+        const runnable = (t: TimerNode): boolean => enabledIds.has(t.id) && !broken.has(t.id);
         this.reconcileActive(tree);
         this.knownPermNames.clear();
         for (const t of timers) if (!t.isGroup) this.knownPermNames.add(t.name);
         this.offsetChildren.clear();
         for (const t of timers) {
-            if (!isOffset(t) || !enabledIds.has(t.id)) continue;
+            if (!isOffset(t) || !runnable(t)) continue;
             const list = this.offsetChildren.get(t.parentId!) ?? [];
             list.push(t);
             this.offsetChildren.set(t.parentId!, list);
@@ -276,7 +288,7 @@ export class TimerEngine {
                 // Never started from here — only its parent's firing arms it.
                 // One already armed by that survives a reload unchanged, as
                 // long as it is still enabled and still the same timer.
-                if (isLive && enabledIds.has(timer.id) && prevDesc === desc) {
+                if (isLive && runnable(timer) && prevDesc === desc) {
                     nextIds.add(timer.id);
                     nextDesc.set(timer.id, desc);
                     if (!nextNames.has(timer.name)) nextNames.set(timer.name, timer.id);
@@ -286,7 +298,7 @@ export class TimerEngine {
                 continue;
             }
 
-            const wantRun = enabledIds.has(timer.id) && !(timer.isGroup && !timer.code);
+            const wantRun = runnable(timer) && !(timer.isGroup && !timer.code);
             if (!wantRun) {
                 // Drop any live handle for an item that is no longer enabled.
                 if (isLive) this.killPermHandle(timer.id);
@@ -451,7 +463,7 @@ export class TimerEngine {
     }
 
     private reportsActive(node: TimerNode, tree: PermTree): boolean {
-        if (!node.enabled) return false;
+        if (!node.enabled || this.broken.has(node.id)) return false;
         return tree.isOffset(node) || this.activePerm.has(node.id);
     }
 

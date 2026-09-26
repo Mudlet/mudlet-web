@@ -48,8 +48,9 @@ export type VariableEdit =
 
 export interface IScriptingRuntime {
     load(code: string, name: string): void;
-    /** Execute a code chunk once, without match context. Used for timers and keybindings. */
-    run(code: string, name: string): void;
+    /** Execute a code chunk once, without match context. Used for timers and
+     *  keybindings. `chunkName` as for {@link runWithMatches}. */
+    run(code: string, name: string, chunkName?: string): void;
     /** The error compiling `code` gives, without running it, or null when it
      *  compiles. `chunkName` is used as Lua's chunk name verbatim. */
     syntaxError?(code: string, chunkName: string): string | null;
@@ -84,9 +85,13 @@ export interface IScriptingRuntime {
         captureSpans?: CaptureSpan[],
         namedSpans?: Record<string, CaptureSpan>,
         fullMatchSpan?: CaptureSpan,
-        /** Named captures per multimatches row, aligned with it. Last, so the
-         *  positional callers ahead of it are undisturbed. */
+        /** Named captures per multimatches row, aligned with it. */
         multiNamedGroups?: (Record<string, string> | undefined)[],
+        /** The chunk name Lua reports the code under — Mudlet's
+         *  "Trigger: <name>" / "Alias: <name>". Without one, `name` is used
+         *  as a file name ("@name"). Last, so the positional callers ahead of
+         *  it are undisturbed. */
+        chunkName?: string,
     ): void;
     destroy(): void;
     /** Bytes behind a path in the runtime's read-only bundled namespace, or null
