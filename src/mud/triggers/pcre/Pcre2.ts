@@ -26,8 +26,9 @@
  * These are constant-factor wins (the engine is still interpreted — the wasm
  * build has no JIT), but they remove the redundant work the scan was repeating.
  *
- * Anything outside the trigger engine (e.g. the Lua `rex` module) keeps using
- * the upstream package directly; both share the same wasm module instance.
+ * The alias engine compiles its patterns with it too (PatternEngine). Anything
+ * else (e.g. the Lua `rex` module) keeps using the upstream package directly;
+ * all of them share the same wasm module instance.
  */
 import libpcre2 from 'pcre2-wasm-universal/libpcre2';
 
@@ -95,6 +96,12 @@ export default class Pcre2 {
     private codePtr = 0;
     private matchData = 0;
     private readonly nametable: Record<number, string> = {};
+
+    /** Whether {@link init} has resolved, so a pattern can be compiled
+     *  synchronously right now. */
+    static get ready(): boolean {
+        return initialized;
+    }
 
     static async init(): Promise<void> {
         if (initialized) return;
@@ -164,8 +171,17 @@ export default class Pcre2 {
         // Preserve upstream semantics: the guard only bites when `start` is a
         // number (matchAll); a plain match(line) leaves it undefined.
         if (start !== undefined && start >= subject.length) return null;
-        const startOffset = start || 0;
+        return this.matchFrom(subject, start || 0);
+    }
 
+    /**
+     * {@link match} without the end-of-subject guard: `startOffset` may equal
+     * `subject.length`, where a pattern that can match nothing still finds its
+     * empty match. That is where TAlias::match's global loop tries after a
+     * match that ran to the end of the command.
+     */
+    matchFrom(subject: string, startOffset: number): Pcre2Match | null {
+        if (this.codePtr === 0) return null;
         ensureLineEncoded(subject);
         if (this.matchData === 0) this.matchData = cfunc.createMatchData(this.codePtr);
 
@@ -196,7 +212,12 @@ export default class Pcre2 {
         return results;
     }
 
-    matchAll(subject: string): Pcre2Match[] {
+    /**
+     * `includeEnd` also tries the offset at the very end of the subject, so a
+     * trailing empty match is reported — what lrexlib's `gmatch`/`gsub`/`count`
+     * do (`rex.count("abc", "x*")` is 4). The trigger engine leaves it off.
+     */
+    matchAll(subject: string, includeEnd = false): Pcre2Match[] {
         // Mudlet's global-match loop (TAlias::match, TTrigger::match_perl):
         // resume at the end of the last match, and when that match was
         // zero-width step past the position rather than asking PCRE2 for the
@@ -217,7 +238,8 @@ export default class Pcre2 {
         // in the loop terminates instead of hanging the tab.
         let safety = 2 * subject.length + 1000;
         let iter: Pcre2Match | null;
-        while ((iter = this.match(subject, start)) !== null) {
+        while ((start < subject.length || (includeEnd && start === subject.length))
+            && (iter = this.matchFrom(subject, start)) !== null) {
             results.push(iter);
             const whole = iter[0];
             if (whole.end > whole.start) {

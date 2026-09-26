@@ -43,7 +43,7 @@ describe('opaque (non-Error) throws out of Lua', () => {
         const logs: string[] = [];
         t.session.events.on('script.log', (text: string) => { logs.push(text); });
 
-        t.rt.run('function probeEvt() local v = probeObj.boom end', 'setup');
+        t.rt.run(`registerAnonymousEventHandler('probeEvt', function() local v = probeObj.boom end)`, 'setup');
         t.rt.emitEvent('probeEvt', []);
 
         expect(logs).toEqual([

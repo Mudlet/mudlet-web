@@ -1,6 +1,9 @@
 -- Stubs that LuaGlobal.lua expects at module load.
 luaGlobalPath = "/lua"
 mudlet = {
+  -- GMCP keys merged rather than replaced (see setMergeTables in Bridge.lua).
+  -- Re-seeded here because this table replaces the one Bridge.lua made.
+  mergeTables = { "Char.Status" },
   translations = {
     interfacelanguage = "en_US",
     -- The direction names Mudlet builds for its interface language at startup

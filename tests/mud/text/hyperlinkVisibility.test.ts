@@ -215,3 +215,33 @@ describe('concealDelayedReveals', () => {
     expect(con.getLines(0, 1)[0]).toBe('OSCREVEAL1(HIDDENWORD)OSCREVEAL1');
   });
 });
+
+// #195: the controller runs for every output line. It used to find armed links
+// with a querySelectorAll over the whole document, which under a flood with a
+// full scrollback was most of the per-line cost.
+describe('HyperlinkVisibilityController — per-line cost', () => {
+  it('never scans the output tree for armed links', () => {
+    const root = document.createElement('div');
+    for (let i = 0; i < 50; i++) root.appendChild(span());
+    const scan = vi.spyOn(root, 'querySelectorAll');
+    const ctrl = new HyperlinkVisibilityController(() => root);
+    for (let i = 0; i < 100; i++) { ctrl.onOutput(); ctrl.onPrompt(); ctrl.onInput(); }
+    expect(scan).not.toHaveBeenCalled();
+  });
+
+  it('leaves an armed link under another root alone', () => {
+    const mine = document.createElement('div');
+    const other = document.createElement('div');
+    const el = span();
+    other.appendChild(el);
+    applyVisibility(el, { action: 'conceal', expireOnOutput: true });
+    click(el);
+    const ctrl = new HyperlinkVisibilityController(() => mine);
+    ctrl.onOutput(); ctrl.onOutput();
+    expect(el.style.visibility).toBe('');
+    // …and the owning root's controller still conceals it (after its skip).
+    const owner = new HyperlinkVisibilityController(() => other);
+    owner.onOutput(); owner.onOutput();
+    expect(el.style.visibility).toBe('hidden');
+  });
+});

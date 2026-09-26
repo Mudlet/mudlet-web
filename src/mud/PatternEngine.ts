@@ -1,4 +1,5 @@
 import { buildEffectivelyEnabledIds } from '../storage/schema';
+import Pcre2 from './triggers/pcre/Pcre2';
 
 type TempFn = (matches: RegExpMatchArray) => void;
 
@@ -13,17 +14,60 @@ type PatternItem = {
     parentId: string | null;
 };
 
+// Same verbs TriggerEngine prepends: Mudlet compiles alias patterns with
+// PCRE2_UTF | PCRE2_UCP just as it does trigger ones, so `\w` and friends
+// classify by Unicode property. See the note on UNICODE_VERBS there.
+const UNICODE_VERBS = '(*UTF)(*UCP)';
+
+/**
+ * An alias pattern, compiled with PCRE2 the way TAlias::compileRegex does —
+ * not as a JS RegExp, whose dialect has no inline `(?i)`/`(?x)`, no atomic or
+ * possessive groups, no `\A`/`\Z`, and reads `\p{L}` as a literal `p{L}`.
+ *
+ * Compiled on first use rather than on construction: the PCRE wasm loads
+ * asynchronously, and aliases (saved ones, and temp ones a script makes while
+ * the profile loads) can be registered before it has. Nobody types a command
+ * before then, so the first match is the earliest a compile is ever needed.
+ * A pattern that fails to compile stays failed and never matches.
+ */
+export class AliasPattern {
+    private re: Pcre2 | null = null;
+    private failed = false;
+
+    constructor(readonly source: string) {}
+
+    /** The compiled pattern, or null while PCRE is still loading or when the
+     *  pattern does not compile. */
+    compiled(): Pcre2 | null {
+        if (this.re || this.failed || !Pcre2.ready) return this.re;
+        try {
+            this.re = new Pcre2(UNICODE_VERBS + this.source);
+        } catch {
+            this.failed = true;
+        }
+        return this.re;
+    }
+
+    /** Free the wasm-side pattern. It never matches again afterwards. */
+    destroy(): void {
+        this.failed = true;
+        this.re?.destroy();
+        this.re = null;
+    }
+}
+
 export class PatternEngine<T extends PatternItem> {
-    /** A null pattern is an item that can never match — an uncompilable or
-     *  empty one. See {@link addTemp}. */
-    protected readonly temp = new Map<number, { pattern: RegExp | null; fn: TempFn }>();
+    /** A null pattern is an empty one, which can never match; an
+     *  uncompilable one is an AliasPattern that never compiles. See
+     *  {@link addTemp}. */
+    protected readonly temp = new Map<number, { pattern: AliasPattern | null; fn: TempFn }>();
     /** Key for this engine's own temp map. NOT an item id: addTemp hands the
      *  caller an unsubscribe function, and the id Lua sees is allocated by the
      *  runtime from the profile's shared sequence. Drawing from that sequence
      *  here would burn a number per temp item and put permAlias/tempAlias out
      *  of step (Alias_spec pins the run of ids). */
     protected nextInternalId = 1;
-    protected permCompiled: Array<{ item: T; re: RegExp }> = [];
+    protected permCompiled: Array<{ item: T; re: AliasPattern }> = [];
 
     /** Number of live session-scoped temp items (Mudlet `getProfileStats` temp count). */
     get tempCount(): number {
@@ -40,40 +84,35 @@ export class PatternEngine<T extends PatternItem> {
      *
      * Both cases used to leak: an uncompilable pattern threw the RegExp
      * SyntaxError out through the Lua binding, and an EMPTY one compiled to
-     * //, which matches every command typed and consumed the lot.
+     * //, which matches every command typed and consumed the lot. A pattern
+     * that PCRE rejects now simply never matches — see {@link AliasPattern}.
      */
-    addTemp(pattern: string | RegExp, fn: TempFn): () => void {
-        let re: RegExp | null = null;
-        if (typeof pattern !== 'string') {
-            re = pattern;
-        } else if (pattern !== '') {
-            try {
-                re = new RegExp(pattern);
-            } catch {
-                re = null; // never matches — see above
-            }
-        }
+    addTemp(pattern: string, fn: TempFn): () => void {
+        const re = pattern !== '' ? new AliasPattern(pattern) : null;
         const id = this.nextInternalId++;
         this.temp.set(id, { pattern: re, fn });
-        return () => { this.temp.delete(id); };
+        return () => {
+            this.temp.delete(id);
+            re?.destroy();
+        };
     }
 
     loadPerm(items: T[]): void {
+        for (const { re } of this.permCompiled) re.destroy();
         this.permCompiled = [];
         const enabledIds = buildEffectivelyEnabledIds(items);
         for (const item of items) {
             if (!enabledIds.has(item.id)) continue;
             if (!item.pattern) continue;
-            try {
-                this.permCompiled.push({ item, re: new RegExp(item.pattern) });
-            } catch {
-                // skip invalid patterns
-            }
+            // An invalid pattern is kept and simply never matches.
+            this.permCompiled.push({ item, re: new AliasPattern(item.pattern) });
         }
     }
 
     destroy(): void {
+        for (const { pattern } of this.temp.values()) pattern?.destroy();
         this.temp.clear();
+        for (const { re } of this.permCompiled) re.destroy();
         this.permCompiled = [];
     }
 }

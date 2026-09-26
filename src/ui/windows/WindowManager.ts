@@ -24,7 +24,8 @@ interface ScriptWindowData extends ScriptWindowRenderData {
 
 interface WindowCmdLineState {
     /** Lua callback fired on Enter. When null/undefined, Enter falls through to
-     *  the main connection (mirrors Mudlet's pre-setCmdLineAction default). */
+     *  the main connection (mirrors Mudlet's pre-setCmdLineAction default) —
+     *  see {@link WindowManager.submitCmdLine}. */
     action: ((text: string) => void) | null;
 }
 
@@ -2337,6 +2338,27 @@ export class WindowManager {
      *  directly on Enter so the React tree never sees the function. */
     getCmdLineAction(id: string): ((text: string) => void) | null {
         return this.cmdLineState.get(id)?.action ?? null;
+    }
+
+    /** Where Enter goes on a window command line with no action bound: the
+     *  game, as typed input. Set by the ScriptingEngine (its `hostSend`). */
+    onCmdLineDefaultSend?: (text: string) => void;
+
+    /**
+     * The user pressed Enter in window `id`'s command line. Runs the bound
+     * action, or else sends the text, as Mudlet's TCommandLine::enterCommand
+     * falls back to `Host::send`. Returns whether anything took the text, i.e.
+     * whether the line should clear.
+     */
+    submitCmdLine(id: string, text: string): boolean {
+        const cb = this.getCmdLineAction(id);
+        if (cb) {
+            try { cb(text); } catch (err) { console.warn(`[WindowCmdLine ${id}] action threw:`, err); }
+            return true;
+        }
+        if (!this.onCmdLineDefaultSend) return false;
+        this.onCmdLineDefaultSend(text);
+        return true;
     }
 
     /** Mudlet clearCmdLine([name]) when name is a userwindow — wipes the

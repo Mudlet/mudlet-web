@@ -292,6 +292,10 @@ export class MudSession {
         // was never dialled — see ensureParsingClient).
         this.stateUnsubs = [
             this.events.on('client.error', (message) => this.reportConnectionError(message)),
+            // Command → prompt-marker round trips feed the same reading the
+            // Core.Ping tracker does, as Mudlet measures latency on every
+            // GA/EOR game and not only ones that answer Core.Ping.
+            this.events.on('network.latency', (duration) => this.setPing(duration)),
         ];
         // Carry the profile's encoding onto the new socket, so a script that set
         // one before dialing isn't silently overridden by the client default.
@@ -353,6 +357,11 @@ export class MudSession {
      *  about to emit itself. */
     scriptEchoDeferred = false;
 
+    /** Set by ScriptingAPI while the trigger engine is processing a line. A
+     *  command echoed then (a trigger's `send()`) goes into the buffer without
+     *  moving the trigger cursor off the matched line — TConsole::printCommand. */
+    triggerCursorPinned = false;
+
     /** Host::send's echo stage: print a command the player (or an item acting
      *  for them) sent, under the showSentText mode. `wantPrint` is the per-call
      *  flag `script` mode defers to — `always` and `never` overrule it. */
@@ -386,7 +395,7 @@ export class MudSession {
             // player could plainly read. appendLine (not echo) because the
             // renderer is driven by the event below: enqueueing it for the
             // drain path as well would render the command twice.
-            this.consoles.get('main')?.appendLine(new AnsiAwareBuffer(styled));
+            this.consoles.get('main')?.appendLine(new AnsiAwareBuffer(styled), !this.triggerCursorPinned);
             // No "> " prefix: Mudlet echoes the bare command, and OutputRenderer
             // appends it inline to the open server prompt line (e.g. "- look").
             this.events.emit('message', styled, 'echo', Date.now());
@@ -426,6 +435,12 @@ export class MudSession {
      * it still warns about text the server encoding can't carry.
      */
     sendData(text: string, isGameCommand = true): void {
+        // cTelnet::sendData strips every line feed before it appends the line
+        // terminator, so `send("one\ntwo")` reaches the game as the single
+        // command `onetwo` — a newline in a script's command never splits it
+        // into several. (Typed multi-line input is split by the command line,
+        // one level up, before it gets here.)
+        text = text.replace(/\n/g, '');
         this.warnIfUnencodable(text);
         if (!this.client) return;
         this.client.send(text, isGameCommand);

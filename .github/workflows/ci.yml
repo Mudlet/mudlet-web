@@ -17,6 +17,10 @@
 #     leaving it off the PR gate would only move the discovery of a break from a
 #     red PR to a red master. Sharded exactly as in deploy.yml, which keeps its
 #     wall clock in the same range as the other jobs.
+#   * vendored — fails a PR that edits a vendored Mudlet tree by hand
+#     (scripts/check-vendored-paths.mjs; see "Vendored Mudlet trees" in
+#     CLAUDE.md). Those trees change only through the sync scripts, so the sync
+#     workflow's own branches are exempt for the paths their scripts write.
 #   * build — `yarn build`, which catches bundler-level failures that no
 #     type-check or unit test sees. Unlike deploy.yml's build job this one does
 #     not upload a Pages artifact: nothing on a PR deploys it.
@@ -140,3 +144,30 @@ jobs:
           cache: yarn
       - run: yarn install --frozen-lockfile
       - run: yarn build
+
+  vendored:
+    name: Vendored trees
+    # Needs a PR's base and head; a dispatched run has neither.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The merge base of base and head has to be present for `base...head`.
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      # No install: the check is plain node with only node: imports. The head
+      # branch and repo are passed as data, never interpolated into the script —
+      # a branch name is attacker-controlled on a fork PR.
+      - name: Check for hand edits to vendored Mudlet trees
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+        run: >-
+          node scripts/check-vendored-paths.mjs
+          --base "$BASE_SHA" --head "$HEAD_SHA"
+          --head-branch "$HEAD_REF" --same-repo "$SAME_REPO"

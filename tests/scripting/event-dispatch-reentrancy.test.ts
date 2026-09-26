@@ -4,18 +4,17 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createTestRuntime, type TestRuntime } from '../createTestRuntime';
 
 // Mudlet parity (Host::raiseEvent): an event raised while another event is
-// still dispatching is queued and delivered after the in-flight dispatch
-// completes — never nested inside it.
+// still dispatching runs its handlers immediately, inside the raise — so the
+// raiser sees their side effects as soon as raiseEvent returns (issue #172).
 //
-// Regression: EleUI2's install flow. installPackage(url) downloads the
-// .mpackage; the sysDownloadDone handler installs the package, whose init
-// raises sysInstallPackage; that handler runs the package's GitUpdater, which
-// registers its own sysDownloadDone handler. With synchronous nested dispatch
-// the new handler was appended to the very list the outer sysDownloadDone
-// dispatch was iterating and received the in-flight event — GitUpdater took
-// the package's own install download for a finished update and uninstalled
-// the package it belonged to.
-describe('event dispatch — events raised mid-dispatch are deferred', () => {
+// Regression guarded alongside it: EleUI2's install flow. installPackage(url)
+// downloads the .mpackage; the sysDownloadDone handler installs the package,
+// whose init raises sysInstallPackage; that handler runs the package's
+// GitUpdater, which registers its own sysDownloadDone handler. That new handler
+// must not receive the in-flight sysDownloadDone — GitUpdater took the
+// package's own install download for a finished update and uninstalled the
+// package it belonged to. Handler lists are snapshotted per dispatch for that.
+describe('event dispatch — events raised mid-dispatch run synchronously', () => {
   let t: TestRuntime;
   let errors: string[];
   let off: () => void;
@@ -33,7 +32,7 @@ describe('event dispatch — events raised mid-dispatch are deferred', () => {
     t.dispose();
   });
 
-  it('raiseEvent inside a handler dispatches after the current event finishes', () => {
+  it('raiseEvent inside a handler dispatches before raiseEvent returns', () => {
     t.run(`
       order = {}
       registerAnonymousEventHandler('outerEvt', function()
@@ -46,11 +45,43 @@ describe('event dispatch — events raised mid-dispatch are deferred', () => {
       end)
     `);
     t.rt.emitEvent('outerEvt', []);
-    expect(t.run(`return table.concat(order, ',')`)).toBe('outer-begin,outer-end,inner');
+    expect(t.run(`return table.concat(order, ',')`)).toBe('outer-begin,inner,outer-end');
     expect(errors).toHaveLength(0);
   });
 
-  it('deferred events dispatch in FIFO order with their arguments', () => {
+  it('state a nested handler sets is visible to the raiser', () => {
+    t.run(`
+      registerAnonymousEventHandler('evtOuter', function()
+        raiseEvent('evtInner'); seenFlag = FLAG
+      end)
+      registerAnonymousEventHandler('evtInner', function() FLAG = true end)
+      raiseEvent('evtOuter')
+    `);
+    expect(t.run('return seenFlag')).toBe(true);
+  });
+
+  it('a handler killed earlier in the same dispatch is not called', () => {
+    t.run(`
+      calls = {}
+      local victim
+      registerAnonymousEventHandler('killEvt', function()
+        calls[#calls + 1] = 'killer'; killAnonymousEventHandler(victim)
+      end)
+      victim = registerAnonymousEventHandler('killEvt', function() calls[#calls + 1] = 'victim' end)
+      raiseEvent('killEvt')
+    `);
+    expect(t.run(`return table.concat(calls, ',')`)).toBe('killer');
+  });
+
+  it('raiseEvent inside a handler returns true', () => {
+    t.run(`
+      registerAnonymousEventHandler('retOuter', function() nestedRet = raiseEvent('retInner') end)
+      raiseEvent('retOuter')
+    `);
+    expect(t.run('return nestedRet')).toBe(true);
+  });
+
+  it('nested events dispatch in order with their arguments', () => {
     t.run(`
       got = {}
       registerAnonymousEventHandler('fifoOuter', function()

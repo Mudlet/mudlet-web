@@ -175,10 +175,21 @@ export class Console {
      * — the renderer for network output drains via the 'message' event
      * pipeline; pending is reserved for script-driven echo flushes.
      */
-    appendLine(buffer: AnsiAwareBuffer): void {
+    appendLine(buffer: AnsiAwareBuffer, moveCursor = true): void {
+        // With `moveCursor` off the line is added below the cursor without
+        // taking it: TConsole::printCommand appends a command echo while the
+        // trigger engine is running but leaves the trigger cursor on the line
+        // being matched, so a trigger's send() followed by deleteLine() gags
+        // the game line, not the echo of the command it just sent.
+        const pinned = this.cursorIdx >= 0 && this.cursorIdx < this.history.length
+            ? this.cursorIdx : this.history.length - 1;
         this.store(buffer);
-        this.cursorIdx = this.history.length - 1;
-        this.cursorCol = 0;
+        if (moveCursor || pinned < 0) {
+            this.cursorIdx = this.history.length - 1;
+            this.cursorCol = 0;
+        } else {
+            this.cursorIdx = pinned;
+        }
         this.evict();
     }
 

@@ -67,7 +67,7 @@ const STRING_EXT: Completion[] = [
 // ── utf8 extensions ───────────────────────────────────────────────────────────
 
 const UTF8_EXT: Completion[] = [
-    fn('len',     '(s) → number',                'Number of UTF-8 code points'),
+    fn('len',     '(s, i?, j?) → number',        'Number of UTF-8 code points starting between byte positions i and j'),
     fn('sub',     '(s, i, j?) → string',         'Substring by code-point index'),
     fn('reverse', '(s) → string',                'Reverse by code point'),
     fn('char',    '(...) → string',              'Build string from Unicode code points'),
@@ -79,6 +79,8 @@ const UTF8_EXT: Completion[] = [
     fn('gsub',    '(s, pattern, repl, n?)',       'Global substitution (UTF-8 aware)'),
     fn('lower',   '(s) → string',                 'Convert to lowercase'),
     fn('upper',   '(s) → string',                 'Convert to uppercase'),
+    fn('codepoint', '(s, i?, j?) → ...',          'Code points of the characters starting between byte positions i and j'),
+    fn('offset',  '(s, n, i?) → pos',             'Byte position where the n-th character (counting from byte i) starts'),
     // Mudlet extensions
     fn('patternEscape', '(s) → string', 'Escape Lua pattern magic characters in a UTF-8 string'),
     fn('charpos',     '(s, [i,] n) → pos, code', 'Byte offset and code point of the n-th character (negative counts from the end)'),
@@ -582,7 +584,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('invokeFileDialog',   '(fileOrFolder, title [, location]) → path', 'Ask the user to pick a file (true) or folder (false) via an in-app picker over the profile VFS. Returns the picked absolute VFS path, or "" if cancelled. The calling handler is suspended until the user answers (the rest of the client keeps running, like Mudlet\'s nested dialog event loop); calling it inside your own pcall fails — Lua 5.1 cannot yield across pcall.'),
     fn('getProfileName',     '() → name',        'The active profile\'s name'),
     fn('getProcessID',       '() → number',      'Mudlet answers the OS process id. A browser tab has no pid, so this is a stable positive number unique to this tab for its lifetime — every property a script can rely on.'),
-    fn('getNetworkLatency',  '() → ms',          'Round-trip time of the most recent keep-alive ping, in milliseconds. -1 when nothing has been measured yet.'),
+    fn('getNetworkLatency',  '() → seconds',     'Most recent network round trip in seconds — from a command to the game\'s next GA/EOR prompt, or a GMCP Core.Ping. 0 when nothing has been measured yet.'),
     fn('handleWindowResizeEvent', '()',          'Legacy no-op kept for old scripts — resizes raise sysWindowResizeEvent on their own.'),
     fn('downloadFile',       '(saveTo, url) → true, url | nil, errMsg', 'Download a URL into the profile filesystem. Asynchronous: the return only says the request was accepted, and the outcome arrives as sysDownloadDone / sysDownloadError. (nil, errMsg) for a URL that is malformed or of an unusable scheme — no request is made.'),
     fn('getNewIDManager',    '() → manager',     'A fresh ID manager object handing out unique ids (mudlet-lua IDManager).'),

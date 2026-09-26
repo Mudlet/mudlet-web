@@ -2345,6 +2345,7 @@ function downloadFile(saveTo, url)
     url = __mudlet_check_string(url, "downloadFile", 2, "remote url")
     local err = __mudlet_http_url_error(url, "downloadFile")
     if err then return nil, err end
+    url = __mudlet_normalize_url(url)
     __downloadFile(saveTo, url)
     return true, url
 end
@@ -2354,6 +2355,7 @@ function getHTTP(url, headers)
     __mudlet_check_headers(headers, "getHTTP", 2)
     local err = __mudlet_http_url_error(url, "getHTTP")
     if err then return nil, err end
+    url = __mudlet_normalize_url(url)
     __getHTTP(url, __mudlet_headers_to_string(headers))
     return true, url
 end
@@ -2382,6 +2384,7 @@ function postHTTP(data, url, headers, file)
     __mudlet_check_headers(headers, "postHTTP", 3)
     local err = __mudlet_http_url_error(url, "postHTTP")
     if err then return nil, err end
+    url = __mudlet_normalize_url(url)
     local ferr = __mudlet_upload_error(file, "postHTTP")
     if ferr then return nil, ferr end
     __postHTTP(data, url, __mudlet_headers_to_string(headers), file)
@@ -2394,6 +2397,7 @@ function putHTTP(data, url, headers, file)
     __mudlet_check_headers(headers, "putHTTP", 3)
     local err = __mudlet_http_url_error(url, "putHTTP")
     if err then return nil, err end
+    url = __mudlet_normalize_url(url)
     local ferr = __mudlet_upload_error(file, "putHTTP")
     if ferr then return nil, ferr end
     __putHTTP(data, url, __mudlet_headers_to_string(headers), file)
@@ -2405,6 +2409,7 @@ function deleteHTTP(url, headers)
     __mudlet_check_headers(headers, "deleteHTTP", 2)
     local err = __mudlet_http_url_error(url, "deleteHTTP")
     if err then return nil, err end
+    url = __mudlet_normalize_url(url)
     __deleteHTTP(url, __mudlet_headers_to_string(headers))
     return true, url
 end
@@ -2426,6 +2431,7 @@ function customHTTP(method, data, url, headers, file)
     end
     local err = __mudlet_http_url_error(url, "customHTTP")
     if err then return nil, err end
+    url = __mudlet_normalize_url(url)
     local ferr = __mudlet_upload_error(file, "customHTTP")
     if ferr then return nil, ferr end
     __customHTTP(method, data, url, __mudlet_headers_to_string(headers), file)
@@ -3266,13 +3272,15 @@ end
 -- whose incoming payloads should be merged into the existing gmcp sub-table on
 -- update instead of wholesale-replaced. Mirrors Host::mGMCP_merge_table_keys —
 -- pure Lua, no host call. The accumulated list is visible as mudlet.mergeTables.
+-- Seeded with "Char.Status" like Host.cpp's mGMCP_merge_table_keys, so IRE-style
+-- partial Char.Status updates keep name/level/class from the first full one.
 mudlet = mudlet or {}
-mudlet.mergeTables = mudlet.mergeTables or {}
+mudlet.mergeTables = mudlet.mergeTables or { "Char.Status" }
 function setMergeTables(...)
     -- Re-assert at call time: bundled Lua (LuaGlobal/Other) may reinitialise the
     -- `mudlet` table after this file loads, so don't rely on the load-time init.
     mudlet = mudlet or {}
-    mudlet.mergeTables = mudlet.mergeTables or {}
+    mudlet.mergeTables = mudlet.mergeTables or { "Char.Status" }
     for _, name in ipairs({...}) do
         name = tostring(name)
         local dup = false
@@ -3356,7 +3364,7 @@ end
 -- Mirrors Mudlet's C++ TLuaInterpreter::registerAnonymousEventHandler: stores
 -- (event name → list of Lua function names) keyed registrations made by scripts
 -- loaded before Other.lua's Lua-side override takes effect (notably
--- GeyserReposition). __mudlet_dispatch_event reads from here and from
+-- GeyserReposition). __mudlet_dispatch reads from here and from
 -- dispatchEventToFunctions, just like Mudlet's C++ raiseEvent dispatches both
 -- C-side anonymous handlers and the wildcard ("*") Lua dispatcher.
 __mudlet_native_handlers = __mudlet_native_handlers or {}
@@ -3370,6 +3378,42 @@ function registerAnonymousEventHandler(event, func)
     return 0
 end
 
+-- Mudlet's Host::raiseEvent: runs every handler for `event` right now, with
+-- `args[1..argc]` as the arguments after the event name. Synchronous at any
+-- depth — a raiseEvent from inside a handler has finished, and its handlers'
+-- side effects are visible, by the time raiseEvent returns, as in Mudlet.
+--
+-- Only registered handlers are called. A global function that merely shares
+-- the event's name is not one: Mudlet never looks it up, and doing so turned a
+-- user's `function connect()` into a handler for Mudlet Web's `connect` event.
+--
+-- Each handler list is snapshotted before the first call (here, and in the
+-- dispatchEventToFunctions override installed after Other.lua), so a handler
+-- registered while this event is in flight — even by a nested event — waits
+-- for the next raise instead of receiving the one that registered it.
+function __mudlet_dispatch(event, args, argc)
+    -- Native handlers registered before Other.lua overrode registerAnonymousEventHandler.
+    -- Mudlet's C++ raiseEvent passes `event` as the first argument followed by event args.
+    local nativeList = __mudlet_native_handlers[event]
+    if nativeList then
+        local names = {}
+        for i, funcName in ipairs(nativeList) do names[i] = funcName end
+        for _, funcName in ipairs(names) do
+            local f = _G[funcName]
+            if type(f) == 'function' then
+                -- __mudlet_pcall_co, not pcall: handlers may suspend via
+                -- invokeFileDialog, which needs a pure-Lua path down to the JS
+                -- resume boundary.
+                local ok, err = __mudlet_pcall_co(f, event, unpack(args, 1, argc))
+                if not ok and type(showHandlerError) == 'function' then showHandlerError(event, err) end
+            end
+        end
+    end
+    if type(dispatchEventToFunctions) == 'function' then
+        dispatchEventToFunctions(event, unpack(args, 1, argc))
+    end
+end
+
 -- JS event bridge. emitEvent() sets __mudlet_evt_name + __mudlet_evt_args
 -- (a JS array, so its keys are 0-indexed) and runs this dispatcher.
 function __mudlet_dispatch_event()
@@ -3378,8 +3422,8 @@ function __mudlet_dispatch_event()
     -- JS arrays push as Lua tables keyed 0..n-1; rebuild as a 1-indexed sequence.
     -- Driven by the count JS reports rather than by walking until a nil, so a
     -- payload containing nil or false keeps every argument in its own position
-    -- (raiseEvent("x", nil, false, "y") must reach handlers as four values, not
-    -- stop dead at the leading nil).
+    -- (an event carrying nil, false, "y" must reach handlers as three values,
+    -- not stop dead at the leading nil).
     local args, argc = {}, tonumber(__mudlet_evt_argc) or 0
     if type(raw) == 'table' then
         if argc > 0 then
@@ -3390,31 +3434,26 @@ function __mudlet_dispatch_event()
             argc = #args
         end
     end
-    -- __mudlet_pcall_co, not pcall: handlers may suspend via invokeFileDialog,
-    -- which needs a pure-Lua path down to the JS resume boundary.
-    -- Lua functions only: event names can collide with JS-bound API globals
-    -- (event "disconnect" vs the disconnect() API) and those must not be
-    -- treated as handlers.
-    local handler = _G[event]
-    if type(handler) == 'function' and debug.getinfo(handler, 'S').what ~= 'C' then
-        local ok, err = __mudlet_pcall_co(handler, unpack(args, 1, argc))
-        if not ok and type(showHandlerError) == 'function' then showHandlerError(event, err) end
+    __mudlet_dispatch(event, args, argc)
+end
+
+-- Mudlet raiseEvent(event, ...). Dispatched here in Lua rather than through JS:
+-- the arguments never leave the Lua state, so tables (and functions, and nils
+-- in any position) reach the handlers as the very values the caller passed.
+-- Crossing into JS turned a table into a wasmoon proxy that the trip back
+-- clobbered — raiseEvent("e", {a = 1}, "s") arrived as ("e", "s", "s").
+-- Returns true, as Mudlet does; false only for a missing event name.
+function raiseEvent(event, ...)
+    if type(event) ~= 'string' or event == '' then return false end
+    local argc = select('#', ...)
+    -- Keep getMainWindowSize's cache in step with a script-raised resize, as
+    -- LuaRuntime.dispatchEventNow does for the one Mudlet Web raises itself.
+    if event == 'sysWindowResizeEvent' then
+        local w, h = ...
+        if type(w) == 'number' and type(h) == 'number' then __mws_w, __mws_h = w, h end
     end
-    -- Native handlers registered before Other.lua overrode registerAnonymousEventHandler.
-    -- Mudlet's C++ raiseEvent passes `event` as the first argument followed by event args.
-    local nativeList = __mudlet_native_handlers[event]
-    if nativeList then
-        for _, funcName in ipairs(nativeList) do
-            local f = _G[funcName]
-            if type(f) == 'function' then
-                local ok, err = __mudlet_pcall_co(f, event, unpack(args, 1, argc))
-                if not ok and type(showHandlerError) == 'function' then showHandlerError(event, err) end
-            end
-        end
-    end
-    if type(dispatchEventToFunctions) == 'function' then
-        dispatchEventToFunctions(event, unpack(args, 1, argc))
-    end
+    __mudlet_dispatch(event, { ... }, argc)
+    return true
 end
 
 -- Per-script event-handler registry. wrapScript (in ScriptingEngine.ts) emits
@@ -4053,15 +4092,23 @@ end
 -- (LuaRuntime.setLabelCb) tracks the prior cb id per slot and frees it on
 -- rebind so handlers don't leak in __mudlet_cb. cb id 0 means "clear".
 do
-    local function bind(name, who, fn, raw, ...)
+    -- `noEvent`: the callback gets only the trailing args, no event table.
+    -- That is TLabel::leaveEvent, which has no mouse position to report.
+    local function bindWith(noEvent, name, who, fn, raw, ...)
         if fn == nil then return raw(name, 0) end
         local f = __mudlet_to_fn(fn, who, 2)
-        if select('#', ...) > 0 then
-            local trailing = {...}
-            local inner = f
-            f = function(event) return inner(event, unpack(trailing)) end
+        local n = select('#', ...)
+        local trailing = {...}
+        local inner = f
+        if noEvent then
+            f = function() return inner(unpack(trailing, 1, n)) end
+        elseif n > 0 then
+            f = function(event) return inner(event, unpack(trailing, 1, n)) end
         end
         return raw(name, __mudlet_register_cb(f))
+    end
+    local function bind(name, who, fn, raw, ...)
+        return bindWith(false, name, who, fn, raw, ...)
     end
 
     local _click = __mudlet_setLabelClickCallback
@@ -4091,7 +4138,7 @@ do
 
     local _leave = __mudlet_setLabelOnLeave
     function setLabelOnLeave(name, fn, ...)
-        return bind(name, "setLabelOnLeave", fn, _leave, ...)
+        return bindWith(true, name, "setLabelOnLeave", fn, _leave, ...)
     end
 
     local _wheel = __mudlet_setLabelWheelCallback
@@ -4205,6 +4252,36 @@ do
     setCmdLineStyleSheet    = requireTail(setCmdLineStyleSheet,    "setCmdLineStyleSheet",    "style sheet")
 end
 
+-- ── Command-line text: naming one that isn't there ─────────────────────────
+-- print/append/get/clearCmdLine take an optional command-line name. The
+-- bindings resolve a known name to its widget and anything else to the main
+-- bar, so a script that named a command line it hadn't created yet overwrote -
+-- or read back - whatever the player was typing. Mudlet refuses the name with
+-- (nil, 'command line "<name>" not found') instead. print/appendCmdLine name
+-- one only in their two-argument form; a lone argument is the text.
+do
+    local function cmdLineNotFound(name)
+        if type(name) ~= 'string' or name == '' or name == 'main' then return nil end
+        local t = __windowType(name)
+        if t == 'commandline' or t == 'miniconsole' or t == 'userwindow' then return nil end
+        return 'command line "' .. name .. '" not found'
+    end
+
+    local function namedGuard(fn, nameArgs)
+        return function(...)
+            if select('#', ...) >= nameArgs then
+                local err = cmdLineNotFound((...))
+                if err then return nil, err end
+            end
+            return fn(...)
+        end
+    end
+    printCmdLine  = namedGuard(printCmdLine,  2)
+    appendCmdLine = namedGuard(appendCmdLine, 2)
+    getCmdLine    = namedGuard(getCmdLine,    1)
+    clearCmdLine  = namedGuard(clearCmdLine,  1)
+end
+
 -- ── Command-line name contracts ────────────────────────────────────────────
 -- Only a command line made with createCommandLine can carry an action, so the
 -- main bar is refused in the same words as a name that doesn't exist: from a
@@ -4286,6 +4363,16 @@ do
     local _id  = 0
     function __mudlet_call_link(id) _fns[id]() end
 
+    -- Store a Lua function and return the Lua code that calls it, so a link or
+    -- popup entry holding a function survives the trip to JS as a string. The
+    -- popup wrappers below go through this too: tostring() on the function
+    -- would give "function: 0x…", which runs as nothing when clicked.
+    function __mudlet_link_ref(fn)
+        _id = _id + 1
+        _fns[_id] = fn
+        return '__mudlet_call_link(' .. _id .. ')'
+    end
+
     -- For echoLink / insertLink: cmd is at slot 3 when arg 4 is a string (window form),
     -- otherwise at slot 2 (no-window form, with optional useCurrentFormat at slot 4).
     local function wrapLink(rawFn)
@@ -4319,6 +4406,13 @@ do
         end
         return _rawSetLink(unpack(args))
     end
+end
+
+-- A popup command is Lua code or a Lua function, as in Mudlet: functions are
+-- stored and replaced by the code that calls them.
+function __mudlet_popup_cmd(c)
+    if type(c) == 'function' then return __mudlet_link_ref(c) end
+    return tostring(c)
 end
 
 -- Mudlet requires the command and hint tables to line up: equal sizes, or one
@@ -4368,7 +4462,7 @@ do
         if not text or text == '' then return end
         local cs, hs = {}, {}
         if type(cmds) == 'table' then
-            for _, c in ipairs(cmds) do cs[#cs+1] = tostring(c) end
+            for _, c in ipairs(cmds) do cs[#cs+1] = __mudlet_popup_cmd(c) end
         end
         if type(hints) == 'table' then
             for _, h in ipairs(hints) do hs[#hs+1] = tostring(h) end
@@ -4410,7 +4504,7 @@ do
         if not text or text == '' then return end
         local cs, hs = {}, {}
         if type(cmds) == 'table' then
-            for _, c in ipairs(cmds) do cs[#cs+1] = tostring(c) end
+            for _, c in ipairs(cmds) do cs[#cs+1] = __mudlet_popup_cmd(c) end
         end
         if type(hints) == 'table' then
             for _, h in ipairs(hints) do hs[#hs+1] = tostring(h) end
@@ -4453,7 +4547,7 @@ do
             return nil, "setPopup: command table and hint table sizes do not match up"
         end
         local cs, hs = {}, {}
-        for _, x in ipairs(cmds) do cs[#cs+1] = tostring(x) end
+        for _, x in ipairs(cmds) do cs[#cs+1] = __mudlet_popup_cmd(x) end
         for _, x in ipairs(hints) do hs[#hs+1] = tostring(x) end
         if _raw(win, table.concat(cs, SEP), table.concat(hs, SEP)) == false then return false end
         return true
@@ -4865,14 +4959,27 @@ do
     local _rawStopSounds = stopSounds
     local _rawStopVideos = stopVideos
     -- Either form: a filter table, or the ordered
-    -- (name, key, tag [, priority [, fadeaway]]).
-    function stopSounds(opts, key, tag, priority, fadeaway)
+    -- (name, key, tag [, priority [, fadeaway [, fadeout]]]). Only the sounds
+    -- the filter matches are stopped; no filter stops them all.
+    function stopSounds(opts, key, tag, priority, fadeaway, fadeout)
+        local filter
         if opts ~= nil and type(opts) ~= 'table' then
             __mudlet_check_media_filter_args("stopSounds", opts, key, tag, priority, fadeaway)
+            if fadeout ~= nil and type(fadeout) ~= 'number' then
+                error("stopSounds: bad argument type (fadeout as number expected, got "
+                    .. type(fadeout) .. "!)", 2)
+            end
+            filter = { name = opts, key = key, tag = tag, priority = priority, fadeout = fadeout }
         elseif opts ~= nil then
             __mudlet_check_media_table(opts, "stopSounds")
+            filter = { name = opts.name, key = opts.key, tag = opts.tag,
+                priority = opts.priority, fadeout = opts.fadeout }
+        else
+            -- A positional call may leave the name out and filter on the rest.
+            filter = { key = key, tag = tag, priority = priority, fadeout = fadeout }
+            __mudlet_check_media_filter_args("stopSounds", nil, key, tag, priority, fadeaway)
         end
-        _rawStopSounds()
+        _rawStopSounds(filter)
         return true
     end
     -- Table form only, like the rest of the video family.
@@ -4945,16 +5052,17 @@ function getPlayingSounds(a, b, c, d)
     local filter
     if type(a) == 'table' then
         __mudlet_check_media_table(a, "getPlayingSounds")
-        filter = { name = a.name, key = a.key, tag = a.tag }
+        filter = { name = a.name, key = a.key, tag = a.tag, priority = a.priority }
     else
         __mudlet_check_media_filter_args("getPlayingSounds", a, b, c, d)
-        filter = { name = a, key = b, tag = c }
+        filter = { name = a, key = b, tag = c, priority = d }
     end
     local raw = __getPlayingSounds(filter)
     local out = {}
     if type(raw) == 'table' then
         for _, v in pairs(raw) do
-            out[#out + 1] = { name = v.name, key = v.key, tag = v.tag, volume = v.volume }
+            out[#out + 1] = { name = v.name, key = v.key, tag = v.tag, volume = v.volume,
+                priority = v.priority }
         end
     end
     return out
@@ -7830,9 +7938,9 @@ do
     function getButtonState(...)
         -- With no argument at all this is a different question: Mudlet answers
         -- the console's own mButtonState, which is 1 or 2 rather than a boolean
-        -- and which only a real click writes. Nothing here can click, so it
-        -- stays at the "not pressed" end.
-        if select('#', ...) == 0 then return 1 end
+        -- and which only a real click writes — 2 when the clicked button went
+        -- down, 1 when it came up or was a plain button.
+        if select('#', ...) == 0 then return __mudlet_clicked_button_state() end
         local name, err = buttonTarget("getButtonState", ..., 1)
         if not name then return nil, err end
         return __getButtonState(name) and true or false

@@ -15,7 +15,8 @@ export function installCommandLineBindings({ lua, api, emitEvent }: BindingConte
     // sub-command-lines (overlay createCommandLine widgets or userwindow
     // command lines). Overlay cmd-lines (cmdLines registry) win first;
     // userwindow cmd-lines (windows registry) second; otherwise drop the
-    // name and target the main command bar.
+    // name and target the main command bar. Bridge.lua refuses a name that
+    // resolves to neither before print/append/get/clearCmdLine get here.
     const cmdLineKind = (name?: unknown): 'overlay' | 'window' | null => {
         if (typeof name !== 'string' || !name || name === 'main') return null;
         if (api.cmdLines.has(name)) return 'overlay';

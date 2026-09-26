@@ -88,4 +88,24 @@ describe('line spacer pattern', () => {
     ])]);
     expect(fireCount(te, ['X', 'X', 'X'])).toBe(0);
   });
+
+  it('gives the spacer its own multimatches row, so later rows keep their index (mudlet-web#180)', () => {
+    te.loadPerm([andTrigger([
+      { type: 'regex', text: '^SPC start (\\d+)' },
+      { type: 'lineSpacer', text: '2' },
+      { type: 'regex', text: '^SPC end (\\d+)' },
+    ])]);
+    let multimatches: (string | undefined)[][] | undefined;
+    let matches: (string | undefined)[] | undefined;
+    for (const line of ['SPC start 1', 'x', 'y', 'SPC end 2']) {
+      te.process(line, false, (m) => { multimatches = m.multimatches; matches = m.captures; });
+    }
+    // Desktop: #multimatches == 3 and multimatches[3][2] == "2".
+    expect(multimatches).toHaveLength(3);
+    expect(multimatches![0]).toEqual(['SPC start 1', '1']);
+    expect(multimatches![1]).toEqual(['']);
+    expect(multimatches![2]).toEqual(['SPC end 2', '2']);
+    // The flat captures don't grow an entry for the spacer.
+    expect(matches).toEqual(['1', '2']);
+  });
 });

@@ -1,8 +1,8 @@
 // @vitest-environment node
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { MudClient } from '../../../src/mud/connection/MudClient';
 import { EventBus } from '../../../src/core/EventBus';
-import { GMCP_WILL, GMCP_DO } from '../../../src/mud/protocol/constants';
+import { GMCP_WILL, GMCP_DO, TELNET_GA } from '../../../src/mud/protocol/constants';
 import type { MudClientEvents } from '../../../src/mud/events';
 
 /** Minimal stand-in for the browser WebSocket the client opens. Captures every
@@ -63,8 +63,24 @@ describe('GMCP Core.Hello handshake', () => {
     const sock = MockWebSocket.instances[0];
     sock.onopen?.({});
     sock.sent.length = 0; // discard the proactive NAWS WILL
-    return { client, sock };
+    return { client, sock, bus };
   }
+
+  // Core.Supports.Set replaces the server's whole module list, so anything a
+  // script adds from sysProtocolEnabled has to go out after it (ctelnet.cpp
+  // sends Hello + Set, then raises the event).
+  it('sends the handshake before announcing the GMCP protocol as enabled', () => {
+    const { sock, bus } = connected();
+    let sentAtEnable = '';
+    bus.on('protocol.enabled', (name) => {
+      if (name === 'GMCP') sentAtEnable = sentText(sock);
+    });
+    sock.deliver(GMCP_WILL);
+    expect(sentAtEnable).toContain(GMCP_DO);
+    expect(sentAtEnable).toContain('Core.Hello');
+    expect(sentAtEnable).toContain('Core.Supports.Set');
+    expect(sentAtEnable.indexOf(GMCP_DO)).toBeLessThan(sentAtEnable.indexOf('Core.Hello'));
+  });
 
   it('announces Core.Hello + Core.Supports.Set when the server offers GMCP (WILL)', () => {
     const { sock } = connected();
@@ -102,5 +118,71 @@ describe('GMCP Core.Hello handshake', () => {
     sock.sent.length = 0;
     sock.deliver(GMCP_WILL);
     expect(sentText(sock)).not.toContain('Core.Hello');
+  });
+});
+
+describe('command → prompt network latency', () => {
+  let realWebSocket: unknown;
+  let realAddEventListener: unknown;
+  let now = 0;
+
+  beforeEach(() => {
+    realWebSocket = (globalThis as Record<string, unknown>).WebSocket;
+    realAddEventListener = (globalThis as Record<string, unknown>).addEventListener;
+    (globalThis as Record<string, unknown>).WebSocket = MockWebSocket as unknown;
+    (globalThis as Record<string, unknown>).addEventListener = () => {};
+    MockWebSocket.instances = [];
+    now = 1000;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    (globalThis as Record<string, unknown>).WebSocket = realWebSocket;
+    (globalThis as Record<string, unknown>).addEventListener = realAddEventListener;
+  });
+
+  function connected() {
+    const bus = new EventBus<MudClientEvents>();
+    const client = new MudClient({ url: 'ws://test.invalid' }, bus);
+    client.connect();
+    const sock = MockWebSocket.instances[0];
+    sock.onopen?.({});
+    const readings: number[] = [];
+    bus.on('network.latency', (d) => readings.push(d));
+    return { client, sock, readings };
+  }
+
+  it('times a command to the next GA once the server marks its prompts', () => {
+    const { client, sock, readings } = connected();
+    sock.deliver('Welcome\r\n> ' + TELNET_GA);
+    client.send('cmd1');
+    now += 800;
+    sock.deliver('Reply 1\r\n> ' + TELNET_GA);
+    expect(readings).toEqual([800]);
+
+    client.send('cmd2');
+    now += 2000;
+    sock.deliver('Reply 2\r\n> ' + TELNET_GA);
+    expect(readings).toEqual([800, 2000]);
+  });
+
+  it('times from the first command of a burst', () => {
+    const { client, sock, readings } = connected();
+    sock.deliver('> ' + TELNET_GA);
+    client.send('in');
+    now += 100;
+    client.send('w');
+    now += 500;
+    sock.deliver('Room\r\n> ' + TELNET_GA);
+    expect(readings).toEqual([600]);
+  });
+
+  it('measures nothing on a server that never sends GA/EOR', () => {
+    const { client, sock, readings } = connected();
+    sock.deliver('Welcome\r\n> ');
+    client.send('cmd1');
+    now += 800;
+    sock.deliver('Reply\r\n> ' + TELNET_GA);
+    expect(readings).toEqual([]);
   });
 });

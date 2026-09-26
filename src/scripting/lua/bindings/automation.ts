@@ -156,6 +156,7 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
         api.setButtonState(String(name ?? ''), !!state));
     lua.global.set('__getButtonState', (name: unknown) =>
         api.getButtonState(String(name ?? '')));
+    lua.global.set('__mudlet_clicked_button_state', () => api.clickedButtonState);
     lua.global.set('setButtonStyleSheet', (name: unknown, css: unknown) =>
         api.setButtonStyleSheet(String(name ?? ''), String(css ?? '')));
     lua.global.set('showToolBar', (name: unknown) =>
