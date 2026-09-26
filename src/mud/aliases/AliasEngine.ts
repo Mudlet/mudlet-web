@@ -1,6 +1,6 @@
 import type { AliasNode } from '../../storage/schema';
 import { PatternEngine, type AliasPattern } from '../PatternEngine';
-import type { Pcre2Match } from '../triggers/pcre/Pcre2';
+import { PCRE2_NO_UTF_CHECK, type Pcre2Match } from '../triggers/pcre/Pcre2';
 
 export type { AliasNode };
 
@@ -27,7 +27,10 @@ function matchAllCaptures(input: string, pattern: AliasPattern): { all: string[]
     let index = -1;
     let start = 0;
     let m: Pcre2Match | null;
-    while ((m = re.matchFrom(input, start)) !== null) {
+    // Only the first call checks the input is valid UTF-16 (see Pcre2.matchAll).
+    let options = 0;
+    while ((m = re.matchFrom(input, start, options)) !== null) {
+        options = PCRE2_NO_UTF_CHECK;
         const whole = m[0];
         if (index < 0) index = whole.start;
         // pcre2_match returns one more than the highest group that took part,

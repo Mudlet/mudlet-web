@@ -29,13 +29,34 @@ function wasmoonWasmFsUrl(): Plugin {
   };
 }
 
+// The app gets pcre2's wasm from the Mudlet Web Vite plugin, which patches
+// `_match` to take an options argument on the way out (vite-plugin/pcre2Wasm.ts).
+// Under vitest the emscripten glue reads the file straight off node_modules, so
+// the same patch is applied where it does — the glue is inlined (see
+// server.deps below), which is what lets this transform reach it. Without it
+// the suite would run the shipped binary, and a test of the trigger engine's
+// match-all loop would not be testing what the app runs.
+function pcre2WasmPatch(): Plugin {
+  const anchor = 'return readBinary(wasmBinaryFile);';
+  const patchModule = resolve('vite-plugin/pcre2Wasm.ts');
+  return {
+    name: 'pcre2-wasm-patch',
+    transform(code, id) {
+      if (!/pcre2-wasm-universal[\\/]dist[\\/]libpcre2\.js/.test(id)) return;
+      if (!code.includes(anchor)) throw new Error(`pcre2-wasm-patch: '${anchor}' not found in ${id}`);
+      return `import { patchLibpcre2Wasm as __patchLibpcre2Wasm } from ${JSON.stringify(patchModule)};\n`
+        + code.replace(anchor, 'var shipped = readBinary(wasmBinaryFile); return __patchLibpcre2Wasm(shipped) || shipped;');
+    },
+  };
+}
+
 // Tests run through Vite, so the bundled Lua (`?raw` imports + the
 // `import.meta.glob('./mudlet-lua/**/*.lua')`), JSON imports, and extensionless
 // TS imports resolve exactly as in the app build. happy-dom supplies the
 // document / window / localStorage that ScriptingAPI touches; wasmoon's WASM is
 // loaded from node's filesystem.
 export default defineConfig({
-  plugins: [wasmoonWasmFsUrl()],
+  plugins: [wasmoonWasmFsUrl(), pcre2WasmPatch()],
   // A Mudlet package archive is a zip, not source — LuaRuntime carries the
   // busted fixture archives into the VFS with `?inline`, which reaches the
   // asset pipeline and needs the extension declared. The app build gets this
