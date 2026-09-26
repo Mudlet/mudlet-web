@@ -383,9 +383,9 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     }, [promptTimeoutMs, session]);
 
     // The profile's decoder choice, for games that never negotiate CHARSET.
-    // MudSession keeps it across reconnects and lets a CHARSET agreement
-    // override it for the session, so this only has to push the value. (A
-    // script's setServerEncoding() writes it back here, as Mudlet's does.)
+    // MudSession keeps it across reconnects, so this only has to push the
+    // value. (A script's setServerEncoding() and an encoding accepted from a
+    // server's CHARSET REQUEST both write it back here, as Mudlet's do.)
     useEffect(() => {
         if (serverEncoding) session.setServerEncoding(savedServerEncoding(serverEncoding));
     }, [serverEncoding, session]);

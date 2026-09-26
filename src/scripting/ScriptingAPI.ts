@@ -1021,6 +1021,12 @@ export class ScriptingAPI {
         const announce = () => { queueMicrotask(() => this.presence.announce()); };
         this.apiUnsubs.push(session.events.on('client.connect', announce));
         this.apiUnsubs.push(session.events.on('client.disconnect', announce));
+        // An encoding agreed by accepting a server's CHARSET REQUEST is saved to
+        // the profile, as cTelnet's `setEncoding(acceptedEncoding, true)` saves
+        // it — the next session opens on it, and the Settings dropdown shows it.
+        this.apiUnsubs.push(session.events.on('charset.accepted', (encoding) => {
+            useAppStore.getState().patchConnectionProfile(connectionId, { serverEncoding: encoding });
+        }));
         session.consoles.set('main', this.mainConsole);
         // Mudlet applies the profile's `consoleBufferSize` to the main console
         // as soon as it exists (mudlet.cpp:2264-2271). The session holds the

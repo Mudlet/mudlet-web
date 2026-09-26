@@ -488,8 +488,10 @@ export class SessionCodec {
 export interface CharsetHandlerHooks {
     sendRaw(data: string): void;
     /** Fired when an encoding switch takes effect. The argument is the
-     *  wire-spelling name (e.g. "UTF-8") so listeners can surface it. */
-    onNegotiated(displayName: string): void;
+     *  wire-spelling name (e.g. "UTF-8") so listeners can surface it;
+     *  `acceptedRequest` says the switch is this client ACCEPTing a server's
+     *  REQUEST rather than anything else. */
+    onNegotiated(displayName: string, acceptedRequest: boolean): void;
 }
 
 /**
@@ -525,7 +527,7 @@ export class CharsetHandler {
             // asking for ISO-8859-2 or US-ASCII has named the encoding this
             // client calls 'ISO 8859-2' and 'ASCII', and getServerEncoding()
             // answers with one canonical name whoever set it.
-            this.setEncoding(normalizeCharsetName(chosen.canonical)!, chosen.canonical);
+            this.setEncoding(normalizeCharsetName(chosen.canonical)!, chosen.canonical, true);
         } else if (sub === CHARSET_ACCEPTED.charCodeAt(0)) {
             // Server accepted one of the names from our REQUEST. The body after
             // byte[1] is the chosen name verbatim.
@@ -547,10 +549,10 @@ export class CharsetHandler {
         return true;
     }
 
-    private setEncoding(encoding: string, displayName: string): void {
+    private setEncoding(encoding: string, displayName: string, acceptedRequest = false): void {
         // A refused label (shouldn't happen for our allowlist) keeps the
         // existing decoder and suppresses the negotiated event.
         if (!this.codec.trySetEncoding(encoding, displayName)) return;
-        this.hooks.onNegotiated(displayName);
+        this.hooks.onNegotiated(displayName, acceptedRequest);
     }
 }

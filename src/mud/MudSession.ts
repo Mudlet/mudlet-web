@@ -195,7 +195,7 @@ export class MudSession {
         // feedTelnet parses through a client that was never connected, and a
         // dial-time subscription left an injected REQUEST changing the decoder
         // while getServerEncoding() went on reporting the old name.
-        this.events.on('charset.negotiated', (name) => this.noteNegotiatedEncoding(name));
+        this.events.on('charset.negotiated', (name, acceptedRequest) => this.noteNegotiatedEncoding(name, acceptedRequest));
         // Mudlet's `mConnectionTimer.start()` (ctelnet.cpp:723). It hangs off
         // the *game* socket, not the proxy one: `client.connect` in `mud` mode
         // only means the proxy accepted our WebSocket, so timing a session from
@@ -297,13 +297,15 @@ export class MudSession {
             // GA/EOR game and not only ones that answer Core.Ping.
             this.events.on('network.latency', (duration) => this.setPing(duration)),
         ];
-        // Carry the profile's encoding onto the new socket, so a script that set
-        // one before dialing isn't silently overridden by the client default.
-        if (this.serverEncoding !== DEFAULT_SERVER_ENCODING) client.setServerEncoding(this.serverEncoding);
-
         this.setStatus('connecting');
         this.announceConnecting(url);
         client.connect();
+        // Carry the profile's encoding onto the new socket, so a saved one (or a
+        // script's, set before dialing) isn't silently overridden by the client
+        // default. After connect(), not before: connect() resets the codec to
+        // UTF-8 for the new stream, which used to undo this on every dial, and
+        // the socket can't deliver a byte until this task has finished.
+        if (this.serverEncoding !== DEFAULT_SERVER_ENCODING) client.setServerEncoding(this.serverEncoding);
     }
 
     /**
@@ -681,10 +683,20 @@ export class MudSession {
     }
 
     /** Called when CHARSET negotiation settles on a name, so the profile-level
-     *  setting reflects what the connection actually agreed. */
-    noteNegotiatedEncoding(name: string): void {
-        this.serverEncoding = canonicalServerEncoding(name) ?? name;
+     *  setting reflects what the connection actually agreed.
+     *
+     *  An encoding this client ACCEPTed from a server's REQUEST is also raised
+     *  as `charset.accepted` for saving to the profile, as Mudlet's
+     *  `setEncoding(acceptedEncoding, true)` saves it — and, like that, only
+     *  when it changed the encoding: cTelnet::setEncoding writes nothing when
+     *  the name is already the one in use. A REJECTED request never gets here,
+     *  and neither does a server's ACCEPTED reply, which Mudlet ignores. */
+    noteNegotiatedEncoding(name: string, acceptedRequest = false): void {
+        const label = canonicalServerEncoding(name) ?? name;
+        const changed = label !== this.serverEncoding;
+        this.serverEncoding = label;
         this.encodingWarningIssued = false;
+        if (acceptedRequest && changed) this.events.emit('charset.accepted', label);
     }
 
     /** Mudlet `getServerEncodingsList()`. The fixed set of encodings Mudlet Web can
