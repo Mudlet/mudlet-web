@@ -82,4 +82,23 @@ describe('permTimer — repeats like a Mudlet perm timer', () => {
         expect(fired).toHaveBeenCalledTimes(5);
         expect(engine.isActiveByName('vT', 'timer', false)).toBe(1);
     });
+
+    it('can be pumped by waitForEvent and stays armed for its next tick', () => {
+        // Mudlet's busted helper waits on a timer by pumping due timers by hand
+        // (TimerEngine.pumpDue); a repeating perm timer has to be pumpable.
+        engine.createPermTimer('vT', '', 1, 'x = 1');
+        const fired = vi.fn();
+        const ids = () => timers().filter(t => t.name === 'vT').map(t => t.id);
+        engine.toggleTimerByName('vT', true);
+        timerEngine.loadPerm(timers(), fired);
+        timerEngine.applyPermSwitch(ids(), true, timers());
+        expect(timerEngine.pumpDue(Date.now() + 1000)).toBe(1);
+        expect(fired).toHaveBeenCalledTimes(1);
+        // The pumped tick re-armed a full interval from now; the one it
+        // replaced does not also land.
+        vi.advanceTimersByTime(999);
+        expect(fired).toHaveBeenCalledTimes(1);
+        vi.advanceTimersByTime(1);
+        expect(fired).toHaveBeenCalledTimes(2);
+    });
 });
