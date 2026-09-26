@@ -4,7 +4,7 @@ import { useConnectionId, useProfileField } from '../storage';
 import { useIsMobile, useIsTouch } from '../hooks/useViewportMode';
 import { useCommandHistory } from './useCommandHistory';
 import { matchHistory, type Match } from './commandHistory';
-import { hasPrecedingWord, matchWordCandidates, splitTrailingWord, type ActiveWord, type BufferWordIndex } from './bufferWords';
+import { matchWordCandidates, splitTrailingWord, type ActiveWord, type BufferWordIndex } from './bufferWords';
 import { flushScreenReaderLines } from './output/ScreenReaderLog';
 import { COMMAND_INPUT_ID } from './landmarks';
 import type { CmdLineMenuEntry, CmdLineMenuRegistry } from './CmdLineMenuRegistry';
@@ -291,11 +291,9 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
     // press computes + caches the candidate list from the typed word; subsequent
     // presses just advance the cached index (the snapshot survives until the user
     // edits, which clears cycleRef). `lists` are the candidate pools in priority
-    // order — for the first word: suggestions, history (whole commands), buffer
-    // words; for an argument word: suggestions, buffer words.
+    // order: suggestions, then buffer words.
     //
-    // Returns false when there was nothing to complete, which is the caller's
-    // cue to let the Tab through as an ordinary focus move.
+    // Returns false when there was nothing to complete.
     const cycleWord = (active: ActiveWord, dir: 1 | -1, lists: string[][]): boolean => {
         let state = cycleRef.current;
         if (!state || state.lastValue !== command) {
@@ -387,25 +385,24 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
             // that does nothing is exactly what WCAG 2.1.2 objects to. See the
             // hint span below, which tells a screen-reader user it is there.
             if (!active) return;
-            const sugg = suggestions ?? [];
-            const words = bufferWords?.getWords() ?? [];
-            // First word: complete commands you've run (history) + suggestions +
-            // buffer words. Argument word: suggestions + buffer words only.
-            // History is prefix-matched too, so it never "completes" to an
-            // unrelated command the way subsequence matching used to.
-            const lists = hasPrecedingWord(active.prefix)
-                ? [sugg, words]
-                : [sugg, history, words];
+            // From here on Tab belongs to the command line, completion or not,
+            // as on desktop. Letting a Tab with no match move focus away sent
+            // the player's next keystrokes somewhere else, and their typing
+            // was lost (#188). The empty box and a trailing space above stay
+            // the way out.
+            e.preventDefault();
+            // Candidates are suggestions + words seen in the output, for the
+            // first word and arguments alike. Command history is not one:
+            // TCommandLine::handleTabCompletion completes only from the buffer
+            // and setCmdLineSuggestions, so a Tab never recalls an old command.
+            const lists = [suggestions ?? [], bufferWords?.getWords() ?? []];
             // The blacklist subtracts from every list, matched case-insensitively
-            // (TCommandLine::tabComplete does the same) — a word blacklisted once
-            // must not come back via history or the output buffer.
+            // (TCommandLine::tabComplete does the same).
             const banned = new Set((blacklist ?? []).map(w => w.toLowerCase()));
             const allowed = banned.size === 0
                 ? lists
                 : lists.map(l => l.filter(w => !banned.has(w.toLowerCase())));
-            // Only consume the key if something was actually completed; a word
-            // with no candidates leaves Tab as a focus move, same as above.
-            if (cycleWord(active, e.shiftKey ? -1 : 1, allowed)) e.preventDefault();
+            cycleWord(active, e.shiftKey ? -1 : 1, allowed);
             return;
         }
 
@@ -514,7 +511,7 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
                 error (WCAG 2.1.2). */}
             <span id={HINT_ID} className="sr-only">
                 Tab completes the word you are typing; press it again to cycle.
-                With nothing to complete, Tab moves on to the next control.
+                On an empty line, or after a space, Tab moves on to the next control.
                 Up and Down recall earlier commands.
             </span>
 

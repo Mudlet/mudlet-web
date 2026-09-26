@@ -122,9 +122,11 @@ describe('command line Tab is escapable', () => {
         expect(press('Tab').defaultPrevented).toBe(false);
     });
 
-    it('lets Tab move focus out when the word has no completions', () => {
+    // Desktop keeps a Tab that completes nothing; letting it move focus sent
+    // the player's next keystrokes elsewhere and lost them (#188).
+    it('keeps Tab in the command line when the word has no completions', () => {
         mount('zzz', { suggestions: ['chameleon'] });
-        expect(press('Tab').defaultPrevented).toBe(false);
+        expect(press('Tab').defaultPrevented).toBe(true);
         expect(input().value).toBe('zzz');
     });
 
@@ -133,5 +135,31 @@ describe('command line Tab is escapable', () => {
         const hintId = input().getAttribute('aria-describedby')!;
         expect(hintId).toBeTruthy();
         expect(document.getElementById(hintId)!.textContent).toMatch(/Tab moves on to the next control/);
+    });
+});
+
+describe('command line Tab completion sources', () => {
+    // TCommandLine::handleTabCompletion completes from the output buffer and
+    // setCmdLineSuggestions only; a Tab never recalls a command from history.
+    it('does not complete from command history', () => {
+        localStorage.setItem(historyStorageKey(null), JSON.stringify(['zqxhist']));
+        mount('zq');
+        press('Tab');
+        expect(input().value).toBe('zq');
+    });
+
+    it('still completes the first word from suggestions', () => {
+        localStorage.setItem(historyStorageKey(null), JSON.stringify(['zqxhist']));
+        mount('zq', { suggestions: ['zqsugg'] });
+        press('Tab');
+        expect(input().value).toBe('zqsugg');
+        press('Tab');
+        expect(input().value).toBe('zqsugg');
+    });
+
+    it('still completes the first word from output buffer words', () => {
+        mount('dr', { bufferWords: { getWords: () => ['dragon'] } });
+        press('Tab');
+        expect(input().value).toBe('dragon');
     });
 });
