@@ -89,6 +89,7 @@ describe('invokeFileDialog — coroutine park/resume', () => {
       function pickEvent()
         eventPicked = invokeFileDialog(true, 'from event')
       end
+      registerAnonymousEventHandler('pickEvent', 'pickEvent')
       raiseEvent('pickEvent')
       `,
       'event-test',

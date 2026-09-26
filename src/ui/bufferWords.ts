@@ -96,15 +96,9 @@ export function splitTrailingWord(command: string): ActiveWord | null {
     return { prefix: command.slice(0, command.length - word.length), word };
 }
 
-/** True when the trailing word is an *argument* (something precedes it), not the
- *  command name. This is what routes Tab to buffer completion vs. history. */
-export function hasPrecedingWord(prefix: string): boolean {
-    return /\S/.test(prefix);
-}
-
 /**
  * Prefix-matches `word` against several candidate lists, tried in priority order
- * (e.g. suggestions, then history, then buffer words). Case-insensitive,
+ * (e.g. suggestions, then buffer words). Case-insensitive,
  * de-duplicated across all lists, excludes the exact word already typed. Matching
  * is **prefix-only** — never subsequence — so a completion always literally starts
  * with what was typed. The returned order is the Tab cycle order.

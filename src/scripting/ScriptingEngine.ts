@@ -287,7 +287,7 @@ export class ScriptingEngine implements EngineHost {
      *  in either mode resolves in both. */
     private readonly osc8Presets = new HyperlinkPresetRegistry();
     /** Drives expire-on-event OSC 8 visibility links (conceal on the next user
-     *  input / prompt / output after they're clicked). Scans the live output. */
+     *  input / prompt / output after they're clicked) within the live output. */
     private readonly visibility = new HyperlinkVisibilityController(
         () => (typeof document !== 'undefined' ? document : null),
     );
@@ -475,6 +475,10 @@ export class ScriptingEngine implements EngineHost {
         session.windows.onRaiseEvent = (event, args) => this.raiseEvent(event, args);
         // Map UI "download map from game" → the Client.Map/MMP download flow.
         session.windows.onDownloadMap = () => void this.downloadMap();
+        // A command line with no setCmdLineAction bound sends what was typed,
+        // as Mudlet's TCommandLine::enterCommand falls back to Host::send.
+        session.windows.onCmdLineDefaultSend = (text) => this.hostSend(text);
+        session.cmdLines.onDefaultSend = (text) => this.hostSend(text);
         // Mudlet's postMessage(): client messages for the player (e.g. a map file
         // whose format version can't be read) go on the main console, coloured off
         // their "[ PREFIX ] -" the way cTelnet::postMessage does.
@@ -611,6 +615,13 @@ export class ScriptingEngine implements EngineHost {
             // Saved Lua globals go back into _G before any script runs, so script
             // bodies and sysLoadEvent handlers see their persisted state.
             this.restoreSavedVariables();
+            // The saved triggers are compiled only once PCRE is ready, below —
+            // after the scripts have run. Reserve their firing order now so a
+            // temp trigger a script creates at load time fires after them, as
+            // on desktop where they are built from the profile before any
+            // script runs.
+            this.triggerEngine.reserveOrder(
+                useAppStore.getState().connectionTriggers[this.connectionId] ?? []);
             this.applyScriptsFromStore();
             this.applyAliasesFromStore();
             this.applyTimersFromStore();
@@ -707,7 +718,8 @@ export class ScriptingEngine implements EngineHost {
             // and still see the firing for the boot-time load.
             // Map-open notification keeps map-aware scripts in sync if the
             // map is already visible at connection time.
-            this.raiseEvent('sysLoadEvent');
+            // Mudlet passes `true` for a profile load, `false` after resetProfile().
+            this.raiseEvent('sysLoadEvent', [true]);
             if (mapLoaded) this.raiseEvent('sysMapLoadEvent');
             if (this.api.windows.isVisible(MAP_WIDGET_ID)) this.mapOpen.notify();
             // Default/brand packages installed just above never go through
@@ -1689,6 +1701,49 @@ export class ScriptingEngine implements EngineHost {
         return dir === v.profilePath ? null : dir;
     }
 
+    /**
+     * The VFS paths a media name may refer to, most likely first. An absolute
+     * path is taken as it stands (getMudletHomeDir().."/media/x.wav" is the
+     * common package idiom), falling back to reading it as profile-relative
+     * for the older "/media/x.wav" spelling. A relative name is looked up in
+     * the profile's media/ directory first, where Mudlet resolves it, then
+     * against the profile root ("media/x.wav" as packages have long written it).
+     */
+    private mediaPathCandidates(path: string): string[] {
+        const v = this.vfs;
+        if (!v) return [];
+        if (path.startsWith('/')) {
+            return path === v.profilePath || path.startsWith(`${v.profilePath}/`)
+                ? [path]
+                : [path, `${v.profilePath}${path}`];
+        }
+        return [`${v.profilePath}/media/${path}`, `${v.profilePath}/${path}`];
+    }
+
+    /** Sound/video loader: absolute URLs hit the network; everything else is
+     *  read from the mounted profile VFS (see {@link mediaPathCandidates}). */
+    private async loadMediaBytes(path: string): Promise<ArrayBuffer | null> {
+        if (/^https?:|^data:|^blob:/.test(path)) {
+            const res = await fetch(path);
+            if (!res.ok) return null;
+            return await res.arrayBuffer();
+        }
+        const v = this.vfs;
+        if (!v) return null;
+        for (const abs of this.mediaPathCandidates(path)) {
+            try {
+                if (!v.exists(abs)) continue;
+                const bytes = v.readBinaryFile(abs);
+                const out = new ArrayBuffer(bytes.byteLength);
+                new Uint8Array(out).set(bytes);
+                return out;
+            } catch {
+                /* try the next candidate */
+            }
+        }
+        return null;
+    }
+
     private createRuntime(vfs: ProfileVFS | null): Promise<IScriptingRuntime> {
         return LuaRuntime.create(this.api, vfs, this.proxyUrlGetter).then(rt => {
             this.runtimes.lua = rt;
@@ -1700,44 +1755,10 @@ export class ScriptingEngine implements EngineHost {
             // Sound loader: absolute URLs hit the network; everything else is
             // resolved against the mounted profile VFS so package-bundled sounds
             // work out of the box.
-            this.session.sounds.setLoader(async (path) => {
-                if (/^https?:|^data:|^blob:/.test(path)) {
-                    const res = await fetch(path);
-                    if (!res.ok) return null;
-                    return await res.arrayBuffer();
-                }
-                const v = this.vfs;
-                if (!v) return null;
-                const abs = path.startsWith('/') ? `${v.profilePath}${path}` : `${v.profilePath}/${path}`;
-                try {
-                    const bytes = v.readBinaryFile(abs);
-                    const out = new ArrayBuffer(bytes.byteLength);
-                    new Uint8Array(out).set(bytes);
-                    return out;
-                } catch {
-                    return null;
-                }
-            });
+            this.session.sounds.setLoader(path => this.loadMediaBytes(path));
             // VideoManager reuses the same VFS-or-URL loader as sounds, and
             // emits sysMediaFinished on natural end (matching Mudlet).
-            this.session.videos.setLoader(async (path) => {
-                if (/^https?:|^data:|^blob:/.test(path)) {
-                    const res = await fetch(path);
-                    if (!res.ok) return null;
-                    return await res.arrayBuffer();
-                }
-                const v = this.vfs;
-                if (!v) return null;
-                const abs = path.startsWith('/') ? `${v.profilePath}${path}` : `${v.profilePath}/${path}`;
-                try {
-                    const bytes = v.readBinaryFile(abs);
-                    const out = new ArrayBuffer(bytes.byteLength);
-                    new Uint8Array(out).set(bytes);
-                    return out;
-                } catch {
-                    return null;
-                }
-            });
+            this.session.videos.setLoader(path => this.loadMediaBytes(path));
             this.session.videos.setMountPoint(() => this.session.windows.getMainViewportElement());
             // Videos carry no key or tag in Mudlet Web (PlayVideoOptions has no
             // field for either), so those two arguments are the empty strings
@@ -2075,9 +2096,10 @@ export class ScriptingEngine implements EngineHost {
         const name = await this.resolveMspMedia(command);
         if (!name) return;
         // MSP is server-driven, so it rides the 'game' mute gate (muteMediaGame).
-        const opts: { name: string; volume?: number; loops?: number; tag?: string; continue?: boolean; origin?: 'api' | 'game' } = { name, origin: 'game' };
+        const opts: PlayMusicOptions = { name, origin: 'game' };
         if (command.volume !== undefined) opts.volume = command.volume;
         if (command.loops !== undefined) opts.loops = command.loops;
+        if (command.priority !== undefined) opts.priority = command.priority;
         if (command.type) opts.tag = command.type;
         if (command.kind === 'music') {
             if (command.continueIfPlaying) opts.continue = true;
@@ -2203,11 +2225,12 @@ export class ScriptingEngine implements EngineHost {
     }
 
     /**
-     * Handle a GMCP media message (`Client.Media.Play/Load/Stop/Default`).
+     * Handle a GMCP media message (`Client.Media.Play/Load/Stop/Pause/Default`).
      * Mirrors Mudlet's `TMedia` MediaProtocolGMCP. The payload is the already-
      * parsed JSON body; `action` is the lowercased segment after `Client.Media`
-     * (defaulting to `play`, matching Mudlet's bare `Client.Media`). Server-
-     * driven, so playback rides the `game` mute gate like MSP.
+     * (a bare `Client.Media` is Default, as in TMedia::parseGMCP). Server-
+     * driven, so playback rides the `game` mute gate like MSP, and a Stop or
+     * Pause reaches only server media — never what a script started.
      */
     private async handleClientMedia(action: string, value: unknown): Promise<void> {
         const debug = debugGmcpEnabled();
@@ -2243,6 +2266,10 @@ export class ScriptingEngine implements EngineHost {
             return undefined;
         };
 
+        // Mudlet lowercases a tag as it parses one (parseJSONByMediaTag), so a
+        // server's "A" and "a" name the same group in events and filters alike.
+        const tagOf = (): string | undefined => str('tag').toLowerCase() || undefined;
+
         if (action === 'default') {
             // Client.Media.Default { url } — remember the base directory for
             // later Play/Load messages that omit their own url.
@@ -2258,15 +2285,50 @@ export class ScriptingEngine implements EngineHost {
             const type = str('type').toLowerCase();
             const name = str('name') || undefined;
             const key = str('key') || undefined;
-            const tag = str('tag') || undefined;
+            const tag = tagOf();
+            const priority = num('priority');
             const fadeout = num('fadeout');
             if (type !== 'sound') {
-                this.session.sounds.stopMusic({ name, key, tag, fadeout });
+                this.session.sounds.stopMusic({ name, key, tag, fadeout, origin: 'game' });
             }
             if (type !== 'music') {
-                this.session.sounds.stopSounds();
+                this.session.sounds.stopSounds({ name, key, tag, priority, fadeout, origin: 'game' });
             }
             if (debug) console.debug(`[mudlet.gmcp] media stop type=${type || 'all'}`);
+            return;
+        }
+
+        if (action === 'pause') {
+            // Client.Media.Pause [{ name, type, tag, key }] — Web Audio can't
+            // hold a source mid-track, so matching media is stopped (see
+            // SoundManager.pauseSounds). It must never fall through to Play.
+            const type = str('type').toLowerCase();
+            const filter = {
+                name: str('name') || undefined,
+                key: str('key') || undefined,
+                tag: tagOf(),
+                priority: num('priority'),
+                origin: 'game' as const,
+            };
+            if (type !== 'sound') this.session.sounds.pauseMusic(filter);
+            if (type !== 'music') this.session.sounds.pauseSounds(filter);
+            if (debug) console.debug(`[mudlet.gmcp] media pause type=${type || 'all'}`);
+            return;
+        }
+
+        if (action !== 'play' && action !== 'load') {
+            if (debug) console.debug(`[mudlet.gmcp] media ${action} ignored (unknown message)`);
+            return;
+        }
+
+        // A type is matched case-insensitively; one Mudlet doesn't know — or one
+        // that isn't a string at all — is refused rather than played as a sound.
+        // Absent, null and "" all mean sound.
+        const rawType = obj.type;
+        if (rawType !== undefined && rawType !== null && typeof rawType !== 'string') return;
+        const type = (typeof rawType === 'string' && rawType ? rawType : 'sound').toLowerCase();
+        if (type !== 'sound' && type !== 'music' && type !== 'video') {
+            if (debug) console.debug(`[mudlet.gmcp] media ${action} refused: unknown type "${type}"`);
             return;
         }
 
@@ -2284,8 +2346,7 @@ export class ScriptingEngine implements EngineHost {
             return;
         }
 
-        // action === 'play' (or bare Client.Media).
-        const type = (str('type') || 'sound').toLowerCase();
+        // action === 'play'.
         const opts: PlayMusicOptions = { name: resolved, origin: 'game' };
         const volume = num('volume');
         if (volume !== undefined) opts.volume = volume;
@@ -2299,8 +2360,10 @@ export class ScriptingEngine implements EngineHost {
         if (start !== undefined) opts.start = start;
         const key = str('key');
         if (key) opts.key = key;
-        const tag = str('tag');
+        const tag = tagOf();
         if (tag) opts.tag = tag;
+        const priority = num('priority');
+        if (priority !== undefined) opts.priority = priority;
 
         if (type === 'music') {
             // Mudlet's music `continue` defaults to true — a repeat Play of the
@@ -3982,12 +4045,15 @@ export class ScriptingEngine implements EngineHost {
             this.prevScripts = [];
             this.triggersReady = true; // PCRE wasm resolved long before any reset
             this.restoreSavedVariables();
+            // Saved triggers keep their place ahead of temps the scripts create.
+            this.triggerEngine.reserveOrder(
+                useAppStore.getState().connectionTriggers[this.connectionId] ?? []);
             this.applyScriptsFromStore();
             this.applyAliasesFromStore();
             this.applyTriggersFromStore();
             this.applyTimersFromStore();
             this.applyKeybindingsFromStore();
-            this.raiseEvent('sysLoadEvent');
+            this.raiseEvent('sysLoadEvent', [false]);
             this.api.flushOutput();
         } catch (err) {
             console.warn('[ScriptingEngine] resetProfile failed:', err);
@@ -4118,6 +4184,8 @@ export class ScriptingEngine implements EngineHost {
         this.unsubs.length = 0;
         this.session.windows.onRaiseEvent = undefined;
         this.session.windows.onDownloadMap = undefined;
+        this.session.windows.onCmdLineDefaultSend = undefined;
+        this.session.cmdLines.onDefaultSend = undefined;
         this.session.windows.onStartSpeedWalk = undefined;
         this.session.windows.onFileDrop = undefined;
         this.session.sounds.onMediaStarted = undefined;
@@ -4223,14 +4291,12 @@ export class ScriptingEngine implements EngineHost {
 
     private executePermAlias(alias: AliasNode, matches: string[], named?: Record<string, string>): void {
         if (alias.command) {
-            const cmd = alias.command.replace(/%(\d)/g, (_, d) => {
-                const idx = Number(d);
-                return idx === 0 ? matches[0] : (matches[idx] ?? '');
-            });
             // Host::send again — TAlias::execute is no different from the
             // others, so an alias whose command names another alias chains, and
-            // each expansion is echoed as its own line.
-            this.hostSend(cmd);
+            // each expansion is echoed as its own line. Sent exactly as written:
+            // desktop does no %1…%9 capture substitution in the command field
+            // (captures are the script's, via `matches`).
+            this.hostSend(alias.command);
         }
         if (alias.code && alias.language === 'lua') {
             try {
@@ -4263,14 +4329,11 @@ export class ScriptingEngine implements EngineHost {
 
         // Built-in command send
         if (trigger.command) {
-            const cmd = trigger.command.replace(/%(\d)/g, (_, d) => {
-                const idx = Number(d);
-                return (idx === 0 ? matches[0] : matches[idx]) ?? '';
-            });
             // Echoed, separator-split and alias-expanded like every other item's
             // built-in command — TTrigger::execute takes both Host::send
-            // defaults.
-            this.hostSend(cmd);
+            // defaults. Sent literally, with no %1…%9 capture substitution, as
+            // desktop does.
+            this.hostSend(trigger.command);
         }
 
         // Built-in highlight.
@@ -4349,11 +4412,16 @@ export class ScriptingEngine implements EngineHost {
     /**
      * Run a button's command + code. The Lua `code` runs on every click.
      * For two-state buttons, `nextState=true` (going DOWN) sends `commandDown`,
-     * otherwise (going UP, or single-state click) sends `command`.
+     * otherwise (going UP) sends `command`. A single-state button sends
+     * `command` — its desktop commandButtonDown, which the importer moves
+     * there. A plain button imported before that still carries the desktop
+     * down command in `commandDown`, and that is the one desktop sends.
      */
     executeButton(button: ButtonNode, nextState: boolean): void {
-        const goingDown = button.isPushDown && nextState;
-        const cmd = goingDown ? button.commandDown : button.command;
+        const cmd = button.isPushDown
+            ? (nextState ? button.commandDown : button.command)
+            : (button.commandDown || button.command);
+        this.api.clickedButtonState = button.isPushDown && nextState ? 2 : 1;
         // Echoed, split and alias-expanded, matching TAction::execute's
         // Host::send call.
         if (cmd) this.hostSend(cmd);
@@ -4391,124 +4459,131 @@ export class ScriptingEngine implements EngineHost {
                     carryEnabled ? this.mudCarryState : undefined;
 
                 for (let i = 0; i < lines.length; i++) {
-                    const line = lines[i];
-                    const lineIsPrompt = this.promptPending && i === lines.length - 1;
-                    if (lineIsPrompt) this.promptPending = false;
+                    try {
+                        const line = lines[i];
+                        const lineIsPrompt = this.promptPending && i === lines.length - 1;
+                        if (lineIsPrompt) this.promptPending = false;
 
-                    // Build the render units for this network line. Normally one
-                    // unit per line, but when MXP is active a single line can carry
-                    // several visual lines via <BR> tags — splitMxpResultLines
-                    // breaks the parsed result on those newlines so each renders
-                    // (and fires triggers) on its own. `blankRenders` forces a
-                    // blank line to render (true for an intentional <BR>-split gap;
-                    // for a single line it mirrors the old `line === ''` rule so a
-                    // text-free MXP line — e.g. pure <!ENTITY> defs — stays hidden).
-                    const units: { plain: string; buffer: AnsiAwareBuffer; outputLine: string; blankRenders: boolean }[] = [];
-                    if ((this.mxpActive || this.forceMxpProcessorOn) && type === 'mud') {
-                        // MXP is live: parse the in-band markup into styled
-                        // segments + clean (tag/entity-decoded) plain text, and
-                        // wire any <SEND>/<A> links into clickable hyperlinks.
-                        // The parser owns SGR carry on these lines (it walked
-                        // every byte), so computeTrailingState is bypassed.
-                        const r = this.mxp.parseLine(line, carryState, fromServer !== false);
-                        if (debugMxpEnabled()) logMxpLine(line, r.segments);
-                        carryState = r.trailingSnapshot;
-                        const parts = splitMxpResultLines(r);
-                        const multiLine = parts.length > 1;
-                        for (const part of parts) {
-                            const buffer = new AnsiAwareBuffer(part.segments);
-                            this.wireMxpLinks(buffer, part.links);
+                        // Build the render units for this network line. Normally one
+                        // unit per line, but when MXP is active a single line can carry
+                        // several visual lines via <BR> tags — splitMxpResultLines
+                        // breaks the parsed result on those newlines so each renders
+                        // (and fires triggers) on its own. `blankRenders` forces a
+                        // blank line to render (true for an intentional <BR>-split gap;
+                        // for a single line it mirrors the old `line === ''` rule so a
+                        // text-free MXP line — e.g. pure <!ENTITY> defs — stays hidden).
+                        const units: { plain: string; buffer: AnsiAwareBuffer; outputLine: string; blankRenders: boolean }[] = [];
+                        if ((this.mxpActive || this.forceMxpProcessorOn) && type === 'mud') {
+                            // MXP is live: parse the in-band markup into styled
+                            // segments + clean (tag/entity-decoded) plain text, and
+                            // wire any <SEND>/<A> links into clickable hyperlinks.
+                            // The parser owns SGR carry on these lines (it walked
+                            // every byte), so computeTrailingState is bypassed.
+                            const r = this.mxp.parseLine(line, carryState, fromServer !== false);
+                            if (debugMxpEnabled()) logMxpLine(line, r.segments);
+                            carryState = r.trailingSnapshot;
+                            const parts = splitMxpResultLines(r);
+                            const multiLine = parts.length > 1;
+                            for (const part of parts) {
+                                const buffer = new AnsiAwareBuffer(part.segments);
+                                this.wireMxpLinks(buffer, part.links);
+                                this.wireOsc8Links(buffer);
+                                units.push({
+                                    plain: part.plain,
+                                    buffer,
+                                    outputLine: multiLine ? part.plain : line,
+                                    blankRenders: multiLine ? true : line === '',
+                                });
+                            }
+                            // <DEST> writes redirected text into a frame. A redirect to
+                            // a frame that doesn't exist falls back to inline main
+                            // rendering (the parser already pulled it out of the main
+                            // line), matching Mudlet's degradation when
+                            // setMxpDestination fails. (<FRAME> itself was carried out
+                            // during the parse — see the onFrame hook.)
+                            if (r.redirects) for (const rd of r.redirects) {
+                                const fbuf = new AnsiAwareBuffer(rd.segments);
+                                // A <SEND>/<A> inside the <DEST> is offset into the
+                                // redirected text, not the main line, so it has to be
+                                // wired onto the frame's own buffer — otherwise the
+                                // frame renders underlined text that does nothing.
+                                this.wireMxpLinks(fbuf, rd.links);
+                                this.wireOsc8Links(fbuf);
+                                if (!this.api.mxpWriteToFrame(rd.frame, fbuf, rd.eof, rd.eol)) {
+                                    units.push({ plain: rd.plain, buffer: fbuf, outputLine: rd.plain, blankRenders: rd.plain === '' });
+                                }
+                            }
+                            // MXP <SOUND>/<MUSIC> are the same server-driven audio
+                            // triggers as MSP, so route them through the identical
+                            // resolve-and-play path (media/ cache, U= download, game
+                            // mute gate).
+                            if (r.sounds) for (const s of r.sounds) void this.handleMspCommand(s);
+                        } else {
+                            const buffer = new AnsiAwareBuffer(line, carryState, this.osc8Presets);
                             this.wireOsc8Links(buffer);
-                            units.push({
-                                plain: part.plain,
-                                buffer,
-                                outputLine: multiLine ? part.plain : line,
-                                blankRenders: multiLine ? true : line === '',
-                            });
+                            // The buffer's text is the line with every escape
+                            // sequence (SGR, OSC 8 links, cursor moves, …) already
+                            // consumed — exactly what's rendered — so trigger
+                            // matching sees the same plain text the user sees.
+                            const plain = buffer.text;
+                            // computeTrailingState reflects the *actual* end-of-line
+                            // SGR — including trailing resets, and unchanged across
+                            // blank lines — unlike buffer.trailingState() which only
+                            // sees the last text segment's state.
+                            carryState = computeTrailingState(line, carryState);
+                            units.push({ plain, buffer, outputLine: line, blankRenders: line === '' });
                         }
-                        // <DEST> writes redirected text into a frame. A redirect to
-                        // a frame that doesn't exist falls back to inline main
-                        // rendering (the parser already pulled it out of the main
-                        // line), matching Mudlet's degradation when
-                        // setMxpDestination fails. (<FRAME> itself was carried out
-                        // during the parse — see the onFrame hook.)
-                        if (r.redirects) for (const rd of r.redirects) {
-                            const fbuf = new AnsiAwareBuffer(rd.segments);
-                            // A <SEND>/<A> inside the <DEST> is offset into the
-                            // redirected text, not the main line, so it has to be
-                            // wired onto the frame's own buffer — otherwise the
-                            // frame renders underlined text that does nothing.
-                            this.wireMxpLinks(fbuf, rd.links);
-                            this.wireOsc8Links(fbuf);
-                            if (!this.api.mxpWriteToFrame(rd.frame, fbuf, rd.eof, rd.eol)) {
-                                units.push({ plain: rd.plain, buffer: fbuf, outputLine: rd.plain, blankRenders: rd.plain === '' });
+
+                        for (let u = 0; u < units.length; u++) {
+                            const { plain, buffer, outputLine, blankRenders } = units[u];
+                            // Only the final visual line of a prompt-bearing network
+                            // line is the prompt (e.g. just the "> ", not the room).
+                            const isPrompt = lineIsPrompt && u === units.length - 1;
+
+                            // Every line goes to the triggers, blank ones included.
+                            // Mudlet's TMainConsole::runTriggers appends a '\n' to
+                            // the line before handing it over, so an empty line
+                            // arrives as "\n" and a `^(.*)$` pattern matches it with
+                            // an empty capture — which is how a chain that collects a
+                            // room description gets its blank separator lines
+                            // (mudlet-web#159). Skipping them here also shortened
+                            // every fire-length and line-delta window by however many
+                            // blanks the server sent.
+                            this.processLineTriggers(plain, buffer, isPrompt);
+                            if (plain.length > 0) this.emit('output', [outputLine, type]);
+
+                            let shouldRender =
+                                !buffer.deleted &&
+                                (blankRenders || plain.length > 0 || !FILTER_ANSI_ONLY_LINES);
+                            // Mudlet `blankLinesBehaviour` (TBuffer): for empty server
+                            // lines, either hide them or replace them with a single
+                            // space. Scoped to mud-typed output — echoes/errors are
+                            // unaffected, matching Mudlet's TBuffer-only handling.
+                            let renderBuffer = buffer;
+                            if (shouldRender && type === 'mud' && plain.length === 0) {
+                                const behaviour = this.session.blankLinesBehaviour;
+                                if (behaviour === 'hide') {
+                                    shouldRender = false;
+                                } else if (behaviour === 'replacewithspace') {
+                                    renderBuffer = new AnsiAwareBuffer(' ');
+                                }
                             }
-                        }
-                        // MXP <SOUND>/<MUSIC> are the same server-driven audio
-                        // triggers as MSP, so route them through the identical
-                        // resolve-and-play path (media/ cache, U= download, game
-                        // mute gate).
-                        if (r.sounds) for (const s of r.sounds) void this.handleMspCommand(s);
-                    } else {
-                        const buffer = new AnsiAwareBuffer(line, carryState, this.osc8Presets);
-                        this.wireOsc8Links(buffer);
-                        // The buffer's text is the line with every escape
-                        // sequence (SGR, OSC 8 links, cursor moves, …) already
-                        // consumed — exactly what's rendered — so trigger
-                        // matching sees the same plain text the user sees.
-                        const plain = buffer.text;
-                        // computeTrailingState reflects the *actual* end-of-line
-                        // SGR — including trailing resets, and unchanged across
-                        // blank lines — unlike buffer.trailingState() which only
-                        // sees the last text segment's state.
-                        carryState = computeTrailingState(line, carryState);
-                        units.push({ plain, buffer, outputLine: line, blankRenders: line === '' });
-                    }
-
-                    for (let u = 0; u < units.length; u++) {
-                        const { plain, buffer, outputLine, blankRenders } = units[u];
-                        // Only the final visual line of a prompt-bearing network
-                        // line is the prompt (e.g. just the "> ", not the room).
-                        const isPrompt = lineIsPrompt && u === units.length - 1;
-
-                        // Every line goes to the triggers, blank ones included.
-                        // Mudlet's TMainConsole::runTriggers appends a '\n' to
-                        // the line before handing it over, so an empty line
-                        // arrives as "\n" and a `^(.*)$` pattern matches it with
-                        // an empty capture — which is how a chain that collects a
-                        // room description gets its blank separator lines
-                        // (mudlet-web#159). Skipping them here also shortened
-                        // every fire-length and line-delta window by however many
-                        // blanks the server sent.
-                        this.processLineTriggers(plain, buffer, isPrompt);
-                        if (plain.length > 0) this.emit('output', [outputLine, type]);
-
-                        let shouldRender =
-                            !buffer.deleted &&
-                            (blankRenders || plain.length > 0 || !FILTER_ANSI_ONLY_LINES);
-                        // Mudlet `blankLinesBehaviour` (TBuffer): for empty server
-                        // lines, either hide them or replace them with a single
-                        // space. Scoped to mud-typed output — echoes/errors are
-                        // unaffected, matching Mudlet's TBuffer-only handling.
-                        let renderBuffer = buffer;
-                        if (shouldRender && type === 'mud' && plain.length === 0) {
-                            const behaviour = this.session.blankLinesBehaviour;
-                            if (behaviour === 'hide') {
-                                shouldRender = false;
-                            } else if (behaviour === 'replacewithspace') {
-                                renderBuffer = new AnsiAwareBuffer(' ');
+                            if (shouldRender) {
+                                this.session.events.emit('message', renderBuffer, type, Date.now(), isPrompt);
                             }
-                        }
-                        if (shouldRender) {
-                            this.session.events.emit('message', renderBuffer, type, Date.now(), isPrompt);
-                        }
 
-                        // Flush this line's trigger echoes right after it renders so
-                        // they land in Mudlet's position — directly after the line
-                        // they fired on — instead of being deferred to the end of
-                        // the whole batch (which dumped every line's echo below the
-                        // last rendered line).
-                        this.api.flushDeferredEcho();
+                            // Flush this line's trigger echoes right after it renders so
+                            // they land in Mudlet's position — directly after the line
+                            // they fired on — instead of being deferred to the end of
+                            // the whole batch (which dumped every line's echo below the
+                            // last rendered line).
+                            this.api.flushDeferredEcho();
+                        }
+                    } catch (err) {
+                        // One line that fails to process must not take the rest of the
+                        // network flush down with it — every later line would otherwise
+                        // vanish unseen and untriggered (mudlet-web#174).
+                        this.api.printError(`[scripting] line flush failed: ${err instanceof Error ? err.message : String(err)}`);
                     }
                 }
 
@@ -4677,13 +4752,15 @@ export class ScriptingEngine implements EngineHost {
         }));
 
         this.unsubs.push(
-            session.events.on('prompt', () => {
-                this.promptPending = true;
+            session.events.on('prompt', (promptLine) => {
+                // A bare GA ended no line; flagging now would make the next,
+                // ordinary line the prompt.
+                if (promptLine !== false) this.promptPending = true;
                 this.visibility.onPrompt();
             }),
             // OSC 8 visibility expiry: a user command (echo) is "input", any
-            // other non-error line is "output". Concealment of armed links is
-            // handled by the controller scanning the live output.
+            // other non-error line is "output". Concealing the armed links is
+            // the controller's job; with none armed each call is a no-op.
             session.events.on('message', (_text, type) => {
                 if (type === 'echo') this.visibility.onInput();
                 else if (type !== 'error') this.visibility.onOutput();
@@ -4782,13 +4859,11 @@ export class ScriptingEngine implements EngineHost {
             session.events.on('client.disconnect', () => {
                 this.emit('disconnect', []);
                 this.emit('sysDisconnectionEvent', []);
-                // Mudlet raises sysProtocolDisabled as protocols tear down. A
-                // dropped socket sends no WONT/DONT, so the pair each protocol
-                // announced on the way in is closed here instead.
-                for (const protocol of this.enabledProtocols) {
-                    if (protocol === 'MXP') this.mxpActive = false;
-                    this.emit('sysProtocolDisabled', [protocol]);
-                }
+                // A dropped socket sends no WONT/DONT, so the protocols the
+                // connection enabled are forgotten here. Mudlet raises only
+                // sysDisconnectionEvent for it — no sysProtocolDisabled per
+                // protocol — so nothing more is announced.
+                if (this.enabledProtocols.has('MXP')) this.mxpActive = false;
                 this.enabledProtocols.clear();
             }),
             // Built-in Client.GUI handler — Mudlet semantics. One entry point
@@ -4805,6 +4880,8 @@ export class ScriptingEngine implements EngineHost {
                 // replaced, siblings survive), then raise gmcp.Char,
                 // gmcp.Char.Items, gmcp.Char.Items.List for an incoming
                 // "Char.Items.List", each with args (eventName, fullKey).
+                // emit() supplies the event name itself, so only fullKey is
+                // passed — a parent-node handler must see the leaf's key.
                 if (!path) return;
                 if (debugGmcpEnabled()) {
                     const body = JSON.stringify(value);
@@ -4816,7 +4893,7 @@ export class ScriptingEngine implements EngineHost {
                 let token = 'gmcp';
                 for (const segment of path.split('.')) {
                     token += `.${segment}`;
-                    this.emit(token, [token, fullKey]);
+                    this.emit(token, [fullKey]);
                 }
                 // Built-in Client.Map handler — Mudlet Host::setMmpMapLocation.
                 // Records the game's published map URL; the actual download is
@@ -4833,7 +4910,7 @@ export class ScriptingEngine implements EngineHost {
                 const lowerPath = path.toLowerCase();
                 if (lowerPath === 'client.media' || lowerPath.startsWith('client.media.')) {
                     const action = lowerPath.slice('client.media'.length).replace(/^\./, '');
-                    void this.handleClientMedia(action || 'play', value);
+                    void this.handleClientMedia(action || 'default', value);
                 }
             }),
             session.events.on('msdp', ({ path, value }) => {
@@ -4844,7 +4921,7 @@ export class ScriptingEngine implements EngineHost {
                 if (!path) return;
                 this.runtimes.lua?.setMsdpValue(path, value);
                 const token = `msdp.${path}`;
-                this.emit(token, [token, token]);
+                this.emit(token, [token]);
             }),
             // MXP finished negotiating (telnet option 91). Flip on in-band markup
             // parsing and mirror the GMCP/MSDP/MSSP pair so scripts can hook
@@ -4875,7 +4952,7 @@ export class ScriptingEngine implements EngineHost {
                 if (!name) return;
                 this.runtimes.lua?.setMsspValue(name, value);
                 const token = `mssp.${name}`;
-                this.emit(token, [token, token]);
+                this.emit(token, [token]);
             }),
             // MSP — translate parsed `!!SOUND` / `!!MUSIC` tags into
             // SoundManager calls. `Off` stops the matching kind; otherwise

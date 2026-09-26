@@ -759,6 +759,21 @@ export class TriggerEngine {
         return () => { this.temp.delete(id); this.orderDirty = true; };
     }
 
+    /**
+     * Give the profile's saved triggers their place in the firing order without
+     * compiling them. Desktop builds every permanent trigger from the profile
+     * XML before any script runs, so a temp trigger a script creates at load
+     * time sorts after them. Triggers can't be compiled here until PCRE is
+     * ready — which is after the scripts have run — so the engine calls this
+     * first and the later {@link loadPerm} reuses the seqs reserved here.
+     */
+    reserveOrder(items: TriggerNode[]): void {
+        for (const item of items) {
+            if (!this.permReg.has(item.id)) this.permReg.set(item.id, this.regCounter++);
+        }
+        this.orderDirty = true;
+    }
+
     loadPerm(items: TriggerNode[]): void {
         this.allById = new Map(items.map(i => [i.id, i]));
         const enabledIds = buildEffectivelyEnabledIds(items);
@@ -769,15 +784,11 @@ export class TriggerEngine {
         // edits/toggles; a node added at runtime draws the current counter, so
         // it sorts after temps created before it — matching Mudlet's appended
         // root list. Prune seqs for nodes that were deleted.
-        const liveIds = new Set<string>();
-        for (const item of items) {
-            liveIds.add(item.id);
-            if (!this.permReg.has(item.id)) this.permReg.set(item.id, this.regCounter++);
-        }
+        this.reserveOrder(items);
+        const liveIds = new Set(items.map(i => i.id));
         for (const id of this.permReg.keys()) {
             if (!liveIds.has(id)) this.permReg.delete(id);
         }
-        this.orderDirty = true;
 
         const hasChildren = new Set<string>();
         for (const it of items) {
@@ -1725,6 +1736,7 @@ export class TriggerEngine {
             if (cond.spacer > 0) {
                 // Line spacer: set the wait and advance, then stop for this line.
                 state.waitUntilLine = currentLine + cond.spacer;
+                this.pushSpacerRow(state);
                 state.nextIdx++;
                 break;
             }
@@ -1732,6 +1744,7 @@ export class TriggerEngine {
                 // A zero-line spacer (or a pattern kind with no matcher) is
                 // satisfied by the line it is reached on, matching Mudlet's
                 // `mSpacer >= 0` first call (TMatchState.h:68).
+                this.pushSpacerRow(state);
                 state.nextIdx++;
                 continue;
             }
@@ -1742,6 +1755,15 @@ export class TriggerEngine {
             state.namedGroups.push(result.namedGroups ?? {});
             state.nextIdx++;
         }
+    }
+
+    /** A line spacer holds a `multimatches` row of its own, as every other
+     *  condition does — TTrigger::match_line_spacer records an empty match for
+     *  it — so the rows after it keep the index of the pattern they belong to. */
+    private pushSpacerRow(state: AndState): void {
+        state.captures.push([]);
+        state.matchedTexts.push('');
+        state.namedGroups.push({});
     }
 
     /** The match a completed AND state reports: every line's captures, in order,

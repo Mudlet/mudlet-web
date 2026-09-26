@@ -2534,7 +2534,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                         className="script-editor__pattern"
                                         value={editCommand}
                                         onChange={e => { setEditCommand(e.target.value); setDirty(true); }}
-                                        placeholder="Command (%1, %2… = captures)"
+                                        placeholder="Command to send"
                                     />
                                 </div>
                                 {aliasLoops && (
@@ -2679,7 +2679,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                         className="script-editor__pattern"
                                         value={editTriggerCommand}
                                         onChange={e => { setEditTriggerCommand(e.target.value); setDirty(true); }}
-                                        placeholder="Command to send (%1..%9 = captures)"
+                                        placeholder="Command to send"
                                     />
                                 </div>
 

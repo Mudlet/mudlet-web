@@ -269,7 +269,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     const mapperShowDefaultArea = mapper?.showDefaultArea ?? MAPPER_DEFAULTS.showDefaultArea;
     const mapperGridColor = mapper?.gridColor;
     const serverEncoding = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'serverEncoding') : undefined));
-    const highlightHistory = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'highlightHistory') : undefined)) ?? false;
+    const highlightHistory = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'highlightHistory') : undefined)) ?? true;
     const disablePasswordMasking = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'disablePasswordMasking') : undefined)) ?? false;
     const reactToAllKeybindings = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'reactToAllKeybindings') : undefined)) ?? false;
     const ambiguousWidthWide = useAppStore(s => (connectionId ? selectProfileField(s, connectionId, 'ambiguousWidthWide') : undefined)) ?? false;
@@ -1697,6 +1697,8 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                             <HelpTip label="About highlighting history">
                                 A command recalled with Up or Down comes back selected, so the
                                 next thing you type replaces it instead of being appended to it.
+                                With text already typed, Up and Down search history for commands
+                                that start with it.
                             </HelpTip>
                         </span>
                         <Toggle

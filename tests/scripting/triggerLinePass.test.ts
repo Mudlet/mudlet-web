@@ -138,4 +138,36 @@ describe('trigger line pass', () => {
         // mudlet-web#156: the child used to fire on every OTHER line.
         expect(fired).toEqual(['my_parent:test', 'my_child:test', 'my_parent:test', 'my_child:test']);
     });
+
+    it('keeps the rest of a packet after an out-of-range 256-colour escape', async () => {
+        await boot([trig({ id: 'probe', name: 'probe', patterns: [{ type: 'regex', text: '^(P\\d|T18) ' }] })]);
+
+        engine.processFlushBatch([{
+            text: 'T18 a\x1b[38;5;300mXX\x1b[0mb\r\nP2 samepacket\r\n'.replace(/\r/g, ''),
+            type: 'mud', fromServer: true,
+        }]);
+
+        // mudlet-web#174: the escape threw while the line was being started,
+        // and the throw abandoned every line behind it in the same flush.
+        expect(fired).toEqual(['probe:T18 ', 'probe:P2 ']);
+    });
+
+    it('carries on with the batch when one line throws', async () => {
+        await boot([trig({ id: 'cap', name: 'cap', patterns: [{ type: 'regex', text: '^(.*)$' }] })]);
+        // A throw out of the line pass itself (a script error is already
+        // caught further in) — the shape the out-of-range colour took.
+        const internals = engine as unknown as { processLineTriggers: (plain: string, ...rest: unknown[]) => void };
+        const real = internals.processLineTriggers.bind(engine);
+        vi.spyOn(internals, 'processLineTriggers').mockImplementation((plain, ...rest) => {
+            if (plain === 'bad') throw new Error('boom');
+            real(plain, ...rest);
+        });
+        const printError = vi.spyOn((engine as unknown as { api: { printError: (m: string) => void } }).api, 'printError')
+            .mockImplementation(() => {});
+
+        engine.processFlushBatch([{ text: 'one\nbad\nthree\n', type: 'mud', fromServer: true }]);
+
+        expect(fired).toEqual(['cap:one', 'cap:three']);
+        expect(printError).toHaveBeenCalledWith(expect.stringContaining('boom'));
+    });
 });

@@ -1,5 +1,6 @@
 import type { ProfileVFS } from '../vfs/ProfileVFS';
 import { githubRawUrl } from '../../utils/githubRawUrl';
+import { normalizeUserUrl } from './userUrl';
 
 // Mudlet's HTTP API is fire-and-forget: each function returns immediately,
 // the actual request runs in the background, and completion/failure is
@@ -10,14 +11,17 @@ import { githubRawUrl } from '../../utils/githubRawUrl';
 // event name itself, prepended by dispatchEventToFunctions in Other.lua —
 // we pass only the trailing args here):
 //   sysDownloadDone(saveTo, fileSize, response)
-//   sysDownloadError(errorMessage, saveTo, url)
+//   sysDownloadError(errorMessage, saveTo, url, response)
 //   sysDownloadFileProgress(url, bytesDownloaded, totalBytes)
-//   sysGetHttpDone(url, response)         sysGetHttpError(error, url)
-//   sysPostHttpDone(url, response)        sysPostHttpError(error, url)
-//   sysPutHttpDone(url, response)         sysPutHttpError(error, url)
-//   sysDeleteHttpDone(url, response)      sysDeleteHttpError(error, url)
-//   sysCustomHttpDone(url, response, method)
-//   sysCustomHttpError(error, url, method)
+//   sysGetHttpDone(url, body, response)   sysGetHttpError(error, url, response)
+//   sysPostHttpDone(url, body, response)  sysPostHttpError(error, url, response)
+//   sysPutHttpDone(url, body, response)   sysPutHttpError(error, url, response)
+//   sysDeleteHttpDone(url, body, response) sysDeleteHttpError(error, url, response)
+//   sysCustomHttpDone(url, body, method, response)
+//   sysCustomHttpError(error, url, method, response)
+// `response` is the record described at responseRecord(); error events carry
+// it too (Mudlet's slot_httpRequestFinished appends it to both), empty when
+// no reply ever arrived.
 
 type EmitFn = (event: string, args: unknown[]) => void;
 type VFSGetter = () => ProfileVFS | null;
@@ -32,12 +36,33 @@ type LocalReader = (path: string) => Uint8Array | null;
 // thousands of events into Lua per second.
 const PROGRESS_THROTTLE_MS = 100;
 
+// How long an origin stays proxied after a direct fetch to it failed. A failure
+// cannot tell CORS from a server that was briefly down, so it is not held
+// against the origin for the rest of the session — only long enough that a
+// burst of calls does not pay for a doomed direct attempt each time.
+const PROXIED_ORIGIN_TTL_MS = 5 * 60_000;
+
+// Set by proxy/server.ts on a reply that is the proxy's own failure to reach
+// the target — the text is what Mudlet would have reported ("Connection
+// refused"), rather than the 502 it rides on.
+const PROXY_ERROR_HEADER = 'X-Mudlet-Proxy-Error';
+
+/** A request that failed before any reply from the target arrived. */
+class TransportError extends Error {}
+
+const EMPTY_RECORD = (): Record<string, unknown> => ({ headers: {}, cookies: {} });
+
 export class HttpService {
     // Origins where a direct fetch failed (almost always CORS — there's no way
     // to distinguish CORS from network errors in a browser, both surface as
     // TypeError). Once an origin lands in here we go straight through the
     // proxy without paying for a doomed direct attempt every call.
-    private readonly proxiedOrigins = new Set<string>();
+    // Origin → when it was last sent to the proxy.
+    private readonly proxiedOrigins = new Map<string, number>();
+    // Origins a direct fetch has already reached and read a reply from, so they
+    // answer CORS: a POST to one of these can safely go direct. See
+    // fetchWithFallback for why a POST to any other origin cannot.
+    private readonly directOrigins = new Set<string>();
 
     /**
      * The response record Mudlet hands to every HTTP event as its last argument:
@@ -64,7 +89,8 @@ export class HttpService {
         private readonly localReader: LocalReader = () => null,
     ) {}
 
-    downloadFile(saveTo: string, url: string): void {
+    downloadFile(saveTo: string, rawUrl: string): void {
+        const url = normalizeUserUrl(rawUrl);
         const scheme = explicitScheme(url);
         // `file:` means the local filesystem, and here that is the VFS. Qt's
         // network manager serves these too, so scripts (and Mudlet's own specs)
@@ -81,53 +107,72 @@ export class HttpService {
         // reporting an error that never named the real problem.
         if (scheme && scheme !== 'http' && scheme !== 'https') {
             this.emitLater('sysDownloadError',
-                [`'${scheme}' urls cannot be downloaded, only http and https`, saveTo, url]);
+                [`'${scheme}' urls cannot be downloaded, only http and https`, saveTo, url, EMPTY_RECORD()]);
             return;
         }
         this.runDownload(saveTo, url).catch(err => {
-            this.emit('sysDownloadError', [errorMessage(err), saveTo, url]);
+            this.emit('sysDownloadError', [errorMessage(err), saveTo, url, EMPTY_RECORD()]);
         });
     }
 
     getHTTP(url: string, headers?: Record<string, string>): void {
-        void this.runRequest('GET', url, undefined, headers, 'sysGetHttpDone', 'sysGetHttpError');
+        void this.runRequest('GET', normalizeUserUrl(url), undefined, headers, 'sysGetHttpDone', 'sysGetHttpError');
     }
 
     postHTTP(data: string | null, url: string, headers?: Record<string, string>, file?: string): void {
-        let body: BodyInit | undefined;
-        try {
-            body = this.bodyForUpload(data, file);
-        } catch (err) {
-            this.emitLater('sysPostHttpError', [errorMessage(err), url]);
-            return;
-        }
-        void this.runRequest('POST', url, body, headers, 'sysPostHttpDone', 'sysPostHttpError');
+        this.upload('POST', data, normalizeUserUrl(url), headers, file, 'sysPostHttpDone', 'sysPostHttpError');
     }
 
     putHTTP(data: string | null, url: string, headers?: Record<string, string>, file?: string): void {
-        let body: BodyInit | undefined;
-        try {
-            body = this.bodyForUpload(data, file);
-        } catch (err) {
-            this.emitLater('sysPutHttpError', [errorMessage(err), url]);
-            return;
-        }
-        void this.runRequest('PUT', url, body, headers, 'sysPutHttpDone', 'sysPutHttpError');
+        this.upload('PUT', data, normalizeUserUrl(url), headers, file, 'sysPutHttpDone', 'sysPutHttpError');
     }
 
     deleteHTTP(url: string, headers?: Record<string, string>): void {
-        void this.runRequest('DELETE', url, undefined, headers, 'sysDeleteHttpDone', 'sysDeleteHttpError');
+        void this.runRequest('DELETE', normalizeUserUrl(url), undefined, headers, 'sysDeleteHttpDone', 'sysDeleteHttpError');
     }
 
     customHTTP(method: string, data: string | null, url: string, headers?: Record<string, string>, file?: string): void {
+        // The verb goes between the body and the response record in both
+        // events — handleHttpOK in Mudlet puts it there.
+        this.upload(method, data, normalizeUserUrl(url), headers, file,
+            'sysCustomHttpDone', 'sysCustomHttpError', [method]);
+    }
+
+    private upload(
+        method: string,
+        data: string | null,
+        url: string,
+        headers: Record<string, string> | undefined,
+        file: string | undefined,
+        doneEvent: string,
+        errorEvent: string,
+        extraArgs: unknown[] = [],
+    ): void {
         let body: BodyInit | undefined;
         try {
             body = this.bodyForUpload(data, file);
         } catch (err) {
-            this.emitLater('sysCustomHttpError', [errorMessage(err), url, method]);
+            this.emitLater(errorEvent, [errorMessage(err), url, ...extraArgs, EMPTY_RECORD()]);
             return;
         }
-        void this.runRequest(method, url, body, headers, 'sysCustomHttpDone', 'sysCustomHttpError', [method], [method]);
+        const verb = method.toUpperCase();
+        // A GET or HEAD cannot carry a body in fetch — the Request constructor
+        // throws — and customHTTP("GET", "", url) is how a script spells "no
+        // body", since the data argument is mandatory. A non-empty one is still
+        // passed through, to fail honestly rather than vanish.
+        if ((verb === 'GET' || verb === 'HEAD') && data === '' && !file) body = undefined;
+        // fetch labels a string body text/plain;charset=UTF-8 on its own. Mudlet
+        // sends no Content-Type for a PUT or a custom verb, and for a POST falls
+        // back to application/x-www-form-urlencoded (Qt's own default) — which a
+        // form handler (PHP's $_POST, express.urlencoded) needs to see a form at
+        // all. Sending the string as bytes stops fetch inventing a type; the
+        // form default is CORS-safelisted, so it costs a direct POST nothing.
+        if (typeof body === 'string') body = new TextEncoder().encode(body);
+        let sendHeaders = headers;
+        if (verb === 'POST' && !Object.keys(headers ?? {}).some(k => k.toLowerCase() === 'content-type')) {
+            sendHeaders = { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' };
+        }
+        void this.runRequest(method, url, body, sendHeaders, doneEvent, errorEvent, extraArgs);
     }
 
     /**
@@ -145,7 +190,7 @@ export class HttpService {
             catch { path = url.trim().replace(/^file:\/\//i, ''); }
 
             const vfs = this.vfsGetter();
-            if (!vfs) return this.emit('sysDownloadError', ['no profile VFS available', saveTo, url]);
+            if (!vfs) return this.emit('sysDownloadError', ['no profile VFS available', saveTo, url, EMPTY_RECORD()]);
 
             let data: Uint8Array | null = this.localReader(path);
             if (!data) {
@@ -153,12 +198,12 @@ export class HttpService {
                 catch { data = null; }
             }
             // Same unterminated quote as the install path had — Mudlet closes it.
-            if (!data) return this.emit('sysDownloadError', [`could not open file '${path}'`, saveTo, url]);
+            if (!data) return this.emit('sysDownloadError', [`could not open file '${path}'`, saveTo, url, EMPTY_RECORD()]);
 
             try { vfs.writeBinaryFile(saveTo, data); }
             catch (err) {
                 return this.emit('sysDownloadError',
-                    [`save to '${saveTo}' failed: ${errorMessage(err)}`, saveTo, url]);
+                    [`save to '${saveTo}' failed: ${errorMessage(err)}`, saveTo, url, EMPTY_RECORD()]);
             }
             // Empty headers: a file: copy never spoke HTTP. Still a record, so a
             // handler can index it without knowing which kind of URL it got.
@@ -168,20 +213,22 @@ export class HttpService {
 
     private async runDownload(saveTo: string, url: string): Promise<void> {
         const res = await this.fetchWithFallback(url, {});
+        const record = this.responseRecord(res.headers);
         if (!res.ok) {
-            this.emit('sysDownloadError', [`HTTP ${res.status} ${res.statusText}`, saveTo, url]);
+            await res.body?.cancel().catch(() => {});
+            this.emit('sysDownloadError', [httpErrorMessage(url, res), saveTo, url, record]);
             return;
         }
         const data = await this.readWithProgress(res, url);
         const vfs = this.vfsGetter();
         if (!vfs) {
-            this.emit('sysDownloadError', ['no profile VFS available', saveTo, url]);
+            this.emit('sysDownloadError', ['no profile VFS available', saveTo, url, record]);
             return;
         }
         try {
             vfs.writeBinaryFile(saveTo, data);
         } catch (err) {
-            this.emit('sysDownloadError', [`save to '${saveTo}' failed: ${errorMessage(err)}`, saveTo, url]);
+            this.emit('sysDownloadError', [`save to '${saveTo}' failed: ${errorMessage(err)}`, saveTo, url, record]);
             return;
         }
         // The third argument is the response record, not the body: the bytes are
@@ -266,26 +313,36 @@ export class HttpService {
         headers: Record<string, string> | undefined,
         doneEvent: string,
         errorEvent: string,
-        extraDoneArgs: unknown[] = [],
-        extraErrorArgs: unknown[] = [],
+        extraArgs: unknown[] = [],
     ): Promise<void> {
         try {
             const res = await this.fetchWithFallback(url, { method, body, headers });
             const text = await res.text();
+            const record = this.responseRecord(res.headers);
             if (!res.ok) {
-                this.emit(errorEvent, [`HTTP ${res.status} ${res.statusText}`, url, ...extraErrorArgs]);
+                this.emit(errorEvent, [httpErrorMessage(url, res), url, ...extraArgs, record]);
                 return;
             }
-            this.emit(doneEvent, [url, text, this.responseRecord(res.headers), ...extraDoneArgs]);
+            this.emit(doneEvent, [url, text, ...extraArgs, record]);
         } catch (err) {
-            this.emit(errorEvent, [errorMessage(err), url, ...extraErrorArgs]);
+            this.emit(errorEvent, [errorMessage(err), url, ...extraArgs, EMPTY_RECORD()]);
         }
     }
 
     // Try the direct fetch first; on failure (almost always CORS), retry
-    // through the configured proxy and remember the origin so future calls
-    // skip the doomed direct attempt. Throws if both attempts fail, or if
-    // the direct attempt fails and no proxy is configured.
+    // through the configured proxy and remember the origin for a while so the
+    // calls right after skip the doomed direct attempt. Throws if both
+    // attempts fail, or if the direct attempt fails and no proxy is configured.
+    //
+    // A POST is the exception. It is the one verb a browser sends *without* a
+    // CORS preflight, so a server that answers no CORS headers still receives
+    // and acts on it — the browser only hides the reply. Retrying it through
+    // the proxy then performs the action a second time. So a POST to an origin
+    // not yet known to answer CORS goes through the proxy first; the direct
+    // attempt is only its fallback when the proxy itself cannot be reached, in
+    // which case nothing was delivered. (Every other verb either is safe to
+    // repeat or is preflighted, and a failed preflight never reaches the
+    // handler.)
     //
     // A github.com `/raw/` url is redirected to raw.githubusercontent.com here
     // rather than by the browser, which cannot follow it — see githubRawUrl.
@@ -297,17 +354,64 @@ export class HttpService {
         const proxyUrl = normalizeProxyBase(this.proxyUrlGetter());
         const origin = parseOrigin(target);
 
-        if (proxyUrl && origin && this.proxiedOrigins.has(origin)) {
-            return fetch(buildProxyUrl(proxyUrl, target), init);
+        // A request fetch refuses to build (a GET with a body, a malformed
+        // header) is the script's mistake, not the network's: it must not be
+        // retried through the proxy, nor mark the origin as needing one.
+        new Request(target, init);
+
+        const viaProxy = () => this.fetchViaProxy(proxyUrl!, target, init, origin);
+
+        if (proxyUrl && origin && this.isProxied(origin)) return viaProxy();
+
+        const method = (init.method ?? 'GET').toUpperCase();
+        if (proxyUrl && method === 'POST' && origin && !this.answersCors(origin)) {
+            let res: Response | undefined;
+            try { res = await fetch(buildProxyUrl(proxyUrl, target), init); }
+            catch { /* the proxy is down: nothing was sent, so direct is safe */ }
+            if (res) return this.checkProxyReply(res);
         }
 
+        let res: Response;
         try {
-            return await fetch(target, init);
+            res = await fetch(target, init);
         } catch (err) {
             if (!proxyUrl) throw err;
-            if (origin) this.proxiedOrigins.add(origin);
-            return fetch(buildProxyUrl(proxyUrl, target), init);
+            return viaProxy();
         }
+        if (origin) this.directOrigins.add(origin);
+        return res;
+    }
+
+    // Only a reply the target actually produced proves the proxy was needed and
+    // could help; the proxy's own "could not reach it" does neither.
+    private async fetchViaProxy(proxyUrl: string, target: string, init: RequestInit, origin: string | null): Promise<Response> {
+        const res = await this.checkProxyReply(await fetch(buildProxyUrl(proxyUrl, target), init));
+        if (origin) this.proxiedOrigins.set(origin, Date.now());
+        return res;
+    }
+
+    // The proxy's own failure to reach the target is reported with the reason
+    // it carries, as Mudlet would report it, not as the 502 it rides on.
+    private async checkProxyReply(res: Response): Promise<Response> {
+        const failure = res.headers.get(PROXY_ERROR_HEADER);
+        if (failure) {
+            await res.body?.cancel().catch(() => {});
+            throw new TransportError(failure);
+        }
+        return res;
+    }
+
+    private isProxied(origin: string): boolean {
+        const since = this.proxiedOrigins.get(origin);
+        if (since === undefined) return false;
+        if (Date.now() - since < PROXIED_ORIGIN_TTL_MS) return true;
+        this.proxiedOrigins.delete(origin);
+        return false;
+    }
+
+    // The page's own origin needs no CORS; any other has to have shown it.
+    private answersCors(origin: string): boolean {
+        return this.directOrigins.has(origin) || origin === globalThis.location?.origin;
     }
 }
 
@@ -340,6 +444,13 @@ function parseOrigin(url: string): string | null {
     } catch {
         return null;
     }
+}
+
+// Qt's QNetworkReply::errorString() for a reply with an error status, which is
+// what Mudlet hands the error event. HTTP/2 replies carry no reason phrase, so
+// the bare status code stands in for one.
+function httpErrorMessage(url: string, res: Response): string {
+    return `Error transferring ${url} - server replied: ${res.statusText || res.status}`;
 }
 
 function errorMessage(err: unknown): string {

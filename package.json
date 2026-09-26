@@ -50,6 +50,7 @@
     "sync:mudlet-specs": "node scripts/sync-mudlet-specs.mjs",
     "sync:mudlet-lua": "node scripts/sync-mudlet-lua.mjs",
     "sync:mudlet-games": "node scripts/sync-mudlet-games.mjs",
+    "check:vendored": "node scripts/check-vendored-paths.mjs",
     "test:e2e:upgrade": "playwright test -c playwright.upgrade.config.ts"
   },
   "dependencies": {

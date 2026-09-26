@@ -227,8 +227,21 @@ const SUPPORTED_ELEMENTS: ReadonlyMap<string, readonly string[]> = new Map([
 /** Built-in XML/HTML entities. User and `<V>`-defined entities augment these via
  *  the per-session `entities` map. */
 const BUILTIN_ENTITIES: Record<string, string> = {
-    lt: "<", gt: ">", amp: "&", quot: '"', apos: "'", nbsp: " ",
+    // `&nbsp;` is a plain space, as in Mudlet's TEntityResolver — U+00A0 would
+    // make every trigger pattern with a space in it miss the text.
+    lt: "<", gt: ">", amp: "&", quot: '"', apos: "'", nbsp: " ",
 };
+
+/** Tags the MXP spec defines that this parser consumes without acting on —
+ *  structural ones and the heavy ones it deliberately leaves alone. Anything
+ *  neither here, in {@link SUPPORTED_ELEMENTS}, nor a custom element is not MXP
+ *  at all and is shown as the text it is, the way Mudlet's TMxpProcessor shows
+ *  a tag no handler took. */
+const CONSUMED_ELEMENTS = new Set<string>([
+    "image", "relocate", "expire", "user", "password", "filter", "reset",
+    "mxp", "script", "small", "tt", "samp", "center", "h1", "h2", "h3", "h4",
+    "h5", "h6", "li", "ol", "ul", "attlist", "tag",
+]);
 
 /** Valueless words a `<SEND>` may carry alongside its command, so the command
  *  is the first positional that is none of them (`<SEND "look" PROMPT>`). */
@@ -669,6 +682,10 @@ export class MxpParser {
                 this.showAsText(raw);
                 return;
             }
+            if (!this.isKnownTag(name)) {
+                this.showAsText(raw);
+                return;
+            }
             this.handleCloseTag(name);
             return;
         }
@@ -677,7 +694,7 @@ export class MxpParser {
         const name = (sp === -1 ? trimmed : trimmed.slice(0, sp)).toLowerCase();
         const attrStr = sp === -1 ? "" : trimmed.slice(sp + 1);
 
-        if (!secure && !this.openAllowed(name)) {
+        if ((!secure && !this.openAllowed(name)) || !this.isKnownTag(name)) {
             this.showAsText(raw);
             return;
         }
@@ -693,7 +710,11 @@ export class MxpParser {
         this.appendText("<" + raw + ">");
     }
 
-    private openAllowed(name: string): boolean {
+    private isKnownTag(name: string): boolean {
+        return SUPPORTED_ELEMENTS.has(name) || CONSUMED_ELEMENTS.has(name) || this.elements.has(name);
+    }
+
+        private openAllowed(name: string): boolean {
         if (OPEN_MODE_TAGS.has(name)) return true;
         const def = this.elements.get(name);
         return def ? def.open : false;
@@ -775,6 +796,7 @@ export class MxpParser {
             default:
                 // Structural no-ops (p, nobr) and discarded heavy tags (image,
                 // gauge, relocate, …): consume the tag, render nothing for it.
+                // Only known tags get here — handleTag shows the rest as text.
                 // Any enclosed text still renders since the close handler ignores
                 // unmatched closing tags.
                 break;

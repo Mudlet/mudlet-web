@@ -91,9 +91,37 @@ const withRe = <T>(
             `Pass either a string or a compiled object from rex.new().`,
         );
     }
-    const re = new PCRE(buildInlinePrefix(flags) + pattern, '');
-    try { return fn(re); } finally { re.destroy(); }
+    return fn(compiled(buildInlinePrefix(flags) + pattern));
 };
+
+// Compiled patterns, most recently used last. Every rex call used to compile
+// its pattern afresh and throw it away, and a `rex.new` object only carries the
+// pattern string — so a trigger testing each line against a few dozen cached
+// `rex.new` shapes recompiled every one of them per line, which under an output
+// flood was seconds of lag on its own (#195). A compiled pattern is reusable:
+// `match` hands back fresh objects, so a `gsub` replacement function that calls
+// rex with the same pattern mid-loop cannot disturb the outer call.
+const RE_CACHE_LIMIT = 256;
+const reCache = new Map<string, InstanceType<typeof PCRE>>();
+
+function compiled(source: string): InstanceType<typeof PCRE> {
+    const hit = reCache.get(source);
+    if (hit) {
+        reCache.delete(source);
+        reCache.set(source, hit);
+        return hit;
+    }
+    // A pattern that fails to compile throws here and is not cached, so every
+    // call reports the error just as before.
+    const re = new PCRE(source, '');
+    reCache.set(source, re);
+    if (reCache.size > RE_CACHE_LIMIT) {
+        const [oldest, evicted] = reCache.entries().next().value!;
+        reCache.delete(oldest);
+        evicted.destroy();
+    }
+    return re;
+}
 
 // The wrapper's safety cap scales with the subject, so it now fires only on a
 // genuinely non-advancing loop rather than on any pattern that can match empty.
@@ -220,7 +248,7 @@ export async function setupRex(lua: Lua): Promise<void> {
     lua.global.set('__rex_match__', (subject: string, pattern: string, flags: FlagsArg, init?: number) => {
         return withRe(pattern, flags, re => {
             const start = resolveInit(subject, init);
-            const m = start < 0 ? null : re.match(subject, start);
+            const m = start < 0 ? null : re.matchFrom(subject, start);
             if (!m) return null;
             const caps = extractCaptures(m);
             return caps.length > 0 ? caps : [m[0].match];
@@ -231,7 +259,7 @@ export async function setupRex(lua: Lua): Promise<void> {
     lua.global.set('__rex_find__', (subject: string, pattern: string, flags: FlagsArg, init?: number) => {
         return withRe(pattern, flags, re => {
             const start = resolveInit(subject, init);
-            const m = start < 0 ? null : re.match(subject, start);
+            const m = start < 0 ? null : re.matchFrom(subject, start);
             if (!m) return null;
             return [...byteSpan(subject, m[0]), ...extractCaptures(m)];
         });
@@ -242,7 +270,7 @@ export async function setupRex(lua: Lua): Promise<void> {
     lua.global.set('__rex_tfind__', (subject: string, pattern: string, flags: FlagsArg, init?: number) => {
         return withRe(pattern, flags, re => {
             const start = resolveInit(subject, init);
-            const m = start < 0 ? null : re.match(subject, start);
+            const m = start < 0 ? null : re.matchFrom(subject, start);
             if (!m) return null;
             const [startIdx, endIdx] = byteSpan(subject, m[0]);
             return {
@@ -295,7 +323,7 @@ export async function setupRex(lua: Lua): Promise<void> {
     lua.global.set('__rex_exec__', (subject: string, pattern: string, flags: FlagsArg, init?: number) => {
         return withRe(pattern, flags, re => {
             const start = resolveInit(subject, init);
-            const m = start < 0 ? null : re.match(subject, start);
+            const m = start < 0 ? null : re.matchFrom(subject, start);
             if (!m) return null;
             const out: (number | false)[] = [...byteSpan(subject, m[0])];
             for (let i = 1; i < m.length; i++) {

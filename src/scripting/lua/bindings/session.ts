@@ -5,7 +5,7 @@ import type { BindingContext, LuaState } from './context';
 /**
  * Session-level introspection and event raising: stopwatches, the console
  * width, connection info, desktop notifications, screen-reader announcements,
- * the clock, and raiseEvent / raiseGlobalEvent.
+ * the clock, and raiseGlobalEvent (raiseEvent lives in Bridge.lua).
  *
  * These share no subsystem - what groups them is that each answers a question
  * about (or acts on) the session as a whole rather than a specific window,
@@ -16,7 +16,7 @@ import type { BindingContext, LuaState } from './context';
  * name, neither of which belongs in this module.
  */
 export function installSessionBindings(
-    { lua, api, emitEvent, registerRawGlobal }: BindingContext,
+    { lua, api, registerRawGlobal }: BindingContext,
     globalEvents: GlobalEventChannel,
 ): void {
     // Mudlet getWindowsCodepage() → active ANSI code page string. The browser
@@ -155,15 +155,8 @@ export function installSessionBindings(
     // override land in the native handler table dispatched from
     // __mudlet_dispatch_event.
 
-    // raiseEvent runs every handler synchronously. JS is single-threaded
-    // so handler-A-before-handler-B ordering falls out of the call stack.
-    // Mudlet returns `true` on success (the only failure mode is a missing
-    // event name); Mudlet Web matches.
-    lua.global.set('raiseEvent', (event: string, ...args: unknown[]) => {
-        if (typeof event !== 'string' || event.length === 0) return false;
-        emitEvent(event, args);
-        return true;
-    });
+    // raiseEvent is defined in Bridge.lua, not here: dispatching in Lua keeps
+    // its arguments Lua values, where a round trip through JS mangled tables.
 
     // raiseGlobalEvent fires the event in every OTHER open profile (each in
     // its own tab) but NOT this one — see GlobalEventChannel. Mudlet appends
