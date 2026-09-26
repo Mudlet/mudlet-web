@@ -2481,7 +2481,7 @@ export class ScriptingAPI {
     }
 
     /** Mudlet `permTimer(name, parent, seconds, luaCode)`. Creates a
-     *  persistent one-shot timer under the parent group (empty = root).
+     *  persistent repeating timer under the parent group (empty = root).
      *  Returns the new timer id, or -1 when `parent` is non-empty but no
      *  timer group of that name exists. */
     permTimer(name: string, parent: string, delay: number, code: string): number {
