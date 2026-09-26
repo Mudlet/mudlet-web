@@ -23,6 +23,7 @@ import YAJL_LUA from './Yajl.lua?raw';
 import {setupRex} from './rex';
 import {setupYajl, type LuaValueTransform} from './yajl';
 import {parseImageSize} from './imageSize';
+import {parseQColor} from '../../ui/labels/qColor';
 import {isQtResourcePath, qtResourceBytes} from '../../assets/qt-resources';
 import {getSqliteClient, sqliteReady} from '../../db/sqliteClient';
 import {QT_CURSOR_NAME_TO_INT, QT_CURSOR_TO_CSS} from '../../ui/labels/cursorShapes';
@@ -1015,6 +1016,21 @@ export class LuaRuntime implements IScriptingRuntime {
             const s = this.api.getLabelSizeHint(typeof name === 'string' ? name : '');
             return s ? [s.width, s.height] : false;
         });
+        // Mudlet's SVG tint/transform family. The argument checks, the colour
+        // table lookup and the (nil, errMsg) shapes live in Bridge.lua; these
+        // primitives only apply the value and answer whether the label exists.
+        this.lua.global.set('__parseQColor', (s: unknown) =>
+            (typeof s === 'string' ? parseQColor(s) : null) ?? false);
+        const labelName = (name: unknown) => (typeof name === 'string' ? name : '');
+        this.lua.global.set('__setSvgTint', (name: unknown, r: unknown, g: unknown, b: unknown) =>
+            this.api.labels.setSvgTint(labelName(name), `rgb(${Number(r)}, ${Number(g)}, ${Number(b)})`));
+        this.lua.global.set('__resetSvgTint', (name: unknown) => this.api.labels.resetSvgTint(labelName(name)));
+        this.lua.global.set('__setSvgRotation', (name: unknown, angle: unknown) =>
+            this.api.labels.setSvgRotation(labelName(name), Number(angle)));
+        this.lua.global.set('__setSvgShear', (name: unknown, x: unknown, y: unknown) =>
+            this.api.labels.setSvgShear(labelName(name), Number(x), Number(y)));
+        this.lua.global.set('__resetSvgTransform', (name: unknown) =>
+            this.api.labels.resetSvgTransform(labelName(name)));
         // Mudlet's setLabelClickCallback / setLabelDoubleClickCallback /
         // setLabelReleaseCallback / setLabelMoveCallback / setLabelOnEnter /
         // setLabelOnLeave / setLabelWheelCallback all share a shape: name + a
