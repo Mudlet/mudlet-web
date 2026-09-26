@@ -120,7 +120,7 @@ export class TimerEngine {
      *
      * Repeating timers are pumped too — Mudlet's own specs wait on a repeat
      * tick, so skipping them made every such wait time out. That works because
-     * a repeat is a self-rescheduling setTimeout (see addTemp): the pending
+     * a repeat is a self-rescheduling setTimeout (see addTemp, startPerm): the pending
      * tick is cancelled and re-armed rather than left to land a second time.
      *
      * Returns the number of timers fired.
@@ -138,12 +138,11 @@ export class TimerEngine {
             clearTimeout(entry.handle);
             due.push(entry.fire);
         }
-        for (const [id, entry] of this.perm) {
-            if (entry.repeat || now < entry.start + entry.intervalMs) continue;
+        for (const entry of this.perm.values()) {
+            if (now < entry.start + entry.intervalMs) continue;
             clearTimeout(entry.handle);
-            // entry.fire retires the perm bookkeeping itself.
+            // entry.fire retires a one-shot and re-arms a repeat itself.
             due.push(entry.fire);
-            void id;
         }
         for (const fire of due) { fire(); fired++; }
         return fired;
@@ -486,8 +485,17 @@ export class TimerEngine {
         const intervalMs = timer.seconds * 1000;
         const start = Date.now();
         if (repeat) {
-            const handle = setInterval(fire, intervalMs) as unknown as ReturnType<typeof setTimeout>;
-            this.perm.set(timer.id, { handle, repeat: true, start, intervalMs, fire });
+            // A self-rescheduling setTimeout rather than a setInterval, for the
+            // reason addTemp gives: pumpDue must be able to fire a tick early
+            // and leave the timer armed for the next one. Re-armed before the
+            // body runs, so a body that disables its own timer (which reloads
+            // the engine and kills this handle) stays disabled.
+            const tick = (): void => { arm(); fire(); };
+            const arm = (): void => {
+                const handle = setTimeout(tick, intervalMs);
+                this.perm.set(timer.id, { handle, repeat: true, start: Date.now(), intervalMs, fire: tick });
+            };
+            arm();
         } else {
             const retire = () => {
                 this.perm.delete(timer.id);
@@ -507,8 +515,7 @@ export class TimerEngine {
     private killPermHandle(id: string): void {
         const entry = this.perm.get(id);
         if (!entry) return;
-        if (entry.repeat) clearInterval(entry.handle as unknown as number);
-        else clearTimeout(entry.handle);
+        clearTimeout(entry.handle);
         this.perm.delete(id);
         this.prevDesc.delete(id);
     }
@@ -557,10 +564,7 @@ export class TimerEngine {
     }
 
     private stopPerm(): void {
-        for (const { handle, repeat } of this.perm.values()) {
-            if (repeat) clearInterval(handle as unknown as number);
-            else clearTimeout(handle);
-        }
+        for (const { handle } of this.perm.values()) clearTimeout(handle);
         this.perm.clear();
         this.offsetChildren.clear();
         this.activePerm.clear();

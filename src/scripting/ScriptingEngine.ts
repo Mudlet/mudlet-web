@@ -60,6 +60,19 @@ function permParentId(items: readonly BaseTreeNode[], parent: string): string | 
     }
     return null;
 }
+
+/**
+ * The package a perm* item joins by being created under `parentId`. Every node
+ * of an installed package or module carries its name, and that tag is what
+ * syncModuleToFile writes back — so an item a script adds inside a module's
+ * group has to carry it too, or enableModuleSync never saves it to the module
+ * file the way Mudlet does.
+ */
+function inheritedPackage(items: readonly BaseTreeNode[], parentId: string | null): { packageName?: string } {
+    if (parentId === null) return {};
+    const packageName = items.find(n => n.id === parentId)?.packageName;
+    return packageName ? { packageName } : {};
+}
 import {LuaRuntime} from './lua/LuaRuntime';
 import type {IScriptingRuntime, LuaGlobalEntry, VariableEdit} from './IScriptingRuntime';
 import {ProfileVFS} from './vfs/ProfileVFS';
@@ -425,7 +438,12 @@ export class ScriptingEngine implements EngineHost {
     // sysExitEvent must fire exactly once per engine — either on teardown
     // (destroy) or on page unload, whichever comes first.
     private exitFired = false;
-    private readonly beforeUnload = () => { this.fireExit(); this.flushProfileData(); };
+    // The map save runs after sysExitEvent so edits its handlers make are kept.
+    private readonly beforeUnload = () => {
+        this.fireExit();
+        this.flushProfileData();
+        this.session.windows.flushMapSaveSync();
+    };
 
     // Mudlet's permScript/permRegexTrigger/setScript return a numeric script id;
     // our store keys nodes by UUID. Hand each UUID a stable monotonic int when
@@ -3300,6 +3318,7 @@ export class ScriptingEngine implements EngineHost {
             code,
             language: 'lua',
             eventHandlers: [],
+            ...inheritedPackage(scripts, parentId),
         });
         return this.numericIdFor(uuid);
     }
@@ -3391,6 +3410,7 @@ export class ScriptingEngine implements EngineHost {
             multiline: patternStrings.length > 1,
             delta: 0,
             isFilter: false,
+            ...inheritedPackage(triggers, parentId),
         });
         // A trigger created while a line is being processed is offered that
         // line, and joins the lineage of whatever created it — the same rule
@@ -3529,13 +3549,14 @@ export class ScriptingEngine implements EngineHost {
             command: '',
             code,
             language: 'lua',
+            ...inheritedPackage(aliases, parentId),
         });
         return this.numericIdFor(uuid);
     }
 
     /**
      * Mudlet `permTimer(name, parent, seconds, luaCode)`. Creates a saved
-     * one-shot timer under the timer group `parent` (empty = root). Returns
+     * repeating timer under the timer group `parent` (empty = root). Returns
      * the new timer id, or -1 if `parent` is non-empty but no timer group of
      * that name exists.
      */
@@ -3564,7 +3585,10 @@ export class ScriptingEngine implements EngineHost {
             seconds,
             code,
             language: 'lua',
-            repeat: false,
+            // Mudlet perm timers always repeat — TTimer has no one-shot mode;
+            // only tempTimer is one-shot.
+            repeat: true,
+            ...inheritedPackage(timers, parentId),
         });
         return this.numericIdFor(uuid);
     }
@@ -3607,6 +3631,7 @@ export class ScriptingEngine implements EngineHost {
             modifiers: isGroup ? [] : modifiersFromMudletInt(modifier),
             code,
             language: 'lua',
+            ...inheritedPackage(keys, parentId),
         });
         return this.numericIdFor(uuid);
     }
@@ -4302,6 +4327,9 @@ export class ScriptingEngine implements EngineHost {
         // so their edits are visible. Both must precede the VFS/VM teardown.
         this.markScriptsLoaded();
         this.flushProfileData();
+        // Mudlet saves an unsaved map when the profile closes
+        // (TMainConsole::closeEvent → saveMapFile), after sysExitEvent.
+        this.session.windows.flushMapSave();
 
         // ── Phase 4: tear down ───────────────────────────────────────────────
         for (const t of this.moduleSyncTimers.values()) clearTimeout(t);

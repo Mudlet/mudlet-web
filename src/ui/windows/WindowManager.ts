@@ -204,6 +204,11 @@ export class WindowManager {
     // flushMapSave() drains a pending save on session close.
     private mapSaveTimer: ReturnType<typeof setTimeout> | null = null;
     private mapSavePending = false;
+    /** MapStore version that matches what is persisted (or was just loaded).
+     *  Any other version means the map has unsaved edits — Mudlet's
+     *  TMap::mUnsavedMap, which drives both Host::autoSaveMap and the save in
+     *  TMainConsole::closeEvent. */
+    private mapCleanVersion = 0;
     /** MMP map URL announced by the game via GMCP `Client.Map` (Mudlet
      *  TMap::mMmpMapLocation). Lives here rather than on ScriptingEngine so it
      *  survives script reloads, like Mudlet's TMap does. */
@@ -233,7 +238,41 @@ export class WindowManager {
     // Public so FloatingWindowLayer (and other overlay components sharing this
     // registry via the other managers) can read/subscribe to the nested
     // wrapper layer's z-index — see overlayLayerOrder.ts.
-    constructor(readonly overlayZ: OverlayLayerOrder = new OverlayLayerOrder()) {}
+    constructor(readonly overlayZ: OverlayLayerOrder = new OverlayLayerOrder()) {
+        // Every map mutation (script or editor) notifies here. Loads mark
+        // themselves clean synchronously, before this microtask-coalesced
+        // callback runs, so only real edits schedule a save.
+        this.mapStore.subscribe(() => {
+            if (this.mapStore.getVersion() !== this.mapCleanVersion) this.markMapUnsaved();
+        });
+    }
+
+    /** How long unsaved map edits wait before they are autosaved. Not reset by
+     *  further edits, so a player mapping continuously still gets saved. */
+    static readonly MAP_AUTOSAVE_DELAY_MS = 10_000;
+
+    /** The map now matches what is stored — nothing to autosave. */
+    private markMapClean(): void {
+        this.mapCleanVersion = this.mapStore.getVersion();
+    }
+
+    /** Record unsaved map edits and arm an autosave, unless one is already
+     *  armed: unlike {@link scheduleMapSave} this does not push a pending save
+     *  back, so a steady stream of edits cannot starve it. */
+    private markMapUnsaved(): void {
+        if (!this._connectionId) return;
+        this.mapSavePending = true;
+        if (this.mapSaveTimer) return;
+        this.mapSaveTimer = setTimeout(() => {
+            this.mapSaveTimer = null;
+            void this.saveMapAsync();
+        }, WindowManager.MAP_AUTOSAVE_DELAY_MS);
+    }
+
+    /** True when the map has edits not yet written to storage. */
+    hasUnsavedMap(): boolean {
+        return this.mapSavePending;
+    }
 
     /** Resolves the same "nested under which parent" id FloatingWindowLayer's
      *  resolveParent uses: an explicit non-'main' parent, else 'main' when this
@@ -1314,6 +1353,7 @@ export class WindowManager {
         assertReadableMapVersion(buf, source);
         const mudletMap = readMapFromBuffer(Buffer.from(buf));
         this.mapStore.loadFromBinary(mudletMap);
+        this.markMapClean();
     }
 
     /**
@@ -1419,6 +1459,7 @@ export class WindowManager {
             // that was never finalized. Reset to a clean empty map rather than
             // let scripts query half a world.
             this.mapStore.newEmptyMap();
+            this.markMapClean();
             this.publishMapLoadProgress(null);
             throw err;
         }
@@ -1436,6 +1477,7 @@ export class WindowManager {
             // runs in the drain right after. Yielding to a macrotask puts the
             // progress teardown after that work rather than before it.
             this.mapStore.endBinaryLoad();
+            this.markMapClean();
             await new Promise<void>(resolve => setTimeout(resolve, 0));
             // After endBinaryLoad, so the audit sees the finished room graph
             // (an exit resolved by the hash index is not a dangling one), and
@@ -1462,6 +1504,7 @@ export class WindowManager {
             // map — calling newEmptyMap() flips isInitialized() so scripts can
             // start adding rooms without first calling it themselves.
             this.mapStore.newEmptyMap();
+            this.markMapClean();
             if (!this._connectionId) return false;
             try {
                 const buf = await loadMapFromStorage(this._connectionId);
@@ -1585,6 +1628,7 @@ export class WindowManager {
      */
     saveMap(): ArrayBuffer | null {
         let bytes: ArrayBuffer;
+        const version = this.mapStore.getVersion();
         try {
             const buf = writeMapToBuffer(this.mapStore.toMudletMapForSave());
             // Copy into a freshly-allocated standalone ArrayBuffer — the
@@ -1605,6 +1649,9 @@ export class WindowManager {
             // through readMapFromBuffer.
             saveMapToStorage(this._connectionId, bytes.slice(0)).catch(err =>
                 console.warn('[WindowManager] saveMap persist failed:', err));
+            this.mapCleanVersion = version;
+            this.mapSavePending = false;
+            if (this.mapSaveTimer) { clearTimeout(this.mapSaveTimer); this.mapSaveTimer = null; }
         }
         return bytes;
     }
@@ -1620,11 +1667,15 @@ export class WindowManager {
         const connId = this._connectionId;
         if (!connId || this.mapStore.isEmpty()) return false;
         this.mapSavePending = false;
+        const version = this.mapStore.getVersion();
         try {
             // toMudletMapForSave() is a cheap Map→object copy on the main thread;
             // the expensive binary encode happens off-thread in the worker.
             const bytes = await serializeMapInWorker(this.mapStore.toMudletMapForSave());
             await saveMapToStorage(connId, bytes);
+            // Edits made while the save was in flight have re-marked the map
+            // unsaved already; this only records what did reach storage.
+            this.mapCleanVersion = version;
             return true;
         } catch (err) {
             console.warn('[WindowManager] saveMapAsync failed:', err);
@@ -1657,6 +1708,19 @@ export class WindowManager {
     flushMapSave(): void {
         if (this.mapSaveTimer) { clearTimeout(this.mapSaveTimer); this.mapSaveTimer = null; }
         if (this.mapSavePending) void this.saveMapAsync();
+    }
+
+    /**
+     * Page-unload counterpart to {@link flushMapSave}: a worker round trip may
+     * not finish before the page is gone, so serialise on this thread and
+     * start the IndexedDB write now. Mudlet saves an unsaved map on close
+     * (TMainConsole::closeEvent → saveMapFile); without this, rooms a script
+     * added since the last autosave are lost when the tab closes.
+     */
+    flushMapSaveSync(): void {
+        if (this.mapSaveTimer) { clearTimeout(this.mapSaveTimer); this.mapSaveTimer = null; }
+        if (!this.mapSavePending || this.mapStore.isEmpty()) return;
+        this.saveMap();
     }
 
     /**
