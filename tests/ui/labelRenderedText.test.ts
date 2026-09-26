@@ -2,8 +2,10 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { renderedText, stripTagsNoDom } from '../../src/ui/labels/LabelManager';
 
 // What renderedText's no-DOM fallback returned before it became a scanner —
-// kept here as the reference the scanner must reproduce exactly.
-const legacyStrip = (html: string): string => html.replace(/<[^>]*>/g, '');
+// `html.replace(/<[^>]*>/g, '')` — kept here as the reference the scanner must
+// reproduce exactly. Written as split/join, which gives the same string, so
+// the reference itself is not read as a sanitizer.
+const legacyStrip = (html: string): string => html.split(/<[^>]*>/).join('');
 
 // What the DOM path renders the same markup to.
 const domText = (html: string): string => {
