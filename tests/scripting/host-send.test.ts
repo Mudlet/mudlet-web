@@ -176,6 +176,54 @@ describe('hostSend — Mudlet Host::send', () => {
             expect(wire).toEqual(['north', 'look', 'score', 'look']);
         });
 
+        it('sends desktop\'s down command from a plain button imported before the fix', () => {
+            // Issue #186: TAction::execute sends mCommandButtonDown for a plain
+            // button. Profiles imported before the importer moved it into
+            // `command` still carry it in `commandDown`.
+            engine.executeButton({ ...BUTTON, command: 'b1up', commandDown: 'b1down' } as never, true);
+            expect(wire).toEqual(['b1down']);
+        });
+
+        it('records the click for getButtonState() with no argument', () => {
+            const api = (engine as unknown as { api: { clickedButtonState: number } }).api;
+            const push = { ...BUTTON, isPushDown: true, command: 'up', commandDown: 'down' };
+            expect(api.clickedButtonState).toBe(1);
+            engine.executeButton(push as never, true);
+            expect(api.clickedButtonState).toBe(2);
+            engine.executeButton(push as never, false);
+            expect(api.clickedButtonState).toBe(1);
+            engine.executeButton(push as never, true);
+            engine.executeButton(BUTTON as never, true);
+            expect(api.clickedButtonState).toBe(1);
+            expect(wire).toEqual(['down', 'up', 'down', 'look']);
+        });
+
+        it('sends from a command line with no action bound', () => {
+            // Issue #186: TCommandLine::enterCommand falls back to Host::send
+            // when no setCmdLineAction is bound — for a createCommandLine
+            // overlay and a user window's command line alike.
+            aliasEngine.loadPerm([ALIAS as never]);
+            session.cmdLines.create('CL2', { parent: 'main', x: 0, y: 0, width: 100, height: 20 } as never);
+            expect(session.cmdLines.submit('CL2', 'gg')).toBe(true);
+            expect(session.windows.submitCmdLine('someWindow', 'look')).toBe(true);
+            expect(echoed).toEqual(['gg', 'north', 'look']);
+            expect(wire).toEqual(['north', 'look']);
+
+            // A bound action takes the text instead.
+            const seen: string[] = [];
+            session.cmdLines.setAction('CL2', (t) => { seen.push(t); });
+            expect(session.cmdLines.submit('CL2', 'raw')).toBe(true);
+            expect(seen).toEqual(['raw']);
+            expect(wire).toEqual(['north', 'look']);
+
+            // Nothing to send to once the engine is gone.
+            // (destroy's DOM cleanup throws without a document; the send
+            // hooks are unhooked before it.)
+            try { engine.destroy(); } catch { /* no DOM in this env */ }
+            expect(session.cmdLines.submit('CL3', 'x')).toBe(false);
+            expect(session.windows.submitCmdLine('someWindow', 'x')).toBe(false);
+        });
+
         it('lets a setCmdLineAction handler pre-empt the whole pipeline', () => {
             // Mudlet checks the action in TCommandLine, before Host::send is
             // ever called — so the handler sees the whole unsplit line and

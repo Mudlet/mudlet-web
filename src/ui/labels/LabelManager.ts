@@ -116,6 +116,10 @@ export interface LabelState {
  *  so ported Geyser scripts that branch on `event.button == "LeftButton"` work. */
 export interface LabelMouseEvent {
     button: string;
+    /** Every button held while the event happened, as Qt button names in
+     *  Qt's bit order (Mudlet's `event.buttons`, a Lua list): `["LeftButton"]`
+     *  on a left press, empty on its release. */
+    buttons: string[];
     x: number;
     y: number;
     globalX: number;
@@ -127,7 +131,12 @@ export interface LabelMouseEvent {
 }
 
 export interface LabelWheelEvent extends LabelMouseEvent {
-    /** Mudlet exposes wheel deltas via `angleDelta.x` / `angleDelta.y` (Qt naming). */
+    /** Mudlet's wheel deltas, flat on the event: `event.angleDeltaX` /
+     *  `event.angleDeltaY`, in Qt's eighths of a degree (±120 per notch). */
+    angleDeltaX: number;
+    angleDeltaY: number;
+    /** The same deltas nested, as Mudlet Web reported them before it matched
+     *  Mudlet's shape. Kept so scripts written against it keep working. */
     angleDelta: { x: number; y: number };
 }
 

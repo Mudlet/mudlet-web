@@ -32,10 +32,48 @@ function cssStringLiteral(s: string): string {
     return s.replace(/[\\"]/g, '\\$&').replace(/\n/g, '\\A ').replace(/\r/g, '');
 }
 
+// DOM `e.buttons` is a bitmask in Qt's own bit order (Qt::LeftButton = 1,
+// RightButton = 2, MiddleButton = 4, BackButton = 8, ForwardButton = 16), so
+// walking the bits low to high lists them the way Mudlet does.
+const BUTTON_BITS: [number, string][] = [
+    [1, 'LeftButton'], [2, 'RightButton'], [4, 'MidButton'], [8, 'BackButton'], [16, 'ForwardButton'],
+];
+
+/** Mudlet's `event.buttons`: every button held while the event happened —
+ *  `{"LeftButton"}` on a left press, `{}` on its release. */
+export function domButtonsToMudlet(domButtons: number): string[] {
+    return BUTTON_BITS.filter(([bit]) => (domButtons & bit) !== 0).map(([, name]) => name);
+}
+
+/** Qt's QStyleHints::mouseDoubleClickInterval default, in ms. */
+const DOUBLE_CLICK_MS = 400;
+
+export interface PressHistory { time: number; button: number; double: boolean }
+
+/**
+ * Whether a press is the second half of a double-click. Qt delivers that press
+ * as a mouseDoubleClickEvent *instead of* a press, so TLabel runs the
+ * double-click callback and not the click one — and the press after it is an
+ * ordinary press again. The DOM reports it as a second pointerdown and then a
+ * separate dblclick, which ran the click callback twice. `detail` is the click
+ * count where the browser fills it in on pointerdown; where it is 0, the
+ * previous press (`prev`, which the caller keeps from the last return)
+ * stands in for it.
+ */
+export function classifyPress(
+    detail: number, button: number, time: number, prev: PressHistory | null,
+): PressHistory {
+    const double = detail > 0
+        ? detail % 2 === 0
+        : !!prev && !prev.double && prev.button === button && time - prev.time <= DOUBLE_CLICK_MS;
+    return { time, button, double };
+}
+
 function buildMouseEvent(e: React.MouseEvent<HTMLDivElement>): LabelMouseEvent {
     const rect = e.currentTarget.getBoundingClientRect();
     return {
         button:  domButtonToMudlet(e.type, e.button),
+        buttons: domButtonsToMudlet(e.buttons),
         x:       Math.round(e.clientX - rect.left),
         y:       Math.round(e.clientY - rect.top),
         globalX: Math.round(e.clientX),
@@ -49,8 +87,11 @@ function buildMouseEvent(e: React.MouseEvent<HTMLDivElement>): LabelMouseEvent {
 
 function buildWheelEvent(e: React.WheelEvent<HTMLDivElement>): LabelWheelEvent {
     const rect = e.currentTarget.getBoundingClientRect();
+    const angleDeltaX = -e.deltaX;
+    const angleDeltaY = -e.deltaY;
     return {
         button:  'NoButton',
+        buttons: domButtonsToMudlet(e.buttons),
         x:       Math.round(e.clientX - rect.left),
         y:       Math.round(e.clientY - rect.top),
         globalX: Math.round(e.clientX),
@@ -59,7 +100,9 @@ function buildWheelEvent(e: React.WheelEvent<HTMLDivElement>): LabelWheelEvent {
         ctrl:    e.ctrlKey,
         shift:   e.shiftKey,
         meta:    e.metaKey,
-        angleDelta: { x: -e.deltaX, y: -e.deltaY },
+        angleDeltaX,
+        angleDeltaY,
+        angleDelta: { x: angleDeltaX, y: angleDeltaY },
     };
 }
 
@@ -109,6 +152,7 @@ function Label({ l, manager, zIndex }: { l: LabelState; manager: LabelManager; z
     // what Qt does (it compresses pending mouse-move events). `pending` holds the
     // latest already-built event so the frame uses the freshest position.
     const moveState = useRef<{ raf: number | null; pending: LabelMouseEvent | null }>({ raf: null, pending: null });
+    const lastPress = useRef<PressHistory | null>(null);
     useEffect(() => () => {
         if (moveState.current.raf !== null && typeof cancelAnimationFrame !== 'undefined') {
             cancelAnimationFrame(moveState.current.raf);
@@ -274,8 +318,12 @@ function Label({ l, manager, zIndex }: { l: LabelState; manager: LabelManager; z
     // pointer so onPointerMove/onPointerUp track outside the label's bounds.
     // Without this, dragging a Geyser pane titlebar stutters and stops the
     // instant the cursor leaves the titlebar.
+    //
+    // The second press of a double-click is Qt's mouseDoubleClickEvent rather
+    // than a press, so it runs the double-click callback only — see
+    // classifyPress. The DOM's own dblclick is therefore not listened to.
     const dragCapable = !!(l.onMouseMove || l.onMouseUp);
-    const hasPress = !!(l.onClick || l.onMouseDown) || dragCapable;
+    const hasPress = !!(l.onClick || l.onMouseDown || l.onDoubleClick) || dragCapable;
     const onPointerDown = hasPress
         ? (e: React.PointerEvent<HTMLDivElement>) => {
             // A press on an <a href> belongs to the link, not the label: Qt's
@@ -285,6 +333,12 @@ function Label({ l, manager, zIndex }: { l: LabelState; manager: LabelManager; z
             if (labelLinkHref(e.target) !== null) return;
             if (dragCapable) {
                 try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not supported */ }
+            }
+            const press = classifyPress(e.detail, e.button, e.timeStamp, lastPress.current);
+            lastPress.current = press;
+            if (press.double) {
+                ref.current.onDoubleClick?.(buildMouseEvent(e));
+                return;
             }
             ref.current.onMouseDown?.(buildMouseEvent(e));
             ref.current.onClick?.(buildMouseEvent(e));
@@ -374,7 +428,6 @@ function Label({ l, manager, zIndex }: { l: LabelState; manager: LabelManager; z
             onPointerDown={onPointerDown}
             onPointerUp={onPointerUp}
             onPointerMove={onPointerMove}
-            onDoubleClick={l.onDoubleClick && (e => ref.current.onDoubleClick?.(buildMouseEvent(e)))}
             onMouseEnter={l.onMouseEnter && (e => ref.current.onMouseEnter?.(buildMouseEvent(e)))}
             onMouseLeave={l.onMouseLeave && (e => ref.current.onMouseLeave?.(buildMouseEvent(e)))}
             onWheel={l.onWheel && (e => ref.current.onWheel?.(buildWheelEvent(e)))}
