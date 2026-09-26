@@ -94,7 +94,7 @@ local function utf8charbytes (s, i)
 
 	-- determine bytes needed for character, based on RFC 3629
 	-- validate byte 1
-	if c > 0 and c <= 127 then
+	if c >= 0 and c <= 127 then
 		-- UTF8-1
 		return 1
 
@@ -1060,8 +1060,25 @@ end
 
 local M = {}
 
-function M.len(s)
-	return utf8len(s)
+-- utf8.len(s [, i [, j]]): characters starting between byte positions i and j
+-- (default the whole string; negative counts back from the end). As luautf8,
+-- an invalid sequence returns nil and the byte position where it starts.
+function M.len(s, i, j)
+	local bytes = len(s)
+	i = i or 1
+	j = j or -1
+	if i < 0 then i = bytes + i + 1 end
+	if j < 0 then j = bytes + j + 1 end
+	if i < 1 then i = 1 end
+	if j > bytes then j = bytes end
+	local pos, n = i, 0
+	while pos <= j do
+		local ok, size = pcall(utf8charbytes, s, pos)
+		if not ok then return nil, pos end
+		n = n + 1
+		pos = pos + size
+	end
+	return n
 end
 function M.sub(s, i, j)
 	return utf8sub(s, i, j)
@@ -1069,8 +1086,12 @@ end
 function M.reverse(s)
 	return utf8reverse(s)
 end
-function M.char(unicode)
-	return utf8char(unicode)
+function M.char(...)
+	local n = select('#', ...)
+	if n == 1 then return utf8char((...)) end
+	local out = {}
+	for k = 1, n do out[k] = utf8char((select(k, ...))) end
+	return table.concat(out)
 end
 function M.unicode(s, i, j)
 	return utf8unicode(s, i, j)
@@ -1099,11 +1120,85 @@ end
 function M.format(s)
 	return format(s)
 end
+-- Unicode simple case mapping, as luautf8 does it. The tables are built on
+-- first use from __mudlet_utf8_casemap (LuaRuntime), which lists every
+-- non-ASCII character whose mapping is a single other character as
+-- "u<TAB>from<TAB>to<LF>" / "l<TAB>...". ASCII goes through string.upper/lower;
+-- anything unmapped, invalid bytes included, is left as it was.
+local caseMaps
+local function getCaseMaps()
+	if caseMaps then return caseMaps end
+	local up, low = {}, {}
+	local src = type(__mudlet_utf8_casemap) == 'function' and __mudlet_utf8_casemap() or ''
+	for kind, from, to in src:gmatch('([ul])\t([^\t]+)\t([^\n]+)\n') do
+		if kind == 'u' then up[from] = to else low[from] = to end
+	end
+	caseMaps = { up = up, low = low }
+	return caseMaps
+end
+local MULTIBYTE = '[\194-\244][\128-\191]*'
 function M.lower(s)
-	return lower(s)
+	s = lower(s)
+	return (s:gsub(MULTIBYTE, getCaseMaps().low))
 end
 function M.upper(s)
-	return upper(s)
+	s = upper(s)
+	return (s:gsub(MULTIBYTE, getCaseMaps().up))
+end
+
+-- luautf8's / Lua 5.3's pattern matching exactly one UTF-8 sequence. Lua 5.1
+-- patterns can't hold a literal NUL, hence %z.
+M.charpattern = '[%z\1-\127\194-\244][\128-\191]*'
+
+-- utf8.codepoint(s [, i [, j]]): the codepoints of every character starting
+-- between byte positions i and j (default i = 1, j = i).
+function M.codepoint(s, i, j)
+	local bytes = len(s)
+	i = i or 1
+	if i < 0 then i = bytes + i + 1 end
+	j = j or i
+	if j < 0 then j = bytes + j + 1 end
+	if i < 1 then error("bad argument #2 to 'codepoint' (out of bounds)", 2) end
+	if j > bytes then error("bad argument #3 to 'codepoint' (out of bounds)", 2) end
+	local out, pos = {}, i
+	while pos <= j do
+		local ok, size = pcall(utf8charbytes, s, pos)
+		if not ok then error("invalid UTF-8 code", 2) end
+		out[#out + 1] = utf8unicode(s, 1, 1, pos)
+		pos = pos + size
+	end
+	return unpack(out)
+end
+
+-- utf8.offset(s, n [, i]): byte position where the n-th character counting from
+-- byte position i starts (Lua 5.3 semantics). n = 0 finds the start of the
+-- character containing byte i; negative n counts backwards. Default i is 1 for
+-- n >= 0, else #s + 1. nil when there is no such character.
+function M.offset(s, n, i)
+	local bytes = len(s)
+	local function iscont(p) local c = byte(s, p); return c ~= nil and c >= 0x80 and c <= 0xBF end
+	i = i or (n >= 0 and 1 or bytes + 1)
+	if i < 0 then i = bytes + i + 1 end
+	if i < 1 or i > bytes + 1 then error("bad argument #3 to 'offset' (position out of bounds)", 2) end
+	if n == 0 then
+		while i > 1 and iscont(i) do i = i - 1 end
+		return i
+	end
+	if iscont(i) then error("initial position is a continuation byte", 2) end
+	if n < 0 then
+		while n < 0 and i > 1 do
+			repeat i = i - 1 until i <= 1 or not iscont(i)
+			n = n + 1
+		end
+	else
+		n = n - 1
+		while n > 0 and i <= bytes do
+			repeat i = i + 1 until not iscont(i)
+			n = n - 1
+		end
+	end
+	if n == 0 then return i end
+	return nil
 end
 function M.rep()
 	return rep(s)

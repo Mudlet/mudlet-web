@@ -67,7 +67,7 @@ const STRING_EXT: Completion[] = [
 // ── utf8 extensions ───────────────────────────────────────────────────────────
 
 const UTF8_EXT: Completion[] = [
-    fn('len',     '(s) → number',                'Number of UTF-8 code points'),
+    fn('len',     '(s, i?, j?) → number',        'Number of UTF-8 code points starting between byte positions i and j'),
     fn('sub',     '(s, i, j?) → string',         'Substring by code-point index'),
     fn('reverse', '(s) → string',                'Reverse by code point'),
     fn('char',    '(...) → string',              'Build string from Unicode code points'),
@@ -79,6 +79,8 @@ const UTF8_EXT: Completion[] = [
     fn('gsub',    '(s, pattern, repl, n?)',       'Global substitution (UTF-8 aware)'),
     fn('lower',   '(s) → string',                 'Convert to lowercase'),
     fn('upper',   '(s) → string',                 'Convert to uppercase'),
+    fn('codepoint', '(s, i?, j?) → ...',          'Code points of the characters starting between byte positions i and j'),
+    fn('offset',  '(s, n, i?) → pos',             'Byte position where the n-th character (counting from byte i) starts'),
     // Mudlet extensions
     fn('patternEscape', '(s) → string', 'Escape Lua pattern magic characters in a UTF-8 string'),
     fn('charpos',     '(s, [i,] n) → pos, code', 'Byte offset and code point of the n-th character (negative counts from the end)'),

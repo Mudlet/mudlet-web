@@ -138,15 +138,73 @@ function logSafetyLimit(callsite: string, pattern: string, subject: string): voi
     });
 }
 
-function safeMatchAll<T>(re: InstanceType<typeof PCRE>, subject: string, callsite: string, pattern: string): T {
+function safeMatchAll<T>(
+    re: InstanceType<typeof PCRE>, subject: string, callsite: string, pattern: string, includeEnd = false,
+): T {
     try {
-        return re.matchAll(subject) as T;
+        return re.matchAll(subject, includeEnd) as T;
     } catch (err) {
         if (err instanceof Error && err.message.includes('safety limit exceeded')) {
             logSafetyLimit(callsite, pattern, subject);
         }
         throw err;
     }
+}
+
+// ── Byte offsets ─────────────────────────────────────────────────────────────
+// Lua strings are bytes and lrexlib reports and accepts BYTE offsets, the same
+// as string.find — so string.sub on a rex.find result cuts where it should. The
+// subject reaches JS as a UTF-16 string, so every position crossing the bridge
+// is translated: a code unit below 0x80 is one byte, below 0x800 two, a
+// surrogate pair four, anything else three.
+
+/** UTF-8 byte length of subject[from, to). */
+function utf8Bytes(subject: string, from: number, to: number): number {
+    let n = 0;
+    for (let i = from; i < to; i++) {
+        const c = subject.charCodeAt(i);
+        if (c < 0x80) n += 1;
+        else if (c < 0x800) n += 2;
+        else if (c >= 0xd800 && c <= 0xdbff && i + 1 < to) {
+            const d = subject.charCodeAt(i + 1);
+            if (d >= 0xdc00 && d <= 0xdfff) { n += 4; i++; } else n += 3;
+        } else n += 3;
+    }
+    return n;
+}
+
+/** UTF-16 index of the first character starting at or after byte `byte` (0-based). */
+function indexAtByte(subject: string, byte: number): number {
+    let b = 0;
+    let i = 0;
+    while (i < subject.length && b < byte) {
+        const pair = subject.charCodeAt(i) >= 0xd800 && subject.charCodeAt(i) <= 0xdbff
+            && i + 1 < subject.length
+            && subject.charCodeAt(i + 1) >= 0xdc00 && subject.charCodeAt(i + 1) <= 0xdfff;
+        const step = pair ? 2 : 1;
+        b += utf8Bytes(subject, i, i + step);
+        i += step;
+    }
+    return i;
+}
+
+/**
+ * lrexlib's `init`: a 1-based byte position, negative counts back from the
+ * end, and a start past the end is no match at all (-1 here). One exactly at
+ * the end is allowed — `$` still matches there.
+ */
+function resolveInit(subject: string, init: number | null | undefined): number {
+    if (init == null || init === 0) return 0;
+    const total = utf8Bytes(subject, 0, subject.length);
+    const byte = init > 0 ? init - 1 : Math.max(0, total + init);
+    if (byte > total) return -1;
+    return indexAtByte(subject, byte);
+}
+
+/** The 1-based start and inclusive end byte offsets of a match group. */
+function byteSpan(subject: string, g: MatchGroup): [number, number] {
+    const start = utf8Bytes(subject, 0, g.start);
+    return [start + 1, start + utf8Bytes(subject, g.start, g.end)];
 }
 
 function extractCaptures(m: MatchResult): (string | false)[] {
@@ -180,12 +238,6 @@ function extractNamedCaptures(m: MatchResult): NamedCapture[] {
     return out;
 }
 
-function resolveInit(subject: string, init: number | undefined): number {
-    if (!init || init === 0) return 0;
-    if (init < 0) return Math.max(0, subject.length + init);
-    return Math.max(0, init - 1);
-}
-
 /** Register __rex_* JS helpers and put rex_pcre2 into package.loaded. */
 export async function setupRex(lua: Lua): Promise<void> {
     await PCRE.init();
@@ -195,7 +247,8 @@ export async function setupRex(lua: Lua): Promise<void> {
     // match(subject, pattern, flags?, init?) → table [cap1, cap2, ...] or nil
     lua.global.set('__rex_match__', (subject: string, pattern: string, flags: FlagsArg, init?: number) => {
         return withRe(pattern, flags, re => {
-            const m = re.match(subject, resolveInit(subject, init));
+            const start = resolveInit(subject, init);
+            const m = start < 0 ? null : re.matchFrom(subject, start);
             if (!m) return null;
             const caps = extractCaptures(m);
             return caps.length > 0 ? caps : [m[0].match];
@@ -205,9 +258,10 @@ export async function setupRex(lua: Lua): Promise<void> {
     // find(subject, pattern, flags?, init?) → table [start, end, cap1, ...] or nil  (1-indexed)
     lua.global.set('__rex_find__', (subject: string, pattern: string, flags: FlagsArg, init?: number) => {
         return withRe(pattern, flags, re => {
-            const m = re.match(subject, resolveInit(subject, init));
+            const start = resolveInit(subject, init);
+            const m = start < 0 ? null : re.matchFrom(subject, start);
             if (!m) return null;
-            return [m[0].start + 1, m[0].end, ...extractCaptures(m)];
+            return [...byteSpan(subject, m[0]), ...extractCaptures(m)];
         });
     });
 
@@ -215,11 +269,13 @@ export async function setupRex(lua: Lua): Promise<void> {
     // Lua-side assembles a captures table keyed by both numeric index and (when present) name.
     lua.global.set('__rex_tfind__', (subject: string, pattern: string, flags: FlagsArg, init?: number) => {
         return withRe(pattern, flags, re => {
-            const m = re.match(subject, resolveInit(subject, init));
+            const start = resolveInit(subject, init);
+            const m = start < 0 ? null : re.matchFrom(subject, start);
             if (!m) return null;
+            const [startIdx, endIdx] = byteSpan(subject, m[0]);
             return {
-                startIdx: m[0].start + 1,
-                endIdx: m[0].end,
+                startIdx,
+                endIdx,
                 captures: extractNamedCaptures(m),
             };
         });
@@ -240,32 +296,64 @@ export async function setupRex(lua: Lua): Promise<void> {
         });
     });
 
-    // gsub(subject, pattern, repl, flags?) → string  (repl: string or Lua function)
-    lua.global.set('__rex_gsub__', (subject: string, pattern: string, repl: unknown, flags: FlagsArg) => {
+    // gsub(subject, pattern, flags?, limit?) → { pieces, rows, ncap }
+    // Only the matching happens here: `pieces` is the unmatched text around the
+    // matches (one more than there are rows) and each row is [whole, cap1, ...].
+    // The Lua side applies the replacement, so a table or function repl is a
+    // real Lua value and the result string never round-trips through JS.
+    lua.global.set('__rex_gsub__', (subject: string, pattern: string, flags: FlagsArg, limit?: number | null) => {
         return withRe(pattern, flags, re => {
-            const matches = safeMatchAll<MatchResult[]>(re, subject, 'rex.gsub', pattern);
-            let result = '';
+            let matches = safeMatchAll<MatchResult[]>(re, subject, 'rex.gsub', pattern, true);
+            if (typeof limit === 'number') matches = matches.slice(0, Math.max(0, Math.floor(limit)));
+            const pieces: string[] = [];
+            const rows: (string | false)[][] = [];
             let lastEnd = 0;
             for (const m of matches) {
-                result += subject.slice(lastEnd, m[0].start);
-                if (typeof repl === 'function') {
-                    const caps = extractCaptures(m);
-                    const r = (repl as (...a: unknown[]) => unknown)(...caps);
-                    result += r == null ? m[0].match : String(r);
-                } else {
-                    result += String(repl);
-                }
+                pieces.push(subject.slice(lastEnd, m[0].start));
+                rows.push([m[0].match, ...extractCaptures(m)]);
                 lastEnd = m[0].end;
             }
-            return result + subject.slice(lastEnd);
+            pieces.push(subject.slice(lastEnd));
+            return { pieces, rows, ncap: matches.length > 0 ? matches[0].length - 1 : 0 };
         });
+    });
+
+    // exec(subject, pattern, flags?, init?) → [start, end, s1, e1, s2, e2, ...] or nil
+    // (byte offsets; an unmatched group's pair is false, false)
+    lua.global.set('__rex_exec__', (subject: string, pattern: string, flags: FlagsArg, init?: number) => {
+        return withRe(pattern, flags, re => {
+            const start = resolveInit(subject, init);
+            const m = start < 0 ? null : re.matchFrom(subject, start);
+            if (!m) return null;
+            const out: (number | false)[] = [...byteSpan(subject, m[0])];
+            for (let i = 1; i < m.length; i++) {
+                const cap = m[i];
+                if (cap && cap.start >= 0) out.push(...byteSpan(subject, cap));
+                else out.push(false, false);
+            }
+            return out;
+        });
+    });
+
+    // compile(pattern, flags?) → error message, or nil when the pattern compiles.
+    // rex.new compiles up front, as lrexlib does, so a bad pattern fails there.
+    lua.global.set('__rex_compile__', (pattern: string, flags: FlagsArg) => {
+        try {
+            withRe(pattern, flags, () => undefined);
+            return null;
+        } catch (err) {
+            const e = err as Error & { offset?: number };
+            return typeof e.offset === 'number'
+                ? `${e.message} (pattern offset: ${e.offset + 1})`
+                : e.message;
+        }
     });
 
     // gmatch(subject, pattern, flags?) → array of per-match capture rows for Lua iterator
     // Each row is the capture list, or [full_match] if there are no capture groups.
     lua.global.set('__rex_gmatch__', (subject: string, pattern: string, flags: FlagsArg) => {
         return withRe(pattern, flags, re => {
-            const matches = safeMatchAll<MatchResult[]>(re, subject, 'rex.gmatch', pattern);
+            const matches = safeMatchAll<MatchResult[]>(re, subject, 'rex.gmatch', pattern, true);
             return matches.map(m => {
                 const caps = extractCaptures(m);
                 return caps.length > 0 ? caps : [m[0].match];
@@ -276,7 +364,7 @@ export async function setupRex(lua: Lua): Promise<void> {
     // count(subject, pattern, flags?) → number of non-overlapping matches
     lua.global.set('__rex_count__', (subject: string, pattern: string, flags: FlagsArg) => {
         return withRe(pattern, flags, re => {
-            return safeMatchAll<MatchResult[]>(re, subject, 'rex.count', pattern).length;
+            return safeMatchAll<MatchResult[]>(re, subject, 'rex.count', pattern, true).length;
         });
     });
 
@@ -291,6 +379,8 @@ export async function setupRex(lua: Lua): Promise<void> {
         local _gsub   = __rex_gsub__
         local _gmatch = __rex_gmatch__
         local _count  = __rex_count__
+        local _exec   = __rex_exec__
+        local _compile = __rex_compile__
         local _flags  = __rex_flag_constants__
 
         local M = {}
@@ -385,9 +475,104 @@ export async function setupRex(lua: Lua): Promise<void> {
             end
         end
 
+        -- lrexlib's gsub: repl is a string (%0 the whole match, %1-%9 the
+        -- captures, %1 the whole match when there are none, % before anything
+        -- else is that character), a table indexed by the first capture, or a
+        -- function called with the captures. A table or function yielding
+        -- false/nil keeps the match as it was. n caps the number of matches.
+        -- Returns the new string, the number of matches and the number of
+        -- substitutions made.
+        local function expand(repl, row, ncap)
+            local out = {}
+            local i, len = 1, #repl
+            while i <= len do
+                local c = repl:sub(i, i)
+                if c == "%" and i < len then
+                    local nx = repl:sub(i + 1, i + 1)
+                    local d = tonumber(nx)
+                    if d then
+                        local v
+                        if d == 0 or (d == 1 and ncap == 0) then
+                            v = row[0]
+                        elseif d <= ncap then
+                            v = row[d]
+                        else
+                            error("invalid capture index %" .. nx .. " in replacement string", 3)
+                        end
+                        if v then out[#out + 1] = v end
+                    else
+                        out[#out + 1] = nx
+                    end
+                    i = i + 2
+                else
+                    out[#out + 1] = c
+                    i = i + 1
+                end
+            end
+            return table.concat(out)
+        end
+
         M.gsub = function(subject, pattern, repl, n, cf)
             local p, cflags = unwrap(pattern)
-            return _gsub(subject, p, repl, effFlags(cf, cflags))
+            local rt = type(repl)
+            if rt == "number" then repl = tostring(repl); rt = "string" end
+            if rt ~= "string" and rt ~= "table" and rt ~= "function" then
+                error("bad argument #3 to 'gsub' (string, table or function expected, got " .. rt .. ")", 2)
+            end
+            local r = _gsub(subject, p, effFlags(cf, cflags), type(n) == "number" and n or nil)
+            local pieces, rows, ncap = r.pieces, r.rows, r.ncap
+            local out = { pieces[0] }
+            local nmatch, nsub = 0, 0
+            while true do
+                local row = rows[nmatch]
+                if row == nil then break end
+                nmatch = nmatch + 1
+                local whole = row[0]
+                local v
+                if rt == "string" then
+                    v = expand(repl, row, ncap)
+                else
+                    local first = row[ncap > 0 and 1 or 0]
+                    if rt == "table" then
+                        v = repl[first]
+                    elseif ncap == 0 then
+                        v = repl(whole)
+                    else
+                        local args = {}
+                        for k = 1, ncap do args[k] = row[k] end
+                        v = repl(unpack(args, 1, ncap))
+                    end
+                end
+                if v == nil or v == false then
+                    out[#out + 1] = whole
+                else
+                    local vt = type(v)
+                    if vt ~= "string" and vt ~= "number" then
+                        error("invalid replacement value (a " .. vt .. ")", 2)
+                    end
+                    out[#out + 1] = tostring(v)
+                    nsub = nsub + 1
+                end
+                out[#out + 1] = pieces[nmatch]
+            end
+            return table.concat(out), nmatch, nsub
+        end
+
+        -- Returns start, end and a table of capture offsets {s1, e1, s2, e2, ...}
+        -- (false for a group that did not take part), all byte positions.
+        M.exec = function(subject, pattern, init, cf)
+            local p, cflags = unwrap(pattern)
+            local t = _exec(subject, p, effFlags(cf, cflags), init)
+            if t == nil then return nil end
+            local offsets = {}
+            local i = 2
+            while true do
+                local v = t[i]
+                if v == nil then break end
+                offsets[i - 1] = v
+                i = i + 1
+            end
+            return t[0], t[1], offsets
         end
 
         -- gmatch returns an iterator yielding captures of each match.
@@ -416,10 +601,16 @@ export async function setupRex(lua: Lua): Promise<void> {
         -- back to recompiling per line". newproxy is Lua 5.1's only way to make
         -- one from Lua; the fields and methods hang off its metatable.
         M.new = function(pattern, flags)
+            if type(pattern) ~= "string" then
+                error("bad argument #1 to 'new' (string expected, got " .. type(pattern) .. ")", 2)
+            end
+            local err = _compile(pattern, flags)
+            if err then error(err, 2) end
             local methods = {
                 match  = function(self, subject, init, ef) return M.match(subject, self, init) end,
                 find   = function(self, subject, init, ef) return M.find(subject, self, init)  end,
                 tfind  = function(self, subject, init, ef) return M.tfind(subject, self, init) end,
+                exec   = function(self, subject, init, ef) return M.exec(subject, self, init) end,
                 gsub   = function(self, subject, repl, n) return M.gsub(subject, self, repl, n) end,
                 split  = function(self, subject) return M.split(subject, self) end,
                 gmatch = function(self, subject) return M.gmatch(subject, self) end,
@@ -453,6 +644,8 @@ export async function setupRex(lua: Lua): Promise<void> {
         __rex_gsub__   = nil
         __rex_gmatch__ = nil
         __rex_count__  = nil
+        __rex_exec__   = nil
+        __rex_compile__ = nil
         __rex_flag_constants__ = nil
 
         return M
