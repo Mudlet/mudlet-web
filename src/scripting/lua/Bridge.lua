@@ -3235,7 +3235,7 @@ end
 -- Mirrors Mudlet's C++ TLuaInterpreter::registerAnonymousEventHandler: stores
 -- (event name → list of Lua function names) keyed registrations made by scripts
 -- loaded before Other.lua's Lua-side override takes effect (notably
--- GeyserReposition). __mudlet_dispatch_event reads from here and from
+-- GeyserReposition). __mudlet_dispatch reads from here and from
 -- dispatchEventToFunctions, just like Mudlet's C++ raiseEvent dispatches both
 -- C-side anonymous handlers and the wildcard ("*") Lua dispatcher.
 __mudlet_native_handlers = __mudlet_native_handlers or {}
@@ -3249,6 +3249,42 @@ function registerAnonymousEventHandler(event, func)
     return 0
 end
 
+-- Mudlet's Host::raiseEvent: runs every handler for `event` right now, with
+-- `args[1..argc]` as the arguments after the event name. Synchronous at any
+-- depth — a raiseEvent from inside a handler has finished, and its handlers'
+-- side effects are visible, by the time raiseEvent returns, as in Mudlet.
+--
+-- Only registered handlers are called. A global function that merely shares
+-- the event's name is not one: Mudlet never looks it up, and doing so turned a
+-- user's `function connect()` into a handler for Mudlet Web's `connect` event.
+--
+-- Each handler list is snapshotted before the first call (here, and in the
+-- dispatchEventToFunctions override installed after Other.lua), so a handler
+-- registered while this event is in flight — even by a nested event — waits
+-- for the next raise instead of receiving the one that registered it.
+function __mudlet_dispatch(event, args, argc)
+    -- Native handlers registered before Other.lua overrode registerAnonymousEventHandler.
+    -- Mudlet's C++ raiseEvent passes `event` as the first argument followed by event args.
+    local nativeList = __mudlet_native_handlers[event]
+    if nativeList then
+        local names = {}
+        for i, funcName in ipairs(nativeList) do names[i] = funcName end
+        for _, funcName in ipairs(names) do
+            local f = _G[funcName]
+            if type(f) == 'function' then
+                -- __mudlet_pcall_co, not pcall: handlers may suspend via
+                -- invokeFileDialog, which needs a pure-Lua path down to the JS
+                -- resume boundary.
+                local ok, err = __mudlet_pcall_co(f, event, unpack(args, 1, argc))
+                if not ok and type(showHandlerError) == 'function' then showHandlerError(event, err) end
+            end
+        end
+    end
+    if type(dispatchEventToFunctions) == 'function' then
+        dispatchEventToFunctions(event, unpack(args, 1, argc))
+    end
+end
+
 -- JS event bridge. emitEvent() sets __mudlet_evt_name + __mudlet_evt_args
 -- (a JS array, so its keys are 0-indexed) and runs this dispatcher.
 function __mudlet_dispatch_event()
@@ -3257,8 +3293,8 @@ function __mudlet_dispatch_event()
     -- JS arrays push as Lua tables keyed 0..n-1; rebuild as a 1-indexed sequence.
     -- Driven by the count JS reports rather than by walking until a nil, so a
     -- payload containing nil or false keeps every argument in its own position
-    -- (raiseEvent("x", nil, false, "y") must reach handlers as four values, not
-    -- stop dead at the leading nil).
+    -- (an event carrying nil, false, "y" must reach handlers as three values,
+    -- not stop dead at the leading nil).
     local args, argc = {}, tonumber(__mudlet_evt_argc) or 0
     if type(raw) == 'table' then
         if argc > 0 then
@@ -3269,31 +3305,26 @@ function __mudlet_dispatch_event()
             argc = #args
         end
     end
-    -- __mudlet_pcall_co, not pcall: handlers may suspend via invokeFileDialog,
-    -- which needs a pure-Lua path down to the JS resume boundary.
-    -- Lua functions only: event names can collide with JS-bound API globals
-    -- (event "disconnect" vs the disconnect() API) and those must not be
-    -- treated as handlers.
-    local handler = _G[event]
-    if type(handler) == 'function' and debug.getinfo(handler, 'S').what ~= 'C' then
-        local ok, err = __mudlet_pcall_co(handler, unpack(args, 1, argc))
-        if not ok and type(showHandlerError) == 'function' then showHandlerError(event, err) end
+    __mudlet_dispatch(event, args, argc)
+end
+
+-- Mudlet raiseEvent(event, ...). Dispatched here in Lua rather than through JS:
+-- the arguments never leave the Lua state, so tables (and functions, and nils
+-- in any position) reach the handlers as the very values the caller passed.
+-- Crossing into JS turned a table into a wasmoon proxy that the trip back
+-- clobbered — raiseEvent("e", {a = 1}, "s") arrived as ("e", "s", "s").
+-- Returns true, as Mudlet does; false only for a missing event name.
+function raiseEvent(event, ...)
+    if type(event) ~= 'string' or event == '' then return false end
+    local argc = select('#', ...)
+    -- Keep getMainWindowSize's cache in step with a script-raised resize, as
+    -- LuaRuntime.dispatchEventNow does for the one Mudlet Web raises itself.
+    if event == 'sysWindowResizeEvent' then
+        local w, h = ...
+        if type(w) == 'number' and type(h) == 'number' then __mws_w, __mws_h = w, h end
     end
-    -- Native handlers registered before Other.lua overrode registerAnonymousEventHandler.
-    -- Mudlet's C++ raiseEvent passes `event` as the first argument followed by event args.
-    local nativeList = __mudlet_native_handlers[event]
-    if nativeList then
-        for _, funcName in ipairs(nativeList) do
-            local f = _G[funcName]
-            if type(f) == 'function' then
-                local ok, err = __mudlet_pcall_co(f, event, unpack(args, 1, argc))
-                if not ok and type(showHandlerError) == 'function' then showHandlerError(event, err) end
-            end
-        end
-    end
-    if type(dispatchEventToFunctions) == 'function' then
-        dispatchEventToFunctions(event, unpack(args, 1, argc))
-    end
+    __mudlet_dispatch(event, { ... }, argc)
+    return true
 end
 
 -- Per-script event-handler registry. wrapScript (in ScriptingEngine.ts) emits

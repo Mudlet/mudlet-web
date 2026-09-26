@@ -388,7 +388,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `disableAlias(name)` | ✅ | |
 | `disableKey(name)` | ✅ | Cascades to children |
 | `disableScript(name)` | ✅ | JS-exposed |
-| `disableTimer(name)` | ✅ | JS-exposed |
+| `disableTimer(name)` | ✅ | A permanent timer name, or a temp timer id (number or its string form) |
 | `disableTrigger(name)` | ✅ | JS-exposed |
 | `enableAlias(name)` | ✅ | |
 | `enableKey(name)` | ✅ | Cascades to children |
@@ -924,7 +924,7 @@ Reconciled against the authoritative [Mudlet Event Engine](https://wiki.mudlet.o
 
 | Event | Status | Notes |
 |---|---|---|
-| `sysLoadEvent` | ✅ | After the initial script load |
+| `sysLoadEvent` | ✅ | After the initial script load, with `true`; with `false` after `resetProfile()` |
 | `sysExitEvent` | ✅ | Fired once at `ScriptingEngine.destroy()` (connection switch/unmount) or on `window` `beforeunload`, whichever comes first |
 | `sysConnectionEvent` | ✅ | On connect; Mudlet Web also fires native `connect` |
 | `sysDisconnectionEvent` | ✅ | On disconnect |
