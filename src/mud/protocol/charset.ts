@@ -9,6 +9,7 @@ import {
 } from "./constants";
 import { codePageUpperHalf, VENDORED_CODE_PAGES } from "./codePages";
 import { decodeMultiByte, isMultiByteFramed, type MultiByteLabel } from "./multiByte";
+import { canBuildMultiByteEncoder, encodeMultiByteChar, type MultiByteEncoding } from "./multiByteEncode";
 
 /**
  * CHARSET (RFC 2066, telnet option 42) negotiation and the session's byte→char
@@ -175,6 +176,16 @@ function reverseTable(label: string): Map<string, number> | null {
  *  single-byte table paths apply to them. */
 const MULTI_BYTE_LABELS = new Set(['utf-8', 'gbk', 'gb18030', 'big5', 'euc-kr']);
 
+/** The multi-byte encoder for decoder `label`, or null when it is not one of
+ *  those. Big5 and BIG5-HKSCS share a decoder but not an encoder — only the
+ *  latter may write the HKSCS codes — so `name`, the encoding's own name, is
+ *  what tells them apart. */
+function multiByteEncoding(label: string, name: string): MultiByteEncoding | null {
+    if (!isMultiByteFramed(label)) return null;
+    if (label === 'big5' && canonicalServerEncoding(name) === 'BIG5-HKSCS') return 'big5-hkscs';
+    return label;
+}
+
 /**
  * Whether every character of `text` survives a trip to the game under
  * `serverEncoding` — Mudlet's TEncodingHelper::canEncode, which is what decides
@@ -191,10 +202,14 @@ export function canEncodeForServer(text: string, serverEncoding: string): boolea
         return true;
     }
     if (iana === 'utf-8') return true;
-    // A multi-byte encoding has no single-byte table to consult and the browser
-    // offers no encoder for one, so there is nothing here that could judge it.
-    // Unjudgeable is encodable: the point is to warn about a loss that will
-    // certainly happen, not to guess at one.
+    const multi = multiByteEncoding(iana, String(serverEncoding));
+    if (multi) {
+        // A browser that cannot supply the tables leaves nothing to judge by,
+        // and unjudgeable is encodable.
+        if (!canBuildMultiByteEncoder(multi)) return true;
+        for (const ch of text) if (encodeMultiByteChar(ch, multi) === null) return false;
+        return true;
+    }
     const table = reverseTable(iana);
     if (!table) return true;
     for (const ch of text) if (!table.has(ch)) return false;
@@ -315,6 +330,8 @@ export class SessionCodec {
      *  decodes; the framed ones need it kept here. */
     private pendingBytes = '';
     private currentEncoding = 'utf-8';
+    /** The encoder for outgoing text while a multi-byte encoding is in use. */
+    private outgoingMultiByte: MultiByteEncoding | null = null;
 
     /** The IANA name of the decoder currently applied to the inbound stream. */
     get encoding(): string {
@@ -328,6 +345,7 @@ export class SessionCodec {
         this.framed = null;
         this.pendingBytes = '';
         this.currentEncoding = 'utf-8';
+        this.outgoingMultiByte = null;
     }
 
     /** Swap the streaming decoder to a new encoding label (an IANA name the
@@ -335,8 +353,10 @@ export class SessionCodec {
      *  multi-byte sequence buffered in the previous decoder is discarded —
      *  fine because CHARSET typically negotiates before any real content
      *  arrives. Returns false (leaving the current decoder untouched) when the
-     *  browser refuses the label. */
-    trySetEncoding(encoding: string): boolean {
+     *  browser refuses the label. `name` is the encoding's own name where it
+     *  says more than the label does — BIG5-HKSCS, which decodes as big5 but
+     *  encodes differently. */
+    trySetEncoding(encoding: string, name: string = encoding): boolean {
         // A single-byte encoding is decoded from its own table rather than by a
         // TextDecoder: ASCII and the DOS code pages have no browser decoder to
         // ask for. Being single-byte, they also carry no state across frames,
@@ -347,18 +367,21 @@ export class SessionCodec {
             this.table = table;
             this.framed = null;
             this.currentEncoding = encoding;
+            this.outgoingMultiByte = null;
             return true;
         }
         if (isMultiByteFramed(encoding)) {
             this.framed = encoding;
             this.table = null;
             this.currentEncoding = encoding;
+            this.outgoingMultiByte = multiByteEncoding(encoding, name);
             return true;
         }
         try {
             this.decoder = new TextDecoder(encoding, { fatal: false });
             this.table = null;
             this.framed = null;
+            this.outgoingMultiByte = null;
             this.currentEncoding = encoding;
             return true;
         } catch {
@@ -403,9 +426,10 @@ export class SessionCodec {
     }
     /** Convert a user-typed JS string (UTF-16) into the Latin-1 byte-string the
      *  socket layer expects, using the currently negotiated outgoing encoding.
-     *  UTF-8 goes through TextEncoder so multi-byte chars survive; every other
-     *  encoding here is single-byte and goes through the inverted decode table,
-     *  which puts the codepage's own byte on the wire. (A plain `& 0xff`
+     *  UTF-8 goes through TextEncoder so multi-byte chars survive; the East
+     *  Asian multi-byte encodings go through the tables in multiByteEncode.ts;
+     *  every other encoding here is single-byte and goes through the inverted
+     *  decode table, which puts the codepage's own byte on the wire. (A plain `& 0xff`
      *  truncation used to stand in for that, and was right only for the
      *  Latin-1 range — every Polish, Cyrillic, or Greek character above it went
      *  out as a byte meaning something else entirely.) A character the codepage
@@ -419,6 +443,12 @@ export class SessionCodec {
             for (let i = 0; i < bytes.length; i += CHUNK) {
                 out += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
             }
+            return out;
+        }
+        const multi = this.outgoingMultiByte;
+        if (multi) {
+            let out = '';
+            for (const ch of text) out += encodeMultiByteChar(ch, multi) ?? '?';
             return out;
         }
         const table = reverseTable(this.currentEncoding);
@@ -507,7 +537,7 @@ export class CharsetHandler {
     private setEncoding(encoding: string, displayName: string): void {
         // A refused label (shouldn't happen for our allowlist) keeps the
         // existing decoder and suppresses the negotiated event.
-        if (!this.codec.trySetEncoding(encoding)) return;
+        if (!this.codec.trySetEncoding(encoding, displayName)) return;
         this.hooks.onNegotiated(displayName);
     }
 }
