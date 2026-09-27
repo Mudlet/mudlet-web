@@ -199,7 +199,6 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='https://ropmud.com/index.html'>Website</a><br><a href='https://discord.gg/CkYm9WRnyw'>Discord</a>",
         "icon": ":/icons/banner_ropmud.png",
         "description": "Rites of Passage is a PVPVE (Player vs Player vs Environment) MUD where Good and Evil are locked in eternal war. Hunt powerful monsters for legendary loot, then defend it from enemy players hunting you. Every expedition into dangerous territory carries the thrill of both PvE challenge and PvP risk.\n\nThe environment is deadly - 80+ areas filled with creatures guarding valuable equipment, quests that reward the bold, and a remort system that lets you grow stronger with each life. But the real tension comes from other players. That raid boss you're fighting? The enemy faction might be watching, waiting for you to weaken before they strike. That rare gem you just looted? You'll need to make it home alive.\n\nThis is a PK MUD. Combat between Good and Evil players isn't just allowed - it's encouraged. Killing enemies earns warpoints, experience, and their gear. Climb the ranks. Make the topten list. Build your reputation through conquest. If you want the risk of PvP combined with challenging environment combat, you've found your home.",
-        "providesOwnUi": true,
         "iconFile": "banner_ropmud.png"
     },
     {
@@ -369,7 +368,6 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='http://www.carrionfields.net'>www.carrionfields.net</a>",
         "icon": ":/icons/carrionfields.png",
         "description": "Carrion Fields is a unique blend of high-caliber roleplay and complex, hardcore player-versus-player combat that has been running continuously, and 100% free, for over 30 years.\n\nChoose from among 21 races, 17 highly customizable classes, and several cabals and religions to suit your playstyle and the story you want to tell. Our massive, original world is full of secrets and envied limited objects that take skill to acquire and great care to keep.\n\nWe like to think of ourselves as the Dark Souls of MUDs, with a community that is supportive of new players - unforgiving though our world may be. Join us for a real challenge and real rewards: adrenaline-pumping battles, memorable quests run by our volunteer immortal staff, and stories that will stick with you for a lifetime.",
-        "providesOwnUi": true,
         "iconFile": "carrionfields.png"
     },
     {
@@ -410,7 +408,6 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='http://morgengrauen.info/'>MorgenGrauen Webseite</a><br><a href='https://www.youtube.com/MorgenGrauen'>YouTube Kanal</a><br><a href='https://discord.gg/nHJnYHk'>Discord Server</a>",
         "icon": ":/icons/morgengrauen_480x120.png",
         "description": "Willkommen im Morgengrauen, dem größten deutschsprachigen MUD, das seit 1992 kontinuierlich weiterentwickelt wird.\n\nEntdecke hunderte einzigartige Abenteuer! Steigere Deine Fähigkeiten in besonderen Gilden: Dämonische Krieger des Chaos, betrunkene Bierschüttler, Werwölfe, Orks, Elfen, und viele weitere.\n\nUnsere freundliche Spielerschaft hilft Dir gerne bei Deinen ersten Schritten.\n\nSpiel jetzt oder nie!",
-        "providesOwnUi": true,
         "alternateHostUrls": [
             "mg.mud.de",
             "mg.morgengrauen.info",
@@ -436,7 +433,6 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='http://medievia.com/'>Medievia</a>",
         "icon": ":/icons/medievia.png",
         "description": "If you take the deepest and most advanced game possible, and mix it with the best chat world around, what you have is Medievia.\n\nImagine...\n    Endless player-created areas to explore for the first time.\n    Ships you can take out to sea. You can go crabbing, kill monsters, attack other ships, explore new islands, etc.\n    Dragons that hunt you, good dragons that fly you places, dragon lairs you can defeat, etc.\n    Trading for gold where you take goods via covered wagon/mules across the wilderness through adventure after adventure from trade post to trade post. Now you can even go right under the ocean to undersea trading posts.\n    Player vs Player action in zones, ships, wilderness, herobattles, arenas, CPK, NPK, LPK, etc.\n    Joining a clan, the clan can join a town, or go ahead and make their own town in the wilderness.\n    Giving birth and creating your own bloodline. If your bloodline gets big enough you can build homes and castles.\n    A game that has the intuition to track your happiness, pride, sadness, and fear while changing itself to fit your needs!\n    Weather, storms, wind, fire, floods, disease, even asteroids. This may be text but it is the most dynamic game ever attempted. The wind affects the ships, where fire spreads, and even how some critters smell you if you are upwind from them.\n\nDo you dare enter?",
-        "providesOwnUi": true,
         "iconFile": "medievia.png"
     },
     {
@@ -477,7 +473,6 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='https://www.icesus.org/'>Website</a><br><a href='https://discord.gg/j9cSPyAzQb'>Discord</a>",
         "icon": ":/icons/icesus_480x120.png",
         "description": "Icesus is a free fantasy text RPG running since 1995. Actively developed, community-run, and full of deep systems.\n\nBuild a character from 27 races and 16 guilds. Fight in tactical party combat, explore the frozen Valley of Aegic, and earn your place in player-driven provinces.\n\nOld-school depth. Modern access. New players welcome.",
-        "providesOwnUi": true,
         "iconFile": "icesus_480x120.png"
     },
     {
