@@ -2576,7 +2576,8 @@ export class ScriptingAPI {
 
     /** Mudlet `tempButton(toolbarName, name, orientation)`. Appends a
      *  transient button, with no command or script, under an existing toolbar
-     *  group; returns the new id, or -1 when the toolbar doesn't exist.
+     *  group; returns the new id, or -1 when the toolbar doesn't exist or
+     *  the name is already taken (the Lua wrapper returns nothing then).
      *  `orientation` is Mudlet's int form (0=horizontal/1=vertical). */
     tempButton(toolbar: string, name: string, orientation: number): number {
         return this.host.createTempButton(toolbar, name, orientation);
@@ -2585,7 +2586,7 @@ export class ScriptingAPI {
     /** Mudlet `tempButtonToolbar(name [, orientation [, location]])`. Creates
      *  a transient toolbar (ButtonNode group). `location` int: 0=top, 1=bottom,
      *  2=left, 3=right, 4=floating. Returns the new id or -1 on duplicate
-     *  name. */
+     *  name (the Lua wrapper returns nothing then). */
     tempButtonToolbar(name: string, orientation: number, location: number): number {
         return this.host.createTempButtonToolbar(name, orientation, location);
     }
