@@ -102,10 +102,22 @@ describe('MudClient prompt markers inside a frame', () => {
 
     it('does not treat GA bytes inside a subnegotiation as a prompt', () => {
         const { client, events } = makeRecorder();
-        // An unknown option's SB payload that happens to carry IAC GA.
-        client.feedTelnet('x\xFF\xFA\x7Fp' + TELNET_GA + 'q\xFF\xF0y\r\n');
+        // An unknown option's SB payload that happens to carry the GA bytes,
+        // its 0xFF doubled as a payload byte has to be.
+        client.feedTelnet('x\xFF\xFA\x7Fp\xFF' + TELNET_GA + 'q\xFF\xF0y\r\n');
 
         expect(events).toEqual(['xy\n']);
+    });
+
+    it('takes an undoubled IAC GA inside a subnegotiation as the end of it, and a prompt (#4385)', () => {
+        const { client, events } = makeRecorder();
+        vi.spyOn(console, 'warn').mockImplementation(() => {});
+        // Mudlet's cTelnet assumes the IAC SE went missing, ends the
+        // subnegotiation there and reads IAC GA as the command it is; the
+        // stray IAC SE after it is dropped.
+        client.feedTelnet('x\xFF\xFA\x7Fp' + TELNET_GA + 'q\xFF\xF0y\r\n');
+
+        expect(events).toEqual(['<GA>', 'x', 'qy\n']);
     });
 });
 

@@ -72,6 +72,27 @@ describe('telnet option negotiation (TelnetNegotiator via MudClient)', () => {
     expect(seen).toEqual(['msdp']);
   });
 
+  // ATCP (200) is GMCP's predecessor: Mudlet takes it up only while GMCP is
+  // switched off for the profile.
+  it('takes up ATCP only while GMCP is off, with the hello after the DO', () => {
+    const ATCP_WILL = '\xFF\xFB\xC8', ATCP_DO = '\xFF\xFD\xC8';
+    const events: string[] = [];
+    const on = connected({ gmcpEnabled: false });
+    on.bus.on('protocol.enabled', p => events.push(`on:${p}`));
+    on.sock.deliver(ATCP_WILL);
+    const sent = sentText(on.sock);
+    expect(sent.startsWith('\xFF\xFD\xC8\xFF\xFA\xC8hello ')).toBe(true);
+    expect(sent.endsWith('map_display 1\n\xFF\xF0')).toBe(true);
+    expect(events).toEqual(['on:ATCP']);
+
+    MockWebSocket.instances = [];
+    const off = connected({ gmcpEnabled: true });
+    off.bus.on('protocol.enabled', p => events.push(`off:${p}`));
+    off.sock.deliver(ATCP_WILL + ATCP_DO);
+    expect(sentText(off.sock)).toBe('\xFF\xFE\xC8\xFF\xFC\xC8'); // DONT, WONT
+    expect(events).toEqual(['on:ATCP']);
+  });
+
   it('ignores WILL MSDP when MSDP is disabled (default)', () => {
     const { sock } = connected();
     sock.deliver(MSDP_WILL);

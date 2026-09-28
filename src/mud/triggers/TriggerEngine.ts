@@ -1,4 +1,4 @@
-import PCRE from './pcre/Pcre2';
+import PCRE, { pcreSubject } from './pcre/Pcre2';
 import type { TriggerNode, TriggerPattern } from '../../storage/schema';
 import { buildEffectivelyEnabledIds } from '../../storage/schema';
 import { COLOR_IGNORED, parseColorPattern } from './legacyColorPatterns';
@@ -495,7 +495,7 @@ function buildMatcher(
             if (!re) return null;
             register(re);
             return (line) => {
-                const m = re.match(line) as PcreMatch | null;
+                const m = re.match(pcreSubject(line)) as PcreMatch | null;
                 if (!m) return null;
                 return pcreToMatchResult(m);
             };
@@ -1026,7 +1026,7 @@ export class TriggerEngine {
                             const results: MatchResult[] = [];
                             let pcreMatches: PcreMatch[];
                             try {
-                                pcreMatches = re.matchAll(line) as PcreMatch[];
+                                pcreMatches = re.matchAll(pcreSubject(line)) as PcreMatch[];
                             } catch (err) {
                                 if (err instanceof Error && err.message.includes('safety limit exceeded')) {
                                     logSafetyLimit(`trigger:${triggerName}(multipleMatches)`, patternText, line);
@@ -1148,7 +1148,7 @@ export class TriggerEngine {
             entry.fn([text]);
             return true;
         }
-        const m = entry.re.match(line) as PcreMatch | null;
+        const m = entry.re.match(pcreSubject(line)) as PcreMatch | null;
         if (!m || !accepted()) return false;
         const result = pcreToMatchResult(m);
         entry.fn(

@@ -62,7 +62,7 @@ export function filenameFromUrl(url: string): string {
 
 export interface ClientGuiPayload {
     url: string;
-    version?: string;
+    version: string;
 }
 
 /**
@@ -127,38 +127,40 @@ function clientGuiVersion(raw: unknown): string | undefined {
  * Decode a `Client.GUI` GMCP payload. Mudlet supports two shapes
  * (cTelnet::setGMCPVariables):
  *   - a `{ url, version }` JSON object (current MMP-style format)
- *   - a string `"<version>\n<url>"` (legacy raw telnet) — version first, which
- *     is the opposite of what this parser assumed before
- * Returns null when neither shape applies or the URL is empty. Mudlet also
- * requires both fields in the legacy shape and drops the message otherwise, so
- * a lone line is only accepted as a bare URL from the JSON-ish path, never as a
- * half-decoded legacy pair.
+ *   - a string `"<version>\n<url>"` (legacy raw telnet) — version first
+ * Mudlet acts on an offer only when it carries both a version and a URL
+ * (handleGUIPackageInstallationAndUpgrade returns on either being empty), in
+ * either shape, so neither a bare URL nor a half pair is salvaged: the version
+ * is what tells a re-delivery from an upgrade, and without it there is nothing
+ * to record against the install.
  */
 export function parseClientGuiPayload(value: unknown): ClientGuiPayload | null {
     if (value && typeof value === 'object') {
         const obj = value as { url?: unknown; version?: unknown };
-        if (typeof obj.url === 'string' && obj.url.length > 0) {
-            const out: ClientGuiPayload = { url: obj.url };
-            const version = clientGuiVersion(obj.version);
-            if (version !== undefined) out.version = version;
-            return out;
-        }
-        return null;
+        if (typeof obj.url !== 'string' || obj.url.length === 0) return null;
+        const version = clientGuiVersion(obj.version);
+        return version === undefined ? null : { url: obj.url, version };
     }
     if (typeof value === 'string') {
         const lines = value.split(/\r?\n/, 2).map(line => line.trim());
-        if (lines.length > 1) {
-            // Legacy raw-telnet pair: version first, url second. Mudlet drops
-            // the message unless both are present, so a half pair is not
-            // salvaged into a bare URL — the missing half could be either one.
-            const [version, url] = lines;
-            if (!version || !url) return null;
-            return { url, version };
-        }
-        // Single line. Mudlet has no branch for this — its fallback needs two
-        // lines — but a server quoting just the URL as a JSON string is
-        // unambiguous, so it's accepted rather than dropped.
-        return lines[0] ? { url: lines[0] } : null;
+        if (lines.length < 2) return null;
+        const [version, url] = lines;
+        if (!version || !url) return null;
+        return { url, version };
     }
     return null;
+}
+
+/**
+ * Whether a `Client.GUI` payload declines the built-in starter UI —
+ * `{"baseui": false}`, which Mudlet (cTelnet::parseGUIBaseUiDeclinedFromJSON)
+ * also takes spelled as the string "false", trimmed and in any case, since some
+ * games' GMCP serializers can only write strings. Only the JSON object form can
+ * decline: the raw telnet form carries a version and a URL and nothing else.
+ */
+export function clientGuiDeclinesBaseUi(value: unknown): boolean {
+    if (!value || typeof value !== 'object') return false;
+    const baseui = (value as { baseui?: unknown }).baseui;
+    if (typeof baseui === 'boolean') return !baseui;
+    return typeof baseui === 'string' && baseui.trim().toLowerCase() === 'false';
 }
