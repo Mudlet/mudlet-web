@@ -3123,7 +3123,16 @@ export class ScriptingEngine implements EngineHost {
         }
         const name = String(nameOrId);
         if (type === 'timer' && /^\d+$/.test(name) && this.api.timers.tempIsActive(Number(name))) return 1;
-        return list.filter(i => i.name === name && isOn(i)).length;
+        // Mudlet names a temporary alias or trigger after its id
+        // (startTempAlias: `setName(QString::number(id))`), so the id as a
+        // string finds it by name too, alongside anything saved under it.
+        const namedCount = list.filter(i => i.name === name && isOn(i)).length;
+        if (/^\d+$/.test(name) && (type === 'alias' || type === 'trigger')) {
+            const tempId = Number(name);
+            const lua = this.runtimes.lua;
+            if (lua?.tempItemExists(tempId, type) && lua.tempItemEnabled(tempId)) return namedCount + 1;
+        }
+        return namedCount;
     }
 
     /**
@@ -5104,7 +5113,10 @@ export class ScriptingEngine implements EngineHost {
         // A trigger can call feedTriggers, which lands back here for a line of
         // its own; the outer line has to be the one `line` names again once that
         // returns, or the rest of the outer pass reads the fed line instead.
-        const outerLine = this.runtimes.lua?.getCurrentLine();
+        // Only a nested pass puts it back: the outermost one leaves `line` as
+        // the last line to have arrived, for whatever runs before the next.
+        const outerLine = this.lineTriggerDepth > 0 ? this.runtimes.lua?.getCurrentLine() : undefined;
+        this.lineTriggerDepth++;
         this.api.beginLine(buffer, isPrompt);
         try {
             this.runtimes.lua?.setCurrentLine(plain, isPrompt);
@@ -5133,10 +5145,15 @@ export class ScriptingEngine implements EngineHost {
                 );
             });
         } finally {
+            this.lineTriggerDepth--;
             this.api.endLine();
             if (outerLine !== undefined) this.runtimes.lua?.setCurrentLine(outerLine, isPrompt);
         }
     }
+
+    /** How many {@link processLineTriggers} passes are running, one inside the
+     *  other when a trigger calls feedTriggers. */
+    private lineTriggerDepth = 0;
 
     private emit(event: string, args: unknown[]): void {
         try {

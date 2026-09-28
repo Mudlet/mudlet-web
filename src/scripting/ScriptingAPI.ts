@@ -1590,6 +1590,11 @@ export class ScriptingAPI {
             // the session rather than the bag
             case 'undoServerWrap':      return this.session.undoServerWrap;
             case 'undoServerWrapWidth': return this.session.undoServerWrapWidth;
+            // Mudlet leaves "matches", "multimatches" and "line" out of the
+            // globals table until a script reads them; Mudlet Web sets them up
+            // front on every dispatch, which is Mudlet with this switched off
+            // (see e2e/knownDivergences.ts).
+            case 'lazyCaptureGlobals':  return false;
             case 'muteMediaAPI':       return this.session.sounds.isOriginMuted('api');
             case 'muteMediaGame':      return this.session.sounds.isOriginMuted('game');
             // read-only
@@ -1706,6 +1711,7 @@ export class ScriptingAPI {
             case 'mapRoundRooms': case 'mapShowRoomBorders':
             case 'mapShowGrid': case 'muteMediaAPI': case 'muteMediaGame':
             case 'mapperPanelVisible': case 'undoServerWrap':
+            case 'lazyCaptureGlobals':
                 return 'bool';
             case 'mapRoomSize': case 'mapExitSize': case 'undoServerWrapWidth':
                 return 'num';
@@ -1911,6 +1917,8 @@ export class ScriptingAPI {
                 this.patchConfigBag('specialForceGAOff', on);
                 return true;
             }
+            // Only the value it already has: see getConfig
+            case 'lazyCaptureGlobals': return !configBool(value);
             // Mudlet Host::mUndoServerWrap — rejoin the lines the game wrapped
             // itself. Live: the line assembler judges the next server line under
             // the new setting, and turning it off commits anything held.
@@ -3128,6 +3136,12 @@ export class ScriptingAPI {
             }
             const at = Math.max(0, Math.min(con.getCursorColumn(), buf.text.length));
             buf.insert(at, text, state);
+            if (this.inTriggerProcessing && con === this.mainConsole) {
+                // As for insertText: TConsole::insertLink moves the capture
+                // positions past the link, and the colours go with the text.
+                this.captureShiftHook?.(at, text.length);
+                this.spliceLineColorSnapshot(at, 0, { ...this.stateColorKeys(state), text });
+            }
             if (!this.inTriggerProcessing) buf.rerender();
             return;
         }
@@ -4532,6 +4546,12 @@ export class ScriptingAPI {
             }
             const at = Math.max(0, Math.min(con.getCursorColumn(), buf.text.length));
             buf.insert(at, text, state);
+            if (this.inTriggerProcessing && con === this.mainConsole) {
+                // As for insertText: TConsole::insertLink moves the capture
+                // positions past the link, and the colours go with the text.
+                this.captureShiftHook?.(at, text.length);
+                this.spliceLineColorSnapshot(at, 0, { ...this.stateColorKeys(state), text });
+            }
             if (!this.inTriggerProcessing) buf.rerender();
             return;
         }
@@ -5076,6 +5096,10 @@ export class ScriptingAPI {
         const state = keepColor ? undefined : this.outputConsole(targetWin).format.toSnapshot();
         buf.replace([sel.start, sel.start + sel.length], newText, state);
         if (this.inTriggerProcessing && this.getConsole(targetWin) === this.mainConsole) {
+            // TConsole::replace moves every capture from the start of the
+            // selection on by the change in length, so a later group is still
+            // found where its text now is
+            this.captureShiftHook?.(sel.start, newText.length - sel.length);
             // Same alignment the insert path needs: a replace that changes the
             // line's LENGTH moves every colour run after it. With keepColor the
             // replacement wears whatever the snapshot already had at that

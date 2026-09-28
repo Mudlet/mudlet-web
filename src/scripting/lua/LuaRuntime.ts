@@ -95,6 +95,68 @@ interface ParkedDialogThread {
     };
 }
 
+// wasmoon's pushTable keeps every table it is building referenced in the
+// registry (so a cycle can be pushed as the same table twice), and frees ALL of
+// them in the `finally` of EVERY level — so a nested object's level frees its
+// parent's ref and its own, and the parent's level then frees both again.
+// Freeing a registry ref twice puts its slot on luaL_ref's free list twice, and
+// two later luaL_ref calls are handed the same slot: whichever writes second
+// silently replaces what the first one parked. That is how an alias pass a
+// script started came to hand it back someone else's table for its `matches`
+// (pushNestedDispatchState parks by ref) once anything had pushed a nested JS
+// object — installing a package does. Same algorithm, with the refs freed once,
+// by the call that started the push.
+{
+    type PushOptions = Parameters<LuaThread['pushTable']>[1] & { refs?: Map<unknown, number> };
+    const isPlainObject = (value: unknown): value is Record<string, unknown> => {
+        if (value === null || typeof value !== 'object') return false;
+        const proto = Object.getPrototypeOf(value);
+        return proto === null || proto === Object.prototype;
+    };
+    LuaThread.prototype.pushTable = function (this: LuaThread, object: Record<string | number, unknown>, options: PushOptions = {}) {
+        const api = this.luaApi;
+        const L = this.address;
+        const owner = !options.refs;
+        const refs = options.refs ??= new Map<unknown, number>();
+        const seen = refs.get(object);
+        if (seen !== undefined) {
+            api.lua_rawgeti(L, LUA_REGISTRYINDEX, seen);
+            return;
+        }
+        const arrIndexs: number[] = [];
+        const recIndexs: string[] = [];
+        if (Array.isArray(object)) {
+            for (const key of Object.keys(object)) {
+                if (!isNaN(Number(key))) arrIndexs.push(Number(key));
+                else recIndexs.push(key);
+            }
+        } else if (isPlainObject(object)) {
+            recIndexs.push(...Object.keys(object));
+        }
+        api.lua_createtable(L, arrIndexs.length, recIndexs.length);
+        const ref = api.luaL_ref(L, LUA_REGISTRYINDEX);
+        api.lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+        refs.set(object, ref);
+        try {
+            for (const key of arrIndexs) {
+                this.pushValue(key, options);
+                this.pushValue(object[key], options);
+                api.lua_settable(L, -3);
+            }
+            for (const key of recIndexs) {
+                this.pushValue(key, options);
+                this.pushValue(object[key], options);
+                api.lua_settable(L, -3);
+            }
+        } finally {
+            if (owner) {
+                for (const held of refs.values()) api.luaL_unref(L, LUA_REGISTRYINDEX, held);
+                refs.clear();
+            }
+        }
+    };
+}
+
 const NESTED_DISPATCH_GLOBALS = ['matches', 'multimatches', 'namedCaptures', 'command'] as const;
 
 // All *.lua and *.json files under mudlet-lua/ are served via the VFS at
@@ -500,6 +562,10 @@ export class LuaRuntime implements IScriptingRuntime {
          *  reach the item by it. Absent for the rest, which are only ever known
          *  by the id they were handed. */
         name?: string;
+        /** Its script did not compile. Mudlet still makes the item, so that it
+         *  can be seen and repaired, but TAlias::setScript leaves it in a state
+         *  that neither fires nor reports active, however it is switched. */
+        uncompiled?: boolean;
     }>();
 
     // Tracks label callback ids per slot so re-binds can free the prior Lua-
@@ -1475,7 +1541,11 @@ export class LuaRuntime implements IScriptingRuntime {
                 // firing on a line it did not match, with nothing captured.
                 const run = matches.length === 0 ? null : this.api.currentLineColorMatch(wantFg, wantBg);
                 this.setMatches(run === null ? [] : [run]);
-                dispatchCb(cbId, 'tempColorTrigger');
+                try {
+                    dispatchCb(cbId, 'tempColorTrigger');
+                } finally {
+                    if (run !== null) this.clearCaptureGlobals();
+                }
                 fires++;
                 if (max > 0 && fires >= max) {
                     killed = true;
@@ -1784,17 +1854,22 @@ export class LuaRuntime implements IScriptingRuntime {
                 : this.api.timers.killTimer(idOrName));
 
         // ── Aliases ───────────────────────────────────────────────────────────
-        this.lua.global.set('__mudlet_tempAlias', (pattern: string, cbId: number) => {
+        this.lua.global.set('__mudlet_tempAlias', (pattern: string, cbId: number, uncompiled?: boolean) => {
             const id = this.api.allocateItemId();
             const unsub = this.api.aliases.addTemp(pattern, (m: RegExpMatchArray) => {
-                if (this.tempIds.get(id)?.enabled === false) return;
+                const entry = this.tempIds.get(id);
+                if (entry?.enabled === false || entry?.uncompiled) return;
                 // Named groups go onto the same `matches` table as the numbered
                 // ones, which is how Mudlet presents them (setCaptureNameGroups
                 // feeds the same table setCaptureGroups does).
                 this.setMatches(Array.from(m), undefined, m.groups as Record<string, string> | undefined);
-                dispatchCb(cbId, 'tempAlias');
+                try {
+                    dispatchCb(cbId, 'tempAlias');
+                } finally {
+                    this.clearCaptureGlobals();
+                }
             });
-            this.tempIds.set(id, { kill: () => { unsub(); releaseCb(cbId); }, type: 'alias', enabled: true });
+            this.tempIds.set(id, { kill: () => { unsub(); releaseCb(cbId); }, type: 'alias', enabled: true, uncompiled: !!uncompiled });
             return id;
         });
         this.lua.global.set('killAlias', (idOrName: number | string) => {
@@ -1853,6 +1928,7 @@ export class LuaRuntime implements IScriptingRuntime {
                     // calls the plain `call` for the rest and never looks.
                     renewed = max > 0 && this.lastCbReturnedTrue();
                 } finally {
+                    if (LuaRuntime.captured(matches)) this.clearCaptureGlobals();
                     this.currentMatches = prevMatches;
                     this.currentCaptureSpans = prevSpans;
                     this.currentNamedSpans = prevNamed;
@@ -1900,9 +1976,12 @@ export class LuaRuntime implements IScriptingRuntime {
                 releaseCb(cbId);
                 this.tempIds.delete(id);
             };
-            unsub = this.api.triggers.addTempLine(Number(from), Number(howMany), (matches) => {
+            unsub = this.api.triggers.addTempLine(Number(from), Number(howMany), () => {
                 if (killed || this.tempIds.get(id)?.enabled === false) return;
-                this.setMatches(matches);
+                // A line trigger has no pattern and so no captures, and Mudlet
+                // changes "matches" only for a fire with captures
+                // (TLuaInterpreter::setMatches) — the script is handed the
+                // table the previous fire left in place, not one of its own.
                 dispatchCb(cbId, 'tempLineTrigger');
                 fires++;
                 if (fires >= total) kill();
@@ -2005,21 +2084,27 @@ export class LuaRuntime implements IScriptingRuntime {
         //   N=1 → full regex match (NOT the first capture)
         //   N=2 → first explicit capture
         //   N=k → (k-1)th explicit capture
-        // Named form selects the (?<name>...) capture by name. Returns the
-        // start column of the selection, or -1 if no such capture / unmatched.
+        // Named form selects the (?<name>...) capture by name. Answers -1 when
+        // there is no such capture or it is empty, and otherwise what the
+        // selection did, as a number: TConsole::selectSection is a bool, so 1
+        // when the text was selected and 0 when it could not be.
         this.lua.global.set('selectCaptureGroup', (groupOrName: number | string) => {
+            const select = (span: CaptureSpan): number =>
+                this.api.selectSection(span.start, span.length) ? 1 : 0;
+            // The fallbacks for a capture without a recorded position find it
+            // by its text instead
+            const selectText = (text: string | undefined): number =>
+                text ? (this.api.selectString(text, 1) >= 0 ? 1 : 0) : -1;
             if (typeof groupOrName === 'number') {
                 if (groupOrName < 1) return -1;
                 if (groupOrName === 1) {
                     if (this.currentFullMatchSpan) {
                         if (this.currentFullMatchSpan.length === 0) return -1;
-                        this.api.selectSection(this.currentFullMatchSpan.start, this.currentFullMatchSpan.length);
-                        return this.currentFullMatchSpan.start;
+                        return select(this.currentFullMatchSpan);
                     }
                     // No span (substring/startOfLine perm trigger): pick the
                     // first textual occurrence of the matched text.
-                    const text = this.currentMatches[0] ?? '';
-                    return text ? this.api.selectString(text, 1) : -1;
+                    return selectText(this.currentMatches[0]);
                 }
                 // Group N>1 is the (N-1)th explicit capture. currentMatches is
                 // [fullLine, cap1, cap2, ...], so the text sits at index N-1
@@ -2029,15 +2114,13 @@ export class LuaRuntime implements IScriptingRuntime {
                 if (captureIdx >= this.currentMatches.length) return -1;
                 const text = this.currentMatches[captureIdx];
                 const span = this.currentCaptureSpans[captureIdx - 1];
-                if (!span) return text ? this.api.selectString(text, 1) : -1;
+                if (!span) return selectText(text);
                 if (span.length === 0) return -1;
-                this.api.selectSection(span.start, span.length);
-                return span.start;
+                return select(span);
             }
             const span = this.currentNamedSpans[groupOrName];
             if (!span || span.length === 0) return -1;
-            this.api.selectSection(span.start, span.length);
-            return span.start;
+            return select(span);
         });
 
         // ── Network ───────────────────────────────────────────────────────────
@@ -2581,7 +2664,7 @@ end`,
         if (typeof idOrName === 'number') return idOrName;
         const byName = this.tempItemIdByName(idOrName, type);
         if (byName !== null) return byName;
-        return /^d+$/.test(idOrName) ? Number(idOrName) : null;
+        return /^\d+$/.test(idOrName) ? Number(idOrName) : null;
     }
 
     private killTempItem(id: number, type: 'alias' | 'trigger'): boolean {
@@ -2623,7 +2706,8 @@ end`,
 
     /** Whether a live temp item is enabled — backs isActive(id, type). */
     tempItemEnabled(id: number): boolean {
-        return this.tempIds.get(id)?.enabled === true;
+        const entry = this.tempIds.get(id);
+        return entry?.enabled === true && !entry.uncompiled;
     }
 
     // ── busted bridge (VITE_BUSTED builds only) ──────────────────────────────
@@ -3412,6 +3496,7 @@ end`);
         try {
             this.execInner(code, name, chunkName);
         } finally {
+            if (LuaRuntime.captured(matches, multimatches)) this.clearCaptureGlobals();
             this.currentMatches = prevMatches;
             this.currentCaptureSpans = prevSpans;
             this.currentNamedSpans = prevNamedSpans;
@@ -3434,23 +3519,90 @@ end`);
         // wasmoon's auto-converting global.set — ~2.4× cheaper per fired trigger,
         // and the matches table is the dominant cost of trigger/alias dispatch.
         // GMCP/MSDP already build their tables this way (pushJsValue).
+        //
+        // Only what the fire captured changes, as in TLuaInterpreter::setMatches:
+        // a multiline trigger is handed `multimatches` and leaves `matches` as it
+        // is, a single-line fire is handed `matches` and leaves `multimatches` —
+        // a table a script put there included — and a fire that captured
+        // nothing (a stay-open line) is handed whatever the last one left.
+        if (this.inert) return;
         const api = this.lua.global.luaApi;
         const L = this.lua.global.address;
-        this.pushMatchesTable(L, matches, namedGroups);
-        this.rawSetGlobal('matches');
-        api.lua_createtable(L, multimatches?.length ?? 0, 0);
-        if (multimatches) {
+        if (multimatches !== undefined) {
+            if (multimatches.length === 0) return;
+            api.lua_createtable(L, multimatches.length, 0);
             for (let i = 0; i < multimatches.length; i++) {
                 // Each row gets the names its own line defined, alongside the
                 // numbered captures — the same table shape as .
                 this.pushMatchesTable(L, multimatches[i], multiNamedGroups?.[i]);
                 api.lua_rawseti(L, -2, i + 1);
             }
+            this.rawSetGlobal('multimatches');
+            return;
         }
-        this.rawSetGlobal('multimatches');
+        if (matches.length === 0) return;
+        this.pushMatchesTable(L, matches, namedGroups);
+        this.rawSetGlobal('matches');
         // Mudlet also exposes a separate `namedCaptures` table; keep parity.
         this.pushJsValue(L, namedGroups ?? {});
         this.rawSetGlobal('namedCaptures');
+    }
+
+    /** Whether {@link setMatches} handed the scripts anything for these
+     *  captures, which is when {@link clearCaptureGlobals} is owed after them. */
+    private static captured(matches: (string | undefined)[], multimatches?: (string | undefined)[][]): boolean {
+        return multimatches !== undefined ? multimatches.length > 0 : matches.length > 0;
+    }
+
+    /** Registry key of the empty table `matches` holds between fires, reused
+     *  for as long as nothing has been put in it. See {@link clearCaptureGlobals}.
+     *  A named key rather than a luaL_ref: the table is replaced in place, and
+     *  writing to a numbered slot is only safe while nothing else has freed it. */
+    private static readonly EMPTY_MATCHES_KEY = 'mudlet.web.emptyMatches';
+
+    /**
+     * Put the between-fires globals back once a fire with captures is over,
+     * as TLuaInterpreter::clearCaptureGroups does after every trigger and alias
+     * that had any — even when its script raised. `matches` becomes an empty
+     * table and `multimatches` a new one, so a script that kept a reference to
+     * the tables its fire was handed keeps them to itself, and a later fire
+     * never finds another fire's captures in place.
+     *
+     * The empty `matches` is one table reused while it is still empty and has
+     * no metatable (Mudlet's pushUnusedTable): a table a script has filled or
+     * given a metatable is that script's, and a new one takes its place.
+     */
+    private clearCaptureGlobals(): void {
+        if (this.inert) return;
+        const api = this.lua.global.luaApi;
+        const L = this.lua.global.address;
+        const top = api.lua_gettop(L);
+        this.pushUnusedEmptyMatches();
+        this.rawSetGlobal('matches');
+        api.lua_createtable(L, 0, 0);
+        this.rawSetGlobal('multimatches');
+        api.lua_createtable(L, 0, 0);
+        this.rawSetGlobal('namedCaptures');
+        api.lua_settop(L, top);
+    }
+
+    private pushUnusedEmptyMatches(): void {
+        const api = this.lua.global.luaApi;
+        const L = this.lua.global.address;
+        api.lua_getfield(L, LUA_REGISTRYINDEX, LuaRuntime.EMPTY_MATCHES_KEY);
+        if (api.lua_type(L, -1) === LuaType.Table) {
+            api.lua_pushnil(L);
+            if (api.lua_next(L, -2) === 0) {
+                if (api.lua_getmetatable(L, -1) === 0) return;
+                api.lua_pop(L, 1);
+            } else {
+                api.lua_pop(L, 2);
+            }
+        }
+        api.lua_pop(L, 1);
+        api.lua_createtable(L, 0, 0);
+        api.lua_pushvalue(L, -1);
+        api.lua_setfield(L, LUA_REGISTRYINDEX, LuaRuntime.EMPTY_MATCHES_KEY);
     }
 
     /**
@@ -3471,6 +3623,7 @@ end`);
     private rawSetGlobal(name: string): void {
         const api = this.lua.global.luaApi;
         const L = this.lua.global.address;
+        this.syncGlobalsFromRunning();
         api.lua_pushstring(L, name);
         // lua_rawset wants the key under the value; the value is already there,
         // so the key pushed on top of it has to go below it.
@@ -3506,6 +3659,7 @@ end`);
         const api = this.lua.global.luaApi;
         const L = this.lua.global.address;
         const top = api.lua_gettop(L);
+        this.syncGlobalsFromRunning();
         // Every Lua call is made before the entry goes onto the stack: an entry
         // that is not parked yet cannot be handed to the wrong caller by a pop.
         const refs = NESTED_DISPATCH_GLOBALS.map(name => {
@@ -3536,6 +3690,7 @@ end`);
         const api = this.lua.global.luaApi;
         const L = this.lua.global.address;
         const top = api.lua_gettop(L);
+        this.syncGlobalsFromRunning();
         // Raw again, and for the same reason as the save: a reference to a
         // global that was nil reads back as nil, which is what it has to be put
         // back as — and that write is the one an absent name's `__newindex`
@@ -3673,8 +3828,64 @@ end`);
         }
     }
 
+    // ── The globals table, as one slot ─────────────────────────────────────
+    // Mudlet runs every script on the one lua_State, so `setfenv(0, t)` in a
+    // script gives the whole interpreter another globals table: the scripts
+    // run after it, a dispatch nested inside it, and the captures Mudlet hands
+    // out all go to `t` from then on (lua_setglobal and LUA_GLOBALSINDEX are
+    // the running thread's). Here each script runs on a coroutine of its own,
+    // and in Lua 5.1 a thread's globals table is its own — so the table a
+    // script switched to is carried across: into the main state before a new
+    // thread is made (lua_newthread copies it from there) and before a
+    // dispatch writes a global, and back into the script's thread when a
+    // thread nested inside it returns.
+    private readonly runningThreads: LuaThread[] = [];
+
+    /** Make the globals table `from` runs with the main state's, and so the one
+     *  every thread made from now on starts with. */
+    private adoptGlobalsOf(from: LuaThread): void {
+        const api = this.lua.global.luaApi;
+        const L = this.lua.global.address;
+        api.lua_pushvalue(from.address, LUA_GLOBALSINDEX);
+        api.lua_xmove(from.address, L, 1);
+        api.lua_replace(L, LUA_GLOBALSINDEX);
+    }
+
+    /** Hand `to` the main state's globals table. */
+    private giveGlobalsTo(to: LuaThread): void {
+        const api = this.lua.global.luaApi;
+        const L = this.lua.global.address;
+        api.lua_pushvalue(L, LUA_GLOBALSINDEX);
+        api.lua_xmove(L, to.address, 1);
+        api.lua_replace(to.address, LUA_GLOBALSINDEX);
+    }
+
+    /** Before anything reads or writes the globals table from JS, or makes a
+     *  thread: whatever the running script switched to is the one. */
+    private syncGlobalsFromRunning(): void {
+        const running = this.runningThreads[this.runningThreads.length - 1];
+        if (running) this.adoptGlobalsOf(running);
+    }
+
+    /** Run `resume` with `t` as the running thread, then leave its globals
+     *  table in place — in the main state and in the thread it returns to. */
+    private resumeAsRunning<T>(t: LuaThread, resume: () => T): T {
+        this.runningThreads.push(t);
+        try {
+            return resume();
+        } finally {
+            this.runningThreads.pop();
+            if (!this.inert) {
+                this.adoptGlobalsOf(t);
+                const outer = this.runningThreads[this.runningThreads.length - 1];
+                if (outer) this.giveGlobalsTo(outer);
+            }
+        }
+    }
+
     private execOnThread(code: string, name: string, chunkName?: string): unknown {
         const g = this.lua.global;
+        this.syncGlobalsFromRunning();
         const t = g.newThread();
         const threadIndex = g.getTop();
         try {
@@ -3682,7 +3893,7 @@ end`);
             t.pushValue(code);
             t.pushValue(name);
             if (chunkName !== undefined) t.pushValue(chunkName);
-            const res = t.resume(chunkName !== undefined ? 3 : 2);
+            const res = this.resumeAsRunning(t, () => t.resume(chunkName !== undefined ? 3 : 2));
             if (res.result === LuaReturn.Yield) {
                 // invokeFileDialog suspended the handler; resumeDialogThread
                 // finishes it later and reports its errors. There is no result
@@ -3719,11 +3930,12 @@ end`);
 
     private runChunkOnThread(chunk: string, label: string): void {
         const g = this.lua.global;
+        this.syncGlobalsFromRunning();
         const t = g.newThread();
         const threadIndex = g.getTop();
         try {
             t.loadString(chunk, '@' + label);
-            const res = t.resume(0);
+            const res = this.resumeAsRunning(t, () => t.resume(0));
             if (res.result === LuaReturn.Yield) {
                 this.parkDialogThread(t, label, 'chunk', threadIndex);
                 return;

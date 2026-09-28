@@ -213,6 +213,25 @@ describe('MxpParser — robustness', () => {
     expect(b.links[0].payload).toBe('north');
   });
 
+  // TBuffer: an ESC while a tag is being built aborts it (abortCurrentTag) —
+  // an escape sequence cannot be part of a tag. What was read of it is text in
+  // the colour before the escape, and the escape still acts.
+  it('shows a tag an escape sequence cut short as the text it was', () => {
+    const { parser } = makeParser();
+    const r = parser.parseLine(`${SECURE}pre<B${ESC}[31mred${ESC}[0m tail`);
+    expect(r.plain).toBe('pre<Bred tail');
+    expect(stateOf(r.segments, '<B')?.foreground).toEqual(stateOf(r.segments, 'pre')?.foreground);
+    expect(stateOf(r.segments, 'red')?.foreground).not.toEqual(stateOf(r.segments, 'pre')?.foreground);
+    // Nothing is held back for the next line, so it arrives on its own
+    expect(parser.parseLine(`${SECURE}<b>next</b>`).plain).toBe('next');
+  });
+
+  it('cuts a tag short at an escape inside a quoted value too', () => {
+    const { parser } = makeParser();
+    const r = parser.parseLine(`${SECURE}<send "a${ESC}[1mb">x</send>`);
+    expect(r.plain).toBe('<send "ab">x');
+  });
+
   it('emits a lone "<" that is not a tag as literal text', () => {
     const { parser } = makeParser();
     const r = parser.parseLine(`${SECURE}5 < 10 and 10 > 5`);

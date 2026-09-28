@@ -566,6 +566,17 @@ export class MxpParser {
                     continue;
                 }
                 const close = findTagEnd(text, i);
+                // An ANSI escape cannot be part of a tag, so one arriving
+                // before the tag closed cuts it short: what was read of it is
+                // shown as the text it was, in the colours in use before the
+                // escape, and the escape then acts as usual (TBuffer's
+                // `abortCurrentTag()` on an ESC while a tag is being built).
+                const cutAt = text.indexOf("\x1b", i + 1);
+                if (cutAt !== -1 && (close === -1 || cutAt < close)) {
+                    this.appendText(text.slice(i, cutAt));
+                    i = cutAt;
+                    continue;
+                }
                 if (close === -1) {
                     // Unterminated tag at end of input — hold it for the next line.
                     if (depth === 0 && n - i <= MAX_PENDING) {

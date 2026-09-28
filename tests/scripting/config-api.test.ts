@@ -23,6 +23,17 @@ describe('setConfig / getConfig', () => {
         expect(h.run('return getConfig("enableMSDP")')).toBe(false);
     });
 
+    // Mudlet Web sets matches/multimatches/line up front on every dispatch,
+    // which is Mudlet with lazyCaptureGlobals off — so that is all it reports,
+    // and turning it on is refused rather than claimed.
+    it('reports lazyCaptureGlobals off and refuses to turn it on', () => {
+        expect(h.run('return getConfig("lazyCaptureGlobals")')).toBe(false);
+        expect(h.run('return (setConfig("lazyCaptureGlobals", false))')).toBe(true);
+        expect(h.run('return select(2, setConfig("lazyCaptureGlobals", true))'))
+            .toBe("setConfig: 'true' is not a valid value for 'lazyCaptureGlobals'");
+        expect(h.run('return getConfig("lazyCaptureGlobals")')).toBe(false);
+    });
+
     it('maps inverse "force off" keys to the negated protocol flag', () => {
         h.run('setConfig("specialForceMxpNegotiationOff", true)');
         expect(useAppStore.getState().connectionProfile[CONN]?.protocols?.mxp).toBe(false);
