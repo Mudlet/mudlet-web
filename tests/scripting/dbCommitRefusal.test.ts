@@ -47,7 +47,7 @@ describe('a refused COMMIT is reported, not swallowed', () => {
       conn:execute("DELETE FROM child")
       local ok = conn:commit()
       local rows = conn:execute("SELECT COUNT(*) FROM child")
-      return tostring(ok) .. "|" .. tostring(rows:fetch()[1])`))
+      return tostring(ok) .. "|" .. tostring((rows:fetch()))`))
       .toBe('true|0');
   });
 
@@ -56,7 +56,7 @@ describe('a refused COMMIT is reported, not swallowed', () => {
       conn:commit()
       conn:rollback()
       local rows = conn:execute("SELECT COUNT(*) FROM child")
-      return rows:fetch()[1]`))
+      return (rows:fetch())`))
       .toBe(0);
   });
 

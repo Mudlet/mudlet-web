@@ -7,6 +7,7 @@
 --   local cur, err = conn:execute(sql)            -- cursor for SELECT
 --   local n = conn:execute("INSERT ...")          -- rowcount otherwise
 --   local row = cur:fetch({}, "a")                -- assoc-mode row, or nil
+--   local a, b = cur:fetch()                      -- a row as multiple values
 --   cur:close(); conn:close(); env:close()
 --
 -- The JS bridge functions (__sql_*) are synchronous — they return a value
@@ -19,40 +20,85 @@
 -- well, or _migrate treats every existing table as brand-new and clobbers it.
 -- Lua 5.1's newproxy(true) gives us a userdata with a fresh metatable; methods
 -- live on its __index and close over this cursor's row/position state.
-local function make_cursor(rows, columns)
+--
+-- The methods follow ls_sqlite3.c:
+--   cur:fetch([t [, mode]]) fills and returns `t` when one is given — by column
+--     number, by column name, or both, as `mode` contains "n" and/or "a"
+--     (default "n") — and otherwise returns the row's values as multiple
+--     results; nil once the rows run out.
+--   cur:getcolnames() / cur:getcoltypes() — the column names, and the types the
+--     columns were declared with (nil for a column that is an expression).
+--   cur:close() — true, or false when already closed. Every other method on a
+--     closed cursor raises.
+local function make_cursor(rows, columns, coltypes)
     local pos = 0
     local n = #rows
+    local ncols = #columns
+    local closed = false
+
+    local function check_open(method)
+        if closed then
+            error("bad argument #1 to '" .. method .. "' (LuaSQL: cursor is closed)", 3)
+        end
+    end
 
     local cur = newproxy(true)
     local mt = getmetatable(cur)
     mt.__index = {
         fetch = function(_, t, mode)
+            check_open("fetch")
             pos = pos + 1
             if pos > n then return nil end
-            t = t or {}
             local row = rows[pos]
-            if mode == "a" then
-                for i = 1, #columns do
-                    t[columns[i]] = row[i]
-                end
-            else
-                for i = 1, #columns do
+            if type(t) ~= "table" then
+                return unpack(row, 1, ncols)
+            end
+            mode = type(mode) == "string" and mode or "n"
+            if mode:find("n", 1, true) then
+                for i = 1, ncols do
                     t[i] = row[i]
+                end
+            end
+            if mode:find("a", 1, true) then
+                for i = 1, ncols do
+                    t[columns[i]] = row[i]
                 end
             end
             return t
         end,
 
-        close = function() return true end,
+        close = function()
+            if closed then return false end
+            closed = true
+            return true
+        end,
 
         getcolnames = function()
+            check_open("getcolnames")
             local r = {}
-            for i = 1, #columns do r[i] = columns[i] end
+            for i = 1, ncols do r[i] = columns[i] end
+            return r
+        end,
+
+        getcoltypes = function()
+            check_open("getcoltypes")
+            local types = coltypes()
+            local r = {}
+            for i = 1, ncols do r[i] = types and types[i] or nil end
             return r
         end,
     }
 
     return cur
+end
+
+-- LuaSQL reports a failure as "LuaSQL: " followed by SQLite's own message.
+-- sqlite-wasm's errors lead with the result code instead ("SQLITE_ERROR:
+-- sqlite3 result code 1: no such table: x"), which is dropped for it.
+local function luasql_error(message)
+    message = tostring(message or "")
+    message = message:gsub("^SQLITE_[%u_]+: sqlite3 result code %d+: ", "")
+    return "LuaSQL: " .. message
 end
 
 local function make_conn(conn_id)
@@ -90,7 +136,7 @@ local function make_conn(conn_id)
         if in_transaction then
             local result = __sql_exec(conn_id, verb)
             if type(result) == "table" and result.kind == "error" then
-                return false, result.message
+                return false, luasql_error(result.message)
             end
             in_transaction = false
         end
@@ -104,7 +150,7 @@ local function make_conn(conn_id)
             return nil, "sqlite returned nil"
         end
         if result.kind == "error" then
-            return nil, result.message
+            return nil, luasql_error(result.message)
         elseif result.kind == "rows" then
             -- Rows arrive as a Lua source literal (`{{...},{...},...}`) rather
             -- than a pre-pushed table. Avoids wasmoon's per-cell pushTable cost
@@ -118,7 +164,13 @@ local function make_conn(conn_id)
             if not ok then
                 return nil, "sql rows eval error: " .. tostring(rows)
             end
-            return make_cursor(rows, result.columns)
+            -- The declared types are looked up only if a script asks for them,
+            -- by preparing the statement again: most cursors never are.
+            local coltypes
+            return make_cursor(rows, result.columns, function()
+                if coltypes == nil then coltypes = __sql_coltypes(conn_id, sql) or false end
+                return coltypes or nil
+            end)
         else
             return result.changes or 0
         end
@@ -156,7 +208,7 @@ local function make_conn(conn_id)
                 local result = __sql_exec(conn_id, "COMMIT")
                 if type(result) == "table" and result.kind == "error" then
                     auto_commit = false
-                    return false, result.message
+                    return false, luasql_error(result.message)
                 end
                 in_transaction = false
             end

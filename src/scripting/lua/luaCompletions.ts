@@ -31,13 +31,13 @@ const IO_COMPLETIONS: Completion[] = [
 // ── lfs ───────────────────────────────────────────────────────────────────────
 
 const LFS_COMPLETIONS: Completion[] = [
-    fn('mkdir',      '(path) → true|nil,err',          'Create a directory (recursive)'),
-    fn('rmdir',      '(path) → true|nil,err',          'Remove a directory'),
+    fn('mkdir',      '(path) → true|nil,err,errno',    'Create a directory (its parent must already exist)'),
+    fn('rmdir',      '(path) → true|nil,err,errno',    'Remove an empty directory'),
     fn('dir',        '(path) → iterator',              'Iterate directory entries'),
-    fn('attributes', '(path, [attr]) → table|value',  'Get file/directory attributes (mode, size, modification, access)'),
+    fn('attributes', '(path, [attr|table]) → table|value|nil,err,errno', 'Get file/directory attributes (mode, size, modification, access, change, permissions, ...)'),
     fn('currentdir', '() → string',                   'Get current working directory'),
     fn('chdir',      '(path) → true|nil,err',          'Change current working directory'),
-    fn('touch',      '(path)',                         'Create file if it does not exist'),
+    fn('touch',      '(path, [atime, [mtime]]) → true|nil,err,errno', 'Set access/modification times (now by default); does not create the file'),
 ];
 
 // ── string extensions ─────────────────────────────────────────────────────────
@@ -647,7 +647,8 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('ioprint',            '(...)',                     'Print to the developer console (Mudlet prints to stdout; in the browser the closest analogue is the devtools console).'),
     fn('getProfileTabNumber', '([name]) → number',        'Tab index of a profile. mudlet is a single-profile web app, so this always returns 1.'),
     fn('getProfiles',         '() → {[name]=info}',        'Table keyed by profile name, one entry per configured connection: { host, port, loaded, connected, description }. loaded = open in some tab (each profile lives in its own browser tab); connected = connected to its game (live for this tab, last-announced for others). Cross-tab via Web Locks + a BroadcastChannel.'),
-    fn('loadProfile',         '(name) → bool',             'Open the named profile in a new browser tab and connect to it (each profile lives in its own tab). The calling profile stays open. Returns false for an unknown name, the already-open profile, or a blocked popup. Needs a user gesture, so it works from a key/button/alias but a browser may block it from a trigger.'),
+    fn('loadProfile',         '(name) → true | nil, err',  'Open the named profile in a new browser tab and connect to it (each profile lives in its own tab). The calling profile stays open. Returns nil plus a message for an unknown name, a profile that is already open, or a blocked popup. Needs a user gesture, so it works from a key/button/alias but a browser may block it from a trigger.'),
+    fn('closeProfile',        '(name) → true | nil, err',  'Close the named open profile — this one, or one open in another tab — disconnecting it and returning its tab to the connection screen. Returns nil plus a message when no open profile has that name.'),
     fn('loadRawFile',        '(path) → string',    'Read entire file from VFS and return its contents'),
     fn('loadfile',           '(filename)',          'Load a Lua file from VFS'),
     fn('dofile',             '(filename)',          'Load and execute a Lua file from VFS'),
@@ -955,9 +956,9 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('showToolBar',         '(name) → bool',                       'Enable a toolbar group so the button strip renders it. False when no toolbar of that name exists.'),
     fn('hideToolBar',         '(name) → bool',                       'Disable a toolbar group so the button strip hides it. False when no toolbar of that name exists.'),
     fn('tempButton',          '(toolbar, name, orientation) → id',
-       'Append a transient button, with no command or script, under an existing toolbar group. orientation: 0=horizontal, 1=vertical. Returns the new id, or -1 if no toolbar of that name exists.'),
+       'Append a transient button, with no command or script, under an existing toolbar group. orientation: 0=horizontal, 1=vertical. Returns the new id, or nothing if no toolbar of that name exists or the name is already taken.'),
     fn('tempButtonToolbar',   '(name [, orientation [, location]]) → id',
-       'Create a transient toolbar group. orientation: 0=horizontal, 1=vertical. location: 0=top, 1=bottom, 2=left, 3=right, 4=floating. Returns the new id, or -1 on duplicate name.'),
+       'Create a transient toolbar group. orientation: 0=horizontal, 1=vertical. location: 0=top, 1=bottom, 2=left, 3=right, 4=floating. Returns the new id, or nothing if a toolbar or button already has that name.'),
     fn('setButtonState',      '(name, state) → bool',                'Set the pressed state of a two-state (push-down) button by name. False when no such button.'),
     fn('getButtonState',      '(name) → bool|nil',                   'Read the pressed state of a two-state button. nil when no such button.'),
     fn('setButtonStyleSheet', '(name, css) → bool',                  'Store a Qt-style stylesheet on a button. The renderer translates the flat-declarations subset to inline style. False when no such button.'),

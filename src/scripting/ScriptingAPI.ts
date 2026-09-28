@@ -7,6 +7,7 @@ import type { TimerEngine } from '../mud/timers/TimerEngine';
 import type { KeyEngine } from '../mud/keybindings/KeyEngine';
 import { classifyReservedKey, formatKeyCombo, reservedKeyNote } from '../mud/keybindings/browserReservedKeys';
 import { CLIENT_VERSION } from '../version';
+import { timeZoneAbbreviation, timeZoneId, timeZoneOffset } from '../utils/timeZone';
 import { getBrand } from '../branding';
 import type { WindowHandle, WindowOpenOptions } from '../ui/windows/types';
 import { MAP_WIDGET_ID, MAPPER_WIDGET_ID } from '../ui/windows/types';
@@ -84,6 +85,9 @@ const DEFAULT_BG_RGB: [number, number, number] = [0x00, 0x00, 0x00];
 type RgbKey = number;
 /** Pattern codes with a meaning of their own: Mudlet's `TTrigger::scmIgnored`
  *  ("any colour") and `TTrigger::scmDefault` (the console's default). */
+/** The font size Mudlet gives a new miniconsole (TMainConsole::createMiniConsole). */
+const MINICONSOLE_DEFAULT_FONT_SIZE = 12;
+
 const COLOR_IGNORED = -1;
 const COLOR_DEFAULT = -2;
 /** No colour at all: an ANSI code outside 0-255, or a colour that does not
@@ -1025,6 +1029,8 @@ export class ScriptingAPI {
         this.keys = keyEngine;
         this.stopwatches = new StopwatchManager(localStorageStopwatchStore(connectionId));
         this.presence = new ProfilesPresence(connectionId, () => this.session.status === 'connected');
+        // Another tab's closeProfile(<this profile>).
+        this.presence.onCloseRequested = () => { this.closeMudlet(); };
         // Re-announce this tab's connected state to other tabs on connect/
         // disconnect (for their getProfiles). Deferred to a microtask so the
         // session's own status handler has run before we read session.status.
@@ -1355,32 +1361,52 @@ export class ScriptingAPI {
         for (const line of lines) this.echo(line + '\n');
     }
 
-    /** Mudlet `loadProfile(name) → bool`. Opens the named profile and connects
+    /** Mudlet `loadProfile(name)`. Opens the named profile and connects
      *  to it. Each profile lives in its own browser tab (the per-profile lock
      *  keeps it to one tab), so this opens a NEW tab at `?profile=<id>&connect=1`
      *  rather than switching the current one — the calling profile stays open
-     *  alongside, mirroring Mudlet's multi-profile model. Returns false for an
-     *  unknown name, when targeting the profile already open in this tab, or when
-     *  the browser blocks the popup. NOTE: `window.open` needs a user gesture, so
-     *  this works from a key/button/alias but a browser may block it from a
-     *  trigger (no Mudlet equivalent to that limitation). */
-    loadProfile(name: string): boolean {
-        const target = (name ?? '').trim();
-        if (!target) return false;
+     *  alongside, mirroring Mudlet's multi-profile model.
+     *
+     *  Returns null on success, or the message for Mudlet's `nil, message`
+     *  refusal: an unknown name, a profile already open (in this tab or any
+     *  other — the loaded set is the same one getProfiles() reports), or a popup
+     *  the browser blocked. NOTE: `window.open` needs a user gesture, so this
+     *  works from a key/button/alias but a browser may block it from a trigger
+     *  (no Mudlet equivalent to that limitation). */
+    loadProfile(name: string): string | null {
+        const target = name ?? '';
         const conn = useAppStore.getState().connections.find(c => c.name === target);
-        if (!conn) {
-            this.echo(`loadProfile: no profile named "${target}"\n`);
-            return false;
-        }
-        if (conn.id === this.connectionId) {
-            this.echo(`loadProfile: "${target}" is already open in this tab\n`);
-            return false;
+        if (!conn) return `loadProfile: profile '${target}' does not exist`;
+        if (conn.id === this.connectionId || this.presence.loadedIds().includes(conn.id)) {
+            return `loadProfile: profile '${target}' is already loaded`;
         }
         const url = new URL(window.location.href);
         url.searchParams.set('profile', conn.id);
         url.searchParams.set('connect', '1');
         const w = window.open(url.toString(), '_blank');
-        return !!w;
+        return w ? null : `loadProfile: could not open profile '${target}', the browser blocked the new tab`;
+    }
+
+    /** Mudlet `closeProfile(name)`. Closes the named open profile — this one,
+     *  or one open in another tab, which is asked to close itself over the
+     *  profiles-presence channel. Closing is what `closeMudlet()` does here:
+     *  disconnect, then return that tab to the connection screen.
+     *
+     *  Returns null on success, or the message for Mudlet's `nil, message`
+     *  refusal when no open profile has that name. Like Mudlet, which closes the
+     *  tab on the next event-loop turn, the close happens after the calling
+     *  script has returned — so a script closing its own profile still finishes. */
+    closeProfile(name: string): string | null {
+        const target = name ?? '';
+        const conn = useAppStore.getState().connections.find(c => c.name === target);
+        const notLoaded = `closeProfile: profile '${target}' does not exist`;
+        if (!conn) return notLoaded;
+        if (conn.id === this.connectionId) {
+            setTimeout(() => this.closeMudlet(), 0);
+            return null;
+        }
+        if (!this.presence.loadedIds().includes(conn.id)) return notLoaded;
+        return this.presence.requestClose(conn.id) ? null : notLoaded;
     }
 
     /** Mudlet `getCommandSeparator()`. Returns the profile's command separator
@@ -2581,7 +2607,8 @@ export class ScriptingAPI {
 
     /** Mudlet `tempButton(toolbarName, name, orientation)`. Appends a
      *  transient button, with no command or script, under an existing toolbar
-     *  group; returns the new id, or -1 when the toolbar doesn't exist.
+     *  group; returns the new id, or -1 when the toolbar doesn't exist or
+     *  the name is already taken (the Lua wrapper returns nothing then).
      *  `orientation` is Mudlet's int form (0=horizontal/1=vertical). */
     tempButton(toolbar: string, name: string, orientation: number): number {
         return this.host.createTempButton(toolbar, name, orientation);
@@ -2590,7 +2617,7 @@ export class ScriptingAPI {
     /** Mudlet `tempButtonToolbar(name [, orientation [, location]])`. Creates
      *  a transient toolbar (ButtonNode group). `location` int: 0=top, 1=bottom,
      *  2=left, 3=right, 4=floating. Returns the new id or -1 on duplicate
-     *  name. */
+     *  name (the Lua wrapper returns nothing then). */
     tempButtonToolbar(name: string, orientation: number, location: number): number {
         return this.host.createTempButtonToolbar(name, orientation, location);
     }
@@ -4522,7 +4549,9 @@ export class ScriptingAPI {
      * successful move.
      */
     moveCursor(windowName: string | undefined, x: number, y: number): boolean {
-        if (!Number.isFinite(x) || x < 0) return false;
+        // Only the line is range-checked, as in TBuffer::moveCursor; a negative
+        // column is kept (see Console.moveTo).
+        if (!Number.isFinite(x)) return false;
         if (!Number.isFinite(y) || y < 0) return false;
         return this.getConsole(windowName)?.moveTo(y, x) ?? false;
     }
@@ -4573,6 +4602,10 @@ export class ScriptingAPI {
                 ignoreHint: true,
                 parent: parent && parent !== 'main' ? parent : undefined,
             });
+            // TMainConsole::createMiniConsole gives a new miniconsole a 12pt
+            // font of its own rather than the profile's; getFontSize() reads
+            // that back, and a re-create (a reposition) leaves it alone.
+            wm.setFontSize(name, MINICONSOLE_DEFAULT_FONT_SIZE);
         } else {
             wm.show(name);
         }
@@ -4835,8 +4868,19 @@ export class ScriptingAPI {
         if (!this.clipboard) return;
         const con = this.outputConsole(windowName);
         const buf = con.getBuffer();
-        if (buf && con.getLineNumber() < con.getLineCount()) {
+        const isMain = !windowName || windowName === 'main';
+        // TConsole::paste inserts at the cursor unless it is on the buffer's
+        // last line — the open one — and appends there. Every console but main
+        // keeps its cursor where a script put it (see Console.followsOutput), so
+        // that line is counted the way getLastLineNumber() counts it: a window
+        // cursor never moved off line 0 pastes into line 0, as it does in
+        // Mudlet. Main's cursor follows its output onto the last complete line,
+        // which keeps appending as it always has.
+        const lastLine = isMain ? con.getLineCount() : this.getLineCount(windowName);
+        if (buf && con.getLineNumber() < lastLine) {
             const at = con.getCursorColumnRaw();
+            // TBuffer::paste refuses a negative column outright.
+            if (at < 0) return;
             // Past the end of the line, Mudlet's insertInLine pads out to the
             // cursor (expandLine) rather than clamping back to it, so the pasted
             // text lands at the column that was asked for.
@@ -4845,7 +4889,6 @@ export class ScriptingAPI {
             if (!this.inTriggerProcessing) buf.rerender();
             return;
         }
-        const isMain = !windowName || windowName === 'main';
         con.appendBuffer(this.clipboard.clone());
         if (isMain) this.drainMain();
         else this.drainWindowConsole(windowName!, con);
@@ -5853,9 +5896,17 @@ export class ScriptingAPI {
      * msec}` table form, and uses `wday` (0=Sun..6=Sat) to format `ddd`/`dddd`
      * tokens when the script asks for a formatted string.
      */
-    getTime(): { year: number; month: number; day: number; hour: number; min: number; sec: number; msec: number; wday: number } {
+    getTime(): {
+        year: number; month: number; day: number; hour: number; min: number; sec: number; msec: number; wday: number;
+        tzAbbr: string; tzOffset: string; tzOffsetColon: string; tzId: string;
+    } {
         const d = new Date();
         return {
+            // The zone, for the `t`…`tttt` format tokens.
+            tzAbbr: timeZoneAbbreviation(d),
+            tzOffset: timeZoneOffset(d),
+            tzOffsetColon: timeZoneOffset(d, true),
+            tzId: timeZoneId(),
             year: d.getFullYear(),
             month: d.getMonth() + 1,
             day: d.getDate(),
@@ -6578,8 +6629,10 @@ export class ScriptingAPI {
         // the facing border re-measures (or detaches) before that border is
         // written. Borders carve insets out of the viewport without resizing it,
         // so the viewport's ResizeObserver never reports this one.
+        // Its width/height are what is left inside the new borders, as Mudlet's
+        // are (see WindowManager.mainResizeEventArgs).
         const [w, h] = this.getMainWindowSize();
-        this.host.raiseEvent('sysWindowResizeEvent', [Math.round(w), Math.round(h)]);
+        this.host.raiseEvent('sysWindowResizeEvent', this.session.windows.mainResizeEventArgs(w, h));
     }
 
     private normalizeBorder(n: unknown): number | null {
@@ -6860,7 +6913,10 @@ export class ScriptingAPI {
         if (!win || win === 'main') return this.mainConsole;
         let con = this.session.consoles.get(win);
         if (!con) {
-            con = new Console();
+            // Only the main console's cursor follows what is written to it; a
+            // miniconsole's, user window's or buffer's stays where a script put
+            // it — line 0 until then — as Mudlet's does.
+            con = new Console({ followsOutput: false });
             // A console other than main starts with TChar's own default pen —
             // white on the default background (`TChar::TChar(nullptr)`) — not
             // the profile's colours, which only a resetFormat() puts in it.

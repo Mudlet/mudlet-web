@@ -5,7 +5,7 @@ import { useAppStore } from '../../src/storage/appStore';
 
 // loadProfile opens another profile in a new browser tab (one profile per tab)
 // and connects. It looks the connection up by name, then window.open's a deep
-// link `?profile=<id>&connect=1`. Here we mock window.location + window.open so
+// we can assert the URL it builds and what it returns.
 // we can assert the URL it builds and the boolean it returns.
 describe('loadProfile', () => {
   let env: TestRuntime;
@@ -48,22 +48,35 @@ describe('loadProfile', () => {
     expect(url.searchParams.get('connect')).toBe('1');
   });
 
-  it('returns false and warns for an unknown profile name', () => {
-    const ok = env.run('return loadProfile("Nope")');
-    expect(ok).toBe(false);
-    expect(opened).toHaveLength(0);
-    expect(env.mainOutput.join('')).toContain('no profile named "Nope"');
-  });
-
-  it('returns false when targeting the profile already open in this tab', () => {
-    const ok = env.run('return loadProfile("Test")');
-    expect(ok).toBe(false);
+  // Mudlet answers a refusal with nil plus a message, not false.
+  it('returns nil and a message for an unknown profile name', () => {
+    expect(env.run('local ok, err = loadProfile("Nope") return tostring(ok) .. "|" .. err'))
+      .toBe("nil|loadProfile: profile 'Nope' does not exist");
     expect(opened).toHaveLength(0);
   });
 
-  it('returns false when the popup is blocked (window.open → null)', () => {
+  it('returns nil and a message when targeting the profile already open in this tab', () => {
+    expect(env.run('local ok, err = loadProfile("Test") return tostring(ok) .. "|" .. err'))
+      .toBe("nil|loadProfile: profile 'Test' is already loaded");
+    expect(opened).toHaveLength(0);
+  });
+
+  it('refuses a profile already open in another tab', () => {
+    const presence = (env.api as unknown as { presence: { loadedIds: () => string[] } }).presence;
+    presence.loadedIds = () => ['test-connection', 'other-profile'];
+    expect(env.run('local ok, err = loadProfile("Other") return tostring(ok) .. "|" .. err'))
+      .toBe("nil|loadProfile: profile 'Other' is already loaded");
+    expect(opened).toHaveLength(0);
+  });
+
+  it('returns nil and a message when the popup is blocked (window.open → null)', () => {
     openResult = null;
-    const ok = env.run('return loadProfile("Other")');
-    expect(ok).toBe(false);
+    expect(env.run('local ok, err = loadProfile("Other") return tostring(ok) .. "|" .. err'))
+      .toMatch(/^nil\|loadProfile: could not open profile 'Other'/);
+  });
+
+  it('raises for a name that is not a string', () => {
+    expect(() => env.run('loadProfile({})'))
+      .toThrow(/loadProfile: bad argument #1 type \(profile name as string expected, got table!\)/);
   });
 });
