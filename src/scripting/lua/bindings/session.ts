@@ -1,6 +1,7 @@
 import { LuaType } from 'wasmoon-lua5.1';
 import type { GlobalEventChannel } from '../../GlobalEventChannel';
 import type { BindingContext, LuaState } from './context';
+import { timeZoneAbbreviation } from '../../../utils/timeZone';
 
 /**
  * Session-level introspection and event raising: stopwatches, the console
@@ -148,6 +149,10 @@ export function installSessionBindings(
     // the table-vs-string dispatch and Qt-style format token expansion on
     // top of this raw time record.
     lua.global.set('__getTime', () => api.getTime());
+    // The local zone's abbreviation at an epoch time in seconds — glibc's %Z,
+    // which Bridge.lua's os.date wrapper substitutes for emscripten's full name.
+    lua.global.set('__mudlet_tz_abbrev', (seconds: unknown) =>
+        timeZoneAbbreviation(new Date(Number(seconds) * 1000)));
 
     // registerAnonymousEventHandler is provided by Bridge.lua — it mirrors
     // Mudlet's C++ TLuaInterpreter::registerAnonymousEventHandler so module-

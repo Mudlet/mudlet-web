@@ -2745,6 +2745,22 @@ function getProfiles()
     return out
 end
 
+-- Mudlet loadProfile(name) / closeProfile(name) → true, or nil + message when
+-- the profile does not exist (or, for loadProfile, is already open). The name
+-- goes through getVerifiedString there, so a missing one raises.
+local function __profile_call(who, raw, name)
+    local s = __mudlet_str(name)
+    if s == nil then
+        error(who .. ": bad argument #1 type (profile name as string expected, got "
+            .. type(name) .. "!)", 3)
+    end
+    local err = raw(s)
+    if err then return nil, err end
+    return true
+end
+function loadProfile(name) return __profile_call("loadProfile", __loadProfile, name) end
+function closeProfile(name) return __profile_call("closeProfile", __closeProfile, name) end
+
 -- Mudlet auditAreas() — repair area/room membership consistency. Mudlet Web returns
 -- a summary report: { checkedAreas, checkedRooms, fixedAreas, orphanRooms={...},
 -- danglingRefs={...} }. JS hands the id arrays over 0-indexed; rebuild them as
@@ -2987,11 +3003,14 @@ end
 
 -- Mudlet getTime([asString, format]) → table or string.
 --   getTime()                    → { year, month, day, hour, min, sec, msec }
---   getTime(true)                → string formatted with "hh:mm:ss.zzz"
---   getTime(true, fmt)           → string formatted with QDateTime tokens:
---     yyyy/yy, MMMM/MMM/MM/M, dddd/ddd/dd/d, HH/H (24h), hh/h (12h if AP present
---     in format, otherwise 24h), mm/m, ss/s, zzz/z (ms), AP/A (uppercase) and
---     ap/a (lowercase) for AM/PM. Unrecognized characters pass through literally.
+--   getTime(true)                → string formatted with "yyyy.MM.dd hh:mm:ss.zzz"
+--   getTime(true, fmt)           → string formatted the way QDateTime::toString
+--     reads fmt: yyyy/yy, MMMM/MMM/MM/M, dddd/ddd/dd/d, HH/H (24h), hh/h (12h
+--     when the format has an AM/PM token, otherwise 24h), mm/m, ss/s, zzz/z
+--     (ms), AP/A (uppercase), ap/a (lowercase), aP/Ap (the locale's case), and
+--     t (zone abbreviation) / tt (+hhmm) / ttt (+hh:mm) / tttt (zone id).
+--     Text inside single quotes is literal, and '' is a quote character, inside
+--     quotes or out. Anything else passes through literally.
 do
     local DAYS_SHORT   = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"}
     local DAYS_LONG    = {"Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"}
@@ -3006,16 +3025,76 @@ do
         "mm","m",
         "ss","s",
         "zzz","z",
-        "AP","ap","A","a",
+        "AP","ap","aP","Ap","A","a",
+        "tttt","ttt","tt","t",
     }
+    local AMPM = { AP = true, ap = true, aP = true, Ap = true, A = true, a = true }
+
+    -- Split fmt into { literal = text } and { token = name } pieces, the way
+    -- Qt's qt_readEscapedFormatString reads it: a quote opens a literal that
+    -- runs to the next lone quote (an unterminated one runs to the end), and a
+    -- doubled quote is one quote character wherever it appears.
+    local function tokenize(fmt)
+        local parts, i, n = {}, 1, #fmt
+        local function literal(text) parts[#parts+1] = { literal = text } end
+        while i <= n do
+            local c = fmt:sub(i, i)
+            if c == "'" then
+                if fmt:sub(i + 1, i + 1) == "'" then
+                    literal("'")
+                    i = i + 2
+                else
+                    local buf = {}
+                    i = i + 1
+                    while i <= n do
+                        local q = fmt:sub(i, i)
+                        if q == "'" then
+                            if fmt:sub(i + 1, i + 1) == "'" then
+                                buf[#buf+1] = "'"
+                                i = i + 2
+                            else
+                                i = i + 1
+                                break
+                            end
+                        else
+                            buf[#buf+1] = q
+                            i = i + 1
+                        end
+                    end
+                    literal(table.concat(buf))
+                end
+            else
+                local matched = false
+                for _, tok in ipairs(TOKENS) do
+                    local len = #tok
+                    if fmt:sub(i, i + len - 1) == tok then
+                        parts[#parts+1] = { token = tok }
+                        i = i + len
+                        matched = true
+                        break
+                    end
+                end
+                if not matched then
+                    literal(c)
+                    i = i + 1
+                end
+            end
+        end
+        return parts
+    end
 
     local function formatTime(t, fmt)
+        local parts = tokenize(fmt)
+        -- h/hh switch to 12-hour when the format has an AM/PM token (Qt's
+        -- timeFormatContainsAP). One inside a quoted literal does not count:
+        -- "'at' hh" is a 24-hour clock.
+        local hasAP = false
+        for _, p in ipairs(parts) do
+            if p.token and AMPM[p.token] then hasAP = true; break end
+        end
         local wdayIdx = (t.wday or 0) + 1
         local isPM = t.hour >= 12
         local h12 = t.hour % 12; if h12 == 0 then h12 = 12 end
-        -- h/hh switch to 12-hour when an AM/PM token is present in the format
-        -- (Qt QDateTime semantics). H/HH are always 24-hour regardless.
-        local hasAP = fmt:find("AP") or fmt:find("ap") or fmt:find("A") or fmt:find("a")
         local R = {
             yyyy = string.format("%04d", t.year),
             yy   = string.format("%02d", t.year % 100),
@@ -3041,23 +3120,16 @@ do
             A    = isPM and "PM" or "AM",
             ap   = isPM and "pm" or "am",
             a    = isPM and "pm" or "am",
+            aP   = isPM and "PM" or "AM",
+            Ap   = isPM and "PM" or "AM",
+            t    = t.tzAbbr or "",
+            tt   = t.tzOffset or "",
+            ttt  = t.tzOffsetColon or "",
+            tttt = t.tzId or "",
         }
-        local out, i, n = {}, 1, #fmt
-        while i <= n do
-            local matched = false
-            for _, tok in ipairs(TOKENS) do
-                local len = #tok
-                if fmt:sub(i, i + len - 1) == tok then
-                    out[#out+1] = R[tok]
-                    i = i + len
-                    matched = true
-                    break
-                end
-            end
-            if not matched then
-                out[#out+1] = fmt:sub(i, i)
-                i = i + 1
-            end
+        local out = {}
+        for _, p in ipairs(parts) do
+            out[#out+1] = p.literal or R[p.token]
         end
         return table.concat(out)
     end
@@ -3088,6 +3160,76 @@ do
         end
         -- Mudlet's documented default is the full stamp, not just the clock.
         return formatTime(t, format or "yyyy.MM.dd hh:mm:ss.zzz")
+    end
+end
+
+-- ── os.date, as glibc's strftime formats it ────────────────────────────────
+-- The wasm Lua's os.date is emscripten's strftime, which parts from the glibc
+-- one desktop Mudlet on Linux gets in ways a log or chat timestamp shows:
+--   %c (and so the no-argument default) zero-pads the day, "Jan 06" where
+--     glibc space-pads it, "Jan  6";
+--   %Z prints the zone's full name ("Central European Standard Time") where
+--     glibc prints its abbreviation ("CET");
+--   %s, the epoch seconds, and the GNU %P / %k / %l are not implemented and
+--     come out as themselves.
+-- Those are rewritten here before the format reaches it; everything else
+-- already matches. %E and %O modifiers are dropped, which is what glibc does
+-- with them in the C locale.
+do
+    local date = os.date
+
+    function os.date(format, time)
+        if format == nil then format = "%c" end
+        local fmt = __mudlet_str(format)
+        if fmt == nil or fmt:find("^!?%*t") or not fmt:find("%", 1, true) then
+            local r = date(format, time)
+            return r
+        end
+        local utc = fmt:sub(1, 1) == "!"
+        local when = time == nil and os.time() or tonumber(time)
+        local fields
+        local function field(key)
+            if not when then return nil end
+            fields = fields or date(utc and "!*t" or "*t", when)
+            return fields[key]
+        end
+        local out, i, n = {}, 1, #fmt
+        while i <= n do
+            local c = fmt:sub(i, i)
+            if c ~= "%" or i == n then
+                out[#out+1] = c
+                i = i + 1
+            else
+                local spec = fmt:sub(i + 1, i + 1)
+                if (spec == "E" or spec == "O") and fmt:sub(i + 2, i + 2):match("%a") then
+                    i = i + 1
+                    spec = fmt:sub(i + 1, i + 1)
+                end
+                local rep
+                if spec == "c" then
+                    rep = "%a %b %e %H:%M:%S %Y"
+                elseif spec == "s" and when then
+                    -- glibc runs mktime over the broken-down time, so with "!"
+                    -- the UTC fields are read back as local time.
+                    rep = string.format("%d", utc and os.time(date("!*t", when)) or when)
+                elseif spec == "Z" and not utc and when then
+                    rep = __mudlet_tz_abbrev(when):gsub("%%", "%%%%")
+                elseif spec == "P" and when then
+                    rep = field("hour") >= 12 and "pm" or "am"
+                elseif spec == "k" and when then
+                    rep = string.format("%2d", field("hour"))
+                elseif spec == "l" and when then
+                    local h = field("hour") % 12
+                    rep = string.format("%2d", h == 0 and 12 or h)
+                else
+                    rep = "%" .. spec
+                end
+                out[#out+1] = rep
+                i = i + 2
+            end
+        end
+        local r = date(table.concat(out), time)
+        return r
     end
 end
 
@@ -5547,23 +5689,38 @@ end
 -- merely empty is a no-op that reports back as (nil, reason). Keeping both here
 -- rather than in the JS bindings means the messages read the same as the rest of
 -- the Lua API surface.
+--
+-- "Wrongly typed" is judged the way Mudlet's getVerified* helpers judge it:
+-- lua_isnumber and lua_isstring, both of which let Lua's own coercions through.
+-- A numeric string is a number argument (`ttsSetRate("0.3")` sets the rate) and
+-- a number is a string one, so the check hands back the coerced value for the
+-- caller to use in place of the raw one.
 local function __tts_check(who, argN, value, expected)
-    if type(value) ~= expected then
+    local coerced
+    if expected == "number" then
+        coerced = __mudlet_num(value)
+    elseif expected == "string" then
+        coerced = __mudlet_str(value)
+    elseif type(value) == expected then
+        coerced = value
+    end
+    if coerced == nil then
         error(who .. ": bad argument #" .. argN .. " type ("
             .. expected .. " expected, got " .. type(value) .. "!)")
     end
+    return coerced
 end
 
 -- Mudlet ttsSpeak(text) / ttsQueue(text[, index]) → speak now / append to the
 -- queue. Whitespace-only text is skipped rather than spoken: an empty utterance
 -- would still occupy the engine and delay everything queued behind it.
 local function __tts_say(who, raw, text, index)
-    __tts_check(who, 1, text, "string")
+    text = __tts_check(who, 1, text, "string")
     if text:match("^%s*$") then
         return nil, who .. ": skipped empty text to speak (TTS)"
     end
     if index ~= nil then
-        __tts_check(who, 2, index, "number")
+        index = __tts_check(who, 2, index, "number")
         return raw(text, index)
     end
     return raw(text)
@@ -5577,7 +5734,7 @@ function ttsQueue(text, index) return __tts_say("ttsQueue", __ttsQueue, text, in
 -- what "clear everything" would have done.
 function ttsClearQueue(index)
     if index == nil then return __ttsClearQueue() end
-    __tts_check("ttsClearQueue", 1, index, "number")
+    index = __tts_check("ttsClearQueue", 1, index, "number")
     if __ttsClearQueue(index) == false then
         return nil, "index " .. index .. " out of bounds for queue size "
             .. #__tts_to_list(__ttsGetQueue())
@@ -5586,27 +5743,27 @@ function ttsClearQueue(index)
 end
 
 function ttsSetVoiceByName(name)
-    __tts_check("ttsSetVoiceByName", 1, name, "string")
+    name = __tts_check("ttsSetVoiceByName", 1, name, "string")
     return __ttsSetVoiceByName(name)
 end
 
 function ttsSetVoiceByIndex(index)
-    __tts_check("ttsSetVoiceByIndex", 1, index, "number")
+    index = __tts_check("ttsSetVoiceByIndex", 1, index, "number")
     return __ttsSetVoiceByIndex(index)
 end
 
 function ttsSetRate(rate)
-    __tts_check("ttsSetRate", 1, rate, "number")
+    rate = __tts_check("ttsSetRate", 1, rate, "number")
     return __ttsSetRate(rate)
 end
 
 function ttsSetPitch(pitch)
-    __tts_check("ttsSetPitch", 1, pitch, "number")
+    pitch = __tts_check("ttsSetPitch", 1, pitch, "number")
     return __ttsSetPitch(pitch)
 end
 
 function ttsSetVolume(volume)
-    __tts_check("ttsSetVolume", 1, volume, "number")
+    volume = __tts_check("ttsSetVolume", 1, volume, "number")
     return __ttsSetVolume(volume)
 end
 

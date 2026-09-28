@@ -7,6 +7,7 @@ import type { TimerEngine } from '../mud/timers/TimerEngine';
 import type { KeyEngine } from '../mud/keybindings/KeyEngine';
 import { classifyReservedKey, formatKeyCombo, reservedKeyNote } from '../mud/keybindings/browserReservedKeys';
 import { CLIENT_VERSION } from '../version';
+import { timeZoneAbbreviation, timeZoneId, timeZoneOffset } from '../utils/timeZone';
 import { getBrand } from '../branding';
 import type { WindowHandle, WindowOpenOptions } from '../ui/windows/types';
 import { MAP_WIDGET_ID, MAPPER_WIDGET_ID } from '../ui/windows/types';
@@ -1020,6 +1021,8 @@ export class ScriptingAPI {
         this.keys = keyEngine;
         this.stopwatches = new StopwatchManager(localStorageStopwatchStore(connectionId));
         this.presence = new ProfilesPresence(connectionId, () => this.session.status === 'connected');
+        // Another tab's closeProfile(<this profile>).
+        this.presence.onCloseRequested = () => { this.closeMudlet(); };
         // Re-announce this tab's connected state to other tabs on connect/
         // disconnect (for their getProfiles). Deferred to a microtask so the
         // session's own status handler has run before we read session.status.
@@ -1350,32 +1353,52 @@ export class ScriptingAPI {
         for (const line of lines) this.echo(line + '\n');
     }
 
-    /** Mudlet `loadProfile(name) → bool`. Opens the named profile and connects
+    /** Mudlet `loadProfile(name)`. Opens the named profile and connects
      *  to it. Each profile lives in its own browser tab (the per-profile lock
      *  keeps it to one tab), so this opens a NEW tab at `?profile=<id>&connect=1`
      *  rather than switching the current one — the calling profile stays open
-     *  alongside, mirroring Mudlet's multi-profile model. Returns false for an
-     *  unknown name, when targeting the profile already open in this tab, or when
-     *  the browser blocks the popup. NOTE: `window.open` needs a user gesture, so
-     *  this works from a key/button/alias but a browser may block it from a
-     *  trigger (no Mudlet equivalent to that limitation). */
-    loadProfile(name: string): boolean {
-        const target = (name ?? '').trim();
-        if (!target) return false;
+     *  alongside, mirroring Mudlet's multi-profile model.
+     *
+     *  Returns null on success, or the message for Mudlet's `nil, message`
+     *  refusal: an unknown name, a profile already open (in this tab or any
+     *  other — the loaded set is the same one getProfiles() reports), or a popup
+     *  the browser blocked. NOTE: `window.open` needs a user gesture, so this
+     *  works from a key/button/alias but a browser may block it from a trigger
+     *  (no Mudlet equivalent to that limitation). */
+    loadProfile(name: string): string | null {
+        const target = name ?? '';
         const conn = useAppStore.getState().connections.find(c => c.name === target);
-        if (!conn) {
-            this.echo(`loadProfile: no profile named "${target}"\n`);
-            return false;
-        }
-        if (conn.id === this.connectionId) {
-            this.echo(`loadProfile: "${target}" is already open in this tab\n`);
-            return false;
+        if (!conn) return `loadProfile: profile '${target}' does not exist`;
+        if (conn.id === this.connectionId || this.presence.loadedIds().includes(conn.id)) {
+            return `loadProfile: profile '${target}' is already loaded`;
         }
         const url = new URL(window.location.href);
         url.searchParams.set('profile', conn.id);
         url.searchParams.set('connect', '1');
         const w = window.open(url.toString(), '_blank');
-        return !!w;
+        return w ? null : `loadProfile: could not open profile '${target}', the browser blocked the new tab`;
+    }
+
+    /** Mudlet `closeProfile(name)`. Closes the named open profile — this one,
+     *  or one open in another tab, which is asked to close itself over the
+     *  profiles-presence channel. Closing is what `closeMudlet()` does here:
+     *  disconnect, then return that tab to the connection screen.
+     *
+     *  Returns null on success, or the message for Mudlet's `nil, message`
+     *  refusal when no open profile has that name. Like Mudlet, which closes the
+     *  tab on the next event-loop turn, the close happens after the calling
+     *  script has returned — so a script closing its own profile still finishes. */
+    closeProfile(name: string): string | null {
+        const target = name ?? '';
+        const conn = useAppStore.getState().connections.find(c => c.name === target);
+        const notLoaded = `closeProfile: profile '${target}' does not exist`;
+        if (!conn) return notLoaded;
+        if (conn.id === this.connectionId) {
+            setTimeout(() => this.closeMudlet(), 0);
+            return null;
+        }
+        if (!this.presence.loadedIds().includes(conn.id)) return notLoaded;
+        return this.presence.requestClose(conn.id) ? null : notLoaded;
     }
 
     /** Mudlet `getCommandSeparator()`. Returns the profile's command separator
@@ -5848,9 +5871,17 @@ export class ScriptingAPI {
      * msec}` table form, and uses `wday` (0=Sun..6=Sat) to format `ddd`/`dddd`
      * tokens when the script asks for a formatted string.
      */
-    getTime(): { year: number; month: number; day: number; hour: number; min: number; sec: number; msec: number; wday: number } {
+    getTime(): {
+        year: number; month: number; day: number; hour: number; min: number; sec: number; msec: number; wday: number;
+        tzAbbr: string; tzOffset: string; tzOffsetColon: string; tzId: string;
+    } {
         const d = new Date();
         return {
+            // The zone, for the `t`…`tttt` format tokens.
+            tzAbbr: timeZoneAbbreviation(d),
+            tzOffset: timeZoneOffset(d),
+            tzOffsetColon: timeZoneOffset(d, true),
+            tzId: timeZoneId(),
             year: d.getFullYear(),
             month: d.getMonth() + 1,
             day: d.getDate(),

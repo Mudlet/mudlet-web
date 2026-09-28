@@ -793,10 +793,12 @@ export class LuaRuntime implements IScriptingRuntime {
         // { host, port, loaded, connected, description }. Bridge.lua rebuilds it
         // into a clean Lua table (wasmoon hands JS objects over as proxies).
         this.lua.global.set('__getProfiles', () => this.api.getProfiles());
-        // Mudlet loadProfile(name) — open the named profile in a new tab + connect.
-        this.lua.global.set('loadProfile', (name?: unknown) =>
-            this.api.loadProfile(typeof name === 'string' ? name : ''),
-        );
+        // Mudlet loadProfile(name) / closeProfile(name) — open the named profile
+        // in a new tab + connect, or close an open one. Each answers null on
+        // success or the refusal message; Bridge.lua checks the argument and
+        // turns that into Mudlet's `true` / `nil, message`.
+        this.lua.global.set('__loadProfile', (name: unknown) => this.api.loadProfile(String(name)));
+        this.lua.global.set('__closeProfile', (name: unknown) => this.api.closeProfile(String(name)));
         // Mudlet getCharacterName() — Mudlet Web maps this to the profile name.
         this.lua.global.set('getCharacterName', () => this.api.getCharacterName());
         // Mudlet getMudletInfo() — echoes a diagnostic block, returns nothing.
@@ -2871,6 +2873,13 @@ end`);
             } catch (e) {
                 return {kind: 'error', message: e instanceof Error ? e.message : String(e)};
             }
+        });
+
+        // Declared column types for Luasql.lua's cursor:getcoltypes(). A
+        // missing one (an expression column) stays a hole in the Lua table.
+        this.lua.global.set('__sql_coltypes', (dbId: unknown, sqlText: unknown) => {
+            const types = sql.columnDeclTypes(Number(dbId), String(sqlText));
+            return types ? toLuaArray(types.map(t => t ?? undefined)) : null;
         });
 
         this.lua.global.set('__sql_close', (dbId: unknown): boolean => {
