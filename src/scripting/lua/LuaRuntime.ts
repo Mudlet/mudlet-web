@@ -3847,15 +3847,16 @@ end`);
     }
 
     private dispatchEventNow(event: string, args: unknown[]): void {
-        // Refresh the Lua-side getMainWindowSize cache (Bridge.lua) from the
-        // authoritative new size on the SAME signal that triggers Geyser's
-        // reposition, set before dispatch so the reposition handler reads current
-        // values. This lets Geyser resolve every percentage against a Lua local
-        // instead of crossing into JS + getBoundingClientRect once per widget.
-        if (event === 'sysWindowResizeEvent'
-            && typeof args[0] === 'number' && typeof args[1] === 'number') {
-            this.lua.global.set('__mws_w', args[0]);
-            this.lua.global.set('__mws_h', args[1]);
+        // Drop the Lua-side getMainWindowSize cache (Bridge.lua) on the SAME
+        // signal that triggers Geyser's reposition, before dispatch, so the
+        // reposition handler's first getMainWindowSize() re-reads the new size
+        // and every later one in the cascade reads a Lua local instead of
+        // crossing into JS + getBoundingClientRect once per widget. The event's
+        // own width/height can't prime it: like Mudlet's, they are the console
+        // area left inside the borders, not the window getMainWindowSize reports.
+        if (event === 'sysWindowResizeEvent') {
+            this.lua.global.set('__mws_w', null);
+            this.lua.global.set('__mws_h', null);
         }
         this.lua.global.set('__mudlet_evt_args', args);
         // Explicit count: a nil/false-carrying payload (raiseEvent("x", nil,

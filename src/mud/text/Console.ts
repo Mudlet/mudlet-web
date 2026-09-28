@@ -72,6 +72,31 @@ export class Console {
      */
     private hasOpenLine = true;
     private cursorIdx = -1; // -1 = always resolve to last line
+    /**
+     * Whether writing to the buffer carries the user cursor along with it.
+     *
+     * True only for the main console, whose cursor the trigger engine parks on
+     * each line as it arrives. Every other TConsole in Mudlet — miniconsoles,
+     * user windows, buffers — starts with `mUserCursor` at (0, 0) and keeps it
+     * there however much is echoed, until a script moves it (moveCursor,
+     * moveCursorEnd, …). So `getLineNumber`/`getCurrentLine`/`selectString`/
+     * `copy` on such a window act on line 0 by default (Mudlet/mudlet-web#236).
+     * With this off the cursor starts on line 0 and the paths that would
+     * otherwise send it back to "following the end" put it there instead.
+     */
+    private readonly followsOutput: boolean;
+
+    constructor(options: { followsOutput?: boolean } = {}) {
+        this.followsOutput = options.followsOutput ?? true;
+        if (!this.followsOutput) this.cursorIdx = 0;
+    }
+
+    /** Where a reset (clear, a paste) leaves the cursor: following the end on
+     *  the main console, the first line everywhere else — see followsOutput. */
+    private resetCursor(): void {
+        this.cursorIdx = this.followsOutput ? -1 : 0;
+        this.cursorCol = 0;
+    }
     // Persistent column position on the rendered-history cursor line. Tracked
     // independently of the active trigger lineBuffer (ScriptingAPI owns that).
     // moveUp/moveDown reset to 0 unless keepHorizontal is set; moveCursor/
@@ -210,8 +235,9 @@ export class Console {
             this.store(line);
             this.pending.push(line);
         }
-        this.cursorIdx = -1;
-        this.cursorCol = 0;
+        // Mudlet's TConsole::appendBuffer leaves the user cursor alone; on a
+        // console that does not follow its output that is what happens here too.
+        if (this.followsOutput) this.resetCursor();
         this.evict();
     }
 
@@ -292,8 +318,7 @@ export class Console {
         const buf = this.partial;
         this.history.push(buf);
         this.partial = new AnsiAwareBuffer();
-        this.cursorIdx = -1;
-        this.cursorCol = 0;
+        if (this.followsOutput) this.resetCursor();
         this.evict();
         return buf;
     }
@@ -302,8 +327,7 @@ export class Console {
         this.history = [];
         this.pending = [];
         this.partial = new AnsiAwareBuffer();
-        this.cursorIdx = -1;
-        this.cursorCol = 0;
+        this.resetCursor();
         this.consumeLeadingNewline = false;
         // Mudlet's clearWindow() leaves exactly ONE empty line, not none — the
         // current line every TBuffer keeps. deleteLine() on that line is what
@@ -500,7 +524,11 @@ export class Console {
      */
     moveTo(line: number, col: number = 0): boolean {
         if (!Number.isFinite(line) || line < 0) return false;
-        if (!Number.isFinite(col) || col < 0) return false;
+        // A negative column is taken, as TBuffer::moveCursor takes it (only the
+        // line is checked there): the cursor lands on the line, and paste —
+        // which reads the raw column — then leaves the line alone. Every other
+        // reader goes through getCursorColumn, which never reports below 0.
+        if (!Number.isFinite(col)) return false;
         // A line past the end of the buffer is refused outright rather than
         // clamped — Mudlet's TBuffer::moveCursor returns false for it, and a
         // script that asks for a line that isn't there wants to hear so.
@@ -531,11 +559,12 @@ export class Console {
      * `keepHorizontal` move never reports past the end of a shorter line.
      */
     getCursorColumn(): number {
-        if (this.onPartialLine) return Math.min(this.cursorCol, this.partial.text.length);
+        const col = Math.max(0, this.cursorCol);
+        if (this.onPartialLine) return Math.min(col, this.partial.text.length);
         const idx = this.cursor;
         if (idx < 0) return 0;
         const lineLen = this.history[idx]?.text.length ?? 0;
-        return Math.min(this.cursorCol, lineLen);
+        return Math.min(col, lineLen);
     }
 
     /**
@@ -571,7 +600,9 @@ export class Console {
         // finished ones — reporting -1 for it told prefix()/suffix() there was
         // no current line to move to. An empty buffer with nothing echoed into
         // that line yet still has Mudlet's "no current line" sentinel.
-        if (len === 0) return this.partial.length > 0 ? 0 : -1;
+        // A console whose cursor was never moved sits on line 0 even before
+        // anything is written into it — Mudlet's fresh miniconsole says 0.
+        if (len === 0) return this.partial.length > 0 || (!this.followsOutput && this.hasOpenLine) ? 0 : -1;
         if (this.onPartialLine) return len;
         // Following-end (cursorIdx < 0, after output/echo) reports as the last
         // line. An in-range or past-end cursorIdx is reported verbatim: after

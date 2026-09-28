@@ -180,11 +180,12 @@ end
 -- constraint against the root window via getMainWindowSize() — reads a Lua local
 -- instead of crossing into JS (and forcing a getBoundingClientRect) once per
 -- widget. A full pane-tree reposition calls this hundreds of times while the
--- window size is constant. The cache (__mws_w/__mws_h globals) is refreshed from
--- JS on the authoritative size-change signal: LuaRuntime.emitEvent pushes the
--- fresh size right before raising sysWindowResizeEvent, so Geyser's reposition
--- handler — which runs on that same event — always reads current values. Lazily
--- primed on first use for any read before the first resize tick.
+-- window size is constant. The cache (__mws_w/__mws_h globals) is dropped on
+-- the authoritative size-change signal: LuaRuntime.emitEvent clears it right
+-- before raising sysWindowResizeEvent, so Geyser's reposition handler — which
+-- runs on that same event — re-primes it with the current size on its first
+-- read. It is not primed from the event's own width/height: as in Mudlet, those
+-- are the console area inside the borders, not the window size reported here.
 function getMainWindowSize()
     if __mws_w == nil then
         local t = __getMainWindowSize()
@@ -3469,12 +3470,9 @@ end
 function raiseEvent(event, ...)
     if type(event) ~= 'string' or event == '' then return false end
     local argc = select('#', ...)
-    -- Keep getMainWindowSize's cache in step with a script-raised resize, as
+    -- Drop getMainWindowSize's cache on a script-raised resize too, as
     -- LuaRuntime.dispatchEventNow does for the one Mudlet Web raises itself.
-    if event == 'sysWindowResizeEvent' then
-        local w, h = ...
-        if type(w) == 'number' and type(h) == 'number' then __mws_w, __mws_h = w, h end
-    end
+    if event == 'sysWindowResizeEvent' then __mws_w, __mws_h = nil, nil end
     __mudlet_dispatch(event, { ... }, argc)
     return true
 end

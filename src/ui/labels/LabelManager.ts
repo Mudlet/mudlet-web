@@ -356,6 +356,14 @@ export class LabelManager {
             // says — the flag decides whether the fill is painted, not what
             // colour it is, and getBackgroundColor reports the colour either way.
             backgroundColor: { r: 32, g: 32, b: 32, a: 255 },
+            // ...and it gets there through TLabel::setBackgroundColor, which
+            // writes the colour into the stylesheet (TMainConsole::createLabel),
+            // so a fresh label's getLabelStyleSheet() reads the declaration back
+            // and the fill is painted even with fillBackground off — desktop
+            // does this deliberately, so an installed script's labels look the
+            // same in both clients. A transparent label says so with
+            // setBackgroundColor(name, 0, 0, 0, 0).
+            styleSheet: patchStyleSheetBackgroundColor('', 32, 32, 32, 255),
         };
         this.labels.set(name, state);
         this.indexAdd(state);
@@ -605,13 +613,12 @@ export class LabelManager {
     setBackgroundColor(name: string, r: number, g: number, b: number, a = 255): boolean {
         const lbl = this.labels.get(name);
         if (!lbl) return false;
-        // Matches Mudlet: a stylesheet already on the label isn't replaced or
-        // ignored — the background-color declaration inside it is patched in
-        // place (see patchStyleSheetBackgroundColor). Only fall back to the
-        // plain fill color when there's no stylesheet to patch.
-        if (lbl.styleSheet) {
-            lbl.styleSheet = patchStyleSheetBackgroundColor(lbl.styleSheet, r, g, b, a);
-        }
+        // Matches Mudlet's TLabel::setBackgroundColor: the colour always goes
+        // into the stylesheet — patched in place over a background-color
+        // declaration already there, appended otherwise, and written as the
+        // whole sheet when there is none — so getLabelStyleSheet() reads it
+        // back (see patchStyleSheetBackgroundColor).
+        lbl.styleSheet = patchStyleSheetBackgroundColor(lbl.styleSheet ?? '', r, g, b, a);
         // Recorded either way, not just on the no-stylesheet branch: this field
         // is what getBackgroundColor answers with, and a label that happened to
         // carry a stylesheet used to report the colour it had *before* the call.
@@ -743,7 +750,8 @@ export class LabelManager {
     }
 
     /** Mudlet `getLabelStyleSheet(name)` — the Qt-style CSS last set via
-     *  {@link setStyleSheet}, or `""` when none is set. Returns `undefined`
+     *  {@link setStyleSheet}, with any {@link setBackgroundColor} declaration
+     *  written into it (a new label starts with one), or `""` when none is set. Returns `undefined`
      *  when the label doesn't exist so the caller can distinguish that case. */
     getStyleSheet(name: string): string | undefined {
         const lbl = this.labels.get(name);

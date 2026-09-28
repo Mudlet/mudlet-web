@@ -84,6 +84,9 @@ const DEFAULT_BG_RGB: [number, number, number] = [0x00, 0x00, 0x00];
 type RgbKey = number;
 /** Pattern codes with a meaning of their own: Mudlet's `TTrigger::scmIgnored`
  *  ("any colour") and `TTrigger::scmDefault` (the console's default). */
+/** The font size Mudlet gives a new miniconsole (TMainConsole::createMiniConsole). */
+const MINICONSOLE_DEFAULT_FONT_SIZE = 12;
+
 const COLOR_IGNORED = -1;
 const COLOR_DEFAULT = -2;
 /** No colour at all: an ANSI code outside 0-255, or a colour that does not
@@ -4517,7 +4520,9 @@ export class ScriptingAPI {
      * successful move.
      */
     moveCursor(windowName: string | undefined, x: number, y: number): boolean {
-        if (!Number.isFinite(x) || x < 0) return false;
+        // Only the line is range-checked, as in TBuffer::moveCursor; a negative
+        // column is kept (see Console.moveTo).
+        if (!Number.isFinite(x)) return false;
         if (!Number.isFinite(y) || y < 0) return false;
         return this.getConsole(windowName)?.moveTo(y, x) ?? false;
     }
@@ -4568,6 +4573,10 @@ export class ScriptingAPI {
                 ignoreHint: true,
                 parent: parent && parent !== 'main' ? parent : undefined,
             });
+            // TMainConsole::createMiniConsole gives a new miniconsole a 12pt
+            // font of its own rather than the profile's; getFontSize() reads
+            // that back, and a re-create (a reposition) leaves it alone.
+            wm.setFontSize(name, MINICONSOLE_DEFAULT_FONT_SIZE);
         } else {
             wm.show(name);
         }
@@ -4830,8 +4839,19 @@ export class ScriptingAPI {
         if (!this.clipboard) return;
         const con = this.outputConsole(windowName);
         const buf = con.getBuffer();
-        if (buf && con.getLineNumber() < con.getLineCount()) {
+        const isMain = !windowName || windowName === 'main';
+        // TConsole::paste inserts at the cursor unless it is on the buffer's
+        // last line — the open one — and appends there. Every console but main
+        // keeps its cursor where a script put it (see Console.followsOutput), so
+        // that line is counted the way getLastLineNumber() counts it: a window
+        // cursor never moved off line 0 pastes into line 0, as it does in
+        // Mudlet. Main's cursor follows its output onto the last complete line,
+        // which keeps appending as it always has.
+        const lastLine = isMain ? con.getLineCount() : this.getLineCount(windowName);
+        if (buf && con.getLineNumber() < lastLine) {
             const at = con.getCursorColumnRaw();
+            // TBuffer::paste refuses a negative column outright.
+            if (at < 0) return;
             // Past the end of the line, Mudlet's insertInLine pads out to the
             // cursor (expandLine) rather than clamping back to it, so the pasted
             // text lands at the column that was asked for.
@@ -4840,7 +4860,6 @@ export class ScriptingAPI {
             if (!this.inTriggerProcessing) buf.rerender();
             return;
         }
-        const isMain = !windowName || windowName === 'main';
         con.appendBuffer(this.clipboard.clone());
         if (isMain) this.drainMain();
         else this.drainWindowConsole(windowName!, con);
@@ -6573,8 +6592,10 @@ export class ScriptingAPI {
         // the facing border re-measures (or detaches) before that border is
         // written. Borders carve insets out of the viewport without resizing it,
         // so the viewport's ResizeObserver never reports this one.
+        // Its width/height are what is left inside the new borders, as Mudlet's
+        // are (see WindowManager.mainResizeEventArgs).
         const [w, h] = this.getMainWindowSize();
-        this.host.raiseEvent('sysWindowResizeEvent', [Math.round(w), Math.round(h)]);
+        this.host.raiseEvent('sysWindowResizeEvent', this.session.windows.mainResizeEventArgs(w, h));
     }
 
     private normalizeBorder(n: unknown): number | null {
@@ -6855,7 +6876,10 @@ export class ScriptingAPI {
         if (!win || win === 'main') return this.mainConsole;
         let con = this.session.consoles.get(win);
         if (!con) {
-            con = new Console();
+            // Only the main console's cursor follows what is written to it; a
+            // miniconsole's, user window's or buffer's stays where a script put
+            // it — line 0 until then — as Mudlet's does.
+            con = new Console({ followsOutput: false });
             // Mudlet raises sysBufferShrinkEvent for every console that trims,
             // not only the main one, and it names the window the lines went
             // from — a script mirroring a miniconsole's buffer has no other way
