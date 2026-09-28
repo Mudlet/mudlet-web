@@ -1202,10 +1202,11 @@ function getCustomEnvColor(envId)
     return t[0], t[1], t[2], t[3]
 end
 
--- Mudlet getRoomCharColor(roomID). Returns r, g, b, a when the room has a
--- per-room char colour set; nil otherwise. JS returns a 0-indexed array.
+-- Mudlet getRoomCharColor(roomID) → r, g, b, or (nil, errMsg) when the room
+-- doesn't exist. JS returns a 0-indexed array, or the message for the miss.
 function getRoomCharColor(roomId)
     local t = __getRoomCharColor(roomId)
+    if type(t) == 'string' then return nil, t end
     if t == nil then return nil end
     -- Three channels: a symbol colour carries no alpha in Mudlet, unlike the
     -- border colour, which does.
@@ -1409,6 +1410,8 @@ function getCustomLines1(id)
     if raw == nil then
         return nil, "getCustomLines1: room " .. tostring(id) .. " doesn't exist"
     end
+    -- getCustomLines points carry no z; a line lies on its room's level.
+    local _, _, z = getRoomCoordinates(id)
     local out = {}
     for dir, line in pairs(raw) do
         local pts, i = {}, 0
@@ -1419,7 +1422,7 @@ function getCustomLines1(id)
             -- triples the way addCustomLine takes them, so a line read here can
             -- be drawn straight into another room. getCustomLines keeps the
             -- keyed, 0-indexed form it has always had.
-            pts[i + 1] = { p.x, p.y, p.z }
+            pts[i + 1] = { p.x, p.y, z }
             i = i + 1
         end
         local a = line.attributes or {}
@@ -5280,7 +5283,8 @@ do
     end
 end
 
--- Mudlet getMapSelection() → { rooms = {roomIDs}, center = roomID }. JS hands
+-- Mudlet getMapSelection() → { rooms = {roomIDs}, center = roomID }, or {}
+-- when nothing is selected. JS hands
 -- the rooms array over 0-indexed (wasmoon convention); rebuild as a 1-indexed
 -- Lua sequence so ipairs() / # work the way scripts expect. `center` is null
 -- in JS when nothing is selected — surface that as nil on the Lua side.
@@ -5298,6 +5302,9 @@ function getMapSelection()
             for _, v in ipairs(src) do rooms[#rooms + 1] = v end
         end
     end
+    -- Nothing selected is an empty table, as desktop answers — not one with
+    -- an empty `rooms` list in it.
+    if #rooms == 0 then return {} end
     local center = nil
     if type(raw) == 'table' and raw.center ~= nil then center = raw.center end
     return { rooms = rooms, center = center }
@@ -6882,6 +6889,10 @@ do
         if t ~= 'number' and t ~= 'string' then
             error("getRoomAreaName: bad argument #1 type (area id as number or area name as string"
                 .. " expected, got " .. t .. "!)", 2)
+        end
+        -- Mudlet checks lua_isnumber first, so a numeric string is an area id.
+        if t == 'string' and tonumber(idOrName) then
+            idOrName, t = tonumber(idOrName), 'number'
         end
         local r = _rawGetRoomAreaName(idOrName)
         if r == nil or r == false then

@@ -173,10 +173,9 @@ function colorFromRgb24(rgb: unknown, alpha = 255): MudletColor {
  * Returns null when the payload isn't this format, so the caller can fall
  * through to the binary-model path.
  *
- * Room `border` is the one documented field still unmapped — no map available
- * to verify it against, and it needs the same post-load side-table treatment as
- * symbol colours. Everything else in TRoom.cpp's writeJsonRoom is covered.
- * Symbol colours are applied separately by applyJsonSymbolColors.
+ * Room borders and symbol colours have nowhere to live in the binary model, so
+ * applyJsonRoomBorders and applyJsonSymbolColors put them on the store once
+ * the rooms exist.
  */
 export function mudletJsonMapToMudletMap(src: unknown): MudletMap | null {
     if (!src || typeof src !== 'object') return null;
@@ -196,6 +195,8 @@ export function mudletJsonMapToMudletMap(src: unknown): MudletMap | null {
 
         const area = makeArea();
         area.userData = (rawArea.userData as Record<string, string>) ?? {};
+        // TArea::writeJsonArea writes the key only for an area in grid mode.
+        area.gridMode = rawArea.gridMode === true;
         areas[areaId] = area;
         areaNames[areaId] = typeof rawArea.name === 'string' ? rawArea.name : '';
         const areaLabels = labelsFromJson(rawArea.labels);
@@ -306,7 +307,7 @@ export function mudletJsonMapToMudletMap(src: unknown): MudletMap | null {
     const mCustomEnvColors: Record<number, MudletColor> = {};
     for (const entry of (Array.isArray(doc.customEnvColors) ? doc.customEnvColors : []) as Record<string, unknown>[]) {
         const id = Number(entry?.id);
-        if (Number.isFinite(id)) mCustomEnvColors[id] = colorFromRgb24(entry.color24RGB);
+        if (Number.isFinite(id)) mCustomEnvColors[id] = readJsonColor(entry) ?? colorFromRgb24(undefined);
     }
 
     // `playersRoomId` is Mudlet's per-profile saved room map (mRoomIdHash).
@@ -342,21 +343,65 @@ function jsonStringMap(raw: unknown): Record<string, string> {
     return out;
 }
 
-/** One JSON colour object (`{r, g, b, a}`) as the reader's colour record. */
-function jsonColor(raw: unknown, fallbackAlpha: number): MudletColor {
-    const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
-    return {
-        spec: 1,
-        r: Number(o.r) || 0,
-        g: Number(o.g) || 0,
-        b: Number(o.b) || 0,
-        alpha: o.a === undefined ? fallbackAlpha : Number(o.a) || 0,
-    };
+/**
+ * A colour out of an object in Mudlet's JSON schema (TMap::readJsonColor):
+ * `color32RGBA: [r, g, b, a]` for a translucent colour, `color24RGB: [r, g, b]`
+ * for an opaque one. Undefined when the object carries neither.
+ *
+ * Desktop drops the alpha of a `color32RGBA` on the way in (Mudlet issue
+ * #10368); it is kept here, since the writer only uses that key to carry it.
+ * The `{r, g, b, a}` object Mudlet Web wrote before it spoke Mudlet's format
+ * is still read, so an export from an older build opens.
+ */
+function readJsonColor(raw: unknown, fallbackAlpha = 255): MudletColor | undefined {
+    if (!raw || typeof raw !== 'object') return undefined;
+    const o = raw as Record<string, unknown>;
+    if (Array.isArray(o.color32RGBA)) {
+        const t = o.color32RGBA;
+        const a = Number(t[3]);
+        return { ...colorFromRgb24(t), alpha: Number.isFinite(a) ? a : 255 };
+    }
+    if (Array.isArray(o.color24RGB)) return colorFromRgb24(o.color24RGB);
+    if ('r' in o || 'g' in o || 'b' in o) {
+        return {
+            spec: 1,
+            r: Number(o.r) || 0,
+            g: Number(o.g) || 0,
+            b: Number(o.b) || 0,
+            alpha: o.a === undefined ? fallbackAlpha : Number(o.a) || 0,
+        };
+    }
+    return undefined;
 }
 
-/** The inverse of {@link jsonColor}, for the writer. */
-function colorToJson(c: MudletColor | undefined): Record<string, number> {
-    return { r: c?.r ?? 0, g: c?.g ?? 0, b: c?.b ?? 0, a: c?.alpha ?? 255 };
+/** The inverse of {@link readJsonColor} (TMap::writeJsonColor): the opaque
+ *  form unless the colour is translucent. */
+function writeJsonColor(c: { r: number; g: number; b: number; alpha?: number; a?: number }): Record<string, number[]> {
+    const alpha = c.alpha ?? c.a ?? 255;
+    return alpha < 255
+        ? { color32RGBA: [c.r, c.g, c.b, alpha] }
+        : { color24RGB: [c.r, c.g, c.b] };
+}
+
+/** A label image in Mudlet's JSON schema: base64 PNG split into lines of 64
+ *  characters (TArea::writeJsonLabel). */
+function labelImageToJson(pixMap: string | Uint8Array): string[] {
+    let base64 = '';
+    if (typeof pixMap === 'string') base64 = pixMap;
+    else {
+        let bin = '';
+        for (let i = 0; i < pixMap.length; i++) bin += String.fromCharCode(pixMap[i]);
+        base64 = btoa(bin);
+    }
+    return base64.match(/.{1,64}/gs) ?? [];
+}
+
+/** The inverse of {@link labelImageToJson}. A plain string — what Mudlet Web
+ *  wrote before — is taken as it is. */
+function labelImageFromJson(raw: unknown): string {
+    if (typeof raw === 'string') return raw;
+    if (Array.isArray(raw)) return raw.filter(p => typeof p === 'string').join('');
+    return '';
 }
 
 /**
@@ -382,9 +427,9 @@ function labelsFromJson(raw: unknown): MudletLabel[] {
             pos: [Number(pos[0]) || 0, Number(pos[1]) || 0, Number(pos[2]) || 0],
             size: [Number(size[0]) || 0, Number(size[1]) || 0],
             text: typeof entry.text === 'string' ? entry.text : '',
-            fgColor: jsonColor(colors[0], 255),
-            bgColor: jsonColor(colors[1], 50),
-            pixMap: typeof entry.image === 'string' ? entry.image : '',
+            fgColor: readJsonColor(colors[0], 255) ?? colorFromRgb24(undefined, 255),
+            bgColor: readJsonColor(colors[1], 50) ?? colorFromRgb24(undefined, 50),
+            pixMap: labelImageFromJson(entry.image),
             showOnTop: !!entry.showOnTop,
             noScaling: entry.scaledels === undefined ? false : !entry.scaledels,
         };
@@ -412,7 +457,7 @@ function applyCustomLine(room: MudletRoom, key: string, raw: unknown): void {
         .map(p => [Number(p[0]) || 0, Number(p[1]) || 0] as [number, number]);
     if (points.length === 0) return;
     room.customLines[key] = points;
-    room.customLinesColor[key] = colorFromRgb24(line.color24RGB);
+    room.customLinesColor[key] = readJsonColor(line) ?? colorFromRgb24(undefined);
     room.customLinesArrow[key] = !!line.endsInArrow;
     // Mudlet omits `style` for the default solid line.
     room.customLinesStyle[key] = PEN_STYLE_NUM[String(line.style ?? 'solid line')] ?? 1;
@@ -431,11 +476,11 @@ function applyJsonSymbolColors(src: unknown, store: MapStore): void {
         for (const room of (Array.isArray(area?.rooms) ? area.rooms : []) as Record<string, unknown>[]) {
             const sym = room?.symbol;
             if (!sym || typeof sym !== 'object') continue;
-            const rgb = (sym as Record<string, unknown>).color24RGB;
-            if (!Array.isArray(rgb)) continue;
+            const c = readJsonColor(sym);
+            if (!c) continue;
             const id = Number(room.id);
             if (!Number.isFinite(id)) continue;
-            store.setRoomCharColor(id, Number(rgb[0]) || 0, Number(rgb[1]) || 0, Number(rgb[2]) || 0);
+            store.setRoomCharColor(id, c.r, c.g, c.b, c.alpha);
         }
     }
 }
@@ -454,15 +499,17 @@ function applyJsonRoomBorders(src: unknown, store: MapStore): void {
         for (const room of (Array.isArray(area?.rooms) ? area.rooms : []) as Record<string, unknown>[]) {
             const id = Number(room?.id);
             if (!Number.isFinite(id)) continue;
-            const rgb = room.borderColor24RGB;
-            if (Array.isArray(rgb)) {
-                // An imported map carries no alpha, so it is the default —
-                // Mudlet issue #10368 records the same limitation.
-                store.setRoomBorderColor(
-                    id, Number(rgb[0]) || 0, Number(rgb[1]) || 0, Number(rgb[2]) || 0, 255,
-                );
-            }
-            const width = Number(room.borderWidth);
+            // Mudlet writes `border: {color24RGB|color32RGBA, thickness}`.
+            // The flat borderColor24RGB/borderWidth pair is what Mudlet Web
+            // wrote before, still read so its older exports open.
+            const border = room.border && typeof room.border === 'object'
+                ? room.border as Record<string, unknown>
+                : undefined;
+            const colour = border
+                ? readJsonColor(border)
+                : Array.isArray(room.borderColor24RGB) ? colorFromRgb24(room.borderColor24RGB) : undefined;
+            if (colour) store.setRoomBorderColor(id, colour.r, colour.g, colour.b, colour.alpha);
+            const width = Number(border ? border.thickness : room.borderWidth);
             if (Number.isFinite(width)) store.setRoomBorderThickness(id, width);
         }
     }
@@ -851,6 +898,7 @@ export class MapStore {
         this.customEnvColors.clear();
         this.restore16ColorSet();
         this.roomCharColors.clear();
+        this.unsetCharColorRooms.clear();
         if (this.hiddenRooms.size > 0) { this.hiddenRooms.clear(); this.hiddenVersion++; }
         this.roomHighlights.clear();
         const hadSelection = this.selectedRooms.size > 0 || this.selectionCenter != null;
@@ -909,6 +957,7 @@ export class MapStore {
         this.customEnvColors.clear();
         this.restore16ColorSet();
         this.roomCharColors.clear();
+        this.unsetCharColorRooms.clear();
         if (this.hiddenRooms.size > 0) { this.hiddenRooms.clear(); this.hiddenVersion++; }
         this.roomHighlights.clear();
         this.pendingBinaryHadSelection = this.selectedRooms.size > 0 || this.selectionCenter != null;
@@ -1104,12 +1153,13 @@ export class MapStore {
             areas: [...this.areaNames.keys()].map(areaId => ({
                 id: areaId,
                 name: this.areaNames.get(areaId) ?? '',
+                ...(this.areas.get(areaId)?.gridMode ? { gridMode: true } : {}),
                 userData: this.areas.get(areaId)?.userData ?? {},
                 labels: this.labelsToJson(areaId),
                 rooms: (this.areas.get(areaId)?.rooms ?? []).map(id => this.roomToJson(id)),
             })),
             customEnvColors: [...this.customEnvColors].map(([id, c]) => ({
-                id, color24RGB: [c.r, c.g, c.b],
+                id, ...writeJsonColor(c),
             })),
             // Map-wide user data, as TMap::writeJsonUserData writes it. Omitted
             // when there is none, so an export from a map nobody has annotated
@@ -1138,10 +1188,13 @@ export class MapStore {
                 // spells it in the file — a label that does not scale is one
                 // the file says is not scaled with the map.
                 scaledels: !label.noScaling,
-                colors: [colorToJson(label.fgColor), colorToJson(label.bgColor)],
+                colors: [
+                    writeJsonColor(label.fgColor ?? colorFromRgb24(undefined)),
+                    writeJsonColor(label.bgColor ?? colorFromRgb24(undefined)),
+                ],
             };
             if (label.text) entry.text = label.text;
-            if (label.pixMap) entry.image = label.pixMap;
+            if (label.pixMap) entry.image = labelImageToJson(label.pixMap);
             if (label.fontName) {
                 entry.font = { family: label.fontName, pointSize: label.fontSize ?? 0 };
             }
@@ -1179,13 +1232,17 @@ export class MapStore {
         if (room.symbol) {
             const colour = this.roomCharColors.get(id);
             out.symbol = colour
-                ? { text: room.symbol, color24RGB: [colour.r, colour.g, colour.b] }
+                ? { text: room.symbol, ...writeJsonColor(colour) }
                 : { text: room.symbol };
         }
-        const border = this.roomBorderColors.get(id);
-        if (border) out.borderColor24RGB = [border.r, border.g, border.b];
+        const borderColour = this.roomBorderColors.get(id);
         const thickness = this.roomBorderThicknesses.get(id);
-        if (thickness != null) out.borderWidth = thickness;
+        if (borderColour || thickness != null) {
+            out.border = {
+                ...(borderColour ? writeJsonColor(borderColour) : {}),
+                ...(thickness != null ? { thickness } : {}),
+            };
+        }
 
         const exits: Record<string, unknown>[] = [];
         const doorName = (v: number) => (v === 1 ? 'open' : v === 2 ? 'closed' : v === 3 ? 'locked' : undefined);
@@ -1234,7 +1291,7 @@ export class MapStore {
             const colour = room.customLinesColor?.[key];
             exit.customLine = {
                 coordinates: points.map(p => [p[0], p[1]]),
-                color24RGB: colour ? [colour.r, colour.g, colour.b] : [255, 255, 255],
+                ...writeJsonColor(colour ?? colorFromRgb24([255, 255, 255])),
                 endsInArrow: !!room.customLinesArrow?.[key],
                 style: PEN_STYLE_NAMES[room.customLinesStyle?.[key] ?? 1] ?? 'solid line',
             };
@@ -1949,6 +2006,14 @@ export class MapStore {
         const room = this.rooms.get(id);
         if (!room) return;
         if (room.hash) this.hashToRoom.delete(room.hash);
+        // A hash names one room. Take it off the room that had it, or that
+        // room still reports it (getRoomHashByID) and, since a load rebuilds
+        // the index from the rooms, can win the hash back on the next loadMap.
+        const prev = this.hashToRoom.get(hash);
+        if (prev !== undefined && prev !== id) {
+            const old = this.rooms.get(prev);
+            if (old && old.hash === hash) delete old.hash;
+        }
         room.hash = hash;
         this.hashToRoom.set(hash, id);
         this.notify();
@@ -2491,19 +2556,18 @@ export class MapStore {
      * Mudlet `getCustomLines(roomID)` — per-direction custom exit lines drawn
      * on the map. Returns `undefined` when the room doesn't exist so the Lua
      * wrapper can hand back `nil`; otherwise a `{ dir = { attributes, points } }`
-     * table (empty when the room has no custom lines). Points carry the room's
-     * Z because Mudlet stores only X/Y per point and uses the owning room's Z
-     * for rendering.
+     * table (empty when the room has no custom lines). Points are X/Y only, as
+     * Mudlet stores and reports them — a line lies on its owning room's Z.
      */
     getCustomLines(id: number): Record<string, {
         attributes: { color: { r: number; g: number; b: number }; style: string; arrow: boolean };
-        points: Array<{ x: number; y: number; z: number }>;
+        points: Array<{ x: number; y: number }>;
     }> | undefined {
         const room = this.rooms.get(id);
         if (!room) return undefined;
         const out: Record<string, {
             attributes: { color: { r: number; g: number; b: number }; style: string; arrow: boolean };
-            points: Array<{ x: number; y: number; z: number }>;
+            points: Array<{ x: number; y: number }>;
         }> = {};
         for (const key of Object.keys(room.customLines ?? {})) {
             const color = room.customLinesColor?.[key];
@@ -2514,7 +2578,7 @@ export class MapStore {
                     style: PEN_STYLE_NAMES[styleNum] ?? 'solid line',
                     arrow: !!room.customLinesArrow?.[key],
                 },
-                points: (room.customLines[key] ?? []).map(([x, y]) => ({ x, y, z: room.z })),
+                points: (room.customLines[key] ?? []).map(([x, y]) => ({ x, y })),
             };
         }
         return out;
@@ -2911,6 +2975,10 @@ export class MapStore {
         if (removed.size > 0) this.severExitsTo(removed);
         this.areas.delete(id);
         this.areaNames.delete(id);
+        // The area's labels go with it (TMap::deleteArea deletes the TArea that
+        // holds them). Left behind, they came back on the next area given this
+        // id, and a save carried them into the file.
+        this.labels.delete(id);
         this.notify();
         return null;
     }
@@ -3352,14 +3420,16 @@ export class MapStore {
         return { ok: true, multi };
     }
 
-    /** Next free label id within an area — Mudlet keys labels by an integer that
-     *  is unique per area and starts at 0. */
+    /** Lowest free label id within an area — Mudlet keys labels by an integer
+     *  that is unique per area, and TArea::createLabelId counts up from 0 to the
+     *  first one not taken, so a deleted label's id is handed out again. */
     private nextLabelId(areaId: number): number {
         const labels = this.labels.get(areaId);
         if (!labels || labels.length === 0) return 0;
-        let max = -1;
-        for (const l of labels) if (l.id > max) max = l.id;
-        return max + 1;
+        const used = new Set(labels.map(l => l.id));
+        let id = 0;
+        while (used.has(id)) id++;
+        return id;
     }
 
     /**
@@ -3954,6 +4024,10 @@ export class MapStore {
     // that with a separate Map keyed by room id; the renderer's
     // MudletMapReader can read this back when painting room symbols.
     private roomCharColors = new Map<number, MudletColor>();
+    // Rooms whose colour unsetRoomCharColor dropped. Only getRoomCharColor
+    // tells them apart: desktop reads a never-set colour back as 0,0,0 and an
+    // unset one as 255,255,255, while both paint with the default colour.
+    private unsetCharColorRooms = new Set<number>();
     // ── Hidden rooms (Mudlet setRoomHidden / getRoomHidden / getHiddenRooms) ──
     // Mudlet stores `isHidden` on the C++ TRoom; the binary reader's MudletRoom
     // shape doesn't surface it. Mirror with a Set keyed by room id and let the
@@ -3968,6 +4042,7 @@ export class MapStore {
     setRoomCharColor(id: number, r: number, g: number, b: number, a = 255): boolean {
         if (!this.rooms.has(id)) return false;
         this.roomCharColors.set(id, { spec: 1, alpha: a, r, g, b });
+        this.unsetCharColorRooms.delete(id);
         this.notify();
         return true;
     }
@@ -3986,9 +4061,14 @@ export class MapStore {
     unsetRoomCharColor(id: number): boolean {
         if (!this.rooms.has(id)) return false;
         if (!this.roomCharColors.delete(id)) return false;
+        this.unsetCharColorRooms.add(id);
         this.notify();
         return true;
     }
+
+    /** Whether unsetRoomCharColor cleared this room's colour (and nothing has
+     *  set one since). */
+    isRoomCharColorUnset(id: number): boolean { return this.unsetCharColorRooms.has(id); }
 
     // ── Hidden rooms ──────────────────────────────────────────────────────────
 
