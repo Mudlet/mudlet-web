@@ -150,11 +150,13 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
         ));
     // Bridge.lua owns the argument contract and every refusal wording — see
     // "Button state" there. These only report what is present.
-    lua.global.set('__mudlet_button_kind', (name: unknown) => api.buttonKind(String(name ?? '')));
+    // A button is given by name or by item ID; only a Lua number is an ID.
+    const buttonRef = (v: unknown): string | number => typeof v === 'number' ? v : String(v ?? '');
+    lua.global.set('__mudlet_button_kind', (name: unknown) => api.buttonKind(buttonRef(name)));
     lua.global.set('__setButtonState', (name: unknown, state: unknown) =>
-        api.setButtonState(String(name ?? ''), !!state));
+        api.setButtonState(buttonRef(name), !!state));
     lua.global.set('__getButtonState', (name: unknown) =>
-        api.getButtonState(String(name ?? '')));
+        api.getButtonState(buttonRef(name)));
     lua.global.set('__mudlet_clicked_button_state', () => api.clickedButtonState);
     lua.global.set('setButtonStyleSheet', (name: unknown, css: unknown) =>
         api.setButtonStyleSheet(String(name ?? ''), String(css ?? '')));

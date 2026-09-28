@@ -1209,7 +1209,7 @@ export class ScriptingEngine implements EngineHost {
             this.moduleInfoOverrides.delete(moduleName);
             this.noteModuleLoaded(moduleName, data);
             const problems = this.collectInstallProblems(moduleName,
-                () => useAppStore.getState().installPackage(id, pkg, data), data.triggers);
+                () => useAppStore.getState().installPackage(id, pkg, data), data);
             this.raiseEvent('sysReadModuleEvent', [moduleName]);
             // A reload is Mudlet's module sync (Host::reloadModule installs it
             // again as one), so it says so the way a sync does — on the event,
@@ -1421,7 +1421,7 @@ export class ScriptingEngine implements EngineHost {
             const { manifest, data } = prepared;
             this.noteModuleLoaded(manifest.name, data);
             const problems = this.collectInstallProblems(manifest.name,
-                () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data.triggers);
+                () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data);
             this.notifyPackageInstalled(manifest.name, undefined, problems);
             this.raiseEvent('sysInstallModule', [manifest.name]);
             this.raiseEvent('sysLuaInstallModule', [manifest.name, path]);
@@ -2167,7 +2167,7 @@ export class ScriptingEngine implements EngineHost {
             prepared.commit();
             const { manifest, data } = prepared;
             const problems = this.collectInstallProblems(manifest.name,
-                () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data.triggers);
+                () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data);
             this.notifyPackageInstalled(manifest.name, path, problems);
             void vfs.flush();
             return { ok: true, error: problems };
@@ -3734,13 +3734,25 @@ export class ScriptingEngine implements EngineHost {
     /** Mudlet `setButtonState(name, state)`. Flips the buttonState on the named
      *  two-state button. */
     /**
+     * The button the button-state functions mean: a name finds the first
+     * button (not toolbar) called that, a number is an item ID — the one
+     * findItems() handed out, which Mudlet's getAction(id) resolves whatever
+     * the item is, so a toolbar found by ID is simply not a push-down button.
+     */
+    private findButton(ref: string | number): ButtonNode | undefined {
+        const buttons = useAppStore.getState().connectionButtons[this.connectionId] ?? [];
+        if (typeof ref === 'number') return buttons.find(b => this.uuidToNumericId.get(b.id) === ref);
+        if (!ref) return undefined;
+        return buttons.find(b => !b.isGroup && b.name === ref);
+    }
+
+    /**
      * What `name` refers to, so the Lua side can say which of Mudlet's several
      * refusals applies: no such button, or a button that has no state to set
      * because it is not a two-state one.
      */
-    buttonKindByName(name: string): 'missing' | 'plain' | 'pushdown' {
-        const buttons = useAppStore.getState().connectionButtons[this.connectionId] ?? [];
-        const target = buttons.find(b => !b.isGroup && b.name === name);
+    buttonKindByName(name: string | number): 'missing' | 'plain' | 'pushdown' {
+        const target = this.findButton(name);
         if (!target) return 'missing';
         return target.isPushDown ? 'pushdown' : 'plain';
     }
@@ -3749,12 +3761,10 @@ export class ScriptingEngine implements EngineHost {
      *  that was already in the state asked for — "nothing to do" rather than
      *  "could not do it", which is why the caller can tell them apart only by
      *  having checked the name first. */
-    setButtonStateByName(name: string, state: boolean): boolean {
-        if (!name) return false;
+    setButtonStateByName(name: string | number, state: boolean): boolean {
         const store = useAppStore.getState();
-        const buttons = store.connectionButtons[this.connectionId] ?? [];
-        const target = buttons.find(b => !b.isGroup && b.name === name);
-        if (!target) return false;
+        const target = this.findButton(name);
+        if (!target || !target.isPushDown) return false;
         if (!!target.buttonState === !!state) return false;
         store.updateButton(this.connectionId, target.id, { buttonState: !!state });
         return true;
@@ -3765,11 +3775,8 @@ export class ScriptingEngine implements EngineHost {
      *  that to nil — Mudlet returns false/error). A button whose code will not
      *  compile still answers its state: TLuaInterpreter::getButtonState reads
      *  mButtonState without asking whether the button is active. */
-    getButtonStateByName(name: string): boolean | null {
-        if (!name) return null;
-        const store = useAppStore.getState();
-        const buttons = store.connectionButtons[this.connectionId] ?? [];
-        const target = buttons.find(b => !b.isGroup && b.name === name);
+    getButtonStateByName(name: string | number): boolean | null {
+        const target = this.findButton(name);
         if (!target) return null;
         return !!target.buttonState;
     }
@@ -4616,7 +4623,11 @@ export class ScriptingEngine implements EngineHost {
      * answer to report however it likes, and a module sync would otherwise
      * repeat it on every save for as long as the module stays broken.
      */
-    private collectInstallProblems(name: string, commit: () => void, triggers: TriggerNode[]): string | null {
+    private collectInstallProblems(
+        name: string,
+        commit: () => void,
+        items: Pick<MudletImportResult, 'triggers' | 'timers' | 'aliases' | 'buttons' | 'keys'>,
+    ): string | null {
         const outer = this.installProblems;
         const problems: string[] = [];
         this.installProblems = problems;
@@ -4628,11 +4639,20 @@ export class ScriptingEngine implements EngineHost {
             this.installing.delete(name);
         }
         this.carryOutHeldRemovals();
+        // Every kind whose Lua is compiled as it is read, in the order
+        // XMLimport reads their packages — each unit names the items it could
+        // not compile (XMLimport::mItemsWithErrors).
         const rt = this.runtimes.lua;
-        for (const trigger of triggers) {
-            if (trigger.isGroup || !trigger.code || trigger.language !== 'lua') continue;
-            const err = itemSyntaxError(rt, trigger.code, itemChunkName('trigger', trigger.name));
-            if (err) problems.push(`${trigger.name}: ${err}`);
+        const kinds: [CodeItemKind, readonly { isGroup?: boolean; code?: string; language?: string; name: string }[]][] = [
+            ['trigger', items.triggers], ['timer', items.timers], ['alias', items.aliases],
+            ['button', items.buttons], ['key', items.keys],
+        ];
+        for (const [kind, list] of kinds) {
+            for (const item of list ?? []) {
+                if (item.isGroup || !item.code || item.language !== 'lua') continue;
+                const err = itemSyntaxError(rt, item.code, itemChunkName(kind, item.name));
+                if (err) problems.push(`${item.name}: ${err}`);
+            }
         }
         return problems.length > 0 ? problems.join('; ') : null;
     }
@@ -5136,10 +5156,21 @@ export class ScriptingEngine implements EngineHost {
                 if (!(key in next) && prev[key] !== undefined) this.raiseEvent('sysSettingChanged', [key, undefined]);
             }
         };
+        // Mudlet also reports the main console's font as a whole, as
+        // ("main window font", family, size), whenever either half changes
+        // (Host::updateConsolesFont) — whether a script or the preferences
+        // changed it. Tracked by what the console is drawn in, so a write that
+        // lands on the same font raises nothing, as setDisplayFont does not.
+        const mainFont = (): [string, number] => [this.api.getFont() ?? '', this.api.getFontSize() ?? 0];
+        let lastMainFont = mainFont().join('\u0000');
         this.unsubs.push(useAppStore.subscribe((state) => {
             const next = (state.connectionProfile[this.connectionId] ?? {}) as Record<string, unknown>;
             if (next === lastProfile) return;
             const prev = lastProfile;
+            const [family, size] = mainFont();
+            const fontNow = `${family}\u0000${size}`;
+            const fontChanged = fontNow !== lastMainFont;
+            lastMainFont = fontNow;
             // Adopted before anything is raised, not after: a handler is allowed
             // to write a setting back from inside the event, and that write
             // re-enters this subscriber. Diffing it against the pre-change
@@ -5162,6 +5193,7 @@ export class ScriptingEngine implements EngineHost {
                 if (key === CONFIG_BAG_FIELD) raiseKeyChanges(asBag(prev[key]), {});
                 else this.raiseEvent('sysSettingChanged', [key, undefined]);
             }
+            if (fontChanged) this.raiseEvent('sysSettingChanged', ['main window font', family, size]);
         }));
 
         this.unsubs.push(

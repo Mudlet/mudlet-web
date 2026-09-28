@@ -1135,6 +1135,9 @@ export class LuaRuntime implements IScriptingRuntime {
             if (this.api.labels.has(name)) { this.api.labels.raise(name); return true; }
             if (this.api.cmdLines.has(name)) { this.api.cmdLines.raise(name); return true; }
             if (this.api.scrollBoxes.has(name)) { this.api.scrollBoxes.raise(name); return true; }
+            // Found, as Mudlet finds it — but a text edit is not drawn yet
+            // (see TextEditManager), so there is no stacking order to change.
+            if (this.api.textEdits.has(name)) return true;
             if (this.api.windows.has(name)) { this.api.windows.bringToFront(name); return true; }
             if (mapperNamed(name)) { this.api.windows.bringToFront(MAPPER_WIDGET_ID); return true; }
             // A bare Geyser container identity (no real widget of its own —
@@ -1149,6 +1152,9 @@ export class LuaRuntime implements IScriptingRuntime {
             if (this.api.labels.has(name)) { this.api.labels.lower(name); return true; }
             if (this.api.cmdLines.has(name)) { this.api.cmdLines.lower(name); return true; }
             if (this.api.scrollBoxes.has(name)) { this.api.scrollBoxes.lower(name); return true; }
+            // Found, as Mudlet finds it — but a text edit is not drawn yet
+            // (see TextEditManager), so there is no stacking order to change.
+            if (this.api.textEdits.has(name)) return true;
             if (this.api.windows.has(name)) { this.api.windows.sendToBack(name); return true; }
             if (mapperNamed(name)) { this.api.windows.sendToBack(MAPPER_WIDGET_ID); return true; }
             return false;
@@ -1188,11 +1194,11 @@ export class LuaRuntime implements IScriptingRuntime {
         });
         // setLabelCustomCursor(name, cursorPath, [hotX, hotY]) — point a label's
         // cursor at a custom image. hotX/hotY are the hotspot in pixels; numbers
-        // may arrive as capture strings, so coerce with Number().
+        // may arrive as capture strings, so coerce with Number(). A refusal
+        // comes back as its message, which Bridge.lua turns into (nil, msg).
         this.lua.global.set('setLabelCustomCursor', (name: unknown, path: unknown, hotX?: unknown, hotY?: unknown) => {
-            if (typeof name !== 'string') return false;
             return this.api.setLabelCustomCursor(
-                name,
+                String(name ?? ''),
                 String(path ?? ''),
                 hotX === undefined ? undefined : Number(hotX),
                 hotY === undefined ? undefined : Number(hotY),
