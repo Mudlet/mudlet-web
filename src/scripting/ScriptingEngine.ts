@@ -82,7 +82,7 @@ import {MapOpenNotifier} from './MapOpenNotifier';
 import {installPackageFonts, refreshPackageFonts} from '../import/packageFonts';
 import {installPackageFromBytes, moduleXmlAbsolutePath, prepareModuleInstallFromVfsPath, preparePackageInstall, reloadModuleFromVfs, uninstallPackageFiles} from '../import/packageInstaller';
 import type {MudletImportResult} from '../import/mudletXmlImport';
-import {downloadFromUrl, filenameFromUrl, isClientGuiRedelivery, parseClientGuiPayload, parseClientMapPayload} from '../import/remotePackageInstall';
+import {clientGuiDeclinesBaseUi, downloadFromUrl, filenameFromUrl, isClientGuiRedelivery, parseClientGuiPayload, parseClientMapPayload} from '../import/remotePackageInstall';
 import {ensureDefaultPackages} from '../import/defaultPackages';
 import {serializeMudletXml, type SerializeInput} from '../import/mudletXmlExport';
 import {isMudletProfileVfs, readNewestParseableXml} from '../import/mudletLink';
@@ -2509,6 +2509,24 @@ export class ScriptingEngine implements EngineHost {
         const styled = mudletPostMessage(text);
         this.session.consoles.get('main')?.appendLine(new AnsiAwareBuffer(styled));
         this.session.events.emit('message', styled, 'info', Date.now());
+    }
+
+    /**
+     * A `Client.GUI` offer, after its gmcp table update. Mudlet
+     * (cTelnet::setGMCPVariables) ignores the whole message when the profile
+     * refuses server packages; otherwise it acts on the install, and then — if
+     * the game declined the built-in starter UI with `{"baseui": false}` —
+     * raises sysServerGuiInstalled with no package named, the same event an
+     * installed interface raises. The install's synchronous part (its
+     * "Downloading" notice) runs first, as it does on desktop; the download
+     * itself settles later.
+     */
+    private handleClientGui(value: unknown): void {
+        const allowInstall = useAppStore.getState().connectionProfile[this.connectionId]?.allowMudPackageInstall;
+        void this.handleClientGuiInstall(value);
+        if (allowInstall !== false && clientGuiDeclinesBaseUi(value)) {
+            this.raiseEvent('sysServerGuiInstalled', []);
+        }
     }
 
     private async handleClientGuiInstall(value: unknown): Promise<void> {
@@ -5267,7 +5285,7 @@ export class ScriptingEngine implements EngineHost {
             // before we act on it) and instead of it for the legacy shape,
             // which Mudlet keeps out of the GMCP table entirely.
             session.events.on('clientGui', (payload) => {
-                void this.handleClientGuiInstall(payload);
+                this.handleClientGui(payload);
             }),
             session.events.on('gmcp', ({ path, value }) => {
                 // Mirrors Mudlet TLuaInterpreter::parseJSON: write into the

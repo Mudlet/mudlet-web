@@ -103,6 +103,29 @@ function ensureLineEncoded(subject: string): void {
     bufLen = len;
 }
 
+// ── Unpaired surrogates ───────────────────────────────────────────────────────
+// Mudlet hands pcre2 a trigger's line, or an alias's command, as UTF-8
+// (`QString::toUtf8`), which leaves an unpaired surrogate out, so the text on
+// either side of one is matched as if it were together. pcre2 here runs in
+// 16-bit mode on the JS string itself, where an unpaired surrogate is invalid
+// UTF-16 and fails the whole match. So those callers match {@link pcreSubject}
+// of the line instead, and every offset reported is into that subject, as
+// Mudlet's are into its UTF-8 one. The wrapper itself still refuses invalid
+// UTF-16, as pcre2 does. A line only carries one from an MXP entity or a
+// script, so the scan is cached for the per-line pass, which hands every
+// pattern the same string.
+const UNPAIRED_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+let rawSubject: string | null = null;
+let cleanSubject = '';
+
+/** `subject` without its unpaired surrogates — what Mudlet's pcre2 sees. */
+export function pcreSubject(subject: string): string {
+    if (subject === rawSubject || subject === cleanSubject) return cleanSubject;
+    rawSubject = subject;
+    cleanSubject = subject.replace(UNPAIRED_SURROGATE, '');
+    return cleanSubject;
+}
+
 /** Drop the cached line so the next match re-encodes. Used after teardown or
  *  when callers want to be sure a stale buffer can't be reused. */
 export function resetLineBuffer(): void {

@@ -37,6 +37,7 @@ import {
 import type { MudClientEvents, TlsEstablished, TlsError } from "../events";
 import { LineAssembler } from "./LineAssembler";
 import { TelnetNegotiator, type TelnetNegotiatorFlags } from "./TelnetNegotiator";
+import { SubnegotiationRepair } from "./SubnegotiationRepair";
 import {
     debugFramesEnabled,
     debugGaEnabled,
@@ -242,6 +243,9 @@ export class MudClient {
     private readonly mccpHandler: MccpHandler;
     private readonly echoHandler: EchoHandler;
     private readonly negotiator: TelnetNegotiator;
+    /** Writes back the IAC SE a server left off a subnegotiation, before any
+     *  inbound parser reads the bytes (see SubnegotiationRepair). */
+    private readonly subnegRepair = new SubnegotiationRepair();
     /** The negotiator's option toggles, held here because they are the
      *  profile's and the profile can change under a live connection. Mudlet
      *  reads `mEnableMSSP` and friends at negotiation time, so a setting
@@ -625,6 +629,7 @@ export class MudClient {
         this.codec.reset();
         this.assembler.reset();
         this.negotiator.reset();
+        this.subnegRepair.reset();
         this.charModeDetected = false;
         this.cancelCharacterModeDetection();
         this.gmcpHelloSent = false;
@@ -669,7 +674,7 @@ export class MudClient {
                     // which is the fallback for a proxy too old to say so.
                     this.markEstablished();
                     const decodedData = bytesToLatin1(new Uint8Array(event.data));
-                    const data = this.mccpHandler.processData(decodedData);
+                    const data = this.subnegRepair.process(this.mccpHandler.processData(decodedData));
                     if (debugTelnetEnabled()) {
                         logTelnetNegotiation('raw', decodedData);
                         if (data !== decodedData) logTelnetNegotiation('post-mccp', data);
@@ -1232,6 +1237,7 @@ export class MudClient {
         // processSocketData (cTelnet::loopbackTest), so negotiation is answered
         // exactly as the socket's would be — the replies go nowhere while
         // unconnected, which sendRaw()'s readyState guard already ensures.
+        data = this.subnegRepair.process(data);
         this.negotiator.processFrame(data);
         this.echoHandler.processData(data);
         this.processIncomingData(data);
@@ -1312,7 +1318,7 @@ export class MudClient {
     }
 
     private decodeAndAssemble(sanitized: string, hasPrompt: boolean, ts: number): void {
-        const decodedRaw = this.codec.decode(sanitized);
+        const decodedRaw = this.codec.decode(sanitized, hasPrompt);
         // MSP in-band parsing: strip `!!SOUND(...)` / `!!MUSIC(...)` triplets
         // and dispatch them as events. Gated on MSP having actually been
         // negotiated, not merely allowed by the profile: on a server that never

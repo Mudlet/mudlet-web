@@ -37,25 +37,23 @@ const SE = 0xF0, EOR = 0xEF, GA = 0xF9, SB = 0xFA, WILL = 0xFB, WONT = 0xFC, DO 
 const OPT_ECHO = 1, OPT_SGA = 3, OPT_STATUS = 5, OPT_TIMING_MARK = 6, OPT_TTYPE_NUM = 24, OPT_EOR = 25, OPT_NAWS = 31,
     OPT_LINEMODE = 34, OPT_NEW_ENVIRON_NUM = 39, OPT_CHARSET_NUM = 42, OPT_MSDP = 69,
     OPT_MSSP = 70, OPT_MCCP1 = 85, OPT_MCCP2 = 86, OPT_MSP = 90, OPT_MXP = 91,
-    OPT_TELNET_102_NUM = 102, OPT_GMCP = 201;
+    OPT_TELNET_102_NUM = 102, OPT_ATCP_NUM = 200, OPT_GMCP = 201;
 
 /** Options the client negotiates natively, each by its own rule below.
  *  Everything else takes the generic answer (see `respondToOtherOption`). */
 const HARDCODED = new Set<number>([
     OPT_ECHO, OPT_SGA, OPT_TTYPE_NUM, OPT_EOR, OPT_NAWS, OPT_LINEMODE, OPT_NEW_ENVIRON_NUM,
     OPT_CHARSET_NUM, OPT_MSDP, OPT_MSSP, OPT_MCCP1, OPT_MCCP2, OPT_MSP, OPT_MXP,
-    OPT_TELNET_102_NUM, OPT_GMCP,
+    OPT_TELNET_102_NUM, OPT_ATCP_NUM, OPT_GMCP,
 ]);
 
 /** The exact sequence of options a server running KaVir's protocol snippet
  *  offers/requests, in order (`expectedOrderForKaVirHandler`, ctelnet.cpp).
  *  Such a server parses a decimal version out of the TTYPE client-name reply
  *  and silently caps colour support at 16 without one, so matching this order
- *  is Mudlet's cue to switch `versionInTTYPE` on. ATCP (200) is in the middle:
- *  the snippet offers it even though Mudlet Web doesn't speak it, and the whole
- *  point of the fingerprint is that it is *this* list in *this* order — so it
- *  is spelled out here rather than derived from the options we handle. */
-const OPT_ATCP_NUM = 200;
+ *  is Mudlet's cue to switch `versionInTTYPE` on. The whole point of the
+ *  fingerprint is that it is *this* list in *this* order — so it is spelled out
+ *  here rather than derived from the options we handle. */
 const KAVIR_NEGOTIATION_ORDER: readonly number[] = [
     OPT_TTYPE_NUM, OPT_NAWS, OPT_CHARSET_NUM, OPT_MSDP, OPT_MSSP, OPT_ATCP_NUM, OPT_MSP, OPT_MXP,
 ];
@@ -73,6 +71,7 @@ const PROTOCOL_NAMES: ReadonlyMap<number, string> = new Map([
     [OPT_MSP, 'MSP'],
     [OPT_MXP, 'MXP'],
     [OPT_TELNET_102_NUM, 'channel102'],
+    [OPT_ATCP_NUM, 'ATCP'],
     [OPT_GMCP, 'GMCP'],
 ]);
 
@@ -693,6 +692,18 @@ export class TelnetNegotiator {
                 // is no "enable channel 102" setting.
                 this.enableProtocol(cmd, opt);
                 return;
+            case OPT_ATCP_NUM:
+                // ATCP is the protocol GMCP replaced, so Mudlet takes it up —
+                // from either direction — only while the profile has GMCP
+                // switched off, and turns it down (taking down an ATCP still up)
+                // once GMCP is back on. A server's offer is answered, after the
+                // DO, with the ATCP hello naming the client.
+                if (f.gmcpEnabled) {
+                    this.refuseProtocol(cmd, opt);
+                    return;
+                }
+                this.enableProtocol(cmd, opt, cmd === WILL ? () => this.sendAtcpHello() : undefined);
+                return;
             case OPT_GMCP:
                 // Symmetric: server offers (WILL) or requests (DO) GMCP; either
                 // way we agree and announce ourselves via the Core.Hello
@@ -738,6 +749,14 @@ export class TelnetNegotiator {
     private withdrawProtocol(opt: number): void {
         this.enabledProtocols.delete(opt);
         this.eventBus.emit('protocol.disabled', PROTOCOL_NAMES.get(opt) ?? String(opt));
+    }
+
+    /** Mudlet's ATCP hello, sent after `IAC DO ATCP`: the client's name and
+     *  version, then the modules it asks for. Mudlet's list less `composer`,
+     *  since there is no ATCP composer here to answer `Client.Compose`. */
+    private sendAtcpHello(): void {
+        const hello = `hello ${CLIENT_NAME} ${CLIENT_VERSION}\nchar_vitals 1\nroom_brief 1\nroom_exits 1\nmap_display 1\n`;
+        this.hooks.sendRaw(GMCP_IAC + GMCP_SB + String.fromCharCode(OPT_ATCP_NUM) + toByteString(hello) + GMCP_IAC + GMCP_SE);
     }
 
     /** Mudlet's MSDP start sequence, sent after `IAC DO MSDP`:

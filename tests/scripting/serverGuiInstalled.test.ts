@@ -53,6 +53,7 @@ const CONN = 'server-gui-installed-conn';
 
 type EngineInternals = {
     handleClientGuiInstall: (value: unknown) => Promise<void>;
+    handleClientGui: (value: unknown) => void;
     vfs: unknown;
     raiseEvent: (event: string, args: unknown[]) => void;
 };
@@ -120,6 +121,24 @@ describe('Client.GUI install raises sysServerGuiInstalled', () => {
     it('does not raise it when the profile refuses server package installs', async () => {
         useAppStore.getState().patchConnectionProfile(CONN, { allowMudPackageInstall: false });
         await install({ url: 'https://example.invalid/ui/game-ui.mpackage', version: '2.0' });
+        expect(raised.map(r => r.event)).not.toContain('sysServerGuiInstalled');
+    });
+
+    // A game can decline the starter UI up front with {"baseui": false}; Mudlet
+    // raises the same event, with no package named (cTelnet::setGMCPVariables).
+    it('raises it with no package named when the game declines the starter UI', () => {
+        const offer = (value: unknown) => (engine as unknown as EngineInternals).handleClientGui(value);
+        offer({ baseui: true });
+        offer({ baseui: 'no' });
+        expect(raised.map(r => r.event)).not.toContain('sysServerGuiInstalled');
+        offer({ baseui: false });
+        offer({ baseui: ' False ' });
+        expect(raised.filter(r => r.event === 'sysServerGuiInstalled').map(r => r.args)).toEqual([[], []]);
+    });
+
+    it('ignores a decline when the profile refuses server packages, as it does the offer', () => {
+        useAppStore.getState().patchConnectionProfile(CONN, { allowMudPackageInstall: false });
+        (engine as unknown as EngineInternals).handleClientGui({ baseui: false });
         expect(raised.map(r => r.event)).not.toContain('sysServerGuiInstalled');
     });
 });

@@ -7,6 +7,7 @@ import {
     GMCP_SE,
     OPT_CHARSET,
 } from "./constants";
+import { fromByteString } from "./byteString";
 import { codePageUpperHalf, VENDORED_CODE_PAGES } from "./codePages";
 import { decodeMultiByte, isMultiByteFramed, type MultiByteLabel } from "./multiByte";
 import { canBuildMultiByteEncoder, encodeMultiByteChar, type MultiByteEncoding } from "./multiByteEncode";
@@ -417,20 +418,24 @@ export class SessionCodec {
 
     /** Converts a Latin-1 byte-string into decoded text under the current
      *  encoding, buffering any trailing partial multi-byte sequence for the
-     *  next frame. */
-    decode(byteString: string): string {
-        if (byteString.length === 0) return '';
+     *  next frame — unless `final`, for text that ends a prompt: Mudlet's
+     *  cTelnet::gotPrompt ends a prompt with a byte of its own, which cannot
+     *  continue a sequence either, so a sequence the prompt cut short earns its
+     *  replacement mark there and the next line starts afresh. */
+    decode(byteString: string, final = false): string {
         if (this.table) return decodeWithTable(byteString, this.table);
         if (this.framed) {
+            if (byteString.length === 0 && !(final && this.pendingBytes)) return '';
             const framed = decodeMultiByte(this.pendingBytes + byteString, this.framed);
-            this.pendingBytes = framed.pending;
-            return framed.text;
+            this.pendingBytes = final ? '' : framed.pending;
+            return final && framed.pending ? framed.text + '\uFFFD' : framed.text;
         }
+        if (byteString.length === 0 && !final) return '';
         const bytes = new Uint8Array(byteString.length);
         for (let i = 0; i < byteString.length; i++) {
             bytes[i] = byteString.charCodeAt(i) & 0xff;
         }
-        return this.decoder.decode(bytes, { stream: true });
+        return this.decoder.decode(bytes, { stream: !final });
     }
 
     /** Decode an out-of-band body (an MSSP or MSDP subnegotiation payload)
@@ -439,9 +444,13 @@ export class SessionCodec {
      *  frame, and a subnegotiation is a whole message that must neither leave
      *  bytes behind in the display path nor take any from it. Mudlet decodes
      *  these through the same encoding tables (`decodeBytes`), which is what
-     *  makes an MSSP value readable on a game running CP437. */
+     *  makes an MSSP value readable on a game running CP437. Under ASCII, which
+     *  Mudlet holds as no encoding at all, it reads them as UTF-8 instead
+     *  (cTelnet::setMSSPVariables' "though this can handle Utf-8" branch), so a
+     *  game that sends UTF-8 there anyway still gets its text through. */
     decodeOutOfBand(byteString: string): string {
         if (byteString.length === 0) return '';
+        if (this.currentEncoding === 'ascii') return fromByteString(byteString).text;
         if (this.table) return decodeWithTable(byteString, this.table);
         if (this.framed) return decodeMultiByte(byteString, this.framed).text;
         const bytes = new Uint8Array(byteString.length);
