@@ -53,8 +53,8 @@ describe('setConfig / getConfig', () => {
         expect(h.run('return getConfig("mapRoundRooms")')).toBe(true);
     });
 
-    // Mudlet's setConfig takes the preferences spin-box scale (mapRoomSize 5 →
-    // mRoomSize 0.5) while getConfig returns the internal double, and its exit
+    // Mudlet's setConfig and getConfig take the preferences spin-box scale
+    // (mapRoomSize 5 → mRoomSize 0.5), and its exit
     // pen is 1/mLineSize * cellPx * mRoomSize. The renderer instead wants plain
     // map-unit roomSize/lineWidth. See docs/config-api.md § Map size units.
     it('translates Mudlet map sizes into renderer map units', () => {
@@ -65,8 +65,9 @@ describe('setConfig / getConfig', () => {
         expect(mapper()?.roomSize).toBeCloseTo(0.5, 10);   // 5 / 10
         expect(mapper()?.lineWidth).toBeCloseTo(0.05, 10); // roomSize / mLineSize
 
-        // getConfig reports Mudlet's internal doubles, not the setter's scale.
-        expect(h.run('return getConfig("mapRoomSize")')).toBeCloseTo(0.5, 10);
+        // getConfig reports the room size in the setter's scale, so it
+        // round-trips; the exit size is mLineSize either way.
+        expect(h.run('return getConfig("mapRoomSize")')).toBe(5);
         expect(h.run('return getConfig("mapExitSize")')).toBeCloseTo(10, 10);
 
         // A bigger mapExitSize means *thinner* exits (inverse divisor).
@@ -318,9 +319,38 @@ describe('setConfig / getConfig', () => {
             .toEqual({ r: 1, g: 2, b: 3, a: 255 });
         // Out-of-range channel is rejected (Mudlet validates 0..255).
         expect(h.run('return setConfig("mapInfoColor", {300, 0, 0, 0})')).toBeNull();
-        // A non-table value is the wrong TYPE, which Mudlet raises on rather
-        // than reporting as a refusal.
-        expect(() => h.run('return setConfig("mapInfoColor", "nope")')).toThrow();
+        // A non-table value is a refusal, not a raise: Mudlet checks it with
+        // lua_istable and answers through warnArgumentValue.
+        expect(h.run('return select(2, setConfig("mapInfoColor", "nope"))'))
+            .toBe('mapInfoColor requires a table {r, g, b} or {r, g, b, a}');
+    });
+
+    it('names the mapInfoColor component that is missing or out of range, as Mudlet does', () => {
+        const refusal = (value: string) => h.run(`return select(2, setConfig("mapInfoColor", ${value}))`);
+        expect(refusal('{}')).toBe('mapInfoColor table must have red component at index 1');
+        expect(refusal('{1}')).toBe('mapInfoColor table must have green component at index 2');
+        expect(refusal('{1, 2}')).toBe('mapInfoColor table must have blue component at index 3');
+        expect(refusal('{256, 0, 0}')).toBe('red value 256 needs to be between 0-255');
+        expect(refusal('{0, -1, 0}')).toBe('green value -1 needs to be between 0-255');
+        expect(refusal('{0, 0, 0, 256}')).toBe('alpha value 256 needs to be between 0-255');
+    });
+
+    it('refuses a mapSymbolFont that is only whitespace in Mudlet\'s words', () => {
+        expect(h.run('return select(2, setConfig("mapSymbolFont", "   "))')).toBe('mapSymbolFont must not be empty');
+    });
+
+    it('reports mapRoomSize in the unit setConfig takes, so it round-trips', () => {
+        h.run('setConfig("mapRoomSize", 7)');
+        expect(h.run('return getConfig("mapRoomSize")')).toBe(7);
+        h.run('setConfig("mapRoomSize", getConfig("mapRoomSize"))');
+        expect(h.run('return getConfig("mapRoomSize")')).toBe(7);
+    });
+
+    it('refuses an unknown openMapWidget docking area in Host::openMapWidget\'s words', () => {
+        expect(h.run('return select(2, openMapWidget("Middle"))')).toBe(
+            'docking option "middle" not available. available docking options are'
+            + ' "t" top, "b" bottom, "r" right, "l" left and "f" floating',
+        );
     });
 
     // Mudlet's showMapInfo/hideMapInfo insert/remove a label in the enabled-set

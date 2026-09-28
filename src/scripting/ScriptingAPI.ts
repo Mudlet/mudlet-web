@@ -1521,10 +1521,12 @@ export class ScriptingAPI {
             case 'askTlsAvailable':
                 return selectProfileField(useAppStore.getState(), this.connectionId, 'askTlsAvailable') ?? true;
             // structured — mapper
-            // Mudlet's getConfig reports the *internal* doubles (host.mRoomSize /
-            // host.mLineSize), not the spin-box scale its setConfig takes — see
-            // setConfig below for the (deliberately asymmetric) write side.
-            case 'mapRoomSize':        return this.getMapperField('roomSize');
+            // Mudlet's getConfig reports mapRoomSize in the tenths-of-a-cell
+            // unit its setConfig takes (qRound(mRoomSize * 10)), so a script can
+            // hand the answer straight back; mapExitSize is the internal
+            // mLineSize, which is the unit its setter takes already.
+            case 'mapRoomSize':
+                return Math.round((this.getMapperField('roomSize') ?? MAPPER_DEFAULTS.roomSize) * MUDLET_ROOM_SIZE_SCALE);
             case 'mapExitSize':        return this.mudletExitSize();
             case 'mapRoundRooms':      return this.getMapperField('roomShape') === 'roundedRectangle';
             case 'mapShowRoomBorders': return this.getMapperField('borders');

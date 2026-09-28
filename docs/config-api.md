@@ -179,16 +179,18 @@ translates between the two spaces.
   exits, and exits scale with the room size. (That inversion is also why the
   preferences dialog shows `50 / mLineSize` in its 1–11 spinner.)
 - `setConfig` writes through the preferences slots, so it takes the **spin-box
-  scale**, while `getConfig` returns the **internal double**:
+  scale**, and `getConfig` answers in the same scale so its answer can be handed
+  straight back:
 
   | key | `setConfig(k, n)` does | `getConfig(k)` returns |
   |---|---|---|
-  | `mapRoomSize` | `slot_roomSize(n)` → `setRoomSize(n / 10)` | `host.mRoomSize` |
+  | `mapRoomSize` | `slot_roomSize(n)` → `setRoomSize(n / 10)` | `qRound(host.mRoomSize * 10)` |
   | `mapExitSize` | `slot_exitSize(n)` → `setExitSize(n)` | `host.mLineSize` |
 
-  So `setConfig("mapRoomSize", 5); getConfig("mapRoomSize")` yields `0.5` in real
-  Mudlet. That asymmetry is reproduced here deliberately — packages are written
-  against observed Mudlet behaviour. Mudlet's defaults are `mapRoomSize = 5`
+  So `setConfig("mapRoomSize", 5); getConfig("mapRoomSize")` yields `5`. (Mudlet
+  used to report the internal `0.5`, which shrank the rooms every time a script
+  saved and restored the setting; Other_spec's "round-trips mapRoomSize in the
+  unit setConfig takes" pins the fix.) Mudlet's defaults are `mapRoomSize = 5`
   and `mapExitSize = 10`.
 
 **Renderer side** (`mudlet-map-renderer` `Settings`): `roomSize` (default `0.6`)
@@ -200,7 +202,7 @@ and `lineWidth` (default `0.025`) are both plain map-unit lengths, and
 | direction | formula |
 |---|---|
 | `setConfig("mapRoomSize", n)` | `R = n / 10` (and `L` is rescaled by the same factor — see below) |
-| `getConfig("mapRoomSize")` | `R` |
+| `getConfig("mapRoomSize")` | `round(R * 10)` |
 | `setConfig("mapExitSize", n)` | `L = R / n` |
 | `getConfig("mapExitSize")` | `R / L` |
 

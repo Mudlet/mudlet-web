@@ -5686,16 +5686,39 @@ do
             error("setConfig: bad argument #2 type (value as string expected, got "
                 .. type(value) .. "!)", 2)
         end
+        -- Mudlet vets the colour component by component, naming the first one
+        -- that is missing or out of range; a non-table is a refusal rather
+        -- than a raise. Components are truncated to integers, as its
+        -- static_cast<int> does.
         if key == "mapInfoColor" then
             if type(value) ~= "table" then
-                error("setConfig: bad argument #2 type (value as table expected, got "
-                    .. type(value) .. "!)", 2)
+                return nil, "mapInfoColor requires a table {r, g, b} or {r, g, b, a}"
             end
-            local r = tonumber(value[1]) or 0
-            local g = tonumber(value[2]) or 0
-            local b = tonumber(value[3]) or 0
-            local a = tonumber(value[4]) or 255
-            value = string.format("%d,%d,%d,%d", r, g, b, a)
+            local channels = {}
+            for i, name in ipairs({"red", "green", "blue"}) do
+                local n = tonumber(value[i])
+                if n == nil then
+                    return nil, "mapInfoColor table must have " .. name .. " component at index " .. i
+                end
+                n = n < 0 and math.ceil(n) or math.floor(n)
+                if n < 0 or n > 255 then
+                    return nil, name .. " value " .. n .. " needs to be between 0-255"
+                end
+                channels[i] = n
+            end
+            local a = tonumber(value[4])
+            if a == nil then
+                a = 255
+            else
+                a = a < 0 and math.ceil(a) or math.floor(a)
+                if a < 0 or a > 255 then
+                    return nil, "alpha value " .. a .. " needs to be between 0-255"
+                end
+            end
+            value = string.format("%d,%d,%d,%d", channels[1], channels[2], channels[3], a)
+        end
+        if key == "mapSymbolFont" and not tostring(value):find("%S") then
+            return nil, "mapSymbolFont must not be empty"
         end
         local ok = _setConfig(key, value)
         if ok == false then
@@ -7709,8 +7732,10 @@ do
         local a = ...
         if n == 1 and type(a) == 'string' then
             if not DOCK_POSITIONS[a:lower()] then
-                return nil, "openMapWidget: docking position '" .. a
-                    .. "' is not available, it must be one of 'f', 'l', 'r', 't' or 'b'"
+                -- Host::openMapWidget's wording, naming the area lowercased
+                -- as it is by the time Mudlet looks at it
+                return nil, 'docking option "' .. a:lower() .. '" not available. available docking options are'
+                    .. ' "t" top, "b" bottom, "r" right, "l" left and "f" floating'
             end
         end
         return _rawOpenMapWidget(...)

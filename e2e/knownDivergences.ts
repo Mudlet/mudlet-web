@@ -67,6 +67,18 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
                 + 'coerces out of the number is handled identically, so it fails on the same io.exists() check for '
                 + 'the same reason.',
         },
+        {
+            name: 'Tests saveJsonMap and loadJsonMap / Tests the audit of an imported JSON map / reads a custom line with no style or arrow as a plain solid line',
+            reason:
+                'Everything the spec asks of the IMPORT holds: the line reads back as a solid line with no arrow, '
+                + 'and the style and arrow are stored rather than left absent (tests/map/mapLoadAudit.test.ts pins '
+                + 'that on the store). What fails is how the spec LOOKS for them — it saves the map as format 19 '
+                + 'with saveMap(path, 19) and searches the bytes for the v19 layout (upper-case exit keys, the '
+                + 'colour as a list of ints, the style as a string). Mudlet Web writes format 20 only: '
+                + 'mudlet-map-binary-reader reads 16-20 but every legacy model\'s write throws, by its author\'s '
+                + 'decision, so saveMap accepts the version argument and writes 20 regardless (see the map format '
+                + 'version row of docs/settings-divergence.md). Saving for an older Mudlet stays a job for desktop.',
+        },
     ],
     Media: (() => {
         // Three specs that need an utterance to FINISH. Everything up to that
