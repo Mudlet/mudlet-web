@@ -802,8 +802,10 @@ describe('createCommandLine — overlay primitive + routing', () => {
   it('creates an overlay cmd line and registers it under the cmdLines manager', () => {
     expect(env.run('return (createCommandLine("c1", 10, 20, 200, 24))')).toBe(true);
     expect(env.session.cmdLines.has('c1')).toBe(true);
-    // Re-create with the same name returns false (Mudlet semantics).
-    expect(env.run('return (createCommandLine("c1", 0, 0, 100, 20))')).toBe(false);
+    // Re-creating one under the same name is refused with nil and Mudlet's
+    // message (TMainConsole::createCommandLine), not a bare false.
+    expect(env.run('return (createCommandLine("c1", 0, 0, 100, 20))')).toBeNull();
+    expect(env.run('return select(2, createCommandLine("c1", 0, 0, 100, 20))')).toBe("couldn't create commandLine");
   });
 
   it('moveWindow / resizeWindow / hideWindow / showWindow / raiseWindow / lowerWindow target overlay cmd lines', () => {

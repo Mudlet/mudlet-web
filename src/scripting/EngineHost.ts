@@ -207,10 +207,10 @@ export interface EngineHost {
     // ── Buttons & scripts ────────────────────────────────────────────────────
 
     /** True when the state actually changed; false when it already was that. */
-    setButtonStateByName(name: string, state: boolean): boolean;
-    getButtonStateByName(name: string): boolean | null;
+    setButtonStateByName(name: string | number, state: boolean): boolean;
+    getButtonStateByName(name: string | number): boolean | null;
     /** Which of Mudlet's button refusals applies to `name`. */
-    buttonKindByName(name: string): 'missing' | 'plain' | 'pushdown';
+    buttonKindByName(name: string | number): 'missing' | 'plain' | 'pushdown';
     setButtonStyleSheetByName(name: string, css: string): boolean;
     setScriptByName(name: string, code: string, pos: number): number;
     getScriptByName(name: string, pos: number): { code: string; id: number } | null;

@@ -61,6 +61,10 @@ export interface StopwatchSummary {
 interface Stopwatch {
     id: number;
     name: string;          // '' = unnamed
+    /** Mudlet's mIsInitialised: false until the watch is first started or
+     *  adjusted, and again after a stopped watch is reset. An uninitialised
+     *  watch reads 0, cannot be stopped and is "already reset". */
+    initialised: boolean;
     running: boolean;
     accumulatedMs: number; // frozen elapsed from prior runs
     startEpochMs: number;  // Date.now() at the current run's start (absolute; only meaningful while running)
@@ -71,10 +75,30 @@ interface Stopwatch {
 interface PersistedStopwatch {
     id: number;
     name: string;
+    initialised?: boolean; // absent in records written before it was tracked
     running: boolean;
     accumulatedMs: number;
     startEpochMs: number;
 }
+
+/**
+ * How a stopwatch was asked for: a number is an ID, a string is a name — only
+ * a Lua number is an ID, so "5" names a stopwatch called 5 (Mudlet tests the
+ * argument with `lua_type(L, 1) == LUA_TNUMBER`). The empty name stands for the
+ * first (lowest ID) unnamed stopwatch.
+ */
+export type StopwatchSubject = number | string;
+
+/**
+ * A refusal, in the words Mudlet's `Host` and `TLuaInterpreter` use for it —
+ * the binding hands it to Lua as the second value after nil.
+ */
+export type StopwatchRefusal = { refused: string };
+
+const refuse = (message: string): StopwatchRefusal => ({ refused: message });
+
+export const isRefusal = (v: unknown): v is StopwatchRefusal =>
+    typeof v === 'object' && v !== null && typeof (v as StopwatchRefusal).refused === 'string';
 
 const MS_PER_DAY = 86_400_000;
 const MS_PER_HOUR = 3_600_000;
@@ -122,23 +146,42 @@ export class StopwatchManager {
     // out of it as time passes — so this is what a RUNNING one reports, not
     // only what an adjustment stores.
     private elapsedMs(w: Stopwatch): number {
+        if (!w.initialised) return 0;
         return clampToRange(w.accumulatedMs + (w.running ? this.now() - w.startEpochMs : 0));
     }
 
+    /** Watches in ascending ID order — Mudlet's std::map, which is what makes
+     *  "the first unnamed stopwatch" the lowest-numbered one. */
+    private ordered(): Stopwatch[] {
+        return [...this.watches.values()].sort((a, b) => a.id - b.id);
+    }
+
+    /** Host::findStopWatchId — the first watch with this name, '' finding the
+     *  first unnamed one. */
+    private findByName(name: string): Stopwatch | undefined {
+        return this.ordered().find(w => w.name === name);
+    }
+
     /**
-     * Resolve a watchID-or-name argument. Numbers (and numeric strings, which
-     * Mudlet's lua_isnumber treats as ids) look up by id; other strings look up
-     * by name. An empty string returns the first unnamed watch — Mudlet's
-     * findStopWatchId("") behaviour.
+     * Look a subject up, or answer the refusal for one that is not there.
+     * `idWord` is the one place the family disagrees with itself: the
+     * functions that go through `TLuaInterpreter::csmInvalidStopWatchID` say
+     * "ID", the ones whose message comes from `Host` say "id".
      */
-    private resolve(arg: number | string): Stopwatch | undefined {
-        if (typeof arg === 'number') return this.watches.get(arg);
-        if (arg === '') {
-            for (const w of this.watches.values()) if (w.name === '') return w;
-            return undefined;
+    private lookup(subject: StopwatchSubject, idWord: 'ID' | 'id'): Stopwatch | StopwatchRefusal {
+        if (typeof subject === 'number') {
+            return this.watches.get(subject) ?? refuse(`stopwatch with ${idWord} ${subject} not found`);
         }
-        for (const w of this.watches.values()) if (w.name === arg) return w;
-        return undefined;
+        return this.findByName(subject) ?? refuse(subject === ''
+            ? 'no unnamed stopwatches found'
+            : `stopwatch with name '${subject}' not found`);
+    }
+
+    /** How Host names a watch in an "already" refusal: the way it was asked for. */
+    private describe(subject: StopwatchSubject, w: Stopwatch): string {
+        return typeof subject === 'number'
+            ? `stopwatch with id ${w.id}`
+            : `stopwatch with name '${subject}' (id:${w.id})`;
     }
 
     /** Rehydrate persistent watches from the backing store (called once on construction). */
@@ -153,11 +196,14 @@ export class StopwatchManager {
         let maxId = 0;
         for (const r of parsed as PersistedStopwatch[]) {
             if (!r || typeof r.id !== 'number') continue;
+            const running = !!r.running;
+            const accumulatedMs = Number(r.accumulatedMs) || 0;
             this.watches.set(r.id, {
                 id: r.id,
                 name: typeof r.name === 'string' ? r.name : '',
-                running: !!r.running,
-                accumulatedMs: Number(r.accumulatedMs) || 0,
+                initialised: typeof r.initialised === 'boolean' ? r.initialised : (running || accumulatedMs !== 0),
+                running,
+                accumulatedMs,
                 startEpochMs: Number(r.startEpochMs) || 0,
                 persistent: true,
             });
@@ -173,7 +219,7 @@ export class StopwatchManager {
         for (const w of this.watches.values()) {
             if (!w.persistent) continue;
             records.push({
-                id: w.id, name: w.name, running: w.running,
+                id: w.id, name: w.name, initialised: w.initialised, running: w.running,
                 accumulatedMs: w.accumulatedMs, startEpochMs: w.startEpochMs,
             });
         }
@@ -182,20 +228,63 @@ export class StopwatchManager {
         try { this.storage.save(JSON.stringify(records)); } catch { /* ignore */ }
     }
 
+    private touched(w: Stopwatch): void {
+        if (w.persistent) this.persist();
+    }
+
+    // ── stopWatch's own state machine (Host.cpp) ────────────────────────────
+
+    private startWatch(w: Stopwatch): boolean {
+        if (!w.initialised) {
+            w.initialised = true;
+            w.accumulatedMs = 0;
+            w.startEpochMs = this.now();
+            w.running = true;
+            return true;
+        }
+        if (w.running) return false;
+        w.startEpochMs = this.now();
+        w.running = true;
+        return true;
+    }
+
+    private stopWatch(w: Stopwatch): boolean {
+        if (!w.initialised || !w.running) return false;
+        // Read while it still counts as running, so the stored time is the
+        // clamped one elapsedMs reports rather than an unbounded sum.
+        w.accumulatedMs = this.elapsedMs(w);
+        w.running = false;
+        return true;
+    }
+
+    /** A stopped watch goes back to never-started; a running one restarts
+     *  from zero and keeps running. One never started has nothing to reset. */
+    private resetWatch(w: Stopwatch): boolean {
+        if (!w.initialised) return false;
+        w.accumulatedMs = 0;
+        if (w.running) w.startEpochMs = this.now();
+        else w.initialised = false;
+        return true;
+    }
+
+    // ── the Lua-facing family ───────────────────────────────────────────────
+
     /**
-     * Mudlet createStopWatch([name], [autostart]). Returns the new id, or null
-     * when `name` is given and already in use (Mudlet rejects duplicate names).
+     * Mudlet createStopWatch([name], [autostart]). Returns the new id, or the
+     * refusal when `name` is already in use (Mudlet rejects duplicate names).
      */
-    create(name: string, autoStart: boolean): number | null {
+    create(name: string, autoStart: boolean): number | StopwatchRefusal {
         if (name) {
-            for (const w of this.watches.values()) if (w.name === name) return null;
+            const holder = this.findByName(name);
+            if (holder) return refuse(`stopwatch with id ${holder.id} called '${name}' already exists`);
         }
         const id = this.nextId++;
         const w: Stopwatch = {
-            id, name: name || '', running: false, accumulatedMs: 0, startEpochMs: 0, persistent: false,
+            id, name: name || '', initialised: false, running: false,
+            accumulatedMs: 0, startEpochMs: 0, persistent: false,
         };
         this.watches.set(id, w);
-        if (autoStart) { w.running = true; w.startEpochMs = this.now(); }
+        if (autoStart) this.startWatch(w);
         return id;
     }
 
@@ -203,104 +292,90 @@ export class StopwatchManager {
      * Mudlet startStopWatch. `resetAndRestart` replicates the legacy behaviour
      * for a numeric id called bare: reset to zero and run from there, which
      * always succeeds. Asked to keep the elapsed time instead, starting one
-     * that is already running is a refusal (stopWatch::start answers false),
-     * reported as the message rather than as a bare boolean so the caller can
-     * say which watch and why. False is still "no such stopwatch".
+     * that is already running is refused.
      */
-    start(arg: number | string, resetAndRestart: boolean): boolean | string {
-        const w = this.resolve(arg);
-        if (!w) return false;
+    start(subject: StopwatchSubject, resetAndRestart: boolean): true | StopwatchRefusal {
+        const w = this.lookup(subject, 'id');
+        if (isRefusal(w)) return w;
         if (resetAndRestart) {
-            w.accumulatedMs = 0;
-            w.startEpochMs = this.now();
-            w.running = true;
-        } else if (w.running) {
-            return `${this.describe(w)} was already running`;
-        } else {
-            w.startEpochMs = this.now();
-            w.running = true;
+            this.stopWatch(w);
+            this.resetWatch(w);
+            this.startWatch(w);
+        } else if (!this.startWatch(w)) {
+            return refuse(`${this.describe(subject, w)} was already running`);
         }
-        if (w.persistent) this.persist();
+        this.touched(w);
         return true;
-    }
-
-    /** How Mudlet names a stopwatch in a refusal: by id, and by name too
-     *  when it has one. */
-    private describe(w: Stopwatch): string {
-        return w.name
-            ? `stopwatch with name '${w.name}' (id:${w.id})`
-            : `stopwatch with id ${w.id}`;
     }
 
     /**
      * Mudlet stopStopWatch. Pauses the watch and returns the elapsed seconds
      * once (legacy behaviour preserved by Mudlet). Stopping one that is
-     * already stopped — including one that was never started — is refused
-     * with the reason; null is "no such stopwatch".
+     * already stopped — including one that was never started — is refused.
      */
-    stop(arg: number | string): number | string | null {
-        const w = this.resolve(arg);
-        if (!w) return null;
-        if (!w.running) return `${this.describe(w)} was already stopped`;
-        // Read while it still counts as running, so the stored time is the
-        // clamped one elapsedMs reports rather than an unbounded sum.
-        w.accumulatedMs = this.elapsedMs(w);
-        w.running = false;
-        if (w.persistent) this.persist();
+    stop(subject: StopwatchSubject): number | StopwatchRefusal {
+        const w = this.lookup(subject, 'id');
+        if (isRefusal(w)) return w;
+        if (!this.stopWatch(w)) return refuse(`${this.describe(subject, w)} was already stopped`);
+        this.touched(w);
         return this.elapsedMs(w) / 1000;
     }
 
     /** Mudlet getStopWatchTime — elapsed seconds without stopping. */
-    getTime(arg: number | string): number | null {
-        const w = this.resolve(arg);
-        if (!w) return null;
+    getTime(subject: StopwatchSubject): number | StopwatchRefusal {
+        const w = this.lookup(subject, 'ID');
+        if (isRefusal(w)) return w;
         return this.elapsedMs(w) / 1000;
     }
 
     /** Mudlet getStopWatchBrokenDownTime — elapsed time as a day/hour/minute/
-     *  second/millisecond table. null for an unknown watch. */
-    getBrokenDownTime(arg: number | string): BrokenDownTime | null {
-        const w = this.resolve(arg);
-        if (!w) return null;
+     *  second/millisecond table. */
+    getBrokenDownTime(subject: StopwatchSubject): BrokenDownTime | StopwatchRefusal {
+        const w = this.lookup(subject, 'id');
+        if (isRefusal(w)) return w;
         return breakDown(this.elapsedMs(w));
     }
 
     /**
-     * Mudlet setStopWatchName(watchID|currentName, newName). Assigns or renames
-     * a watch. Returns false for an unknown watch, an empty new name, or when
-     * another watch already uses the new name (Mudlet rejects duplicate names).
+     * Mudlet `setStopWatchName(id|name, newName)` — Host::setStopWatchName.
+     * Refuses a name another stopwatch already carries, naming that one; the
+     * empty new name takes a watch's name away again.
      */
-    /**
-     * Mudlet `setStopWatchName(id|name, newName)`. Refuses a name another
-     * stopwatch already carries, naming that one — the reason has to reach the
-     * caller, so this returns the message (null on success) rather than a bare
-     * boolean the binding would have to guess a reason for.
-     */
-    setName(arg: number | string, newName: string): boolean | string {
-        const w = this.resolve(arg);
-        // false is reserved for "no such stopwatch" so the Lua guard can phrase
-        // that miss the way it phrases every other one (by id or by name).
-        if (!w) return false;
-        for (const [otherId, other] of this.watches) {
-            if (other !== w && other.name === newName && newName.length > 0) {
-                return `the name '${newName}' is already in use for another stopwatch (id:${otherId})`;
+    setName(subject: StopwatchSubject, newName: string): true | StopwatchRefusal {
+        if (typeof subject === 'number') {
+            // By id the name is checked first, as Host does: a name that is
+            // taken is the answer even when the id is not a stopwatch at all.
+            if (newName) {
+                const holder = this.findByName(newName);
+                if (holder) {
+                    return holder.id === subject
+                        ? true
+                        : refuse(`the name '${newName}' is already in use for another stopwatch (id:${holder.id})`);
+                }
             }
         }
-        if (typeof newName !== 'string' || newName.length === 0) {
-            return 'the stopwatch name cannot be empty';
+        const w = this.lookup(subject, 'id');
+        if (isRefusal(w)) return w;
+        if (newName) {
+            const holder = this.ordered().find(o => o !== w && o.name === newName);
+            if (holder) return refuse(`the name '${newName}' is already in use for another stopwatch (id:${holder.id})`);
         }
+        if (w.name === newName) return true;
         w.name = newName;
-        if (w.persistent) this.persist();
+        this.touched(w);
         return true;
     }
 
     /** Mudlet resetStopWatch — zero the elapsed time; a running watch keeps running. */
-    reset(arg: number | string): boolean {
-        const w = this.resolve(arg);
-        if (!w) return false;
-        w.accumulatedMs = 0;
-        if (w.running) w.startEpochMs = this.now();
-        if (w.persistent) this.persist();
+    reset(subject: StopwatchSubject): true | StopwatchRefusal {
+        const w = this.lookup(subject, 'id');
+        if (isRefusal(w)) return w;
+        if (!this.resetWatch(w)) {
+            return refuse(subject === ''
+                ? `the first unnamed stopwatch (id:${w.id}) was already reset`
+                : `${this.describe(subject, w)} was already reset`);
+        }
+        this.touched(w);
         return true;
     }
 
@@ -314,16 +389,17 @@ export class StopwatchManager {
      * that is what a stopwatch keeps its time in, and the comparison is written
      * so that a NaN or an infinity fails it too.
      */
-    adjust(arg: number | string, seconds: number): boolean | string {
-        const w = this.resolve(arg);
-        // false is "no such stopwatch" — the guard in Bridge.lua phrases that
-        // miss itself, and a string is a refusal it passes through.
-        if (!w) return false;
+    adjust(subject: StopwatchSubject, seconds: number): true | StopwatchRefusal {
+        const w = this.lookup(subject, 'ID');
+        if (isRefusal(w)) return w;
         const milliSeconds = Math.round(seconds * 1000);
         if (!(milliSeconds >= -MAX_STOPWATCH_MS && milliSeconds <= MAX_STOPWATCH_MS)) {
             const limit = MAX_STOPWATCH_MS / MS_PER_SEC;
-            return `modification in seconds must be a finite number from ${-limit} to ${limit}, got ${seconds}`;
+            return refuse(`modification in seconds must be a finite number from ${-limit} to ${limit}, got ${seconds}`);
         }
+        // Adjusting one never started starts its clock at the adjustment,
+        // without setting it running.
+        w.initialised = true;
         if (w.running) {
             // A running stopwatch measures from an effective start time, so the
             // shift goes through the total elapsed time: moving that start time
@@ -335,28 +411,26 @@ export class StopwatchManager {
         } else {
             w.accumulatedMs = clampToRange(w.accumulatedMs + milliSeconds);
         }
-        if (w.persistent) this.persist();
+        this.touched(w);
         return true;
     }
 
     /** Mudlet deleteStopWatch. */
-    delete(arg: number | string): boolean {
-        const w = this.resolve(arg);
-        if (!w) return false;
-        const wasPersistent = w.persistent;
-        const removed = this.watches.delete(w.id);
-        if (wasPersistent) this.persist();
-        return removed;
+    delete(subject: StopwatchSubject): true | StopwatchRefusal {
+        const w = this.lookup(subject, 'ID');
+        if (isRefusal(w)) return w;
+        this.watches.delete(w.id);
+        if (w.persistent) this.persist();
+        return true;
     }
 
     /**
      * Mudlet setStopWatchPersistence(id|name, state). Marks whether the watch is
-     * saved to (and restored from) the backing store across reloads. Returns
-     * false for an unknown watch.
+     * saved to (and restored from) the backing store across reloads.
      */
-    setPersistence(arg: number | string, state: boolean): boolean {
-        const w = this.resolve(arg);
-        if (!w) return false;
+    setPersistence(subject: StopwatchSubject, state: boolean): true | StopwatchRefusal {
+        const w = this.lookup(subject, 'ID');
+        if (isRefusal(w)) return w;
         w.persistent = state;
         this.persist();
         return true;

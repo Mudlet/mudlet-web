@@ -36,11 +36,13 @@ export class TextEditManager {
         return this.edits.get(name);
     }
 
-    /** Create (or replace) a text edit. Returns true (Mudlet always succeeds). */
+    /** Create a text edit. False when one of that name already exists — it is
+     *  left as it was, as TMainConsole::createTextBox leaves it. */
     create(
         name: string,
         opts: { parent: string; x: number; y: number; width: number; height: number },
     ): boolean {
+        if (this.edits.has(name)) return false;
         this.edits.set(name, {
             parent: opts.parent,
             x: opts.x, y: opts.y, width: opts.width, height: opts.height,

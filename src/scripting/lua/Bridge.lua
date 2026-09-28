@@ -875,7 +875,12 @@ do
     -- trailing arguments each carry their own name — the type is checked before
     -- the window is looked up, since a table is a bad argument rather than a
     -- window that is not there.
-    local function userWindowGuard(fn, message, who, what, tailName, tailOptional)
+    --
+    -- `emptyMessage`, when given, is the refusal for the empty name, and then a
+    -- console of the name that is not a user window (a miniconsole, a buffer)
+    -- is refused as that rather than as missing — TMainConsole looks the name
+    -- up among all its sub-consoles before asking which kind it found.
+    local function userWindowGuard(fn, message, who, what, tailName, tailOptional, emptyMessage)
         return function(name, ...)
             name = __mudlet_check_string(name, who, 1, what)
             local tail = ...
@@ -883,6 +888,13 @@ do
                 if __mudlet_str(tail) == nil then
                     error(who .. ': bad argument #2 type (' .. tailName .. ' as string '
                         .. (tailOptional and 'is optional' or 'expected') .. ', got ' .. type(tail) .. '!)', 2)
+                end
+            end
+            if emptyMessage then
+                if name == '' then return nil, emptyMessage end
+                local kind = __windowType(name)
+                if kind == 'miniconsole' or kind == 'buffer' then
+                    return nil, '"' .. name .. '" is not a user window'
                 end
             end
             if __windowType(name) ~= 'userwindow' then
@@ -906,7 +918,7 @@ do
     end
 
     setUserWindowTitle      = userWindowGuard(setUserWindowTitle,      "user window name '%s' not found",
-        'setUserWindowTitle', 'name', 'title', true)
+        'setUserWindowTitle', 'name', 'title', true, "a user window cannot have an empty string as its name")
     setUserWindowStyleSheet = userWindowGuard(setUserWindowStyleSheet, "userwindow name '%s' not found",
         'setUserWindowStyleSheet', 'userwindow name', 'StyleSheet', false)
 
@@ -1629,6 +1641,7 @@ end
 -- Mudlet deleteLabel(name) → true on success, (false, errMsg) when the label
 -- doesn't exist.
 function deleteLabel(name)
+    if name == '' then return false, "a label cannot have an empty string as its name" end
     __mudlet_forget_geometry(name)
     if __deleteLabel(name) then return true end
     return false, "label name '" .. tostring(name) .. "' not found"
@@ -1638,6 +1651,7 @@ end
 -- success, (false, errMsg) when the target doesn't exist. The main command line
 -- is protected (Mudlet refuses to delete it).
 function deleteMiniConsole(name)
+    if name == '' then return false, "a miniconsole cannot have an empty string as its name" end
     __mudlet_forget_geometry(name)
     if __deleteMiniConsole(name) then return true end
     return false, "miniconsole \"" .. tostring(name) .. "\" does not exist"
@@ -1698,6 +1712,18 @@ do
                     .. type(a[base + i - 1]) .. "!)", 2)
             end
             a[base + i - 1] = v
+        end
+        -- fillBackground and clickthrough are flags given as a boolean or as a
+        -- number (0/1) — lua_isnumber, so a numeric string counts too. The
+        -- clickthrough flag is optional.
+        local flags = { "fillBackground", "clickthrough" }
+        for i = 1, 2 do
+            local at = base + 3 + i
+            local v = a[at]
+            if not (i == 2 and v == nil) and type(v) ~= 'boolean' and tonumber(v) == nil then
+                error("createLabel: bad argument #" .. at .. " type (label " .. flags[i]
+                    .. " as boolean/number (0/1) expected, got " .. type(v) .. "!)", 2)
+            end
         end
         -- The parent has to be a window that can hold a label: a user window or
         -- a scroll box. Naming anything else used to put the label in the MAIN
@@ -1769,10 +1795,36 @@ do
             error('openUserWindow: bad argument #4 type (area as string expected, got '
                 .. type(area) .. '!)', 2)
         end
-        if __windowType(name) == 'label' then
+        -- Host::openWindow, in its order: the empty name, a label of that name,
+        -- then a console of that name that is not a user window (a miniconsole
+        -- or a buffer) — the user window would have to be a second widget
+        -- under the same name.
+        if name == '' then
+            return nil, "an userwindow cannot have an empty string as its name"
+        end
+        local kind = __windowType(name)
+        if kind == 'label' then
             return nil, "label with the name '" .. tostring(name) .. "' already exists"
         end
+        if kind == 'miniconsole' or kind == 'buffer' then
+            return nil, "userwindow '" .. name .. "' already exists"
+        end
+        -- An area Mudlet does not know is refused only AFTER the window is
+        -- open: Host::openWindow creates and shows it first, then finds no
+        -- side to dock it on, so the window stays where a new one goes.
+        local knownArea = true
+        if top > 3 and area ~= '' then
+            local a = area:lower()
+            knownArea = a == 't' or a == 'top' or a == 'b' or a == 'bottom'
+                or a == 'r' or a == 'right' or a == 'l' or a == 'left'
+                or a == 'f' or a == 'floating'
+        end
         __mudlet_forget_geometry(name)
+        if not knownArea then
+            _rawOpenUserWindow(unpack({ ... }, 1, 3))
+            return nil, 'docking option "' .. area:lower() .. '" not available. available docking options are'
+                .. ' "t" top, "b" bottom, "r" right, "l" left and "f" floating'
+        end
         return _rawOpenUserWindow(...)
     end
 
@@ -2604,11 +2656,12 @@ function getStopWatches()
 end
 
 -- Mudlet getStopWatchBrokenDownTime(watchID|name) → a day/hour/minute/second/
--- millisecond table. The __ binding returns the record (or nil for an unknown
--- watch); rebuild it off the wasmoon proxy, mapping the miss to false.
+-- millisecond table. The __ binding returns the record (or the refusal's
+-- message, which the stopwatch guard below turns into nil, message); rebuild
+-- it off the wasmoon proxy.
 function getStopWatchBrokenDownTime(arg)
     local e = __getStopWatchBrokenDownTime(arg)
-    if type(e) ~= 'table' then return false end
+    if type(e) ~= 'table' then return e end
     return {
         negative = e.negative,
         days = e.days,
@@ -3923,12 +3976,18 @@ do
     end
 end
 
--- Mudlet tempButtonToolbar(name [, orientation [, location]]). Creates a
--- transient toolbar group. Returns the new id, or -1 if the name is taken.
+-- Mudlet tempButtonToolbar(name, location, orientation). Creates a transient
+-- toolbar group. Returns the new id, or -1 if the name is taken.
+-- The LOCATION comes first (TLuaInterpreter::tempButtonToolbar reads #2 as
+-- location and #3 as orientation), and every location above 0 is shifted up
+-- one: TAction::mLocation keeps 1 for a bottom bar Lua cannot ask for, so
+-- Lua's 0/1/2/3 are top/left/right/floating (stored 0/2/3/4).
 do
     local _raw = __mudlet_tempButtonToolbar
-    function tempButtonToolbar(name, orientation, location)
-        return _raw(tostring(name or ""), tonumber(orientation) or 0, tonumber(location) or 0)
+    function tempButtonToolbar(name, location, orientation)
+        location = tonumber(location) or 0
+        if location > 0 then location = location + 1 end
+        return _raw(tostring(name or ""), tonumber(orientation) or 0, location)
     end
 end
 
@@ -6486,8 +6545,10 @@ do
         local data = ...
         data = __mudlet_check_string(data, "feedTelnet", 1, "imitation game server data",
             select('#', ...) >= 1)
-        local err = __feedTelnet(__mudlet_armor(data), select(2, ...))
-        if err ~= nil then return nil, err end
+        local r = __feedTelnet(__mudlet_armor(data), select(2, ...))
+        if type(r) == 'string' then return nil, r end
+        -- the empty string asks for the byte-tag table's version, feeding nothing
+        if type(r) == 'table' then return true, "feedTelnet: using table version " .. r.version end
         return true
     end
 
@@ -6990,9 +7051,18 @@ do
     end
 
     -- `argc` is the argument count of the parented form: fewer means no parent.
-    local function parentGuard(raw, argc, refusal, userWindowOnly)
+    -- `names`, when given, carries the creator's refusals for its own name —
+    -- the empty one (checked before the parent, as TMainConsole does) and one
+    -- already in use by another of its kind (after it, and reported when the
+    -- binding answers false).
+    local function parentGuard(raw, argc, refusal, userWindowOnly, names)
         return function(...)
             local parent = ...
+            if names then
+                local name = parent
+                if select('#', ...) >= argc then name = select(2, ...) end
+                if name == '' then return nil, names.empty end
+            end
             if select('#', ...) >= argc and type(parent) == 'string' then
                 local missing
                 if userWindowOnly then
@@ -7004,23 +7074,33 @@ do
                     return refusal, "window '" .. parent .. "' not found"
                 end
             end
-            return raw(...)
+            if not names then return raw(...) end
+            local r = raw(...)
+            if r == false then return nil, names.taken end
+            return r
         end
     end
     createScrollBox   = parentGuard(createScrollBox,   6, false)
     createMiniConsole = parentGuard(createMiniConsole, 6, false)
-    createCommandLine = parentGuard(createCommandLine, 6, nil)
-    createTextEdit    = parentGuard(createTextEdit,    6, nil)
+    createCommandLine = parentGuard(createCommandLine, 6, nil, false, {
+        empty = "a commandLine cannot have an empty string as its name",
+        taken = "couldn't create commandLine",
+    })
+    createTextEdit    = parentGuard(createTextEdit,    6, nil, false, {
+        empty = "a text edit cannot have an empty string as its name",
+        taken = "couldn't create text edit",
+    })
     createMapper      = parentGuard(createMapper,      5, nil, true)
 end
 
 -- ── Stopwatch argument contracts ───────────────────────────────────────────
 -- Every stopwatch function takes its subject as `stopwatchID as number or name
--- as string`, raises when given anything else, and reports a subject it cannot
--- resolve as (nil, errMsg) — Mudlet's messages are "stopwatch with ID %1 not
--- found" / "stopwatch with name '%1' not found", with the empty name spelled
--- "no unnamed stopwatches found". Mudlet Web's JS bindings coerce and answer with a
--- bare false, so the shaping lives here.
+-- as string`, raises when given anything else, and reports a refusal as
+-- (nil, errMsg) in Mudlet's own words, with no function name in front — they
+-- go out through warnArgumentValue, which puts the name only in the debug
+-- console. The JS bindings answer a refusal with its message string (none of
+-- the family succeeds with a string), so the shaping into (nil, message) lives
+-- here.
 do
     local function checkSubject(v, funcName, what)
         if type(v) ~= 'number' and type(v) ~= 'string' then
@@ -7029,24 +7109,11 @@ do
         end
     end
 
-    local function notFound(funcName, subject)
-        if type(subject) == 'number' then
-            return funcName .. ": stopwatch with ID " .. tostring(subject) .. " not found"
-        end
-        if subject == '' then return funcName .. ": no unnamed stopwatches found" end
-        return funcName .. ": stopwatch with name '" .. tostring(subject) .. "' not found"
-    end
-
-    -- None of these has `false` as a legitimate success value — the setters
-    -- answer true and the readers a number — so false is unambiguously the miss.
-    -- A string return is a refusal the binding could phrase better than we can
-    -- here (setStopWatchName naming the watch that already holds the name).
     local function watchGuard(fn, funcName, what)
         return function(subject, ...)
             checkSubject(subject, funcName, what)
             local r = fn(subject, ...)
-            if r == false then return nil, notFound(funcName, subject) end
-            if type(r) == 'string' then return nil, funcName .. ": " .. r end
+            if type(r) == 'string' then return nil, r end
             return r
         end
     end
@@ -7076,9 +7143,7 @@ do
                 .. " boolean are optional, got " .. type(first) .. "!)", 2)
         end
         local id = _rawCreateStopWatch(...)
-        if id == false then
-            return nil, "createStopWatch: a stopwatch called '" .. tostring(first) .. "' already exists"
-        end
+        if type(id) == 'string' then return nil, id end
         return id
     end
 end
@@ -7100,6 +7165,34 @@ do
         end
         _rawSendCmdLine(a, b)
         return true
+    end
+end
+
+-- ── expandAlias argument contract ──────────────────────────────────────────
+-- Mudlet expandAlias(text [, echo]) checks the text with checkStringArg, so a
+-- table (or nothing at all) raises rather than being run as its tostring().
+do
+    local _rawExpandAlias = expandAlias
+    function expandAlias(...)
+        local text = ...
+        text = __mudlet_check_string(text, "expandAlias", 1, "text to parse", select('#', ...) >= 1)
+        return _rawExpandAlias(text, select(2, ...))
+    end
+end
+
+-- ── setLabelCustomCursor ───────────────────────────────────────────────────
+-- Mudlet setLabelCustomCursor(name, location [, hotX, hotY]): both names are
+-- checked with checkStringArg, and a refusal (empty name or location, a label
+-- that is not there, an image that cannot be loaded) is (nil, message). The
+-- binding answers a refusal with its message string.
+do
+    local _raw = setLabelCustomCursor
+    function setLabelCustomCursor(name, location, ...)
+        name = __mudlet_check_string(name, "setLabelCustomCursor", 1, "label name")
+        location = __mudlet_check_string(location, "setLabelCustomCursor", 2, "custom cursor location")
+        local r = _raw(name, location, ...)
+        if type(r) == 'string' then return nil, r end
+        return r
     end
 end
 
@@ -7930,18 +8023,23 @@ end
 -- "is not a push-down button" quite differently from "no button ... found" — and
 -- because only Lua can return the (nil, msg) pair they use to say so.
 --
--- An item ID never resolves here: Mudlet Web identifies stored items by uuid, so a
--- number can only ever be a miss. The refusal it earns is still Mudlet's, since
--- a script that kept an ID from somewhere deserves to be told what happened to
--- it rather than to be handed a nil.
+-- An item ID is the one findItems() hands out (getTActionFromIdOrName rounds it).
 do
     local function buttonTarget(who, ref, argIndex)
         local t = type(ref)
         if t == 'number' then
-            if ref < 0 then
-                return nil, "item ID as number must be equal or greater than zero, got " .. tostring(ref)
+            local id = math.floor(ref + 0.5)
+            if id < 0 then
+                return nil, "item ID (" .. id .. ") invalid, it must be equal or greater than zero"
             end
-            return nil, "no button item with ID " .. string.format("%d", ref) .. " found"
+            local kind = __mudlet_button_kind(id)
+            if kind == 'missing' then
+                return nil, "no button item with ID " .. id .. " found"
+            end
+            if kind ~= 'pushdown' then
+                return nil, "item ID with " .. id .. " is not a push-down button"
+            end
+            return id
         end
         if t ~= 'string' then
             error(who .. ": bad argument #" .. argIndex .. " type (button name as string or item ID as"

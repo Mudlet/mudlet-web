@@ -135,7 +135,7 @@ describe('Mudlet argument coercion parity', () => {
 
     it('a table, wherever a scalar was wanted', () => {
       expect(() => run('setBorderTop({})')).toThrow(/number expected, got table/);
-      expect(() => run('createLabel("coerceLBX", 0, 0, 50, 50, {})')).toThrow(/boolean expected/);
+      expect(() => run('createLabel("coerceLBX", 0, 0, 50, 50, {})')).toThrow(/fillBackground as boolean\/number \(0\/1\) expected, got table/);
     });
 
     it('a boolean where Mudlet uses getVerifiedString — lua_isstring is false for one', () => {
