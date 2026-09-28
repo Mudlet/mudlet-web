@@ -4,8 +4,10 @@ import type { MudSession } from '../mud/MudSession';
 /**
  * Mudlet's "Reconnect automatically" profile option, ported from `cTelnet`.
  *
- * The whole of it is three lines at the end of `slot_socketDisconnected`
- * (ctelnet.cpp:918-923):
+ * It covers two different endings, and treats them differently:
+ *
+ * **A connection that was made and then lost** — the end of
+ * `slot_socketDisconnected`:
  *
  * ```cpp
  * if (mAutoReconnect && !mDontReconnect && timeOffset >= 5000) {
@@ -14,7 +16,19 @@ import type { MudSession } from '../mud/MudSession';
  * mDontReconnect = false;
  * ```
  *
- * Three conditions, and each one matters:
+ * **One** redial, immediately, with nothing printed — a session that ran for an
+ * hour and blipped should come back without narrating it. A drop inside five
+ * seconds (`timeOffset < 5000`) is the server turning the login away, and is
+ * left alone.
+ *
+ * **An attempt that never reached the game** — refused, unknown host, the
+ * proxy unreachable — `handleFailedConnection`: "Trying again in N seconds...",
+ * after 5 s, doubling with each failure in a row up to 60 s
+ * (`FAILED_CONNECTION_RETRY_DELAY` / `_MAX_DELAY`). The wait and its timer live
+ * on {@link MudSession.scheduleFailedConnectionRetry}, so that Connect,
+ * Disconnect and closing the profile all call a pending retry off.
+ *
+ * Common to both:
  *
  * - **`mAutoReconnect`** is the profile's own `autoreconnect` flag — here
  *   `MudConnection.reconnectOnDrop`, a *different* option from the badly-named
@@ -26,21 +40,10 @@ import type { MudSession } from '../mud/MudSession';
  *   alike, and raised again by a rejected certificate and a failed GMCP login
  *   exactly as Mudlet does (ctelnet.cpp:819, GMCPAuthenticator.cpp:613) —
  *   neither of those gets better by being retried.
- * - **`timeOffset >= 5000`** — the session has to have *settled*. `timeOffset`
- *   is `mConnectionTimer`, started when the game socket connects, so a dial that
- *   never landed leaves it invalid and nothing is retried. Mudlet does not retry
- *   failed connection attempts at all: a game that is down stays down, and the
- *   player asked for a client, not a doorbell.
  *
- * What happens then is deliberately unremarkable: **one** redial, immediately,
- * with nothing printed. No backoff, no countdown, no console line — a session
- * that ran for an hour and blipped should come back without narrating it. If the
- * redial also drops inside five seconds, that is the end of it until the player
- * clicks Connect.
- *
- * (An earlier attempt at this bolted a 5s→60s backoff and a `Trying again in %n
- * second(s)...` notice onto the *other* flag; neither the message nor the
- * symbols it was credited to exist in Mudlet. It was reverted — see issue #130.)
+ * `timeOffset` is `mConnectionTimer`, started when the *game* socket connects —
+ * here `client.established`, never the WebSocket to the proxy opening, which
+ * happens for a game that is down too (issue #130).
  */
 
 /** Mudlet's `timeOffset >= 5000`: how long the game link has to have been up
@@ -83,7 +86,19 @@ export function useAutoReconnect({ session, enabled, redial }: Options): void {
             // Tearing the profile down disconnects on the way out. That is not a
             // drop to recover from, and the session is already unusable.
             if (session.destroyed) return;
-            if (openedAt === null) return;
+            if (openedAt === null) {
+                // Never reached the game: handleFailedConnection's retry. After
+                // the dispatch, like the redial below, so the notice follows the
+                // attempt's error and sysDisconnectionEvent, as it does there.
+                queueMicrotask(() => {
+                    if (!latest.current.enabled) return;
+                    if (session.destroyed || session.dontReconnect) return;
+                    session.scheduleFailedConnectionRetry(() => {
+                        if (latest.current.enabled) latest.current.redial();
+                    });
+                });
+                return;
+            }
             if (Date.now() - openedAt < SETTLED_SESSION_MS) return;
             // Mudlet redials at the *end* of slot_socketDisconnected, once its
             // own cleanup has run. Ours is one listener among several on the
@@ -95,6 +110,10 @@ export function useAutoReconnect({ session, enabled, redial }: Options): void {
             queueMicrotask(() => {
                 if (!latest.current.enabled) return;
                 if (session.destroyed) return;
+                // The disconnect was the old socket being torn down by a dial
+                // already under way (connect() tears down before it dials), so
+                // there is nothing to redial — doing so would dial twice.
+                if (session.status !== 'disconnected') return;
                 latest.current.redial();
             });
         };

@@ -34,8 +34,17 @@ describe('createBuffer / copy / paste / appendBuffer', () => {
 
   it('paste APPENDS when the cursor is on the last line', () => {
     env.run('createBuffer("tb"); cecho("tb", "Hello World\\n"); selectCurrentLine("tb"); copy("tb")');
-    env.run('createBuffer("tb2"); cecho("tb2", "line-A\\n"); paste("tb2")');
+    // A buffer's cursor stays on line 0 until moved, as Mudlet's does, so the
+    // script parks it on the open last line first.
+    env.run('createBuffer("tb2"); cecho("tb2", "line-A\\n"); moveCursorEnd("tb2"); paste("tb2")');
     expect(env.run('return (getCurrentLine("tb2"))')).toBe('Hello World');
+    expect(env.run('return (table.concat(getLines("tb2", 0, 2), "|"))')).toBe('line-A|Hello World');
+  });
+
+  it('paste INSERTS on line 0 when the cursor was never moved (Mudlet/mudlet-web#236)', () => {
+    env.run('createBuffer("tb"); cecho("tb", "Hello World\\n"); selectCurrentLine("tb"); copy("tb")');
+    env.run('createBuffer("tb2"); cecho("tb2", "line-A\\n"); paste("tb2")');
+    expect(env.run('return (getCurrentLine("tb2"))')).toBe('Hello Worldline-A');
   });
 
   it('paste INSERTS at the cursor when above the last line', () => {

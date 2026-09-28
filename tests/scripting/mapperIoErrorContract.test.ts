@@ -40,11 +40,21 @@ describe('mapper return contracts (#173)', () => {
 
     it('getPlayerRoom returns nil plus a reason when there is no player room', () => {
         expect(t.run('local a, b = getPlayerRoom(); return a == nil and b')).toBe("you haven't opened a map yet");
+        t.run('openMapWidget()');
         t.run('addRoom(60)');
         expect(t.run('local a, b = getPlayerRoom(); return a == nil and b'))
             .toBe('the player does not have a valid roomID set');
         t.run('centerview(60)');
         expect(t.run('return getPlayerRoom()')).toBe(60);
+    });
+
+    // Issue #239: Mudlet checks for the mapper before the player room, so rooms
+    // (and even a player room) without a mapper ever shown still read as no map.
+    it('getPlayerRoom says no map was opened while only rooms exist', () => {
+        t.run('addRoom(61); centerview(61)');
+        expect(t.run('local a, b = getPlayerRoom(); return a == nil and b')).toBe("you haven't opened a map yet");
+        t.run('openMapWidget(); closeMapWidget()');
+        expect(t.run('return getPlayerRoom()')).toBe(61);
     });
 
     it('getPath raises a Lua argument error on a non-number roomID', () => {

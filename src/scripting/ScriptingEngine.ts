@@ -560,13 +560,10 @@ export class ScriptingEngine implements EngineHost {
         session.sounds.onMediaStarted = (file, path, mediaType, key, tag) => {
             this.raiseEvent('sysMediaStarted', [file, path, mediaType, key, tag]);
         };
-        // sysSoundFinished is the pre-4.15 name, superseded by sysMediaFinished
-        // but still fired here as a compat alias so older scripts keep working.
-        // It keeps its two-argument shape: that is what the scripts written
-        // against it expect, and widening it would break them.
+        // Only sysMediaFinished: desktop Mudlet raises no sysSoundFinished
+        // alongside it, so a handler on that name never runs there either.
         session.sounds.onMediaFinished = (file, path, mediaType, key, tag) => {
             this.raiseEvent('sysMediaFinished', [file, path, mediaType, key, tag]);
-            this.raiseEvent('sysSoundFinished', [file, path]);
         };
         // Closed captions (Mudlet enableClosedCaption): print a text line when a
         // sound/music starts or stops, gated on the setting (decided per-event so
@@ -2272,9 +2269,10 @@ export class ScriptingEngine implements EngineHost {
     }
 
     /**
-     * Resolve a media `file` (+ optional base `url` directory) to a VFS-relative
-     * path under `media/` the SoundManager loader can read, downloading and
-     * caching it on a miss. Shared by MSP (`resolveMspMedia`) and the GMCP media
+     * Resolve a media `file` (+ optional base `url` directory) to its absolute
+     * VFS path under the profile's `media/` the SoundManager loader can read,
+     * downloading and caching it on a miss (raising sysDownloadDone /
+     * sysDownloadError for the download, as TMedia does). Shared by MSP (`resolveMspMedia`) and the GMCP media
      * protocol (`handleClientMedia`). The whole filename — including any
      * subdirectories — is appended to the base URL and mirrored under `media/`,
      * so the cache layout matches the server's. `..`/`.` segments are rejected
@@ -2315,9 +2313,12 @@ export class ScriptingEngine implements EngineHost {
         const cleanFile = cleanSegments.join('/');
         const vfsPath = `media/${cleanFile}`;
         const absPath = `${vfs.profilePath}/${vfsPath}`;
+        // The absolute path is what's played and what the media events carry:
+        // Mudlet plays from `<profile>/media/<file>` (TMediaData's
+        // mediaAbsolutePathFileName), so sysMediaStarted/Finished report it.
         if (vfs.exists(absPath)) {
             if (debug) console.debug(`${logPrefix} cache hit ${vfsPath}`);
-            return vfsPath;
+            return absPath;
         }
         // No announced location — fall back to the MUD's own website, the way
         // Mudlet's TMedia::parseUrl does for MSP and GMCP media.
@@ -2337,16 +2338,22 @@ export class ScriptingEngine implements EngineHost {
             if (debug) console.debug(`${logPrefix} invalid base URL "${baseUrl}"`);
             return null;
         }
+        // TMedia::slot_writeFile reports every media download to scripts:
+        // sysDownloadDone(path, bytes) once it is saved, sysDownloadError(error,
+        // path) when it isn't — no response table, unlike downloadFile's.
+        let bytes: Uint8Array;
         try {
-            const bytes = await downloadFromUrl(downloadUrl, this.proxyUrlGetter());
+            bytes = await downloadFromUrl(downloadUrl, this.proxyUrlGetter());
             vfs.writeBinaryFile(absPath, bytes);
-            if (debug) console.debug(`${logPrefix} downloaded ${downloadUrl} → ${vfsPath} (${bytes.byteLength} bytes)`);
-            return vfsPath;
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             if (debug) console.debug(`${logPrefix} download failed ${downloadUrl}: ${msg}`);
+            this.raiseEvent('sysDownloadError', [msg, absPath]);
             return null;
         }
+        if (debug) console.debug(`${logPrefix} downloaded ${downloadUrl} → ${vfsPath} (${bytes.byteLength} bytes)`);
+        this.raiseEvent('sysDownloadDone', [absPath, bytes.byteLength]);
+        return absPath;
     }
 
     /**
@@ -3433,7 +3440,10 @@ export class ScriptingEngine implements EngineHost {
         // multiline flag, counting the list as handed in — blank entries are
         // dropped later, when the trigger stores its patterns, so a two-entry
         // list with one blank still makes an AND trigger whose captures land in
-        // `multimatches` rather than `matches`.
+        // `multimatches` rather than `matches`. It does that only at the root:
+        // with a parent it builds the trigger through the parent constructor
+        // and just sets the pattern list, so the trigger stays an ordinary OR
+        // one however many patterns it has (mudlet-web#238).
         const uuid = store.addTrigger(this.connectionId, {
             name,
             enabled: true,
@@ -3444,7 +3454,7 @@ export class ScriptingEngine implements EngineHost {
             language: 'lua',
             fireLength: 0,
             multipleMatches: false,
-            multiline: patternStrings.length > 1,
+            multiline: parentId === null && patternStrings.length > 1,
             delta: 0,
             isFilter: false,
             ...inheritedPackage(triggers, parentId),
@@ -3678,7 +3688,11 @@ export class ScriptingEngine implements EngineHost {
      * button under an existing toolbar group, with no command and no script:
      * TLuaInterpreter::tempButton gives it an empty one, and its third
      * argument is the orientation. Returns the new id, or -1 when no toolbar
-     * of that name exists. `orientation` is round-tripped
+     * of that name exists or a button or toolbar already has the name —
+     * desktop refuses a duplicate rather than adding a second button, so a
+     * script that makes its buttons on every load does not pile them up
+     * (mudlet-web#238). The Lua wrapper turns -1 into no value, as desktop
+     * returns. `orientation` is round-tripped
      * onto the leaf for parity with Mudlet — the renderer doesn't use it at the
      * leaf, but ports that read it back via the store get a stable value.
      */
@@ -3688,6 +3702,9 @@ export class ScriptingEngine implements EngineHost {
         const buttons = store.connectionButtons[this.connectionId] ?? [];
         const parent = buttons.find(b => b.isGroup && b.name === toolbar);
         if (!parent) return -1;
+        // TLuaInterpreter::tempButton's findAction(name) looks at every
+        // action, toolbars included, not just the ones on this toolbar.
+        if (buttons.some(b => b.name === name)) return -1;
         const uuid = store.addButton(this.connectionId, {
             name,
             enabled: true,
@@ -3708,13 +3725,14 @@ export class ScriptingEngine implements EngineHost {
      * Mudlet `tempButtonToolbar(name [, orientation [, location]])`. Creates a
      * transient toolbar (ButtonNode group). `orientation`: 0=horizontal,
      * 1=vertical. `location`: 0=top, 1=bottom, 2=left, 3=right, 4=floating.
-     * Returns -1 when a toolbar group of that name already exists.
+     * Returns -1 when a toolbar or button of that name already exists —
+     * desktop's findAction(name) is not limited to toolbars.
      */
     createTempButtonToolbar(name: string, orientation: number, location: number): number {
         if (!name) return -1;
         const store = useAppStore.getState();
         const buttons = store.connectionButtons[this.connectionId] ?? [];
-        if (buttons.some(b => b.isGroup && b.name === name)) return -1;
+        if (buttons.some(b => b.name === name)) return -1;
         const uuid = store.addButton(this.connectionId, {
             name,
             enabled: true,

@@ -16,11 +16,13 @@ import {
     unlinkSync,
     rmSync,
     renameSync,
+    utimesSync,
     type FileSystem,
 } from '@zenfs/core';
 import { IndexedDB, WebAccess } from '@zenfs/dom';
 import { checkFolderPermission, loadFolderHandle } from './folderHandleStore';
 import { invalidateVfsPath } from './vfsBridge';
+import { FsError } from './fsErrors';
 import { profileVfsDatabaseName } from '../../storage/profileStorage';
 import { whenIdbNamesMigrated } from '../../storage/storageMigration';
 
@@ -60,6 +62,25 @@ type Syncable = FileSystem & { sync?: () => Promise<void> };
 function disableAtime(fs: Syncable): Syncable {
     fs.attributes.set('no_atime');
     return fs;
+}
+
+export interface VfsStat {
+    type: 'file' | 'dir';
+    size: number;
+    mtime: Date;
+    atime: Date;
+    /** Inode change time — what `lfs.attributes` reports as `change`. */
+    ctime: Date;
+    /** The full `st_mode`: file type bits and permission bits. */
+    mode: number;
+    dev: number;
+    ino: number;
+    nlink: number;
+    uid: number;
+    gid: number;
+    rdev: number;
+    blocks: number;
+    blksize: number;
 }
 
 export class ProfileVFS {
@@ -218,24 +239,89 @@ export class ProfileVFS {
         this.invalidate(absNew);
     }
 
-    mkdir(path: string): void {
-        mkdirSync(this.resolvePath(path), { recursive: true });
+    /**
+     * Create a directory. By default the whole chain is created and an existing
+     * directory is not an error, which is what the app's own callers want.
+     * `{ recursive: false }` is POSIX `mkdir(2)` — what LuaFileSystem's
+     * `lfs.mkdir` does on desktop: a missing parent is ENOENT, a parent that is
+     * a file is ENOTDIR, and an existing path is EEXIST.
+     */
+    mkdir(path: string, { recursive = true }: { recursive?: boolean } = {}): void {
+        const abs = this.resolvePath(path);
+        if (recursive) {
+            mkdirSync(abs, { recursive: true });
+            return;
+        }
+        if (existsSync(abs)) throw new FsError('EEXIST', abs);
+        const parent = abs.substring(0, abs.lastIndexOf('/')) || '/';
+        // Checked here rather than left to ZenFS, which fails a mkdir under a
+        // plain file with a JSON parse error instead of ENOTDIR.
+        const parentType = this.stat(parent)?.type;
+        if (!parentType) throw new FsError('ENOENT', abs);
+        if (parentType !== 'dir') throw new FsError('ENOTDIR', abs);
+        mkdirSync(abs);
     }
 
-    rmdir(path: string): void {
+    /**
+     * Remove a directory. By default it goes with everything in it — the app's
+     * own callers (the file browser, package reinstalls) mean exactly that.
+     * `{ recursive: false }` is POSIX `rmdir(2)`, what `lfs.rmdir` does on
+     * desktop: only an empty directory is removed, and a non-empty directory
+     * (ENOTEMPTY), a plain file (ENOTDIR) or a missing path (ENOENT) is left
+     * alone and reported. A script must never be able to wipe a folder of
+     * saved data with a call that desktop refuses.
+     */
+    rmdir(path: string, { recursive = true }: { recursive?: boolean } = {}): void {
         const abs = this.resolvePath(path);
-        try {
-            rmdirSync(abs);
-        } catch {
-            rmSync(abs, { recursive: true, force: true });
+        if (recursive) {
+            try {
+                rmdirSync(abs);
+            } catch {
+                rmSync(abs, { recursive: true, force: true });
+            }
+            return;
         }
+        const type = this.stat(abs)?.type;
+        if (!type) throw new FsError('ENOENT', abs);
+        if (type !== 'dir') throw new FsError('ENOTDIR', abs);
+        if (readdirSync(abs).length > 0) throw new FsError('ENOTEMPTY', abs);
+        // The profile root is this VFS's mount point; removing it would leave
+        // the profile with nowhere to write.
+        if (abs === this.profilePath) throw new FsError('EBUSY', abs);
+        rmdirSync(abs);
+    }
+
+    /**
+     * C's `remove(3)`, which Lua's `os.remove` is: a file is unlinked and an
+     * empty directory is removed, as `rmdir(2)` would.
+     */
+    remove(path: string): void {
+        const abs = this.resolvePath(path);
+        const type = this.stat(abs)?.type;
+        if (!type) throw new FsError('ENOENT', abs);
+        if (type === 'dir') {
+            this.rmdir(abs, { recursive: false });
+        } else {
+            unlinkSync(abs);
+        }
+        this.invalidate(abs);
+    }
+
+    /**
+     * Set a path's access and modification times (`utime(2)`), which is all
+     * `lfs.touch` does — it never creates a file.
+     */
+    touch(path: string, atime: Date, mtime: Date): void {
+        const abs = this.resolvePath(path);
+        if (!existsSync(abs)) throw new FsError('ENOENT', abs);
+        utimesSync(abs, atime, mtime);
     }
 
     readdir(path: string): string[] {
         return readdirSync(this.resolvePath(path)) as string[];
     }
 
-    stat(path: string): { type: 'file' | 'dir'; size: number; mtime: Date; atime: Date } | null {
+    stat(path: string): VfsStat | null {
         try {
             const s = statSync(this.resolvePath(path));
             return {
@@ -243,6 +329,16 @@ export class ProfileVFS {
                 size: s.size,
                 mtime: new Date(s.mtimeMs),
                 atime: new Date(s.atimeMs),
+                ctime: new Date(s.ctimeMs),
+                mode: s.mode,
+                dev: s.dev,
+                ino: s.ino,
+                nlink: s.nlink,
+                uid: s.uid,
+                gid: s.gid,
+                rdev: s.rdev,
+                blocks: s.blocks,
+                blksize: s.blksize,
             };
         } catch { return null; }
     }

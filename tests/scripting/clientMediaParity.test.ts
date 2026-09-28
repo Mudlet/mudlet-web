@@ -99,16 +99,24 @@ describe('GMCP Client.Media parity', () => {
     });
 
     it('passes priority and a lowercased tag to a Play', async () => {
-        vi.spyOn(internals(), 'resolveMediaFile').mockResolvedValue('media/long.wav');
+        vi.spyOn(internals(), 'resolveMediaFile').mockResolvedValue('/profiles/p/media/long.wav');
         const play = vi.spyOn(session.sounds, 'playSound').mockResolvedValue(1);
         await media('play', { name: 'long.wav', tag: 'A', priority: '60' });
         expect(play).toHaveBeenCalledWith(expect.objectContaining({
-            name: 'media/long.wav', tag: 'a', priority: 60, origin: 'game',
+            name: '/profiles/p/media/long.wav', tag: 'a', priority: 60, origin: 'game',
         }));
     });
 
+    // Issue #239: desktop raises sysMediaFinished alone — no sysSoundFinished.
+    it('raises only sysMediaFinished when a sound ends', () => {
+        const raised: string[] = [];
+        vi.spyOn(engine, 'raiseEvent').mockImplementation((e: string) => { raised.push(e); });
+        session.sounds.onMediaFinished?.('x.wav', '/profiles/p/media/x.wav', 'sound', '', '');
+        expect(raised).toEqual(['sysMediaFinished']);
+    });
+
     it('refuses a Play of a type Mudlet does not know', async () => {
-        vi.spyOn(internals(), 'resolveMediaFile').mockResolvedValue('media/long.wav');
+        vi.spyOn(internals(), 'resolveMediaFile').mockResolvedValue('/profiles/p/media/long.wav');
         const sound = vi.spyOn(session.sounds, 'playSound').mockResolvedValue(1);
         const music = vi.spyOn(session.sounds, 'playMusic').mockResolvedValue(1);
         await media('play', { name: 'long.wav', type: 'foo' });

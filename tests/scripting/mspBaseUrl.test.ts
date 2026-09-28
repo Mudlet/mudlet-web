@@ -109,7 +109,7 @@ describe('MSP base URL is shared across sound and music', () => {
         // Cached under media/ mirroring the server's own layout.
         expect(written).toEqual([`/profiles/${CONN}/media/static/audio/music/Peaceful.mp3`]);
         expect(playMusic).toHaveBeenCalledWith(expect.objectContaining({
-            name: 'media/static/audio/music/Peaceful.mp3',
+            name: `/profiles/${CONN}/media/static/audio/music/Peaceful.mp3`,
             volume: 100, loops: -1, continue: true, origin: 'game',
         }));
     });
@@ -120,7 +120,7 @@ describe('MSP base URL is shared across sound and music', () => {
 
         expect(downloadFromUrl.mock.calls[0][0]).toBe('https://example.invalid/media/zap.wav');
         expect(playSound).toHaveBeenCalledWith(expect.objectContaining({
-            name: 'media/zap.wav', origin: 'game',
+            name: `/profiles/${CONN}/media/zap.wav`, origin: 'game',
         }));
     });
 
@@ -144,7 +144,7 @@ describe('MSP base URL is shared across sound and music', () => {
         await msp({ kind: 'music', file: 'Peaceful.mp3' });
 
         expect(downloadFromUrl.mock.calls[0][0]).toBe('https://www.example.invalid/media/Peaceful.mp3');
-        expect(playMusic).toHaveBeenCalledWith(expect.objectContaining({ name: 'media/Peaceful.mp3' }));
+        expect(playMusic).toHaveBeenCalledWith(expect.objectContaining({ name: `/profiles/${CONN}/media/Peaceful.mp3` }));
     });
 
     it('does not double up the www. prefix on an already-qualified host', async () => {
@@ -164,6 +164,23 @@ describe('MSP base URL is shared across sound and music', () => {
 
         expect(downloadFromUrl).not.toHaveBeenCalled();
         expect(playMusic).not.toHaveBeenCalled();
+    });
+
+    // Issue #239: TMedia::slot_writeFile raises sysDownloadDone(path, bytes) for
+    // every media file it fetches, and sysDownloadError(error, path) when the
+    // fetch fails — the path being the absolute one it is played from.
+    it('raises sysDownloadDone for a fetched media file, and sysDownloadError on failure', async () => {
+        const raised: [string, unknown[]][] = [];
+        vi.spyOn(engine, 'raiseEvent').mockImplementation((e: string, a: unknown[] = []) => { raised.push([e, a]); });
+        await msp({ kind: 'sound', file: 'zap.wav', url: 'https://cdn.example.invalid/' });
+        downloadFromUrl.mockRejectedValueOnce(new Error('Connection refused'));
+        await msp({ kind: 'sound', file: 'gone.wav' });
+
+        expect(raised).toEqual([
+            ['sysDownloadDone', [`/profiles/${CONN}/media/zap.wav`, 3]],
+            ['sysDownloadError', ['Connection refused', `/profiles/${CONN}/media/gone.wav`]],
+        ]);
+        expect(playSound).toHaveBeenCalledTimes(1);
     });
 
     it('prefers an announced base URL over the website guess', async () => {

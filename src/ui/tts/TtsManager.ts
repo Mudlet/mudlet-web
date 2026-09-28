@@ -297,6 +297,11 @@ export class TtsManager {
             if (e.error === 'canceled' || e.error === 'interrupted') return;
             this.current = null;
             this.setState('ttsSpeechError');
+            // A failed utterance is over, so whatever is queued behind it gets
+            // its turn — one bad line must not wedge the queue for good. The
+            // error stays the reported state when nothing is left to try:
+            // advance() on an empty queue would paper over it with Ready.
+            if (this.pending.length > 0) this.advance();
         };
         u.onpause = () => {
             if (gen !== this.gen) return;
@@ -307,8 +312,14 @@ export class TtsManager {
             this.setState('ttsSpeechStarted', this.current ?? undefined);
         };
 
-        this.synth.speak(u);
+        // Report Started BEFORE handing the utterance over, not after. Chrome
+        // fires onerror synchronously inside speak() when there is no speech
+        // engine to hand it to, and setting Started afterwards overwrote that
+        // error — ttsGetState() then claimed to be speaking indefinitely, where
+        // Mudlet reports ttsSpeechError. Started-then-Error is also the order
+        // Mudlet raises the two events in.
         this.setState('ttsSpeechStarted', text);
+        this.synth.speak(u);
     }
 
     private setState(state: TtsState, text?: string): void {

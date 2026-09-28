@@ -84,12 +84,11 @@ export interface MudClientOptions {
      *  MUDs render as replacement chars). */
     charsetEnabled?: boolean;
     /** Whether to enable MSP (MUD Sound Protocol, telnet option 90). Default
-     *  false. When true the client negotiates the option and, once the server
-     *  has agreed to it, strips inline `!!SOUND(...)` / `!!MUSIC(...)` tags
-     *  from MUD text, dispatching them as `msp` events. Always parses
-     *  subnegotiations regardless of this flag once negotiated, but in-band
-     *  parsing is gated to avoid eating literal text on MUDs that don't speak
-     *  MSP. */
+     *  false. When true the client negotiates the option; commands then arrive
+     *  as `IAC SB MSP` subnegotiations and are dispatched as `msp` events.
+     *  Inline `!!SOUND(...)` / `!!MUSIC(...)` tags in MUD text are never
+     *  parsed — as in Mudlet, they stay in the line for triggers to handle
+     *  (typically via `receiveMSP`). */
     mspEnabled?: boolean;
     /** Whether to accept MXP (telnet option 91) negotiation. Default true.
      *  When false, IAC WILL/DO MXP is ignored so the server never sees a
@@ -286,8 +285,8 @@ export class MudClient {
     /** When the game command now awaiting a reply went out (`performance.now()`),
      *  or null when nothing is being timed. Mudlet's
      *  `cTelnet::begin/finishNetworkLatencyMeasurement`: on a server that marks
-     *  its prompts with GA/EOR, the time from a command to the next prompt
-     *  marker is the network latency `getNetworkLatency()` reports, whether or
+     *  its prompts with GA/EOR, the time from a command to the first read
+     *  off the socket after it is the network latency `getNetworkLatency()` reports, whether or
      *  not the game answers GMCP `Core.Ping`. Timed from the first command of a
      *  burst, so a queued speedwalk isn't credited with the replies to its
      *  earlier steps. */
@@ -310,10 +309,6 @@ export class MudClient {
     private gameEstablished = false;
 
     commandEcho: boolean;
-    /** Gates the in-band `!!SOUND(...)` / `!!MUSIC(...)` tag parsing, together
-     *  with the option actually being negotiated — the tag bytes are
-     *  legitimate text on non-MSP MUDs. */
-    private readonly mspEnabled: boolean;
     private readonly mspParser = new MspParser();
     /** WebSocket subprotocols advertised on connect (see MudClientOptions). */
     private readonly subprotocols: string[];
@@ -368,7 +363,6 @@ export class MudClient {
         this.commandEcho = commandEcho;
         this.eventBus = eventBus;
         this.chunkProcessor = chunkProcessor ?? createPassthroughProcessor();
-        this.mspEnabled = mspEnabled;
         this.subprotocols = subprotocols;
         this.strictUnixEndings = inputLineStrictUnixEndings;
         this.forceGaOff = specialForceGAOff;
@@ -641,7 +635,6 @@ export class MudClient {
             clearTimeout(this.tlsDeadline);
             this.tlsDeadline = null;
         }
-        this.mspParser.reset();
 
         try {
             // Advertise subprotocols only when configured — passing an empty
@@ -711,11 +704,11 @@ export class MudClient {
                     this.eventBus.emit('client.error', formatCloseError(event, this.opened, this.viaProxy));
                 }
                 this.eventBus.emit('client.disconnect');
+                this.eventBus.emit('client.disconnected');
                 this.opened = false;
                 this.mccpHandler.reset();
                 this.echoHandler.reset();
                 this.pendingTelnet = "";
-                this.mspParser.reset();
                 this.negotiator.clearMspNegotiated();
                 this.cancelCharacterModeDetection();
             };
@@ -735,7 +728,6 @@ export class MudClient {
                             selected ? `'${selected}'` : '(none)');
                     }
                 }
-                this.negotiator.onSocketOpen();
                 // A TLS failure is not reliably reportable: an out-of-date proxy
                 // ignores `&tls=1` and opens a plaintext socket to a port that
                 // will never answer, and a Cloudflare-Worker proxy whose peer
@@ -750,10 +742,14 @@ export class MudClient {
                     }, TLS_HANDSHAKE_TIMEOUT_MS);
                 }
                 this.eventBus.emit('open', event);
-                this.eventBus.emit('client.connect');
                 // A direct websocket has only one leg, so opening it *is*
-                // reaching the game. Through a proxy it is not, and the frame
-                // or first byte that proves it arrives later.
+                // reaching the game. Through a proxy it is not: the proxy
+                // accepts us first and dials the game afterwards, and the frame
+                // or first byte that proves it got there arrives later. Until
+                // then nothing is connected — `client.connect` (and with it
+                // sysConnectionEvent and the "connected" status) waits for it,
+                // so a dial to a closed port or an unknown host is reported as
+                // the failed attempt it is (issue #237).
                 if (!this.viaProxy) this.markEstablished();
             };
         } catch (error) {
@@ -767,16 +763,25 @@ export class MudClient {
             // console — would never be posted. cTelnet is equivalent here: a
             // failed connectToHost still reaches slot_socketDisconnected.
             this.eventBus.emit('client.disconnect');
+            this.eventBus.emit('client.disconnected');
         }
     }
 
-    /** Announce that the link to the game itself is up, once per socket.
-     *  See the `client.established` docs in events.ts for why this is not the
-     *  same thing as `client.connect`. */
+    /** Announce that the link to the game itself is up, once per socket —
+     *  Mudlet's `slot_socketConnected`, which is both where it says so
+     *  (`client.connect` → "Open connection made.", sysConnectionEvent) and
+     *  where `mConnectionTimer` starts (`client.established`). */
     private markEstablished(): void {
         if (this.gameEstablished) return;
         this.gameEstablished = true;
+        this.eventBus.emit('client.connect');
         this.eventBus.emit('client.established');
+    }
+
+    /** Whether the current socket ever reached the game — false for an attempt
+     *  that failed before connecting (Mudlet's `slot_socketError` case). */
+    get established(): boolean {
+        return this.gameEstablished;
     }
 
     /** Stop policing the TLS deadline — the handshake is accounted for. */
@@ -866,11 +871,11 @@ export class MudClient {
         // once, which is what makes a disconnect()ed profile injectable again.
         this.socket = null;
         this.eventBus.emit('client.disconnect');
+        this.eventBus.emit('client.disconnected');
         this.opened = false;
         this.mccpHandler.reset();
         this.echoHandler.reset();
         this.pendingTelnet = '';
-        this.mspParser.reset();
         this.negotiator.clearMspNegotiated();
         this.cancelCharacterModeDetection();
         this.latencyStartedAt = null;
@@ -939,7 +944,7 @@ export class MudClient {
         this.latencyStartedAt = performance.now();
     }
 
-    /** Stop the clock at the first prompt marker after a timed command and
+    /** Stop the clock at the first socket read after a timed command and
      *  publish the reading (ms) as `network.latency`. */
     private finishLatencyMeasurement(receivedAt: number): void {
         if (this.latencyStartedAt === null) return;
@@ -1262,6 +1267,10 @@ export class MudClient {
         this.pendingTelnet = data.substring(complete);
         const processable = complete === data.length ? data : data.substring(0, complete);
         const ts = typeof timestamp === 'number' ? timestamp : Date.now();
+        // `cTelnet::slot_socketReadyToBeRead`: the first read after a timed
+        // write is its reply, whatever it carries — a reply line that arrives
+        // before its prompt stops the clock then, not when the prompt does.
+        if (receivedAt !== undefined) this.finishLatencyMeasurement(receivedAt);
 
         // `mFORCE_GA_OFF`: the marker is still received, but it stops meaning
         // "prompt". The session never latches into GA-driven mode, and the
@@ -1272,7 +1281,6 @@ export class MudClient {
             this.processSegment(processable, false, ts);
             return;
         }
-        if (receivedAt !== undefined) this.finishLatencyMeasurement(receivedAt);
         // Every GA/EOR ends the line it follows, wherever it falls in the
         // frame: a prompt bundled with the next output (or two prompts in one
         // read) are separate lines, the way Mudlet's gotPrompt cuts them.
@@ -1318,22 +1326,12 @@ export class MudClient {
     }
 
     private decodeAndAssemble(sanitized: string, hasPrompt: boolean, ts: number): void {
-        const decodedRaw = this.codec.decode(sanitized, hasPrompt);
-        // MSP in-band parsing: strip `!!SOUND(...)` / `!!MUSIC(...)` triplets
-        // and dispatch them as events. Gated on MSP having actually been
-        // negotiated, not merely allowed by the profile: on a server that never
-        // agreed to MSP the tag bytes are ordinary text, and Mudlet leaves them
-        // in the line — which is what lets the usual recipe (a trigger on
-        // `!!SOUND` that calls receiveMSP and deleteLine) work at all.
-        let decoded = decodedRaw;
-        if (this.mspEnabled && this.negotiator.isMspNegotiated() && decodedRaw.length > 0) {
-            const { text, commands } = this.mspParser.feed(decodedRaw);
-            decoded = text;
-            if (commands.length > 0 && debugMspEnabled()) {
-                console.debug(`[mudlet.msp] inline parsed ${commands.length} command(s):`, commands);
-            }
-            for (const cmd of commands) this.eventBus.emit('msp', cmd);
-        }
+        // In-band `!!SOUND(...)` / `!!MUSIC(...)` tags are ordinary text, MSP
+        // negotiated or not: Mudlet only takes MSP from `IAC SB MSP` and
+        // `receiveMSP()`, never from game text, which is what lets the usual
+        // recipe (a trigger on `!!SOUND` that calls receiveMSP and deleteLine)
+        // work at all.
+        const decoded = this.codec.decode(sanitized, hasPrompt);
 
         if (debugFramesEnabled() && decoded.length > 0) {
             const endsWithNl = decoded.endsWith('\n');

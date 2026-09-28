@@ -50,6 +50,17 @@ const PROXY_ERROR_HEADER = 'X-Mudlet-Proxy-Error';
 /** A request that failed before any reply from the target arrived. */
 class TransportError extends Error {}
 
+/** The verbs Qt turns back into their own operation when sent through
+ *  `sendCustomRequest`, with the events Mudlet raises for that operation. A
+ *  HEAD raises none: `handleHttpOK` and the error branch both skip it. */
+const STANDARD_VERBS: Readonly<Record<string, { verb: string; done: string; error: string }>> = {
+    get: { verb: 'GET', done: 'sysGetHttpDone', error: 'sysGetHttpError' },
+    head: { verb: 'HEAD', done: '', error: '' },
+    delete: { verb: 'DELETE', done: 'sysDeleteHttpDone', error: 'sysDeleteHttpError' },
+    put: { verb: 'PUT', done: 'sysPutHttpDone', error: 'sysPutHttpError' },
+    post: { verb: 'POST', done: 'sysPostHttpDone', error: 'sysPostHttpError' },
+};
+
 const EMPTY_RECORD = (): Record<string, unknown> => ({ headers: {}, cookies: {} });
 
 export class HttpService {
@@ -132,6 +143,16 @@ export class HttpService {
     }
 
     customHTTP(method: string, data: string | null, url: string, headers?: Record<string, string>, file?: string): void {
+        // Qt's QNetworkReplyHttpImpl remaps a custom request whose verb is one
+        // of the standard five (compared case-insensitively) to that verb's own
+        // operation (`remapCustom`), and Mudlet picks the event by operation —
+        // so customHTTP("GET", …) finishes as sysGetHttpDone, not the custom
+        // pair, and a HEAD raises nothing at all.
+        const standard = STANDARD_VERBS[method.toLowerCase()];
+        if (standard) {
+            this.upload(standard.verb, data, normalizeUserUrl(url), headers, file, standard.done, standard.error);
+            return;
+        }
         // The verb goes between the body and the response record in both
         // events — handleHttpOK in Mudlet puts it there.
         this.upload(method, data, normalizeUserUrl(url), headers, file,
@@ -160,7 +181,7 @@ export class HttpService {
         // throws — and customHTTP("GET", "", url) is how a script spells "no
         // body", since the data argument is mandatory. A non-empty one is still
         // passed through, to fail honestly rather than vanish.
-        if ((verb === 'GET' || verb === 'HEAD') && data === '' && !file) body = undefined;
+        if ((verb === 'GET' || verb === 'HEAD' || verb === 'DELETE') && data === '' && !file) body = undefined;
         // fetch labels a string body text/plain;charset=UTF-8 on its own. Mudlet
         // sends no Content-Type for a PUT or a custom verb, and for a POST falls
         // back to application/x-www-form-urlencoded (Qt's own default) — which a
@@ -289,7 +310,12 @@ export class HttpService {
      * its timer queue instead.
      */
     private emitLater(event: string, args: unknown[]): void {
-        this.defer(() => this.emit(event, args));
+        this.defer(() => this.emitNamed(event, args));
+    }
+
+    /** Raise `event` unless it is '' — the "no event" a HEAD finishes with. */
+    private emitNamed(event: string, args: unknown[]): void {
+        if (event) this.emit(event, args);
     }
 
     private bodyForUpload(data: string | null, file: string | undefined): BodyInit | undefined {
@@ -320,12 +346,12 @@ export class HttpService {
             const text = await res.text();
             const record = this.responseRecord(res.headers);
             if (!res.ok) {
-                this.emit(errorEvent, [httpErrorMessage(url, res), url, ...extraArgs, record]);
+                this.emitNamed(errorEvent, [httpErrorMessage(url, res), url, ...extraArgs, record]);
                 return;
             }
-            this.emit(doneEvent, [url, text, ...extraArgs, record]);
+            this.emitNamed(doneEvent, [url, text, ...extraArgs, record]);
         } catch (err) {
-            this.emit(errorEvent, [errorMessage(err), url, ...extraArgs, EMPTY_RECORD()]);
+            this.emitNamed(errorEvent, [errorMessage(err), url, ...extraArgs, EMPTY_RECORD()]);
         }
     }
 

@@ -31,13 +31,13 @@ const IO_COMPLETIONS: Completion[] = [
 // ── lfs ───────────────────────────────────────────────────────────────────────
 
 const LFS_COMPLETIONS: Completion[] = [
-    fn('mkdir',      '(path) → true|nil,err',          'Create a directory (recursive)'),
-    fn('rmdir',      '(path) → true|nil,err',          'Remove a directory'),
+    fn('mkdir',      '(path) → true|nil,err,errno',    'Create a directory (its parent must already exist)'),
+    fn('rmdir',      '(path) → true|nil,err,errno',    'Remove an empty directory'),
     fn('dir',        '(path) → iterator',              'Iterate directory entries'),
-    fn('attributes', '(path, [attr]) → table|value',  'Get file/directory attributes (mode, size, modification, access)'),
+    fn('attributes', '(path, [attr|table]) → table|value|nil,err,errno', 'Get file/directory attributes (mode, size, modification, access, change, permissions, ...)'),
     fn('currentdir', '() → string',                   'Get current working directory'),
     fn('chdir',      '(path) → true|nil,err',          'Change current working directory'),
-    fn('touch',      '(path)',                         'Create file if it does not exist'),
+    fn('touch',      '(path, [atime, [mtime]]) → true|nil,err,errno', 'Set access/modification times (now by default); does not create the file'),
 ];
 
 // ── string extensions ─────────────────────────────────────────────────────────
@@ -188,7 +188,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('getServerEncodingsList', '() → {names}', '1-indexed list of every encoding mudlet can decode (ASCII, UTF-8, ISO-8859-x, Windows-125x, KOI8-R/U).'),
     fn('sendATCP',     '(message) → bool', "Send an ATCP subnegotiation (telnet option 200, GMCP's predecessor). False when the socket is closed."),
     fn('sendTelnetChannel102', '(msg) → bool', 'Send a zMUD "channel 102" subnegotiation (telnet option 102). False when the socket is closed.'),
-    fn('reconnect',    '() → bool', 'Disconnect and redial the last-connected URL. False when no connection has been made yet.'),
+    fn('reconnect',    '()', 'Disconnect and redial the last-connected URL (or the configured server when nothing has been dialled yet). Returns nothing; the outcome arrives as sysConnectionEvent or sysDisconnectionEvent.'),
     fn('sendSocket',   '(data)',           'Send literal bytes over the socket (no telnet/encoding processing)'),
     fn('feedTelnet',   '(data)',           'Inject raw server bytes into the inbound pipeline as if received from the MUD'),
     fn('loadReplay',   '(fileName) → true | nil,err', 'Play back a Mudlet binary replay (.dat) from the profile filesystem on its recorded timeline (e.g. loadReplay(getMudletHomeDir().."/log/rec.dat")).'),
@@ -584,7 +584,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('invokeFileDialog',   '(fileOrFolder, title [, location]) → path', 'Ask the user to pick a file (true) or folder (false) via an in-app picker over the profile VFS. Returns the picked absolute VFS path, or "" if cancelled. The calling handler is suspended until the user answers (the rest of the client keeps running, like Mudlet\'s nested dialog event loop); calling it inside your own pcall fails — Lua 5.1 cannot yield across pcall.'),
     fn('getProfileName',     '() → name',        'The active profile\'s name'),
     fn('getProcessID',       '() → number',      'Mudlet answers the OS process id. A browser tab has no pid, so this is a stable positive number unique to this tab for its lifetime — every property a script can rely on.'),
-    fn('getNetworkLatency',  '() → seconds',     'Most recent network round trip in seconds — from a command to the game\'s next GA/EOR prompt, or a GMCP Core.Ping. 0 when nothing has been measured yet.'),
+    fn('getNetworkLatency',  '() → seconds',     'Most recent network round trip in seconds — from a command to the first data the game sends back (on a server that marks prompts with GA/EOR), or a GMCP Core.Ping. 0 when nothing has been measured yet.'),
     fn('handleWindowResizeEvent', '()',          'Legacy no-op kept for old scripts — resizes raise sysWindowResizeEvent on their own.'),
     fn('downloadFile',       '(saveTo, url) → true, url | nil, errMsg', 'Download a URL into the profile filesystem. Asynchronous: the return only says the request was accepted, and the outcome arrives as sysDownloadDone / sysDownloadError. (nil, errMsg) for a URL that is malformed or of an unusable scheme — no request is made.'),
     fn('getNewIDManager',    '() → manager',     'A fresh ID manager object handing out unique ids (mudlet-lua IDManager).'),
@@ -594,7 +594,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('showNotification',   '(title [, content [, expirySeconds]])', 'Show a desktop notification via the Web Notifications API (requests permission on first use). content defaults to title; expirySeconds auto-closes it. Always returns true.'),
     fn('getEpoch',           '() → number',        'Seconds since the Unix epoch (1970-01-01 UTC) with millisecond precision'),
     fn('getOS',              '() → osName, osVersion, [osType], processor', 'Operating system the client runs on, sniffed from the user agent. Returns osName ("windows"/"mac"/"linux"/"freebsd"/"openbsd"/"netbsd"/"unknown"), osVersion, and a processor string; Linux inserts an extra osType (distro) before the processor (4 values vs 3). The first value is the name, so `getOS() == "windows"` still works.'),
-    fn('getCharacterName',   '() → string',        'Active profile/character name (mudlet has one character per profile, so this matches getProfileName). Empty string when unset.'),
+    fn('getCharacterName',   '() → string | nil, err', 'The character name the profile logs in with (its saved login name). nil + "no character name set" when none is saved.'),
     fn('getMudletInfo',      '()',                 'Echo a short diagnostic block (profile, server encoding, platform) to the main window.'),
     fn('getProcessMemoryUsage', '() → kb',         'Memory in use, in Kb. Browser-adapted: returns the JS heap in use (performance.memory, Chromium only), or 0 where unavailable.'),
     fn('getSubsystemMemoryStats', '() → table',    'Diagnostic table under Mudlet\'s key names: lua_heap_kb/lua_heap_mb, triggers_total/temp, timers_total/temp, aliases_total/temp, map_rooms, map_areas, console_buffer_lines, media_sound_players/media_music_players/media_stopped_players, plus heap_in_use_mb/heap_allocated_mb/heap_limit_mb and loaded_fonts where the browser reports them. Best-effort.'),
@@ -616,7 +616,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('postHTTP',     '(data, url [, headers, file]) → true, url | nil, errMsg',  'POST a body (or upload a file from the profile filesystem, whose contents become the body). Result on sysPostHttpDone / sysPostHttpError.'),
     fn('putHTTP',      '(data, url [, headers, file]) → true, url | nil, errMsg',  'PUT a body (or upload a file). Result on sysPutHttpDone / sysPutHttpError.'),
     fn('deleteHTTP',   '(url [, headers]) → true, url | nil, errMsg',              'DELETE a URL. Result on sysDeleteHttpDone / sysDeleteHttpError.'),
-    fn('customHTTP',   '(method, url [, headers]) → true, url | nil, errMsg',      'Issue an arbitrary HTTP method. Result on sysCustomHttpDone / sysCustomHttpError.'),
+    fn('customHTTP',   '(method, url [, headers]) → true, url | nil, errMsg',      'Issue an arbitrary HTTP method. Result on sysCustomHttpDone / sysCustomHttpError; GET, PUT, POST and DELETE report on their own sysGet/Put/Post/DeleteHttp* events instead, and HEAD on none.'),
 
     // Spell check — Mudlet Web has no system dictionary (Mudlet uses Hunspell), so
     // only the per-profile user dictionary is backed. Calls that ask for the
@@ -647,7 +647,8 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('ioprint',            '(...)',                     'Print to the developer console (Mudlet prints to stdout; in the browser the closest analogue is the devtools console).'),
     fn('getProfileTabNumber', '([name]) → number',        'Tab index of a profile. mudlet is a single-profile web app, so this always returns 1.'),
     fn('getProfiles',         '() → {[name]=info}',        'Table keyed by profile name, one entry per configured connection: { host, port, loaded, connected, description }. loaded = open in some tab (each profile lives in its own browser tab); connected = connected to its game (live for this tab, last-announced for others). Cross-tab via Web Locks + a BroadcastChannel.'),
-    fn('loadProfile',         '(name) → bool',             'Open the named profile in a new browser tab and connect to it (each profile lives in its own tab). The calling profile stays open. Returns false for an unknown name, the already-open profile, or a blocked popup. Needs a user gesture, so it works from a key/button/alias but a browser may block it from a trigger.'),
+    fn('loadProfile',         '(name) → true | nil, err',  'Open the named profile in a new browser tab and connect to it (each profile lives in its own tab). The calling profile stays open. Returns nil plus a message for an unknown name, a profile that is already open, or a blocked popup. Needs a user gesture, so it works from a key/button/alias but a browser may block it from a trigger.'),
+    fn('closeProfile',        '(name) → true | nil, err',  'Close the named open profile — this one, or one open in another tab — disconnecting it and returning its tab to the connection screen. Returns nil plus a message when no open profile has that name.'),
     fn('loadRawFile',        '(path) → string',    'Read entire file from VFS and return its contents'),
     fn('loadfile',           '(filename)',          'Load a Lua file from VFS'),
     fn('dofile',             '(filename)',          'Load and execute a Lua file from VFS'),
@@ -699,7 +700,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('getMapZoom',           '([areaID]) → zoom | (nil, errMsg)', 'Map zoom = number of map units visible across the viewport\'s shorter edge. Stored per area (like Mudlet), so it answers with no map panel open; (nil, errMsg) for an areaID that does not exist.'),
     fn('setMapZoom',           '(zoom [, areaID]) → true | (nil, errMsg)', 'Set an area\'s map zoom: how many map units fit across the shorter edge (larger = zoomed out, must be >= 3.0), then redraw. (nil, errMsg) for a zoom below the minimum or an areaID that does not exist.'),
     fn('updateMap',            '()',                               'Force the map to re-read the map store and redraw.'),
-    fn('getPlayerRoom',        '() → id|nil',                      'Get the player\'s current room id (restored from the map file on load, then updated by centerview); nil when unset or the room no longer exists'),
+    fn('getPlayerRoom',        '() → id|nil',                      'Get the player\'s current room id (restored from the map file on load, then updated by centerview); nil when unset, the room no longer exists, or no map has been opened yet'),
     fn('loadMap',              '([location]) → bool',              'Load a map from a VFS path — a Mudlet binary `.dat`, or an IRE-style XML map when the path ends in `.xml`; persists to IndexedDB and re-renders the panel. With no path, reloads from already-stored bytes. Returns false on a missing/unreadable/unparseable file.'),
     fn('saveMap',              '([location]) → bool',              'Serialise the current map to Mudlet binary `.dat` format and persist it to the connection\'s IndexedDB slot (the default profile location). With a path, also writes the bytes to that VFS path. Returns false on serialisation or write failure.'),
     fn('exportAreaImage',      '(areaID, filePath [, zLevel]) → ok[, pathOrErr]', 'Render an area (optionally a single z-level) to a PNG file in the profile VFS at filePath (relative paths resolve under the profile root). Requires the mapper to be open. Returns true, absolutePath on success or false, errMsg otherwise. The whole area is fitted into the image; hidden rooms follow the current viewing/editing mode.'),
@@ -955,9 +956,9 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('showToolBar',         '(name) → bool',                       'Enable a toolbar group so the button strip renders it. False when no toolbar of that name exists.'),
     fn('hideToolBar',         '(name) → bool',                       'Disable a toolbar group so the button strip hides it. False when no toolbar of that name exists.'),
     fn('tempButton',          '(toolbar, name, orientation) → id',
-       'Append a transient button, with no command or script, under an existing toolbar group. orientation: 0=horizontal, 1=vertical. Returns the new id, or -1 if no toolbar of that name exists.'),
+       'Append a transient button, with no command or script, under an existing toolbar group. orientation: 0=horizontal, 1=vertical. Returns the new id, or nothing if no toolbar of that name exists or the name is already taken.'),
     fn('tempButtonToolbar',   '(name, location, orientation) → id',
-       'Create a transient toolbar group. orientation: 0=horizontal, 1=vertical. location: 0=top, 1=left, 2=right, 3=floating. Returns the new id, or -1 on duplicate name.'),
+       'Create a transient toolbar group. orientation: 0=horizontal, 1=vertical. location: 0=top, 1=left, 2=right, 3=floating. Returns the new id, or nothing if a toolbar or button already has that name.'),
     fn('setButtonState',      '(name, state) → bool',                'Set the pressed state of a two-state (push-down) button by name. False when no such button.'),
     fn('getButtonState',      '(name) → bool|nil',                   'Read the pressed state of a two-state button. nil when no such button.'),
     fn('setButtonStyleSheet', '(name, css) → bool',                  'Store a Qt-style stylesheet on a button. The renderer translates the flat-declarations subset to inline style. False when no such button.'),

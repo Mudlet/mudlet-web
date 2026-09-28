@@ -101,6 +101,6 @@ describe('event handlers on dotted script names', () => {
     `);
     // centerview sets the player room (Mudlet parity), so this proves the whole
     // chain ran, not just that the handler was reached.
-    expect(t.run(`return getPlayerRoom()`)).toBe(7);
+    expect(t.run(`openMapWidget() return getPlayerRoom()`)).toBe(7);
   });
 });

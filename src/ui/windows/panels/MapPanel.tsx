@@ -5,6 +5,7 @@ import type { AreaExitClickEventDetail, LodEventDetail, RoomClickEventDetail, Ro
 import type { WindowManager, MapControl, MapLoadProgress } from '../WindowManager';
 import type { MapEventEntry, MapInfoResult, MapInfoContributor, MapStore } from '../../../map/MapStore';
 import { MudletMapReader } from '../../../map/MudletMapReader';
+import { centerviewAreaChange } from './mapAreaChange';
 import {
     MUDLET_MIN_MAP_ZOOM, applyAreaZoom, fitAreaWithHeadroom, toMudletZoom, toRendererZoom,
 } from '../../../map/mapZoom';
@@ -157,6 +158,10 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
     // can see the current selection (state values would be stale captures).
     const currentAreaRef = useRef<number | null>(null);
     const currentLevelRef = useRef<number>(0);
+    // Whether a centerview has run since this panel opened (or its map was
+    // replaced) — the first one always raises sysMapAreaChanged
+    // (centerviewAreaChange).
+    const centeredRef = useRef(false);
     currentAreaRef.current = currentArea;
     currentLevelRef.current = currentLevel;
 
@@ -385,6 +390,7 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
             setLevels([]);
             setCurrentArea(null);
             currentAreaRef.current = null;
+            centeredRef.current = false;
             renderer.clearPosition();
             recomputeMapInfos();
             // Whatever map arrives next opens fresh: drop the one-time fit latch
@@ -1106,9 +1112,11 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
         const prevArea = currentAreaRef.current;
         if (prevArea !== areaId) {
             useAppStore.getState().patchConnectionProfile(connectionId, { mapLastAreaId: areaId });
-            // Mudlet `sysMapAreaChanged(newAreaID, prevAreaID)`.
-            manager.onRaiseEvent?.('sysMapAreaChanged', [areaId, prevArea ?? -1]);
         }
+        // Mudlet `sysMapAreaChanged(newAreaID, prevAreaID)`.
+        const areaChange = centerviewAreaChange(!centeredRef.current, prevArea, areaId);
+        centeredRef.current = true;
+        if (areaChange) manager.onRaiseEvent?.('sysMapAreaChanged', areaChange);
         setLevels(areaLevels);
         setCurrentLevel(zLevel);
         setCurrentArea(areaId);

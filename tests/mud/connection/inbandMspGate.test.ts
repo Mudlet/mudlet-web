@@ -5,9 +5,10 @@ import { MSP_WILL } from '../../../src/mud/protocol/constants';
 import type { MudClientEvents } from '../../../src/mud/events';
 import type { MspCommand } from '../../../src/mud/protocol/msp';
 
-// Issue #185: in-band `!!SOUND(...)` in game text is MSP only once the server
-// has agreed to MSP. Before that it is ordinary text — Mudlet leaves it in the
-// line, which is what the usual trigger + receiveMSP + deleteLine recipe needs.
+// Issues #185 / #239: Mudlet never parses MSP out of game text — it is reached
+// only via `IAC SB MSP` and `receiveMSP()`. An in-band `!!SOUND(...)` stays in
+// the line, negotiated or not, which is what the usual trigger + receiveMSP +
+// deleteLine recipe needs.
 function makeClient() {
     const bus = new EventBus<MudClientEvents>();
     const client = new MudClient({ url: 'ws://test.invalid', mspEnabled: true }, bus);
@@ -28,12 +29,19 @@ describe('in-band MSP tags', () => {
         expect(commands).toEqual([]);
     });
 
-    it('are stripped and dispatched once the server has agreed to MSP', () => {
+    it('are still left in the line once the server has agreed to MSP', () => {
         const { client, lines, commands } = makeClient();
         client.feedTelnet(MSP_WILL);
         expect(client.isMspNegotiated()).toBe(true);
         client.feedTelnet('X1 hello !!SOUND(short.wav) world\r\n');
-        expect(lines.filter(l => l.trim())).toEqual(['X1 hello  world\n']);
+        expect(lines.filter(l => l.trim())).toEqual(['X1 hello !!SOUND(short.wav) world\n']);
+        expect(commands).toEqual([]);
+    });
+
+    it('are dispatched when they arrive as an MSP subnegotiation', () => {
+        const { client, commands } = makeClient();
+        client.feedTelnet(MSP_WILL);
+        client.feedTelnet('\xFF\xFA\x5A!!SOUND(short.wav)\xFF\xF0');
         expect(commands.map(c => c.file)).toEqual(['short.wav']);
     });
 });

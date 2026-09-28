@@ -664,6 +664,20 @@ export class TriggerEngine {
      *  window and there is no match to replay. See the fire-length branch in
      *  matchPermEntryOnce. */
     private keepFiring = new Map<string, { until: number; match: TriggerMatch | null }>();
+    /**
+     * The stay-open state a single-line match left its trigger in, to be put
+     * back once that match's script has run. Desktop runs a single-line
+     * trigger's script from inside the pattern test and only then assigns
+     * `mKeepFiring = mStayOpen` (src/TTrigger.cpp:995-999), so a trigger that
+     * calls setTriggerStayOpen on ITSELF has the call overwritten and does not
+     * keep firing; opening another trigger's window is unaffected. Mudlet Web
+     * does the bookkeeping before the script runs, so {@link execPerm} restores
+     * it afterwards (mudlet-web#238).
+     */
+    private readonly stayOpenAfterScript = new WeakMap<TriggerMatch, {
+        keep: { until: number; match: TriggerMatch | null } | undefined;
+        chainUntil: number | undefined;
+    }>();
 
     // Filter state: chainHeadId → last matched/captured text
     private filterActiveText = new Map<string, string>();
@@ -1104,7 +1118,13 @@ export class TriggerEngine {
     }
 
     private fireTempEntryInner(id: number, entry: TempEntry, line: string, isPrompt: boolean): void {
-        if (this.fireTempEntryMatch(id, entry, line, isPrompt)) return;
+        if (this.fireTempEntryMatch(id, entry, line, isPrompt)) {
+            // Desktop's `mKeepFiring = mStayOpen` once the script has run, and a
+            // temporary trigger's mStayOpen is 0: a match closes the window, and
+            // the callback cannot hold its own trigger open (mudlet-web#238).
+            entry.keepFiring = 0;
+            return;
+        }
         // No match. A trigger held open by setTriggerStayOpen fires anyway,
         // with nothing captured, and spends one of its lines doing it
         // (TTrigger::match: ).
@@ -1338,6 +1358,14 @@ export class TriggerEngine {
                 }
             }
             this.applyFireLength(item, currentLine, effectiveLine, lastMatch, out);
+            // Only the single-line branch: desktop's multiline completion
+            // assigns mKeepFiring before running the script, as this does.
+            if (lastMatch && entry.kind !== 'and') {
+                this.stayOpenAfterScript.set(lastMatch, {
+                    keep: this.keepFiring.get(item.id),
+                    chainUntil: this.chainOpenUntil.get(item.id),
+                });
+            }
         } finally {
             colorWindowRef.window = previousColorWindow;
         }
@@ -1539,6 +1567,14 @@ export class TriggerEngine {
             m.trigger.name,
             this.permSameLine.get(this.rootIdOf(m.trigger)),
             () => exec(m));
+        const after = this.stayOpenAfterScript.get(m);
+        if (!after) return;
+        this.stayOpenAfterScript.delete(m);
+        const id = m.trigger.id;
+        if (after.keep) this.keepFiring.set(id, after.keep);
+        else this.keepFiring.delete(id);
+        if (after.chainUntil !== undefined) this.chainOpenUntil.set(id, after.chainUntil);
+        else this.chainOpenUntil.delete(id);
     }
 
     /**

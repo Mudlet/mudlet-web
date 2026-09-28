@@ -291,7 +291,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `enableModuleSync(name)` | ✅ | Marks the module syncing |
 | `expandAlias(text [, echo])` | ✅ | `ScriptingAPI.expandAlias` |
 | `feedTriggers(text)` | ✅ | Feeds text through trigger pipeline + shows in output |
-| `getCharacterName()` | ✅ | Mudlet Web maps character→profile (one character per profile); returns the profile name (same as `getProfileName`), "" when unset |
+| `getCharacterName()` | ✅ | The profile's saved login name (`charLoginAccount`, or a branded build's in-memory login) — `Host::getLogin()`; `nil, "no character name set"` when none is saved |
 | `getConfig(key)` | ✅ | Config registry in `ScriptingAPI`. Structured keys (protocol toggles, mapper, `autoClearInputLine`, `showSentText`, `mapperPanelVisible`) read their real field / live state; UI-consumed keys (`commandLineHistorySaveSize`, `showTabConnectionIndicators`) round-trip via the `config` bag and drive behaviour; other catalogued keys persist-only. Unknown key → nil. Full key table + enforced/persist-only breakdown: [`docs/config-api.md`](config-api.md) |
 | `getCommandSeparator()` | ✅ | Reads the profile's `commandSeparator` (default `;;`) |
 | `getModuleInfo(name, key)` | ✅ | Bridge.lua |
@@ -495,7 +495,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `openUrl(url)` | ✅ | `window.open(url, '_blank')`; `file:` prefix routes to the VFS file browser |
 | `postHTTP(url, data [, headers])` | ✅ | Bridge.lua → `HttpService.postHTTP` |
 | `putHTTP(url, data [, headers])` | ✅ | Bridge.lua → `HttpService.putHTTP` |
-| `reconnect()` | ✅ | Disconnect + redial the last-connected URL (`MudSession.lastUrl`, set by every `connect()`); false when nothing dialed yet |
+| `reconnect()` | ✅ | Disconnect + redial the last-connected URL (`MudSession.lastUrl`, set by every `connect()`), else the profile's configured server; returns nothing, as Mudlet's does |
 | `sendAll(text1, text2, ...)` | ✅ | Other.lua |
 | `sendATCP(msg)` | ✅ | `IAC SB ATCP(200) <payload> IAC SE` via `MudClient.sendRaw` (shared `sendSubnegotiation` helper); false when the socket is closed |
 | `sendGMCP(message)` | ✅ | Frames as IAC SB GMCP … |
@@ -956,7 +956,7 @@ Reconciled against the authoritative [Mudlet Event Engine](https://wiki.mudlet.o
 | `sysPostHttpDone` / `sysPostHttpError` | ✅ | `postHTTP` |
 | `sysPutHttpDone` / `sysPutHttpError` | ✅ | `putHTTP` |
 | `sysDeleteHttpDone` / `sysDeleteHttpError` | ✅ | `deleteHTTP` |
-| `sysCustomHttpDone` / `sysCustomHttpError` | ✅ | `customHTTP` — extra arg: HTTP method |
+| `sysCustomHttpDone` / `sysCustomHttpError` | ✅ | `customHTTP` with a non-standard verb — extra arg: HTTP method. A GET/PUT/POST/DELETE raises that verb's own pair and a HEAD raises nothing, as Qt remaps them (`remapCustom`) |
 | `sysDownloadDone` / `sysDownloadError` / `sysDownloadFileProgress` | ✅ | `downloadFile` |
 | `sysUnzipDone` / `sysUnzipError` | ✅ | `unzipAsync` |
 
@@ -1015,7 +1015,7 @@ Reconciled against the authoritative [Mudlet Event Engine](https://wiki.mudlet.o
 | `sysPathChanged` | ✅ | VFS mutation of a watched path — arg: path |
 | `sysMediaFinished` | ✅ | Sound/music/video source ended or stopped — args: name, path |
 | `sysSettingChanged` | ✅ | Per-connection profile-settings mutation. One event per changed field — args: setting, newValue (`undefined` when unset) |
-| `sysSoundFinished` | ✅ | Pre-4.15 name, superseded by `sysMediaFinished`. Fired as a compat alias alongside it from the `SoundManager` finished path — args: name, path |
+| `sysSoundFinished` | ➖ | Not raised: desktop Mudlet raises only `sysMediaFinished` (the old name has no emitter in TMedia). |
 | `sysIrcMessage` | ❌ | No IRC client in Mudlet Web; nothing fires it (no stub needed — events don't break callers when never raised) |
 
 > **Not Mudlet events** — do not implement under these names: `sysConnect` / `sysDisconnect` / `sysGmcpMessage` (Mudlet uses `sysConnectionEvent` / `sysDisconnectionEvent` and the `gmcp.<path>` event chain), `sysUserWindowCreated` / `sysUserWindowClosed`, `sysMapperLocationChanged`.

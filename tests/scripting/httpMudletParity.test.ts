@@ -176,7 +176,7 @@ describe('customHTTP', () => {
 
         expect(calls).toHaveLength(1);
         expect(calls[0].init.body).toBeUndefined();
-        expect(find(events, 'sysCustomHttpDone')?.[1]).toBe('hello');
+        expect(find(events, 'sysGetHttpDone')?.[1]).toBe('hello');
     });
 
     it('does not send a request fetch refuses to the proxy', async () => {
@@ -186,7 +186,62 @@ describe('customHTTP', () => {
         await flush();
 
         expect(calls).toHaveLength(0);
-        expect(find(events, 'sysCustomHttpError')).toBeDefined();
+        expect(find(events, 'sysGetHttpError')).toBeDefined();
+    });
+
+    // Issue #239: Qt remaps a custom request with a standard verb to that verb's
+    // own operation, so Mudlet raises the matching event pair, without the verb.
+    it('finishes a GET as sysGetHttpDone(url, body, response)', async () => {
+        stubFetch(() => new Response('hello', { status: 200 }));
+        const events: Events = [];
+        service(events).customHTTP('get', '', 'http://example.invalid/ok');
+        await flush();
+
+        expect(events.map(([e]) => e)).toEqual(['sysGetHttpDone']);
+        const args = find(events, 'sysGetHttpDone')!;
+        expect(args).toHaveLength(3);
+        expect(args.slice(0, 2)).toEqual(['http://example.invalid/ok', 'hello']);
+        expect(args[2]).toHaveProperty('headers');
+    });
+
+    it('reports a failed GET as sysGetHttpError', async () => {
+        stubFetch(() => { throw new TypeError('Failed to fetch'); });
+        const events: Events = [];
+        service(events).customHTTP('GET', '', 'http://down.invalid/x');
+        await flush();
+
+        expect(events.map(([e]) => e)).toEqual(['sysGetHttpError']);
+        expect(find(events, 'sysGetHttpError')).toHaveLength(3);
+    });
+
+    it.each([
+        ['PUT', 'sysPutHttpDone'],
+        ['post', 'sysPostHttpDone'],
+        ['Delete', 'sysDeleteHttpDone'],
+    ])('finishes a %s as %s', async (verb, event) => {
+        const calls = stubFetch(() => new Response('ok', { status: 200 }));
+        const events: Events = [];
+        service(events).customHTTP(verb, verb === 'Delete' ? '' : 'd', 'http://example.invalid/x');
+        await flush();
+
+        expect(calls[0].init.method).toBe(verb.toUpperCase());
+        expect(events.map(([e]) => e)).toEqual([event]);
+        expect(find(events, event)).toHaveLength(3);
+    });
+
+    it('raises nothing for a HEAD, done or failed', async () => {
+        const calls = stubFetch(url => {
+            if (url.includes('down')) throw new TypeError('Failed to fetch');
+            return new Response(null, { status: 200 });
+        });
+        const events: Events = [];
+        const http = service(events);
+        http.customHTTP('HEAD', '', 'http://example.invalid/x');
+        http.customHTTP('HEAD', '', 'http://down.invalid/x');
+        await flush();
+
+        expect(calls.map(c => c.init.method)).toEqual(['HEAD', 'HEAD']);
+        expect(events).toEqual([]);
     });
 });
 

@@ -318,6 +318,12 @@ export class FormatState {
      *  SGR 0 and SGR 39 leave it. Bold never brightens a default foreground. */
     private fgIsDefault = true;
     private _foreground?: FormatColor;
+    /** Mudlet's `!mIsDefaultColor` exactly — which is narrower than
+     *  `!fgIsDefault`: TBuffer::decodeSGR clears mIsDefaultColor only for one of
+     *  the sixteen ANSI colours (30–37, 90–97, and `38;5`/`48;5` below 16), not
+     *  for a 256-colour or 24-bit one. It decides one thing here: whether SGR 1
+     *  makes the characters written bold (see {@link toCellSnapshot}). */
+    private ansiColored = false;
 
     /** The foreground in force, both variants already resolved. */
     get foreground(): FormatColor | undefined {
@@ -347,6 +353,9 @@ export class FormatState {
         // rule is the right one: it becomes both variants. Nothing is lost —
         // whatever bold was doing at the carry point had already chosen it.
         this.foreground = snapshot.foreground;
+        // A snapshot does not say how its colour was chosen; one of the sixteen
+        // ANSI colours is the one kind that could only have come from them.
+        this.ansiColored = isAnsiPaletteColor(snapshot.foreground);
         this.background = cloneColor(snapshot.background);
         this.bold = snapshot.bold ? true : undefined;
         this.italic = snapshot.italic ? true : undefined;
@@ -365,6 +374,7 @@ export class FormatState {
 
     reset(): void {
         this.foreground = undefined;
+        this.ansiColored = false;
         this.background = undefined;
         this.bold = undefined;
         this.italic = undefined;
@@ -378,6 +388,18 @@ export class FormatState {
         this.concealed = undefined;
         this.alternateFont = undefined;
         this.dim = undefined;
+    }
+
+    /** The attributes an SGR-decoded character is written with. Mudlet's
+     *  TBuffer gives a cell the Bold flag as `mIsDefaultColor ? mBold : false`:
+     *  on one of the sixteen ANSI colours, SGR 1 only picks the bright twin
+     *  (already resolved into `foreground`) and the character itself is not
+     *  bold. The bold state is still carried — `toSnapshot` keeps it — so a
+     *  colour that arrives later is brightened. */
+    toCellSnapshot(): FormatStateSnapshot {
+        const snapshot = this.toSnapshot();
+        if (this.ansiColored) snapshot.bold = undefined;
+        return snapshot;
     }
 
     toSnapshot(): FormatStateSnapshot {
@@ -491,6 +513,7 @@ export class FormatState {
                     this.fgNormal = undefined;
                     this.fgLight = undefined;
                     this.fgIsDefault = true;
+                    this.ansiColored = false;
                     this.resolveForeground();
                     break;
                 case 49:
@@ -534,6 +557,9 @@ export class FormatState {
                         // is a zero — the same as writing `38;5;0`.
                         const index = present(2) ? at(2) : 0;
                         if (index !== undefined) {
+                            // decodeSGR38 and decodeSGR48 both clear
+                            // mIsDefaultColor for an index below 16.
+                            if (index >= 0 && index < 16) this.ansiColored = true;
                             const color = xtermColor(index);
                             // A colour chosen out of the 256-colour cube names
                             // itself exactly; there is no brighter twin to pick,
@@ -590,10 +616,12 @@ export class FormatState {
                             {space: "hex", color: colorCodes.ansi.dark[code - 30]},
                             {space: "hex", color: colorCodes.ansi.bright[code - 30]},
                         );
+                        this.ansiColored = true;
                     } else if (code >= 90 && code <= 97) {
                         // Already bright — bold has nothing brighter to reach for.
                         const bright: HexColor = {space: "hex", color: colorCodes.ansi.bright[code - 90]};
                         this.setForeground(bright, bright);
+                        this.ansiColored = true;
                     } else if (code >= 40 && code <= 47) {
                         this.background = {space: "hex", color: colorCodes.ansi.dark[code - 40]};
                     } else if (code >= 100 && code <= 107) {
@@ -676,6 +704,7 @@ export class FormatState {
             else this.background = color;
         };
         if (group[1] === 5 && group[2] !== undefined) {
+            if (group[2] >= 0 && group[2] < 16) this.ansiColored = true;
             const color = xtermColor(group[2]);
             if (color) put(color);
             else if (isForeground) put(OUT_OF_RANGE_FOREGROUND);
@@ -708,6 +737,15 @@ export class FormatState {
     setHyperlink(link?: FormatHyperlink): void {
         this.hyperlink = link ? {...link} : undefined;
     }
+}
+
+/** Whether `color` is one of the sixteen ANSI palette colours (SGR 30–37 /
+ *  90–97) as the SGR decoder writes them. */
+function isAnsiPaletteColor(color: FormatColor | undefined): boolean {
+    if (color?.space !== "hex") return false;
+    const hex = color.color.toLowerCase();
+    return colorCodes.ansi.dark.some(c => c.toLowerCase() === hex)
+        || colorCodes.ansi.bright.some(c => c.toLowerCase() === hex);
 }
 
 /**
@@ -794,7 +832,7 @@ function parseAnsiSegments(
     let buffer = "";
     const flush = (): void => {
         if (!buffer) return;
-        const snapshot = state.toSnapshot();
+        const snapshot = state.toCellSnapshot();
         const storedState = isDefaultState(snapshot) ? undefined : snapshot;
         segments.push({text: buffer, state: storedState});
         buffer = "";

@@ -148,4 +148,36 @@ describe('getConnectionInfo() inside sys(Dis)ConnectionEvent handlers', () => {
         expect(seen('sysDisconnectionEvent')).toEqual([{ event: 'sysDisconnectionEvent', connected: false }]);
         expect(session.status).toBe('connecting');
     });
+    // Issue #237. Through the proxy, the WebSocket opening only means the proxy
+    // accepted us — it dials the game afterwards. A closed port, an unknown
+    // host or a rejected certificate used to raise sysConnectionEvent anyway,
+    // so a script sending its login on connect sent it into nothing. Desktop
+    // raises only sysDisconnectionEvent for such an attempt (slot_socketError →
+    // handleFailedConnection).
+    describe('through the proxy', () => {
+        const PROXY = 'wss://proxy.invalid/?host=127.0.0.1&port=5798';
+
+        it('raises no sysConnectionEvent for an attempt that never reaches the game', () => {
+            session.connect(PROXY);
+            const sock = MockWebSocket.instances[0];
+            sock.onopen?.({});
+            expect(seen('sysConnectionEvent')).toEqual([]);
+            expect(probeConnected?.()).toBe(false);
+            sock.onclose?.({ code: 1011, reason: 'Proxy: connect to 127.0.0.1:5798 failed: ECONNREFUSED', wasClean: true });
+
+            expect(seen('sysConnectionEvent')).toEqual([]);
+            expect(seen('sysDisconnectionEvent')).toEqual([{ event: 'sysDisconnectionEvent', connected: false }]);
+            expect(session.status).toBe('disconnected');
+        });
+
+        it('raises sysConnectionEvent once the proxy has reached the game', () => {
+            session.connect(PROXY);
+            const sock = MockWebSocket.instances[0];
+            sock.onopen?.({});
+            sock.onmessage?.({ data: JSON.stringify({ type: 'game.connected' }) as unknown as ArrayBuffer });
+
+            expect(seen('sysConnectionEvent')).toEqual([{ event: 'sysConnectionEvent', connected: true }]);
+            expect(session.status).toBe('connected');
+        });
+    });
 });
