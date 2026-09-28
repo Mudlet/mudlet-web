@@ -234,9 +234,11 @@ export function installMapBindings({
         // "Map format version" preference is absent for the same reason (see
         // docs/settings-divergence.md), and saving for an older Mudlet is a job
         // for desktop Mudlet, which still writes those formats.
+        // Zero is not a version but "the one the map is saved in by default"
+        // (TMap::serialize), which is what a spec passing 0 means.
         if (formatVersion !== undefined && formatVersion !== null) {
             const v = Number(formatVersion);
-            if (!Number.isFinite(v) || v < MIN_MAP_FORMAT || v > MAX_MAP_FORMAT) return false;
+            if (!Number.isFinite(v) || v > MAX_MAP_FORMAT || (v !== 0 && v < MIN_MAP_FORMAT)) return false;
         }
         const bytes = api.saveMap();
         if (!bytes) return false;

@@ -1390,20 +1390,18 @@ export class WindowManager {
      * Mudlet's "report map issues on screen" (`mudlet::showMapAuditErrors`,
      * consulted at every `postMessage` in TRoom/TRoomDB/TMap's audit).
      *
-     * Called after a load has finished. When the preference is off this does
-     * nothing at all — not even the audit, which on a large map is a full pass
-     * over every room and every exit. `alreadyAudited` covers the import paths
-     * that audit-and-repair as they go: their report is already collected, and
-     * re-running the audit would only find the problems they just fixed.
+     * Called after a load has finished. Every load path audits and repairs the
+     * map as Mudlet's TMap::audit does (MapStore.auditMap), so the report is
+     * already collected; this only decides whether the player sees it.
      */
-    private reportMapIssues(alreadyAudited: boolean): void {
+    private reportMapIssues(): void {
         // Take the report either way: it is owed to this load, and leaving it in
         // the store would hand it to the next one instead.
         const collected = this.mapStore.takeAuditIssues();
         if (!this._connectionId) return;
         if (!selectProfileField(useAppStore.getState(), this._connectionId, 'reportMapIssues')) return;
 
-        const issues = alreadyAudited ? collected : this.mapStore.auditExits(false);
+        const issues = collected;
         if (issues.length === 0) return;
 
         const shown = issues.slice(0, WindowManager.MAX_MAP_ISSUES_POSTED);
@@ -1479,11 +1477,9 @@ export class WindowManager {
             this.mapStore.endBinaryLoad();
             this.markMapClean();
             await new Promise<void>(resolve => setTimeout(resolve, 0));
-            // After endBinaryLoad, so the audit sees the finished room graph
-            // (an exit resolved by the hash index is not a dangling one), and
-            // after the yield, so a map big enough to be worth auditing has
-            // already painted before the audit walks it.
-            this.reportMapIssues(false);
+            // endBinaryLoad audited the finished room graph (an exit resolved
+            // by the hash index is not a dangling one); this reports it.
+            this.reportMapIssues();
         } finally {
             this.publishMapLoadProgress(null);
         }
@@ -1562,7 +1558,7 @@ export class WindowManager {
                 this.reportMapLoadFailure('loadMap parse failed', err);
                 return false;
             }
-            this.reportMapIssues(false);
+            this.reportMapIssues();
         }
         // The panel callback is advisory — its return value reports render
         // success, but sysMapLoadEvent fires on successful data ingest so
@@ -1752,9 +1748,7 @@ export class WindowManager {
      */
     loadJsonMap(json: string): boolean {
         if (!this.mapStore.loadFromJsonString(json)) return false;
-        // The JSON path audits and repairs as it parses, so its report is
-        // already collected — auditing again would find only its own repairs.
-        this.reportMapIssues(true);
+        this.reportMapIssues();
         this.mapLoadCallback?.();
         this.onRaiseEvent?.('sysMapLoadEvent', []);
         return true;
@@ -1772,7 +1766,7 @@ export class WindowManager {
         const map = parseXmlMap(xmlText);
         if (!map) return false;
         this.mapStore.loadFromBinary(map);
-        this.reportMapIssues(false);
+        this.reportMapIssues();
         this.scheduleMapSave(0);
         this.mapLoadCallback?.();
         this.onRaiseEvent?.('sysMapLoadEvent', []);

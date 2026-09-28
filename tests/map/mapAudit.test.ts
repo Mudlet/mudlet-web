@@ -37,9 +37,11 @@ function mapOf(ids: number[], patch: (rooms: Record<number, MudletRoom>) => void
     };
 }
 
+/** Loaded WITHOUT the audit every real load runs, so what auditExits finds
+ *  (and repairs) can be looked at on its own. */
 function storeOf(ids: number[], patch?: (rooms: Record<number, MudletRoom>) => void): MapStore {
     const store = new MapStore();
-    store.loadFromBinary(mapOf(ids, patch));
+    store.loadFromBinary(mapOf(ids, patch), false);
     return store;
 }
 
@@ -131,7 +133,7 @@ describe('auditExits — areas', () => {
         const store = new MapStore();
         const map = mapOf([1, 2]);
         map.areas[1].rooms.push(404);
-        store.loadFromBinary(map);
+        store.loadFromBinary(map, false);
         const issues = store.auditExits();
         expect(issues).toHaveLength(1);
         expect(issues[0]).toMatchObject({ severity: 'warn', areaId: 1 });

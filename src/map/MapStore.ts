@@ -27,6 +27,11 @@ const DIR_SHORT: Record<number, string> = {
     11: 'in', 12: 'out',
 };
 
+/** Short direction name → Mudlet direction number (inverse of DIR_SHORT). */
+const DIR_SHORT_TO_INT: Record<string, number> = Object.fromEntries(
+    Object.entries(DIR_SHORT).map(([num, short]) => [short, Number(num)]),
+);
+
 // Mudlet exit/door APIs accept either an integer 1-12 or a long/short
 // direction name. Normalize either form to the canonical 1-12 index, or
 // undefined when the value isn't a recognized direction.
@@ -329,6 +334,38 @@ export function mudletJsonMapToMudletMap(src: unknown): MudletMap | null {
         useOnlyMapFont: !!doc.onlyMapSymbolFontToBeUsed,
         areas, mRoomIdHash, labels, rooms,
     };
+}
+
+/** A room or area id the binary reader read unsigned, as the signed int the
+ *  file holds. */
+function asInt32(value: number): number {
+    return Number.isFinite(value) ? value | 0 : value;
+}
+
+/**
+ * The special exits a Mudlet JSON map marks locked, by command — the unit
+ * Mudlet locks them in. The room model only keeps locks by destination, which
+ * cannot tell two commands to the same room apart.
+ */
+function jsonSpecialExitLocks(src: unknown): Map<number, Set<string>> {
+    const out = new Map<number, Set<string>>();
+    const doc = src as Record<string, unknown> | null;
+    if (!doc || !Array.isArray(doc.areas)) return out;
+    for (const area of doc.areas as Record<string, unknown>[]) {
+        for (const room of (Array.isArray(area?.rooms) ? area.rooms : []) as Record<string, unknown>[]) {
+            const id = Number(room?.id);
+            if (!Number.isFinite(id)) continue;
+            const commands = new Set<string>();
+            for (const exit of (Array.isArray(room.exits) ? room.exits : []) as Record<string, unknown>[]) {
+                const name = String(exit?.name ?? '');
+                if (name && exit.locked && !Object.prototype.hasOwnProperty.call(DIR_NUM_BY_NAME, name)) {
+                    commands.add(name);
+                }
+            }
+            out.set(id, commands);
+        }
+    }
+    return out;
 }
 
 /** A `{key: value}` object of strings from a JSON document, or `{}` when the
@@ -851,6 +888,9 @@ export class MapStore {
         this.customEnvColors.clear();
         this.restore16ColorSet();
         this.roomCharColors.clear();
+        // Keyed by room id, so a lock left over from the map being replaced
+        // would land on whichever room of the next one has that number.
+        this.specialExitLocks.clear();
         if (this.hiddenRooms.size > 0) { this.hiddenRooms.clear(); this.hiddenVersion++; }
         this.roomHighlights.clear();
         const hadSelection = this.selectedRooms.size > 0 || this.selectionCenter != null;
@@ -881,12 +921,12 @@ export class MapStore {
      * ids so subsequent {@link createRoomID} / {@link addAreaName} calls don't
      * collide. One notification fires at the end of the batch.
      */
-    loadFromBinary(mudletMap: MudletMap): void {
+    loadFromBinary(mudletMap: MudletMap, audit = true): void {
         this.beginBinaryLoad(mudletMap);
         for (const [k, room] of Object.entries(mudletMap.rooms ?? {})) {
             this.ingestBinaryRoom(Number(k), room);
         }
-        this.endBinaryLoad();
+        this.endBinaryLoad(audit);
     }
 
     /**
@@ -909,6 +949,9 @@ export class MapStore {
         this.customEnvColors.clear();
         this.restore16ColorSet();
         this.roomCharColors.clear();
+        // Keyed by room id, so a lock left over from the map being replaced
+        // would land on whichever room of the next one has that number.
+        this.specialExitLocks.clear();
         if (this.hiddenRooms.size > 0) { this.hiddenRooms.clear(); this.hiddenVersion++; }
         this.roomHighlights.clear();
         this.pendingBinaryHadSelection = this.selectedRooms.size > 0 || this.selectionCenter != null;
@@ -926,6 +969,10 @@ export class MapStore {
 
         for (const [k, area] of Object.entries(header.areas ?? {})) {
             const id = Number(k);
+            // The reader takes an area's room list as unsigned; a room id
+            // below one comes out 2^32 too big, and the audit needs it as the
+            // number the file meant.
+            area.rooms = (area.rooms ?? []).map(asInt32);
             this.areas.set(id, area);
             if (id >= this.nextAreaId) this.nextAreaId = id + 1;
         }
@@ -1000,6 +1047,11 @@ export class MapStore {
             delete room.userData[HIDDEN_FALLBACK_KEY];
             if (fallback === 'true') this.hiddenRooms.add(id);
         }
+        // Special exit destinations are read unsigned, like area room lists.
+        for (const [command, dest] of Object.entries(room.mSpecialExits ?? {})) {
+            room.mSpecialExits[command] = asInt32(dest);
+        }
+        if (room.mSpecialExitLocks) room.mSpecialExitLocks = room.mSpecialExitLocks.map(asInt32);
         this.rooms.set(id, room);
         if (room.hash) this.hashToRoom.set(room.hash, id);
         if (id >= this.nextRoomId) this.nextRoomId = id + 1;
@@ -1010,15 +1062,15 @@ export class MapStore {
      * resolve the player room, and fire the single notification the whole load
      * is worth.
      */
-    endBinaryLoad(): void {
-        if (this.hiddenRooms.size > 0) this.hiddenVersion++;
+    endBinaryLoad(audit = true): void {
         // Binary may carry hashes for rooms that haven't been parsed into
         // `rooms` (legacy maps with orphan hash entries). Trust the explicit
         // hash→id table as authoritative when it disagrees. Streamed rooms
         // arrive with no `hash` field at all (it lives only in this index), so
         // this is also where they get one — matching what readMapFromBuffer
         // does eagerly.
-        for (const [hash, id] of Object.entries(this.pendingBinaryHashIndex)) {
+        for (const [hash, rawId] of Object.entries(this.pendingBinaryHashIndex)) {
+            const id = asInt32(rawId);
             this.hashToRoom.set(hash, id);
             const room = this.rooms.get(id);
             if (room && !room.hash) room.hash = hash;
@@ -1029,6 +1081,10 @@ export class MapStore {
         // actually resolves to a loaded room.
         const savedPlayer = this.profileName ? this.mRoomIdHash[this.profileName] : undefined;
         this.playerRoomId = savedPlayer != null && this.rooms.has(savedPlayer) ? savedPlayer : null;
+        // TMap::audit runs after every load, and repairs what it finds; its
+        // report waits for whoever loaded the map (takeAuditIssues).
+        this.lastAuditIssues = audit ? this.auditMap() : [];
+        if (this.hiddenRooms.size > 0) this.hiddenVersion++;
         this.initialized = true;
         this.notify();
         this.notifyHighlights();
@@ -1111,6 +1167,9 @@ export class MapStore {
             customEnvColors: [...this.customEnvColors].map(([id, c]) => ({
                 id, color24RGB: [c.r, c.g, c.b],
             })),
+            // TMap::writeJsonMapFile writes mRoomIdHash as `playersRoomId`,
+            // which is how loadJsonMap puts the player back where they were.
+            playersRoomId: this.playerRoomHash(),
             // Map-wide user data, as TMap::writeJsonUserData writes it. Omitted
             // when there is none, so an export from a map nobody has annotated
             // reads the same as it always did.
@@ -1282,39 +1341,26 @@ export class MapStore {
             ? mudletJsonMapToMudletMap(parsed)
             : (map.areas ? map as MudletMap : null);
         if (!source) return false;
-        try { this.loadFromBinary(source); }
-        catch { return false; }
+        // The locks by command, read before the load hands the rooms to the
+        // audit, which drops the lock of any exit it removes.
+        const locks = source === map ? null : jsonSpecialExitLocks(parsed);
+        try {
+            this.beginBinaryLoad(source);
+            for (const [k, room] of Object.entries(source.rooms ?? {})) this.ingestBinaryRoom(Number(k), room);
+            // only for the exits the reader kept
+            for (const [roomId, commands] of locks ?? []) {
+                const kept = source.rooms?.[roomId]?.mSpecialExits ?? {};
+                this.specialExitLocks.set(roomId, new Set([...commands].filter(c => Object.prototype.hasOwnProperty.call(kept, c))));
+            }
+            this.endBinaryLoad();
+        } catch { return false; }
         // Symbol colours live in a side-table (MudletRoom has no charColor
         // field), so they can only be applied once the rooms exist.
         applyJsonSymbolColors(parsed, this);
         applyJsonRoomBorders(parsed, this);
-        this.lastAuditIssues = this.auditExits(true);
         return true;
     }
 
-    /**
-     * Mudlet's `TRoom::auditExits`, run over every room.
-     *
-     * A map file is a document, and a document can say things the mapper API
-     * never could: an exit to a room the file does not contain, a stub standing
-     * in a direction that already has an exit, a door on a direction with no way
-     * out. Every one of them is something the renderer then quietly skips, which
-     * is why desktop reports them — its "report map issues on screen" preference
-     * is the switch on that reporting.
-     *
-     * With `repair`, the three problems that can be resolved without guessing
-     * are resolved on the way in, as Mudlet does, and what was done is written
-     * into the room's own userData so a map that quietly changed shape on import
-     * can still be explained afterwards. Without it nothing is touched: a `.dat`
-     * came from a client that had already had its chance to repair it, and
-     * rewriting a player's map to make a report tidier is not a trade worth
-     * making.
-     *
-     * The order matters when repairing. Missing destinations are resolved first,
-     * because a stock exit that loses its destination BECOMES a stub, and only
-     * then can stub-versus-exit be judged — otherwise the stub just created
-     * would be dropped again by the very exit it replaced.
-     */
     /** What the last repairing audit found, cleared as it is read — a report is
      *  owed to the load that caused it, and to no later one. */
     takeAuditIssues(): MapIssue[] {
@@ -1323,134 +1369,416 @@ export class MapStore {
         return issues;
     }
 
+    /**
+     * Mudlet's `TMap::audit` — what runs after every map load, and what the
+     * Lua `auditAreas()` asks for: `TRoomDB::auditRooms` followed by
+     * `TRoom::audit` for every room.
+     *
+     * A map file is a document, and a document can say things the mapper API
+     * never could: a room or an area numbered below one, a room filed under an
+     * area that does not exist, an area listing rooms that are elsewhere, an
+     * exit to a room the file does not contain, a door on a direction with no
+     * way out. Every one of them is repaired the way Mudlet repairs it, and what
+     * was done is written into the room's (or area's) user data under the same
+     * `audit.*` keys, so a map that quietly changed shape can still be explained
+     * afterwards. The report is kept for {@link takeAuditIssues}.
+     */
+    auditMap(): MapIssue[] {
+        const issues: MapIssue[] = [];
+        // 1) Room ids below one are renumbered, and remembered so the exits
+        // that led to them can follow.
+        const validRoomIds = new Set<number>();
+        const roomRemap = new Map<number, number>();
+        const roomsByArea = new Map<number, number[]>();
+        for (const [id, room] of this.rooms) {
+            if (id >= 1) validRoomIds.add(id);
+            else roomRemap.set(id, id);
+            const list = roomsByArea.get(room.area);
+            if (list) list.push(id);
+            else roomsByArea.set(room.area, [id]);
+        }
+
+        // 2) Every area the rooms or the area names call for has to exist.
+        // -1 is the default area; zero and anything below -1 are faulty.
+        const faultyArea = (id: number) => id < -1 || id === 0;
+        const areaRemap = new Map<number, number>();
+        const wantedAreas = new Set<number>([...roomsByArea.keys(), ...this.areaNames.keys()]);
+        const missingAreas: number[] = [];
+        for (const areaId of wantedAreas) {
+            if (faultyArea(areaId)) areaRemap.set(areaId, areaId);
+            if (!this.areas.has(areaId)) missingAreas.push(areaId);
+        }
+        for (const areaId of this.areas.keys()) {
+            if (faultyArea(areaId)) areaRemap.set(areaId, areaId);
+        }
+        for (const areaId of missingAreas.sort((a, b) => a - b)) {
+            issues.push({
+                severity: 'warn', areaId,
+                message: `Area with ID: ${areaId} is expected but was not found, it has been created.`,
+            });
+            this.areas.set(areaId, makeArea());
+            if (!this.areaNames.has(areaId)) this.areaNames.set(areaId, this.freeUnnamedAreaName());
+        }
+
+        // 3) Faulty area ids take the lowest free id, name and all.
+        for (const faulty of [...areaRemap.keys()].sort((a, b) => a - b)) {
+            let replacement = 0;
+            while (this.areas.has(++replacement)) { /* the increment is the search */ }
+            areaRemap.set(faulty, replacement);
+            const area = this.areas.get(faulty) ?? makeArea();
+            this.areas.delete(faulty);
+            const name = this.areaNames.get(faulty);
+            this.areaNames.delete(faulty);
+            this.areaNames.set(replacement, name ?? this.freeUnnamedAreaName());
+            area.userData = { ...(area.userData ?? {}), 'audit.remapped_id': String(faulty) };
+            this.areas.set(replacement, area);
+            const members = roomsByArea.get(faulty) ?? [];
+            roomsByArea.delete(faulty);
+            roomsByArea.set(replacement, [...(roomsByArea.get(replacement) ?? []), ...members]);
+            issues.push({
+                severity: 'info', areaId: replacement,
+                message: `Area with ID: ${faulty} has an invalid ID and has been renumbered to: ${replacement}.`,
+            });
+        }
+
+        // 4) Faulty room ids take the lowest free id; the hash comes along.
+        if (roomRemap.size > 0) {
+            const moved: [number, MudletRoom][] = [];
+            for (const faulty of [...roomRemap.keys()].sort((a, b) => a - b)) {
+                let replacement = 0;
+                while (validRoomIds.has(++replacement)) { /* the increment is the search */ }
+                roomRemap.set(faulty, replacement);
+                validRoomIds.add(replacement);
+                const room = this.rooms.get(faulty)!;
+                this.rooms.delete(faulty);
+                room.userData = { ...(room.userData ?? {}), 'audit.remapped_id': String(faulty) };
+                if (room.hash) this.hashToRoom.set(room.hash, replacement);
+                if (this.hiddenRooms.delete(faulty)) this.hiddenRooms.add(replacement);
+                const locks = this.specialExitLocks.get(faulty);
+                if (locks) {
+                    this.specialExitLocks.delete(faulty);
+                    this.specialExitLocks.set(replacement, locks);
+                }
+                moved.push([replacement, room]);
+                issues.push({
+                    severity: 'info', roomId: replacement,
+                    message: `Room with ID: ${faulty} has an invalid ID and has been renumbered to: ${replacement}.`,
+                });
+            }
+            for (const [id, room] of moved) this.rooms.set(id, room);
+            if (this.playerRoomId != null && roomRemap.has(this.playerRoomId)) {
+                this.playerRoomId = roomRemap.get(this.playerRoomId)!;
+            }
+        }
+
+        // 5) Each room: its area follows a renumbering, and its exits are
+        // audited against the (renumbered) room ids.
+        for (const [id, room] of this.rooms) {
+            const remappedArea = areaRemap.get(room.area);
+            if (remappedArea !== undefined) {
+                room.userData['audit.remapped_area'] = String(room.area);
+                room.area = remappedArea;
+            }
+            this.auditRoomExits(id, room, roomRemap, true, issues);
+        }
+
+        // 6) An area holds exactly the rooms that name it, whatever it listed.
+        for (const [areaId, area] of this.areas) {
+            const found = [...new Set((roomsByArea.get(areaId) ?? []).map(id => roomRemap.get(id) ?? id))]
+                .sort((a, b) => a - b);
+            const have = new Set(area.rooms);
+            const missing = found.filter(id => !have.has(id));
+            const extra = area.rooms.filter(id => !found.includes(id));
+            if (missing.length > 0) {
+                issues.push({
+                    severity: 'info', areaId,
+                    message: `Area with ID: ${areaId} was missing rooms that say they are in it, they were:`
+                        + ` ${missing.join(', ')}; they have been added.`,
+                });
+            }
+            if (extra.length > 0) {
+                issues.push({
+                    severity: 'info', areaId,
+                    message: `Area with ID: ${areaId} listed rooms that are not in it, they were:`
+                        + ` ${extra.join(', ')}; they have been removed.`,
+                });
+            }
+            if (missing.length > 0 || extra.length > 0 || area.rooms.length !== found.length) {
+                area.rooms = found;
+                const zs = new Set<number>(area.zLevels ?? []);
+                for (const rid of found) zs.add(this.rooms.get(rid)!.z);
+                area.zLevels = [...zs].sort((a, b) => a - b);
+                this.updateAreaBounds(areaId);
+            }
+        }
+        for (const id of this.rooms.keys()) {
+            if (id >= this.nextRoomId) this.nextRoomId = id + 1;
+        }
+        for (const id of this.areas.keys()) {
+            if (id >= this.nextAreaId) this.nextAreaId = id + 1;
+        }
+        return issues;
+    }
+
+    /** Mudlet's mUnnamedAreaName, numbered "_001", "_002"… when it is taken. */
+    private freeUnnamedAreaName(): string {
+        const taken = new Set(this.areaNames.values());
+        if (!taken.has(UNNAMED_AREA_NAME)) return UNNAMED_AREA_NAME;
+        let suffix = 0;
+        let name: string;
+        do {
+            name = `${UNNAMED_AREA_NAME}_${String(++suffix).padStart(3, '0')}`;
+        } while (taken.has(name));
+        return name;
+    }
+
+    /**
+     * Mudlet's `TRoom::auditExits`, run over every room — the exit half of the
+     * audit alone, with no renumbering, plus a report on area membership.
+     *
+     * Without `repair` nothing is touched and only the report is made; with it,
+     * each room is repaired exactly as {@link auditMap} repairs it.
+     */
     auditExits(repair = false): MapIssue[] {
         const issues: MapIssue[] = [];
+        const noRemap = new Map<number, number>();
         for (const [id, room] of this.rooms) {
-            for (const [num, field] of Object.entries(DIR_FIELD)) {
-                const dest = (room as unknown as Record<string, number>)[field];
-                if (!Number.isFinite(dest) || dest <= 0 || this.rooms.has(dest)) continue;
-                const dirNum = Number(num);
-                issues.push({
-                    severity: 'warn',
-                    roomId: id,
-                    message: `Room with ID: ${id} has an exit "${field}" to: ${dest} but that room does not exist.`
-                        + (repair ? ' The exit has been turned into a stub, and the destination stored in the room\'s'
-                            + ` user data under "audit.made_stub_of_valid_but_missing_exit.${dirNum}".` : ''),
-                });
-                if (!repair) continue;
-                // The exit pointed somewhere the file never described. The
-                // direction is still real, so it survives as a stub: the map
-                // goes on saying "there is a way east", just not where it goes.
-                (room as unknown as Record<string, number>)[field] = -1;
-                if (!room.stubs.includes(dirNum)) room.stubs.push(dirNum);
-                room.userData[`audit.made_stub_of_valid_but_missing_exit.${dirNum}`] = String(dest);
-            }
-            for (const [command, dest] of Object.entries(room.mSpecialExits ?? {})) {
-                if (command === '') {
-                    issues.push({
-                        severity: 'warn',
-                        roomId: id,
-                        message: `In room ID: ${id} there is an invalid (special) exit to ${dest} (with no name!).`,
-                    });
-                    continue;
-                }
-                if (this.rooms.has(dest)) continue;
-                issues.push({
-                    severity: 'warn',
-                    roomId: id,
-                    message: `Room with ID: ${id} has a special exit "${command}" to: ${dest} but that room does not exist.`
-                        + (repair ? ' The exit has been removed, and the destination stored in the room\'s'
-                            + ` user data under "audit.removed_valid_but_missing_special_exit.${command}".` : ''),
-                });
-                if (!repair) continue;
-                // A special exit IS its command, and a command with nowhere to
-                // go is not a way out of anywhere — there is no stub for it to
-                // fall back to, so it goes entirely.
-                delete room.mSpecialExits[command];
-                room.mSpecialExitLocks = (room.mSpecialExitLocks ?? []).filter(d => d !== dest);
-                room.userData[`audit.removed_valid_but_missing_special_exit.${command}`] = String(dest);
-            }
-            // A stub says "there is a way out here that goes nowhere yet", which
-            // is nothing to add to a direction that already goes somewhere.
-            const surplusStubs = room.stubs.filter(dirNum => {
-                const field = DIR_FIELD[dirNum];
-                if (!field) return true;
-                const dest = (room as unknown as Record<string, number>)[field];
-                return Number.isFinite(dest) && dest > 0;
-            });
-            if (surplusStubs.length > 0) {
-                const named = surplusStubs.map(d => DIR_FIELD[d] ?? String(d)).join(', ');
-                issues.push({
-                    severity: 'info',
-                    roomId: id,
-                    message: `In room with ID: ${id} found one or more surplus exit stubs`
-                        + ` in directions that already have an exit${repair ? ', which were removed' : ''}: ${named}.`,
-                });
-                if (repair) room.stubs = room.stubs.filter(d => !surplusStubs.includes(d));
-            }
-            this.auditRoomExitExtras(id, room, issues);
+            this.auditRoomExits(id, repair ? room : structuredClone(room), noRemap, repair, issues);
         }
         this.auditAreaMembership(issues);
         return issues;
     }
 
     /**
-     * Doors, weights and locks whose exit is not there — Mudlet's "surplus door
-     * items" / "surplus weight items" / "surplus exit lock items" reports
-     * (TRoom.cpp:1395-1462). Report-only in every mode: unlike a dangling exit,
-     * a stray weight harms nothing, and a player who set one on a direction they
-     * are about to map would not thank us for deleting it.
+     * One room's `TRoom::auditExits`. Each normal exit is checked in turn — an
+     * exit to a renumbered room follows it, one to a room that is not there
+     * becomes a stub, one to an id that can never exist becomes a stub too and
+     * sheds what a stub cannot carry — then each special exit, and finally
+     * whatever doors, weights, locks and custom lines are left keyed to no exit
+     * at all are dropped.
+     *
+     * The order matters: an exit that loses its destination BECOMES a stub, and
+     * only then can stub-versus-exit be judged — otherwise the stub just
+     * created would be dropped again by the very exit it replaced.
      */
-    private auditRoomExitExtras(id: number, room: MudletRoom, issues: MapIssue[]): void {
-        // A key is live if it names a stock direction the room has an exit or a
-        // stub in (a stub can carry a door and a lock), or a special exit's
-        // command. Anything else is keyed to nothing.
-        const live = new Set<string>();
+    private auditRoomExits(
+        id: number, room: MudletRoom, roomRemap: ReadonlyMap<number, number>, repair: boolean, issues: MapIssue[],
+    ): void {
+        const exits = room as unknown as Record<string, number>;
+        room.stubs = [...new Set(room.stubs ?? [])];
+        room.exitLocks = [...new Set(room.exitLocks ?? [])];
+        room.doors ??= {};
+        room.exitWeights ??= {};
+        room.customLines ??= {};
+        room.customLinesColor ??= {};
+        room.customLinesStyle ??= {};
+        room.customLinesArrow ??= {};
+        room.userData ??= {};
+        room.mSpecialExits ??= {};
+        const dropLine = (key: string) => {
+            delete room.customLines[key];
+            delete room.customLinesColor[key];
+            delete room.customLinesStyle[key];
+            delete room.customLinesArrow[key];
+        };
+        // The pools: what has not yet been matched to an exit. Whatever is
+        // left once every exit has been looked at is keyed to nothing.
+        const weightsPool = new Set(Object.keys(room.exitWeights));
+        const locksPool = new Set(room.exitLocks);
+        const doorsPool = new Set(Object.keys(room.doors));
+        const linesPool = new Set([
+            ...Object.keys(room.customLines), ...Object.keys(room.customLinesColor),
+            ...Object.keys(room.customLinesStyle), ...Object.keys(room.customLinesArrow),
+        ]);
+        const surplusStubs: number[] = [];
+        const surplusDoors: string[] = [];
+        const surplusWeights: string[] = [];
+        const surplusLocks: number[] = [];
+        const settle = (dir: number, key: string) => {
+            locksPool.delete(dir);
+            weightsPool.delete(key);
+            doorsPool.delete(key);
+            linesPool.delete(key);
+        };
+
         for (const [num, field] of Object.entries(DIR_FIELD)) {
-            const dirNum = Number(num);
-            const dest = (room as unknown as Record<string, number>)[field];
-            if ((Number.isFinite(dest) && dest > 0) || room.stubs?.includes(dirNum)) {
-                live.add(DIR_SHORT[dirNum]);
-                live.add(field);
+            const dir = Number(num);
+            const key = DIR_SHORT[dir];
+            let dest = Number.isFinite(exits[field]) ? exits[field] : -1;
+            if (dest !== -1 && roomRemap.has(dest)) {
+                room.userData[`audit.remapped_exit.${dir}`] = String(dest);
+                dest = roomRemap.get(dest)!;
+                exits[field] = dest;
+            }
+            if (dest > 0) {
+                if (!this.rooms.has(dest)) {
+                    issues.push({
+                        severity: 'warn', roomId: id,
+                        message: `Room with ID: ${id} has an exit "${field}" to: ${dest} but that room does not exist.`
+                            + (repair ? ' The exit has been turned into a stub, and the destination stored in the'
+                                + ` room's user data under "audit.made_stub_of_valid_but_missing_exit.${dir}".` : ''),
+                    });
+                    room.userData[`audit.made_stub_of_valid_but_missing_exit.${dir}`] = String(dest);
+                    if (!room.stubs.includes(dir)) room.stubs.push(dir);
+                    exits[field] = -1;
+                    // a stub can keep a door and a lock, but not a weight or a line
+                    delete room.exitWeights[key];
+                    dropLine(key);
+                } else if (room.stubs.includes(dir)) {
+                    surplusStubs.push(dir);
+                    room.stubs = room.stubs.filter(d => d !== dir);
+                }
+                settle(dir, key);
+            } else if (dest === -1) {
+                // No exit: a stub may carry a door and a lock, nothing else may.
+                if (!room.stubs.includes(dir)) {
+                    if (key in room.doors) { surplusDoors.push(key); delete room.doors[key]; }
+                    if (room.exitLocks.includes(dir)) {
+                        surplusLocks.push(dir);
+                        room.exitLocks = room.exitLocks.filter(d => d !== dir);
+                    }
+                }
+                if (key in room.exitWeights) { surplusWeights.push(key); delete room.exitWeights[key]; }
+                dropLine(key);
+                settle(dir, key);
+            } else {
+                // Zero or below -1, and not a room that was renumbered: an id no
+                // room can have. The direction survives as a stub.
+                issues.push({
+                    severity: 'info', roomId: id,
+                    message: `In room with ID: ${id} exit "${field}" that was to room with an invalid ID: ${dest}`
+                        + ' that does not exist. The exit has been turned into a stub, and the bad destination'
+                        + ` stored in the room's user data under "audit.made_stub_of_invalid_exit.${dir}".`,
+                });
+                room.userData[`audit.made_stub_of_invalid_exit.${dir}`] = String(dest);
+                exits[field] = -1;
+                if (!room.stubs.includes(dir)) room.stubs.push(dir);
+                if (key in room.exitWeights) {
+                    room.userData[`audit.invalid_exit.${dir}.weight`] = String(room.exitWeights[key]);
+                    delete room.exitWeights[key];
+                }
+                dropLine(key);
+                settle(dir, key);
             }
         }
-        for (const command of Object.keys(room.mSpecialExits ?? {})) live.add(command);
+        if (surplusStubs.length > 0) {
+            issues.push({
+                severity: 'info', roomId: id,
+                message: `In room with ID: ${id} found one or more surplus exit stubs in directions that already`
+                    + ` have an exit${repair ? ', which were removed' : ''}:`
+                    + ` ${surplusStubs.map(d => DIR_FIELD[d]).join(', ')}.`,
+            });
+        }
 
-        const surplusDoors = Object.keys(room.doors ?? {}).filter(k => !live.has(k));
+        // Special exits: one with no command is not an exit at all, and one to
+        // a renumbered room follows it.
+        const removedCommands: string[] = [];
+        const removeSpecial = (command: string) => {
+            delete room.mSpecialExits[command];
+            delete room.exitWeights[command];
+            delete room.doors[command];
+            dropLine(command);
+            weightsPool.delete(command);
+            doorsPool.delete(command);
+            linesPool.delete(command);
+            removedCommands.push(command);
+        };
+        for (const [command, dest] of Object.entries(room.mSpecialExits)) {
+            if (command === '') {
+                issues.push({
+                    severity: 'warn', roomId: id,
+                    message: `In room ID: ${id} there is an invalid (special) exit to ${dest} (with no name!).`,
+                });
+                delete room.mSpecialExits[command];
+                removedCommands.push(command);
+                continue;
+            }
+            if (roomRemap.has(dest)) {
+                room.userData[`audit.remapped_special_exit.${command}`] = String(dest);
+                room.mSpecialExits[command] = roomRemap.get(dest)!;
+            }
+        }
+        for (const [command, dest] of Object.entries(room.mSpecialExits)) {
+            if (dest > 0) {
+                if (this.rooms.has(dest)) {
+                    weightsPool.delete(command);
+                    doorsPool.delete(command);
+                    linesPool.delete(command);
+                    continue;
+                }
+                issues.push({
+                    severity: 'warn', roomId: id,
+                    message: `Room with ID: ${id} has a special exit "${command}" to: ${dest} but that room does not exist.`
+                        + (repair ? ' The exit has been removed, and the destination stored in the room\'s'
+                            + ` user data under "audit.removed_valid_but_missing_special_exit.${command}".` : ''),
+                });
+                room.userData[`audit.removed_valid_but_missing_special_exit.${command}`] = String(dest);
+            } else {
+                issues.push({
+                    severity: 'info', roomId: id,
+                    message: `In room with ID: ${id} special exit "${command}" that was to room with an invalid ID:`
+                        + ` ${dest} that does not exist. The exit has been removed, and the bad destination stored`
+                        + ` in the room's user data under "audit.removed_invalid_special_exit.${command}".`,
+                });
+                room.userData[`audit.removed_invalid_special_exit.${command}`] = String(dest);
+            }
+            removeSpecial(command);
+        }
+        if (removedCommands.length > 0) {
+            // The lock goes with the exit: a later exit reusing the command
+            // starts out unlocked.
+            const locked = repair ? this.specialExitLocks.get(id) : undefined;
+            if (locked) {
+                for (const command of removedCommands) locked.delete(command);
+                this.syncSpecialExitLockMirror(id);
+            } else {
+                const dests = new Set(Object.values(room.mSpecialExits));
+                room.mSpecialExitLocks = (room.mSpecialExitLocks ?? []).filter(d => dests.has(d));
+            }
+        }
+
+        // Whatever is left in the pools names no exit.
+        for (const key of doorsPool) { surplusDoors.push(key); delete room.doors[key]; }
+        for (const key of weightsPool) { surplusWeights.push(key); delete room.exitWeights[key]; }
+        for (const dir of locksPool) {
+            surplusLocks.push(dir);
+            room.exitLocks = room.exitLocks.filter(d => d !== dir);
+        }
+        for (const key of linesPool) dropLine(key);
         if (surplusDoors.length > 0) {
             issues.push({
-                severity: 'info',
-                roomId: id,
+                severity: 'info', roomId: id,
                 message: `In room with ID: ${id} found one or more surplus door items`
                     + ` on directions with no exit: ${surplusDoors.join(', ')}.`,
             });
         }
-        const surplusWeights = Object.keys(room.exitWeights ?? {}).filter(k => !live.has(k));
         if (surplusWeights.length > 0) {
             issues.push({
-                severity: 'info',
-                roomId: id,
+                severity: 'info', roomId: id,
                 message: `In room with ID: ${id} found one or more surplus weight items`
                     + ` on directions with no exit: ${surplusWeights.join(', ')}.`,
             });
         }
-        const surplusLocks = (room.exitLocks ?? []).filter(d => !live.has(DIR_SHORT[d] ?? ''));
         if (surplusLocks.length > 0) {
-            const named = surplusLocks.map(d => DIR_FIELD[d] ?? String(d)).join(', ');
             issues.push({
-                severity: 'info',
-                roomId: id,
+                severity: 'info', roomId: id,
                 message: `In room with ID: ${id} found one or more surplus exit lock items`
-                    + ` on directions with no exit: ${named}.`,
+                    + ` on directions with no exit: ${surplusLocks.map(d => DIR_FIELD[d] ?? String(d)).join(', ')}.`,
+            });
+        }
+        if (linesPool.size > 0) {
+            issues.push({
+                severity: 'info', roomId: id,
+                message: `In room with ID: ${id} found one or more surplus custom line items`
+                    + ` on exits the room does not have: ${[...linesPool].map(k => k || '<empty string>').join(', ')}.`,
             });
         }
     }
 
     /**
-     * The area half of Mudlet's audit (TRoomDB::auditRooms): a room filed under
-     * an area that is not there, and an area whose room list names a room that
-     * is not there. Report-only — the repair is `auditAreas()`, which a script
-     * calls deliberately, and which this report is worth pointing at.
+     * The area half of the report: a room filed under an area that is not
+     * there, and an area whose room list names a room that is not there. The
+     * repair is {@link auditMap}, which every load runs.
      */
     private auditAreaMembership(issues: MapIssue[]): void {
         for (const [id, room] of this.rooms) {
@@ -1474,6 +1802,23 @@ export class MapStore {
         }
     }
 
+    /**
+     * Every profile's saved player room, ours stamped from the live
+     * playerRoomId so reopening the map restores the position (Mudlet's
+     * mRoomIdHash[mProfileName] round-trip), other profiles' preserved.
+     */
+    private playerRoomHash(): Record<string, number> {
+        const hash = { ...this.mRoomIdHash };
+        if (this.profileName) {
+            if (this.playerRoomId != null && this.rooms.has(this.playerRoomId)) {
+                hash[this.profileName] = this.playerRoomId;
+            } else {
+                delete hash[this.profileName];
+            }
+        }
+        return hash;
+    }
+
     toMudletMap(): MudletMap {
         const areas: Record<number, MudletArea> = {};
         for (const [id, a] of this.areas) areas[id] = a;
@@ -1489,17 +1834,7 @@ export class MapStore {
         for (const [id, v] of this.envColors) envColors[id] = v;
         const labels: Record<number, MapLabel[]> = {};
         for (const [id, ls] of this.labels) labels[id] = ls;
-        // Preserve other profiles' saved player rooms, and stamp our own from
-        // the live playerRoomId so reopening the map restores the position
-        // (Mudlet's mRoomIdHash[mProfileName] round-trip).
-        const mRoomIdHash = { ...this.mRoomIdHash };
-        if (this.profileName) {
-            if (this.playerRoomId != null && this.rooms.has(this.playerRoomId)) {
-                mRoomIdHash[this.profileName] = this.playerRoomId;
-            } else {
-                delete mRoomIdHash[this.profileName];
-            }
-        }
+        const mRoomIdHash = this.playerRoomHash();
         return {
             // Mudlet binary map *format* version — the leading int that selects
             // the reader/writer model. Always 20: mudlet-map-binary-reader
@@ -2129,12 +2464,28 @@ export class MapStore {
         const room = this.rooms.get(roomId);
         if (!room) return;
         delete room.doors?.[cmd];
-        delete room.exitWeights?.[cmd];
+        if (!this.hasExitOrSpecialExitNamed(room, cmd)) delete room.exitWeights?.[cmd];
         // The per-command set is the authority; the destination-keyed list on
         // the room is the mirror the binary writer repacks, so it is rebuilt
         // rather than edited (two commands can share a destination, and only
         // one of them is going).
         if (this.specialExitLocks.get(roomId)?.delete(cmd)) this.syncSpecialExitLockMirror(roomId);
+    }
+
+    /**
+     * Mudlet's TRoom::hasExitOrSpecialExit(QString): whether `key` still names
+     * an exit of the room — a normal one by its short direction ("n", "up"…),
+     * or a special one by its command. A special exit named like a normal one
+     * shares that exit's weight, so removing the special exit must leave the
+     * weight while the normal exit is still there.
+     */
+    private hasExitOrSpecialExitNamed(room: MudletRoom, key: string): boolean {
+        if (Object.prototype.hasOwnProperty.call(DIR_SHORT_TO_INT, key)) {
+            const dirInt = DIR_SHORT_TO_INT[key];
+            const dest = (room as unknown as Record<string, number>)[DIR_FIELD[dirInt]];
+            return Number.isFinite(dest) && dest > 0;
+        }
+        return Object.prototype.hasOwnProperty.call(room.mSpecialExits ?? {}, key);
     }
 
     getSpecialExitsSwap(id: number): Record<string, number> {
@@ -2242,9 +2593,12 @@ export class MapStore {
             delete room.customLinesColor[cmd];
             delete room.customLinesStyle[cmd];
             delete room.customLinesArrow[cmd];
-            delete room.exitWeights[cmd];
         }
+        const commands = Object.keys(room.mSpecialExits);
         room.mSpecialExits = {};
+        for (const cmd of commands) {
+            if (!this.hasExitOrSpecialExitNamed(room, cmd)) delete room.exitWeights[cmd];
+        }
         room.mSpecialExitLocks = [];
         this.specialExitLocks.delete(id);
         this.notify();
@@ -3462,43 +3816,35 @@ export class MapStore {
     }
 
     /**
-     * Mudlet `auditAreas()` — sweep the map for area/room consistency problems
-     * and repair what is safe to repair. Mudlet Web rebuilds every area's membership
-     * list (`rooms[]`) from the authoritative `room.area` back-pointers, which
-     * drops dangling room ids and re-files rooms that were missing from their
-     * area's list. Rooms whose `area` points at a non-existent area are reported
-     * but left untouched (they may be intentionally parked in the void area -1).
-     * Returns a summary report (Mudlet returns nothing; Mudlet Web surfaces the audit
-     * so scripts can act on it).
+     * Mudlet `auditAreas()` — which is `TMap::audit`, the same audit every map
+     * load runs (see {@link auditMap}): room and area ids below one renumbered,
+     * areas the rooms or the area names call for created, every area's room
+     * list rebuilt from the rooms' own `area`, and every room's exits checked.
+     * Mudlet returns nothing; Mudlet Web also returns a summary of what the area
+     * half found, taken before the repair, so a script can act on it.
      */
     auditAreas(): {
         checkedAreas: number; checkedRooms: number; fixedAreas: number;
         orphanRooms: number[]; danglingRefs: number[];
     } {
-        // Authoritative membership: group room ids by their `area` field.
-        const byArea = new Map<number, number[]>();
         const orphanRooms: number[] = [];
         for (const [id, room] of this.rooms) {
             if (!this.areas.has(room.area)) orphanRooms.push(id);
-            const list = byArea.get(room.area);
-            if (list) list.push(id);
-            else byArea.set(room.area, [id]);
         }
         const danglingSet = new Set<number>();
-        let fixedAreas = 0;
+        const before = new Map<number, string>();
         for (const [areaId, area] of this.areas) {
-            const want = (byArea.get(areaId) ?? []).slice().sort((a, b) => a - b);
-            const have = area.rooms;
-            for (const rid of have) {
+            for (const rid of area.rooms) {
                 if (!this.rooms.has(rid)) danglingSet.add(rid);
             }
-            const same = have.length === want.length && have.every((v, i) => v === want[i]);
-            if (!same) {
-                area.rooms = want;
-                fixedAreas++;
-            }
+            before.set(areaId, [...area.rooms].sort((a, b) => a - b).join(','));
         }
-        if (fixedAreas > 0) this.notify();
+        this.auditMap();
+        let fixedAreas = 0;
+        for (const [areaId, area] of this.areas) {
+            if (before.get(areaId) !== [...area.rooms].sort((a, b) => a - b).join(',')) fixedAreas++;
+        }
+        this.notify();
         return {
             checkedAreas: this.areas.size,
             checkedRooms: this.rooms.size,
