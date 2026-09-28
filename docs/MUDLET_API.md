@@ -956,7 +956,7 @@ Reconciled against the authoritative [Mudlet Event Engine](https://wiki.mudlet.o
 | `sysPostHttpDone` / `sysPostHttpError` | ✅ | `postHTTP` |
 | `sysPutHttpDone` / `sysPutHttpError` | ✅ | `putHTTP` |
 | `sysDeleteHttpDone` / `sysDeleteHttpError` | ✅ | `deleteHTTP` |
-| `sysCustomHttpDone` / `sysCustomHttpError` | ✅ | `customHTTP` — extra arg: HTTP method |
+| `sysCustomHttpDone` / `sysCustomHttpError` | ✅ | `customHTTP` with a non-standard verb — extra arg: HTTP method. A GET/PUT/POST/DELETE raises that verb's own pair and a HEAD raises nothing, as Qt remaps them (`remapCustom`) |
 | `sysDownloadDone` / `sysDownloadError` / `sysDownloadFileProgress` | ✅ | `downloadFile` |
 | `sysUnzipDone` / `sysUnzipError` | ✅ | `unzipAsync` |
 

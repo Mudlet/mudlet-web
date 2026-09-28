@@ -584,7 +584,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('invokeFileDialog',   '(fileOrFolder, title [, location]) → path', 'Ask the user to pick a file (true) or folder (false) via an in-app picker over the profile VFS. Returns the picked absolute VFS path, or "" if cancelled. The calling handler is suspended until the user answers (the rest of the client keeps running, like Mudlet\'s nested dialog event loop); calling it inside your own pcall fails — Lua 5.1 cannot yield across pcall.'),
     fn('getProfileName',     '() → name',        'The active profile\'s name'),
     fn('getProcessID',       '() → number',      'Mudlet answers the OS process id. A browser tab has no pid, so this is a stable positive number unique to this tab for its lifetime — every property a script can rely on.'),
-    fn('getNetworkLatency',  '() → seconds',     'Most recent network round trip in seconds — from a command to the game\'s next GA/EOR prompt, or a GMCP Core.Ping. 0 when nothing has been measured yet.'),
+    fn('getNetworkLatency',  '() → seconds',     'Most recent network round trip in seconds — from a command to the first data the game sends back (on a server that marks prompts with GA/EOR), or a GMCP Core.Ping. 0 when nothing has been measured yet.'),
     fn('handleWindowResizeEvent', '()',          'Legacy no-op kept for old scripts — resizes raise sysWindowResizeEvent on their own.'),
     fn('downloadFile',       '(saveTo, url) → true, url | nil, errMsg', 'Download a URL into the profile filesystem. Asynchronous: the return only says the request was accepted, and the outcome arrives as sysDownloadDone / sysDownloadError. (nil, errMsg) for a URL that is malformed or of an unusable scheme — no request is made.'),
     fn('getNewIDManager',    '() → manager',     'A fresh ID manager object handing out unique ids (mudlet-lua IDManager).'),
@@ -616,7 +616,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('postHTTP',     '(data, url [, headers, file]) → true, url | nil, errMsg',  'POST a body (or upload a file from the profile filesystem, whose contents become the body). Result on sysPostHttpDone / sysPostHttpError.'),
     fn('putHTTP',      '(data, url [, headers, file]) → true, url | nil, errMsg',  'PUT a body (or upload a file). Result on sysPutHttpDone / sysPutHttpError.'),
     fn('deleteHTTP',   '(url [, headers]) → true, url | nil, errMsg',              'DELETE a URL. Result on sysDeleteHttpDone / sysDeleteHttpError.'),
-    fn('customHTTP',   '(method, url [, headers]) → true, url | nil, errMsg',      'Issue an arbitrary HTTP method. Result on sysCustomHttpDone / sysCustomHttpError.'),
+    fn('customHTTP',   '(method, url [, headers]) → true, url | nil, errMsg',      'Issue an arbitrary HTTP method. Result on sysCustomHttpDone / sysCustomHttpError; GET, PUT, POST and DELETE report on their own sysGet/Put/Post/DeleteHttp* events instead, and HEAD on none.'),
 
     // Spell check — Mudlet Web has no system dictionary (Mudlet uses Hunspell), so
     // only the per-profile user dictionary is backed. Calls that ask for the
@@ -699,7 +699,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('getMapZoom',           '([areaID]) → zoom | (nil, errMsg)', 'Map zoom = number of map units visible across the viewport\'s shorter edge. Stored per area (like Mudlet), so it answers with no map panel open; (nil, errMsg) for an areaID that does not exist.'),
     fn('setMapZoom',           '(zoom [, areaID]) → true | (nil, errMsg)', 'Set an area\'s map zoom: how many map units fit across the shorter edge (larger = zoomed out, must be >= 3.0), then redraw. (nil, errMsg) for a zoom below the minimum or an areaID that does not exist.'),
     fn('updateMap',            '()',                               'Force the map to re-read the map store and redraw.'),
-    fn('getPlayerRoom',        '() → id|nil',                      'Get the player\'s current room id (restored from the map file on load, then updated by centerview); nil when unset or the room no longer exists'),
+    fn('getPlayerRoom',        '() → id|nil',                      'Get the player\'s current room id (restored from the map file on load, then updated by centerview); nil when unset, the room no longer exists, or no map has been opened yet'),
     fn('loadMap',              '([location]) → bool',              'Load a map from a VFS path — a Mudlet binary `.dat`, or an IRE-style XML map when the path ends in `.xml`; persists to IndexedDB and re-renders the panel. With no path, reloads from already-stored bytes. Returns false on a missing/unreadable/unparseable file.'),
     fn('saveMap',              '([location]) → bool',              'Serialise the current map to Mudlet binary `.dat` format and persist it to the connection\'s IndexedDB slot (the default profile location). With a path, also writes the bytes to that VFS path. Returns false on serialisation or write failure.'),
     fn('exportAreaImage',      '(areaID, filePath [, zLevel]) → ok[, pathOrErr]', 'Render an area (optionally a single z-level) to a PNG file in the profile VFS at filePath (relative paths resolve under the profile root). Requires the mapper to be open. Returns true, absolutePath on success or false, errMsg otherwise. The whole area is fitted into the image; hidden rooms follow the current viewing/editing mode.'),

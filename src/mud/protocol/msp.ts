@@ -36,8 +36,9 @@ export interface MspCommand {
 const TAG_HEAD = /!!(SOUND|MUSIC)\(/;
 
 /**
- * Stateful MSP parser. Feed each post-telnet-strip chunk through `feed()` and
- * render the returned `text` instead of the raw input. Parsed commands are
+ * Stateful MSP parser. `feed()` parses `!!SOUND(...)` / `!!MUSIC(...)` tags out
+ * of text a script hands to `receiveMSP()` — game text itself is never parsed,
+ * as in Mudlet — returning the remaining `text`. Parsed commands are
  * delivered as `commands`. The parser holds back a partial tag (`!!SOUND(...`
  * with no closing `)` yet) until the next chunk supplies the rest, so tags
  * split across WebSocket frames still parse correctly.

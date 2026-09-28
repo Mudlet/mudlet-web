@@ -2606,8 +2606,9 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                                 reports just its <code>CHARSET</code>, <code>CLIENT_NAME</code>,
                                 <code>CLIENT_VERSION</code>, <code>MTTS</code>, and
                                 <code>TERMINAL_TYPE</code>. Off by default; enable for MUDs
-                                that use it for client detection. Takes precedence over
-                                NEW-ENVIRON when both are on.
+                                that use it for client detection. Only narrows what
+                                NEW-ENVIRON reports, so it needs NEW-ENVIRON on as well —
+                                with NEW-ENVIRON off, option 39 is refused either way.
                             </HelpTip>
                         </span>
                         <Toggle

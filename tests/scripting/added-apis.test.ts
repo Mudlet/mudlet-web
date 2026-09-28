@@ -1275,6 +1275,19 @@ describe('getTextFormat bold on SGR-coloured text (issue #239)', () => {
     expect(env.run('selectString("YY", 1) return getTextFormat().bold')).toBe(true);
   });
 
+  // Only the sixteen ANSI colours clear mIsDefaultColor: a 24-bit or 256-colour
+  // foreground keeps bold text bold (Telnet_spec pins the 24-bit case).
+  it('keeps bold on a 24-bit or 256-colour foreground', () => {
+    env.run('echo("\\27[1;38;2;120;134;94mTT\\27[0m \\27[1;38;5;196mEE\\27[0m")');
+    expect(env.run('selectString("TT", 1) return getTextFormat().bold')).toBe(true);
+    expect(env.run('selectString("EE", 1) return getTextFormat().bold')).toBe(true);
+  });
+
+  it('keeps setBold on text echoed with a colour pen', () => {
+    env.run('createBuffer("bb"); setFgColor("bb", 255, 0, 0); setBold("bb", true); echo("bb", "RB")');
+    expect(env.run('selectString("bb", "RB", 1) return getTextFormat("bb").bold')).toBe(true);
+  });
+
   it('still brightens a colour that arrives after the bold', () => {
     env.run('echo("\\27[1mA\\27[31mB\\27[0m")');
     expect(env.run('selectString("B", 1) return getTextFormat().bold')).toBe(false);
