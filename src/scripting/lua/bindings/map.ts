@@ -139,15 +139,16 @@ export function installMapBindings({
         api.getMapViewInfo(Number(viewId)) ?? null);
     // Mudlet getPlayerRoom: the room id, or (nil, errMsg) when there is no map
     // or no valid player room. Returns the id or the message; Bridge.lua makes
-    // the pair. Mudlet's "no map" test is that the map widget was never
-    // created — the closest thing here is a map with no rooms in it.
+    // the pair. Mudlet's "no map" test is that the mapper was never created
+    // (`!mpMap->mpMapper`), checked before the player room — so a map loaded
+    // but never shown still answers "you haven't opened a map yet".
     lua.global.set('__getPlayerRoom', () => {
-        const id = api.map.getPlayerRoom();
-        if (id != null) return id;
-        return api.map.isEmpty()
-            ? "you haven't opened a map yet"
-            : 'the player does not have a valid roomID set';
+        if (!api.windows.hasMapper()) return "you haven't opened a map yet";
+        return api.map.getPlayerRoom() ?? 'the player does not have a valid roomID set';
     });
+    // The player room with no mapper check — what gotoRoom reads (Mudlet's
+    // TMap::gotoRoom goes to mRoomIdHash directly, not through getPlayerRoom).
+    lua.global.set('__getPlayerRoomId', () => api.map.getPlayerRoom() ?? null);
     // Mudlet getRoomIDbyHash: returns -1 when no room has the given hash.
     lua.global.set('getRoomIDbyHash', (hash: string)            => api.getRoomIDbyHash(hash) ?? -1);
     lua.global.set('setRoomIDbyHash', (id: number, hash: string)=> api.map.setRoomIDbyHash(id, hash));

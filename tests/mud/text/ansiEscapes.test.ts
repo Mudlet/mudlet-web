@@ -148,13 +148,18 @@ describe('AnsiAwareBuffer.toStyledRuns (copy-as-image)', () => {
   });
 
   it('resolves SGR colour and attributes to concrete values', () => {
-    const buf = new AnsiAwareBuffer(`${ESC}[1;3;4;31mx${ESC}[0m`);
-    const runs = buf.toStyledRuns().filter(r => r.text === 'x');
-    expect(runs).toHaveLength(1);
-    expect(runs[0].color).toMatch(/^#/);
-    expect(runs[0].bold).toBe(true);
-    expect(runs[0].italic).toBe(true);
-    expect(runs[0].underline).toBe(true);
+    const buf = new AnsiAwareBuffer(`${ESC}[1;3;4mb${ESC}[31mx${ESC}[0m`);
+    const runs = buf.toStyledRuns();
+    const b = runs.filter(r => r.text === 'b');
+    const x = runs.filter(r => r.text === 'x');
+    expect(x).toHaveLength(1);
+    expect(x[0].color).toMatch(/^#/);
+    expect(x[0].italic).toBe(true);
+    expect(x[0].underline).toBe(true);
+    // As in Mudlet's TBuffer, SGR 1 makes a character bold only on the default
+    // foreground; on a colour it picks the bright twin instead.
+    expect(b[0].bold).toBe(true);
+    expect(x[0].bold).toBe(false);
   });
 
   it('emits console-default CSS vars for reverse video on default colours', () => {

@@ -179,6 +179,8 @@ export class WindowManager {
     private readonly cmdLineState = new Map<string, WindowCmdLineState>();
     private readonly mapCallbacks  = new Map<string, (roomId: number) => void>();
     private readonly mapControls   = new Map<string, MapControl>();
+    /** See {@link hasMapper}. */
+    private mapperCreated = false;
     /** Per-window teardown for the mousedown/mouseup listeners observeMouse
      *  attaches. Keyed by window id ('main' for the central output). */
     private readonly mouseCleanups = new Map<string, () => void>();
@@ -1155,6 +1157,16 @@ export class WindowManager {
 
     registerMapControl(id: string, ctrl: MapControl): void {
         this.mapControls.set(id, ctrl);
+        this.mapperCreated = true;
+    }
+
+    /** Whether a mapper has been created this session — Mudlet's
+     *  `mpMap->mpMapper`, which getPlayerRoom requires before it reports a
+     *  room at all. Desktop makes one when the map is first shown (the Map
+     *  button, openMapWidget, createMapper) or loaded (loadMap), and keeps it,
+     *  hidden, when the dock is closed — so this latches. */
+    hasMapper(): boolean {
+        return this.mapperCreated;
     }
 
     unregisterMapControl(id: string): void {
@@ -1532,6 +1544,8 @@ export class WindowManager {
      * (failures appear in console.warn). Fires sysMapLoadEvent on success.
      */
     loadMap(buf?: ArrayBuffer, source?: string): boolean {
+        // Host::loadMapFile creates the mapper before it reads anything.
+        this.mapperCreated = true;
         if (buf) {
             // Ahead of the IndexedDB write, not just ahead of the parse: Mudlet
             // refuses an unreadable map before it touches anything
@@ -1769,6 +1783,7 @@ export class WindowManager {
      * not a well-formed XML map.
      */
     loadMapXml(xmlText: string): boolean {
+        this.mapperCreated = true;
         const map = parseXmlMap(xmlText);
         if (!map) return false;
         this.mapStore.loadFromBinary(map);
@@ -2738,7 +2753,10 @@ export class WindowManager {
             existing.zIndex  = ++this.nextZ;
             this.touchOverlayWindows(existing);
             this.notify();
-            if (existing.kind === 'map') this.onMapOpen?.(id);
+            if (existing.kind === 'map') {
+                this.mapperCreated = true;
+                this.onMapOpen?.(id);
+            }
             return this.makeHandle(id);
         }
 
@@ -2834,7 +2852,10 @@ export class WindowManager {
         };
         this.saveHint(id, win);
         this.notify();
-        if (kind === 'map') this.onMapOpen?.(id);
+        if (kind === 'map') {
+            this.mapperCreated = true;
+            this.onMapOpen?.(id);
+        }
         return this.makeHandle(id);
     }
 

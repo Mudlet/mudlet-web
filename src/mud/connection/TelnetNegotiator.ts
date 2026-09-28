@@ -56,6 +56,14 @@ const HARDCODED = new Set<number>([
  *  point of the fingerprint is that it is *this* list in *this* order — so it
  *  is spelled out here rather than derived from the options we handle. */
 const OPT_ATCP_NUM = 200;
+/** Options whose subnegotiation payload `cTelnet::processTelnetCommand`
+ *  consumes and returns from before raising `sysTelnetEvent` — whether or not
+ *  the option is enabled. STATUS, TTYPE and everything else fall through. */
+const SB_CONSUMED = new Set<number>([
+    OPT_NEW_ENVIRON_NUM, OPT_CHARSET_NUM, OPT_MSDP, OPT_ATCP_NUM, OPT_GMCP,
+    OPT_MSSP, OPT_MSP, OPT_MXP, OPT_TELNET_102_NUM,
+]);
+
 const KAVIR_NEGOTIATION_ORDER: readonly number[] = [
     OPT_TTYPE_NUM, OPT_NAWS, OPT_CHARSET_NUM, OPT_MSDP, OPT_MSSP, OPT_ATCP_NUM, OPT_MSP, OPT_MXP,
 ];
@@ -195,9 +203,6 @@ export class TelnetNegotiator {
      *  detector fires the hook at most once even though a server may keep
      *  re-offering options. */
     private kaVirDetected = false;
-    /** True once we've sent IAC WILL NAWS this session (proactively on connect,
-     *  or in response to a server-initiated IAC DO NAWS), so we don't re-offer. */
-    private nawsWillSent = false;
     /** True once the server has accepted NAWS (IAC DO NAWS). Gates whether a
      *  window-size change is pushed to the server. */
     private nawsNegotiated = false;
@@ -246,7 +251,6 @@ export class TelnetNegotiator {
         this.carry = "";
         this.ttypeStep = 0;
         this.mxpStarted = false;
-        this.nawsWillSent = false;
         this.nawsNegotiated = false;
         this.mspNegotiated = false;
         this.serverRequestedSGA = false;
@@ -297,17 +301,6 @@ export class TelnetNegotiator {
         return this.serverRequestedSGA;
     }
 
-    /** The WebSocket handshake completed — proactively offer NAWS (RFC 1073
-     *  has the window-owning side send WILL). The server replies IAC DO NAWS —
-     *  handled in processFrame — at which point we send the actual dimensions.
-     *  Harmless if the server doesn't support it (it answers DONT or ignores us). */
-    onSocketOpen(): void {
-        if (this.flags.nawsEnabled && !this.nawsWillSent) {
-            this.sendOption(WILL, OPT_NAWS);
-            this.nawsWillSent = true;
-        }
-    }
-
     /** Mudlet `addSupportedTelnetOption(option)`. Marks the telnet option byte
      *  (0..255) as one the client will accept: on the next IAC WILL <opt> we
      *  reply IAC DO <opt>; on IAC DO <opt> we reply IAC WILL <opt>. Natively
@@ -336,7 +329,7 @@ export class TelnetNegotiator {
 
     /** Walk one incoming frame (post-MCCP Latin-1 byte-string) for telnet IAC
      *  sequences: answer WILL/WONT/DO/DONT per the option policy, raise
-     *  `telnet.event` for every command but GA/EOR (as Mudlet's
+     *  `telnet.event` for every command but GA/EOR and consumed SBs (as Mudlet's
      *  `processTelnetCommand` does), and watch for in-band MXP line-mode
      *  sequences on servers that skip the option-91 handshake. */
     processFrame(data: string): void {
@@ -365,7 +358,12 @@ export class TelnetNegotiator {
                     }
                 }
                 if (end === -1) { this.carry = buf.slice(i); break; }
-                this.emitTelnetEvent(buf.slice(i, end + 2));
+                // Mudlet returns from its SB branch before the sysTelnetEvent
+                // tail for every option it consumes itself; only STATUS, TTYPE
+                // and options it doesn't handle reach Lua.
+                if (!(i + 2 < end && SB_CONSUMED.has(buf.charCodeAt(i + 2)))) {
+                    this.emitTelnetEvent(buf.slice(i, end + 2));
+                }
                 i = end + 2;
                 continue;
             }
@@ -580,14 +578,12 @@ export class TelnetNegotiator {
                     this.eventBus.emit('protocol.disabled', 'NAWS');
                     return;
                 }
-                // Server accepted our WILL NAWS (or requested it outright)
-                // → start reporting window size. If the server initiated
-                // without seeing our WILL, or after we took it back, send
-                // WILL first. Then push the current dimensions and re-send
-                // on every resize.
+                // The server asked for NAWS → start reporting window size.
+                // Mudlet never offers it unprompted: it waits for this DO, then
+                // answers WILL (unless already on), pushes the current
+                // dimensions, and re-sends them on every resize.
                 if (!this.myOn.has(OPT_NAWS)) {
                     this.sendOption(WILL, OPT_NAWS);
-                    this.nawsWillSent = true;
                 }
                 const firstAccept = !this.nawsNegotiated;
                 this.nawsNegotiated = true;
@@ -603,15 +599,17 @@ export class TelnetNegotiator {
                 // still answered by the same toggle, as Mudlet does, so a
                 // server offering it isn't left waiting. MNES and plain
                 // NEW-ENVIRON share telnet option 39 and differ only in the
-                // variable set reported (handled in handleNewEnvironSubneg);
-                // either toggle being on means we answer the option. MNES
-                // takes precedence when both are on.
+                // variable set reported (handled in handleNewEnvironSubneg).
+                // Whether the option is answered at all is the NEW-ENVIRON
+                // toggle's alone (`mEnableNEWENVIRON` in cTelnet): MNES only
+                // narrows the reply, so with NEW-ENVIRON off a DO is refused
+                // even when MNES is on, as desktop does.
                 if (cmd !== DO) {
-                    if (f.mnesEnabled || f.newEnvironEnabled) this.enableProtocol(cmd, opt);
+                    if (f.newEnvironEnabled) this.enableProtocol(cmd, opt);
                     else this.refuseProtocol(cmd, opt);
                     return;
                 }
-                if (f.mnesEnabled || f.newEnvironEnabled) {
+                if (f.newEnvironEnabled) {
                     this.enableProtocol(cmd, opt);
                     this.eventBus.emit('mnes.negotiated', f.mnesEnabled ? 'MNES' : 'NEW-ENVIRON');
                 } else {
@@ -753,7 +751,8 @@ export class TelnetNegotiator {
     /** Raise `telnet.event` (Mudlet's `sysTelnetEvent`) for one complete
      *  command, `raw` being its bytes from the IAC on. Mirrors the tail of
      *  `cTelnet::processTelnetCommand`: raised for every command — handled
-     *  options included — except GA and EOR, which end nearly every prompt.
+     *  options included — except GA and EOR, which end nearly every prompt,
+     *  and the subnegotiations of the options in `SB_CONSUMED`.
      *  `type` is the command byte itself (251 WILL, 250 SB, …), `option` the
      *  byte after it (0 for a two-byte command), and `message` the SB body
      *  between the option byte and IAC SE, or for anything shorter than a
@@ -818,8 +817,8 @@ export class TelnetNegotiator {
         const f = this.flags;
         // MNES precedence: when on, it restricts the reported set to the core
         // five regardless of whether plain NEW-ENVIRON is also enabled.
-        const extended = !f.mnesEnabled && f.newEnvironEnabled;
-        if (!f.mnesEnabled && !f.newEnvironEnabled) return;
+        const extended = !f.mnesEnabled;
+        if (!f.newEnvironEnabled) return;
         const request = parseMnesRequest(subneg);
         if (!request.isSend) return;
         // MNES knows IPADDRESS but does not supply it, so a server asking for it

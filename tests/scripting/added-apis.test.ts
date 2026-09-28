@@ -1262,6 +1262,49 @@ describe('setOverline — Lua binding round-trips through getTextFormat', () => 
   });
 });
 
+describe('getTextFormat bold on SGR-coloured text (issue #239)', () => {
+  let env: TestRuntime;
+  beforeEach(async () => { env = await createTestRuntime(); });
+  afterEach(() => env.dispose());
+
+  // Mudlet's TBuffer writes Bold as `mIsDefaultColor ? mBold : false`: SGR 1 on
+  // a colour only brightens it.
+  it('reports bold false for ESC[1;32m and true for bold on the default colour', () => {
+    env.run('echo("\\27[1;32mXX\\27[0m \\27[1mYY\\27[0m")');
+    expect(env.run('selectString("XX", 1) return getTextFormat().bold')).toBe(false);
+    expect(env.run('selectString("YY", 1) return getTextFormat().bold')).toBe(true);
+  });
+
+  it('still brightens a colour that arrives after the bold', () => {
+    env.run('echo("\\27[1mA\\27[31mB\\27[0m")');
+    expect(env.run('selectString("B", 1) return getTextFormat().bold')).toBe(false);
+    expect(env.run('selectString("B", 1) return getTextFormat().foreground[1]')).toBe(255);
+  });
+});
+
+describe('default pen of a new console (issue #239)', () => {
+  let env: TestRuntime;
+  beforeEach(async () => { env = await createTestRuntime(); });
+  afterEach(() => env.dispose());
+
+  // A console other than main starts on TChar's default pen, white, until a
+  // resetFormat() gives it the console's own light grey.
+  it('echoes white in a fresh window, and the default grey after resetFormat', () => {
+    env.run('createBuffer("pen"); echo("pen", "AA")');
+    expect(env.run('selectString("pen", "AA", 1) local r, g, b = getFgColor("pen") return r .. "," .. g .. "," .. b'))
+      .toBe('255,255,255');
+    env.run('resetFormat("pen"); echo("pen", "BB")');
+    expect(env.run('selectString("pen", "BB", 1) local r, g, b = getFgColor("pen") return r .. "," .. g .. "," .. b'))
+      .toBe('192,192,192');
+  });
+
+  it('leaves the main console on the profile colour', () => {
+    env.run('echo("MM")');
+    expect(env.run('selectString("MM", 1) local r, g, b = getFgColor() return r .. "," .. g .. "," .. b'))
+      .toBe('192,192,192');
+  });
+});
+
 describe('utf8.patternEscape', () => {
   let env: TestRuntime;
   beforeEach(async () => { env = await createTestRuntime(); });

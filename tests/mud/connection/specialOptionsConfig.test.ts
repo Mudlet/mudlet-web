@@ -66,7 +66,7 @@ describe('telnet-layer setConfig options', () => {
     client.connect();
     const sock = MockWebSocket.instances[0];
     sock.onopen?.({});
-    sock.sent.length = 0; // discard the proactive NAWS WILL
+    sock.sent.length = 0;
     return { client, sock, bus };
   }
 

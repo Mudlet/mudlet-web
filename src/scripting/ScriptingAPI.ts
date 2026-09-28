@@ -596,6 +596,11 @@ class ScriptingWindowsAPI {
         return this.session.windows.has(id);
     }
 
+    /** Whether a mapper has been created this session (see WindowManager.hasMapper). */
+    hasMapper(): boolean {
+        return this.session.windows.hasMapper();
+    }
+
     isVisible(id: string): boolean {
         return this.session.windows.isVisible(id);
     }
@@ -6856,6 +6861,10 @@ export class ScriptingAPI {
         let con = this.session.consoles.get(win);
         if (!con) {
             con = new Console();
+            // A console other than main starts with TChar's own default pen —
+            // white on the default background (`TChar::TChar(nullptr)`) — not
+            // the profile's colours, which only a resetFormat() puts in it.
+            con.format.foreground = { space: 'rgb', r: 255, g: 255, b: 255 };
             // Mudlet raises sysBufferShrinkEvent for every console that trims,
             // not only the main one, and it names the window the lines went
             // from — a script mirroring a miniconsole's buffer has no other way

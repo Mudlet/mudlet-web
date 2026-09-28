@@ -560,13 +560,10 @@ export class ScriptingEngine implements EngineHost {
         session.sounds.onMediaStarted = (file, path, mediaType, key, tag) => {
             this.raiseEvent('sysMediaStarted', [file, path, mediaType, key, tag]);
         };
-        // sysSoundFinished is the pre-4.15 name, superseded by sysMediaFinished
-        // but still fired here as a compat alias so older scripts keep working.
-        // It keeps its two-argument shape: that is what the scripts written
-        // against it expect, and widening it would break them.
+        // Only sysMediaFinished: desktop Mudlet raises no sysSoundFinished
+        // alongside it, so a handler on that name never runs there either.
         session.sounds.onMediaFinished = (file, path, mediaType, key, tag) => {
             this.raiseEvent('sysMediaFinished', [file, path, mediaType, key, tag]);
-            this.raiseEvent('sysSoundFinished', [file, path]);
         };
         // Closed captions (Mudlet enableClosedCaption): print a text line when a
         // sound/music starts or stops, gated on the setting (decided per-event so
@@ -2272,9 +2269,10 @@ export class ScriptingEngine implements EngineHost {
     }
 
     /**
-     * Resolve a media `file` (+ optional base `url` directory) to a VFS-relative
-     * path under `media/` the SoundManager loader can read, downloading and
-     * caching it on a miss. Shared by MSP (`resolveMspMedia`) and the GMCP media
+     * Resolve a media `file` (+ optional base `url` directory) to its absolute
+     * VFS path under the profile's `media/` the SoundManager loader can read,
+     * downloading and caching it on a miss (raising sysDownloadDone /
+     * sysDownloadError for the download, as TMedia does). Shared by MSP (`resolveMspMedia`) and the GMCP media
      * protocol (`handleClientMedia`). The whole filename — including any
      * subdirectories — is appended to the base URL and mirrored under `media/`,
      * so the cache layout matches the server's. `..`/`.` segments are rejected
@@ -2315,9 +2313,12 @@ export class ScriptingEngine implements EngineHost {
         const cleanFile = cleanSegments.join('/');
         const vfsPath = `media/${cleanFile}`;
         const absPath = `${vfs.profilePath}/${vfsPath}`;
+        // The absolute path is what's played and what the media events carry:
+        // Mudlet plays from `<profile>/media/<file>` (TMediaData's
+        // mediaAbsolutePathFileName), so sysMediaStarted/Finished report it.
         if (vfs.exists(absPath)) {
             if (debug) console.debug(`${logPrefix} cache hit ${vfsPath}`);
-            return vfsPath;
+            return absPath;
         }
         // No announced location — fall back to the MUD's own website, the way
         // Mudlet's TMedia::parseUrl does for MSP and GMCP media.
@@ -2337,16 +2338,22 @@ export class ScriptingEngine implements EngineHost {
             if (debug) console.debug(`${logPrefix} invalid base URL "${baseUrl}"`);
             return null;
         }
+        // TMedia::slot_writeFile reports every media download to scripts:
+        // sysDownloadDone(path, bytes) once it is saved, sysDownloadError(error,
+        // path) when it isn't — no response table, unlike downloadFile's.
+        let bytes: Uint8Array;
         try {
-            const bytes = await downloadFromUrl(downloadUrl, this.proxyUrlGetter());
+            bytes = await downloadFromUrl(downloadUrl, this.proxyUrlGetter());
             vfs.writeBinaryFile(absPath, bytes);
-            if (debug) console.debug(`${logPrefix} downloaded ${downloadUrl} → ${vfsPath} (${bytes.byteLength} bytes)`);
-            return vfsPath;
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             if (debug) console.debug(`${logPrefix} download failed ${downloadUrl}: ${msg}`);
+            this.raiseEvent('sysDownloadError', [msg, absPath]);
             return null;
         }
+        if (debug) console.debug(`${logPrefix} downloaded ${downloadUrl} → ${vfsPath} (${bytes.byteLength} bytes)`);
+        this.raiseEvent('sysDownloadDone', [absPath, bytes.byteLength]);
+        return absPath;
     }
 
     /**

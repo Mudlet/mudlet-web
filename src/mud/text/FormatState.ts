@@ -380,6 +380,18 @@ export class FormatState {
         this.dim = undefined;
     }
 
+    /** The attributes an SGR-decoded character is written with. Mudlet's
+     *  TBuffer gives a cell the Bold flag as `mIsDefaultColor ? mBold : false`:
+     *  on a coloured foreground, SGR 1 only picks the bright twin (already
+     *  resolved into `foreground`) and the character itself is not bold. The
+     *  bold state is still carried — `toSnapshot` keeps it — so a colour that
+     *  arrives later is brightened. */
+    toCellSnapshot(): FormatStateSnapshot {
+        const snapshot = this.toSnapshot();
+        if (!this.fgIsDefault) snapshot.bold = undefined;
+        return snapshot;
+    }
+
     toSnapshot(): FormatStateSnapshot {
         return {
             foreground: cloneColor(this.foreground),
@@ -794,7 +806,7 @@ function parseAnsiSegments(
     let buffer = "";
     const flush = (): void => {
         if (!buffer) return;
-        const snapshot = state.toSnapshot();
+        const snapshot = state.toCellSnapshot();
         const storedState = isDefaultState(snapshot) ? undefined : snapshot;
         segments.push({text: buffer, state: storedState});
         buffer = "";

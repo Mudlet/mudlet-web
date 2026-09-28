@@ -62,7 +62,7 @@ describe('GMCP Core.Hello handshake', () => {
     client.connect();
     const sock = MockWebSocket.instances[0];
     sock.onopen?.({});
-    sock.sent.length = 0; // discard the proactive NAWS WILL
+    sock.sent.length = 0;
     return { client, sock, bus };
   }
 
@@ -159,7 +159,7 @@ describe('GMCP Core.Hello handshake', () => {
   });
 });
 
-describe('command → prompt network latency', () => {
+describe('command → reply network latency', () => {
   let realWebSocket: unknown;
   let realAddEventListener: unknown;
   let now = 0;
@@ -190,7 +190,7 @@ describe('command → prompt network latency', () => {
     return { client, sock, readings };
   }
 
-  it('times a command to the next GA once the server marks its prompts', () => {
+  it('times a command to its reply once the server marks its prompts', () => {
     const { client, sock, readings } = connected();
     sock.deliver('Welcome\r\n> ' + TELNET_GA);
     client.send('cmd1');
@@ -213,6 +213,28 @@ describe('command → prompt network latency', () => {
     now += 500;
     sock.deliver('Room\r\n> ' + TELNET_GA);
     expect(readings).toEqual([600]);
+  });
+
+  // Issue #239: Mudlet stops the clock on the first socket read after the
+  // write (cTelnet::slot_socketReadyToBeRead), not on the prompt marker, so a
+  // reply that arrives ahead of its prompt is timed to the reply.
+  it('stops at the first read, even when the prompt comes later', () => {
+    const { client, sock, readings } = connected();
+    sock.deliver('> ' + TELNET_GA);
+    client.send('look');
+    now += 500;
+    sock.deliver('Reply 1\r\n');
+    expect(readings).toEqual([500]);
+    now += 300;
+    sock.deliver('P> ' + TELNET_GA);
+    expect(readings).toEqual([500]);
+
+    client.send('look');
+    now += 300;
+    sock.deliver('Reply 2\r\n');
+    now += 300;
+    sock.deliver('P> ' + TELNET_GA);
+    expect(readings).toEqual([500, 300]);
   });
 
   it('measures nothing on a server that never sends GA/EOR', () => {

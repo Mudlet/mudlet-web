@@ -59,7 +59,7 @@ describe('telnet option negotiation (TelnetNegotiator via MudClient)', () => {
     client.connect();
     const sock = MockWebSocket.instances[0];
     sock.onopen?.({});
-    sock.sent.length = 0; // discard the proactive NAWS WILL
+    sock.sent.length = 0;
     return { client, sock, bus };
   }
 
@@ -194,6 +194,17 @@ describe('telnet option negotiation (TelnetNegotiator via MudClient)', () => {
     // IAC SB NAWS 0 120 0 40 IAC SE (16-bit big-endian cols then rows)
     expect(sentText(sock)).toContain('\xFF\xFA\x1F\x00\x78\x00\x28\xFF\xF0');
     expect(seen).toEqual(['naws']);
+  });
+
+  it('does not offer NAWS unprompted on connect, only in answer to DO NAWS (as Mudlet)', () => {
+    const bus = new EventBus<MudClientEvents>();
+    const client = new MudClient({ url: 'ws://test.invalid' }, bus);
+    client.connect();
+    const sock = MockWebSocket.instances[0];
+    sock.onopen?.({});
+    expect(sentText(sock)).toBe('');
+    sock.deliver(NAWS_DO);
+    expect(sentText(sock).startsWith(NAWS_WILL + '\xFF\xFA\x1F')).toBe(true);
   });
 
   it('does not offer NAWS when disabled', () => {

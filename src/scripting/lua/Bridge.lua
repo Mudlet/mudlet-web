@@ -104,7 +104,7 @@ end
 -- pathfinds from room 0 and reports the generic "no path found"; naming the
 -- real cause saves a debugging session, and the value stays falsy either way.
 function gotoRoom(targetRoomID)
-    local from = getPlayerRoom()
+    local from = __getPlayerRoomId()
     if not from then
         return nil, "gotoRoom: the current room is unknown (use centerview to set it first)"
     end

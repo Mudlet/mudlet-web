@@ -58,7 +58,7 @@ describe('telnet negotiation parity with desktop Mudlet', () => {
     client.connect();
     const sock = MockWebSocket.instances[0];
     sock.onopen?.({});
-    sock.sent.length = 0; // discard the proactive NAWS WILL
+    sock.sent.length = 0;
     const events: [number, number, string][] = [];
     bus.on('telnet.event', (type, option, msg) => events.push([type, option, msg]));
     return { client, sock, bus, events };
@@ -86,6 +86,25 @@ describe('telnet negotiation parity with desktop Mudlet', () => {
       const utf8 = String.fromCharCode(...new TextEncoder().encode('Zażółć'));
       sock.deliver(IAC + SB + '\x96one' + IAC + SE + IAC + SB + '\x96' + utf8 + IAC + SE);
       expect(events).toEqual([[250, 150, 'one'], [250, 150, 'Zażółć']]);
+    });
+
+    it('is not raised for the subnegotiations of options Mudlet consumes itself', () => {
+      const { sock, events } = connected({ gmcpEnabled: true, msdpEnabled: true });
+      sock.deliver(cmd(WILL, 201) + cmd(WILL, 69));
+      events.length = 0;
+      sock.deliver(IAC + SB + '\xC9Char.Vitals {"hp":5}' + IAC + SE);
+      sock.deliver(IAC + SB + '\x45\x01HEALTH\x0210' + IAC + SE);
+      // NEW-ENVIRON, CHARSET, MSSP, ATCP, MSP, MXP and 102 return early too.
+      for (const opt of [39, 42, 70, 200, 90, 91, 102]) {
+        sock.deliver(IAC + SB + String.fromCharCode(opt) + 'x' + IAC + SE);
+      }
+      expect(events).toEqual([]);
+    });
+
+    it('is still raised for TTYPE and STATUS subnegotiations', () => {
+      const { sock, events } = connected();
+      sock.deliver(IAC + SB + '\x18\x01' + IAC + SE + IAC + SB + '\x05\x01' + IAC + SE);
+      expect(events.map(([t, o]) => [t, o])).toEqual([[250, 24], [250, 5]]);
     });
 
     it('is raised for two-byte commands, but not for GA, EOR or a stray SE', () => {

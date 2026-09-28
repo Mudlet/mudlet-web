@@ -64,7 +64,7 @@ describe('login-time telnet negotiation replies', () => {
     client.connect();
     const sock = MockWebSocket.instances[0];
     sock.onopen?.({});
-    sock.sent.length = 0; // discard the proactive NAWS WILL
+    sock.sent.length = 0;
     return { client, sock, bus };
   }
 
@@ -169,6 +169,10 @@ describe('login-time telnet negotiation replies', () => {
     }
   });
 
+  // A server's `IAC SB NEW-ENVIRON SEND IAC SE` request — the option parser
+  // strips IAC SB/SE and hands the body (option code + command) to the handler.
+  const sendRequest = '\xFF\xFA' + OPT_NEW_ENVIRON + NEW_ENVIRON_SEND + '\xFF\xF0';
+
   it('declines DO NEW-ENVIRON with WONT when MNES is disabled', () => {
     const { sock } = connected({ mnesEnabled: false });
     sock.deliver(NEW_ENVIRON_DO);
@@ -177,8 +181,22 @@ describe('login-time telnet negotiation replies', () => {
     expect(out).not.toContain(NEW_ENVIRON_WILL);
   });
 
-  it('accepts DO NEW-ENVIRON with WILL when MNES is enabled', () => {
-    const { sock } = connected({ mnesEnabled: true });
+  it('declines DO NEW-ENVIRON with WONT when only MNES is enabled (NEW-ENVIRON gates the option)', () => {
+    const { sock } = connected({ mnesEnabled: true, newEnvironEnabled: false });
+    sock.deliver(NEW_ENVIRON_DO);
+    const out = sentText(sock);
+    expect(out).toContain(NEW_ENVIRON_WONT);
+    expect(out).not.toContain(NEW_ENVIRON_WILL);
+  });
+
+  it('ignores a SEND when NEW-ENVIRON is off, even with MNES on', () => {
+    const { sock } = connected({ mnesEnabled: true, newEnvironEnabled: false });
+    sock.deliver(sendRequest);
+    expect(sentText(sock)).toBe('');
+  });
+
+  it('accepts DO NEW-ENVIRON with WILL when MNES and NEW-ENVIRON are enabled', () => {
+    const { sock } = connected({ mnesEnabled: true, newEnvironEnabled: true });
     sock.deliver(NEW_ENVIRON_DO);
     const out = sentText(sock);
     expect(out).toContain(NEW_ENVIRON_WILL);
@@ -193,12 +211,8 @@ describe('login-time telnet negotiation replies', () => {
     expect(out).not.toContain(NEW_ENVIRON_WONT);
   });
 
-  // A server's `IAC SB NEW-ENVIRON SEND IAC SE` request — the option parser
-  // strips IAC SB/SE and hands the body (option code + command) to the handler.
-  const sendRequest = '\xFF\xFA' + OPT_NEW_ENVIRON + NEW_ENVIRON_SEND + '\xFF\xF0';
-
   it('answers a SEND in MNES mode with VAR-framed core variables only', () => {
-    const { sock } = connected({ mnesEnabled: true });
+    const { sock } = connected({ mnesEnabled: true, newEnvironEnabled: true });
     sock.deliver(NEW_ENVIRON_DO);
     sock.sent.length = 0;
     sock.deliver(sendRequest);

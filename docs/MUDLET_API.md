@@ -1015,7 +1015,7 @@ Reconciled against the authoritative [Mudlet Event Engine](https://wiki.mudlet.o
 | `sysPathChanged` | ✅ | VFS mutation of a watched path — arg: path |
 | `sysMediaFinished` | ✅ | Sound/music/video source ended or stopped — args: name, path |
 | `sysSettingChanged` | ✅ | Per-connection profile-settings mutation. One event per changed field — args: setting, newValue (`undefined` when unset) |
-| `sysSoundFinished` | ✅ | Pre-4.15 name, superseded by `sysMediaFinished`. Fired as a compat alias alongside it from the `SoundManager` finished path — args: name, path |
+| `sysSoundFinished` | ➖ | Not raised: desktop Mudlet raises only `sysMediaFinished` (the old name has no emitter in TMedia). |
 | `sysIrcMessage` | ❌ | No IRC client in Mudlet Web; nothing fires it (no stub needed — events don't break callers when never raised) |
 
 > **Not Mudlet events** — do not implement under these names: `sysConnect` / `sysDisconnect` / `sysGmcpMessage` (Mudlet uses `sysConnectionEvent` / `sysDisconnectionEvent` and the `gmcp.<path>` event chain), `sysUserWindowCreated` / `sysUserWindowClosed`, `sysMapperLocationChanged`.
