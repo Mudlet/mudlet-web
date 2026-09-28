@@ -193,6 +193,73 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
                 + '"Vosk".',
         },
     ],
+    Trigger: (() => {
+        // Mudlet leaves `matches`, `multimatches` and `line` out of the globals
+        // table until a script reads them (Mudlet/Mudlet's lazyCaptureGlobals,
+        // on by default): a metatable on _G builds them on first read, and
+        // getmetatable/setmetatable and their debug twins are replaced so that a
+        // script handed that metatable switches the deferral off for the
+        // session. It exists so that the C++ side does not build Lua tables for
+        // the many scripts that never look at them.
+        //
+        // Mudlet Web sets all three up front on every dispatch, which is Mudlet
+        // with the setting switched off — a mode Mudlet supports and keeps under
+        // test in the same describe block ("sets matches, multimatches and line
+        // up front when switched off", "takes Mudlet's handlers off the globals
+        // metatable when switched off", "hands a fire what it is owed when
+        // switched off during it" all pass here). Every case in that block that
+        // is about what a script SEES — a fire's own tables, empty tables between
+        // dispatches, assigning and clearing them, rawset, nested alias and
+        // trigger passes, raising scripts, coroutines, setfenv(0), sandboxes,
+        // policing metatables, finalisers — passes as well. What is listed here
+        // is only the deferral observing itself: rawget() finding the names
+        // absent mid-fire, Mudlet's handlers being present on _G's metatable,
+        // and the setting's default.
+        //
+        // Matching it would mean installing handlers on the metatable of _G that
+        // every read of a missing global in every package goes through, and
+        // wrapping the four metatable accessors to guard them — the machinery
+        // Mudlet needed several hundred lines of C++ and this describe block's twenty-odd
+        // edge cases to make safe — to save work that here is a handful of
+        // table pushes per fire. If profiling ever says those pushes matter,
+        // this is the place to revisit, and these entries turn red the day it
+        // is done.
+        const reason =
+            'Observes Mudlet\'s lazy capture globals (the lazyCaptureGlobals setting, on by default there): '
+            + 'matches/multimatches/line left out of _G until read, via handlers on _G\'s metatable and '
+            + 'guarded getmetatable/setmetatable. mudlet sets them up front on every dispatch, which is Mudlet '
+            + 'with that setting off — a mode Mudlet supports and tests in the same block, and those cases pass '
+            + 'here, as does every case about what a script sees. Only the deferral observing itself (rawget '
+            + 'finding a name absent mid-fire, Mudlet\'s handlers on the metatable, the setting\'s default) '
+            + 'fails. Matching it means a metatable on _G that every missing-global read in every package goes '
+            + 'through, plus guarded metatable accessors, to save a few table pushes per fire. '
+            + 'getConfig("lazyCaptureGlobals") answers false, and setConfig refuses true rather than claim it.';
+        const lazy = 'Trigger processing / capture globals a script may never read / ';
+        return [
+            ...[
+                'leaves them out of the globals table until a script reads them',
+                'refuses a write through a userdata handed its metatable',
+                'a metatable the globals table is given and then changed / still leaves them out when the metatable is only copied',
+                'the handlers once the metatable is handed out / come off the globals metatable at the next line',
+                'the lazyCaptureGlobals setting / is on by default',
+                'the lazyCaptureGlobals setting / leaves them out again once switched back on',
+            ].map(name => ({ name: lazy + name, reason })),
+            {
+                name: 'Trigger processing / triggers ruled out from a copy of their pattern / leaves the pinned filters alone when a trigger creates another trigger',
+                reason:
+                    'Reads getProfileStats().triggers.rootFilterEpoch, a test-mode-only counter of how often '
+                    + 'TriggerUnit invalidated the per-pass copies of its root triggers\' bigram prefilters — the '
+                    + 'summaries Mudlet uses to rule a trigger out of a line without running its pattern. mudlet '
+                    + 'has no such prefilter (TriggerEngine runs each active pattern), so there are no pinned '
+                    + 'copies to invalidate and no epoch to count; reporting one would be a number that measures '
+                    + 'nothing. What the spec cares about for scripts — which triggers fire on a line when one '
+                    + 'creates another mid-pass — is covered by the "triggers created while a line is being '
+                    + 'processed" block, which passes. The sibling prefilter probes in TriggerFlood_spec '
+                    + '(prescanWorkers) find the field absent and pend themselves; this one has no such gate '
+                    + 'beyond MUDLET_TEST_MODE, which the busted build sets.',
+            },
+        ];
+    })(),
 };
 
 /** The recorded divergence for one it(), or undefined when it is expected to pass. */

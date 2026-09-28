@@ -2232,6 +2232,18 @@ function waitForEvent(eventName, timeoutMs)
     return eventName, unpack(slot.args, 1, slot.n)
 end
 
+-- Mudlet rearmLazyGlobals() — test-only. Mudlet leaves "matches",
+-- "multimatches" and "line" out of the globals table until a script reads them,
+-- and this turns that back on for the specs after busted handed out the globals
+-- metatable. Mudlet Web always sets them up front, which is Mudlet with the
+-- lazyCaptureGlobals setting off, and there this answers false.
+function rearmLazyGlobals()
+    if type(__mudlet_pump) ~= 'function' then
+        return nil, "rearmLazyGlobals: only available in test mode (set the MUDLET_TEST_MODE environment variable)"
+    end
+    return false
+end
+
 -- Mudlet pumpEvents([durationMs]) — waitForEvent's sibling for when there is no
 -- named event to wait on: keep delivering queued work for a while. Test-only for
 -- the same reason, and driven the same way (__mudlet_pump fires the timers that
@@ -3231,16 +3243,28 @@ end
 -- observes a plain yield/resume round trip. Used by __exec (Exec.lua) and the
 -- event-dispatch loops below wherever plain pcall would sit between the JS
 -- entry point and user code.
+--
+-- A thread's globals table is its own in Lua 5.1, and Mudlet runs every script
+-- on the one thread: a `setfenv(0, t)` the script made is the interpreter's
+-- globals table once it returns. So the table the private coroutine finished
+-- with is handed to the thread that called this (LuaRuntime carries it on from
+-- there — see resumeAsRunning).
 function __mudlet_pcall_co(fn, ...)
     -- coroutine.create rejects C functions (JS-bound API globals). Those can't
     -- yield across the C boundary anyway, so plain pcall is equivalent.
-    local okc, co = pcall(coroutine.create, fn)
-    if not okc then return pcall(fn, ...) end
+    if type(fn) ~= 'function' or debug.getinfo(fn, 'S').what == 'C' then return pcall(fn, ...) end
+    local finalGlobals
+    local function finish(...)
+        finalGlobals = getfenv(0)
+        return ...
+    end
+    local co = coroutine.create(function(...) return finish(fn(...)) end)
     local function step(ok, ...)
         if not ok then return false, ... end
         if coroutine.status(co) == 'suspended' then
             return step(coroutine.resume(co, coroutine.yield(...)))
         end
+        if finalGlobals ~= nil and finalGlobals ~= getfenv(0) then setfenv(0, finalGlobals) end
         return true, ...
     end
     return step(coroutine.resume(co, ...))
@@ -3540,13 +3564,20 @@ end
 -- instead made every temp* constructor reject a body it should have accepted,
 -- which is what LuaApiContracts_spec's "builds nothing when it refuses" reads as
 -- a consumed ID. So the compile error is deferred into the handler itself.
+-- The stand-ins __mudlet_to_fn hands back for a code string that did not compile
+__mudlet_uncompiled = setmetatable({}, {__mode = "k"})
+
 function __mudlet_to_fn(v, who, argN)
     if type(v) == 'function' then return v end
     if type(v) == 'string' then
         local fn, err = loadstring(v)
         if not fn then
             local message = who .. ": failed to compile code string: " .. tostring(err)
-            return function() error(message, 0) end
+            local stub = function() error(message, 0) end
+            -- Noted for a caller that makes an item, which has to know its
+            -- script never compiled
+            __mudlet_uncompiled[stub] = true
+            return stub
         end
         return fn
     end
@@ -3635,7 +3666,9 @@ end
 do
     local _raw = __mudlet_tempAlias
     function tempAlias(pattern, fn)
-        return _raw(pattern, __mudlet_register_cb(__mudlet_to_fn(fn, "tempAlias", 2)))
+        -- An uncompilable script still makes an alias, one that never fires
+        local compiled = __mudlet_to_fn(fn, "tempAlias", 2)
+        return _raw(pattern, __mudlet_register_cb(compiled), __mudlet_uncompiled[compiled] == true)
     end
 end
 
@@ -4039,11 +4072,10 @@ do
         if #matches > 1 then
             -- selectCaptureGroup is 1-based over the SAME list as `matches`, so
             -- group 1 is the whole match and the groups start at 2. It answers
-            -- with a position, and -1 for "nothing selected" — which is truthy
-            -- in Lua, so the comparison has to be explicit.
+            -- 1 for a selection made, and 0 or -1 when there is none — both
+            -- truthy in Lua, so the comparison has to be explicit.
             for i = 2, #matches do
-                local at = selectCaptureGroup(i)
-                if type(at) == 'number' and at >= 0 then paint() end
+                if selectCaptureGroup(i) == 1 then paint() end
             end
         elseif matchAll then
             local n = 1
@@ -4077,16 +4109,24 @@ do
 
         local hasHighlight = type(hlFgColor) == 'string' or type(hlBgColor) == 'string'
         local hasSound = type(soundFile) == 'string' and soundFile ~= ''
-        local fires, max, id = 0, tonumber(expireAfter)
+        local remaining, id = tonumber(expireAfter)
+        local expiring = remaining and remaining > 0
         local wrapper = function()
             if hasHighlight then highlight(hlFgColor, hlBgColor, matchAllOn) end
             if hasSound then playSoundFile(soundFile) end
-            fires = fires + 1
-            -- Spent BEFORE the body runs, so a trigger that re-arms itself from
-            -- its own script does not have the fresh one killed by the count the
-            -- old one ran out of.
-            if max and max > 0 and fires >= max and id then killTrigger(id) end
-            return userFn()
+            if not expiring then return userFn() end
+            -- As TTrigger::execute() and the count after it: a script that
+            -- returns true renews the fire it just spent (callMultiReturnBool,
+            -- callReturnBool), and one that raises spends it all the same.
+            -- Killing by this call's own id is safe after the body: a script
+            -- that re-arms the trigger by name makes a new node with an id of
+            -- its own, and this one is already gone by then.
+            local ok, result = pcall(userFn)
+            if ok and result == true then remaining = remaining + 1 end
+            remaining = remaining - 1
+            if remaining <= 0 and id then killTrigger(id) end
+            if not ok then error(result, 0) end
+            return result
         end
 
         local patterns = ''

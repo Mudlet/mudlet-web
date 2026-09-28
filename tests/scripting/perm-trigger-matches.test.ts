@@ -82,12 +82,12 @@ describe('setMatches — raw-stack table shape', () => {
   beforeEach(async () => { env = await createTestRuntime(); });
   afterEach(() => env.dispose());
 
-  it('exposes numeric + named captures on matches, plus namedCaptures and multimatches', () => {
+  it('exposes numeric + named captures on matches, plus namedCaptures', () => {
     env.rt.runWithMatches(
-      'R = { matches[1], matches[2], matches[3], matches.hp, namedCaptures.hp, multimatches[1][2] }',
+      'R = { matches[1], matches[2], matches[3], matches.hp, namedCaptures.hp }',
       'shape',
       ['HP 137/200', '137', '200'],   // matches: whole match + 2 captures
-      [['rowFull', 'rowCap']],        // multimatches: one row
+      undefined,
       { hp: '137' },                  // named groups
     );
     expect(env.run('return R[1]')).toBe('HP 137/200');
@@ -95,7 +95,55 @@ describe('setMatches — raw-stack table shape', () => {
     expect(env.run('return R[3]')).toBe('200');
     expect(env.run('return R[4]')).toBe('137');   // named merged onto matches
     expect(env.run('return R[5]')).toBe('137');   // separate namedCaptures table
-    expect(env.run('return R[6]')).toBe('rowCap'); // multimatches[1][2]
+  });
+
+  // TLuaInterpreter::setMatches: a multiline fire is handed multimatches and
+  // leaves matches as it was, and a single-line one leaves multimatches alone
+  it('hands a multiline fire multimatches and nothing else', () => {
+    env.run('matches = {"before"}; multimatches = nil');
+    env.rt.runWithMatches(
+      'R = { multimatches[1][2], multimatches[1].who, matches[1] }',
+      'multi',
+      ['unused'],
+      [['rowFull', 'rowCap']],        // multimatches: one row
+      undefined, undefined, undefined, undefined,
+      [{ who: 'rowCap' }],
+    );
+    expect(env.run('return R[1]')).toBe('rowCap'); // multimatches[1][2]
+    expect(env.run('return R[2]')).toBe('rowCap'); // the row's own named capture
+    expect(env.run('return R[3]')).toBe('before');
+  });
+
+  it('leaves multimatches alone for a single-line fire', () => {
+    env.run('MINE = {}; multimatches = MINE');
+    env.rt.runWithMatches('R = rawequal(multimatches, MINE)', 'single', ['full']);
+    expect(env.run('return R')).toBe(true);
+  });
+
+  // TLuaInterpreter::clearCaptureGroups, after every fire that had captures —
+  // one that raised included
+  it('puts empty tables back once the fire is over', () => {
+    env.run('KEPT = nil');
+    expect(() => env.rt.runWithMatches('KEPT = matches; error("boom")', 'raises', ['full', 'cap'])).toThrow();
+    expect(env.run('return KEPT[2]')).toBe('cap');
+    expect(env.run('return next(matches) == nil and getmetatable(matches) == nil')).toBe(true);
+    expect(env.run('return type(multimatches) == "table" and next(multimatches) == nil')).toBe(true);
+    // The empty table is reused while it stays empty, and replaced once a
+    // script has put something in it
+    env.run('BETWEEN = matches');
+    env.rt.runWithMatches('', 'quiet', ['full']);
+    expect(env.run('return rawequal(matches, BETWEEN)')).toBe(true);
+    env.run('matches.note = 1');
+    env.rt.runWithMatches('', 'quiet', ['full']);
+    expect(env.run('return rawequal(matches, BETWEEN) or matches.note')).toBe(null);
+  });
+
+  // A fire with nothing captured (a stay-open line) is handed what is there
+  it('leaves matches alone for a fire that captured nothing', () => {
+    env.run('matches = {"left"}');
+    env.rt.runWithMatches('R = matches[1]', 'nothing', []);
+    expect(env.run('return R')).toBe('left');
+    expect(env.run('return matches[1]')).toBe('left');
   });
 
   it('leaves an unmatched optional group as nil (not empty string)', () => {
