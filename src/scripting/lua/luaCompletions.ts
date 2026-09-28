@@ -31,13 +31,13 @@ const IO_COMPLETIONS: Completion[] = [
 // ── lfs ───────────────────────────────────────────────────────────────────────
 
 const LFS_COMPLETIONS: Completion[] = [
-    fn('mkdir',      '(path) → true|nil,err',          'Create a directory (recursive)'),
-    fn('rmdir',      '(path) → true|nil,err',          'Remove a directory'),
+    fn('mkdir',      '(path) → true|nil,err,errno',    'Create a directory (its parent must already exist)'),
+    fn('rmdir',      '(path) → true|nil,err,errno',    'Remove an empty directory'),
     fn('dir',        '(path) → iterator',              'Iterate directory entries'),
-    fn('attributes', '(path, [attr]) → table|value',  'Get file/directory attributes (mode, size, modification, access)'),
+    fn('attributes', '(path, [attr|table]) → table|value|nil,err,errno', 'Get file/directory attributes (mode, size, modification, access, change, permissions, ...)'),
     fn('currentdir', '() → string',                   'Get current working directory'),
     fn('chdir',      '(path) → true|nil,err',          'Change current working directory'),
-    fn('touch',      '(path)',                         'Create file if it does not exist'),
+    fn('touch',      '(path, [atime, [mtime]]) → true|nil,err,errno', 'Set access/modification times (now by default); does not create the file'),
 ];
 
 // ── string extensions ─────────────────────────────────────────────────────────

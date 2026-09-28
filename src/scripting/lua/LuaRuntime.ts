@@ -9,6 +9,7 @@ import {unzipSync, strFromU8} from 'fflate';
 import type {IScriptingRuntime, CaptureSpan, LuaGlobalEntry, VariableEdit} from '../IScriptingRuntime';
 import type {ScriptingAPI} from '../ScriptingAPI';
 import type {ProfileVFS} from '../vfs/ProfileVFS';
+import {describeFsError} from '../vfs/fsErrors';
 import UTF8 from './utf8.lua?raw';
 import {findLuaPattern} from './utf8Patterns';
 import {utf8CaseMap} from './utf8CaseMap';
@@ -173,6 +174,13 @@ function luaTableToHeaders(h: unknown): Record<string, string> | undefined {
 // Image MIME for a VFS path's extension, used when inlining a profile icon as
 // a data: URI. Falls back to image/png for unknown extensions (most icons are
 // PNG and browsers sniff the bytes anyway).
+/** The nine-character `rwxr-xr-x` form `lfs.attributes` reports as `permissions`. */
+function permissionString(mode: number): string {
+    let out = '';
+    for (let bit = 8; bit >= 0; bit--) out += mode & (1 << bit) ? 'rwx'[(8 - bit) % 3] : '-';
+    return out;
+}
+
 function imageMimeForPath(path: string): string {
     const ext = path.toLowerCase().split('.').pop() ?? '';
     switch (ext) {
@@ -2928,6 +2936,20 @@ end`);
     private setupVFS(vfs: ProfileVFS | null, builtins = new Map<string, string>()): void {
         let nextId = 1;
         let lastError = '';
+        let lastErrno: number | null = null;
+        // Every failure reports a message and, when there is one, an errno —
+        // the `nil, message, errno` triple stock Lua's io/os and LuaFileSystem
+        // return on desktop. `prefix` is the path the message names, as
+        // liolib/loslib put it ("<path>: No such file or directory"); lfs's
+        // mkdir/rmdir/touch give the bare strerror text.
+        const setError = (message: string, errno: number | null = null): void => {
+            lastError = message;
+            lastErrno = errno;
+        };
+        const failWith = (e: unknown, prefix?: string): void => {
+            const d = describeFsError(e);
+            setError(prefix !== undefined && d.errno !== undefined ? `${prefix}: ${d.message}` : d.message, d.errno ?? null);
+        };
 
         interface Handle {
             path: string;
@@ -2966,6 +2988,7 @@ end`);
                 : bytesToLatin1(vfs!.readBinaryFile(filename));
 
         this.lua.global.set('__vfs_err__', () => lastError);
+        this.lua.global.set('__vfs_errno__', () => lastErrno);
         this.lua.global.set('__vfs_exists__', (path: string) =>
             builtins.has(path) || (vfs ? vfs.exists(path) : false));
         this.lua.global.set('__vfs_profile_dir__', () => vfs?.profilePath ?? '/profiles/default');
@@ -2978,13 +3001,13 @@ end`);
                 let dirty = false;
 
                 if (builtins.has(filename)) {
-                    if (m !== 'r') { lastError = `cannot open '${filename}': read-only`; return null; }
+                    if (m !== 'r') { setError(`cannot open '${filename}': read-only`); return null; }
                     content = readAsLatin1(filename);
                 } else if (vfs) {
                     resolvedPath = vfs.resolvePath(filename);
                     if (m === 'r' || m === 'r+') {
                         if (!vfs.exists(filename)) {
-                            lastError = `${filename}: No such file or directory`;
+                            setError(`${filename}: No such file or directory`, 2);
                             return null;
                         }
                         content = readAsLatin1(filename);
@@ -2998,7 +3021,14 @@ end`);
                         const parent = resolvedPath.substring(0, resolvedPath.lastIndexOf('/')) || '/';
                         const parentType = vfs.stat(parent)?.type;
                         if (parentType !== 'dir') {
-                            lastError = `${filename}: ${parentType ? 'Not a directory' : 'No such file or directory'}`;
+                            if (parentType) setError(`${filename}: Not a directory`, 20);
+                            else setError(`${filename}: No such file or directory`, 2);
+                            return null;
+                        }
+                        // fopen() for writing refuses a directory up front;
+                        // here the write would only fail at close.
+                        if (vfs.stat(resolvedPath)?.type === 'dir') {
+                            setError(`${filename}: Is a directory`, 21);
                             return null;
                         }
                     }
@@ -3007,7 +3037,7 @@ end`);
                     }
                     dirty = m === 'w' || m === 'w+';
                 } else {
-                    lastError = `${filename}: No such file or directory`;
+                    setError(`${filename}: No such file or directory`, 2);
                     return null;
                 }
 
@@ -3021,15 +3051,15 @@ end`);
                 });
                 return id;
             } catch (e) {
-                lastError = e instanceof Error ? e.message : String(e);
+                failWith(e, filename);
                 return null;
             }
         });
 
         this.lua.global.set('__vfs_io_read__', (id: number, fmt: string | number): string | number | null => {
             const h = handles.get(id);
-            if (!h) { lastError = 'invalid file handle'; return null; }
-            if (h.mode === 'w' || h.mode === 'a') { lastError = 'file is write-only'; return null; }
+            if (!h) { setError('invalid file handle'); return null; }
+            if (h.mode === 'w' || h.mode === 'a') { setError('file is write-only'); return null; }
 
             if (typeof fmt === 'number') {
                 if (fmt === 0) return armor('');
@@ -3087,13 +3117,13 @@ end`);
 
         this.lua.global.set('__vfs_io_seek__', (id: number, whence: string, offset: number): number | null => {
             const h = handles.get(id);
-            if (!h) { lastError = 'invalid file handle'; return null; }
+            if (!h) { setError('invalid file handle'); return null; }
             const o = offset ?? 0;
             let newPos: number;
             if ((whence ?? 'cur') === 'set') newPos = o;
             else if ((whence ?? 'cur') === 'cur') newPos = h.pos + o;
             else if (whence === 'end') newPos = h.content.length + o;
-            else { lastError = 'invalid whence'; return null; }
+            else { setError('invalid whence'); return null; }
             h.pos = Math.max(0, Math.min(newPos, h.content.length));
             return h.pos;
         });
@@ -3115,14 +3145,15 @@ end`);
         });
 
         this.lua.global.set('__vfs_os_remove__', (path: string): boolean => {
-            if (!vfs) { lastError = 'no profile VFS'; return false; }
+            if (!vfs) { setError('no profile VFS'); return false; }
             const abs = vfs.resolvePath(path);
-            try { vfs.deleteFile(path); this.notifyVfsPathChange(abs); return true; }
-            catch (e) { lastError = e instanceof Error ? e.message : String(e); return false; }
+            // remove(3): a file, or an empty directory.
+            try { vfs.remove(path); this.notifyVfsPathChange(abs); return true; }
+            catch (e) { failWith(e, path); return false; }
         });
 
         this.lua.global.set('__vfs_os_rename__', (oldPath: string, newPath: string): boolean => {
-            if (!vfs) { lastError = 'no profile VFS'; return false; }
+            if (!vfs) { setError('no profile VFS'); return false; }
             const oldAbs = vfs.resolvePath(oldPath);
             const newAbs = vfs.resolvePath(newPath);
             try {
@@ -3131,38 +3162,52 @@ end`);
                 if (oldAbs !== newAbs) this.notifyVfsPathChange(newAbs);
                 return true;
             }
-            catch (e) { lastError = e instanceof Error ? e.message : String(e); return false; }
+            catch (e) { failWith(e, oldPath); return false; }
         });
 
         this.lua.global.set('__vfs_lfs_chdir__', (path: string): boolean => {
-            if (!vfs) { lastError = 'no profile VFS'; return false; }
+            if (!vfs) { setError('no profile VFS'); return false; }
             const err = vfs.chdir(path);
-            if (err) { lastError = err; return false; }
+            if (err) { setError(err); return false; }
             return true;
         });
 
         this.lua.global.set('__vfs_lfs_currentdir__', () => vfs?.cwd ?? '/');
 
         this.lua.global.set('__vfs_lfs_mkdir__', (path: string): boolean => {
-            if (!vfs) { lastError = 'no profile VFS'; return false; }
+            if (!vfs) { setError('no profile VFS'); return false; }
             const abs = vfs.resolvePath(path);
-            try { vfs.mkdir(path); this.notifyVfsPathChange(abs); return true; }
-            catch (e) { lastError = e instanceof Error ? e.message : String(e); return false; }
+            // Non-recursive, as lfs.mkdir is: a missing parent or an existing
+            // path is an error, not something to paper over.
+            try { vfs.mkdir(path, { recursive: false }); this.notifyVfsPathChange(abs); return true; }
+            catch (e) { failWith(e); return false; }
         });
 
         this.lua.global.set('__vfs_lfs_rmdir__', (path: string): boolean => {
-            if (!vfs) { lastError = 'no profile VFS'; return false; }
+            if (!vfs) { setError('no profile VFS'); return false; }
             const abs = vfs.resolvePath(path);
-            try { vfs.rmdir(path); this.notifyVfsPathChange(abs); return true; }
-            catch (e) { lastError = e instanceof Error ? e.message : String(e); return false; }
+            // Non-recursive, as lfs.rmdir is: only an empty directory goes.
+            try { vfs.rmdir(path, { recursive: false }); this.notifyVfsPathChange(abs); return true; }
+            catch (e) { failWith(e); return false; }
+        });
+
+        this.lua.global.set('__vfs_lfs_touch__', (path: string, atime: number, mtime: number): boolean => {
+            if (!vfs) { setError('no profile VFS'); return false; }
+            const abs = vfs.resolvePath(path);
+            try {
+                vfs.touch(path, new Date(atime * 1000), new Date(mtime * 1000));
+                this.notifyVfsPathChange(abs);
+                return true;
+            }
+            catch (e) { failWith(e); return false; }
         });
 
         this.lua.global.set('__vfs_lfs_dir__', (path: string): string[] | null => {
-            if (!vfs) { lastError = 'no profile VFS'; return null; }
+            if (!vfs) { setError('no profile VFS'); return null; }
             try {
                 return ['.', '..', ...vfs.readdir(path)];
             } catch (e) {
-                lastError = e instanceof Error ? e.message : String(e);
+                failWith(e);
                 return null;
             }
         });
@@ -3173,15 +3218,32 @@ end`);
             // its JSON files via io.exists before opening them.
             if (builtins.has(path)) {
                 const content = builtins.get(path)!;
-                return {type: 'file', size: content.length, modification: 0, access: 0};
+                return {
+                    type: 'file', size: content.length, modification: 0, access: 0, change: 0,
+                    permissions: 'r--r--r--', dev: 0, ino: 0, nlink: 1, uid: 0, gid: 0, rdev: 0,
+                    blocks: Math.ceil(content.length / 512), blksize: 4096,
+                };
             }
             const s = vfs?.stat(path) ?? null;
-            if (!s) return null;
+            if (!s) {
+                setError(`cannot obtain information from file '${path}': No such file or directory`, 2);
+                return null;
+            }
             return {
                 type: s.type,
                 size: s.size,
                 modification: Math.floor(s.mtime.getTime() / 1000),
                 access: Math.floor(s.atime.getTime() / 1000),
+                change: Math.floor(s.ctime.getTime() / 1000),
+                permissions: permissionString(s.mode),
+                dev: s.dev,
+                ino: s.ino,
+                nlink: s.nlink,
+                uid: s.uid,
+                gid: s.gid,
+                rdev: s.rdev,
+                blocks: s.blocks,
+                blksize: s.blksize,
             };
         });
 
