@@ -2287,6 +2287,24 @@ function receiveMSP(text)
     return __mudlet_receiveMSP(text)
 end
 
+-- Mudlet reconnect(). Returns nothing, as TLuaInterpreter::reconnect does —
+-- the redial's outcome arrives later, as sysConnectionEvent or
+-- sysDisconnectionEvent.
+function reconnect()
+    __mudlet_reconnect()
+end
+
+-- Mudlet getCharacterName(): the login name saved in the profile
+-- (Host::getLogin()), or nil + "no character name set" when there is none.
+-- Not the profile name — getProfileName() is that.
+function getCharacterName()
+    local name = __mudlet_getCharacterName()
+    if name == nil or name == "" then
+        return nil, "no character name set"
+    end
+    return name
+end
+
 -- Mudlet connectToServer(host [, port [, save]]). The port is range-checked and
 -- reported as (nil, errMsg) rather than raising, since it's a value problem
 -- rather than a type one (TLuaInterpreterNetworking.cpp).

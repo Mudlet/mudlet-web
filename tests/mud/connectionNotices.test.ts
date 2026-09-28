@@ -111,8 +111,45 @@ describe('connect/disconnect console notices', () => {
 
     describe('the connection being made', () => {
         it('reports an open connection', () => {
-            dial().onopen?.({});
+            settle(dial());
             expect(lines()).toContain('[  OK  ]  - Open connection made.');
+        });
+
+        // Issue #237: the proxy accepts our WebSocket before it dials the game,
+        // so the WebSocket opening proves nothing about the game. Nothing is
+        // "made" until the proxy says it got there.
+        it('does not report a connection the proxy has not made yet', () => {
+            const connects: number[] = [];
+            session.events.on('client.connect', () => connects.push(1));
+            dial().onopen?.({});
+            expect(lines().some(l => l.includes('connection made'))).toBe(false);
+            expect(connects).toHaveLength(0);
+            expect(session.status).toBe('connecting');
+        });
+
+        it('reports it once the proxy has reached the game', () => {
+            const sock = dial();
+            sock.onopen?.({});
+            sock.onmessage?.({ data: JSON.stringify({ type: 'game.connected' }) as unknown as ArrayBuffer });
+            expect(lines()).toContain('[  OK  ]  - Open connection made.');
+            expect(session.status).toBe('connected');
+        });
+
+        // A proxy predating `game.connected` says nothing, so the first byte the
+        // game sends is the proof instead.
+        it('takes the first game byte as the proof from an older proxy', () => {
+            const sock = dial();
+            sock.onopen?.({});
+            sock.onmessage?.({ data: new TextEncoder().encode('Welcome\r\n').buffer as ArrayBuffer });
+            expect(lines()).toContain('[  OK  ]  - Open connection made.');
+            expect(session.status).toBe('connected');
+        });
+
+        // A direct websocket has only the one leg: opening it is reaching the game.
+        it('reports a direct websocket connection as soon as it opens', () => {
+            dial('ws://mud.example.org:4000/ws').onopen?.({});
+            expect(lines()).toContain('[  OK  ]  - Open connection made.');
+            expect(session.status).toBe('connected');
         });
 
         // Mudlet wires slot_socketConnected to QSslSocket::encrypted for a
@@ -129,8 +166,7 @@ describe('connect/disconnect console notices', () => {
         // The reported case: the server closes cleanly ("Goodbye!") and the
         // proxy relays code 1000. Nothing was appended at all.
         it('announces a clean server-side close', () => {
-            const sock = dial();
-            sock.onopen?.({});
+            const sock = settle(dial());
             messages = [];
             sock.onclose?.({ code: 1000, reason: '', wasClean: true });
 
@@ -140,7 +176,7 @@ describe('connect/disconnect console notices', () => {
         });
 
         it('names the user when the user clicked Disconnect', () => {
-            dial().onopen?.({});
+            settle(dial());
             messages = [];
             session.disconnect();
 
@@ -148,14 +184,30 @@ describe('connect/disconnect console notices', () => {
             expect(lines()[1].trim()).toBe('User Disconnected');
         });
 
-        // An idle kick: a long, healthy session that simply ends. Past the
-        // five-second window cTelnet has no explanation to offer, so it says so.
-        it('says only that it got disconnected when it has no reason', () => {
+        // An idle kick: a long, healthy session that simply ends. The proxy
+        // relays the game hanging up as a plain close frame, and cTelnet names it
+        // with Qt's RemoteHostClosedError text (issue #237 — this used to say
+        // only "Socket got disconnected.").
+        it('names the remote host closing the connection', () => {
             vi.useFakeTimers();
             const sock = settle(dial());
             messages = [];
             vi.advanceTimersByTime(65_000);
-            sock.onclose?.({ code: 1000, reason: '', wasClean: true });
+            sock.onclose?.({ code: 1000, reason: 'TCP connection closed', wasClean: true });
+
+            expect(lines()[0]).toBe('[ ALERT ] - Socket got disconnected, for reason:');
+            expect(lines()[1].trim()).toBe('The remote host closed the connection');
+            expect(lines()[2]).toBe('[ INFO ]  - Connection time: 00:01:05.000.');
+        });
+
+        // Tearing a live session down to dial again has no close frame and no
+        // error behind it, so there is nothing to name.
+        it('says only that it got disconnected when it has no reason', () => {
+            vi.useFakeTimers();
+            settle(dial());
+            vi.advanceTimersByTime(65_000);
+            messages = [];
+            dial();
 
             expect(lines()[0]).toBe('[ ALERT ] - Socket got disconnected.');
             expect(lines()[1]).toBe('[ INFO ]  - Connection time: 00:01:05.000.');
@@ -180,17 +232,17 @@ describe('connect/disconnect console notices', () => {
 
         // A dial that dies in the WebSocket constructor produces no close event,
         // so without an explicit disconnect the failure would never be narrated
-        // and the session would sit in `connecting` for ever. Mudlet leaves its
-        // timeOffset at 0 when the connection timer never started
-        // (ctelnet.cpp:993), so this lands in the rejection window, and the
-        // transport's own words go to the script log rather than the console.
+        // and the session would sit in `connecting` for ever. It never reached
+        // the proxy, so it is cTelnet's "via proxy" failure, carrying the
+        // transport's own words.
         it('announces a dial that never opened a socket at all', () => {
             MockWebSocket.throwOnConstruct = 'The URL is invalid';
             session.connect(PROXY_URL);
 
             expect(lines()[0]).toBe('[ INFO ]  - Attempting an open connection to achaea.com:23 via proxy...');
-            expect(lines()[1]).toBe('[ ALERT ] - Socket got disconnected, for reason:');
-            expect(lines()[2].trim()).toBe('Connection/login attempt rejected by server');
+            expect(lines()[1]).toBe('[ ERROR ] - Unable to connect to achaea.com:23 via proxy - The URL is invalid.');
+            expect(lines()[2].trim()).toBe('Check the proxy details entered in the profile preferences.');
+            expect(lines()).toHaveLength(3);
             expect(session.scriptLog.some(e => e.text.includes('The URL is invalid'))).toBe(true);
             expect(session.status).toBe('disconnected');
         });
@@ -201,8 +253,7 @@ describe('connect/disconnect console notices', () => {
         // a rejection rather than repeating the transport's words.
         it('prefers the rejection window over the socket error', () => {
             vi.useFakeTimers();
-            const sock = dial();
-            sock.onopen?.({});
+            const sock = settle(dial());
             messages = [];
             vi.advanceTimersByTime(1_200);
             sock.onclose?.({ code: 1006, reason: '', wasClean: false });
@@ -216,16 +267,107 @@ describe('connect/disconnect console notices', () => {
         });
 
         it('announces each connection exactly once across a reconnect', () => {
-            const first = dial();
-            first.onopen?.({});
-            const second = dial();
-            second.onopen?.({});
+            settle(dial());
+            const second = settle(dial());
             second.onclose?.({ code: 1000, reason: '', wasClean: true });
 
             const disconnects = lines().filter(l => l.startsWith('[ ALERT ] - Socket got disconnected'));
             const attempts = lines().filter(l => l.includes('Attempting an open connection'));
             expect(attempts).toHaveLength(2);
             expect(disconnects).toHaveLength(2);
+        });
+    });
+    // Issue #237. cTelnet::slot_socketError: an attempt that never reaches the
+    // game is not a connection that was lost. No "Open connection made", no
+    // "Socket got disconnected", no connection time — one error naming the
+    // address and why, in the operating system's words.
+    describe('an attempt that never reaches the game', () => {
+        const refuse = (sock: MockWebSocket, reason: string) => {
+            sock.onopen?.({});
+            sock.onclose?.({ code: 1011, reason, wasClean: true });
+        };
+
+        it('reports a refused connection in the words Mudlet uses', () => {
+            refuse(dial(), 'Proxy: connect to achaea.com:23 failed: ECONNREFUSED');
+            expect(lines().slice(1)).toEqual([
+                '[ ERROR ] - Unable to connect to achaea.com:23 - Connection refused.',
+                '            Check your internet connection and the details entered for the game server.',
+            ]);
+            expect(session.status).toBe('disconnected');
+        });
+
+        it('reports a host that does not resolve as the lookup failure', () => {
+            refuse(dial(), 'Proxy: connect to nowhere.invalid:23 failed: ENOTFOUND');
+            expect(lines()[1]).toBe('[ ERROR ] - Unable to connect to "achaea.com".');
+            expect(lines()[2].trim()).toBe('Check your internet connection and the details entered for the game server.');
+        });
+
+        it('passes on a reason it has no translation for', () => {
+            refuse(dial(PROXY_TLS_URL), 'Proxy: TLS certificate rejected: CERT_HAS_EXPIRED');
+            expect(lines()).toContain('[ ERROR ] - Unable to connect to achaea.com:443 - TLS certificate rejected: CERT_HAS_EXPIRED.');
+        });
+
+        it('blames the proxy when the proxy itself could not be reached', () => {
+            dial().onclose?.({ code: 1006, reason: '', wasClean: false });
+            expect(lines()[1]).toBe('[ ERROR ] - Unable to connect to achaea.com:23 via proxy - The proxy could not be reached.');
+            expect(lines()[2].trim()).toBe('Check the proxy details entered in the profile preferences.');
+        });
+
+        it('reports a direct websocket that never opened', () => {
+            dial('wss://mud.example.org:4000/ws').onclose?.({ code: 1006, reason: '', wasClean: false });
+            expect(lines()[1]).toBe('[ ERROR ] - Unable to connect to wss://mud.example.org:4000/ws - The server could not be reached.');
+        });
+
+        it('never raises client.connect, but does raise client.disconnect', () => {
+            const seen: string[] = [];
+            session.events.on('client.connect', () => seen.push('connect'));
+            session.events.on('client.disconnect', () => seen.push('disconnect'));
+            refuse(dial(), 'Proxy: connect to achaea.com:23 failed: ECONNREFUSED');
+            expect(seen).toEqual(['disconnect']);
+        });
+
+        // handleFailedConnection with mDontReconnect: the player called it off,
+        // and "its failure is not news to anybody".
+        it('says nothing about an attempt the player called off', () => {
+            dial().onopen?.({});
+            messages = [];
+            session.disconnect();
+            expect(messages).toEqual([]);
+            expect(session.status).toBe('disconnected');
+        });
+
+        it('says nothing about an attempt abandoned for a new dial', () => {
+            dial().onopen?.({});
+            messages = [];
+            dial();
+            expect(lines()).toEqual(['[ INFO ]  - Attempting an open connection to achaea.com:23 via proxy...']);
+        });
+    });
+
+    // cTelnet posts a failed attempt's error before raising sysDisconnectionEvent
+    // (handleFailedConnection), but raises it *before* reporting a connection
+    // that was lost (slot_socketDisconnected). A late `client.disconnect`
+    // listener stands in for the scripting engine's bridge here.
+    describe('order against sysDisconnectionEvent', () => {
+        const marker = () => session.events.on('client.disconnect', () => messages.push('<sysDisconnectionEvent>'));
+
+        it('reports a lost connection after the event', () => {
+            marker();
+            const sock = settle(dial());
+            messages = [];
+            sock.onclose?.({ code: 1000, reason: '', wasClean: true });
+            expect(lines()[0]).toBe('<sysDisconnectionEvent>');
+            expect(lines()[1]).toBe('[ ALERT ] - Socket got disconnected, for reason:');
+        });
+
+        it('reports a failed attempt before the event', () => {
+            marker();
+            const sock = dial();
+            messages = [];
+            sock.onopen?.({});
+            sock.onclose?.({ code: 1011, reason: 'Proxy: connect to achaea.com:23 failed: ECONNREFUSED', wasClean: true });
+            expect(lines()[0]).toMatch(/^\[ ERROR \]/);
+            expect(lines()[2]).toBe('<sysDisconnectionEvent>');
         });
     });
 });

@@ -50,21 +50,8 @@ import type { FileDialogRequest } from './mud/events';
 import { replayFileName } from './mud/replay/replayFormat';
 import { listenForKeybindings } from './mud/keybindings/keyEventTarget';
 import { FilePickerModal } from './ui/FilePickerModal';
+import { TextAutoLogin } from './mud/autoLogin';
 import type { ProfileVFS } from './scripting/vfs/ProfileVFS';
-
-// Mudlet parity (AUTO_LOGIN_USERNAME_DELAY_MS in Mudlet's cTelnet): how long
-// to wait after connecting, with no IAC GA/EOR prompt marker seen, before
-// sending the saved account name anyway. See the text-login auto-fill effect
-// in ProfileSession for why this fallback exists.
-const AUTO_LOGIN_USERNAME_FALLBACK_MS = 2000;
-
-// Mudlet parity (AUTO_LOGIN_PASSWORD_DELAY_MS in Mudlet's cTelnet): how long to
-// wait after sending the account name, with no ECHO-off signal seen, before
-// sending the password anyway. Mudlet's slot_send_pass is timer-driven and
-// explicitly independent of ECHO mode, because plenty of servers print a bare
-// "Password:" prompt without ever negotiating IAC WILL ECHO (Federation 2 is
-// one). Gating solely on ECHO leaves the password unsent forever on those.
-const AUTO_LOGIN_PASSWORD_FALLBACK_MS = 1000;
 
 interface Props {
     connection: MudConnection;
@@ -130,11 +117,11 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // the leftover character-name case ("MyChar" still showing when the server
     // toggles ECHO) apart from a freshly-typed partial password.
     const lastSentRef = useRef('');
-    // Auto-login state. `autoLoginStage` drives the text-login state machine
-    // (send account at the first prompt, password when the server enters
-    // password mode). `gmcpAutoTried` guards against re-sending stored GMCP
-    // credentials in a loop when they're wrong. Both reset on each connect.
-    const autoLoginStage = useRef<'idle' | 'name' | 'password'>('idle');
+    // Text auto-login (Mudlet's mTimerLogin/mTimerPass — see mud/autoLogin.ts),
+    // created by the auto-login effect below; cancelled when GMCP Char.Login
+    // takes the login over. `gmcpAutoTried` guards against re-sending stored
+    // GMCP credentials in a loop when they're wrong; reset on each connect.
+    const textAutoLogin = useRef<TextAutoLogin | null>(null);
     const gmcpAutoTried = useRef(false);
     // Set when the user picks "Use text login" in the credentials popup. Servers
     // may re-send Char.Login.Default while their text login runs (StickMUD does,
@@ -164,13 +151,6 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // Still set at a disconnect ⇒ the game hung up on the login without a word,
     // which is worth saying out loud — see CHAR_LOGIN_SILENT_DROP_MESSAGE.
     const charLoginUnanswered = useRef(false);
-    // Fallback timer for MUDs that never send IAC GA/EOR around their login
-    // prompt (e.g. plain FluffOS/LPMud bare-telnet banners) — see the
-    // text-login auto-fill effect below.
-    const nameFallbackTimer = useRef<number | null>(null);
-    // Fallback timer for MUDs that never switch ECHO off around their password
-    // prompt — see the text-login auto-fill effect below.
-    const passFallbackTimer = useRef<number | null>(null);
 
     const outputFont = useAppStore(s => selectProfileField(s, connection.id, 'outputFont'));
     const mapperSymbolFont = useAppStore(s => selectProfileField(s, connection.id, 'mapper')?.symbolFont);
@@ -742,8 +722,8 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         });
         // GMCP Char.Login: the server asks for credentials.
         const unsub7 = session.events.on('charLogin.request', (methods) => {
-            // GMCP login takes over — disarm the text-login state machine.
-            autoLoginStage.current = 'idle';
+            // GMCP login takes over — cTelnet's cancelLoginTimers.
+            textAutoLogin.current?.cancel();
             const stored = readStoredLogin(connection.id);
             const action = decideCharLoginRequest({
                 methods,
@@ -896,8 +876,11 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                 true,
             );
         });
-        // A fresh dial invalidates the previous connection's verdict.
-        const t5 = session.events.on('client.connect', () => {
+        // A fresh dial invalidates the previous connection's verdict. At the
+        // dial rather than on `client.connect`, which an attempt that never
+        // reaches the game — a rejected certificate, say — never raises.
+        const t5 = session.events.on('status', (status) => {
+            if (status !== 'connecting') return;
             msspTlsFacts.current = emptyMsspTlsFacts();
             setTlsStatus(null);
         });
@@ -1025,61 +1008,23 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         }
     };
 
-    // Text-login auto-fill for MUDs without GMCP login. When the profile has
-    // saved credentials, send the account at the first server prompt and the
-    // password when the server switches to password mode (IAC ECHO off) —
-    // mirroring Mudlet's saved-login. Armed on connect; disarmed after use, on
-    // disconnect, or when GMCP Char.Login takes over (see charLogin.request).
+    // Text-login auto-fill for MUDs without GMCP login: Mudlet's fixed login
+    // and password timers, started when the game link comes up (see
+    // mud/autoLogin.ts). Cancelled on disconnect, or when GMCP Char.Login
+    // takes over (see charLogin.request).
     useEffect(() => {
-        const readCreds = () => readStoredLogin(connection.id);
-        const clearNameFallback = () => {
-            if (nameFallbackTimer.current !== null) {
-                window.clearTimeout(nameFallbackTimer.current);
-                nameFallbackTimer.current = null;
-            }
-        };
-        const clearPassFallback = () => {
-            if (passFallbackTimer.current !== null) {
-                window.clearTimeout(passFallbackTimer.current);
-                passFallbackTimer.current = null;
-            }
-        };
-        // Send the password and leave the login state machine. Reached either
-        // from the ECHO-off signal or, on servers that never send one, from the
-        // fallback timer started when the account went out. Whichever arrives
-        // first wins: the stage guard makes the loser a no-op.
-        const sendPassword = () => {
-            clearPassFallback();
-            if (autoLoginStage.current !== 'password') return;
-            const { password } = readCreds();
-            autoLoginStage.current = 'idle';
-            if (password) session.sendSecret(password);
-        };
-        // First prompt ≈ the "By what name?" prompt: send the account (echoed,
-        // since the server echoes it back off here just like a typed name).
-        // Called either from the real 'prompt' event (IAC GA/EOR) or, absent
-        // one, from the fallback timer below.
-        const sendAccount = () => {
-            clearNameFallback();
-            if (autoLoginStage.current !== 'name') return;
-            const { account } = readCreds();
-            if (!account) { autoLoginStage.current = 'idle'; return; }
-            autoLoginStage.current = 'password';
-            // Echoed locally (the server echoes a typed name back the same way),
-            // but not a game command: like Mudlet's `sendData(getLogin())` it
-            // must not arm character-at-a-time detection, since the password
-            // prompt it walks into is exactly the ECHO+SGA state that detection
-            // is trying to tell apart from the real thing.
-            send(account, true, false);
-            passFallbackTimer.current = window.setTimeout(sendPassword, AUTO_LOGIN_PASSWORD_FALLBACK_MS);
-        };
+        const autoLogin = new TextAutoLogin({
+            readCredentials: () => readStoredLogin(connection.id),
+            sendLogin: (account) => session.sendData(account, false),
+            sendPassword: (password) => session.sendSecret(password),
+        });
+        textAutoLogin.current = autoLogin;
         const onConnect = () => {
             gmcpAutoTried.current = false;
             gmcpLoginDeclined.current = false;
             lastLoginAttempt.current = null;
             charLoginUnanswered.current = false;
             vaultDeclined.current = false;
-            clearNameFallback();
             // A text-login game gives no signal we can wait behind — the name
             // prompt arrives when it arrives — so a locked vault has to be
             // offered here, at connect, rather than at the moment its password
@@ -1090,38 +1035,16 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             if (vaultNeedsUnlock(connection.id)) {
                 setVaultUnlock(`${connection.name} has a saved login. Unlock it to sign in.`);
             }
-            const { account, password } = readCreds();
-            autoLoginStage.current = account && password ? 'name' : 'idle';
-            if (autoLoginStage.current === 'name') {
-                // Some MUDs (e.g. plain FluffOS/LPMud bare-telnet banners) never
-                // send IAC GA/EOR at all, so the 'prompt' event that normally
-                // drives sendAccount would never fire and the account would sit
-                // unsent forever. Mirrors Mudlet's mTimerLogin — a fixed delay
-                // from connect, independent of any telnet signal — as a backstop
-                // for exactly these servers. Superseded (cleared) by a real
-                // 'prompt' event if one arrives first.
-                nameFallbackTimer.current = window.setTimeout(sendAccount, AUTO_LOGIN_USERNAME_FALLBACK_MS);
-            }
-        };
-        const onPrompt = () => sendAccount();
-        // Server enters password mode (ECHO off) → send the password via the
-        // secret path so it never surfaces as plaintext, even under the
-        // showSentText='always' echo mode.
-        const onEcho = (mask: boolean) => {
-            if (!mask) return;
-            sendPassword();
-        };
-        const onDisconnect = () => {
-            autoLoginStage.current = 'idle';
-            clearNameFallback();
-            clearPassFallback();
+            autoLogin.start();
         };
         const u1 = session.events.on('client.connect', onConnect);
-        const u2 = session.events.on('prompt', onPrompt);
-        const u3 = session.events.on('telnet.echo', onEcho);
-        const u4 = session.events.on('client.disconnect', onDisconnect);
-        return () => { u1(); u2(); u3(); u4(); clearNameFallback(); clearPassFallback(); };
-    }, [session, connection.id, connection.name, send]);
+        const u2 = session.events.on('client.disconnect', () => autoLogin.cancel());
+        return () => {
+            u1(); u2();
+            autoLogin.cancel();
+            if (textAutoLogin.current === autoLogin) textAutoLogin.current = null;
+        };
+    }, [session, connection.id, connection.name]);
 
     // Register the getCmdLine provider on the engine. Effect re-runs when the
     // engine instance changes (connection swap). Suggestions state is reset

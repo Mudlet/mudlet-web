@@ -34,6 +34,7 @@ import { namedColorToState, dechoToAnsiFast, cechoToAnsiFast, hechoToAnsiFast } 
 import { colorCodes } from '../mud/text/colors';
 import { Console, MIN_CONSOLE_BUFFER_SIZE, MAX_CONSOLE_BUFFER_SIZE, WINDOW_WRAP_DEFAULT } from '../mud/text/Console';
 import { flashTitle } from '../utils/documentTitle';
+import { readStoredLogin } from '../utils/storedCredentials';
 import { MspParser } from '../mud/protocol';
 import { decodeUtf8AsTBuffer, fromByteString } from '../mud/protocol/byteString';
 import { canEncodeForServer, decodeForServer } from '../mud/protocol/charset';
@@ -1287,11 +1288,13 @@ export class ScriptingAPI {
         return this.session.getServerEncodingsList();
     }
 
-    /** Mudlet `getCharacterName()`. Mudlet Web uses one character per profile, so
-     *  this returns the active profile name (same value as getProfileName());
-     *  empty string when unset. */
+    /** Mudlet `getCharacterName()` — `Host::getLogin()`, the character name the
+     *  profile logs in with, *not* the profile name. '' when none is saved; the
+     *  Lua wrapper reports that as Mudlet's `nil, "no character name set"`.
+     *  Read through {@link readStoredLogin}, the same source auto-login and the
+     *  GMCP `Char.Login` reply use, so a branded build's in-memory login counts. */
     getCharacterName(): string {
-        return this.profileName;
+        return readStoredLogin(this.connectionId).account;
     }
 
     /**

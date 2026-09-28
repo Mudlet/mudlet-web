@@ -68,14 +68,26 @@ export type MudClientEvents = {
     'open': [event: Event];
     'close': [event: CloseEvent];
     'error': [error: unknown];
+    /** The link to the game is up — Mudlet's `slot_socketConnected`. Through
+     *  the proxy this waits for the proxy to reach the game (see
+     *  `client.established`, which always follows it), so a dial that never
+     *  gets there never raises it. */
     'client.connect': void;
+    /** The connection, or the attempt at one, is over. Raised for an attempt
+     *  that failed too — Mudlet raises sysDisconnectionEvent for both — which
+     *  listeners tell apart by whether `client.connect` came first. */
     'client.disconnect': void;
+    /** Raised straight after `client.disconnect`, once every listener on it has
+     *  run. Mudlet reports a lost connection *after* sysDisconnectionEvent
+     *  (ctelnet.cpp slot_socketDisconnected), so the notice hangs off this. */
+    'client.disconnected': void;
     'client.error': [message: string];
-    /** The link to the *game* is up — Mudlet's `slot_socketConnected`, where
-     *  `mConnectionTimer` starts (ctelnet.cpp:723). Distinct from
-     *  `client.connect`, which in proxy mode only means the WebSocket to the
-     *  proxy opened: the proxy accepts that first and dials the game afterwards,
-     *  so a dial to a dead game still "connects". Fires at most once per socket,
+    /** The link to the *game* is up — the point in Mudlet's
+     *  `slot_socketConnected` where `mConnectionTimer` starts (ctelnet.cpp:723).
+     *  Emitted immediately after `client.connect`, for the same socket; kept as
+     *  its own event for the things that time a session (the proxy accepts our
+     *  WebSocket before it dials the game, so the WebSocket opening is never the
+     *  moment to measure from). Fires at most once per socket,
      *  on whichever comes first of the proxy's `game.connected` control frame, a
      *  completed TLS handshake, or the first byte of game traffic — and
      *  immediately on open for a direct websocket, where there is no second leg.

@@ -153,6 +153,22 @@ export class MudSession {
      *  {@link reportConnectionError}. cTelnet reads the equivalent straight off
      *  `mpSocket->errorString()` when it composes the message. */
     private disconnectReason: string | null = null;
+    /** What the outstanding dial is reaching — kept for the failed-attempt
+     *  notice, which names it as cTelnet's does. */
+    private dialTarget: DialTarget | null = null;
+    /** Whether the current dial's WebSocket opened. Through the proxy, a dial
+     *  that failed without it never reached the proxy at all — Mudlet's "via
+     *  proxy" failure — rather than the proxy failing to reach the game. */
+    private socketOpened = false;
+    /** The close frame that ended the current socket, when the other end ended
+     *  it; null for a disconnect() of our own. */
+    private lastClose: CloseEvent | null = null;
+    /** cTelnet's `mFailedConnectionCount`: attempts in a row that never reached
+     *  the game, which is what the retry delay doubles on. Cleared by a
+     *  connection being made and by a deliberate disconnect. */
+    private failedConnectionCount = 0;
+    /** cTelnet's `mTimerFailedConnectionRetry`. */
+    private failedConnectionRetry: ReturnType<typeof setTimeout> | null = null;
 
     /** Warn before the tab closes while a connection is live. Owned here rather
      *  than by MudClient — a fresh client is created on every connect(), so a
@@ -184,10 +200,12 @@ export class MudSession {
         // The session is always constructed before the engine that wraps it, so
         // latching here restores that ordering. These stay subscribed for the
         // session's lifetime (the bus is ours; destroy() clears it).
-        // The console notices ride along here for the same reason: they must be
-        // in the buffer before a Lua sysConnectionEvent/sysDisconnectionEvent
-        // handler writes anything of its own, which is the order cTelnet
-        // produces (postMessage precedes raiseEvent in both slots).
+        // The connect notice rides along here for the same reason: it must be in
+        // the buffer before a Lua sysConnectionEvent handler writes anything of
+        // its own, which is the order slot_socketConnected produces. So does a
+        // failed attempt's error, which handleFailedConnection posts before it
+        // raises sysDisconnectionEvent. A lost connection is the other way
+        // round — see the `client.disconnected` subscription below.
         this.events.on('client.connect', () => { this.setStatus('connected'); this.announceConnected(); });
         // A CHARSET exchange decides what encoding the session reads its game in,
         // and the answer belongs to the profile rather than to the socket that
@@ -201,12 +219,26 @@ export class MudSession {
         // only means the proxy accepted our WebSocket, so timing a session from
         // there credits a dial that never reached the game with however long the
         // upstream connect took to fail. See `client.established` in events.ts.
-        this.events.on('client.established', () => { this.connectedAt = Date.now(); });
+        this.events.on('client.established', () => {
+            this.connectedAt = Date.now();
+            this.failedConnectionCount = 0;
+        });
+        this.events.on('open', () => { this.socketOpened = true; });
+        this.events.on('close', (event) => { this.lastClose = event; });
+        // Two different endings share `client.disconnect`, as they share
+        // sysDisconnectionEvent in Mudlet. An attempt that never reached the
+        // game is cTelnet's slot_socketError → handleFailedConnection: the error
+        // is posted *before* the event is raised. A connection that was made and
+        // lost is slot_socketDisconnected, which raises the event first and
+        // reports afterwards — hence the second half on `client.disconnected`,
+        // which runs once every `client.disconnect` listener (the scripting
+        // engine's included) has had its turn.
         this.events.on('client.disconnect', () => {
             this.setStatus('disconnected');
             this.setPing(null);
-            this.announceDisconnected();
+            if (this.connectedAt === null) this.announceFailedConnection();
         });
+        this.events.on('client.disconnected', () => this.announceDisconnected());
         this.events.on('error', () => this.setStatus('disconnected'));
         // Replay recording tap. `socket.incoming` carries the post-MCCP data
         // of every real network frame (and only real frames — replayed data is
@@ -252,11 +284,19 @@ export class MudSession {
         // carries the reason and duration of the connection it is ending. The
         // "asked for it" flag goes with them: teardownClient() disconnects, and
         // leaving it raised would suppress a dial that is very much wanted.
+        // An attempt still under way is abandoned rather than failed: cTelnet's
+        // connectIt clears its pending attempts before aborting the old socket
+        // so that socket's error "cannot be counted against the attempt being
+        // started here" — nor reported, since nobody is waiting on it now.
+        if (this.client && this.connectedAt === null) this.deliberateDisconnect = true;
         this.teardownClient();
+        this.cancelFailedConnectionRetry();
         this.connectedAt = null;
         this.deliberateDisconnect = false;
         this.dontReconnect = false;
         this.disconnectReason = null;
+        this.socketOpened = false;
+        this.lastClose = null;
         // Synchronously re-measure the main console's char grid before dialing.
         // The resize observer that normally feeds windowSize is async, so a quick
         // connect (notably on mobile, where layout settles late) can otherwise
@@ -336,6 +376,12 @@ export class MudSession {
     dontReconnect = false;
 
     disconnect(): void {
+        // cTelnet::disconnectIt — a Disconnect also calls off a retry that is
+        // waiting to happen, and starts the next run of failures from scratch.
+        // Before the client check: after a failed attempt there may be nothing
+        // left to hang up, but the retry is still pending.
+        this.cancelFailedConnectionRetry();
+        this.failedConnectionCount = 0;
         if (!this.client) return;
         // Latched before the socket closes, so the disconnect notice can name
         // the user rather than guessing at the server — cTelnet's mDontReconnect.
@@ -944,6 +990,7 @@ export class MudSession {
         this.replayPlayer?.abort();
         this.replayPlayer = null;
         this.replayRecorder = null;
+        this.cancelFailedConnectionRetry();
         if (typeof window !== 'undefined') {
             window.removeEventListener('beforeunload', this.beforeUnload);
         }
@@ -984,7 +1031,7 @@ export class MudSession {
      *  the whole point of the issue: a transcript that ends mid-sentence should
      *  say why. Prefix colours follow the ones already used for the TLS notices
      *  in ProfileSession. */
-    private postSocketMessage(prefix: 'INFO' | 'OK' | 'ALERT', text: string): void {
+    private postSocketMessage(prefix: keyof typeof SOCKET_MESSAGE_PREFIX, text: string): void {
         const tag = SOCKET_MESSAGE_PREFIX[prefix];
         this.events.emit('message', `${tag.color}${tag.label}\x1b[0m${tag.gap}- ${text}`, 'script', Date.now());
     }
@@ -996,6 +1043,7 @@ export class MudSession {
      *  "via proxy" wording describes, so it is used for exactly those. */
     private announceConnecting(url: string): void {
         const target = parseDialTarget(url);
+        this.dialTarget = target;
         this.secureDial = target.secure;
         this.dialAnnounced = true;
         const verb = target.secure ? 'a secure connection' : 'an open connection';
@@ -1020,6 +1068,75 @@ export class MudSession {
         this.postSocketMessage('OK', 'Open connection made.');
     }
 
+    /** cTelnet's slot_socketError / host-lookup failure notice, for a dial that
+     *  never reached the game (ctelnet.cpp slot_socketError,
+     *  slot_socketHostFound). No "Socket got disconnected" and no connection
+     *  time: nothing was connected. Posted before sysDisconnectionEvent, as
+     *  handleFailedConnection raises it only after the player has been told.
+     *  An attempt called off by the player is not news, and says nothing. */
+    private announceFailedConnection(): void {
+        if (!this.dialAnnounced) return;
+        this.dialAnnounced = false;
+        const error = this.disconnectReason;
+        this.disconnectReason = null;
+        const target = this.dialTarget;
+        // Called off (Disconnect, or a new dial replacing it) rather than failed:
+        // not counted — disconnectIt has just reset the count, and connectIt
+        // keeps an abandoned socket from being "counted against the attempt
+        // being started here".
+        if (this.deliberateDisconnect || !target) return;
+        this.failedConnectionCount += 1;
+        const { reason, hostNotFound, proxyUnreachable } = describeFailedAttempt(this.lastClose, error, this.socketOpened, target);
+        if (hostNotFound) {
+            this.postSocketMessage('ERROR', `Unable to connect to "${target.host}".`);
+            this.postSocketContinuation('Check your internet connection and the details entered for the game server.');
+        } else if (proxyUnreachable) {
+            this.postSocketMessage('ERROR', `Unable to connect to ${target.address} via proxy - ${reason}.`);
+            this.postSocketContinuation('Check the proxy details entered in the profile preferences.');
+        } else {
+            this.postSocketMessage('ERROR', `Unable to connect to ${target.address} - ${reason}.`);
+            this.postSocketContinuation('Check your internet connection and the details entered for the game server.');
+        }
+    }
+
+    /** How many attempts in a row have failed to reach the game. */
+    get failedConnections(): number { return this.failedConnectionCount; }
+
+    /**
+     * The retry half of cTelnet's `handleFailedConnection`, for a profile set to
+     * reconnect automatically: say when, then try again after 5 s, doubling per
+     * failure in a row up to 60 s. The caller decides whether a retry is wanted
+     * at all (the profile option, `dontReconnect`); the timer is ours, so that
+     * a Connect, a Disconnect or closing the profile calls it off, as each of
+     * them stops `mTimerFailedConnectionRetry`.
+     */
+    scheduleFailedConnectionRetry(redial: () => void): void {
+        if (this._destroyed) return;
+        // Only while the failure is still the last word: a dial started since
+        // (the player's own Connect) has made the retry moot.
+        if (this._status !== 'disconnected') return;
+        this.cancelFailedConnectionRetry();
+        const delay = failedConnectionRetryDelayMs(this.failedConnectionCount);
+        const seconds = Math.round(delay / 1000);
+        this.postSocketMessage('INFO', `Trying again in ${seconds} second${seconds === 1 ? '' : 's'}...`);
+        this.failedConnectionRetry = setTimeout(() => {
+            this.failedConnectionRetry = null;
+            if (!this._destroyed) redial();
+        }, delay);
+    }
+
+    private cancelFailedConnectionRetry(): void {
+        if (this.failedConnectionRetry === null) return;
+        clearTimeout(this.failedConnectionRetry);
+        this.failedConnectionRetry = null;
+    }
+
+    /** The indented, yellow second row of a two-line notice — Mudlet's "%1\n%2"
+     *  renders as two rows, and a `message` here is one. */
+    private postSocketContinuation(text: string): void {
+        this.events.emit('message', `\x1b[33m            ${text}\x1b[0m`, 'script', Date.now());
+    }
+
     /** cTelnet's disconnect pair: the reason (ctelnet.cpp:1073-1136) and then
      *  the connection time (ctelnet.cpp:994-999). Posted on *every* disconnect — a clean
      *  server close and an idle kick used to produce nothing at all, because
@@ -1033,23 +1150,26 @@ export class MudSession {
         // the socket's own errorString(). The window comes FIRST — a server that
         // slams the door on login drops us with a socket error inside those five
         // seconds, and Mudlet still calls that a rejection rather than repeating
-        // the transport's words. Mudlet leaves its timeOffset at 0 when the
-        // connection timer never started (:993), so a dial that failed before
-        // connecting lands here too, exactly as `elapsed` does.
+        // the transport's words. (A dial that never connected doesn't get here:
+        // {@link announceFailedConnection} has answered it already.)
         //
         // (Mudlet has a TLS-handshake arm between the first two; ours is handled
         // separately by ProfileSession's tls.error path, which posts its own
         // notice before this one runs.)
+        // Past the window with nothing more specific, a close the other end made
+        // is what Qt's errorString() calls RemoteHostClosedError — the proxy
+        // relays the game hanging up as a plain close frame, so there is no
+        // transport error to quote, but cTelnet always has this one to hand.
         const reason = this.deliberateDisconnect ? 'User Disconnected'
             : elapsed < CONNECTION_REJECTED_WINDOW_MS ? 'Connection/login attempt rejected by server'
-            : this.disconnectReason;
+            : this.disconnectReason ?? (this.lastClose ? REMOTE_HOST_CLOSED : null);
         if (reason) {
             // Two lines, because Mudlet's "%1\n%2" renders as two and a `message`
             // here is one console row. The indent aligns the reason under the
             // text and the yellow is postMessage's ALERT body colour, so the row
             // reads as part of the notice rather than as game output.
             this.postSocketMessage('ALERT', 'Socket got disconnected, for reason:');
-            this.events.emit('message', `\x1b[33m            ${reason}\x1b[0m`, 'script', Date.now());
+            this.postSocketContinuation(reason);
         } else {
             this.postSocketMessage('ALERT', 'Socket got disconnected.');
         }
@@ -1071,7 +1191,68 @@ const SOCKET_MESSAGE_PREFIX = {
     INFO:  { label: '[ INFO ]',  color: '\x1b[36m', gap: '  ' },
     OK:    { label: '[  OK  ]',  color: '\x1b[32m', gap: '  ' },
     ALERT: { label: '[ ALERT ]', color: '\x1b[31m', gap: ' '  },
+    ERROR: { label: '[ ERROR ]', color: '\x1b[31m', gap: ' '  },
 } as const;
+
+/** Qt's QAbstractSocket::RemoteHostClosedError text, the reason cTelnet gives
+ *  for a game that simply hung up. */
+const REMOTE_HOST_CLOSED = 'The remote host closed the connection';
+
+/** cTelnet's `FAILED_CONNECTION_RETRY_DELAY` / `_MAX_DELAY` (ctelnet.cpp):
+ *  how long to leave a game that could not be reached before trying again,
+ *  doubling with each failure in a row. */
+export const FAILED_CONNECTION_RETRY_DELAY_MS = 5_000;
+export const FAILED_CONNECTION_RETRY_MAX_DELAY_MS = 60_000;
+
+/** The wait before retry number `failures` (1-based) —
+ *  `min(DELAY * 2^min(failures - 1, 5), MAX_DELAY)`, as cTelnet computes it. */
+export function failedConnectionRetryDelayMs(failures: number): number {
+    const shift = Math.min(Math.max(failures - 1, 0), 5);
+    return Math.min(FAILED_CONNECTION_RETRY_DELAY_MS * (1 << shift), FAILED_CONNECTION_RETRY_MAX_DELAY_MS);
+}
+
+/** Node's errno codes for a failed connect, as the proxy relays them, in the
+ *  words Qt's errorString() uses for the same failure — which is what cTelnet
+ *  prints. */
+const SOCKET_ERROR_TEXT: Record<string, string> = {
+    ECONNREFUSED: 'Connection refused',
+    ECONNRESET: REMOTE_HOST_CLOSED,
+    ETIMEDOUT: 'Socket operation timed out',
+    EHOSTUNREACH: 'Network unreachable',
+    ENETUNREACH: 'Network unreachable',
+    ENOTFOUND: 'Host not found',
+    EAI_AGAIN: 'Host not found',
+};
+
+/** Why an attempt failed, from what the proxy or the browser said about it.
+ *  `hostNotFound` picks cTelnet's separate lookup-failure message. */
+function describeFailedAttempt(
+    close: CloseEvent | null,
+    error: string | null,
+    socketOpened: boolean,
+    target: DialTarget,
+): { reason: string; hostNotFound: boolean; proxyUnreachable: boolean } {
+    const raw = close?.reason?.trim() ?? '';
+    if (raw) {
+        const code = /\b(E[A-Z_]+)$/.exec(raw)?.[1];
+        if (code && SOCKET_ERROR_TEXT[code]) {
+            return { reason: SOCKET_ERROR_TEXT[code], hostNotFound: code === 'ENOTFOUND' || code === 'EAI_AGAIN', proxyUnreachable: false };
+        }
+        return { reason: raw.replace(/^Proxy:\s*/, ''), hostNotFound: false, proxyUnreachable: false };
+    }
+    if (!socketOpened) {
+        // A browser reports nothing about a WebSocket that never opened (1006,
+        // no reason) — the transport's words, when there are any, come from a
+        // constructor that threw.
+        const thrown = /^Failed to open WebSocket:\s*(.*)$/.exec(error ?? '');
+        const detail = thrown?.[1];
+        if (target.viaProxy) {
+            return { reason: detail || 'The proxy could not be reached', hostNotFound: false, proxyUnreachable: true };
+        }
+        return { reason: detail || 'The server could not be reached', hostNotFound: false, proxyUnreachable: false };
+    }
+    return { reason: REMOTE_HOST_CLOSED, hostNotFound: false, proxyUnreachable: false };
+}
 
 /** How soon after connecting a drop still counts as the server rejecting us
  *  rather than a real session ending — cTelnet's `timeOffset < 5000`
@@ -1081,17 +1262,19 @@ const CONNECTION_REJECTED_WINDOW_MS = 5000;
 /** What a dialed URL is actually reaching, for the "Attempting …" notice.
  *  A `mud`-mode URL is the proxy's, carrying the game's host/port as query
  *  params; a `websocket`-mode one is the game's own endpoint. */
-function parseDialTarget(url: string): { address: string; secure: boolean; viaProxy: boolean } {
+interface DialTarget { address: string; host: string; secure: boolean; viaProxy: boolean }
+
+function parseDialTarget(url: string): DialTarget {
     try {
         const parsed = new URL(url);
         const host = parsed.searchParams.get('host');
         if (host) {
             const port = parsed.searchParams.get('port') ?? '23';
-            return { address: `${host}:${port}`, secure: parsed.searchParams.get('tls') === '1', viaProxy: true };
+            return { address: `${host}:${port}`, host, secure: parsed.searchParams.get('tls') === '1', viaProxy: true };
         }
-        return { address: url, secure: parsed.protocol === 'wss:', viaProxy: false };
+        return { address: url, host: parsed.hostname, secure: parsed.protocol === 'wss:', viaProxy: false };
     } catch {
-        return { address: url, secure: false, viaProxy: false };
+        return { address: url, host: url, secure: false, viaProxy: false };
     }
 }
 

@@ -797,8 +797,9 @@ export class LuaRuntime implements IScriptingRuntime {
         this.lua.global.set('loadProfile', (name?: unknown) =>
             this.api.loadProfile(typeof name === 'string' ? name : ''),
         );
-        // Mudlet getCharacterName() — Mudlet Web maps this to the profile name.
-        this.lua.global.set('getCharacterName', () => this.api.getCharacterName());
+        // Mudlet getCharacterName() — the profile's saved login name, or '' when
+        // none is set; Bridge.lua turns that into Mudlet's (nil, errMsg).
+        this.lua.global.set('__mudlet_getCharacterName', () => this.api.getCharacterName());
         // Mudlet getMudletInfo() — echoes a diagnostic block, returns nothing.
         this.lua.global.set('getMudletInfo', () => { this.api.getMudletInfo(); });
 
@@ -1555,8 +1556,9 @@ export class LuaRuntime implements IScriptingRuntime {
          *  "not connected to game server" guards Mudlet applies before sending
          *  ATCP/GMCP/MSDP. */
         this.lua.global.set('__mudlet_is_connected', () => this.api.getConnectionInfo().connected);
-        // Mudlet reconnect() — disconnect and redial the last URL.
-        this.lua.global.set('reconnect', () => this.api.reconnect());
+        // Mudlet reconnect() — disconnect and redial the last URL. Bridge.lua
+        // drops the result: Mudlet's returns nothing at all.
+        this.lua.global.set('__mudlet_reconnect', () => { this.api.reconnect(); });
         // Mudlet `feedTelnet(data)`: inject raw server bytes into the inbound
         // pipeline as if received from the MUD.
         // Returns the refusal message (or nil when the data was fed); the

@@ -706,6 +706,7 @@ export class MudClient {
                     this.eventBus.emit('client.error', formatCloseError(event, this.opened, this.viaProxy));
                 }
                 this.eventBus.emit('client.disconnect');
+                this.eventBus.emit('client.disconnected');
                 this.opened = false;
                 this.mccpHandler.reset();
                 this.echoHandler.reset();
@@ -745,10 +746,14 @@ export class MudClient {
                     }, TLS_HANDSHAKE_TIMEOUT_MS);
                 }
                 this.eventBus.emit('open', event);
-                this.eventBus.emit('client.connect');
                 // A direct websocket has only one leg, so opening it *is*
-                // reaching the game. Through a proxy it is not, and the frame
-                // or first byte that proves it arrives later.
+                // reaching the game. Through a proxy it is not: the proxy
+                // accepts us first and dials the game afterwards, and the frame
+                // or first byte that proves it got there arrives later. Until
+                // then nothing is connected — `client.connect` (and with it
+                // sysConnectionEvent and the "connected" status) waits for it,
+                // so a dial to a closed port or an unknown host is reported as
+                // the failed attempt it is (issue #237).
                 if (!this.viaProxy) this.markEstablished();
             };
         } catch (error) {
@@ -762,16 +767,25 @@ export class MudClient {
             // console — would never be posted. cTelnet is equivalent here: a
             // failed connectToHost still reaches slot_socketDisconnected.
             this.eventBus.emit('client.disconnect');
+            this.eventBus.emit('client.disconnected');
         }
     }
 
-    /** Announce that the link to the game itself is up, once per socket.
-     *  See the `client.established` docs in events.ts for why this is not the
-     *  same thing as `client.connect`. */
+    /** Announce that the link to the game itself is up, once per socket —
+     *  Mudlet's `slot_socketConnected`, which is both where it says so
+     *  (`client.connect` → "Open connection made.", sysConnectionEvent) and
+     *  where `mConnectionTimer` starts (`client.established`). */
     private markEstablished(): void {
         if (this.gameEstablished) return;
         this.gameEstablished = true;
+        this.eventBus.emit('client.connect');
         this.eventBus.emit('client.established');
+    }
+
+    /** Whether the current socket ever reached the game — false for an attempt
+     *  that failed before connecting (Mudlet's `slot_socketError` case). */
+    get established(): boolean {
+        return this.gameEstablished;
     }
 
     /** Stop policing the TLS deadline — the handshake is accounted for. */
@@ -861,6 +875,7 @@ export class MudClient {
         // once, which is what makes a disconnect()ed profile injectable again.
         this.socket = null;
         this.eventBus.emit('client.disconnect');
+        this.eventBus.emit('client.disconnected');
         this.opened = false;
         this.mccpHandler.reset();
         this.echoHandler.reset();
