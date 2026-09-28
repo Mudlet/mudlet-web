@@ -7,6 +7,7 @@ do
     local _close_fn    = __vfs_io_close__
     local _exists      = __vfs_exists__
     local _err         = __vfs_err__
+    local _errno       = __vfs_errno__
     local _profile_dir = __vfs_profile_dir__
     local _os_remove   = __vfs_os_remove__
     local _os_rename   = __vfs_os_rename__
@@ -16,6 +17,7 @@ do
     local _rmdir       = __vfs_lfs_rmdir__
     local _dir_list    = __vfs_lfs_dir__
     local _stat        = __vfs_lfs_stat__
+    local _touch       = __vfs_lfs_touch__
 
     __vfs_io_open__        = nil
     __vfs_io_read__        = nil
@@ -24,6 +26,7 @@ do
     __vfs_io_close__       = nil
     __vfs_exists__         = nil
     __vfs_err__            = nil
+    __vfs_errno__          = nil
     __vfs_profile_dir__    = nil
     __vfs_os_remove__      = nil
     __vfs_os_rename__      = nil
@@ -33,6 +36,13 @@ do
     __vfs_lfs_rmdir__      = nil
     __vfs_lfs_dir__        = nil
     __vfs_lfs_stat__       = nil
+    __vfs_lfs_touch__      = nil
+
+    -- A failed call answers the way stock Lua's io/os and LuaFileSystem do:
+    -- nil, the message, and the errno (nil when the failure has none).
+    local function _fail()
+        return nil, _err(), _errno()
+    end
 
     local _handles = {}
 
@@ -106,7 +116,7 @@ do
     io = {
         open = function(filename, mode)
             local id = _open(tostring(filename), mode or 'r')
-            if not id then return nil, _err() end
+            if not id then return _fail() end
             return _make_handle(id)
         end,
 
@@ -188,13 +198,15 @@ do
 
         mkdir = function(path)
             local ok = _mkdir(tostring(path))
-            if not ok then return nil, _err() end
+            if not ok then return _fail() end
             return true
         end,
 
+        -- Removes an empty directory only, as LuaFileSystem does; anything
+        -- else is refused with nil, message, errno.
         rmdir = function(path)
             local ok = _rmdir(tostring(path))
-            if not ok then return nil, _err() end
+            if not ok then return _fail() end
             return true
         end,
 
@@ -210,26 +222,53 @@ do
             end
         end,
 
-        -- attrib: optional string key to return a single attribute value
+        -- LuaFileSystem's attributes(path [, name | table]): the whole table,
+        -- one named field, or the fields written into a table passed in.
         attributes = function(path, attrib)
             local s = _stat(tostring(path))
-            if not s then return nil end
+            if not s then return _fail() end
             local t = {
                 mode         = s.type == 'dir' and 'directory' or 'file',
                 size         = s.size,
                 modification = s.modification,
                 access       = s.access,
+                change       = s.change,
+                permissions  = s.permissions,
+                dev          = s.dev,
+                ino          = s.ino,
+                nlink        = s.nlink,
+                uid          = s.uid,
+                gid          = s.gid,
+                rdev         = s.rdev,
+                blocks       = s.blocks,
+                blksize      = s.blksize,
             }
-            if attrib then return t[attrib] end
+            if type(attrib) == 'string' then
+                local v = t[attrib]
+                if v == nil then error("invalid attribute name '" .. attrib .. "'", 0) end
+                return v
+            end
+            if type(attrib) == 'table' then
+                for k, v in pairs(t) do attrib[k] = v end
+                return attrib
+            end
             return t
         end,
 
-        touch = function(path)
-            if not _exists(tostring(path)) then
-                local f, e = io.open(path, 'w')
-                if not f then return nil, e end
-                f:close()
+        -- Sets the access and modification times; like LuaFileSystem it never
+        -- creates the file. With no times given both become now; a missing
+        -- mtime takes atime's value.
+        touch = function(path, ...)
+            local atime, mtime
+            if select('#', ...) == 0 then
+                atime = os.time()
+                mtime = atime
+            else
+                local a, m = ...
+                atime = tonumber(a) or 0
+                mtime = tonumber(m) or atime
             end
+            if not _touch(tostring(path), atime, mtime) then return _fail() end
             return true
         end,
 
@@ -310,14 +349,14 @@ do
 
     os.remove = function(path)
         if not _os_remove(tostring(path)) then
-            return nil, _err()
+            return _fail()
         end
         return true
     end
 
     os.rename = function(old, new)
         if not _os_rename(tostring(old), tostring(new)) then
-            return nil, _err()
+            return _fail()
         end
         return true
     end

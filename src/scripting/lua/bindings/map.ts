@@ -23,6 +23,32 @@ function opt(v: unknown): number | undefined {
     return Number.isFinite(n) ? n : undefined;
 }
 
+/** An argument that takes an area id or an area name. Mudlet tests
+ *  `lua_isnumber` first, which is true for a numeric string, so `"1"` names
+ *  area 1 — not an area called "1". */
+function idOrName(v: unknown): number | string {
+    if (typeof v === 'string' && v.trim() !== '') {
+        const n = Number(v);
+        if (Number.isFinite(n)) return n;
+    }
+    return v as number | string;
+}
+
+/** A map event argument as desktop keeps it: Mudlet collects them into a
+ *  QStringList with lua_tostring, so a number becomes its Lua string form
+ *  (`42` → `"42"`) and anything lua_tostring can't convert — a boolean, nil, a
+ *  table — becomes the empty string. */
+function mapEventArg(v: unknown): string {
+    if (typeof v === 'string') return v;
+    if (typeof v === 'number') {
+        if (Number.isInteger(v)) return String(v);
+        if (!Number.isFinite(v)) return Number.isNaN(v) ? 'nan' : v > 0 ? 'inf' : '-inf';
+        // Lua 5.1's LUAI_NUMFFORMAT is "%.14g".
+        return String(Number(v.toPrecision(14)));
+    }
+    return '';
+}
+
 const MIN_MAP_FORMAT = 17;
 const MAX_MAP_FORMAT = 21;
 
@@ -103,8 +129,8 @@ export function installMapBindings({
     // A second argument aims a secondary map window: that view centres on the
     // room and the player is left where they are. Answers with the refusal
     // message when the view id names nothing.
-    lua.global.set('__centerview', (id: number, viewId?: unknown) =>
-        api.centerView(id, viewId == null || viewId === '' ? undefined : Number(viewId)));
+    lua.global.set('__centerview', (id: unknown, viewId?: unknown) =>
+        api.centerView(Number(id), viewId == null || viewId === '' ? undefined : Number(viewId)));
     // Mudlet getMapZoom([areaID]) / setMapZoom(zoom[, areaID]) / updateMap().
     // Mudlet Web has a single shared 2D view, so areaID is accepted for compat but
     // applies to the current view. getMapZoom returns false (→ nil) with no
@@ -150,11 +176,11 @@ export function installMapBindings({
     });
     // Mudlet getRoomIDbyHash: returns -1 when no room has the given hash.
     lua.global.set('getRoomIDbyHash', (hash: string)            => api.getRoomIDbyHash(hash) ?? -1);
-    lua.global.set('setRoomIDbyHash', (id: number, hash: string)=> api.map.setRoomIDbyHash(id, hash));
+    lua.global.set('setRoomIDbyHash', (id: unknown, hash: unknown)=> api.map.setRoomIDbyHash(Number(id), String(hash ?? '')));
     // Mudlet getRoomHashByID: returns the hash string, or (false, errMsg) on
     // miss / when the room has no hash. JS hands back the string or null;
     // Bridge.lua unpacks the multi-return.
-    lua.global.set('__getRoomHashByID', (id: number)            => api.map.getRoomHashByID(id) ?? null);
+    lua.global.set('__getRoomHashByID', (id: unknown)           => api.map.getRoomHashByID(Number(id)) ?? null);
 
     // Mudlet loadMap([location]). With a path, reads the map from VFS —
     // an `.xml` path goes through the IRE-style XML importer (Mudlet
@@ -354,15 +380,19 @@ export function installMapBindings({
         const r = api.map.addRoom(rid, Number.isFinite(aid as number) ? aid : undefined);
         return typeof r === 'object' ? r.err : r;
     });
-    lua.global.set('deleteRoom',   (id: number)    => api.map.deleteRoom(id));
-    lua.global.set('roomExists',   (id: number)    => api.map.roomExists(id));
+    // Room ids are coerced with Number() throughout: Mudlet's getVerifiedInt
+    // takes a numeric string ("9201"), and ids from GMCP or a regex capture
+    // usually arrive as one. The store keys rooms by number, so a raw string
+    // would miss every lookup.
+    lua.global.set('deleteRoom',   (id: unknown)   => api.map.deleteRoom(Number(id)));
+    lua.global.set('roomExists',   (id: unknown)   => api.map.roomExists(Number(id)));
 
     // ── Room properties ───────────────────────────────────────────────────
     // Mudlet getRoomName: returns the name string, or (false, errMsg) on
     // miss. JS hands back the string or null; Bridge.lua unpacks the
     // multi-return.
-    lua.global.set('__getRoomName', (id: number)              => api.map.getRoomName(id) ?? null);
-    lua.global.set('setRoomName',  (id: number, n: string)   => api.map.setRoomName(id, n));
+    lua.global.set('__getRoomName', (id: unknown)             => api.map.getRoomName(Number(id)) ?? null);
+    lua.global.set('setRoomName',  (id: unknown, n: string)  => api.map.setRoomName(Number(id), n));
     // Mudlet `getRoomArea(id)` — area id, or -1 when the room is missing.
     lua.global.set('getRoomArea',  (id: number)              => api.map.getRoomArea(Number(id)) ?? null);
     // Mudlet setRoomArea(roomID|{ids}, areaID|areaName). Bridge.lua flattens the
@@ -382,11 +412,12 @@ export function installMapBindings({
         pushJsValue(L, api.map.getRoomCoordinates(id));
         return 1;
     });
-    lua.global.set('setRoomCoordinates',   (id: number, x: number, y: number, z: number) => api.map.setRoomCoordinates(id, x, y, z));
+    lua.global.set('setRoomCoordinates',   (id: unknown, x: unknown, y: unknown, z: unknown) =>
+        api.map.setRoomCoordinates(Number(id), Number(x), Number(y), Number(z)));
     lua.global.set('__getRoomsByPosition', (areaId: unknown, x: unknown, y: unknown, z: unknown) =>
         api.map.getRoomsByPosition(Number(areaId), Number(x), Number(y), Number(z)) ?? null);
-    lua.global.set('getRoomEnv',   (id: number)              => api.map.getRoomEnv(id));
-    lua.global.set('setRoomEnv',   (id: number, e: number)   => api.map.setRoomEnv(id, e));
+    lua.global.set('getRoomEnv',   (id: unknown)             => api.map.getRoomEnv(Number(id)));
+    lua.global.set('setRoomEnv',   (id: unknown, e: unknown) => api.map.setRoomEnv(Number(id), Number(e)));
     // Mudlet getRoomChar(id) → symbol string, or (nil, errMsg) when the
     // room doesn't exist. The raw entry point returns the empty string for
     // an unset symbol and `null` for the miss case; Bridge.lua re-shapes.
@@ -395,7 +426,7 @@ export function installMapBindings({
         if (!Number.isFinite(rid) || !api.map.roomExists(rid)) return null;
         return api.map.getRoomChar(rid);
     });
-    lua.global.set('setRoomChar',  (id: number, c: string)   => api.map.setRoomChar(id, c));
+    lua.global.set('setRoomChar',  (id: unknown, c: string)  => api.map.setRoomChar(Number(id), c));
     // Mudlet lockRoom(roomID, lockIfTrue) → true on success. roomLocked
     // returns the lock state, or nil when the room doesn't exist (Mudlet
     // distinguishes the miss from an unlocked room).
@@ -462,8 +493,8 @@ export function installMapBindings({
     // getRoomUserData both see "5". Storing the number instead made the pair
     // asymmetric — bundled Lua writes a bare number here (setRoomNameOffset's
     // one-value branch) and every reader expects a string back.
-    lua.global.set('setRoomUserData', (id: number, k: string, v: unknown) =>
-        api.map.setRoomUserData(id, k, v == null ? '' : String(v)));
+    lua.global.set('setRoomUserData', (id: unknown, k: string, v: unknown) =>
+        api.map.setRoomUserData(Number(id), k, v == null ? '' : String(v)));
     // Mudlet `getRoomUserDataKeys(id)` → sequential table of keys, or nil
     // when the room doesn't exist. JS hands back an array (wasmoon 0-indexed
     // on the Lua side) or `null` for the miss; Bridge.lua re-indexes to a
@@ -602,7 +633,7 @@ export function installMapBindings({
         api.map.addSpecialExit(Number(from), Number(to), typeof cmd === 'string' ? cmd : String(cmd ?? '')));
     lua.global.set('__removeSpecialExit', (from: unknown, cmd: unknown) =>
         api.map.removeSpecialExit(Number(from), typeof cmd === 'string' ? cmd : String(cmd ?? '')));
-    lua.global.set('getSpecialExitsSwap',(id: number)                         => api.map.getSpecialExitsSwap(id));
+    lua.global.set('getSpecialExitsSwap',(id: unknown)                        => api.map.getSpecialExitsSwap(Number(id)));
     // Mudlet getSpecialExits(roomID [, listAllExits]) → { [exitRoomID] =
     // { [command] = "0"|"1" } }. The outer keys are room ids, which wasmoon
     // hands to Lua as stringified keys; Bridge.lua re-keys them to integers.
@@ -622,10 +653,11 @@ export function installMapBindings({
         else { const s = String(cmd ?? ''); dir = /^\d+$/.test(s) ? Number(s) : s; }
         return api.map.setExitWeight(Number(id), dir, Number(w));
     });
-    // Mudlet `getCustomLines(roomID)` → { [dir] = { attributes={color,style,arrow}, points=[{x,y,z},...] } }.
+    // Mudlet `getCustomLines(roomID)` → { [dir] = { attributes={color,style,arrow}, points=[{x,y},...] } }.
     // Returns nil when the room doesn't exist; wasmoon converts the JS
     // arrays/objects directly — the `points` array lands 0-indexed on the
-    // Lua side, matching Mudlet's documented shape.
+    // Lua side, matching Mudlet's documented shape. A point is x and y only:
+    // desktop pushes no z here (getCustomLines1's triples carry the room's).
     lua.global.set('getCustomLines', (id: unknown) => {
         const rid = Number(id);
         if (!Number.isFinite(rid)) return null;
@@ -760,7 +792,7 @@ export function installMapBindings({
             String(eventName ?? ''),
             parent == null ? null : String(parent),
             displayName == null ? null : String(displayName),
-            ...args,
+            ...args.map(mapEventArg),
         );
         return true;
     });
@@ -953,14 +985,21 @@ export function installMapBindings({
         const aa = a == null ? 255 : Math.max(0, Math.min(255, Number(a) || 0));
         return api.map.setRoomCharColor(Math.trunc(id), rr, gg, bb, aa);
     });
-    // Mudlet getRoomCharColor(roomID) → r, g, b; nil when no per-room colour
-    // was ever set. Three channels, not four: a symbol colour has no alpha in
-    // Mudlet, unlike the border colour beside it, which does return one.
+    // Mudlet getRoomCharColor(roomID) → r, g, b. Three channels, not four: a
+    // symbol colour has no alpha in Mudlet, unlike the border colour beside
+    // it, which does return one. A room with no colour of its own still
+    // answers — 0,0,0 when none was ever set, 255,255,255 once
+    // unsetRoomCharColor dropped one — so `local r, g, b = …` followed by
+    // arithmetic works. A missing room hands back the refusal message, which
+    // Bridge.lua makes (nil, errMsg).
     lua.global.set('__getRoomCharColor', (roomId: unknown) => {
-        const id = Number(roomId);
-        if (!Number.isFinite(id)) return null;
-        const c = api.map.getRoomCharColor(Math.trunc(id));
-        return c ? [c.r, c.g, c.b] : null;
+        const id = Math.trunc(Number(roomId));
+        if (!Number.isFinite(id) || !api.map.roomExists(id)) {
+            return `getRoomCharColor: number ${String(roomId)} is not a valid roomID`;
+        }
+        const c = api.map.getRoomCharColor(id);
+        if (c) return [c.r, c.g, c.b];
+        return api.map.isRoomCharColorUnset(id) ? [255, 255, 255] : [0, 0, 0];
     });
     // Mudlet setMapBackgroundColor(r, g, b [, a]) / setMapRoomExitsColor(r, g, b).
     // Stored on the profile mapper settings — MapPanel reads from there each
@@ -1036,8 +1075,8 @@ export function installMapBindings({
     });
     // deleteArea(areaID|areaName) — accept either form; the refusal message
     // (or null on success) is shaped into (nil, errMsg) by Bridge.lua.
-    lua.global.set('__deleteArea', (idOrName: unknown) =>
-        api.map.deleteArea(idOrName as number | string));
+    lua.global.set('__deleteArea', (a: unknown) =>
+        api.map.deleteArea(idOrName(a)));
     lua.global.set('getAreaTable',   ()                        => api.map.getAreaTable());
     // Mudlet getAreaTableSwap() → { [areaID] = name }. JS hands back an
     // object whose numeric ids cross the bridge as stringified keys;
@@ -1096,12 +1135,12 @@ export function installMapBindings({
     // getRoomAreaName is bidirectional: number → name string, name → number.
     // Returns false when the input cannot be resolved (matches the
     // existing convention; Mudlet returns nil/false on miss).
-    lua.global.set('getRoomAreaName', (idOrName: unknown) => {
-        const v = api.map.getRoomAreaName(idOrName as number | string);
+    lua.global.set('getRoomAreaName', (a: unknown) => {
+        const v = api.map.getRoomAreaName(idOrName(a));
         return v ?? false;
     });
-    lua.global.set('__setAreaName', (idOrName: unknown, n: unknown) => {
-        const r = api.map.setAreaName(idOrName as number | string, String(n ?? ''));
+    lua.global.set('__setAreaName', (a: unknown, n: unknown) => {
+        const r = api.map.setAreaName(idOrName(a), String(n ?? ''));
         if (r === true) return true;
         return { ok: false, err: typeof r === 'object' ? r.err : 'setAreaName: failed' };
     });

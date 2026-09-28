@@ -2,6 +2,7 @@ import type { ProfileVFS } from '../scripting/vfs/ProfileVFS';
 import { useAppStore } from '../storage/appStore';
 import { getBrand } from '../branding';
 import { installPackageFromBytes } from './packageInstaller';
+import { gameOwnUi } from '../mud/games/bundledGames';
 // `./defaults/` is a vendored mirror of Mudlet's `src/packages/` — every package
 // it preinstalls, one directory each, holding the `.mpackage` archive and the
 // sources it was built from (see scripts/sync-mudlet-lua.mjs). Vendoring is not
@@ -118,20 +119,6 @@ export const IRE_MAPPER_GAMES = [
     'imperian.com', 'starmourn.com', 'stickmud.com',
 ];
 
-/**
- * Games whose own bundled loader installs a full interface, so the starter UI is
- * not preinstalled for them — it would only fight the game's GUI for the same
- * screen space. Mirrors the `providesOwnUi` entries of `TGameDetails.h`'s
- * `scmDefaultGames`, including each game's `alternateHostUrls`.
- */
-export const GAMES_WITH_OWN_UI = [
-    'carrionfields.net',    // CF-loader installs CFGUI
-    'medievia.com',         // MedBootstrap installs MedUI
-    'icesus.org',           // icesus-loader installs Icesus' own interface
-    // mg-loader installs MorgenGrauen's own interface:
-    'mud.morgengrauen.info', 'mg.mud.de', 'mg.morgengrauen.info', 'morgengrauen.info',
-];
-
 /** Every bundled default, whatever the host — for tests and tooling. */
 export const ALL_DEFAULTS: DefaultPackage[] = [RUN_LUA_CODE, MUDLET_MAPPER, GENERIC_MAPPER, MPKG, GUI_DROP, BASE_UI];
 
@@ -151,22 +138,40 @@ export const ALL_DEFAULTS: DefaultPackage[] = [RUN_LUA_CODE, MUDLET_MAPPER, GENE
  * The starter UI is the one host-conditional pick: Mudlet skips it for players
  * who aren't new (`experiencedMudletPlayer()` — any profile folder older than
  * six months) because "veterans will have their own layouts already", and for
- * games whose own loader installs a full interface. Mudlet Web has no profile-age
- * signal to mirror the first, so `createdAt` stands in for it — see
- * {@link isNewProfile}.
+ * games that install a full interface of their own — it would only fight that
+ * interface for the same screen space. Mudlet Web has no profile-age signal to
+ * mirror the first, so `createdAt` stands in for it — see {@link isNewProfile}.
+ * The second reads the game catalogue's `ownUi` the way `setupPreInstallPackages`
+ * does: a game with a bundled loader always brings its interface, while one that
+ * sends it by Client.GUI only does when the profile lets that in
+ * (`serverGuiAccepted` — the profile's `allowMudPackageInstall`).
  *
  * mpkg is the one *build*-conditional pick, and for the reason Mudlet has:
  * see {@link TEST_BUILD}.
  */
-export function stockDefaults(host?: string, conn?: { createdAt?: string }): DefaultPackage[] {
+export function stockDefaults(
+    host?: string,
+    conn?: { createdAt?: string },
+    serverGuiAccepted = true,
+): DefaultPackage[] {
     const isIreMapperGame = !!host && IRE_MAPPER_GAMES.some(g => g.toLowerCase() === host);
     const packages = [RUN_LUA_CODE, isIreMapperGame ? MUDLET_MAPPER : GENERIC_MAPPER];
     // Every host gets the package manager, except under the spec corpus — see TEST_BUILD.
     if (!TEST_BUILD) packages.push(MPKG);
     packages.push(GUI_DROP);
-    const gameHasOwnUi = !!host && GAMES_WITH_OWN_UI.some(g => g === host);
-    if (isNewProfile(conn) && !gameHasOwnUi) packages.push(BASE_UI);
+    if (isNewProfile(conn) && !ownUiArrives(host, serverGuiAccepted)) packages.push(BASE_UI);
     return packages;
+}
+
+/**
+ * Whether the game at `host` will install a full interface of its own — Mudlet's
+ * `ownUiArrives` in `setupPreInstallPackages`. A bundled loader always does; a
+ * Client.GUI package only arrives if the profile accepts one.
+ */
+export function ownUiArrives(host: string | undefined, serverGuiAccepted: boolean): boolean {
+    if (!host) return false;
+    const ownUi = gameOwnUi(host);
+    return ownUi === 'bundledLoader' || (ownUi === 'clientGui' && serverGuiAccepted);
 }
 
 /**
@@ -200,8 +205,9 @@ export function resolveDefaultPackages(
     brandPackages: InstallablePackage[] | undefined,
     host?: string,
     conn?: { createdAt?: string },
+    serverGuiAccepted = true,
 ): InstallablePackage[] {
-    return brandPackages ?? stockDefaults(host, conn);
+    return brandPackages ?? stockDefaults(host, conn, serverGuiAccepted);
 }
 
 /** Hostname `stockDefaults` matches its game lists against, lowercased. */
@@ -260,7 +266,9 @@ export async function ensureDefaultPackages(connectionId: string, vfs: ProfileVF
     const removedByUser = new Set(state.connectionProfile[connectionId]?.uninstalledPackages ?? []);
     // BrandPackage is shape-compatible with DefaultPackage, plus `removable`.
     const host = connectionHost(conn);
-    const defaults = resolveDefaultPackages(getBrand().packages, host, conn);
+    // Same undefined-means-true as the Client.GUI handler that reads it.
+    const serverGuiAccepted = state.connectionProfile[connectionId]?.allowMudPackageInstall !== false;
+    const defaults = resolveDefaultPackages(getBrand().packages, host, conn, serverGuiAccepted);
     const installed: string[] = [];
     for (const def of defaults) {
         const current = installedPackages.find(p => p.name === def.name);

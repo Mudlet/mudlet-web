@@ -8,6 +8,10 @@
 //
 // Regenerate with: node scripts/sync-mudlet-games.mjs [path/to/TGameDetails.h]
 
+/** How a game installs its own full interface (Mudlet's `GameDetail::OwnUi`,
+ *  less `None`). */
+export type GameOwnUi = 'bundledLoader' | 'clientGui';
+
 /** One entry of Mudlet's bundled-game catalogue (its C++ `GameDetail`). */
 export interface BundledGame {
     name: string;
@@ -23,9 +27,11 @@ export interface BundledGame {
      *  the bundler only emits assets it can see referenced. */
     iconFile?: string;
     description: string;
-    /** The game's own loader installs its full interface, so the generic
-     *  starter UI is not preinstalled for it. */
-    providesOwnUi?: boolean;
+    /** How the game installs its own full interface, if it does (Mudlet's
+     *  `GameDetail::OwnUi`): `bundledLoader` — a loader bundled with Mudlet
+     *  fetches it; `clientGui` — the game sends a Client.GUI package, often
+     *  only after login. Absent means neither (`OwnUi::None`). */
+    ownUi?: GameOwnUi;
     /** Other hostnames the game answers on. */
     alternateHostUrls?: string[];
 }
@@ -49,6 +55,7 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='https://abandonedrealms.com'>Website</a><br><a href='https://abandonedrealms.com/forum'>Forum</a>",
         "icon": ":/icons/abandonedrealms_icon.jpg",
         "description": "The Abandoned Realms is a completely free RP-enforced, PK-encouraged, MUD in a fantasy setting (swords/magic/lore/intrigue) that has been up and running constantly since 1997.\n\nWith 20 races and 16 classes, there are vast possibilities for players to explore and enjoy. The Abandoned Realms has a dedicated staff of highly skilled immortals/coders/builders, and a diverse base players online at any given time. There are extensive opportunities for role-play, including writing character background entries, building your own house (including decor), contributing to the in-game newspaper, engaging in political intrigue, choosing a deity to worship (and opening exceptional Immortal RP opportunities), and more.\n\nIt is a dangerous realm, filled with exceptional killers but new players are not hunted – they are welcomed and supported. Perma-death exists, but it is common for characters to live for hundreds of  hours, or as long as the player desires. Information and advice are shared freely – see The Codex for item identifications/locations, the logboard for battles, and the forum and discord for gameplay discussion and advice.\n\nIf you are interested in a completely free, immersive RP/PK experience, in a vibrant land filled with lore/intrigue, where you can forge long-lasting friendships and bitter rivalries, and have an opportunity to leave your lasting mark and be remembered forever, then welcome ye to the Abandoned Realms.",
+        "ownUi": "clientGui",
         "iconFile": "abandonedrealms_icon.jpg"
     },
     {
@@ -119,6 +126,7 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='https://darkmists.org'>https://darkmists.org</a>",
         "icon": ":/icons/banner_darkmists.png",
         "description": "Dark Mists is a persistent online fantasy world featuring 24 races and 11 classes, 9 of which branch into distinct subclasses, with dozens of quests and hundreds of skills and spells tied to class, subclass, or race. The world is shaped by the players through active clans and a worship system with direct interaction with the Gods of Dark Mists. The Immortals are present in-game and continue developing new content for the world. The community is welcoming and helpful to newcomers while encouraging competition and growth. Houses remain active and provide guidance and support for new and returning players. Roleplay is required and playerkilling is an integral part of character growth, rewarding wit, courage, and ambition. The world continues to evolve with new discoveries and challenges. Come carve out your legacy in Dark Mists.",
+        "ownUi": "clientGui",
         "iconFile": "banner_darkmists.png"
     },
     {
@@ -169,6 +177,7 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='https://mud.ren/'>https://mud.ren/</a>",
         "icon": ":/icons/mudren.png",
         "description": "天下风云出我辈，一入江湖岁月催。\n皇图霸业谈笑中，不胜人生一场醉。\n提剑跨骑挥鬼雨，白骨如山鸟惊飞。\n尘事如潮人如水，只叹江湖几人回。\n\n中文开源武侠MUD炎黄群侠传，游戏包括25大门派和5大世家，正邪只在一念间；近千门武学等你学习，上百种任务随你体验；让自己成为一代宗师，江湖笑，恩怨了。",
+        "ownUi": "clientGui",
         "iconFile": "mudren.png"
     },
     {
@@ -199,7 +208,6 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='https://ropmud.com/index.html'>Website</a><br><a href='https://discord.gg/CkYm9WRnyw'>Discord</a>",
         "icon": ":/icons/banner_ropmud.png",
         "description": "Rites of Passage is a PVPVE (Player vs Player vs Environment) MUD where Good and Evil are locked in eternal war. Hunt powerful monsters for legendary loot, then defend it from enemy players hunting you. Every expedition into dangerous territory carries the thrill of both PvE challenge and PvP risk.\n\nThe environment is deadly - 80+ areas filled with creatures guarding valuable equipment, quests that reward the bold, and a remort system that lets you grow stronger with each life. But the real tension comes from other players. That raid boss you're fighting? The enemy faction might be watching, waiting for you to weaken before they strike. That rare gem you just looted? You'll need to make it home alive.\n\nThis is a PK MUD. Combat between Good and Evil players isn't just allowed - it's encouraged. Killing enemies earns warpoints, experience, and their gear. Climb the ranks. Make the topten list. Build your reputation through conquest. If you want the risk of PvP combined with challenging environment combat, you've found your home.",
-        "providesOwnUi": true,
         "iconFile": "banner_ropmud.png"
     },
     {
@@ -270,6 +278,7 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='http://midnightsun2.org/'>http://midnightsun2.org/</a>",
         "icon": ":/icons/midnightsun2.png",
         "description": "Midnight Sun is a medieval fantasy LPmud that has been around since 1991. We are a non-PK, hack-and-slash game, cooperative rather than competitive in nature, and with a strong sense of community.",
+        "ownUi": "clientGui",
         "iconFile": "midnightsun2.png"
     },
     {
@@ -300,6 +309,7 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='http://www.stickmud.com/'>stickmud.com</a>",
         "icon": ":/icons/stickmud_icon.jpg",
         "description": "StickMUD is a free, medieval fantasy game with a graphical user interface and a depth of features. You are welcomed into the game world with maps and dashboards to complement your imagination. Newbies escape quickly into game play with minimal study time. Awaken under the wondrous Mallorn Tree in the center of Newbie Park and learn by playing. Challenge non-player characters to gain experience, advance level and maximize your stats. Between battles, sit on the enchanted bench under the Tree to rapidly heal and reduce wait time. Signs in the park present game features such as races, clans and guilds. Read up on teasers about the adventures on the path ahead like dragons, castles and sailing. Join a guild and learn the ways of a Bard, Fighter, Mage, Necromancer, Ninja, Thief, Healer or Priest. Train skills in both craft and combat aligned with your guild. Participate in frequent game-wide events to earn points exchanged for gold, experience or skill training. Heroes and villains alike are invited! Role play is optional and player vs. player combat is allowed in much of the game. StickMUD was born in Finland in June 1991 and is now hosted in Canada. Our diverse community of players and active game engineers are ready to welcome new players like you to one of the best text-based multi-player games ever!",
+        "ownUi": "clientGui",
         "iconFile": "stickmud_icon.jpg"
     },
     {
@@ -310,6 +320,7 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='http://www.clessidra.it/'>http://www.clessidra.it</a>",
         "icon": ":/icons/clessidra.jpg",
         "description": "Clessidra e' il primo MUD completamente in italiano mai creato. Su Clessidra potrete trovare solo aree originali ed in italiano. Molte caratteristiche rendono Clessidra uno dei migliori, se non il migliore, MUD in Italia : Avanzati sistemi di spostamento, sfide uno-contro-uno contro gli amici, o i nemici, L'arena e i combattimenti, Le sfide all'ultimo sangue e i MOB intelligenti con le loro Quest e tecniche di combattimento, un sistema di assegnazione di missioni casuali e un avanzatissimo sistema di Clan che permettera' guerre e conquiste. Disponibilità di mercenari in caso di poca utenza, sistema di produzione/mercato per ottenere esclusivi oggetti, un interfaccia grafica per aiutarti a giocare, sia per i novizi che gli esperti. Un MUD che si evolve di continuo.",
+        "ownUi": "clientGui",
         "iconFile": "clessidra.jpg"
     },
     {
@@ -320,6 +331,7 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='https://www.reinosdeleyenda.es/'>Sitio web principal</a><br><a href='https://www.reinosdeleyenda.es/foro/'>Foros</a><br><a href='https://wiki.reinosdeleyenda.es/'>Wiki</a>",
         "icon": ":/icons/reinosdeleyenda_mud.png",
         "description": "El mud Español gratis con más de 20 años de historia.\n\nReinos de Leyenda toma lugar en el siempre cambiante mundo de Eirea, devastado por las intrigas de los dioses tras más de un millar de años de desprecio y cruenta guerra entre sus fanáticos peones mortales.\n\nLa historia se escribe día a día, tomando en consideración las elecciones de los jugadores para decidir las consecuencias irreversibles de este conflicto imperecedero.\n\nÉste es un MUD con PvP que permite al jugador establecer cuánto quiere arriesgar al morir: a más riesgo, más gloria ganará por sus heroicidades. La interpretación (Rol) no está obligada, pero si recompensada con habilidades especiales -no orientadas al combate- y tesoros únicos.\n\nEl detallado creador del juego te permitirá elegir tu deidad -o renegar completamente de los dioses- y unirte a uno de los reinos que los jugadores se encargan de gobernar para explorar un mundo viviente, sumergirte en los misterios del océano, dar forma a tu legado, forjar maravillas olvidadas para ti -o tus aliados- y luchar por fe, gloria o dinero.",
+        "ownUi": "clientGui",
         "iconFile": "reinosdeleyenda_mud.png"
     },
     {
@@ -330,6 +342,7 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='https://www.fierymud.org/'>https://www.fierymud.org</a>",
         "icon": ":/icons/fiery_mud.png",
         "description": "The original vision of FieryMUD was to create a challanging MUD for advanced players. This new reborne Fiery is a hope to bring back the goals of the past by inflicting certain death on unsuspecting players. FieryMUD will continue to grow and change through the coming years and those players who seek challenge and possess imagination will come in search of what the 3D world fails to offer them.",
+        "ownUi": "clientGui",
         "iconFile": "fiery_mud.png"
     },
     {
@@ -369,7 +382,7 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='http://www.carrionfields.net'>www.carrionfields.net</a>",
         "icon": ":/icons/carrionfields.png",
         "description": "Carrion Fields is a unique blend of high-caliber roleplay and complex, hardcore player-versus-player combat that has been running continuously, and 100% free, for over 30 years.\n\nChoose from among 21 races, 17 highly customizable classes, and several cabals and religions to suit your playstyle and the story you want to tell. Our massive, original world is full of secrets and envied limited objects that take skill to acquire and great care to keep.\n\nWe like to think of ourselves as the Dark Souls of MUDs, with a community that is supportive of new players - unforgiving though our world may be. Join us for a real challenge and real rewards: adrenaline-pumping battles, memorable quests run by our volunteer immortal staff, and stories that will stick with you for a lifetime.",
-        "providesOwnUi": true,
+        "ownUi": "bundledLoader",
         "iconFile": "carrionfields.png"
     },
     {
@@ -380,6 +393,7 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='https://www.cleftofdimensions.net/'>cleftofdimensions.net</a><br><a href='https://discord.gg/cSqkpbu'>Discord Guild</a>",
         "icon": ":/icons/cleftofdimensions.png",
         "description": "Do you have a soft spot for an old SNES RPG? Are you a fan of retro gaming? The Cleft of Dimensions is an adventure-driven MUD with content inspired by a variety of classic video games. Do you want to jump on goombas? Maybe you'd rather immolate them with lava or bombard them with meteors. Then again, why fight when enslavement's an option? If that doesn't work out, you've got this motorcycle you could crash into them. The Cleft has 16 character classes, each with a distinctive playstyle.\n\nGameplay in the Cleft features exploration, puzzles, quests, and combat. At time of writing, the world contains 98 areas. Quests range from deciphering treasure maps and committing industrial espionage to seeking the blessings of the mana spirits or just going fishing. A remort system facilitates repeat playthroughs to find content you missed the first time around.\n\nThe Cleft opened in July 2000 and has been in active development ever since. We're always innovating. Recent features include Discord integration and areas written with artificial intelligence. Check us out!",
+        "ownUi": "clientGui",
         "iconFile": "cleftofdimensions.png"
     },
     {
@@ -390,6 +404,7 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='https://www.legendsofthejedi.com/'>legendsofthejedi.com</a>",
         "icon": ":/icons/legendsofthejedi_120x30.png",
         "description": "Legends of the Jedi is a text-based roleplaying experience that immerses players in a multiplayer world where they can rewrite classic Star Wars stories with their own heroes, villains, battles, and endings. Over the course of each two-year timeline, the game explores all the key eras of the Star Wars Expanded Universe.\n\nTake and hold planets as an Imperial Stormtrooper, command the Rebel navy and liberate the galaxy, pursue targets as a bounty hunter, or shape things on a larger scale as a member of the Galactic Senate. Maybe you'll even be one of the few born with force sensitivity, destined to be trained by Jedi or Sith.\n\nThe game offers an extensive crafting system for engineers to supply weapons, armor, and ships to the galaxy. Develop new, cutting-edge armaments to give your side an edge, or open a shop in a bustling commercial district and become wealthy as part of a powerful engineering conglomerate.\n\nLOTJ offers full PVP in both ground and space combat, governed by a set of rules to minimize griefing and ensure that all kills have sufficient in-character cause.\n\nWhat role will you play? The legend awaits!",
+        "ownUi": "clientGui",
         "iconFile": "legendsofthejedi_120x30.png"
     },
     {
@@ -400,6 +415,7 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='https://mume.org/'>mume.org</a>",
         "icon": ":/icons/mume.png",
         "description": "Multi-Users in Middle-earth (MUME) is a highly competitive world PvP DikuMUD, set in J. R. R. Tolkien’s fictional world of Middle-earth, as described in The Hobbit and The Lord of the Rings, where players may choose to join the epic war between the forces of Sauron and the armies of the Free peoples. In MUME players can explore, role-play, acquire achievements, and complete quests across many challenging locations across Middle-earth such as Lothlórien, the Shire, Bree, Rivendell, Goblin-town, Mirkwood, Dol Guldur, and the Mines of Moria. The game is completely at no cost to play and has been continually enhanced since its inception in the fall of 1991.",
+        "ownUi": "clientGui",
         "iconFile": "mume.png"
     },
     {
@@ -410,7 +426,7 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='http://morgengrauen.info/'>MorgenGrauen Webseite</a><br><a href='https://www.youtube.com/MorgenGrauen'>YouTube Kanal</a><br><a href='https://discord.gg/nHJnYHk'>Discord Server</a>",
         "icon": ":/icons/morgengrauen_480x120.png",
         "description": "Willkommen im Morgengrauen, dem größten deutschsprachigen MUD, das seit 1992 kontinuierlich weiterentwickelt wird.\n\nEntdecke hunderte einzigartige Abenteuer! Steigere Deine Fähigkeiten in besonderen Gilden: Dämonische Krieger des Chaos, betrunkene Bierschüttler, Werwölfe, Orks, Elfen, und viele weitere.\n\nUnsere freundliche Spielerschaft hilft Dir gerne bei Deinen ersten Schritten.\n\nSpiel jetzt oder nie!",
-        "providesOwnUi": true,
+        "ownUi": "bundledLoader",
         "alternateHostUrls": [
             "mg.mud.de",
             "mg.morgengrauen.info",
@@ -426,6 +442,7 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='https://infinitymud.com/'>infinitymud.com</a>",
         "icon": ":/icons/infinity_480x120.png",
         "description": "Prepare to immerse yourself in Infinity, a city between times and dimensions that allows entry into any number of lands and timelines. Infinity LPMud provides willing adventurers and questseekers with a venue of original ideas, mind boggling quests, and bloodcurdling beasts, spinning into realms of power, magic, and technology, and many players with which to share your adventures.",
+        "ownUi": "clientGui",
         "iconFile": "infinity_480x120.png"
     },
     {
@@ -436,7 +453,7 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='http://medievia.com/'>Medievia</a>",
         "icon": ":/icons/medievia.png",
         "description": "If you take the deepest and most advanced game possible, and mix it with the best chat world around, what you have is Medievia.\n\nImagine...\n    Endless player-created areas to explore for the first time.\n    Ships you can take out to sea. You can go crabbing, kill monsters, attack other ships, explore new islands, etc.\n    Dragons that hunt you, good dragons that fly you places, dragon lairs you can defeat, etc.\n    Trading for gold where you take goods via covered wagon/mules across the wilderness through adventure after adventure from trade post to trade post. Now you can even go right under the ocean to undersea trading posts.\n    Player vs Player action in zones, ships, wilderness, herobattles, arenas, CPK, NPK, LPK, etc.\n    Joining a clan, the clan can join a town, or go ahead and make their own town in the wilderness.\n    Giving birth and creating your own bloodline. If your bloodline gets big enough you can build homes and castles.\n    A game that has the intuition to track your happiness, pride, sadness, and fear while changing itself to fit your needs!\n    Weather, storms, wind, fire, floods, disease, even asteroids. This may be text but it is the most dynamic game ever attempted. The wind affects the ships, where fire spreads, and even how some critters smell you if you are upwind from them.\n\nDo you dare enter?",
-        "providesOwnUi": true,
+        "ownUi": "bundledLoader",
         "iconFile": "medievia.png"
     },
     {
@@ -447,6 +464,7 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='https://www.dragonfiremud.com/'>https://www.dragonfiremud.com/</a>",
         "icon": ":/icons/dragonfire_icon.png",
         "description": "Dragonfire MUD is an ancient LPMUD that has been online since 1989, offering deep lore and a classic text-based RPG experience. It features 16 distinctive guilds, over 10,000 unique rooms, and hundreds of custom quests that you can tackle at your own pace.\n\nExplore realms spanning fantasy, modern, future, and shadowy secrets, hunt dragons for experience and loot, and discover hidden areas and guilds. Optional player killing is allowed, and the community welcomes new adventurers and builders alike.",
+        "ownUi": "clientGui",
         "iconFile": "dragonfire_icon.png"
     },
     {
@@ -457,6 +475,7 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='https://www.voidmud.com/'>https://www.voidmud.com/</a>",
         "icon": ":/icons/voidmud_icon.png",
         "description": "Beyond the Void is an EverQuest-inspired text RPG that brings the world of Norrath to life with a reimagined storyline touched by an ancient alien race and its rift stones for fast travel. The Void serves as a central hub with trainers, guild masters, and trade for every profession.\n\nFree to play and ready for adventurers, the game emphasizes classic EverQuest combat in a modern text-only experience. Build a character with up to three classes, pursue epic quests and rebirth bonuses, and enjoy quality-of-life features like a custom Mudlet UI and real-time maps.",
+        "ownUi": "clientGui",
         "iconFile": "voidmud_icon.png"
     },
     {
@@ -477,7 +496,7 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='https://www.icesus.org/'>Website</a><br><a href='https://discord.gg/j9cSPyAzQb'>Discord</a>",
         "icon": ":/icons/icesus_480x120.png",
         "description": "Icesus is a free fantasy text RPG running since 1995. Actively developed, community-run, and full of deep systems.\n\nBuild a character from 27 races and 16 guilds. Fight in tactical party combat, explore the frozen Valley of Aegic, and earn your place in player-driven provinces.\n\nOld-school depth. Modern access. New players welcome.",
-        "providesOwnUi": true,
+        "ownUi": "bundledLoader",
         "iconFile": "icesus_480x120.png"
     },
     {
@@ -488,6 +507,7 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "websiteInfo": "<a href='https://phoenixmud.net'>Website</a><br><a href='https://phoenixmud.net/PhoenixMUD.mpackage'>Mudlet package</a>",
         "icon": ":/icons/phoenixmud_480x120.png",
         "description": "PhoenixMUD is a free classic DikuMUD, online since 1996. 20,685 rooms across 276 zones, 16 classes and 15 races, and 400+ levels of progression: 1-100 to Hero, then three full remort climbs.\n\nOur official Mudlet package installs itself on connect: GMCP vitals and effects panes, channel routing into chat windows, and an embedded mapper preloaded with the whole world. The browser client adds a World Atlas: a live map with fog-of-war and route-finding.\n\nNo payment of any kind, and character creation is open. Actively developed, with a friendly community that makes room for newcomers. New players welcome.",
+        "ownUi": "clientGui",
         "iconFile": "phoenixmud_480x120.png"
     }
 ];
@@ -498,12 +518,13 @@ export function findBundledGame(name: string): BundledGame | null {
     return BUNDLED_GAMES.find(g => g.name === name) ?? null;
 }
 
-/** Whether the game reachable at `hostUrl` installs its own full interface,
- *  in which case the generic starter UI is not preinstalled (Mudlet's
- *  TGameDetails::gameProvidesOwnUi). */
-export function gameProvidesOwnUi(hostUrl: string): boolean {
+/** How the game reachable at `hostUrl` (or any of its alternate hostnames,
+ *  case-insensitively) installs its own full interface — `'none'` when it
+ *  doesn't, or isn't a bundled game at all. Mudlet's TGameDetails::gameOwnUi. */
+export function gameOwnUi(hostUrl: string): GameOwnUi | 'none' {
     const wanted = hostUrl.toLowerCase();
-    return BUNDLED_GAMES.some(g => g.providesOwnUi
+    const game = BUNDLED_GAMES.find(g => g.ownUi
         && (g.hostUrl.toLowerCase() === wanted
             || (g.alternateHostUrls ?? []).some(u => u.toLowerCase() === wanted)));
+    return game?.ownUi ?? 'none';
 }

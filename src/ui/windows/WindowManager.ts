@@ -884,13 +884,38 @@ export class WindowManager {
         if (sizeChanged && this.onRaiseEvent) {
             this.lastEmittedSize.set(id, { w, h });
             // Mudlet argument order:
-            //   sysWindowResizeEvent(width, height)         — main window
+            //   sysWindowResizeEvent(width, height, "main")   — main window
             //   sysUserWindowResizeEvent(width, height, name) — user windows
             // GeyserReposition's user-window branch reads `arg.."Container" == window.name`,
             // so the name must be the third arg, not the first.
-            if (id === 'main') this.onRaiseEvent('sysWindowResizeEvent', [w, h]);
-            else               this.onRaiseEvent('sysUserWindowResizeEvent', [w, h, id]);
+            if (id === 'main') {
+                this.onRaiseEvent('sysWindowResizeEvent', this.mainResizeEventArgs(w, h));
+            } else if (!this.isMiniConsole(id)) {
+                // Only a user window raises this in Mudlet (TConsole::resizeEvent
+                // checks for UserWindow): a miniconsole — or the embedded
+                // mapper — resizing is not news to sysUserWindowResizeEvent
+                // handlers, which would otherwise hear every createMiniConsole.
+                this.onRaiseEvent('sysUserWindowResizeEvent', [w, h, id]);
+            }
         }
+    }
+
+    /**
+     * The arguments of a main-window `sysWindowResizeEvent` for a main viewport
+     * of `w`×`h` — Mudlet's TConsole::raiseMudletSysWindowResizeEvent: the size
+     * of the console area left once the setBorder* insets are taken out, then
+     * the console's name. The viewport measured here already stops short of the
+     * command line, which desktop subtracts as well. getMainWindowSize() still
+     * reports the whole viewport, borders included — the two differ in Mudlet
+     * too.
+     */
+    mainResizeEventArgs(w: number, h: number): [number, number, string] {
+        const b = selectProfileField(useAppStore.getState(), this._connectionId, 'outputBorders');
+        return [
+            Math.max(0, Math.round(w - (b?.left ?? 0) - (b?.right ?? 0))),
+            Math.max(0, Math.round(h - (b?.top ?? 0) - (b?.bottom ?? 0))),
+            'main',
+        ];
     }
 
     /**

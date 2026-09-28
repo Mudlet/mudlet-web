@@ -132,6 +132,19 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
                 + 'profile ... by the connection dialog"). Note that getProfiles() DOES list every profile that is '
                 + 'not currently open — unloaded profiles are covered; only the folder-without-a-record case is not.',
         },
+        {
+            name: 'Tests C++ functions in the Miscallaneous category / The Miscallaneous specs clean up after themselves / leaves no file or folder of its own behind',
+            reason:
+                'The half of this spec that checks the profile itself runs and passes. The other half lists the '
+                + 'PARENT of getMudletHomeDir() with lfs.dir(), and a profile VFS is mounted AT its own directory '
+                + 'and cannot read above it — the same boundary, for the same reason, as the Package entry below: '
+                + 'a profile reaching its siblings is what the mount exists to prevent. This used to pass only by '
+                + 'accident: lfs.mkdir() was recursive, so the "lists a profile that is not loaded" spec above '
+                + 'quietly created the profiles folder in the in-memory root when it made its scratch folder under '
+                + 'it. lfs.mkdir() is now the non-recursive call LuaFileSystem makes (#233), that mkdir fails as '
+                + 'it must, and lfs.dir() over the parent answers nil, which the spec\'s `for entry in lfs.dir(...)` '
+                + 'calls. There is nothing of a profile\'s own that could be left up there to find.',
+        },
     ],
     Package: [
         {

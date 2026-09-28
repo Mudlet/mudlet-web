@@ -108,6 +108,30 @@ export class SqliteClient {
         return { kind: 'rows', rows, columns };
     }
 
+    /** The declared types of the columns `sql` returns — LuaSQL's
+     *  cursor:getcoltypes() — with null for a column that is an expression
+     *  rather than a table column. Prepares the statement without stepping it,
+     *  so nothing runs. Null when it does not prepare. */
+    columnDeclTypes(dbId: number, sql: string): (string | null)[] | null {
+        const db = this.dbs.get(dbId);
+        if (!db) return null;
+        let stmt: ReturnType<Database['prepare']>;
+        try {
+            stmt = db.prepare(sql);
+        } catch {
+            return null;
+        }
+        try {
+            const types: (string | null)[] = [];
+            for (let i = 0; i < stmt.columnCount; i++) {
+                types.push(this.s.capi.sqlite3_column_decltype(stmt.pointer!, i));
+            }
+            return types;
+        } finally {
+            stmt.finalize();
+        }
+    }
+
     exportFile(dbId: number): Uint8Array {
         const db = this.dbs.get(dbId);
         if (!db) throw new Error('invalid dbId');

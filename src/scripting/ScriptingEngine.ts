@@ -3415,7 +3415,10 @@ export class ScriptingEngine implements EngineHost {
         // multiline flag, counting the list as handed in — blank entries are
         // dropped later, when the trigger stores its patterns, so a two-entry
         // list with one blank still makes an AND trigger whose captures land in
-        // `multimatches` rather than `matches`.
+        // `multimatches` rather than `matches`. It does that only at the root:
+        // with a parent it builds the trigger through the parent constructor
+        // and just sets the pattern list, so the trigger stays an ordinary OR
+        // one however many patterns it has (mudlet-web#238).
         const uuid = store.addTrigger(this.connectionId, {
             name,
             enabled: true,
@@ -3426,7 +3429,7 @@ export class ScriptingEngine implements EngineHost {
             language: 'lua',
             fireLength: 0,
             multipleMatches: false,
-            multiline: patternStrings.length > 1,
+            multiline: parentId === null && patternStrings.length > 1,
             delta: 0,
             isFilter: false,
             ...inheritedPackage(triggers, parentId),
@@ -3660,7 +3663,11 @@ export class ScriptingEngine implements EngineHost {
      * button under an existing toolbar group, with no command and no script:
      * TLuaInterpreter::tempButton gives it an empty one, and its third
      * argument is the orientation. Returns the new id, or -1 when no toolbar
-     * of that name exists. `orientation` is round-tripped
+     * of that name exists or a button or toolbar already has the name —
+     * desktop refuses a duplicate rather than adding a second button, so a
+     * script that makes its buttons on every load does not pile them up
+     * (mudlet-web#238). The Lua wrapper turns -1 into no value, as desktop
+     * returns. `orientation` is round-tripped
      * onto the leaf for parity with Mudlet — the renderer doesn't use it at the
      * leaf, but ports that read it back via the store get a stable value.
      */
@@ -3670,6 +3677,9 @@ export class ScriptingEngine implements EngineHost {
         const buttons = store.connectionButtons[this.connectionId] ?? [];
         const parent = buttons.find(b => b.isGroup && b.name === toolbar);
         if (!parent) return -1;
+        // TLuaInterpreter::tempButton's findAction(name) looks at every
+        // action, toolbars included, not just the ones on this toolbar.
+        if (buttons.some(b => b.name === name)) return -1;
         const uuid = store.addButton(this.connectionId, {
             name,
             enabled: true,
@@ -3690,13 +3700,14 @@ export class ScriptingEngine implements EngineHost {
      * Mudlet `tempButtonToolbar(name [, orientation [, location]])`. Creates a
      * transient toolbar (ButtonNode group). `orientation`: 0=horizontal,
      * 1=vertical. `location`: 0=top, 1=bottom, 2=left, 3=right, 4=floating.
-     * Returns -1 when a toolbar group of that name already exists.
+     * Returns -1 when a toolbar or button of that name already exists —
+     * desktop's findAction(name) is not limited to toolbars.
      */
     createTempButtonToolbar(name: string, orientation: number, location: number): number {
         if (!name) return -1;
         const store = useAppStore.getState();
         const buttons = store.connectionButtons[this.connectionId] ?? [];
-        if (buttons.some(b => b.isGroup && b.name === name)) return -1;
+        if (buttons.some(b => b.name === name)) return -1;
         const uuid = store.addButton(this.connectionId, {
             name,
             enabled: true,

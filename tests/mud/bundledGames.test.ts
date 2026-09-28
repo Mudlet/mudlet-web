@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { BUNDLED_GAMES, findBundledGame, gameProvidesOwnUi } from '../../src/mud/games/bundledGames';
+import { BUNDLED_GAMES, findBundledGame, gameOwnUi } from '../../src/mud/games/bundledGames';
 import { connectionFromGame } from '../../src/ui/BundledGameGrid';
 
 /**
@@ -36,9 +36,9 @@ describe('bundled game catalogue', () => {
     });
 
     it('keeps the optional trailing fields', () => {
-        // Icesus is the last entry and carries providesOwnUi; a parser that
-        // stopped at the seventh field would drop it silently.
-        expect(findBundledGame('Icesus')?.providesOwnUi).toBe(true);
+        // Icesus carries an OwnUi enumerator after its description; a parser
+        // that stopped at the seventh field would drop it silently.
+        expect(findBundledGame('Icesus')?.ownUi).toBe('bundledLoader');
         expect(findBundledGame('Icesus')?.tlsEnabled).toBe(true);
         // MorgenGrauen is the one entry with alternate hostnames.
         expect(findBundledGame('MorgenGrauen')?.alternateHostUrls).toContain('mg.mud.de');
@@ -63,9 +63,17 @@ describe('bundled game catalogue', () => {
     });
 
     it('reports own-UI games by any of their hostnames', () => {
-        expect(gameProvidesOwnUi('mg.mud.de')).toBe(true);
-        expect(gameProvidesOwnUi('MG.MUD.DE')).toBe(true);
-        expect(gameProvidesOwnUi('achaea.com')).toBe(false);
+        expect(gameOwnUi('mg.mud.de')).toBe('bundledLoader');
+        expect(gameOwnUi('MG.MUD.DE')).toBe('bundledLoader');
+        expect(gameOwnUi('elephant.org')).toBe('none');
+        expect(gameOwnUi('not-a-game.example')).toBe('none');
+    });
+
+    it('tells a bundled loader from a Client.GUI interface', () => {
+        // TGameDetails' GameDetail::OwnUi: both kinds are in the catalogue,
+        // and the starter UI treats them differently.
+        const kinds = new Set(BUNDLED_GAMES.map(g => g.ownUi).filter(Boolean));
+        expect(kinds).toEqual(new Set(['bundledLoader', 'clientGui']));
     });
 });
 

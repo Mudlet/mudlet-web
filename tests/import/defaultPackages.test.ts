@@ -8,12 +8,13 @@ import {
     connectionHost,
     ensureDefaultPackages,
     IRE_MAPPER_GAMES,
-    GAMES_WITH_OWN_UI,
+    ownUiArrives,
     isNewProfile,
 } from '../../src/import/defaultPackages';
 import { installPackageFromBytes } from '../../src/import/packageInstaller';
 import { useAppStore } from '../../src/storage/appStore';
 import type { ProfileVFS } from '../../src/scripting/vfs/ProfileVFS';
+import { BUNDLED_GAMES } from '../../src/mud/games/bundledGames';
 
 /**
  * Each default package declares metadata by hand (`name`, and optionally
@@ -61,8 +62,16 @@ const ARCHIVE_PATHS: Record<string, string> = {
  *  the `createdAt` stamp addConnection writes — so the mapper/run-lua-code cases
  *  below aren't quietly also asserting the starter-UI gate. */
 const NEW_PROFILE = { createdAt: '2026-08-02T00:00:00.000Z' };
-const namesFor = (host?: string, conn: { createdAt?: string } = NEW_PROFILE) =>
-    stockDefaults(host, conn).map(d => d.name);
+const namesFor = (host?: string, conn: { createdAt?: string } = NEW_PROFILE, serverGuiAccepted = true) =>
+    stockDefaults(host, conn, serverGuiAccepted).map(d => d.name);
+
+/** Every hostname — main and alternate — of the catalogue games with `ownUi`. */
+const ownUiHosts = (ownUi: string) => BUNDLED_GAMES
+    .filter(g => g.ownUi === ownUi)
+    .flatMap(g => [g.hostUrl, ...(g.alternateHostUrls ?? [])]);
+const LOADER_UI_HOSTS = ownUiHosts('bundledLoader');
+const CLIENT_GUI_HOSTS = ownUiHosts('clientGui');
+const GAMES_WITH_OWN_UI = [...LOADER_UI_HOSTS, ...CLIENT_GUI_HOSTS];
 
 describe('default packages', () => {
     it('always ships exactly one mapper, so the map follows the player', () => {
@@ -199,18 +208,46 @@ describe('default packages', () => {
     });
 
     describe('starter UI', () => {
-        // Mirrors mudlet.cpp: appended unless TGameDetails flags the game as
-        // providing its own interface via its bundled loader.
+        // Mirrors mudlet.cpp's setupPreInstallPackages: appended unless the
+        // game's own interface arrives — TGameDetails' OwnUi::BundledLoader
+        // always, OwnUi::ClientGui only when the profile accepts server GUIs.
         it('ships on games that provide no interface of their own', () => {
-            for (const host of ['elephant.org', 'alteraeon.com', 'stickmud.com', undefined]) {
+            for (const host of ['elephant.org', 'achaea.com', undefined]) {
                 expect(namesFor(host), `host ${host}`).toContain('mudlet-base-ui');
             }
         });
 
+        it('reads which games bring their own UI from the catalogue', () => {
+            // The four whose loader Mudlet bundles, MorgenGrauen by every name.
+            expect(LOADER_UI_HOSTS).toEqual(expect.arrayContaining([
+                'carrionfields.net', 'medievia.com', 'icesus.org',
+                'mud.morgengrauen.info', 'mg.mud.de', 'mg.morgengrauen.info', 'morgengrauen.info',
+            ]));
+            expect(CLIENT_GUI_HOSTS.length).toBeGreaterThan(0);
+        });
+
         it('stands aside for games whose own loader installs a full UI', () => {
-            for (const host of GAMES_WITH_OWN_UI) {
+            for (const host of LOADER_UI_HOSTS) {
                 expect(namesFor(host), `host ${host}`).not.toContain('mudlet-base-ui');
+                // The loader is bundled, so the profile's Client.GUI switch has no say.
+                expect(namesFor(host, NEW_PROFILE, false), `host ${host}, no server GUI`)
+                    .not.toContain('mudlet-base-ui');
             }
+        });
+
+        it('stands aside for Client.GUI games only while the profile accepts one', () => {
+            for (const host of CLIENT_GUI_HOSTS) {
+                expect(namesFor(host), `host ${host}`).not.toContain('mudlet-base-ui');
+                // A refused Client.GUI never arrives, so nothing would take the space.
+                expect(namesFor(host, NEW_PROFILE, false), `host ${host}, no server GUI`)
+                    .toContain('mudlet-base-ui');
+            }
+        });
+
+        it('matches hosts case-insensitively, as TGameDetails::gameOwnUi does', () => {
+            expect(ownUiArrives('ICESUS.ORG', false)).toBe(true);
+            expect(ownUiArrives(undefined, true)).toBe(false);
+            expect(ownUiArrives('elephant.org', true)).toBe(false);
         });
 
         it('stays off profiles that predate the createdAt stamp', () => {
