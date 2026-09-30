@@ -154,7 +154,7 @@ export function installSoundBindings({ lua, api }: BindingContext): void {
 /**
  * Mudlet playVideoFile / pauseVideos / stopVideos.
  * Same VFS-or-URL loader as sounds; videos mount on the main viewport.
- * playVideoFile(path [, volume, loops]) | playVideoFile{name=..., ...}.
+ * playVideoFile{name=..., ...} (table form only, as in Mudlet).
  */
 export function installVideoBindings({ lua, api }: BindingContext): void {
     const videos = api.videos;

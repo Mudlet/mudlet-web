@@ -99,9 +99,12 @@ describe('setConfig / getConfig', () => {
         expect(mapper()?.roomSize).toBeCloseTo(0.5, 10);
         expect(mapper()?.lineWidth).toBeCloseTo(0.05, 10);
 
-        // Non-positive sizes are ignored (but still "known key" → true).
+        // A non-positive room size is ignored (but still "known key" → true);
+        // an exit size below 1 is refused, since it divides the exit pen.
         expect(h.run('return setConfig("mapRoomSize", 0)')).toBe(true);
-        expect(h.run('return setConfig("mapExitSize", -1)')).toBe(true);
+        expect(h.run('return select(2, setConfig("mapExitSize", -1))')).toContain('at least 1');
+        expect(h.run('return select(2, setConfig("mapExitSize", 0/0))')).toContain('at least 1');
+        expect(h.run('return select(2, setConfig("mapExitSize", 0.5))')).toContain('at least 1');
         expect(mapper()?.roomSize).toBeCloseTo(0.5, 10);
         expect(mapper()?.lineWidth).toBeCloseTo(0.05, 10);
     });

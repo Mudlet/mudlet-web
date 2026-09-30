@@ -945,7 +945,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('stopMusic',           '([{name=..., key=..., tag=..., fadeout=...}])',
        'Stop matching music tracks. With no args, stops all music. fadeout (ms) overrides the per-track fadeout for this call.'),
     // Video playback (HTML <video> overlay on the main viewport).
-    fn('playVideoFile',       '(filename [, volume [, loops]]) | ({name=..., volume=..., loops=..., width=..., height=..., caption=...})',
+    fn('playVideoFile',       '({name=..., volume=..., loops=..., width=..., height=..., caption=...})',
        'Play a video file. Filename resolves against the profile VFS or may be an http(s):// URL. Mounts an absolutely-positioned <video> element on the main viewport that fills the visible area; loops=-1 plays indefinitely. caption sets the closed-caption text.'),
     fn('loadVideoFile',       '(name) | ({name=...})',               'Preload (fetch + cache) a video so the first playVideoFile has no fetch latency. name resolves against the profile VFS or may be an http(s):// URL.'),
     fn('getPlayingVideos',    '([{name=...}] | name) → {{name, path, volume}, ...}', 'Return the videos currently playing, optionally filtered by name. Volume is on the 0..100 scale.'),

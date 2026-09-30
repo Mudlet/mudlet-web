@@ -718,20 +718,21 @@ export class LuaRuntime implements IScriptingRuntime {
     }
 
     private async setup(): Promise<void> {
-        // echo([window,] text). Mudlet routes echo to labels when the target
-        // name is a label — its HTML is replaced (not appended to).
-        this.lua.global.set('echo', (a: string, b?: string) => {
-            if (b !== undefined) {
-                if (a === 'main') {
-                    this.api.echo(b);
-                } else if (this.api.labels.has(a)) {
-                    this.api.labels.setHtml(a, b);
-                } else {
-                    this.api.echoToWindow(a, b);
-                }
+        // The primitive under Bridge.lua's echo([window,] text), which checks
+        // the arguments and shapes the answer. Mudlet routes echo to labels when
+        // the target name is a label — its HTML is replaced (not appended to).
+        // Answers false for a name no console or label carries.
+        this.lua.global.set('__echo', (win: string, text: string): boolean => {
+            if (win === '' || win === 'main') {
+                this.api.echo(text);
+            } else if (this.api.labels.has(win)) {
+                this.api.labels.setHtml(win, text);
+            } else if (this.api.hasConsole(win)) {
+                this.api.echoToWindow(win, text);
             } else {
-                this.api.echo(a);
+                return false;
             }
+            return true;
         });
 
         // Native fast path for the color-echo family. The Lua wrapper installed
