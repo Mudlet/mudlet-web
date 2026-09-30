@@ -1839,7 +1839,7 @@ export class ScriptingAPI {
                 // (1 / mLineSize) * cellPx * mRoomSize, so in renderer map units
                 // lineWidth = roomSize / mLineSize. Bigger mapExitSize → thinner
                 // exits, which is why the preferences spinner shows 50/mLineSize.
-                if (Number.isFinite(n) && n > 0) {
+                if (Number.isFinite(n) && n >= 1) {
                     this.setMapperField('lineWidth', (this.getMapperField('roomSize') ?? MAPPER_DEFAULTS.roomSize) / n);
                 }
                 return true;
@@ -7010,6 +7010,11 @@ export class ScriptingAPI {
      * all of which back a Console. Used by the read/select methods instead of a
      * bare `windows.has`, which is false for buffers (they have no panel).
      */
+    /** Whether `name` is a console a script can write to (see {@link consoleExists}). */
+    hasConsole(name: string): boolean {
+        return this.consoleExists(name);
+    }
+
     private consoleExists(windowName: string | undefined): boolean {
         if (!windowName || windowName === 'main') return true;
         return this.session.windows.has(windowName) || this.buffers.has(windowName);

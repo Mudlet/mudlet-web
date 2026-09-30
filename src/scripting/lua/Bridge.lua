@@ -4908,6 +4908,26 @@ function sendTelnetChannel102(msg)
     return true
 end
 
+-- Mudlet `echo([consoleName,] text)` (TLuaInterpreter::echo). A lone argument
+-- is the text for the main console; with two, the first names the console or
+-- label ("" and "main" both mean the main console). Either one of the wrong
+-- type is an error, and a name nothing carries answers nil and a message
+-- rather than conjuring a console out of the typo.
+function echo(...)
+    local n = select('#', ...)
+    local a, b = ...
+    if n < 2 then
+        __echo('main', __mudlet_check_string(a, "echo", 1, "text", n == 1))
+        return true
+    end
+    local name = __mudlet_check_string(a, "echo", 1, "console name")
+    local text = __mudlet_check_string(b, "echo", 2, "text")
+    if not __echo(name, text) then
+        return nil, "console/label '" .. name .. "' does not exist"
+    end
+    return true
+end
+
 -- Mudlet's setServerEncoding (TLuaInterpreter::setServerEncoding): a non-string
 -- is an error, and a name cTelnet::setEncoding does not have is refused with
 -- nil and a message listing the ones it does.
@@ -4945,7 +4965,20 @@ __mudlet_media_field_types = {
 -- or durations in milliseconds, so none of them can be negative.
 __mudlet_media_nonnegative = { fadein = true, fadeout = true, start = true, finish = true }
 
+-- A field is read by its name, and the array part is ignored, so a key that is
+-- neither cannot mean anything: Mudlet refuses it rather than skip it silently.
+function __mudlet_check_media_table_keys(t, funcName)
+    for k in pairs(t) do
+        local kt = type(k)
+        if kt ~= 'string' and kt ~= 'number' then
+            error(funcName .. ": bad argument #1 type (table keys as string expected, got "
+                .. kt .. "!)", 4)
+        end
+    end
+end
+
 function __mudlet_check_media_table(t, funcName)
+    __mudlet_check_media_table_keys(t, funcName)
     for field, expected in pairs(__mudlet_media_field_types) do
         local v = t[field]
         if v ~= nil and type(v) ~= expected then
@@ -4983,6 +5016,7 @@ end
 -- whatever it complains about, so a script is told which load it got wrong.
 -- The table form's `name`/`url` are the only fields a load reads.
 function __mudlet_check_media_load_table(t, funcName)
+    __mudlet_check_media_table_keys(t, funcName)
     for _, field in ipairs({ 'name', 'url' }) do
         local v = t[field]
         if v ~= nil then
@@ -5041,25 +5075,64 @@ do
     end
 end
 
+-- The ordered forms check each position by the name it carries and its index,
+-- as Mudlet's errorArgumentType does:
+--   "<fn>: bad argument #<n> type (<field> as <type> expected, got <T>!)"
+-- A nil is skipped, so a caller may leave any position out. An entry marked
+-- lenient takes a number as well, which Lua renders as a string (a file name
+-- of 42 is "42").
+function __mudlet_check_media_ordered(funcName, spec, ...)
+    for i, entry in ipairs(spec) do
+        local v = select(i, ...)
+        local t = type(v)
+        if v ~= nil and t ~= entry[2] and not (entry[3] and t == 'number') then
+            error(funcName .. ": bad argument #" .. i .. " type (" .. entry[1] .. " as "
+                .. entry[2] .. " expected, got " .. t .. "!)", 3)
+        end
+    end
+end
+
+__mudlet_media_ordered = {
+    playSoundFile = {
+        { 'name', 'string', true }, { 'volume', 'number' }, { 'fadein', 'number' },
+        { 'fadeout', 'number' }, { 'start', 'number' }, { 'loops', 'number' },
+        { 'key', 'string' }, { 'tag', 'string' }, { 'priority', 'number' },
+        { 'url', 'string' }, { 'finish', 'number' },
+    },
+    playMusicFile = {
+        { 'name', 'string', true }, { 'volume', 'number' }, { 'fadein', 'number' },
+        { 'fadeout', 'number' }, { 'start', 'number' }, { 'loops', 'number' },
+        { 'key', 'string' }, { 'tag', 'string' }, { 'continue', 'boolean' },
+        { 'url', 'string' }, { 'finish', 'number' },
+    },
+    load = { { 'name', 'string', true }, { 'url', 'string', true } },
+    getPlayingSounds = { { 'name', 'string' }, { 'key', 'string' }, { 'tag', 'string' }, { 'priority', 'number' } },
+    getPlayingMusic = { { 'name', 'string' }, { 'key', 'string' }, { 'tag', 'string' } },
+    stopSounds = {
+        { 'name', 'string' }, { 'key', 'string' }, { 'tag', 'string' },
+        { 'priority', 'number' }, { 'fadeaway', 'boolean' }, { 'fadeout', 'number' },
+    },
+    stopMusic = {
+        { 'name', 'string' }, { 'key', 'string' }, { 'tag', 'string' },
+        { 'fadeaway', 'boolean' }, { 'fadeout', 'number' },
+    },
+}
+
 -- The ordered play form, in Mudlet's argument order:
 --   name [, volume [, fadein [, fadeout [, start [, loops [, key [, tag
 --        [, continue|priority [, url [, finish ]]]]]]]]]]
 -- The ninth argument is where the two calls differ: music continues or
 -- restarts, so playMusicFile reads a boolean there, while a sound's ninth is
 -- its priority (playSoundFileAsOrderedArguments, TLuaInterpreterMedia.cpp).
--- Every position is checked by the name it carries — a complaint that names
--- "volume" is far more use than one naming argument #2 — and the four time
--- fields are refused when negative. Each caller passes its own name through, so
--- the message names the call that was made and not the parser (upstream #9785,
--- where every music range error said playSoundFile).
-function __mudlet_ordered_play_args(funcName, name, volume, fadein, fadeout, start, loops,
-                                   key, tag, ninth, url, finish)
-    local function want(v, field, expected)
-        if v ~= nil and type(v) ~= expected then
-            error(funcName .. ": bad argument type (" .. field .. " as " .. expected
-                .. " expected, got " .. type(v) .. "!)", 3)
-        end
-    end
+-- Every position is type-checked, the name included, before the caller looks
+-- for a missing name — so a wrong type anywhere is an error even when the name
+-- was left out — and the four time fields are refused when negative. Each
+-- caller passes its own name through, so the message names the call that was
+-- made and not the parser (upstream #9785, where every music range error said
+-- playSoundFile).
+function __mudlet_ordered_play_args(funcName, ...)
+    __mudlet_check_media_ordered(funcName, __mudlet_media_ordered[funcName], ...)
+    local name, volume, fadein, fadeout, start, loops, key, tag, ninth, url, finish = ...
     local function range(v, field)
         if v ~= nil and v < 0 then
             error(funcName .. ": bad argument range for " .. field
@@ -5067,29 +5140,18 @@ function __mudlet_ordered_play_args(funcName, name, volume, fadein, fadeout, sta
                 .. tostring(v) .. ")", 3)
         end
     end
-    want(volume, "volume", 'number')
-    want(fadein, "fadein", 'number')
-    want(fadeout, "fadeout", 'number')
-    want(start, "start", 'number')
-    want(loops, "loops", 'number')
-    want(key, "key", 'string')
-    want(tag, "tag", 'string')
-    local continueFlag, priority
-    if funcName == 'playMusicFile' then
-        want(ninth, "continue", 'boolean')
-        continueFlag = ninth
-    else
-        want(ninth, "priority", 'number')
-        priority = ninth
-    end
-    want(url, "url", 'string')
-    want(finish, "finish", 'number')
     range(fadein, "fadein")
     range(fadeout, "fadeout")
     range(start, "start")
     range(finish, "finish")
+    local continueFlag, priority
+    if funcName == 'playMusicFile' then
+        continueFlag = ninth
+    else
+        priority = ninth
+    end
     return {
-        name = name, volume = volume, fadein = fadein, fadeout = fadeout,
+        name = __mudlet_str(name), volume = volume, fadein = fadein, fadeout = fadeout,
         start = start, loops = loops, key = key, tag = tag,
         ["continue"] = continueFlag, priority = priority,
         url = url, finish = finish,
@@ -5108,10 +5170,7 @@ function __mudlet_media_load_args(funcName, ...)
         __mudlet_check_media_load_table(a, funcName)
         return tostring(a.name or a.url or ''), nil
     end
-    if b ~= nil and __mudlet_str(b) == nil then
-        error(funcName .. ": bad argument #2 type (url as string expected, got "
-            .. type(b) .. "!)", 3)
-    end
+    __mudlet_check_media_ordered(funcName, __mudlet_media_ordered.load, a, b)
     local name = __mudlet_str(a)
     if name == nil or name == '' then
         return nil, funcName .. ": missing argument 1 (file to load)"
@@ -5140,28 +5199,28 @@ function playSoundFile(...)
         if __mudlet_media_deferred(a, __playSoundFile) then return true end
         return __playSoundFile(a)
     end
-    local name = __mudlet_str(a)
-    if name == nil or name == '' then
+    local opts = __mudlet_ordered_play_args("playSoundFile", ...)
+    if opts.name == nil or opts.name == '' then
         return nil, "playSoundFile: missing argument 1 (file to play)"
     end
-    local n = select('#', ...)
-    local args = { ... }
-    args[1] = name
-    return __playSoundFile(__mudlet_ordered_play_args("playSoundFile", unpack(args, 1, n)))
+    return __playSoundFile(opts)
 end
 
--- Mudlet `playVideoFile`. Accepts either:
---   playVideoFile(filename [, volume [, loops]])  -- positional
+-- Mudlet `playVideoFile`. Table form only, like the rest of the video family:
 --   playVideoFile({name=..., volume=..., loops=..., width=..., height=...})
 -- The file resolves against the profile VFS or may be an http(s):// URL.
-function playVideoFile(a, b, c)
-    if type(a) == 'table' then
-        __mudlet_check_media_table(a, "playVideoFile")
-        __mudlet_check_media_name(a, "playVideoFile")
-        if __mudlet_media_deferred(a, __playVideoFile) then return true end
-        return __playVideoFile(a)
+function playVideoFile(...)
+    if select('#', ...) == 0 then
+        error("playVideoFile: need at least one argument", 2)
     end
-    return __playVideoFile({ name = tostring(a or ''), volume = b, loops = c })
+    local a = ...
+    if type(a) ~= 'table' then
+        error("playVideoFile: needs to be a table", 2)
+    end
+    __mudlet_check_media_table(a, "playVideoFile")
+    __mudlet_check_media_name(a, "playVideoFile")
+    if __mudlet_media_deferred(a, __playVideoFile) then return true end
+    return __playVideoFile(a)
 end
 
 -- Mudlet `loadVideoFile`. Preloads/caches a video so the first playVideoFile
@@ -5201,14 +5260,11 @@ function playMusicFile(...)
         if __mudlet_media_deferred(opts, __playMusicFile) then return true end
         return __playMusicFile(opts)
     end
-    local name = __mudlet_str(opts)
-    if name == nil or name == '' then
+    opts = __mudlet_ordered_play_args("playMusicFile", ...)
+    if opts.name == nil or opts.name == '' then
         return nil, "playMusicFile: missing argument 1 (file to play)"
     end
-    local n = select('#', ...)
-    local args = { ... }
-    args[1] = name
-    return __playMusicFile(__mudlet_ordered_play_args("playMusicFile", unpack(args, 1, n)))
+    return __playMusicFile(opts)
 end
 
 -- Mudlet `loadSoundFile`. Preloads a sound so the first playSoundFile has no
@@ -5254,21 +5310,14 @@ do
     -- the filter matches are stopped; no filter stops them all.
     function stopSounds(opts, key, tag, priority, fadeaway, fadeout)
         local filter
-        if opts ~= nil and type(opts) ~= 'table' then
-            __mudlet_check_media_filter_args("stopSounds", opts, key, tag, priority, fadeaway)
-            if fadeout ~= nil and type(fadeout) ~= 'number' then
-                error("stopSounds: bad argument type (fadeout as number expected, got "
-                    .. type(fadeout) .. "!)", 2)
-            end
-            filter = { name = opts, key = key, tag = tag, priority = priority, fadeout = fadeout }
-        elseif opts ~= nil then
+        if type(opts) == 'table' then
             __mudlet_check_media_table(opts, "stopSounds")
             filter = { name = opts.name, key = opts.key, tag = opts.tag,
                 priority = opts.priority, fadeout = opts.fadeout }
         else
             -- A positional call may leave the name out and filter on the rest.
-            filter = { key = key, tag = tag, priority = priority, fadeout = fadeout }
-            __mudlet_check_media_filter_args("stopSounds", nil, key, tag, priority, fadeaway)
+            __mudlet_check_media_filter_args("stopSounds", opts, key, tag, priority, fadeaway, fadeout)
+            filter = { name = opts, key = key, tag = tag, priority = priority, fadeout = fadeout }
         end
         _rawStopSounds(filter)
         return true
@@ -5322,21 +5371,11 @@ function __mudlet_check_media_filter_table(v, funcName)
     __mudlet_check_media_table(v, funcName)
 end
 
--- The ordered filter form: (name, key, tag [, priority [, fadeaway]]). Each
--- position is type-checked by the name it carries, so the complaint names the
--- argument rather than its index.
-function __mudlet_check_media_filter_args(funcName, name, key, tag, priority, fadeaway)
-    local function want(v, field, expected)
-        if v ~= nil and type(v) ~= expected then
-            error(funcName .. ": bad argument type (" .. field .. " as " .. expected
-                .. " expected, got " .. type(v) .. "!)", 3)
-        end
-    end
-    want(name, "name", 'string')
-    want(key, "key", 'string')
-    want(tag, "tag", 'string')
-    want(priority, "priority", 'number')
-    want(fadeaway, "fadeaway", 'boolean')
+-- The ordered filter form: (name, key, tag [, priority] [, fadeaway [, fadeout]]),
+-- the positions each call takes listed in __mudlet_media_ordered. Each is
+-- type-checked by the name it carries and its index.
+function __mudlet_check_media_filter_args(funcName, ...)
+    __mudlet_check_media_ordered(funcName, __mudlet_media_ordered[funcName], ...)
 end
 
 function getPlayingSounds(a, b, c, d)
@@ -5367,7 +5406,7 @@ function getPlayingMusic(a, b, c, d)
         __mudlet_check_media_table(a, "getPlayingMusic")
         filter = { name = a.name, key = a.key, tag = a.tag }
     else
-        __mudlet_check_media_filter_args("getPlayingMusic", a, b, c, d)
+        __mudlet_check_media_filter_args("getPlayingMusic", a, b, c)
         filter = { name = a, key = b, tag = c }
     end
     local raw = __getPlayingMusic(filter)
@@ -5756,23 +5795,16 @@ end
 -- (name, key, tag [, fadeaway [, fadeout]]), with no priority: a music track
 -- has no priority to match on.
 function stopMusic(opts, key, tag, fadeaway, fadeout)
-    if opts ~= nil and type(opts) ~= 'table' then
-        __mudlet_check_media_filter_args("stopMusic", opts, key, tag, nil, fadeaway)
-        if fadeout ~= nil then
-            local ms = __mudlet_num(fadeout)
-            if ms == nil then
-                error("stopMusic: bad argument type (fadeout as number expected, got "
-                    .. type(fadeout) .. "!)", 2)
-            end
-            if fadeout < 0 then
-                error("stopMusic: bad argument range for fadeout, got " .. tostring(fadeout) .. "!", 2)
-            end
-        end
-        __stopMusic({ name = opts, key = key, tag = tag, fadeout = fadeout })
+    if type(opts) == 'table' then
+        __mudlet_check_media_table(opts, "stopMusic")
+        __stopMusic(opts)
         return true
     end
-    if opts ~= nil then __mudlet_check_media_table(opts, "stopMusic") end
-    __stopMusic(opts)
+    __mudlet_check_media_filter_args("stopMusic", opts, key, tag, fadeaway, fadeout)
+    if fadeout ~= nil and fadeout < 0 then
+        error("stopMusic: bad argument range for fadeout, got " .. tostring(fadeout) .. "!", 2)
+    end
+    __stopMusic({ name = opts, key = key, tag = tag, fadeout = fadeout })
     return true
 end
 
@@ -6002,6 +6034,17 @@ do
             end
             value = string.format("%d,%d,%d,%d", channels[1], channels[2], channels[3], a)
         end
+        -- The exit size divides the exit pen's width, so it has to be a finite
+        -- number of at least 1: anything smaller blows the pen up, and NaN or
+        -- an infinity would reach the saved profile. Inverted like the range
+        -- check above so NaN lands here too.
+        if key == "mapExitSize" then
+            local n = tonumber(value)
+            if not (n >= 1 and n < math.huge) then
+                return nil, "setConfig: mapExitSize must be a finite number of at least 1, got "
+                    .. tostring(value)
+            end
+        end
         if key == "mapSymbolFont" and not tostring(value):find("%S") then
             return nil, "mapSymbolFont must not be empty"
         end
@@ -6137,7 +6180,20 @@ do
         -- take a branch real Mudlet never offers it.
         -- An empty peer list is reported as nil, not an empty table.
         getClientList     = function() warnOnce("getClientList") return nil end,
-        displayClientList = function() warnOnce("displayClientList") return nil end,
+        -- Mudlet prints its client table whether or not anyone is in it, as a
+        -- sysMMCPChatMessage from "System" (MMCPServer::clientList): here that
+        -- is always the header, no rows, and the flag legend.
+        displayClientList = function()
+            warnOnce("displayClientList")
+            raiseEvent("sysMMCPChatMessage", "System", table.concat({
+                "     Name                 Address              Port  Group           Flags   ChatClient",
+                "     ==================== ==================== ===== =============== ======= ================",
+                "",
+                "Flags:  A - Allow Commands, F - Firewall, I - Ignore,  P - Private,   n - Allow Snooping",
+                "        N - Being Snooped,  r - Requestor, S - Serving, T - Allows File Transfers",
+            }, "\n"))
+            return true
+        end,
         -- Dialling out: validate the host/port exactly as Mudlet does, then
         -- report that the connection didn't happen.
         call = function(host, port)
@@ -7089,7 +7145,24 @@ do
     setRoomHidden      = roomGuard(setRoomHidden, "setRoomHidden")
     setRoomUserData    = roomGuard(setRoomUserData, "setRoomUserData")
     unsetRoomCharColor = roomGuard(unsetRoomCharColor, "unsetRoomCharColor")
-    hasExitLock        = roomGuard(hasExitLock, "hasExitLock")
+    -- hasExitLock checks its direction before the room (#10670): a direction
+    -- that is neither a number nor a string, or a number that is not one of the
+    -- twelve stock directions, is an error naming the type it was handed —
+    -- Mudlet's dirToNumber refuses both on the one path. A string direction is
+    -- left to Other.lua's wrapper, which maps the names and answers false for
+    -- any other.
+    do
+        local guarded = roomGuard(hasExitLock, "hasExitLock")
+        function hasExitLock(id, dir)
+            local t = type(dir)
+            if (t ~= 'number' and t ~= 'string')
+                or (t == 'number' and (dir < 1 or dir > 12 or dir ~= math.floor(dir))) then
+                error("hasExitLock: bad argument #2 type (direction as number or string expected, got "
+                    .. t .. "!)", 2)
+            end
+            return guarded(id, dir)
+        end
+    end
     setAreaUserData    = areaGuard(setAreaUserData, "setAreaUserData")
 
     -- setAreaUserData/setMapUserData additionally refuse an empty key.
