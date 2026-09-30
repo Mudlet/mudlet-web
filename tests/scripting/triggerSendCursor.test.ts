@@ -49,8 +49,22 @@ describe('send() inside a trigger', () => {
         expect(lines()).toEqual(['marker one', 'get coin', 'marker two']);
     });
 
-    it('still puts a command sent outside a trigger under the cursor', () => {
+    // Outside a trigger too: the main console's user cursor stays on the last
+    // server line while commands are echoed below it (mudlet-web#262), so a
+    // timer's getCurrentLine() after a send() still reads the game's line.
+    it('leaves the cursor on the last server line for a command sent outside a trigger', () => {
+        onLine('SERVERLINE', '');
         t.session.echoCommand('look');
-        expect(plain(String(t.run('return getCurrentLine()')))).toBe('look');
+        expect(plain(String(t.run('return getCurrentLine()')))).toBe('SERVERLINE');
+        expect(lines()).toEqual(['SERVERLINE', 'look']);
+    });
+
+    // An echoed command is stored wrapped at the main window's width, as a
+    // server line of the same length is (#232, mudlet-web#262).
+    it('stores a long command echo wrapped at the main wrap width', () => {
+        onLine('SERVERLINE', '');
+        t.session.echoCommand(`SHOWN${'w'.repeat(150)}`);
+        expect(lines().map(l => l.length)).toEqual([10, 100, 55]);
+        expect(plain(String(t.run('return getCurrentLine()')))).toBe('SERVERLINE');
     });
 });

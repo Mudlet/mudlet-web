@@ -1887,7 +1887,7 @@ export class ScriptingEngine implements EngineHost {
             // Perm colorTrigger patterns delegate to the same buffer scan the
             // tempColorTrigger binding uses — both inspect the line that
             // beginLine() just appended to the main console.
-            this.triggerEngine.setColorMatcher((fg, bg, window) => this.api.currentLineColorMatch(fg, bg, window));
+            this.triggerEngine.setColorMatcher((fg, bg, window) => this.api.currentLineColorRuns(fg, bg, window));
             // The runaway-creation report goes to the main console, where the
             // player is already looking at the line it could not finish.
             this.triggerEngine.setRunawayReporter(text => this.api.postSystemMessage(text));

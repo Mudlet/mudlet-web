@@ -154,8 +154,19 @@ describe('mudlet-web#238 item 2 — setTriggerStayOpen on the trigger itself', (
             if (m.trigger.id === 'opener') engine.setStayOpen(['target'], 2);
         });
         // The window starts on the line it was opened on; target sorts after
-        // opener, so it sees that line too.
-        expect(fired).toEqual(['opener@VOPEN', 'target@VOPEN', 'target@y1', 'target@y2']);
+        // opener, so it sees that line too — and that line spends one of the
+        // two, as desktop's mKeepFiring-- does (mudlet-web#262).
+        expect(fired).toEqual(['opener@VOPEN', 'target@VOPEN', 'target@y1']);
+    });
+
+    it('opens the next lines of a trigger the walk has already passed', () => {
+        const engine = new TriggerEngine();
+        // target sorts BEFORE opener, so VOPEN is behind it when the window opens.
+        engine.loadPerm([node('target', 'target', '^never-matches$'), node('opener', 'opener', '^VOPEN')]);
+        const fired = feed(engine, ['VOPEN', 'y1', 'y2', 'y3'], m => {
+            if (m.trigger.id === 'opener') engine.setStayOpen(['target'], 2);
+        });
+        expect(fired).toEqual(['opener@VOPEN', 'target@y1', 'target@y2']);
     });
 
     it('keeps the trigger\'s own fire length when the script re-arms itself', () => {

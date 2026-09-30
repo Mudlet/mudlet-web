@@ -139,6 +139,13 @@ function rgbaCss(r: number, g: number, b: number, a = 255): string {
     return `rgba(${ch(r)}, ${ch(g)}, ${ch(b)}, ${alpha})`;
 }
 
+/** `#rrggbb` for an rgb triple, clamped — the form the profile's colour
+ *  settings are stored in. */
+function hexCss(r: number, g: number, b: number): string {
+    const ch = (n: number) => Math.max(0, Math.min(255, Math.round(Number(n) || 0))).toString(16).padStart(2, '0');
+    return `#${ch(r)}${ch(g)}${ch(b)}`;
+}
+
 /** WCAG relative luminance of an rgb triple, as Mudlet computes it. */
 function relativeLuminance([r, g, b]: [number, number, number]): number {
     const channel = (v: number) => {
@@ -1188,6 +1195,10 @@ export class ScriptingAPI {
             return 'feedTelnet: refused, telnet connection socket is not in the unconnected state';
         }
         if (data.length === 0) return { version: decodeTelnetByteTags('') };
+        // Same as feedTriggers: a trigger the calling chunk just created or
+        // switched on has to be in the engine before the bytes reach it, and
+        // the coalesced reload cannot run while that chunk is on the stack.
+        this.host.flushPendingApplies();
         // `data` is a BYTE-STRING: one char per byte, as a socket produces and
         // as everything downstream reads it (MSDP decodes its values from UTF-8
         // bytes, for one). The Lua binding unarmors it into that shape — see
@@ -3686,7 +3697,6 @@ export class ScriptingAPI {
         this.outerTriggerLines.push(this.triggerLineDepth > 0 ? this.mainConsole.getLineNumber() : -1);
         this.mainConsole.appendLine(buffer);
         this.inTriggerProcessing = true;
-        this.session.triggerCursorPinned = true;
         this.triggerLineDepth++;
         this.selection = null;
         this.setDeferringEcho(true);
@@ -3722,7 +3732,6 @@ export class ScriptingAPI {
             return;
         }
         this.inTriggerProcessing = false;
-        this.session.triggerCursorPinned = false;
         this.echoOnMatchedLine = false;
         // NB: the trigger selection is intentionally NOT cleared here. Mudlet
         // leaves a selection made inside a trigger in place, so a script can read
@@ -3758,16 +3767,30 @@ export class ScriptingAPI {
      * colours, or null when none does. A colour trigger reports that run as
      * `matches[1]` — Mudlet matches a contiguous same-coloured run, not the
      * whole line — so adjacent segments sharing the colours are joined.
+     */
+    currentLineColorMatch(
+        wantFg: number, wantBg: number, window: { start: number; length: number } | null = null,
+    ): string | null {
+        return this.currentLineColorRuns(wantFg, wantBg, window, 1)[0]?.text ?? null;
+    }
+
+    /**
+     * Every run on the current line carrying the wanted ANSI colours, in order,
+     * with its offset in the line — at most `limit` of them. A filter parent
+     * matching a colour hands each run to its children separately, as
+     * TTrigger::match_color_pattern collects them all.
      *
      * Reads the snapshot beginLine took, not the live buffer: an earlier trigger
      * may already have recoloured the line, and Mudlet still matches against the
      * colours the server sent.
      */
-    currentLineColorMatch(
+    currentLineColorRuns(
         wantFg: number, wantBg: number, window: { start: number; length: number } | null = null,
-    ): string | null {
+        limit = Infinity,
+    ): { text: string; start: number }[] {
+        const runs: { text: string; start: number }[] = [];
         const snapshot = this.lineColorSnapshots[this.lineColorSnapshots.length - 1];
-        if (!snapshot) return null;
+        if (!snapshot) return runs;
         // `window` narrows the scan to one stretch of the line — a colour
         // trigger inside a filter chain is only shown what its parent captured,
         // so a colour elsewhere on the line is not a match for it.
@@ -3779,7 +3802,12 @@ export class ScriptingAPI {
         const defaults = this.triggerDefaultColorKeys();
         const fgKey = wantFg === COLOR_DEFAULT ? defaults.fg : ansiCodeKey(wantFg);
         const bgKey = wantBg === COLOR_DEFAULT ? defaults.bg : ansiCodeKey(wantBg);
-        let run: string | null = null;
+        let run: { text: string; start: number } | null = null;
+        const close = (): boolean => {
+            if (run !== null) runs.push(run);
+            run = null;
+            return runs.length >= limit;
+        };
         let at = 0;
         for (const seg of snapshot) {
             const text = seg.text ?? '';
@@ -3789,16 +3817,21 @@ export class ScriptingAPI {
             if (end <= start) {
                 // Wholly outside the window: it can neither match nor continue a
                 // run, so a run in progress ends here.
-                if (run !== null) return run;
+                if (close()) return runs;
                 continue;
             }
             const visible = text.slice(start - (at - text.length), end - (at - text.length));
             const hit = (wantFg === COLOR_IGNORED || seg.fg === fgKey)
                 && (wantBg === COLOR_IGNORED || seg.bg === bgKey);
-            if (hit && visible) run = (run ?? '') + visible;
-            else if (run !== null) return run;
+            if (hit && visible) {
+                if (run === null) run = { text: visible, start };
+                else run.text += visible;
+            } else if (close()) {
+                return runs;
+            }
         }
-        return run;
+        close();
+        return runs;
     }
 
     /** Per-segment colours (as {@link RgbKey}s) and text of each line currently
@@ -5177,7 +5210,8 @@ export class ScriptingAPI {
 
     /**
      * Mudlet setCommandBackgroundColor([windowName], r, g, b, [transparency]).
-     * Recolors the command bar's background. Mudlet Web only has the main command
+     * Recolors the command bar's background and the echoed commands
+     * (Host::mCommandBgColor). Mudlet Web only has the main command
      * bar, so a non-"main" windowName is ignored. `a` is Mudlet's 0..255 alpha;
      * the CommandBar reads the `inputBackground` profile field as a CSS color.
      */
@@ -5185,20 +5219,32 @@ export class ScriptingAPI {
         if (name && name !== 'main') {
             return this.session.windows.setCmdLineColor(name, 'background-color', r, g, b, a);
         }
+        const commandEchoBackground = hexCss(r, g, b);
         useAppStore.getState().patchConnectionProfile(this.connectionId, {
             inputBackground: rgbaCss(r, g, b, a),
+            commandEchoBackground,
         });
+        // The next echoed command is drawn in it at once — Host::mCommandBgColor
+        // is read as the command is printed — not once the store change has
+        // made its way back through a render.
+        this.session.commandEchoColor = { ...this.session.commandEchoColor, bg: commandEchoBackground };
         return true;
     }
 
-    /** Mudlet setCommandForegroundColor — recolors the command bar text. */
+    /** Mudlet setCommandForegroundColor — recolors the command bar text and
+     *  the echoed commands (Host::mCommandFgColor). */
     setCommandForegroundColor(r: number, g: number, b: number, a = 255, name?: string): boolean {
         if (name && name !== 'main') {
             return this.session.windows.setCmdLineColor(name, 'color', r, g, b, a);
         }
+        const commandEchoForeground = hexCss(r, g, b);
         useAppStore.getState().patchConnectionProfile(this.connectionId, {
             inputForeground: rgbaCss(r, g, b, a),
+            commandEchoForeground,
         });
+        // Host::mCommandFgColor, which the next echoed command is drawn in —
+        // applied now for the same reason as setCommandBackgroundColor.
+        this.session.commandEchoColor = { ...this.session.commandEchoColor, fg: commandEchoForeground };
         return true;
     }
 

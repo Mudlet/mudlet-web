@@ -405,11 +405,6 @@ export class MudSession {
      *  about to emit itself. */
     scriptEchoDeferred = false;
 
-    /** Set by ScriptingAPI while the trigger engine is processing a line. A
-     *  command echoed then (a trigger's `send()`) goes into the buffer without
-     *  moving the trigger cursor off the matched line — TConsole::printCommand. */
-    triggerCursorPinned = false;
-
     /** Host::send's echo stage: print a command the player (or an item acting
      *  for them) sent, under the showSentText mode. `wantPrint` is the per-call
      *  flag `script` mode defers to — `always` and `never` overrule it. */
@@ -443,7 +438,19 @@ export class MudSession {
             // player could plainly read. appendLine (not echo) because the
             // renderer is driven by the event below: enqueueing it for the
             // drain path as well would render the command twice.
-            this.consoles.get('main')?.appendLine(new AnsiAwareBuffer(styled), !this.triggerCursorPinned);
+            //
+            // The cursor stays where it was, inside a trigger or not:
+            // TConsole::printCommand appends below the user cursor without
+            // moving it, so a timer's getCurrentLine()/selectString() after a
+            // send() still acts on the last server line. And the echo is
+            // stored wrapped at the main window's width, like a server line of
+            // the same length (mudlet-web#262, #232).
+            const main = this.consoles.get('main');
+            if (main) {
+                const line = new AnsiAwareBuffer(styled);
+                main.appendLine(line, false);
+                main.wrapAppendedLine(line);
+            }
             // No "> " prefix: Mudlet echoes the bare command, and OutputRenderer
             // appends it inline to the open server prompt line (e.g. "- look").
             this.events.emit('message', styled, 'echo', Date.now());

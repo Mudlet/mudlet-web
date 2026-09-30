@@ -1,7 +1,7 @@
 import PCRE, { pcreSubject } from './pcre/Pcre2';
 import type { TriggerNode, TriggerPattern } from '../../storage/schema';
 import { buildEffectivelyEnabledIds } from '../../storage/schema';
-import { COLOR_IGNORED, parseColorPattern } from './legacyColorPatterns';
+import { COLOR_DEFAULT, COLOR_IGNORED, parseColorPattern } from './legacyColorPatterns';
 
 export type { TriggerNode };
 
@@ -66,6 +66,12 @@ type MatchResult = {
     /** What this match offers a filter trigger's children. Defaults to
      *  `'whole'` when a matcher doesn't say. */
     filterMode?: FilterMode;
+    /** The exact list a filter trigger hands its children, overriding
+     *  `filterMode` — for a match that offers more than one stretch of text
+     *  without them being capture groups (every run of a colour pattern, every
+     *  line of a completed multiline state). Offsets are into the line the
+     *  matcher was given. */
+    offerings?: { text: string; start: number }[];
 };
 
 type Matcher = (line: string, isPrompt: boolean) => MatchResult | null;
@@ -154,6 +160,7 @@ function mergeAllMatches(results: MatchResult[]): MatchResult | null {
  * participate — and ones that matched nothing — drop out.
  */
 function filterOfferings(result: MatchResult): { text: string; start: number }[] {
+    if (result.offerings) return result.offerings.filter(o => o.text);
     const mode = result.filterMode ?? 'whole';
     if (mode === 'none') return [];
     if (mode === 'whole') {
@@ -367,7 +374,7 @@ const luaEvalRef: { fn: ((code: string, line: string) => boolean) | null } = { f
  *  the plain-text line, so the check has to come from outside). Used by the
  *  `colorTrigger` pattern branch — see `buildMatcher`. */
 const colorMatchRef: {
-    fn: ((fg: number, bg: number, window: { start: number; length: number } | null) => string | null) | null;
+    fn: ((fg: number, bg: number, window: { start: number; length: number } | null) => { text: string; start: number }[]) | null;
 } = { fn: null };
 
 /** The stretch of the ORIGINAL line a colour trigger may look at: the whole line
@@ -539,16 +546,27 @@ function buildMatcher(
             // legacy pattern the remap above could not rescue arrives in — and
             // treating that as "match anything" fired the trigger's script on
             // every line of output (issue #102).
-            if (isIgnoredColorPattern(p.text)) return () => null;
+            // Nor is one that names a colour no palette has — compileItem
+            // marks either kind invalid, so the trigger is switched off.
+            if (!isUsableColorPattern(fg, bg)) return () => null;
             return (line) => {
                 if (!line) return null;
                 if (!colorMatchRef.fn) return null;
                 // The MATCH is the coloured run, not the line it sits on:
                 // TTrigger::match_color_pattern pushes that run as the
                 // capture, which is what a script reads as matches[1] and
-                // what the built-in highlight recolours.
-                const run = colorMatchRef.fn(fg, bg, colorWindowRef.window);
-                return run === null ? null : { captures: [], matchedText: run };
+                // what the built-in highlight recolours. It collects EVERY
+                // run on the line, and a filter hands each of them to its
+                // children in turn.
+                const window = colorWindowRef.window;
+                const runs = colorMatchRef.fn(fg, bg, window);
+                if (runs.length === 0) return null;
+                const base = window?.start ?? 0;
+                return {
+                    captures: [],
+                    matchedText: runs[0].text,
+                    offerings: runs.map(r => ({ text: r.text, start: r.start - base })),
+                };
             };
         }
         case 'lineSpacer':
@@ -556,10 +574,17 @@ function buildMatcher(
     }
 }
 
-/** A colour pattern that asks for neither colour — see buildMatcher. */
-function isIgnoredColorPattern(text: string): boolean {
-    const [fg, bg] = parseColorPattern(text);
-    return fg === COLOR_IGNORED && bg === COLOR_IGNORED;
+/** A colour channel a colour pattern can ask for: an ANSI palette index,
+ *  the console default, or "any". */
+function isPaletteChannel(channel: number): boolean {
+    return channel === COLOR_IGNORED || channel === COLOR_DEFAULT || (channel >= 0 && channel <= 255);
+}
+
+/** Whether a colour pattern can match anything: it asks for at least one
+ *  colour, and every colour it asks for is one the palette has. */
+function isUsableColorPattern(fg: number, bg: number): boolean {
+    if (fg === COLOR_IGNORED && bg === COLOR_IGNORED) return false;
+    return isPaletteChannel(fg) && isPaletteChannel(bg);
 }
 
 export class TriggerEngine {
@@ -663,7 +688,11 @@ export class TriggerEngine {
      *  re-report while they do — `null` when setTriggerStayOpen opened the
      *  window and there is no match to replay. See the fire-length branch in
      *  matchPermEntryOnce. */
-    private keepFiring = new Map<string, { until: number; match: TriggerMatch | null }>();
+    private keepFiring = new Map<string, { remaining: number; match: TriggerMatch | null }>();
+    /** The last line each permanent trigger was walked past — whether
+     *  setTriggerStayOpen, called from another trigger's script, is still ahead
+     *  of it on the line being processed. See setStayOpen. */
+    private walkedLine = new Map<string, number>();
     /**
      * The stay-open state a single-line match left its trigger in, to be put
      * back once that match's script has run. Desktop runs a single-line
@@ -675,7 +704,7 @@ export class TriggerEngine {
      * it afterwards (mudlet-web#238).
      */
     private readonly stayOpenAfterScript = new WeakMap<TriggerMatch, {
-        keep: { until: number; match: TriggerMatch | null } | undefined;
+        keep: { remaining: number; match: TriggerMatch | null } | undefined;
         chainUntil: number | undefined;
     }>();
 
@@ -995,7 +1024,17 @@ export class TriggerEngine {
                     conditions.push({ test: null, spacer: isNaN(n) || n < 0 ? 0 : n });
                 } else {
                     const test = buildMatcher(p, register, reportPatternError);
-                    conditions.push({ test, spacer: 0 });
+                    // A lua condition captures nothing but still takes its
+                    // multimatches row: the row is empty, not the line.
+                    conditions.push({
+                        test: test && p.type === 'luaFunction'
+                            ? (line, isPrompt) => {
+                                const r = test(line, isPrompt);
+                                return r && { ...r, matchedText: '' };
+                            }
+                            : test,
+                        spacer: 0,
+                    });
                 }
             }
             if (conditions.length > 0) {
@@ -1063,8 +1102,12 @@ export class TriggerEngine {
 
         // A colour pattern with both colours ignored matches nothing, and
         // setRegexCodeList counts it as a failure like a bad regex (state =
-        // false: "no colors to match were set").
-        if (patterns.some(p => p.type === 'colorTrigger' && isIgnoredColorPattern(p.text))) invalid = true;
+        // false: "no colors to match were set"). So does one naming a colour
+        // outside the palette, e.g. F{999}: desktop leaves the trigger in
+        // place but switched off, so it can be seen and repaired.
+        if (patterns.some(p => p.type === 'colorTrigger' && !isUsableColorPattern(...parseColorPattern(p.text)))) {
+            invalid = true;
+        }
 
         return { signature, compiled, pcreInstances: instances, invalid };
     }
@@ -1261,6 +1304,7 @@ export class TriggerEngine {
         seenSuffix: string,
     ): void {
         const { item } = entry;
+        this.walkedLine.set(item.id, currentLine);
         // Desktop's `if (isActive())` at the top of TTrigger::match, read live
         // rather than by leaving the trigger out of the list — see enabledIds.
         if (!this.enabledIds.has(item.id)) return;
@@ -1317,9 +1361,13 @@ export class TriggerEngine {
                             captures: r.captures,
                             matchedText: r.matchedText,
                             // Desktop's multiline filter tail (src/TTrigger.cpp:1026-1046)
-                            // walks each completed row skipping its whole-match entry,
-                            // so what goes down is the capture groups.
-                            filterMode: 'captures',
+                            // walks each completed row: a row with capture groups
+                            // hands those down without its whole match, and a row
+                            // whose pattern has none (substring, start of line,
+                            // exact) hands down the text it matched.
+                            offerings: (r.multimatches ?? []).flatMap(row =>
+                                (row.length > 1 ? row.slice(1) : row.slice(0, 1))
+                                    .map(text => ({ text: text ?? '', start: 0 }))),
                         });
                     }
                     out.push(r);
@@ -1357,7 +1405,7 @@ export class TriggerEngine {
                     }
                 }
             }
-            this.applyFireLength(item, currentLine, effectiveLine, lastMatch, out);
+            this.applyFireLength(item, effectiveLine, lastMatch, out);
             // Only the single-line branch: desktop's multiline completion
             // assigns mKeepFiring before running the script, as this does.
             if (lastMatch && entry.kind !== 'and') {
@@ -1390,7 +1438,6 @@ export class TriggerEngine {
      */
     private applyFireLength(
         item: TriggerNode,
-        currentLine: number,
         effectiveLine: string,
         lastMatch: TriggerMatch | null,
         out: TriggerMatch[],
@@ -1402,16 +1449,19 @@ export class TriggerEngine {
             // desktop's `!conditionMet` guard below) never spent on the same
             // line the trigger matched on.
             const fireLength = item.fireLength ?? 0;
-            if (fireLength > 0) this.keepFiring.set(item.id, { until: currentLine + fireLength, match: lastMatch });
+            if (fireLength > 0) this.keepFiring.set(item.id, { remaining: fireLength, match: lastMatch });
             else this.keepFiring.delete(item.id);
             return;
         }
+        // A COUNT, spent one line at a time as the trigger is reached, as
+        // desktop's `mKeepFiring--` is — not a span of line numbers. So a
+        // window setTriggerStayOpen opened from an earlier trigger on the same
+        // line starts on that line, and the one it lasts past is not reached
+        // (mudlet-web#262).
         const keep = this.keepFiring.get(item.id);
         if (!keep) return;
-        if (currentLine > keep.until) {
-            this.keepFiring.delete(item.id);
-            return;
-        }
+        if (keep.remaining <= 1) this.keepFiring.delete(item.id);
+        else this.keepFiring.set(item.id, { remaining: keep.remaining - 1, match: keep.match });
         // Desktop re-runs the script only for a childless trigger
         // (src/TTrigger.cpp:1085); one with children is holding the chain open
         // FOR them, and they are reached through `chainOpenUntil`.
@@ -1721,7 +1771,7 @@ export class TriggerEngine {
      * `ScriptingAPI.currentLineMatchesColor`. Passing `null` disables every
      * colour trigger (e.g. during runtime teardown).
      */
-    setColorMatcher(fn: ((fg: number, bg: number, window: { start: number; length: number } | null) => string | null) | null): void {
+    setColorMatcher(fn: ((fg: number, bg: number, window: { start: number; length: number } | null) => { text: string; start: number }[]) | null): void {
         colorMatchRef.fn = fn;
     }
 
@@ -1740,6 +1790,7 @@ export class TriggerEngine {
         this.lineCounter = 0;
         this.andStates.clear();
         this.keepFiring.clear();
+        this.walkedLine.clear();
         this.filterActiveText.clear();
         this.filterActiveOffset.clear();
         this.filterCaptures.clear();
@@ -1920,20 +1971,29 @@ export class TriggerEngine {
      * the first left a stay-open trigger silent on the lines it was opened for
      * (upstream Trigger_spec, "large plain-text trigger sets").
      *
+     * The count is spent on the lines the trigger is next reached on. When
+     * the call comes from the script of a trigger walked BEFORE the target on
+     * this line, that includes this line: desktop decrements `mKeepFiring` as
+     * soon as the walk reaches the target, so `setTriggerStayOpen(t, 2)` covers
+     * this line and the next — not this line and two more (mudlet-web#262).
+     * When the target has already been walked past (it sorts earlier, or the
+     * call came from outside a pass), the window is the next `lines` lines.
+     *
      * `matchPerm` post-increments `lineCounter`, so during a trigger's script
-     * the line just matched is `lineCounter - 1`; the window math then mirrors
-     * `openChain` exactly. Negative counts clamp to 0 (open for the current
-     * line only). `ids` are resolved by name by the caller.
+     * the line just matched is `lineCounter - 1`. Negative counts clamp to 0,
+     * which closes the window. `ids` are resolved by name by the caller.
      */
     setStayOpen(ids: string[], lines: number): void {
         const currentLine = this.lineCounter - 1;
-        const openUntil = currentLine + Math.max(0, Math.trunc(lines));
+        const count = Math.max(0, Math.trunc(lines));
         for (const id of ids) {
-            this.chainOpenUntil.set(id, openUntil);
+            const ahead = this.processingDepth > 0 && this.walkedLine.get(id) !== currentLine;
+            this.chainOpenUntil.set(id, currentLine + count - (ahead ? 1 : 0));
             // No match to replay: the trigger may never have matched at all, and
             // one opened this way is being fired by the caller, not by its own
             // pattern. applyFireLength stands the line in for it.
-            this.keepFiring.set(id, { until: openUntil, match: null });
+            if (count > 0) this.keepFiring.set(id, { remaining: count, match: null });
+            else this.keepFiring.delete(id);
         }
     }
 
