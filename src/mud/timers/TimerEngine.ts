@@ -24,6 +24,9 @@ interface TimerEntry {
      *  rather than unknown, and a second `killTimer` has a corpse to find and
      *  so answers false. See {@link reapKilled}. */
     dead?: boolean;
+    /** A one-shot whose body is running right now. Still live — see addTemp —
+     *  but {@link pumpDue} must not fire it a second time. */
+    firing?: boolean;
     /** Switched off by `disableTimer(id)`. The pending timeout is cleared; the
      *  timer stays findable and `enableTimer(id)` re-arms it. */
     disabled?: boolean;
@@ -74,6 +77,10 @@ export class TimerEngine {
     private readonly knownPermNames = new Set<string>();
     /** Shared with every other engine in the profile — see ItemIdSequence. */
     private idSeq = new ItemIdSequence();
+    /** Temp timer bodies on the stack (a body can pump others via waitForEvent).
+     *  Killed timers are reaped when the outermost one returns — TimerUnit's
+     *  mProcessingDepth / doCleanup. */
+    private firingDepth = 0;
     setIdSequence(seq: ItemIdSequence): void { this.idSeq = seq; }
 
     /** Number of live session-scoped temp timers (Mudlet `getProfileStats` temp
@@ -95,10 +102,35 @@ export class TimerEngine {
         // from inside its own callback has to stay dead, and killTimer can only
         // clear a handle that already exists — re-arming afterwards would
         // resurrect it.
+        //
+        // A one-shot is retired only AFTER its body, as TTimer::execute does:
+        // inside its own callback the timer still exists and is active, so
+        // killTimer/enableTimer/disableTimer on it answer true. Then it is
+        // stopped and marked for cleanup, and TimerUnit::timerFired frees it —
+        // along with anything else killed meanwhile — once no timer body is
+        // left on the stack.
         const fire = (): void => {
             if (repeat) arm();
-            else this.temp.delete(id);
-            fn();
+            else {
+                const entry = this.temp.get(id);
+                if (entry) entry.firing = true;
+            }
+            this.firingDepth++;
+            try {
+                fn();
+            } finally {
+                this.firingDepth--;
+                if (!repeat) {
+                    // Looked up again: a disable + enable inside the body
+                    // replaced the entry with a freshly armed one.
+                    const entry = this.temp.get(id);
+                    if (entry) {
+                        clearTimeout(entry.handle);
+                        entry.dead = true;
+                    }
+                }
+                if (this.firingDepth === 0) this.reapKilled();
+            }
         };
         const arm = (): void => {
             const handle = setTimeout(fire, intervalMs);
@@ -131,7 +163,7 @@ export class TimerEngine {
         // map underneath a live iteration would skip or revisit entries.
         const due: Array<() => void> = [];
         for (const [, entry] of this.temp) {
-            if (entry.dead || entry.disabled || now < entry.start + entry.intervalMs) continue;
+            if (entry.dead || entry.disabled || entry.firing || now < entry.start + entry.intervalMs) continue;
             // Cancel the pending timeout and let `fire` do the bookkeeping — it
             // retires a one-shot and re-arms a repeat, so a repeating timer ends
             // up correctly scheduled for its next tick instead of double-firing.
@@ -202,7 +234,9 @@ export class TimerEngine {
     }
 
     /** Free every timer killed since the last call. Runs once per processed line
-     *  batch, mirroring the deferred cleanup Mudlet's TTimerUnit does. */
+     *  batch and after each outermost temp timer body, mirroring the deferred
+     *  cleanup Mudlet's TimerUnit does (Host::incomingStreamProcessor and
+     *  TimerUnit::timerFired). */
     reapKilled(): void {
         for (const [id, entry] of this.temp) if (entry.dead) this.temp.delete(id);
     }

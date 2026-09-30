@@ -3883,12 +3883,30 @@ end`);
         }
     }
 
+    /** Desktop runs every entry point on the main state, so a script must not
+     *  see the thread at `threadIndex` as a coroutine — Bridge.lua's
+     *  coroutine.running/yield consult this registry table. Absent until
+     *  Bridge.lua has run. */
+    private markEntryThread(threadIndex: number): void {
+        const api = this.lua.global.luaApi;
+        const L = this.lua.global.address;
+        api.lua_getfield(L, LUA_REGISTRYINDEX, LuaRuntime.ENTRY_THREADS_KEY);
+        if (api.lua_type(L, -1) === LuaType.Table) {
+            api.lua_pushvalue(L, threadIndex);
+            api.lua_pushboolean(L, 1);
+            api.lua_rawset(L, -3);
+        }
+        api.lua_pop(L, 1);
+    }
+    private static readonly ENTRY_THREADS_KEY = 'mudlet.entryThreads';
+
     private execOnThread(code: string, name: string, chunkName?: string): unknown {
         const g = this.lua.global;
         this.syncGlobalsFromRunning();
         const t = g.newThread();
         const threadIndex = g.getTop();
         try {
+            this.markEntryThread(threadIndex);
             t.loadString('return __exec(...)', '@' + name);
             t.pushValue(code);
             t.pushValue(name);
@@ -3934,6 +3952,7 @@ end`);
         const t = g.newThread();
         const threadIndex = g.getTop();
         try {
+            this.markEntryThread(threadIndex);
             t.loadString(chunk, '@' + label);
             const res = this.resumeAsRunning(t, () => t.resume(0));
             if (res.result === LuaReturn.Yield) {
@@ -3968,10 +3987,10 @@ end`);
     /**
      * A thread resume returned LUA_YIELD. If it is invokeFileDialog's yield
      * (sentinel first), read the request off the thread stack, anchor the
-     * thread, and open the picker — returns true. Any other yield reaching
-     * the handler boundary is a script bug (stock Lua 5.1 errors with
-     * "attempt to yield from outside a coroutine" there): report and abandon
-     * the thread — returns false.
+     * thread, and open the picker — returns true. No other yield should get
+     * here: Bridge.lua's coroutine.yield refuses to leave an entry thread, as
+     * desktop's main state does. Should one anyway, report and abandon the
+     * thread — returns false.
      *
      * First park: the thread still sits at `threadIndex` on the global stack
      * (the caller's finally pops it), so take a registry ref now. Re-park

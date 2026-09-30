@@ -167,19 +167,14 @@ describe('invokeFileDialog — coroutine park/resume', () => {
     expect(t.run('return picked')).toBe('/first');
   });
 
-  it('abandons (without crashing) a handler that yields outside invokeFileDialog', () => {
-    const errors: string[] = [];
-    const off = t.session.events.on('script.log', (text: string, level: string) => {
-      if (level === 'error') errors.push(text);
-    });
-    try {
-      t.rt.load(`coroutine.yield('rogue')`, 'rogue-yield-test');
-      expect(errors.some(e => e.includes('yield'))).toBe(true);
-      // The runtime is still healthy afterwards.
-      expect(t.run('return 1 + 1')).toBe(2);
-    } finally {
-      off();
-    }
+  it('refuses a yield outside invokeFileDialog, as desktop\'s main state does', () => {
+    // Desktop runs a script on the main state, where coroutine.yield errors;
+    // it is a script error, not a suspended handler.
+    expect(() => t.rt.load(`coroutine.yield('rogue')`, 'rogue-yield-test'))
+      .toThrow('attempt to yield across metamethod/C-call boundary');
+    expect(requests).toHaveLength(0);
+    // The runtime is still healthy afterwards.
+    expect(t.run('return 1 + 1')).toBe(2);
   });
 
   it('resolving after destroy() is a safe no-op', () => {
@@ -227,19 +222,20 @@ describe('__mudlet_pcall_co — yield-transparent pcall', () => {
     expect(t.run(`local ok = __mudlet_pcall_co(error, 'from C') return ok`)).toBe(false);
   });
 
-  it('forwards a nested yield outward and feeds the resume value back in', () => {
-    // Simulate the JS boundary with a plain coroutine wrapping the trampoline.
+  it('refuses a script\'s own yield, like the pcall it stands in for', () => {
+    // Only invokeFileDialog's yield is forwarded to the JS boundary. Any other
+    // is an error inside the protected call, as it is inside desktop's pcall,
+    // and the coroutine that made the call carries on.
     const result = t.run(`
       local co = coroutine.create(function()
-        local ok, v = __mudlet_pcall_co(function()
+        local ok, err = __mudlet_pcall_co(function()
           return coroutine.yield('ping')
         end)
-        return ok and v
+        return tostring(ok) .. '/' .. tostring(err)
       end)
-      local _, yielded = coroutine.resume(co)      -- reached the JS boundary
-      local _, final = coroutine.resume(co, 'pong') -- resumed with the "picked" value
-      return yielded .. '/' .. tostring(final)
+      local _, res = coroutine.resume(co)
+      return res .. '/' .. coroutine.status(co)
     `);
-    expect(result).toBe('ping/pong');
+    expect(result).toBe('false/attempt to yield across metamethod/C-call boundary/dead');
   });
 });

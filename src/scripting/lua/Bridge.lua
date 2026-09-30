@@ -3451,40 +3451,89 @@ function __mudlet_dispatch_cb_arg(id)
     if fn then return fn(__mudlet_cb_arg) end
 end
 
--- Yield-transparent pcall. Runs `fn` on a private coroutine so a runtime
--- error is caught like pcall, but a coroutine.yield inside `fn` (that is:
--- invokeFileDialog) is forwarded outward to the JS resume boundary instead of
--- erroring — in Lua 5.1 pcall is a C frame and yielding across it raises
--- "attempt to yield across metamethod/C-call boundary". Values fed back by
--- the next outer resume are passed straight into the inner coroutine, so `fn`
--- observes a plain yield/resume round trip. Used by __exec (Exec.lua) and the
--- event-dispatch loops below wherever plain pcall would sit between the JS
--- entry point and user code.
+-- Script entry points run on the main state on desktop, not on a coroutine.
 --
--- A thread's globals table is its own in Lua 5.1, and Mudlet runs every script
--- on the one thread: a `setfenv(0, t)` the script made is the interpreter's
--- globals table once it returns. So the table the private coroutine finished
--- with is handed to the thread that called this (LuaRuntime carries it on from
--- there — see resumeAsRunning).
-function __mudlet_pcall_co(fn, ...)
-    -- coroutine.create rejects C functions (JS-bound API globals). Those can't
-    -- yield across the C boundary anyway, so plain pcall is equivalent.
-    if type(fn) ~= 'function' or debug.getinfo(fn, 'S').what == 'C' then return pcall(fn, ...) end
-    local finalGlobals
-    local function finish(...)
-        finalGlobals = getfenv(0)
-        return ...
+-- Mudlet runs every timer, trigger, alias, key, event handler and script body
+-- with lua_pcall on the one lua_State, and Other.lua dispatches events with a
+-- plain pcall. So there, coroutine.running() is nil in a callback, and a stray
+-- coroutine.yield() errors ("attempt to yield across metamethod/C-call
+-- boundary") instead of suspending anything. Here every JS→Lua entry runs on a
+-- thread of its own (LuaRuntime.execOnThread/runChunkOnThread — so that
+-- invokeFileDialog can suspend it), and __mudlet_pcall_co below runs handlers on
+-- a private coroutine. Those are the client's threads, not the script's: a
+-- script must not be able to see them or yield out of them. Left visible,
+-- helpers of the `if coroutine.running() then f() else coroutine.wrap(f)() end`
+-- kind take the wrong branch, and a handler that captured the private coroutine
+-- and yielded silently lost the rest of the coroutine that raised the event.
+--
+-- So coroutine.running() reports what desktop would, and coroutine.yield()
+-- refuses to leave one of those threads. The only yield that may is
+-- invokeFileDialog's, which uses the raw one.
+local __mudlet_raw_yield = coroutine.yield
+do
+    local rawCreate, rawResume, rawRunning, rawStatus =
+        coroutine.create, coroutine.resume, coroutine.running, coroutine.status
+    -- Threads LuaRuntime made to run an entry point on. Marked from JS through
+    -- the registry, which a script's setfenv(0, t) cannot move.
+    local entryThreads = setmetatable({}, {__mode = 'k'})
+    debug.getregistry()['mudlet.entryThreads'] = entryThreads
+    -- __mudlet_pcall_co's private coroutines → the coroutine the code it runs
+    -- would be on under desktop's pcall (false: the main state).
+    local standIns = setmetatable({}, {__mode = 'k'})
+
+    function coroutine.running()
+        local t = rawRunning()
+        if t == nil or entryThreads[t] then return nil end
+        local standIn = standIns[t]
+        if standIn == nil then return t end
+        return standIn or nil
     end
-    local co = coroutine.create(function(...) return finish(fn(...)) end)
-    local function step(ok, ...)
-        if not ok then return false, ... end
-        if coroutine.status(co) == 'suspended' then
-            return step(coroutine.resume(co, coroutine.yield(...)))
+
+    function coroutine.yield(...)
+        local t = rawRunning()
+        if t ~= nil and (entryThreads[t] or standIns[t] ~= nil) then
+            error("attempt to yield across metamethod/C-call boundary", 0)
         end
-        if finalGlobals ~= nil and finalGlobals ~= getfenv(0) then setfenv(0, finalGlobals) end
-        return true, ...
+        return __mudlet_raw_yield(...)
     end
-    return step(coroutine.resume(co, ...))
+
+    -- Yield-transparent pcall. Runs `fn` on a private coroutine so a runtime
+    -- error is caught like pcall, but invokeFileDialog's yield inside `fn` is
+    -- forwarded outward to the JS resume boundary instead of erroring — in Lua
+    -- 5.1 pcall is a C frame and yielding across it raises "attempt to yield
+    -- across metamethod/C-call boundary". Values fed back by the next outer
+    -- resume are passed straight into the inner coroutine, so `fn` observes a
+    -- plain yield/resume round trip. Any other yield errors, as it would inside
+    -- desktop's pcall (see coroutine.yield above). Used by __exec (Exec.lua) and
+    -- the event-dispatch loops below wherever plain pcall would sit between the
+    -- JS entry point and user code.
+    --
+    -- A thread's globals table is its own in Lua 5.1, and Mudlet runs every
+    -- script on the one thread: a `setfenv(0, t)` the script made is the
+    -- interpreter's globals table once it returns. So the table the private
+    -- coroutine finished with is handed to the thread that called this
+    -- (LuaRuntime carries it on from there — see resumeAsRunning).
+    function __mudlet_pcall_co(fn, ...)
+        -- coroutine.create rejects C functions (JS-bound API globals). Those can't
+        -- yield across the C boundary anyway, so plain pcall is equivalent.
+        if type(fn) ~= 'function' or debug.getinfo(fn, 'S').what == 'C' then return pcall(fn, ...) end
+        local finalGlobals
+        local function finish(...)
+            finalGlobals = getfenv(0)
+            return ...
+        end
+        local co = rawCreate(function(...) return finish(fn(...)) end)
+        standIns[co] = coroutine.running() or false
+        local function step(ok, ...)
+            if not ok then return false, ... end
+            if rawStatus(co) == 'suspended' then
+                return step(rawResume(co, __mudlet_raw_yield(...)))
+            end
+            if finalGlobals ~= nil and finalGlobals ~= getfenv(0) then setfenv(0, finalGlobals) end
+            return true, ...
+        end
+        return step(rawResume(co, ...))
+    end
 end
 
 -- Mudlet invokeFileDialog(fileOrFolder, dialogTitle[, dialogLocation]).
@@ -3520,7 +3569,7 @@ do
         end
         dialogTitle = title
         local m, mm, nc = matches, multimatches, namedCaptures
-        local path = coroutine.yield(SENTINEL,
+        local path = __mudlet_raw_yield(SENTINEL,
             fileOrFolder and true or false,
             dialogTitle == nil and '' or tostring(dialogTitle),
             dialogLocation == nil and '' or tostring(dialogLocation))
