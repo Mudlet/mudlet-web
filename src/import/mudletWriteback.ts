@@ -1,7 +1,7 @@
 import type { ProfileSettings } from '../storage/schema';
 import { serializeMudletXml, type SerializeInput } from './mudletXmlExport';
 import { serializeVariablePackage, type MudletVariablePackage } from './mudletVariables';
-import { applyProfileSettingsToHost } from './mudletHost';
+import { applyInstalledPackages, applyProfileSettingsToHost } from './mudletHost';
 
 // Link mode (phase 2): write the live Mudlet Web state back into a linked Mudlet
 // profile's XML *DOM-preservingly*. We parse the profile's current save, replace
@@ -52,6 +52,11 @@ export function buildLinkedWriteback(
      *  seven item packages and nothing else. A document meant to be handed to
      *  someone else should not carry the sender's preferences. */
     omitHostSettings = false,
+    /** The profile's live package list, written into `<mInstalledPackages>`
+     *  as desktop's `Host::saveProfile` does. Left out, the base's own list
+     *  stands — right for an export whose base was already stamped, wrong for a
+     *  save based on an older one, whose list predates any install since. */
+    installedPackages?: string[],
 ): string {
     const doc = new DOMParser().parseFromString(baseXml, 'text/xml');
     const err = doc.getElementsByTagName('parsererror')[0];
@@ -62,6 +67,7 @@ export function buildLinkedWriteback(
     // Update the modeled Host settings in place (unmodeled fields preserved).
     const host = doc.getElementsByTagName('Host')[0];
     if (host && settings) applyProfileSettingsToHost(host, settings);
+    if (host && installedPackages) applyInstalledPackages(host, installedPackages);
 
     // Drop the packages we own; HostPackage and unknown siblings stay.
     for (const child of Array.from(root.children)) {

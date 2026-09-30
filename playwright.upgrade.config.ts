@@ -18,7 +18,7 @@ export default defineConfig({
     ...base,
     testDir: './e2e/upgrade',
     globalSetup: undefined,
-    // One test, and it walks a whole app boot twice; the default 30s is tight.
+    // Each test walks a whole app boot twice; the default 30s is tight.
     timeout: 180_000,
     fullyParallel: false,
     workers: 1,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findNewestCurrentXml, isMudletProfileVfs, readNewestParseableXml, type VfsReader } from '../../src/import/mudletLink';
+import { findNewestCurrentXml, isMudletProfileVfs, opensAsLinkedProfile, readNewestParseableXml, type VfsReader } from '../../src/import/mudletLink';
 
 // A minimal in-memory VfsReader. `files` maps a relative path to its mtime (ms);
 // `contents` optionally maps a path to file text. Directories are inferred.
@@ -80,5 +80,58 @@ describe('readNewestParseableXml', () => {
     it('returns null when nothing parses', () => {
         const vfs = mockVfs({ 'current/a.xml': 1000 }, { 'current/a.xml': 'not xml at all <<<' });
         expect(readNewestParseableXml(vfs)).toBeNull();
+    });
+});
+
+describe('loadMudletLinkedProfile — package set', () => {
+    const CONN = 'linked-packages-conn';
+    const xmlWith = (...names: string[]) => '<?xml version="1.0"?><MudletPackage version="1.001"><HostPackage><Host>'
+        + `<name>P</name><mInstalledPackages>${names.map(n => `<string>${n}</string>`).join('')}</mInstalledPackages>`
+        + '</Host></HostPackage></MudletPackage>';
+
+    it('takes which packages are installed from the XML, and what they are from the sidecar', async () => {
+        const { loadMudletLinkedProfile } = await import('../../src/import/mudletLink');
+        const { useAppStore } = await import('../../src/storage/appStore');
+        const { PROFILE_DATA_PATH } = await import('../../src/storage/profileVfsData');
+        const sidecar = {
+            packages: [
+                { name: 'vpkg', installedAt: 'then', xmlPath: 'vpkg.xml', sourcePath: '/p/vpkg.xml' },
+                // Uninstalled in desktop since: the XML no longer lists it.
+                { name: 'dropped', installedAt: 'then' },
+                // Modules live in <mInstalledModules>, never <mInstalledPackages>.
+                { name: 'shared', installedAt: 'then', kind: 'module' },
+            ],
+        };
+        const vfs = mockVfs(
+            { 'current/2026-01-01#00-00-00.xml': 1, [PROFILE_DATA_PATH]: 1, 'fresh/config.lua': 1 },
+            {
+                'current/2026-01-01#00-00-00.xml': xmlWith('vpkg', 'fresh'),
+                [PROFILE_DATA_PATH]: JSON.stringify(sidecar),
+                'fresh/config.lua': 'mpackage = [[fresh]]\nversion = [[2.0]]',
+            },
+        );
+
+        expect(loadMudletLinkedProfile(vfs, CONN, 'now')).toBe(true);
+        const pkgs = useAppStore.getState().connectionPackages[CONN] ?? [];
+        expect(pkgs.map(p => p.name)).toEqual(['vpkg', 'fresh', 'shared']);
+        expect(pkgs[0]).toMatchObject({ installedAt: 'then', xmlPath: 'vpkg.xml', sourcePath: '/p/vpkg.xml' });
+        expect(pkgs[1]).toMatchObject({ installedAt: 'now', version: '2.0' });
+        expect(pkgs[2]).toMatchObject({ kind: 'module' });
+    });
+});
+
+describe('opensAsLinkedProfile', () => {
+    const withSave = () => mockVfs({ 'current/2026-01-01#00-00-00.xml': 1 }, { 'current/2026-01-01#00-00-00.xml': VALID_XML });
+
+    it('loads a linked Mudlet folder from its newest save', () => {
+        expect(opensAsLinkedProfile({ mudletLinked: true }, withSave())).toBe(true);
+    });
+
+    it('does not for a Mudlet Web profile whose current/ saveProfile() wrote (#259)', () => {
+        expect(opensAsLinkedProfile({}, withSave())).toBe(false);
+    });
+
+    it('does not for a linked profile with no save to load', () => {
+        expect(opensAsLinkedProfile({ mudletLinked: true }, mockVfs({ 'map/m': 1 }))).toBe(false);
     });
 });

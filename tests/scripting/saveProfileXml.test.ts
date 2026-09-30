@@ -182,6 +182,45 @@ describe('saveProfile — the XML save it writes', () => {
         expect(xml).toContain('keep me');
     });
 
+    // #259: desktop's Host::saveProfile writes <mInstalledPackages>, and a
+    // load takes the profile's package set from it. A save without it made the
+    // next open forget every installed package and reinstall the defaults.
+    const setPackages = (...pkgs: { name: string; kind?: 'package' | 'module' }[]) => {
+        useAppStore.getState().hydrateConnectionData(CONN, {
+            packages: pkgs.map(p => ({ installedAt: '2020-01-01T00:00:00Z', ...p })),
+        });
+    };
+    const installedIn = (xml: string) => {
+        const doc = new DOMParser().parseFromString(xml, 'text/xml');
+        const list = doc.getElementsByTagName('mInstalledPackages')[0];
+        return list ? Array.from(list.getElementsByTagName('string')).map(e => e.textContent) : null;
+    };
+
+    it('lists the installed packages in the Host of a fresh save', () => {
+        setPackages({ name: 'run-lua-code' }, { name: 'vpkg' }, { name: 'shared', kind: 'module' });
+        const { vfs, files } = fakeVfs();
+
+        expect(makeEngine(vfs).saveProfileXml().ok).toBe(true);
+        const xml = files.get([...files.keys()][0]) ?? '';
+        // Packages only: desktop keeps modules in <mInstalledModules>.
+        expect(installedIn(xml)).toEqual(['run-lua-code', 'vpkg']);
+        // The Host names the profile as desktop's does.
+        expect(xml).toContain('<name>Test</name>');
+    });
+
+    it('replaces the package list of the save it is based on with the live one', () => {
+        const base = '<?xml version="1.0" encoding="UTF-8"?>'
+            + '<MudletPackage version="1.001"><HostPackage><Host>'
+            + '<mInstalledPackages><string>gone</string></mInstalledPackages>'
+            + '</Host></HostPackage></MudletPackage>';
+        setPackages({ name: 'vpkg' });
+        const { vfs, files } = fakeVfs({ 'current/2020-01-01#00-00-00.xml': base });
+
+        expect(makeEngine(vfs).saveProfileXml().ok).toBe(true);
+        const saved = [...files.keys()].find(k => k !== 'current/2020-01-01#00-00-00.xml') ?? '';
+        expect(installedIn(files.get(saved) ?? '')).toEqual(['vpkg']);
+    });
+
     it('reports a failure rather than throwing when the write is refused', () => {
         const { vfs } = fakeVfs();
         (vfs as unknown as { writeFile: () => void }).writeFile = () => {

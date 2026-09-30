@@ -1,5 +1,6 @@
 import { useAppStore } from '../storage/appStore';
 import { PROFILE_DATA_PATH, type PersistedProfileData } from '../storage/profileVfsData';
+import type { PackageManifest } from '../storage/schema';
 import { parseMudletProfile } from './mudletHost';
 import { buildPackageManifests } from './mudletProfileImport';
 
@@ -57,6 +58,19 @@ export function isMudletProfileVfs(vfs: VfsReader): boolean {
 }
 
 /**
+ * Whether opening this profile loads it from its newest current/*.xml rather
+ * than `.mudlet/profile.json`: only a linked Mudlet folder, where desktop may
+ * have edited the save since. A Mudlet Web profile that called saveProfile()
+ * has a current/*.xml too, but nothing outside this app writes it and
+ * profile.json — flushed alongside it — is the fuller record (module
+ * manifests, install paths, …). Loading that one as a linked folder lost its
+ * installed packages and re-ran the default-package install (#259).
+ */
+export function opensAsLinkedProfile(connection: { mudletLinked?: boolean }, vfs: VfsReader): boolean {
+    return connection.mudletLinked === true && isMudletProfileVfs(vfs);
+}
+
+/**
  * The newest current/*.xml whose content actually parses as a Mudlet profile,
  * with its text. Skips a corrupt newest save (e.g. a truncated/garbage autosave
  * from the write bug) and falls back to older saves — so a linked profile still
@@ -79,6 +93,32 @@ export function readNewestParseableXml(vfs: VfsReader): { path: string; xml: str
     return null;
 }
 
+/**
+ * The linked profile's package set. The XML's `<mInstalledPackages>` decides
+ * which packages are installed — that's what desktop edits — but a package this
+ * app already knew keeps the manifest it recorded in the sidecar (install
+ * paths, source, declared info), which the XML has no room for; only one the
+ * sidecar hasn't seen is rebuilt from its `config.lua`. Modules aren't in
+ * `<mInstalledPackages>` at all (desktop keeps them in `<mInstalledModules>`),
+ * so the sidecar's are carried over as they are.
+ */
+function linkedPackageManifests(
+    vfs: VfsReader,
+    names: string[],
+    known: PackageManifest[],
+    installedAt: string,
+): PackageManifest[] {
+    const knownPackages = new Map(known.filter(m => m.kind !== 'module').map(m => [m.name, m]));
+    const fresh = buildPackageManifests(names.filter(n => !knownPackages.has(n)), name => {
+        const p = `${name}/config.lua`;
+        try { return vfs.exists(p) ? vfs.readFile(p) : undefined; } catch { return undefined; }
+    }).map(m => ({ ...m, installedAt }));
+    const freshByName = new Map(fresh.map(m => [m.name, m]));
+    const packages = names.map(n => knownPackages.get(n) ?? freshByName.get(n)!);
+    const modules = known.filter(m => m.kind === 'module' && !names.includes(m.name));
+    return [...packages, ...modules];
+}
+
 function readSidecar(vfs: VfsReader): Partial<PersistedProfileData> {
     if (!vfs.exists(PROFILE_DATA_PATH)) return {};
     try {
@@ -99,12 +139,8 @@ export function loadMudletLinkedProfile(vfs: VfsReader, connectionId: string, in
     if (!found) return false;
 
     const data = parseMudletProfile(found.xml);
-    const packages = buildPackageManifests(data.installedPackages, name => {
-        const p = `${name}/config.lua`;
-        try { return vfs.exists(p) ? vfs.readFile(p) : undefined; } catch { return undefined; }
-    }).map(m => ({ ...m, installedAt }));
-
     const sidecar = readSidecar(vfs);
+    const packages = linkedPackageManifests(vfs, data.installedPackages, sidecar.packages ?? [], installedAt);
     const vars = data.variables.variables;
 
     useAppStore.getState().hydrateConnectionData(connectionId, {

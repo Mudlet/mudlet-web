@@ -302,14 +302,24 @@ export function applyHostIdentity(host: Element, identity: MudletHostIdentity): 
     setHostEl(host, 'name', identity.name);
     setHostEl(host, 'url', identity.url);
     setHostEl(host, 'port', String(identity.port));
+    applyInstalledPackages(host, identity.installedPackages);
+}
 
+/**
+ * Replace `<Host><mInstalledPackages>` with `names`, creating it when absent.
+ * Desktop's `Host::saveProfile` always writes the live list, and a load takes
+ * the profile's package set from it — so a save that left it out (or kept a
+ * stale copy from the document it was based on) forgets every package on the
+ * next open.
+ */
+export function applyInstalledPackages(host: Element, names: string[]): void {
     let list = host.querySelector(':scope > mInstalledPackages');
     if (!list) {
         list = newHostEl(host, 'mInstalledPackages');
         host.appendChild(list);
     }
     while (list.firstChild) list.removeChild(list.firstChild);
-    for (const name of identity.installedPackages) {
+    for (const name of names) {
         const el = newHostEl(host, 'string');
         el.textContent = name;
         list.appendChild(el);

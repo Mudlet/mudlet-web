@@ -9,7 +9,7 @@ import { acquireProfileLock, isProfileLockHeld } from './utils/profileLock';
 import { ProfileVFS } from './scripting/vfs/ProfileVFS';
 import { registerVfs, unregisterVfs } from './scripting/vfs/vfsBridge';
 import { loadProfileData } from './storage/profileVfsData';
-import { isMudletProfileVfs, loadMudletLinkedProfile } from './import/mudletLink';
+import { loadMudletLinkedProfile, opensAsLinkedProfile } from './import/mudletLink';
 import { loadFolderHandle, checkFolderPermission, requestFolderPermission, clearFolderHandle } from './scripting/vfs/folderHandleStore';
 import { ensurePersistentStorage } from './storage/persistentStorage';
 import { useAppStore, type MudConnection } from './storage';
@@ -248,7 +248,8 @@ export default function App() {
                 // from .mudlet/profile.json (and run the one-time v21 migration)
                 // before the session renders, so the profile's settings/layout/
                 // protocols are present for the synchronous reads.
-                if (isMudletProfileVfs(vfs)) {
+                // A profile that merely called saveProfile() is not linked (#259).
+                if (opensAsLinkedProfile({ mudletLinked: linked }, vfs)) {
                     loadMudletLinkedProfile(vfs, id, new Date().toISOString());
                 } else {
                     loadProfileData(vfs, id);

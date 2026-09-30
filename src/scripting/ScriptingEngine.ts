@@ -1030,43 +1030,40 @@ export class ScriptingEngine implements EngineHost {
         };
         const vars = s.connectionVariables[id];
         return buildLinkedWriteback(
-            baseXml ?? this.retainedHostXml() ?? EMPTY_PROFILE_XML, trees,
+            baseXml ?? this.hostBaseXml() ?? EMPTY_PROFILE_XML, trees,
             { hidden: vars?.hidden ?? [], variables: vars?.values ?? [] }, s.connectionProfile[id],
-            omitHostSettings,
+            omitHostSettings, this.getPackageNames(),
         );
     }
 
     /**
-     * The `<Host>` retained when this profile was imported from Mudlet, restamped
-     * with the connection's current identity and package set — the retained copy
-     * still names them as they were at import.
+     * The `<Host>` a save starts from when there's no `current/*.xml` to base
+     * on: the one retained when this profile was imported from Mudlet, else the
+     * empty skeleton — either way stamped with the connection's current identity
+     * and package set, which desktop's `Host::saveProfile` always writes (the
+     * retained copy still names them as they were at import).
      *
      * Only reached when there's no `current/*.xml` to base on, so it never
-     * displaces a linked folder's own save. Undefined for a profile that was
-     * never imported, or when the retained file is missing or unreadable.
+     * displaces a linked folder's own save. Undefined without a VFS; the bare
+     * retained file (or nothing) when the connection record is gone.
      */
-    private retainedHostXml(): string | undefined {
+    private hostBaseXml(): string | undefined {
         const vfs = this.vfs;
         if (!vfs) return undefined;
-        let retained: string;
+        let retained: string | undefined;
         try {
             // The legacy path covers a profile whose VFS has not been opened
             // since the storage rename moved `.mudix/` to `.mudlet/`.
             const path = vfs.exists(RETAINED_HOST_PATH) ? RETAINED_HOST_PATH
                 : vfs.exists(LEGACY_RETAINED_HOST_PATH) ? LEGACY_RETAINED_HOST_PATH
                 : null;
-            if (!path) return undefined;
-            retained = vfs.readFile(path);
+            if (path) retained = vfs.readFile(path);
         } catch (err) {
             console.warn('[ScriptingEngine] retained <Host> unreadable:', err);
-            return undefined;
         }
-        const s = useAppStore.getState();
-        const connection = s.connections.find(c => c.id === this.connectionId);
+        const connection = useAppStore.getState().connections.find(c => c.id === this.connectionId);
         if (!connection) return retained;
-        const packageNames = (s.connectionPackages[this.connectionId] ?? [])
-            .map(p => p.name).filter(Boolean);
-        return buildHostBaseXml(connection, packageNames, retained);
+        return buildHostBaseXml(connection, this.getPackageNames(), retained);
     }
 
     /**
