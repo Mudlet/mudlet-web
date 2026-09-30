@@ -17,6 +17,8 @@ import base from './playwright.config';
 export default defineConfig({
     ...base,
     testDir: './e2e/upgrade',
+    // The base config ignores this directory; this config is its home.
+    testIgnore: [],
     globalSetup: undefined,
     // Each test walks a whole app boot twice; the default 30s is tight.
     timeout: 180_000,

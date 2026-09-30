@@ -19,6 +19,10 @@ const fresh = isFresh();
 
 export default defineConfig({
     testDir: './e2e',
+    // The reload suite runs under its own config (playwright.upgrade.config.ts)
+    // against a built app; here it would meet no server at all whenever the
+    // recording is reused, and a dev server that doesn't survive a reload when not.
+    testIgnore: 'upgrade/**',
     globalSetup: './e2e/bustedRecord.ts',
     // The tests are pure functions of the recording — no page, no browser — so
     // they fan out freely and cost milliseconds each. (They used to take a
