@@ -180,9 +180,16 @@ export class MxpFrameManager {
         const parent = frame.parent;
         if (parent) {
             parent.children = parent.children.filter(c => c !== frame);
-            if (parent.tabs.includes(name)) {
+            const at = parent.tabs.indexOf(name);
+            if (at !== -1) {
                 parent.tabs = parent.tabs.filter(t => t !== name);
-                this.publishTabs(parent);
+                // Closing the page on show brings up the one to its right, or
+                // the one to its left when it was the last — QTabBar's
+                // SelectRightTab, which is what the frame's QTabWidget does.
+                const next = parent.activeTab === name
+                    ? parent.tabs[Math.min(at, parent.tabs.length - 1)]
+                    : undefined;
+                this.publishTabs(parent, next);
             }
         }
         frame.parent = null;

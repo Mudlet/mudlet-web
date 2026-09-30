@@ -203,14 +203,19 @@ describe('MxpParser — handshake', () => {
 });
 
 describe('MxpParser — robustness', () => {
-  it('reunites a tag split across two parseLine calls', () => {
+  // A tag cannot span lines: the newline ends it, what was read of it is text,
+  // and the next line is its own (TMxpProcessor rejects a tag a newline
+  // arrives inside). Holding it swallowed the next line whole (#258).
+  it('shows a tag the line ended inside as text, and keeps the next line', () => {
     const { parser } = makeParser();
-    const a = parser.parseLine(`${SECURE}go <sen`);
-    expect(a.plain).toBe('go '); // partial tag held back
-    const b = parser.parseLine('d>north</send>');
-    expect(b.plain).toBe('north');
-    expect(b.links).toHaveLength(1);
-    expect(b.links[0].payload).toBe('north');
+    expect(parser.parseLine(`${SECURE}go <send href="north`).plain).toBe('go <send href="north');
+    expect(parser.parseLine('next line').plain).toBe('next line');
+  });
+
+  it('shows an entity the line ended inside as text, and keeps the next line', () => {
+    const { parser } = makeParser();
+    expect(parser.parseLine(`${SECURE}X08 call AT&T`).plain).toBe('X08 call AT&T');
+    expect(parser.parseLine('X09 next line').plain).toBe('X09 next line');
   });
 
   // TBuffer: an ESC while a tag is being built aborts it (abortCurrentTag) —
@@ -313,9 +318,23 @@ describe('MxpParser — ESC[#z only switches mode for server data', () => {
     expect(parser.parseLine('<frame Status>', undefined, false).frames?.[0]?.name).toBe('Status');
   });
 
-  it('the same lock from the game does take effect', () => {
+  // Even from the game, a lock to OPEN or LOCKED is acknowledged and ignored
+  // while the processor is forced on (TMxpProcessor::setMode's
+  // shouldLockModeToSecure) — and so is the locked start a bare SB asks for.
+  it('keeps the forced secure lock against the game\'s ESC[7z and ESC[5z', () => {
     const { parser } = makeParser();
     parser.lockSecureMode(true);
+    parser.parseLine(`${ESC}[7z`);
+    expect(parser.parseLine('<frame Status>', undefined, false).frames?.[0]?.name).toBe('Status');
+    parser.parseLine(`${ESC}[5z`);
+    parser.setLockedMode('locked');
+    expect(parser.parseLine('<frame Other>', undefined, false).frames?.[0]?.name).toBe('Other');
+  });
+
+  it('takes the game\'s lock once the processor is no longer forced', () => {
+    const { parser } = makeParser();
+    parser.lockSecureMode(true);
+    parser.lockSecureMode(false);
     parser.parseLine(`${ESC}[7z`);
     expect(parser.parseLine('<frame Status>', undefined, false).frames).toBeUndefined();
   });

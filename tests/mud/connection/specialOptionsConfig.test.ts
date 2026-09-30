@@ -314,5 +314,17 @@ describe('telnet-layer setConfig options', () => {
       sock.deliver('\xFF\xFB\x5B'); // IAC WILL MXP
       expect(seen).toEqual([true]);
     });
+
+    // The SB that usually follows the WILL is what locks the processor until
+    // the game sends a mode (cTelnet sets LOCK_LOCKED on each one), so it has
+    // to reach the engine even though MXP is already on (#258).
+    it('reports a subnegotiation that follows the WILL', () => {
+      const { sock, bus } = connected();
+      const seen: [boolean, boolean | undefined][] = [];
+      bus.on('mxp.negotiated', (viaTelnet, viaSub) => { seen.push([viaTelnet, viaSub]); });
+      sock.deliver('\xFF\xFB\x5B'); // IAC WILL MXP
+      sock.deliver('\xFF\xFA\x5B\xFF\xF0'); // IAC SB MXP IAC SE
+      expect(seen).toEqual([[true, false], [true, true]]);
+    });
   });
 });

@@ -261,6 +261,19 @@ describe('MxpFrameManager — titles and tabs', () => {
         expect(h.destroyed).toContain('Room');
     });
 
+    // QTabBar's SelectRightTab: closing the page on show brings up the one
+    // that was to its right, or to its left when it was the last.
+    it('shows the next tab when the one on show is closed', () => {
+        mgr.createFrame('Chat', { NAME: 'Chat', ALIGN: 'top', HEIGHT: '120', TITLE: 'Channels' });
+        mgr.createFrame('Room', { NAME: 'Room', ALIGN: 'client', DOCK: 'Chat', TITLE: 'Room' });
+        mgr.createFrame('Tells', { NAME: 'Tells', ALIGN: 'client', DOCK: 'Chat', TITLE: 'Tells' });
+        expect(h.tabs.get('Chat')?.active).toBe('Room');
+        mgr.createFrame('Room', { NAME: 'Room', ACTION: 'close' });
+        expect(h.tabs.get('Chat')?.active).toBe('Tells');
+        mgr.createFrame('Tells', { NAME: 'Tells', ACTION: 'close' });
+        expect(h.tabs.get('Chat')?.active).toBe('Chat');
+    });
+
     it('brings a tab to the front when its frame is re-opened or focused', () => {
         mgr.createFrame('Chat', { NAME: 'Chat', ALIGN: 'top', HEIGHT: '120', TITLE: 'Channels' });
         mgr.createFrame('Room', { NAME: 'Room', ALIGN: 'client', DOCK: 'Chat', TITLE: 'Room' });
