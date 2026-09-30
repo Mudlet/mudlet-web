@@ -982,14 +982,26 @@ end
 local function utf8gmatch(str, regex, all)
 regex = (utf8sub(regex,1,1) ~= '^') and regex or '%' .. regex
 local lastChar = 1
+-- Where the previous match ended. As in luautf8 (and Lua 5.4), an empty match
+-- there is skipped; without it an empty match never advanced and "b*" looped
+-- forever.
+local lastEnd
+local strLen = utf8len(str)
 return function()
-	local found = {utf8find(str, regex, lastChar)}
-	if found[1] then
-		lastChar = found[2] + 1
-		if found[all and 1 or 3] then
-			return unpack(found, all and 1 or 3)
+	while true do
+		local found = {utf8find(str, regex, lastChar)}
+		if not found[1] then return end
+		if found[2] < found[1] and found[1] == lastEnd then
+			if found[1] > strLen then return end
+			lastChar = found[1] + 1
+		else
+			lastChar = found[2] + 1
+			lastEnd = lastChar
+			if found[all and 1 or 3] then
+				return unpack(found, all and 1 or 3)
+			end
+			return utf8sub(str, found[1], found[2])
 		end
-		return utf8sub(str, found[1], found[2])
 	end
 end
 end
@@ -1042,7 +1054,21 @@ local function utf8gsub(str, regex, repl, limit)
 limit = limit or -1
 local ret = ''
 local prevEnd = 1
-local it = utf8gmatch(str, regex, true)
+local it
+if utf8sub(regex, 1, 1) == '^' then
+	-- string.gsub honours a leading ^: one attempt, anchored at the start of
+	-- the subject. utf8gmatch escapes it to a literal (right for gmatch), so
+	-- routing through it here meant "^a" only ever matched a literal "^a" —
+	-- generic_mapper's prompt-stripping gsub never stripped anything.
+	local tried = false
+	it = function()
+		if tried then return end
+		tried = true
+		return utf8find(str, regex, 1)
+	end
+else
+	it = utf8gmatch(str, regex, true)
+end
 local found = {it()}
 local n = 0
 while #found > 0 and limit ~= n do

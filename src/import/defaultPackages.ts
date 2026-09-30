@@ -30,6 +30,10 @@ import mudletMapperUrl from './defaults/mudlet-mapper.xml?url';
 import guiDropUrl from './defaults/gui-drop/gui-drop.mpackage?url';
 // Mudlet's command-line package manager, preinstalled for every game.
 import mpkgUrl from './defaults/mpkg/mpkg.mpackage?url';
+// Three small alias packages Mudlet preinstalls for every game.
+import echoUrl from './defaults/echo/echo.mpackage?url';
+import enableAccessibilityUrl from './defaults/enable-accessibility/enable-accessibility.mpackage?url';
+import deleteOldProfilesUrl from './defaults/deleteOldProfiles/deleteOldProfiles.mpackage?url';
 
 interface DefaultPackage {
     /** Must match the manifest name produced by installPackageFromBytes. */
@@ -45,6 +49,21 @@ interface DefaultPackage {
 
 const RUN_LUA_CODE: DefaultPackage = {
     name: 'run-lua-code', filename: 'run-lua-code.mpackage', url: runLuaCodeUrl,
+};
+/** `` `echo ``/`` `cecho ``/`` `decho ``/`` `hecho `` — feed a line through the
+ *  local triggers without the game sending it: the standard way to test a trigger. */
+const ECHO: DefaultPackage = {
+    name: 'echo', filename: 'echo.mpackage', url: echoUrl,
+};
+/** `mudlet accessibility on` — sets the screen-reader-friendly preferences. */
+const ENABLE_ACCESSIBILITY: DefaultPackage = {
+    name: 'enable-accessibility', filename: 'enable-accessibility.mpackage', url: enableAccessibilityUrl,
+};
+/** `delete old profiles|maps|modules [days]` — prunes the autosave backups a
+ *  profile accumulates under its home dir. Mudlet Web writes those into the
+ *  profile VFS the same way, and the package only needs `lfs`/`os.remove`. */
+const DELETE_OLD_PROFILES: DefaultPackage = {
+    name: 'deleteOldProfiles', filename: 'deleteOldProfiles.mpackage', url: deleteOldProfilesUrl,
 };
 /** Mudlet's IRE/`mmp` mapper. Drives the map from `gmcp.Room.Info` with no setup. */
 const MUDLET_MAPPER: DefaultPackage = {
@@ -120,7 +139,8 @@ export const IRE_MAPPER_GAMES = [
 ];
 
 /** Every bundled default, whatever the host — for tests and tooling. */
-export const ALL_DEFAULTS: DefaultPackage[] = [RUN_LUA_CODE, MUDLET_MAPPER, GENERIC_MAPPER, MPKG, GUI_DROP, BASE_UI];
+export const ALL_DEFAULTS: DefaultPackage[] = [
+    RUN_LUA_CODE, ECHO, ENABLE_ACCESSIBILITY, DELETE_OLD_PROFILES, MUDLET_MAPPER, GENERIC_MAPPER, MPKG, GUI_DROP, BASE_UI];
 
 /**
  * The stock defaults for a profile on `host`.
@@ -155,7 +175,12 @@ export function stockDefaults(
     serverGuiAccepted = true,
 ): DefaultPackage[] {
     const isIreMapperGame = !!host && IRE_MAPPER_GAMES.some(g => g.toLowerCase() === host);
-    const packages = [RUN_LUA_CODE, isIreMapperGame ? MUDLET_MAPPER : GENERIC_MAPPER];
+    // run-lua-code, echo, enable-accessibility and deleteOldProfiles are `*` in
+    // defaultScripts: every game gets them.
+    const packages = [
+        RUN_LUA_CODE, ECHO, ENABLE_ACCESSIBILITY, DELETE_OLD_PROFILES,
+        isIreMapperGame ? MUDLET_MAPPER : GENERIC_MAPPER,
+    ];
     // Every host gets the package manager, except under the spec corpus — see TEST_BUILD.
     if (!TEST_BUILD) packages.push(MPKG);
     packages.push(GUI_DROP);

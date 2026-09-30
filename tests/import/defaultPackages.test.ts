@@ -56,6 +56,9 @@ const ARCHIVE_PATHS: Record<string, string> = {
     'mudlet-base-ui.mpackage': 'src/import/defaults/mudlet-base-ui/mudlet-base-ui.mpackage',
     'gui-drop.mpackage': 'src/import/defaults/gui-drop/gui-drop.mpackage',
     'mpkg.mpackage': 'src/import/defaults/mpkg/mpkg.mpackage',
+    'echo.mpackage': 'src/import/defaults/echo/echo.mpackage',
+    'enable-accessibility.mpackage': 'src/import/defaults/enable-accessibility/enable-accessibility.mpackage',
+    'deleteOldProfiles.mpackage': 'src/import/defaults/deleteOldProfiles/deleteOldProfiles.mpackage',
 };
 
 /** What a profile on `host` ends up with. Defaults to a newly-created profile —
@@ -105,6 +108,18 @@ describe('default packages', () => {
     it('installs run-lua-code on every host', () => {
         expect(namesFor('stickmud.com')).toContain('run-lua-code');
         expect(namesFor(undefined)).toContain('run-lua-code');
+    });
+
+    it('installs echo, enable-accessibility and deleteOldProfiles on every host, as Mudlet does', () => {
+        // `*` rows of defaultScripts in mudlet.cpp. Without echo, `` `echo `` —
+        // the usual way to test a trigger — went to the game as plain text (#263).
+        for (const host of [undefined, 'stickmud.com', 'elephant.org', ...GAMES_WITH_OWN_UI]) {
+            for (const conn of [NEW_PROFILE, {}]) {
+                const names = namesFor(host, conn);
+                expect(names, `host ${host}`).toEqual(expect.arrayContaining(
+                    ['echo', 'enable-accessibility', 'deleteOldProfiles']));
+            }
+        }
     });
 
     it('installs gui-drop on every host, new profile or not', () => {
@@ -178,7 +193,7 @@ describe('default packages', () => {
 
         it('installs the stock defaults when the brand has no opinion', () => {
             expect(resolveDefaultPackages(undefined, 'elephant.org').map(d => d.name))
-                .toEqual(['run-lua-code', 'generic_mapper', 'mpkg', 'gui-drop', 'mudlet-base-ui']);
+                .toEqual(['run-lua-code', 'echo', 'enable-accessibility', 'deleteOldProfiles', 'generic_mapper', 'mpkg', 'gui-drop', 'mudlet-base-ui']);
         });
 
         it('installs nothing for an empty brand list', () => {
@@ -204,7 +219,7 @@ describe('default packages', () => {
             for (const def of stockDefaults(host)) expect(ALL_DEFAULTS).toContain(def);
         }
         expect(ALL_DEFAULTS.map(d => d.name))
-            .toEqual(['run-lua-code', 'mudlet-mapper', 'generic_mapper', 'mpkg', 'gui-drop', 'mudlet-base-ui']);
+            .toEqual(['run-lua-code', 'echo', 'enable-accessibility', 'deleteOldProfiles', 'mudlet-mapper', 'generic_mapper', 'mpkg', 'gui-drop', 'mudlet-base-ui']);
     });
 
     describe('starter UI', () => {
@@ -256,7 +271,7 @@ describe('default packages', () => {
             // experiencedMudletPlayer() check. Everything else still installs.
             const established = namesFor('elephant.org', {});
             expect(established).not.toContain('mudlet-base-ui');
-            expect(established).toEqual(['run-lua-code', 'generic_mapper', 'mpkg', 'gui-drop']);
+            expect(established).toEqual(['run-lua-code', 'echo', 'enable-accessibility', 'deleteOldProfiles', 'generic_mapper', 'mpkg', 'gui-drop']);
         });
 
         it('treats a profile with no connection record as new', () => {
