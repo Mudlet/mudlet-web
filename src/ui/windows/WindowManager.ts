@@ -1838,6 +1838,12 @@ export class WindowManager {
         return this.miniConsoles.has(id);
     }
 
+    /** Whether `id` is a text console (a user window or miniconsole) rather
+     *  than a map or HTML panel. */
+    isTextWindow(id: string): boolean {
+        return this.windows.get(id)?.kind === 'text';
+    }
+
     // ── MXP frame chrome ──────────────────────────────────────────────────────
 
     /** Flag a console as an MXP frame so it renders with a frame border. Also

@@ -2269,8 +2269,13 @@ export class ScriptingAPI {
     }
 
     /** Mudlet `closeMudlet()`. Mudlet Web maps it to closing the active profile:
-     *  disconnect, then return to the connection screen. */
+     *  raise sysExitEvent, disconnect, then return to the connection screen.
+     *  The event comes first because on desktop (TMainConsole::closeEvent) the
+     *  exit handlers run while the profile is still connected, so a goodbye or
+     *  save command they send reaches the game. The engine's teardown does not
+     *  raise it a second time. */
     closeMudlet(): void {
+        this.host.raiseExitEvent();
         this.disconnect();
         this.closeProfileCallback?.();
     }
@@ -4625,7 +4630,8 @@ export class ScriptingAPI {
     createMiniConsole(name: string, x: number, y: number, width: number, height: number, parent?: string): boolean {
         if (!name) return false;
         const wm = this.session.windows;
-        if (!wm.has(name)) {
+        const created = !wm.has(name);
+        if (created) {
             wm.open(name, {
                 kind: 'text',
                 title: name,
@@ -4643,6 +4649,10 @@ export class ScriptingAPI {
         wm.markAsMiniConsole(name);
         wm.setPosition(name, Math.round(x), Math.round(y));
         wm.setSize(name, Math.round(width), Math.round(height));
+        // That setFontSize(12) is a font change like any other, so desktop's
+        // new miniconsole announces itself with sysFontChangeEvent — raised
+        // once it is in place, for a handler that measures it.
+        if (created) this.raiseFontChangeEvent(name);
         return true;
     }
 
@@ -6200,7 +6210,32 @@ export class ScriptingAPI {
             useAppStore.getState().patchConnectionProfile(this.connectionId, { fontSize: whole });
             return true;
         }
-        return this.session.windows.setFontSize(win, whole);
+        return this.withFontChangeEvent(win, () => this.session.windows.setFontSize(win, whole));
+    }
+
+    /**
+     * Desktop's `TConsole::raiseFontChangeEvent`: `sysFontChangeEvent(console,
+     * family, size)`, raised whenever a console's font really changes — a new
+     * miniconsole or user window taking its first font, and every setFont /
+     * setFontSize that lands on something different. Layout code listens for
+     * it to reflow. Main's is raised by the engine, which watches the profile
+     * font whatever changed it.
+     */
+    raiseFontChangeEvent(name: string): void {
+        this.host.raiseEvent('sysFontChangeEvent', [name, this.getFont(name) ?? '', this.getFontSize(name) ?? 0]);
+    }
+
+    /** Run a font write against a console and raise sysFontChangeEvent if it
+     *  changed what the console is drawn in. Only consoles raise it on desktop
+     *  (not labels, maps or buffers), and a write that lands on the font already
+     *  in use raises nothing — TConsole::setFont compares before it applies. */
+    private withFontChangeEvent(win: string, apply: () => boolean): boolean {
+        if (!this.session.windows.isTextWindow(win)) return apply();
+        const fontOf = () => `${this.getFont(win)}\u0000${this.getFontSize(win)}`;
+        const before = fontOf();
+        const ok = apply();
+        if (ok && fontOf() !== before) this.raiseFontChangeEvent(win);
+        return ok;
     }
 
     /**
@@ -6215,7 +6250,7 @@ export class ScriptingAPI {
         if (!name || !this.session.windows.has(name)) return false;
         const whole = fontSizePoints(size);
         if (whole === null) return false;
-        return this.session.windows.setFontSize(name, whole);
+        return this.withFontChangeEvent(name, () => this.session.windows.setFontSize(name, whole));
     }
 
     /**
@@ -6712,7 +6747,8 @@ export class ScriptingAPI {
         // not reach at all, and Geyser.Label:setFont took its "Qt will pick
         // something close" branch on every call. Fall through to them rather
         // than reporting the name as unknown.
-        return this.session.windows.setFont(win, fam) || this.labels.setFont(win, fam);
+        return this.withFontChangeEvent(win, () => this.session.windows.setFont(win, fam))
+            || this.labels.setFont(win, fam);
     }
 
     /**

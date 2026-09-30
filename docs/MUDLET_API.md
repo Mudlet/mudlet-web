@@ -927,7 +927,7 @@ Reconciled against the authoritative [Mudlet Event Engine](https://wiki.mudlet.o
 | Event | Status | Notes |
 |---|---|---|
 | `sysLoadEvent` | ✅ | After the initial script load, with `true`; with `false` after `resetProfile()` |
-| `sysExitEvent` | ✅ | Fired once at `ScriptingEngine.destroy()` (connection switch/unmount) or on `window` `beforeunload`, whichever comes first |
+| `sysExitEvent` | ✅ | Fired once at `ScriptingEngine.destroy()` (connection switch/unmount), on `window` `beforeunload`, or by `closeMudlet()`/`closeProfile()` — whichever comes first. `closeMudlet()` raises it before disconnecting, so a handler can still send (as `TMainConsole::closeEvent`) |
 | `sysConnectionEvent` | ✅ | On connect; Mudlet Web also fires native `connect` |
 | `sysDisconnectionEvent` | ✅ | On disconnect |
 | `sysProfileFocusChangeEvent` | ✅ | On `document.visibilitychange` — arg: isFocused |
@@ -942,10 +942,10 @@ Reconciled against the authoritative [Mudlet Event Engine](https://wiki.mudlet.o
 
 | Event | Status | Notes |
 |---|---|---|
-| `sysInstall` / `sysUninstall` | ✅ | After/before any package/module install or uninstall — arg: name |
-| `sysInstallPackage` / `sysUninstallPackage` | ✅ | args: name, fileName / name |
-| `sysInstallModule` / `sysUninstallModule` | ✅ | args: name, fileName / name |
-| `sysLuaInstallModule` / `sysLuaUninstallModule` | ✅ | Fired by the Lua `installModule`/`uninstallModule` paths |
+| `sysInstall` / `sysUninstall` | ✅ | After/before any package/module install or uninstall — arg: name. Each install raises it plus exactly one of the detailed events below, as `Host::installPackage` does |
+| `sysInstallPackage` / `sysUninstallPackage` | ✅ | Packages only — args: name, fileName / name |
+| `sysInstallModule` / `sysUninstallModule` | ✅ | Modules installed from the UI — args: name, fileName / name |
+| `sysLuaInstallModule` / `sysLuaUninstallModule` | ✅ | Fired by the Lua `installModule`/`uninstallModule` paths, instead of `sysInstallPackage`/`sysInstallModule` — args: name, fileName / name |
 | `sysSyncInstallModule` / `sysSyncUninstallModule` | ✅ | Sync-flagged modules; single-profile, no sibling propagation |
 
 **HTTP / download**
@@ -991,6 +991,8 @@ Reconciled against the authoritative [Mudlet Event Engine](https://wiki.mudlet.o
 | `sysMiniConsoleDeleted` | ✅ | On successful `deleteMiniConsole` — arg: name |
 | `sysCommandLineDeleted` | ✅ | On successful `deleteCommandLine` — arg: name |
 | `sysScrollBoxDeleted` | ✅ | On successful `deleteScrollBox` — arg: name |
+| `sysTextEditDeleted` | ✅ | On successful `deleteTextEdit` — arg: name |
+| `sysFontChangeEvent` | ✅ | A console's font changed: a new miniconsole or user window, a `setFont`/`setFontSize`/`setMiniConsoleFontSize` that changes it, or the main font from any source (raised before `sysSettingChanged("main window font")`). Labels don't raise it — args: name, fontFamily, fontSize |
 
 **Protocol / telnet**
 

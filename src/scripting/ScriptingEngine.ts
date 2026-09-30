@@ -1372,11 +1372,10 @@ export class ScriptingEngine implements EngineHost {
     /**
      * Install a module from a path inside the profile VFS. Plain XML stays in
      * place (manifest holds the absolute VFS path). Zips/.mpackages extract into
-     * the standard pkgDir. Raises sysInstall, sysInstallPackage and
-     * sysInstallModule on success — sysInstallModule is the module-specific
-     * counterpart to sysInstallPackage. This method is reached only via the
-     * Lua `installModule()` binding, so it also raises Mudlet's
-     * `sysLuaInstallModule` (name, fileName) for ported-script parity.
+     * the standard pkgDir. This method is reached only via the Lua
+     * `installModule()` binding, so on success it raises what desktop's
+     * ModuleFromScript install does: sysInstall and sysLuaInstallModule
+     * (name, fileName) — not sysInstallPackage or sysInstallModule.
      */
     installModuleFromPath(path: string): InstallOutcome {
         const vfs = this.vfs;
@@ -1419,13 +1418,13 @@ export class ScriptingEngine implements EngineHost {
             this.noteModuleLoaded(manifest.name, data);
             const problems = this.collectInstallProblems(manifest.name,
                 () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data);
-            this.notifyPackageInstalled(manifest.name, undefined, problems);
-            this.raiseEvent('sysInstallModule', [manifest.name]);
-            this.raiseEvent('sysLuaInstallModule', [manifest.name, path]);
-            // Mudlet raises sysSyncInstallModule for modules flagged to sync
-            // (so sibling profiles reload them). Mudlet Web is single-profile, so
-            // this fires locally for ported scripts that listen on it.
-            if (manifest.sync) this.raiseEvent('sysSyncInstallModule', problems ? [manifest.name, path, problems] : [manifest.name, path]);
+            // Host::installPackage raises the generic sysInstall and exactly one
+            // detailed event, chosen by how the install was asked for — for
+            // Lua's installModule (ModuleFromScript) that is sysLuaInstallModule
+            // alone. Raising sysInstallPackage / sysInstallModule as well made a
+            // package tracker count every scripted module as a package.
+            this.notifyInstalled(manifest.name, problems);
+            this.raiseEvent('sysLuaInstallModule', problems ? [manifest.name, path, problems] : [manifest.name, path]);
             void vfs.flush();
             return { ok: true, error: problems };
         } catch (err) {
@@ -1457,8 +1456,9 @@ export class ScriptingEngine implements EngineHost {
         // same name for it.
         this.raiseEvent('sysUninstall', [moduleName]);
         this.raiseEvent('sysLuaUninstallModule', [moduleName]);
-        // Mudlet's sync-module counterpart, fired for sync-flagged modules
-        // (see sysSyncInstallModule above for the single-profile caveat).
+        // Mudlet's sync-module counterpart, fired for sync-flagged modules.
+        // Mudlet Web is single-profile, so it fires locally for ported
+        // scripts that listen on it.
         if (pkg.sync) this.raiseEvent('sysSyncUninstallModule', [moduleName]);
         this.unloadedModules.delete(moduleName);
         useAppStore.getState().uninstallPackage(this.connectionId, moduleName);
@@ -1935,8 +1935,7 @@ export class ScriptingEngine implements EngineHost {
      * this method runs the package's event handlers are already registered.
      */
     notifyPackageInstalled(packageName: string, fileName?: string, problems?: string | null): void {
-        this.flushPendingApplies();
-        this.registerPackageFonts(packageName);
+        this.notifyInstalled(packageName, problems);
         // sysInstall carries the name; the detailed event carries the file it
         // came from as well (Host::installPackage raises both). A handler that
         // reacts to an install often wants the source — to read the archive's
@@ -1946,12 +1945,19 @@ export class ScriptingEngine implements EngineHost {
         // What does not work in the package rides along as the last argument,
         // for a handler that installs on a script's behalf and reports it.
         if (problems) {
-            this.raiseEvent('sysInstall', [packageName, problems]);
             this.raiseEvent('sysInstallPackage', [packageName, fileName ?? '', problems]);
             return;
         }
-        this.raiseEvent('sysInstall', [packageName]);
         this.raiseEvent('sysInstallPackage', fileName ? [packageName, fileName] : [packageName]);
+    }
+
+    /** The half of an install every kind shares: apply the new items, register
+     *  their fonts and raise the generic sysInstall. The caller raises the one
+     *  detailed event that fits how the install was asked for. */
+    private notifyInstalled(name: string, problems?: string | null): void {
+        this.flushPendingApplies();
+        this.registerPackageFonts(name);
+        this.raiseEvent('sysInstall', problems ? [name, problems] : [name]);
     }
 
     /** Re-register every installed package's fonts on profile open. See the
@@ -4133,6 +4139,12 @@ export class ScriptingEngine implements EngineHost {
         this.emit(event, args);
     }
 
+    /** Part of {@link EngineHost}: closeMudlet raises the exit event before it
+     *  disconnects. */
+    raiseExitEvent(): void {
+        this.fireExit();
+    }
+
     /** Raise sysExitEvent at most once, while the Lua runtime is still alive. */
     private fireExit(): void {
         if (this.exitFired) return;
@@ -5193,7 +5205,8 @@ export class ScriptingEngine implements EngineHost {
         };
         // Mudlet also reports the main console's font as a whole, as
         // ("main window font", family, size), whenever either half changes
-        // (Host::updateConsolesFont) — whether a script or the preferences
+        // (Host::updateConsolesFont), after the console's own
+        // sysFontChangeEvent("main", family, size) — whether a script or the preferences
         // changed it. Tracked by what the console is drawn in, so a write that
         // lands on the same font raises nothing, as setDisplayFont does not.
         const mainFont = (): [string, number] => [this.api.getFont() ?? '', this.api.getFontSize() ?? 0];
@@ -5228,7 +5241,12 @@ export class ScriptingEngine implements EngineHost {
                 if (key === CONFIG_BAG_FIELD) raiseKeyChanges(asBag(prev[key]), {});
                 else this.raiseEvent('sysSettingChanged', [key, undefined]);
             }
-            if (fontChanged) this.raiseEvent('sysSettingChanged', ['main window font', family, size]);
+            if (fontChanged) {
+                // The console's own sysFontChangeEvent first — TConsole::setFont
+                // raises it before Host::updateConsolesFont reports the setting.
+                this.raiseEvent('sysFontChangeEvent', ['main', family, size]);
+                this.raiseEvent('sysSettingChanged', ['main window font', family, size]);
+            }
         }));
 
         this.unsubs.push(

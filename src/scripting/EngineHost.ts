@@ -81,6 +81,10 @@ export interface EngineHost {
 
     /** Raise a Mudlet event with the given arguments. */
     raiseEvent(event: string, args: unknown[]): void;
+    /** Raise sysExitEvent now, while the profile is still connected. It is
+     *  raised at most once per engine, so the teardown that follows does not
+     *  repeat it. */
+    raiseExitEvent(): void;
 
     // ── Packages ─────────────────────────────────────────────────────────────
 
@@ -250,6 +254,7 @@ export const NULL_ENGINE_HOST: EngineHost = Object.freeze({
     processFlushBatch: () => {},
     flushPendingApplies: () => {},
     raiseEvent: () => {},
+    raiseExitEvent: () => {},
 
     installPackageFromVfsPath: () => ({ ok: false, error: 'no package installer available' }),
     uninstallPackageByName: () => false,

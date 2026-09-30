@@ -7,7 +7,7 @@ import type { BindingContext } from './context';
  * Backed by TextEditManager, which is a pure data-model registry; the React
  * overlay renders whatever the model holds.
  */
-export function installTextEditBindings({ lua, api, channel }: BindingContext): void {
+export function installTextEditBindings({ lua, api, channel, emitEvent }: BindingContext): void {
     // ── Text edit widgets (Mudlet createTextEdit) ─────────────────────────
     // createTextEdit([parent,] name, x, y, w, h) → true. The delete/get/set/
     // property primitives below are __-prefixed and return bool/value; the
@@ -23,8 +23,15 @@ export function installTextEditBindings({ lua, api, channel }: BindingContext): 
             x: Number(x), y: Number(y), width: Number(w), height: Number(h),
         });
     });
-    lua.global.set('__deleteTextEdit', (name: unknown) =>
-        typeof name === 'string' ? api.textEdits.destroy(name) : false);
+    // Raises sysTextEditDeleted(name) on success, as desktop's
+    // TMainConsole::deleteTextEdit does — the counterpart of sysLabelDeleted /
+    // sysMiniConsoleDeleted / sysCommandLineDeleted.
+    lua.global.set('__deleteTextEdit', (name: unknown) => {
+        if (typeof name !== 'string') return false;
+        const ok = api.textEdits.destroy(name);
+        if (ok) emitEvent('sysTextEditDeleted', [name]);
+        return ok;
+    });
     // Returns the text (incl. "") on success or `false` when missing — the
     // Bridge wrapper distinguishes the empty string from the miss.
     lua.global.set('__getTextEditText', (name: unknown) => {
