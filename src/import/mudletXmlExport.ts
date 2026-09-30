@@ -1,6 +1,7 @@
 import { sanitizeControlChars } from './mudletControlChars';
 import { isColorizing } from '../storage/schema';
 import { toSaveFileColorPattern } from '../mud/triggers/legacyColorPatterns';
+import { domCodeToQtKey } from '../mud/keybindings/qtKeys';
 import type {
     AliasNode,
     ButtonNode,
@@ -24,33 +25,6 @@ function patternTypeIndex(t: TriggerPatternType): number {
     const i = MUDLET_PATTERN_TYPES.indexOf(t);
     return i >= 0 ? i : 0;
 }
-
-const CODE_TO_QT_KEY: Record<string, number> = {
-    Space: 32,
-    Digit0: 48, Digit1: 49, Digit2: 50, Digit3: 51, Digit4: 52,
-    Digit5: 53, Digit6: 54, Digit7: 55, Digit8: 56, Digit9: 57,
-    KeyA: 65, KeyB: 66, KeyC: 67, KeyD: 68, KeyE: 69, KeyF: 70,
-    KeyG: 71, KeyH: 72, KeyI: 73, KeyJ: 74, KeyK: 75, KeyL: 76,
-    KeyM: 77, KeyN: 78, KeyO: 79, KeyP: 80, KeyQ: 81, KeyR: 82,
-    KeyS: 83, KeyT: 84, KeyU: 85, KeyV: 86, KeyW: 87, KeyX: 88,
-    KeyY: 89, KeyZ: 90,
-    Escape: 16777216, Tab: 16777217, Backspace: 16777219,
-    Enter: 16777220, NumpadEnter: 16777221,
-    Insert: 16777222, Delete: 16777223,
-    Home: 16777232, End: 16777233,
-    ArrowLeft: 16777234, ArrowUp: 16777235,
-    ArrowRight: 16777236, ArrowDown: 16777237,
-    PageUp: 16777238, PageDown: 16777239,
-    F1: 16777264,  F2: 16777265,  F3: 16777266,  F4: 16777267,
-    F5: 16777268,  F6: 16777269,  F7: 16777270,  F8: 16777271,
-    F9: 16777272,  F10: 16777273, F11: 16777274, F12: 16777275,
-    // Numpad codes share Qt::Key values with their main-keyboard counterparts;
-    // the numpad distinction is carried by Qt::KeypadModifier in keyModifier.
-    Numpad0: 48, Numpad1: 49, Numpad2: 50, Numpad3: 51, Numpad4: 52,
-    Numpad5: 53, Numpad6: 54, Numpad7: 55, Numpad8: 56, Numpad9: 57,
-    NumpadMultiply: 42, NumpadAdd: 43, NumpadSubtract: 45,
-    NumpadDecimal: 46, NumpadDivide: 47, NumpadEqual: 61,
-};
 
 const QT_SHIFT = 33554432, QT_CTRL = 67108864, QT_ALT = 134217728, QT_META = 268435456;
 const QT_KEYPAD = 536870912;
@@ -349,7 +323,7 @@ function emitKeys(xml: XmlBuilder, nodes: KeyNode[], opts: ExportOptions): void 
             xml.leaf('packageName', n.packageName ?? '');
             xml.leaf('script', n.code ?? '');
             xml.leaf('command', n.command ?? '');
-            xml.leaf('keyCode', String(CODE_TO_QT_KEY[n.key] ?? 0));
+            xml.leaf('keyCode', String((n.key && domCodeToQtKey(n.key)) || 0));
             xml.leaf('keyModifier', String(modifiersToQt(n.modifiers ?? [], n.key)));
         });
     xml.close('KeyPackage');

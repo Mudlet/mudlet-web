@@ -24,24 +24,44 @@ const VFS_INTERNAL_DIRS = ['.mudlet', '.mudix'];
  *  export rather than a real structural limit. */
 const MAX_WALK_DEPTH = 12;
 
-function walk(vfs: ProfileVFS, dir: string, depth: number, out: Record<string, Uint8Array>): void {
+/** The part of ProfileVFS the walk needs, so it's testable over any ZenFS. */
+export type WalkableVfs = Pick<ProfileVFS, 'profilePath' | 'readdir' | 'stat' | 'readBinaryFile'>;
+
+/**
+ * Every user file in the profile folder, keyed by its path relative to the
+ * profile root — packages, modules, and whatever scripts wrote with `io.*` /
+ * `table.save`, i.e. what desktop Mudlet's profile folder holds.
+ *
+ * Paths are resolved against `profilePath`, never passed bare: ProfileVFS reads
+ * a leading `/` as the ZenFS root, and a relative path resolves against the Lua
+ * working directory, which `lfs.chdir` can move (issue #261).
+ */
+export function collectVfsFiles(vfs: WalkableVfs): Record<string, Uint8Array> {
+    const out: Record<string, Uint8Array> = {};
+    walk(vfs, '', 0, out);
+    return out;
+}
+
+function walk(vfs: WalkableVfs, dir: string, depth: number, out: Record<string, Uint8Array>): void {
     if (depth > MAX_WALK_DEPTH) return;
+    const abs = (rel: string) => (rel ? `${vfs.profilePath}/${rel}` : vfs.profilePath);
     let names: string[];
     try {
-        names = vfs.readdir(dir || '/');
+        names = vfs.readdir(abs(dir));
     } catch {
         return; // unreadable directory: skip rather than fail the whole export
     }
     for (const name of names) {
+        if (name === '.' || name === '..') continue;
         const rel = dir ? `${dir}/${name}` : name;
         if (VFS_INTERNAL_DIRS.some(d => rel === d || rel.startsWith(`${d}/`))) continue;
-        const st = vfs.stat(rel);
+        const st = vfs.stat(abs(rel));
         if (!st) continue;
         if (st.type === 'dir') {
             walk(vfs, rel, depth + 1, out);
         } else {
             try {
-                out[rel] = vfs.readBinaryFile(rel);
+                out[rel] = vfs.readBinaryFile(abs(rel));
             } catch (err) {
                 console.warn('[collectProfileExport] unreadable file skipped:', rel, err);
             }
@@ -130,11 +150,11 @@ export async function collectProfileExport(
     const vfs = await ProfileVFS.mount(connection.id);
     let data: PersistedProfileData;
     let hostBaseXml: string | undefined;
-    const files: Record<string, Uint8Array> = {};
+    let files: Record<string, Uint8Array>;
     try {
         data = readProfileData(vfs);
         hostBaseXml = readHostBase(vfs);
-        walk(vfs, '', 0, files);
+        files = collectVfsFiles(vfs);
     } finally {
         vfs.unmount();
     }

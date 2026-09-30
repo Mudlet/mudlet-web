@@ -181,22 +181,40 @@ export function listToQtModifiers(modifiers: string[]): number {
 }
 
 // Inverse of QT_KEY_TO_DOM_CODE. The forward map is many-to-one (e.g. both
-// 0x21 '!' and the digit row land on 'Digit1'); first-writer-wins collapses each
-// DOM code to one canonical Qt key, which round-trips ordinary binds. The
-// digit/letter/numpad ranges are handled directly in domCodeToQtKey below.
+// 0x3A ':' and 0x3B ';' land on 'Semicolon'), so each DOM code needs one
+// canonical Qt key: the one desktop Mudlet records for that key pressed on its
+// own, i.e. the unshifted character (';' 59, '=' 61, "'" 39) — what a key item
+// saved by desktop carries and what its key matcher compares against. First
+// writer wins otherwise, and integer keys iterate in ascending order, which
+// would pick the shifted ':' / '+' / '"' — hence the explicit overrides.
+// The digit/letter/numpad-digit ranges are handled directly in domCodeToQtKey.
+const DOM_CODE_CANONICAL_QT_KEY: Record<string, number> = {
+    Quote: 0x27,                      // '  (not ")
+    Equal: 0x3D,                      // =  (not +)
+    Semicolon: 0x3B,                  // ;  (not :)
+    NumLock: 0x01000026,              // Qt::Key_NumLock (not Key_Clear)
+};
+
 const DOM_CODE_TO_QT_KEY: Record<string, number> = (() => {
-    const r: Record<string, number> = {};
+    const r: Record<string, number> = { ...DOM_CODE_CANONICAL_QT_KEY };
     for (const [qt, code] of Object.entries(QT_KEY_TO_DOM_CODE)) {
+        if (!(code in r)) r[code] = Number(qt);
+    }
+    // Numpad symbols share their Qt::Key with the main keyboard; the numpad is
+    // told apart by Qt::KeypadModifier, which the caller adds.
+    for (const [qt, code] of Object.entries(QT_KEYPAD_OVERRIDES)) {
         if (!(code in r)) r[code] = Number(qt);
     }
     return r;
 })();
 
 /**
- * Inverse of qtKeyToDomCode for the common case — a DOM `KeyboardEvent.code`
- * back to a Qt::Key integer. Used by getKeyCode() to report a permanent key
- * binding (stored as a DOM code) in Mudlet's Qt terms. Returns undefined for a
- * code with no Qt mapping.
+ * Inverse of qtKeyToDomCode — a DOM `KeyboardEvent.code` back to a Qt::Key
+ * integer. Used by getKeyCode() to report a permanent key binding (stored as a
+ * DOM code) in Mudlet's Qt terms, and by the Mudlet XML export to write a key
+ * item's `<keyCode>`. Numpad codes return the shared main-keyboard Qt::Key; the
+ * keypad flag lives in the modifier. Returns undefined for a code with no Qt
+ * mapping.
  */
 export function domCodeToQtKey(code: string): number | undefined {
     const letter = /^Key([A-Z])$/.exec(code);
