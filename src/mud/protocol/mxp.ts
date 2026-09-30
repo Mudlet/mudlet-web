@@ -28,16 +28,29 @@ import { scanEscape, parseOsc8Payload, classifyHyperlinkUri, parseOscColorPalett
 import { parseOsc8Uri, HyperlinkPresetRegistry } from "../text/hyperlinkConfig";
 import type { MspCommand, MspKind } from "./msp";
 import { CLIENT_NAME, CLIENT_VERSION } from "../../version";
+import { quoteLuaLiteral } from "./luaLiteral";
 
 /** A link tag that is open — everything the close needs to finish it, since
  *  the command may only be resolvable once the wrapped text is known (`&text;`
  *  stands for it). */
 interface LinkState {
     start: number;
-    href?: string;
+    /** The command(s) or address, entities already filled in — all but
+     *  `&text;`, which waits for the close. */
+    href: string;
     hint?: string;
     kind: "command" | "url" | "prompt";
+    /** Which tag made it: an `<A>` opens its address, a `<SEND>` runs it. */
+    tag: "send" | "a";
     destName: string | null;
+    /** Its entry in the link store — see {@link MxpParser.storeLink}. */
+    id: number;
+    /** `EXPIRE=name`: an `<EXPIRE name>` later retires it. */
+    expire?: string;
+    /** The text the tag wrapped as the game sent it, which is what `&text;`
+     *  stands for. Not the same as the text shown: a tag inside it that could
+     *  not be acted on is shown as text, but it was never content. */
+    content: string;
 }
 
 /** A clickable region the parser found, expressed as offsets into `plain`. The
@@ -58,6 +71,9 @@ export interface MxpLink {
     /** Present when the SEND carried a `cmd1|cmd2|…` list — the engine renders a
      *  right-click popup of `cmds` labelled by `hints`. */
     prompts?: { cmds: string[]; hints: string[] };
+    /** The link's id in the parser's link store; a click asks
+     *  {@link MxpParser.isLinkLive} with it whether an `<EXPIRE>` retired it. */
+    id: number;
 }
 
 /** A `<FRAME>` window-lifecycle command the parser surfaces to the session.
@@ -182,8 +198,8 @@ const OPEN_MODE_TAGS = new Set<string>([
  *  Kept beside the dispatch in {@link MxpParser.handleOpenTag}: it is that
  *  dispatch this describes, and a tag added there without an entry here is a
  *  tag games are told this client does not have. Mirrors the shape of Mudlet's
- *  mSupportedMxpElements (TMxpTagProcessor), minus what this client does not do
- *  — EXPIRE, and the IMAGE that Mudlet deliberately leaves unadvertised too. */
+ *  mSupportedMxpElements (TMxpTagProcessor), minus the IMAGE that Mudlet deliberately
+ *  leaves unadvertised too. */
 const SUPPORTED_ELEMENTS: ReadonlyMap<string, readonly string[]> = new Map([
     // Version control
     ['version', []],
@@ -203,8 +219,9 @@ const SUPPORTED_ELEMENTS: ReadonlyMap<string, readonly string[]> = new Map([
     ['p', []],
     ['hr', []],
     // Links
-    ['send', ['href', 'hint', 'prompt']],
-    ['a', ['href', 'hint']],
+    ['send', ['href', 'hint', 'prompt', 'expire']],
+    ['a', ['href', 'hint', 'expire']],
+    ['expire', ['name']],
     // Colour and font
     ['color', ['fore', 'back']],
     ['c', ['fore', 'back']],
@@ -238,7 +255,7 @@ const BUILTIN_ENTITIES: Record<string, string> = {
  *  at all and is shown as the text it is, the way Mudlet's TMxpProcessor shows
  *  a tag no handler took. */
 const CONSUMED_ELEMENTS = new Set<string>([
-    "image", "relocate", "expire", "user", "password", "filter", "reset",
+    "image", "relocate", "user", "password", "filter", "reset",
     "mxp", "script", "small", "tt", "samp", "center", "h1", "h2", "h3", "h4",
     "h5", "h6", "li", "ol", "ul", "attlist", "tag",
 ]);
@@ -247,14 +264,13 @@ const CONSUMED_ELEMENTS = new Set<string>([
  *  is the first positional that is none of them (`<SEND "look" PROMPT>`). */
 const SEND_FLAGS = new Set(["prompt", "hint", "expire"]);
 
-/** Cap on a held partial tag/entity. Beyond this it was never real markup, so it
- *  is flushed as literal text rather than swallowing the rest of the stream. */
+/** Cap on a held partial escape sequence. Beyond this it was never a real one,
+ *  so it is dropped rather than swallowing the rest of the stream. */
 const MAX_PENDING = 256;
-/** An `&` plus characters an entity name may still be made of — Mudlet's
- *  `isalnum(c) || c == '#' || '.' || '-' || '_' || '&'` (`;` would have ended
- *  it). ASCII only, deliberately: Mudlet tests raw bytes, so the first byte of a
- *  non-ASCII character ends a name there too. */
-const ENTITY_NAME_TAIL = /^&[0-9A-Za-z#.\-_&]+$/;
+/** How many links that carry an `EXPIRE` name are remembered. A link that
+ *  falls off the end can no longer be retired — Mudlet's store recycles its ids
+ *  after as many (TLinkStore::scmMaxLinks). */
+const MAX_EXPIRING_LINKS = 20000;
 /** Recursion guard for custom-element template expansion. */
 const MAX_DEPTH = 8;
 /** Narrowest an `<HR>` rule may be drawn, however narrow the window wraps.
@@ -270,6 +286,7 @@ export class MxpParser {
             body?: { text: string; actions: string[] },
         ) => void;
         onFrame?: (frame: MxpFrameCommand) => boolean;
+        hasFrame?: (name: string) => boolean;
         wrapWidth?: () => number;
     };
 
@@ -300,6 +317,22 @@ export class MxpParser {
     /** OSC 8 preset definitions seen this session (shared with the ANSI path
      *  when the engine supplies a registry). */
     private presets: HyperlinkPresetRegistry;
+    /** Set while the processor is forced on: the lock to secure mode it came
+     *  with then holds against a game's `ESC[5z`/`ESC[7z` (and the locked start
+     *  a bare `IAC SB MXP IAC SE` asks for) — Mudlet's shouldLockModeToSecure. */
+    private forcedSecure = false;
+
+    // --- the link store: Mudlet's TLinkStore, as far as MXP needs it ---
+    /** Id of the newest link; ids are never reused, so a click on a link long
+     *  gone from the store still finds nothing rather than someone else's. */
+    private linkSeq = 0;
+    /** The newest link and the Lua its click runs — what a custom element's
+     *  `mxp.<element>.actions` reports (TLinkStore::getCurrentLinks). Emptied
+     *  when an `<EXPIRE>` retires it. */
+    private currentLink: { id: number; actions: string[]; expire?: string } | null = null;
+    /** Every link made with an `EXPIRE` name, oldest first: the name while it
+     *  is live, null once an `<EXPIRE>` has retired it. */
+    private expiringLinks = new Map<number, string | null>();
 
     // --- per-line scratch (reset at the start of parseLine) ---
     private fmt: FormatState = new FormatState();
@@ -336,6 +369,12 @@ export class MxpParser {
          *  word. Without this the commands are collected into the result for a
          *  caller to run afterwards, which cannot report a refusal in time. */
         onFrame?: (frame: MxpFrameCommand) => boolean;
+        /** Whether a frame of this name is open for a `<DEST>` to write into.
+         *  Text sent to one that is not stays where it was, in the main line
+         *  (Mudlet leaves it in the line it was building when the frame has no
+         *  sink). Without this every `<DEST>` is redirected and the caller
+         *  decides afterwards. */
+        hasFrame?: (name: string) => boolean;
         /** Columns the main window wraps at — how wide `<HR>` draws its rule.
          *  Mudlet's `TMxpClient::getWrapWidth`, whose own fallback is 80. */
         wrapWidth?: () => number;
@@ -352,6 +391,7 @@ export class MxpParser {
      * without the lock every definition tag would be ignored as unsafe.
      */
     lockSecureMode(locked: boolean): void {
+        this.forcedSecure = locked;
         this.setLockedMode(locked ? "secure" : null);
     }
 
@@ -361,8 +401,18 @@ export class MxpParser {
      *  a server has negotiated nothing, so until it sends a mode of its own
      *  nothing it writes is markup. */
     setLockedMode(mode: "open" | "secure" | "locked" | null): void {
+        // A forced processor keeps its secure lock, as it does against the
+        // game's own ESC[5z/7z (see applyLineMode).
+        if (this.forcedSecure && mode !== "secure" && mode !== null && this.lockedMode === "secure") return;
         this.lockedMode = mode;
         this.lineMode = mode ?? "open";
+    }
+
+    /** Whether a link is still there to click: false once an `<EXPIRE>` has
+     *  retired the name it was made with (TLinkStore::expireLinks), when a
+     *  click on it runs nothing. */
+    isLinkLive(id: number): boolean {
+        return this.expiringLinks.get(id) !== null;
     }
 
     /** Clear all cross-line state. Called on (re)connect so a new session starts
@@ -439,8 +489,9 @@ export class MxpParser {
             // EOF clears once, on the first write of the block.
             this.destEof = false;
         }
-        // A held partial tag means we're logically mid-line, so the transient
-        // line mode (and temp-secure) must survive into the continuation.
+        // A held partial escape means we're logically mid-line, so the
+        // transient line mode (and temp-secure) must survive into the
+        // continuation.
         if (this.pendingTag === "") this.resetTransientMode();
 
         const trailing = this.fmt.toSnapshot();
@@ -463,21 +514,61 @@ export class MxpParser {
     }
 
     private resetTransientMode(): void {
+        // A line that ends in OPEN mode takes the tags it left open with it:
+        // only a secure line's tags are the game's to close
+        // (TMxpProcessor::resetToDefaultMode).
+        if (this.lineMode === "open") this.closeOpenModeTags();
         // Transient OPEN/SECURE/LOCKED (modes 0/1/2) last only for the current
         // line; at the newline we revert to the locked mode, or OPEN by default.
         this.lineMode = this.lockedMode ?? "open";
         this.tempSecure = false;
     }
 
+    /** Take off the styling open tags put on — bold, italic, underline,
+     *  strikeout and colour — when the mode moves away from OPEN, the way
+     *  Mudlet's resetTextProperties drops its counters and colour stacks.
+     *  Links and variables are left running: that call does not touch them. */
+    private closeOpenModeTags(): void {
+        if (!this.stack.some(t => !t.link && t.varName === undefined)) return;
+        this.flushRun();
+        const kept: OpenTag[] = [];
+        // Innermost first, so the outermost tag's "before" is what is left.
+        for (let k = this.stack.length - 1; k >= 0; k--) {
+            const tag = this.stack[k];
+            if (tag.link || tag.varName !== undefined) {
+                kept.unshift(tag);
+                continue;
+            }
+            if (tag.colorOverride && this.mxpColorStack.length > 0) this.mxpColorStack.pop();
+            const before = tag.closeFmt;
+            switch (tag.name) {
+                case "b": case "bold": case "strong": case "h": case "high":
+                    this.fmt.bold = before.bold; break;
+                case "i": case "italic": case "em":
+                    this.fmt.italic = before.italic; break;
+                case "u": case "underline":
+                    this.fmt.underline = before.underline; break;
+                case "s": case "strikeout": case "strike": case "del":
+                    this.fmt.strikethrough = before.strikethrough; break;
+            }
+        }
+        this.stack = kept;
+    }
+
     // ---- text emission ----
 
-    private appendText(s: string): void {
+    /** Add text to the line. `markup` marks text that is markup put back —
+     *  a tag that could not be acted on, shown as what it was — which the
+     *  links open around it do not count as the text they wrap (Mudlet inserts
+     *  such a tag straight into the line, past the handlers' handleContent). */
+    private appendText(s: string, markup = false): void {
         if (s.length === 0) return;
         this.run += s;
         // While a <DEST> is open, plain text accrues to the redirect buffer, not
         // the main line (so it never reaches the main window or its triggers).
         if (this.destName === null) this.plain += s;
         else this.destPlain += s;
+        if (!markup) for (const tag of this.stack) if (tag.link) tag.link.content += s;
     }
 
     private flushRun(): void {
@@ -519,7 +610,11 @@ export class MxpParser {
                     // Consumed either way — it is never text — but only obeyed
                     // when the game sent it. See parseLine's `fromServer`.
                     this.flushRun();
-                    if (this.fromServer) this.applyLineMode(parseInt(esc.params ?? "", 10) || 0);
+                    // Only a plain number is a mode: `ESC[z` or `ESC[1;2z` is
+                    // ignored, not read as mode 0 or 1 (TMxpProcessor::setMode
+                    // drops a code that is not an integer).
+                    const code = esc.params ?? "";
+                    if (this.fromServer && /^\d+$/.test(code)) this.applyLineMode(parseInt(code, 10));
                 } else if (esc.kind === "osc" && esc.oscPayload !== undefined) {
                     // OSC 8 hyperlink: open/close a clickable link on the
                     // following text. The URI is stashed on the pen and the
@@ -573,19 +668,18 @@ export class MxpParser {
                 // `abortCurrentTag()` on an ESC while a tag is being built).
                 const cutAt = text.indexOf("\x1b", i + 1);
                 if (cutAt !== -1 && (close === -1 || cutAt < close)) {
-                    this.appendText(text.slice(i, cutAt));
+                    this.appendText(text.slice(i, cutAt), true);
                     i = cutAt;
                     continue;
                 }
                 if (close === -1) {
-                    // Unterminated tag at end of input — hold it for the next line.
-                    if (depth === 0 && n - i <= MAX_PENDING) {
-                        this.pendingTag = text.slice(i);
-                        return;
-                    }
-                    this.appendText("<");
-                    i++;
-                    continue;
+                    // Unterminated at the end of the line: a tag cannot span
+                    // lines, so what was read of it is text, and the next line
+                    // starts clean (TMxpProcessor rejects a tag a newline
+                    // arrives inside). Holding it instead swallowed the line
+                    // after it whole.
+                    this.appendText(text.slice(i), true);
+                    return;
                 }
                 this.handleTag(text.slice(i + 1, close), depth);
                 i = close + 1;
@@ -598,6 +692,9 @@ export class MxpParser {
                     i++;
                     continue;
                 }
+                // An entity left unfinished at the end of the line is text: the
+                // newline ends it, as it ends a tag, so `call AT&T` keeps its
+                // `&T` and the next line is its own (Mudlet/Mudlet#9439).
                 const semi = text.indexOf(";", i + 1);
                 if (semi !== -1 && semi - i <= 33) {
                     const decoded = this.decodeEntity(text.slice(i + 1, semi));
@@ -605,21 +702,6 @@ export class MxpParser {
                         this.appendText(decoded);
                         i = semi + 1;
                         continue;
-                    }
-                } else if (semi === -1 && depth === 0) {
-                    // Hold the tail for the next line ONLY while it could still
-                    // become an entity — every character after the `&` one an
-                    // entity name may contain. Mudlet ends a name at the first
-                    // that is not (`TEntityHandler::handle`), and it tests bytes,
-                    // so a space or the first byte of a non-ASCII character both
-                    // end it: `Käse&Brötchen and &Ф too` is a line of text with
-                    // two stray ampersands in it, not an entity spanning into
-                    // the next line. Holding it swallowed the rest of the line
-                    // and glued it to the line after (Mudlet/Mudlet#9439).
-                    const rest = text.slice(i);
-                    if (rest.length > 1 && rest.length <= 33 && ENTITY_NAME_TAIL.test(rest)) {
-                        this.pendingTag = rest;
-                        return;
                     }
                 }
                 this.appendText("&");
@@ -642,6 +724,12 @@ export class MxpParser {
     // ---- line modes ----
 
     private applyLineMode(n: number): void {
+        // Leaving OPEN for anything but OPEN closes the tags it left open
+        // (TMxpProcessor::setMode); a reset closes everything regardless.
+        if (this.lineMode === "open" && (n === 1 || n === 2 || n === 6 || n === 7)) {
+            // A forced processor ignores 7, and so keeps what it would close.
+            if (!(n === 7 && this.forcedSecure && this.lockedMode === "secure")) this.closeOpenModeTags();
+        }
         switch (n) {
             case 0: this.lineMode = "open"; break;
             case 1: this.lineMode = "secure"; break;
@@ -654,9 +742,13 @@ export class MxpParser {
                 this.tempSecure = false;
                 break;
             case 4: this.tempSecure = true; break;
-            case 5: this.lockedMode = "open"; this.lineMode = "open"; break;
+            case 5: case 7:
+                // A forced processor holds its secure lock against a game
+                // that would unlock it (shouldLockModeToSecure).
+                if (this.forcedSecure && this.lockedMode === "secure") break;
+                this.lockedMode = this.lineMode = n === 5 ? "open" : "locked";
+                break;
             case 6: this.lockedMode = "secure"; this.lineMode = "secure"; break;
-            case 7: this.lockedMode = "locked"; this.lineMode = "locked"; break;
         }
     }
 
@@ -674,7 +766,12 @@ export class MxpParser {
 
     // ---- tags ----
 
-    private handleTag(raw: string, depth: number): void {
+    /** `mapValue`, when given, is applied to every attribute once the tag has
+     *  been read — how a custom element's values reach the tags of its
+     *  definition. Filling them in before the read would let a value with a
+     *  quote in it end the attribute it was put in and write attributes of its
+     *  own. */
+    private handleTag(raw: string, depth: number, mapValue?: (value: string) => string): void {
         const trimmed = raw.trim();
         if (trimmed === "") return;
 
@@ -683,8 +780,7 @@ export class MxpParser {
         this.tempSecure = false;
 
         if (trimmed.startsWith("!")) {
-            if (secure) this.handleDefinition(trimmed);
-            else this.showAsText(raw);
+            if (!secure || !this.handleDefinition(trimmed)) this.showAsText(raw);
             return;
         }
         if (trimmed.startsWith("/")) {
@@ -709,7 +805,7 @@ export class MxpParser {
             this.showAsText(raw);
             return;
         }
-        this.handleOpenTag(name, attrStr, depth, raw);
+        this.handleOpenTag(name, attrStr, depth, raw, mapValue);
     }
 
     /** A tag the current line mode does not allow is shown to the player as
@@ -718,7 +814,7 @@ export class MxpParser {
      *  instead would hide half a game's output on an OPEN line and leave the
      *  other half — the text the tag wrapped — with no explanation. */
     private showAsText(raw: string): void {
-        this.appendText("<" + raw + ">");
+        this.appendText("<" + raw + ">", true);
     }
 
     private isKnownTag(name: string): boolean {
@@ -731,14 +827,16 @@ export class MxpParser {
         return def ? def.open : false;
     }
 
-    private handleOpenTag(name: string, attrStr: string, depth: number, raw = ""): void {
+    private handleOpenTag(
+        name: string, attrStr: string, depth: number, raw = "", mapValue?: (value: string) => string,
+    ): void {
+        const { named, positional, firstIsPositional } = parseAttrs(attrStr, mapValue);
         const def = this.elements.get(name);
         if (def) {
-            this.expandElement(def, attrStr, depth);
+            this.expandElement(def, named, positional, depth);
             return;
         }
 
-        const { named, positional } = parseAttrs(attrStr);
         switch (name) {
             case "b": case "bold": case "strong":
                 this.openFormat(name, () => { this.fmt.bold = true; }); break;
@@ -762,20 +860,40 @@ export class MxpParser {
             case "send": {
                 // <SEND "look" PROMPT> — the command is the first positional
                 // that is not one of the flags, and PROMPT switches the click
-                // from sending to seeding the command line.
+                // from sending to seeding the command line. With none, the
+                // command is the text the tag wraps.
                 const flags = new Set(positional.map(p => p.toLowerCase()));
                 const href = named.get("href") ?? named.get("hr")
                     ?? positional.find(p => !SEND_FLAGS.has(p.toLowerCase()));
                 const hint = named.get("hint") ?? named.get("title");
                 const prompt = flags.has("prompt") || named.has("prompt");
-                this.openLink("send", href, hint, prompt ? "prompt" : "command");
+                this.openLink("send", href || "&text;", hint, prompt ? "prompt" : "command", named.get("expire"));
                 break;
             }
             case "a": {
-                const href = named.get("href") ?? positional[0];
-                const isUrl = !!href && /^(https?|mailto):/i.test(href);
-                this.openLink("a", href, named.get("hint") ?? named.get("title"),
-                    isUrl ? "url" : "command");
+                // The address is HREF, or a first word that has no value, or —
+                // for a bare <A> — the text it wraps. An A with attributes and
+                // none of them an address is no link at all, and is shown as
+                // the text it is (TMxpLinkTagHandler::getHref).
+                const bare = named.size === 0 && positional.length === 0;
+                const href = bare ? "&text;"
+                    : named.has("href") ? named.get("href")
+                    : firstIsPositional ? positional[0]
+                    : undefined;
+                if (!href) {
+                    this.showAsText(raw);
+                    break;
+                }
+                this.openLink("a", href, named.get("hint") ?? named.get("title"), "url", named.get("expire"));
+                break;
+            }
+            case "expire": {
+                // <EXPIRE name> / <EXPIRE NAME=name>: retire every link made
+                // with that EXPIRE name. One that names nothing is not a tag
+                // Mudlet can act on, and is shown as text.
+                const group = named.get("name") ?? positional[0];
+                if (!group) this.showAsText(raw);
+                else this.expireLinks(group);
                 break;
             }
             case "v": case "var":
@@ -795,7 +913,7 @@ export class MxpParser {
             case "frame":
                 this.handleFrameTag(named, positional, raw); break;
             case "dest":
-                this.handleDestTag(named, positional); break;
+                this.handleDestTag(named, positional, raw); break;
             case "sound":
                 this.handleSoundTag("sound", named, positional); break;
             case "music":
@@ -818,8 +936,9 @@ export class MxpParser {
 
     /** Hand a finished `<SEND>` to Lua the way Mudlet does: the `mxp.send`
      *  table and an `mxp.send` event, carrying the tag's attributes, the text it
-     *  wrapped, and the Lua each of its commands would run — `send([[…]])`, or
-     *  `printCmdLine([[…]])` for a PROMPT. Queued on the closing tag because
+     *  wrapped, and the Lua each of its commands would run — `send(…)`, or
+     *  `printCmdLine(…)` for a PROMPT, the command quoted by
+     *  {@link quoteLuaLiteral}. Queued on the closing tag because
      *  until then the caption is not known, and the caption is what `&text;`
      *  resolves to in every one of those (TMxpMudlet::setCaptionForSendEvent).
      *
@@ -827,14 +946,11 @@ export class MxpParser {
      *  run something of its own alongside it, or to count what a shop offered.
      *  The command list is reported whole even where the click can only fire
      *  the first of them. */
-    private reportSend(link: LinkState, text: string, resolvedHref: string): void {
+    private reportSend(link: LinkState, text: string, resolvedHref: string, actions: string[]): void {
         const report = this.opts.onElementEvent;
         if (!report) return;
-        const command = link.kind === "prompt" ? "printCmdLine" : "send";
-        const cmds = resolvedHref.split("|").filter(c => c.trim().length > 0);
-        const actions = (cmds.length > 0 ? cmds : [text]).map(c => `${command}([[${c}]])`);
         const attrs: Record<string, string> = {};
-        if (link.href !== undefined) attrs.href = resolvedHref;
+        if (link.href !== "&text;") attrs.href = resolvedHref;
         if (link.hint !== undefined) attrs.hint = link.hint.replace(/&text;/gi, text);
         if (link.kind === "prompt") attrs.prompt = "";
         report("send", attrs, { text, actions });
@@ -922,14 +1038,25 @@ export class MxpParser {
 
     /** `<DEST name [eol] [eof]>` — start redirecting enclosed text into `name`.
      *  NAME is the NAME attribute or the first non-flag positional. Persists
-     *  until `</DEST>` (or end of line). A nameless DEST is ignored so its text
-     *  renders inline, matching Mudlet (setMxpDestination fails → not handled). */
-    private handleDestTag(named: Map<string, string>, positional: string[]): void {
+     *  until `</DEST>` (or end of line). A nameless DEST is a tag Mudlet cannot
+     *  act on, and is shown as text; one naming a frame that is not open is
+     *  taken out, but its text stays in the line it was part of — Mudlet keeps
+     *  building the main line when the destination has no sink to flush to. */
+    private handleDestTag(named: Map<string, string>, positional: string[], raw: string): void {
         const flags = new Set(positional.map(p => p.toLowerCase()));
         let name = named.get("name");
         if (!name) name = positional.find(p => { const l = p.toLowerCase(); return l !== "eol" && l !== "eof"; });
         name = (name ?? "").trim();
-        if (name === "") return;
+        if (name === "") {
+            this.showAsText(raw);
+            return;
+        }
+        if (this.opts.hasFrame && !this.opts.hasFrame(name)) {
+            // Nowhere to send it: close any redirect already running, and let
+            // the text carry on in the main line.
+            if (this.destName !== null) this.closeDest(this.destEol);
+            return;
+        }
         // Close any frame already being redirected to (nested/sequential DEST).
         if (this.destName !== null) this.closeDest(this.destEol);
         this.flushRun(); // commit preceding main text before switching sink
@@ -1018,10 +1145,11 @@ export class MxpParser {
     }
 
     private openLink(
-        name: string,
-        href: string | undefined,
+        tag: "send" | "a",
+        href: string,
         hint: string | undefined,
         kind: "command" | "url" | "prompt",
+        expire: string | undefined,
     ): void {
         const before = this.fmt.toSnapshot();
         this.flushRun();
@@ -1030,7 +1158,64 @@ export class MxpParser {
         // the pointer cursor + click handler.
         this.fmt.underline = true;
         const sink = this.destName === null ? this.plain : this.destPlain;
-        this.stack.push({ name, closeFmt: before, link: { start: sink.length, href, hint, kind, destName: this.destName } });
+        // The game's entities go into the command and hint now, as Mudlet's
+        // SEND fills them in at the start tag (they may hold `|` separators);
+        // `&text;` is not one, and waits for the text.
+        const link: LinkState = {
+            start: sink.length,
+            href: tag === "send" ? this.interpolateEntities(href) : href,
+            hint: hint !== undefined && tag === "send" ? this.interpolateEntities(hint) : hint,
+            kind, tag, destName: this.destName, id: 0, expire: expire || undefined, content: "",
+        };
+        // Stored at the start tag, as Mudlet's are, so the newest link is this
+        // one while its text is still arriving.
+        link.id = this.storeLink(this.linkActions(link, ""), link.expire);
+        this.stack.push({ name: tag, closeFmt: before, link });
+    }
+
+    /** The Lua each of a link's commands runs, `&text;` filled with `text`
+     *  before the command is quoted, so nothing the game wrote in either can
+     *  end the string it is put in (TMxpSendTagHandler::actionFor). */
+    private linkActions(link: LinkState, text: string): string[] {
+        const target = link.href.replace(/&text;/gi, text);
+        if (link.tag === "a") return [`openUrl(${quoteLuaLiteral(target)})`];
+        const command = link.kind === "prompt" ? "printCmdLine" : "send";
+        const cmds = target.split("|").filter(c => c.trim().length > 0);
+        return (cmds.length > 0 ? cmds : [text]).map(c => `${command}(${quoteLuaLiteral(c)})`);
+    }
+
+    /** Record a new link as the newest — TLinkStore::addLinks. */
+    private storeLink(actions: string[], expire: string | undefined): number {
+        const id = ++this.linkSeq;
+        this.currentLink = { id, actions, expire };
+        if (expire !== undefined) {
+            this.expiringLinks.set(id, expire);
+            if (this.expiringLinks.size > MAX_EXPIRING_LINKS) {
+                this.expiringLinks.delete(this.expiringLinks.keys().next().value!);
+            }
+        }
+        return id;
+    }
+
+    /** `<EXPIRE name>`: the links made with that name stop working, and if the
+     *  newest is one of them there is no newest link left to report
+     *  (TLinkStore::expireLinks removes them from the store outright). */
+    private expireLinks(name: string): void {
+        for (const [id, group] of this.expiringLinks) {
+            if (group === name) this.expiringLinks.set(id, null);
+        }
+        if (this.currentLink?.expire === name) this.currentLink.actions = [];
+    }
+
+    /** Replace `&name;` with the game's entity of that name, or a built-in
+     *  one; anything that names neither is left as it was (TEntityResolver's
+     *  interpolate) — which is what keeps `&text;` for the close to fill. */
+    private interpolateEntities(s: string): string {
+        if (!s.includes("&")) return s;
+        return s.replace(/&([^;&]*);/g, (m, name: string) => {
+            if (name.toLowerCase() === "text") return m;
+            return this.decodeEntity(name) ?? m;
+        });
     }
 
     private openVar(varName: string): void {
@@ -1061,41 +1246,50 @@ export class MxpParser {
     private finalizeTag(tag: OpenTag): void {
         if (tag.colorOverride && this.mxpColorStack.length > 0) this.mxpColorStack.pop();
         if (tag.link) {
+            const link = tag.link;
             // Resolve against the sink the link's text actually went into, and
             // collect it there: a <SEND> inside a <DEST> belongs to that frame's
             // redirect, not to the main line.
-            const intoDest = tag.link.destName !== null && tag.link.destName === this.destName;
+            const intoDest = link.destName !== null && link.destName === this.destName;
             const sink = intoDest ? this.destPlain : this.plain;
             const collect = intoDest ? this.destLinks : this.links;
             const end = sink.length;
-            const text = sink.slice(tag.link.start, end);
-            let payload = tag.link.href;
-            if (payload === undefined || payload === "") payload = text;
-            else payload = payload.replace(/&text;/gi, text);
-            if (payload && end > tag.link.start) {
+            const text = sink.slice(link.start, end);
+            // `&text;` is the text the tag wrapped as the game sent it, not as
+            // it is shown: markup inside it that was put back as text is not
+            // part of it.
+            const payload = link.href.replace(/&text;/gi, link.content);
+            const actions = this.linkActions(link, link.content);
+            if (this.currentLink?.id === link.id && this.isLinkLive(link.id)) this.currentLink.actions = actions;
+            // An <A> opens its address; one that is not a web address is
+            // offered to the game as a command, as it always was here.
+            const kind = link.tag === "a" && !/^(https?|mailto):/i.test(payload) ? "command" : link.kind;
+            if (payload && end > link.start) {
                 // Split, but not trimmed: a trailing space is part of the command a
                 // game means to be completed (<SEND "tell Zugg " PROMPT>), and Mudlet
                 // keeps it. Only a segment that is nothing but space is dropped.
                 const cmds = payload.split("|").filter(c => c.trim().length > 0);
-                const hintParts = tag.link.hint !== undefined ? tag.link.hint.split("|") : [];
+                const hintParts = link.hint !== undefined ? link.hint.replace(/&text;/gi, link.content).split("|") : [];
                 if (cmds.length > 1) {
                     collect.push({
-                        start: tag.link.start, end,
-                        kind: tag.link.kind,
+                        start: link.start, end,
+                        kind,
                         payload: cmds[0],
                         hint: hintParts[0] ?? text,
                         prompts: { cmds, hints: hintParts.slice(1) },
+                        id: link.id,
                     });
                 } else {
                     collect.push({
-                        start: tag.link.start, end,
-                        kind: tag.link.kind,
+                        start: link.start, end,
+                        kind,
                         payload: cmds[0] ?? text,
-                        hint: hintParts[0] ?? tag.link.hint,
+                        hint: hintParts[0] ?? link.hint,
+                        id: link.id,
                     });
                 }
             }
-            if (tag.name === "send") this.reportSend(tag.link, text, payload);
+            if (link.tag === "send") this.reportSend(link, link.content.trim(), payload, actions);
         }
         if (tag.varName !== undefined && tag.varName !== "") {
             this.entities.set(tag.varName, this.plain.slice(tag.varStart ?? this.plain.length, this.plain.length));
@@ -1104,22 +1298,27 @@ export class MxpParser {
 
     // ---- definitions ----
 
-    private handleDefinition(raw: string): void {
+    /** A `<!…>` definition. False when it is not one Mudlet can act on — an
+     *  element with nothing after its name, an entity with no name — which is
+     *  then shown as the text it is. */
+    private handleDefinition(raw: string): boolean {
         const body = raw.slice(1); // drop leading '!'
         const km = /^\s*([A-Za-z]+)/.exec(body);
-        if (!km) return;
+        if (!km) return true;
         const keyword = km[1].toUpperCase();
         const rest = body.slice(km[0].length);
-        if (keyword === "ELEMENT" || keyword === "EL") this.defineElement(rest);
-        else if (keyword === "ENTITY" || keyword === "EN") this.defineEntity(rest);
+        if (keyword === "ELEMENT" || keyword === "EL") return this.defineElement(rest);
+        if (keyword === "ENTITY" || keyword === "EN") return this.defineEntity(rest);
         // ATTLIST and others are accepted but ignored.
+        return true;
     }
 
-    private defineElement(rest: string): void {
+    private defineElement(rest: string): boolean {
         const toks = tokenizeAttrs(rest);
-        if (toks.length === 0) return;
+        // A name and nothing to define it with (TMxpElementDefinitionHandler).
+        if (toks.length < 2) return false;
         const name = toks[0].value.toLowerCase();
-        if (!name) return;
+        if (!name) return false;
         let template = "";
         let templateSeen = false;
         const atts: string[] = [];
@@ -1153,15 +1352,16 @@ export class MxpParser {
                 else if (!templateSeen) { template = t.value; templateSeen = true; }
             }
         }
-        if (del) { this.elements.delete(name); return; }
+        if (del) { this.elements.delete(name); return true; }
         this.elements.set(name, { name, template, atts, attDefaults, flag, open, empty });
+        return true;
     }
 
-    private defineEntity(rest: string): void {
+    private defineEntity(rest: string): boolean {
         const toks = tokenizeAttrs(rest);
-        if (toks.length === 0) return;
+        if (toks.length === 0) return false;
         const name = toks[0].value;
-        if (!name) return;
+        if (!name) return false;
         let del = false;
         let value = "";
         let valueSeen = false;
@@ -1173,30 +1373,63 @@ export class MxpParser {
             else if (up === "PRIVATE" || up === "PUBLISH" || up === "ADD" || up === "REMOVE") continue;
             else if (!valueSeen) { value = t.value; valueSeen = true; }
         }
-        if (del) { this.entities.delete(name); return; }
+        if (del) { this.entities.delete(name); return true; }
         this.entities.set(name, value);
+        return true;
     }
 
-    private expandElement(def: ElementDef, attrStr: string, depth: number): void {
+    private expandElement(def: ElementDef, named: Map<string, string>, positional: string[], depth: number): void {
         if (depth >= MAX_DEPTH) return;
-        const { named, positional } = parseAttrs(attrStr);
-        this.opts.onElementEvent?.(def.name, elementEventAttrs(def, named, positional));
         const before = this.fmt.toSnapshot();
         this.flushRun();
         // Push the close marker *below* the tags the template will open, so
         // `</name>` reverts everything the definition introduced.
         if (!def.empty) this.stack.push({ name: def.name, closeFmt: before });
-        this.parseFragment(this.substituteTemplate(def, named, positional), depth + 1);
+        this.runTemplate(def.template, this.elementValues(def, named, positional), depth + 1);
+        // Reported once the definition has run, as Mudlet reports it after
+        // handling the tag: `actions` is the newest link's, which may be the
+        // one the definition just made.
+        this.opts.onElementEvent?.(def.name, elementEventAttrs(def, named, positional), {
+            text: "", actions: this.currentLink ? [...this.currentLink.actions] : [],
+        });
     }
 
-    private substituteTemplate(def: ElementDef, named: Map<string, string>, positional: string[]): string {
+    /** `&att;` → the value the tag gave that attribute, by name or by the
+     *  position the definition declared it at, else its default; anything else
+     *  is left alone for the entity pass (TMxpCustomElementTagHandler's
+     *  mapAttributes). */
+    private elementValues(def: ElementDef, named: Map<string, string>, positional: string[]): (s: string) => string {
         const vals: Record<string, string> = { ...def.attDefaults };
         def.atts.forEach((an, idx) => { if (positional[idx] !== undefined) vals[an] = positional[idx]; });
         for (const [k, v] of named) vals[k.toLowerCase()] = v;
-        return def.template.replace(/&(\w+);/g, (m, an: string) => {
-            const key = an.toLowerCase();
-            return key in vals ? vals[key] : m; // leave real entities (e.g. &lt;) intact
-        });
+        return (s: string) => s.includes("&")
+            ? s.replace(/&([^;&]*);/g, (m, an: string) => {
+                const key = an.toLowerCase();
+                return Object.prototype.hasOwnProperty.call(vals, key) ? vals[key] : m;
+            })
+            : s;
+    }
+
+    /** Run a definition's markup. Its tags are read first and filled in after,
+     *  attribute by attribute, so a value cannot rewrite the tag it lands in:
+     *  a quote in it stays in the value. The text between them is filled in
+     *  and read as the game's own. */
+    private runTemplate(template: string, fill: (s: string) => string, depth: number): void {
+        let textStart = 0;
+        let i = 0;
+        while (i < template.length) {
+            if (template[i] === "<" && /[a-zA-Z!/]/.test(template[i + 1] ?? "")) {
+                const close = findTagEnd(template, i);
+                if (close === -1) break;
+                if (i > textStart) this.parseFragment(fill(template.slice(textStart, i)), depth);
+                this.handleTag(template.slice(i + 1, close), depth, fill);
+                i = close + 1;
+                textStart = i;
+                continue;
+            }
+            i++;
+        }
+        if (textStart < template.length) this.parseFragment(fill(template.slice(textStart)), depth);
     }
 
     // ---- entities ----
@@ -1403,13 +1636,20 @@ function elementEventAttrs(
     return attrs;
 }
 
-/** Split a tag's attribute string into named and positional values. */
-function parseAttrs(attrStr: string): { named: Map<string, string>; positional: string[] } {
+/** Split a tag's attribute string into named and positional values, each
+ *  value passed through `mapValue` once it has been read. `firstIsPositional`
+ *  says whether the first attribute written was a bare word. */
+function parseAttrs(
+    attrStr: string,
+    mapValue?: (value: string) => string,
+): { named: Map<string, string>; positional: string[]; firstIsPositional: boolean } {
     const named = new Map<string, string>();
     const positional: string[] = [];
-    for (const t of tokenizeAttrs(attrStr)) {
-        if (t.key !== undefined) named.set(t.key.toLowerCase(), t.value);
-        else positional.push(t.value);
+    const tokens = tokenizeAttrs(attrStr);
+    for (const t of tokens) {
+        const value = mapValue ? mapValue(t.value) : t.value;
+        if (t.key !== undefined) named.set(t.key.toLowerCase(), value);
+        else positional.push(value);
     }
-    return { named, positional };
+    return { named, positional, firstIsPositional: tokens.length > 0 && tokens[0].key === undefined };
 }

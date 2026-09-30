@@ -2970,10 +2970,14 @@ export class ScriptingAPI {
         hint?: string,
         promptCmds?: string[],
         promptHints?: string[],
+        isLive: () => boolean = () => true,
     ): FormatHyperlink {
+        // A link an <EXPIRE> has since retired keeps its look but runs
+        // nothing, from a click or from its menu (TLinkStore::expireLinks
+        // leaves the text and drops what it ran).
         if (kind === 'url') {
             return {
-                onClick: () => { window.open(payload, '_blank', 'noopener'); },
+                onClick: () => { if (isLive()) window.open(payload, '_blank', 'noopener'); },
                 title: hint || undefined,
                 autoUnderline: true,
             };
@@ -2983,8 +2987,8 @@ export class ScriptingAPI {
         // canonical example is `<SEND "tell Zugg " PROMPT>`, which wants a
         // message typed after it). Same as the OSC 8 `prompt:` scheme.
         const sendCmd = kind === 'prompt'
-            ? (cmd: string) => { this.printCmdLine(cmd); }
-            : (cmd: string) => { this.send(cmd); };
+            ? (cmd: string) => { if (isLive()) this.printCmdLine(cmd); }
+            : (cmd: string) => { if (isLive()) this.send(cmd); };
         if (promptCmds && promptCmds.length > 1) {
             const hl = this.buildPopupHyperlink(promptCmds, promptHints ?? [], sendCmd);
             hl.onClick = () => sendCmd(payload);
@@ -4671,6 +4675,11 @@ export class ScriptingAPI {
      * and `DOCK` tab groups. This just owns the manager and satisfies its host
      * interface below. `dest` is the `<DEST>` frame open when the tag was parsed.
      */
+    /** Whether an MXP frame of this name is open for a `<DEST>` to write to. */
+    mxpHasFrame(name: string): boolean {
+        return this.mxpFrames.has(name);
+    }
+
     mxpFrame(name: string, attrs: Record<string, string>, dest?: string): boolean {
         if (!name) return false;
         return this.mxpFrames.createFrame(name, attrs, dest);

@@ -877,14 +877,21 @@ export class TelnetNegotiator {
         }, extended);
     }
 
-    /** Latch MXP on for this session and notify listeners. Idempotent — only the
-     *  first call emits `mxp.negotiated`; later calls (repeat WILL/DO, in-band
-     *  detection on subsequent frames) are no-ops. `viaTelnet` distinguishes a
+    /** Latch MXP on for this session and notify listeners. Only the first call
+     *  emits `mxp.negotiated`, and a later subnegotiation; other later calls
+     *  (repeat WILL/DO, in-band detection on subsequent frames) are no-ops. `viaTelnet` distinguishes a
      *  real option-91 handshake from in-band-only detection (see the event doc),
      *  and `viaSubnegotiation` the bare `IAC SB MXP IAC SE` that starts the
      *  processor locked until the server sends a mode of its own. */
     private startMxp(viaTelnet: boolean, viaSubnegotiation = false): void {
-        if (this.mxpStarted) return;
+        if (this.mxpStarted) {
+            // Every `IAC SB MXP IAC SE` puts the processor back in locked mode,
+            // not just one that comes first: the usual order is WILL, then SB,
+            // and it is the SB that says nothing is markup until the game
+            // switches modes (cTelnet sets MXP_MODE_CODE_LOCK_LOCKED on each).
+            if (viaSubnegotiation) this.eventBus.emit('mxp.negotiated', viaTelnet, true);
+            return;
+        }
         this.mxpStarted = true;
         this.eventBus.emit('mxp.negotiated', viaTelnet, viaSubnegotiation);
     }

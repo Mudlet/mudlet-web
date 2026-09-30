@@ -105,7 +105,7 @@ describe('MxpParser — DEST (Mudlet 4.21)', () => {
     const rd = r.redirects![0];
     expect(rd.plain).toBe('a well Get');
     expect(rd.links).toEqual([
-      { start: 7, end: 10, kind: 'command', payload: 'get well', hint: 'pick it up' },
+      { start: 7, end: 10, kind: 'command', payload: 'get well', hint: 'pick it up', id: expect.any(Number) },
     ]);
     expect(rd.plain.slice(rd.links[0].start, rd.links[0].end)).toBe('Get');
   });
@@ -117,11 +117,22 @@ describe('MxpParser — DEST (Mudlet 4.21)', () => {
     expect(r.redirects?.[0].links).toMatchObject([{ payload: 'north', start: 0, end: 1 }]);
   });
 
-  it('renders a nameless DEST inline (no redirect)', () => {
+  // A DEST that names nothing is a tag Mudlet cannot act on: it stays in the
+  // line as text, and its text is not redirected anywhere.
+  it('shows a nameless DEST as text and redirects nothing', () => {
     const { parser } = makeParser();
     const r = parser.parseLine(`${SECURE}<dest>inline</dest>`);
     expect(r.redirects).toBeUndefined();
-    expect(r.plain).toBe('inline');
+    expect(r.plain).toBe('<dest>inline');
+  });
+
+  // Mudlet keeps building the main line when the destination has no frame to
+  // flush into, so the text stays exactly where it was — on the same line.
+  it('leaves the text of a DEST naming a missing frame in the main line', () => {
+    const parser = new MxpParser({ send: () => {}, hasFrame: name => name === 'Here' });
+    const r = parser.parseLine(`${SECURE}<dest Gone>stays</dest> after <dest Here>moved</dest>`);
+    expect(r.plain).toBe('stays after ');
+    expect(r.redirects).toMatchObject([{ frame: 'Here', plain: 'moved' }]);
   });
 
   it('advertises +frame and +dest in the SUPPORTS reply', () => {

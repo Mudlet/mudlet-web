@@ -138,7 +138,9 @@ export type MudClientEvents = {
      *  on a server that skipped negotiation. Only telnet-negotiated MXP gets the
      *  `<SUPPORTS>`/`<VERSION>` handshake replies — an in-band-only server's
      *  inbound MXP channel isn't confirmed, so replying would spam it with
-     *  invalid commands. */
+     *  invalid commands. `viaSubnegotiation` marks a bare `IAC SB MXP IAC SE`,
+     *  which is reported every time it arrives — each one puts the processor
+     *  back in locked mode — where the rest are reported once. */
     'mxp.negotiated': [viaTelnet: boolean, viaSubnegotiation?: boolean];
     /** Fired for every `!!SOUND` / `!!MUSIC` tag parsed from the in-band text
      *  stream (or an `IAC SB MSP ... IAC SE` subnegotiation body). The
