@@ -1,6 +1,7 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import { setBrand, getBrand, isBrandedMode, isPackageRemovable, getThemeChoices, isLightTheme, brandThemesCss, brandConnectionData, matchBrandProfile, DEFAULT_BRAND, STOCK_THEMES } from '../../src/branding';
-import { connectionUrl, DEFAULT_PROXY_URL, type MudConnection } from '../../src/storage/schema';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { setBrand, getBrand, isBrandedMode, isPackageRemovable, getThemeChoices, isLightTheme, brandThemesCss, brandConnectionData, matchBrandProfile, addBrandProfile, DEFAULT_BRAND, STOCK_THEMES } from '../../src/branding';
+import { connectionUrl, DEFAULT_PROXY_URL, PROFILE_DEFAULTS, selectProfileField, type MudConnection } from '../../src/storage/schema';
+import { useAppStore } from '../../src/storage/appStore';
 
 const conn = (c: Partial<MudConnection>): MudConnection => ({ id: 'x', name: 'x', ...c });
 
@@ -139,6 +140,52 @@ describe('brandConnectionData', () => {
         expect(brandConnectionData(getBrand(), '  Gandalf ')?.name).toBe('Gandalf');
         // Empty account falls back to the brand name.
         expect(brandConnectionData(getBrand(), '  ')?.name).toBe('Arkadia');
+    });
+});
+
+describe('addBrandProfile', () => {
+    const seed = { name: 'Threshold', mode: 'mud' as const, host: 'thresholdrpg.com', port: 3333 };
+    const fakeStore = () => ({
+        addConnection: vi.fn(() => 'new-id'),
+        patchConnectionProfile: vi.fn(),
+    });
+
+    it('applies profileDefaults to the profile it creates', () => {
+        const store = fakeStore();
+        const profileDefaults = {
+            fontSize: 12,
+            autoClearInput: true,
+            config: { versionInTTYPE: true, enableBlinkText: true },
+        };
+        const id = addBrandProfile({ appName: 'T', profileDefaults }, seed, store);
+        expect(id).toBe('new-id');
+        expect(store.addConnection).toHaveBeenCalledWith(seed);
+        expect(store.patchConnectionProfile).toHaveBeenCalledWith('new-id', profileDefaults);
+    });
+
+    it('lands profileDefaults where the Settings UI reads them', () => {
+        const store = useAppStore.getState();
+        const id = addBrandProfile({
+            appName: 'T',
+            profileDefaults: {
+                fontSize: 12,
+                autoClearInput: true,
+                config: { versionInTTYPE: true, enableBlinkText: true },
+            },
+        }, seed, store);
+        const s = useAppStore.getState();
+        expect(selectProfileField(s, id, 'fontSize')).toBe(12);
+        expect(selectProfileField(s, id, 'autoClearInput')).toBe(true);
+        expect(selectProfileField(s, id, 'config')).toEqual({ versionInTTYPE: true, enableBlinkText: true });
+        // Fields the brand left alone still fall through to the stock defaults.
+        expect(selectProfileField(s, id, 'showTimestamps')).toBe(PROFILE_DEFAULTS.showTimestamps);
+    });
+
+    it('leaves the profile at stock defaults without profileDefaults', () => {
+        const store = fakeStore();
+        addBrandProfile({ appName: 'T' }, seed, store);
+        expect(store.addConnection).toHaveBeenCalledOnce();
+        expect(store.patchConnectionProfile).not.toHaveBeenCalled();
     });
 });
 

@@ -1,5 +1,5 @@
 import type { ComponentType, ReactNode } from 'react';
-import type { ConnectionMode, MudConnection } from './storage/schema';
+import type { ConnectionMode, MudConnection, ProfileSettings } from './storage/schema';
 import type { TopMenu } from './ui/menu/menuModel';
 import type { ToolbarItem } from './ui/menu/toolbarModel';
 import mudletLogoUrl from './assets/mudlet-logo.svg?url';
@@ -264,6 +264,13 @@ export interface BrandConfig {
     toolbar?: BrandToolbarConfig;
     /** Custom landing screen replacing the stock connection picker. */
     Landing?: ComponentType<LandingProps>;
+    /** Profile settings a managed profile starts with, applied once when the
+     *  profile is created (on first launch, or at first login in `'perLogin'`
+     *  mode). The player's later changes in Settings stick: an existing
+     *  profile is never re-patched, so editing this reaches new profiles only.
+     *  `config` is the `setConfig` option bag (e.g. `versionInTTYPE`,
+     *  `enableBlinkText`). */
+    profileDefaults?: Partial<ProfileSettings>;
 }
 
 export const DEFAULT_BRAND: BrandConfig = {
@@ -357,6 +364,22 @@ export function brandConnectionData(brand: BrandConfig, account?: string): Omit<
         return { ...common, mode: 'mud', host: mud.host ?? '', port: mud.port ?? 23, url: undefined };
     }
     return { ...common, mode: 'websocket', url: mud.url ?? '', host: undefined, port: undefined };
+}
+
+/** Create a managed profile from `seed` and apply the brand's
+ *  `profileDefaults` to it. Returns the new connection id. The store actions
+ *  are passed in so this module stays free of the store. */
+export function addBrandProfile(
+    brand: BrandConfig,
+    seed: Omit<MudConnection, 'id'>,
+    store: {
+        addConnection: (data: Omit<MudConnection, 'id'>) => string;
+        patchConnectionProfile: (connectionId: string, patch: Partial<ProfileSettings>) => void;
+    },
+): string {
+    const id = store.addConnection(seed);
+    if (brand.profileDefaults) store.patchConnectionProfile(id, brand.profileDefaults);
+    return id;
 }
 
 /** The existing managed profile a login maps to, if any. In `'perLogin'` mode

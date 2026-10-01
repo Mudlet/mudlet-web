@@ -43,7 +43,7 @@ export { BrandLoginScreen } from "./ui/BrandLoginScreen";
 export { useBrandLogin, type UseBrandLoginResult } from "./ui/useBrandLogin";
 export { BrandLoginFields, type BrandLoginFieldsProps } from "./ui/BrandLoginFields";
 export { setSessionCredentials, getSessionCredentials, getLastSessionCredentials, type SessionCredentials } from "./utils/sessionCredentials";
-export type { MudConnection, ConnectionMode } from "./storage/schema";
+export type { MudConnection, ConnectionMode, ProfileSettings } from "./storage/schema";
 
 // Core
 export { EventBus } from "./core/EventBus";

@@ -14,7 +14,7 @@ import { loadFolderHandle, checkFolderPermission, requestFolderPermission, clear
 import { ensurePersistentStorage } from './storage/persistentStorage';
 import { useAppStore, type MudConnection } from './storage';
 import { GAME_LINK_PARAM, findGameByLink } from './mud/games/gameLinks';
-import { getBrand, isBrandedMode, brandConnectionData, matchBrandProfile } from './branding';
+import { getBrand, isBrandedMode, brandConnectionData, matchBrandProfile, addBrandProfile } from './branding';
 import { onSystemThemeChange, resolveTheme } from './utils/systemTheme';
 
 /**
@@ -101,7 +101,7 @@ export default function App() {
         if (brand.profileMode === 'perLogin') return;
         const seed = brandConnectionData(brand);
         if (!seed || useAppStore.getState().connections.length > 0) return;
-        addConnection(seed);
+        addBrandProfile(brand, seed, useAppStore.getState());
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
@@ -331,7 +331,7 @@ export default function App() {
             patchConnection(existing.id, seed);
             return existing.id;
         }
-        return addConnection(seed);
+        return addBrandProfile(brand, seed, useAppStore.getState());
     };
     // Branded mode never shows profile creation/selection: the landing is a
     // login form — the brand's own Landing when provided, else the built-in
