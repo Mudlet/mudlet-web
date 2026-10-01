@@ -242,13 +242,17 @@ export interface BrandConfig {
      *   mapper, chosen per game — see `stockDefaults`).
      * - `[]` — nothing is preinstalled.
      * - a list — exactly these, and none of the stock ones.
+     * - a function — handed the stock defaults this profile would get (already
+     *   chosen per game), returns the exact list to install. Use it to drop or
+     *   add to the stock set without vendoring it, e.g.
+     *   `stock => stock.filter(p => p.name !== 'mudlet-base-ui')`.
      *
      * So a brand shipping its own mapper just lists it here and ours never
      * appears; nothing arbitrates between them at install time, which is why the
      * list is exact rather than additive (two mappers would both drive
      * `centerview` off the same movement).
      */
-    packages?: BrandPackage[];
+    packages?: BrandPackage[] | ((stock: BrandPackage[]) => BrandPackage[]);
     /** Brand-defined themes, offered in the picker alongside (or instead of)
      *  the stock ones. A theme reusing a stock id overrides it. */
     themes?: BrandTheme[];
@@ -298,13 +302,6 @@ export function getBrand(): BrandConfig {
  *  (single profile, login-form landing, no persisted credentials). */
 export function isBrandedMode(): boolean {
     return !!current.mud;
-}
-
-/** Whether the user may uninstall the named package. Only brand-bundled
- *  packages marked `removable: false` are locked; everything else — stock
- *  defaults included — is removable. */
-export function isPackageRemovable(name: string): boolean {
-    return current.packages?.find(p => p.name === name)?.removable !== false;
 }
 
 /** Theme options for the settings picker: brand themes first (one overriding

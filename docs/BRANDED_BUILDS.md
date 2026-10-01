@@ -81,6 +81,9 @@ that file as the source of truth.
   first open, **replacing** Mudlet Web's stock defaults rather than adding to
   them. Leave it unset to get the stock defaults (`run-lua-code` plus one
   mapper); set `[]` to preinstall nothing; list packages to get exactly those.
+  Or pass a function: it is handed the stock defaults this game would get and
+  returns the exact list, so you can drop one without vendoring the rest —
+  `packages: stock => stock.filter(p => p.name !== 'mudlet-base-ui')`.
   See [Bundling Lua packages](#bundling-lua-packages) below.
 - **`themes`** / **`availableThemes`** / **`defaultTheme`** — brand color
   themes and picker configuration (see [Theming](#theming) below).

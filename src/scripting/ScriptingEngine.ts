@@ -11,7 +11,7 @@ import {findReservedKeybindings, reservedKeyNote} from '../mud/keybindings/brows
 import type {ButtonNode, ScriptNode, TimerNode} from '../storage/schema';
 import {buildEffectivelyEnabledIds, isColorizing, isEffectivelyEnabled} from '../storage/schema';
 import {useAppStore, connectionUrl, selectProfileField} from '../storage';
-import {isPackageRemovable} from '../branding';
+import {isPackageRemovable} from '../import/defaultPackages';
 import {saveProfileData} from '../storage/profileVfsData';
 import type {BufferSegment, FormatColor, FormatStateSnapshot, RgbColor} from '../mud/text/FormatState';
 import {AnsiAwareBuffer, computeTrailingState} from '../mud/text/FormatState';
