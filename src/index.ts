@@ -12,7 +12,6 @@ export { MudletWebApp } from "./MudletWebApp";
 export {
     getBrand,
     isBrandedMode,
-    isPackageRemovable,
     getThemeChoices,
     isLightTheme,
     DEFAULT_BRAND,
@@ -39,6 +38,7 @@ export type {
 export type {
     ToolbarButtonItem, ToolbarCustomItem, ToolbarItem, ToolbarSplitItem,
 } from "./ui/menu/toolbarModel";
+export { isPackageRemovable } from "./import/defaultPackages";
 export { BrandLoginScreen } from "./ui/BrandLoginScreen";
 export { useBrandLogin, type UseBrandLoginResult } from "./ui/useBrandLogin";
 export { BrandLoginFields, type BrandLoginFieldsProps } from "./ui/BrandLoginFields";

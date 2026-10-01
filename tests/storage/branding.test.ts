@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { setBrand, getBrand, isBrandedMode, isPackageRemovable, getThemeChoices, isLightTheme, brandThemesCss, brandConnectionData, matchBrandProfile, DEFAULT_BRAND, STOCK_THEMES } from '../../src/branding';
+import { setBrand, getBrand, isBrandedMode, getThemeChoices, isLightTheme, brandThemesCss, brandConnectionData, matchBrandProfile, DEFAULT_BRAND, STOCK_THEMES } from '../../src/branding';
+import { isPackageRemovable } from '../../src/import/defaultPackages';
 import { connectionUrl, DEFAULT_PROXY_URL, type MudConnection } from '../../src/storage/schema';
 
 const conn = (c: Partial<MudConnection>): MudConnection => ({ id: 'x', name: 'x', ...c });
@@ -175,6 +176,18 @@ describe('isPackageRemovable', () => {
         expect(isPackageRemovable('locked-ui')).toBe(false);
         expect(isPackageRemovable('optional-pack')).toBe(true);
         // Stock defaults and unknown packages are always removable.
+        expect(isPackageRemovable('run-lua-code')).toBe(true);
+    });
+
+    it('honours removable: false from a brand packages function', () => {
+        setBrand({
+            packages: stock => [
+                ...stock.map(p => p.name === 'echo' ? { ...p, removable: false } : p),
+                { name: 'locked-ui', filename: 'locked-ui.mpackage', url: 'u', removable: false },
+            ],
+        });
+        expect(isPackageRemovable('locked-ui')).toBe(false);
+        expect(isPackageRemovable('echo')).toBe(false);
         expect(isPackageRemovable('run-lua-code')).toBe(true);
     });
 
