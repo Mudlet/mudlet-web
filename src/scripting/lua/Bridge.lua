@@ -411,8 +411,8 @@ function getPath(from, to)
     end
     if type(res) ~= 'table' then
         return false, -1,
-            "getPath: no path found from the roomID " .. tostring(from)
-            .. " to roomID " .. tostring(to) .. "!"
+            "getPath: no path found from the roomID " .. tostring(__mudlet_int(from))
+            .. " to roomID " .. tostring(__mudlet_int(to)) .. "!"
     end
     -- JS hands the three step lists over as 0-indexed arrays (wasmoon convention).
     -- Room ids and step weights are stringified to match Mudlet, which fills
@@ -7692,7 +7692,24 @@ do
     end
 
     deleteArea        = shaped(__deleteArea)
-    setDoor           = shaped(__setDoor)
+    -- setDoor answers TRoom::setDoor's boolean (false: the door already had
+    -- that status) or the refusal message. The door command is read with
+    -- checkStringArg once the room is known, so a number is its Lua string
+    -- form — "4" names a special exit, not east — and any other type raises.
+    function setDoor(id, cmd, status)
+        if roomExists(id) then
+            local t = type(cmd)
+            if t == 'number' then
+                cmd = tostring(cmd)
+            elseif t ~= 'string' then
+                error("setDoor: bad argument #2 type (door command as string expected, got "
+                    .. t .. "!)", 2)
+            end
+        end
+        local r = __setDoor(id, cmd, status)
+        if type(r) == 'string' then return nil, r end
+        return r
+    end
     setExitWeight     = shaped(__setExitWeight)
     addSpecialExit    = shaped(__addSpecialExit)
     removeSpecialExit = shaped(__removeSpecialExit)
@@ -7872,7 +7889,15 @@ do
             error("setExitStub: number " .. tostring(id) .. " is not a valid roomID", 2)
         end
         checkDirection(dir, "setExitStub", 2)
-        return _rawSetExitStub(id, dir, set)
+        -- Desktop pushes nothing back.
+        _rawSetExitStub(id, dir, set)
+    end
+
+    -- lockExit returns nothing on desktop either, whatever happened. Wrapped
+    -- here, before Other.lua's direction-name wrapper captures it.
+    local _rawLockExit = lockExit
+    function lockExit(id, dir, lock)
+        _rawLockExit(id, dir, lock)
     end
 
     -- connectExitStub(fromID, direction) | (fromID, toID[, direction]) — the

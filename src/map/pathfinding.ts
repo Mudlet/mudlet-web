@@ -15,6 +15,17 @@ const DIR_SHORT: Record<number, string> = {
 };
 
 /**
+ * The order desktop offers a room's stock exits to the graph (`TMap::initGraph`
+ * calls addDirectionalRoute n, e, s, w, up, down, ne, se, sw, nw, in, out), as
+ * [direction code, MudletRoom field, short name]. Desktop keeps one edge per
+ * destination and replaces the kept one only with a STRICTLY cheaper exit, so
+ * of two equal-cost exits into the same room the earlier one here is the one a
+ * speedwalk takes. Relaxing in this order with a strict `<` reproduces that.
+ */
+const STOCK_EXIT_ORDER: ReadonlyArray<readonly [number, string, string]> =
+    [1, 4, 6, 5, 9, 10, 2, 7, 8, 3, 11, 12].map(d => [d, DIR_FIELD[d], DIR_SHORT[d]] as const);
+
+/**
  * Verdict from a `setExitWeightFilter` callback for one candidate exit.
  * `blocked` drops the edge from the graph entirely; `weightOverride` replaces
  * the edge cost that the exit weight / target room weight would have given.
@@ -186,21 +197,23 @@ export function findPath(
             }
         };
 
-        // Stock 12 directions
-        for (const dirIntStr of Object.keys(DIR_FIELD)) {
-            const di = Number(dirIntStr);
-            const field = DIR_FIELD[di];
-            relax(
-                (room as unknown as Record<string, number>)[field],
-                DIR_SHORT[di],
-                lockedDirs.includes(di),
-            );
+        // Stock 12 directions, in desktop's order (see STOCK_EXIT_ORDER).
+        const fields = room as unknown as Record<string, number>;
+        for (const [di, field, short] of STOCK_EXIT_ORDER) {
+            relax(fields[field], short, lockedDirs.includes(di));
         }
 
         // Special exits — keyed by command string; see the function docs for
-        // how the lock is resolved.
+        // how the lock is resolved. Desktop walks them as a QMap, i.e. sorted
+        // by command (case-sensitive, UTF-16 code units — what a plain
+        // `sort()` compares), so the alphabetically first of two equal-cost
+        // commands into one room wins rather than the first one added.
         const lockedSpecialTargets = room.mSpecialExitLocks ?? [];
-        for (const [cmd, target] of Object.entries(room.mSpecialExits ?? {})) {
+        const specials = room.mSpecialExits ?? {};
+        const commands = Object.keys(specials);
+        if (commands.length > 1) commands.sort();
+        for (const cmd of commands) {
+            const target = specials[cmd];
             const locked = isSpecialExitLocked
                 ? isSpecialExitLocked(current, cmd)
                 : lockedSpecialTargets.includes(target);

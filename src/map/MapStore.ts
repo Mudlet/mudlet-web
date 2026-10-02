@@ -871,6 +871,11 @@ export class MapStore {
     private areas = new Map<number, MudletArea>();
     private areaNames = new Map<number, string>();
     private hashToRoom = new Map<string, number>();
+    /** Hashes set on an id no room has yet — desktop's roomIDToHash is keyed by
+     *  id alone, so `setRoomIDbyHash(id, h)` before `addRoom(id)` is kept and
+     *  the room picks it up when it is created. Also holds a loaded map's hash
+     *  entries whose room is not in the file. */
+    private orphanHashes = new Map<number, string>();
     private labels = new Map<number, MapLabel[]>();
     private envColors = new Map<number, number>();
     private nextRoomId = 1;
@@ -1042,6 +1047,7 @@ export class MapStore {
         this.areas.clear();
         this.areaNames.clear();
         this.hashToRoom.clear();
+        this.orphanHashes.clear();
         this.labels.clear();
         this.envColors.clear();
         this.customEnvColors.clear();
@@ -1106,6 +1112,7 @@ export class MapStore {
         this.areas.clear();
         this.areaNames.clear();
         this.hashToRoom.clear();
+        this.orphanHashes.clear();
         this.labels.clear();
         this.envColors.clear();
         this.customEnvColors.clear();
@@ -1272,6 +1279,7 @@ export class MapStore {
             this.hashToRoom.set(hash, id);
             const room = this.rooms.get(id);
             if (room && !room.hash) room.hash = hash;
+            else if (!room) this.orphanHashes.set(id, hash);
         }
         this.pendingBinaryHashIndex = {};
         // Mudlet restores the player room from mRoomIdHash[mProfileName] on load
@@ -2152,7 +2160,14 @@ export class MapStore {
         // area was asked for. Area 0 isn't an area: a room left in it would be
         // orphaned from getAreaTable/getAreaRooms and written into the map file.
         const placedIn = known ? requested : -1;
-        this.rooms.set(id, makeRoom(placedIn));
+        const room = makeRoom(placedIn);
+        // A hash set on this id before the room existed belongs to it now.
+        const earlyHash = this.orphanHashes.get(id);
+        if (earlyHash !== undefined) {
+            room.hash = earlyHash;
+            this.orphanHashes.delete(id);
+        }
+        this.rooms.set(id, room);
         let area = this.areas.get(placedIn);
         if (!area) {
             area = makeArea();
@@ -2532,10 +2547,18 @@ export class MapStore {
 
     getRoomIDbyHash(hash: string): number | undefined { return this.hashToRoom.get(hash); }
 
+    /**
+     * Mudlet `setRoomIDbyHash(roomID, hash)`. Desktop keeps the pairing in its
+     * own two-way index (TRoomDB::hashToRoomID / roomIDToHash), not on the
+     * room, so it is stored whether or not the room exists yet: the common
+     * "set the hash, then addRoom" order works, and getRoomIDbyHash /
+     * getRoomHashByID answer for the id in the meantime.
+     */
     setRoomIDbyHash(id: number, hash: string): void {
+        if (!Number.isFinite(id)) return;
         const room = this.rooms.get(id);
-        if (!room) return;
-        if (room.hash) this.hashToRoom.delete(room.hash);
+        const oldHash = room ? room.hash : this.orphanHashes.get(id);
+        if (oldHash) this.hashToRoom.delete(oldHash);
         // A hash names one room. Take it off the room that had it, or that
         // room still reports it (getRoomHashByID) and, since a load rebuilds
         // the index from the rooms, can win the hash back on the next loadMap.
@@ -2543,13 +2566,17 @@ export class MapStore {
         if (prev !== undefined && prev !== id) {
             const old = this.rooms.get(prev);
             if (old && old.hash === hash) delete old.hash;
+            if (this.orphanHashes.get(prev) === hash) this.orphanHashes.delete(prev);
         }
-        room.hash = hash;
+        if (room) room.hash = hash;
+        else this.orphanHashes.set(id, hash);
         this.hashToRoom.set(hash, id);
         this.notify();
     }
 
-    getRoomHashByID(id: number): string | undefined { return this.rooms.get(id)?.hash; }
+    getRoomHashByID(id: number): string | undefined {
+        return this.rooms.get(id)?.hash ?? this.orphanHashes.get(id);
+    }
 
     // ── Exits ─────────────────────────────────────────────────────────────────
 
@@ -3262,17 +3289,24 @@ export class MapStore {
      * "up"/"down"/"in"/"out"), which is also what a saved map carries — or an
      * arbitrary special-exit command string, used as-is.
      *
+     * Only those twelve exact, lower-case spellings name a stock exit: desktop
+     * compares the command against them verbatim (TLuaInterpreter::setDoor),
+     * so "east", "E" or "4" are special-exit names and are refused unless the
+     * room has a special exit called that — they never touch the stock door.
+     *
      * Mudlet refuses a direction the room has no exit *or stub* for, and a
      * status outside 0-3; both are `(nil, errMsg)` returns rather than a bare
-     * false, so the failure is reported here as the message string and success
-     * as null (same shape as {@link addCustomLine}).
+     * false, so the failure is reported here as the message string. Otherwise
+     * the answer is TRoom::setDoor's: true when the door changed, false when it
+     * already had that status.
      */
-    setDoor(id: number, dir: number | string, val: number): string | null {
+    setDoor(id: number, cmd: string, val: number): string | boolean {
         const room = this.rooms.get(id);
         if (!room) return `setDoor: number ${id} is not a valid roomID`;
-        const dirInt = parseDirection(dir);
-        const key = dirInt != null ? DIR_SHORT[dirInt] : (typeof dir === 'string' ? dir : '');
-        if (!key) return `setDoor: "${String(dir)}" is not a valid door command`;
+        const key = String(cmd ?? '');
+        const dirInt = Object.prototype.hasOwnProperty.call(DIR_SHORT_TO_INT, key)
+            ? DIR_SHORT_TO_INT[key]
+            : null;
         if (dirInt != null) {
             const target = (room as unknown as Record<string, number>)[DIR_FIELD[dirInt]];
             if (!(target > 0) && !(room.stubs ?? []).includes(dirInt)) {
@@ -3284,10 +3318,12 @@ export class MapStore {
         if (!Number.isFinite(val) || val < 0 || val > 3) {
             return `setDoor: door type ${val} is not one of 0='none', 1='open', 2='closed' or 3='locked'`;
         }
+        const had = Object.prototype.hasOwnProperty.call(room.doors, key) ? room.doors[key] : 0;
+        if (had === val) return false;
         if (val <= 0) delete room.doors[key];
         else room.doors[key] = val;
         this.notify();
-        return null;
+        return true;
     }
 
     // ── User data ─────────────────────────────────────────────────────────────
@@ -3323,7 +3359,10 @@ export class MapStore {
     getRoomUserDataKeys(id: number): string[] | undefined {
         const room = this.rooms.get(id);
         if (!room) return undefined;
-        return Object.keys(room.userData);
+        // Desktop's userData is a QMap, so its keys come back sorted
+        // (case-sensitive, by UTF-16 code unit — a plain sort()), not in the
+        // order they were set.
+        return Object.keys(room.userData).sort();
     }
 
     /**

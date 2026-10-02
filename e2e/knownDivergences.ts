@@ -604,4 +604,21 @@ export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
             + 'equivalent, and the error is what a Lua built without popen raises.',
         issue: '#276',
     },
+    {
+        api: 'getPath() between equal-cost routes through different rooms',
+        behaviour:
+            'Desktop: when two routes of the same total weight reach the target through different '
+            + 'intermediate rooms, which one speedWalkPath/speedWalkDir describe can change from one Mudlet run '
+            + 'to the next. Mudlet Web: always the same route for the same map, but not necessarily the one a '
+            + 'given desktop run picked. Two exits of equal cost from one room into the SAME room do match: the '
+            + 'first of n,e,s,w,up,down,ne,se,sw,nw,in,out wins, then the alphabetically first special exit.',
+        reason:
+            'Desktop numbers its search vertices in QHash iteration order over the room map (TMap::initGraph), '
+            + 'and its frontier breaks equal-priority ties by that vertex number. Qt seeds QHash per process, so '
+            + 'the order — and with it the choice between equal routes — is not a property of the map and '
+            + 'cannot be reproduced. The per-room tie (parallel exits into one room) is decided while the graph '
+            + 'is built, in a fixed order, and is ported exactly in src/map/pathfinding.ts. Pinned by '
+            + 'tests/scripting/mapperParity295.test.ts.',
+        issue: '#295',
+    },
 ];

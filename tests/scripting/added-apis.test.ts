@@ -895,23 +895,26 @@ describe('lockExit / hasExitLock', () => {
   it('locks and unlocks a stock-direction exit by name', () => {
     env.run('addRoom(100); addRoom(101); setExit(100, 101, "north")');
     expect(env.run('return (hasExitLock(100, "north"))')).toBe(false);
-    expect(env.run('return (lockExit(100, "north", true))')).toBe(true);
+    // Desktop's lockExit pushes nothing back (#295).
+    expect(env.run('return select("#", lockExit(100, "north", true))')).toBe(0);
     expect(env.run('return (hasExitLock(100, "north"))')).toBe(true);
-    expect(env.run('return (lockExit(100, "north", false))')).toBe(true);
+    expect(env.run('return select("#", lockExit(100, "north", false))')).toBe(0);
     expect(env.run('return (hasExitLock(100, "north"))')).toBe(false);
   });
 
   it('accepts the 1-12 integer direction code', () => {
     env.run('addRoom(200)');
-    expect(env.run('return (lockExit(200, 4, true))')).toBe(true); // 4 = east
+    env.run('lockExit(200, 4, true)'); // 4 = east
     expect(env.run('return (hasExitLock(200, "east"))')).toBe(true);
     expect(env.run('return (hasExitLock(200, 4))')).toBe(true);
   });
 
   it('rejects an unknown direction or missing room', () => {
     env.run('addRoom(300)');
+    // Other.lua's own wrapper answers false for a name it does not know.
     expect(env.run('return (lockExit(300, "sideways", true))')).toBe(false);
-    expect(env.run('return (lockExit(9999, "north", true))')).toBe(false);
+    expect(env.run('return (hasExitLock(300, "north"))')).toBe(false);
+    expect(env.run('return select("#", lockExit(9999, "north", true))')).toBe(0);
     expect(env.run('return (hasExitLock(9999, "north"))')).toBeNull();
   });
 
