@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type React from 'react';
 import type { MudSession } from '../../mud/MudSession';
 import { useStickyOutput, DEFAULT_STICKY_LINES } from '../../hooks/useOutput';
@@ -174,6 +174,22 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
             session.windows.registerMainOverlayHost(null);
         };
     }, [session, outputRef]);
+
+    // NAWS follows the main console's font and timestamp gutter as desktop's
+    // does (cTelnet::sendCurrentNAWS reads the screen width in characters and
+    // takes the gutter off it). A font change leaves the element's box alone,
+    // so no resize observer fires: re-measure the grid once the new size is
+    // laid out, and again a frame later in case the face was still loading.
+    const outputFontFamily = useProfileField('outputFont')?.family;
+    useLayoutEffect(() => {
+        session.setTimestampsShown(!!showTimestamps);
+    }, [session, showTimestamps]);
+    useLayoutEffect(() => {
+        session.windows.remeasureMainGrid();
+        if (typeof requestAnimationFrame !== 'function') return;
+        const frame = requestAnimationFrame(() => session.windows.remeasureMainGrid());
+        return () => cancelAnimationFrame(frame);
+    }, [session, fontSize, outputFontFamily]);
 
     // Mudlet setBorderTop/Bottom/Left/Right insets the console; labels still
     // own the full main-viewport so they can be placed in the carved area.

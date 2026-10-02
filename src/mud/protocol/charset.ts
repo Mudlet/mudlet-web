@@ -2,6 +2,8 @@ import {
     CHARSET_ACCEPTED,
     CHARSET_REJECTED,
     CHARSET_REQUEST,
+    CHARSET_TTABLE_IS,
+    CHARSET_TTABLE_REJECTED,
     GMCP_IAC,
     GMCP_SB,
     GMCP_SE,
@@ -300,8 +302,8 @@ function decodeWithTable(byteString: string, table: readonly string[]): string {
 
 /**
  * Parse an `IAC SB CHARSET REQUEST ...` subnegotiation body (leading byte is
- * the option code 42, then subcommand byte 1, then optional `[TTABLE]<ver>`
- * prefix, then a separator byte, then separator-delimited IANA names). Returns
+ * the option code 42, then subcommand byte 1, then a separator byte, then
+ * separator-delimited IANA names). Returns
  * the one to switch to with both the original wire spelling (echoed back in
  * the ACCEPTED reply per RFC 2066) and this client's canonical name for it,
  * which is what `getServerEncoding()` then reports. Returns null if no offered
@@ -312,18 +314,15 @@ export function pickCharsetFromRequest(
     current?: string,
 ): { original: string; canonical: string } | null {
     if (subneg.length < 4) return null;
-    let i = 2; // skip option code (42) + subcommand (REQUEST = 1)
-    // Optional `[TTABLE]<version>` prefix — skip the bracket-delimited tag and
-    // the single version byte after it. We don't support translation tables;
-    // we just step past the prefix so we can find the real separator.
-    if (subneg.charCodeAt(i) === 0x5B /* '[' */) {
-        const close = subneg.indexOf(']', i);
-        if (close === -1) return null;
-        i = close + 1;
-        if (i >= subneg.length) return null;
-        i++; // skip version byte
-    }
-    if (i >= subneg.length) return null;
+    const i = 2; // skip option code (42) + subcommand (REQUEST = 1)
+    // The byte after REQUEST is taken as the separator, always. A request
+    // opening with RFC 2066's `[TTABLE]<version>` prefix (an offer to use
+    // translation tables, which this client does not support) therefore splits
+    // on '[' and offers nothing recognisable, so it is REJECTED — which is what
+    // Mudlet answers it with: its `[TTABLE]1` strip compares against a payload
+    // that still starts with the REQUEST byte, so it never fires, and the
+    // request is split on '[' exactly as here. Accepting a name out of such a
+    // request would leave a server expecting a translation table we never use.
     const sep = subneg[i];
     const list = subneg.substring(i).split(sep).filter(name => name.length > 0);
     if (list.length === 0) return null;
@@ -520,7 +519,7 @@ export class CharsetHandler {
      *  is the option code, 42). Handles REQUEST (server lists charsets, we
      *  ACCEPT one or REJECT), ACCEPTED (server picked one of ours — switch
      *  codec), and REJECTED (server didn't like any of ours — stay put).
-     *  TTABLE-* subcommands are silently ignored; almost no MUD uses them. */
+     *  TTABLE-IS (a translation table) gets TTABLE-REJECTED, as in Mudlet. */
     handleSubneg(subneg: string): void {
         if (!this.enabled) return;
         if (subneg.length < 2) return;
@@ -544,6 +543,11 @@ export class CharsetHandler {
             const canonical = canonicalServerEncoding(name);
             const norm = canonical ? normalizeCharsetName(canonical) : null;
             if (norm && canonical) this.setEncoding(norm, canonical);
+        }
+        else if (sub === CHARSET_TTABLE_IS.charCodeAt(0)) {
+            // A translation table we have no use for. RFC 2066 requires an
+            // answer, and Mudlet gives TTABLE-REJECTED.
+            this.hooks.sendRaw(GMCP_IAC + GMCP_SB + OPT_CHARSET + CHARSET_TTABLE_REJECTED + GMCP_IAC + GMCP_SE);
         }
         // CHARSET_REJECTED — no action, keep current encoding.
     }

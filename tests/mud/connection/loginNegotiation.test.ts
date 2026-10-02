@@ -252,23 +252,16 @@ describe('login-time telnet negotiation replies', () => {
     expect(out).not.toContain('OSC_HYPERLINKS');
   });
 
-  it('reports TLS=1 in NEW-ENVIRON mode over a direct wss:// connection', () => {
-    const { sock } = connected({ newEnvironEnabled: true, url: 'wss://secure.invalid' });
+  // TLS is Mudlet's capability flag ("1" whenever built with SSL), not a report
+  // on this link — and Mudlet Web can reach a game over TLS from either mode,
+  // so it says "1" over plain ws:// to a proxy just as over wss:// (#286).
+  it.each(['wss://secure.invalid', 'ws://proxy.invalid'])('reports TLS=1 in NEW-ENVIRON mode over %s', (url) => {
+    const { sock } = connected({ newEnvironEnabled: true, url });
     sock.deliver(NEW_ENVIRON_DO);
     sock.sent.length = 0;
     sock.deliver(sendRequest);
     // USERVAR 'TLS' VALUE(\x01) '1'
     expect(sentText(sock)).toContain(NEW_ENVIRON_USERVAR + 'TLS' + '\x01' + '1');
-  });
-
-  it('reports TLS=0 in NEW-ENVIRON mode when the transport is not secure (proxy mode)', () => {
-    // Proxy mode passes secureTransport:false — a wss:// proxy URL only secures
-    // the browser↔proxy hop, not the plaintext proxy↔MUD telnet socket.
-    const { sock } = connected({ newEnvironEnabled: true, url: 'wss://proxy.invalid', secureTransport: false });
-    sock.deliver(NEW_ENVIRON_DO);
-    sock.sent.length = 0;
-    sock.deliver(sendRequest);
-    expect(sentText(sock)).toContain(NEW_ENVIRON_USERVAR + 'TLS' + '\x01' + '0');
   });
 
   it('emits mnes.negotiated with the active protocol name', () => {

@@ -2585,8 +2585,8 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                                 when a server offers it, the client accepts and transparently
                                 decompresses the stream, cutting bandwidth. On by default;
                                 disable to force compression off (Mudlet's
-                                <code>specialForceCompressionOff</code>) — the client ignores
-                                the server's offer and the stream stays uncompressed, which is
+                                <code>specialForceCompressionOff</code>) — the client turns
+                                the server's offer down and the stream stays uncompressed, which is
                                 handy when debugging the raw telnet bytes.
                             </HelpTip>
                         </span>

@@ -4446,6 +4446,10 @@ export class ScriptingAPI {
      *  reports matches what the window shows. Called whenever the wrap width or
      *  either indent moves, and for main when the API is created. */
     private applyStoredWrap(windowName?: string): void {
+        // Main's wrap also caps what NAWS reports and is the NEW-ENVIRON
+        // WORD_WRAP — desktop reads Host::mWrapAt for both, and re-sends NAWS
+        // when setWindowWrap("main", n) changes it.
+        if (!windowName || windowName === 'main') this.session.setWrapAt(this.mainWrapAt());
         const con = this.getConsole(windowName);
         if (!con) return;
         con.setWrapWidth(...this.wrapSettings(windowName, con));

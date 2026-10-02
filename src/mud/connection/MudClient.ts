@@ -110,13 +110,6 @@ export interface MudClientOptions {
      *  NEW_ENVIRON_USERVAR. Mudlet exposes MNES and NEW-ENVIRON as two separate
      *  toggles over the same telnet option; Mudlet Web mirrors that. */
     newEnvironEnabled?: boolean;
-    /** Whether the link to the *game server* is TLS-encrypted, reported as the
-     *  NEW-ENVIRON `TLS` capability. Defaults to whether `url` is `wss://` — the
-     *  correct answer for a direct websocket-mode connection. In proxy (`mud`)
-     *  mode the caller passes the answer explicitly, because a `wss://` proxy URL
-     *  only secures the browser↔proxy hop: the proxy↔MUD leg is plaintext telnet
-     *  unless the profile enabled TLS (see connectionSecureTransport). */
-    secureTransport?: boolean;
     /** Whether to advertise screen-reader use, reported as the MTTS SCREEN
      *  READER bit and the NEW-ENVIRON `SCREEN_READER` capability
      *  (`setConfig("advertiseScreenReader", …)`). Default false. */
@@ -342,7 +335,6 @@ export class MudClient {
             mxpEnabled = true,
             mnesEnabled = false,
             newEnvironEnabled = false,
-            secureTransport,
             screenReaderAdvertised = false,
             osc8HyperlinksEnabled = true,
             nawsEnabled = true,
@@ -393,11 +385,6 @@ export class MudClient {
             mnesEnabled,
             newEnvironEnabled,
             nawsEnabled,
-            // Fall back to the URL scheme when the caller doesn't say —
-            // correct for a direct websocket connection; proxy mode passes
-            // its own answer, since a wss:// proxy URL says nothing about
-            // whether the proxy↔game leg is encrypted.
-            secureTransport: secureTransport ?? /^wss:/i.test(url),
             screenReaderAdvertised,
             osc8HyperlinksEnabled,
             versionInTTYPE,
@@ -411,6 +398,7 @@ export class MudClient {
                 sendRaw: (data) => this.sendRaw(data),
                 onGmcpNegotiated: (offered) => this.sendGmcpHandshake(offered),
                 getEncoding: () => this.codec.encoding,
+                isMccpEnabled: () => this.mccpHandler.enabled,
                 onKaVirProtocolDetected: () => this.eventBus.emit('kavir.detected'),
             },
         );
@@ -480,11 +468,18 @@ export class MudClient {
             else if (code === NEW_ENVIRON_COMMAND_CODE) this.negotiator.handleNewEnvironSubneg(subneg);
             else if (code === TELNET_102_COMMAND_CODE) this.handleChannel102Subneg(subneg);
         }, this.telnetParserOpts);
-        this.mccpHandler = new MccpHandler((data) => this.sendRaw(data));
+        // The option commands these two handlers send themselves are noted in
+        // the negotiator's option bitsets, which Mudlet keeps for every option
+        // it answers (they feed the STATUS reply and the repeat-offer checks).
+        const sendOptionRaw = (data: string): void => {
+            this.negotiator.noteOptionsSent(data);
+            this.sendRaw(data);
+        };
+        this.mccpHandler = new MccpHandler(sendOptionRaw);
         this.mccpHandler.enabled = mccpEnabled;
 
         this.echoHandler = new EchoHandler(
-            (data) => this.sendRaw(data),
+            sendOptionRaw,
             (maskInput) => {
                 this.eventBus.emit('telnet.echo', maskInput);
                 // The server released ECHO right after the masked line, so this
@@ -1197,6 +1192,18 @@ export class MudClient {
      *  The session calls this on every output-area resize. See TelnetNegotiator. */
     setWindowSize(cols: number, rows: number): void {
         this.negotiator.setWindowSize(cols, rows);
+    }
+
+    /** Report the main console's wrap column (Mudlet's `Host::mWrapAt`, 0 for
+     *  off), which caps the NAWS width and is the NEW-ENVIRON WORD_WRAP. */
+    setWrapAt(wrapAt: number): void {
+        this.negotiator.setWrapAt(wrapAt);
+    }
+
+    /** Report whether the main console draws its timestamp gutter, which comes
+     *  off the NAWS width as on desktop. */
+    setTimestampsShown(shown: boolean): void {
+        this.negotiator.setTimestampsShown(shown);
     }
 
     /** Mudlet `sendSocket(data)`. Sends literal bytes over the socket with no

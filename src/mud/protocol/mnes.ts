@@ -8,6 +8,7 @@ import {
     NEW_ENVIRON_VAR,
     NEW_ENVIRON_VALUE,
     NEW_ENVIRON_ESC,
+    NEW_ENVIRON_USERVAR,
     computeMtts,
 } from "./constants";
 import { CLIENT_NAME, CLIENT_VERSION, TERMINAL_TYPE } from "../../version";
@@ -18,7 +19,6 @@ import { CLIENT_NAME, CLIENT_VERSION, TERMINAL_TYPE } from "../../version";
 // distinguished by position: command first, markers everywhere after.
 const SEND = 1;     // command: server requests variables
 const VAR = 0;      // marker: standard variable name follows
-const VALUE = 1;    // marker: variable value follows
 const ESC = 2;      // marker: next byte is literal (unescape it)
 const USERVAR = 3;  // marker: user-defined variable name follows
 
@@ -29,100 +29,53 @@ const USERVAR = 3;  // marker: user-defined variable name follows
  *  distinction structurally: a name followed by VALUE is defined (and, with
  *  nothing after the VALUE, defined-but-empty), while a name followed by the
  *  next marker or IAC with no VALUE at all is undefined. That is how a variable
- *  the client deliberately does not supply is answered — see
- *  {@link MNES_UNMAINTAINED}. */
+ *  the client does not supply is answered. */
 export interface MnesVar {
     name: string;
     value: string | null;
 }
 
-/** Result of parsing an `IAC SB NEW-ENVIRON SEND … IAC SE` request body. */
-export interface MnesRequest {
-    /** True when the body is a well-formed SEND command (the only request kind
-     *  a client answers). */
-    isSend: boolean;
-    /** Variable names the server explicitly asked for, in request order. Empty
-     *  means a bare SEND — the server wants every variable we report. */
-    requested: string[];
-}
-
-/** Escape a name/value per RFC 1572: any control byte that would otherwise be
- *  read as a marker (VAR/VALUE/ESC/USERVAR = 0..3) or as IAC (255) is prefixed
- *  with ESC. MNES values are ASCII in practice, so this rarely fires — but a
- *  charset name or version string is server-influenced enough to be worth
- *  doing correctly. */
+/** Escape a name/value the way Mudlet's `cTelnet::prepareNewEnvironData` does:
+ *  each byte that would otherwise read as a marker (VAR/VALUE/ESC/USERVAR =
+ *  0..3) is prefixed with ESC (RFC 1572), and IAC (255) is doubled, as telnet
+ *  requires inside any subnegotiation. Values are ASCII in practice, so this
+ *  rarely fires — but a charset name or version string is server-influenced
+ *  enough to be worth doing correctly. */
 function escapeEnv(s: string): string {
     let out = "";
     for (let i = 0; i < s.length; i++) {
         const c = s.charCodeAt(i);
-        if (c <= 3 || c === 0xff) out += NEW_ENVIRON_ESC;
+        if (c === 0xff) out += GMCP_IAC;
+        else if (c <= 3) out += NEW_ENVIRON_ESC;
         out += s[i];
     }
     return out;
 }
 
 /**
- * Parse an `IAC SB NEW-ENVIRON SEND …` request. `subneg` is the subnegotiation
- * body with the leading option code (39) still attached (matching how the
- * telnet option parser hands bodies to the other protocol streams). The byte
- * after the option code is the command; for a server→client request it's SEND.
- * After SEND comes an optional list of `VAR <name>` / `USERVAR <name>` entries,
- * each name running until the next marker (ESC-escaped bytes pass through).
- * A bare SEND with no entries — or only empty names — means "send everything".
- */
-export function parseMnesRequest(subneg: string): MnesRequest {
-    if (subneg.length < 2 || subneg.charCodeAt(0) !== NEW_ENVIRON_COMMAND_CODE) {
-        return { isSend: false, requested: [] };
-    }
-    if (subneg.charCodeAt(1) !== SEND) return { isSend: false, requested: [] };
-
-    const requested: string[] = [];
-    const n = subneg.length;
-    let i = 2;
-    while (i < n) {
-        const marker = subneg.charCodeAt(i);
-        if (marker !== VAR && marker !== USERVAR) {
-            i++; // skip stray bytes between entries
-            continue;
-        }
-        i++; // consume the VAR/USERVAR marker
-        let name = "";
-        while (i < n) {
-            const c = subneg.charCodeAt(i);
-            if (c === ESC) {
-                i++;
-                if (i < n) { name += subneg[i]; i++; }
-                continue;
-            }
-            if (c === VAR || c === USERVAR || c === VALUE) break;
-            name += subneg[i];
-            i++;
-        }
-        if (name.length > 0) requested.push(name);
-    }
-    return { isSend: true, requested };
-}
-
-/**
  * Frame an `IAC SB NEW-ENVIRON IS <marker> <name> VALUE <value> … IAC SE` reply
  * for the given variables. The returned string is a Latin-1 byte-string ready
- * for sendBytes (names/values are ASCII; control bytes are escaped per RFC
- * 1572). `marker` selects how each variable name is tagged: `NEW_ENVIRON_VAR`
- * (the default — MNES frames every variable as a standard VAR) or
- * `NEW_ENVIRON_USERVAR` (plain NEW-ENVIRON frames its client-defined variables
- * as USERVAR, matching Mudlet). The two never mix within one reply because the
- * client reports a single coherent set per negotiated mode.
+ * for sendRaw. `marker` selects how each variable name is tagged:
+ * `NEW_ENVIRON_VAR` (the default — MNES frames every variable as a standard
+ * VAR) or `NEW_ENVIRON_USERVAR`. An empty list frames an empty IS.
  */
 export function encodeMnesIs(
     vars: ReadonlyArray<MnesVar>,
     marker: string = NEW_ENVIRON_VAR,
 ): string {
+    return frameIs(vars.map((v) => ({ ...v, marker })));
+}
+
+interface MarkedVar extends MnesVar {
+    marker: string;
+}
+
+function frameIs(vars: ReadonlyArray<MarkedVar>): string {
     let body = OPT_NEW_ENVIRON + NEW_ENVIRON_IS;
-    for (const { name, value } of vars) {
+    for (const { name, value, marker } of vars) {
         body += marker + escapeEnv(name);
         // RFC 1572: a name with no VALUE after it is undefined, which is not the
-        // same as a VALUE with nothing after it (defined, and empty). Mudlet
-        // answers a variable it deliberately does not maintain with the former.
+        // same as a VALUE with nothing after it (defined, and empty).
         if (value !== null) body += NEW_ENVIRON_VALUE + escapeEnv(value);
     }
     return GMCP_IAC + GMCP_SB + body + GMCP_IAC + GMCP_SE;
@@ -130,18 +83,20 @@ export function encodeMnesIs(
 
 /** Live client state the NEW-ENVIRON variable set is derived from. Everything
  *  here is something the server can't know on its own — the negotiated encoding,
- *  the transport's TLS status, the output window's wrap column. */
+ *  the profile's wrap column, the advertising preferences. */
 export interface NewEnvironState {
     /** The active byte→char codec label as reported for the CHARSET variable,
      *  e.g. "UTF-8" or "LATIN-1". */
     charset: string;
     /** Whether the live encoding is UTF-8 (drives the UTF-8 capability flag). */
     utf8: boolean;
-    /** Whether the link to the game server is TLS-encrypted. True for a direct
-     *  `wss://` connection; false in proxy mode (plaintext upstream telnet). */
-    tls: boolean;
-    /** Output window wrap column, or 0 when the grid hasn't been measured yet. */
-    wrapColumns: number;
+    /** Whether the MTTS bitvector carries the MNES bit — Mudlet sets it when the
+     *  profile has both MNES and NEW-ENVIRON enabled. Defaults to false. */
+    mnes?: boolean;
+    /** The main console's wrap column — Mudlet's `Host::mWrapAt`, reported as
+     *  WORD_WRAP. Not the window's column count: a server wrapping to this
+     *  value produces lines the client then shows unbroken. */
+    wordWrap: number;
     /** Whether the client is advertising screen-reader use (MTTS SCREEN READER
      *  bit, NEW-ENVIRON SCREEN_READER var) — `setConfig("advertiseScreenReader", …)`.
      *  Defaults to false (matching Mudlet's opt-in behaviour). */
@@ -169,14 +124,16 @@ export { CLIENT_NAME, CLIENT_VERSION, TERMINAL_TYPE };
  * capabilities (ANSI, 256_COLORS, TRUECOLOR, UTF-8), transport/security (TLS),
  * and layout/accessibility hints (WORD_WRAP, SCREEN_READER). Capabilities Mudlet Web
  * doesn't implement are reported honestly as "0" rather than omitted, so a
- * server gets a definite answer instead of inferring absence. The caller frames
- * the result with VAR (MNES) or USERVAR (NEW-ENVIRON) via encodeMnesIs.
+ * server gets a definite answer instead of inferring absence.
+ *
+ * TLS is "1" always: like the MTTS SSL bit (see computeMtts) it is Mudlet's
+ * compiled-in capability, not the state of this link.
  */
 export function buildNewEnvironVars(
     state: NewEnvironState,
     extended: boolean,
 ): MnesVar[] {
-    const mtts = String(computeMtts({ utf8: state.utf8, tls: state.tls, screenReader: state.screenReader }));
+    const mtts = String(computeMtts({ utf8: state.utf8, mnes: state.mnes, screenReader: state.screenReader }));
     const core: MnesVar[] = [
         { name: "CHARSET", value: state.charset },
         { name: "CLIENT_NAME", value: CLIENT_NAME },
@@ -192,8 +149,8 @@ export function buildNewEnvironVars(
         { name: "256_COLORS", value: "1" },
         { name: "UTF-8", value: state.utf8 ? "1" : "0" },
         { name: "TRUECOLOR", value: "1" },
-        { name: "TLS", value: state.tls ? "1" : "0" },
-        { name: "WORD_WRAP", value: String(state.wrapColumns) },
+        { name: "TLS", value: "1" },
+        { name: "WORD_WRAP", value: String(state.wordWrap) },
         { name: "SCREEN_READER", value: state.screenReader ? "1" : "0" },
         { name: "OSC_COLOR_PALETTE", value: "1" },
         // OSC 8 hyperlinks. A flag reads "1" only once Mudlet Web actually honours
@@ -228,44 +185,116 @@ const OSC_HYPERLINK_CAPS: ReadonlyArray<readonly [string, string]> = [
     ["OSC_HYPERLINKS_VISIBILITY", "1"], // timed conceal/reveal + expire on input/prompt/output
 ];
 
-/** MNES names the standard defines that Mudlet Web deliberately does not supply.
- *  They are still *known*, so a server that asks for one is told it is
- *  undefined rather than left with silence — Mudlet's `isMNESVariable` lists
- *  IPADDRESS alongside the five it reports, and answers it with a name and no
- *  VALUE. (A browser tab has no way to learn its own address, and the client is
- *  not the right party to guess: the server already sees the peer address.) */
-export const MNES_UNMAINTAINED: ReadonlyArray<string> = ["IPADDRESS"];
+/** The names MNES defines — Mudlet's `isMNESVariable`. IPADDRESS is among
+ *  them though no client supplies it (a browser tab cannot learn its own
+ *  address, and the server already sees the peer), so a request for it is
+ *  answered "undefined" rather than ignored. */
+export const MNES_VARIABLES: ReadonlyArray<string> = [
+    "CHARSET", "CLIENT_NAME", "CLIENT_VERSION", "MTTS", "TERMINAL_TYPE", "IPADDRESS",
+];
+
+/** Mudlet holds its variables in a `QMap`, so every "send them all" reply lists
+ *  them in key order. Code-unit order, as `QString::operator<` compares. */
+function inKeyOrder(vars: ReadonlyArray<MnesVar>): MnesVar[] {
+    return [...vars].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+/** The request list of an `IAC SB NEW-ENVIRON SEND …` body — everything after
+ *  the SEND byte — or null when the body is not a SEND (Mudlet answers nothing
+ *  else). `subneg` carries the option code (39) at [0]. */
+function sendList(subneg: string): string | null {
+    if (subneg.length < 2 || subneg.charCodeAt(0) !== NEW_ENVIRON_COMMAND_CODE) return null;
+    if (subneg.charCodeAt(1) !== SEND) return null;
+    return subneg.slice(2);
+}
+
+/** Split a request list into `[marker, name]` entries, a marker being one of
+ *  `delimiters`. A name before the first marker gets marker null. Every byte
+ *  that is not a delimiter belongs to the current name, as in Mudlet's request
+ *  loops — except that an ESC-escaped byte is taken literally (RFC 1572), which
+ *  Mudlet does not do but which changes nothing for any name it knows. */
+function splitRequest(list: string, delimiters: ReadonlySet<number>): Array<[number | null, string]> {
+    const entries: Array<[number | null, string]> = [];
+    let marker: number | null = null;
+    let name = "";
+    let started = false;
+    for (let i = 0; i < list.length; i++) {
+        const c = list.charCodeAt(i);
+        if (c === ESC && i + 1 < list.length) {
+            name += list[++i];
+            continue;
+        }
+        if (delimiters.has(c)) {
+            if (started || name) entries.push([marker, name]);
+            marker = c;
+            name = "";
+            started = true;
+            continue;
+        }
+        name += list[i];
+    }
+    if (started || name) entries.push([marker, name]);
+    return entries;
+}
+
+const NEW_ENVIRON_DELIMITERS: ReadonlySet<number> = new Set([VAR, USERVAR]);
+const MNES_DELIMITERS: ReadonlySet<number> = new Set([VAR]);
 
 /**
- * Pick which of the client's `available` variables to report in response to a
- * parsed request, mirroring Mudlet's `sendIsMNESValues` /
- * `sendIsNewEnvironValues`:
+ * Answer a plain NEW-ENVIRON `SEND` the way Mudlet's
+ * `cTelnet::sendIsNewEnvironValues` does — one IS reply, possibly empty, or
+ * null when the body is not a SEND. Every variable in `available` is a USERVAR
+ * (Mudlet defines no VAR of its own while SYSTEMTYPE and USER are opt-in), so:
  *
- *   - A bare SEND (no names) asks for everything, and gets it.
- *   - Named variables come back in request order, each either with its value or
- *     — for a name in `undefinedNames` — as undefined (no VALUE).
- *   - A name that is neither is left out entirely.
- *
- * A request naming only names we do not report therefore selects **nothing**.
- * It used to fall back to sending everything on the reasoning that the server
- * still learns who we are, but that answers a question nobody asked: a server
- * probing for one specific variable gets an unsolicited dump of the whole set,
- * which is not what Mudlet does and not what the request meant. The caller
- * decides what an empty selection is framed as.
+ *  - a bare SEND lists them all, in key order;
+ *  - `USERVAR` with no name lists them all, `VAR` with no name lists none;
+ *  - `USERVAR <name>` gets its value; `VAR <name>` for one of ours, or either
+ *    marker with a name we do not define, is echoed back with no VALUE —
+ *    RFC 1572's "undefined" — rather than dropped.
  */
-export function selectMnesVars(
-    request: MnesRequest,
-    available: ReadonlyArray<MnesVar>,
-    undefinedNames: ReadonlyArray<string> = [],
-): MnesVar[] {
-    if (request.requested.length === 0) return [...available];
+export function newEnvironIsReply(subneg: string, available: ReadonlyArray<MnesVar>): string | null {
+    const list = sendList(subneg);
+    if (list === null) return null;
+    const entries = splitRequest(list, NEW_ENVIRON_DELIMITERS);
+    const all = inKeyOrder(available);
     const byName = new Map(available.map((v) => [v.name, v.value] as const));
-    const undefinedSet = new Set(undefinedNames);
-    const picked: MnesVar[] = [];
-    for (const name of request.requested) {
-        const value = byName.get(name);
-        if (value !== undefined) picked.push({ name, value });
-        else if (undefinedSet.has(name)) picked.push({ name, value: null });
+    const out: MarkedVar[] = [];
+    if (entries.length === 0) {
+        out.push(...all.map((v) => ({ ...v, marker: NEW_ENVIRON_USERVAR })));
+        return frameIs(out);
     }
-    return picked;
+    for (const [marker, name] of entries) {
+        const isUserVar = marker === USERVAR;
+        const tag = isUserVar ? NEW_ENVIRON_USERVAR : NEW_ENVIRON_VAR;
+        if (!name) {
+            if (isUserVar) out.push(...all.map((v) => ({ ...v, marker: tag })));
+            continue;
+        }
+        const value = byName.get(name);
+        out.push({ name, value: isUserVar && value !== undefined ? value : null, marker: tag });
+    }
+    return frameIs(out);
+}
+
+/**
+ * Answer an MNES `SEND` the way Mudlet's `cTelnet::sendIsMNESValues` does, or
+ * null when the body is not a SEND. Only VAR separates names here. Each named
+ * MNES variable gets an IS reply of its own (IPADDRESS as undefined), a name
+ * MNES does not define gets nothing, and a request that ends without a name — a
+ * bare SEND, or a trailing empty VAR — is answered with every variable in one
+ * reply, after any per-name replies.
+ */
+export function mnesIsReplies(subneg: string, available: ReadonlyArray<MnesVar>): string[] | null {
+    const list = sendList(subneg);
+    if (list === null) return null;
+    const entries = splitRequest(list, MNES_DELIMITERS);
+    const byName = new Map(available.map((v) => [v.name, v.value] as const));
+    const replies: string[] = [];
+    for (const [, name] of entries) {
+        if (!name || !MNES_VARIABLES.includes(name)) continue;
+        replies.push(encodeMnesIs([{ name, value: byName.get(name) ?? null }]));
+    }
+    const last = entries[entries.length - 1];
+    if (!last || !last[1]) replies.push(encodeMnesIs(inKeyOrder(available)));
+    return replies;
 }

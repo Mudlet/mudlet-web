@@ -30,7 +30,7 @@ describe('client identity', () => {
 
     it('feeds the MNES core variables from the shared constants', () => {
         const vars = buildNewEnvironVars(
-            { charset: 'UTF-8', utf8: true, tls: false, wrapColumns: 80 },
+            { charset: 'UTF-8', utf8: true, wordWrap: 100 },
             false,
         );
         expect(vars).toContainEqual({ name: 'CLIENT_NAME', value: CLIENT_NAME });

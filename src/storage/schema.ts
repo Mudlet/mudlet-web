@@ -1323,17 +1323,6 @@ export function connectionDisplayAddr(c: MudConnection): string {
     return c.url ?? '';
 }
 
-/** Whether the connection's link to the *game server* is TLS-encrypted — the
- *  signal reported as the NEW-ENVIRON `TLS` variable. In `websocket` mode the
- *  browser connects straight to the game, so a `wss://` URL is end-to-end TLS.
- *  In `mud` (proxy) mode the browser↔proxy hop being `wss://` says nothing about
- *  the proxy↔game hop: that leg is a plaintext telnet socket unless `tls` is set,
- *  which makes the proxy perform a TLS handshake with the game instead. */
-export function connectionSecureTransport(c: MudConnection): boolean {
-    if (c.mode === 'mud') return !!c.tls;
-    return (c.url ?? '').trim().toLowerCase().startsWith('wss://');
-}
-
 /**
  * Whether `name` is already some other profile's, ignoring case.
  *

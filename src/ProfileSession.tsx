@@ -30,7 +30,7 @@ import type { TlsStatus } from './mud/events';
 import { QuickOpenPalette } from './ui/QuickOpenPalette';
 import { MAIN_OUTPUT_ID, COMMAND_INPUT_ID } from './ui/landmarks';
 import { SessionLogger } from './logging/SessionLogger';
-import { useAppStore, selectProfileField, symbolFontSource, ConnectionIdContext, connectionUrl, connectionSecureTransport, PROTOCOL_DEFAULTS, type MudConnection } from './storage';
+import { useAppStore, selectProfileField, symbolFontSource, ConnectionIdContext, connectionUrl, PROTOCOL_DEFAULTS, type MudConnection } from './storage';
 import { DEFAULT_STICKY_LINES } from './hooks/useOutput';
 import { applyOutputFont, registerFontSource, primeLocalFontsCache } from './utils/fontLoader';
 import { setBaseTitle, flashTitle, clearTitleFlash } from './utils/documentTitle';
@@ -242,11 +242,6 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // echo it back in the 101 (e.g. a Cloudflare Worker). Default ['binary']
     // otherwise — the raw telnet stream Mudlet Web decodes.
     const subprotocols = connection.mode === 'mud' ? [] : [...wsSubprotocols];
-    // The NEW-ENVIRON TLS variable describes the game-facing link: a direct
-    // wss:// connection is TLS, and in proxy mode it depends on whether the
-    // profile asked the proxy to encrypt the upstream leg. Read live, so a TLS
-    // upgrade is reported correctly on the connection it takes effect on.
-    const secureTransport = connectionSecureTransport(liveConnection);
     // Mudlet's `advertiseScreenReader` (config bag). Read like the protocol
     // toggles above — the MTTS/NEW-ENVIRON negotiation only runs at connect
     // time, so a mid-session change takes effect on the next reconnect.
@@ -255,7 +250,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // here (connect-time, like the toggles above); the rendering half is the
     // parser gate applied in an effect below.
     const osc8HyperlinksEnabled = osc8Hyperlinks !== false;
-    session.setProtocolOptions({ gmcpEnabled, mttsEnabled, msdpEnabled, msspEnabled, charsetEnabled, mspEnabled, mccpEnabled, mxpEnabled, mnesEnabled, newEnvironEnabled, secureTransport, screenReaderAdvertised, osc8HyperlinksEnabled, nawsEnabled, subprotocols });
+    session.setProtocolOptions({ gmcpEnabled, mttsEnabled, msdpEnabled, msspEnabled, charsetEnabled, mspEnabled, mccpEnabled, mxpEnabled, mnesEnabled, newEnvironEnabled, screenReaderAdvertised, osc8HyperlinksEnabled, nawsEnabled, subprotocols });
     // Mudlet 5.0's `undoServerWrap` / `undoServerWrapWidth` — rejoin the lines
     // the game hard-wrapped itself before triggers see them. Live: the line
     // assembler judges each new server line under the current setting, so this

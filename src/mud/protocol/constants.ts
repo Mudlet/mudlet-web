@@ -184,13 +184,12 @@ export const MTTS_MSLP = 1024;
 export const MTTS_SSL = 2048;
 
 /** Live capabilities that toggle the dynamic MTTS bits. The static bits (ANSI,
- *  256 colours, OSC colour palette, truecolour) are always on. */
+ *  256 colours, OSC colour palette, truecolour, SSL) are always on. */
 export interface MttsCapabilities {
     /** UTF-8 is the active encoding (sets the UTF-8 bit). */
     utf8?: boolean;
-    /** The game-facing transport is TLS-encrypted (sets the SSL bit). */
-    tls?: boolean;
-    /** MNES is negotiated (sets the MNES bit). */
+    /** MNES is on — Mudlet sets the bit when the profile has both MNES and
+     *  NEW-ENVIRON enabled, negotiated or not (sets the MNES bit). */
     mnes?: boolean;
     /** A screen reader is being advertised (sets the SCREEN READER bit). */
     screenReader?: boolean;
@@ -198,15 +197,21 @@ export interface MttsCapabilities {
 
 /**
  * Compose the MTTS bitvector Mudlet Web advertises. Mirrors Mudlet's
- * `getNewEnvironMTTS`: ANSI + 256 COLORS + OSC COLOR PALETTE + TRUECOLOR are
- * always present (Mudlet Web's static terminal capabilities); UTF-8, SSL/TLS, MNES
- * and SCREEN READER are added from live state. With UTF-8 + TLS this yields
- * 2349, matching a default Mudlet connection.
+ * `getNewEnvironMTTS`: ANSI + 256 COLORS + OSC COLOR PALETTE + TRUECOLOR + SSL
+ * are always present; UTF-8, MNES and SCREEN READER are added from live state.
+ * With UTF-8 this yields 2349, matching a default Mudlet connection.
+ *
+ * SSL is a capability ("client supports SSL for data transmission"), not a
+ * report on the current link: Mudlet sets it whenever it was built with SSL,
+ * encrypted connection or not, and a server reads it as "this client could use
+ * the TLS port". Mudlet Web can — over `wss://` in websocket mode, and through
+ * the proxy's TLS leg to the game (`&tls=1`) in proxy mode — so it is always
+ * set. Whether the browser↔proxy hop happens to be `wss://` says nothing about
+ * the game link either way, and is deliberately not consulted.
  */
 export function computeMtts(caps: MttsCapabilities = {}): number {
-    let bits = MTTS_ANSI | MTTS_256_COLORS | MTTS_OSC_COLOR_PALETTE | MTTS_TRUECOLOR;
+    let bits = MTTS_ANSI | MTTS_256_COLORS | MTTS_OSC_COLOR_PALETTE | MTTS_TRUECOLOR | MTTS_SSL;
     if (caps.utf8) bits |= MTTS_UTF8;
-    if (caps.tls) bits |= MTTS_SSL;
     if (caps.mnes) bits |= MTTS_MNES;
     if (caps.screenReader) bits |= MTTS_SCREEN_READER;
     return bits;
@@ -237,5 +242,7 @@ export const OPT_CHARSET = "\x2A";           // 42
 export const CHARSET_REQUEST  = "\x01";      // 1 — "here are the charsets I support"
 export const CHARSET_ACCEPTED = "\x02";      // 2 — "I'll use this one"
 export const CHARSET_REJECTED = "\x03";      // 3 — "none of those work"
+export const CHARSET_TTABLE_IS       = "\x04"; // 4 — "here is a translation table"
+export const CHARSET_TTABLE_REJECTED = "\x05"; // 5 — "I don't do translation tables"
 export const CHARSET_WILL = "\xFF\xFB\x2A";  // IAC WILL CHARSET
 export const CHARSET_DO   = "\xFF\xFD\x2A";  // IAC DO CHARSET

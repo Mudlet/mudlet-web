@@ -135,8 +135,8 @@ describe('telnet option negotiation (TelnetNegotiator via MudClient)', () => {
     sock.deliver(sendReq); // terminal type
     sock.sent.length = 0;
     sock.deliver(sendReq); // MTTS bitvector
-    // ANSI(1) + 256(8) + OSC_COLOR_PALETTE(32) + TRUECOLOR(256) + UTF8(4) + SCREEN_READER(64) = 365.
-    expect(sentText(sock)).toContain(TTYPE_IS + 'MTTS 365');
+    // ANSI(1) + 256(8) + OSC_COLOR_PALETTE(32) + TRUECOLOR(256) + UTF8(4) + SSL(2048) + SCREEN_READER(64) = 2413.
+    expect(sentText(sock)).toContain(TTYPE_IS + 'MTTS 2413');
   });
 
   it('omits the MTTS SCREEN READER bit by default', () => {
@@ -149,8 +149,8 @@ describe('telnet option negotiation (TelnetNegotiator via MudClient)', () => {
     sock.deliver(sendReq);
     sock.sent.length = 0;
     sock.deliver(sendReq);
-    // ANSI(1) + 256(8) + OSC_COLOR_PALETTE(32) + TRUECOLOR(256) + UTF8(4) = 301.
-    expect(sentText(sock)).toContain(TTYPE_IS + 'MTTS 301');
+    // ANSI(1) + 256(8) + OSC_COLOR_PALETTE(32) + TRUECOLOR(256) + UTF8(4) + SSL(2048) = 2349 — desktop's default.
+    expect(sentText(sock)).toContain(TTYPE_IS + 'MTTS 2349');
   });
 
   // Mudlet only answers the server's REQUEST ("Mudlet does not initiate
@@ -210,10 +210,10 @@ describe('telnet option negotiation (TelnetNegotiator via MudClient)', () => {
     const seen: string[] = [];
     const { client, sock, bus } = connected();
     bus.on('naws.negotiated', () => seen.push('naws'));
-    client.setWindowSize(120, 40);
+    client.setWindowSize(90, 40);
     sock.deliver(NAWS_DO);
-    // IAC SB NAWS 0 120 0 40 IAC SE (16-bit big-endian cols then rows)
-    expect(sentText(sock)).toContain('\xFF\xFA\x1F\x00\x78\x00\x28\xFF\xF0');
+    // IAC SB NAWS 0 90 0 40 IAC SE (16-bit big-endian cols then rows)
+    expect(sentText(sock)).toContain('\xFF\xFA\x1F\x00\x5A\x00\x28\xFF\xF0');
     expect(seen).toEqual(['naws']);
   });
 

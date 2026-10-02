@@ -100,6 +100,21 @@ describe('network line wrap', () => {
         try { engine.destroy(); } catch { /* teardown best-effort */ }
     });
 
+    // Desktop reads Host::mWrapAt for the NAWS width cap and NEW-ENVIRON
+    // WORD_WRAP, so the session has to hear about every change to main's wrap,
+    // whether a script or the Settings field made it (#286).
+    it('hands main\'s wrap to the session for NAWS, from setWindowWrap and from the store', async () => {
+        const wraps: number[] = [];
+        const spy = vi.spyOn(MudSession.prototype, 'setWrapAt').mockImplementation((n: number) => { wraps.push(n); });
+        await boot();
+        expect(wraps.at(-1)).toBe(100); // the profile default, when the API comes up
+        api().setWindowWrap('main', 60);
+        expect(wraps.at(-1)).toBe(60);
+        useAppStore.getState().patchConnectionProfile(CONN, { outputWrapAt: 80 });
+        expect(wraps.at(-1)).toBe(80);
+        spy.mockRestore();
+    });
+
     it('splits an over-long server line at the wrap width after the triggers saw it whole', async () => {
         await boot();
         expect(api().setWindowWrap('main', 100)).toBe(true);

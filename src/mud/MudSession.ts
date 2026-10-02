@@ -91,6 +91,13 @@ export class MudSession {
      *  next connect(). Fed by the WindowManager's main-console resize callback
      *  and forwarded to the live client for NAWS (telnet option 31). */
     private windowSize: { cols: number; rows: number } | null = null;
+    /** The main console's wrap column (Mudlet's `Host::mWrapAt`), held like
+     *  `windowSize` so each new client starts with it — it caps the NAWS width
+     *  and is the NEW-ENVIRON WORD_WRAP. Null until the scripting API reports
+     *  the profile's value; the client then assumes desktop's default of 100. */
+    private wrapAt: number | null = null;
+    /** Whether the main console draws its timestamp gutter (off the NAWS width). */
+    private timestampsShown = false;
 
     /** Active Mudlet-format replay recording, or null. Fed from the
      *  `socket.incoming` tap in the constructor — the post-MCCP,
@@ -309,6 +316,8 @@ export class MudSession {
         this.client = client;
         // Seed the fresh client with the last known window size so NAWS reports
         // the right grid as soon as the server negotiates it.
+        if (this.wrapAt !== null) client.setWrapAt(this.wrapAt);
+        if (this.timestampsShown) client.setTimestampsShown(true);
         if (this.windowSize) client.setWindowSize(this.windowSize.cols, this.windowSize.rows);
 
         this.pingTracker = new PingTracker(
@@ -927,7 +936,7 @@ export class MudSession {
      *  toggle switched off mid-session is obeyed by the next offer the server
      *  makes (Mudlet reads its equivalents at negotiation time). Options
      *  already negotiated are not retroactively withdrawn. */
-    setProtocolOptions(opts: { gmcpEnabled?: boolean; mttsEnabled?: boolean; msdpEnabled?: boolean; msspEnabled?: boolean; charsetEnabled?: boolean; mspEnabled?: boolean; mccpEnabled?: boolean; mxpEnabled?: boolean; mnesEnabled?: boolean; newEnvironEnabled?: boolean; secureTransport?: boolean; screenReaderAdvertised?: boolean; osc8HyperlinksEnabled?: boolean; nawsEnabled?: boolean; subprotocols?: string[] }): void {
+    setProtocolOptions(opts: { gmcpEnabled?: boolean; mttsEnabled?: boolean; msdpEnabled?: boolean; msspEnabled?: boolean; charsetEnabled?: boolean; mspEnabled?: boolean; mccpEnabled?: boolean; mxpEnabled?: boolean; mnesEnabled?: boolean; newEnvironEnabled?: boolean; screenReaderAdvertised?: boolean; osc8HyperlinksEnabled?: boolean; nawsEnabled?: boolean; subprotocols?: string[] }): void {
         if (opts.gmcpEnabled !== undefined) this.options.gmcpEnabled = opts.gmcpEnabled;
         if (opts.mttsEnabled !== undefined) this.options.mttsEnabled = opts.mttsEnabled;
         if (opts.msdpEnabled !== undefined) this.options.msdpEnabled = opts.msdpEnabled;
@@ -938,7 +947,6 @@ export class MudSession {
         if (opts.mxpEnabled !== undefined) this.options.mxpEnabled = opts.mxpEnabled;
         if (opts.mnesEnabled !== undefined) this.options.mnesEnabled = opts.mnesEnabled;
         if (opts.newEnvironEnabled !== undefined) this.options.newEnvironEnabled = opts.newEnvironEnabled;
-        if (opts.secureTransport !== undefined) this.options.secureTransport = opts.secureTransport;
         if (opts.screenReaderAdvertised !== undefined) this.options.screenReaderAdvertised = opts.screenReaderAdvertised;
         if (opts.osc8HyperlinksEnabled !== undefined) this.options.osc8HyperlinksEnabled = opts.osc8HyperlinksEnabled;
         if (opts.nawsEnabled !== undefined) this.options.nawsEnabled = opts.nawsEnabled;
@@ -957,7 +965,6 @@ export class MudSession {
             ...(opts.mnesEnabled !== undefined && { mnesEnabled: opts.mnesEnabled }),
             ...(opts.newEnvironEnabled !== undefined && { newEnvironEnabled: opts.newEnvironEnabled }),
             ...(opts.nawsEnabled !== undefined && { nawsEnabled: opts.nawsEnabled }),
-            ...(opts.secureTransport !== undefined && { secureTransport: opts.secureTransport }),
             ...(opts.screenReaderAdvertised !== undefined && { screenReaderAdvertised: opts.screenReaderAdvertised }),
             ...(opts.osc8HyperlinksEnabled !== undefined && { osc8HyperlinksEnabled: opts.osc8HyperlinksEnabled }),
         });
@@ -970,6 +977,22 @@ export class MudSession {
     setWindowSize(cols: number, rows: number): void {
         this.windowSize = { cols, rows };
         this.client?.setWindowSize(cols, rows);
+    }
+
+    /** Record the main console's wrap column (0 for off) and pass it to the
+     *  live client: desktop reports `min(columns, wrap)` as the NAWS width and
+     *  the wrap itself as WORD_WRAP, and re-sends NAWS when it changes. Called
+     *  by the scripting API whenever the profile's `outputWrapAt` is applied. */
+    setWrapAt(wrapAt: number): void {
+        this.wrapAt = wrapAt;
+        this.client?.setWrapAt(wrapAt);
+    }
+
+    /** Record whether the main console shows its timestamp gutter, which
+     *  desktop takes off the NAWS width. Called by the main output view. */
+    setTimestampsShown(shown: boolean): void {
+        this.timestampsShown = shown;
+        this.client?.setTimestampsShown(shown);
     }
 
     private teardownClient(): void {

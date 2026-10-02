@@ -2,7 +2,8 @@ import type { EventBus } from "../../core/EventBus";
 import {
     buildNewEnvironVars,
     computeMtts,
-    encodeMnesIs,
+    mnesIsReplies,
+    newEnvironIsReply,
     encodeMsdp,
     encodeNaws,
     GMCP_IAC,
@@ -10,12 +11,7 @@ import {
     GMCP_SE,
     MSDP_VAL,
     MSDP_VAR,
-    NEW_ENVIRON_USERVAR,
-    NEW_ENVIRON_VAR,
     OPT_TTYPE,
-    parseMnesRequest,
-    selectMnesVars,
-    MNES_UNMAINTAINED,
     OPT_MSDP as OPT_MSDP_BYTE,
     toByteString,
     TTYPE_IS,
@@ -29,7 +25,18 @@ import { debugMspEnabled, debugTelnetEnabled } from "./telnetDebug";
 
 // Telnet command bytes.
 const IAC = 0xFF;
-const SE = 0xF0, EOR = 0xEF, GA = 0xF9, SB = 0xFA, WILL = 0xFB, WONT = 0xFC, DO = 0xFD, DONT = 0xFE;
+const SE = 0xF0, EOR = 0xEF, AYT = 0xF6, GA = 0xF9, SB = 0xFA, WILL = 0xFB, WONT = 0xFC, DO = 0xFD, DONT = 0xFE;
+/** STATUS (RFC 859) subcommands. */
+const STATUS_IS = 0, STATUS_SEND = 1;
+
+/** Columns the timestamp gutter takes off the main console when it is shown —
+ *  the length of Mudlet's `TBuffer::smTimeStampFormat` ("hh:mm:ss.zzz "). Desktop
+ *  takes it off the NAWS width, so a game wraps to what is left beside it. */
+const TIMESTAMP_GUTTER_COLUMNS = 13;
+
+/** Main console wrap column before the profile says otherwise — Mudlet's
+ *  `Host::mWrapAt` default (and `PROFILE_DEFAULTS.outputWrapAt`). */
+const DEFAULT_WRAP_AT = 100;
 
 // Telnet option bytes the negotiator handles natively (or deliberately leaves
 // to a sibling handler). Everything else gets the generic answer, which the
@@ -107,8 +114,6 @@ export interface TelnetNegotiatorFlags {
     mnesEnabled: boolean;
     newEnvironEnabled: boolean;
     nawsEnabled: boolean;
-    /** Whether the game-facing transport is TLS (MTTS SSL bit, NEW-ENVIRON TLS var). */
-    secureTransport: boolean;
     /** Whether to advertise screen-reader use (MTTS SCREEN READER bit,
      *  NEW-ENVIRON SCREEN_READER var) — Mudlet's `advertiseScreenReader` config
      *  key. Default false; some MUDs adjust their output (e.g. suppress ASCII
@@ -152,6 +157,10 @@ export interface TelnetNegotiatorHooks {
     /** Current inbound encoding (IANA label) — drives the MTTS UTF-8 bit and
      *  the MNES/NEW-ENVIRON CHARSET variable. */
     getEncoding(): string;
+    /** Whether MCCP may be taken up — false under `specialForceCompressionOff`.
+     *  The server's offer is otherwise MccpHandler's to accept; this only lets
+     *  the negotiator turn it down while that handler stands aside. */
+    isMccpEnabled(): boolean;
     /** The server's option-negotiation order matched KaVir's protocol snippet —
      *  it wants a version in our TTYPE reply. Fired at most once per connection;
      *  the owner turns `versionInTTYPE` on and redials. */
@@ -183,8 +192,9 @@ export class TelnetNegotiator {
      *  whose IAC SE hasn't arrived) — prepended to the next frame so
      *  negotiation commands split across WebSocket frames aren't missed. */
     private carry = "";
-    /** MTTS cycle position. The server issues SB TTYPE SEND repeatedly; we walk
-     *  through client name (0), terminal type (1), then the MTTS bitvector (2+).
+    /** MTTS cycle position — Mudlet's `mCycleCountMTTS`. The server issues SB
+     *  TTYPE SEND repeatedly; we walk through client name (0), terminal type
+     *  (1), the MTTS bitvector (2) and the bitvector again (3), then start over.
      *  Reset on each connect(). */
     private ttypeStep = 0;
     /** Latches true once MXP has started for this session — via telnet option 91
@@ -211,10 +221,22 @@ export class TelnetNegotiator {
      *  did. See {@link isMspNegotiated}. */
     private mspNegotiated = false;
     /** Latest known main output window size in character columns × rows, fed in
-     *  by the session's resize observer via setWindowSize(). Null until the UI
-     *  has measured the grid at least once. Deliberately NOT cleared by reset()
-     *  so a reconnect keeps reporting the current grid. */
+     *  by the session's resize observer via setWindowSize() — Mudlet's
+     *  `mScreenWidth` × `mScreenHeight`. Null until the UI has measured the grid
+     *  at least once. Deliberately NOT cleared by reset() so a reconnect keeps
+     *  reporting the current grid. */
     private windowSize: { cols: number; rows: number } | null = null;
+    /** The main console's wrap column — Mudlet's `Host::mWrapAt`; 0 means
+     *  wrapping is off. Caps the NAWS width and is reported as WORD_WRAP.
+     *  Survives reset() like the window size. */
+    private wrapAt = DEFAULT_WRAP_AT;
+    /** Whether the main console draws its timestamp gutter, which desktop takes
+     *  off the NAWS width. */
+    private timestampsShown = false;
+    /** The NAWS width × height last sent this connection — Mudlet's `mNaws_x` /
+     *  `mNaws_y` — so a change that leaves the reported size alone sends nothing.
+     *  Null until the first report; cleared by reset() and by each DO NAWS. */
+    private lastNaws: { width: number; height: number } | null = null;
     /** Latches true once the server has asked us to suppress go-ahead (IAC WILL
      *  SGA). Mudlet Web refuses SGA (line mode only), but records the request:
      *  combined with active server echo it's the character-at-a-time signature
@@ -251,6 +273,7 @@ export class TelnetNegotiator {
         this.ttypeStep = 0;
         this.mxpStarted = false;
         this.nawsNegotiated = false;
+        this.lastNaws = null;
         this.mspNegotiated = false;
         this.serverRequestedSGA = false;
         this.negotiationOrder = [];
@@ -317,13 +340,41 @@ export class TelnetNegotiator {
     /** Record the main output window's character grid (columns × rows) for NAWS.
      *  The value is stored regardless of negotiation state (so a client created
      *  on a later connect can be seeded with the current size); it's only sent
-     *  to the server once NAWS has been negotiated, and only when it changed. */
+     *  to the server once NAWS has been negotiated, and only when the size it
+     *  reports changed. */
     setWindowSize(cols: number, rows: number): void {
-        const c = Math.max(0, Math.trunc(cols));
-        const r = Math.max(0, Math.trunc(rows));
-        if (this.windowSize && this.windowSize.cols === c && this.windowSize.rows === r) return;
-        this.windowSize = { cols: c, rows: r };
-        if (this.nawsNegotiated) this.sendNawsSize();
+        this.windowSize = { cols: Math.max(0, Math.trunc(cols)), rows: Math.max(0, Math.trunc(rows)) };
+        this.sendCurrentNaws();
+    }
+
+    /** Record the main console's wrap column (Mudlet's `Host::mWrapAt`; 0 for
+     *  off). It caps the NAWS width, so a change re-reports the size the way
+     *  desktop's `setWindowWrap("main", n)` does. */
+    setWrapAt(wrapAt: number): void {
+        this.wrapAt = Number.isFinite(wrapAt) ? Math.max(0, Math.trunc(wrapAt)) : DEFAULT_WRAP_AT;
+        this.sendCurrentNaws();
+    }
+
+    /** Record whether the main console draws its timestamp gutter, which
+     *  desktop takes off the NAWS width. */
+    setTimestampsShown(shown: boolean): void {
+        this.timestampsShown = shown;
+        this.sendCurrentNaws();
+    }
+
+    /** Note option commands a sibling handler (EchoHandler, MccpHandler) put on
+     *  the wire itself, so the option bitsets — and with them the STATUS reply
+     *  and the repeat-offer checks — know about them, as Mudlet's single
+     *  `sendTelnetOption` does. `data` is what was sent. */
+    noteOptionsSent(data: string): void {
+        for (let i = 0; i + 2 < data.length; i++) {
+            if (data.charCodeAt(i) !== IAC) continue;
+            const cmd = data.charCodeAt(i + 1);
+            if (cmd === IAC) { i++; continue; }
+            if (cmd < WILL || cmd > DONT) continue;
+            this.trackOption(cmd, data.charCodeAt(i + 2));
+            i += 2;
+        }
     }
 
     /** Walk one incoming frame (post-MCCP Latin-1 byte-string) for telnet IAC
@@ -357,6 +408,12 @@ export class TelnetNegotiator {
                     }
                 }
                 if (end === -1) { this.carry = buf.slice(i); break; }
+                // STATUS SEND (RFC 859): exactly `IAC SB STATUS SEND IAC SE`,
+                // the only form Mudlet answers. Its subnegotiation is not one
+                // the option parser routes, so it is answered here.
+                if (end === i + 4 && buf.charCodeAt(i + 2) === OPT_STATUS && buf.charCodeAt(i + 3) === STATUS_SEND) {
+                    this.sendStatusIs();
+                }
                 // Mudlet returns from its SB branch before the sysTelnetEvent
                 // tail for every option it consumes itself; only STATUS, TTYPE
                 // and options it doesn't handle reach Lua.
@@ -373,6 +430,9 @@ export class TelnetNegotiator {
                 i += 3;
                 continue;
             }
+            // Are You There (RFC 854): Mudlet answers with a bare "YES", raw
+            // bytes outside any encoding, and still raises the event below.
+            if (cmd === AYT) this.hooks.sendRaw("YES");
             // 2-byte command (NOP, AYT, …) — nothing to negotiate. A stray SE
             // with no SB before it is dropped by Mudlet without an event.
             if (cmd !== SE) this.emitTelnetEvent(buf.slice(i, i + 2));
@@ -410,13 +470,33 @@ export class TelnetNegotiator {
     /** Send `IAC <cmd> <opt>` and keep the four option bitsets in step, as
      *  Mudlet's `cTelnet::sendTelnetOption` does. */
     private sendOption(cmd: number, opt: number): void {
+        this.trackOption(cmd, opt);
+        this.hooks.sendRaw(String.fromCharCode(IAC, cmd, opt));
+    }
+
+    private trackOption(cmd: number, opt: number): void {
         switch (cmd) {
             case WILL: this.announced.add(opt); this.myOn.add(opt); break;
             case WONT: this.announced.add(opt); this.myOn.delete(opt); break;
             case DO: this.hisOn.add(opt); break;
             case DONT: this.hisOn.delete(opt); break;
         }
-        this.hooks.sendRaw(String.fromCharCode(IAC, cmd, opt));
+    }
+
+    /** Mudlet's reply to STATUS SEND: `IAC SB STATUS IS`, then `WILL <opt>`
+     *  for every option we have on and `DO <opt>` for every one we asked the
+     *  server to have on, in option order, then `IAC SE`. Sent whether or not
+     *  STATUS itself was negotiated, as desktop does. RFC 859 exempts the list
+     *  from IAC escaping except for an option byte equal to SE (240), which is
+     *  doubled. */
+    private sendStatusIs(): void {
+        let out = String.fromCharCode(IAC, SB, OPT_STATUS, STATUS_IS);
+        for (let opt = 0; opt < 256; opt++) {
+            const dup = opt === SE ? String.fromCharCode(opt) : "";
+            if (this.myOn.has(opt)) out += String.fromCharCode(WILL, opt) + dup;
+            if (this.hisOn.has(opt)) out += String.fromCharCode(DO, opt) + dup;
+        }
+        this.hooks.sendRaw(out + String.fromCharCode(IAC, SE));
     }
 
     /** The answer every option gets once nothing specific to it applies —
@@ -503,9 +583,20 @@ export class TelnetNegotiator {
             return;
         }
         switch (opt) {
-            case OPT_ECHO:
             case OPT_MCCP1:
             case OPT_MCCP2:
+                // With compression forced off (`specialForceCompressionOff`)
+                // MccpHandler stands aside, and the offer is turned down here —
+                // either version, as Mudlet's mFORCE_NO_COMPRESSION branch does,
+                // and only while it is not already on, as for any WILL.
+                if (cmd === WILL && !this.hooks.isMccpEnabled()) {
+                    if (!this.hisOn.has(opt)) this.sendOption(DONT, opt);
+                    return;
+                }
+                // Otherwise as for ECHO below.
+                if (cmd === DO) this.respondToOtherOption(cmd, opt);
+                return;
+            case OPT_ECHO:
                 // The server's WILL is negotiated by EchoHandler / MccpHandler,
                 // which see the same frame independently. A DO asks us to echo
                 // or compress, which we don't: refused like any other option.
@@ -588,7 +679,10 @@ export class TelnetNegotiator {
                 this.nawsNegotiated = true;
                 this.enabledProtocols.add(OPT_NAWS);
                 this.eventBus.emit('protocol.enabled', 'NAWS');
-                this.sendNawsSize();
+                // The game asked for the size now: forget what was last sent
+                // so it is answered even if unchanged (Mudlet zeroes mNaws_x/y).
+                this.lastNaws = null;
+                this.sendCurrentNaws();
                 if (firstAccept) this.eventBus.emit('naws.negotiated');
                 return;
             }
@@ -787,28 +881,46 @@ export class TelnetNegotiator {
 
     /** Reply to a TERMINAL-TYPE / MTTS subnegotiation. `subneg` is the SB body
      *  with the option byte (24) at [0]; [1] is the request kind (1 = SEND). We
-     *  answer `IAC SB TTYPE IS <value> IAC SE`, cycling client name → terminal
-     *  type → MTTS capability bitvector on successive SENDs, then repeating the
-     *  last value to signal the list is exhausted (RFC 1091 + the MTTS standard).
-     *  With MTTS off the cycle is just the client name, repeated — desktop
-     *  Mudlet still identifies itself, it only skips the MTTS steps. */
+     *  answer `IAC SB TTYPE IS <value> IAC SE`, walking Mudlet's
+     *  `mCycleCountMTTS` cycle on successive SENDs: client name, terminal type,
+     *  the MTTS bitvector, the bitvector again — the repeat is what tells the
+     *  server the list is done (RFC 1091 + the MTTS standard) — and then back to
+     *  the client name, so a server that re-detects the client later (after a
+     *  copyover, say) is told who it is again. With MTTS off the cycle is just
+     *  the client name, repeated — desktop Mudlet still identifies itself, it
+     *  only skips the MTTS steps. */
     handleTtypeSubneg(subneg: string): void {
         if (subneg.charCodeAt(1) !== TTYPE_SEND.charCodeAt(0)) return; // only handle SEND
-        // MTTS bitvector tracks live state (UTF-8 encoding, TLS transport); the
-        // static bits (ANSI, 256 colours, OSC colour palette, truecolour) are
-        // always on. See computeMtts.
-        const mtts = computeMtts({
+        let value: string;
+        switch (this.ttypeStep) {
+            case 0:
+                // `mVersionInTTYPE`: append our version to the client-name step
+                // only — the terminal-type and MTTS steps are unchanged.
+                value = this.flags.versionInTTYPE ? `${CLIENT_NAME} ${CLIENT_VERSION}` : CLIENT_NAME;
+                if (this.flags.mttsEnabled) this.ttypeStep = 1;
+                break;
+            case 1:
+                value = TERMINAL_TYPE;
+                this.ttypeStep = 2;
+                break;
+            default:
+                value = `MTTS ${this.currentMtts()}`;
+                this.ttypeStep = this.ttypeStep === 2 ? 3 : 0;
+                break;
+        }
+        this.hooks.sendRaw(GMCP_IAC + GMCP_SB + OPT_TTYPE + TTYPE_IS + value + GMCP_IAC + GMCP_SE);
+    }
+
+    /** The MTTS bitvector from live state — Mudlet's `getNewEnvironMTTS`: UTF-8
+     *  when that is the encoding, SCREEN READER when advertised, MNES when the
+     *  profile has MNES and NEW-ENVIRON both on; the rest are static (see
+     *  computeMtts, including why SSL always is). */
+    private currentMtts(): number {
+        return computeMtts({
             utf8: this.hooks.getEncoding() === 'utf-8',
-            tls: this.flags.secureTransport,
+            mnes: this.flags.mnesEnabled && this.flags.newEnvironEnabled,
             screenReader: this.flags.screenReaderAdvertised,
         });
-        // `mVersionInTTYPE`: append our version to the client-name step only —
-        // the terminal-type and MTTS steps are unchanged (ctelnet.cpp case 0).
-        const clientName = this.flags.versionInTTYPE ? `${CLIENT_NAME} ${CLIENT_VERSION}` : CLIENT_NAME;
-        const cycle = this.flags.mttsEnabled ? [clientName, TERMINAL_TYPE, `MTTS ${mtts}`] : [clientName];
-        const value = cycle[Math.min(this.ttypeStep, cycle.length - 1)];
-        if (this.ttypeStep < cycle.length - 1) this.ttypeStep++;
-        this.hooks.sendRaw(GMCP_IAC + GMCP_SB + OPT_TTYPE + TTYPE_IS + value + GMCP_IAC + GMCP_SE);
     }
 
     /** Handle an `IAC SB MXP IAC SE` subnegotiation. Per spec it carries no
@@ -824,54 +936,42 @@ export class TelnetNegotiator {
         this.startMxp(true, true);
     }
 
-    /** Answer an `IAC SB NEW-ENVIRON SEND … IAC SE` request, framed as
-     *  `IAC SB NEW-ENVIRON IS <marker> … VALUE … IAC SE`. Telnet option 39 is
-     *  shared by two modes: MNES reports the five core variables framed as VAR;
-     *  plain NEW-ENVIRON reports the core set plus an extended capability set,
-     *  framed as USERVAR. MNES takes precedence when both toggles are on
-     *  (matching Mudlet). The server may request specific variables or send a
-     *  bare SEND for all; selectMnesVars handles both. No-op when the option is
-     *  off for this profile or on a malformed/non-SEND body. */
+    /** Answer an `IAC SB NEW-ENVIRON SEND … IAC SE` request. Telnet option 39
+     *  is shared by two modes, each answered as Mudlet answers it: MNES
+     *  (`sendIsMNESValues`) reports the five core variables framed as VAR, one
+     *  reply per named variable; plain NEW-ENVIRON (`sendIsNewEnvironValues`)
+     *  reports the core set plus an extended capability set, framed as USERVAR,
+     *  in a single reply that lists unknown names as undefined and may come
+     *  back empty. MNES takes precedence when both toggles are on. No-op when
+     *  the option is off for this profile or on a non-SEND body. */
     handleNewEnvironSubneg(subneg: string): void {
         const f = this.flags;
+        if (!f.newEnvironEnabled) return;
         // MNES precedence: when on, it restricts the reported set to the core
         // five regardless of whether plain NEW-ENVIRON is also enabled.
         const extended = !f.mnesEnabled;
-        if (!f.newEnvironEnabled) return;
-        const request = parseMnesRequest(subneg);
-        if (!request.isSend) return;
-        // MNES knows IPADDRESS but does not supply it, so a server asking for it
-        // is answered "undefined" rather than ignored. Plain NEW-ENVIRON has no
-        // such name: everything it defines, it reports.
-        const vars = selectMnesVars(
-            request,
-            this.collectNewEnvironVars(extended),
-            extended ? [] : MNES_UNMAINTAINED,
-        );
-        // A request naming only variables we do not report selects nothing, and
-        // the two modes say so differently (cTelnet::sendIsMNESValues frames each
-        // variable as its own subnegotiation, so no variables means no traffic at
-        // all; sendIsNewEnvironValues frames one reply either way and lets it come
-        // back empty). Following each keeps a server's own parser on the path it
-        // already handles for Mudlet.
-        if (vars.length === 0 && !extended) return;
-        const marker = extended ? NEW_ENVIRON_USERVAR : NEW_ENVIRON_VAR;
-        this.hooks.sendRaw(encodeMnesIs(vars, marker));
+        const vars = this.collectNewEnvironVars(extended);
+        if (extended) {
+            const reply = newEnvironIsReply(subneg, vars);
+            if (reply !== null) this.hooks.sendRaw(reply);
+            return;
+        }
+        for (const reply of mnesIsReplies(subneg, vars) ?? []) this.hooks.sendRaw(reply);
     }
 
     /** Build the option-39 variable set from live client state. CHARSET tracks
-     *  the negotiated encoding; the extended NEW-ENVIRON capabilities derive from
-     *  the game-facing transport (TLS — false in proxy mode) and the measured
-     *  output grid (WORD_WRAP). The static identity (CLIENT_NAME/VERSION, MTTS,
-     *  TERMINAL_TYPE) and the capability defaults live in buildNewEnvironVars. */
+     *  the negotiated encoding and WORD_WRAP the main console's wrap column
+     *  (Mudlet's `Host::mWrapAt`, not the window's width). The static identity
+     *  (CLIENT_NAME/VERSION, TERMINAL_TYPE) and the capability defaults live in
+     *  buildNewEnvironVars. */
     private collectNewEnvironVars(extended: boolean): MnesVar[] {
         const encoding = this.hooks.getEncoding();
         const charset = encoding === 'utf-8' ? 'UTF-8' : encoding.toUpperCase();
         return buildNewEnvironVars({
             charset,
             utf8: encoding === 'utf-8',
-            tls: this.flags.secureTransport,
-            wrapColumns: this.windowSize?.cols ?? 0,
+            mnes: this.flags.mnesEnabled && this.flags.newEnvironEnabled,
+            wordWrap: this.wrapAt,
             screenReader: this.flags.screenReaderAdvertised,
             osc8Hyperlinks: this.flags.osc8HyperlinksEnabled,
         }, extended);
@@ -896,17 +996,31 @@ export class TelnetNegotiator {
         this.eventBus.emit('mxp.negotiated', viaTelnet, viaSubnegotiation);
     }
 
-    /** Send the current window size as an `IAC SB NAWS … IAC SE` subnegotiation.
-     *  Falls back to a conventional 80×24 terminal default when the UI hasn't
-     *  reported a real size yet — better than the NAWS 0×0 "no preference"
-     *  sentinel, which some servers treat as "disable wrapping". */
-    private sendNawsSize(): void {
+    /** Mudlet's `cTelnet::sendCurrentNAWS`: report the size the game should
+     *  format for as an `IAC SB NAWS … IAC SE` subnegotiation — once NAWS is
+     *  on, and only when it differs from what was last sent. The width is the
+     *  smaller of the window's columns and the wrap column, less the timestamp
+     *  gutter when one is drawn; a game told the full window width would wrap
+     *  wider than the client does, and every long line would break twice.
+     *  Wrapping switched off (wrap 0, which only the Settings field can set and
+     *  desktop has no equivalent of) leaves the window width alone.
+     *
+     *  Falls back to a conventional 80×24 terminal when the UI hasn't reported a
+     *  real size yet — better than the NAWS 0×0 "no preference" sentinel, which
+     *  some servers treat as "disable wrapping". */
+    private sendCurrentNaws(): void {
+        if (!this.nawsNegotiated) return;
         const { cols, rows } = this.windowSize ?? { cols: 80, rows: 24 };
+        const visible = this.wrapAt > 0 ? Math.min(cols, this.wrapAt) : cols;
+        const width = Math.max(0, visible - (this.timestampsShown ? TIMESTAMP_GUTTER_COLUMNS : 0));
+        if (rows <= 0) return; // Mudlet sends nothing while the console has no height
+        if (this.lastNaws && this.lastNaws.width === width && this.lastNaws.height === rows) return;
+        this.lastNaws = { width, height: rows };
         if (debugTelnetEnabled()) {
             const fallback = this.windowSize ? '' : ' (fallback — no size measured yet)';
             // eslint-disable-next-line no-console
-            console.debug(`[mudlet.telnet OUT] SB NAWS ${cols}x${rows}${fallback}`);
+            console.debug(`[mudlet.telnet OUT] SB NAWS ${width}x${rows}${fallback}`);
         }
-        this.hooks.sendRaw(encodeNaws(cols, rows));
+        this.hooks.sendRaw(encodeNaws(width, rows));
     }
 }
