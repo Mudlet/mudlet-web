@@ -264,11 +264,15 @@ export class Console {
             ? this.cursorIdx : this.history.length - 1;
         this.store(buffer);
         if (moveCursor || pinned < 0) {
+            // Trimmed first, so the cursor lands on the new line's index as it
+            // is AFTER the head of the buffer went: set before, it pointed past
+            // the end, where a trigger pass reads no line at all.
+            this.evict();
             this.cursorIdx = this.history.length - 1;
             this.cursorCol = 0;
-        } else {
-            this.cursorIdx = pinned;
+            return;
         }
+        this.cursorIdx = pinned;
         this.evict();
     }
 
@@ -498,9 +502,35 @@ export class Console {
     /** The buffer the cursor is on: the partial when it is following the end,
      *  otherwise the history line it was parked on. */
     private currentBuffer(): AnsiAwareBuffer | null {
+        // Mid trigger pass the matched line is the LAST line — Mudlet runs the
+        // triggers before its terminator opens the next one — so a cursor at or
+        // past the end of history is on no line at all: where deleteLine() on
+        // the matched line leaves it. Reading the line above instead made every
+        // later trigger on that line select, replace and recolour the PREVIOUS
+        // line (mudlet-web#273).
+        if (this.openLineSuspended && this.cursorIdx >= this.history.length) return null;
         if (this.onPartialLine) return this.partial;
         return this.history[this.cursor] ?? null;
     }
+
+    /** The last complete line, whatever the cursor is on — where Mudlet's
+     *  trigger-mode echo writes (`TConsoleModel::echo` inserts at the end of
+     *  line `size() - 1`), which after deleteLine() is the line above. */
+    lastLine(): AnsiAwareBuffer | null {
+        return this.history[this.history.length - 1] ?? null;
+    }
+
+    /**
+     * Whether the buffer is between a trigger pass's beginLine and endLine,
+     * when it has no open line past the matched one. Set by ScriptingAPI on
+     * the main console only. See {@link currentBuffer}.
+     */
+    private openLineSuspended = false;
+    suspendOpenLine(on: boolean): void { this.openLineSuspended = on; }
+
+    /** The text of line `index` in Mudlet's numbering (the open line last), or
+     *  null when there is no such line. */
+    lineText(index: number): string | null { return this.lineAt(index); }
 
     /** Per-line prompt flag on the current cursor line. Mirrors Mudlet's TBuffer
      *  behaviour: `isPrompt()` follows the cursor, so moveCursor + isPrompt can

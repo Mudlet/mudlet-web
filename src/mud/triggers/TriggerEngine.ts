@@ -1,6 +1,6 @@
 import PCRE, { pcreSubject } from './pcre/Pcre2';
 import type { TriggerNode, TriggerPattern } from '../../storage/schema';
-import { buildEffectivelyEnabledIds } from '../../storage/schema';
+import { buildEffectivelyEnabledIds, isColorizing } from '../../storage/schema';
 import { COLOR_DEFAULT, COLOR_IGNORED, parseColorPattern } from './legacyColorPatterns';
 
 export type { TriggerNode };
@@ -285,6 +285,15 @@ type CompiledAndEntry = {
     item: TriggerNode;
     conditions: Array<{ test: Matcher | null; spacer: number }>;
     depth: number;
+    /** What each condition made of the line being processed — `undefined`
+     *  until tested — so a pattern is run once per line however many states
+     *  wait on it, as desktop's single pattern loop runs it. Allocated once,
+     *  reused for every line. */
+    lineResults?: (MatchResult | null | undefined)[];
+    /** Set while {@link TriggerEngine.processAndTrigger} is using
+     *  `lineResults`; a re-entrant pass (a Lua condition feeding a line) tests
+     *  afresh instead of trampling it. */
+    lineResultsBusy?: boolean;
 };
 
 type CompiledEntry = CompiledOrEntry | CompiledAndEntry;
@@ -1426,7 +1435,7 @@ export class TriggerEngine {
                 // of the bookkeeping below.
                 return;
             } else if (entry.kind === 'and') {
-                const completed = this.processAndTrigger(entry, effectiveLine, isPrompt, currentLine);
+                const completed = this.processAndTrigger(entry, effectiveLine, isPrompt, currentLine, effOffset);
                 for (const r of completed) {
                     if (isChainHead) {
                         this.openChain(item, currentLine, {
@@ -1770,6 +1779,22 @@ export class TriggerEngine {
         runawayReportRef.fn = fn;
     }
 
+    /** Paints a trigger's built-in highlight. See {@link setHighlighter}. */
+    private highlighter: ((match: TriggerMatch) => void) | null = null;
+
+    /**
+     * How a multiline (AND) trigger's highlight is painted. Desktop paints it
+     * per CONDITION, on the line each pattern matches and at the moment it
+     * matches (the `mIsColorizerTrigger` block every match_* runs before
+     * `updateMultistates`), whether or not the state ever completes — the
+     * completed fire carries no single match to paint, which is why Mudlet Web
+     * painted nothing. ScriptingEngine wires this to the same painter the
+     * single-line path uses; the match handed over is the condition's own.
+     */
+    setHighlighter(fn: ((match: TriggerMatch) => void) | null): void {
+        this.highlighter = fn;
+    }
+
     /** How the engine switches off a permanent trigger it stopped. */
     setPermDisabler(fn: ((nodeId: string) => void) | null): void {
         permDisableRef.fn = fn;
@@ -1876,6 +1901,73 @@ export class TriggerEngine {
         effectiveLine: string,
         isPrompt: boolean,
         currentLine: number,
+        effOffset: number,
+    ): TriggerMatch[] {
+        const cache = entry.lineResultsBusy ? null : (entry.lineResults ??= new Array(entry.conditions.length));
+        if (!cache) return this.advanceAndTrigger(entry, effectiveLine, isPrompt, currentLine, effOffset);
+        cache.fill(undefined);
+        entry.lineResultsBusy = true;
+        try {
+            return this.advanceAndTrigger(entry, effectiveLine, isPrompt, currentLine, effOffset);
+        } finally {
+            entry.lineResultsBusy = false;
+        }
+    }
+
+    /** What condition `i` of an AND trigger makes of the line being processed:
+     *  tested once per line while {@link processAndTrigger} holds the cache. */
+    private andTest(entry: CompiledAndEntry, i: number, line: string, isPrompt: boolean): MatchResult | null {
+        const test = entry.conditions[i].test!;
+        const cache = entry.lineResultsBusy ? entry.lineResults : undefined;
+        if (!cache) return test(line, isPrompt);
+        let r = cache[i];
+        if (r === undefined) {
+            r = test(line, isPrompt);
+            cache[i] = r;
+        }
+        return r;
+    }
+
+    /**
+     * Desktop's per-line pattern loop for a multiline trigger, run only to
+     * decide what its highlight paints (TTrigger::match, multiline branch):
+     * patterns are tried in order, and the walk stops at the first one that
+     * fails once it is past the furthest condition any state is waiting on.
+     * Every pattern that matches on the way is painted then and there — on its
+     * own line, before any script, whether or not a state needs it or ever
+     * completes. A line spacer counts as a match (match_line_spacer returns
+     * true). `highest` is each state's TMatchState::nextCondition, which for a
+     * state still counting down a spacer is the spacer itself.
+     */
+    private paintAndConditions(
+        entry: CompiledAndEntry, states: readonly AndState[],
+        line: string, isPrompt: boolean, currentLine: number, effOffset: number,
+    ): void {
+        const { item, conditions } = entry;
+        let highest = 0;
+        for (const state of states) {
+            const prev = conditions[state.nextIdx - 1];
+            const next = prev && prev.spacer > 0 && currentLine <= state.waitUntilLine
+                ? state.nextIdx - 1 : state.nextIdx;
+            if (next > highest) highest = next;
+        }
+        for (let p = 0; p < conditions.length; p++) {
+            let matched = true;
+            if (conditions[p].test) {
+                const r = this.andTest(entry, p, line, isPrompt);
+                matched = r !== null;
+                if (r) this.highlighter?.(matchResultToTriggerMatch(item, this.shiftResultSpans(r, effOffset)));
+            }
+            if (!matched && p >= highest) break;
+        }
+    }
+
+    private advanceAndTrigger(
+        entry: CompiledAndEntry,
+        effectiveLine: string,
+        isPrompt: boolean,
+        currentLine: number,
+        effOffset: number,
     ): TriggerMatch[] {
         const { item, conditions } = entry;
         const delta = item.delta ?? 0;
@@ -1890,11 +1982,17 @@ export class TriggerEngine {
         const states = (this.andStates.get(item.id) ?? [])
             .filter(state => currentLine - state.startLine <= delta);
 
+        // Painted before any state moves: desktop's highlight belongs to the
+        // pattern loop, which reads the states as the line found them.
+        if (this.highlighter && item.highlight && isColorizing(item)) {
+            this.paintAndConditions(entry, states, effectiveLine, isPrompt, currentLine, effOffset);
+        }
+
         // The first condition matching always starts a state, however many are
         // already under way — that is what lets two of them complete together.
         const first = conditions[0];
         if (first && first.spacer === 0 && first.test) {
-            const opened = first.test(effectiveLine, isPrompt);
+            const opened = this.andTest(entry, 0, effectiveLine, isPrompt);
             if (opened) {
                 states.push({
                     nextIdx: 1,
@@ -1909,7 +2007,7 @@ export class TriggerEngine {
         const stillWaiting: AndState[] = [];
         const fired: TriggerMatch[] = [];
         for (const state of states) {
-            this.advanceAndState(state, conditions, effectiveLine, isPrompt, currentLine);
+            this.advanceAndState(state, entry, effectiveLine, isPrompt, currentLine);
             if (state.nextIdx >= conditions.length) fired.push(this.andMatch(item, state));
             else stillWaiting.push(state);
         }
@@ -1921,11 +2019,12 @@ export class TriggerEngine {
      *  line takes it. Several can be satisfied by the same line. */
     private advanceAndState(
         state: AndState,
-        conditions: CompiledAndEntry['conditions'],
+        entry: CompiledAndEntry,
         effectiveLine: string,
         isPrompt: boolean,
         currentLine: number,
     ): void {
+        const { conditions } = entry;
         while (state.nextIdx < conditions.length) {
             if (currentLine < state.waitUntilLine) break;
             const cond = conditions[state.nextIdx];
@@ -1945,7 +2044,7 @@ export class TriggerEngine {
                 state.nextIdx++;
                 continue;
             }
-            const result = cond.test(effectiveLine, isPrompt);
+            const result = this.andTest(entry, state.nextIdx, effectiveLine, isPrompt);
             if (!result) break;
             state.rows.push(andRow(result));
             state.namedGroups.push(result.namedGroups ?? {});

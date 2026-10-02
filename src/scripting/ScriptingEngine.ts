@@ -570,6 +570,11 @@ export class ScriptingEngine implements EngineHost {
                 source ? { kind: 'trigger', id: source.id, name: source.name } : undefined,
             );
         });
+        // A multiline trigger's highlight is painted per condition, from inside
+        // the engine's walk, as each pattern matches its line.
+        triggerEngine.setHighlighter((m) => this.paintHighlight(
+            m.trigger, m.captureless ? [] : [m.matchedText, ...m.captures],
+            m.matchStart, m.captureSpans, m.groupCount));
         this.bridgeEvents(session);
         // Let WindowManager raise system events (e.g. sysUserWindowResizeEvent)
         // through the same path as everything else.
@@ -4862,25 +4867,10 @@ export class ScriptingEngine implements EngineHost {
         // match-all pattern does that for every occurrence, not just the first.
         // Mudlet Web painted `matches[1]` and stopped, which got the no-groups
         // single-match case right and the other two wrong.
-        if (isColorizing(trigger) && trigger.highlight && matchedText) {
-            const { fg, bg } = trigger.highlight;
-            const fgColor = fg ? hexToRgb(fg) : null;
-            const bgColor = bg ? hexToRgb(bg) : null;
-            if (fgColor || bgColor) {
-                const format = {
-                    ...(fgColor ? { foreground: fgColor } : {}),
-                    ...(bgColor ? { background: bgColor } : {}),
-                };
-                for (const { text, span } of highlightTargets(matches, matchStart, captureSpans, groupCount)) {
-                    const ok = span
-                        ? this.api.selectSection(span.start, span.length)
-                        : this.api.selectString(text, 1) >= 0;
-                    if (!ok) continue;
-                    this.api.applyFormatToSelection(format);
-                    this.api.deselect();
-                }
-            }
-        }
+        // A multiline trigger's fire has no match of its own (matchedText is
+        // empty): its highlight was painted per condition, as each pattern
+        // matched — see TriggerEngine.setHighlighter.
+        if (matchedText) this.paintHighlight(trigger, matches, matchStart, captureSpans, groupCount);
 
         // User code
         if (trigger.code && trigger.language === 'lua') {
@@ -4895,6 +4885,35 @@ export class ScriptingEngine implements EngineHost {
             } catch (err) {
                 this.reportEntityError('trigger', trigger.id, trigger.name, err);
             }
+        }
+    }
+
+    /** Paint a trigger's built-in highlight over what one match captured, on
+     *  the line being processed. Shared by the single-line fire and by each
+     *  condition of a multiline trigger as it matches. */
+    private paintHighlight(
+        trigger: TriggerNode,
+        matches: readonly (string | undefined)[],
+        matchStart: number | undefined,
+        captureSpans: readonly { start: number; length: number }[] | undefined,
+        groupCount: number | undefined,
+    ): void {
+        if (!isColorizing(trigger) || !trigger.highlight) return;
+        const { fg, bg } = trigger.highlight;
+        const fgColor = fg ? hexToRgb(fg) : null;
+        const bgColor = bg ? hexToRgb(bg) : null;
+        if (!fgColor && !bgColor) return;
+        const format = {
+            ...(fgColor ? { foreground: fgColor } : {}),
+            ...(bgColor ? { background: bgColor } : {}),
+        };
+        for (const { text, span } of highlightTargets(matches, matchStart, captureSpans, groupCount)) {
+            const ok = span
+                ? this.api.selectSection(span.start, span.length)
+                : this.api.selectString(text, 1) >= 0;
+            if (!ok) continue;
+            this.api.applyFormatToSelection(format);
+            this.api.deselect();
         }
     }
 

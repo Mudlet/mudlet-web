@@ -34,7 +34,7 @@ import { openOsc8Menu } from '../ui/output/osc8Menu';
 import { namedColorToState, dechoToAnsiFast, cechoToAnsiFast, hechoToAnsiFast } from '../mud/text/colorParsers';
 import { colorCodes } from '../mud/text/colors';
 import { effectiveAmbiguousWidthWide, setAmbiguousWidthWide } from '../mud/text/wcwidth';
-import { Console, MIN_CONSOLE_BUFFER_SIZE, MAX_CONSOLE_BUFFER_SIZE, WINDOW_WRAP_DEFAULT } from '../mud/text/Console';
+import { BAD_LINE_ERROR, Console, MIN_CONSOLE_BUFFER_SIZE, MAX_CONSOLE_BUFFER_SIZE, WINDOW_WRAP_DEFAULT } from '../mud/text/Console';
 import { flashTitle } from '../utils/documentTitle';
 import { readStoredLogin } from '../utils/storedCredentials';
 import { MspParser } from '../mud/protocol';
@@ -2879,7 +2879,10 @@ export class ScriptingAPI {
      */
     private echoMain(text: string, state?: FormatStateSnapshot): void {
         if (this.echoOnMatchedLine) {
-            const buf = this.mainConsole.getBuffer();
+            // The last line, not strictly the cursor's: TConsoleModel::echo
+            // writes onto line size() - 1, which is the line above once a
+            // trigger has deleted the one it matched.
+            const buf = this.mainConsole.getBuffer() ?? this.mainConsole.lastLine();
             if (buf) {
                 const nl = text.indexOf('\n');
                 const head = nl < 0 ? text : text.slice(0, nl);
@@ -3369,7 +3372,8 @@ export class ScriptingAPI {
         const sel = this.selection;
         const buf = this.resolveBuffer(sel.windowName);
         if (!buf) return false;
-        buf.setHyperlink([sel.start, sel.start + sel.length], this.buildPopupHyperlink(cmds, hints));
+        const span = this.selectionSpan(sel, buf);
+        if (span) buf.setHyperlink(span, this.buildPopupHyperlink(cmds, hints));
         if (!this.inTriggerProcessing) buf.rerender();
         return true;
     }
@@ -3861,7 +3865,8 @@ export class ScriptingAPI {
             onClick: () => { this.host.runLinkCode(cmd); },
             title: tooltip || undefined,
         };
-        buf.setHyperlink([sel.start, sel.start + sel.length], hyperlink);
+        const span = this.selectionSpan(sel, buf);
+        if (span) buf.setHyperlink(span, hyperlink);
         if (!this.inTriggerProcessing) buf.rerender();
         return true;
     }
@@ -3896,6 +3901,7 @@ export class ScriptingAPI {
         // fed from inside a trigger can hand the outer pass its own line back.
         this.outerTriggerLines.push(this.triggerLineDepth > 0 ? this.mainConsole.getLineNumber() : -1);
         this.mainConsole.appendLine(buffer);
+        this.mainConsole.suspendOpenLine(true);
         this.inTriggerProcessing = true;
         if (this.triggerLineDepth === 0) this.triggerEchoLines = 0;
         this.triggerLineDepth++;
@@ -3933,6 +3939,7 @@ export class ScriptingAPI {
             return;
         }
         this.inTriggerProcessing = false;
+        this.mainConsole.suspendOpenLine(false);
         this.echoOnMatchedLine = false;
         this.triggerEchoLines = 0;
         // NB: the trigger selection is intentionally NOT cleared here. Mudlet
@@ -4282,7 +4289,11 @@ export class ScriptingAPI {
      */
     getCurrentLine(windowName?: string): string | null {
         if (!this.consoleExists(windowName)) return null;
-        return this.getConsole(windowName)?.getLine() ?? '';
+        const con = this.getConsole(windowName);
+        // A cursor left on no line — a trigger that deleted the line it matched
+        // — reads as TBuffer::line() answers any index past the end.
+        if (con && this.inTriggerPass(con) && !con.getBuffer()) return BAD_LINE_ERROR;
+        return con?.getLine() ?? '';
     }
 
     // Mudlet line-index APIs are 0-indexed: getLineNumber() == cursor.y() and
@@ -4832,8 +4843,20 @@ export class ScriptingAPI {
     moveCursorEnd(windowName?: string): void {
         const con = this.getConsole(windowName);
         if (!con) return;
-        con.moveToEnd();
-        con.setCursorColumn(con.getLine().length);
+        if (this.inTriggerPass(con)) {
+            // TConsoleModel::moveCursorEnd: the last line, on its last
+            // character (column 0 for an empty one). Mid trigger pass the last
+            // line is the one being matched — there is no open line after it —
+            // so this is that line at length - 1, and getLineNumber() equals
+            // getLineCount() afterwards. Parking one line further and one
+            // column past the end put a following insertText after the whole
+            // line and a getCurrentLine on no line at all (mudlet-web#273).
+            const y = this.getLineCount(windowName);
+            con.moveTo(y, Math.max(0, (con.lineText(y)?.length ?? 0) - 1));
+        } else {
+            con.moveToEnd();
+            con.setCursorColumn(con.getLine().length);
+        }
         con.markCursorAtEnd();
     }
 
@@ -5362,6 +5385,9 @@ export class ScriptingAPI {
         const targetWin = windowName ?? sel.windowName;
         const buf = this.resolveBuffer(targetWin);
         if (!buf) return;
+        // TBuffer::replaceInLine refuses a selection that no longer fits the
+        // line rather than trimming it.
+        if (sel.start < 0 || sel.start + sel.length > buf.length) return;
         const state = keepColor ? undefined : this.outputConsole(targetWin).format.toSnapshot();
         buf.replace([sel.start, sel.start + sel.length], newText, state);
         if (this.inTriggerProcessing && this.getConsole(targetWin) === this.mainConsole) {
@@ -5378,7 +5404,10 @@ export class ScriptingAPI {
                 text: newText,
             } : undefined);
         }
-        this.selection = null;
+        // The selection is left where it was — same start, same length — as
+        // TConsoleModel::replace leaves P_begin/P_end: replaceInLine only reads
+        // them. So the common selectString → replace → setFgColor idiom colours
+        // the replacement; clearing it here made that last call a no-op.
         if (!this.inTriggerProcessing) {
             buf.rerender();
         } else if (this.getConsole(targetWin) === this.mainConsole) {
@@ -7369,12 +7398,25 @@ export class ScriptingAPI {
         return this.selection.windowName === win;
     }
 
+    /**
+     * The columns a selection covers on `buf`, read as TBuffer::applyFgColor
+     * and the other apply* calls read P_begin/P_end: the end is cut at the end
+     * of the line, and a selection starting at or past it covers nothing. A
+     * selection outlives the text it was made on — replace() keeps it, and the
+     * cursor can move to a shorter line — so it can run off the end.
+     */
+    private selectionSpan(sel: { start: number; length: number }, buf: AnsiAwareBuffer): [number, number] | null {
+        if (sel.start < 0 || sel.start >= buf.length || sel.length <= 0) return null;
+        return [sel.start, Math.min(sel.start + sel.length, buf.length)];
+    }
+
     private applyStateToSelection(state: FormatStateSnapshot | null): void {
         if (!this.selection || !state) return;
         const sel = this.selection;
         const buf = this.resolveBuffer(sel.windowName);
         if (!buf) return;
-        buf.applyFormat([sel.start, sel.start + sel.length], state);
+        const span = this.selectionSpan(sel, buf);
+        if (span) buf.applyFormat(span, state);
         // Only rerender if already in the DOM (post-trigger path).
         if (!this.inTriggerProcessing) buf.rerender();
     }
