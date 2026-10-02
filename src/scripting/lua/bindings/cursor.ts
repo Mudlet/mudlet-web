@@ -157,7 +157,11 @@ export function installCursorBindings({ lua, api }: BindingContext): void {
             ? api.selectSection(b, c, a as string)
             : api.selectSection(a as number, b);
     });
-    lua.global.set('selectCurrentLine', (win?: string) => api.selectCurrentLine(win));
+    // Mudlet selectCurrentLine([window]) answers nothing on success
+    // (TLuaInterpreter::selectCurrentLine returns no values); a window name
+    // that is not one gets (nil, 'window "X" not found') from Bridge.lua's
+    // unknown-window guard.
+    lua.global.set('selectCurrentLine', (win?: string) => { api.selectCurrentLine(win); });
     // Mudlet getSelection([window]) → text, start, length (3 returns) or
     // false, errMsg. The wasmoon → Lua boundary returns one value, so we
     // hand back a 0-indexed [text, start, length] array (or null) and let

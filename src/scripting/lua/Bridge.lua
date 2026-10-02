@@ -1092,11 +1092,13 @@ function getBackgroundColor(windowName)
 end
 
 -- Mudlet windowType(name) → "main"/"label"/"miniconsole"/"userwindow", or
--- (nil, errMsg) when the named window doesn't resolve.
+-- (nil, errMsg) when the named window doesn't resolve, worded as
+-- TLuaInterpreter::windowType words it.
 function windowType(name)
     local k = __windowType(name)
     if k == nil then
-        return nil, "window/label \"" .. tostring(name) .. "\" not found"
+        return nil, "'" .. tostring(name)
+            .. "' is not a known label, any type of console, command line, text edit, nor scroll box"
     end
     return k
 end
@@ -6683,6 +6685,13 @@ do
     getWindowWrap   = guard(getWindowWrap)
     moveCursorEnd   = guard(moveCursorEnd)
     deleteLine      = guard(deleteLine)
+    -- No values at all on success, as TLuaInterpreter::selectCurrentLine; a JS
+    -- binding always hands back one (nil), so the call is wrapped in Lua.
+    do
+        local raw = selectCurrentLine
+        selectCurrentLine = guard(function(...) raw(...) end)
+    end
+    paste           = guard(paste)
     copy            = guard(copy)
     appendBuffer    = guard(appendBuffer)
     resetFormat     = guard(resetFormat)

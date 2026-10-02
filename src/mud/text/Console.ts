@@ -161,6 +161,7 @@ export class Console {
                 if (text.length === 0) return;
             }
         }
+        this.reopenLastLine();
         this.partial.appendBuffer(new AnsiAwareBuffer(text, this.format.toSnapshot()));
         // Anything written gives the buffer a current line back — see hasOpenLine.
         this.hasOpenLine = true;
@@ -219,19 +220,30 @@ export class Console {
     }
 
     /**
-     * Append a pre-formatted buffer as a new complete line — mirrors Mudlet's
-     * TConsole::appendBuffer, the primitive behind the `appendBuffer`/`paste`
+     * Write a pre-formatted buffer onto the end of the last line and end that
+     * line — mirrors Mudlet's TConsole::appendBuffer, the primitive behind the `appendBuffer`/`paste`
      * clipboard functions. Unlike `appendLine` (network pipeline) this also
      * enqueues into `pending` so the line reaches the renderer through the
      * normal drain path; the cursor resets to the end so a following
      * `selectCurrentLine` sees the pasted line.
      */
     appendBuffer(buffer: AnsiAwareBuffer): void {
+        // TBuffer::appendBuffer goes through appendFormatted(), which writes the
+        // chunk onto the END of the last line — the open one, still holding
+        // whatever an echo without a newline left there — and only then ends
+        // that line. Storing the chunk as a line of its own put it ABOVE that
+        // unfinished text instead of after it.
+        this.reopenLastLine();
+        const joined = this.partial;
+        joined.appendBuffer(buffer);
+        this.partial = new AnsiAwareBuffer();
+        this.consumeLeadingNewline = false;
+        this.hasOpenLine = true;
         // Wrapped as it is stored, exactly as an echo of the same text would be
         // — Mudlet's appendFormatted() ends in the same wrapLine() call, so a
         // line that arrives through the clipboard has to lay out like one typed
         // into the window.
-        for (const line of this.toStoredLines(buffer)) {
+        for (const line of this.toStoredLines(joined)) {
             this.store(line);
             this.pending.push(line);
         }
@@ -256,13 +268,29 @@ export class Console {
         this.hasOpenLine = true;
     }
 
+    /**
+     * Give the buffer its open line back after deleteLine() removed it while
+     * complete lines remained. Mudlet has no separate open line: its last line
+     * is simply whatever lineBuffer ends with, so once the old last line is
+     * deleted the one above it is the line the next write lands on — an echo
+     * continues it rather than starting a fresh one. Here that line moves back
+     * out of history into `partial`; its row leaves the DOM so the partial
+     * render can show it in its place.
+     */
+    private reopenLastLine(): void {
+        if (this.hasOpenLine || this.history.length === 0) return;
+        const last = this.history.pop()!;
+        last.removeFromDom();
+        this.partial = last;
+        this.hasOpenLine = true;
+    }
+
     private evict(): void {
-        // Counted over the COMPLETE lines only. Mudlet bounds lineBuffer.size(),
-        // which includes the line being built, so its capacity is one lower than
-        // this — an off-by-one nothing observes: the open line is not scrollback,
-        // no spec pins the figure, and moving it would change what every console
-        // holds to nobody's benefit.
-        if (this.history.length <= this._maxLines) return;
+        // Counted as Mudlet counts it: TBuffer trims once buffer.size(), which
+        // includes the line being built, goes over mLinesLimit — so a console
+        // holds one complete line fewer than its limit, and the trim comes the
+        // moment the complete lines reach it, not one line later.
+        if (this.lineTotal <= this._maxLines) return;
         // Mudlet trims a BATCH at a time (TBuffer::shrinkBuffer): once the
         // buffer is over its limit it drops `batchDeleteSize` lines in one go,
         // and sysBufferShrinkEvent carries that count so a script can correct a
@@ -270,9 +298,9 @@ export class Console {
         // Evicting one line per appended line instead announced a stream of 1s
         // and left the buffer pinned to the limit.
         let removed = 0;
-        while (this.history.length > this._maxLines) {
-            // Never more than the limit itself. Mudlet keeps `batch < limit` as
-            // an invariant of the one call that sets both
+        while (this.lineTotal > this._maxLines && this.history.length > 0) {
+            // A batch at or over the limit trims only the overflow. Mudlet keeps
+            // `batch < limit` as an invariant of the one call that sets both
             // (`TBuffer::setBufferSize`, TBuffer.cpp:407-409: a batch at or over
             // the limit is knocked down to limit/10), so its shrinkBuffer can
             // pop a flat batch without checking. Here the two can be set
@@ -282,8 +310,10 @@ export class Console {
             // buffer outright rather than trimming it: raising the default batch
             // to 1,000 alongside the 10,000-line default meant any console
             // dropped to a smaller limit lost everything on its next write.
+            const wanted = Math.max(1, this._batchDeleteSize);
             const batch = Math.min(
-                Math.max(1, this._batchDeleteSize), this._maxLines, this.history.length);
+                wanted >= this._maxLines ? this.lineTotal - this._maxLines : wanted,
+                this.history.length);
             for (let i = 0; i < batch; i++) this.history.shift()!.removeFromDom();
             removed += batch;
         }
@@ -411,12 +441,22 @@ export class Console {
     deleteLine(): void {
         const idx = this.cursor;
         const buf = this.history[idx];
-        if (!buf) {
+        // A cursor a script put on the open line — the last one, still being
+        // built — deletes that line, not the complete one above it, which is
+        // where the clamping `cursor` getter would otherwise land. TBuffer's
+        // deleteLine(y) takes the cursor's line as it is. Only for consoles
+        // whose cursor stays where a script put it: main's follows its output,
+        // and mid trigger pass has no open line in Mudlet's sense at all.
+        const onOpenLine = !this.followsOutput && this.cursorIdx >= this.history.length;
+        if (!buf || onOpenLine) {
+            if (onOpenLine && this.cursorIdx > this.history.length) return;
             // No complete line under the cursor, so the line being deleted is
             // the open one — the case clearWindow() then deleteLine() reaches,
             // and the only way to a buffer holding nothing at all. Mudlet drops
             // it from lineBuffer and is left with zero lines; here that is the
-            // flag going down and the half-written text going with it.
+            // flag going down and the half-written text going with it. With
+            // complete lines left, the last of them is Mudlet's last line now,
+            // and the next write reopens it (see reopenLastLine).
             // Tested on hasOpenLine alone rather than on the cursor index: with
             // no complete lines the `cursor` getter clamps to -1 whatever the
             // user cursor was set to, so there is nothing else left for
@@ -633,6 +673,11 @@ export class Console {
     // is where the open line has always been accounted for. Counting it here as
     // well made every Lua-facing count one too high.
     getLineCount(): number  { return this.history.length - 1; }
+
+    /** Mudlet's TBuffer::getLastLineNumber() — the index of the last line, the
+     *  open one included, and 0 for a buffer with no lines at all. Differs from
+     *  getLineCount() + 1 only once deleteLine() has removed the open line. */
+    lastLineNumber(): number { return Math.max(0, this.lineTotal - 1); }
 
     /**
      * Mudlet `moveCursorEnd` — park the cursor on the empty line past the last

@@ -17,12 +17,18 @@ describe('Console scrollback defaults', () => {
         expect(con.batchDeleteSize).toBe(DEFAULT_CONSOLE_BUFFER_SIZE / 10);
     });
 
-    it('keeps that many lines before evicting', () => {
+    it('keeps that many lines, the open one included, before evicting', () => {
         const con = new Console();
-        for (let i = 0; i < DEFAULT_CONSOLE_BUFFER_SIZE; i++) con.echo(`line ${i}\n`);
-        // getLineCount() is the 0-indexed last line, so nothing has been dropped.
-        expect(con.getLineCount()).toBe(DEFAULT_CONSOLE_BUFFER_SIZE - 1);
+        // Mudlet bounds buffer.size(), which counts the empty line every echo
+        // ending in a newline leaves open — so limit - 1 complete lines fit.
+        for (let i = 0; i < DEFAULT_CONSOLE_BUFFER_SIZE - 1; i++) con.echo(`line ${i}\n`);
+        // getLineCount() is the 0-indexed last complete line, so nothing has
+        // been dropped.
+        expect(con.getLineCount()).toBe(DEFAULT_CONSOLE_BUFFER_SIZE - 2);
         expect(con.getLines(0, 1)).toEqual(['line 0']);
+        // and the line that fills the buffer is the one that trims it
+        con.echo('one more\n');
+        expect(con.getLines(0, 1)).not.toEqual(['line 0']);
     });
 });
 
@@ -125,13 +131,14 @@ describe('evict never removes past the limit', () => {
         // The batch is still 1,000 here: setMaxLines evicts immediately, so the
         // pair is inconsistent for exactly one call — which is all it took.
         c.setMaxLines(100);
-        expect(held(c)).toBe(100);
+        // 99 complete lines and the open one: Mudlet's limit counts both.
+        expect(held(c)).toBe(99);
     });
 
     it('leaves a large buffer trimmed to the limit, not emptied', () => {
         const c = filled(3000);
         c.setMaxLines(100);
-        expect(held(c)).toBe(100);
+        expect(held(c)).toBe(99);
     });
 
     it('goes on trimming as new lines arrive, so line indices keep moving', () => {

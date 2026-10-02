@@ -18,9 +18,12 @@ export function installOutputBindings({ lua, api }: BindingContext): void {
     // overload the window name lands in the text slot and the actual segment
     // is dropped, producing a wall of "main"s. The API itself decides where
     // to write (lineBuffer at cursor inside triggers, echo otherwise).
+    // Answers true once the text is written, as TLuaInterpreter::insertText
+    // does; a window name that is no console gets nil (Bridge.lua's
+    // unknown-window guard supplies the message for names nothing carries).
     lua.global.set('insertText', (a: string, b?: string) => {
-        if (b !== undefined) api.insertText(b, a);
-        else                 api.insertText(a);
+        const written = b !== undefined ? api.insertText(b, a) : api.insertText(a);
+        return written ? true : undefined;
     });
     // Armored, like feedTelnet: the older `feedTriggers(data, false)` form
     // carries bytes already in the game's encoding, which are not UTF-8 and

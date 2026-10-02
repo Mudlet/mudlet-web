@@ -71,8 +71,8 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
     // appends at the end when the cursor is on the last line).
     lua.global.set('paste', (name?: unknown) =>
         api.paste(typeof name === 'string' ? name : undefined));
-    // Mudlet `appendBuffer([window])`. Appends the copied rich text as a new
-    // line to the named window/buffer (defaults to main).
+    // Mudlet `appendBuffer([window])`. Writes the copied rich text onto the end
+    // of the named window/buffer's last line and ends it (defaults to main).
     lua.global.set('appendBuffer', (name?: unknown) =>
         api.appendBuffer(typeof name === 'string' ? name : undefined));
     // createMapper has two calling conventions:

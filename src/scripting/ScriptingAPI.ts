@@ -2797,7 +2797,8 @@ export class ScriptingAPI {
 
     echoToWindow(win: string, text: string): void {
         if (this.injectOsc8Docs(text)) return;
-        const con = this.outputConsole(win);
+        const con = this.penConsole(win);
+        if (!con) return;
         con.echo(text);
         this.drainWindowConsole(win, con);
     }
@@ -2822,6 +2823,10 @@ export class ScriptingAPI {
     fastColorEcho(kind: string, win: string, str: string): boolean {
         if (win !== 'main' && this.labels.has(win)) return false;
         if (win === 'main' && this.echoOnMatchedLine) return false;
+        // A window that does not exist takes nothing: xEcho's every call on it
+        // — deselect, resetFormat, the pens, echo — misses in Mudlet, so the
+        // whole colour echo is a no-op rather than the birth of a window.
+        if (!this.consoleExists(win)) return true;
 
         let ansi: string | null = null;
         if (kind === 'decho') ansi = dechoToAnsiFast(str);
@@ -2861,7 +2866,8 @@ export class ScriptingAPI {
             onClick: () => { this.host.runLinkCode(cmd); },
             title: tooltip || undefined,
         };
-        const con = this.outputConsole(win);
+        const con = this.penConsole(win);
+        if (!con) return;
         con.format.hyperlink = hyperlink;
         if (!useCurrentFormat) {
             // Mudlet's TConsole::echoLink default: blue + underline.
@@ -3115,7 +3121,8 @@ export class ScriptingAPI {
     }
 
     echoPopup(text: string, cmds: string[], hints: string[], win?: string, useCurrentFormat = false): void {
-        const con = this.outputConsole(win);
+        const con = this.penConsole(win);
+        if (!con) return;
         con.format.hyperlink = this.buildPopupHyperlink(cmds, hints);
         if (!useCurrentFormat) {
             // Same default as echoLink: Mudlet renders popup links blue + underline.
@@ -3156,18 +3163,50 @@ export class ScriptingAPI {
                 state.foreground = this.linkColor(win);
                 state.underline = true;
             }
-            const at = Math.max(0, Math.min(con.getCursorColumn(), buf.text.length));
-            buf.insert(at, text, state);
-            if (this.inTriggerProcessing && con === this.mainConsole) {
-                // As for insertText: TConsole::insertLink moves the capture
-                // positions past the link, and the colours go with the text.
-                this.captureShiftHook?.(at, text.length);
-                this.spliceLineColorSnapshot(at, 0, { ...this.stateColorKeys(state), text });
-            }
-            if (!this.inTriggerProcessing) buf.rerender();
+            this.insertLinkSpan(con, buf, text, state, win,
+                () => this.echoPopup(text, cmds, hints, win, useCurrentFormat));
             return;
         }
         this.echoPopup(text, cmds, hints, win, useCurrentFormat);
+    }
+
+    /**
+     * The shared tail of insertLink/insertPopup — Mudlet routes both through
+     * TConsoleModel::insertLink. When the cursor sits on TBuffer::getEndPos()
+     * (the last character of the last line, or column 0 of an empty one) the
+     * span is appended there instead, which is `appendAtEnd`, and the cursor
+     * stays put. Otherwise it goes in at the cursor — padded out to it when the
+     * cursor is past the end of the line — and, outside the trigger engine,
+     * the cursor moves past it so a following insert lands after the link
+     * rather than in front of it.
+     */
+    private insertLinkSpan(
+        con: Console, buf: AnsiAwareBuffer, text: string, state: FormatStateSnapshot,
+        windowName: string | undefined, appendAtEnd: () => void,
+    ): void {
+        const onTriggerLine = this.inTriggerProcessing && con === this.mainConsole;
+        const col = con.getCursorColumn();
+        if (!onTriggerLine
+            && con.getLineNumber() === this.getLastLineNumber(windowName)
+            && col === Math.max(0, con.currentPartial.length - 1)) {
+            appendAtEnd();
+            return;
+        }
+        const at = Math.min(col, buf.text.length);
+        // The padding is not part of the link: applyLink covers the inserted
+        // text only.
+        const padding = ' '.repeat(col - at);
+        if (padding) buf.insert(at, padding);
+        buf.insert(col, text, state);
+        if (onTriggerLine) {
+            // As for insertText: TConsole::insertLink moves the capture
+            // positions past the link, and the colours go with the text.
+            this.captureShiftHook?.(at, padding.length + text.length);
+            this.spliceLineColorSnapshot(at, 0, { ...this.stateColorKeys(state), text: padding + text });
+        } else {
+            con.setCursorColumn(col + text.length);
+        }
+        if (!this.inTriggerProcessing) buf.rerender();
     }
 
     /**
@@ -3205,7 +3244,7 @@ export class ScriptingAPI {
         if (this.selectionMatches(win)) {
             this.applyStateToSelection({ foreground: { space: 'rgb', r, g, b } });
         }
-        this.outputConsole(win).setFgColor(r, g, b);
+        this.penConsole(win)?.setFgColor(r, g, b);
     }
 
     setBgColor(r: number, g: number, b: number, a?: number, win?: string): void {
@@ -3215,24 +3254,24 @@ export class ScriptingAPI {
         if (this.selectionMatches(win)) {
             this.applyStateToSelection({ background: color });
         }
-        this.outputConsole(win).setBgColor(r, g, b, a);
+        this.penConsole(win)?.setBgColor(r, g, b, a);
     }
 
     setBold(v: boolean, win?: string): void {
         if (this.selectionMatches(win)) this.applyStateToSelection({ bold: v });
-        this.outputConsole(win).setBold(v);
+        this.penConsole(win)?.setBold(v);
     }
     setItalic(v: boolean, win?: string): void {
         if (this.selectionMatches(win)) this.applyStateToSelection({ italic: v });
-        this.outputConsole(win).setItalic(v);
+        this.penConsole(win)?.setItalic(v);
     }
     setUnderline(v: boolean, win?: string): void {
         if (this.selectionMatches(win)) this.applyStateToSelection({ underline: v });
-        this.outputConsole(win).setUnderline(v);
+        this.penConsole(win)?.setUnderline(v);
     }
     setStrikethrough(v: boolean, win?: string): void {
         if (this.selectionMatches(win)) this.applyStateToSelection({ strikethrough: v });
-        this.outputConsole(win).setStrikethrough(v);
+        this.penConsole(win)?.setStrikethrough(v);
     }
     /** Mudlet `setOverline([window,] bool)`. Renders a line above the text
      *  (CSS `text-decoration: overline`, ANSI SGR 53). Mirrors the other style
@@ -3240,7 +3279,7 @@ export class ScriptingAPI {
      *  the resolved console's pen for subsequent echo. */
     setOverline(v: boolean, win?: string): void {
         if (this.selectionMatches(win)) this.applyStateToSelection({ overline: v });
-        this.outputConsole(win).setOverline(v);
+        this.penConsole(win)?.setOverline(v);
     }
     /**
      * Mudlet `setReverse([window,] bool)`. Toggles reverse-video — the renderer
@@ -3250,7 +3289,7 @@ export class ScriptingAPI {
      */
     setReverse(v: boolean, win?: string): void {
         if (this.selectionMatches(win)) this.applyStateToSelection({ inverse: v });
-        this.outputConsole(win).setReverse(v);
+        this.penConsole(win)?.setReverse(v);
     }
 
     /**
@@ -3331,7 +3370,7 @@ export class ScriptingAPI {
         // in another, which would break selectCurrentLine(buf) → copy(buf) when
         // unrelated output goes to main in between.
         if (this.selectionMatches(windowName)) this.selection = null;
-        this.outputConsole(windowName).resetFormat();
+        this.penConsole(windowName)?.resetFormat();
         return true;
     }
 
@@ -4123,7 +4162,7 @@ export class ScriptingAPI {
         const con = this.getConsole(windowName);
         if (!con) return -1;
         if (this.inTriggerPass(con)) return con.getLineCount() - this.triggerEchoLines;
-        return con.getLineCount() + 1;
+        return con.lastLineNumber();
     }
 
     getLastLineNumber(windowName?: string): number {
@@ -4531,7 +4570,7 @@ export class ScriptingAPI {
      * when the cursor isn't on a valid line yet (empty buffer / sub-window
      * without a backing buffer).
      */
-    insertText(text: string, windowName?: string): void {
+    insertText(text: string, windowName?: string): boolean {
         const isMain = !windowName || windowName === 'main';
         const con = this.getConsole(windowName);
         const buf = con?.getBuffer();
@@ -4556,15 +4595,17 @@ export class ScriptingAPI {
                 this.spliceLineColorSnapshot(at, 0, { ...this.stateColorKeys(state), text: inserted });
             }
             if (!this.inTriggerProcessing) con.getBuffer()?.rerender();
-            return;
+            return true;
         }
         // No current line: degrade to an echo so the text isn't lost.
         if (isMain) {
             this.mainConsole.echo(text);
             this.drainMain();
-        } else {
-            this.echoToWindow(windowName!, text);
+            return true;
         }
+        if (!this.consoleExists(windowName)) return false;
+        this.echoToWindow(windowName!, text);
+        return true;
     }
 
     /**
@@ -4600,15 +4641,8 @@ export class ScriptingAPI {
                 if (!this.inTriggerProcessing) con.getBuffer()?.rerender();
                 return;
             }
-            const at = Math.max(0, Math.min(con.getCursorColumn(), buf.text.length));
-            buf.insert(at, text, state);
-            if (this.inTriggerProcessing && con === this.mainConsole) {
-                // As for insertText: TConsole::insertLink moves the capture
-                // positions past the link, and the colours go with the text.
-                this.captureShiftHook?.(at, text.length);
-                this.spliceLineColorSnapshot(at, 0, { ...this.stateColorKeys(state), text });
-            }
-            if (!this.inTriggerProcessing) buf.rerender();
+            this.insertLinkSpan(con, buf, text, state, windowName,
+                () => this.echoLink(text, cmd, tooltip, windowName, useCurrentFormat));
             return;
         }
         this.echoLink(text, cmd, tooltip, windowName, useCurrentFormat);
@@ -4943,13 +4977,15 @@ export class ScriptingAPI {
 
     /**
      * Mudlet `appendBuffer([window])`. Appends the clipboard's rich text (from
-     * the last `copy()`) as a new line at the end of the named console's buffer.
-     * No-op until something has been copied. Mirrors TConsole::appendBuffer.
+     * the last `copy()`) onto the end of the named console's last line, then
+     * ends that line. No-op until something has been copied. Mirrors
+     * TConsole::appendBuffer.
      */
     appendBuffer(windowName?: string): void {
         if (!this.clipboard) return;
         const isMain = !windowName || windowName === 'main';
-        const con = this.outputConsole(windowName);
+        const con = this.penConsole(windowName);
+        if (!con) return;
         con.appendBuffer(this.clipboard.clone());
         if (isMain) this.drainMain();
         else this.drainWindowConsole(windowName!, con);
@@ -4957,13 +4993,14 @@ export class ScriptingAPI {
 
     /**
      * Mudlet `paste([window])`. Inserts the clipboard at the cursor's current
-     * column when the cursor sits above the last line; otherwise appends it as
-     * a new line at the end (TConsole::paste semantics). No-op without a prior
-     * copy().
+     * column when the cursor sits above the last line; otherwise writes it onto
+     * the end of the last line and ends that line (Host::pasteClipboardInto).
+     * No-op without a prior copy().
      */
     paste(windowName?: string): void {
         if (!this.clipboard) return;
-        const con = this.outputConsole(windowName);
+        const con = this.penConsole(windowName);
+        if (!con) return;
         const buf = con.getBuffer();
         const isMain = !windowName || windowName === 'main';
         // TConsole::paste inserts at the cursor unless it is on the buffer's
@@ -7068,6 +7105,19 @@ export class ScriptingAPI {
     private consoleExists(windowName: string | undefined): boolean {
         if (!windowName || windowName === 'main') return true;
         return this.session.windows.has(windowName) || this.buffers.has(windowName);
+    }
+
+    /**
+     * The Console a write to `win` goes to, or null when `win` names no console
+     * at all. Mudlet resolves the name and answers a miss with "window not
+     * found" (or, for echo, "console/label does not exist") without creating
+     * anything; going through {@link outputConsole} instead conjured a hidden
+     * console out of the typo, which then showed up as a "userwindow" and
+     * handed its stray text to whatever window was later created under that
+     * name (mudlet-web#280).
+     */
+    private penConsole(win?: string): Console | null {
+        return this.consoleExists(win) ? this.outputConsole(win) : null;
     }
 
     /** Returns the Console for a window, creating and registering one on demand. */
