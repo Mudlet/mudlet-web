@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createTestRuntime, type TestRuntime } from '../createTestRuntime';
-import { timeZoneAbbreviation, timeZoneId, timeZoneOffset } from '../../src/utils/timeZone';
+import { timeZoneAbbreviation, timeZoneLongName, timeZoneOffset } from '../../src/utils/timeZone';
 
 // getTime(true, fmt) reads fmt the way QDateTime::toString does, and os.date
 // formats the way glibc's strftime does — both as desktop Mudlet on Linux.
@@ -43,11 +43,11 @@ describe('getTime(true, fmt) — Qt format quoting and the zone tokens', () => {
     expect(fmt('yyyy-MM-dd ddd MMM ss.zzz')).toBe('2026-09-26 Sat Sep 05.123');
   });
 
-  it('formats t as the zone abbreviation and tt/ttt/tttt as offset and id', () => {
+  it('formats t as the zone abbreviation, tt/ttt as the offset and tttt as the long name', () => {
     expect(fmt('t')).toBe(timeZoneAbbreviation(when));
     expect(fmt('tt')).toBe(timeZoneOffset(when));
     expect(fmt('ttt')).toBe(timeZoneOffset(when, true));
-    expect(fmt('tttt')).toBe(timeZoneId());
+    expect(fmt('tttt')).toBe(timeZoneLongName(when));
     expect(fmt("hh 't'")).toBe('18 t');
   });
 });

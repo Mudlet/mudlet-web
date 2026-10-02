@@ -155,6 +155,51 @@ export function installSessionBindings(
     lua.global.set('__mudlet_tz_abbrev', (seconds: unknown) =>
         timeZoneAbbreviation(new Date(Number(seconds) * 1000)));
 
+    // Helpers for the user-dictionary functions in Bridge.lua, which need the
+    // Unicode case mappings and the collation Lua's C-locale string library
+    // lacks. Words cross as one "\n"-joined string — a dictionary word never
+    // holds a line break (storableWord refuses one).
+    // getDictionaryWordList sorts with a case-insensitive QCollator; the
+    // accent-sensitivity collator is ICU's secondary strength, which is what
+    // Qt's case-insensitive QCollator sets. Equal words fall back to code order
+    // so the result is deterministic.
+    let dictCollator: Intl.Collator | null = null;
+    lua.global.set('__mudlet_dict_sort', (joined: unknown) => {
+        if (typeof joined !== 'string' || joined === '') return '';
+        dictCollator ??= new Intl.Collator('en', { sensitivity: 'accent' });
+        const c = dictCollator;
+        return joined.split('\n')
+            .sort((a, b) => c.compare(a, b) || (a < b ? -1 : a > b ? 1 : 0))
+            .join('\n');
+    });
+    lua.global.set('__mudlet_upper', (s: unknown) => String(s ?? '').toUpperCase());
+    lua.global.set('__mudlet_lower', (s: unknown) => String(s ?? '').toLowerCase());
+
+    // os.clock(), which Bridge.lua points here. Desktop's is stock Lua 5.1's
+    // clock(): CPU time the process has used, which stands still while the
+    // client idles. emscripten's clock() is wall time since start, so a script
+    // that waits 1.5s on a tempTimer read 1.5s where desktop reads ~0. A page
+    // has no CPU-time clock, so this counts the time the main thread is busy
+    // in the tasks that read it: the first reading in a task opens a segment,
+    // and a microtask — which only runs once the synchronous Lua call that
+    // read it has unwound — closes it and banks its length. Idle gaps between
+    // tasks are never counted; a benchmark inside one call measures as it does
+    // on desktop. Work in tasks that never read the clock (rendering, other
+    // JS) is not counted either — see e2e/knownDivergences.ts.
+    let cpuBanked = 0;
+    let segmentStart: number | null = null;
+    lua.global.set('__mudlet_cpu_clock', () => {
+        const now = performance.now();
+        if (segmentStart === null) {
+            segmentStart = now;
+            queueMicrotask(() => {
+                if (segmentStart !== null) cpuBanked += performance.now() - segmentStart;
+                segmentStart = null;
+            });
+        }
+        return (cpuBanked + (now - segmentStart)) / 1000;
+    });
+
     // registerAnonymousEventHandler is provided by Bridge.lua — it mirrors
     // Mudlet's C++ TLuaInterpreter::registerAnonymousEventHandler so module-
     // load-time registrations (Geyser etc.) made before Other.lua's Lua-side

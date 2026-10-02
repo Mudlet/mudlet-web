@@ -381,3 +381,54 @@ export const UNSUPPORTED_AREAS: UnsupportedArea[] = [
             + 'scripts route around it.',
     },
 ];
+
+/**
+ * Divergences no spec in the corpus exercises, so neither list above can hold
+ * them (both are checked against live spec output). Recorded so the decision
+ * sits with the others, and so nobody re-files it as a bug.
+ */
+export interface PlatformDivergence {
+    /** The Lua surface that behaves differently. */
+    api: string;
+    /** What a script sees on each client. */
+    behaviour: string;
+    /** Why Mudlet Web does not match. */
+    reason: string;
+    /** Where it was reported. */
+    issue: string;
+}
+
+export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
+    {
+        api: 'os.clock()',
+        behaviour:
+            'Desktop: CPU time the whole process has used — stands still while idle (0.0 across an idle 1.5s '
+            + 'tempTimer), advances for rendering and network work too. Mudlet Web: main-thread time in the '
+            + 'tasks that read the clock — also stands still while idle and measures a benchmark inside one '
+            + 'call the same, but misses work in tasks that never read it and starts near 0.',
+        reason:
+            'Desktop runs stock Lua 5.1, whose os.clock() is C clock(). A page has no CPU-time clock at all '
+            + "(performance.now() is wall time, and emscripten's clock() is wall time since start, which is "
+            + 'what os.clock used to report). The approximation counts main-thread '
+            + 'time in the tasks that read the clock: the first reading in a task opens a segment and a '
+            + 'microtask closes it once the synchronous Lua call has unwound. So idle time never counts and a '
+            + 'benchmark inside one call measures as on desktop, but work in tasks that never read the clock '
+            + '(rendering, other JS, Lua that ran without calling os.clock) is missing, and the value starts '
+            + 'near 0 rather than at the CPU time the process had already used. Pinned by '
+            + 'tests/scripting/textTimeUtilityParity.test.ts.',
+        issue: '#294',
+    },
+    {
+        api: 'string→number coercion of "0x"',
+        behaviour: 'Desktop: "0x" + 1 raises (not a number). Mudlet Web: "0x" + 1 is 1.',
+        reason:
+            'Lua 5.1 parses a numeric string with strtod and, on a trailing "x", strtoul(s, 16). glibc stops '
+            + "that strtoul after the \"0\" when no hex digit follows, so \"0x\" is not a number on desktop; the "
+            + 'wasm Lua is built against musl, which consumes the bare prefix and yields 0. tonumber() is '
+            + 'wrapped in Lua to answer nil as desktop does (#308), but the same C parse also runs for arithmetic '
+            + 'coercion ("0x" + 1) and string.format("%d", "0x"), inside the VM where Lua cannot reach. Fixing '
+            + 'those means patching luaO_str2d in the wasm build of wasmoon-lua5.1; a script would have to do '
+            + 'arithmetic on a bare "0x" string to notice. Pinned by tests/scripting/textTimeUtilityParity.test.ts.',
+        issue: '#294',
+    },
+];

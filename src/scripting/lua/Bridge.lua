@@ -3093,9 +3093,12 @@ end
 --   getTime(true)                → string formatted with "yyyy.MM.dd hh:mm:ss.zzz"
 --   getTime(true, fmt)           → string formatted the way QDateTime::toString
 --     reads fmt: yyyy/yy, MMMM/MMM/MM/M, dddd/ddd/dd/d, HH/H (24h), hh/h (12h
---     when the format has an AM/PM token, otherwise 24h), mm/m, ss/s, zzz/z
---     (ms), AP/A (uppercase), ap/a (lowercase), aP/Ap (the locale's case), and
---     t (zone abbreviation) / tt (+hhmm) / ttt (+hh:mm) / tttt (zone id).
+--     when the format has an AM/PM token, otherwise 24h), mm/m, ss/s, zzz
+--     (ms, 3 digits) and zz/z (Qt 6: the same 3 digits as a fraction of a
+--     second, trailing zeros dropped — 820 ms is "82", 1 ms "001", 0 ms "0"),
+--     AP/A (uppercase), ap/a (lowercase), aP/Ap (the locale's case), and
+--     t (zone abbreviation) / tt (+hhmm) / ttt (+hh:mm) / tttt (the zone's
+--     long display name, "Coordinated Universal Time").
 --     Text inside single quotes is literal, and '' is a quote character, inside
 --     quotes or out. Anything else passes through literally.
 do
@@ -3111,7 +3114,7 @@ do
         "HH","H","hh","h",
         "mm","m",
         "ss","s",
-        "zzz","z",
+        "zzz","zz","z",
         "AP","ap","aP","Ap","A","a",
         "tttt","ttt","tt","t",
     }
@@ -3182,6 +3185,12 @@ do
         local wdayIdx = (t.wday or 0) + 1
         local isPM = t.hour >= 12
         local h12 = t.hour % 12; if h12 == 0 then h12 = 12 end
+        -- Qt 6 treats z/zz as the decimal part of the seconds: zero-padded to
+        -- three digits, then up to two trailing zeros chopped.
+        local fraction = string.format("%03d", t.msec)
+        for _ = 1, 2 do
+            if fraction:sub(-1) == "0" then fraction = fraction:sub(1, -2) end
+        end
         local R = {
             yyyy = string.format("%04d", t.year),
             yy   = string.format("%02d", t.year % 100),
@@ -3202,7 +3211,8 @@ do
             ss   = string.format("%02d", t.sec),
             s    = tostring(t.sec),
             zzz  = string.format("%03d", t.msec),
-            z    = tostring(t.msec),
+            zz   = fraction,
+            z    = fraction,
             AP   = isPM and "PM" or "AM",
             A    = isPM and "PM" or "AM",
             ap   = isPM and "pm" or "am",
@@ -3212,7 +3222,7 @@ do
             t    = t.tzAbbr or "",
             tt   = t.tzOffset or "",
             ttt  = t.tzOffsetColon or "",
-            tttt = t.tzId or "",
+            tttt = t.tzLong or "",
         }
         local out = {}
         for _, p in ipairs(parts) do
@@ -3262,6 +3272,13 @@ end
 -- Those are rewritten here before the format reaches it; everything else
 -- already matches. %E and %O modifiers are dropped, which is what glibc does
 -- with them in the C locale.
+-- os.clock() is CPU time on desktop (Lua 5.1's clock()) but wall time since
+-- start in emscripten; __mudlet_cpu_clock (bindings/session.ts) approximates
+-- the CPU clock by counting only the busy tasks that read it.
+function os.clock()
+    return __mudlet_cpu_clock()
+end
+
 do
     local date = os.date
 
@@ -9033,8 +9050,44 @@ do
         return true
     end
 
+    -- Desktop sorts the list with a case-insensitive QCollator, so "apple"
+    -- comes before "Banana"; readDict's byte order puts every capital first.
     function getDictionaryWordList()
-        return (readDict())
+        local words = readDict()
+        if #words < 2 then return words end
+        local out = {}
+        for w in (__mudlet_dict_sort(table.concat(words, "\n")) .. "\n"):gmatch("(.-)\n") do
+            out[#out + 1] = w
+        end
+        return out
+    end
+
+    -- Hunspell's capitalisation classes (get_captype), which decide which
+    -- spellings of a dictionary word it accepts: an all-lowercase word only as
+    -- itself; a capitalised one ("Apple") as itself or lowercased; an all-caps
+    -- one ("APPLE", "ZORKMID") whenever some dictionary word uppercases to it
+    -- (the lowercase and capitalised forms, plus the hidden all-caps homonym it
+    -- adds for mixed-case words); and a mixed one ("aPPle") only as itself.
+    local function capType(w)
+        if w == __mudlet_lower(w) then return "none" end
+        local first, rest = w:match("^([%z\1-\127\194-\244][\128-\191]*)(.*)$")
+        if first and first ~= __mudlet_lower(first) and rest == __mudlet_lower(rest) then
+            return "init"
+        end
+        if w == __mudlet_upper(w) then return "all" end
+        return "mixed"
+    end
+
+    local function userDictAccepts(w, set)
+        if set[w] then return true end
+        local ct = capType(w)
+        if ct == "init" then return set[__mudlet_lower(w)] == true end
+        if ct == "all" then
+            for entry in pairs(set) do
+                if __mudlet_upper(entry) == w then return true end
+            end
+        end
+        return false
     end
 
     -- Varargs, not named parameters: Mudlet only type-checks argument #2 when it
@@ -9048,7 +9101,7 @@ do
             return nil, SYSTEM_UNAVAILABLE_CHECK
         end
         local _, set = readDict()
-        return set[w] == true
+        return userDictAccepts(w, set)
     end
 
     -- Hunspell ranks its suggestions by how far they are from the word given;
@@ -9083,9 +9136,13 @@ do
         end
         local words = readDict()
         local scored = {}
+        -- A word that differs only in case is hunspell's first suggestion
+        -- ("zorkmid" → "Zorkmid"), so distance 0 counts unless it is the very
+        -- word given.
+        local lw = __mudlet_lower(w)
         for _, entry in ipairs(words) do
-            local d = distance(w:lower(), entry:lower())
-            if d > 0 and d <= 2 then scored[#scored + 1] = { word = entry, d = d } end
+            local d = distance(lw, __mudlet_lower(entry))
+            if entry ~= w and d <= 2 then scored[#scored + 1] = { word = entry, d = d } end
         end
         table.sort(scored, function(x, y)
             if x.d ~= y.d then return x.d < y.d end

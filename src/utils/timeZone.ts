@@ -29,13 +29,19 @@ export function timeZoneAbbreviation(date: Date): string {
     return (east < 0 ? '-' : '+') + hh + mm;
 }
 
-/** The IANA id of the local zone ("Europe/Warsaw"), Qt's `tttt`. */
-export function timeZoneId(): string {
+/** The zone's long display name in effect at `date` ("Coordinated Universal
+ *  Time", "Central European Summer Time") — Qt 6's `tttt`, which prints
+ *  `QTimeZone::displayName(when, LongName, locale)` (not the IANA id) and falls
+ *  back to the abbreviation when there is none. Desktop asks the system
+ *  locale; the English name is used here, as for the abbreviation. */
+let longNameFormatter: Intl.DateTimeFormat | null = null;
+export function timeZoneLongName(date: Date): string {
     try {
-        const id = new Intl.DateTimeFormat().resolvedOptions().timeZone;
-        if (id) return id;
-    } catch { /* fall through */ }
-    return 'UTC';
+        longNameFormatter ??= new Intl.DateTimeFormat('en-US', { timeZoneName: 'long' });
+        const name = longNameFormatter.formatToParts(date).find(p => p.type === 'timeZoneName')?.value;
+        if (name) return name;
+    } catch { /* no Intl time-zone data — fall through to the abbreviation */ }
+    return timeZoneAbbreviation(date);
 }
 
 /** The local zone's offset from UTC at `date` as "+hhmm", or "+hh:mm" with

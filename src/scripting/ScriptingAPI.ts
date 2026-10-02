@@ -7,7 +7,7 @@ import type { TimerEngine } from '../mud/timers/TimerEngine';
 import type { KeyEngine } from '../mud/keybindings/KeyEngine';
 import { classifyReservedKey, formatKeyCombo, reservedKeyNote } from '../mud/keybindings/browserReservedKeys';
 import { CLIENT_VERSION } from '../version';
-import { timeZoneAbbreviation, timeZoneId, timeZoneOffset } from '../utils/timeZone';
+import { timeZoneAbbreviation, timeZoneLongName, timeZoneOffset } from '../utils/timeZone';
 import { getBrand } from '../branding';
 import type { WindowHandle, WindowOpenOptions } from '../ui/windows/types';
 import { MAP_WIDGET_ID, MAPPER_WIDGET_ID } from '../ui/windows/types';
@@ -394,11 +394,12 @@ const VALID_EXPERIMENTS: readonly string[] = [
     'experiment.3d-player-icon',
 ];
 
-/** Format an epoch-ms timestamp as Mudlet's "hh:mm:ss.zzz" (local time). */
+/** Format an epoch-ms timestamp as Mudlet's `TBuffer::smTimeStampFormat`,
+ *  "hh:mm:ss.zzz " (local time) — the trailing space is part of it. */
 function formatLineTimestamp(ms: number): string {
     const d = new Date(ms);
     const p = (n: number, w = 2) => String(n).padStart(w, '0');
-    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)} `;
 }
 
 function formatColorToRgb(color: FormatColor | undefined): [number, number, number] | null {
@@ -3344,17 +3345,21 @@ export class ScriptingAPI {
         // history line the cursor was moved to.
         const line = this.getConsole(windowName)?.getLine() ?? '';
 
-        let count = 0;
-        let searchFrom = 0;
-        while (searchFrom <= line.length - str.length) {
-            const idx = line.indexOf(str, searchFrom);
-            if (idx === -1) break;
-            count++;
-            if (count === occurrence) {
-                this.selection = { windowName, start: idx, length: str.length };
-                return idx;
+        // TConsoleModel::selectString resumes each search at `begin + 1`, not
+        // after the whole match, so overlapping occurrences count separately:
+        // "aa" in "aaaa" is found at 0, 1 and 2. An empty line never matches,
+        // and QString::indexOf from past the end is -1 (JS clamps it instead).
+        if (line.length > 0 && occurrence >= 1) {
+            let begin = -1;
+            for (let i = 0; i < occurrence; i++) {
+                const from = begin + 1;
+                begin = from > line.length ? -1 : line.indexOf(str, from);
+                if (begin === -1) break;
             }
-            searchFrom = idx + str.length;
+            if (begin >= 0) {
+                this.selection = { windowName, start: begin, length: str.length };
+                return begin;
+            }
         }
         // A failed search CLEARS the selection (TConsole::select deselects on
         // every one of its -1 paths). Leaving the old one standing meant the -1
@@ -4209,8 +4214,8 @@ export class ScriptingAPI {
 
     /**
      * Mudlet `getTimestamp([window,] lineNumber)` — the wall-clock time the line
-     * entered the buffer, formatted "HH:MM:SS.mmm" (Mudlet's "hh:mm:ss.zzz"),
-     * or a blank of dashes for a line wrapping continued. `lineNumber` counts
+     * entered the buffer, formatted as Mudlet's "hh:mm:ss.zzz " (13 characters,
+     * trailing space included), or "------------ " for a line wrapping continued. `lineNumber` counts
      * from 0 as getLineNumber() does, 0 itself refused (see
      * Console.getLineTimestamp); omit it for the current cursor line. Returns null when the window or line doesn't exist — the Lua
      * binding maps that to Mudlet's `(nil, errMsg)` shape.
@@ -4906,20 +4911,33 @@ export class ScriptingAPI {
      * Mudlet `copy([window])`. Copies the current selection of the resolved
      * console — including all formatting — into the session clipboard, a single
      * rich-text buffer shared with `paste`/`appendBuffer` (Mudlet's host-global
-     * mClipboard). No-op when there's no selection, or when `window` is given
-     * but doesn't own the active selection.
+     * mClipboard).
+     *
+     * Like Host::copyToClipboard it ALWAYS replaces the clipboard with the named
+     * console's selection (main when omitted) — when that console has none
+     * (after a failed selectString, a deselect(), or a selection that belongs to
+     * another window) the clipboard becomes empty, and a following appendBuffer
+     * appends an empty line. Keeping the previous clipboard instead re-appended
+     * stale text. Only an unknown window leaves the clipboard alone (desktop
+     * raises "window not found" there). TBuffer::copy resets a start outside
+     * the line to column 0, which is reproduced too.
      */
-    copy(windowName?: string): void {
-        if (!this.selection) return;
-        if (windowName !== undefined && !this.selectionMatches(windowName)) return;
-        const buf = this.resolveBuffer(this.selection.windowName);
-        if (!buf) return;
-        const start = Math.max(0, Math.min(this.selection.start, buf.length));
-        const end = Math.max(start, Math.min(this.selection.start + this.selection.length, buf.length));
+    copy(windowName?: string): boolean {
+        if (windowName !== undefined && !this.consoleExists(windowName)) return false;
+        const target = windowName ?? 'main';
+        const sel = this.selectionMatches(target) ? this.selection : null;
+        const buf = sel ? this.resolveBuffer(sel.windowName) : null;
+        if (!sel || !buf) {
+            this.clipboard = new AnsiAwareBuffer('');
+            return true;
+        }
+        const start = sel.start < 0 || sel.start >= buf.length ? 0 : sel.start;
+        const end = Math.max(start, Math.min(sel.start + sel.length, buf.length));
         const slice = buf.clone();
         slice.remove([end, slice.length]);
         slice.remove([0, start]);
         this.clipboard = slice;
+        return true;
     }
 
     /**
@@ -6012,7 +6030,7 @@ export class ScriptingAPI {
      */
     getTime(): {
         year: number; month: number; day: number; hour: number; min: number; sec: number; msec: number; wday: number;
-        tzAbbr: string; tzOffset: string; tzOffsetColon: string; tzId: string;
+        tzAbbr: string; tzOffset: string; tzOffsetColon: string; tzLong: string;
     } {
         const d = new Date();
         return {
@@ -6020,7 +6038,7 @@ export class ScriptingAPI {
             tzAbbr: timeZoneAbbreviation(d),
             tzOffset: timeZoneOffset(d),
             tzOffsetColon: timeZoneOffset(d, true),
-            tzId: timeZoneId(),
+            tzLong: timeZoneLongName(d),
             year: d.getFullYear(),
             month: d.getMonth() + 1,
             day: d.getDate(),

@@ -803,8 +803,9 @@ export class Console {
 export const WINDOW_WRAP_DEFAULT = 99999999;
 
 /** What getTimestamp() answers for a continued line — Mudlet's
- *  `smBlankTimeStamp`, cut to the width of the times this client formats. */
-export const BLANK_TIMESTAMP = '------------';
+ *  `smBlankTimeStamp`, trailing space included, the same 13 characters as a
+ *  real stamp ("hh:mm:ss.zzz "). */
+export const BLANK_TIMESTAMP = '------------ ';
 
 /**
  * Split `buf` into the lines a console of `width` columns stores it as, or

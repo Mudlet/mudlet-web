@@ -152,10 +152,17 @@ describe('getTimestamp', () => {
   beforeEach(async () => { env = await createTestRuntime(); });
   afterEach(() => env.dispose());
 
-  it('returns an "hh:mm:ss.zzz" string for an in-range line', () => {
+  it('returns an "hh:mm:ss.zzz " string (trailing space, as desktop) for an in-range line', () => {
     env.run('createBuffer("tb"); cecho("tb", "hi\\n")');
     const ts = env.run('return (getTimestamp("tb", 1))');
-    expect(ts).toMatch(/^\d{2}:\d{2}:\d{2}\.\d{3}$/);
+    expect(ts).toMatch(/^\d{2}:\d{2}:\d{2}\.\d{3} $/);
+  });
+
+  it('returns "------------ " for a wrapped continuation line', () => {
+    env.run('createBuffer("tb"); setWindowWrap("tb", 10); cecho("tb", "aaaaaaaaaa bbbbbbbbbb cccc\\n")');
+    const count = env.run('return getLineCount("tb")') as number;
+    expect(count).toBeGreaterThan(1);
+    expect(env.run('return (getTimestamp("tb", 2))')).toBe('------------ ');
   });
 
   it('returns nil for an out-of-range line or a missing window', () => {
