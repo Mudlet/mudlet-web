@@ -35,10 +35,12 @@ const QT_KEY_TO_DOM_CODE: Record<number, string> = {
     0x01000021: 'ControlLeft',
     0x01000022: 'MetaLeft',
     0x01000023: 'AltLeft',
-    0x01000024: 'AltRight',           // Qt::Key_AltGr
-    0x01000025: 'CapsLock',
-    0x01000026: 'NumLock',
-    0x01000027: 'ScrollLock',
+    // Values from Qt's qnamespace.h: Key_CapsLock follows Key_Alt directly,
+    // and Key_AltGr sits out at 0x01001103 with the international keys.
+    0x01000024: 'CapsLock',           // Qt::Key_CapsLock
+    0x01000025: 'NumLock',            // Qt::Key_NumLock
+    0x01000026: 'ScrollLock',         // Qt::Key_ScrollLock
+    0x01001103: 'AltRight',           // Qt::Key_AltGr
     0x01000030: 'F1',
     0x01000031: 'F2',
     0x01000032: 'F3',
@@ -63,7 +65,8 @@ const QT_KEY_TO_DOM_CODE: Record<number, string> = {
     0x01000045: 'F22',
     0x01000046: 'F23',
     0x01000047: 'F24',
-    0x01000053: 'ContextMenu',        // Qt::Key_Menu
+    // 0x01000053/54 are Key_Super_L/R, not the menu key.
+    0x01000055: 'ContextMenu',        // Qt::Key_Menu
 
     // ASCII-range Qt codes coincide with character codes. 0–9 → DigitN,
     // A–Z → KeyN. Both are the values `event.code` reports for top-row
@@ -192,7 +195,7 @@ const DOM_CODE_CANONICAL_QT_KEY: Record<string, number> = {
     Quote: 0x27,                      // '  (not ")
     Equal: 0x3D,                      // =  (not +)
     Semicolon: 0x3B,                  // ;  (not :)
-    NumLock: 0x01000026,              // Qt::Key_NumLock (not Key_Clear)
+    NumLock: 0x01000025,             // Qt::Key_NumLock (not Key_Clear)
 };
 
 const DOM_CODE_TO_QT_KEY: Record<string, number> = (() => {

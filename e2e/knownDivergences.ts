@@ -428,4 +428,18 @@ export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
             + 'chunk can corrupt the VM), so widening what the loader accepts is not worth it for that.',
         issue: '#296',
     },
+    {
+        api: 'getModulePath on a module that came in with an imported desktop profile',
+        behaviour:
+            'Desktop answers with the <filepath> the profile recorded (e.g. C:/Users/me/modB.xml). Mudlet Web '
+            + 'answers with the copy of that XML the import placed inside the profile\'s VFS '
+            + '(/profiles/<id>/modB/modB.xml, or wherever the imported tree already held it). The module is '
+            + 'otherwise a module on both: getModules lists it, getPackages does not, and its priority and '
+            + 'sync flag carry over.',
+        reason:
+            'The recorded path is on the original machine\'s disk, which a browser cannot open; the module '
+            + 'reloads from, and syncs to, the VFS copy. Reporting the old path would hand scripts a file that '
+            + 'installModule/reinstall cannot read.',
+        issue: '#279',
+    },
 ];

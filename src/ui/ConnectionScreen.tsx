@@ -116,7 +116,7 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
     // rest, otherwise provision the profile immediately.
     const beginImport = async (bundle: MudletProfileBundle) => {
         const { resolved, unresolved } = resolveModulesFromTree(bundle);
-        for (const r of resolved) addModuleToBundle(bundle, r.ref.key, r.xmlBytes);
+        for (const r of resolved) addModuleToBundle(bundle, r.ref, r.xmlBytes, r.path);
         if (unresolved.length) { setPendingImports(q => [...q, { bundle, unresolved }]); return; }
         await provision(bundle);
     };
@@ -172,7 +172,9 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
         if (!p) return;
         setPendingImports(q => q.slice(1));
         void runImport(async () => {
-            for (const u of uploads) addModuleToBundle(p.bundle, u.key, u.bytes);
+            for (const u of uploads) {
+                addModuleToBundle(p.bundle, p.unresolved.find(m => m.key === u.key) ?? u.key, u.bytes);
+            }
             await provision(p.bundle);
         });
     };

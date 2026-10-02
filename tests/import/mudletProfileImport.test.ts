@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { zipSync, strToU8 } from 'fflate';
 import { buildMudletProfileBundle, extractMudletProfileZip, resolveModulesFromTree, addModuleToBundle } from '../../src/import/mudletProfileImport';
+import { bundleToConnectionData } from '../../src/import/applyMudletProfile';
 
 function profileXml(opts: { sep: string; varName: string; varValue: string }): string {
     return `<?xml version="1.0" encoding="UTF-8"?>
@@ -124,13 +125,38 @@ describe('module resolution', () => {
         expect(unresolved.map(m => m.key)).toEqual(['missing']);
     });
 
-    it('folds a resolved/uploaded module in as a removable package', () => {
+    it('folds a resolved module in tagged with its key', () => {
         const bundle = buildMudletProfileBundle(profileWithModule());
         addModuleToBundle(bundle, 'buttons', strToU8(MODULE_XML));
         // The module's alias is imported and tagged with the module key.
         const alias = bundle.profile.automation.aliases.find(a => a.name === 'btn');
         expect(alias?.packageName).toBe('buttons');
         expect(bundle.packages.some(p => p.name === 'buttons')).toBe(true);
+    });
+
+    // Issue #279: a desktop module arrived as a package — getPackages listed
+    // it, getModules did not, and its priority, sync flag and path were gone.
+    it('keeps a tree-resolved module a module, with its sync flag, priority and file', () => {
+        const bundle = buildMudletProfileBundle(profileWithModule());
+        const { resolved } = resolveModulesFromTree(bundle);
+        for (const r of resolved) addModuleToBundle(bundle, r.ref, r.xmlBytes, r.path);
+        const m = bundle.packages.find(p => p.name === 'buttons');
+        expect(m).toMatchObject({ kind: 'module', sync: false, priority: 0, xmlVfsPath: 'some/buttons.xml' });
+    });
+
+    it('stores an uploaded module\'s XML in the profile and keeps its <globalSave>/<priority>', () => {
+        const bundle = buildMudletProfileBundle(profileWithModule());
+        addModuleToBundle(bundle, 'missing', strToU8(MODULE_XML));
+        const m = bundle.packages.find(p => p.name === 'missing');
+        expect(m).toMatchObject({ kind: 'module', sync: true, priority: 2, xmlVfsPath: 'missing/missing.xml' });
+        expect(bundle.files['missing/missing.xml']).toEqual(strToU8(MODULE_XML));
+    });
+
+    it('anchors the module XML path in the new profile\'s VFS', () => {
+        const bundle = buildMudletProfileBundle(profileWithModule());
+        addModuleToBundle(bundle, 'missing', strToU8(MODULE_XML));
+        const data = bundleToConnectionData(bundle, '2026-01-01T00:00:00Z', '/profiles/abc');
+        expect(data.packages.find(p => p.name === 'missing')?.xmlVfsPath).toBe('/profiles/abc/missing/missing.xml');
     });
 });
 

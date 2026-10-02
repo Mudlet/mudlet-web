@@ -25,7 +25,8 @@ export interface MudletProfileBundle {
     hostPackageXml?: string;
     /** Manifests for the profile's installed packages (from <mInstalledPackages>,
      *  metadata from each package's config.lua). Registered on import so
-     *  getPackageInfo / package managers see them as installed. */
+     *  getPackageInfo / package managers see them as installed. Folded-in
+     *  modules join them as `kind: 'module'` manifests (addModuleToBundle). */
     packages: PackageManifest[];
     /** Modules the profile loads from external local XML files — unresolvable in a
      *  browser; the import UI asks the user to upload or drop each. */
@@ -280,13 +281,16 @@ export function extractMudletProfileZipAll(
 // A Mudlet module loads its content from an external XML file on the user's disk
 // (e.g. C:/Users/.../buttons.xml). A browser can't read that path, but the file
 // is sometimes present inside the imported profile tree — so we match by
-// basename. Whatever's resolved is baked into the profile as a normal (removable)
-// package; a browser can't live-sync to an external file anyway. Anything not
-// found is surfaced for the user to upload or drop.
+// basename. Whatever's resolved stays a MODULE, as it is on desktop: its XML is
+// kept as a file in the new profile's VFS, which the module reloads from on
+// every open and (with its globalSave flag) syncs back to, and its priority is
+// carried over. Anything not found is surfaced for the user to upload or drop.
 
 export interface ResolvedModule {
     ref: MudletModuleRef;
     xmlBytes: Uint8Array;
+    /** Where the file was found, as a `bundle.files` key. */
+    path: string;
 }
 
 function fileBasename(path: string): string {
@@ -299,13 +303,13 @@ export function resolveModulesFromTree(bundle: MudletProfileBundle): {
     resolved: ResolvedModule[];
     unresolved: MudletModuleRef[];
 } {
-    const byBase = new Map<string, Uint8Array>();
-    for (const [p, b] of Object.entries(bundle.files)) byBase.set(fileBasename(p), b);
+    const byBase = new Map<string, string>();
+    for (const p of Object.keys(bundle.files)) byBase.set(fileBasename(p), p);
     const resolved: ResolvedModule[] = [];
     const unresolved: MudletModuleRef[] = [];
     for (const ref of bundle.modules) {
-        const bytes = byBase.get(fileBasename(ref.filepath));
-        if (bytes) resolved.push({ ref, xmlBytes: bytes });
+        const path = byBase.get(fileBasename(ref.filepath));
+        if (path) resolved.push({ ref, xmlBytes: bundle.files[path], path });
         else unresolved.push(ref);
     }
     return { resolved, unresolved };
@@ -313,12 +317,30 @@ export function resolveModulesFromTree(bundle: MudletProfileBundle): {
 
 /**
  * Fold a resolved/uploaded module's XML into the bundle: its triggers/aliases/…
- * are parsed (grouped + tagged under the module key, so it's a removable unit)
- * and appended to the automation, and a manifest is registered. Mutates and
- * returns the bundle. Treated as a package — the live-sync-to-disk behaviour
- * doesn't apply in a browser.
+ * are parsed (tagged under the module key) and appended to the automation, and
+ * a MODULE manifest is registered — `kind: 'module'`, the `<globalSave>` flag
+ * as `sync`, its `<priority>` — so getModules/getModulePriority/getModulePath
+ * see it the way desktop does, and getPackages does not (issue #279).
+ *
+ * The XML has to exist as a file for the module to reload from: `treePath` is
+ * where the import tree already holds it (see resolveModulesFromTree); an
+ * uploaded file is added to `bundle.files` under `<key>/<its filename>`. The
+ * manifest's `xmlVfsPath` is that path relative to the profile root until
+ * bundleToConnectionData anchors it in the new profile's VFS.
+ *
+ * `module` may be the bare key, in which case the rest of its entry is looked
+ * up in `bundle.modules`. Mutates and returns the bundle.
  */
-export function addModuleToBundle(bundle: MudletProfileBundle, key: string, xmlBytes: Uint8Array): MudletProfileBundle {
+export function addModuleToBundle(
+    bundle: MudletProfileBundle,
+    module: MudletModuleRef | string,
+    xmlBytes: Uint8Array,
+    treePath?: string,
+): MudletProfileBundle {
+    const ref: MudletModuleRef = typeof module === 'string'
+        ? bundle.modules.find(m => m.key === module) ?? { key: module, filepath: '', globalSave: false, priority: 0 }
+        : module;
+    const key = ref.key;
     const parsed = parseMudletXml(strFromU8(xmlBytes), { packageName: key });
     const a = bundle.profile.automation;
     a.scripts.push(...parsed.scripts);
@@ -331,8 +353,26 @@ export function addModuleToBundle(bundle: MudletProfileBundle, key: string, xmlB
     // Named, because by this point the user has hand-picked the file this came
     // from and needs to know which one the complaint is about.
     for (const w of parsed.warnings) bundle.warnings.push(`Module "${key}": ${w}`);
-    if (!bundle.packages.some(p => p.name === key)) {
-        bundle.packages.push({ name: key, installedAt: '', kind: 'package' });
+    let relPath = treePath && bundle.files[treePath] ? treePath : undefined;
+    if (!relPath) {
+        const filename = ref.filepath.replace(/\\/g, '/').split('/').pop() || `${key}.xml`;
+        relPath = `${key}/${filename}`;
+        bundle.files[relPath] = xmlBytes;
     }
+    const manifest: PackageManifest = {
+        name: key,
+        installedAt: '',
+        kind: 'module',
+        sync: ref.globalSave,
+        priority: ref.priority,
+        xmlVfsPath: relPath,
+        sourceFile: relPath.split('/').pop(),
+    };
+    // A module named in <mInstalledPackages> too is a module: desktop's
+    // getPackages lists only what mInstalledPackages holds, but our store keeps
+    // one manifest per name, and the module's is the one that loads it.
+    const at = bundle.packages.findIndex(p => p.name === key);
+    if (at === -1) bundle.packages.push(manifest);
+    else bundle.packages[at] = manifest;
     return bundle;
 }

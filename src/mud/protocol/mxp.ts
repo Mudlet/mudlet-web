@@ -136,6 +136,11 @@ export interface MxpLineResult {
 }
 
 type MxpMode = "open" | "secure" | "locked";
+/** The mode in force right now: one of the three, or TEMP SECURE (`ESC[4z`),
+ *  which is a mode of its own in Mudlet (MXP_MODE_TEMP_SECURE) — it replaces
+ *  the line's mode until the next recognised tag, then hands over to the
+ *  default mode rather than back to the line's. */
+type LineMode = MxpMode | "tempSecure";
 
 interface ElementDef {
     name: string;
@@ -293,9 +298,10 @@ export class MxpParser {
     // --- persistent across the whole session ---
     private elements = new Map<string, ElementDef>();
     private entities = new Map<string, string>();
-    private lineMode: MxpMode = "open";
+    private lineMode: LineMode = "open";
+    /** Mudlet's mMXP_DEFAULT — the mode a newline, an `ESC[3z` reset and the
+     *  end of a temp-secure tag return to. Null is OPEN, the initial default. */
     private lockedMode: MxpMode | null = null;
-    private tempSecure = false;
     private stack: OpenTag[] = [];
     /** Active MXP `<COLOR>`/`<FONT>` fg/bg overrides, innermost last. While
      *  non-empty, the top entry's colours are painted over whatever the ANSI
@@ -422,7 +428,6 @@ export class MxpParser {
         this.entities.clear();
         this.lineMode = "open";
         this.lockedMode = null;
-        this.tempSecure = false;
         this.stack = [];
         this.mxpColorStack = [];
         this.pendingTag = "";
@@ -502,7 +507,7 @@ export class MxpParser {
         return result;
     }
 
-    private effectiveMode(): MxpMode {
+    private effectiveMode(): LineMode {
         // The current line's mode. Lock modes (5/6/7) only change the *default*
         // that `resetTransientMode` restores at the start of each new line — they
         // are NOT an override that beats a per-line mode tag (0/1/2). Servers that
@@ -521,7 +526,6 @@ export class MxpParser {
         // Transient OPEN/SECURE/LOCKED (modes 0/1/2) last only for the current
         // line; at the newline we revert to the locked mode, or OPEN by default.
         this.lineMode = this.lockedMode ?? "open";
-        this.tempSecure = false;
     }
 
     /** Take off the styling open tags put on — bold, italic, underline,
@@ -734,14 +738,16 @@ export class MxpParser {
             case 0: this.lineMode = "open"; break;
             case 1: this.lineMode = "secure"; break;
             case 2: this.lineMode = "locked"; break;
-            case 3: // reset — close everything, back to defaults
+            case 3:
+                // Reset: close everything and drop the styling, then fall back
+                // to the DEFAULT mode — which a lock (ESC[5z/6z/7z, or the
+                // locked start of a bare IAC SB MXP IAC SE) set and a reset
+                // keeps. Mudlet: `mMXP_MODE = mMXP_DEFAULT`; it is not OPEN.
                 this.closeAllTags();
                 this.fmt.reset();
-                this.lineMode = "open";
-                this.lockedMode = null;
-                this.tempSecure = false;
+                this.lineMode = this.lockedMode ?? "open";
                 break;
-            case 4: this.tempSecure = true; break;
+            case 4: this.lineMode = "tempSecure"; break;
             case 5: case 7:
                 // A forced processor holds its secure lock against a game
                 // that would unlock it (shouldLockModeToSecure).
@@ -775,9 +781,15 @@ export class MxpParser {
         const trimmed = raw.trim();
         if (trimmed === "") return;
 
-        // Temp-secure (mode 4) makes exactly the next tag secure.
-        const secure = this.tempSecure || this.effectiveMode() === "secure";
-        this.tempSecure = false;
+        const mode = this.effectiveMode();
+        const secure = mode === "secure" || mode === "tempSecure";
+        // Temp-secure (mode 4) lasts for one recognised tag, after which the
+        // DEFAULT mode is in force for the rest of the line — not whatever the
+        // line was in before (TMxpProcessor::processMxpInput). A name Mudlet
+        // does not know is rejected before that point and leaves it pending.
+        if (mode === "tempSecure" && this.isRecognisedTag(trimmed)) {
+            this.lineMode = this.lockedMode ?? "open";
+        }
 
         if (trimmed.startsWith("!")) {
             if (!secure || !this.handleDefinition(trimmed)) this.showAsText(raw);
@@ -819,6 +831,16 @@ export class MxpParser {
 
     private isKnownTag(name: string): boolean {
         return SUPPORTED_ELEMENTS.has(name) || CONSUMED_ELEMENTS.has(name) || this.elements.has(name);
+    }
+
+    /** Whether Mudlet would recognise a tag (its trimmed raw text) as MXP —
+     *  the definitions it lists in allMxpTags, or a known element, open or
+     *  closing. What it does not recognise it rejects as text before the
+     *  temp-secure mode is spent. */
+    private isRecognisedTag(trimmed: string): boolean {
+        if (trimmed.startsWith("!")) return /^!(element|el|attlist|at|entity|en|tag|--)(?![a-z])/i.test(trimmed);
+        const body = trimmed.startsWith("/") ? trimmed.slice(1).trim() : trimmed;
+        return this.isKnownTag(body.split(/[\s>]/)[0].toLowerCase());
     }
 
         private openAllowed(name: string): boolean {

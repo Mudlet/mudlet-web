@@ -343,9 +343,10 @@ export function applyInstalledPackages(host: Element, names: string[]): void {
  * - the automation and variable packages, which are regenerated from live state
  *   on every write; keeping a copy here would ship the same data twice, in two
  *   formats, and let a stale one resurface.
- * - `<mInstalledModules>`, because import folds a resolved module into an
- *   ordinary package. A surviving reference would make Mudlet load it a second
- *   time from the absolute path it had on the original machine.
+ * - `<mInstalledModules>`, because import re-registers each resolved module
+ *   against a copy of its XML inside the new profile. A surviving reference
+ *   would make Mudlet load it a second time from the absolute path it had on
+ *   the original machine.
  *
  * Returns null if `profileXml` doesn't parse or carries no `<HostPackage>`.
  */
