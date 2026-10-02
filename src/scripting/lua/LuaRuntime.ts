@@ -6,7 +6,7 @@ import {Lua, LuaReturn, LuaType, LUA_GLOBALSINDEX, LUA_REGISTRYINDEX, LuaThread}
 // hand back a base-aware same-origin URL we pass as `customWasmUri` below.
 import luaWasmUrl from 'wasmoon-lua5.1/dist/liblua5.1.wasm?url';
 import {unzipSync, strFromU8} from 'fflate';
-import type {IScriptingRuntime, CaptureSpan, LuaGlobalEntry, VariableEdit} from '../IScriptingRuntime';
+import type {IScriptingRuntime, CaptureSpan, LuaGlobalEntry, ScriptHandlerEntry, VariableEdit} from '../IScriptingRuntime';
 import type {ScriptingAPI} from '../ScriptingAPI';
 import type {ProfileVFS} from '../vfs/ProfileVFS';
 import {describeFsError} from '../vfs/fsErrors';
@@ -4441,10 +4441,17 @@ end`);
         return true;
     }
 
-    killScriptHandlers(scriptId: string): void {
-        if (this.inert) return;
-        this.lua.global.set('__mudlet_kill_sid', scriptId);
-        this.runChunk('__mudlet_kill_script_handlers(__mudlet_kill_sid)', 'kill-script-handlers');
+    syncScriptHandlers(entries: ScriptHandlerEntry[]): void {
+        if (this.inert || entries.length === 0) return;
+        // One string, one chunk, however many scripts changed: a group toggle
+        // flips every script under it.
+        const flat = entries
+            .map(e => [e.id, e.name, e.active ? '1' : '0',
+                e.events.filter(ev => ev !== '').join('\u0003')].join('\u0002'))
+            .join('\u0001');
+        this.lua.global.set('__mudlet_sync_flat', flat);
+        this.runChunk('__mudlet_sync_script_handlers(__mudlet_sync_flat); __mudlet_sync_flat = nil',
+            'sync-script-handlers');
     }
 
     /**

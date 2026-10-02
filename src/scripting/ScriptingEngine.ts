@@ -74,7 +74,7 @@ function inheritedPackage(items: readonly BaseTreeNode[], parentId: string | nul
     return packageName ? { packageName } : {};
 }
 import {LuaRuntime} from './lua/LuaRuntime';
-import type {IScriptingRuntime, LuaGlobalEntry, VariableEdit} from './IScriptingRuntime';
+import type {IScriptingRuntime, LuaGlobalEntry, ScriptHandlerEntry, VariableEdit} from './IScriptingRuntime';
 import {ProfileVFS} from './vfs/ProfileVFS';
 import {rewriteVfsUrlsInCss} from './vfs/cssRewrite';
 import {rewriteVfsUrlsInHtml} from './vfs/htmlRewrite';
@@ -443,6 +443,14 @@ export class ScriptingEngine implements EngineHost {
     // Last seen script list for the active connection. Used to diff against
     // the next store update so we know which scripts to load/unload.
     private prevScripts: ScriptNode[] = [];
+    // False until the profile's scripts have been loaded into the current
+    // runtime (and again after resetProfile recreates it): the next
+    // applyScriptsFromStore is then a profile load, not an edit.
+    private profileScriptsCompiled = false;
+    // What the runtime was last told about each script's event-handler-list
+    // registration, so applyScriptsFromStore only sends what changed. Only
+    // scripts that are registered (list non-empty) are kept.
+    private readonly scriptHandlerState = new Map<string, { name: string; active: boolean; key: string }>();
     // resetProfile() coalescing + a teardown guard so a deferred reset that
     // fires after the engine was destroyed is a no-op.
     private resetting = false;
@@ -1618,38 +1626,95 @@ export class ScriptingEngine implements EngineHost {
         const next = useAppStore.getState().connectionScripts[this.connectionId] ?? [];
         const prev = this.prevScripts;
         this.prevScripts = next;
-        if (prev === next) return;
+        if (prev === next && this.profileScriptsCompiled) return;
+        const profileLoad = !this.profileScriptsCompiled;
+        this.profileScriptsCompiled = true;
+        if (profileLoad) this.scriptHandlerState.clear();
 
-        const prevEnabledIds = buildEffectivelyEnabledIds(prev);
         const nextEnabledIds = buildEffectivelyEnabledIds(next);
-        const prevEnabled = new Map(
-            prev.filter(s => s.language === 'lua' && prevEnabledIds.has(s.id))
-                .map(s => [s.id, s] as const),
-        );
-        const nextEnabledLuaIds = new Set(
-            next.filter(s => s.language === 'lua' && nextEnabledIds.has(s.id))
-                .map(s => s.id),
-        );
-        for (const id of prevEnabled.keys()) {
-            if (!nextEnabledLuaIds.has(id)) this.unloadScript(id);
+        const priorityMap = this.modulePriorityMap();
+        const isModuleScript = (s: ScriptNode): boolean =>
+            !!s.packageName && priorityMap.has(s.packageName);
+
+        // Event-handler lists first (Host::mEventHandlerMap). Every script that
+        // lists events is registered, enabled or not — desktop registers them as
+        // the XML is read and asks isActive() && ancestorsActive() only when an
+        // event comes (TScript::callEventHandler). Registration order is load
+        // order: the profile's own tree first, then modules by priority, which
+        // install after it (mudlet::slot_connectionDialogueFinished).
+        const registrationOrder = next
+            .map((s, idx) => ({ s, idx, mod: isModuleScript(s), prio: priorityFor(s, priorityMap) }))
+            .sort((a, b) => Number(a.mod) - Number(b.mod) || (a.mod ? a.prio - b.prio : 0) || a.idx - b.idx);
+        const handlerUpdates: ScriptHandlerEntry[] = [];
+        const seen = new Set<string>();
+        for (const { s } of registrationOrder) {
+            if (s.language !== 'lua') continue;
+            const events = s.eventHandlers.filter(e => e !== '');
+            const had = this.scriptHandlerState.get(s.id);
+            if (events.length === 0) continue;
+            seen.add(s.id);
+            const state = { name: s.name, active: nextEnabledIds.has(s.id), key: events.join('\n') };
+            if (had && had.name === state.name && had.active === state.active && had.key === state.key) continue;
+            this.scriptHandlerState.set(s.id, state);
+            handlerUpdates.push({ id: s.id, name: s.name, active: state.active, events });
         }
+        for (const id of [...this.scriptHandlerState.keys()]) {
+            if (seen.has(id)) continue;
+            this.scriptHandlerState.delete(id);
+            handlerUpdates.push({ id, name: '', active: false, events: [] });
+        }
+        if (handlerUpdates.length > 0) this.syncScriptHandlers(handlerUpdates);
+
+        // Then the bodies — only where desktop compiles a script, which is NOT
+        // when it is switched on: ScriptUnit::enableScript only flips the flag,
+        // so a script never compiled stays that way (its handler then finds no
+        // function), and one already compiled is not run again.
+        //  - Profile load: ScriptUnit::compileAll compiles every script under a
+        //    root that is active, children whatever their own switch says;
+        //    modules are compiled as they are imported, active or not.
+        //  - Afterwards: a script that is new or whose code changed is compiled
+        //    by TScript::setScript / the XML import, active or not.
         // Mudlet-style module load priority: scripts owned by modules with a
         // negative priority load before profile scripts; non-negative priorities
         // load after. Within a priority bucket, original array order is preserved
         // so existing trees stay deterministic. Profile-owned scripts (no
         // packageName) are treated as priority 0.
-        const priorityMap = this.modulePriorityMap();
+        const byId = new Map(next.map(s => [s.id, s] as const));
+        const rootActive = (s: ScriptNode): boolean => {
+            let node: ScriptNode = s;
+            const visited = new Set<string>();
+            while (node.parentId && !visited.has(node.id)) {
+                visited.add(node.id);
+                const parent = byId.get(node.parentId);
+                if (!parent) break;
+                node = parent;
+            }
+            return node.enabled;
+        };
+        const prevById = profileLoad ? null : new Map(prev.map(s => [s.id, s] as const));
         const orderedNext = next
             .map((s, idx) => ({ s, idx, prio: priorityFor(s, priorityMap) }))
             .sort((a, b) => a.prio - b.prio || a.idx - b.idx);
         for (const { s } of orderedNext) {
-            if (s.language !== 'lua' || !nextEnabledIds.has(s.id)) continue;
-            const was = prevEnabled.get(s.id);
-            const handlersChanged = !!was && was.eventHandlers.join('\n') !== s.eventHandlers.join('\n');
-            if (!was || was.code !== s.code || handlersChanged) {
-                this.reloadScript(s);
+            if (s.language !== 'lua') continue;
+            let compile: boolean;
+            if (prevById) {
+                const was = prevById.get(s.id);
+                compile = !was || was.language !== 'lua' || was.code !== s.code;
+            } else {
+                compile = isModuleScript(s) || rootActive(s);
             }
+            if (compile) this.reloadScript(s);
         }
+    }
+
+    private syncScriptHandlers(entries: ScriptHandlerEntry[]): void {
+        if (this.disposed) return;
+        const rt = this.runtimes.lua;
+        if (rt) { rt.syncScriptHandlers(entries); return; }
+        this.runtimeReady
+            .then(rt => { if (!this.disposed) rt.syncScriptHandlers(entries); })
+            .catch(() => {});
     }
 
     /** Map of module name → priority. Profile (no packageName) is implicitly 0. */
@@ -1950,21 +2015,6 @@ export class ScriptingEngine implements EngineHost {
             this.api.printError(`[scripting] Lua runtime init failed: ${msg}`);
             throw err;
         });
-    }
-
-    /**
-     * Tear down a script's event-handler registrations. Used when a script is
-     * removed or transitions enabled→disabled so its handlers stop firing
-     * before the next full runtime reload.
-     *
-     * Runs synchronously once the runtime is up so the store-subscription
-     * pipeline (script removed → handlers gone) completes inside the same
-     * tick as the store mutation. See attachToStore for the rationale.
-     */
-    unloadScript(scriptId: string): void {
-        const rt = this.runtimes.lua;
-        if (rt) { rt.killScriptHandlers(scriptId); return; }
-        this.runtimeReady.then(rt => rt.killScriptHandlers(scriptId)).catch(() => {});
     }
 
     /**
@@ -4039,11 +4089,11 @@ export class ScriptingEngine implements EngineHost {
     /**
      * Force-run a profile script's body right now, even if its code is unchanged.
      * Backs the editor's "Run" / "Save & Run" button: the store subscription only
-     * re-runs a script when its code or handlers actually change (so editing one
+     * re-runs a script when its code actually changes (so editing one
      * script doesn't re-execute its untouched siblings), which means clicking
      * "Run" twice — or running a script you didn't edit — would otherwise do
-     * nothing. wrapScript kills the script's previously registered anonymous
-     * handlers before re-registering, so repeated runs stay idempotent.
+     * nothing. Event-handler registrations live apart from the body (see
+     * applyScriptsFromStore), so repeated runs stay idempotent.
      */
     runScript(scriptId: string): void {
         const node = (useAppStore.getState().connectionScripts[this.connectionId] ?? [])
@@ -4053,7 +4103,7 @@ export class ScriptingEngine implements EngineHost {
 
     private runScriptLoad(rt: IScriptingRuntime, script: ScriptNode): void {
         try {
-            rt.load(this.wrapScript(script), script.name);
+            rt.load(script.code, script.name);
         } catch (err) {
             this.reportEntityError('script', script.id, script.name, err);
         }
@@ -4325,6 +4375,7 @@ export class ScriptingEngine implements EngineHost {
             //    the load event. Resetting prevScripts forces a full reload
             //    (every enabled script is treated as new).
             this.prevScripts = [];
+            this.profileScriptsCompiled = false;
             this.triggersReady = true; // PCRE wasm resolved long before any reset
             this.restoreSavedVariables();
             // Saved triggers keep their place ahead of temps the scripts create.
@@ -4751,41 +4802,6 @@ export class ScriptingEngine implements EngineHost {
         const line = parseLuaErrorLine(msg);
         if (line !== undefined) source.line = line;
         this.api.printError(`[${prefix}] ${msg}`, source);
-    }
-
-    // Mudlet TScript semantics: the body runs at load time (defining e.g.
-    // `function MyScript(event, ...) ... end` as a global), and each event
-    // handler fires by looking up the function named after the script and
-    // calling it. We resolve by name on every dispatch (not by capturing a
-    // function reference) so re-saving the script picks up the new function,
-    // and so missing/mistyped names silently no-op like Mudlet.
-    //
-    // The lookup goes through __mudlet_resolve_handler, which walks dotted names
-    // the way Mudlet's `return <name>` evaluation does — packages commonly name
-    // a script after the table field it defines (`mmp.centerRoominfo`), and a
-    // flat _G[name] lookup would never find those.
-    //
-    // The wrapper also kills any previously-registered handlers for this
-    // script (Bridge.lua's __mudlet_script_handlers tracks IDs by script id)
-    // so re-saving doesn't accumulate duplicate registrations.
-    private wrapScript(script: ScriptNode): string {
-        if (script.eventHandlers.length === 0) return script.code;
-        const sidLiteral = JSON.stringify(script.id);
-        const nameLiteral = JSON.stringify(script.name);
-        const registrations = script.eventHandlers
-            .map(e =>
-                `__mudlet_script_handlers[${sidLiteral}][#__mudlet_script_handlers[${sidLiteral}]+1] = ` +
-                `registerAnonymousEventHandler(${JSON.stringify(e)}, function(...) ` +
-                `local __fn = __mudlet_resolve_handler(${nameLiteral}); ` +
-                `if __fn then return __fn(...) end ` +
-                `end)`)
-            .join('\n');
-        return [
-            `__mudlet_kill_script_handlers(${sidLiteral})`,
-            `__mudlet_script_handlers[${sidLiteral}] = {}`,
-            script.code,
-            registrations,
-        ].join('\n');
     }
 
     private executePermAlias(alias: AliasNode, matches: string[], named?: Record<string, string>): void {

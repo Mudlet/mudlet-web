@@ -3713,11 +3713,97 @@ __mudlet_native_handlers = __mudlet_native_handlers or {}
 function registerAnonymousEventHandler(event, func)
     event, func = __mudlet_str(event), __mudlet_str(func)
     if event == nil or func == nil then return 0 end
-    local list = __mudlet_native_handlers[event]
-    if not list then list = {}; __mudlet_native_handlers[event] = list end
+    local list = __mudlet_native_handlers[event] or {}
     for _, existing in ipairs(list) do if existing == func then return 0 end end
-    list[#list + 1] = func
+    -- Copy-on-write: a dispatch holds the list it started with, so the list is
+    -- replaced rather than appended to — that is the snapshot, for free.
+    local copy = {}
+    for i = 1, #list do copy[i] = list[i] end
+    copy[#copy + 1] = func
+    __mudlet_native_handlers[event] = copy
     return 0
+end
+
+-- Scripts' event-handler lists: Host::mEventHandlerMap. Each event maps to the
+-- scripts listing it, in the order they were registered (TScript::
+-- setEventHandlerList appends) — tree order for a loaded profile. A list is
+-- never changed in place, only replaced, so a dispatch that grabbed it keeps
+-- the copy Host::raiseEvent takes without allocating one per event.
+--
+-- A script stays registered while it is disabled, as on desktop: whether it
+-- runs is decided at dispatch time (TScript::callEventHandler checks
+-- isActive() && ancestorsActive()), from the record's `active` flag, which
+-- ScriptingEngine keeps current. The function is looked up by the script's
+-- name on every call, as TLuaInterpreter::callEventHandler does.
+__mudlet_script_events = __mudlet_script_events or {}
+__mudlet_script_records = __mudlet_script_records or {}
+
+local function __mudlet_script_events_without(event, rec)
+    local list = __mudlet_script_events[event]
+    if not list then return end
+    local copy = {}
+    for i = 1, #list do
+        if list[i] ~= rec then copy[#copy + 1] = list[i] end
+    end
+    __mudlet_script_events[event] = (#copy > 0) and copy or nil
+end
+
+local function __mudlet_script_events_with(event, rec)
+    local list = __mudlet_script_events[event] or {}
+    local copy = {}
+    for i = 1, #list do copy[i] = list[i] end
+    copy[#copy + 1] = rec
+    __mudlet_script_events[event] = copy
+end
+
+-- Bring scripts' registrations up to date. `flat` is one entry per script,
+-- joined by \1: sid \2 name \2 active ("1"/"0") \2 events joined by \3. An
+-- entry with no events unregisters the script (also how a deleted script is
+-- dropped). A changed event list re-registers the script at the end of each
+-- list, as setEventHandlerList does; a name or active change alone keeps its
+-- place.
+function __mudlet_sync_script_handlers(flat)
+    for entry in tostring(flat or ""):gmatch("[^\1]+") do
+        local sid, name, active, events = entry:match("^([^\2]*)\2([^\2]*)\2([^\2]*)\2(.*)$")
+        if sid then
+            local rec = __mudlet_script_records[sid]
+            if rec and rec.key ~= events then
+                for _, e in ipairs(rec.events) do __mudlet_script_events_without(e, rec) end
+                __mudlet_script_records[sid] = nil
+                rec = nil
+            end
+            if events ~= "" then
+                if not rec then
+                    rec = { key = events, events = {} }
+                    local seen = {}
+                    for e in events:gmatch("[^\3]+") do
+                        -- Host::registerEventHandler lists a script once per event.
+                        if not seen[e] then
+                            seen[e] = true
+                            rec.events[#rec.events + 1] = e
+                            __mudlet_script_events_with(e, rec)
+                        end
+                    end
+                    __mudlet_script_records[sid] = rec
+                end
+                rec.name = name
+                rec.active = active == "1"
+            end
+        end
+    end
+end
+
+local function __mudlet_run_script_handlers(list, event, args, argc)
+    for i = 1, #list do
+        local rec = list[i]
+        if rec.active then
+            local f = __mudlet_resolve_handler(rec.name)
+            if f then
+                local ok, err = __mudlet_pcall_co(f, event, unpack(args, 1, argc))
+                if not ok and type(showHandlerError) == 'function' then showHandlerError(event, err) end
+            end
+        end
+    end
 end
 
 -- Mudlet's Host::raiseEvent: runs every handler for `event` right now, with
@@ -3729,18 +3815,28 @@ end
 -- the event's name is not one: Mudlet never looks it up, and doing so turned a
 -- user's `function connect()` into a handler for Mudlet Web's `connect` event.
 --
+-- Order is Host::raiseEvent's: every script's event-handler-list handler for
+-- the event, then those listing "*", and only then the anonymous handlers
+-- (registerAnonymousEventHandler) — never interleaved by registration order.
+--
 -- Each handler list is snapshotted before the first call (here, and in the
 -- dispatchEventToFunctions override installed after Other.lua), so a handler
 -- registered while this event is in flight — even by a nested event — waits
--- for the next raise instead of receiving the one that registered it.
+-- for the next raise instead of receiving the one that registered it. The
+-- anonymous half of that differs from desktop, which walks Other.lua's live
+-- table; see PLATFORM_DIVERGENCES in e2e/knownDivergences.ts.
 function __mudlet_dispatch(event, args, argc)
+    local scriptList = __mudlet_script_events[event]
+    if scriptList then __mudlet_run_script_handlers(scriptList, event, args, argc) end
+    scriptList = __mudlet_script_events["*"]
+    if scriptList then __mudlet_run_script_handlers(scriptList, event, args, argc) end
     -- Native handlers registered before Other.lua overrode registerAnonymousEventHandler.
     -- Mudlet's C++ raiseEvent passes `event` as the first argument followed by event args.
+    -- The list is copy-on-write (see registerAnonymousEventHandler), so holding
+    -- it is the snapshot.
     local nativeList = __mudlet_native_handlers[event]
     if nativeList then
-        local names = {}
-        for i, funcName in ipairs(nativeList) do names[i] = funcName end
-        for _, funcName in ipairs(names) do
+        for _, funcName in ipairs(nativeList) do
             local f = _G[funcName]
             if type(f) == 'function' then
                 -- __mudlet_pcall_co, not pcall: handlers may suspend via
@@ -3795,12 +3891,6 @@ function raiseEvent(event, ...)
     return true
 end
 
--- Per-script event-handler registry. wrapScript (in ScriptingEngine.ts) emits
--- code that calls __mudlet_kill_script_handlers before re-registering, so
--- saving a script doesn't accumulate duplicate handlers. JS calls the same
--- helper on disable/remove via LuaRuntime.killScriptHandlers.
-__mudlet_script_handlers = __mudlet_script_handlers or {}
-
 -- Resolve a script's event-handler function from its name.
 --
 -- Mudlet evaluates the script name as a Lua expression to find the function
@@ -3821,17 +3911,6 @@ function __mudlet_resolve_handler(name)
     end
     if type(target) == 'function' then return target end
     return nil
-end
-
-function __mudlet_kill_script_handlers(sid)
-    local ids = __mudlet_script_handlers[sid]
-    if not ids then return end
-    for i = 1, #ids do
-        if type(killAnonymousEventHandler) == 'function' then
-            pcall(killAnonymousEventHandler, ids[i])
-        end
-    end
-    __mudlet_script_handlers[sid] = nil
 end
 
 -- Mudlet REGEX_LUA_CODE pattern evaluator: run the body as a Lua chunk on

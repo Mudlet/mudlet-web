@@ -461,4 +461,23 @@ export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
             + 'decision.',
         issue: '#275',
     },
+    {
+        api: 'registerAnonymousEventHandler during a dispatch of the same event',
+        behaviour:
+            'A handler registered while its event is being dispatched (directly, or from a nested event) runs '
+            + 'in that same dispatch on desktop, which walks Other.lua\'s live handler table with pairs(). Mudlet '
+            + 'Web snapshots each handler list before calling into it, so the new handler first runs on the next '
+            + 'raise of the event. Killing a handler mid-dispatch behaves the same on both.',
+        reason:
+            'The snapshot (the dispatchEventToFunctions override in LuaRuntime\'s mudlet-lua-overrides) guards '
+            + 'the EleUI2 GitUpdater regression: a package installed from a sysDownloadDone handler registers its '
+            + 'own sysDownloadDone handler from sysInstallPackage, and a live walk hands it the very download that '
+            + 'installed it, which it takes for a finished update and uninstalls the package. Desktop is safe '
+            + 'from that only because Host::installPackage raises sysInstall/sysInstallPackage from a '
+            + 'QTimer::singleShot(0), after the dispatch that asked for the install has finished, whereas '
+            + 'ScriptingEngine.notifyPackageInstalled raises them synchronously. Dropping the snapshot needs the '
+            + 'install events (sysInstall, sysInstallPackage, sysLuaInstallModule, sysSyncInstallModule) deferred '
+            + 'the same way first, which reorders the profile-open bootstrap, held self-removals and UI installs.',
+        issue: '#282',
+    },
 ];

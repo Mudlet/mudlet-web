@@ -110,19 +110,28 @@ export class TimerEngine {
         // stopped and marked for cleanup, and TimerUnit::timerFired frees it —
         // along with anything else killed meanwhile — once no timer body is
         // left on the stack.
+        //
+        // Either kind is `firing` while its body runs. Every temp timer is a
+        // single-shot QTimer on desktop (TTimer.cpp: setSingleShot(isTemporary())),
+        // which Qt stops before delivering the timeout and which, for a repeat,
+        // only TimerUnit::timerFired restarts once the body has returned. So
+        // inside its own callback remainingTime() reads QTimer's -1 ("timer is
+        // inactive or expired"), and a nested event loop never fires it again.
         const fire = (): void => {
             if (repeat) arm();
-            else {
-                const entry = this.temp.get(id);
-                if (entry) entry.firing = true;
-            }
+            const firingEntry = this.temp.get(id);
+            if (firingEntry) firingEntry.firing = true;
             this.firingDepth++;
             try {
                 fn();
             } finally {
                 this.firingDepth--;
-                if (repeat) this.rearmIfOverdue(this.temp, id);
-                else {
+                if (repeat) {
+                    // Looked up again, as below: the body may have re-armed it.
+                    const entry = this.temp.get(id);
+                    if (entry) entry.firing = false;
+                    this.rearmIfOverdue(this.temp, id);
+                } else {
                     // Looked up again: a disable + enable inside the body
                     // replaced the entry with a freshly armed one.
                     const entry = this.temp.get(id);
@@ -615,7 +624,8 @@ export class TimerEngine {
         // A killed timer is still present until the reap, but it is stopped — so
         // it reports as inactive, not as an unknown id. That distinction is what
         // tells a caller the timer it just killed is really the one it found.
-        if (entry.dead || entry.disabled) return -1;
+        // A temp timer inside its own callback is stopped as well (see addTemp).
+        if (entry.dead || entry.disabled || entry.firing) return -1;
         const elapsed = Date.now() - entry.start;
         const ms = entry.repeat
             ? entry.intervalMs - (elapsed % entry.intervalMs)

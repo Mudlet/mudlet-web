@@ -46,6 +46,17 @@ export type VariableEdit =
     | { op: 'move'; path: VariablePathSegment[]; to: VariablePathSegment }
     | { op: 'delete'; path: VariablePathSegment[] };
 
+/** A script's event-handler-list registration (Host::mEventHandlerMap entry):
+ *  the name its handler function is looked up by, whether it may run right now
+ *  (isActive() && ancestorsActive()), and the events it lists. No events means
+ *  the script is not registered at all. */
+export interface ScriptHandlerEntry {
+    id: string;
+    name: string;
+    active: boolean;
+    events: string[];
+}
+
 export interface IScriptingRuntime {
     load(code: string, name: string): void;
     /** Execute a code chunk once, without match context. Used for timers and
@@ -134,11 +145,11 @@ export interface IScriptingRuntime {
      */
     startSpeedWalk(from: number, to: number): void;
     /**
-     * Kill every event handler registered by `wrapScript` for the given
-     * script id. Called when a script is removed or disabled so its handlers
-     * stop firing without waiting for a full runtime reload.
+     * Bring scripts' event-handler-list registrations up to date: register,
+     * re-register after a list change (to the end, as setEventHandlerList
+     * does), rename, flip the active flag, or drop one (empty `events`).
      */
-    killScriptHandlers(scriptId: string): void;
+    syncScriptHandlers(entries: ScriptHandlerEntry[]): void;
     /**
      * True when a script-created (temp) alias/trigger with this id is live and of
      * the given type. Backs exists(id, "alias"/"trigger") for temp items, which
