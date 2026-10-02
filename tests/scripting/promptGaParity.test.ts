@@ -230,4 +230,35 @@ describe('GA/EOR prompts vs. Mudlet (mudlet-web#288)', () => {
             expect(fired).toEqual(['R1 room|false', '|true', 'PROMPT:', 'R1 next|false']);
         });
     });
+
+    // TBuffer::commitLineData applies blankLinesBehaviour to the empty line
+    // before it looks at the prompt marker, so the empty prompt line a bare
+    // GA ends is subject to it like any other blank server line (#290).
+    describe('3. a bare GA/EOR under blankLinesBehaviour', () => {
+        const setConfig = (key: string, value: unknown) =>
+            (engine as unknown as { api: { setConfig: (k: string, v: unknown) => unknown } }).api.setConfig(key, value);
+
+        it('"hide" drops the empty prompt line, and no prompt trigger sees it', async () => {
+            await boot();
+            setConfig('blankLinesBehaviour', 'hide');
+            const before = main().getLineCount() + 1;
+
+            session.feedTelnet('H1 l1\r\n' + TELNET_GA + 'H1 l2\r\n');
+
+            expect(fired).toEqual(['H1 l1|false', 'H1 l2|false']);
+            expect(linesFrom(before)).toEqual(['H1 l1', 'H1 l2']);
+        });
+
+        it('"replacewithspace" stores a single-space prompt line and fires prompt triggers on it (they capture nothing)', async () => {
+            await boot();
+            setConfig('blankLinesBehaviour', 'replacewithspace');
+            const before = main().getLineCount() + 1;
+
+            session.feedTelnet('S1 l1\r\n' + TELNET_GA + 'S1 l2\r\n');
+
+            expect(fired).toEqual(['S1 l1|false', ' |true', 'PROMPT:', 'S1 l2|false']);
+            expect(linesFrom(before)).toEqual(['S1 l1', ' ', 'S1 l2']);
+            expect(lineAt(before + 1)?.isPrompt).toBe(true);
+        });
+    });
 });
