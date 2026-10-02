@@ -1588,21 +1588,27 @@ export class LuaRuntime implements IScriptingRuntime {
         // body (e.g. `Core.Supports.Add ["Char 1"]`), framed by IAC SB GMCP …
         // IAC SE. The optional second `what` arg is concatenated with a space
         // separator (Mudlet behaviour) so scripts can pass the package name
-        // and payload separately.
+        // and payload separately. An empty `what` adds nothing, not a lone
+        // space: Mudlet appends the separator only `if (!what.empty())`.
         this.lua.global.set('sendGMCP', (message: unknown, what?: unknown) => {
             const body = String(message ?? '');
-            const tail = what != null ? ' ' + String(what) : '';
+            const whatText = what != null ? String(what) : '';
+            const tail = whatText !== '' ? ' ' + whatText : '';
             this.api.sendGmcp(body + tail);
         });
         // Mudlet `sendMSDP(variable [, value, ...])`. The Bridge.lua wrapper
         // packs the variadic values into a \x01-delimited string (wasmoon's
         // varargs handling is unreliable); we split them back here. Frames as
-        // IAC SB MSDP MSDP_VAR var [MSDP_VAL val]... IAC SE.
-        this.lua.global.set('__mudlet_sendMSDP', (variable: unknown, valuesStr?: unknown) => {
+        // IAC SB MSDP MSDP_VAR var [MSDP_VAL val]... IAC SE. The value count
+        // travels separately because the packed string can't tell "no values"
+        // from one empty value - and Mudlet frames `sendMSDP("X", "")` with an
+        // empty VAL, not without one.
+        this.lua.global.set('__mudlet_sendMSDP', (variable: unknown, valuesStr?: unknown, count?: unknown) => {
             const v = String(variable ?? '');
             if (!v) return false;
             const s = valuesStr != null ? String(valuesStr) : '';
-            const values = s.length === 0 ? [] : s.split('\x01');
+            const n = typeof count === 'number' ? count : (s.length === 0 ? 0 : -1);
+            const values = n === 0 ? [] : s.split('\x01');
             return this.api.sendMSDP(v, values);
         });
         // Mudlet `sendSocket(data)`: send literal bytes over the socket, no
@@ -4527,7 +4533,11 @@ end`);
                 else api.lua_pushnumber(L, value);
                 return;
             case 'string':
-                api.lua_pushstring(L, value);
+                // lua_pushstring stops at the first NUL, so a GMCP "x\u0000y"
+                // arrived as "x". Mudlet's yajl decoder keeps the byte (Lua
+                // strings are counted), so push those with their UTF-8 length.
+                if (value.includes('\0')) api.lua_pushlstring(L, value, api.module.lengthBytesUTF8(value));
+                else api.lua_pushstring(L, value);
                 return;
             case 'boolean':
                 api.lua_pushboolean(L, value ? 1 : 0);

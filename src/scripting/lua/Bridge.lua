@@ -3606,9 +3606,19 @@ end
 
 function __mudlet_set_gmcp(key, value)
     if type(gmcp) ~= 'table' then gmcp = {} end
-    local parts = {}
-    for part in string.gmatch(key, '[^.]+') do parts[#parts + 1] = part end
-    if #parts == 0 then return end
+    if key == '' then return end
+    -- Split keeping empty segments, as parseJSON's QString::split('.') does:
+    -- "A..B" lands in gmcp.A[""].B and "A." in gmcp.A[""], not both in gmcp.A.
+    local parts, start = {}, 1
+    while true do
+        local dot = string.find(key, '.', start, true)
+        if not dot then
+            parts[#parts + 1] = string.sub(key, start)
+            break
+        end
+        parts[#parts + 1] = string.sub(key, start, dot - 1)
+        start = dot + 1
+    end
     local node = gmcp
     for i = 1, #parts - 1 do
         local k = parts[i]
@@ -4896,7 +4906,8 @@ end
 
 -- sendMSDP(variable [, value, ...]): pack the variadic values into a \x01
 -- string so the JS binding gets a stable shape regardless of wasmoon's
--- vararg handling. An empty value list concats to "" → no MSDP_VAL groups.
+-- vararg handling. The count goes along with it: an empty list and a single
+-- empty value both concat to "", but only the second gets an MSDP_VAL.
 do
     local _raw = __mudlet_sendMSDP
     function sendMSDP(variable, ...)
@@ -4912,7 +4923,7 @@ do
         if not __mudlet_is_connected() then
             return nil, "sendMSDP: not connected to game server - connect first before sending MSDP"
         end
-        return _raw(variable, table.concat(parts, '\1'))
+        return _raw(variable, table.concat(parts, '\1'), select('#', ...))
     end
 end
 

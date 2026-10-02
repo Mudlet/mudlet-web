@@ -98,8 +98,42 @@ describe('createMsdpStream', () => {
     ]);
   });
 
-  it('treats a variable with no value byte as empty string', () => {
-    expect(collect(body(MSDP_VAR + 'PING'))).toEqual([{ path: 'PING', value: '' }]);
+  it('drops a variable with no value byte, like msdp2Lua (issue #287)', () => {
+    // msdp2Lua queues a variable only once a VAL arrives for it, so a bare
+    // name never reaches setMSDPTable: no entry and no event.
+    expect(collect(body(MSDP_VAR + 'PING'))).toEqual([]);
+    // and it does not disturb the variable after it
+    expect(collect(body(MSDP_VAR + 'NOVAL' + MSDP_VAR + 'HP' + MSDP_VAL + '5'))).toEqual([
+      { path: 'HP', value: '5' },
+    ]);
+  });
+
+  it('keeps an empty value directly before TABLE_CLOSE / ARRAY_CLOSE (issue #287)', () => {
+    expect(
+      collect(
+        body(
+          MSDP_VAR + 'ROOM' + MSDP_VAL + MSDP_TABLE_OPEN +
+          MSDP_VAR + 'VNUM' + MSDP_VAL + '6008' +
+          MSDP_VAR + 'TERRAIN' + MSDP_VAL +
+          MSDP_TABLE_CLOSE +
+          MSDP_VAR + 'ARR' + MSDP_VAL + MSDP_ARRAY_OPEN +
+          MSDP_VAL + 'a' + MSDP_VAL +
+          MSDP_ARRAY_CLOSE +
+          MSDP_VAR + 'GROUP' + MSDP_VAL + MSDP_ARRAY_OPEN +
+          MSDP_VAL + MSDP_TABLE_OPEN +
+          MSDP_VAR + 'name' + MSDP_VAL + 'Bob' + MSDP_VAR + 'title' + MSDP_VAL +
+          MSDP_TABLE_CLOSE +
+          MSDP_VAL + MSDP_TABLE_OPEN +
+          MSDP_VAR + 'name' + MSDP_VAL + 'Al' + MSDP_VAR + 'title' + MSDP_VAL + 'x' +
+          MSDP_TABLE_CLOSE +
+          MSDP_ARRAY_CLOSE,
+        ),
+      ),
+    ).toEqual([
+      { path: 'ROOM', value: { VNUM: '6008', TERRAIN: '' } },
+      { path: 'ARR', value: ['a', ''] },
+      { path: 'GROUP', value: [{ name: 'Bob', title: '' }, { name: 'Al', title: 'x' }] },
+    ]);
   });
 
   it('ignores subnegotiations whose option byte is not MSDP', () => {

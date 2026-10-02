@@ -20,7 +20,9 @@ if yajl then
   json_to_value = yajl.to_value
 end
 gmcp = {}
-msdp = {}
+-- No msdp here: Mudlet's LuaGlobal.lua declares gmcp and mssp but not msdp,
+-- which setMSDPTable creates on the first variable - so `if msdp then` is how
+-- scripts tell whether the game has sent any MSDP yet.
 mssp = {}
 
 function __gmcp_merge_gmcp_sub_tables( a, key )

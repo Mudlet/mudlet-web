@@ -229,8 +229,8 @@ describe('msdp global — setMsdpValue', () => {
   beforeEach(async () => { env = await createTestRuntime(); });
   afterEach(() => env.dispose());
 
-  it('exposes an empty msdp table before any packet', () => {
-    expect(env.run('return type(msdp)')).toBe('table');
+  it('has no msdp table before any packet, as desktop (issue #287)', () => {
+    expect(env.run('return type(msdp)')).toBe('nil');
   });
 
   it('writes a scalar variable to the flat top-level key', () => {

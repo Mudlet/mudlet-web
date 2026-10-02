@@ -75,6 +75,8 @@ class MsdpParser {
     private malformed = false;
     /** The variable being read left a table/array open at end of input. */
     private truncated = false;
+    /** How many tables/arrays enclose the cursor - Mudlet's `nest`. */
+    private depth = 0;
     constructor(private readonly data: string) {}
 
     /** Top-level variables in wire order. Mudlet flushes each one separately, so
@@ -99,6 +101,13 @@ class MsdpParser {
                 const key = this.readScalar();
                 let value: unknown = "";
                 const next = this.i < n ? this.data.charCodeAt(this.i) : -1;
+                if (next !== VAL && next !== TABLE_OPEN && next !== ARRAY_OPEN) {
+                    // A name with no value at all. msdp2Lua only queues a
+                    // variable for setMSDPTable once a VAL arrives for it
+                    // (`varList.append` in its MSDP_VAL case), so this one never
+                    // reaches Lua: no entry and no event.
+                    continue;
+                }
                 if (next === TABLE_OPEN || next === ARRAY_OPEN) {
                     // A name running straight into a structure, with no value
                     // marker between them, is malformed: Mudlet's reassembled
@@ -135,9 +144,14 @@ class MsdpParser {
         if (c === TABLE_OPEN) return this.readTable();
         if (c === ARRAY_OPEN) return this.readArray();
         if (c === TABLE_CLOSE || c === ARRAY_CLOSE) {
-            // nothing is open here, so this closes a structure the game never
-            // started; leave the byte for the caller's stray-byte skip
-            this.malformed = true;
+            // A value marker running straight into a close marker. Inside a
+            // structure that is an empty value ending it: msdp2Lua closes the
+            // open quote (`last == MSDP_VAL` in its close cases) and the field
+            // is "". Games send it whenever a table's last field is empty.
+            // At the top level nothing is open, so it closes a structure the
+            // game never started (`malformed` with nest == 0). Either way the
+            // byte is left for the enclosing reader to consume.
+            if (this.depth === 0) this.malformed = true;
             return "";
         }
         return this.readScalar();
@@ -145,6 +159,7 @@ class MsdpParser {
 
     private readTable(): Record<string, unknown> {
         this.i++; // consume TABLE_OPEN
+        this.depth++;
         const out: Record<string, unknown> = {};
         const n = this.data.length;
         while (this.i < n && this.data.charCodeAt(this.i) !== TABLE_CLOSE) {
@@ -163,11 +178,13 @@ class MsdpParser {
         }
         if (this.i < n) this.i++; // consume TABLE_CLOSE
         else this.truncated = true; // ran out of input with the table still open
+        this.depth--;
         return out;
     }
 
     private readArray(): unknown[] {
         this.i++; // consume ARRAY_OPEN
+        this.depth++;
         const out: unknown[] = [];
         const n = this.data.length;
         while (this.i < n && this.data.charCodeAt(this.i) !== ARRAY_CLOSE) {
@@ -187,6 +204,7 @@ class MsdpParser {
         }
         if (this.i < n) this.i++; // consume ARRAY_CLOSE
         else this.truncated = true; // ran out of input with the array still open
+        this.depth--;
         return out;
     }
 
