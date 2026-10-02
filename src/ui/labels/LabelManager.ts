@@ -1,5 +1,5 @@
 import {
-    cssEscape, cssTextToParts, extractQtAlignment, extractQtScaledContents, extractQtWordWrap,
+    cssTextToParts, extractQtAlignment, extractQtScaledContents, extractQtWordWrap,
     patchStyleSheetBackgroundColor,
 } from './qtCss';
 import type { MoviePlayer } from './gifMovie';
@@ -260,37 +260,61 @@ function safeCoord(n: number): number {
     return Number.isFinite(n) ? n : 0;
 }
 
+/** A width or height: what safeCoord gives, but never below 0. QWidget::resize
+ *  bounds a widget's size by its minimum, so desktop's resizeWindow("lbl", -20, 30)
+ *  and createLabel(..., -10, -10) leave a 0-wide label behind, not a negative one. */
+function safeSize(n: number): number {
+    return Math.max(0, safeCoord(n));
+}
+
 /**
- * Natural size of a label's HTML, measured off-screen.
+ * Natural size of a label's HTML, measured off-screen — the text extent
+ * QLabel::sizeHint hands back, before the stylesheet's chrome is added.
  *
- * Backs getSizeHint when the label has no element in the document — a script
- * that creates a label and asks for its hint in one chunk runs entirely before
- * React paints. The probe is absolutely positioned with no width, so it
- * shrink-to-fits its content, which is exactly what a size hint is. Any font
- * declarations from the label's own stylesheet are applied so the metrics match
- * what will actually be drawn.
+ * Always a detached probe, never the label's own element: a hint is what the
+ * contents want whatever box the label has now, and a measurement taken inside
+ * that box is bounded by it (a block-level echo `<div>` spans the whole label,
+ * so the old in-place reading reported the box width, and an autoWidth label
+ * could never grow). A probe also answers the same way before and after React
+ * has mounted the label, where the two paths used to disagree by the 4px
+ * document margin. The probe carries the `.label` class, so it picks up the
+ * font a rendered label has, and is absolutely positioned with no width, so it
+ * shrink-to-fits its content.
  *
- * Null when there is nothing to measure or no DOM at all.
+ * No document margin: QLabel lays its rich text out with the root frame's
+ * margin set to 0 (QLabelPrivate::ensureTextLayouted), which is why desktop's
+ * hint for one 8pt line is exactly that line's height. An empty label still has
+ * its one empty line, so it measures as a zero-width line rather than nothing.
+ *
+ * Null when there is no DOM, or no layout to read (a test environment).
  */
-function measureHtmlContent(html: string, styleSheet?: string): { width: number; height: number } | null {
-    if (typeof document === 'undefined' || !document.body || !html) return null;
+function measureHtmlContent(
+    html: string, styleSheet: string | undefined, fontFamily: string | undefined, wordWrap: boolean,
+): { width: number; height: number } | null {
+    if (typeof document === 'undefined' || !document.body) return null;
     const probe = document.createElement('div');
-    probe.style.cssText = 'position:absolute;left:-99999px;top:0;'
-        // nowrap for the same reason the rendered label carries it: QLabel's
-        // wordWrap is off, so the size a label "wants" is its text on one line
-        // (broken only where the HTML breaks it), not the text folded to fit.
-        + 'visibility:hidden;width:auto;height:auto;white-space:nowrap;';
+    probe.className = 'label';
+    probe.style.cssText = 'position:absolute;left:-99999px;top:0;display:block;padding:0;border:0;'
+        // nowrap (from .label) for the reason the rendered label carries it:
+        // QLabel's wordWrap is off, so the size a label "wants" is its text on
+        // one line, broken only where the HTML breaks it.
+        + 'visibility:hidden;width:auto;height:auto;min-width:0;min-height:0;';
+    if (wordWrap) probe.style.whiteSpace = 'normal';
+    // The widget font first, then the stylesheet's, which wins over it in Qt.
+    if (fontFamily) probe.style.fontFamily = fontFamily;
     for (const prop of ['font-family', 'font-size', 'font-weight', 'font-style'] as const) {
-        const found = styleSheet?.match(new RegExp(`(?:^|[;\\s])${prop}\\s*:\\s*([^;]+)`, 'i'));
+        const found = styleSheet?.match(new RegExp(`(?:^|[;\\s{])${prop}\\s*:\\s*([^;}]+)`, 'i'));
         if (found) probe.style.setProperty(prop, found[1].trim());
     }
-    // The 4px QTextDocument margin every label:echo() renders with (see the
-    // .label-doc wrapper in LabelOverlay) belongs in the hint too.
-    probe.innerHTML = `<div style="margin:4px">${html}</div>`;
+    const content = document.createElement('div');
+    // A zero-width space keeps an empty label's one empty line, as QTextDocument
+    // keeps an empty block.
+    content.innerHTML = html || '​';
+    probe.appendChild(content);
     document.body.appendChild(probe);
     try {
         const rect = probe.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0) return null;
+        if (rect.width <= 0 && rect.height <= 0) return null;
         return { width: Math.ceil(rect.width), height: Math.ceil(rect.height) };
     } finally {
         probe.remove();
@@ -347,7 +371,7 @@ export class LabelManager {
         const state: LabelState = {
             name, parent,
             x: safeCoord(opts.x), y: safeCoord(opts.y),
-            width: safeCoord(opts.width), height: safeCoord(opts.height),
+            width: safeSize(opts.width), height: safeSize(opts.height),
             fillBackground: opts.fillBackground,
             clickThrough: opts.clickThrough ?? false,
             visible: true,
@@ -411,7 +435,7 @@ export class LabelManager {
     resize(name: string, width: number, height: number): boolean {
         const lbl = this.labels.get(name);
         if (!lbl) return false;
-        const nw = safeCoord(width), nh = safeCoord(height);
+        const nw = safeSize(width), nh = safeSize(height);
         if (lbl.width === nw && lbl.height === nh) return true;
         lbl.width = nw; lbl.height = nh;
         this.notify(lbl.parent);
@@ -437,60 +461,25 @@ export class LabelManager {
         return true;
     }
 
-    /** Mudlet `getLabelSizeHint(name)` → the label's preferred `{width,height}`.
-     *  Mudlet returns the QLabel sizeHint (the size its content wants); the
-     *  browser analogue is the rendered node's content extent
-     *  (`scrollWidth`/`scrollHeight`), read off the `data-mudlet-label` element.
-     *  Falls back to the configured geometry when the label isn't in the DOM
-     *  yet (hidden, or rendered before mount). null when no such label. */
+    /** Mudlet `getLabelSizeHint(name)` → the label's preferred `{width,height}`:
+     *  TLabel::sizeHint, which is QLabel's — the extent of the label's contents
+     *  (its text laid out unwrapped, or its movie frame) plus the margin, border
+     *  and padding its stylesheet puts around them. It never depends on the box
+     *  the label has now, which is what lets Geyser's adjustSize/autoWidth grow a
+     *  label as well as shrink it. Falls back to the configured geometry only
+     *  where there is no layout to measure at all. null when no such label. */
     getSizeHint(name: string): { width: number; height: number } | null {
         const lbl = this.labels.get(name);
         if (!lbl) return null;
         const svgHint = this.svgSizeHint(lbl);
         if (svgHint) return svgHint;
-        if (typeof document !== 'undefined') {
-            const el = document.querySelector(
-                `[data-mudlet-label="${cssEscape(name)}"]`,
-            ) as HTMLElement | null;
-            if (el) {
-                // Qt's sizeHint is what the widget *wants*, so it has to be able
-                // to come out smaller than the widget currently is. scrollWidth
-                // can't: it is the box width whenever the content is narrower,
-                // which made every hint exactly the label's own size. A Range
-                // over the contents measures the laid-out text itself.
-                // Range over the *inline* content: `.label-doc` is a block, so
-                // ranging over the outer element just re-measures the box. Its
-                // children are the text and spans echo() produced, whose client
-                // rects are the actual laid-out extent.
-                const doc = el.querySelector('.label-doc');
-                const range = document.createRange();
-                range.selectNodeContents(doc ?? el);
-                const rect = range.getBoundingClientRect();
-                if (rect.width > 0 && rect.height > 0) {
-                    // Padding and border belong to the hint — Qt includes the
-                    // widget's own chrome around the content it sizes for.
-                    const style = getComputedStyle(el);
-                    const pad = (...vals: string[]): number =>
-                        vals.reduce((n, v) => n + (parseFloat(v) || 0), 0);
-                    return {
-                        width: Math.ceil(rect.width + pad(
-                            style.paddingLeft, style.paddingRight,
-                            style.borderLeftWidth, style.borderRightWidth)),
-                        height: Math.ceil(rect.height + pad(
-                            style.paddingTop, style.paddingBottom,
-                            style.borderTopWidth, style.borderBottomWidth)),
-                    };
-                }
-                return { width: el.scrollWidth, height: el.scrollHeight };
-            }
-            // No mounted element: a label created and measured inside one
-            // synchronous script chunk hasn't been through React yet. Falling
-            // back to the label's own size would make the hint meaningless — it
-            // would always report exactly the box we were asked to size — so
-            // measure the same HTML in a detached, unconstrained probe instead.
-            const measured = measureHtmlContent(lbl.html, lbl.styleSheet);
-            if (measured) return measured;
+        const chrome = stylesheetChrome(lbl.styleSheet);
+        if (lbl.movie) {
+            const { width, height } = lbl.movie.gif;
+            return { width: width + chrome.width, height: height + chrome.height };
         }
+        const measured = measureHtmlContent(lbl.html, lbl.styleSheet, lbl.fontFamily, !!lbl.wordWrap);
+        if (measured) return { width: measured.width + chrome.width, height: measured.height + chrome.height };
         return { width: lbl.width, height: lbl.height };
     }
 

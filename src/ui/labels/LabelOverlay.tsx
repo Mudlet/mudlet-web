@@ -331,6 +331,10 @@ function Label({ l, manager, zIndex }: { l: LabelState; manager: LabelManager; z
             // callback (TLabel::mousePressEvent). Skipping capture too, so a
             // drag-capable label doesn't swallow the click that follows.
             if (labelLinkHref(e.target) !== null) return;
+            // A move still waiting for its frame happened before this press, and
+            // Qt delivers it first: a pointer moved onto the label and clicked in
+            // the same frame reports move, then click, then release on desktop.
+            flushPendingMove();
             if (dragCapable) {
                 try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not supported */ }
             }
@@ -352,6 +356,15 @@ function Label({ l, manager, zIndex }: { l: LabelState; manager: LabelManager; z
         st.pending = null;
         if (ev) ref.current.onMouseMove?.(ev);
     };
+    /** Deliver a frame-pending move now and drop its scheduled frame — a press
+     *  or release must never overtake a move that happened before it. */
+    const flushPendingMove = () => {
+        const st = moveState.current;
+        if (st.raf !== null && typeof cancelAnimationFrame !== 'undefined') {
+            cancelAnimationFrame(st.raf);
+        }
+        flushMove();
+    };
     const onPointerMove = l.onMouseMove
         ? (e: React.PointerEvent<HTMLDivElement>) => {
             // rAF unavailable (SSR/tests) → dispatch synchronously.
@@ -371,14 +384,8 @@ function Label({ l, manager, zIndex }: { l: LabelState; manager: LabelManager; z
             // TLabel::mouseReleaseEvent.
             if (labelLinkHref(e.target) !== null) return;
             // Flush any frame-pending move first so the release sees the final
-            // drag position (e.g. the insertion target picked on the last move),
-            // then drop the scheduled frame.
-            const st = moveState.current;
-            if (st.raf !== null && typeof cancelAnimationFrame !== 'undefined') {
-                cancelAnimationFrame(st.raf);
-                st.raf = null;
-            }
-            if (st.pending) { const ev = st.pending; st.pending = null; ref.current.onMouseMove?.(ev); }
+            // drag position (e.g. the insertion target picked on the last move).
+            flushPendingMove();
             ref.current.onMouseUp?.(buildMouseEvent(e));
         }
         : undefined;
@@ -435,11 +442,10 @@ function Label({ l, manager, zIndex }: { l: LabelState; manager: LabelManager; z
             {l.backgroundImage?.svg && <SvgLayer l={l} />}
             {movie
                 ? <MovieCanvas player={movie} />
-                // Qt lays label rich text out in a QTextDocument whose default
-                // documentMargin is 4px, *inside* the QSS padding — every
-                // Mudlet label:echo() renders with that inset. The wrapper
-                // carries it so a stylesheet padding (applied inline on the
-                // outer div) adds to it instead of replacing it.
+                // QLabel zeroes its QTextDocument's root frame margin, so the
+                // wrapper adds no inset: the text sits at the contents rect,
+                // inside the stylesheet padding applied inline on the outer
+                // div — the extent getLabelSizeHint measures (see the CSS).
                 : <div className="label-doc" dangerouslySetInnerHTML={{ __html: l.html }} />}
         </div>
     );

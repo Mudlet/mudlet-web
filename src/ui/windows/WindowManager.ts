@@ -1,3 +1,4 @@
+import { flushSync } from 'react-dom';
 import { type OutputRendererControls } from '../output/OutputRenderer';
 import type { Console } from '../../mud/text/Console';
 import type { AnsiAwareBuffer } from '../../mud/text/FormatState';
@@ -2963,7 +2964,60 @@ export class WindowManager {
     getGeometry(id: string): { x: number; y: number; width: number; height: number } | null {
         const win = this.windows.get(id);
         if (!win) return null;
+        // A docked window's x/y/width/height are its floating rectangle, kept for
+        // when it is undocked — not where it is. Desktop reads a docked user
+        // window's geometry off its dock widget (title bar included), so report
+        // the dock frame the panel is laid out in.
+        if (win.docked && win.visible && !win.poppedOut) {
+            const frame = this.dockFrame(id);
+            if (frame) {
+                const rect = frame.getBoundingClientRect();
+                if (rect.width > 0 || rect.height > 0) {
+                    return {
+                        x: Math.round(rect.left), y: Math.round(rect.top),
+                        width: Math.round(rect.width), height: Math.round(rect.height),
+                    };
+                }
+            }
+        }
         return { x: win.x, y: win.y, width: win.width, height: win.height };
+    }
+
+    /** The dock frame (title bar and content) a docked window is shown in. */
+    private dockFrame(id: string): HTMLElement | null {
+        const target = this.portalTargets.get(id);
+        if (!target?.isConnected) return null;
+        return target.closest<HTMLElement>('.docked-panel, .tab-group-panel');
+    }
+
+    /**
+     * Lay the windows out NOW rather than on React's next render, so the script
+     * line after a dock change already sees the sizes it produced.
+     *
+     * Desktop docks synchronously: by the time openUserWindow() returns, the
+     * dock has its size, the main console has shrunk to make room and
+     * sysWindowResizeEvent has fired, so getUserWindowSize, getMainWindowSize
+     * and getWindowGeometry all answer with the final layout. Here the layout is
+     * React state, which commits on a later turn — scripts that positioned
+     * things right after creating a docked window read the pre-dock numbers.
+     * flushSync commits that render (and the panels' mount effects) before it
+     * returns, so the DOM — which every geometry getter measures — is already
+     * the docked layout, and the main viewport's resize is raised on the spot
+     * like setMainWindowSize does; the observer's own tick dedupes to nothing.
+     *
+     * A no-op beyond the measure when no layout is mounted. When called from
+     * inside a React render or effect, React refuses to flush and the layout
+     * catches up on its own turn, as it always did.
+     */
+    settleLayout(): void {
+        if (this.onWindowsChange) {
+            try {
+                flushSync(() => this.notify());
+            } catch {
+                this.notify();
+            }
+        }
+        if (this.mainViewportEl) this.measureAndEmitResize('main', this.mainViewportEl);
     }
 
     /** The window this one nests inside, or null for a root floating window.

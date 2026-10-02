@@ -191,8 +191,30 @@ export class Console {
         // Anything written gives the buffer a current line back — see hasOpenLine.
         this.hasOpenLine = true;
 
-        if (!this.partial.text.includes('\n')) return;
-        this.promotePartialLines();
+        if (this.partial.text.includes('\n')) this.promotePartialLines();
+        this.wrapPartial();
+    }
+
+    /**
+     * Wrap the line still being built the moment it outgrows the wrap width,
+     * not when its newline arrives. Mudlet's TBuffer::append runs wrapLine() on
+     * the last line after every echo, so a long `echo` without a trailing
+     * newline is already several buffer lines: getLineCount, the cursor moves
+     * and getCurrentLine see them straight away, and the next echo carries on
+     * from the last piece. Every piece but the last is finished and goes to
+     * history; the last stays open as the new partial, marked as a
+     * continuation so its later wrap takes the hanging indent.
+     */
+    private wrapPartial(): void {
+        if (this.wrapWidth <= 0 || this.partial.length === 0) return;
+        const lines = wrapBuffer(this.partial, this.wrapWidth, this.wrapIndent, this.wrapHangingIndent);
+        if (!lines) return;
+        for (let i = 0; i < lines.length - 1; i++) {
+            this.store(lines[i]);
+            this.pending.push(lines[i]);
+        }
+        this.partial = lines[lines.length - 1];
+        this.evict();
     }
 
     /**
@@ -205,6 +227,12 @@ export class Console {
         const splits = this.partial.splitLines();
         const endsWithNewline = this.partial.text.endsWith('\n');
         const completeCount = endsWithNewline ? splits.length : splits.length - 1;
+        // The open line may itself be the tail of a line wrapPartial() already
+        // broke; whatever it becomes is still a continuation of that line.
+        if (this.partial.continuation) {
+            splits[0].continuation = true;
+            splits[0].timestamp = this.partial.timestamp;
+        }
 
         for (let i = 0; i < completeCount; i++) {
             for (const line of this.toStoredLines(splits[i])) {

@@ -654,6 +654,12 @@ class ScriptingWindowsAPI {
         }
     }
 
+    /** Commit the window layout synchronously, so the next script line sees the
+     *  sizes a dock change produced (see WindowManager.settleLayout). */
+    settleLayout(): void {
+        this.session.windows.settleLayout();
+    }
+
     /** Queue the sysUserWindowResizeEvent a freshly opened user window is owed. */
     announceCreatedSize(id: string): void {
         this.session.windows.announceCreatedSize(id);
@@ -6416,6 +6422,10 @@ export class ScriptingAPI {
         // internal caller can't reintroduce the nil-size crash (see Geyser
         // Label:onRightClick).
         if (!name || name === 'main') return this.getMainWindowSize();
+        // TMainConsole::getUserWindowSize only looks in the dock registry, which
+        // holds user windows alone — a miniconsole (or embedded mapper) is not
+        // there, so it gets the main window's size like any unknown name.
+        if (this.session.windows.isMiniConsole(name)) return this.getMainWindowSize();
         const size = this.session.windows.getSize(name);
         if (!size) return [0, 0];
         return [size.width, size.height];
@@ -6788,7 +6798,7 @@ export class ScriptingAPI {
     // ── Borders ───────────────────────────────────────────────────────────────
     // Mudlet setBorderTop/Bottom/Left/Right carve pixel insets out of the main
     // window so labels can sit in the freed space. Sizes are clamped to >= 0
-    // and rounded; non-finite input is rejected. Reads/writes the active
+    // and truncated to whole pixels; non-finite input is rejected. Reads/writes the active
     // profile's outputBorders override.
 
     setBorderTop(size: number): void { this.patchBorders('top', size); }
@@ -6948,7 +6958,8 @@ export class ScriptingAPI {
     private normalizeBorder(n: unknown): number | null {
         const num = Number(n);
         if (!Number.isFinite(num)) return null;
-        return Math.max(0, Math.round(num));
+        // getVerifiedInt drops the fraction rather than rounding: 194.8 is 194.
+        return Math.max(0, Math.trunc(num));
     }
 
     /**

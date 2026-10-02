@@ -496,4 +496,34 @@ export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
             + 'a script reading its colour back can tell.',
         issue: '#272',
     },
+    {
+        api: 'getLabelSizeHint, and Geyser.Label adjustSize / autoWidth / autoHeight built on it',
+        behaviour:
+            'Both clients size the hint the same way: the label\'s contents laid out unwrapped, with no '
+            + 'document margin, plus the stylesheet\'s margin, border and padding, whatever box the label has '
+            + 'now. The pixel values still differ by font: desktop under the PTB reported 62x13 for an 8pt '
+            + '"Hello world" and 11x22 for an empty label, and the browser answers with what its own font '
+            + 'measures (an empty label is a zero-width line of the label font).',
+        reason:
+            'The hint is a text measurement, and the two clients rasterise text with different engines and '
+            + 'usually different fonts (Qt\'s font database against the browser\'s CSS font stack), so there '
+            + 'is no shared number to match. The shape of the answer is what scripts rely on, and that is '
+            + 'matched.',
+        issue: '#283',
+    },
+    {
+        api: 'Docked Geyser.UserWindow / openUserWindow: the size a new dock gets',
+        behaviour:
+            'Both clients lay a docked window out before openUserWindow returns, so getUserWindowSize, '
+            + 'getMainWindowSize, getWindowGeometry and sysWindowResizeEvent already reflect the dock on the '
+            + 'next line. The size of the dock differs: desktop gave a new right dock its minimum width (49 '
+            + 'pixels in the report), Mudlet Web gives it the width of that side\'s dock area (300 pixels '
+            + 'unless the player has dragged it), shared by every panel docked on that side.',
+        reason:
+            'The dock area is Mudlet Web\'s own layout, one resizable extent per side that the player sets and '
+            + 'the profile remembers, not a Qt QDockWidget negotiating its size hint. Opening every new dock '
+            + 'at a sliver would not make a script more portable (the width is still the player\'s to change '
+            + 'on both clients) and would leave each new panel unusable until dragged open.',
+        issue: '#283',
+    },
 ];

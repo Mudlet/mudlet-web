@@ -57,14 +57,14 @@
     -webkit-user-select: none;
 }
 
-/* Wrapper around a label's echoed HTML. Qt renders QLabel rich text through a
-   QTextDocument whose default documentMargin is 4px, inside the QSS padding —
-   without it, top/left-aligned label text sits 4px closer to the edge than
-   Mudlet draws it (e.g. Adjustable.Container titles). Kept on an inner element
-   so stylesheet padding (inline on .label) adds to it rather than replacing
-   it. box-sizing must stay content-box-agnostic: the wrapper is a stretched
-   flex item, so padding just insets its children. */
+/* Wrapper around a label's echoed HTML. No inset of its own: QLabel lays its
+   rich text out in a QTextDocument whose root frame margin it sets to 0
+   (QLabelPrivate::ensureTextLayouted, qtbase qlabel.cpp), so QTextDocument's
+   default 4px documentMargin never applies to a label — plain text skips the
+   document altogether. Painting and sizeHint share that layout, so the text
+   starts at the contents rect's edge (inside any stylesheet padding/border) and
+   getLabelSizeHint, which measures the same zero-margin extent, is exactly the
+   room it needs: a label sized from its hint never clips. */
 .label-doc {
-    padding: 4px;
     box-sizing: border-box;
 }
