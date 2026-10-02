@@ -4027,6 +4027,22 @@ function __mudlet_perm_result(id, funcName, what, parent)
     return id
 end
 
+-- The pattern list a perm*Trigger was handed, read the way Mudlet reads it:
+-- every value lua_next reaches, keyed or not and past any hole, kept only when
+-- it is really a string (`lua_type == LUA_TSTRING`, no number coercion). So
+-- {k = "x"} is one pattern and {"x", 5} is one pattern, not two. pairs() walks
+-- the table with the same next(), so the order is the one desktop sees
+-- (mudlet-web#291).
+function __mudlet_perm_patterns(t)
+    local out = {}
+    if type(t) == 'table' then
+        for _, v in pairs(t) do
+            if type(v) == 'string' then out[#out + 1] = v end
+        end
+    end
+    return out
+end
+
 -- Mudlet permScript(name, parent, luaCode). mudlet-lua's permGroup invokes this
 -- with a 4th positional arg ("" type filler); Lua naturally drops it.
 do
@@ -4059,7 +4075,8 @@ do
 end
 
 -- Mudlet permRegexTrigger(name, parent, regexes, luaCode). The 3rd arg is a
--- Lua array of regex pattern strings; flatten to \1-delimited so JS can split
+-- table of regex pattern strings (see __mudlet_perm_patterns for which of its
+-- values count); flatten to \1-delimited so JS can split
 -- it back (LuaTable numeric iteration over wasmoon's JS proxy is unreliable).
 -- An empty/missing regex table is the documented way to create a trigger
 -- folder, and is what `permGroup("name", "trigger")` ends up calling.
@@ -4067,10 +4084,7 @@ do
     local _raw = __mudlet_permRegexTrigger
     local SEP = '\1'
     function permRegexTrigger(name, parent, regexes, code)
-        local rs = {}
-        if type(regexes) == 'table' then
-            for _, r in ipairs(regexes) do rs[#rs + 1] = tostring(r) end
-        end
+        local rs = __mudlet_perm_patterns(regexes)
         return __mudlet_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), table.concat(rs, SEP), tostring(code or "")),
             "permRegexTrigger", "trigger", parent)
@@ -4085,10 +4099,7 @@ do
     local _raw = __mudlet_permSubstringTrigger
     local SEP = '\1'
     function permSubstringTrigger(name, parent, patterns, code)
-        local ps = {}
-        if type(patterns) == 'table' then
-            for _, p in ipairs(patterns) do ps[#ps + 1] = tostring(p) end
-        end
+        local ps = __mudlet_perm_patterns(patterns)
         return __mudlet_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), table.concat(ps, SEP), tostring(code or "")),
             "permSubstringTrigger", "trigger", parent)
@@ -4103,10 +4114,7 @@ do
     local _raw = __mudlet_permBeginOfLineStringTrigger
     local SEP = '\1'
     function permBeginOfLineStringTrigger(name, parent, patterns, code)
-        local ps = {}
-        if type(patterns) == 'table' then
-            for _, p in ipairs(patterns) do ps[#ps + 1] = tostring(p) end
-        end
+        local ps = __mudlet_perm_patterns(patterns)
         return __mudlet_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), table.concat(ps, SEP), tostring(code or "")),
             "permBeginOfLineStringTrigger", "trigger", parent)
@@ -4120,10 +4128,7 @@ do
     local _raw = __mudlet_permExactMatchTrigger
     local SEP = '\1'
     function permExactMatchTrigger(name, parent, patterns, code)
-        local ps = {}
-        if type(patterns) == 'table' then
-            for _, p in ipairs(patterns) do ps[#ps + 1] = tostring(p) end
-        end
+        local ps = __mudlet_perm_patterns(patterns)
         return __mudlet_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), table.concat(ps, SEP), tostring(code or "")),
             "permExactMatchTrigger", "trigger", parent)

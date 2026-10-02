@@ -3358,7 +3358,9 @@ export class ScriptingEngine implements EngineHost {
      * handlers synchronously inside the addScript commit.
      */
     createPermScript(name: string, parent: string, code: string): number {
-        if (!name) return -1;
+        // No name check, here or in the other perm* creators: Mudlet never
+        // validates it, so permScript("", "", ...) makes a script with an
+        // empty name (mudlet-web#291). -1 means a missing parent and nothing else.
         const store = useAppStore.getState();
         const scripts = store.connectionScripts[this.connectionId] ?? [];
         let parentId: string | null = null;
@@ -3443,7 +3445,6 @@ export class ScriptingEngine implements EngineHost {
         kind: 'regex' | 'substring' | 'startOfLine' | 'exactMatch' | 'prompt',
         code: string,
     ): number {
-        if (!name) return -1;
         const store = useAppStore.getState();
         const triggers = store.connectionTriggers[this.connectionId] ?? [];
         let parentId: string | null = null;
@@ -3594,7 +3595,6 @@ export class ScriptingEngine implements EngineHost {
      * group of that name exists.
      */
     createPermAlias(name: string, parent: string, pattern: string, code: string): number {
-        if (!name) return -1;
         const store = useAppStore.getState();
         const aliases = store.connectionAliases[this.connectionId] ?? [];
         let parentId: string | null = null;
@@ -3629,7 +3629,6 @@ export class ScriptingEngine implements EngineHost {
      * that name exists.
      */
     createPermTimer(name: string, parent: string, delay: number, code: string): number {
-        if (!name) return -1;
         const store = useAppStore.getState();
         const timers = store.connectionTimers[this.connectionId] ?? [];
         let parentId: string | null = null;
@@ -3670,7 +3669,6 @@ export class ScriptingEngine implements EngineHost {
      * that name exists.
      */
     createPermKey(name: string, parent: string, modifier: number, key: string | number, code: string): number {
-        if (!name) return -1;
         const store = useAppStore.getState();
         const keys = store.connectionKeybindings[this.connectionId] ?? [];
         let parentId: string | null = null;
