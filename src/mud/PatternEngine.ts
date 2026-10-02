@@ -74,6 +74,13 @@ export class PatternEngine<T extends PatternItem> {
      *  of step (Alias_spec pins the run of ids). */
     protected nextInternalId = 1;
     protected permCompiled: Array<{ item: T; re: AliasPattern }> = [];
+    /** {@link permCompiled} by item id — what is loaded and active right now. */
+    protected permById = new Map<string, { item: T; re: AliasPattern }>();
+    /** Every permanent item with a pattern, active or not, in tree order. A
+     *  fresh array on each {@link loadPerm}, so a pass can keep walking the one
+     *  it started with — Mudlet's `copyOfNodeList` — while a script it runs
+     *  enables or disables items, which reloads this engine synchronously. */
+    protected permOrder: readonly string[] = [];
 
     /** Number of live session-scoped temp items (Mudlet `getProfileStats` temp count). */
     get tempCount(): number {
@@ -108,13 +115,19 @@ export class PatternEngine<T extends PatternItem> {
     loadPerm(items: T[], blocked?: ReadonlySet<string>): void {
         for (const { re } of this.permCompiled) re.destroy();
         this.permCompiled = [];
+        this.permById = new Map();
+        const order: string[] = [];
         const enabledIds = buildEffectivelyEnabledIds(items, blocked);
         for (const item of items) {
-            if (!enabledIds.has(item.id)) continue;
             if (!item.pattern) continue;
+            order.push(item.id);
+            if (!enabledIds.has(item.id)) continue;
             // An invalid pattern is kept and simply never matches.
-            this.permCompiled.push({ item, re: new AliasPattern(item.pattern) });
+            const entry = { item, re: new AliasPattern(item.pattern) };
+            this.permCompiled.push(entry);
+            this.permById.set(item.id, entry);
         }
+        this.permOrder = order;
     }
 
     /** Whether the permanent item `id` is loaded with a pattern PCRE rejects. */
@@ -127,5 +140,7 @@ export class PatternEngine<T extends PatternItem> {
         this.temp.clear();
         for (const { re } of this.permCompiled) re.destroy();
         this.permCompiled = [];
+        this.permById = new Map();
+        this.permOrder = [];
     }
 }

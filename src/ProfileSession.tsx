@@ -8,6 +8,7 @@ import { useAutoReconnect } from './hooks/useAutoReconnect';
 import { useEngines } from './hooks/useEngines';
 import { Toolbar } from './ui/Toolbar';
 import { CommandBar } from './ui/CommandBar';
+import { useCmdLineSelection } from './ui/cmdline/useCmdLineSelection';
 import { BufferWordIndex } from './ui/bufferWords';
 import { ContentLayout } from './ui/layout/ContentLayout';
 import { ScriptEditorModal } from './ui/windows/ScriptEditorModal';
@@ -106,6 +107,8 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     const [replayRecording, setReplayRecording] = useState(false);
     const [replaySpeed, setReplaySpeed] = useState<number | null>(null);
     const commandInputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
+    /** Caret/selection a script asked for, applied once its text has landed. */
+    const requestCmdLineSelection = useCmdLineSelection(commandInputRef, command);
     const windowContextMenuHandlerRef = useRef<((e: React.MouseEvent) => void) | null>(null);
 
     // Live mirror of the current command bar text — read by Lua's getCmdLine()
@@ -681,22 +684,22 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     }, [session, engineRef]);
 
     useEffect(() => {
+        // Where each staging call leaves the caret is applied once React has
+        // put the text in the input — see useCmdLineSelection. Desktop's
+        // printCmdLine and appendCmdLine end at the end of the text with
+        // nothing selected; sendCmdLine selects it all, so the player can
+        // overtype it.
         const unsub1 = session.events.on('script.appendcmd', (text: string) => {
             setCommand(prev => prev + text);
+            requestCmdLineSelection('end');
         });
-        const unsub2 = session.events.on('script.setcmd', (text: string) => {
+        const unsub2 = session.events.on('script.setcmd', (text: string, selectAll?: boolean) => {
             setCommand(text);
-            // Mudlet sendCmdLine ends with selectAll; replicate so the user can
-            // overtype or hit Backspace to clear without manually selecting.
-            queueMicrotask(() => {
-                const el = commandInputRef.current;
-                if (!el) return;
-                el.focus();
-                el.select();
-            });
+            requestCmdLineSelection(selectAll ? 'all' : 'end');
         });
         const unsub3 = session.events.on('script.clearcmd', () => {
             setCommand('');
+            requestCmdLineSelection(null);
         });
         const unsub4 = session.events.on('script.openvfs', (path: string) => {
             setFilesOpen({ initialPath: path, pickedAt: Date.now() });
@@ -711,14 +714,10 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             setSaveCommandHistory(save);
         });
         // Mudlet selectCmdLineText — highlight all text in the command bar so the
-        // next keystroke overtypes it (same selectAll behaviour as script.setcmd).
+        // next keystroke overtypes it, including text a printCmdLine just
+        // before it staged.
         const unsub6 = session.events.on('script.selectcmd', () => {
-            queueMicrotask(() => {
-                const el = commandInputRef.current;
-                if (!el) return;
-                el.focus();
-                el.select();
-            });
+            requestCmdLineSelection('all');
         });
         // GMCP Char.Login: the server asks for credentials.
         const unsub7 = session.events.on('charLogin.request', (methods) => {
@@ -1250,10 +1249,17 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             }
         }
         lastSentRef.current = command;
+        // TCommandLine::enterCommand clears (or selects) only after Host::send
+        // has run the aliases, so it has the last word over anything an alias
+        // staged with printCmdLine. The mirror getCmdLine() reads is written
+        // here too rather than left to the render, and a caret request the
+        // alias left is dropped or overridden, so neither can outlive it.
         if (autoClearInput) {
             setCommand('');
+            engineRef.current?.setCmdLineValue('');
+            requestCmdLineSelection(null);
         } else {
-            commandInputRef.current?.select();
+            requestCmdLineSelection('all', false);
         }
     };
 

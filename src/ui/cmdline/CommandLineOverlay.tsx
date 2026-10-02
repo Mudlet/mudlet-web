@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import type { CommandLineManager, CmdLineState } from './CommandLineManager';
 import { cmdLineQssToScopedCss, cssEscape } from '../labels/qtCss';
+import { useCmdLineSelection } from './useCmdLineSelection';
 import './CommandLineOverlay.css';
 
 interface CommandLineOverlayProps {
@@ -35,19 +36,21 @@ function CommandLine({ c, manager, zIndex }: { c: CmdLineState; manager: Command
     valueRef.current = value;
     const inputRef = useRef<HTMLInputElement>(null);
     const lastSeedSeq = useRef<number>(c.valueSeq);
+    const requestSelection = useCmdLineSelection(inputRef, value);
+    /** The seed a selectCmdLineText arrived after, while that seed was still
+     *  on its way here — see the control below. */
+    const selectAfterSeed = useRef<number | null>(null);
 
     // Apply script-pushed seeds (printCmdLine / clearCmdLine / appendCmdLine).
+    // The caret goes to the end, unless a selectCmdLineText came after this
+    // very seed, in which case it is all selected once the text is in.
     useEffect(() => {
         if (c.valueSeq === lastSeedSeq.current) return;
         lastSeedSeq.current = c.valueSeq;
         setValue(c.value);
-        requestAnimationFrame(() => {
-            const el = inputRef.current;
-            if (el && document.activeElement === el) {
-                el.setSelectionRange(c.value.length, c.value.length);
-            }
-        });
-    }, [c.valueSeq, c.value]);
+        requestSelection(selectAfterSeed.current === c.valueSeq ? 'all' : 'end', false);
+        selectAfterSeed.current = null;
+    }, [c.valueSeq, c.value, requestSelection]);
 
     // Probe for getCmdLine([name]) — reads live typed text.
     useEffect(() => {
@@ -55,11 +58,18 @@ function CommandLine({ c, manager, zIndex }: { c: CmdLineState; manager: Command
     }, [c.name, manager]);
 
     // Imperative control — selectCmdLineText highlights the input contents.
+    // A printCmdLine just before it has not reached the input yet (its seed is
+    // applied on a later render), and selecting now would be undone when it
+    // does — so the selection waits for that seed (issue #284).
     useEffect(() => {
         return manager.registerControl(c.name, {
-            selectAll: () => inputRef.current?.select(),
+            selectAll: () => {
+                const seq = manager.get(c.name)?.valueSeq;
+                if (seq !== undefined && seq !== lastSeedSeq.current) selectAfterSeed.current = seq;
+                else requestSelection('all', false);
+            },
         });
-    }, [c.name, manager]);
+    }, [c.name, manager, requestSelection]);
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key !== 'Enter') return;

@@ -4,6 +4,14 @@ import { PCRE2_NO_UTF_CHECK, type Pcre2Match } from '../triggers/pcre/Pcre2';
 
 export type { AliasNode };
 
+/** One permanent alias a command matched — see AliasEngine.forEachPermMatch. */
+export interface PermAliasMatch {
+    alias: AliasNode;
+    matchedText: string;
+    captures: string[];
+    named: Record<string, string>;
+}
+
 /**
  * Mudlet's `TAlias::match` runs an unconditional global-match loop: after the
  * first match it keeps matching from the end of the previous one and appends
@@ -98,16 +106,35 @@ export class AliasEngine extends PatternEngine<AliasNode> {
 
     // ── Perm aliases (persisted, visible in UI) ────────────────────────────────
 
-    /** Every perm alias the input matches, in tree order — all of them fire,
-     *  for the reason {@link processTemp} gives. `matchedText` is the portion of
-     *  `input` the regex actually matched (Mudlet's `matches[1]`), which differs
-     *  from the whole input for an unanchored pattern. */
-    matchAllPerm(input: string): { alias: AliasNode; matchedText: string; captures: string[]; named: Record<string, string> }[] {
-        const hits: { alias: AliasNode; matchedText: string; captures: string[]; named: Record<string, string> }[] = [];
-        for (const { item, re } of this.permCompiled) {
-            const hit = matchAllCaptures(input, re);
-            if (hit) hits.push({ alias: item, matchedText: hit.all[0], captures: hit.all.slice(1), named: hit.named });
+    /**
+     * Walk the perm aliases in tree order and hand each one the input matches
+     * to `fire` as it is reached — all of them fire, for the reason
+     * {@link processTemp} gives. `matchedText` is the portion of `input` the
+     * regex actually matched (Mudlet's `matches[1]`), which differs from the
+     * whole input for an unanchored pattern.
+     *
+     * Match-then-fire, one alias at a time, rather than collecting every match
+     * first: `AliasUnit::processDataStream` asks each alias `isActive()` as it
+     * reaches it, so an earlier alias's `disableAlias`/`enableAlias` decides
+     * whether a later one runs in the same pass (issue #284). The walk is over
+     * the list as it stood when the pass began — a new alias waits for the
+     * next command — but each step reads the live state, which the toggle has
+     * already reloaded through the store subscription.
+     */
+    forEachPermMatch(input: string, fire: (hit: PermAliasMatch) => void): void {
+        for (const id of this.permOrder) {
+            const entry = this.permById.get(id);
+            if (!entry) continue;
+            const hit = matchAllCaptures(input, entry.re);
+            if (hit) fire({ alias: entry.item, matchedText: hit.all[0], captures: hit.all.slice(1), named: hit.named });
         }
+    }
+
+    /** Every perm alias the input matches, in tree order, without firing any.
+     *  A command goes through {@link forEachPermMatch} instead. */
+    matchAllPerm(input: string): PermAliasMatch[] {
+        const hits: PermAliasMatch[] = [];
+        this.forEachPermMatch(input, hit => hits.push(hit));
         return hits;
     }
 }

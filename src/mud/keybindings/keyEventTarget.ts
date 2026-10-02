@@ -10,6 +10,12 @@
  * Typing a command is the app's resting state, not a text-entry mode that
  * should own every hotkey.
  *
+ * The command lines scripts make are command lines too, not text entry:
+ * `createCommandLine` (and Geyser.CommandLine on top of it) and a miniconsole's
+ * or user window's `enableCommandLine`. Every desktop TCommandLine — main,
+ * SubCommandLine and ConsoleCommandLine alike — runs the same `event()`, which
+ * offers its keys to the KeyUnit, so a binding fires from any of them.
+ *
  * Real text entry elsewhere — the Lua script editor (CodeMirror, so
  * `contentEditable`), a modal's form field, the script tree's filter box —
  * does keep the event to itself.
@@ -18,15 +24,19 @@ export function isTextEntryTarget(target: EventTarget | null): boolean {
     if (!(target instanceof HTMLElement)) return false;
     if (target.isContentEditable) return true;
     if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) {
-        return !target.classList.contains('command-input');
+        return !isCommandLineTarget(target);
     }
     return false;
 }
 
-/** Whether `target` is the MUD command line (textarea, or the password-mode
- *  input of the same class). */
+/** Classes of the inputs that stand for a Mudlet TCommandLine: the main one
+ *  (textarea, or the password-mode input of the same class), a
+ *  createCommandLine overlay, and a miniconsole's or user window's own. */
+const COMMAND_LINE_CLASSES = ['command-input', 'cmdline-overlay-input', 'window-cmdline'];
+
+/** Whether `target` is a command line — the main one or a script-made one. */
 export function isCommandLineTarget(target: EventTarget | null): boolean {
-    return target instanceof HTMLElement && target.classList.contains('command-input');
+    return target instanceof HTMLElement && COMMAND_LINE_CLASSES.some(c => target.classList.contains(c));
 }
 
 /**

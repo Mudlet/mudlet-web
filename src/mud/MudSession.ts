@@ -592,6 +592,12 @@ export class MudSession {
         return this.client?.isMspNegotiated() ?? false;
     }
 
+    /** Mudlet `Host::isRemoteEchoingActive` — the server is echoing (password
+     *  entry), so no command is echoed locally. False with no client. */
+    isRemoteEchoingActive(): boolean {
+        return this.client ? !this.client.shouldEchoCommand() : false;
+    }
+
     // ── Mudlet replay (record + playback) ───────────────────────────────────
 
     get replaySpeed(): number { return this._replaySpeed; }

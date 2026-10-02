@@ -2795,6 +2795,32 @@ export class ScriptingAPI {
         else con.echo(text);
     }
 
+    /**
+     * `TConsole::printCommand` on a miniconsole or user window: what Enter on
+     * its own command line (no action bound) prints into it after sending.
+     * Gated as desktop's enterCommand/printCommand gate it — never under
+     * `showSentText` "never", nor while the server echoes (password entry) —
+     * and drawn in that console's command colours, which start as
+     * TConsoleModel's (213,195,0) on black and setCommandForegroundColor /
+     * setCommandBackgroundColor with its name change.
+     */
+    printCommandToWindow(win: string, text: string): void {
+        if (!win || win === 'main' || !this.session.windows.has(win)) return;
+        if (this.session.showSentText === 'never' || this.session.isRemoteEchoingActive()) return;
+        const { fg, bg } = this.windowCommandColors.get(win) ?? {};
+        const [fr, fg2, fb] = fg ?? [213, 195, 0];
+        const [br, bg2, bb] = bg ?? [0, 0, 0];
+        const con = this.outputConsole(win);
+        // Console.echo starts parsing from the pen without changing it, so the
+        // escapes colour this line alone, as TConsoleModel::print(msg, fg, bg).
+        con.echo(`\x1b[38;2;${fr};${fg2};${fb}m\x1b[48;2;${br};${bg2};${bb}m${text}\x1b[0m\n`);
+        this.drainWindowConsole(win, con);
+    }
+
+    /** Per-console command echo colours (TConsole::mCommandFgColor/BgColor),
+     *  set by setCommandForegroundColor/BackgroundColor with a window name. */
+    private readonly windowCommandColors = new Map<string, { fg?: [number, number, number]; bg?: [number, number, number] }>();
+
     echoToWindow(win: string, text: string): void {
         if (this.injectOsc8Docs(text)) return;
         const con = this.outputConsole(win);
@@ -3005,7 +3031,7 @@ export class ScriptingAPI {
         // canonical example is `<SEND "tell Zugg " PROMPT>`, which wants a
         // message typed after it). Same as the OSC 8 `prompt:` scheme.
         const sendCmd = kind === 'prompt'
-            ? (cmd: string) => { if (isLive()) this.printCmdLine(cmd); }
+            ? (cmd: string) => { if (isLive()) this.printCmdLine(cmd, true); }
             : (cmd: string) => { if (isLive()) this.send(cmd); };
         if (promptCmds && promptCmds.length > 1) {
             const hl = this.buildPopupHyperlink(promptCmds, promptHints ?? [], sendCmd);
@@ -3028,7 +3054,7 @@ export class ScriptingAPI {
         const action = classifyHyperlinkUri(uri);
         if (!action) return;
         if (action.kind === 'send') this.send(action.command);
-        else if (action.kind === 'prompt') this.printCmdLine(action.command);
+        else if (action.kind === 'prompt') this.printCmdLine(action.command, true);
         else this.openUrl(action.url);
     }
 
@@ -3043,7 +3069,7 @@ export class ScriptingAPI {
         const action = classifyLabelLink(href);
         if (!action) return;
         if (action.kind === 'send') this.send(action.command);
-        else if (action.kind === 'prompt') this.printCmdLine(action.command);
+        else if (action.kind === 'prompt') this.printCmdLine(action.command, true);
         else if (action.kind === 'url') this.openUrl(action.url);
         else this.host.runLinkCode(action.code);
     }
@@ -3099,7 +3125,7 @@ export class ScriptingAPI {
             }
             this.oscLinks.markVisited(command);
             if (action.kind === 'send') this.send(action.command + selectedSuffix);
-            else if (action.kind === 'prompt') this.printCmdLine(action.command);
+            else if (action.kind === 'prompt') this.printCmdLine(action.command, true);
             else this.openUrl(action.url);
             const doc = (ev?.currentTarget as HTMLElement | undefined)?.ownerDocument
                 ?? (typeof document !== 'undefined' ? document : null);
@@ -4721,6 +4747,7 @@ export class ScriptingAPI {
         // on screen and still answering windowType() after it was deleted.
         if (!this.session.windows.isMiniConsole(name) && !this.session.windows.has(name)) return false;
         this.session.windows.close(name);
+        this.windowCommandColors.delete(name);
         this.host.raiseEvent('sysMiniConsoleDeleted', [name]);
         return true;
     }
@@ -5219,9 +5246,13 @@ export class ScriptingAPI {
         this.session.events.emit('script.appendcmd', text);
     }
 
-    printCmdLine(text: string): void {
+    /** Mudlet printCmdLine, which leaves the caret at the end with nothing
+     *  selected (TMainConsole's putTextOnCommandLine); `selectAll` is
+     *  sendCmdLine's setCommandLineText, which selects what it put there — the
+     *  form a link PROMPT takes on desktop too. */
+    printCmdLine(text: string, selectAll = false): void {
         this.cmdLineValue = text;
-        this.session.events.emit('script.setcmd', text);
+        this.session.events.emit('script.setcmd', text, selectAll);
     }
 
     clearCmdLine(): void {
@@ -5250,7 +5281,9 @@ export class ScriptingAPI {
      */
     setCommandBackgroundColor(r: number, g: number, b: number, a = 255, name?: string): boolean {
         if (name && name !== 'main') {
-            return this.session.windows.setCmdLineColor(name, 'background-color', r, g, b, a);
+            const ok = this.session.windows.setCmdLineColor(name, 'background-color', r, g, b, a);
+            if (ok) this.windowCommandColors.set(name, { ...this.windowCommandColors.get(name), bg: [r, g, b] });
+            return ok;
         }
         const commandEchoBackground = hexCss(r, g, b);
         useAppStore.getState().patchConnectionProfile(this.connectionId, {
@@ -5268,7 +5301,9 @@ export class ScriptingAPI {
      *  the echoed commands (Host::mCommandFgColor). */
     setCommandForegroundColor(r: number, g: number, b: number, a = 255, name?: string): boolean {
         if (name && name !== 'main') {
-            return this.session.windows.setCmdLineColor(name, 'color', r, g, b, a);
+            const ok = this.session.windows.setCmdLineColor(name, 'color', r, g, b, a);
+            if (ok) this.windowCommandColors.set(name, { ...this.windowCommandColors.get(name), fg: [r, g, b] });
+            return ok;
         }
         const commandEchoForeground = hexCss(r, g, b);
         useAppStore.getState().patchConnectionProfile(this.connectionId, {

@@ -247,7 +247,9 @@ export type MudEvents = MudClientEvents & {
     'script.deleteline': void;
     'script.clearwindow': void;
     'script.appendcmd': [text: string];
-    'script.setcmd': [text: string];
+    /** `selectAll`: sendCmdLine and link PROMPTs select what they put there;
+     *  printCmdLine and appendCmdLine leave the caret at the end. */
+    'script.setcmd': [text: string, selectAll?: boolean];
     'script.clearcmd': void;
     'script.selectcmd': void;
     'script.cmdlinesuggestions': [items: string[]];

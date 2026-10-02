@@ -70,7 +70,7 @@ export function installDiagnosticsBindings(
         // wasmoon hands an omitted Lua argument over as `null`, not `undefined`,
         // so `== null` is what distinguishes "no cmdLineName given".
         const text = b == null ? String(a ?? '') : String(b);
-        api.printCmdLine(text);
+        api.printCmdLine(text, true);
     });
 }
 

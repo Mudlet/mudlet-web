@@ -2445,8 +2445,9 @@ export class WindowManager {
     }
 
     /** Where Enter goes on a window command line with no action bound: the
-     *  game, as typed input. Set by the ScriptingEngine (its `hostSend`). */
-    onCmdLineDefaultSend?: (text: string) => void;
+     *  game, as typed input, then echoed into window `id` itself. Set by the
+     *  ScriptingEngine. */
+    onCmdLineDefaultSend?: (text: string, id: string) => void;
 
     /**
      * The user pressed Enter in window `id`'s command line. Runs the bound
@@ -2461,7 +2462,7 @@ export class WindowManager {
             return true;
         }
         if (!this.onCmdLineDefaultSend) return false;
-        this.onCmdLineDefaultSend(text);
+        this.onCmdLineDefaultSend(text, id);
         return true;
     }
 

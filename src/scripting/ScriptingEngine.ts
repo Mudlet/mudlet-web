@@ -546,7 +546,13 @@ export class ScriptingEngine implements EngineHost {
         session.windows.onDownloadMap = () => void this.downloadMap();
         // A command line with no setCmdLineAction bound sends what was typed,
         // as Mudlet's TCommandLine::enterCommand falls back to Host::send.
-        session.windows.onCmdLineDefaultSend = (text) => this.hostSend(text);
+        // A miniconsole's or user window's own line (desktop's ConsoleCommandLine)
+        // then prints the command into that console too, as enterCommand does
+        // after Host::send. A createCommandLine overlay (SubCommandLine) doesn't.
+        session.windows.onCmdLineDefaultSend = (text, id) => {
+            this.hostSend(text);
+            this.api.printCommandToWindow(id, text);
+        };
         session.cmdLines.onDefaultSend = (text) => this.hostSend(text);
         // Mudlet's postMessage(): client messages for the player (e.g. a map file
         // whose format version can't be read) go on the main console, coloured off
@@ -4102,12 +4108,14 @@ export class ScriptingEngine implements EngineHost {
         // JS temp aliases
         let consumed = this.aliasEngine.processTemp(text);
         // Permanent aliases
-        for (const permMatch of this.aliasEngine.matchAllPerm(text)) {
+        // Each one runs as it is reached, so an alias that enables or disables
+        // a later one decides whether that one fires in this same pass.
+        this.aliasEngine.forEachPermMatch(text, permMatch => {
             // matches[1] is the matched portion (Mudlet semantics), not the
             // whole input — see the perm-trigger note above (issue #4).
             this.executePermAlias(permMatch.alias, [permMatch.matchedText, ...permMatch.captures], permMatch.named);
             consumed = true;
-        }
+        });
         this.api.flushOutput();
         return consumed;
     }
