@@ -445,14 +445,26 @@ export class MudSession {
             // send() still acts on the last server line. And the echo is
             // stored wrapped at the main window's width, like a server line of
             // the same length (mudlet-web#262, #232).
+            //
+            // Outside the trigger engine, a command sent while the last line is
+            // a GA/EOR prompt is written onto that prompt line and nowhere else
+            // (printCommand's insertInLine branch, mudlet-web#288) — the screen
+            // has always shown it there, and storing it on a line of its own
+            // as well put a phantom line in the buffer per command.
             const main = this.consoles.get('main');
             if (main) {
                 const line = new AnsiAwareBuffer(styled);
-                main.appendLine(line, false);
-                main.wrapAppendedLine(line);
+                const prompt = this.scriptEchoDeferred ? null : main.appendToPromptLine(line);
+                if (prompt) {
+                    main.wrapAppendedLine(prompt);
+                } else {
+                    main.appendLine(line, false);
+                    main.wrapAppendedLine(line);
+                }
             }
-            // No "> " prefix: Mudlet echoes the bare command, and OutputRenderer
-            // appends it inline to the open server prompt line (e.g. "- look").
+            // No "> " prefix: Mudlet echoes the bare command. When it joined the
+            // prompt line above, OutputRenderer redraws that line (it sees the
+            // line's prompt flag cleared) instead of adding a row.
             this.events.emit('message', styled, 'echo', Date.now());
         }
     }

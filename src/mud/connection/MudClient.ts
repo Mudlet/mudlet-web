@@ -371,7 +371,7 @@ export class MudClient {
         this.assembler = new LineAssembler(
             {
                 onChunk: (text, ts) => this.chunkProcessor.processChunk(text, ts, this),
-                onPrompt: (promptLine) => this.eventBus.emit('prompt', promptLine),
+                onPrompt: () => this.eventBus.emit('prompt'),
                 onIdleFlush: () => this.flushMessageBuffer(),
             },
             { promptTimeoutMs, fixUnnecessaryLinebreaks, undoServerWrap, undoServerWrapWidth },

@@ -411,24 +411,26 @@ export function setupOutputRenderer(
         // trimming here.
     }
 
-    /** Append a command echo inline to the open prompt line ("- " + "look"). */
-    function appendEchoToPrompt(message: string | AnsiAwareBuffer, target: HTMLDivElement, sticky: HTMLDivElement | null): void {
+    /**
+     * Redraw the open prompt line after a command echo joined it ("- " +
+     * "look"). The console model does the joining (MudSession.echoCommand →
+     * Console.appendToPromptLine) on the very buffer this row draws, clearing
+     * its prompt flag as it does; the renderer only shows the result, so the
+     * command is in the buffer exactly once. Returns false when the model kept
+     * the echo on a line of its own (still flagged: a send() from inside a
+     * trigger, or output came between) — the caller then draws it as a new row.
+     */
+    function redrawEchoedPrompt(target: HTMLDivElement, sticky: HTMLDivElement | null): boolean {
         const promptBuf = elementBuffers.get(target) as AnsiAwareBuffer | undefined;
-        if (promptBuf) {
-            const echoBuf = typeof message === 'string' ? new AnsiAwareBuffer(message) : message;
-            promptBuf.appendBuffer(echoBuf.clone());
-            updateElementContent(target, promptBuf);
-            const stickyBuf = sticky ? (elementBuffers.get(sticky) as AnsiAwareBuffer | undefined) : undefined;
-            if (sticky && stickyBuf) {
-                stickyBuf.appendBuffer(echoBuf.clone());
-                updateElementContent(sticky, stickyBuf, false);
-            }
-            cursorEl = target;
-            deletedPrev = null;
-        }
+        if (!promptBuf || promptBuf.isPrompt) return false;
+        updateElementContent(target, promptBuf);
+        if (sticky) updateElementContent(sticky, promptBuf, false);
+        cursorEl = target;
+        deletedPrev = null;
         if (!isSplitView()) {
             requestAnimationFrame(scrollToTail);
         }
+        return true;
     }
 
     const handleMessage = (message?: string | AnsiAwareBuffer, type?: string, timestamp?: number, isPrompt?: boolean) => {
@@ -447,8 +449,7 @@ export function setupOutputRenderer(
             const sticky = promptStickyEl;
             promptLineEl = null;
             promptStickyEl = null;
-            appendEchoToPrompt(message, target, sticky);
-            return;
+            if (redrawEchoedPrompt(target, sticky)) return;
         }
 
         // Any non-echo output closes the open prompt line: it stays as its own

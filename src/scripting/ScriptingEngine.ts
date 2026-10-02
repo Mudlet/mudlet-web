@@ -5037,6 +5037,9 @@ export class ScriptingEngine implements EngineHost {
                                     shouldRender = false;
                                 } else if (behaviour === 'replacewithspace') {
                                     renderBuffer = new AnsiAwareBuffer(' ');
+                                    // A stand-in for the stored line: the
+                                    // renderer reads the prompt flag off it.
+                                    renderBuffer.isPrompt = isPrompt;
                                 }
                             }
                             if (shouldRender) {
@@ -5268,10 +5271,10 @@ export class ScriptingEngine implements EngineHost {
         }));
 
         this.unsubs.push(
-            session.events.on('prompt', (promptLine) => {
-                // A bare GA ended no line; flagging now would make the next,
-                // ordinary line the prompt.
-                if (promptLine !== false) this.promptPending = true;
+            session.events.on('prompt', () => {
+                // Every marker ends a line (a bare one an empty line), and that
+                // line is the last of the batch flushed next.
+                this.promptPending = true;
                 this.visibility.onPrompt();
             }),
             // OSC 8 visibility expiry: a user command (echo) is "input", any

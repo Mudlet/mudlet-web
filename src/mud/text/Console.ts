@@ -323,6 +323,23 @@ export class Console {
         return buf;
     }
 
+    /**
+     * `TConsole::printCommand` outside the trigger engine: when the last line
+     * is still flagged as a prompt (and nothing has been echoed after it), the
+     * command is written onto the end of that line instead of onto a line of
+     * its own, and the line stops being a prompt — so only the first command
+     * after a prompt joins it. Returns the line it was added to, or null when
+     * there is no such prompt line and the caller appends as usual.
+     */
+    appendToPromptLine(buffer: AnsiAwareBuffer): AnsiAwareBuffer | null {
+        if (this.partial.length > 0 || !this.hasOpenLine) return null;
+        const last = this.history[this.history.length - 1];
+        if (!last || !last.isPrompt || last.deleted) return null;
+        last.appendBuffer(buffer);
+        last.isPrompt = false;
+        return last;
+    }
+
     clear(): void {
         this.history = [];
         this.pending = [];

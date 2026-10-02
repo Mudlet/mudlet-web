@@ -229,9 +229,9 @@ export type MudClientEvents = {
      *  redials. Fires at most once per connection, and never once the profile's
      *  `promptForVersionInTTYPE` latch is set. */
     'kavir.detected': void;
-    /** An IAC GA/EOR arrived. `promptLine` is false when the marker had no
-     *  text in front of it to end, so no line was flagged as a prompt. */
-    'prompt': [promptLine?: boolean];
+    /** An IAC GA/EOR arrived. The next line flushed is the one it ended — an
+     *  empty one for a bare marker, as in Mudlet. */
+    'prompt': void;
 } & Record<string, any>;
 
 export type MudEvents = MudClientEvents & {

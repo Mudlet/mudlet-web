@@ -29,11 +29,11 @@ export interface LineAssemblerCallbacks {
     /** Deliver assembled whole lines (or a flushed prompt tail) downstream —
      *  the trigger pipeline and rendering treat each chunk as complete lines. */
     onChunk(text: string, ts: number): void;
-    /** Fired for every prompt marker (IAC GA/EOR), after it flushed the held
-     *  tail — the owner emits its `prompt` event here. `promptLine` is false
-     *  for a bare marker that had no text to end: there is no prompt line then,
-     *  and the next line the game sends is not one either. */
-    onPrompt(promptLine: boolean): void;
+    /** Fired for every prompt marker (IAC GA/EOR), after it flushed the line
+     *  it ends — the owner emits its `prompt` event here, and the line just
+     *  handed to `onChunk` is the prompt. A bare marker ends an empty line, so
+     *  there always is one. */
+    onPrompt(): void;
     /** Fired after an idle-timer flush so the owner can render any messages
      *  the flushed chunk produced (MudClient.flushMessageBuffer). */
     onIdleFlush(): void;
@@ -196,12 +196,23 @@ export class LineAssembler {
         }
 
         if (hasPrompt) {
-            const promptLine = this.flush(ts);
+            // A marker with no text in front of it still ends a line: an empty
+            // one, flagged as the prompt. Mudlet's gotPrompt posts the '\xff'
+            // on its own and TBuffer::commitLineData commits the empty open
+            // line with promptBuffer set and runs the triggers on it — only an
+            // empty *timer* posting ('\r') is dropped. So `l1\r\n` + GA stores
+            // `[l1][]` with prompt triggers firing on "", and a game that ends
+            // every prompt with `\r\n` + GA still gets its prompt triggers.
+            // (A held incomplete escape stays held for the next line.)
+            if (!this.flush(ts)) {
+                this.commitServerWrapPending(ts);
+                this.callbacks.onChunk('\n', ts);
+            }
             this._gaDriver = true;
             // The next data block (the next transmission) starts fresh, so its
             // leading newline is again a candidate for the IRE-bug strip above.
             this.atPromptBlockStart = true;
-            this.callbacks.onPrompt(promptLine);
+            this.callbacks.onPrompt();
         } else if (this.pendingLineTail.length > 0 && !this._gaDriver) {
             // Once GA-driven, only a newline or the next prompt marker ends a
             // line — Mudlet's gotRest posts the fragment into TBuffer's open

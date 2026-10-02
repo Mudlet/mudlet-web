@@ -10,6 +10,8 @@ import type { MudClientEvents } from '../../../src/mud/events';
 // flushLines. We assert on the full concatenated output (the passthrough processor
 // tags every chunk 'mud', so chunks within a frame merge into one group) — what
 // matters here is whether the spurious leading newline survives. No socket opened.
+// A block ending `\r\n` + GA ends with an extra '\n': the empty prompt line the
+// bare GA ends, as in Mudlet (mudlet-web#288).
 function makeClient(fix: boolean) {
     const bus = new EventBus<MudClientEvents>();
     const client = new MudClient(
@@ -56,7 +58,7 @@ describe('MudClient fixUnnecessaryLinebreaks', () => {
         // second produces survives.
         client.feedTelnet('\r\n\r\nYou see a cat.\r\n' + TELNET_GA);
 
-        expect(out.text).toBe('\nYou see a cat.\n');
+        expect(out.text).toBe('\nYou see a cat.\n\n');
     });
 
     it('skips a leading ANSI SGR sequence before stripping the newline', () => {
@@ -67,7 +69,7 @@ describe('MudClient fixUnnecessaryLinebreaks', () => {
         // The block opens with a color escape, then the spurious newline.
         client.feedTelnet('\x1b[32m\r\nGreen text\r\n' + TELNET_GA);
 
-        expect(out.text).toBe('\x1b[32mGreen text\n');
+        expect(out.text).toBe('\x1b[32mGreen text\n\n');
     });
 
     it('does not strip when the block starts with real content', () => {
@@ -90,7 +92,7 @@ describe('MudClient fixUnnecessaryLinebreaks', () => {
         client.feedTelnet('\r\n');
         client.feedTelnet('You see a cat.\r\n' + TELNET_GA);
 
-        expect(out.text).toBe('You see a cat.\n');
+        expect(out.text).toBe('You see a cat.\n\n');
     });
 
     it('does not strip the first transmission before GA latches', () => {
@@ -101,7 +103,7 @@ describe('MudClient fixUnnecessaryLinebreaks', () => {
 
         client.feedTelnet('\r\nwelcome\r\n' + TELNET_GA);
 
-        expect(out.text).toBe('\nwelcome\n');
+        expect(out.text).toBe('\nwelcome\n\n');
     });
 
     it('applies to every GA block, not just the first', () => {
@@ -112,6 +114,6 @@ describe('MudClient fixUnnecessaryLinebreaks', () => {
         client.feedTelnet('\r\nfirst block\r\n' + TELNET_GA);
         client.feedTelnet('\r\nsecond block\r\n' + TELNET_GA);
 
-        expect(out.text).toBe('first block\nsecond block\n');
+        expect(out.text).toBe('first block\n\nsecond block\n\n');
     });
 });

@@ -78,7 +78,7 @@ function makeRecorder(opts: Record<string, unknown> = {}) {
     bus.on('flushLines', (groups) => {
         for (const g of groups) events.push(g.text);
     });
-    bus.on('prompt', (promptLine) => { events.push(promptLine === false ? '<GA:bare>' : '<GA>'); });
+    bus.on('prompt', () => { events.push('<GA>'); });
     return { client, events };
 }
 
@@ -176,12 +176,29 @@ describe('MudClient partial lines in GA-driven mode', () => {
         expect(events).toEqual(['Name: ']);
     });
 
-    it('reports a bare GA as ending no prompt line', () => {
+    // mudlet-web#288, measured on Mudlet PTB: a GA/EOR with no text in front
+    // of it ends an empty line, flagged as the prompt (TBuffer commits the
+    // empty open line on '\xff' and runs the triggers on it).
+    it('ends an empty prompt line at a bare GA', () => {
         const { client, events } = makeRecorder();
         client.feedTelnet('Room line\r\n');
         client.feedTelnet(TELNET_GA);
         client.feedTelnet('Next line\r\n');
 
-        expect(events).toEqual(['Room line\n', '<GA:bare>', 'Next line\n']);
+        expect(events).toEqual(['Room line\n', '<GA>', '\n', 'Next line\n']);
+    });
+
+    it('ends an empty prompt line at a GA after a newline in the same frame', () => {
+        const { client, events } = makeRecorder();
+        client.feedTelnet('B3 l1\r\n' + TELNET_GA + 'B3 l2\r\n');
+
+        expect(events).toEqual(['<GA>', 'B3 l1\n\n', 'B3 l2\n']);
+    });
+
+    it('treats a bare EOR like a bare GA', () => {
+        const { client, events } = makeRecorder();
+        client.feedTelnet(TELNET_EOR);
+
+        expect(events).toEqual(['<GA>', '\n']);
     });
 });
