@@ -2,7 +2,8 @@ import { FormatState } from './FormatState';
 import { AnsiAwareBuffer } from './FormatState';
 import type { FormatStateSnapshot } from './FormatState';
 import { concealDelayedReveals } from './hyperlinkVisibility';
-import { codePointWidth, isPlainAscii, segmentCells } from './wcwidth';
+import { codePointWidth, graphemeEnds, isPlainAscii } from './wcwidth';
+import { lineBreakOpportunities } from './lineBreak';
 
 /** Longest run of characters one echo or insert may add to a line. Mudlet's
  *  `TBuffer::MAX_CHARACTERS_PER_ECHO`. */
@@ -855,31 +856,38 @@ interface WrapPiece {
 /**
  * Where `text` breaks to fit `maxWidth` columns — a port of Mudlet's
  * TBuffer::getWrapInfo, so the answer has to agree with it piece for piece.
- * Width is counted per grapheme in terminal columns, an east asian character
- * taking two. A break falls at the last opportunity that fits: before a space
- * (the run of spaces it lands in is then skipped rather than starting the next
- * line), or wherever the line-break rules allow one, and a word longer than
- * the whole width is broken hard. An empty answer means the line stays as it
- * is — including a line that would only have been broken by its indent.
+ * Width is counted per grapheme in terminal columns, each grapheme as wide as
+ * its base character by Mudlet's width table (wcwidth.ts). A break falls at
+ * the last opportunity that fits: before a space (the run of spaces it lands
+ * in is then skipped rather than starting the next line), or wherever Qt's
+ * line breaker allows one (lineBreak.ts), and a word longer than the whole
+ * width is broken hard. An empty answer means the line stays as it is —
+ * including a line that would only have been broken by its indent.
  */
 function wrapInfo(text: string, isNewline: boolean, maxWidth: number, indent: number, hangingIndent: number): WrapPiece[] {
     const output: WrapPiece[] = [];
     if (text.length === 0) return output;
-    // Most lines are short printable ASCII, one column a character, and those
-    // need none of the grapheme work below.
-    if (text.length <= (isNewline ? maxWidth - indent : maxWidth) && text.length <= maxWidth && isPlainAscii(text)) {
-        return output;
-    }
+    // Printable ASCII is one column a character, so such a line no wider than
+    // the wrap column has no break to find.
+    const widthAvailable = Math.min(isNewline ? maxWidth - indent : maxWidth, maxWidth);
+    const plainAscii = isPlainAscii(text);
+    if (plainAscii && text.length <= widthAvailable) return output;
+    // No grapheme is wider than two columns or shorter than one code unit, so
+    // this line can't reach the wrap column; only an embedded newline breaks it.
+    if (text.length * 2 <= widthAvailable && !text.includes('\n')) return output;
 
-    // The grapheme starting at each offset: where it ends, and how wide it is.
-    const cellEnd = new Int32Array(text.length + 1).fill(-1);
-    const cellWidth = new Uint8Array(text.length + 1);
-    let offset = 0;
-    for (const cell of segmentCells(text)) {
-        cellEnd[offset] = offset + cell.text.length;
-        cellWidth[offset] = cell.width;
-        offset += cell.text.length;
-    }
+    // Where each grapheme starting at an offset ends; a plain ASCII line's
+    // graphemes are its characters. The break opportunities are only worked
+    // out once a line actually overflows.
+    const cellEnd = plainAscii ? null : graphemeEnds(text);
+    let breaks: Uint8Array | null = null;
+    const lineBreakAtOrBefore = (position: number): number => {
+        breaks ??= lineBreakOpportunities(text);
+        if (position === 0 || breaks[position]) return position;
+        let previous = position - 1;
+        while (previous > 0 && !breaks[previous]) previous--;
+        return previous;
+    };
 
     let xPos = 0;
     let totalWidth = 0;
@@ -902,16 +910,28 @@ function wrapInfo(text: string, isNewline: boolean, maxWidth: number, indent: nu
             xPos = 0;
             continue;
         }
-        const isCellStart = cellEnd[index] > index;
-        const next = isCellStart ? cellEnd[index] : index + 1;
-        const charWidth = isCellStart ? cellWidth[index] : 1;
+        let next = index + 1;
+        let charWidth = 1;
+        if (cellEnd) {
+            // A break inside a grapheme resumes there, as Qt's grapheme finder
+            // does after setPosition(): up to the next boundary, measured by the
+            // character it starts on.
+            next = cellEnd[index];
+            if (next < 0) {
+                next = index + 1;
+                while (next < text.length && cellEnd[next] < 0) next++;
+            }
+            charWidth = codePointWidth(text.codePointAt(index)!);
+        }
         const indentationHere = isNewline ? indent : hangingIndent;
         if (xPos + charWidth > maxWidth - (needsIndent ? indentationHere : 0)) {
             if (isNewline) needsIndent = true;
+            // Any space will do as a break, unlike the indirect break UAX #14
+            // only allows after the last of a run of them.
             const firstNonIndentChar = firstChar + (needsIndent ? 0 : indentationHere);
-            if (c !== ' ' && !isLineBreakAt(text, index, cellEnd)) {
-                const previous = previousLineBreak(text, index, cellEnd);
-                if (previous > firstNonIndentChar) index = previous;
+            if (c !== ' ') {
+                const wrapPoint = lineBreakAtOrBefore(index);
+                if (wrapPoint > firstNonIndentChar) index = wrapPoint;
             }
             if (index <= firstChar) {
                 // no room for even one grapheme: keep one on the line, or the
@@ -933,46 +953,4 @@ function wrapInfo(text: string, isNewline: boolean, maxWidth: number, indent: nu
     if (totalWidth <= maxWidth && !hasNewline) return [];
     if (output.length > 0) output.push({ isNewline, needsIndent: !isNewline, first: firstChar, last: text.length });
     return output;
-}
-
-// East asian punctuation a line may not start with, and the kind it may not end
-// on — the few UAX #14 rules that decide where ideographic text can break.
-const NO_BREAK_BEFORE = new Set([...'、。，．：；！？）］｝〕〉》」』】〙〗〟ー々〻ぁぃぅぇぉっゃゅょゎゕゖァィゥェォッャュョヮヵヶ・…‥']);
-const NO_BREAK_AFTER = new Set([...'（［｛〔〈《「『【〘〖〝']);
-
-function codePointBefore(text: string, index: number): number {
-    const low = text.charCodeAt(index - 1);
-    if (index >= 2 && low >= 0xdc00 && low <= 0xdfff) {
-        const high = text.charCodeAt(index - 2);
-        if (high >= 0xd800 && high <= 0xdbff) return text.codePointAt(index - 2)!;
-    }
-    return low;
-}
-
-/**
- * Whether a line may break before `index` — what Mudlet asks
- * QTextBoundaryFinder::Line. The rules that matter for game text: after a run
- * of spaces, after a hyphen inside a word, and between east asian characters,
- * short of the punctuation that has to stay with its neighbour.
- */
-function isLineBreakAt(text: string, index: number, cellEnd: Int32Array): boolean {
-    if (index <= 0 || index >= text.length || cellEnd[index] <= index) return false;
-    const current = text.codePointAt(index)!;
-    const previous = codePointBefore(text, index);
-    if (current === 0x20) return false;
-    if (previous === 0x20) return true;
-    if (previous === 0x2d) return /\p{L}/u.test(String.fromCodePoint(current));
-    if (codePointWidth(current) === 2 || codePointWidth(previous) === 2) {
-        return !NO_BREAK_BEFORE.has(String.fromCodePoint(current))
-            && !NO_BREAK_AFTER.has(String.fromCodePoint(previous));
-    }
-    return false;
-}
-
-/** The last line-break opportunity before `index`, or 0 for none. */
-function previousLineBreak(text: string, index: number, cellEnd: Int32Array): number {
-    for (let i = index - 1; i > 0; i--) {
-        if (isLineBreakAt(text, i, cellEnd)) return i;
-    }
-    return 0;
 }
