@@ -2,7 +2,7 @@ import type {MudSession, ScriptLogSource, ScriptLogSourceKind} from '../mud/MudS
 import type { LogFormat } from '../logging/SessionLogger';
 import { MAP_WIDGET_ID } from '../ui/windows/types';
 import { qtModifiersToList } from '../mud/keybindings/qtKeys';
-import { splitCommands } from '../mud/commandSplit';
+import { splitSentCommands } from '../mud/commandSplit';
 import type {AliasEngine, AliasNode} from '../mud/aliases/AliasEngine';
 import {TriggerEngine, highlightTargets, type TriggerNode} from '../mud/triggers/TriggerEngine';
 import type {TimerEngine} from '../mud/timers/TimerEngine';
@@ -1681,8 +1681,11 @@ export class ScriptingEngine implements EngineHost {
      * `expandAlias(text, echo)` is exactly this function.
      */
     hostSend(text: string, echo = true): void {
-        this.session.echoSentCommand(text, echo);
-        const parts = splitCommands(text, this.api.getCommandSeparator());
+        // What the echo hands back is what gets split: an echoed command has
+        // gained printCommand's line feed, which can leave an empty command
+        // for the aliases (a `^$` alias on empty Enter) — see echoSentCommand.
+        const asSent = this.session.echoSentCommand(text, echo);
+        const parts = splitSentCommands(asSent, this.api.getCommandSeparator());
         // Nothing but separators (or nothing at all) still reaches the game
         // as a bare line feed, and never sees the aliases — Mudlet returns
         // early from its "allow sending blank commands" branch.

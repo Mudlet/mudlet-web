@@ -13,34 +13,55 @@ export interface LogFormat {
     font?: string;
     /** Console background, painted behind the whole document as Mudlet does. */
     background?: { r: number; g: number; b: number };
+    /** Console foreground — the body's text colour, and what an HTML log line
+     *  names for text with no colour of its own (Host::mFgColor). */
+    foreground?: { r: number; g: number; b: number };
 }
 
-/** Mudlet's HTML log preamble (TTextEdit::slot_copySelectionToClipboardHTML,
- *  the same document the log writer emits): a strict-HTML wrapper, a title, and
- *  a stylesheet naming the console font and background, with the fallback
- *  families Mudlet appends. The body opens a `<div>` that stopFileLog closes —
- *  strict HTML 4 wants the spans wrapped in a block. */
+const DEFAULT_LOG_FG = { r: 192, g: 192, b: 192 };
+const DEFAULT_LOG_BG = { r: 0, g: 0, b: 0 };
+
+/** Mudlet's HTML log preamble, as TConsoleModel::toggleLogging writes it: a
+ *  strict-HTML wrapper, a title, and a stylesheet naming the console font,
+ *  foreground and background, with the fallback families Mudlet appends. The
+ *  body is written separately — a restarted log carries the old one forward. */
 function htmlLogHeader(title: string, format?: LogFormat): string {
-    const bg = format?.background ?? { r: 0, g: 0, b: 0 };
-    const families = [format?.font, 'Monospace', 'Courier']
+    const bg = format?.background ?? DEFAULT_LOG_BG;
+    const fg = format?.foreground ?? DEFAULT_LOG_FG;
+    const families = [format?.font, 'Courier New', 'Monospace', 'Courier']
         .filter((f): f is string => !!f)
         .filter((f, i, all) => all.indexOf(f) === i);
     return "<!DOCTYPE HTML PUBLIC '-//W3C//DTD HTML 4.01//EN' 'http://www.w3.org/TR/html4/strict.dtd'>\n"
         + '<html>\n'
         + " <head>\n"
-        + "  <meta http-equiv='content-type' content='text/html; charset=utf-8'>\n"
+        + "  <meta http-equiv='content-type' content='text/html; charset=utf-8'>"
         + "  <meta name='generator' content='Mudlet Web'>\n"
-        + `  <title>${escapeHtml(title)}</title>\n`
+        + `  <title>Mudlet, log from ${escapeHtml(title)} profile</title>\n`
         + "  <style type='text/css'>\n"
         + `   <!-- body { font-family: '${families.join("', '")}'; font-size: 100%;`
-        + ' line-height: 1.125em; white-space: nowrap; color:rgb(255,255,255);'
+        + ` line-height: 1.125em; white-space: nowrap; color:rgb(${fg.r},${fg.g},${fg.b});`
         + ` background-color:rgb(${bg.r},${bg.g},${bg.b});}\n`
         + '        span { white-space: pre-wrap; }\n'
         + '     -->\n'
         + '  </style>\n'
-        + '  </head>\n'
-        + '  <body><div>';
+        + '  </head>\n';
 }
+
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+    'August', 'September', 'October', 'November', 'December'];
+
+/** The line TConsoleModel::toggleLogging opens and closes every log session
+ *  with — `'Log session starting at 'hh:mm:ss' on 'dddd', 'd' 'MMMM' 'yyyy'.'`,
+ *  e.g. "Log session starting at 06:16:55 on Thursday, 1 October 2026." */
+export function logSessionLine(kind: 'starting' | 'ending', d: Date): string {
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `Log session ${kind} at ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+        + ` on ${WEEKDAYS[d.getDay()]}, ${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}.`;
+}
+
+/** What a text log puts between two sessions written to one file: 80 × U+23AF. */
+const TEXT_LOG_SESSION_RULE = '⎯'.repeat(80);
 
 function escapeHtml(s: string): string {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -129,15 +150,20 @@ export class SessionLogger {
     startFileLog(format?: LogFormat): string | null {
         if (this.logFilePath) return this.logFilePath;
         this.logHtml = format?.html ?? false;
-        this.logBackground = format?.background ?? { r: 0, g: 0, b: 0 };
+        this.logBackground = format?.background ?? DEFAULT_LOG_BG;
+        this.logForeground = format?.foreground ?? DEFAULT_LOG_FG;
         this.openLogFile(format);
         return this.logFilePath;
     }
 
-    /** Stop mirroring to the file, writing out whatever is buffered — and, for
-     *  an HTML log, the closing tags that make it a document. */
+    /** Stop mirroring to the file, writing out whatever is buffered, then the
+     *  "Log session ending at …" line — and, for an HTML log, the closing tags
+     *  that make it a document. */
     stopFileLog(): void {
-        if (this.logHtml && this.logFilePath) this.fileBuffer.push(' </div></body>\n</html>\n');
+        if (this.logFilePath) {
+            const end = logSessionLine('ending', new Date());
+            this.fileBuffer.push(this.logHtml ? `<p>${end}</p>\n  </div></body>\n</html>\n` : `${end}\n`);
+        }
         this.flushLogFile();
         this.logFilePath = null;
         this.logHtml = false;
@@ -145,8 +171,10 @@ export class SessionLogger {
 
     /** Whether the open file log is HTML rather than plain text. */
     private logHtml = false;
-    /** The console background the HTML log paints transparent text with. */
-    private logBackground = { r: 0, g: 0, b: 0 };
+    /** The console colours an HTML log line names for text with none of its own
+     *  (and paints transparent backgrounds with). */
+    private logBackground = DEFAULT_LOG_BG;
+    private logForeground = DEFAULT_LOG_FG;
 
     private openLogFile(format?: LogFormat): void {
         if (!this.vfs) return;
@@ -157,13 +185,29 @@ export class SessionLogger {
         const path = `${this.vfs.profilePath}/log/${stamp}.${this.logHtml ? 'html' : 'txt'}`;
         try {
             this.vfs.mkdir(`${this.vfs.profilePath}/log`);
-            // Only create it — never blank one that is already there. The name
-            // carries the second this logger was built, so stopping and
-            // restarting logging inside one session comes back to the same file,
-            // and truncating it would throw away everything the first stretch
-            // had written. Mudlet reopens for append.
-            if (!this.vfs.exists(path)) {
-                this.vfs.writeFile(path, this.logHtml ? htmlLogHeader(this.connectionName, format) : '');
+            // Never blank one that is already there. The name carries the
+            // second this logger was built, so stopping and restarting logging
+            // inside one session comes back to the same file, and truncating it
+            // would throw away everything the first stretch had written. Mudlet
+            // reopens it the way TConsoleModel::toggleLogging does: a text log
+            // is appended to after a rule, and an HTML one is rebuilt with the
+            // old body carried forward and an <hr> before the new session.
+            const existing = this.vfs.exists(path) ? this.vfs.readFile(path) : '';
+            const start = logSessionLine('starting', new Date());
+            if (this.logHtml) {
+                const lines = existing.split('\n');
+                const open = lines.findIndex(l => l.includes('<body><div>'));
+                let body = '  <body><div>\n';
+                if (open >= 0) {
+                    const close = lines.findIndex((l, i) => i > open && l.includes('</div></body>'));
+                    body = lines.slice(open, close < 0 ? lines.length : close).map(l => `${l}\n`).join('')
+                        + '  </div><hr><div>\n';
+                }
+                this.vfs.writeFile(path, htmlLogHeader(this.connectionName, format) + body + `<p>${start}</p>\n`);
+            } else {
+                // A few junk bytes (a BOM) at the start don't count as a session.
+                const rule = existing.length > 5 ? `${TEXT_LOG_SESSION_RULE}\n` : '';
+                this.vfs.writeFile(path, `${existing}${rule}${start}\n`);
             }
             this.logFilePath = path;
         } catch (err) {
@@ -204,13 +248,13 @@ export class SessionLogger {
             plain: buffer.text,
         });
         this.totalCount++;
-        // An HTML log takes the same styled markup the log browser records, so
-        // colour and formatting survive into the document; a text log takes the
-        // plain line.
+        // An HTML log line is TBuffer::bufferToHtml's: spans naming both
+        // colours, ending in <br> (the body is nowrap, so that is what breaks
+        // the lines); a text log takes the plain line.
         if (this.logFilePath) {
-            this.fileBuffer.push((this.logHtml
-                ? buffer.toHtml({ transparentBackground: this.logBackground })
-                : buffer.text) + '\n');
+            this.fileBuffer.push(this.logHtml
+                ? buffer.toLogHtml({ foreground: this.logForeground, background: this.logBackground })
+                : buffer.text + '\n');
         }
         if (this.buffer.length >= FLUSH_AT) void this.flush();
     }

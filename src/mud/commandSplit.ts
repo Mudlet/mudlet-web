@@ -17,3 +17,15 @@ export function splitCommands(text: string, separator: string): string[] {
     if (!separator) return text ? [text] : [];
     return text.split(separator).filter(part => part !== '');
 }
+
+/**
+ * The rest of Host::send's loop on top of the split: each part has its line
+ * feeds removed, but only after the empty parts were skipped. So a part that
+ * was nothing but a line feed survives as an EMPTY command — which is what an
+ * echoed command's trailing line feed (see MudSession.echoSentCommand) leaves
+ * after a final separator, or as the whole of an empty one, and what a `^$`
+ * alias then fires on.
+ */
+export function splitSentCommands(text: string, separator: string): string[] {
+    return splitCommands(text, separator).map(part => part.replace(/\n/g, ''));
+}

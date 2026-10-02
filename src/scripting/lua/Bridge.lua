@@ -2694,7 +2694,8 @@ end
 -- Mudlet getStopWatchBrokenDownTime(watchID|name) → a day/hour/minute/second/
 -- millisecond table. The __ binding returns the record (or the refusal's
 -- message, which the stopwatch guard below turns into nil, message); rebuild
--- it off the wasmoon proxy.
+-- it off the wasmoon proxy. No decimalSeconds: Mudlet builds this one with
+-- generateElapsedTimeTable's includeDecimalSeconds off (getStopWatches has it).
 function getStopWatchBrokenDownTime(arg)
     local e = __getStopWatchBrokenDownTime(arg)
     if type(e) ~= 'table' then return e end
@@ -2705,7 +2706,6 @@ function getStopWatchBrokenDownTime(arg)
         minutes = e.minutes,
         seconds = e.seconds,
         milliSeconds = e.milliSeconds,
-        decimalSeconds = e.decimalSeconds,
     }
 end
 
@@ -7540,8 +7540,42 @@ do
     startStopWatch             = watchGuard(startStopWatch, "startStopWatch", ID_OR_NAME)
     stopStopWatch              = watchGuard(stopStopWatch, "stopStopWatch", ID_OR_NAME)
     resetStopWatch             = watchGuard(resetStopWatch, "resetStopWatch", ID_OR_NAME)
-    adjustStopWatch            = watchGuard(adjustStopWatch, "adjustStopWatch", ID_OR_NAME)
-    setStopWatchPersistence    = watchGuard(setStopWatchPersistence, "setStopWatchPersistence", ID_OR_NAME)
+    -- adjustStopWatch / setStopWatchPersistence check their second argument
+    -- the way TLuaInterpreter does, with getVerifiedDouble / getVerifiedBool,
+    -- which raise — but only after getWatchId. That resolves a NAME there and
+    -- then, answering (nil, errMsg) for one that is not found before the second
+    -- argument is looked at; a numeric ID it passes through unchecked, so a bad
+    -- second argument raises even for an ID no watch has.
+    local function secondArgGuard(fn, funcName, verify)
+        return function(...)
+            local subject, value = ...
+            checkSubject(subject, funcName, ID_OR_NAME)
+            if type(subject) == 'string' then
+                local missing = __stopWatchMissing(subject)
+                if missing then return nil, missing end
+            end
+            value = verify(value, select('#', ...) >= 2)
+            local r = fn(subject, value)
+            if type(r) == 'string' then return nil, r end
+            return r
+        end
+    end
+    local _rawAdjustStopWatch = adjustStopWatch
+    adjustStopWatch = secondArgGuard(_rawAdjustStopWatch, "adjustStopWatch", function(v, present)
+        if __mudlet_num(v) == nil then
+            error("adjustStopWatch: bad argument #2 type (modification in seconds as number expected, got "
+                .. __mudlet_typename(v, present) .. "!)", 3)
+        end
+        return __mudlet_num(v)
+    end)
+    local _rawSetStopWatchPersistence = setStopWatchPersistence
+    setStopWatchPersistence = secondArgGuard(_rawSetStopWatchPersistence, "setStopWatchPersistence", function(v, present)
+        if type(v) ~= 'boolean' then
+            error("setStopWatchPersistence: bad argument #2 type (persistence as boolean expected, got "
+                .. __mudlet_typename(v, present) .. "!)", 3)
+        end
+        return v
+    end)
     getStopWatchBrokenDownTime = watchGuard(getStopWatchBrokenDownTime, "getStopWatchBrokenDownTime", ID_OR_NAME)
     deleteStopWatch            = watchGuard(deleteStopWatch, "deleteStopWatch",
         "stopwatchID as number or stopwatch name as string expected")
@@ -7558,6 +7592,16 @@ do
         if n > 0 and first ~= nil and type(first) ~= 'string' and type(first) ~= 'boolean' then
             error("createStopWatch: bad argument #1 type (name as string or autostart as"
                 .. " boolean are optional, got " .. type(first) .. "!)", 2)
+        end
+        -- A second argument, when there is one at all (a trailing nil counts,
+        -- as lua_gettop does), goes through getVerifiedBool(..., "autostart",
+        -- true): optional in the wording only — anything but a boolean raises.
+        if n > 1 then
+            local second = select(2, ...)
+            if type(second) ~= 'boolean' then
+                error("createStopWatch: bad argument #2 type (autostart as boolean is optional, got "
+                    .. type(second) .. "!)", 2)
+            end
         end
         local id = _rawCreateStopWatch(...)
         if type(id) == 'string' then return nil, id end

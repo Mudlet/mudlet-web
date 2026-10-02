@@ -332,6 +332,13 @@ export class Console {
 
     get currentPartial(): AnsiAwareBuffer { return this.partial; }
 
+    /** The last finished line — the one before the line being built, which is
+     *  where TBuffer's `buffer.size() - 2` points — or undefined when there is
+     *  none yet. */
+    get lastFinishedLine(): AnsiAwareBuffer | undefined {
+        return this.history[this.history.length - 1];
+    }
+
     /**
      * Promote the in-flight partial (an echo without a trailing newline, e.g.
      * a trigger's `cecho("\n text")`) into a finished history line and return

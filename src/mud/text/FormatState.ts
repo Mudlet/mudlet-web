@@ -1490,6 +1490,57 @@ export class AnsiAwareBuffer {
     }
 
     /**
+     * This line as TBuffer::bufferToHtml writes it into an HTML session log:
+     * every run in a span naming BOTH colours outright (text with no colour of
+     * its own takes the console's — Mudlet's TChar always carries one), then
+     * `<br>` and a line feed. The `<br>` is what breaks the lines: the log's
+     * stylesheet sets `white-space: nowrap` on the body, so without it a browser
+     * draws the whole session as one line. Only `<` and `>` are escaped, as
+     * desktop does.
+     */
+    toLogHtml(defaults: { foreground: { r: number; g: number; b: number }; background: { r: number; g: number; b: number } }): string {
+        const rgbOf = (color: FormatColor | undefined): [number, number, number] | null => {
+            if (!color) return null;
+            if (color.space === "rgb") return [color.r, color.g, color.b];
+            const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(this.colorToHex(color));
+            return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : null;
+        };
+        const fgDefault: [number, number, number] = [defaults.foreground.r, defaults.foreground.g, defaults.foreground.b];
+        const bgDefault: [number, number, number] = [defaults.background.r, defaults.background.g, defaults.background.b];
+        let html = "";
+        let open: string | null = null;
+        for (const segment of this.segments) {
+            if (!segment.text) continue;
+            const state = segment.state;
+            const overlay = state?.hyperlink?.config?.style;
+            const fgSrc = overlay?.foreground ?? state?.foreground;
+            const bgSrc = overlay?.background ?? state?.background;
+            let fg = rgbOf(fgSrc) ?? fgDefault;
+            // A transparent cell shows the console through it on screen, so
+            // the log paints the console's colour there rather than black.
+            let bg = bgSrc && bgSrc.space === "rgb" && bgSrc.a === 0 ? bgDefault : (rgbOf(bgSrc) ?? bgDefault);
+            if (state?.inverse) [fg, bg] = [bg, fg];
+            let style = `color: rgb(${fg.join(",")}); background: rgb(${bg.join(",")});`;
+            if (overlay?.bold ?? state?.bold) style += " font-weight: bold;";
+            if (overlay?.italic ?? state?.italic) style += " font-style: italic;";
+            const underline = (overlay?.underline ?? state?.underline) || state?.hyperlink?.autoUnderline;
+            let decorations = "";
+            if (underline) decorations += " underline";
+            if (overlay?.strikethrough ?? state?.strikethrough) decorations += " line-through";
+            if (overlay?.overline ?? state?.overline) decorations += " overline";
+            if (decorations) style += ` text-decoration:${decorations};`;
+            if (style !== open) {
+                if (open !== null) html += "</span>";
+                html += `<span style="${style}">`;
+                open = style;
+            }
+            html += segment.text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }
+        if (open !== null) html += "</span>";
+        return html + "<br>\n";
+    }
+
+    /**
      * Resolve the buffer's segments to styled runs with concrete CSS colours,
      * for rendering to a canvas (copy-as-image). Mirrors {@link toHtml}'s colour
      * handling, including reverse-video on default colours — there the swap

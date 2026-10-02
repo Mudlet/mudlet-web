@@ -414,12 +414,39 @@ export class MudSession {
      *  about to emit itself. */
     scriptEchoDeferred = false;
 
-    /** Host::send's echo stage: print a command the player (or an item acting
-     *  for them) sent, under the showSentText mode. `wantPrint` is the per-call
-     *  flag `script` mode defers to — `always` and `never` overrule it. */
-    echoSentCommand(text: string, wantPrint: boolean): void {
-        if (text === '' && !this.shouldEchoEmptyCommand()) return;
-        if (this.shouldEchoSentText(wantPrint)) this.echoCommand(text);
+    /**
+     * Host::send's echo stage: print a command the player (or an item acting
+     * for them) sent, under the showSentText mode. `wantPrint` is the per-call
+     * flag `script` mode defers to — `always` and `never` overrule it.
+     *
+     * Returns the command as Host::send goes on to split it, which is not
+     * always the text it was given: `TConsoleModel::printCommand` takes the
+     * command by reference and appends the line feed that ends the echoed line
+     * to it — unless it puts the echo on the end of a waiting prompt line, which
+     * needs no line feed — and inside a trigger it also puts one in front when
+     * the line being processed has text. Host::send then splits that on the
+     * separator, skips only parts that are empty BEFORE it strips line feeds,
+     * and so runs the aliases on an empty command where the text had nothing
+     * after its last separator. That is how an echoed empty Enter, `x;;` or
+     * `expandAlias("")` reaches a `^$` alias on desktop, while
+     * `expandAlias("", false)` goes out as a bare line feed without one.
+     */
+    echoSentCommand(text: string, wantPrint: boolean): string {
+        if (text === '' && !this.shouldEchoEmptyCommand()) return text;
+        if (!this.shouldEchoSentText(wantPrint)) return text;
+        // echoCommand's own gates: nothing is printed while the server echoes.
+        if (this.showSentText === 'never' || (this.client && !this.client.shouldEchoCommand())) return text;
+        const last = this.consoles.get('main')?.lastFinishedLine;
+        let asSent = text;
+        if (this.scriptEchoDeferred) {
+            // printCommand's trigger-engine branch: always a trailing line
+            // feed, and a leading one when the current line is not empty.
+            asSent = (last && last.text !== '' ? '\n' : '') + text + '\n';
+        } else if (!last?.isPrompt) {
+            asSent = text + '\n';
+        }
+        this.echoCommand(text);
+        return asSent;
     }
 
     echoCommand(text: string): void {

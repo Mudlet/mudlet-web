@@ -1,7 +1,9 @@
 // Mudlet-compatible stopwatch API backing createStopWatch/startStopWatch/etc.
 //
 // Mudlet stopwatches are millisecond-resolution wall-clock timers identified by
-// a monotonic numeric id and an optional unique name. We measure elapsed time
+// a numeric id and an optional unique name. A new watch takes the lowest id not
+// in use, as Host::createStopWatch does, so a deleted watch's id is handed out
+// again and a reload that drops the non-persistent watches frees theirs. We measure elapsed time
 // with Date.now() — wall-clock, like Mudlet's QDateTime — rather than the
 // monotonic performance.now(), because persistence requires an absolute time
 // anchor that survives a page reload (performance.now() resets to zero on every
@@ -38,7 +40,9 @@ export function localStorageStopwatchStore(connectionId: string): StopwatchStore
     };
 }
 
-/** Broken-down elapsed time, mirroring Mudlet's generateElapsedTimeTable. */
+/** Broken-down elapsed time, mirroring Mudlet's generateElapsedTimeTable —
+ *  what getStopWatchBrokenDownTime answers, which calls it with
+ *  includeDecimalSeconds false. */
 export interface BrokenDownTime {
     negative: boolean;
     days: number;
@@ -46,6 +50,11 @@ export interface BrokenDownTime {
     minutes: number;
     seconds: number;
     milliSeconds: number;
+}
+
+/** The elapsedTime getStopWatches reports per watch: the same table with
+ *  generateElapsedTimeTable's includeDecimalSeconds on. */
+export interface ElapsedTime extends BrokenDownTime {
     /** Signed total seconds (matches Mudlet's elapsedMilliSeconds / 1000). */
     decimalSeconds: number;
 }
@@ -55,7 +64,7 @@ export interface StopwatchSummary {
     name: string;
     isRunning: boolean;
     isPersistent: boolean;
-    elapsedTime: BrokenDownTime;
+    elapsedTime: ElapsedTime;
 }
 
 interface Stopwatch {
@@ -120,7 +129,7 @@ const clampToRange = (ms: number): number =>
     Math.min(MAX_STOPWATCH_MS, Math.max(-MAX_STOPWATCH_MS, ms));
 
 /** Decompose signed milliseconds into Mudlet's day/hour/minute/second table. */
-function breakDown(ms: number): BrokenDownTime {
+function breakDown(ms: number): ElapsedTime {
     const decimalSeconds = ms / 1000;
     let abs = Math.abs(Math.round(ms));
     const days = Math.floor(abs / MS_PER_DAY); abs -= days * MS_PER_DAY;
@@ -132,7 +141,6 @@ function breakDown(ms: number): BrokenDownTime {
 
 export class StopwatchManager {
     private readonly watches = new Map<number, Stopwatch>();
-    private nextId = 1;
 
     constructor(private readonly storage?: StopwatchStore) {
         this.restore();
@@ -177,6 +185,13 @@ export class StopwatchManager {
             : `stopwatch with name '${subject}' not found`);
     }
 
+    /** The refusal looking `subject` up gives where TLuaInterpreter's own
+     *  csmInvalidStopWatchID words it ("ID"), or null when the watch exists. */
+    missing(subject: StopwatchSubject): StopwatchRefusal | null {
+        const w = this.lookup(subject, 'ID');
+        return isRefusal(w) ? w : null;
+    }
+
     /** How Host names a watch in an "already" refusal: the way it was asked for. */
     private describe(subject: StopwatchSubject, w: Stopwatch): string {
         return typeof subject === 'number'
@@ -193,7 +208,6 @@ export class StopwatchManager {
         let parsed: unknown;
         try { parsed = JSON.parse(raw); } catch { return; }
         if (!Array.isArray(parsed)) return;
-        let maxId = 0;
         for (const r of parsed as PersistedStopwatch[]) {
             if (!r || typeof r.id !== 'number') continue;
             const running = !!r.running;
@@ -207,9 +221,7 @@ export class StopwatchManager {
                 startEpochMs: Number(r.startEpochMs) || 0,
                 persistent: true,
             });
-            if (r.id > maxId) maxId = r.id;
         }
-        this.nextId = maxId + 1;
     }
 
     /** Write the current set of persistent watches to the backing store. */
@@ -278,7 +290,9 @@ export class StopwatchManager {
             const holder = this.findByName(name);
             if (holder) return refuse(`stopwatch with id ${holder.id} called '${name}' already exists`);
         }
-        const id = this.nextId++;
+        // Host::createStopWatch: the lowest id not in use, counting from 1.
+        let id = 1;
+        while (this.watches.has(id)) id++;
         const w: Stopwatch = {
             id, name: name || '', initialised: false, running: false,
             accumulatedMs: 0, startEpochMs: 0, persistent: false,
@@ -333,7 +347,10 @@ export class StopwatchManager {
     getBrokenDownTime(subject: StopwatchSubject): BrokenDownTime | StopwatchRefusal {
         const w = this.lookup(subject, 'id');
         if (isRefusal(w)) return w;
-        return breakDown(this.elapsedMs(w));
+        // generateElapsedTimeTable is called with includeDecimalSeconds false
+        // here; only getStopWatches carries that field.
+        const { negative, days, hours, minutes, seconds, milliSeconds } = breakDown(this.elapsedMs(w));
+        return { negative, days, hours, minutes, seconds, milliSeconds };
     }
 
     /**

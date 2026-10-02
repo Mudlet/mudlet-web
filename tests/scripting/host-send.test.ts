@@ -43,6 +43,7 @@ const { TimerEngine } = await import('../../src/mud/timers/TimerEngine');
 const { KeyEngine } = await import('../../src/mud/keybindings/KeyEngine');
 const { ScriptingEngine } = await import('../../src/scripting/ScriptingEngine');
 const { useAppStore } = await import('../../src/storage/appStore');
+const { AnsiAwareBuffer } = await import('../../src/mud/text/FormatState');
 
 // Minimal DOM for the engine constructor, installed after the imports (pcre2
 // picks node-vs-browser loading at module init — see createTestRuntime).
@@ -262,14 +263,54 @@ describe('hostSend — Mudlet Host::send', () => {
             expect(wire).toEqual(['north', 'south']);
         });
 
-        it('sends a blank line for empty input, without consulting aliases', () => {
+        it('sends a blank line for unechoed empty input, without consulting aliases', () => {
             // Mudlet's "allow sending blank commands" branch returns before the
-            // alias loop, so pressing Enter on an empty command line always
-            // reaches the game (menus, more-prompts).
+            // alias loop when nothing is left after the split — which is the
+            // case when the command was not echoed (expandAlias("", false), or
+            // command echo turned off).
             aliasEngine.loadPerm([{ ...ALIAS, pattern: '^$', command: 'nope' } as never]);
+            engine.expandAlias('', false);
+            session.showSentText = 'never';
             engine.sendCommand('');
             engine.sendCommand(';;');
-            expect(wire).toEqual(['', '']);
+            expect(wire).toEqual(['', '', '']);
+        });
+
+        // Issue #278: printCommand appends the echoed line's line feed to the
+        // command Host::send then splits, so an echoed empty command, or one
+        // ending in a separator, leaves an empty part that does reach the aliases.
+        it('runs a ^$ alias on echoed empty input', () => {
+            aliasEngine.loadPerm([{ ...ALIAS, pattern: '^$', command: 'empty-fired' } as never]);
+            engine.sendCommand('');
+            engine.expandAlias('', true);
+            expect(wire).toEqual(['empty-fired', 'empty-fired']);
+        });
+
+        it('runs a ^$ alias after a trailing separator: x;; and y;;', () => {
+            aliasEngine.loadPerm([{ ...ALIAS, pattern: '^$', command: 'empty-fired' } as never]);
+            engine.expandAlias('x;;', true);
+            engine.sendCommand('y;;');
+            engine.sendCommand(';;');
+            expect(wire).toEqual(['x', 'empty-fired', 'y', 'empty-fired', 'empty-fired']);
+        });
+
+        it('sends a trailing separator\'s empty command as a bare line when no alias takes it', () => {
+            engine.sendCommand('x;;');
+            (engine as unknown as EngineInternals).api.send('z;;');
+            (engine as unknown as EngineInternals).api.send('z;;', false);
+            expect(wire).toEqual(['x', '', 'z', '', 'z']);
+        });
+
+        it('adds no empty command when the echo lands on a waiting prompt line', () => {
+            // printCommand inserts the echo into a prompt line without touching
+            // the command, so Enter straight after a GA prompt is a bare line.
+            aliasEngine.loadPerm([{ ...ALIAS, pattern: '^$', command: 'empty-fired' } as never]);
+            const prompt = new AnsiAwareBuffer('HP:100> ');
+            prompt.isPrompt = true;
+            session.consoles.get('main')!.appendLine(prompt);
+            engine.sendCommand('');
+            engine.sendCommand('x;;');
+            expect(wire).toEqual(['', 'x']);
         });
 
         it('splits an item command too, not just typed input', () => {

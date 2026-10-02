@@ -86,14 +86,23 @@ export function installSessionBindings(
         pushWatchTime(L, api.stopwatches.getTime(watchArg(L))));
     lua.global.set('resetStopWatch', (a: unknown) =>
         answer(api.stopwatches.reset(watchSubject(a))));
+    // Bridge.lua has already checked the modification is a number (raising
+    // otherwise, as getVerifiedDouble does) — see secondArgGuard there.
     lua.global.set('adjustStopWatch', (a: unknown, b: unknown) =>
         answer(api.stopwatches.adjust(watchSubject(a), Number(b))));
+    // The refusal a lookup of this watch would give, or nil when it exists.
+    // adjustStopWatch / setStopWatchPersistence resolve a stopwatch NAME before
+    // they check their second argument, so the guard needs the answer first.
+    lua.global.set('__stopWatchMissing', (a: unknown) => {
+        const r = api.stopwatches.missing(watchSubject(a));
+        return r === null ? undefined : r.refused;
+    });
     lua.global.set('deleteStopWatch', (a: unknown) =>
         answer(api.stopwatches.delete(watchSubject(a))));
     // setStopWatchPersistence(id|name, state). Persistent watches are saved
     // to localStorage (keyed per connection) and restored on the next load.
     lua.global.set('setStopWatchPersistence', (a: unknown, b: unknown) =>
-        answer(api.stopwatches.setPersistence(watchSubject(a), !!b)));
+        answer(api.stopwatches.setPersistence(watchSubject(a), b === true)));
     // getStopWatches → record keyed by stringified id; Bridge.lua re-keys to
     // integer ids and rebuilds the nested table off the wasmoon proxy.
     lua.global.set('__getStopWatches', () => api.stopwatches.getAll());

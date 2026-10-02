@@ -1,6 +1,6 @@
 import type { MudSession, ScriptLogSource, ShowSentTextMode, BlankLinesBehaviour } from '../mud/MudSession';
 import type { TelnetNegotiatorFlags } from '../mud/connection/TelnetNegotiator';
-import { splitCommands } from '../mud/commandSplit';
+import { splitSentCommands } from '../mud/commandSplit';
 import type { AliasEngine } from '../mud/aliases/AliasEngine';
 import type { TriggerEngine } from '../mud/triggers/TriggerEngine';
 import type { TimerEngine } from '../mud/timers/TimerEngine';
@@ -1147,8 +1147,10 @@ export class ScriptingAPI {
      * {@link ScriptingEngine.hostSend}.
      */
     send(text: string, echo = true): void {
-        this.session.echoSentCommand(text, echo);
-        const parts = splitCommands(text, this.getCommandSeparator());
+        // Split what the echo hands back, as Host::send does — an echoed
+        // `send("x;;")` sends `x` and then a bare line feed on desktop.
+        const asSent = this.session.echoSentCommand(text, echo);
+        const parts = splitSentCommands(asSent, this.getCommandSeparator());
         // Nothing but separators (or nothing at all) still reaches the game as a
         // bare line feed — Mudlet's "allow sending blank commands" branch.
         if (parts.length === 0) { this.sendData(''); return; }
@@ -2237,11 +2239,15 @@ export class ScriptingAPI {
         // `logInHTML` decides which of the two documents a start writes, and
         // the header needs the console font and background it is told to name —
         // neither of which the logger can see for itself.
+        const [fr, fg, fb] = this.defaultColorRgb('foreground');
+        const [br, bgG, bb] = this.defaultColorRgb('background');
         this.loggingToggler?.(enabled, {
             html: this.getConfig('logInHTML') === true,
             font: this.getFont() ?? undefined,
-            background: selectProfileField(useAppStore.getState(), this.connectionId, 'outputBackgroundColor')
-                ?? undefined,
+            // Host::mFgColor / mBgColor: the body's colours, and what a log
+            // line names for text that has none of its own.
+            foreground: { r: fr, g: fg, b: fb },
+            background: { r: br, g: bgG, b: bb },
         });
         const path = enabled ? this.loggingPath() : before;
         return enabled

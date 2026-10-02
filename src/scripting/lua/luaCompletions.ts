@@ -636,7 +636,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('adjustStopWatch',    '(id|name, seconds) → bool', 'Add seconds (may be negative) to a stopwatch’s elapsed time. false if not found.'),
     fn('deleteStopWatch',    '(id|name) → bool', 'Delete a stopwatch. false if not found.'),
     fn('getStopWatches',     '() → table', 'Table of all stopwatches keyed by id: { name, isRunning, isPersistent, elapsedTime = {negative, days, hours, minutes, seconds, milliSeconds, decimalSeconds} }.'),
-    fn('getStopWatchBrokenDownTime', '(id|name) → table|false', 'Elapsed time as {negative, days, hours, minutes, seconds, milliSeconds, decimalSeconds}, without stopping the watch. false if not found.'),
+    fn('getStopWatchBrokenDownTime', '(id|name) → table|false', 'Elapsed time as {negative, days, hours, minutes, seconds, milliSeconds}, without stopping the watch. false if not found.'),
     fn('setStopWatchName',   '(id|currentName, newName) → bool', 'Assign or rename a stopwatch. false on unknown watch, empty name, or a name already used by another watch.'),
     fn('setStopWatchPersistence', '(id|name, state) → bool', 'Mark a stopwatch persistent. Persistent watches are saved to localStorage (per connection) and restored on the next load — a running one keeps counting across reloads, including time the client was closed. false if not found.'),
     fn('getTime',            '([asString [, format]]) → table|string', 'Current local time. Default → table {year,month,day,hour,min,sec,msec}. With asString=true → string formatted via Qt-style tokens (default "hh:mm:ss.zzz"): yyyy/yy, MMMM/MMM/MM/M, dddd/ddd/dd/d, HH/H (24h), hh/h (12h when AP/ap in format), mm/m, ss/s, zzz/z, AP/A/ap/a.'),
