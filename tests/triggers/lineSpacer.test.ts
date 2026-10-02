@@ -103,7 +103,8 @@ describe('line spacer pattern', () => {
     // Desktop: #multimatches == 3 and multimatches[3][2] == "2".
     expect(multimatches).toHaveLength(3);
     expect(multimatches![0]).toEqual(['SPC start 1', '1']);
-    expect(multimatches![1]).toEqual(['']);
+    // An empty row, not {""} — match_line_spacer pushes an empty list (#292).
+    expect(multimatches![1]).toEqual([]);
     expect(multimatches![2]).toEqual(['SPC end 2', '2']);
     // The flat captures don't grow an entry for the spacer.
     expect(matches).toEqual(['1', '2']);

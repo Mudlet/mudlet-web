@@ -4,7 +4,7 @@ import { MAP_WIDGET_ID } from '../ui/windows/types';
 import { qtModifiersToList } from '../mud/keybindings/qtKeys';
 import { splitCommands } from '../mud/commandSplit';
 import type {AliasEngine, AliasNode} from '../mud/aliases/AliasEngine';
-import {TriggerEngine, type TriggerNode} from '../mud/triggers/TriggerEngine';
+import {TriggerEngine, highlightTargets, type TriggerNode} from '../mud/triggers/TriggerEngine';
 import type {TimerEngine} from '../mud/timers/TimerEngine';
 import type {KeyEngine, KeyNode} from '../mud/keybindings/KeyEngine';
 import {findReservedKeybindings, reservedKeyNote} from '../mud/keybindings/browserReservedKeys';
@@ -4822,21 +4822,7 @@ export class ScriptingEngine implements EngineHost {
                     ...(fgColor ? { foreground: fgColor } : {}),
                     ...(bgColor ? { background: bgColor } : {}),
                 };
-                // Entry 0 is the whole match; the rest line up with captureSpans.
-                const spans: ({ start: number; length: number } | undefined)[] = [
-                    matchStart !== undefined ? { start: matchStart, length: matchedText.length } : undefined,
-                    ...(captureSpans ?? []),
-                ];
-                const perOccurrence = groupCount ?? matches.length;
-                for (let i = 0; i < matches.length; i++) {
-                    // `position % numberOfCaptureGroups != 1` in TTrigger::execute,
-                    // 1-based. With one entry per occurrence the modulus is 1 and
-                    // nothing is ever skipped, which is what makes a match-all
-                    // substring paint all of its hits.
-                    if (matches.length > 1 && perOccurrence > 0 && (i + 1) % perOccurrence === 1) continue;
-                    const span = spans[i];
-                    const text = matches[i];
-                    if (!text) continue;
+                for (const { text, span } of highlightTargets(matches, matchStart, captureSpans, groupCount)) {
                     const ok = span
                         ? this.api.selectSection(span.start, span.length)
                         : this.api.selectString(text, 1) >= 0;
@@ -5163,7 +5149,10 @@ export class ScriptingEngine implements EngineHost {
                     // for an unanchored pattern that matches a substring. Passing
                     // `plain` here made `selectString(matches[1])` highlight the
                     // entire line (issue #4). matchedText is the matched portion.
-                    [m.matchedText, ...m.captures],
+                    // A fire with no capture groups (Lua-function or prompt
+                    // pattern, a fire-length line) hands the script an empty
+                    // `matches`, as desktop's bare execute() does.
+                    m.captureless ? [] : [m.matchedText, ...m.captures],
                     m.matchedText,
                     m.multimatches,
                     m.namedGroups,

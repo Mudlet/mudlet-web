@@ -72,6 +72,11 @@ type MatchResult = {
      *  line of a completed multiline state). Offsets are into the line the
      *  matcher was given. */
     offerings?: { text: string; start: number }[];
+    /** The match set no capture groups at all — a Lua-function or prompt
+     *  pattern, whose `match_lua_code`/`match_prompt` call `execute()` without
+     *  `setCaptureGroups`, so the script sees `matches` as `{}` and a
+     *  multiline row is an empty table. `matchedText` is then `''`. */
+    captureless?: boolean;
 };
 
 type Matcher = (line: string, isPrompt: boolean) => MatchResult | null;
@@ -93,6 +98,11 @@ export type TriggerMatch = {
     namedSpans?: Record<string, CaptureSpan>;
     matchStart?: number;
     groupCount?: number;
+    /** No capture groups were set for this fire: the script's `matches` is
+     *  left empty rather than built from `matchedText`/`captures`. True for a
+     *  Lua-function or prompt match and for a fire-length (stay-open) line,
+     *  which desktop runs through a bare `execute()`. */
+    captureless?: boolean;
 };
 
 /**
@@ -132,7 +142,10 @@ function mergeAllMatches(results: MatchResult[]): MatchResult | null {
         matchStart: first.matchStart,
         captureSpans,
         groupCount: 1 + first.captures.length,
-        filterMode: 'captures',
+        // A regex hands its filter children the groups of every occurrence; a
+        // substring hands them only the first occurrence
+        // (TTrigger::processSubstringMatch filters `captureList.front()`).
+        filterMode: first.filterMode,
         namedGroups: Object.keys(namedGroups).length > 0 ? namedGroups : undefined,
         namedSpans: Object.keys(namedSpans).length > 0 ? namedSpans : undefined,
     };
@@ -184,6 +197,48 @@ function filterOfferings(result: MatchResult): { text: string; start: number }[]
     return out;
 }
 
+/**
+ * What a trigger's built-in highlight paints, given the `matches` list its
+ * script is handed (whole match first) and the spans the engine reported.
+ *
+ * Mudlet walks the whole flattened capture list — {whole, groups…} per
+ * occurrence — and paints each entry EXCEPT the whole-match ones, but only when
+ * there is more than one entry to choose from: `position %
+ * numberOfCaptureGroups != 1`, 1-based, in TTrigger::processRegexMatch. With one
+ * entry per occurrence the modulus is 1 and nothing is skipped, which is what
+ * makes a match-all substring paint all of its hits. A capture-less match
+ * (empty `matches`) paints nothing. `span` is absent only for a matcher that
+ * reports no position, which the caller falls back to finding by text.
+ */
+export function highlightTargets(
+    matches: readonly Capture[],
+    matchStart: number | undefined,
+    captureSpans: readonly CaptureSpan[] | undefined,
+    groupCount: number | undefined,
+): { text: string; span?: CaptureSpan }[] {
+    const out: { text: string; span?: CaptureSpan }[] = [];
+    const perOccurrence = groupCount ?? matches.length;
+    for (let i = 0; i < matches.length; i++) {
+        if (matches.length > 1 && perOccurrence > 0 && (i + 1) % perOccurrence === 1) continue;
+        const text = matches[i];
+        if (!text) continue;
+        // Entry 0 is the whole match; the rest line up with captureSpans.
+        const span = i === 0
+            ? (matchStart !== undefined ? { start: matchStart, length: text.length } : undefined)
+            : captureSpans?.[i - 1];
+        out.push(span ? { text, span } : { text });
+    }
+    return out;
+}
+
+/** The `multimatches` row a multiline condition's match contributes: the
+ *  capture list desktop's updateMultistates is handed — the whole match then
+ *  its groups (every occurrence's, under "match all") — or an empty row for a
+ *  condition that sets no captures (Lua function, prompt). */
+function andRow(r: MatchResult): Capture[] {
+    return r.captureless ? [] : [r.matchedText, ...r.captures];
+}
+
 function matchResultToTriggerMatch(trigger: TriggerNode, r: MatchResult): TriggerMatch {
     return {
         trigger,
@@ -194,6 +249,7 @@ function matchResultToTriggerMatch(trigger: TriggerNode, r: MatchResult): Trigge
         namedSpans: r.namedSpans,
         matchStart: r.matchStart,
         groupCount: r.groupCount ?? 1 + r.captures.length,
+        captureless: r.captureless,
     };
 }
 
@@ -221,7 +277,6 @@ type CompiledOrEntry = {
     kind: 'or';
     item: TriggerNode;
     tests: Array<Matcher>;
-    testAll: ((line: string) => MatchResult[]) | null;
     depth: number;
 };
 
@@ -315,7 +370,7 @@ function comparePath(a: number[], b: number[]): number {
 /**
  * Cached compile result for a single trigger node, keyed by item.id in
  * TriggerEngine.cache. The `signature` captures the fields that determine the
- * compiled shape (patterns + flags that switch AND/OR/testAll). On loadPerm,
+ * compiled shape (patterns + flags that switch AND/OR/match-all). On loadPerm,
  * entries whose signature matches are reused — their PCRE instances stay
  * alive, and only `item` ref + `depth` are updated in place. This is what
  * makes enable/disable churn cheap: flipping the enabled bit doesn't touch
@@ -357,11 +412,11 @@ type AndState = {
     nextIdx: number;
     startLine: number;
     waitUntilLine: number;
-    captures: Capture[][];
-    /** What each condition matched, kept alongside its captures because a
-     *  `multimatches` row leads with the whole match (Mudlet's capture list
-     *  starts at PCRE group 0) before the capture groups. */
-    matchedTexts: string[];
+    /** One `multimatches` row per condition met: Mudlet's capture list for
+     *  that line — the whole match (PCRE group 0) then its groups, repeated per
+     *  occurrence for a "match all" pattern — or an empty row for a condition
+     *  that captures nothing (line spacer, Lua function, prompt). */
+    rows: Capture[][];
     namedGroups: Array<Record<string, string>>;
 };
 
@@ -490,10 +545,21 @@ function compilePcre(pattern: string, onError?: (reason: string) => void): PcreI
     }
 }
 
+/**
+ * `matchAll` is the trigger's "match all occurrences" (Mudlet
+ * `mPerlSlashGOption`). Desktop applies it per PATTERN, inside the pattern's own
+ * `process*Match`, so in an OR trigger with several patterns it is the first
+ * pattern to match that collects its occurrences (and the rest are not tried),
+ * and in a multiline trigger every occurrence lands in that condition's
+ * `multimatches` row. Only the regex and substring paths loop; every other kind
+ * matches once whatever the flag says.
+ */
 function buildMatcher(
     p: TriggerPattern,
     register: (re: PcreInstance) => void,
     onError?: (pattern: TriggerPattern, reason: string) => void,
+    matchAll = false,
+    triggerName = '',
 ): Matcher | null {
     switch (p.type) {
         case 'regex': {
@@ -501,36 +567,87 @@ function buildMatcher(
             const re = compilePcre(p.text, reason => onError?.(p, reason));
             if (!re) return null;
             register(re);
+            if (matchAll) {
+                const patternText = p.text;
+                return (line) => {
+                    const subject = pcreSubject(line);
+                    // The single match first: most lines do not match at all,
+                    // and this keeps them to one PCRE call and no allocation.
+                    const first = re.match(subject) as PcreMatch | null;
+                    if (!first) return null;
+                    let all: PcreMatch[];
+                    try {
+                        all = re.matchAll(subject) as PcreMatch[];
+                    } catch (err) {
+                        if (err instanceof Error && err.message.includes('safety limit exceeded')) {
+                            logSafetyLimit(`trigger:${triggerName}(multipleMatches)`, patternText, line);
+                        }
+                        throw err;
+                    }
+                    if (all.length <= 1) return pcreToMatchResult(first);
+                    return mergeAllMatches(all.map(pcreToMatchResult));
+                };
+            }
             return (line) => {
                 const m = re.match(pcreSubject(line)) as PcreMatch | null;
                 if (!m) return null;
                 return pcreToMatchResult(m);
             };
         }
-        case 'substring':
+        case 'substring': {
             if (!p.text) return null;
-            return (line) => line.includes(p.text) ? { captures: [], matchedText: p.text } : null;
+            const needle = p.text;
+            // Positioned, so the highlight and selectCaptureGroup land on the
+            // occurrence that matched — under a filter, the one inside the
+            // parent's capture, not the first one in the whole line.
+            if (!matchAll) {
+                return (line) => {
+                    const at = line.indexOf(needle);
+                    return at === -1 ? null : { captures: [], matchedText: needle, matchStart: at };
+                };
+            }
+            // TTrigger::processSubstringMatch runs an indexOf loop under
+            // mPerlSlashGOption exactly as the regex path runs a global match,
+            // so `matches` holds one entry per occurrence. Overlaps count — the
+            // loop advances by one character, not by the needle's length.
+            return (line) => {
+                const at = line.indexOf(needle);
+                if (at === -1) return null;
+                let next = line.indexOf(needle, at + 1);
+                if (next === -1) return { captures: [], matchedText: needle, matchStart: at };
+                const captures: Capture[] = [];
+                const captureSpans: CaptureSpan[] = [];
+                for (; next !== -1; next = line.indexOf(needle, next + 1)) {
+                    captures.push(needle);
+                    captureSpans.push({ start: next, length: needle.length });
+                }
+                return { captures, matchedText: needle, matchStart: at, captureSpans, groupCount: 1 };
+            };
+        }
         case 'startOfLine':
             if (!p.text) return null;
-            return (line) => line.startsWith(p.text) ? { captures: [], matchedText: p.text } : null;
+            return (line) => line.startsWith(p.text) ? { captures: [], matchedText: p.text, matchStart: 0 } : null;
         case 'exactMatch':
             if (!p.text) return null;
             // The haystack carries the trailing newline the engine appends; an
             // exact match is against the line without it (TTrigger::match_exact_match
             // chops one for the same reason).
-            return (line) => stripEol(line) === p.text ? { captures: [], matchedText: p.text } : null;
+            return (line) => stripEol(line) === p.text ? { captures: [], matchedText: p.text, matchStart: 0 } : null;
         case 'prompt':
-            // match_prompt never calls filter(), so a filter that fired on its
+            // match_prompt sets no capture groups and never calls filter(), so
+            // the script sees an empty `matches` and a filter that fired on its
             // prompt pattern hands its children nothing.
             return (_line, isPrompt) =>
-                isPrompt ? { captures: [], matchedText: '', filterMode: 'none' } : null;
+                isPrompt ? { captures: [], matchedText: '', filterMode: 'none', captureless: true } : null;
         case 'luaFunction': {
             const code = p.text;
-            // Nor does match_lua_code — same reason.
+            // Nor does match_lua_code — same reason. Nothing to highlight
+            // either: the built-in highlight paints captures, and there are none.
             return (line) => {
                 if (!luaEvalRef.fn) return null;
-                const text = stripEol(line);
-                return luaEvalRef.fn(code, text) ? { captures: [], matchedText: text, filterMode: 'none' } : null;
+                return luaEvalRef.fn(code, stripEol(line))
+                    ? { captures: [], matchedText: '', filterMode: 'none', captureless: true }
+                    : null;
             };
         }
         case 'colorTrigger': {
@@ -684,11 +801,10 @@ export class TriggerEngine {
 
     // AND state: per-trigger progress for multiline AND triggers
     private andStates = new Map<string, AndState[]>();
-    /** Triggers still firing on their own after completing, and the match they
-     *  re-report while they do — `null` when setTriggerStayOpen opened the
-     *  window and there is no match to replay. See the fire-length branch in
-     *  matchPermEntryOnce. */
-    private keepFiring = new Map<string, { remaining: number; match: TriggerMatch | null }>();
+    /** Triggers still firing on their own after completing (or after
+     *  setTriggerStayOpen), and how many more lines they do it for. See
+     *  applyFireLength. */
+    private keepFiring = new Map<string, { remaining: number }>();
     /** The last line each permanent trigger was walked past — whether
      *  setTriggerStayOpen, called from another trigger's script, is still ahead
      *  of it on the line being processed. See setStayOpen. */
@@ -704,7 +820,7 @@ export class TriggerEngine {
      * it afterwards (mudlet-web#238).
      */
     private readonly stayOpenAfterScript = new WeakMap<TriggerMatch, {
-        keep: { remaining: number; match: TriggerMatch | null } | undefined;
+        keep: { remaining: number } | undefined;
         chainUntil: number | undefined;
     }>();
 
@@ -1007,6 +1123,8 @@ export class TriggerEngine {
         // blank rows out, so these arrive from a perm*Trigger() call or a
         // hand-written package XML with an empty <string>.
         const patterns = item.patterns.filter(p => p.text !== '' || p.type === 'prompt' || p.type === 'lineSpacer');
+        // "Match all occurrences" — not offered on a folder.
+        const matchAll = !item.isGroup && !!item.multipleMatches;
 
         if (!item.isGroup && item.multiline) {
             // AND trigger: compile as a sequence of conditions
@@ -1023,16 +1141,11 @@ export class TriggerEngine {
                     const n = parseInt(p.text, 10);
                     conditions.push({ test: null, spacer: isNaN(n) || n < 0 ? 0 : n });
                 } else {
-                    const test = buildMatcher(p, register, reportPatternError);
-                    // A lua condition captures nothing but still takes its
-                    // multimatches row: the row is empty, not the line.
+                    // A Lua-function or prompt condition captures nothing but
+                    // still takes its multimatches row, which is empty — see
+                    // advanceAndState.
                     conditions.push({
-                        test: test && p.type === 'luaFunction'
-                            ? (line, isPrompt) => {
-                                const r = test(line, isPrompt);
-                                return r && { ...r, matchedText: '' };
-                            }
-                            : test,
+                        test: buildMatcher(p, register, reportPatternError, matchAll, item.name),
                         spacer: 0,
                     });
                 }
@@ -1041,62 +1154,21 @@ export class TriggerEngine {
                 compiled = { kind: 'and', item, conditions, depth };
             }
         } else {
-            // OR trigger (or group): any pattern fires
+            // OR trigger (or group): the first pattern to match fires it. With
+            // "match all" on, that pattern's matcher has already collected
+            // every occurrence of itself (see buildMatcher) — desktop breaks
+            // out of the pattern loop at the first hit, so the patterns after
+            // it are not tried, match-all or not. Mudlet Web used to keep one
+            // match-all matcher per trigger, overwritten by each pattern in
+            // turn, so only the last pattern could fire (issue #292).
             const tests: Matcher[] = [];
-            let testAll: ((line: string) => MatchResult[]) | null = null;
-
             for (const pattern of patterns) {
-                const test = buildMatcher(pattern, register, reportPatternError);
+                const test = buildMatcher(pattern, register, reportPatternError, matchAll, item.name);
                 if (test) tests.push(test);
-
-                // A plain substring pattern collects its occurrences too:
-                // TTrigger::processSubstringMatch runs an indexOf loop under
-                // mPerlSlashGOption exactly as the regex path runs a global
-                // match, so `matches` holds one entry per occurrence. Overlaps
-                // count — the loop advances by one character, not by the
-                // needle's length.
-                if (!item.isGroup && item.multipleMatches && pattern.type === 'substring' && pattern.text) {
-                    const needle = pattern.text;
-                    testAll = (line: string) => {
-                        const results: MatchResult[] = [];
-                        for (let at = line.indexOf(needle); at !== -1; at = line.indexOf(needle, at + 1)) {
-                            results.push({ captures: [], matchedText: needle, matchStart: at });
-                        }
-                        return results;
-                    };
-                }
-
-                // multipleMatches only for non-group regex patterns. buildMatcher
-                // above already compiled (and reported) this same pattern, so the
-                // second compile stays quiet rather than doubling the report.
-                if (!item.isGroup && item.multipleMatches && pattern.type === 'regex' && pattern.text) {
-                    const re = compilePcre(pattern.text);
-                    if (re) {
-                        register(re);
-                        const triggerName = item.name;
-                        const patternText = pattern.text;
-                        testAll = (line: string) => {
-                            const results: MatchResult[] = [];
-                            let pcreMatches: PcreMatch[];
-                            try {
-                                pcreMatches = re.matchAll(pcreSubject(line)) as PcreMatch[];
-                            } catch (err) {
-                                if (err instanceof Error && err.message.includes('safety limit exceeded')) {
-                                    logSafetyLimit(`trigger:${triggerName}(multipleMatches)`, patternText, line);
-                                }
-                                throw err;
-                            }
-                            for (const m of pcreMatches) {
-                                results.push(pcreToMatchResult(m));
-                            }
-                            return results;
-                        };
-                    }
-                }
             }
 
             if (tests.length > 0) {
-                compiled = { kind: 'or', item, tests, testAll, depth };
+                compiled = { kind: 'or', item, tests, depth };
             }
         }
 
@@ -1374,38 +1446,23 @@ export class TriggerEngine {
                 }
                 if (completed.length > 0) lastMatch = completed[completed.length - 1];
             } else {
-                // OR entry (non-group)
-                if (entry.testAll) {
-                    // "Match all occurrences" fires the trigger ONCE and hands it
-                    // every occurrence at the same time: Mudlet appends each
-                    // further match's whole-match-plus-captures to the same
-                    // capture list (TTrigger::match_perl, mPerlSlashGOption), so
-                    // matches[1] is the first whole match and the rest of the
-                    // occurrences follow the first one's groups. Firing once per
-                    // occurrence instead would run the script N times and show it
-                    // only one match each.
-                    const merged = mergeAllMatches(entry.testAll(effectiveLine));
-                    if (merged !== null) {
-                        if (isChainHead) this.openChain(item, currentLine, merged);
-                        lastMatch = matchResultToTriggerMatch(item, this.shiftResultSpans(merged, effOffset));
-                        out.push(lastMatch);
-                    }
-                } else {
-                    if (seen.has(seenKey)) return;
-                    let result: MatchResult | null = null;
-                    for (const test of entry.tests) {
-                        result = test(effectiveLine, isPrompt);
-                        if (result !== null) break;
-                    }
-                    if (result !== null) {
-                        seen.add(seenKey);
-                        if (isChainHead) this.openChain(item, currentLine, result);
-                        lastMatch = matchResultToTriggerMatch(item, this.shiftResultSpans(result, effOffset));
-                        out.push(lastMatch);
-                    }
+                // OR entry (non-group). A "match all occurrences" pattern
+                // still fires the trigger ONCE, with every occurrence folded
+                // into the one capture list (see buildMatcher/mergeAllMatches).
+                if (seen.has(seenKey)) return;
+                let result: MatchResult | null = null;
+                for (const test of entry.tests) {
+                    result = test(effectiveLine, isPrompt);
+                    if (result !== null) break;
+                }
+                if (result !== null) {
+                    seen.add(seenKey);
+                    if (isChainHead) this.openChain(item, currentLine, result);
+                    lastMatch = matchResultToTriggerMatch(item, this.shiftResultSpans(result, effOffset));
+                    out.push(lastMatch);
                 }
             }
-            this.applyFireLength(item, effectiveLine, lastMatch, out);
+            this.applyFireLength(item, lastMatch, out);
             // Only the single-line branch: desktop's multiline completion
             // assigns mKeepFiring before running the script, as this does.
             if (lastMatch && entry.kind !== 'and') {
@@ -1438,7 +1495,6 @@ export class TriggerEngine {
      */
     private applyFireLength(
         item: TriggerNode,
-        effectiveLine: string,
         lastMatch: TriggerMatch | null,
         out: TriggerMatch[],
     ): void {
@@ -1449,7 +1505,7 @@ export class TriggerEngine {
             // desktop's `!conditionMet` guard below) never spent on the same
             // line the trigger matched on.
             const fireLength = item.fireLength ?? 0;
-            if (fireLength > 0) this.keepFiring.set(item.id, { remaining: fireLength, match: lastMatch });
+            if (fireLength > 0) this.keepFiring.set(item.id, { remaining: fireLength });
             else this.keepFiring.delete(item.id);
             return;
         }
@@ -1461,16 +1517,17 @@ export class TriggerEngine {
         const keep = this.keepFiring.get(item.id);
         if (!keep) return;
         if (keep.remaining <= 1) this.keepFiring.delete(item.id);
-        else this.keepFiring.set(item.id, { remaining: keep.remaining - 1, match: keep.match });
+        else this.keepFiring.set(item.id, { remaining: keep.remaining - 1 });
         // Desktop re-runs the script only for a childless trigger
         // (src/TTrigger.cpp:1085); one with children is holding the chain open
         // FOR them, and they are reached through `chainOpenUntil`.
         if (this.hasChildren.has(item.id)) return;
-        // No match to replay when the window was opened by setTriggerStayOpen
-        // rather than by a hit — the trigger may never have matched at all. The
-        // whole line stands in, so `matches[1]` is the line that kept it firing
-        // rather than a stale capture from an earlier one.
-        out.push(keep.match ?? { trigger: item, captures: [], matchedText: stripEol(effectiveLine) });
+        // A bare `execute()` on desktop: no capture groups are set, so the
+        // script sees `matches` (and `multimatches`) as the empty tables the
+        // last fire's clearCaptureGroups left — not the opening line's captures
+        // replayed, nor the line standing in for them. Scripts tell the opening
+        // line from the follow-up ones by exactly that (issue #292).
+        out.push({ trigger: item, captures: [], matchedText: '', captureless: true });
     }
 
     // ── Unified pass (permanent + temporary, in registration order) ───────────
@@ -1843,8 +1900,7 @@ export class TriggerEngine {
                     nextIdx: 1,
                     startLine: currentLine,
                     waitUntilLine: currentLine,
-                    captures: [opened.captures],
-                    matchedTexts: [opened.matchedText],
+                    rows: [andRow(opened)],
                     namedGroups: [opened.namedGroups ?? {}],
                 });
             }
@@ -1891,19 +1947,18 @@ export class TriggerEngine {
             }
             const result = cond.test(effectiveLine, isPrompt);
             if (!result) break;
-            state.captures.push(result.captures);
-            state.matchedTexts.push(result.matchedText);
+            state.rows.push(andRow(result));
             state.namedGroups.push(result.namedGroups ?? {});
             state.nextIdx++;
         }
     }
 
     /** A line spacer holds a `multimatches` row of its own, as every other
-     *  condition does — TTrigger::match_line_spacer records an empty match for
-     *  it — so the rows after it keep the index of the pattern they belong to. */
+     *  condition does, so the rows after it keep the index of the pattern they
+     *  belong to. The row is EMPTY — TTrigger::match_line_spacer pushes an
+     *  empty capture list — not one holding an empty string. */
     private pushSpacerRow(state: AndState): void {
-        state.captures.push([]);
-        state.matchedTexts.push('');
+        state.rows.push([]);
         state.namedGroups.push({});
     }
 
@@ -1918,9 +1973,9 @@ export class TriggerEngine {
         const rowNames = state.namedGroups.map(n => (n && Object.keys(n).length > 0 ? n : undefined));
         return {
             trigger: item,
-            captures: state.captures.flat(),
+            captures: state.rows.flatMap(row => row.slice(1)),
             matchedText: '',
-            multimatches: state.captures.map((c, i) => [state.matchedTexts[i], ...c]),
+            multimatches: state.rows,
             multiNamedGroups: rowNames.some(Boolean) ? rowNames : undefined,
             namedGroups: Object.keys(lastNamedGroups).length > 0 ? lastNamedGroups : undefined,
         };
@@ -1991,8 +2046,8 @@ export class TriggerEngine {
             this.chainOpenUntil.set(id, currentLine + count - (ahead ? 1 : 0));
             // No match to replay: the trigger may never have matched at all, and
             // one opened this way is being fired by the caller, not by its own
-            // pattern. applyFireLength stands the line in for it.
-            if (count > 0) this.keepFiring.set(id, { remaining: count, match: null });
+            // pattern. applyFireLength fires it with nothing captured.
+            if (count > 0) this.keepFiring.set(id, { remaining: count });
             else this.keepFiring.delete(id);
         }
     }
