@@ -101,7 +101,8 @@ export class TimerEngine {
         // Re-arm BEFORE running the body. A repeating timer that kills itself
         // from inside its own callback has to stay dead, and killTimer can only
         // clear a handle that already exists — re-arming afterwards would
-        // resurrect it.
+        // resurrect it. A body slower than the interval then pushes that tick
+        // a full interval past its return (rearmIfOverdue).
         //
         // A one-shot is retired only AFTER its body, as TTimer::execute does:
         // inside its own callback the timer still exists and is active, so
@@ -120,7 +121,8 @@ export class TimerEngine {
                 fn();
             } finally {
                 this.firingDepth--;
-                if (!repeat) {
+                if (repeat) this.rearmIfOverdue(this.temp, id);
+                else {
                     // Looked up again: a disable + enable inside the body
                     // replaced the entry with a freshly armed one.
                     const entry = this.temp.get(id);
@@ -138,6 +140,25 @@ export class TimerEngine {
         };
         arm();
         return id;
+    }
+
+    /**
+     * After a repeating timer's body returns: if the body ran so long that the
+     * tick armed before it is already due, push that tick a full interval past
+     * now. Desktop's next tick comes at least one interval after a slow body
+     * returns (mudlet-web#293: a 0.2s timer whose body takes 0.5s fires at 0.2
+     * then 0.9, not 0.7), so a late tick must not fire the moment the body
+     * ends. Only the timer's *own* slow body does this — a tick held up by
+     * some other timer's body is re-armed from when it actually fired, which
+     * already is "now". The entry is looked up afresh: a body that killed,
+     * disabled or re-armed its own timer left nothing overdue to move.
+     */
+    private rearmIfOverdue<K>(map: Map<K, TimerEntry>, key: K): void {
+        const entry = map.get(key);
+        if (!entry || entry.dead || entry.disabled || !entry.arm) return;
+        if (Date.now() < entry.start + entry.intervalMs) return;
+        clearTimeout(entry.handle);
+        entry.arm();
     }
 
     /**
@@ -524,10 +545,15 @@ export class TimerEngine {
             // and leave the timer armed for the next one. Re-armed before the
             // body runs, so a body that disables its own timer (which reloads
             // the engine and kills this handle) stays disabled.
-            const tick = (): void => { arm(); fire(); };
+            // A body slower than the interval pushes the next tick a full
+            // interval past its return — see rearmIfOverdue.
+            const tick = (): void => {
+                arm();
+                try { fire(); } finally { this.rearmIfOverdue(this.perm, timer.id); }
+            };
             const arm = (): void => {
                 const handle = setTimeout(tick, intervalMs);
-                this.perm.set(timer.id, { handle, repeat: true, start: Date.now(), intervalMs, fire: tick });
+                this.perm.set(timer.id, { handle, repeat: true, start: Date.now(), intervalMs, fire: tick, arm });
             };
             arm();
         } else {

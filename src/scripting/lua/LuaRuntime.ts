@@ -1847,12 +1847,19 @@ export class LuaRuntime implements IScriptingRuntime {
                 if (!isRepeat) releaseCb(cbId);
             }, isRepeat);
         });
-        // Mudlet `killTimer(idOrName)`: numeric id kills a temp timer; a name
-        // string removes a permanent timer (and any group sharing the name).
-        this.lua.global.set('killTimer', (idOrName: number | string) =>
-            typeof idOrName === 'string'
-                ? this.api.killByName('timer', idOrName)
-                : this.api.timers.killTimer(idOrName));
+        // Mudlet `killTimer(idOrName)`: TimerUnit::killTimer looks the argument
+        // up by *name*, and a temp timer's name is the id tempTimer returned —
+        // so `killTimer(tostring(id))` kills it just as `killTimer(id)` does.
+        // The name has to be the id's exact spelling ("05" names nothing).
+        // Permanent timers can't be killed (killByName refuses them).
+        this.lua.global.set('killTimer', (idOrName: number | string) => {
+            if (typeof idOrName !== 'string') return this.api.timers.killTimer(idOrName);
+            const n = Number(idOrName);
+            if (Number.isInteger(n) && String(n) === idOrName && this.api.timers.hasTemp(n)) {
+                return this.api.timers.killTimer(n);
+            }
+            return this.api.killByName('timer', idOrName);
+        });
 
         // ── Aliases ───────────────────────────────────────────────────────────
         this.lua.global.set('__mudlet_tempAlias', (pattern: string, cbId: number, uncompiled?: boolean) => {
