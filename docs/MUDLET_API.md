@@ -363,7 +363,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `uninstallModule(name)` | ✅ | JS-exposed |
 | `uninstallPackage(name)` | ✅ | JS-exposed |
 | `unzipAsync(zipPath, destDir)` | ✅ | JS-exposed; fires `sysUnzipDone`/`sysUnzipError` |
-| `yajl.to_string` / `yajl.to_value` | ✅ | `Yajl.lua` (pure-Lua encoder) + `yajl.ts` (JS `JSON.parse` decoder with 1-indexed-array remap and a `yajl.null` sentinel). Loaded at startup via `setupYajl` |
+| `yajl.to_string` / `yajl.to_value` / `yajl.generator` / `yajl.parser` / `yajl.null` | ✅ | Matches desktop lua-yajl (`lua_yajl.c`). `Yajl.lua`: a port of yajl_gen (sparse arrays with null holes, `indent`, depth-128 limit, `__gen_json`) and of yajl's push parser (streaming `yajl.parser`, yajl's error text). `yajl.ts`: the `JSON.parse` fast path behind `to_value` (Lua source, or an iterative raw-API build for deep documents, capped where lua_yajl's stack check is), and `yajl.null` as a userdata. Loaded at startup via `setupYajl` |
 
 ---
 

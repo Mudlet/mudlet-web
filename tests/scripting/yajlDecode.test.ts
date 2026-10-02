@@ -85,12 +85,14 @@ describe('yajl.to_value — source-emitting decoder', () => {
   });
 });
 
-// The fast path replaced a decoder that handed wasmoon an object graph. Any
-// structural divergence between the two would silently corrupt decoded data
-// (a Mudlet JSON map, say), so pin them against each other over a document
+// Documents too deep to express as source go through __yajl_parse__, which
+// builds the value with the raw lua_* API instead (it replaced a decoder that
+// handed wasmoon an object graph). Any structural divergence between the two
+// would silently corrupt decoded data (a Mudlet JSON map, say) depending only
+// on how deep it is, so pin them against each other over a document
 // shaped like a real map: areas holding rooms, coordinate arrays, exit lists,
 // string-keyed userData, nulls, unicode, and numeric-looking keys.
-describe('yajl.to_value matches the legacy graph decoder', () => {
+describe('yajl.to_value matches the raw-API decoder', () => {
   let t: TestRuntime;
   beforeEach(async () => { t = await createTestRuntime(); });
   afterEach(() => { t.dispose(); });
@@ -184,7 +186,7 @@ describe('yajl.to_value matches the legacy graph decoder', () => {
 describe('luaChunkForValue', () => {
   it('returns null for documents nested past the emit limit', () => {
     // Lua caps nested constructors (LUAI_MAXCCALLS), so deep values must fall
-    // back to the graph path rather than emitting source that won't compile.
+    // back to the raw-API path rather than emitting source that won't compile.
     let deep: unknown = 1;
     for (let i = 0; i < 400; i++) deep = [deep];
     expect(luaChunkForValue(deep)).toBeNull();

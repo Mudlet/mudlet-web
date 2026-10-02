@@ -28,6 +28,16 @@ const IO_COMPLETIONS: Completion[] = [
     fn('type',   '(obj) → string|nil',         'Return "file", "closed file", or nil'),
 ];
 
+// ── yajl ──────────────────────────────────────────────────────────────────────
+
+const YAJL_COMPLETIONS: Completion[] = [
+    fn('to_value',  '(json, opts?) → value',     'Decode JSON. Arrays are 1-indexed; JSON null is yajl.null. opts: allow_comments, check_utf8'),
+    fn('to_string', '(value, opts?) → string',   'Encode a value as JSON. Integer-keyed tables are arrays (holes become null). opts.indent pretty-prints'),
+    fn('generator', '({printer?, indent?}) → gen', 'Streaming encoder: gen:value/string/number/integer/double/boolean/null/open_object/open_array/close; output goes to printer(str)'),
+    fn('parser',    '({events, allow_comments?, check_utf8?}) → parse', 'Streaming decoder: parse(chunk) feeds text, parse(nil) completes; calls events.value/open_object/object_key/open_array/close'),
+    variable('null',  'The JSON null sentinel (a userdata) — what decoding yields for null, and encodes as null'),
+];
+
 // ── lfs ───────────────────────────────────────────────────────────────────────
 
 const LFS_COMPLETIONS: Completion[] = [
@@ -989,6 +999,8 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('ttsGetVolume',        '() → volume',                         'Current volume (0..1).'),
     // rex
     ns('rex', 'PCRE-compatible regex module: rex.match(), rex.find(), rex.new()'),
+    // yajl
+    ns('yajl', 'JSON module (lua-yajl): yajl.to_value(), yajl.to_string(), yajl.generator(), yajl.parser(), yajl.null'),
     // Globals / tables
     variable('gmcp',         'GMCP state table — auto-populated from server packets'),
     variable('msdp',         'MSDP state table — auto-populated from server packets'),
@@ -1033,6 +1045,7 @@ export const REFERENCE_GROUPS: ReferenceGroup[] = [
     { title: 'io',              prefix: 'io.',             entries: IO_COMPLETIONS },
     { title: 'lfs',             prefix: 'lfs.',            entries: LFS_COMPLETIONS },
     { title: 'utf8',            prefix: 'utf8.',           entries: UTF8_EXT       },
+    { title: 'yajl',            prefix: 'yajl.',           entries: YAJL_COMPLETIONS },
 ];
 
 // ── Hover lookup map: full dotted name → completion entry ────────────────────
@@ -1049,6 +1062,7 @@ export const HOVER_MAP = new Map<string, Completion>([
     ...TABLE_EXT     .map(c => [`table.${c.label}`,          c] as [string, Completion]),
     ...MATH_EXT      .map(c => [`math.${c.label}`,           c] as [string, Completion]),
     ...UTF8_EXT      .map(c => [`utf8.${c.label}`,           c] as [string, Completion]),
+    ...YAJL_COMPLETIONS.map(c => [`yajl.${c.label}`,         c] as [string, Completion]),
 ]);
 
 // ── Namespace map: prefix → completions for that sub-namespace ────────────────
@@ -1061,6 +1075,7 @@ const NAMESPACE_MAP: Array<[string, Completion[]]> = [
     ['table.',  TABLE_EXT],
     ['math.',   MATH_EXT],
     ['utf8.',   UTF8_EXT],
+    ['yajl.',   YAJL_COMPLETIONS],
 ];
 
 // ── Completion source ─────────────────────────────────────────────────────────

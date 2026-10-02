@@ -411,4 +411,21 @@ export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
             + 'arithmetic on a bare "0x" string to notice. Pinned by tests/scripting/textTimeUtilityParity.test.ts.',
         issue: '#294',
     },
+    {
+        api: 'string.dump / loadstring of precompiled chunks',
+        behaviour:
+            'Bytecode dumped by desktop Mudlet fails to load here with "binary string: bad header in '
+            + 'precompiled chunk", and bytecode dumped here fails the same way on desktop. Source code, and '
+            + 'string.dump/loadstring round-trips within one client, are unaffected.',
+        reason:
+            'A Lua 5.1 chunk header records the sizes of the C types the VM was built with, and lundump '
+            + 'refuses any chunk whose header differs from its own. The WebAssembly Lua is a wasm32 build, '
+            + 'so sizeof(size_t) is 4 where desktop\'s 64-bit build has 8 (header bytes `04 04 04 08 00` '
+            + 'against `04 08 04 08 00`), and every string length inside the chunk is a size_t of that width. '
+            + 'Closing it would mean transcoding chunks between the two layouts inside load/loadstring/'
+            + 'loadfile/dofile/require AND emitting the 64-bit layout from string.dump, all for the rare .luac '
+            + 'file or dumped function moved between clients. Lua 5.1 bytecode is also unverified (a malformed '
+            + 'chunk can corrupt the VM), so widening what the loader accepts is not worth it for that.',
+        issue: '#296',
+    },
 ];

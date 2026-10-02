@@ -23,7 +23,7 @@ import LUASQL_LUA from './Luasql.lua?raw';
 import {encodeLuaBytes, encodeRowsToLuaSource} from './sqlRowEncoder';
 import YAJL_LUA from './Yajl.lua?raw';
 import {setupRex} from './rex';
-import {setupYajl, type LuaValueTransform} from './yajl';
+import {setupYajl, type YajlBridge} from './yajl';
 import {parseImageSize} from './imageSize';
 import {parseQColor} from '../../ui/labels/qColor';
 import {isQtResourcePath, qtResourceBytes} from '../../assets/qt-resources';
@@ -355,7 +355,7 @@ if names then
   end
 end
 __mudlet_save_list = nil
-return yajl.to_string(out)
+return __mudlet_json_encode(out)
 `;
 
 // Snapshot the set of global names that exist right after the runtime boots —
@@ -419,7 +419,7 @@ for k, v in pairs(_G) do
     out[#out + 1] = e
   end
 end
-return yajl.to_string(out)
+return __mudlet_json_encode(out)
 `;
 
 // Apply one edit from the Variables view to the live `_G`: set a value, rename
@@ -696,10 +696,10 @@ export class LuaRuntime implements IScriptingRuntime {
     // Set by setupSqlBridge — closes every luasql connection this runtime
     // opened. destroy() runs it before lua_close.
     private closeSqlConnections: () => void = () => {};
-    // Same JSON→Lua remap yajl uses (1-indexed arrays, null sentinel).
-    // Captured here so setGmcpValue can shape incoming GMCP payloads
-    // identically to Mudlet's `gmcp` global.
-    private toLuaValue: LuaValueTransform = v => v;
+    // Pushes a JSON-decoded value exactly as yajl.to_value builds it (1-indexed
+    // arrays, the yajl.null userdata, inf/-0 intact). Mudlet fills `gmcp` and
+    // `msdp` through json_to_value = yajl.to_value, so the bridge must agree.
+    private yajl: YajlBridge | null = null;
 
     private constructor(
         private readonly lua: Lua,
@@ -2356,7 +2356,7 @@ export class LuaRuntime implements IScriptingRuntime {
         await sqliteReady;
         this.setupSqlBridge();
         this.exec(LUASQL_LUA, 'Luasql');
-        this.toLuaValue = setupYajl(this.lua).transform;
+        this.yajl = setupYajl(this.lua, (name, fn) => this.registerRawGlobal(name, fn));
         this.exec(YAJL_LUA, 'Yajl');
         // lpeg (Mudlet 4.21 bundles the C library). The browser has no C lpeg, so
         // we register the pure-Lua LuLPeg port under package.loaded["lpeg"]. This
@@ -4204,10 +4204,10 @@ end`);
         this.lua.global.set('__mudlet_gmcp_path', path);
         // Raw-push the (potentially large, deeply nested) decoded payload instead
         // of wasmoon's generic pushValue, whose ref/unref bookkeeping is O(n²) in
-        // the node count (issue #2). pushJsValue mirrors toLuaValue's conventions
-        // and delegates the yajl.null sentinel leaves back to wasmoon.
+        // the node count (issue #2) — and which recursed past the Lua stack on a
+        // deep document. The yajl bridge builds it the way yajl.to_value does.
         const L = this.lua.global.address;
-        this.pushJsValue(L, this.toLuaValue(value));
+        if (!this.pushDecodedJson(L, value, `gmcp "${path}"`)) return;
         this.lua.global.luaApi.lua_setglobal(L, '__mudlet_gmcp_val');
         this.runChunk('__mudlet_set_gmcp(__mudlet_gmcp_path, __mudlet_gmcp_val)', `set-gmcp "${path}"`);
     }
@@ -4221,9 +4221,25 @@ end`);
         // Raw-push the decoded value (see setGmcpValue) to avoid the O(n²)
         // generic pushValue on large nested MSDP tables (issue #2).
         const L = this.lua.global.address;
-        this.pushJsValue(L, this.toLuaValue(value));
+        if (!this.pushDecodedJson(L, value, `msdp "${path}"`)) return;
         this.lua.global.luaApi.lua_setglobal(L, '__mudlet_msdp_val');
         this.runChunk('__mudlet_set_msdp(__mudlet_msdp_path, __mudlet_msdp_val)', `set-msdp "${path}"`);
+    }
+
+    /**
+     * Push a JSON-decoded protocol payload as yajl.to_value would decode it.
+     * False, with nothing pushed, when it nests deeper than lua_yajl accepts —
+     * Mudlet's json_to_value raises on such a payload and the table is left as
+     * it was, so the caller skips the update too.
+     */
+    private pushDecodedJson(L: LuaState, value: unknown, what: string): boolean {
+        if (!this.yajl) {
+            this.lua.global.luaApi.lua_pushnil(L);
+            return true;
+        }
+        if (this.yajl.pushValue(L, value)) return true;
+        console.warn(`[mudlet] ${what} not stored: nested deeper than yajl accepts`);
+        return false;
     }
 
     /** Records one channel-102 report in the Lua `channel102` global. Both
@@ -4515,16 +4531,15 @@ end`);
      * pushTable does (see issue #2) is gone:
      *   - integer-valued numbers → lua_pushinteger, others → lua_pushnumber
      *   - arrays keyed by Object.keys + lua_rawseti, so dense 0-based arrays
-     *     (map getters) stay 0-indexed and the sparse 1-based arrays toLuaValue
-     *     builds stay 1-indexed — identical to wasmoon's arrIndexs handling
+     *     (map getters) stay 0-indexed and sparse 1-based arrays stay
+     *     1-indexed — identical to wasmoon's arrIndexs handling
      *   - plain objects → string keys via lua_setfield
      * Anything that isn't a primitive / plain array / plain object (wasmoon
-     * LuaTable proxies such as the yajl.null sentinel, functions, Maps, class
-     * instances) is delegated to wasmoon's own pushValue, which is O(1) for
-     * these leaves and preserves their reference identity. Such values only
-     * appear as leaves of GMCP/MSDP payloads (toLuaValue rebuilds every
-     * container as a fresh plain array/object) and always push on the main
-     * thread; on a coroutine stack we can't safely delegate, so degrade to nil.
+     * LuaTable proxies, functions, Maps, class instances) is delegated to
+     * wasmoon's own pushValue, which is O(1) for these leaves and preserves
+     * their reference identity. That is only safe on the main thread; on a
+     * coroutine stack we can't delegate, so degrade to nil. (GMCP/MSDP
+     * payloads don't come through here — see pushDecodedJson.)
      */
     private pushJsValue(L: LuaState, value: unknown, depth = 0): void {
         const api = this.lua.global.luaApi;
