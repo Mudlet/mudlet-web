@@ -126,7 +126,10 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
         else if (api.cmdLines.has(name)) api.cmdLines.move(name, xn, yn);
         else if (api.textEdits.has(name)) api.textEdits.move(name, xn, yn);
         else if (api.scrollBoxes.has(name)) api.scrollBoxes.move(name, xn, yn);
-        else if (api.windows.has(name)) api.windows.move(name, xn, yn);
+        else if (api.windows.has(name)) {
+            api.windows.floatForGeometryChange(name);
+            api.windows.move(name, xn, yn);
+        }
     });
     lua.global.set('resizeWindow', (name: string, w: unknown, h: unknown) => {
         const wn = px(w), hn = px(h);
@@ -134,7 +137,10 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
         else if (api.cmdLines.has(name)) api.cmdLines.resize(name, wn, hn);
         else if (api.textEdits.has(name)) api.textEdits.resize(name, wn, hn);
         else if (api.scrollBoxes.has(name)) api.scrollBoxes.resize(name, wn, hn);
-        else if (api.windows.has(name)) api.windows.resize(name, wn, hn);
+        else if (api.windows.has(name)) {
+            api.windows.floatForGeometryChange(name);
+            api.windows.resize(name, wn, hn);
+        }
     });
     // Window state getters. Each returns null for "no such widget" so the
     // Bridge.lua wrapper can build Mudlet's (nil, errMsg) pair; geometry comes

@@ -654,6 +654,29 @@ class ScriptingWindowsAPI {
         }
     }
 
+    /** Whether the window is shown in a dock rather than floating. */
+    isDocked(id: string): boolean {
+        return this.session.windows.isDocked(id);
+    }
+
+    /**
+     * Float a docked user window ahead of a move or resize, as Host::moveWindow
+     * and Host::resizeWindow do (`if (!pD->isFloating()) pD->setFloating(true)`)
+     * before they move or resize the dock widget — which is also why a docked
+     * window's getWindowGeometry reads back what resizeWindow set. Geyser's
+     * UserWindow:move documents the same ("is set to floating state if this
+     * function is used"). setFloating leaves a hidden dock hidden, so this does
+     * too. Miniconsoles have no dock and are left alone.
+     */
+    floatForGeometryChange(id: string): void {
+        const wm = this.session.windows;
+        if (wm.isMiniConsole(id) || !wm.isDocked(id)) return;
+        const wasVisible = wm.isVisible(id);
+        wm.undock(id);
+        if (!wasVisible) wm.hide(id);
+        wm.settleLayout();
+    }
+
     /** Commit the window layout synchronously, so the next script line sees the
      *  sizes a dock change produced (see WindowManager.settleLayout). */
     settleLayout(): void {

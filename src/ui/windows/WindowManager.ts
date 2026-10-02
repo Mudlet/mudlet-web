@@ -2957,6 +2957,11 @@ export class WindowManager {
         return this.windows.get(id)?.visible ?? false;
     }
 
+    /** Whether the window sits in a dock (rather than floating). */
+    isDocked(id: string): boolean {
+        return !!this.windows.get(id)?.docked;
+    }
+
     /** Stored geometry for a user window / miniconsole — deliberately the saved
      *  x/y/width/height rather than {@link getSize}'s live DOM rect, so it is an
      *  exact inverse of moveWindow/resizeWindow (Mudlet's getWindowGeometry

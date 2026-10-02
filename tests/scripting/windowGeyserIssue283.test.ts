@@ -62,6 +62,36 @@ describe('issue #283 — window and Geyser parity with desktop', () => {
             expect(settle).toHaveBeenCalled();
             settle.mockRestore();
         });
+
+        it('a window opened floating settles nothing, so the main size a constructor measured holds', () => {
+            // Geyser.UserWindow:new reads getMainWindowSize before openUserWindow
+            // and resolves its percentages after it; flushing an unrelated
+            // pending layout change in between would move the goalposts.
+            const settle = vi.spyOn(rt.session.windows, 'settleLayout');
+            rt.run('openUserWindow("dk_float", false, true, "floating")');
+            expect(settle).not.toHaveBeenCalled();
+            settle.mockRestore();
+        });
+
+        it('resizeWindow and moveWindow float a docked user window first, as Host::resizeWindow does', () => {
+            rt.run('openUserWindow("dk_rs", false, true, "right")');
+            expect(rt.session.windows.isDocked('dk_rs')).toBe(true);
+            rt.run('resizeWindow("dk_rs", 400, 200)');
+            expect(rt.session.windows.isDocked('dk_rs')).toBe(false);
+            expect(ask('getWindowGeometry("dk_rs")').slice(2)).toEqual([400, 200]);
+
+            rt.run('openUserWindow("dk_mv", false, true, "left")');
+            rt.run('moveWindow("dk_mv", 33, 44)');
+            expect(rt.session.windows.isDocked('dk_mv')).toBe(false);
+            expect(ask('getWindowGeometry("dk_mv")').slice(0, 2)).toEqual([33, 44]);
+        });
+
+        it('a hidden docked window floated by resizeWindow stays hidden, as setFloating leaves it', () => {
+            rt.run('openUserWindow("dk_hid", false, true, "right"); hideWindow("dk_hid")');
+            rt.run('resizeWindow("dk_hid", 300, 150)');
+            expect(rt.session.windows.isDocked('dk_hid')).toBe(false);
+            expect(rt.session.windows.isVisible('dk_hid')).toBe(false);
+        });
     });
 
     describe('getUserWindowSize', () => {
