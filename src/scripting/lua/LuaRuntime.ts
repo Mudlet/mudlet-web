@@ -20,7 +20,7 @@ import BRIDGE_LUA from './Bridge.lua?raw';
 import EXEC_LUA from './Exec.lua?raw';
 import LUA_GLOBAL_SETUP from './LuaGlobalSetup.lua?raw';
 import LUASQL_LUA from './Luasql.lua?raw';
-import {encodeRowsToLuaSource} from './sqlRowEncoder';
+import {encodeLuaBytes, encodeRowsToLuaSource} from './sqlRowEncoder';
 import YAJL_LUA from './Yajl.lua?raw';
 import {setupRex} from './rex';
 import {setupYajl, type LuaValueTransform} from './yajl';
@@ -693,6 +693,9 @@ export class LuaRuntime implements IScriptingRuntime {
     // immediately. Called from saveProfile() so user code can ensure SQL state
     // is durable before the default 500 ms debounce window elapses.
     private flushPendingSqlSnapshots: () => void = () => {};
+    // Set by setupSqlBridge — closes every luasql connection this runtime
+    // opened. destroy() runs it before lua_close.
+    private closeSqlConnections: () => void = () => {};
     // Same JSON→Lua remap yajl uses (1-indexed arrays, null sentinel).
     // Captured here so setGmcpValue can shape incoming GMCP payloads
     // identically to Mudlet's `gmcp` global.
@@ -2832,172 +2835,172 @@ end`);
     }
 
     // ── luasql.sqlite3 bridge ────────────────────────────────────────────────
-    // Exposes globals consumed by Luasql.lua: __sql_open / __sql_exec /
-    // __sql_close / __sql_escape. All synchronous — sqlite runs on the main
-    // thread, so Lua doesn't need to yield Promises.
+    // The globals Luasql.lua is built on. All synchronous — sqlite runs on the
+    // main thread, so Lua doesn't need to yield Promises. sqliteClient.ts owns
+    // the connections and their databases; this layer maps paths onto the
+    // profile VFS and carries values across the wasmoon bridge as BYTES:
+    //   - SQL text arrives armored (__mudlet_armor), so a latin1 or binary
+    //     literal reaches sqlite unchanged instead of UTF-8-decoded to U+FFFD.
+    //   - Results return as Lua source (sqlRowEncoder), every string a literal
+    //     of \DDD escapes: one crossing per result, and pure ASCII on the wire.
     //
-    // VFS round-trip: on open we preload from the ProfileVFS via
-    // sqlite3_deserialize; the VFS file is the source of truth. After each
-    // mutation we schedule a debounced snapshot (setTimeout) back to the same
-    // VFS path so a tight INSERT loop coalesces into one write.
-    //
-    // Row arrays are 1-indexed for Lua: wasmoon's pushTable iterates
-    // Object.keys, so a sparse JS array with index 0 absent and 1..n populated
-    // lands in Lua as a clean 1-indexed sequence.
+    // Persistence: a database's committed state is written back to its VFS
+    // path after writes (debounced), before anything reads that file (the VFS
+    // read barrier — a backup script copying Database_x.db right after db:add
+    // must get the row it just added, as it does from desktop's file), on
+    // saveProfile(), and when its last connection closes.
     private setupSqlBridge(): void {
         const sql = getSqliteClient();
+        const vfs = this.vfs;
+        // Connections this runtime opened: destroy() closes them (rolling back
+        // what they never committed) instead of leaving them in the
+        // page-lifetime client for the next runtime to trip over.
+        const owned = new Set<number>();
 
-        const toLuaArray = <T>(arr: T[]): T[] => {
-            const r: T[] = [];
-            for (let i = 0; i < arr.length; i++) r[i + 1] = arr[i];
-            return r;
+        const bytesOf = (byteString: string): Uint8Array => {
+            const out = new Uint8Array(byteString.length);
+            for (let i = 0; i < byteString.length; i++) out[i] = byteString.charCodeAt(i) & 0xff;
+            return out;
+        };
+        const PREFIX = bytesOf('LuaSQL: ');
+        const failSrc = (message: Uint8Array): string => {
+            const full = new Uint8Array(PREFIX.length + message.length);
+            full.set(PREFIX);
+            full.set(message, PREFIX.length);
+            return `return nil,${encodeLuaBytes(full)}`;
+        };
+        const listSrc = (items: (Uint8Array | null)[]): string =>
+            '{' + items.map(v => (v ? encodeLuaBytes(v) : 'nil')).join(',') + '}';
+
+        // Nothing here may touch the sqlite module itself: if its wasm failed to
+        // load, the runtime must still start, with only db:* and luasql
+        // failing (connect answers nil plus the reason). The hooks below only
+        // walk the client's own maps, which stay empty in that case.
+        this.flushPendingSqlSnapshots = () => sql.flushAll();
+        if (!sql.unavailable()) vfs?.setReadBarrier?.(abs => sql.flush(abs));
+
+        this.closeSqlConnections = () => {
+            for (const id of owned) sql.close(id);
+            owned.clear();
+            vfs?.setReadBarrier?.(null);
         };
 
-        const SNAPSHOT_DEBOUNCE_MS = 500;
-        const dbPaths = new Map<number, string>();
-        const pendingTimers = new Map<number, ReturnType<typeof setTimeout>>();
+        this.lua.global.set('__sql_version', sql.version() ?? undefined);
 
-        const snapshotNow = (dbId: number): void => {
-            const path = dbPaths.get(dbId);
-            if (!path || !this.vfs) return;
-            try {
-                const bytes = sql.exportFile(dbId);
-                // sqlite3_js_db_export returns an empty Uint8Array for an
-                // in-memory DB with no committed pages (a bare connect+close
-                // with no DDL/DML). Writing 0 bytes would poison the VFS path:
-                // the next __sql_open would read it back and reject it as too
-                // small for a SQLite header. Skip the write instead.
-                if (bytes.byteLength === 0) return;
-                this.vfs.writeBinaryFile(path, bytes);
-            } catch (e) {
-                console.warn('[sql snapshot]', path, e);
-            }
-        };
-
-        const scheduleSnapshot = (dbId: number): void => {
-            if (!this.vfs) return;
-            // The very first write goes out immediately: DB.lua's
-            // db:_isActiveDBName (which db:close and db:create both consult)
-            // tests io.exists on the database path, so a database that only
-            // existed in memory read back as "not open" until the debounce
-            // fired half a second later.
-            const path = dbPaths.get(dbId);
-            if (path && !this.vfs.exists(path)) { snapshotNow(dbId); return; }
-            const prev = pendingTimers.get(dbId);
-            if (prev) clearTimeout(prev);
-            const t = setTimeout(() => {
-                pendingTimers.delete(dbId);
-                snapshotNow(dbId);
-            }, SNAPSHOT_DEBOUNCE_MS);
-            pendingTimers.set(dbId, t);
-        };
-
-        this.flushPendingSqlSnapshots = () => {
-            for (const [dbId, t] of pendingTimers) {
-                clearTimeout(t);
-                snapshotNow(dbId);
-            }
-            pendingTimers.clear();
-        };
-
-        this.lua.global.set('__sql_open', (path: unknown): number => {
+        // env:connect. A number is the new connection; a string is why it could
+        // not be opened, in sqlite's words.
+        this.lua.global.set('__sql_open', (path: unknown, readOnly: unknown): number | string => {
             const p = String(path);
-            // Reuse a still-open connection to the same path. DB.lua's db:create
-            // → db:_migrate reconnects mid-session (adding a column, changing
-            // _violations) by overwriting db.__conn WITHOUT closing the previous
-            // handle. Opening a fresh :memory: DB each time would both strand the
-            // rows written since the last snapshot (Lua runs synchronously, so
-            // the debounced VFS snapshot hasn't fired) and leak the old handle.
-            // The live in-memory DB already holds the current committed state, so
-            // hand the same dbId back; the VFS is consulted only on a cold open.
-            const live = sql.liveId(p);
-            if (live != null) return live;
-            let preload: Uint8Array | undefined;
-            if (this.vfs && this.vfs.exists(p)) {
-                let raw: Uint8Array;
+            const ro = readOnly === true;
+            const CANTOPEN = 'unable to open database file';
+            const unavailable = sql.unavailable();
+            if (unavailable) return unavailable;
+            if (p.includes(':memory:')) {
                 try {
-                    raw = this.vfs.readBinaryFile(p);
+                    const id = sql.openMemory();
+                    owned.add(id);
+                    return id;
                 } catch (e) {
-                    throw new Error(`VFS read of '${p}' failed: ${e instanceof Error ? e.message : String(e)}`);
-                }
-                // Normalize to a fresh, byteOffset=0, standalone Uint8Array —
-                // ZenFS may return a Buffer slice that spans only part of an
-                // underlying ArrayBuffer.
-                const fresh = new Uint8Array(raw.byteLength);
-                fresh.set(raw);
-                // 0-byte file: treat as if the DB doesn't exist yet. snapshotNow
-                // now skips empty exports, but older sessions or interrupted runs
-                // may have left a 0-byte file behind that would otherwise jam
-                // every future open of this path.
-                if (fresh.byteLength === 0) {
-                    console.warn(`[__sql_open] '${p}' exists as 0 bytes — opening as fresh database`);
-                } else if (fresh.byteLength < 512) {
-                    throw new Error(`VFS file '${p}' is ${fresh.byteLength} bytes, too small to be a SQLite database`);
-                } else {
-                    // Quick header sniff — SQLite files start with "SQLite format 3\0".
-                    const HDR = 'SQLite format 3\0';
-                    let headerOk = true;
-                    for (let i = 0; i < HDR.length; i++) {
-                        if (fresh[i] !== HDR.charCodeAt(i)) { headerOk = false; break; }
-                    }
-                    if (!headerOk) {
-                        throw new Error(`VFS file '${p}' is not a SQLite database (bad header). First bytes: ${Array.from(fresh.subarray(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
-                    }
-                    preload = fresh;
+                    return e instanceof Error ? e.message : String(e);
                 }
             }
-            const dbId = sql.open(p, preload);
-            dbPaths.set(dbId, p);
-            return dbId;
-        });
-
-        this.lua.global.set('__sql_exec', (dbId: unknown, sqlText: unknown) => {
-            const id = Number(dbId);
-            try {
-                const r = sql.exec(id, String(sqlText));
-                if (r.kind === 'rows') {
-                    // Return rows as a Lua source literal instead of a nested
-                    // JS array. wasmoon's pushTable crosses the JS↔WASM boundary
-                    // once per cell — for a fetch of N rows × M columns that's
-                    // N*M crossings, which dominates large-result paths. By
-                    // emitting `{{...},{...},...}` and letting Lua's loadstring
-                    // parse it, we replace N*M boundary crossings with one
-                    // string push plus an in-wasm parse.
-                    const rowsSrc = encodeRowsToLuaSource(r.rows as unknown[][]);
-                    const cols1 = toLuaArray(r.columns);
-                    return {kind: 'rows', rowsSrc, columns: cols1};
+            let key = p;
+            let preload: Uint8Array | undefined;
+            let persist: ((bytes: Uint8Array) => void) | undefined;
+            if (vfs) {
+                key = vfs.resolvePath(p);
+                const st = vfs.stat(key);
+                if (st?.type === 'dir') return CANTOPEN;
+                if (!sql.isLive(key)) {
+                    if (st) {
+                        try {
+                            // A fresh, byteOffset-0 copy: ZenFS may hand back a
+                            // slice of a larger buffer.
+                            preload = new Uint8Array(vfs.readBinaryFile(key));
+                        } catch {
+                            return CANTOPEN;
+                        }
+                    } else {
+                        // sqlite3_open_v2 creates the file there and then — an
+                        // empty one, which DB.lua's io.exists check relies on —
+                        // and cannot when its directory is missing.
+                        const parent = key.substring(0, key.lastIndexOf('/')) || '/';
+                        if (ro || vfs.stat(parent)?.type !== 'dir') return CANTOPEN;
+                        try {
+                            vfs.writeBinaryFile(key, new Uint8Array(0));
+                        } catch {
+                            return CANTOPEN;
+                        }
+                    }
                 }
-                // Any non-query (INSERT/UPDATE/DELETE/DDL) — schedule a debounced
-                // VFS snapshot. Coalesces a tight db:add loop into one write.
-                scheduleSnapshot(id);
-                return {kind: 'changes', changes: r.changes};
-            } catch (e) {
-                return {kind: 'error', message: e instanceof Error ? e.message : String(e)};
+                persist = bytes => vfs.writeBinaryFile(key, bytes);
             }
-        });
-
-        // Declared column types for Luasql.lua's cursor:getcoltypes(). A
-        // missing one (an expression column) stays a hole in the Lua table.
-        this.lua.global.set('__sql_coltypes', (dbId: unknown, sqlText: unknown) => {
-            const types = sql.columnDeclTypes(Number(dbId), String(sqlText));
-            return types ? toLuaArray(types.map(t => t ?? undefined)) : null;
-        });
-
-        this.lua.global.set('__sql_close', (dbId: unknown): boolean => {
-            const id = Number(dbId);
             try {
-                const t = pendingTimers.get(id);
-                if (t) { clearTimeout(t); pendingTimers.delete(id); }
-                snapshotNow(id);
-                sql.close(id);
-                dbPaths.delete(id);
-                return true;
+                const id = sql.open(key, preload, {readOnly: ro, persist});
+                owned.add(id);
+                return id;
             } catch {
-                return false;
+                return CANTOPEN;
             }
         });
 
-        this.lua.global.set('__sql_escape', (s: unknown): string => sql.escape(String(s ?? '')));
+        // conn:execute. A number is sqlite3_changes(); otherwise Lua source for
+        // either `nil, "LuaSQL: <why>"` or a cursor's id, column names and
+        // declared types.
+        this.lua.global.set('__sql_exec', (dbId: unknown, armoredSql: unknown): number | string => {
+            const id = Number(dbId);
+            let r;
+            try {
+                r = sql.luasqlExec(id, bytesOf(unarmor(String(armoredSql))));
+            } catch (e) {
+                return failSrc(bytesOf(e instanceof Error ? e.message : String(e)));
+            }
+            if (r.kind === 'changes') {
+                sql.markDirty(id);
+                return r.changes;
+            }
+            if (r.kind === 'error') return failSrc(r.message);
+            if (r.wrote) sql.markDirty(id);
+            return `return ${r.cursorId},${listSrc(r.columns)},${listSrc(r.declTypes)}`;
+        });
+
+        // A cursor's first fetch: Lua source for `rows, err, holding`.
+        this.lua.global.set('__sql_cursor_fetch', (cursorId: unknown): string => {
+            try {
+                const r = sql.cursorFetch(Number(cursorId));
+                const err = r.error ? failSrc(r.error).slice('return nil,'.length) : 'nil';
+                return `return ${encodeRowsToLuaSource(r.rows)},${err},${r.holding}`;
+            } catch (e) {
+                return `return {},${failSrc(bytesOf(e instanceof Error ? e.message : String(e))).slice('return nil,'.length)},false`;
+            }
+        });
+
+        this.lua.global.set('__sql_cursor_close', (cursorId: unknown): void => {
+            sql.cursorClose(Number(cursorId));
+        });
+
+        // Fixed transaction-control SQL (COMMIT, ROLLBACK;BEGIN, ...): nil, or
+        // sqlite's error text armored.
+        this.lua.global.set('__sql_script', (dbId: unknown, text: unknown): string | null => {
+            const id = Number(dbId);
+            let err: Uint8Array | null;
+            try {
+                err = sql.script(id, String(text));
+            } catch (e) {
+                return armor(e instanceof Error ? e.message : String(e));
+            }
+            if (err) return armor(String.fromCharCode(...err));
+            sql.markDirty(id);
+            return null;
+        });
+
+        this.lua.global.set('__sql_lastid', (dbId: unknown): number => sql.lastInsertRowid(Number(dbId)));
+
+        this.lua.global.set('__sql_close', (dbId: unknown): void => {
+            const id = Number(dbId);
+            owned.delete(id);
+            sql.close(id);
+        });
     }
 
     // ── VFS bridge ───────────────────────────────────────────────────────────
@@ -4605,6 +4608,16 @@ end`);
         this.nestedDispatchStates = [];
         this.globalEvents?.close();
         this.tts?.destroy();
+        // Close the luasql connections as desktop does when the profile closes:
+        // what they never committed is rolled back, what they did is written
+        // out. Then mark Luasql.lua's finalizers inert — lua_close runs every
+        // __gc, and those must not reach back into JS for handles already gone.
+        try {
+            this.closeSqlConnections();
+            this.lua.global.set('__luasql_dead', true);
+        } catch (err) {
+            console.error('[mudlet] error closing sql connections (ignored):', err);
+        }
         this.api.map.setMapEventDispatcher(null);
         this.api.map.setMapInfoEvaluator(null);
         this.api.map.clearMapInfoContributors();

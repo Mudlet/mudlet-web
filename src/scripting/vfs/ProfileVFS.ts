@@ -90,6 +90,7 @@ export class ProfileVFS {
     private _handle?: FileSystemDirectoryHandle;
     readonly source: VFSSource;
     readonly folderName?: string;
+    private readBarrier: ((absPath: string) => void) | null = null;
 
     private constructor(
         readonly connectionId: string,
@@ -171,6 +172,23 @@ export class ProfileVFS {
 
     get cwd(): string { return this._cwd; }
 
+    /**
+     * Run `barrier` with a file's absolute path before anything reads it.
+     * The sql bridge uses it to write a database's pending changes out first,
+     * so a file a script (or the file browser, or an upload) reads right after
+     * a db:add holds that row, as desktop's database file would. Null removes it.
+     */
+    setReadBarrier(barrier: ((absPath: string) => void) | null): void {
+        this.readBarrier = barrier;
+    }
+
+    private beforeRead(abs: string): string {
+        if (this.readBarrier) {
+            try { this.readBarrier(abs); } catch (e) { console.warn('[ProfileVFS] read barrier failed:', e); }
+        }
+        return abs;
+    }
+
     resolvePath(path: string): string {
         const abs = path.startsWith('/') ? path : `${this._cwd}/${path}`;
         return normalizePath(abs);
@@ -181,11 +199,11 @@ export class ProfileVFS {
     }
 
     readFile(path: string): string {
-        return readFileSync(this.resolvePath(path), 'utf8') as string;
+        return readFileSync(this.beforeRead(this.resolvePath(path)), 'utf8') as string;
     }
 
     readBinaryFile(path: string): Uint8Array {
-        return readFileSync(this.resolvePath(path)) as unknown as Uint8Array;
+        return readFileSync(this.beforeRead(this.resolvePath(path))) as unknown as Uint8Array;
     }
 
     writeFile(path: string, content: string): void {
@@ -231,7 +249,7 @@ export class ProfileVFS {
     }
 
     rename(oldPath: string, newPath: string): void {
-        const absOld = this.resolvePath(oldPath);
+        const absOld = this.beforeRead(this.resolvePath(oldPath));
         const absNew = this.resolvePath(newPath);
         ensureParentDir(absNew);
         renameSync(absOld, absNew);
@@ -323,7 +341,7 @@ export class ProfileVFS {
 
     stat(path: string): VfsStat | null {
         try {
-            const s = statSync(this.resolvePath(path));
+            const s = statSync(this.beforeRead(this.resolvePath(path)));
             return {
                 type: s.isDirectory() ? 'dir' : 'file',
                 size: s.size,

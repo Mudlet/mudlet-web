@@ -1,244 +1,358 @@
--- luasql.sqlite3 shim backed by the main-thread sqlite-wasm bridge in
--- LuaRuntime.ts. Mudlet's DB.lua expects this module to look like the real
--- LuaSQL binding:
+-- luasql.sqlite3 for Mudlet Web: LuaSQL 2.6's sqlite3 driver (ls_sqlite3.c),
+-- reproduced over the sqlite-wasm bridge in LuaRuntime.ts / sqliteClient.ts.
+-- Mudlet's DB.lua and scripts that use LuaSQL directly both run on it, so it
+-- answers the way desktop's binding does, down to the error text:
+--
 --   local luasql = require "luasql.sqlite3"
 --   local env  = luasql.sqlite3()
---   local conn = env:connect(path)
---   local cur, err = conn:execute(sql)            -- cursor for SELECT
---   local n = conn:execute("INSERT ...")          -- rowcount otherwise
---   local row = cur:fetch({}, "a")                -- assoc-mode row, or nil
---   local a, b = cur:fetch()                      -- a row as multiple values
+--   local conn = env:connect(path)                -- nil, "LuaSQL: ..." on failure
+--   local cur  = conn:execute(sql)                -- a cursor for a statement with columns
+--   local n    = conn:execute("INSERT ...")       -- otherwise sqlite3_changes()
+--   local row  = cur:fetch({}, "a")               -- nil once the rows run out
 --   cur:close(); conn:close(); env:close()
 --
--- The JS bridge functions (__sql_*) are synchronous — they return a value
--- directly, no Promise / __await dance.
-
--- A LuaSQL cursor must be a *userdata*, not a Lua table: Mudlet's DB.lua
--- branches on `type(cur) == "userdata"` (e.g. db:_migrate reads existing
--- columns from a `PRAGMA table_info` cursor only when that test passes). The
--- real luasql.sqlite3 binding returns userdata cursors, so the shim has to as
--- well, or _migrate treats every existing table as brand-new and clobbers it.
--- Lua 5.1's newproxy(true) gives us a userdata with a fresh metatable; methods
--- live on its __index and close over this cursor's row/position state.
+-- What the JS side owns, and why it is there rather than here:
+--   * Every connection is its own sqlite handle on the database file, so two
+--     connections lock each other out and do not see each other's uncommitted
+--     work, exactly as two handles on one file do on desktop. Closing a
+--     connection rolls back what it never committed (sqlite3_close).
+--   * SQL text and every TEXT/BLOB value cross the wasmoon bridge as bytes —
+--     armored on the way out (__mudlet_armor, Bridge.lua), a Lua source literal
+--     of \DDD escapes on the way back — so latin1 or binary data is stored and
+--     read back byte for byte instead of being UTF-8 "repaired" to U+FFFD.
 --
--- The methods follow ls_sqlite3.c:
---   cur:fetch([t [, mode]]) fills and returns `t` when one is given — by column
---     number, by column name, or both, as `mode` contains "n" and/or "a"
---     (default "n") — and otherwise returns the row's values as multiple
---     results; nil once the rows run out.
---   cur:getcolnames() / cur:getcoltypes() — the column names, and the types the
---     columns were declared with (nil for a column that is an expression).
---   cur:close() — true, or false when already closed. Every other method on a
---     closed cursor raises.
-local function make_cursor(rows, columns, coltypes)
-    local pos = 0
-    local n = #rows
-    local ncols = #columns
-    local closed = false
+-- Environments, connections and cursors are userdata, as they are on desktop:
+-- DB.lua branches on `type(cur) == "userdata"`. The methods live on a metatable
+-- shared per class and look their object's state up by `self`, which is how the
+-- C methods behave (calling one on the wrong object is a type error, not a
+-- silent call on whichever object the method was fetched from).
 
-    local function check_open(method)
-        if closed then
-            error("bad argument #1 to '" .. method .. "' (LuaSQL: cursor is closed)", 3)
+local CURSOR = "SQLite3 cursor"
+local CONNECTION = "SQLite3 connection"
+local ENVIRONMENT = "SQLite3 environment"
+local PREFIX = "LuaSQL: "
+
+local type, tostring, error, select, rawset, unpack, loadstring, setmetatable, getmetatable, newproxy =
+      type, tostring, error, select, rawset, unpack, loadstring, setmetatable, getmetatable, newproxy
+local getinfo = debug and debug.getinfo
+
+-- Object state, keyed by the userdata. Weak keys, so state goes with its
+-- object; Lua 5.1 keeps a key that is being finalized until after its __gc.
+local cursors = setmetatable({}, { __mode = "k" })
+local connections = setmetatable({}, { __mode = "k" })
+local environments = setmetatable({}, { __mode = "k" })
+
+-- luaL_argerror, as lauxlib.c words it. The C functions raise with no position
+-- prefix (luaL_where on a C function is empty), hence level 0. `level` is the
+-- stack level of the API function relative to this one.
+local function argerror(level, narg, extramsg)
+    local ar = getinfo and getinfo(level + 1, "n")
+    local name = ar and ar.name
+    if ar and ar.namewhat == "method" then
+        narg = narg - 1
+        if narg == 0 then
+            error("calling '" .. tostring(name) .. "' on bad self (" .. extramsg .. ")", 0)
         end
     end
+    error("bad argument #" .. narg .. " to '" .. (name or "?") .. "' (" .. extramsg .. ")", 0)
+end
 
-    local cur = newproxy(true)
-    local mt = getmetatable(cur)
-    mt.__index = {
-        fetch = function(_, t, mode)
-            check_open("fetch")
-            pos = pos + 1
-            if pos > n then return nil end
-            local row = rows[pos]
-            if type(t) ~= "table" then
-                return unpack(row, 1, ncols)
-            end
-            mode = type(mode) == "string" and mode or "n"
-            if mode:find("n", 1, true) then
-                for i = 1, ncols do
-                    t[i] = row[i]
-                end
-            end
-            if mode:find("a", 1, true) then
-                for i = 1, ncols do
-                    t[columns[i]] = row[i]
-                end
-            end
-            return t
-        end,
+-- luaL_typerror's "X expected, got Y", where an absent argument is "no value".
+local function typename(present, v)
+    if not present then return "no value" end
+    return type(v)
+end
 
-        close = function()
-            if closed then return false end
-            closed = true
-            return true
-        end,
+-- luaL_checkudata + the closed check every method makes first.
+local function checkobject(store, kind, what, level, nargs, self)
+    local st = store[self]
+    if st == nil then
+        argerror(level + 1, 1, kind .. " expected, got " .. typename(nargs >= 1, self))
+    end
+    if st.closed then
+        argerror(level + 1, 1, PREFIX .. what .. " is closed")
+    end
+    return st
+end
 
-        getcolnames = function()
-            check_open("getcolnames")
-            local r = {}
-            for i = 1, ncols do r[i] = columns[i] end
-            return r
-        end,
+-- luaL_checkstring: a string, or a number in its %.14g spelling.
+local function checkstring(level, narg, present, v)
+    local t = type(v)
+    if t == "string" then return v end
+    if t == "number" then return tostring(v) end
+    argerror(level + 1, narg, "string expected, got " .. typename(present, v))
+end
 
-        getcoltypes = function()
-            check_open("getcoltypes")
-            local types = coltypes()
-            local r = {}
-            for i = 1, ncols do r[i] = types and types[i] or nil end
-            return r
-        end,
+-- The bridge hands back results as Lua source (one loadstring instead of one
+-- boundary crossing per cell); a parse failure would be a bridge bug.
+local function evalsource(src)
+    local fn, err = loadstring(src, "=luasql")
+    if not fn then error(PREFIX .. "internal error: " .. tostring(err), 0) end
+    return fn()
+end
+
+-- Created at the bottom, once the method tables exist.
+local cursor_proto, connection_proto
+
+-- ── Cursor ────────────────────────────────────────────────────────────────
+
+-- cur_nullify: the cursor is closed, its connection's count of open cursors
+-- drops, and the statement (and any read lock it holds) is let go.
+local function nullify_cursor(st)
+    st.closed = true
+    st.rows = nil
+    local conn = st.conn
+    conn.cur_counter = conn.cur_counter - 1
+    if st.needs_release and not __luasql_dead then
+        __sql_cursor_close(st.id)
+    end
+    st.needs_release = false
+end
+
+local cursor_methods = {}
+
+function cursor_methods.fetch(...)
+    local self, t, mode = ...
+    local nargs = select("#", ...)
+    local st = checkobject(cursors, CURSOR, "cursor", 1, nargs, self)
+    if st.rows == nil then
+        -- The first fetch runs the statement, as desktop's does (execute only
+        -- stepped it to learn its shape, then reset it). From here until the
+        -- rows run out, the cursor holds its read lock like a live statement.
+        local rows, err, needs_release = evalsource(__sql_cursor_fetch(st.id))
+        st.rows, st.n, st.err, st.needs_release = rows, #rows, err, needs_release
+    end
+    local pos = st.pos + 1
+    if pos > st.n then
+        -- the step that found no row finalizes the statement and closes the cursor
+        local err = st.err
+        nullify_cursor(st)
+        if err then return nil, err end
+        return nil
+    end
+    st.pos = pos
+    local row = st.rows[pos]
+    local ncols = st.numcols
+    if type(t) == "table" then
+        if mode == nil then
+            mode = "n"
+        elseif type(mode) == "number" then
+            mode = tostring(mode)
+        elseif type(mode) ~= "string" then
+            argerror(1, 3, "string expected, got " .. type(mode))
+        end
+        if mode:find("n", 1, true) then
+            for i = 1, ncols do rawset(t, i, row[i]) end
+        end
+        if mode:find("a", 1, true) then
+            local names = st.colnames
+            for i = 1, ncols do rawset(t, names[i], row[i]) end
+        end
+        return t
+    end
+    return unpack(row, 1, ncols)
+end
+
+function cursor_methods.close(...)
+    local self = ...
+    local st = cursors[self]
+    if st == nil then
+        argerror(1, 1, CURSOR .. " expected, got " .. typename(select("#", ...) >= 1, self))
+    end
+    if st.closed then return false end
+    nullify_cursor(st)
+    return true
+end
+
+-- The same table every time, as desktop keeps it in the registry.
+function cursor_methods.getcolnames(...)
+    local self = ...
+    return checkobject(cursors, CURSOR, "cursor", 1, select("#", ...), self).colnames
+end
+
+function cursor_methods.getcoltypes(...)
+    local self = ...
+    return checkobject(cursors, CURSOR, "cursor", 1, select("#", ...), self).coltypes
+end
+
+local function cursor_gc(self)
+    local st = cursors[self]
+    if st ~= nil and not st.closed then nullify_cursor(st) end
+end
+
+-- ── Connection ────────────────────────────────────────────────────────────
+
+local connection_methods = {}
+
+local function close_connection(st)
+    st.closed = true
+    if not __luasql_dead then __sql_close(st.id) end
+end
+
+function connection_methods.execute(...)
+    local self, statement = ...
+    local nargs = select("#", ...)
+    local st = checkobject(connections, CONNECTION, "connection", 1, nargs, self)
+    statement = checkstring(1, 2, nargs >= 2, statement)
+    local r = __sql_exec(st.id, __mudlet_armor(statement))
+    if type(r) == "number" then return r end
+    local id, colnames, coltypes = evalsource(r)
+    if id == nil then return nil, colnames end -- nil, "LuaSQL: <why>"
+    st.cur_counter = st.cur_counter + 1
+    local cur = newproxy(cursor_proto)
+    cursors[cur] = {
+        id = id, conn = st, connobj = self, closed = false,
+        numcols = #colnames, colnames = colnames, coltypes = coltypes,
+        pos = 0, rows = nil, needs_release = true,
     }
-
     return cur
 end
 
--- LuaSQL reports a failure as "LuaSQL: " followed by SQLite's own message.
--- sqlite-wasm's errors lead with the result code instead ("SQLITE_ERROR:
--- sqlite3 result code 1: no such table: x"), which is dropped for it.
-local function luasql_error(message)
-    message = tostring(message or "")
-    message = message:gsub("^SQLITE_[%u_]+: sqlite3 result code %d+: ", "")
-    return "LuaSQL: " .. message
+-- sqlite3_mprintf("%q") of luaL_checklstring: quotes doubled, and %q stops at
+-- the first NUL. It never looks at the connection, closed or not.
+function connection_methods.escape(...)
+    local self, from = ...
+    from = checkstring(1, 2, select("#", ...) >= 2, from)
+    return (from:match("^[^%z]*"):gsub("'", "''"))
 end
 
-local function make_conn(conn_id)
-    local conn = {}
+local function run_script(st, sql)
+    local err = __sql_script(st.id, sql)
+    if err ~= nil then return nil, PREFIX .. __mudlet_unarmor(err) end
+    return true
+end
 
-    -- Transaction handling mirrors LuaSQL's sqlite3 driver: autocommit is on
-    -- until setautocommit(false), which opens a transaction there and then and
-    -- re-opens one after every commit/rollback. db:create turns it off for every
-    -- database it makes, so db.Database:_begin (which only stops db:add from
-    -- committing each row) leaves the rows inside the open transaction for
-    -- _rollback to discard. Treating commit/rollback as no-ops — as this shim
-    -- used to — made _rollback silently keep every "discarded" row.
-    local auto_commit = true
-    local in_transaction = false
-    local function begin_transaction()
-        if not in_transaction then
-            __sql_exec(conn_id, "BEGIN")
-            in_transaction = true
-        end
+-- With autocommit off desktop re-opens the transaction in the same breath, and
+-- with it on, a COMMIT outside any transaction is SQLite's own error.
+function connection_methods.commit(...)
+    local self = ...
+    local st = checkobject(connections, CONNECTION, "connection", 1, select("#", ...), self)
+    return run_script(st, st.auto_commit and "COMMIT" or "COMMIT;BEGIN")
+end
+
+function connection_methods.rollback(...)
+    local self = ...
+    local st = checkobject(connections, CONNECTION, "connection", 1, select("#", ...), self)
+    return run_script(st, st.auto_commit and "ROLLBACK" or "ROLLBACK;BEGIN")
+end
+
+-- Turning autocommit back on ROLLS BACK the open transaction, ignoring errors;
+-- turning it off opens one, and a failure to (one already open) raises.
+function connection_methods.setautocommit(...)
+    local self, on = ...
+    local st = checkobject(connections, CONNECTION, "connection", 1, select("#", ...), self)
+    if on then
+        st.auto_commit = true
+        __sql_script(st.id, "ROLLBACK")
+    else
+        st.auto_commit = false
+        local err = __sql_script(st.id, "BEGIN")
+        if err ~= nil then error(PREFIX .. __mudlet_unarmor(err), 0) end
     end
-    -- A COMMIT can be refused, and the refusal has to be handed back rather than
-    -- swallowed: db:create turns autocommit off for every database it makes, so
-    -- nothing lands until a commit goes through, and a "true" over a refused one
-    -- loses the work without saying so — the failure db.Database:_commit's
-    -- return value exists to report. It is not hypothetical on an in-memory
-    -- database either: a DEFERRABLE constraint is checked at COMMIT
-    -- (SQLITE_CONSTRAINT), and a database that has outgrown what the wasm heap
-    -- can still grow to fails there too (SQLITE_FULL / SQLITE_NOMEM).
-    --
-    -- SQLite leaves the transaction OPEN when it refuses to end one, so
-    -- in_transaction only clears on success — otherwise the shim would think it
-    -- had left a transaction the database is still inside, and the next BEGIN
-    -- would error out.
-    local function finish(verb)
-        if in_transaction then
-            local result = __sql_exec(conn_id, verb)
-            if type(result) == "table" and result.kind == "error" then
-                return false, luasql_error(result.message)
-            end
-            in_transaction = false
-        end
-        if not auto_commit then begin_transaction() end
-        return true
+    return true
+end
+
+function connection_methods.getlastautoid(...)
+    local self = ...
+    local st = checkobject(connections, CONNECTION, "connection", 1, select("#", ...), self)
+    return __sql_lastid(st.id)
+end
+
+-- conn_close → conn_gc: refused (raised, the connection stays open) while a
+-- cursor is open; false when already closed.
+function connection_methods.close(...)
+    local self = ...
+    local st = connections[self]
+    if st == nil then
+        argerror(1, 1, CONNECTION .. " expected, got " .. typename(select("#", ...) >= 1, self))
     end
+    if st.closed then return false end
+    if st.cur_counter > 0 then error(PREFIX .. "there are open cursors", 0) end
+    close_connection(st)
+    return true
+end
 
-    function conn:execute(sql)
-        local result = __sql_exec(conn_id, sql)
-        if result == nil then
-            return nil, "sqlite returned nil"
-        end
-        if result.kind == "error" then
-            return nil, luasql_error(result.message)
-        elseif result.kind == "rows" then
-            -- Rows arrive as a Lua source literal (`{{...},{...},...}`) rather
-            -- than a pre-pushed table. Avoids wasmoon's per-cell pushTable cost
-            -- on big fetches — one boundary crossing for the source string, one
-            -- in-wasm Lua parse, no JS round-trip per value.
-            local fn, parse_err = loadstring("return " .. result.rowsSrc, "sql_rows")
-            if not fn then
-                return nil, "sql rows parse error: " .. tostring(parse_err)
-            end
-            local ok, rows = pcall(fn)
-            if not ok then
-                return nil, "sql rows eval error: " .. tostring(rows)
-            end
-            -- The declared types are looked up only if a script asks for them,
-            -- by preparing the statement again: most cursors never are.
-            local coltypes
-            return make_cursor(rows, result.columns, function()
-                if coltypes == nil then coltypes = __sql_coltypes(conn_id, sql) or false end
-                return coltypes or nil
-            end)
-        else
-            return result.changes or 0
-        end
-    end
+local function connection_gc(self)
+    local st = connections[self]
+    -- a cursor holds its connection, so by the time a connection is garbage
+    -- every cursor on it has been finalized already
+    if st ~= nil and not st.closed then close_connection(st) end
+end
 
-    function conn:escape(s)
-        return __sql_escape(s)
-    end
+-- ── Environment ───────────────────────────────────────────────────────────
 
-    local closed = false
-    function conn:close()
-        -- Closing a connection twice is false, not true: luasql answers that
-        -- way, and db:_closeAll() reads it to name the databases something else
-        -- closed behind its back.
-        if closed then return false end
-        closed = true
-        -- Commit rather than drop: closing with work pending should persist it,
-        -- which is what a caller that never called commit() expects.
-        auto_commit = true
-        finish("COMMIT")
-        __sql_close(conn_id)
-        return true
-    end
+local environment_methods = {}
 
-    function conn:commit() return finish("COMMIT") end
-    function conn:rollback() return finish("ROLLBACK") end
-
-    function conn:setautocommit(on)
-        auto_commit = on ~= false
-        if auto_commit then
-            -- Same as finish(): a refused COMMIT leaves the transaction open, so
-            -- report it and keep the flag honest instead of turning autocommit
-            -- back on over work that never landed.
-            if in_transaction then
-                local result = __sql_exec(conn_id, "COMMIT")
-                if type(result) == "table" and result.kind == "error" then
-                    auto_commit = false
-                    return false, luasql_error(result.message)
-                end
-                in_transaction = false
-            end
-        else
-            begin_transaction()
-        end
-        return true
-    end
-
+-- env:connect(path [, busy_timeout [, read_only]]). A path containing
+-- ":memory:" is a private in-memory database, as SQLITE_OPEN_MEMORY makes it.
+-- The busy timeout is not applied: sqlite here runs on the page's only
+-- thread, where waiting for a lock to clear would wait forever.
+function environment_methods.connect(...)
+    local self, sourcename, _, readonly = ...
+    local nargs = select("#", ...)
+    checkobject(environments, ENVIRONMENT, "environment", 1, nargs, self)
+    sourcename = checkstring(1, 2, nargs >= 2, sourcename)
+    local id = __sql_open(sourcename, readonly == true)
+    if type(id) ~= "number" then return nil, PREFIX .. tostring(id) end
+    local conn = newproxy(connection_proto)
+    connections[conn] = {
+        id = id, env = self, closed = false, auto_commit = true, cur_counter = 0,
+    }
     return conn
 end
 
-local function make_env()
-    local env = {}
-
-    function env:connect(path)
-        local conn_id = __sql_open(path)
-        if conn_id == nil then
-            return nil, "failed to open " .. tostring(path)
-        end
-        return make_conn(conn_id)
+function environment_methods.close(...)
+    local self = ...
+    local st = environments[self]
+    if st == nil then
+        argerror(1, 1, ENVIRONMENT .. " expected, got " .. typename(select("#", ...) >= 1, self))
     end
-
-    function env:close() return true end
-
-    return env
+    if st.closed then return false end
+    st.closed = true
+    return true
 end
 
+local function environment_gc(self)
+    local st = environments[self]
+    if st ~= nil then st.closed = true end
+end
+
+-- ── Classes and module ────────────────────────────────────────────────────
+
+local function makeproto(kind, store, methods, gc)
+    local proto = newproxy(true)
+    local mt = getmetatable(proto)
+    local function describe(self)
+        local st = store[self]
+        if st == nil or st.closed then return kind .. " (closed)" end
+        -- %p of the object, as luasql prints it: the stock tostring() of the
+        -- userdata, read with this __tostring briefly out of the way
+        mt.__tostring = nil
+        local raw = tostring(self)
+        mt.__tostring = describe
+        return kind .. " (" .. (raw:match("0x%x+") or raw:match(": (.+)$") or raw) .. ")"
+    end
+    mt.__index = methods
+    mt.__gc = gc
+    mt.__tostring = describe
+    mt.__metatable = PREFIX .. "you're not allowed to get this metatable"
+    return proto
+end
+
+cursor_proto = makeproto(CURSOR, cursors, cursor_methods, cursor_gc)
+connection_proto = makeproto(CONNECTION, connections, connection_methods, connection_gc)
+local environment_proto = makeproto(ENVIRONMENT, environments, environment_methods, environment_gc)
+
 local mod = {
-    sqlite3 = function() return make_env() end,
+    sqlite3 = function()
+        local env = newproxy(environment_proto)
+        environments[env] = { closed = false }
+        return env
+    end,
+    _COPYRIGHT = "Copyright (C) 2003-2020 Kepler Project",
+    _DESCRIPTION = "LuaSQL is a simple interface from Lua to a DBMS",
+    _VERSION = "LuaSQL 2.6.0 (for Lua 5.1)",
+    _CLIENTVERSION = __sql_version,
 }
 
 -- Populate both package.preload (so `require("luasql.sqlite3")` works) and

@@ -1,17 +1,15 @@
 // @vitest-environment node
 //
-// db.Database:_commit answers (false, why) rather than swallowing a refusal.
-// That return value exists because db:create turns the driver's own autocommit
-// off for every database it makes: nothing lands until a commit goes through, so
-// a "true" over a refused one loses the work silently.
+// conn:commit answers (nil, why) rather than swallowing a refusal, and
+// db.Database:_commit passes it on. That return value exists because db:create
+// turns the driver's own autocommit off for every database it makes: nothing
+// lands until a commit goes through, so a "true" over a refused one loses the
+// work silently.
 //
-// Mudlet Web keeps a database in wasm memory rather than in a file, so it cannot
-// reproduce the way DB_spec provokes a refusal — a second connection holding the
-// file's lock (see e2e/knownDivergences.ts). The refusals it CAN meet are the
-// ones SQLite raises at COMMIT on one connection: a DEFERRABLE constraint
-// checked only when the transaction ends, and a database that has outgrown what
-// the wasm heap can still grow to. Those go through the same Luasql.lua path,
-// which is what this pins.
+// The refusals pinned here are the ones SQLite raises at COMMIT on one
+// connection — a DEFERRABLE constraint checked only when the transaction ends —
+// and the one DB_spec provokes, a second connection part way through reading
+// (tests/scripting/luasqlConnections.test.ts).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createTestRuntime, type TestRuntime } from '../createTestRuntime';
 
@@ -32,11 +30,11 @@ describe('a refused COMMIT is reported, not swallowed', () => {
     conn:execute("INSERT INTO child (id, pid) VALUES (1, 999)")
   `;
 
-  it('conn:commit answers false and says why', () => {
+  it('conn:commit answers nil and says why', () => {
     expect(env.run(`${armDeferredViolation}
       local ok, err = conn:commit()
       return tostring(ok) .. "|" .. tostring(err)`))
-      .toMatch(/^false\|.*FOREIGN KEY constraint failed/);
+      .toBe('nil|LuaSQL: FOREIGN KEY constraint failed');
   });
 
   it('leaves the transaction open, as SQLite does, so the work is still there', () => {
@@ -60,11 +58,13 @@ describe('a refused COMMIT is reported, not swallowed', () => {
       .toBe(0);
   });
 
-  it('setautocommit(true) reports it too rather than turning the flag over lost work', () => {
+  it('setautocommit(true) rolls the open transaction back, as LuaSQL does', () => {
+    // ls_sqlite3.c conn_setautocommit: "undo active transaction - ignore errors"
     expect(env.run(`${armDeferredViolation}
       local ok, err = conn:setautocommit(true)
-      return tostring(ok) .. "|" .. tostring(err)`))
-      .toMatch(/^false\|.*FOREIGN KEY constraint failed/);
+      local rows = conn:execute("SELECT COUNT(*) FROM child")
+      return tostring(ok) .. "|" .. tostring(err) .. "|" .. tostring((rows:fetch()))`))
+      .toBe('true|nil|0');
   });
 
   it('a healthy commit still answers true', () => {

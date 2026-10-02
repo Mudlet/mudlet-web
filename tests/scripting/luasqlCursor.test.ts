@@ -10,8 +10,7 @@ describe('luasql.sqlite3 cursor', () => {
   beforeEach(async () => { env = await createTestRuntime(); });
   afterEach(() => env.dispose());
 
-  // A fresh database per use: the sqlite client outlives each runtime and
-  // hands a reopened path its still-live handle, rows and all.
+  // A fresh database per use, so no test sees another's rows.
   let dbSeq = 0;
   const setup = () => `
     local conn = luasql.sqlite3():connect("cursorparity-${++dbSeq}.db")
@@ -73,7 +72,12 @@ describe('luasql.sqlite3 cursor', () => {
     expect(() => env.run(`${setup()}
       local cur = conn:execute("SELECT n FROM t")
       cur:close()
-      cur:fetch()`)).toThrow(/bad argument #1 to 'fetch' \(LuaSQL: cursor is closed\)/);
+      cur:fetch()`)).toThrow(/calling 'fetch' on bad self \(LuaSQL: cursor is closed\)/);
+    // luaL_argerror words it by how the method was called, as desktop's does
+    expect(() => env.run(`${setup()}
+      local cur = conn:execute("SELECT n FROM t")
+      cur:close()
+      cur.fetch(cur)`)).toThrow(/bad argument #1 to 'fetch' \(LuaSQL: cursor is closed\)/);
     expect(() => env.run(`${setup()}
       local cur = conn:execute("SELECT n FROM t")
       cur:close()
