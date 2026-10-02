@@ -1,5 +1,6 @@
 import { Buffer } from 'buffer';
 import { readMapFromBuffer, streamRooms, writeMapToBuffer, type MudletLabel, type MudletMap, type MudletMapHeader, type MudletRoom } from 'mudlet-map-binary-reader';
+import { withLabelPixmapBytes } from './labelPixmap';
 
 /** Rooms per streamed batch. Clone cost is per-room either way, so batch size
  *  only trades message count against granularity: smaller batches give the
@@ -51,19 +52,11 @@ self.addEventListener('message', (event: MessageEvent<Req>) => {
             // qtdatastream's Buffer.concat throws "list argument must be an Array
             // of Buffers" and the ENTIRE map save fails (zoom, edits, hidden
             // rooms — everything that round-trips through saveMap).
-            for (const arr of Object.values(req.map.labels ?? {})) {
-                for (const label of arr) {
-                    const pm = label.pixMap as unknown;
-                    if (typeof pm === 'string') {
-                        (label as { pixMap: unknown }).pixMap = Buffer.from(pm, 'base64');
-                    }
-                }
-            }
             // Serialise the map binary off the main thread. writeMapToBuffer
             // returns a Buffer backed by the polyfill's pool, so copy into a
             // standalone ArrayBuffer we can transfer back without dragging the
             // whole pool along.
-            const buf = writeMapToBuffer(req.map);
+            const buf = writeMapToBuffer(withLabelPixmapBytes(req.map));
             const out = new ArrayBuffer(buf.byteLength);
             new Uint8Array(out).set(buf);
             const res: Res = { id: req.id, ok: true, kind: 'serialize', bytes: out };

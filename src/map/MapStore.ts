@@ -1,6 +1,7 @@
 import type {MudletArea, MudletColor, MudletFont, MudletLabel, MudletMap, MudletMapHeader, MudletRoom} from 'mudlet-map-binary-reader';
 import {readerExport} from 'mudlet-map-binary-reader';
 import {findPath, type ExitWeightFilter, type PathfindResult} from './pathfinding';
+import {renderLabelPixmap} from './labelPixmap';
 
 export type {ExitWeightFilter, PathfindResult} from './pathfinding';
 
@@ -98,10 +99,11 @@ const PEN_STYLE_NAMES: Record<number, string> = {
 // set so the file stays interoperable with Mudlet v20 readers.
 const HIDDEN_FALLBACK_KEY = 'system.fallback_hidden';
 
-// Per-area 2D-map zoom. Persisted inside the area's userData so the view zoom
-// round-trips with the map file (mirroring Mudlet, where zoom is map data, not
-// client config). It's an ordinary userData key — scripts can read it like any
-// other area user-data entry; getAreaZoom/setAreaZoom are just typed accessors.
+// Per-area 2D-map zoom. Persisted in the map file so the view zoom round-trips
+// with it (mirroring Mudlet, where zoom is map data, not client config). In
+// memory it lives beside the area (MapStore.areaZooms), not in its user data:
+// TMap::restore takes the key out on load, so a script iterating area user data
+// never sees it, and toMudletMapForSave puts it back for every area.
 //
 // This is Mudlet's OWN key for the same datum: TArea::mLast2DMapZoom only gets
 // a field of its own in map format v21, so a v20 save carries it in area
@@ -115,6 +117,51 @@ const HIDDEN_FALLBACK_KEY = 'system.fallback_hidden';
 // pixels-per-unit multiplier. Anything crossing into the renderer converts at
 // that boundary (see MapPanel's toRendererZoom).
 const AREA_ZOOM_KEY = 'system.fallback_map2DZoom';
+
+// The other fallback keys a v20 file carries for TRoom/TMapLabel fields the
+// format has no slot for (TMap::serialize / TRoom::restore / TMap::restore).
+// The symbol colour and the label keys are TAKEN on load, so scripts never
+// see them; the border keys are only READ (TRoom::restore uses `value`, not
+// `take`), so they stay visible as room user data, exactly as on desktop.
+const SYMBOL_COLOR_FALLBACK_KEY = 'system.fallback_symbol_color';
+const BORDER_COLOR_KEY = 'room.ui_borderColor';
+const BORDER_THICKNESS_KEY = 'room.ui_borderThickness';
+const labelFontKey = (labelId: number) => `system.labelFont_${labelId}`;
+const labelOutlineKey = (labelId: number) => `system.labelOutlineColor_${labelId}`;
+// QFont::Normal under Qt 6 — the weight TMap::createMapLabel's
+// `QFont(fontName, fontSize)` reports, and so what desktop writes.
+const QFONT_NORMAL_WEIGHT = 400;
+
+/**
+ * `QColor(QString)` for the `#…` spellings Mudlet writes (`name()` and
+ * `name(QColor::HexArgb)`) plus the other hex forms Qt accepts. Returns null
+ * for anything Qt would read as an invalid colour; SVG colour names are not
+ * recognised, and nothing Mudlet writes uses them.
+ */
+function parseQColorName(raw: string | undefined): { r: number; g: number; b: number; a: number } | null {
+    if (typeof raw !== 'string' || !/^#[0-9a-fA-F]+$/.test(raw)) return null;
+    const hex = raw.slice(1);
+    const channel = (s: string) => {
+        const max = 16 ** s.length - 1;
+        return Math.round(parseInt(s, 16) * 255 / max);
+    };
+    switch (hex.length) {
+        case 3: return { r: channel(hex[0]), g: channel(hex[1]), b: channel(hex[2]), a: 255 };
+        case 6: return { r: channel(hex.slice(0, 2)), g: channel(hex.slice(2, 4)), b: channel(hex.slice(4, 6)), a: 255 };
+        case 8: return { a: channel(hex.slice(0, 2)), r: channel(hex.slice(2, 4)), g: channel(hex.slice(4, 6)), b: channel(hex.slice(6, 8)) };
+        case 9: return { r: channel(hex.slice(0, 3)), g: channel(hex.slice(3, 6)), b: channel(hex.slice(6, 9)), a: 255 };
+        case 12: return { r: channel(hex.slice(0, 4)), g: channel(hex.slice(4, 8)), b: channel(hex.slice(8, 12)), a: 255 };
+        default: return null;
+    }
+}
+
+const hexByte = (n: number) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0');
+/** `QColor::name()` — `#rrggbb`, alpha dropped. */
+const qColorName = (c: { r: number; g: number; b: number }) => `#${hexByte(c.r)}${hexByte(c.g)}${hexByte(c.b)}`;
+/** `QColor::name(QColor::HexArgb)` — `#aarrggbb`. */
+const qColorNameArgb = (c: { r: number; g: number; b: number; a: number }) => `#${hexByte(c.a)}${qColorName(c).slice(1)}`;
+/** `QString::number(double)` — `%g` with six significant digits. */
+const qNumber = (n: number) => String(Number(n.toPrecision(6)));
 
 export const DEFAULT_FONT: MudletFont = {
     family: 'Bitstream Vera Sans Mono', style: 'Normal',
@@ -563,13 +610,18 @@ export function makeArea(): MudletArea {
 
 /**
  * A map label as Mudlet Web stores it: the binary-map reader's shape plus the fields
- * Mudlet's `TMapLabel` carries that its map file never persists — the font, the
- * outline colour and the `temporary` flag. All optional, so labels read back
- * from a binary map (which have none of them) stay valid without conversion.
+ * Mudlet's `TMapLabel` carries that the label record in its map file does not —
+ * the font and outline colour (which a v20 file keeps in the area's user data,
+ * see restoreLabelFallbacks / labelFallbackEntries) and the `temporary` flag
+ * (never saved). All optional, so a label read back without them stays valid.
  */
 export interface MapLabel extends MudletLabel {
     fontName?: string;
     fontSize?: number;
+    /** QFont weight and italic flag, carried only so a label read from a
+     *  desktop file writes its `system.labelFont_N` back unchanged. */
+    fontWeight?: number;
+    fontItalic?: boolean;
     temporary?: boolean;
     outlineColor?: MudletColor;
 }
@@ -644,6 +696,57 @@ export type MapLabelLookup =
     | { ok: false; err: 'noarea' | 'noid' }
     | { ok: true; single: MapLabelInfo }
     | { ok: true; multi: Record<number, MapLabelInfo> };
+
+/**
+ * TMap's restoreLabelFontFromUserData + restoreLabelOutlineColorFromUserData:
+ * take the label's `system.labelFont_N` ("family|pointSize|weight|italic") and
+ * `system.labelOutlineColor_N` ("r|g|b|a") out of its area's user data. The key
+ * goes either way; a value without exactly four parts is dropped, as desktop
+ * drops it with a warning.
+ */
+function restoreLabelFallbacks(label: MapLabel, userData: Record<string, string>): void {
+    const fontKey = labelFontKey(label.id);
+    if (fontKey in userData) {
+        const parts = String(userData[fontKey]).split('|');
+        delete userData[fontKey];
+        if (parts.length === 4) {
+            label.fontName = parts[0] || undefined;
+            label.fontSize = Math.trunc(Number(parts[1])) || 0;
+            label.fontWeight = Math.trunc(Number(parts[2])) || 0;
+            label.fontItalic = Math.trunc(Number(parts[3])) !== 0;
+        }
+    }
+    const outlineKey = labelOutlineKey(label.id);
+    if (outlineKey in userData) {
+        const parts = String(userData[outlineKey]).split('|');
+        delete userData[outlineKey];
+        if (parts.length === 4) {
+            const [r, g, b, a] = parts.map(p => clampByte(Math.trunc(Number(p)) || 0));
+            label.outlineColor = { spec: 1, alpha: a, r, g, b };
+        }
+    }
+}
+
+/**
+ * The area user-data entries TMap::serialize writes for a permanent label: the
+ * font only when it has a family (a `createMapLabel` with no font name has
+ * none), the outline colour always — black when the label never had one,
+ * TMapLabel's default.
+ */
+function labelFallbackEntries(label: MapLabel): Record<string, string> {
+    const out: Record<string, string> = {};
+    if (label.fontName) {
+        out[labelFontKey(label.id)] = [
+            label.fontName,
+            Math.trunc(label.fontSize ?? 0),
+            label.fontWeight ?? QFONT_NORMAL_WEIGHT,
+            label.fontItalic ? 1 : 0,
+        ].join('|');
+    }
+    const o = label.outlineColor;
+    out[labelOutlineKey(label.id)] = o ? `${o.r}|${o.g}|${o.b}|${o.alpha}` : '0|0|0|255';
+    return out;
+}
 
 function labelToInfo(l: MapLabel): MapLabelInfo {
     let pixmap = '';
@@ -781,6 +884,15 @@ export class MapStore {
     // ingestBinaryRooms* → endBinaryLoad). Empty/false outside a load.
     private pendingBinaryHashIndex: Record<string, number> = {};
     private pendingBinaryHadSelection = false;
+    /** Whether the load in flight lifts the v20 `system.*` fallback keys out
+     *  of user data. True for a binary file (and the binary-model JSON that
+     *  toJsonString writes); false while reading Mudlet's own JSON format,
+     *  whose reader leaves user data exactly as the file has it. */
+    private liftFileFallbacks = true;
+    /** TArea::mLast2DMapZoom — keyed by the area object so it follows an area
+     *  the audit renumbers and goes when the area does. Absent means "never
+     *  set", which reads back as the default zoom. */
+    private areaZooms = new WeakMap<MudletArea, number>();
     /** What the last import's audit found and repaired, for whoever loaded the
      *  map to report. Read through {@link takeAuditIssues}. */
     private lastAuditIssues: MapIssue[] = [];
@@ -935,6 +1047,8 @@ export class MapStore {
         this.customEnvColors.clear();
         this.restore16ColorSet();
         this.roomCharColors.clear();
+        this.roomBorderColors.clear();
+        this.roomBorderThicknesses.clear();
         // Keyed by room id, so a lock left over from the map being replaced
         // would land on whichever room of the next one has that number.
         this.specialExitLocks.clear();
@@ -997,6 +1111,8 @@ export class MapStore {
         this.customEnvColors.clear();
         this.restore16ColorSet();
         this.roomCharColors.clear();
+        this.roomBorderColors.clear();
+        this.roomBorderThicknesses.clear();
         // Keyed by room id, so a lock left over from the map being replaced
         // would land on whichever room of the next one has that number.
         this.specialExitLocks.clear();
@@ -1022,6 +1138,14 @@ export class MapStore {
             // below one comes out 2^32 too big, and the audit needs it as the
             // number the file meant.
             area.rooms = (area.rooms ?? []).map(asInt32);
+            // TMap::restore (v17-v20) takes the zoom fallback out of the
+            // area's user data — scripts never see it — and keeps it only
+            // when it is at or above the minimum zoom.
+            if (this.liftFileFallbacks && area.userData && AREA_ZOOM_KEY in area.userData) {
+                const zoom = Number(area.userData[AREA_ZOOM_KEY]);
+                delete area.userData[AREA_ZOOM_KEY];
+                if (Number.isFinite(zoom) && zoom >= MapStore.MIN_MAP_ZOOM) this.areaZooms.set(area, zoom);
+            }
             this.areas.set(id, area);
             if (id >= this.nextAreaId) this.nextAreaId = id + 1;
         }
@@ -1063,6 +1187,13 @@ export class MapStore {
                 try { return { ...l, pixMap: Buffer.from(pm as Uint8Array).toString('base64') }; }
                 catch { return { ...l, pixMap: '' }; }
             });
+            // The label font and outline colour ride in the area's user data
+            // (restoreLabelFontFromUserData / restoreLabelOutlineColorFromUserData),
+            // taken out as each label of an existing area is read.
+            const areaUserData = this.liftFileFallbacks ? this.areas.get(Number(k))?.userData : undefined;
+            if (areaUserData) {
+                for (const label of normalized as MapLabel[]) restoreLabelFallbacks(label, areaUserData);
+            }
             this.labels.set(Number(k), normalized);
         }
         for (const [k, c] of Object.entries(header.mCustomEnvColors ?? {})) {
@@ -1095,6 +1226,24 @@ export class MapStore {
         if (fallback !== undefined) {
             delete room.userData[HIDDEN_FALLBACK_KEY];
             if (fallback === 'true') this.hiddenRooms.add(id);
+        }
+        if (this.liftFileFallbacks && room.userData) {
+            // TRoom::restore, version < 21: the symbol colour is taken out of
+            // the user data (QColor(name) — "#rrggbb", so always opaque).
+            if (SYMBOL_COLOR_FALLBACK_KEY in room.userData) {
+                const c = parseQColorName(room.userData[SYMBOL_COLOR_FALLBACK_KEY]);
+                delete room.userData[SYMBOL_COLOR_FALLBACK_KEY];
+                if (c) this.roomCharColors.set(id, { spec: 1, alpha: c.a, r: c.r, g: c.g, b: c.b });
+            }
+            // The border is read but left in place (`value`, not `take`).
+            const border = parseQColorName(room.userData[BORDER_COLOR_KEY]);
+            if (border) this.roomBorderColors.set(id, border);
+            if (BORDER_THICKNESS_KEY in room.userData) {
+                // QString::toInt: a whole decimal number or nothing.
+                const raw = String(room.userData[BORDER_THICKNESS_KEY]).trim();
+                const t = /^[+-]?\d+$/.test(raw) ? Number(raw) : 0;
+                if (t > 0 && t <= 10) this.roomBorderThicknesses.set(id, t);
+            }
         }
         // Special exit destinations are read unsigned, like area room lists.
         for (const [command, dest] of Object.entries(room.mSpecialExits ?? {})) {
@@ -1359,24 +1508,65 @@ export class MapStore {
     }
 
     /**
-     * Save-side variant of {@link toMudletMap}: re-injects the v20-compatible
-     * `system.fallback_hidden` userData key for rooms in the hidden side-table
-     * so the serialised file round-trips back through `loadFromBinary` (and
-     * stays loadable by Mudlet v20 readers). Render paths still call the plain
-     * {@link toMudletMap} — the fallback key is dead weight for the renderer
-     * and we don't want to pay the per-room object spread on every redraw.
+     * Save-side variant of {@link toMudletMap}: writes what TMap::serialize
+     * puts into user data for a v20 file, for the fields the format has no
+     * slot for, so the file round-trips back through `loadFromBinary` and
+     * through desktop Mudlet:
+     *
+     * - room `system.fallback_hidden` for rooms in the hidden side-table;
+     * - room `system.fallback_symbol_color` (`QColor::name()`) for a room with
+     *   a symbol colour;
+     * - room `room.ui_borderColor` (`name(HexArgb)`) / `room.ui_borderThickness`
+     *   from the border side-tables — set when there is one, removed when not;
+     * - area `system.fallback_map2DZoom` for every area (the default zoom when
+     *   none was ever set — TArea always has one);
+     * - area `system.labelFont_N` / `system.labelOutlineColor_N` for each
+     *   permanent label.
+     *
+     * Temporary labels are left out, as TMap::serialize leaves them out.
+     * Nothing in the store is mutated: desktop leaves these keys behind in its
+     * in-memory user data after a save, which is not worth copying. Render paths
+     * still call the plain {@link toMudletMap} — none of this is any use to the
+     * renderer.
      */
     toMudletMapForSave(): MudletMap {
         const m = this.toMudletMap();
-        if (this.hiddenRooms.size === 0) return m;
-        const patched: Record<number, MudletRoom> = {};
+        const rooms: Record<number, MudletRoom> = {};
         for (const [k, r] of Object.entries(m.rooms)) {
             const id = Number(k);
-            patched[id] = this.hiddenRooms.has(id)
-                ? { ...r, userData: { ...r.userData, [HIDDEN_FALLBACK_KEY]: 'true' } }
-                : r;
+            const charColor = this.roomCharColors.get(id);
+            const border = this.roomBorderColors.get(id);
+            const thickness = this.roomBorderThicknesses.get(id);
+            const hidden = this.hiddenRooms.has(id);
+            const ud = r.userData ?? {};
+            if (!charColor && !border && thickness == null && !hidden
+                && !(BORDER_COLOR_KEY in ud) && !(BORDER_THICKNESS_KEY in ud)) {
+                rooms[id] = r;
+                continue;
+            }
+            const userData: Record<string, string> = { ...ud };
+            if (hidden) userData[HIDDEN_FALLBACK_KEY] = 'true';
+            if (charColor) userData[SYMBOL_COLOR_FALLBACK_KEY] = qColorName(charColor);
+            if (border) userData[BORDER_COLOR_KEY] = qColorNameArgb(border);
+            else delete userData[BORDER_COLOR_KEY];
+            if (thickness != null && thickness > 0) userData[BORDER_THICKNESS_KEY] = String(thickness);
+            else delete userData[BORDER_THICKNESS_KEY];
+            rooms[id] = { ...r, userData };
         }
-        return { ...m, rooms: patched };
+        const areas: Record<number, MudletArea> = {};
+        const labels: Record<number, MapLabel[]> = {};
+        for (const [k, a] of Object.entries(m.areas)) {
+            const id = Number(k);
+            const permanent = ((m.labels[id] ?? []) as MapLabel[]).filter(l => !l.temporary);
+            if (permanent.length > 0) labels[id] = permanent;
+            const userData: Record<string, string> = {
+                ...(a.userData ?? {}),
+                [AREA_ZOOM_KEY]: qNumber(this.areaZooms.get(a) ?? MapStore.DEFAULT_MAP_ZOOM),
+            };
+            for (const label of permanent) Object.assign(userData, labelFallbackEntries(label));
+            areas[id] = { ...a, userData };
+        }
+        return { ...m, rooms, areas, labels };
     }
 
     /**
@@ -1401,6 +1591,10 @@ export class MapStore {
         // The locks by command, read before the load hands the rooms to the
         // audit, which drops the lock of any exit it removes.
         const locks = source === map ? null : jsonSpecialExitLocks(parsed);
+        // Mudlet's own JSON format has no fallback keys — its border and symbol
+        // colours were converted to fields above and are applied below — so
+        // any `system.*` entry in it is user data and stays put.
+        this.liftFileFallbacks = source === map;
         try {
             this.beginBinaryLoad(source);
             for (const [k, room] of Object.entries(source.rooms ?? {})) this.ingestBinaryRoom(Number(k), room);
@@ -1411,6 +1605,7 @@ export class MapStore {
             }
             this.endBinaryLoad();
         } catch { return false; }
+        finally { this.liftFileFallbacks = true; }
         // Symbol colours live in a side-table (MudletRoom has no charColor
         // field), so they can only be applied once the rooms exist.
         applyJsonSymbolColors(parsed, this);
@@ -3361,8 +3556,8 @@ export class MapStore {
     // reached through TRoomDB::get2DMapZoom) rather than on the widget, so
     // getMapZoom/setMapZoom answer even with no mapper mounted and each area
     // remembers its own. Mudlet Web already stores it per area — see
-    // {@link getAreaZoom} / {@link setAreaZoom} further down, which persist it
-    // into the area's userData so it round-trips with the map file.
+    // {@link getAreaZoom} / {@link setAreaZoom} further down, whose value
+    // round-trips with the map file.
     /** Mudlet's T2DMap::csmDefaultXYZoom / csmMinXYZoom. */
     static readonly DEFAULT_MAP_ZOOM = 20;
     static readonly MIN_MAP_ZOOM = 3;
@@ -3463,8 +3658,9 @@ export class MapStore {
     // ── Area view (zoom) ───────────────────────────────────────────────────────
 
     /**
-     * Per-area 2D-map zoom stored in the map file (area userData under
-     * {@link AREA_ZOOM_KEY}), in Mudlet units. Returns `undefined` when the area
+     * Per-area 2D-map zoom (TArea::mLast2DMapZoom), in Mudlet units — written
+     * to the file under {@link AREA_ZOOM_KEY} and lifted back out of the area's
+     * user data on load, so scripts never see the key. Returns `undefined` when the area
      * is missing or has no usable saved zoom, in which case the caller opens at
      * {@link DEFAULT_MAP_ZOOM}. Mirrors Mudlet's treatment of zoom as map data
      * rather than client config.
@@ -3475,15 +3671,13 @@ export class MapStore {
      * limit the wheel itself enforces.
      */
     getAreaZoom(id: number): number | undefined {
-        const raw = this.areas.get(id)?.userData[AREA_ZOOM_KEY];
-        if (raw == null) return undefined;
-        const z = Number(raw);
-        return Number.isFinite(z) && z >= MapStore.MIN_MAP_ZOOM ? z : undefined;
+        const area = this.areas.get(id);
+        return area ? this.areaZooms.get(area) : undefined;
     }
 
     /**
-     * Save the per-area zoom into the area's userData so it round-trips with the
-     * map file. Deliberately does NOT call {@link notify} — zoom is a view-only
+     * Set the per-area zoom; it round-trips with the map file (see
+     * {@link getAreaZoom}). Deliberately does NOT call {@link notify} — zoom is a view-only
      * datum that no renderer reads from the store snapshot, and the camera-move
      * handler calls this on every wheel tick; notifying would rebuild the whole
      * scene on each one. The value persists to IndexedDB the next time the map is
@@ -3496,7 +3690,7 @@ export class MapStore {
     setAreaZoom(id: number, zoom: number): boolean {
         const area = this.areas.get(id);
         if (!area || !Number.isFinite(zoom) || zoom < MapStore.MIN_MAP_ZOOM) return false;
-        area.userData[AREA_ZOOM_KEY] = String(zoom);
+        this.areaZooms.set(area, zoom);
         return true;
     }
 
@@ -3794,10 +3988,11 @@ export class MapStore {
      * text label to the area and returns its new id, or -1 if the area does not
      * exist or the text is empty (both are Mudlet's own refusals).
      *
-     * `fontName`, `temporary` and the outline colour have nowhere to live in the
-     * binary map format, so they are Mudlet Web-only fields on the stored label (see
-     * `MapLabel`); of the three only `temporary` is visible from Lua, because
-     * Mudlet's getMapLabel doesn't publish the other two either.
+     * `fontName`, `temporary` and the outline colour are extra fields on the
+     * stored label (see `MapLabel`); of the three only `temporary` is visible
+     * from Lua, because Mudlet's getMapLabel doesn't publish the other two
+     * either. The label's image is rendered here, as desktop renders it, so a
+     * saved map carries it (see renderLabelPixmap).
      */
     createMapLabel(
         areaId: number, text: string,
@@ -3814,18 +4009,30 @@ export class MapStore {
         const id = this.nextLabelId(areaId);
         const fontSize = numOr(opts.fontSize, 50);
         const zoom = numOr(opts.zoom, 30);
-        const [width, height] = labelBoxSize(str, fontSize, zoom);
         // Mudlet paints the outline in the *foreground* alpha, not its own.
         const fgAlpha = clampByte(numOr(opts.fgAlpha, 255));
+        const bgAlpha = clampByte(numOr(opts.bgAlpha, 50));
         const outline = opts.outline ?? { r: fgR, g: fgG, b: fgB };
+        // Desktop draws the label into a pixmap here and sizes the label from
+        // what it drew; the pixmap is what a map file carries and what
+        // desktop's mapper paints. Without a canvas the box is estimated.
+        const pixmap = renderLabelPixmap({
+            text: str, fontSize, fontName: opts.fontName || undefined,
+            fg: { r: fgR, g: fgG, b: fgB, a: fgAlpha },
+            bg: { r: bgR, g: bgG, b: bgB, a: bgAlpha },
+            outline: { ...outline, a: fgAlpha },
+        });
+        const [width, height] = pixmap
+            ? [pixmap.width / zoom, pixmap.height / zoom]
+            : labelBoxSize(str, fontSize, zoom);
         const label: MapLabel = {
             id,
             pos: [x, y, z],
             size: [width, height],
             text: str,
             fgColor: { spec: 1, alpha: fgAlpha, r: fgR, g: fgG, b: fgB },
-            bgColor: { spec: 1, alpha: clampByte(numOr(opts.bgAlpha, 50)), r: bgR, g: bgG, b: bgB },
-            pixMap: '',
+            bgColor: { spec: 1, alpha: bgAlpha, r: bgR, g: bgG, b: bgB },
+            pixMap: pixmap?.base64 ?? '',
             noScaling: opts.noScaling ?? true,
             showOnTop: opts.showOnTop ?? true,
             fontName: opts.fontName || undefined,

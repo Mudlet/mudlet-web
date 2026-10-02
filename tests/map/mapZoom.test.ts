@@ -161,12 +161,16 @@ describe('MapStore area zoom persistence', () => {
         store.setAreaZoom(areaId, 42);
         // v20 has no field for TArea::mLast2DMapZoom; Mudlet carries it in area
         // userData under this key, so the value survives a trip through Mudlet.
-        expect(store.getAreaUserData(areaId, AREA_ZOOM_KEY)).toBe('42');
+        // It is a file artefact only: scripts never see it (#285).
+        const saved = store.toMudletMapForSave();
+        expect(saved.areas[areaId].userData[AREA_ZOOM_KEY]).toBe('42');
+        expect(store.getAreaUserData(areaId, AREA_ZOOM_KEY)).toBeUndefined();
 
-        const parsed = readMapFromBuffer(Buffer.from(writeMapToBuffer(store.toMudletMapForSave())));
+        const parsed = readMapFromBuffer(Buffer.from(writeMapToBuffer(saved)));
         const reloaded = new MapStore();
         reloaded.loadFromBinary(parsed);
         expect(reloaded.getAreaZoom(areaId)).toBe(42);
+        expect(reloaded.getAreaUserData(areaId, AREA_ZOOM_KEY)).toBeUndefined();
     });
 
     it('refuses to store a zoom below the limit, and ignores one already stored', () => {
@@ -177,7 +181,13 @@ describe('MapStore area zoom persistence', () => {
         expect(store.setAreaZoom(areaId, 0.0004)).toBe(false);
         expect(store.getAreaZoom(areaId)).toBe(30);
 
-        store.setAreaUserData(areaId, AREA_ZOOM_KEY, '0.0004');
-        expect(store.getAreaZoom(areaId)).toBeUndefined();
+        // A file whose key is below the limit loads at the default, as
+        // TMap::restore does.
+        const saved = store.toMudletMapForSave();
+        saved.areas[areaId].userData[AREA_ZOOM_KEY] = '0.0004';
+        const reloaded = new MapStore();
+        reloaded.loadFromBinary(readMapFromBuffer(Buffer.from(writeMapToBuffer(saved))));
+        expect(reloaded.getAreaZoom(areaId)).toBeUndefined();
+        expect(reloaded.getAreaUserData(areaId, AREA_ZOOM_KEY)).toBeUndefined();
     });
 });

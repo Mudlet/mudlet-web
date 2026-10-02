@@ -6,6 +6,7 @@ import { MAP_VIEW_ID_RE, mapViewWindowId, migrateClientWindowHints } from './typ
 import { MapStore } from '../../map/MapStore';
 import { parseXmlMap } from '../../map/xmlMapImport';
 import { exportAreaImage } from '../../map/mapImageExport';
+import { withLabelPixmapBytes } from '../../map/labelPixmap';
 import { useAppStore, selectProfileField } from '../../storage';
 import { saveMap as saveMapToStorage, loadMap as loadMapFromStorage } from '../../storage/mapStorage';
 import { readMapFromBuffer, writeMapToBuffer } from 'mudlet-map-binary-reader';
@@ -1665,7 +1666,9 @@ export class WindowManager {
         let bytes: ArrayBuffer;
         const version = this.mapStore.getVersion();
         try {
-            const buf = writeMapToBuffer(this.mapStore.toMudletMapForSave());
+            // Base64 label pixmaps to bytes first, as the worker save does —
+            // written as strings they corrupt the file from the labels on.
+            const buf = writeMapToBuffer(withLabelPixmapBytes(this.mapStore.toMudletMapForSave()));
             // Copy into a freshly-allocated standalone ArrayBuffer — the
             // returned Buffer is a view onto a Node Buffer pool (and at the
             // type level its .buffer may be SharedArrayBuffer), neither of
