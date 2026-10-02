@@ -18,6 +18,7 @@ import VFS_LUA from './VFS.lua?raw';
 import LUAGLOBAL from './LuaGlobal.lua?raw';
 import BRIDGE_LUA from './Bridge.lua?raw';
 import EXEC_LUA from './Exec.lua?raw';
+import WIDE_INTEGERS_LUA from './WideIntegers.lua?raw';
 import LUA_GLOBAL_SETUP from './LuaGlobalSetup.lua?raw';
 import LUASQL_LUA from './Luasql.lua?raw';
 import {encodeLuaBytes, encodeRowsToLuaSource} from './sqlRowEncoder';
@@ -2298,6 +2299,10 @@ export class LuaRuntime implements IScriptingRuntime {
         });
 
         this.installSafeFunctionTostring();
+        // 64-bit integer semantics for string.format, tonumber and table.insert
+        // (wasm32's lua_Integer and long are 32 bits). First of the
+        // Lua chunks, so nothing captures an unwrapped original as an upvalue.
+        this.lua.doStringSync(WIDE_INTEGERS_LUA);
 
         // Bootstrap chunks run sync — none of them yield. setupRex needs an
         // await for one-time PCRE wasm init; sqliteReady gates the SQL bridge

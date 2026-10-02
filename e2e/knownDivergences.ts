@@ -442,4 +442,23 @@ export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
             + 'installModule/reinstall cannot read.',
         issue: '#279',
     },
+    {
+        api: 'string.sub / string.byte with a position of 2^31 or more',
+        behaviour:
+            'Desktop: ("abcdef"):sub(3, 2^33) is "cdef", ("abcdef"):sub(2^31) is "", and ("abc"):byte(1, 2^31) '
+            + 'returns 97 98 99. Mudlet Web: "", the whole string, and nothing — the position narrows to INT_MIN '
+            + 'before the C code sees it. Every position inside the 32-bit range, negative ones included, '
+            + 'behaves exactly as on desktop.',
+        reason:
+            'This client runs Lua 5.1 compiled to wasm32, where lua_Integer is 32 bits; desktop builds it for a '
+            + '64-bit host. The wasm cannot be rebuilt from here, so the only fix is a Lua wrapper in front of '
+            + 'each function — and it was written and measured: it made both of these, among the hottest '
+            + 'functions any script calls, about five times slower on every call (sub ~36ns -> ~190ns), to '
+            + 'correct positions no real script uses, since a string two billion bytes long cannot exist in the '
+            + 'first place. string.format, tonumber and table.insert — where the large values are real (gold, '
+            + 'XP, epoch milliseconds) or the narrowing froze the tab — ARE corrected, by '
+            + 'src/scripting/lua/WideIntegers.lua; tests/scripting/wideIntegers.test.ts pins those and this '
+            + 'decision.',
+        issue: '#275',
+    },
 ];
