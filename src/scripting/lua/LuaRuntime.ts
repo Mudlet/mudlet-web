@@ -31,6 +31,7 @@ import {getSqliteClient, sqliteReady} from '../../db/sqliteClient';
 import {QT_CURSOR_NAME_TO_INT, QT_CURSOR_TO_CSS} from '../../ui/labels/cursorShapes';
 import {qtKeyToDomCode, qtModifiersToList, domCodeToQtKey, listToQtModifiers} from '../../mud/keybindings/qtKeys';
 import xterm256 from '../../mud/text/xterm256';
+import {cechoFastPaletteLua} from '../../mud/text/colorParsers';
 import {HttpService} from '../http/HttpService';
 import {normalizeUserUrl, userUrlInvalidReason} from '../http/userUrl';
 import {TtsManager} from '../../ui/tts/TtsManager';
@@ -2583,6 +2584,24 @@ end`,
   local fast = __mudletFastColorEcho
   local orig_xEcho = xEcho
   local styleKind = { Decimal = 'decho', Color = 'cecho', Hex = 'hecho' }
+  -- The palette the native cecho resolves names with. Mudlet's xEcho reads the
+  -- live color_table per tag, so any tag whose color_table entry no longer
+  -- matches it (a script set color_table.red = {...}) goes the Lua way.
+  local builtin = ${cechoFastPaletteLua()}
+  local gmatch = string.gmatch
+  local function paletteIntact(str)
+    local ct = color_table
+    if type(ct) ~= 'table' then return false end
+    for name in gmatch(str, '<([%w_]+)>') do
+      if name ~= 'r' and name ~= 'reset' then
+        local c, b = ct[name], builtin[name]
+        if not (c and b and c[1] == b[1] and c[2] == b[2] and c[3] == b[3]) then
+          return false
+        end
+      end
+    end
+    return true
+  end
   function xEcho(style, func, ...)
     if func == 'echo' then
       local kind = styleKind[style]
@@ -2595,7 +2614,7 @@ end`,
         elseif n >= 1 and type(a) == 'string' then
           win, str = 'main', a
         end
-        if str ~= nil and fast(kind, win, str) then return end
+        if str ~= nil and (kind ~= 'cecho' or paletteIntact(str)) and fast(kind, win, str) then return end
       end
     end
     return orig_xEcho(style, func, ...)

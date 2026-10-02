@@ -2755,6 +2755,10 @@ export class ScriptingAPI {
         // through the append path, so it prints the phrase as ordinary text —
         // Mudlet draws the same line, and UI_spec asserts it.
         if (!this.echoOnMatchedLine && this.injectOsc8Docs(text)) return;
+        // TConsole::echo drops every \r before writing to the main console
+        // (\r\n becomes \n, a lone \r vanishes). Only main: a miniconsole or
+        // user window is printed through TConsole::print, which keeps it.
+        if (text.includes('\r')) text = text.replace(/\r/g, '');
         this.echoMain(text);
         this.drainMain();
     }
@@ -2770,13 +2774,13 @@ export class ScriptingAPI {
      * and the "add a clickable link after the line" pattern `echoLink` and
      * `echoPopup` are used for. The caller drains.
      */
-    private echoMain(text: string): void {
+    private echoMain(text: string, state?: FormatStateSnapshot): void {
         if (this.echoOnMatchedLine) {
             const buf = this.mainConsole.getBuffer();
             if (buf) {
                 const nl = text.indexOf('\n');
                 const head = nl < 0 ? text : text.slice(0, nl);
-                if (head) buf.insert(buf.text.length, head, this.mainConsole.format.toSnapshot());
+                if (head) buf.insert(buf.text.length, head, state ?? this.mainConsole.format.toSnapshot());
                 if (nl < 0) return;          // stayed on the matched line
                 this.echoOnMatchedLine = false;
                 text = text.slice(nl);        // remainder leads with the advancing \n
@@ -2785,15 +2789,29 @@ export class ScriptingAPI {
             }
         }
         const before = this.mainConsole.getLineCount();
-        this.mainConsole.echo(text);
+        this.mainConsole.echoText(text, state);
         if (this.triggerLineDepth > 0) this.triggerEchoLines += this.mainConsole.getLineCount() - before;
     }
 
     /** Echo into `con` — through {@link echoMain} when it is the main console,
-     *  so a link or popup echoed from a trigger lands on the matched line. */
-    private echoTo(con: Console, text: string): void {
-        if (con === this.mainConsole) this.echoMain(text);
-        else con.echo(text);
+     *  so a link or popup echoed from a trigger lands on the matched line.
+     *  `state`, when given, is written instead of the console's pen. */
+    private echoTo(con: Console, text: string, state?: FormatStateSnapshot): void {
+        if (con === this.mainConsole) this.echoMain(text, state);
+        else con.echoText(text, state);
+    }
+
+    /**
+     * The format a link or popup gets when the caller did not ask for the
+     * current one — Mudlet's `standardLinkFormat`: the link blue, the console's
+     * own background and underline, and nothing else. It replaces the pen
+     * outright rather than layering onto it, so bold, italics, a background,
+     * strikeout or reverse set beforehand do not carry into the link (and a
+     * `cechoLink` with `<b>` inside stays one plain link run, since xEcho
+     * passes no format flag to the echoLink calls it makes).
+     */
+    private standardLinkState(win: string | undefined, hyperlink: FormatHyperlink): FormatStateSnapshot {
+        return { foreground: this.linkColor(win), underline: true, hyperlink };
     }
 
     /**
@@ -2826,7 +2844,7 @@ export class ScriptingAPI {
         if (this.injectOsc8Docs(text)) return;
         const con = this.penConsole(win);
         if (!con) return;
-        con.echo(text);
+        con.echoText(text);
         this.drainWindowConsole(win, con);
     }
 
@@ -2845,7 +2863,12 @@ export class ScriptingAPI {
      *    line via a raw, non-ANSI insert the ANSI path can't reproduce),
      *  - any input the per-kind guard declines ({@link dechoToAnsiFast} /
      *    {@link cechoToAnsiFast} / {@link hechoToAnsiFast}) — style tags,
-     *    combined fg/bg, backgrounds, unknown color names, unmodeled tokens.
+     *    combined fg/bg, backgrounds, unknown color names, unmodeled tokens,
+     *  - an ESC anywhere in the text (Mudlet stores it as text; the ANSI this
+     *    builds would decode it).
+     * The Lua wrapper also keeps a cecho off this path while any of its tags
+     * names a `color_table` entry a script has changed (see LuaRuntime's
+     * installFastColorEcho).
      */
     fastColorEcho(kind: string, win: string, str: string): boolean {
         if (win !== 'main' && this.labels.has(win)) return false;
@@ -2854,6 +2877,13 @@ export class ScriptingAPI {
         // — deselect, resetFormat, the pens, echo — misses in Mudlet, so the
         // whole colour echo is a no-op rather than the birth of a window.
         if (!this.consoleExists(win)) return true;
+        // The string is turned into ANSI below, so an ESC already in it would be
+        // decoded as a sequence of its own. Mudlet keeps it as text (xEcho's
+        // echo() never decodes escapes), which the per-segment Lua path does too.
+        if (str.includes('\x1b')) return false;
+        // xEcho echoes each segment through echo("main", …), and TConsole::echo
+        // drops every \r on the way into the main console.
+        if (win === 'main' && str.includes('\r')) str = str.replace(/\r/g, '');
 
         let ansi: string | null = null;
         if (kind === 'decho') ansi = dechoToAnsiFast(str);
@@ -2895,20 +2925,13 @@ export class ScriptingAPI {
         };
         const con = this.penConsole(win);
         if (!con) return;
-        con.format.hyperlink = hyperlink;
         if (!useCurrentFormat) {
-            // Mudlet's TConsole::echoLink default: blue + underline.
-            const prevFg = con.format.foreground;
-            const prevUnderline = con.format.underline;
-            con.format.foreground = this.linkColor(win);
-            con.format.underline = true;
-            this.echoTo(con, text);
-            con.format.foreground = prevFg;
-            con.format.underline = prevUnderline;
+            this.echoTo(con, text, this.standardLinkState(win, hyperlink));
         } else {
+            con.format.hyperlink = hyperlink;
             this.echoTo(con, text);
+            con.format.hyperlink = undefined;
         }
-        con.format.hyperlink = undefined;
         if (!win || win === 'main') {
             this.drainMain();
         } else {
@@ -3150,20 +3173,15 @@ export class ScriptingAPI {
     echoPopup(text: string, cmds: string[], hints: string[], win?: string, useCurrentFormat = false): void {
         const con = this.penConsole(win);
         if (!con) return;
-        con.format.hyperlink = this.buildPopupHyperlink(cmds, hints);
+        const hyperlink = this.buildPopupHyperlink(cmds, hints);
         if (!useCurrentFormat) {
-            // Same default as echoLink: Mudlet renders popup links blue + underline.
-            const prevFg = con.format.foreground;
-            const prevUnderline = con.format.underline;
-            con.format.foreground = this.linkColor(win);
-            con.format.underline = true;
-            this.echoTo(con, text);
-            con.format.foreground = prevFg;
-            con.format.underline = prevUnderline;
+            // Same default as echoLink: Mudlet's standard link format.
+            this.echoTo(con, text, this.standardLinkState(win, hyperlink));
         } else {
+            con.format.hyperlink = hyperlink;
             this.echoTo(con, text);
+            con.format.hyperlink = undefined;
         }
-        con.format.hyperlink = undefined;
         if (!win || win === 'main') {
             this.drainMain();
         } else {
@@ -3183,13 +3201,11 @@ export class ScriptingAPI {
         const con = this.getConsole(win);
         const buf = con?.getBuffer();
         if (con && buf) {
-            const state: FormatStateSnapshot = con.format.toSnapshot();
-            state.hyperlink = this.buildPopupHyperlink(cmds, hints);
-            if (!useCurrentFormat) {
-                // Same default as insertLink: blue foreground + underline.
-                state.foreground = this.linkColor(win);
-                state.underline = true;
-            }
+            const hyperlink = this.buildPopupHyperlink(cmds, hints);
+            // Same default as insertLink: Mudlet's standard link format.
+            const state: FormatStateSnapshot = useCurrentFormat
+                ? { ...con.format.toSnapshot(), hyperlink }
+                : this.standardLinkState(win, hyperlink);
             this.insertLinkSpan(con, buf, text, state, win,
                 () => this.echoPopup(text, cmds, hints, win, useCurrentFormat));
             return;
@@ -4634,7 +4650,7 @@ export class ScriptingAPI {
         }
         // No current line: degrade to an echo so the text isn't lost.
         if (isMain) {
-            this.mainConsole.echo(text);
+            this.mainConsole.echoText(text);
             this.drainMain();
             return true;
         }
@@ -4646,9 +4662,9 @@ export class ScriptingAPI {
     /**
      * Mudlet `insertLink([window,] text, cmd, hint, [useCurrentFormat])`.
      * Like `insertText` but the inserted span is a clickable link bound to
-     * `cmd`. With `useCurrentFormat=false` (the default) the link inherits
-     * Mudlet's built-in style — blue foreground + underline — layered on top
-     * of the current pen state. If no buffer is available (empty console,
+     * `cmd`. With `useCurrentFormat=false` (the default) the link gets
+     * Mudlet's standard link format — link blue + underline, nothing of the
+     * current pen ({@link standardLinkState}). If no buffer is available (empty console,
      * sub-window without backing buffer) the call degrades to `echoLink` so
      * the text isn't lost.
      */
@@ -4657,15 +4673,13 @@ export class ScriptingAPI {
         const con = this.getConsole(windowName);
         const buf = con?.getBuffer();
         if (con && buf) {
-            const state: FormatStateSnapshot = con.format.toSnapshot();
-            state.hyperlink = {
+            const hyperlink: FormatHyperlink = {
                 onClick: () => { this.host.runLinkCode(cmd); },
                 title: tooltip || undefined,
             };
-            if (!useCurrentFormat) {
-                state.foreground = this.linkColor(windowName);
-                state.underline = true;
-            }
+            const state: FormatStateSnapshot = useCurrentFormat
+                ? { ...con.format.toSnapshot(), hyperlink }
+                : this.standardLinkState(windowName, hyperlink);
             // A newline in the inserted text BREAKS the line, as it does for
             // insertText — TConsole::insertLink runs the same wrapLine() over
             // the result. Writing straight into the buffer skipped that, so the

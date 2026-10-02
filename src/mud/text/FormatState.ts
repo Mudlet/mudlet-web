@@ -961,6 +961,16 @@ export class AnsiAwareBuffer {
         }
     }
 
+    /** A buffer holding `text` exactly as given — every character, an ESC
+     *  included, stored as text in `state`. The string constructor decodes
+     *  escape sequences instead; this is for text that must not be decoded
+     *  (a script's echo — see Console.echoText). */
+    static literal(text: string, state?: FormatStateSnapshot): AnsiAwareBuffer {
+        const buf = new AnsiAwareBuffer();
+        if (text) buf.segments = [{ text, state: isDefaultState(state) ? undefined : cloneState(state) }];
+        return buf;
+    }
+
     get deleted(): boolean {
         return this._deleted;
     }

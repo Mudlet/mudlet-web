@@ -1277,9 +1277,11 @@ describe('getTextFormat bold on SGR-coloured text (issue #239)', () => {
   afterEach(() => env.dispose());
 
   // Mudlet's TBuffer writes Bold as `mIsDefaultColor ? mBold : false`: SGR 1 on
-  // a colour only brightens it.
+  // a colour only brightens it. Seeded as a decoded game line: an echo() keeps
+  // an ESC as text rather than decoding it (mudlet-web#289).
+  const gameLine = (ansi: string) => env.api.beginLine(new AnsiAwareBuffer(ansi));
   it('reports bold false for ESC[1;32m and true for bold on the default colour', () => {
-    env.run('echo("\\27[1;32mXX\\27[0m \\27[1mYY\\27[0m")');
+    gameLine('\x1b[1;32mXX\x1b[0m \x1b[1mYY\x1b[0m');
     expect(env.run('selectString("XX", 1) return getTextFormat().bold')).toBe(false);
     expect(env.run('selectString("YY", 1) return getTextFormat().bold')).toBe(true);
   });
@@ -1287,7 +1289,7 @@ describe('getTextFormat bold on SGR-coloured text (issue #239)', () => {
   // Only the sixteen ANSI colours clear mIsDefaultColor: a 24-bit or 256-colour
   // foreground keeps bold text bold (Telnet_spec pins the 24-bit case).
   it('keeps bold on a 24-bit or 256-colour foreground', () => {
-    env.run('echo("\\27[1;38;2;120;134;94mTT\\27[0m \\27[1;38;5;196mEE\\27[0m")');
+    gameLine('\x1b[1;38;2;120;134;94mTT\x1b[0m \x1b[1;38;5;196mEE\x1b[0m');
     expect(env.run('selectString("TT", 1) return getTextFormat().bold')).toBe(true);
     expect(env.run('selectString("EE", 1) return getTextFormat().bold')).toBe(true);
   });
@@ -1298,7 +1300,7 @@ describe('getTextFormat bold on SGR-coloured text (issue #239)', () => {
   });
 
   it('still brightens a colour that arrives after the bold', () => {
-    env.run('echo("\\27[1mA\\27[31mB\\27[0m")');
+    gameLine('\x1b[1mA\x1b[31mB\x1b[0m');
     expect(env.run('selectString("B", 1) return getTextFormat().bold')).toBe(false);
     expect(env.run('selectString("B", 1) return getTextFormat().foreground[1]')).toBe(255);
   });

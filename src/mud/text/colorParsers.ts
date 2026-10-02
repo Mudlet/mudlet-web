@@ -157,6 +157,23 @@ export function cechoToAnsiFast(str: string): string | null {
 }
 
 /**
+ * The palette {@link cechoToAnsiFast} resolves names against, as a Lua table
+ * constructor (`{["red"]={255,0,0},…}`). Mudlet's cecho reads the live
+ * `color_table` for every tag, so a script that sets `color_table.red` changes
+ * what `<red>` draws. The fast-path wrapper in LuaRuntime compares each tag's
+ * `color_table` entry with this table and hands the call back to the Lua
+ * `xEcho` whenever they disagree — a per-tag lookup, and only overridden
+ * names pay for the slow path.
+ */
+export function cechoFastPaletteLua(): string {
+    const parts: string[] = [];
+    for (const [name, c] of Object.entries(MUDLET_COLORS)) {
+        parts.push(`[${JSON.stringify(name)}]={${c[0]},${c[1]},${c[2]}}`);
+    }
+    return `{${parts.join(',')}}`;
+}
+
+/**
  * Fast-path for `hecho` — see {@link dechoToAnsiFast}. Handles ONLY a plain
  * foreground `#RRGGBB` and the `#r` reset. Falls back to Lua `xEcho` for
  * everything {@link parseHecho} can't reproduce as Mudlet does:

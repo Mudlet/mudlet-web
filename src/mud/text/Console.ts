@@ -154,7 +154,29 @@ export class Console {
 
     // ── Output ────────────────────────────────────────────────────────────────
 
+    /** Append `text`, interpreting any ANSI escape sequences in it against the
+     *  current pen — the path for text that came from a server (feedTriggers'
+     *  carried partial) or that Mudlet Web built as ANSI itself (the colour-echo
+     *  fast path). A script's own `echo` goes through {@link echoText}. */
     echo(text: string): void {
+        this.write(text, false);
+    }
+
+    /**
+     * Append `text` verbatim in the current pen. Mudlet's echo family
+     * (`TConsoleModel::print` → `TBuffer::append`) stores every character it is
+     * given, an ESC byte included — only the network path decodes escape
+     * sequences — so `echo("A\27[31mB")` keeps the sequence as text and the pen
+     * colour unchanged.
+     */
+    echoText(text: string, state?: FormatStateSnapshot): void {
+        this.write(text, true, state);
+    }
+
+    /** `state` (literal writes only) replaces the pen for this one write and
+     *  leaves the pen itself untouched — how a link gets Mudlet's standard
+     *  link format without disturbing the format current on the console. */
+    private write(text: string, literal: boolean, state?: FormatStateSnapshot): void {
         if (this.consumeLeadingNewline) {
             this.consumeLeadingNewline = false;
             if (text.startsWith('\n') && this.partial.text.length === 0) {
@@ -163,7 +185,9 @@ export class Console {
             }
         }
         this.reopenLastLine();
-        this.partial.appendBuffer(new AnsiAwareBuffer(text, this.format.toSnapshot()));
+        this.partial.appendBuffer(literal
+            ? AnsiAwareBuffer.literal(text, state ?? this.format.toSnapshot())
+            : new AnsiAwareBuffer(text, this.format.toSnapshot()));
         // Anything written gives the buffer a current line back — see hasOpenLine.
         this.hasOpenLine = true;
 
