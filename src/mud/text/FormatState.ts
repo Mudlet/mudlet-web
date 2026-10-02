@@ -2,6 +2,7 @@ import { colorCodes, setPaletteColor, resetPaletteColor, resetAllPaletteColors, 
 import mudletColorsJson from "./mudletColors.json";
 import {
     scanEscape,
+    cursorForwardCount,
     parseOsc8Payload,
     classifyHyperlinkUri,
     parseOscColorPalette,
@@ -402,6 +403,19 @@ export class FormatState {
         return snapshot;
     }
 
+    /** The attributes the spaces a `CSI n C` (cursor forward) stands for are
+     *  written with: the current ones, with the foreground set to the
+     *  background so the gap stays transparent — an underline or strike-out in
+     *  force does not show across it (TBuffer's
+     *  `TChar(mBackGroundColor, mBackGroundColor, computeCurrentAttributeFlags())`).
+     *  A default background leaves the foreground default too: the parser has
+     *  no profile colours to resolve it to. */
+    toCursorForwardSnapshot(): FormatStateSnapshot {
+        const snapshot = this.toCellSnapshot();
+        snapshot.foreground = cloneColor(this.background);
+        return snapshot;
+    }
+
     toSnapshot(): FormatStateSnapshot {
         return {
             foreground: cloneColor(this.foreground),
@@ -654,10 +668,12 @@ export class FormatState {
             this.italic = style === 1 || style === 2 ? true : undefined;
             return;
         }
-        if (group[0] !== 4) {
-            this.applySgr(group);
-            return;
-        }
+        // Any other parameter with sub-parameters — SGR 58 / 59 (underline
+        // colour, which Mudlet does not draw), `1:3`, `0:1` — is ignored whole,
+        // as TBuffer::decodeSGR does. Reading the pieces as codes of their own
+        // turned `58:5:3` into italics and blink, and let a `0` among them reset
+        // everything set earlier in the same sequence.
+        if (group[0] !== 4) return;
         // `4:n` picks the underline's style; every style is exclusive, so each
         // replaces the last rather than adding to it (Mudlet's decodeSGR clears
         // the three sibling flags on every branch). Anything outside 0..5 is a
@@ -852,6 +868,19 @@ function parseAnsiSegments(
                 if (sgr) {
                     flush();
                     state.applySgr(sgr);
+                }
+            } else if (esc.kind === "csi" && esc.finalByte === "C") {
+                // CUF: n spaces in the background colour (see
+                // cursorForwardCount), so column-aligned output keeps its
+                // columns. An unreadable or zero count is consumed, nothing more.
+                const spaces = cursorForwardCount(esc.params);
+                if (spaces > 0) {
+                    flush();
+                    const snapshot = state.toCursorForwardSnapshot();
+                    segments.push({
+                        text: " ".repeat(spaces),
+                        state: isDefaultState(snapshot) ? undefined : snapshot,
+                    });
                 }
             } else if (esc.kind === "osc" && esc.oscPayload !== undefined) {
                 const link = parseOsc8Payload(esc.oscPayload);

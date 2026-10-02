@@ -480,4 +480,20 @@ export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
             + 'the same way first, which reorders the profile-open bootstrap, held self-removals and UI installs.',
         issue: '#282',
     },
+    {
+        api: 'CSI n C (cursor forward) on the default background — getFgColor / getTextFormat',
+        behaviour:
+            'Both clients turn `ESC[nC` into n spaces painted with the foreground set to the background. When '
+            + 'the background is the profile default, desktop resolves that to the profile\'s background colour '
+            + '(getFgColor on the gap reports 0,0,0 on a stock profile, and an underline or strike-out in force '
+            + 'is invisible across it); Mudlet Web leaves the foreground default (getFgColor reports the profile '
+            + 'foreground, and the decoration shows). With any explicit background the two agree.',
+        reason:
+            'Desktop resolves colours to RGB as it decodes, from the Host. Mudlet Web\'s ANSI and MXP parsers '
+            + 'keep a default colour as "default" so a later change of the profile colours repaints old output, '
+            + 'and they run with no access to the profile — there is no colour value that means "the default '
+            + 'background" to give the foreground. The gap is spaces, so only a decoration drawn through it and '
+            + 'a script reading its colour back can tell.',
+        issue: '#272',
+    },
 ];

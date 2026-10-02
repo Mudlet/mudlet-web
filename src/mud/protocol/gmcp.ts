@@ -47,8 +47,19 @@ export const stripTelnetSequences = (data: string, handler: TelnetOptionHandler)
     // IAC (\xFF) left is a lone trailing one — an option/command split across
     // frames — so drop it. (We no longer blanket-strip \xF9, which the old
     // regex mis-handled for GA and which is a legitimate text byte otherwise.)
+    //
+    // A NUL goes too. cTelnet::processSocketData drops `\0` from the text
+    // stream outside a subnegotiation (it is the padding half of telnet's
+    // `CR NUL`), so it never reaches the buffer; kept, it cut `line`,
+    // getCurrentLine() and getLines() short at the NUL and shifted every
+    // position after it (mudlet-web#272). Subnegotiation payloads were
+    // already handed to `handler` above, so a NUL inside one is untouched.
+    // (Two single-character passes, the second only when there is a NUL: V8
+    // runs a one-character global replace as a plain search, where a character
+    // class costs several times as much on every byte of every frame.)
     const re = data.includes(GMCP_IAC + GMCP_SE) ? TELNET_OPTION_REGEX : TELNET_OPTION_REGEX_NO_SB;
-    return data.replace(re, handler).replace(/\xFF/g, "");
+    const text = data.replace(re, handler).replace(/\xFF/g, "");
+    return text.includes("\0") ? text.replace(/\0/g, "") : text;
 };
 
 const parseGmcpPayload = (

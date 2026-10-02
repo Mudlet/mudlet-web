@@ -20,7 +20,7 @@
  * drag the letter ratio below the prose threshold.
  */
 
-import { scanEscape } from './ansiEscapes';
+import { cursorForwardCount, scanEscape } from './ansiEscapes';
 
 /** How far below the configured column a line may end and still count as
  *  ending *at* it. The game breaks at the last space that fits, so a wrapped
@@ -81,6 +81,8 @@ export function visibleText(line: string): string {
             // An incomplete escape runs to the end of the line — nothing visible
             // follows it, so stopping here is the same as skipping it.
             i = scan.end;
+            // A cursor-forward is spaces in the line Mudlet measures.
+            if (scan.kind === 'csi' && scan.finalByte === 'C') out += ' '.repeat(cursorForwardCount(scan.params));
             continue;
         }
         out += ch;

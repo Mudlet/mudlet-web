@@ -1,4 +1,4 @@
-import { scanEscape } from "../text/ansiEscapes";
+import { cursorForwardCount, scanEscape } from "../text/ansiEscapes";
 import {
     SERVER_WRAP_FLUSH_DELAY_MS,
     SERVER_WRAP_MAX_JOINED_LENGTH,
@@ -398,6 +398,14 @@ export class LineAssembler {
         this.pendingTailTimer = window.setTimeout(() => {
             this.pendingTailTimer = null;
             if (this.pendingLineTail.length === 0) return;
+            // A fragment with nothing to show — colour changes and other
+            // escapes only — is not a line. Mudlet's timer posting ('\r')
+            // applies its escapes and then drops the empty line it was left
+            // with (TBuffer::commitLineData: "empty timer posting"), so the
+            // colours carry on into the next text. Holding the fragment
+            // in front of that text does the same; flushing it made an empty
+            // line that triggers fired on and that shifted getLines().
+            if (!hasVisibleText(this.pendingLineTail)) return;
             this.flush(Date.now());
             this.callbacks.onIdleFlush();
         }, this.promptTimeoutMs);
@@ -451,4 +459,19 @@ function incompleteEscapeTailStart(s: string): number {
     const esc = s.lastIndexOf("\x1b");
     if (esc === -1) return -1;
     return scanEscape(s, esc).kind === "incomplete" ? esc : -1;
+}
+
+/**
+ * Whether `s` holds anything besides escape sequences — anything that would
+ * put a character in the line. A cursor-forward counts: it stands for spaces.
+ */
+function hasVisibleText(s: string): boolean {
+    let i = 0;
+    while (i < s.length) {
+        if (s.charCodeAt(i) !== 0x1b) return true;
+        const scan = scanEscape(s, i);
+        if (scan.kind === "csi" && scan.finalByte === "C" && cursorForwardCount(scan.params) > 0) return true;
+        i = scan.end;
+    }
+    return false;
 }

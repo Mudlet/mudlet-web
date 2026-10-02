@@ -144,6 +144,36 @@ export function scanEscape(text: string, start: number): EscapeScan {
     return { kind: "esc", end: start + 1 };
 }
 
+/**
+ * How many spaces a `CSI n C` (CUF, cursor forward) stands for — the one cursor
+ * movement Mudlet emulates (TBuffer::translateToPlainText's 'C' case, added for
+ * games that column-align with it). The parameter has to read whole as a
+ * positive integer (`QByteArray::toInt`): `ESC[C`, `ESC[0C` and anything like
+ * `ESC[1;2C` stand for nothing and return 0.
+ */
+export function cursorForwardCount(params: string | undefined): number {
+    if (!params) return 0;
+    let n = 0;
+    for (let i = 0; i < params.length; i++) {
+        const d = params.charCodeAt(i) - 0x30;
+        if (d < 0 || d > 9) return 0;
+        n = n * 10 + d;
+    }
+    // Past INT_MAX toInt fails, and Mudlet ignores the sequence.
+    if (n > 0x7fffffff) return 0;
+    // Deliberately not desktop: Mudlet appends however many spaces it is
+    // asked for, so `ESC[999999999C` tries to allocate a billion cells. Here
+    // " ".repeat() would throw RangeError inside the incoming-text parser and
+    // wedge output for the session, so the count is clamped. 1000 because CUF
+    // exists to align columns on one screen line: it is twice the widest
+    // server wrap Mudlet accepts (500) and ten times the default console wrap
+    // (100), so no real layout reaches it, and a line it pads stays small.
+    return Math.min(n, MAX_CURSOR_FORWARD);
+}
+
+/** The most spaces one `CSI n C` stands for. See {@link cursorForwardCount}. */
+export const MAX_CURSOR_FORWARD = 1000;
+
 // ── OSC 8 hyperlink protocol ──────────────────────────────────────────────
 // https://wiki.mudlet.org/w/Manual:Supported_Protocols#OSC_8:_Hyperlink_Protocol
 // and https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda

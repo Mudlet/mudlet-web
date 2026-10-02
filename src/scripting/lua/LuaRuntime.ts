@@ -1931,6 +1931,17 @@ export class LuaRuntime implements IScriptingRuntime {
             // Mudlet names a trigger made by tempTrigger() and friends after its
             // id, unless the call carried a name of its own — which is what the
             // runaway report has to print.
+            //
+            // An empty pattern is not registered with the engine at all: Mudlet
+            // compacts blank patterns out as it compiles a trigger (only a
+            // prompt pattern may be blank — TTrigger::setRegexCodeList), so
+            // `tempTrigger("")` and friends make a trigger, return its id, and
+            // never fire. Here '' would match every line. The id stays live
+            // for killTrigger/enableTrigger exactly as for any other.
+            if (pattern === '' && kind !== 'prompt') {
+                this.tempIds.set(id, { kill, type: 'trigger', enabled: true, name });
+                return id;
+            }
             unsub = this.api.triggers.addTemp(pattern, (matches, spans, namedGroups) => {
                 if (killed || this.tempIds.get(id)?.enabled === false) return;
                 const prevSpans = this.currentCaptureSpans;

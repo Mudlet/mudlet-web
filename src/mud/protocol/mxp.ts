@@ -21,10 +21,10 @@
 //    parsed-and-discarded: the tag is consumed so it never renders literally,
 //    while any enclosed text still renders inline.
 
-import { FormatState, applyOscPaletteOps } from "../text/FormatState";
+import { FormatState, applyOscPaletteOps, parseSgrCodes } from "../text/FormatState";
 import type { BufferSegment, FormatColor, FormatStateSnapshot, FormatHyperlink } from "../text/FormatState";
 import { mxpColor } from "../text/colorParsers";
-import { scanEscape, parseOsc8Payload, classifyHyperlinkUri, parseOscColorPalette } from "../text/ansiEscapes";
+import { scanEscape, cursorForwardCount, parseOsc8Payload, classifyHyperlinkUri, parseOscColorPalette } from "../text/ansiEscapes";
 import { parseOsc8Uri, HyperlinkPresetRegistry } from "../text/hyperlinkConfig";
 import type { MspCommand, MspKind } from "./msp";
 import { CLIENT_NAME, CLIENT_VERSION } from "../../version";
@@ -575,7 +575,17 @@ export class MxpParser {
         if (!markup) for (const tag of this.stack) if (tag.link) tag.link.content += s;
     }
 
-    private flushRun(): void {
+    /** `CSI n C` (cursor forward): n spaces painted in the background colour,
+     *  as TBuffer writes them (see cursorForwardCount). They go straight into
+     *  the line, past any open link's content, the way Mudlet appends them to
+     *  mMudLine without the MXP handlers seeing them. */
+    private appendCursorForward(count: number): void {
+        this.flushRun();
+        this.appendText(" ".repeat(count), true);
+        this.flushRun(true);
+    }
+
+    private flushRun(transparent = false): void {
         if (this.run.length === 0) return;
         const state = this.fmt.toSnapshot();
         // An open MXP <COLOR>/<FONT> colour wins over the ANSI pen (Mudlet
@@ -586,6 +596,7 @@ export class MxpParser {
             if (override.fg) state.foreground = override.fg;
             if (override.bg) state.background = override.bg;
         }
+        if (transparent) state.foreground = state.background ? { ...state.background } : undefined;
         // Route the run to the active <DEST> frame, or to the main line.
         if (this.destName === null) this.out.push({ text: this.run, state });
         else this.destOut.push({ text: this.run, state });
@@ -608,8 +619,16 @@ export class MxpParser {
                     return;
                 }
                 if (esc.kind === "csi" && esc.finalByte === "m") {
-                    this.flushRun();
-                    this.fmt.applySgr(parseSgrParams(esc.params ?? ""));
+                    // The same reading as the plain ANSI path, sub-parameters
+                    // and all — null when no parameter could be read at all.
+                    const sgr = parseSgrCodes(esc.params ?? "");
+                    if (sgr) {
+                        this.flushRun();
+                        this.fmt.applySgr(sgr);
+                    }
+                } else if (esc.kind === "csi" && esc.finalByte === "C") {
+                    const spaces = cursorForwardCount(esc.params);
+                    if (spaces > 0) this.appendCursorForward(spaces);
                 } else if (esc.kind === "csi" && esc.finalByte === "z") {
                     // Consumed either way — it is never text — but only obeyed
                     // when the game sent it. See parseLine's `fromServer`.
@@ -1552,14 +1571,6 @@ function findTagEnd(text: string, start: number): number {
         }
     }
     return -1;
-}
-
-function parseSgrParams(s: string): number[] {
-    if (s === "") return [0];
-    return s.split(";").map(p => {
-        const n = parseInt(p, 10);
-        return Number.isFinite(n) ? n : 0;
-    });
 }
 
 function firstWhitespace(s: string): number {
