@@ -100,8 +100,8 @@ export class Console {
     // Persistent column position on the rendered-history cursor line. Tracked
     // independently of the active trigger lineBuffer (ScriptingAPI owns that).
     // moveUp/moveDown reset to 0 unless keepHorizontal is set; moveCursor/
-    // moveTo set it explicitly. getCursorColumn clamps lazily to the current
-    // line's length, so moves into shorter lines silently snap to end.
+    // moveTo set it explicitly. Like Mudlet's mUserCursor it may sit past the
+    // end of the line; insertText pads out to it.
     private cursorCol = 0;
     private _maxLines = DEFAULT_CONSOLE_BUFFER_SIZE;
     // Mudlet's setConsoleBufferSize takes a "size of batch deletion" — how many
@@ -466,8 +466,15 @@ export class Console {
         // would otherwise spend unbounded memory and layout time on a single
         // line nobody can read anyway.
         if (text.length > MAX_CHARACTERS_PER_ECHO) text = text.slice(0, MAX_CHARACTERS_PER_ECHO);
-        const col = Math.max(0, Math.min(this.getCursorColumn(), cur.length));
-        cur.insert(col, text, state);
+        // A column past the end of the line pads the gap with spaces so the text
+        // lands at that column, as TBuffer::insertInLine expands the line first.
+        const col = this.getCursorColumn();
+        if (col > cur.length) {
+            text = ' '.repeat(col - cur.length) + text;
+            cur.insert(cur.length, text, state);
+        } else {
+            cur.insert(col, text, state);
+        }
         if (!text.includes('\n')) {
             this.cursorCol = col;
             return true;
@@ -495,8 +502,7 @@ export class Console {
     /**
      * Move the cursor up `lines` rows. When `keepHorizontal` is false (the
      * default, matching Mudlet) the column resets to 0; when true the column
-     * is preserved across the move and lazily clamps to the destination
-     * line's length on read via `getCursorColumn`.
+     * is preserved across the move, even past the end of a shorter line.
      */
     moveUp(lines: number = 1, keepHorizontal: boolean = false): boolean {
         const idx = this.cursor;
@@ -554,17 +560,14 @@ export class Console {
     }
 
     /**
-     * Mudlet's `mUserCursor.x()` — the column on the cursor line. Lazily
-     * clamped to the current line's length so a stale `cursorCol` from a
-     * `keepHorizontal` move never reports past the end of a shorter line.
+     * Mudlet's `mUserCursor.x()` — the column on the cursor line. Not clamped
+     * to the line's length: TBuffer::moveCursor accepts any column, and each
+     * operation that writes through it decides what past the end means
+     * (insertText pads out to it). Never reports below 0.
      */
     getCursorColumn(): number {
-        const col = Math.max(0, this.cursorCol);
-        if (this.onPartialLine) return Math.min(col, this.partial.text.length);
-        const idx = this.cursor;
-        if (idx < 0) return 0;
-        const lineLen = this.history[idx]?.text.length ?? 0;
-        return Math.min(col, lineLen);
+        if (!this.onPartialLine && this.cursor < 0) return 0;
+        return Math.max(0, this.cursorCol);
     }
 
     /**

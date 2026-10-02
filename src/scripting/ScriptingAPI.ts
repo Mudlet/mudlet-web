@@ -2783,7 +2783,9 @@ export class ScriptingAPI {
                 this.echoOnMatchedLine = false;
             }
         }
+        const before = this.mainConsole.getLineCount();
         this.mainConsole.echo(text);
+        if (this.triggerLineDepth > 0) this.triggerEchoLines += this.mainConsole.getLineCount() - before;
     }
 
     /** Echo into `con` — through {@link echoMain} when it is the main console,
@@ -3706,6 +3708,7 @@ export class ScriptingAPI {
         this.outerTriggerLines.push(this.triggerLineDepth > 0 ? this.mainConsole.getLineNumber() : -1);
         this.mainConsole.appendLine(buffer);
         this.inTriggerProcessing = true;
+        if (this.triggerLineDepth === 0) this.triggerEchoLines = 0;
         this.triggerLineDepth++;
         this.selection = null;
         this.setDeferringEcho(true);
@@ -3742,6 +3745,7 @@ export class ScriptingAPI {
         }
         this.inTriggerProcessing = false;
         this.echoOnMatchedLine = false;
+        this.triggerEchoLines = 0;
         // NB: the trigger selection is intentionally NOT cleared here. Mudlet
         // leaves a selection made inside a trigger in place, so a script can read
         // it back via getSelection() after the line is processed (e.g. UI_spec's
@@ -3926,6 +3930,11 @@ export class ScriptingAPI {
     /** How many lines are being processed at once — more than one whenever a
      *  trigger calls feedTriggers. See beginLine/endLine. */
     private triggerLineDepth = 0;
+    /** Main-console lines the trigger pass's own echoes have completed. Mudlet's
+     *  TConsole::echo embeds a trigger echo's newlines in the line being
+     *  processed rather than opening lines, so the line count leaves them out
+     *  until the pass is over. See {@link getLineCount}. */
+    private triggerEchoLines = 0;
     /** Per nested line, the line the outer pass was on. See beginLine. */
     private outerTriggerLines: number[] = [];
 
@@ -4099,13 +4108,13 @@ export class ScriptingAPI {
     // numbers add one to reach Mudlet's convention. Missing windows report -1
     // (Mudlet's "no such window" sentinel).
     //
-    // The exception is the main window while a trigger is still writing onto
-    // the matched line: Mudlet runs triggers before that line's terminator
-    // opens the next one, so the matched line IS the last line and the count
-    // equals getLineNumber(). Adding one there made
-    // `getLines("main", getLineCount() - 1, getLineCount())` miss the matched
-    // line. Once a trigger echo has advanced past it with a `\n`, the line it
-    // opened is the open one again and the usual +1 applies.
+    // The exception is the main window during a trigger pass: Mudlet runs
+    // triggers before that line's terminator opens the next one, so the
+    // matched line IS the last line and the count equals getLineNumber().
+    // Adding one there made `getLines("main", getLineCount() - 1,
+    // getLineCount())` miss the matched line. A trigger's echo does not change
+    // that, newlines and all — TConsole::echo embeds them in the line being
+    // processed — so the lines those echoes completed here are left out too.
     getLineNumber(windowName?: string): number {
         return this.getConsole(windowName)?.getLineNumber() ?? -1;
     }
@@ -4113,17 +4122,18 @@ export class ScriptingAPI {
     getLineCount(windowName?: string): number {
         const con = this.getConsole(windowName);
         if (!con) return -1;
-        return con.getLineCount() + (this.onOpenMatchedLine(con) ? 0 : 1);
+        if (this.inTriggerPass(con)) return con.getLineCount() - this.triggerEchoLines;
+        return con.getLineCount() + 1;
     }
 
     getLastLineNumber(windowName?: string): number {
         return this.getLineCount(windowName);
     }
 
-    /** Whether `con` is the main console with a trigger still on its matched
-     *  line — the one moment it has no open line past the last complete one. */
-    private onOpenMatchedLine(con: Console): boolean {
-        return this.echoOnMatchedLine && con === this.mainConsole;
+    /** Whether `con` is the main console mid trigger pass — the one time it has
+     *  no open line past the last complete one. */
+    private inTriggerPass(con: Console): boolean {
+        return this.triggerLineDepth > 0 && con === this.mainConsole;
     }
 
     // ── Scrolling / scrollbars ────────────────────────────────────────────────
@@ -4529,17 +4539,21 @@ export class ScriptingAPI {
             const state = con.format.toSnapshot();
             // Where the insert lands, read before it happens: the capture
             // positions this line's trigger recorded have to move with it.
-            const at = con.getCursorColumn();
+            // A column past the end is padded with spaces by Console.insertText,
+            // and the padding is inserted text as far as captures and colours go.
+            const col = con.getCursorColumn();
+            const at = Math.min(col, buf.text.length);
+            const inserted = ' '.repeat(col - at) + text;
             // Console.insertText splits on embedded '\n' into new history lines
             // (Mudlet #8945); for the single-line case it inserts in place.
             con.insertText(text, state);
             if (this.inTriggerProcessing && con === this.mainConsole && !text.includes('\n')) {
-                this.captureShiftHook?.(at, text.length);
+                this.captureShiftHook?.(at, inserted.length);
                 // The colours have to move with the text for the same reason
                 // the captures do — the inserted characters are not the ones
                 // the server coloured, and a later colour trigger must not
                 // sweep them into its run.
-                this.spliceLineColorSnapshot(at, 0, { ...this.stateColorKeys(state), text });
+                this.spliceLineColorSnapshot(at, 0, { ...this.stateColorKeys(state), text: inserted });
             }
             if (!this.inTriggerProcessing) con.getBuffer()?.rerender();
             return;

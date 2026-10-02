@@ -41,10 +41,12 @@ describe('console buffer APIs inside a trigger', () => {
     expect(env.run('return prev')).toBe('first|second');
   });
 
-  it('getLineCount() counts the open line again once a trigger echo leaves the matched line', () => {
+  // TConsole::echo embeds a trigger echo's newlines in the line being processed,
+  // so the trigger pass still has no open line after one.
+  it('getLineCount() leaves out the lines a trigger echo opens', () => {
     feedLine(env, 'first');
-    feedLine(env, 'second', 'echo("\\nnext"); diff = getLineCount() - getLineNumber()');
-    expect(env.run('return diff')).toBe(1);
+    feedLine(env, 'second', 'echo("\\nnext\\nlast"); diff = getLineCount() - getLineNumber()');
+    expect(env.run('return diff')).toBe(0);
   });
 
   it('getLineCount() outside a trigger still counts the open line', () => {

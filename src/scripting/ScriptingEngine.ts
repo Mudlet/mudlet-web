@@ -336,6 +336,13 @@ export class ScriptingEngine implements EngineHost {
      *  script can drive MXP markup through feedTriggers on a profile that never
      *  negotiated it. Does NOT enable the handshake replies. */
     forceMxpProcessorOn = false;
+    /** Mudlet's TMxpClient::mMxpEvents — element uses the parser has read but
+     *  not yet published, drained at the end of processFlushBatch. */
+    private readonly mxpEventQueue: {
+        name: string;
+        attrs: Record<string, string>;
+        body?: { text: string; actions: string[] };
+    }[] = [];
 
     /** Per-session OSC 8 preset registry (`preset:NAME` definitions). Shared
      *  between the MXP parser and the plain-ANSI render path so a preset defined
@@ -366,10 +373,10 @@ export class ScriptingEngine implements EngineHost {
         // <HR> draws its rule as wide as the main window wraps.
         wrapWidth: () => this.api.getWindowWrap('main'),
         // Mudlet publishes every use of a server-defined element as
-        // `mxp.<element>` and raises an event of the same name.
+        // `mxp.<element>` and raises an event of the same name — queued, and
+        // raised once the batch's text has been through the triggers.
         onElementEvent: (name, attrs, body) => {
-            this.runtimes.lua?.setMxpElement(name, attrs, body);
-            this.raiseEvent(`mxp.${name.toLowerCase()}`);
+            this.mxpEventQueue.push({ name, attrs, body });
         },
         // <FRAME> is carried out as the tag is read, so a refusal — a name
         // that is not a plain word, or a frame that is not open to act on —
@@ -5066,6 +5073,17 @@ export class ScriptingEngine implements EngineHost {
             }
         }
         this.reapKilledTempItems();
+        // Host::incomingStreamProcessor raises the queued MXP events only after
+        // translateToPlainText, so a handler sees what the triggers made of the
+        // line. A nested feedTriggers drains the shared queue at its own end.
+        if (this.mxpEventQueue.length > 0) {
+            while (this.mxpEventQueue.length > 0) {
+                const { name, attrs, body } = this.mxpEventQueue.shift()!;
+                this.runtimes.lua?.setMxpElement(name, attrs, body);
+                this.raiseEvent(`mxp.${name.toLowerCase()}`);
+            }
+            this.reapKilledTempItems();
+        }
     }
 
     /**
