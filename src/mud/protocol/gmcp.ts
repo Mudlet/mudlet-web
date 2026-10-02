@@ -1,5 +1,5 @@
 import { fromByteString, toByteString, toHex } from "./byteString";
-import { GMCP_COMMAND_CODE, GMCP_IAC, GMCP_SB, GMCP_SE, TELNET_EOR, TELNET_GA, TELNET_OPTION_REGEX, TELNET_OPTION_REGEX_NO_SB } from "./constants";
+import { GMCP_COMMAND_CODE, GMCP_IAC, GMCP_SB, GMCP_SE, TELNET_EOR, TELNET_GA } from "./constants";
 
 export interface GmcpEnvelope {
     path: string;
@@ -42,24 +42,73 @@ export const createTelnetOptionParser = (
     };
 };
 
+const IAC_SE = GMCP_IAC + GMCP_SE;
+const CODE_SB = 0xFA;
+const CODE_WILL = 0xFB;
+const CODE_DONT = 0xFE;
+
+/**
+ * Consume every complete telnet sequence in `data`, replacing each with what
+ * `handler` returns, and return the text that is left.
+ *
+ * A single forward scan with the same semantics as TELNET_OPTION_REGEX
+ * (`IAC SB … IAC SE` up to the first IAC SE, else `IAC WILL/WONT/DO/DONT x`,
+ * else `IAC x`), so `handler` sees exactly the sequences the regex matched.
+ * It replaced the regex because the lazy SB branch rescans to end-of-buffer
+ * from every IAC SB whose terminator never comes — quadratic on a run of
+ * IAC SB from a hostile server. Here the terminator search runs once: when it
+ * fails, no later IAC SB can find one either, so it is not repeated; when it
+ * succeeds, the scan resumes past it.
+ *
+ * Unfinished sequences, as the regex left them: a lone trailing IAC is
+ * dropped, `IAC WILL` at the very end is consumed as a two-byte command, and
+ * so is an `IAC SB` with no IAC SE after it. (MudClient holds a sequence split
+ * across frames back for the next one before calling this — `scanTelnetFrame`.)
+ *
+ * A NUL goes too. cTelnet::processSocketData drops `\0` from the text stream
+ * outside a subnegotiation (it is the padding half of telnet's `CR NUL`), so
+ * it never reaches the buffer; kept, it cut `line`, getCurrentLine() and
+ * getLines() short at the NUL and shifted every position after it
+ * (mudlet-web#272). Subnegotiation payloads go to `handler` intact, so a NUL
+ * inside one is untouched.
+ */
 export const stripTelnetSequences = (data: string, handler: TelnetOptionHandler): string => {
-    // After the regex consumes every complete telnet sequence, the only stray
-    // IAC (\xFF) left is a lone trailing one — an option/command split across
-    // frames — so drop it. (We no longer blanket-strip \xF9, which the old
-    // regex mis-handled for GA and which is a legitimate text byte otherwise.)
-    //
-    // A NUL goes too. cTelnet::processSocketData drops `\0` from the text
-    // stream outside a subnegotiation (it is the padding half of telnet's
-    // `CR NUL`), so it never reaches the buffer; kept, it cut `line`,
-    // getCurrentLine() and getLines() short at the NUL and shifted every
-    // position after it (mudlet-web#272). Subnegotiation payloads were
-    // already handed to `handler` above, so a NUL inside one is untouched.
-    // (Two single-character passes, the second only when there is a NUL: V8
-    // runs a one-character global replace as a plain search, where a character
-    // class costs several times as much on every byte of every frame.)
-    const re = data.includes(GMCP_IAC + GMCP_SE) ? TELNET_OPTION_REGEX : TELNET_OPTION_REGEX_NO_SB;
-    const text = data.replace(re, handler).replace(/\xFF/g, "");
-    return text.includes("\0") ? text.replace(/\0/g, "") : text;
+    let iac = data.indexOf(GMCP_IAC);
+    if (iac === -1) return data.includes("\0") ? data.replace(/\0/g, "") : data;
+
+    const len = data.length;
+    let out = "";
+    let last = 0;
+    // Set once a search for IAC SE from some point has failed: none exists
+    // past it, so no later IAC SB can be terminated.
+    let noTerminator = false;
+    while (iac !== -1) {
+        if (iac > last) out += data.substring(last, iac);
+        const next = iac + 1;
+        if (next >= len) {
+            // Lone trailing IAC.
+            last = len;
+            break;
+        }
+        const cmd = data.charCodeAt(next);
+        let end = -1;
+        if (cmd === CODE_SB && !noTerminator) {
+            const se = data.indexOf(IAC_SE, iac + 2);
+            if (se === -1) noTerminator = true;
+            else end = se + 2;
+        }
+        if (end === -1) end = cmd >= CODE_WILL && cmd <= CODE_DONT && next + 1 < len ? iac + 3 : iac + 2;
+        const replacement = handler(data.substring(iac, end));
+        // An IAC in a replacement is stripped like any other stray IAC; its
+        // NULs go with the text's below.
+        if (replacement) out += replacement.includes(GMCP_IAC) ? replacement.replace(/\xFF/g, "") : replacement;
+        last = end;
+        iac = data.indexOf(GMCP_IAC, end);
+    }
+    if (last < len) out += data.substring(last);
+    // Text between sequences holds no IAC: every one starts a sequence or is
+    // the trailing one dropped above.
+    return out.includes("\0") ? out.replace(/\0/g, "") : out;
 };
 
 const parseGmcpPayload = (

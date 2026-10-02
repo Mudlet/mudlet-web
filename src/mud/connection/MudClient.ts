@@ -1447,7 +1447,7 @@ export function formatCloseError(event: CloseEvent, wasOpened: boolean, viaProxy
 }
 
 /**
- * Walk one frame's telnet stream the way the strip regex (TELNET_OPTION_REGEX)
+ * Walk one frame's telnet stream the way stripTelnetSequences
  * will consume it and report two things:
  *
  * - `complete`: where an unfinished telnet sequence starts at the end of the
@@ -1476,7 +1476,7 @@ function scanTelnetFrame(data: string): { complete: number; markers: number[] } 
         const cmd = data.charCodeAt(i + 1);
         let next: number;
         if (cmd === SB) {
-            // Same terminator the regex's lazy SB branch stops at.
+            // Same terminator stripTelnetSequences stops at.
             const se = data.indexOf('\xFF\xF0', i + 2);
             if (se === -1) return { complete: i, markers };
             next = se + 2;

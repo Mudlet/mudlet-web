@@ -6,14 +6,12 @@
 // The old pattern (`ÿ.[^ÿ]`) treated *every* command as 3 bytes, so a 2-byte
 // IAC EOR/GA immediately followed by data (e.g. `IAC EOR \x1b[K`) ate the next
 // byte — orphaning the `\x1b` and leaking `[K` as literal text.
+//
+// Kept as the public reference for what a telnet sequence is; the client
+// itself strips with the linear scanner in gmcp.ts (`stripTelnetSequences`),
+// since the lazy SB branch rescans to end-of-buffer from every IAC SB whose
+// terminator never comes — quadratic on input a server controls.
 export const TELNET_OPTION_REGEX = /\xFF\xFA[\s\S]*?\xFF\xF0|\xFF[\xFB-\xFE][\s\S]|\xFF[\s\S]/g;
-
-// TELNET_OPTION_REGEX minus the subnegotiation branch, for buffers that hold
-// no IAC SE. The SB branch scans forward for its terminator, so without one
-// present it rescans to end-of-buffer from every IAC SB (quadratic: ~1.3s on
-// 160KB of IAC SB from a hostile server). Skipping it there is exact —
-// `IAC SB … IAC SE` cannot match when the buffer contains no IAC SE.
-export const TELNET_OPTION_REGEX_NO_SB = /\xFF[\xFB-\xFE][\s\S]|\xFF[\s\S]/g;
 
 // Telnet Go Ahead / End-of-Record — used by MUDs to signal a prompt line
 export const TELNET_GA  = "\xFF\xF9"; // IAC GA  (249)
