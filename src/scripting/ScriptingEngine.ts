@@ -271,9 +271,33 @@ function keyCodeFromMudletKey(key: string | number): string {
 /** Mudlet `tempButtonToolbar` location int → ButtonLocation. */
 const BUTTON_LOCATIONS = ['top', 'bottom', 'left', 'right', 'floating'] as const;
 
-/** The ProfileSettings field holding ScriptingAPI's catch-all setConfig bag.
- *  One store field, many getConfig keys — see the sysSettingChanged bridge. */
-const CONFIG_BAG_FIELD = 'config';
+/**
+ * The settings Mudlet raises `sysSettingChanged(key, boolean)` for — and the
+ * only ones: Host::raiseSettingChangedEvent's callers plus MudletMedia's two
+ * mute gates. Each names the getConfig key, where the profile keeps it (a
+ * ProfileSettings field of its own, or ScriptingAPI's `config` bag) and the
+ * value getConfig answers while it is unset.
+ */
+const REPORTED_SETTINGS: readonly { key: string; inBag: boolean; default: boolean }[] = [
+    { key: 'compactInputLine',      inBag: true,  default: false },
+    { key: 'mapperPanelVisible',    inBag: false, default: true },
+    { key: 'enableClosedCaption',   inBag: true,  default: false },
+    { key: 'advertiseScreenReader', inBag: true,  default: false },
+    { key: 'announceIncomingText',  inBag: true,  default: true },
+    { key: 'muteMediaAPI',          inBag: true,  default: false },
+    { key: 'muteMediaGame',         inBag: true,  default: false },
+];
+
+/** The {@link REPORTED_SETTINGS} values one profile snapshot holds, in order. */
+function reportedSettingValues(profile: Record<string, unknown>): boolean[] {
+    const bag = (profile.config ?? {}) as Record<string, unknown>;
+    return REPORTED_SETTINGS.map(({ key, inBag, default: fallback }) => {
+        const v = inBag ? bag[key] : profile[key];
+        if (v === undefined || v === null) return fallback;
+        if (typeof v === 'string') return !/^(false|0|no|off)$/i.test(v.trim());
+        return !!v;
+    });
+}
 
 /**
  * Compare the slice of nodes tagged with `pkgName` between two arrays. Returns
@@ -4998,10 +5022,32 @@ export class ScriptingEngine implements EngineHost {
                         }
 
                         for (let u = 0; u < units.length; u++) {
-                            const { plain, buffer, outputLine, blankRenders } = units[u];
+                            let { plain, buffer, outputLine, blankRenders } = units[u];
                             // Only the final visual line of a prompt-bearing network
                             // line is the prompt (e.g. just the "> ", not the room).
                             const isPrompt = lineIsPrompt && u === units.length - 1;
+
+                            // Mudlet `blankLinesBehaviour` (TBuffer::commitLineData):
+                            // decided before the line is stored, so it governs what
+                            // the triggers and the buffer see, not only the display.
+                            // "hide" drops an empty server line outright — no trigger
+                            // sees it and getLines never has it; "replacewithspace"
+                            // stores, triggers on and draws a single space instead.
+                            // Empty means empty once the escapes are consumed, as
+                            // desktop tests the decoded line. Server output only
+                            // (feedTriggers included, which desktop runs through
+                            // the same TBuffer); echoes and errors never get here
+                            // as 'mud'.
+                            if (type === 'mud' && plain.length === 0 && !buffer.deleted) {
+                                const behaviour = this.session.blankLinesBehaviour;
+                                if (behaviour === 'hide') continue;
+                                if (behaviour === 'replacewithspace') {
+                                    plain = ' ';
+                                    outputLine = ' ';
+                                    buffer = new AnsiAwareBuffer(' ');
+                                    blankRenders = true;
+                                }
+                            }
 
                             // Every line goes to the triggers, blank ones included.
                             // Mudlet's TMainConsole::runTriggers appends a '\n' to
@@ -5015,31 +5061,14 @@ export class ScriptingEngine implements EngineHost {
                             this.processLineTriggers(plain, buffer, isPrompt);
                             if (plain.length > 0) this.emit('output', [outputLine, type]);
 
-                            let shouldRender =
+                            const shouldRender =
                                 !buffer.deleted &&
                                 (blankRenders || plain.length > 0 || !FILTER_ANSI_ONLY_LINES);
-                            // Mudlet `blankLinesBehaviour` (TBuffer): for empty server
-                            // lines, either hide them or replace them with a single
-                            // space. Scoped to mud-typed output — echoes/errors are
-                            // unaffected, matching Mudlet's TBuffer-only handling.
-                            let renderBuffer = buffer;
-                            if (shouldRender && type === 'mud' && plain.length === 0) {
-                                const behaviour = this.session.blankLinesBehaviour;
-                                if (behaviour === 'hide') {
-                                    shouldRender = false;
-                                } else if (behaviour === 'replacewithspace') {
-                                    renderBuffer = new AnsiAwareBuffer(' ');
-                                    // A stand-in for the stored line: the
-                                    // renderer reads the prompt flag off it.
-                                    renderBuffer.isPrompt = isPrompt;
-                                }
-                            }
                             if (shouldRender) {
                                 // A line longer than the main window's wrap width
                                 // is stored as several buffer lines once its
                                 // triggers have run, and drawn as those lines.
-                                const pieces = renderBuffer === buffer
-                                    ? this.api.wrapNetworkLine(buffer) : [renderBuffer];
+                                const pieces = this.api.wrapNetworkLine(buffer);
                                 const now = Date.now();
                                 pieces.forEach((piece, i) => this.session.events.emit(
                                     'message', piece, type, now, isPrompt && i === pieces.length - 1));
@@ -5202,22 +5231,21 @@ export class ScriptingEngine implements EngineHost {
         document.addEventListener('visibilitychange', onVisibility);
         this.unsubs.push(() => document.removeEventListener('visibilitychange', onVisibility));
 
-        // Mudlet `sysSettingChanged(setting, value)` — fired whenever the
-        // per-connection profile settings slice mutates. We diff the slice
-        // by key so each changed field gets its own event (matching Mudlet's
-        // per-setting granularity).
+        // Mudlet `sysSettingChanged(setting, value)`. Desktop raises it for a
+        // short, fixed list of boolean settings only — the ones whose Host
+        // setters go through raiseSettingChangedEvent (compactInputLine,
+        // mapperPanelVisible, enableClosedCaption, advertiseScreenReader,
+        // announceIncomingText) and MudletMedia's two mute gates — always as
+        // (getConfig key, boolean), and only when the value actually changed.
+        // Every other setting changes silently, so the store is watched for
+        // those keys alone, compared by the value getConfig would answer.
         const seedProfile = useAppStore.getState().connectionProfile[this.connectionId];
         let lastProfile: Record<string, unknown> = (seedProfile ?? {}) as Record<string, unknown>;
-        const asBag = (v: unknown) => (v ?? {}) as Record<string, unknown>;
-        // Raise one event per changed key of a plain object, in both directions
-        // (a key that went away is reported as having become nil).
-        const raiseKeyChanges = (prev: Record<string, unknown>, next: Record<string, unknown>) => {
-            for (const key of Object.keys(next)) {
-                if (next[key] !== prev[key]) this.raiseEvent('sysSettingChanged', [key, next[key]]);
-            }
-            for (const key of Object.keys(prev)) {
-                if (!(key in next) && prev[key] !== undefined) this.raiseEvent('sysSettingChanged', [key, undefined]);
-            }
+        let lastSettings = reportedSettingValues(lastProfile);
+        const raiseSettingChanges = (prev: boolean[], next: boolean[]) => {
+            REPORTED_SETTINGS.forEach(({ key }, i) => {
+                if (next[i] !== prev[i]) this.raiseEvent('sysSettingChanged', [key, next[i]]);
+            });
         };
         // Mudlet also reports the main console's font as a whole, as
         // ("main window font", family, size), whenever either half changes
@@ -5230,7 +5258,8 @@ export class ScriptingEngine implements EngineHost {
         this.unsubs.push(useAppStore.subscribe((state) => {
             const next = (state.connectionProfile[this.connectionId] ?? {}) as Record<string, unknown>;
             if (next === lastProfile) return;
-            const prev = lastProfile;
+            const prevSettings = lastSettings;
+            const nextSettings = reportedSettingValues(next);
             const [family, size] = mainFont();
             const fontNow = `${family}\u0000${size}`;
             const fontChanged = fontNow !== lastMainFont;
@@ -5242,21 +5271,8 @@ export class ScriptingEngine implements EngineHost {
             // once the outer call finally assigned, leave `lastProfile` holding
             // a value the store no longer has.
             lastProfile = next;
-            for (const key of Object.keys(next)) {
-                if (next[key] === prev[key]) continue;
-                // `config` is not a setting — it is the catch-all bag one store
-                // field wide that holds most of the getConfig keys. Reporting it
-                // by its store name would hand every handler the string "config"
-                // and the whole bag, so it is diffed a level down and each key
-                // inside raised under the name getConfig knows it by.
-                if (key === CONFIG_BAG_FIELD) raiseKeyChanges(asBag(prev[key]), asBag(next[key]));
-                else this.raiseEvent('sysSettingChanged', [key, next[key]]);
-            }
-            for (const key of Object.keys(prev)) {
-                if (key in next || prev[key] === undefined) continue;
-                if (key === CONFIG_BAG_FIELD) raiseKeyChanges(asBag(prev[key]), {});
-                else this.raiseEvent('sysSettingChanged', [key, undefined]);
-            }
+            lastSettings = nextSettings;
+            raiseSettingChanges(prevSettings, nextSettings);
             if (fontChanged) {
                 // The console's own sysFontChangeEvent first — TConsole::setFont
                 // raises it before Host::updateConsolesFont reports the setting.

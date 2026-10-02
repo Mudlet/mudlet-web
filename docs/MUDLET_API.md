@@ -1016,7 +1016,7 @@ Reconciled against the authoritative [Mudlet Event Engine](https://wiki.mudlet.o
 | `sysAppStyleSheetChange` | ✅ | `setAppStyleSheet` — args: css, tag |
 | `sysPathChanged` | ✅ | VFS mutation of a watched path — arg: path |
 | `sysMediaFinished` | ✅ | Sound/music/video source ended or stopped — args: name, path |
-| `sysSettingChanged` | ✅ | Per-connection profile-settings mutation. One event per changed field — args: setting, newValue (`undefined` when unset) |
+| `sysSettingChanged` | ✅ | Desktop's list only: `compactInputLine`, `mapperPanelVisible`, `enableClosedCaption`, `advertiseScreenReader`, `announceIncomingText`, `muteMediaAPI`, `muteMediaGame` — args: getConfig key, new boolean; raised only when the value changed, from a script or the Settings UI alike. Plus `("main window font", family, size)` when the main console's font changes. Every other setting changes silently, as on desktop |
 | `sysSoundFinished` | ➖ | Not raised: desktop Mudlet raises only `sysMediaFinished` (the old name has no emitter in TMedia). |
 | `sysIrcMessage` | ❌ | No IRC client in Mudlet Web; nothing fires it (no stub needed — events don't break callers when never raised) |
 

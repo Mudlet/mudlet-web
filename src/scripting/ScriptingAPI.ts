@@ -33,6 +33,7 @@ import { decodeTelnetByteTags } from '../mud/connection/telnetByteTags';
 import { openOsc8Menu } from '../ui/output/osc8Menu';
 import { namedColorToState, dechoToAnsiFast, cechoToAnsiFast, hechoToAnsiFast } from '../mud/text/colorParsers';
 import { colorCodes } from '../mud/text/colors';
+import { effectiveAmbiguousWidthWide, setAmbiguousWidthWide } from '../mud/text/wcwidth';
 import { Console, MIN_CONSOLE_BUFFER_SIZE, MAX_CONSOLE_BUFFER_SIZE, WINDOW_WRAP_DEFAULT } from '../mud/text/Console';
 import { flashTitle } from '../utils/documentTitle';
 import { readStoredLogin } from '../utils/storedCredentials';
@@ -258,6 +259,19 @@ function parseBlankLinesBehaviour(value: unknown): BlankLinesBehaviour | null {
  *  `setRoomSize(size / 10.0)`. Mudlet's default spinner value is 5 → 0.5. */
 const MUDLET_ROOM_SIZE_SCALE = 10;
 
+/** The values `setConfig("ambiguousEAsianWidthCharacters", …)` takes, in the
+ *  order Mudlet's refusal lists them. */
+const AMBIGUOUS_WIDTH_MODES: readonly string[] = ['narrow', 'wide', 'auto'];
+
+/** The keys Mudlet's setConfig only handles inside its
+ *  `if (host.mpMap && host.mpMap->mpMapper)` block — the 2D mapper widget's
+ *  own settings. Until a mapper exists they are refused as unknown options. */
+const MAPPER_ONLY_CONFIG_KEYS: ReadonlySet<string> = new Set([
+    'mapRoomSize', 'mapExitSize', 'mapRoundRooms', 'showRoomIdsOnMap',
+    'showMapInfo', 'hideMapInfo', 'show3dMapView', 'mapShowRoomBorders',
+    'mapShowGrid', 'showUpperLowerLevels', 'mapInfoColor',
+]);
+
 /** Mudlet config keys persisted in the {@link ProfileSettings.config} bag rather
  *  than a dedicated structured field. Each entry gives the value type and the
  *  default `getConfig` returns before the key has been set, so first reads match
@@ -295,7 +309,6 @@ const CONFIG_PERSIST_ONLY: Record<string, {
     // TelnetNegotiator's MTTS/NEW-ENVIRON SCREEN_READER reporting) on the next
     // connect — see docs/config-api.md group 2a.
     advertiseScreenReader:          { type: 'bool', default: false },
-    ambiguousEAsianWidthCharacters: { type: 'str',  default: 'auto', enum: ['auto', 'wide', 'narrow'] },
     // Default true, matching Mudlet's mAnnounceIncomingText: the off-screen
     // ARIA live region (ScreenReaderLog) mirrors incoming output to the user's
     // screen reader. Gating this on a default-false key would silently mute that
@@ -1594,6 +1607,13 @@ export class ScriptingAPI {
             case 'showSentText':
                 return useStringFormat ? this.session.showSentText : this.session.showSentText !== 'never';
             case 'blankLinesBehaviour': return this.session.blankLinesBehaviour;
+            // Mudlet Host::getWideAmbiguousEAsianGlyphsControlState: the
+            // profile's tri-state, held in the boolean the Settings toggle
+            // writes, with "never chosen" meaning auto.
+            case 'ambiguousEAsianWidthCharacters': {
+                const wide = selectProfileField(useAppStore.getState(), this.connectionId, 'ambiguousWidthWide');
+                return wide === undefined ? 'auto' : wide ? 'wide' : 'narrow';
+            }
             // Mudlet's mShowPanel — the mapper's *control bar*, not the map
             // window (that's openMapWidget/closeMapWidget). Default true.
             case 'mapperPanelVisible':
@@ -1689,6 +1709,7 @@ export class ScriptingAPI {
     configKeyValues(key: string): readonly string[] | null {
         const resolved = CONFIG_KEY_ALIASES[key] ?? key;
         if (resolved === 'blankLinesBehaviour') return ['show', 'hide', 'replacewithspace'];
+        if (resolved === 'ambiguousEAsianWidthCharacters') return AMBIGUOUS_WIDTH_MODES;
         if (resolved === 'showSentText') return ['never', 'always', 'script'];
         return CONFIG_PERSIST_ONLY[resolved]?.enum ?? null;
     }
@@ -1706,6 +1727,11 @@ export class ScriptingAPI {
      */
     configKeyKind(rawKey: string): 'bool' | 'num' | 'str' | 'any' | 'readonly' | null {
         const key = CONFIG_KEY_ALIASES[rawKey] ?? rawKey;
+        // Mudlet only knows these while the 2D mapper exists
+        // (`host.mpMap->mpMapper`): before the map has been shown, setConfig
+        // refuses them as unknown keys whatever the value, so this is decided
+        // ahead of the type check.
+        if (MAPPER_ONLY_CONFIG_KEYS.has(key) && !this.session.windows.hasMapper()) return null;
         // An experiment takes a boolean, and one this build has never heard of
         // is still a KEY — its refusal has to name it, which it cannot do from
         // the generic "no such option" path. The two pseudo-keys are reads.
@@ -1728,6 +1754,7 @@ export class ScriptingAPI {
             case 'mapRoomSize': case 'mapExitSize': case 'undoServerWrapWidth':
                 return 'num';
             case 'blankLinesBehaviour':
+            case 'ambiguousEAsianWidthCharacters':
             // Set-only in Mudlet: they name a map-info overlay to switch on/off
             // and have no getConfig counterpart, so getConfig reports them as
             // invalid while setConfig accepts them.
@@ -1877,6 +1904,19 @@ export class ScriptingAPI {
                 if (!mode) return false;
                 this.session.blankLinesBehaviour = mode;
                 this.patchConfigBag('blankLinesBehaviour', mode);
+                return true;
+            }
+            // Mudlet Host::setWideAmbiguousEAsianGlyphs. "auto" is decided from
+            // the server encoding there and then (wide for the CJK ones), as
+            // desktop decides it; lines wrapped from now on use the new width.
+            // Stored in the Settings toggle's field so the two cannot disagree:
+            // true/false for a chosen width, unset for auto.
+            case 'ambiguousEAsianWidthCharacters': {
+                const mode = String(value);
+                if (!AMBIGUOUS_WIDTH_MODES.includes(mode)) return false;
+                const wide = mode === 'auto' ? undefined : mode === 'wide';
+                setAmbiguousWidthWide(effectiveAmbiguousWidthWide(wide, this.session.getServerEncoding()));
+                useAppStore.getState().patchConnectionProfile(this.connectionId, { ambiguousWidthWide: wide });
                 return true;
             }
             // Live per-origin media mute gates, persisted so they survive a

@@ -59,6 +59,18 @@ export function isAmbiguousWidthWide(): boolean {
     return ambiguousWide;
 }
 
+/** The encodings whose games expect ambiguous-width characters drawn wide —
+ *  the list Host::setWideAmbiguousEAsianGlyphs checks in "auto" mode. */
+const WIDE_AMBIGUOUS_ENCODINGS = new Set(['GBK', 'GB18030', 'BIG5', 'BIG5-HKSCS', 'EUC-KR']);
+
+/** Whether ambiguous-width characters are drawn wide, given the profile's
+ *  choice (`ambiguousWidthWide`: true/false, or undefined for Mudlet's "auto")
+ *  and the server encoding. "auto" is wide for the CJK encodings only. */
+export function effectiveAmbiguousWidthWide(choice: boolean | undefined, encoding: string): boolean {
+    if (choice !== undefined) return choice;
+    return WIDE_AMBIGUOUS_ENCODINGS.has(String(encoding ?? '').toUpperCase());
+}
+
 /**
  * Display width of a grapheme cluster (base + any combining marks, variation
  * selectors, ZWJ sequence): the width of its base character, the way Mudlet

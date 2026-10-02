@@ -43,7 +43,7 @@ import { useVaultSaver } from './ui/useVaultSaver';
 import { VaultUnlockPrompt } from './ui/VaultUnlockPrompt';
 import { applyAnsiPalette, setServerRedefineColorsAllowed, resetAllPaletteColors } from './mud/text/colors';
 import { setOsc8HyperlinksEnabled } from './mud/text/hyperlinkConfig';
-import { setAmbiguousWidthWide } from './mud/text/wcwidth';
+import { effectiveAmbiguousWidthWide, setAmbiguousWidthWide } from './mud/text/wcwidth';
 import { setExpectColorSpaceId } from './mud/text/colorSpaceId';
 import { DEFAULT_CONSOLE_BUFFER_SIZE } from './mud/text/Console';
 import type { MudSession, ControlCharacterMode } from './mud/MudSession';
@@ -372,9 +372,14 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // profile), so they are pushed rather than read. Like the ANSI palette,
     // they apply to lines drawn after the change — what is already on screen
     // keeps the widths and colours it was rendered with.
+    // The ambiguous-width choice is Mudlet's tri-state: unset is "auto", which
+    // is wide for the CJK encodings. Like Host::setWideAmbiguousEAsianGlyphs,
+    // "auto" is decided against the encoding when the choice is applied — on
+    // open (after the effect above has pushed the saved encoding) and when it
+    // changes — not again each time the encoding does.
     useEffect(() => {
-        setAmbiguousWidthWide(ambiguousWidthWide === true);
-    }, [ambiguousWidthWide]);
+        setAmbiguousWidthWide(effectiveAmbiguousWidthWide(ambiguousWidthWide, session.getServerEncoding()));
+    }, [ambiguousWidthWide, session]);
 
     useEffect(() => {
         setExpectColorSpaceId(expectColorSpaceId === true);

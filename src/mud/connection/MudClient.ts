@@ -127,10 +127,10 @@ export interface MudClientOptions {
     nawsEnabled?: boolean;
     /** Mudlet's "Fix unnecessary linebreaks on GA servers"
      *  (`setConfig("fixUnnecessaryLinebreaks", …)`, host flag
-     *  `mUSE_IRE_DRIVER_BUGFIX`). Default false. When true *and* the session is
-     *  GA-driven, a single spurious leading newline is stripped from the start
-     *  of each GA-terminated data block — the IRE-server bug Mudlet patches in
-     *  `cTelnet::gotPrompt`. See LineAssembler. */
+     *  `mUSE_IRE_DRIVER_BUGFIX`). Default false. When true, a single spurious
+     *  leading newline is stripped from the start of each block of a read that
+     *  ends in GA/EOR — the IRE-server bug Mudlet patches in
+     *  `cTelnet::gotPrompt`. See LineAssembler.stripPromptBlockNewline. */
     fixUnnecessaryLinebreaks?: boolean;
     /** Mudlet's `Host::mUndoServerWrap` — rejoin the lines the game wrapped
      *  itself, so triggers and rendering see whole logical lines. Default false.
@@ -543,7 +543,7 @@ export class MudClient {
     }
 
     /** Mudlet `setConfig("fixUnnecessaryLinebreaks", …)`. Takes effect on the
-     *  next GA-driven block; never retroactive. */
+     *  next block that ends in a prompt marker; never retroactive. */
     setFixUnnecessaryLinebreaks(enabled: boolean): void {
         this.assembler.setFixUnnecessaryLinebreaks(enabled);
     }
@@ -1302,7 +1302,11 @@ export class MudClient {
     /** Strip, decode and assemble one run of a frame. `hasPrompt` means the run
      *  ends in an IAC GA/EOR. */
     private processSegment(processable: string, hasPrompt: boolean, ts: number): void {
-        const sanitized = stripTelnetSequences(processable, this.telnetOptionHandler).replace(/\r/g, '');
+        let sanitized = stripTelnetSequences(processable, this.telnetOptionHandler).replace(/\r/g, '');
+        // `fixUnnecessaryLinebreaks` works on the whole run, before it is
+        // decoded or split, because desktop decides it on the raw block at the
+        // GA — a run with no marker after it is never touched.
+        if (hasPrompt) sanitized = this.assembler.stripPromptBlockNewline(sanitized);
         if (hasPrompt && debugGaEnabled()) {
             const marker = processable.endsWith(TELNET_GA) ? 'GA' : 'EOR';
             // eslint-disable-next-line no-console

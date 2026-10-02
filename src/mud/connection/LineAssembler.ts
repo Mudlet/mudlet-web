@@ -78,12 +78,6 @@ export class LineAssembler {
      *  partial lines here, because our render path finalizes every emitted
      *  chunk and has no downstream open-line carry. */
     private _gaDriver = false;
-    /** True at the start of a GA-driven data block — i.e. before any content of
-     *  the current post-GA transmission has been seen. Drives the
-     *  `fixUnnecessaryLinebreaks` leading-newline strip, which fires at most once
-     *  per block. Set true on connect and after each prompt flush, cleared once
-     *  the block's leading-newline question has been settled. */
-    private atPromptBlockStart = true;
     private fixUnnecessaryLinebreaks: boolean;
 
     // ── server-wrap join (Mudlet TBuffer::append's mUndoServerWrap block) ────
@@ -129,9 +123,32 @@ export class LineAssembler {
     }
 
     /** Mudlet `setConfig("fixUnnecessaryLinebreaks", …)`. Takes effect on the
-     *  next GA-driven block; never retroactive. */
+     *  next block that ends in a prompt marker; never retroactive. */
     setFixUnnecessaryLinebreaks(enabled: boolean): void {
         this.fixUnnecessaryLinebreaks = enabled;
+    }
+
+    /**
+     * Mudlet's "Fix unnecessary linebreaks on GA servers" (cTelnet::gotPrompt
+     * under `mUSE_IRE_DRIVER_BUGFIX`): from a block of one read that ENDS in
+     * IAC GA/EOR, drop a single leading newline — after any leading SGR
+     * escapes, none of which it removes. `block` is that run's raw text, up to
+     * the marker; it is returned unchanged when the option is off.
+     *
+     * Only such a block is touched. Text that arrives on its own, with no
+     * prompt marker after it — the reply that follows a prompt a moment later,
+     * say — keeps its newline, as desktop's gotRest posts it untouched.
+     *
+     * Desktop strips from `mMudData`, which once GA-driven holds only this
+     * block (every read's leftovers are posted straight away). Before the first
+     * marker it also still holds whatever partial line the previous reads left
+     * waiting for the posting timer, so a block continuing one does not start
+     * at its own first byte — which is what the held tail stands in for here.
+     */
+    stripPromptBlockNewline(block: string): string {
+        if (!this.fixUnnecessaryLinebreaks) return block;
+        if (!this._gaDriver && this.pendingLineTail.length > 0) return block;
+        return stripLeadingPromptNewline(block);
     }
 
     /** Mudlet `setConfig("undoServerWrap", …)`. Turning it off commits anything
@@ -151,7 +168,6 @@ export class LineAssembler {
     reset(): void {
         this.pendingLineTail = "";
         this._gaDriver = false;
-        this.atPromptBlockStart = true;
         this.clearTailTimer();
         this.serverWrapPending = null;
         this.serverWrapPendingSegmentLength = 0;
@@ -167,24 +183,7 @@ export class LineAssembler {
     feed(decoded: string, hasPrompt: boolean, ts: number): void {
         if (decoded.length > 0) {
             this.clearTailTimer();
-            let combined = this.pendingLineTail + decoded;
-            // Mudlet's "Fix unnecessary linebreaks on GA servers": at the start
-            // of a GA-driven block, drop a single spurious leading newline (the
-            // IRE-driver bug). Done at block-start rather than at the GA — like
-            // Mudlet's cTelnet::gotPrompt — because our render path emits whole
-            // lines eagerly and can't retract them once the GA arrives. The block
-            // after a GA begins at the very next byte, so its leading newline is
-            // the same one Mudlet would strip from mMudData at the next GA.
-            // (Deviation: Mudlet also strips the first block at the first GA via
-            // buffering; we can't see that block is GA-driven until the GA lands,
-            // so the very first transmission keeps its leading newline.)
-            if (this.fixUnnecessaryLinebreaks && this._gaDriver && this.atPromptBlockStart) {
-                const { result, decided } = stripLeadingPromptNewline(combined);
-                if (decided) {
-                    combined = result;
-                    this.atPromptBlockStart = false;
-                }
-            }
+            const combined = this.pendingLineTail + decoded;
             const lastNl = combined.lastIndexOf('\n');
             if (lastNl === -1) {
                 this.pendingLineTail = combined;
@@ -209,9 +208,6 @@ export class LineAssembler {
                 this.callbacks.onChunk('\n', ts);
             }
             this._gaDriver = true;
-            // The next data block (the next transmission) starts fresh, so its
-            // leading newline is again a candidate for the IRE-bug strip above.
-            this.atPromptBlockStart = true;
             this.callbacks.onPrompt();
         } else if (this.pendingLineTail.length > 0 && !this._gaDriver) {
             // Once GA-driven, only a newline or the next prompt marker ends a
@@ -420,36 +416,26 @@ export class LineAssembler {
  * `cTelnet::gotPrompt` (gated there on `mUSE_IRE_DRIVER_BUGFIX && mGA_Driver`).
  * IRE-style servers prepend a spurious <LF> to each GA-terminated transmission,
  * which renders as a blank line before every prompt block. This removes a single
- * leading newline from the front of a GA-driven block — first skipping any
+ * leading newline from the front of a block that ends in GA — first skipping any
  * leading ANSI SGR escape sequence, exactly as Mudlet does (`if (mMudData[j] ==
- * 0x1B) … scan to 'm'`).
- *
- * Returns the (possibly trimmed) string and `decided`:
- *  - `decided: true`  — the leading-newline question is settled for this block
- *    (a newline was removed, or the first real byte wasn't a newline).
- *  - `decided: false` — so far the block is *only* ANSI escapes, or ends inside
- *    an incomplete escape (no terminating 'm' yet). The caller should keep the
- *    block-start flag set and retry once more bytes arrive. (Mudlet never hits
- *    this case — it has the whole block in hand at GA time — but we decide
- *    incrementally as frames stream in.)
+ * 0x1B) … scan to 'm'`). A block that is only escapes, or ends inside one, is
+ * returned as it is.
  */
-function stripLeadingPromptNewline(s: string): { result: string; decided: boolean } {
+function stripLeadingPromptNewline(s: string): string {
     let i = 0;
     while (i < s.length) {
         if (s.charCodeAt(i) === 0x1b) {
             // Skip an ANSI escape up to and including its 'm' (SGR) terminator.
             let j = i + 1;
             while (j < s.length && s[j] !== 'm') j++;
-            if (j >= s.length) return { result: s, decided: false }; // incomplete — wait
+            if (j >= s.length) return s;
             i = j + 1;
             continue;
         }
         // First non-escape byte reached: strip it iff it's the spurious newline.
-        if (s[i] === '\n') return { result: s.slice(0, i) + s.slice(i + 1), decided: true };
-        return { result: s, decided: true };
+        return s[i] === '\n' ? s.slice(0, i) + s.slice(i + 1) : s;
     }
-    // Ran off the end with only complete ANSI escapes — no content byte yet.
-    return { result: s, decided: false };
+    return s;
 }
 
 /**

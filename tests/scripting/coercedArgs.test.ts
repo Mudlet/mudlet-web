@@ -139,6 +139,12 @@ describe('Mudlet argument coercion parity', () => {
     });
 
     it('a boolean where Mudlet uses getVerifiedString — lua_isstring is false for one', () => {
+      // hideMapInfo is one of the keys desktop only knows while a mapper exists
+      // (with none it is refused as unknown before the value is looked at), so
+      // the map has to have been shown for the value check to be reached.
+      t.session.windows.registerMapControl('coerced-args', {
+        getZoom: () => null, setZoom() {}, redraw() {}, exportArea: () => null,
+      });
       expect(() => run('setConfig("hideMapInfo", true)')).toThrow(/value as string expected/);
     });
 

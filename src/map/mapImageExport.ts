@@ -5,7 +5,7 @@ import type { MapStore } from './MapStore';
 // Pulled straight from the schema module rather than the ../storage barrel:
 // the barrel also re-exports the Zustand store, and this file is loaded by the
 // headless export path where dragging that in would be a needless cycle risk.
-import { PLAYER_MARKER_DEFAULTS, symbolFontSource, type MapperSettings } from '../storage/schema';
+import { MAPPER_DEFAULTS, PLAYER_MARKER_DEFAULTS, symbolFontSource, type MapperSettings } from '../storage/schema';
 
 /**
  * One profile-supplied font family as a CSS string literal, safe to concatenate
@@ -56,8 +56,9 @@ export function mapSymbolFontStack(mapper: MapperSettings | undefined): string {
 
 /**
  * Copy user-set fields from MapperSettings onto a live renderer settings
- * object. Anything left undefined in `mapper` is intentionally not touched
- * so the renderer's own createSettings() defaults stay in effect.
+ * object. Most fields left undefined in `mapper` are intentionally not touched
+ * so the renderer's own createSettings() defaults stay in effect; room size and
+ * exit width are the exception (see below).
  */
 export function applyMapperSettings(target: MapRendererSettings, mapper: MapperSettings | undefined): void {
     // Mudlet's 2D map renders on an OPAQUE BLACK background (the renderer's own
@@ -86,11 +87,15 @@ export function applyMapperSettings(target: MapRendererSettings, mapper: MapperS
     // so it behaves as designed: picking drops out only while enough rooms are
     // on screen to make the index expensive, and zooming in brings it back.
     if (mapper?.lodHitTestBudget !== undefined) target.lodHitTestBudget = mapper.lodHitTestBudget;
+    // Room size and exit width default to Mudlet's (0.5 of a cell, exits a
+    // tenth of that), not the renderer's — getConfig("mapRoomSize") and
+    // getConfig("mapExitSize") report desktop's 5 and 10 for a profile that
+    // never set them, and the map has to be drawn at what they report.
+    target.roomSize = mapper?.roomSize ?? MAPPER_DEFAULTS.roomSize;
+    target.lineWidth = mapper?.lineWidth ?? MAPPER_DEFAULTS.lineWidth;
     if (!mapper) return;
-    if (mapper.roomSize !== undefined) target.roomSize = mapper.roomSize;
     if (mapper.roomShape !== undefined) target.roomShape = mapper.roomShape;
     if (mapper.borders !== undefined) target.borders = mapper.borders;
-    if (mapper.lineWidth !== undefined) target.lineWidth = mapper.lineWidth;
     if (mapper.lineColor !== undefined) target.lineColor = mapper.lineColor;
     if (mapper.gridEnabled !== undefined) target.gridEnabled = mapper.gridEnabled;
     if (mapper.gridColor !== undefined) target.gridColor = mapper.gridColor;

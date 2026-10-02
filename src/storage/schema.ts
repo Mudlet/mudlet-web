@@ -301,7 +301,10 @@ export interface ProfileSettings {
     doubleClickIgnore?: string;
     /** Mudlet's "Make 'Ambiguous' E. Asian width characters wide": render the
      *  Unicode East Asian *Ambiguous* characters (box-drawing glyphs, ★ ♠ and
-     *  friends) two columns wide instead of one. Off unless explicitly true. */
+     *  friends) two columns wide instead of one. A tri-state, like Mudlet's
+     *  checkbox: true or false is a chosen width, unset is "auto" — wide only
+     *  for the CJK server encodings (see effectiveAmbiguousWidthWide). Read and
+     *  written by `get/setConfig("ambiguousEAsianWidthCharacters")` as well. */
     ambiguousWidthWide?: boolean;
     /** Mudlet's "Enable text analyzer" (`Host::mEnableTextAnalyzer`): put an
      *  "Analyse characters" entry on a console's right-click menu, reporting the
@@ -703,10 +706,17 @@ export function symbolFontSource(font: string | OutputFontSource | undefined): O
 }
 
 export const MAPPER_DEFAULTS: Required<MapperSettings> = {
-    roomSize: 0.6,
+    // Mudlet's own: Host::mRoomSize 0.5 of a grid cell, and exits drawn
+    // 1/mLineSize (10) of the room — 0.5 / 10 = 0.05 of a cell
+    // (T2DMap: exitWidth = 1 / eSize * mRoomWidth * rSize). So a fresh
+    // profile draws the map as desktop does, and getConfig("mapRoomSize") /
+    // getConfig("mapExitSize") answer desktop's 5 and 10. Applied to the
+    // renderer explicitly (applyMapperSettings) rather than left to its own
+    // createSettings() values, which are not these.
+    roomSize: 0.5,
     roomShape: 'rectangle',
     borders: true,
-    lineWidth: 0.025,
+    lineWidth: 0.05,
     backgroundColor: '#000000',
     lineColor: '#e1ffe1',
     showDefaultArea: true,

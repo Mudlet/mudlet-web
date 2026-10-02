@@ -58,6 +58,36 @@ describe('setConfig / getConfig', () => {
         expect(h.run('return getConfig("autoClearInputLine")')).toBe(true);
     });
 
+    // Mudlet handles these inside `if (host.mpMap && host.mpMap->mpMapper)`, so
+    // until the map has been shown they are refused as unknown keys — whatever
+    // the value, with no type check first (#290).
+    it('refuses the mapper-widget keys as unknown until a mapper exists', () => {
+        expect(h.session.windows.hasMapper()).toBe(false);
+        for (const [key, value] of [
+            ['mapRoomSize', '5'], ['mapExitSize', '10'], ['mapRoundRooms', 'true'],
+            ['showRoomIdsOnMap', 'true'], ['mapShowRoomBorders', 'false'], ['mapShowGrid', 'true'],
+            ['showUpperLowerLevels', 'false'], ['show3dMapView', 'true'],
+            ['showMapInfo', '"x"'], ['hideMapInfo', '"x"'], ['mapInfoColor', '{1, 2, 3}'],
+            // the wrong type is not raised either: the key is unknown first
+            ['mapRoomSize', '"big"'],
+        ] as const) {
+            expect(h.run(`local ok, err = setConfig("${key}", ${value}) return tostring(ok) .. "|" .. tostring(err)`))
+                .toBe(`nil|setConfig: '${key}' isn't a valid configuration option`);
+        }
+        expect(useAppStore.getState().connectionProfile[CONN]?.mapper?.roomShape).toBeUndefined();
+        // getConfig still answers — Mudlet's reads need no mapper — with
+        // desktop's defaults for a profile that never set them.
+        expect(h.run('return getConfig("mapRoomSize")')).toBe(5);
+        expect(h.run('return getConfig("mapExitSize")')).toBe(10);
+
+        // The map being shown makes the mapper, and it stays made.
+        h.session.windows.registerMapControl('config-api-test', {
+            getZoom: () => null, setZoom() {}, redraw() {}, exportArea: () => null,
+        });
+        h.session.windows.unregisterMapControl('config-api-test');
+        expect(h.session.windows.hasMapper()).toBe(true);
+    });
+
     it('maps mapper keys to renderer settings', () => {
         h.run('setConfig("mapRoundRooms", true)');
         expect(useAppStore.getState().connectionProfile[CONN]?.mapper?.roomShape).toBe('roundedRectangle');
