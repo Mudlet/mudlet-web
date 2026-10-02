@@ -194,7 +194,10 @@ function pushScalar(api: LuaApi, L: LuaState, v: unknown): void {
             else api.lua_pushnumber(L, v);
             return;
         case 'string':
-            api.lua_pushstring(L, v);
+            // lua_pushstring stops at the first NUL; lua_yajl keeps the byte
+            // (Lua strings are counted), so push those with their UTF-8 length.
+            if (v.includes('\0')) api.lua_pushlstring(L, v, api.module.lengthBytesUTF8(v));
+            else api.lua_pushstring(L, v);
             return;
         case 'boolean':
             api.lua_pushboolean(L, v ? 1 : 0);
