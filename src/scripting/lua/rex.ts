@@ -238,8 +238,10 @@ function extractNamedCaptures(m: MatchResult): NamedCapture[] {
     return out;
 }
 
-/** Register __rex_* JS helpers and put rex_pcre2 into package.loaded. */
-export async function setupRex(lua: Lua): Promise<void> {
+/** Register __rex_* JS helpers and put rex_pcre2 into package.loaded.
+ *  `run` executes the module's Lua source — LuaRuntime compiles it as its own
+ *  ("=[C]") code, since desktop's rex is the lrexlib C library. */
+export async function setupRex(lua: Lua, run: (code: string) => void = code => { lua.doStringSync(code); }): Promise<void> {
     await PCRE.init();
 
     type FlagsArg = string | number | null | undefined;
@@ -370,8 +372,9 @@ export async function setupRex(lua: Lua): Promise<void> {
 
     // Expose the PCRE2 flag constants table to Lua, so rex.flags() can return it.
     lua.global.set('__rex_flag_constants__', PCRE2_FLAGS);
+    lua.global.set('__rex_pcre_version__', PCRE.version());
 
-    const rexModule = await lua.doString(`
+    run(`
         local _match  = __rex_match__
         local _find   = __rex_find__
         local _tfind  = __rex_tfind__
@@ -633,8 +636,49 @@ export async function setupRex(lua: Lua): Promise<void> {
             return proxy
         end
 
+        -- lrexlib's library-level extras (lpcre2.c / lpcre2_f.c, rel-2-9-4).
+        M._VERSION = "Lrexlib 2.9.4 (for PCRE2)"
+        local pcreVersion = __rex_pcre_version__
+        M.version = function() return pcreVersion end
+        -- rex.config([t]): the PCRE2 build's pcre2_config() values, into t
+        -- when one is passed. lrexlib reads every key as an int, so the two
+        -- string-valued ones (VERSION, UNICODE_VERSION) never make it in, and
+        -- JITTARGET only does on a JIT build — the wasm library has no JIT.
+        local CONFIG = {
+            PCRE2_CONFIG_BSR = 1,                 -- PCRE2_BSR_UNICODE
+            PCRE2_CONFIG_JIT = 0,
+            PCRE2_CONFIG_LINKSIZE = 2,
+            PCRE2_CONFIG_MATCHLIMIT = 10000000,
+            PCRE2_CONFIG_NEWLINE = 2,             -- PCRE2_NEWLINE_LF
+            PCRE2_CONFIG_PARENSLIMIT = 250,
+            PCRE2_CONFIG_RECURSIONLIMIT = 10000000,
+            PCRE2_CONFIG_STACKRECURSE = 0,
+            PCRE2_CONFIG_UNICODE = 1,
+        }
+        M.config = function(t)
+            if type(t) ~= "table" then t = {} end
+            for k, v in pairs(CONFIG) do t[k] = v end
+            return t
+        end
+        -- rex.maketables(): a "chartables" userdata, which rex.new accepts in
+        -- place of a locale. The wasm library has one set of tables, the C
+        -- locale's, which is also what pcre2_maketables(NULL) builds there.
+        M.maketables = function()
+            local ud = newproxy(true)
+            local addr = tostring(ud):match("0x%x+") or "0x0"
+            local mt = getmetatable(ud)
+            mt.__tostring = function() return "chartables (" .. addr .. ")" end
+            mt.__metatable = "access denied"
+            return ud
+        end
+
+        -- Desktop registers this as rex_pcre2 and binds the result to the
+        -- globals (rex_pcre = require "rex_pcre2"); "rex_pcre" is a module
+        -- only on a build that fell back to the old PCRE1 library, so require
+        -- of it fails there.
         package.loaded["rex_pcre2"] = M
-        package.loaded["rex_pcre"] = M
+        rex, rex_pcre2, rex_pcre = M, M, M
+        __rex_pcre_version__ = nil
 
         -- clean up bridge globals
         __rex_match__  = nil
@@ -647,10 +691,5 @@ export async function setupRex(lua: Lua): Promise<void> {
         __rex_exec__   = nil
         __rex_compile__ = nil
         __rex_flag_constants__ = nil
-
-        return M
     `);
-    lua.global.set('rex', rexModule);
-    lua.global.set('rex_pcre2', rexModule);
-    lua.global.set('rex_pcre', rexModule);
 }

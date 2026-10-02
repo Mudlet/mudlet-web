@@ -126,7 +126,8 @@ Transactions are driven through the Luasql connection (`conn:commit()`/`conn:rol
 | Function | Status | Notes |
 |---|---|---|
 | `io.exists(path)` | ✅ | Other.lua (uses `io.open`) backed by ProfileVFS |
-| `lfs.attributes(path [, attrib])` | ✅ | VFS.lua exposes the full `lfs` table over the profile VFS — `attributes` returns `{mode, size, modification, access}` (or the single named attribute). `lfs.currentdir`/`chdir`/`mkdir`/`rmdir`/`dir`/`touch`/`isfile`/`isdir` also wired |
+| `lfs.attributes(path [, attrib])` | ✅ | VFS.lua exposes LuaFileSystem 1.9.0's `lfs` over the profile VFS — `attributes` returns `{mode, size, modification, access, ...}` (or the single named attribute). `currentdir`/`chdir`/`mkdir`/`rmdir`/`dir`/`touch`/`symlinkattributes`/`link`/`lock`/`unlock`/`lock_dir`/`setmode` and `_VERSION` also wired (plus Mudlet Web's own `isfile`/`isdir`). `lfs.dir` raises `cannot open <path>: <reason>` for a folder it can't read and returns the iterator plus a directory object, as LuaFileSystem does |
+| `io.*` | ✅ | The whole of Lua 5.1's io library over the profile VFS: file handles are userdata; `io.stdin`/`io.stdout`/`io.stderr` exist (stdout/stderr writes go to the browser console, where desktop writes to its process streams); `io.tmpfile`, `io.flush`; `io.open` refuses a mode glibc refuses (`nil, "<path>: Invalid argument", 22`). `io.popen` raises `'popen' not supported` — a browser can't start processes |
 | `openMudletHomeDir()` | ✅ | `openUrl("file:")` routes to the VFS file browser |
 | `saveProfile([name])` | ✅ | Forces the debounced VFS flush to IndexedDB (see Miscellaneous Functions) |
 
@@ -249,6 +250,7 @@ Transactions are driven through the Luasql connection (`conn:commit()`/`conn:rol
 | `setExitWeight(roomID, exitCommand, weight)` | ✅ | Weight 0 resets to destination-room weight; rejects negatives/unknown exits |
 | `setGridMode(areaID, bool)` | ✅ | `api.map.setGridMode`; false when missing |
 | `setMapUserData(key, value)` | ✅ | JS-exposed |
+| `setMapPerspective(r, theta, phi)` / `shiftMapPerspective(verticalAngle, horizontalAngle, rotationAngle)` | ✅ | Desktop's 3D-map camera. The checks desktop makes (no map → `nil, "you haven't opened a map yet"`; three numbers) and then nothing, as on desktop while the 3D view isn't the one showing — the map here is 2D |
 | `setMapZoom(zoom[, areaID])` | ✅ | See `getMapZoom` |
 | `setRoomArea(roomID, areaID)` | ✅ | JS-exposed |
 | `setRoomChar(roomID, char)` | ✅ | JS-exposed |
@@ -419,6 +421,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `killTimer(id)` | ✅ | |
 | `killTrigger(name\|id)` | ✅ | String → name-based delete; numeric → temp-trigger disposer |
 | `loadProfile(name)` | ✅ | Opens the named profile in a NEW browser tab (`?profile=<id>&connect=1`) and connects — each profile lives in its own tab (per-profile lock), so the calling profile stays open alongside, matching Mudlet's multi-profile model. Returns `false` for an unknown name, the profile already open in this tab, or a blocked popup. `window.open` needs a user gesture: works from a key/button/alias, may be blocked from a trigger |
+| `setActiveProfile(name)` | ✅ | `true`, or `false` plus why not (empty name, no such profile, not loaded); the name matches case-insensitively. A page can't switch browser tabs, so for a profile open in another tab this answers `true` without bringing it forward |
 | `permAlias(name, parent, pattern, code)` | ✅ | Pattern is a single PCRE string (Mudlet TAlias.mRegexCode). Returns the new id, or -1 |
 | `permGroup(name, type [, parent])` | ✅ | Creates a group node in the requested family |
 | `permPromptTrigger(name, parent, code)` | ✅ | Persistent trigger firing on every server prompt (GA/EOR); single `prompt`-type pattern, never a group. Returns the new id or -1 |
@@ -536,7 +539,8 @@ Standard Lua 5.1 string functions (`string.byte`, `string.char`, `string.find`, 
 | `string.title(s)` | ✅ | StringUtils.lua |
 | `string.trim(s)` | ✅ | StringUtils.lua |
 | `utf8.byte` / `utf8.char` / `utf8.find` / `utf8.gmatch` / `utf8.gsub` / `utf8.len` / `utf8.lower` / `utf8.match` / `utf8.reverse` / `utf8.sub` / `utf8.upper` | ✅ | Bundled `utf8.lua` (Stepets) exposed as the `utf8` global |
-| `utf8.patternEscape` / `utf8.title` | ✅ | StringUtils.lua. `patternEscape` escapes Lua-pattern magic chars (function replacement — the bundled `utf8.gsub` drops table-replacement misses); `title` uppercases the first code point |
+| `utf8.patternEscape` | ✅ | StringUtils.lua. Escapes Lua-pattern magic chars (function replacement — the bundled `utf8.gsub` drops table-replacement misses) |
+| `utf8.title` / `utf8.codes` / `utf8.isvalid` / `utf8.invalidoffset` / `utf8.clean` / `utf8.isnfc` / `utf8.normalize_nfc` / `utf8.widthlimit` / `utf8.grapheme_indices` / `utf8.version` | ✅ | luautf8 0.2.1, ported from its C into `utf8.lua`. `title` maps every character to its titlecase, as luautf8 does (`utf8.title("élan")` is `ÉLAN`) — not StringUtils' first-letter `string.title`. NFC and grapheme clusters come from the JS engine (`String.prototype.normalize`, `Intl.Segmenter`) |
 | `utf8.charpos` / `utf8.escape` / `utf8.fold` / `utf8.insert` / `utf8.ncasecmp` / `utf8.next` / `utf8.remove` / `utf8.width` / `utf8.widthindex` | ✅ | luautf8 (starwing) extensions ported into `utf8.lua` over the bundled Stepets helpers. `fold`/`ncasecmp` case-fold ASCII (no Unicode CaseFolding table); `width`/`widthindex` use Markus Kuhn's wcwidth ranges (combining → 0, East-Asian wide/fullwidth → 2) and accept (but don't tabulate) `ambi_is_double` |
 
 ---

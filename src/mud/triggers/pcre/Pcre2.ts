@@ -169,6 +169,29 @@ export default class Pcre2 {
         initialized = true;
     }
 
+    /** The PCRE2 library's own version string (`pcre2_config(PCRE2_CONFIG_VERSION)`),
+     *  e.g. "10.42 2022-12-11" — what lrexlib's `rex.version()` reports. */
+    static version(): string {
+        if (!initialized) throw new Error('Pcre2.init() has not completed');
+        const fn = libpcre2.cwrap('version', 'number', ['number']);
+        const len = fn(0);
+        if (len <= 0) return '';
+        const ptr = libpcre2._malloc(len * 2);
+        try {
+            fn(ptr);
+            const u16 = libpcre2.HEAPU16;
+            let out = '';
+            for (let i = 0; i < len; i++) {
+                const c = u16[(ptr >> 1) + i];
+                if (c === 0) break;
+                out += String.fromCharCode(c);
+            }
+            return out;
+        } finally {
+            libpcre2._free(ptr);
+        }
+    }
+
     constructor(pattern: string, flags = '') {
         if (!initialized) throw new Error('Pcre2.init() must resolve before compiling patterns');
         const patternBuffer = encodeUTF16LE(pattern);

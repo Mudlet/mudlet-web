@@ -1154,22 +1154,48 @@ end
 local caseMaps
 local function getCaseMaps()
 	if caseMaps then return caseMaps end
-	local up, low = {}, {}
+	local up, low, titleOnly = {}, {}, {}
 	local src = type(__mudlet_utf8_casemap) == 'function' and __mudlet_utf8_casemap() or ''
-	for kind, from, to in src:gmatch('([ul])\t([^\t]+)\t([^\n]+)\n') do
-		if kind == 'u' then up[from] = to else low[from] = to end
+	for kind, from, to in src:gmatch('([ult])\t([^\t]+)\t([^\n]+)\n') do
+		if kind == 'u' then up[from] = to
+		elseif kind == 'l' then low[from] = to
+		else titleOnly[from] = to end
 	end
-	caseMaps = { up = up, low = low }
+	-- Titlecase is the uppercase except where UnicodeData says otherwise
+	-- (the "t" lines: the Dž-style digraphs, and Georgian, which titles as
+	-- itself).
+	local title = {}
+	for k, v in pairs(up) do title[k] = v end
+	for k, v in pairs(titleOnly) do title[k] = v end
+	caseMaps = { up = up, low = low, title = title }
 	return caseMaps
 end
 local MULTIBYTE = '[\194-\244][\128-\191]*'
+-- luautf8's converters also take a codepoint and hand one back.
+local function convertCode(cp, map, ascii)
+	if cp < 0x80 then return byte(ascii(char(cp))) end
+	local ok, ch = pcall(utf8char, cp)
+	if not ok then return cp end
+	local to = map[ch]
+	if to == nil then return cp end
+	return utf8unicode(to, 1, 1)
+end
 function M.lower(s)
+	if type(s) == 'number' then return convertCode(s, getCaseMaps().low, lower) end
 	s = lower(s)
 	return (s:gsub(MULTIBYTE, getCaseMaps().low))
 end
 function M.upper(s)
+	if type(s) == 'number' then return convertCode(s, getCaseMaps().up, upper) end
 	s = upper(s)
 	return (s:gsub(MULTIBYTE, getCaseMaps().up))
+end
+-- utf8.title(s): every character to its titlecase — character by character,
+-- as luautf8 does it, not word-initial capitalisation: title("élan") is "ÉLAN".
+function M.title(s)
+	if type(s) == 'number' then return convertCode(s, getCaseMaps().title, upper) end
+	s = upper(s)
+	return (s:gsub(MULTIBYTE, getCaseMaps().title))
 end
 
 -- luautf8's / Lua 5.3's pattern matching exactly one UTF-8 sequence. Lua 5.1
@@ -1461,6 +1487,286 @@ function M.widthindex(s, location, _ambi, default)
 		idx = idx + 1
 	end
 	return idx, location - w, 0
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- The rest of luautf8 0.2.1 (starwing/luautf8, lutf8lib.c) — the version the
+-- luautf8 rock desktop links is at. Ported from the C, argument checks and
+-- edge cases included; the Unicode tables NFC and grapheme clusters need come
+-- from the JS engine (LuaRuntime.installUtf8Natives).
+-- ─────────────────────────────────────────────────────────────────────────────
+
+M.version = "0.2.1"
+
+local function argError(n, fname, msg)
+	error("bad argument #" .. n .. " to '" .. fname .. "' (" .. msg .. ")")
+end
+
+local function checkString(v, n, fname)
+	local t = type(v)
+	if t == 'string' then return v end
+	if t == 'number' then return tostring(v) end
+	argError(n, fname, "string expected, got " .. (v == nil and 'no value' or t))
+end
+
+local function optInteger(v, n, fname, default)
+	if v == nil then return default end
+	local x = tonumber(v)
+	if x == nil then argError(n, fname, "number expected, got " .. type(v)) end
+	return x >= 0 and mfloor(x) or -mfloor(-x)
+end
+
+-- byte_relat: a negative byte position counts back from the end.
+local function byteRelat(pos, slen)
+	if pos >= 0 then return pos end
+	if -pos > slen then return 0 end
+	return slen + pos + 1
+end
+
+local function isCont(c) return c ~= nil and c >= 0x80 and c <= 0xBF end
+
+-- utf8_decode: the codepoint at byte i and the position after it, or nil for
+-- an invalid sequence. Lax by default (up to 0x7FFFFFFF, surrogates allowed);
+-- strict rejects surrogates and anything past U+10FFFF. Past the end the C
+-- reads the string's terminating NUL, hence the `or 0`.
+local DECODE_LIMITS = { [0] = math.huge, 0x80, 0x800, 0x10000, 0x200000, 0x4000000 }
+local function luDecode(s, i, strict)
+	local c = byte(s, i) or 0
+	if c < 0x80 then return c, i + 1 end
+	local res, count = 0, 0
+	while mfloor(c / 0x40) % 2 == 1 do
+		count = count + 1
+		local cc = byte(s, i + count) or 0
+		if not isCont(cc) then return nil end
+		res = res * 64 + cc % 64
+		c = c * 2
+	end
+	res = res + (c % 0x80) * 2 ^ (count * 5)
+	if count > 5 or res > 0x7FFFFFFF or res < DECODE_LIMITS[count] then return nil end
+	if strict and (res > 0x10FFFF or (res >= 0xD800 and res <= 0xDFFF)) then return nil end
+	return res, i + count + 1
+end
+
+local function safeDecode(s, i)
+	local code, nxt = luDecode(s, i, false)
+	if code == nil then error("invalid UTF-8 code") end
+	return code, nxt
+end
+
+-- utf8_next / utf8_prev over 1-based positions; slen + 1 is the end.
+local function nextPos(s, p, slen)
+	while p <= slen and isCont(byte(s, p + 1)) do p = p + 1 end
+	if p <= slen then return p + 1 end
+	return slen + 1
+end
+local function prevPos(s, first, e)
+	while first < e and isCont(byte(s, e - 1)) do e = e - 1 end
+	if first < e then return e - 1 end
+	return first
+end
+
+-- utf8.codes(s [, lax]): for pos, code in utf8.codes(s). Strict unless `lax`
+-- is true, raising on a surrogate or a codepoint past U+10FFFF.
+local function codesIterator(strict)
+	return function(s, n)
+		local slen = len(s)
+		local p = (n or 0) <= 0 and 1 or nextPos(s, n, slen)
+		if p > slen then return nil end
+		local code = safeDecode(s, p)
+		if strict and (code > 0x10FFFF or (code >= 0xD800 and code <= 0xDFFF)) then
+			error("invalid UTF-8 code")
+		end
+		return p, code
+	end
+end
+local codesStrict, codesLax = codesIterator(true), codesIterator(false)
+function M.codes(s, lax)
+	s = checkString(s, 1, 'codes')
+	return lax and codesLax or codesStrict, s, 0
+end
+
+-- utf8_invalid_offset: the 1-based position of the first byte of the first
+-- invalid sequence at or after `p`, or nil when the rest is valid UTF-8.
+local CODE_UNIT_LEN = { 1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, 2, 2, 3, 4 }
+local function invalidOffset(s, p, slen)
+	while p <= slen do
+		local c = byte(s, p)
+		if c >= 0x80 then
+			if c < 0xC2 or c >= 0xF5 then return p end
+			local need = CODE_UNIT_LEN[mfloor(c / 16) + 1]
+			if slen - p + 1 < need then return p end
+			local c2 = byte(s, p + 1)
+			if not isCont(c2) then return p end
+			if need >= 3 then
+				local c3 = byte(s, p + 2)
+				if not isCont(c3) then return p end
+				if need == 3 then
+					if c == 0xE0 and c2 < 0xA0 then return p end
+					if c == 0xED and c2 >= 0xA0 then return p end
+				else
+					local c4 = byte(s, p + 3)
+					if not isCont(c4) then return p end
+					if c == 0xF0 and c2 < 0x90 then return p end
+					if c == 0xF4 and c2 >= 0x90 then return p end
+				end
+			end
+			p = p + need
+		else
+			p = p + 1
+		end
+	end
+	return nil
+end
+
+function M.isvalid(s)
+	s = checkString(s, 1, 'isvalid')
+	return invalidOffset(s, 1, len(s)) == nil
+end
+
+-- utf8.invalidoffset(s [, i]): where the first invalid sequence at or after
+-- byte i starts, or nil.
+function M.invalidoffset(s, i)
+	s = checkString(s, 1, 'invalidoffset')
+	local slen = len(s)
+	local offset = optInteger(i, 2, 'invalidoffset', 0)
+	local start = 1
+	if offset > 1 then
+		start = offset
+		if start > slen then return nil end
+	elseif offset < 0 and -slen < offset then
+		start = slen + offset + 1
+	end
+	return invalidOffset(s, start, slen)
+end
+
+-- utf8.clean(s [, replacement]): each run of invalid bytes replaced (by
+-- U+FFFD unless given), and whether the string was clean already.
+function M.clean(s, ...)
+	s = checkString(s, 1, 'clean')
+	local r = ...
+	if r == nil then r = "\239\191\189" else r = checkString(r, 2, 'clean') end
+	if select('#', ...) > 0 and invalidOffset(r, 1, len(r)) ~= nil then
+		error("replacement string must be valid UTF-8", 0)
+	end
+	local slen = len(s)
+	local bad = invalidOffset(s, 1, slen)
+	if bad == nil then return s, true end
+	local out, p = {}, 1
+	while true do
+		out[#out + 1] = sub(s, p, bad - 1)
+		out[#out + 1] = r
+		p = bad
+		while p == bad do
+			p = p + 1
+			bad = invalidOffset(s, p, slen)
+		end
+		if bad == nil then
+			out[#out + 1] = sub(s, p)
+			return concat(out), false
+		end
+	end
+end
+
+-- NFC needs the Unicode composition tables; the JS engine has them.
+local function nfcOf(s, fname)
+	local slen, p = len(s), 1
+	while p <= slen do
+		local _, nxt = luDecode(s, p, true)
+		if nxt == nil then argError(1, fname, "string is not valid UTF-8") end
+		p = nxt
+	end
+	local native = __mudlet_utf8_nfc
+	if type(native) ~= 'function' then return s end
+	return __mudlet_unarmor(native(__mudlet_armor(s)))
+end
+
+function M.isnfc(s)
+	s = checkString(s, 1, 'isnfc')
+	return nfcOf(s, 'isnfc') == s
+end
+
+-- utf8.normalize_nfc(s): the NFC form, and whether s was in it already.
+function M.normalize_nfc(s)
+	s = checkString(s, 1, 'normalize_nfc')
+	local nfc = nfcOf(s, 'normalize_nfc')
+	if nfc == s then return s, true end
+	return nfc, false
+end
+
+-- utf8.widthlimit(s, width [, i [, j [, ambi_is_double [, default_width]]]]):
+-- how far into s (bytes i..j) `width` columns reach. A negative width counts
+-- from the end. Returns the byte position and the width left over. The
+-- argument numbers in its range errors are luautf8's own.
+function M.widthlimit(s, width, i, j, ambi, default)
+	s = checkString(s, 1, 'widthlimit')
+	local slen = len(s)
+	if width == nil then argError(2, 'widthlimit', "number expected, got no value") end
+	width = optInteger(width, 2, 'widthlimit', 0)
+	local posi = byteRelat(optInteger(i, 3, 'widthlimit', 1), slen)
+	local posj = byteRelat(optInteger(j, 4, 'widthlimit', slen), slen)
+	optInteger(ambi, 5, 'widthlimit', 1)
+	local defaultWidth = optInteger(default, 6, 'widthlimit', 0)
+	if not (posi >= 1 and posi - 1 <= slen) then argError(2, 'widthlimit', "initial position out of bounds") end
+	if not (posj - 1 < slen) then argError(3, 'widthlimit', "final position out of bounds") end
+	-- 1-based: [first, last] is the byte range, last + 1 its end.
+	local first, stop = posi, posj + 1
+	if width >= 0 then
+		while first < stop and width ~= 0 do
+			local code, nxt = safeDecode(s, first)
+			local w = codeWidth(code, defaultWidth)
+			if width < w then break end
+			first, width = nxt, width - w
+		end
+		return first - 1, width
+	end
+	while first < stop and width ~= 0 do
+		local p = prevPos(s, first, stop)
+		local code = safeDecode(s, p)
+		local w = codeWidth(code, defaultWidth)
+		if -width < w then break end
+		stop, width = p, width + w
+	end
+	return stop, width
+end
+
+-- utf8.grapheme_indices(s [, i [, j]]): for first, last in ... — the byte
+-- span of each extended grapheme cluster in bytes i..j. Clusters come from the
+-- engine's Intl.Segmenter (UAX #29); a string that only decodes laxly (a
+-- surrogate, a five-byte form) is split per codepoint.
+function M.grapheme_indices(s, i, j)
+	s = checkString(s, 1, 'grapheme_indices')
+	local slen = len(s)
+	local start = byteRelat(optInteger(i, 2, 'grapheme_indices', 1), slen)
+	local stop = byteRelat(optInteger(j, 3, 'grapheme_indices', slen), slen)
+	if start < 1 then argError(2, 'grapheme_indices', "out of range") end
+	if stop > slen then argError(3, 'grapheme_indices', "out of range") end
+	local spans, k, at
+	return function()
+		if spans == nil then
+			spans, at = {}, 0
+			if start <= stop then
+				local text = sub(s, start, stop)
+				local native = __mudlet_utf8_graphemes
+				if invalidOffset(text, 1, #text) == nil and type(native) == 'function' then
+					for n in native(__mudlet_armor(text)):gmatch('%d+') do spans[#spans + 1] = tonumber(n) end
+				else
+					local p = 1
+					while p <= #text do
+						local _, nxt = safeDecode(text, p)
+						spans[#spans + 1] = nxt - p
+						p = nxt
+					end
+				end
+			end
+			k = start
+		end
+		at = at + 1
+		local n = spans[at]
+		if n == nil then return nil end
+		local first = k
+		k = k + n
+		return first, k - 1
+	end
 end
 
 return M

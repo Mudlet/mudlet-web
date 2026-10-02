@@ -56,7 +56,7 @@ import { isQtResourcePath, qtResourceUrl } from '../assets/qt-resources';
 import { ProfilesPresence } from './profilesPresence';
 import { MapStore } from '../map/MapStore';
 import { type EngineHost, type TempComplexTriggerSpec, NULL_ENGINE_HOST } from './EngineHost';
-import { findBundledGame } from '../mud/games/bundledGames';
+import { BUNDLED_GAMES, findBundledGame } from '../mud/games/bundledGames';
 
 // Mudlet's TChar always carries baked-in fg/bg colors (the rendered pair), so
 // getFgColor/getBgColor never return "no color" for in-bounds positions. Mudlet Web
@@ -1471,6 +1471,34 @@ export class ScriptingAPI {
         }
         if (!this.presence.loadedIds().includes(conn.id)) return notLoaded;
         return this.presence.requestClose(conn.id) ? null : notLoaded;
+    }
+
+    /** Mudlet `setActiveProfile(name)`: make an open profile the one in front.
+     *  The name is matched as MudletApp::getCanonicalProfileName matches it —
+     *  case-insensitively against the profiles, then against the bundled games
+     *  (a game with no profile is "not loaded").
+     *
+     *  Returns null on success or the refusal message. Each profile has a tab
+     *  of its own here, and a page can't bring another tab forward — browsers
+     *  only let the user switch tabs — so for a profile open elsewhere this
+     *  answers true, as desktop does, without the switch; for this tab's own
+     *  profile it asks for the window's focus. */
+    setActiveProfile(name: string): string | null {
+        const requested = name ?? '';
+        if (requested === '') return 'setActiveProfile: profile name cannot be empty';
+        const lower = requested.toLowerCase();
+        const conn = [...useAppStore.getState().connections]
+            .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+            .find(c => c.name.toLowerCase() === lower);
+        const canonical = conn?.name ?? BUNDLED_GAMES.find(g => g.name.toLowerCase() === lower)?.name;
+        if (canonical === undefined) return `setActiveProfile: profile '${requested}' does not exist`;
+        const loaded = conn !== undefined
+            && (conn.id === this.connectionId || this.presence.loadedIds().includes(conn.id));
+        if (!loaded) return `setActiveProfile: profile '${canonical}' is not loaded`;
+        if (conn.id === this.connectionId) {
+            try { window.focus(); } catch { /* not focusable here */ }
+        }
+        return null;
     }
 
     /** Mudlet `getCommandSeparator()`. Returns the profile's command separator

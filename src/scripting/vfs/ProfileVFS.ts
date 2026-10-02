@@ -17,6 +17,10 @@ import {
     rmSync,
     renameSync,
     utimesSync,
+    lstatSync,
+    readlinkSync,
+    symlinkSync,
+    linkSync,
     type FileSystem,
 } from '@zenfs/core';
 import { IndexedDB, WebAccess } from '@zenfs/dom';
@@ -63,6 +67,9 @@ function disableAtime(fs: Syncable): Syncable {
     fs.attributes.set('no_atime');
     return fs;
 }
+
+/** {@link ProfileVFS.lstat}: a stat that can also be about a symbolic link. */
+export type VfsLstat = Omit<VfsStat, 'type'> & { type: VfsStat['type'] | 'link' };
 
 export interface VfsStat {
     type: 'file' | 'dir';
@@ -315,6 +322,14 @@ export class ProfileVFS {
      */
     remove(path: string): void {
         const abs = this.resolvePath(path);
+        // A symbolic link goes itself, whatever (if anything) it points at.
+        let isLink = false;
+        try { isLink = lstatSync(abs).isSymbolicLink(); } catch { /* not there */ }
+        if (isLink) {
+            unlinkSync(abs);
+            this.invalidate(abs);
+            return;
+        }
         const type = this.stat(abs)?.type;
         if (!type) throw new FsError('ENOENT', abs);
         if (type === 'dir') {
@@ -359,6 +374,55 @@ export class ProfileVFS {
                 blksize: s.blksize,
             };
         } catch { return null; }
+    }
+
+    /** `lstat(2)`: like {@link stat}, but about a symbolic link itself, which
+     *  reports as type `link`. Throws the filesystem's error (ENOENT …). */
+    lstat(path: string): VfsLstat {
+        const s = lstatSync(this.resolvePath(path));
+        return {
+            type: s.isSymbolicLink() ? 'link' : s.isDirectory() ? 'dir' : 'file',
+            size: s.size,
+            mtime: new Date(s.mtimeMs),
+            atime: new Date(s.atimeMs),
+            ctime: new Date(s.ctimeMs),
+            mode: s.mode,
+            dev: s.dev,
+            ino: s.ino,
+            nlink: s.nlink,
+            uid: s.uid,
+            gid: s.gid,
+            rdev: s.rdev,
+            blocks: s.blocks,
+            blksize: s.blksize,
+        };
+    }
+
+    /** `readlink(2)`: a symbolic link's target, as stored. */
+    readlink(path: string): string {
+        return String(readlinkSync(this.resolvePath(path)));
+    }
+
+    /** `link(2)` / `symlink(2)` — what `lfs.link` makes. A symbolic link's
+     *  target is stored as given (it may be relative, or dangle); a hard link's
+     *  must exist. Throws the filesystem's error (EEXIST, ENOENT, ENOTSUP …). */
+    link(target: string, path: string, symbolic: boolean): void {
+        const abs = this.resolvePath(path);
+        let present = false;
+        try { lstatSync(abs); present = true; } catch { /* free */ }
+        if (present) throw new FsError('EEXIST', abs);
+        const parent = abs.substring(0, abs.lastIndexOf('/')) || '/';
+        const parentType = this.stat(parent)?.type;
+        if (!parentType) throw new FsError('ENOENT', abs);
+        if (parentType !== 'dir') throw new FsError('ENOTDIR', abs);
+        if (symbolic) {
+            symlinkSync(target, abs);
+        } else {
+            const from = this.resolvePath(target);
+            if (!existsSync(from)) throw new FsError('ENOENT', from);
+            linkSync(from, abs);
+        }
+        this.invalidate(abs);
     }
 
     chdir(path: string): string | null {

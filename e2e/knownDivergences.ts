@@ -526,4 +526,82 @@ export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
             + 'on both clients) and would leave each new panel unusable until dragged open.',
         issue: '#283',
     },
+    {
+        api: 'debug.traceback / debug.getinfo, tail-called',
+        behaviour:
+            'A function that ends in `return debug.traceback(msg)` (or `return debug.getinfo(1)`) gets a '
+            + '"(tail call): ?" frame at level 1 here where desktop shows that function\'s own line. Every other '
+            + 'level, and every call that is not a tail call, matches.',
+        reason:
+            'These are Lua functions here (Bridge.lua), so they can present Mudlet Web\'s own Lua as C frames. A '
+            + 'tail call to a Lua function replaces the caller\'s frame and Lua 5.1 keeps only a placeholder for '
+            + 'it, so its line is gone before the override runs; desktop\'s C functions never replace a frame. '
+            + 'Matching would mean writing them as C functions against the raw stack, for one cosmetic line.',
+        issue: '#276',
+    },
+    {
+        api: 'runtime errors inside Mudlet Web\'s own Lua',
+        behaviour:
+            'An error the Lua VM or a stock C function raises from inside Mudlet Web\'s own Lua - e.g. '
+            + 'utf8.len({}), which fails inside string.len - is prefixed "[C]:<line>:", where desktop prefixes the '
+            + 'calling script line (luaL_argerror) or nothing. Errors that code raises deliberately are '
+            + 'positioned as desktop positions them.',
+        reason:
+            'Desktop\'s io/lfs/utf8/rex/yajl/luasql/lpeg and API are C; here they are Lua compiled under the chunk '
+            + 'name "=[C]". Deliberate raises go through an error() that positions the way lua_error / luaL_error '
+            + 'do, but an error raised by the VM itself, or by a stock C function such code calls, takes the '
+            + 'position of the Lua frame that called it, and nothing sits between there and the script\'s pcall '
+            + 'to rewrite it. Closing it means validating every argument up front in every shim.',
+        issue: '#276',
+    },
+    {
+        api: 'setActiveProfile(name)',
+        behaviour:
+            'For a profile open in another browser tab it answers true, as desktop does, but that tab is not '
+            + 'brought to the front. For this tab\'s own profile it asks for window focus.',
+        reason:
+            'Each profile lives in its own browser tab, and browsers only let the user switch tabs - a page '
+            + 'cannot focus another tab. The refusals (empty name, no such profile, not loaded) match.',
+        issue: '#276',
+    },
+    {
+        api: 'rex.config()',
+        behaviour:
+            'PCRE2_CONFIG_JIT is 0 and there is no PCRE2_CONFIG_JITTARGET; desktop\'s build reports 1 and its '
+            + 'JIT target.',
+        reason:
+            'The table describes the PCRE2 library in use, and the WebAssembly build has no JIT (rex.jit_compile '
+            + 'is not provided either). Reporting desktop\'s values would describe a library that is not there.',
+        issue: '#276',
+    },
+    {
+        api: 'lfs.lock / lfs.unlock',
+        behaviour:
+            'Always succeed on an open handle whose mode can carry the lock; desktop\'s fcntl lock can be refused '
+            + 'by another process holding one.',
+        reason:
+            'A profile\'s files belong to the one tab holding its Web Lock, so no second holder of a record lock '
+            + 'can exist to contend with. The argument checks and the closed-file error match.',
+        issue: '#276',
+    },
+    {
+        api: 'lfs.link / lfs.lock_dir / lfs.symlinkattributes',
+        behaviour:
+            'Work over the default IndexedDB filesystem; on a linked local folder they answer '
+            + '`nil, "Operation not supported", 95` where desktop makes the link.',
+        reason:
+            'Links are a feature of the virtual filesystem backend. ZenFS\'s store backend implements them; the '
+            + 'File System Access API behind a linked folder has no links at all.',
+        issue: '#276',
+    },
+    {
+        api: 'io.popen, io.stdout / io.stderr',
+        behaviour:
+            'io.popen raises "\'popen\' not supported". io.stdout / io.stderr writes go to the browser console '
+            + 'rather than the process streams desktop writes to.',
+        reason:
+            'A browser page cannot start processes and has no standard streams; the console is the nearest '
+            + 'equivalent, and the error is what a Lua built without popen raises.',
+        issue: '#276',
+    },
 ];

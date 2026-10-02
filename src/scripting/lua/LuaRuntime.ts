@@ -23,6 +23,7 @@ import LUA_GLOBAL_SETUP from './LuaGlobalSetup.lua?raw';
 import LUASQL_LUA from './Luasql.lua?raw';
 import {encodeLuaBytes, encodeRowsToLuaSource} from './sqlRowEncoder';
 import YAJL_LUA from './Yajl.lua?raw';
+import LPEG_REGISTER_LUA from './Lpeg.lua?raw';
 import {setupRex} from './rex';
 import {setupYajl, type YajlBridge} from './yajl';
 import {parseImageSize} from './imageSize';
@@ -367,6 +368,43 @@ return __mudlet_json_encode(out)
 // Mudlet, which only shows user-created variables). Run once at the end of init,
 // before any saved-variable restore or user script adds globals. The set's own
 // name starts with __mudlet so it's excluded from the view.
+// The two `error`s internal chunks are compiled with (LuaRuntime.INTERNAL_PROLOGUE).
+// __mudlet_c_error is lua_error: no position, whatever level it is asked for.
+// __mudlet_lual_error is luaL_error: the position of the first frame outside
+// Mudlet Web's own code — the script line that called into it — and none when
+// that frame is C (a pcall, say); level 0 still means none. A level that is
+// not a number gets the stock argument error, named 'error' because it is
+// called through a table field. Bound before any internal chunk, and with the
+// stock debug.getinfo, before Bridge.lua replaces it.
+const C_ERROR_LUA = `
+do
+  local raw = { error = error }
+  local getinfo = debug.getinfo
+  function __mudlet_c_error(message, level)
+    if level ~= nil and tonumber(level) == nil then raw.error(message, level) end
+    raw.error(message, 0)
+  end
+  function __mudlet_lual_error(message, level)
+    if level ~= nil and tonumber(level) == nil then raw.error(message, level) end
+    local t = type(message)
+    if tonumber(level) == 0 or (t ~= 'string' and t ~= 'number') then raw.error(message, 0) end
+    local lvl = 2
+    while true do
+      local info = getinfo(lvl, 'Sl')
+      if info == nil then break end
+      if not (info.source == '=[C]' and info.what ~= 'C') then
+        if info.what ~= 'C' and info.currentline > 0 then
+          raw.error(info.short_src .. ':' .. info.currentline .. ': ' .. message, 0)
+        end
+        break
+      end
+      lvl = lvl + 1
+    end
+    raw.error(message, 0)
+  end
+end
+`;
+
 const CAPTURE_BASELINE_LUA = `
 __mudlet_baseline = {}
 for k in pairs(_G) do
@@ -881,6 +919,9 @@ export class LuaRuntime implements IScriptingRuntime {
         // turns that into Mudlet's `true` / `nil, message`.
         this.lua.global.set('__loadProfile', (name: unknown) => this.api.loadProfile(String(name)));
         this.lua.global.set('__closeProfile', (name: unknown) => this.api.closeProfile(String(name)));
+        // Mudlet setActiveProfile(name) — null when the profile is open (and
+        // fronted, where a browser lets a page do that), or the refusal.
+        this.lua.global.set('__setActiveProfile', (name: unknown) => this.api.setActiveProfile(String(name)));
         // Mudlet getCharacterName() — the profile's saved login name, or '' when
         // none is set; Bridge.lua turns that into Mudlet's (nil, errMsg).
         this.lua.global.set('__mudlet_getCharacterName', () => this.api.getCharacterName());
@@ -2318,12 +2359,17 @@ export class LuaRuntime implements IScriptingRuntime {
         // Bootstrap chunks run sync — none of them yield. setupRex needs an
         // await for one-time PCRE wasm init; sqliteReady gates the SQL bridge
         // until the sqlite module has finished loading.
-        this.lua.doStringSync(BRIDGE_LUA);
-        await setupRex(this.lua);
-        this.lua.doStringSync(EXEC_LUA);
+        this.runInternalChunk(C_ERROR_LUA, 'none');
+        this.runInternalChunk(BRIDGE_LUA, 'mudlet');
+        await setupRex(this.lua, code => this.runInternalChunk(code, 'lual'));
+        this.runInternalChunk(EXEC_LUA, 'mudlet');
         this.installNativeUtf8Find();
         this.lua.global.set('__mudlet_utf8_casemap', utf8CaseMap);
+        this.installUtf8Natives();
         this.execModule(UTF8, 'utf8', 'utf8');
+        // Desktop loads it as `utf8 = require "lua-utf8"`, and luautf8
+        // registers itself as "utf8" too, so both names require.
+        this.execInternal('package.loaded["lua-utf8"] = utf8; package.loaded["utf8"] = utf8', 'utf8-register');
 
         // Built-in Lua files served read-only via the VFS at /lua/<relative-path>.
         // Derived from mudlet-lua/ directory; keys mirror the paths LuaGlobal.lua
@@ -2370,28 +2416,31 @@ export class LuaRuntime implements IScriptingRuntime {
         // the same read-only namespace Lua does.
         this.builtinFiles = builtins;
         this.setupVFS(this.vfs, builtins);
-        this.exec(VFS_LUA, 'VFS');
-        this.exec(LUA_GLOBAL_SETUP, 'lua-globals-setup');
+        this.execInternal(VFS_LUA, 'VFS');
+        this.execInternal(LUA_GLOBAL_SETUP, 'lua-globals-setup', 'mudlet');
         await sqliteReady;
         this.setupSqlBridge();
-        this.exec(LUASQL_LUA, 'Luasql');
+        this.execInternal(LUASQL_LUA, 'Luasql');
         this.yajl = setupYajl(this.lua, (name, fn) => this.registerRawGlobal(name, fn));
-        this.exec(YAJL_LUA, 'Yajl');
+        // lua-yajl raises with lua_error throughout (Yajl.lua passes level 0
+        // everywhere), hence the `mudlet` flavour of error.
+        this.execInternal(YAJL_LUA, 'Yajl', 'mudlet');
+        // Desktop loads it as `yajl = require "yajl"`, so the name requires.
+        this.execInternal('package.loaded.yajl = yajl', 'yajl-register');
         // lpeg (Mudlet 4.21 bundles the C library). The browser has no C lpeg, so
         // we register the pure-Lua LuLPeg port under package.loaded["lpeg"]. This
         // MUST run before LuaGlobal.lua, whose `if package.loaded["lpeg"] then lpeg
-        // = require "lpeg" end` guard publishes the global. dofile (not require) —
-        // bundled modules sit in the VFS at /lua/... but /lua isn't on package.path
-        // outside busted builds, so LuaGlobal.lua loads its own 3rdparty/* the same
-        // way. pcall-guarded so a load failure leaves lpeg nil (the prior
-        // behaviour) rather than aborting runtime setup.
-        this.exec(
-            `do local ok, mod = pcall(dofile, "/lua/3rdparty/lulpeg.lua")
-                 if ok and mod then package.loaded["lpeg"] = mod
-                 else print("[mudlet] lpeg (LuLPeg) failed to load: " .. tostring(mod)) end
-             end`,
-            'lpeg-register',
-        );
+        // = require "lpeg" end` guard publishes the global. Read and compiled here
+        // rather than required — bundled modules sit in the VFS at /lua/... but
+        // /lua isn't on package.path outside busted builds — and compiled as
+        // Mudlet Web's own code, since desktop's lpeg is C. pcall-guarded so a
+        // load failure leaves lpeg nil rather than aborting runtime setup.
+        //
+        // LuLPeg predates LPeg 1.1, which is what desktop links (the lpeg rock):
+        // there `version` is the string "LPeg 1.1.0" rather than a function, and
+        // utfR(from, to) matches one UTF-8 character in a codepoint range. utfR
+        // is built here out of byte ranges.
+        this.execInternal(LPEG_REGISTER_LUA, 'lpeg-register');
         this.exec(LUAGLOBAL, 'LuaGlobal');
         this.installMudletLuaOverrides();
         this.installFastColorEcho();
@@ -2430,7 +2479,7 @@ export class LuaRuntime implements IScriptingRuntime {
      * bundled or user chunk can capture the unsafe version as an upvalue.
      */
     private installSafeFunctionTostring(): void {
-        this.lua.doStringSync(
+        this.runInternalChunk(
             `do
   local raw = tostring
   local getmt, setmt = debug.getmetatable, debug.setmetatable
@@ -2445,6 +2494,7 @@ export class LuaRuntime implements IScriptingRuntime {
     return 'function: (unknown)'
   end
 end`,
+            'none',
         );
     }
 
@@ -3211,6 +3261,34 @@ end`);
             }
         });
 
+        // io.tmpfile(): a "w+" handle with no file behind it, so its contents
+        // live only as long as the handle — the unnamed file tmpfile(3) makes.
+        this.lua.global.set('__vfs_io_tmpfile__', (): number => {
+            const id = nextId++;
+            handles.set(id, { path: '', mode: 'w+', content: '', pos: 0, dirty: false });
+            return id;
+        });
+
+        // io.stdout / io.stderr. Desktop writes those to its own process's
+        // streams, which a player never sees; here they go to the browser
+        // console, a line at a time.
+        const stdioPending: Record<number, string> = { 1: '', 2: '' };
+        this.lua.global.set('__mudlet_stdio_write', (fd: number, armored: string): void => {
+            const stream = fd === 2 ? 2 : 1;
+            const bytes = unarmor(String(armored ?? '\x02'));
+            const buf = new Uint8Array(bytes.length);
+            for (let i = 0; i < bytes.length; i++) buf[i] = bytes.charCodeAt(i) & 0xff;
+            let text = stdioPending[stream] + new TextDecoder('utf-8').decode(buf);
+            let nl = text.indexOf('\n');
+            while (nl !== -1) {
+                const line = text.substring(0, nl);
+                if (stream === 2) console.error(line); else console.log(line);
+                text = text.substring(nl + 1);
+                nl = text.indexOf('\n');
+            }
+            stdioPending[stream] = text;
+        });
+
         this.lua.global.set('__vfs_io_read__', (id: number, fmt: string | number): string | number | null => {
             const h = handles.get(id);
             if (!h) { setError('invalid file handle'); return null; }
@@ -3287,7 +3365,8 @@ end`);
             const h = handles.get(id);
             if (!h) return 'invalid file handle';
             try {
-                if (h.dirty && vfs) {
+                // An empty path is io.tmpfile()'s handle: nothing to write back.
+                if (h.dirty && vfs && h.path !== '') {
                     vfs.writeBinaryFile(h.path, latin1ToBytes(h.content));
                     this.notifyVfsPathChange(h.path);
                 }
@@ -3400,6 +3479,60 @@ end`);
                 blocks: s.blocks,
                 blksize: s.blksize,
             };
+        });
+
+        // lfs.symlinkattributes: lstat, so a symbolic link reports as itself.
+        this.lua.global.set('__vfs_lfs_lstat__', (path: string): object | null => {
+            if (builtins.has(path)) {
+                const content = builtins.get(path)!;
+                return {
+                    type: 'file', size: content.length, modification: 0, access: 0, change: 0,
+                    permissions: 'r--r--r--', dev: 0, ino: 0, nlink: 1, uid: 0, gid: 0, rdev: 0,
+                    blocks: Math.ceil(content.length / 512), blksize: 4096,
+                };
+            }
+            if (!vfs) {
+                setError(`cannot obtain information from file '${path}': No such file or directory`, 2);
+                return null;
+            }
+            try {
+                const s = vfs.lstat(path);
+                return {
+                    type: s.type,
+                    size: s.size,
+                    modification: Math.floor(s.mtime.getTime() / 1000),
+                    access: Math.floor(s.atime.getTime() / 1000),
+                    change: Math.floor(s.ctime.getTime() / 1000),
+                    permissions: permissionString(s.mode),
+                    dev: s.dev,
+                    ino: s.ino,
+                    nlink: s.nlink,
+                    uid: s.uid,
+                    gid: s.gid,
+                    rdev: s.rdev,
+                    blocks: s.blocks,
+                    blksize: s.blksize,
+                };
+            } catch (e) {
+                const d = describeFsError(e);
+                setError(`cannot obtain information from file '${path}': ${d.message}`, d.errno ?? null);
+                return null;
+            }
+        });
+
+        this.lua.global.set('__vfs_lfs_readlink__', (path: string): string | null => {
+            if (!vfs) { setError('No such file or directory', 2); return null; }
+            try { return vfs.readlink(path); }
+            catch (e) { failWith(e); return null; }
+        });
+
+        this.lua.global.set('__vfs_lfs_link__', (target: string, path: string, symbolic: boolean): boolean => {
+            if (!vfs) { setError('no profile VFS'); return false; }
+            try {
+                vfs.link(target, path, symbolic === true);
+                this.notifyVfsPathChange(vfs.resolvePath(path));
+                return true;
+            } catch (e) { failWith(e); return false; }
         });
 
         // ── zip (the lua-zip rock Mudlet preloads) ───────────────────────────
@@ -3793,6 +3926,54 @@ end`);
         this.execInner(code, name);
     }
 
+    /**
+     * The chunk name every piece of Mudlet Web's own Lua is compiled under —
+     * Bridge.lua, the io/lfs/utf8/yajl/luasql/rex/lpeg shims, and the one-line
+     * entry chunks JS runs. Desktop implements all of that in C, so Lua reports
+     * it as `[C]` there; Bridge.lua's error/debug.getinfo/debug.traceback use
+     * this name to show it the same way (see the top of Bridge.lua).
+     */
+    static readonly INTERNAL_CHUNK = '=[C]';
+
+    /**
+     * Put in front of an internal chunk, on its first line so the chunk's line
+     * numbers don't move: `error` there is one of {@link C_ERROR_LUA}'s, so an
+     * error raised from that code is positioned the way the C it stands in for
+     * positions it.
+     *   - `mudlet`: Mudlet's own API raises with lua_error — no position at
+     *     all (`tempTimer: bad argument #1 ...`).
+     *   - `lual`: the C libraries (io, lfs, luautf8, lrexlib, lua-yajl,
+     *     LuaSQL, LPeg) raise with luaL_error / luaL_argerror — the position
+     *     of the script line that called them, none when C called them.
+     * A chunk-local rather than a replaced global `error`, because a script's
+     * `return error(msg)` tail-calls it: the stock C function keeps the
+     * caller's frame for its position, a Lua replacement would not.
+     */
+    private static readonly INTERNAL_PROLOGUE = {
+        mudlet: 'local error = __mudlet_c_error; ',
+        lual: 'local error = __mudlet_lual_error; ',
+        none: '',
+    } as const;
+
+    /** Run one of Mudlet Web's own bootstrap chunks on the main state, under
+     *  {@link INTERNAL_CHUNK}. */
+    private runInternalChunk(code: string, errors: keyof typeof LuaRuntime.INTERNAL_PROLOGUE = 'mudlet'): void {
+        const g = this.lua.global;
+        const top = g.getTop();
+        try {
+            g.loadString(LuaRuntime.INTERNAL_PROLOGUE[errors] + code, LuaRuntime.INTERNAL_CHUNK);
+            g.runSync();
+        } finally {
+            g.luaApi.lua_settop(g.address, top);
+        }
+    }
+
+    /** {@link exec} for Mudlet Web's own Lua: compiled under
+     *  {@link INTERNAL_CHUNK}, so what it defines reads as C to a script. */
+    private execInternal(code: string, name: string, errors: keyof typeof LuaRuntime.INTERNAL_PROLOGUE = 'lual'): unknown {
+        return this.execInner(LuaRuntime.INTERNAL_PROLOGUE[errors] + code, name, LuaRuntime.INTERNAL_CHUNK);
+    }
+
     // `lua_gc(L, LUA_GCCOUNT, 0)` — Lua-managed memory in KB, one C call.
     private static readonly LUA_GCCOUNT = 3;
     // Emscripten builds liblua5.1 as a 32-bit module, so its heap stops dead at
@@ -3961,7 +4142,7 @@ end`);
         const threadIndex = g.getTop();
         try {
             this.markEntryThread(threadIndex);
-            t.loadString('return __exec(...)', '@' + name);
+            t.loadString('return __exec(...)', LuaRuntime.INTERNAL_CHUNK);
             t.pushValue(code);
             t.pushValue(name);
             if (chunkName !== undefined) t.pushValue(chunkName);
@@ -4007,7 +4188,7 @@ end`);
         const threadIndex = g.getTop();
         try {
             this.markEntryThread(threadIndex);
-            t.loadString(chunk, '@' + label);
+            t.loadString(chunk, LuaRuntime.INTERNAL_CHUNK);
             const res = this.resumeAsRunning(t, () => t.resume(0));
             if (res.result === LuaReturn.Yield) {
                 this.parkDialogThread(t, label, 'chunk', threadIndex);
@@ -4119,27 +4300,77 @@ end`);
     // Fire a registered Lua callback by id (label clicks, tempTimer/Alias/
     // Trigger/Key).
     private dispatchCb(cbId: number, label: string): void {
-        this.runChunk(`__mudlet_dispatch_cb(${cbId})`, label);
+        this.runCallback(cbId, label, false, undefined);
         this.api.flushOutput();
     }
 
-    /** Whether the callback {@link dispatchCb} last ran returned true — the way
-     *  an expiring temp trigger asks for another life. See __mudlet_dispatch_cb. */
+    /** Set by {@link runCallback}: whether the callback's first result was
+     *  `true` — the way an expiring temp trigger asks for another life. */
+    private cbReturnedTrue = false;
+
+    /** Whether the callback {@link dispatchCb} last ran returned true. */
     private lastCbReturnedTrue(): boolean {
-        try {
-            return this.lua.global.get('__mudlet_cb_returned_true') === true;
-        } catch {
-            return false;
-        }
+        return this.cbReturnedTrue;
     }
 
     // Same as dispatchCb but passes a single argument to the callback. Used by
     // label mouse callbacks to deliver the {button, x, y, ...} event table.
     private dispatchCbWithArg(cbId: number, arg: unknown, label: string): void {
         if (this.inert) return;
-        this.lua.global.set('__mudlet_cb_arg', arg);
-        this.runChunk(`__mudlet_dispatch_cb_arg(${cbId})`, label);
+        this.runCallback(cbId, label, true, arg);
         this.api.flushOutput();
+    }
+
+    /**
+     * Call the Lua function registered under `cbId` (Bridge.lua's
+     * `mudlet.cb` registry table) as the base function of a fresh entry
+     * thread. Desktop calls such a callback straight from C with lua_pcall, so
+     * nothing sits under it: its traceback ends at the callback, which shows as
+     * `in function <chunk:line>` — called from C, it has no name. Running it
+     * through a Lua dispatcher chunk instead left two frames of ours under it.
+     */
+    private runCallback(cbId: number, label: string, withArg: boolean, arg: unknown): void {
+        this.cbReturnedTrue = false;
+        if (this.inert) return;
+        this.checkMemoryPressure();
+        try {
+            const g = this.lua.global;
+            const api = g.luaApi;
+            this.syncGlobalsFromRunning();
+            const t = g.newThread();
+            const threadIndex = g.getTop();
+            try {
+                this.markEntryThread(threadIndex);
+                api.lua_getfield(t.address, LUA_REGISTRYINDEX, 'mudlet.cb');
+                if (api.lua_type(t.address, -1) !== LuaType.Table) {
+                    api.lua_settop(t.address, 0);
+                    return;
+                }
+                api.lua_rawgeti(t.address, -1, cbId);
+                api.lua_remove(t.address, -2);
+                if (api.lua_type(t.address, -1) !== LuaType.Function) {
+                    api.lua_settop(t.address, 0);
+                    return;
+                }
+                if (withArg) t.pushValue(arg);
+                const res = this.resumeAsRunning(t, () => t.resume(withArg ? 1 : 0));
+                if (res.result === LuaReturn.Yield) {
+                    this.parkDialogThread(t, label, 'chunk', threadIndex);
+                    return;
+                }
+                t.assertOk(res.result);
+                this.cbReturnedTrue = t.getTop() >= 1
+                    && api.lua_type(t.address, 1) === LuaType.Boolean
+                    && api.lua_toboolean(t.address, 1) !== 0;
+            } catch (e) {
+                if (this.markFatal(e)) return;
+                this.api.printError(`[${label}] ${describeThrown(e, label)}`);
+            } finally {
+                g.remove(threadIndex);
+            }
+        } catch (e) {
+            if (!this.markFatal(e)) throw e;
+        }
     }
 
     // Unregister a previously registered callback id (Lua side). Used to free
@@ -4165,7 +4396,7 @@ end`);
     }
 
     private execModule(code: string, name: string, globalName: string): void {
-        const result = this.execInner(code, name);
+        const result = this.execInternal(code, name);
         if (result !== undefined && result !== null) this.lua.global.set(globalName, result);
     }
 
@@ -4190,6 +4421,50 @@ end`);
             if (r.kind === 'unsupported') return undefined;
             if (r.kind === 'nomatch') return false;
             return [r.start, r.end, ...r.captures];
+        });
+    }
+
+    /**
+     * The Unicode tables behind luautf8's normalize_nfc / isnfc /
+     * grapheme_indices, read off the JS engine (String.prototype.normalize,
+     * Intl.Segmenter) rather than vendored. Both take and give the text armored
+     * (see byteArmor.ts) — valid UTF-8 may still hold a NUL, which the wasmoon
+     * string bridge would cut at. utf8.lua validates before calling, so the
+     * bytes always decode.
+     */
+    private installUtf8Natives(): void {
+        const decoder = new TextDecoder('utf-8');
+        const encoder = new TextEncoder();
+        const toText = (armored: unknown): string => {
+            const bytes = unarmor(String(armored ?? '\x02'));
+            const buf = new Uint8Array(bytes.length);
+            for (let i = 0; i < bytes.length; i++) buf[i] = bytes.charCodeAt(i) & 0xff;
+            return decoder.decode(buf);
+        };
+        const utf8Length = (s: string): number => encoder.encode(s).length;
+        // NFC of the text, armored for the trip back.
+        this.lua.global.set('__mudlet_utf8_nfc', (armored: unknown): string => {
+            const bytes = encoder.encode(toText(armored).normalize('NFC'));
+            let out = '';
+            for (let i = 0; i < bytes.length; i += 0x8000) {
+                out += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+            }
+            return armor(out);
+        });
+        // Extended grapheme clusters, as the byte length of each, comma
+        // separated: one flat string rather than an array for Lua to walk.
+        this.lua.global.set('__mudlet_utf8_graphemes', (armored: unknown): string => {
+            const text = toText(armored);
+            const lengths: number[] = [];
+            const Segmenter = (Intl as unknown as { Segmenter?: new (l?: string, o?: object) => { segment(s: string): Iterable<{ segment: string }> } }).Segmenter;
+            if (Segmenter) {
+                for (const { segment } of new Segmenter(undefined, { granularity: 'grapheme' }).segment(text)) {
+                    lengths.push(utf8Length(segment));
+                }
+            } else {
+                for (const ch of text) lengths.push(utf8Length(ch));
+            }
+            return lengths.join(',');
         });
     }
 

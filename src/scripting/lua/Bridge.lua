@@ -1,5 +1,388 @@
 matches = {}; multimatches = {}
 
+-- ── Mudlet Web's own Lua, seen from a script, is C ─────────────────────────
+-- Everything desktop Mudlet implements in C — its API, io, lfs, utf8, rex,
+-- yajl, luasql, lpeg — is Lua here: this file and the shims LuaRuntime loads
+-- after it. All of them are compiled under one chunk name, "=[C]" (see
+-- LuaRuntime.INTERNAL_CHUNK), and the two places a script can see the
+-- difference are made to report what desktop would:
+--   * `error` in that code is a chunk-local one (LuaRuntime prepends it, on
+--     line 1 so line numbers stay put) that never adds a "[C]:123:" position,
+--     as a lua_error from C adds none — so `tempTimer: bad argument #1 ...`
+--     reads the same on both;
+--   * debug.getinfo / getlocal / setlocal / traceback (installed below) show
+--     each run of it as one C frame, and the entry-point plumbing under a
+--     callback not at all.
+local __mudlet_INTERNAL = '=[C]'
+local __mudlet_rawGetinfo = debug.getinfo
+local __mudlet_rawRunning = coroutine.running
+
+do
+    local raw = {
+        getinfo = debug.getinfo, traceback = debug.traceback,
+        getlocal = debug.getlocal, setlocal = debug.setlocal,
+    }
+    local rawGetinfo, rawRunning, INTERNAL = __mudlet_rawGetinfo, __mudlet_rawRunning, __mudlet_INTERNAL
+    local floor = math.floor
+
+    local function internal(info)
+        return info ~= nil and info.source == INTERNAL and info.what ~= 'C'
+    end
+
+    -- Rewrite (in place) the fields a getinfo table carries so they describe
+    -- a C function, as lua_getinfo does for one.
+    local function asC(info)
+        if info.source ~= nil then
+            info.source = INTERNAL
+            info.short_src = '[C]'
+            info.what = 'C'
+            info.linedefined = -1
+            info.lastlinedefined = -1
+        end
+        if info.currentline ~= nil then info.currentline = -1 end
+        if info.nups ~= nil then info.nups = 0 end
+        info.activelines = nil
+        return info
+    end
+
+    -- The stack of `co` (or the current thread, from level `first` counted
+    -- from this function) as desktop would have it. Each entry is
+    -- { idx = position in the real walk (1 = level `first`), asC, blank,
+    -- info = 'Snl' info ready to print }. A run of Mudlet Web frames — with any
+    -- real C frames inside it — becomes one C frame named the way its
+    -- outermost frame was called; a run at the bottom of the stack (the
+    -- entry-point plumbing a callback runs under) is dropped; and a script
+    -- frame called from Mudlet Web code loses its name, as a function called
+    -- from C has none.
+    local function virtualStack(co, first)
+        local infos, n = {}, 0
+        while true do
+            local info
+            if co then info = rawGetinfo(co, first + n, 'Snl') else info = rawGetinfo(first + n, 'Snl') end
+            if not info then break end
+            n = n + 1
+            infos[n] = info
+        end
+        -- Tail-call placeholders join a run too: desktop's C never tail-calls,
+        -- and __exec is reached by one.
+        local function joins(info)
+            return internal(info) or info.what == 'C' or info.what == 'tail'
+        end
+        local out, i = {}, 1
+        while i <= n do
+            local info = infos[i]
+            if joins(info) then
+                local j, sawInternal = i, internal(info)
+                while j < n and joins(infos[j + 1]) do
+                    j = j + 1
+                    if internal(infos[j]) then sawInternal = true end
+                end
+                if not sawInternal then
+                    for k = i, j do out[#out + 1] = { idx = k, info = infos[k] } end
+                elseif j == n then
+                    break
+                else
+                    local outer = j
+                    while infos[outer].what == 'tail' do outer = outer - 1 end
+                    out[#out + 1] = { idx = outer, asC = true, info = asC(infos[outer]) }
+                end
+                i = j + 1
+            else
+                local blank = i < n and internal(infos[i + 1])
+                if blank then info.namewhat, info.name = '', nil end
+                out[#out + 1] = { idx = i, blank = blank, info = info }
+                i = i + 1
+            end
+        end
+        return out
+    end
+
+    local function isCurrent(co)
+        return co == nil or co == rawRunning()
+    end
+
+    local function toLevel(v)
+        if type(v) == 'number' then return v end
+        if type(v) == 'string' then return tonumber(v) end
+        return nil
+    end
+
+    function debug.getinfo(...)
+        local nargs = select('#', ...)
+        local a, b, c = ...
+        local co, f, what
+        if type(a) == 'thread' then co, f, what = a, b, c else f, what = a, b end
+        if isCurrent(co) then co = nil end
+        if type(f) == 'function' then
+            local info
+            if co then info = raw.getinfo(co, f, what or 'flnSu') else info = raw.getinfo(f, what or 'flnSu') end
+            if info and internal(rawGetinfo(f, 'S')) then asC(info) end
+            return info
+        end
+        local lvl = toLevel(f)
+        if lvl == nil then
+            -- Not a level or a function: the stock function raises its own error.
+            if type(a) == 'thread' then return raw.getinfo(a, b, c) end
+            if nargs >= 2 then return raw.getinfo(a, b) end
+            return raw.getinfo(a)
+        end
+        lvl = lvl >= 0 and floor(lvl) or -floor(-lvl)
+        what = what or 'flnSu'
+        if lvl < 0 then return nil end
+        if lvl == 0 and not co then
+            -- getinfo itself, a C function on desktop.
+            local info = raw.getinfo(1, what)
+            if info then
+                asC(info)
+                if info.func ~= nil then info.func = debug.getinfo end
+            end
+            return info
+        end
+        local stack = virtualStack(co, co and 0 or 3)
+        local e = stack[co and lvl + 1 or lvl]
+        if not e then return nil end
+        local info
+        if co then info = raw.getinfo(co, e.idx - 1, what) else info = raw.getinfo(e.idx + 1, what) end
+        if not info then return nil end
+        if e.asC then asC(info) end
+        if e.blank and info.namewhat ~= nil then info.namewhat, info.name = '', nil end
+        return info
+    end
+
+    -- getlocal / setlocal count levels the way getinfo now does, so code that
+    -- walks the stack with one and reads locals with the other (StringUtils'
+    -- f() interpolation does) lands on the same frame.
+    local function localAccess(name, ...)
+        local a = ...
+        local co, base = nil, 0
+        if type(a) == 'thread' then co, base = a, 1 end
+        if isCurrent(co) then co = nil end
+        local lvl = toLevel((select(base + 1, ...)))
+        if lvl == nil or lvl < 1 then return nil end
+        lvl = floor(lvl)
+        -- virtualStack from 4: localAccess sits between it and the caller.
+        local stack = virtualStack(co, co and 0 or 4)
+        local e = stack[co and lvl + 1 or lvl]
+        if not e then
+            error("bad argument #" .. (base + 1) .. " to '" .. name .. "' (level out of range)", 0)
+        end
+        return e, co, base
+    end
+    function debug.getlocal(...)
+        local e, co, base = localAccess('getlocal', ...)
+        if e == nil then return raw.getlocal(...) end
+        local n = select(base + 2, ...)
+        if co then return raw.getlocal(co, e.idx - 1, n) end
+        return raw.getlocal(e.idx + 1, n)
+    end
+    function debug.setlocal(...)
+        local e, co, base = localAccess('setlocal', ...)
+        if e == nil then return raw.setlocal(...) end
+        local n, v = select(base + 2, ...)
+        if co then return raw.setlocal(co, e.idx - 1, n, v) end
+        return raw.setlocal(e.idx + 1, n, v)
+    end
+
+    -- Lua 5.1's db_errorfb, over the stack virtualStack describes.
+    local LEVELS1, LEVELS2 = 12, 10
+    function debug.traceback(...)
+        local args = { n = select('#', ...), ... }
+        local base, co = 0, nil
+        if type(args[1]) == 'thread' then co, base = args[1], 1 end
+        local current = isCurrent(co)
+        local top = args.n
+        local level = toLevel(args[base + 2])
+        if level ~= nil then
+            level = level >= 0 and floor(level) or -floor(-level)
+            top = base + 1
+        else
+            level = current and 1 or 0
+        end
+        local msg = args[base + 1]
+        local head
+        if top == base then
+            head = ''
+        elseif type(msg) ~= 'string' and type(msg) ~= 'number' then
+            return msg
+        else
+            head = msg .. '\n'
+        end
+        local stack, offset
+        if current then
+            stack, offset = virtualStack(nil, 3), 0
+        else
+            stack, offset = virtualStack(co, 0), 1
+        end
+        local self
+        if current then
+            -- Level 0 is traceback itself, a C function on desktop.
+            self = asC(raw.getinfo(1, 'Snl'))
+        end
+        local function frame(v)
+            if v < 0 then return nil end
+            if current and v == 0 then return self end
+            local e = stack[v + offset]
+            return e and e.info
+        end
+        local parts, firstpart = { head, 'stack traceback:' }, true
+        while frame(level) do
+            level = level + 1
+            if level > LEVELS1 and firstpart then
+                if not frame(level + LEVELS2) then
+                    level = level - 1
+                else
+                    parts[#parts + 1] = '\n\t...'
+                    while frame(level + LEVELS2) do level = level + 1 end
+                end
+                firstpart = false
+            else
+                local ar = frame(level - 1)
+                local s = '\n\t' .. ar.short_src .. ':'
+                if ar.currentline > 0 then s = s .. ar.currentline .. ':' end
+                if ar.namewhat ~= '' then
+                    s = s .. " in function '" .. tostring(ar.name) .. "'"
+                elseif ar.what == 'main' then
+                    s = s .. ' in main chunk'
+                elseif ar.what == 'C' or ar.what == 'tail' then
+                    s = s .. ' ?'
+                else
+                    s = s .. ' in function <' .. ar.short_src .. ':' .. ar.linedefined .. '>'
+                end
+                parts[#parts + 1] = s
+            end
+        end
+        return table.concat(parts)
+    end
+end
+
+-- ── math.random: glibc's rand() ─────────────────────────────────────────────
+-- Lua 5.1's math.random is `rand() % RAND_MAX / RAND_MAX` and math.randomseed
+-- is `srand(seed)`, so a seeded sequence is whatever the C library's rand()
+-- makes of it. Desktop links glibc, whose rand() is random(3) — the TYPE_3
+-- additive feedback generator, 31 words of state. Emscripten's libc has a
+-- different generator, so the same seed gave different numbers here; this is
+-- glibc's random_r/srandom_r (stdlib/random_r.c) step for step. Nothing on
+-- desktop seeds it at startup, so it starts from srand(1), glibc's default.
+do
+    -- luaL_argerror / luaL_error raise these: positioned at the calling line.
+    local lualError = __mudlet_lual_error
+    local floor = math.floor
+    local DEG, SEP, TWO32, RAND_MAX = 31, 3, 4294967296, 2147483647
+    local state, fptr, rptr = {}, SEP + 1, 1
+
+    local function rand()
+        local val = (state[fptr] + state[rptr]) % TWO32
+        state[fptr] = val
+        fptr = fptr + 1
+        if fptr > DEG then
+            fptr = 1
+            rptr = rptr + 1
+        else
+            rptr = rptr + 1
+            if rptr > DEG then rptr = 1 end
+        end
+        return floor(val / 2)
+    end
+
+    local function srand(seed)
+        seed = seed % TWO32
+        if seed == 0 then seed = 1 end
+        state[1] = seed
+        -- int32_t word = seed: the Park–Miller steps run on the signed value.
+        local word = seed >= 2147483648 and seed - TWO32 or seed
+        for i = 2, DEG do
+            local hi = word >= 0 and floor(word / 127773) or -floor(-word / 127773)
+            local lo = word - hi * 127773
+            word = 16807 * lo - 2836 * hi
+            if word < 0 then word = word + 2147483647 end
+            state[i] = word % TWO32
+        end
+        fptr, rptr = SEP + 1, 1
+        for _ = 1, DEG * 10 do rand() end
+    end
+    srand(1)
+
+    -- luaL_checkint: a number (or numeric string), truncated to an int.
+    local function checkint(v, n, fname)
+        local x = tonumber(v)
+        if x == nil then
+            lualError("bad argument #" .. n .. " to '" .. fname .. "' (number expected, got "
+                .. (v == nil and 'no value' or type(v)) .. ")")
+        end
+        return x >= 0 and floor(x) or -floor(-x)
+    end
+
+    function math.random(...)
+        local n = select('#', ...)
+        local r = (rand() % RAND_MAX) / RAND_MAX
+        if n == 0 then return r end
+        if n == 1 then
+            local u = checkint((...), 1, 'random')
+            if u < 1 then lualError("bad argument #1 to 'random' (interval is empty)") end
+            return floor(r * u) + 1
+        end
+        if n == 2 then
+            local l, u = ...
+            l, u = checkint(l, 1, 'random'), checkint(u, 2, 'random')
+            if l > u then lualError("bad argument #2 to 'random' (interval is empty)") end
+            return floor(r * (u - l + 1)) + l
+        end
+        lualError("wrong number of arguments")
+    end
+
+    function math.randomseed(seed)
+        srand(checkint(seed, 1, 'randomseed'))
+    end
+end
+
+-- The globals TLuaInterpreter::initLuaGlobals sets on the interpreter state
+-- before anything else runs. SESSION is the host's id — 1 for the first
+-- profile opened, and a browser tab only ever holds one.
+SESSION = 1
+SCRIPT_NAME = "Global Lua Session Interpreter"
+SCRIPT_ID = -1
+
+-- Mudlet setActiveProfile(name): bring an open profile's tab to the front →
+-- true, or false plus why not. The name matches case-insensitively, as
+-- MudletApp::getCanonicalProfileName does.
+function setActiveProfile(name)
+    local s = __mudlet_str(name)
+    if s == nil then
+        error("setActiveProfile: bad argument #1 type (profile name as string expected, got "
+            .. type(name) .. "!)")
+    end
+    local err = __setActiveProfile(s)
+    if err then return false, err end
+    return true
+end
+
+-- Mudlet setMapPerspective(r, theta, phi) / shiftMapPerspective(verticalAngle,
+-- horizontalAngle, rotationAngle): aim the 3D map's camera. The map here is
+-- the 2D one, and on desktop both calls do nothing while the 3D view isn't the
+-- one showing, so after the same checks desktop makes (a map open first, then
+-- the three numbers) there is nothing left to do.
+do
+    local function perspective(fname, names, ...)
+        if not __mudlet_mapper_open() then
+            -- warnArgumentValue: the message alone, no function name.
+            return nil, "you haven't opened a map yet"
+        end
+        for i = 1, 3 do
+            local v = select(i, ...)
+            if __mudlet_num(v) == nil then
+                error(fname .. ": bad argument #" .. i .. " type (" .. names[i]
+                    .. " as number expected, got " .. type(v) .. "!)")
+            end
+        end
+    end
+    function setMapPerspective(...)
+        return perspective("setMapPerspective", { "r", "theta", "phi" }, ...)
+    end
+    function shiftMapPerspective(...)
+        return perspective("shiftMapPerspective", { "verticalAngle", "horizontalAngle", "rotationAngle" }, ...)
+    end
+end
+
 -- Mudlet's getPath populates these globals (cleared on every call). Predeclare
 -- them as empty tables so user code reading them before any getPath call
 -- doesn't crash on nil-indexing — Mudlet's C++ side leaves them undefined
@@ -3442,6 +3825,11 @@ end
 -- doStringSync, sidestepping wasmoon's broken Lua-function-from-JS proxy.
 __mudlet_cb = {}
 __mudlet_cb_next = 0
+-- LuaRuntime.dispatchCb reaches the table through the registry and makes the
+-- callback itself the base of the thread it runs on, so nothing of Mudlet Web's
+-- sits under it on the stack — desktop calls it straight from C, and its
+-- tracebacks end at the callback.
+debug.getregistry()['mudlet.cb'] = __mudlet_cb
 function __mudlet_register_cb(fn)
     __mudlet_cb_next = __mudlet_cb_next + 1
     __mudlet_cb[__mudlet_cb_next] = fn
@@ -3535,7 +3923,7 @@ do
     function __mudlet_pcall_co(fn, ...)
         -- coroutine.create rejects C functions (JS-bound API globals). Those can't
         -- yield across the C boundary anyway, so plain pcall is equivalent.
-        if type(fn) ~= 'function' or debug.getinfo(fn, 'S').what == 'C' then return pcall(fn, ...) end
+        if type(fn) ~= 'function' or __mudlet_rawGetinfo(fn, 'S').what == 'C' then return pcall(fn, ...) end
         local finalGlobals
         local function finish(...)
             finalGlobals = getfenv(0)
@@ -3978,7 +4366,8 @@ do
         -- relies on this ordering to surface the right "#N" in its own error.
         local delaySeconds = __mudlet_num(seconds)
         if delaySeconds == nil then
-            error("tempTimer: bad argument #1 type (number expected, got " .. type(seconds) .. "!)")
+            error("tempTimer: bad argument #1 type (time in seconds {maybe decimal} as number expected, got "
+                .. type(seconds) .. "!)")
         end
         seconds = delaySeconds
         if not timerDelayFits(seconds) then
@@ -3986,7 +4375,7 @@ do
                 .. " than 86400, got " .. string.format("%f", seconds) .. ")")
         end
         if repeating ~= nil and type(repeating) ~= 'boolean' then
-            error("tempTimer: bad argument #3 type (boolean expected, got "
+            error("tempTimer: bad argument #3 type (repeating as boolean expected, got "
                 .. type(repeating) .. "!)")
         end
         -- A code string that doesn't compile is a *reported* failure here, not a
@@ -4099,7 +4488,7 @@ do
     -- function that called tempKey; short_src is the chunk name Mudlet Web loads the
     -- script under (see LuaRuntime.exec → loadString('@'..name)).
     local function _callerSource()
-        local info = debug.getinfo(3, "Sl")
+        local info = __mudlet_rawGetinfo(3, "Sl")
         if not info then return nil end
         local src = info.short_src or "?"
         if info.currentline and info.currentline > 0 then
