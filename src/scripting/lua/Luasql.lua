@@ -34,7 +34,9 @@ local PREFIX = "LuaSQL: "
 
 local type, tostring, error, select, rawset, unpack, loadstring, setmetatable, getmetatable, newproxy =
       type, tostring, error, select, rawset, unpack, loadstring, setmetatable, getmetatable, newproxy
-local getinfo = debug and debug.getinfo
+-- The stock getinfo: argerror counts this file's own frames, which the
+-- debug.getinfo Bridge.lua installs would fold into one C frame.
+local getinfo = __mudlet_stock_getinfo or (debug and debug.getinfo)
 
 -- Object state, keyed by the userdata. Weak keys, so state goes with its
 -- object; Lua 5.1 keeps a key that is being finalized until after its __gc.

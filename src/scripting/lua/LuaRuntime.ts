@@ -380,6 +380,10 @@ const C_ERROR_LUA = `
 do
   local raw = { error = error }
   local getinfo = debug.getinfo
+  -- The stock getinfo, for internal chunks that emulate a C function's
+  -- luaL_argerror (Luasql.lua): they count their own frames, which the
+  -- Bridge.lua replacement folds into one C frame.
+  __mudlet_stock_getinfo = getinfo
   function __mudlet_c_error(message, level)
     if level ~= nil and tonumber(level) == nil then raw.error(message, level) end
     raw.error(message, 0)
