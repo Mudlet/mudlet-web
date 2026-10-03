@@ -878,6 +878,10 @@ export class MudClient {
 
     /** Whether MSP is live on this connection (negotiated, not merely allowed
      *  by the profile config) — gates Mudlet's receiveMSP. */
+    isGmcpEnabled(): boolean {
+        return this.negotiator.isGmcpEnabled();
+    }
+
     isMspNegotiated(): boolean {
         return this.negotiator.isMspNegotiated();
     }

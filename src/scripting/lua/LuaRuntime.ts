@@ -1737,6 +1737,7 @@ export class LuaRuntime implements IScriptingRuntime {
         // wrapper, matching Mudlet's order (enabled first, then type).
         this.lua.global.set('__mudlet_receiveMSP', (data: unknown) => this.api.receiveMSP(String(data ?? '')));
         this.lua.global.set('__mudlet_is_msp_enabled', () => this.api.isMspNegotiated());
+        this.lua.global.set('__mudlet_is_gmcp_enabled', () => this.api.isGmcpEnabled());
         // Mudlet `disconnect()`: drop the current connection.
         this.lua.global.set('disconnect', () => { this.api.disconnect(); });
         // Mudlet `closeMudlet()`: Mudlet Web closes the active profile — disconnect
@@ -1960,8 +1961,11 @@ export class LuaRuntime implements IScriptingRuntime {
         // to one of the JS bindings below.
         const installTempTrigger = (
             pattern: string, cbId: number, kind: 'regex' | 'substring' | 'startOfLine' | 'exactMatch' | 'prompt',
-            expirationCount: number | undefined, label: string, name?: string,
+            expirationCount: number | undefined, label: string, name?: string, uncompiled?: unknown,
         ) => {
+            // Its body did not compile: made, numbered and reachable like any
+            // other, but it never fires and isActive() says 0 (tempItemEnabled).
+            const broken = uncompiled === true;
             const id = this.api.allocateItemId();
             const max = (typeof expirationCount === 'number' && expirationCount > 0) ? expirationCount : -1;
             let fires = 0;
@@ -1985,11 +1989,12 @@ export class LuaRuntime implements IScriptingRuntime {
             // never fire. Here '' would match every line. The id stays live
             // for killTrigger/enableTrigger exactly as for any other.
             if (pattern === '' && kind !== 'prompt') {
-                this.tempIds.set(id, { kill, type: 'trigger', enabled: true, name });
+                this.tempIds.set(id, { kill, type: 'trigger', enabled: true, name, uncompiled: broken });
                 return id;
             }
             unsub = this.api.triggers.addTemp(pattern, (matches, spans, namedGroups) => {
-                if (killed || this.tempIds.get(id)?.enabled === false) return;
+                const entry = this.tempIds.get(id);
+                if (killed || entry?.enabled === false || entry?.uncompiled) return;
                 const prevSpans = this.currentCaptureSpans;
                 const prevNamed = this.currentNamedSpans;
                 const prevMatches = this.currentMatches;
@@ -2019,29 +2024,29 @@ export class LuaRuntime implements IScriptingRuntime {
                 if (!renewed) fires++;
                 if (max > 0 && fires >= max) kill();
             }, kind, { name: name ?? String(id), onStopped: kill });
-            this.tempIds.set(id, { kill, type: 'trigger', enabled: true, name });
+            this.tempIds.set(id, { kill, type: 'trigger', enabled: true, name, uncompiled: broken });
             return id;
         };
-        this.lua.global.set('__mudlet_tempTrigger', (pattern: string, cbId: number, expirationCount?: number) =>
-            installTempTrigger(pattern, cbId, 'substring', expirationCount, 'tempTrigger'));
-        this.lua.global.set('__mudlet_tempRegexTrigger', (pattern: string, cbId: number, expirationCount?: number, name?: unknown) =>
+        this.lua.global.set('__mudlet_tempTrigger', (pattern: string, cbId: number, expirationCount?: number, uncompiled?: unknown) =>
+            installTempTrigger(pattern, cbId, 'substring', expirationCount, 'tempTrigger', undefined, uncompiled));
+        this.lua.global.set('__mudlet_tempRegexTrigger', (pattern: string, cbId: number, expirationCount?: number, name?: unknown, uncompiled?: unknown) =>
             installTempTrigger(pattern, cbId, 'regex', expirationCount, 'tempRegexTrigger',
-                typeof name === 'string' && name ? name : undefined));
-        this.lua.global.set('__mudlet_tempExactMatchTrigger', (pattern: string, cbId: number, expirationCount?: number) =>
-            installTempTrigger(pattern, cbId, 'exactMatch', expirationCount, 'tempExactMatchTrigger'));
-        this.lua.global.set('__mudlet_tempBeginOfLineTrigger', (pattern: string, cbId: number, expirationCount?: number) =>
-            installTempTrigger(pattern, cbId, 'startOfLine', expirationCount, 'tempBeginOfLineTrigger'));
+                typeof name === 'string' && name ? name : undefined, uncompiled));
+        this.lua.global.set('__mudlet_tempExactMatchTrigger', (pattern: string, cbId: number, expirationCount?: number, uncompiled?: unknown) =>
+            installTempTrigger(pattern, cbId, 'exactMatch', expirationCount, 'tempExactMatchTrigger', undefined, uncompiled));
+        this.lua.global.set('__mudlet_tempBeginOfLineTrigger', (pattern: string, cbId: number, expirationCount?: number, uncompiled?: unknown) =>
+            installTempTrigger(pattern, cbId, 'startOfLine', expirationCount, 'tempBeginOfLineTrigger', undefined, uncompiled));
         // tempPromptTrigger(fn[, expirationCount]) — fires on every line the
         // server flags as a prompt (GA/EOR). No pattern; the empty string is a
         // placeholder the 'prompt' kind ignores.
-        this.lua.global.set('__mudlet_tempPromptTrigger', (cbId: number, expirationCount?: number) =>
-            installTempTrigger('', cbId, 'prompt', expirationCount, 'tempPromptTrigger'));
+        this.lua.global.set('__mudlet_tempPromptTrigger', (cbId: number, expirationCount?: number, uncompiled?: unknown) =>
+            installTempTrigger('', cbId, 'prompt', expirationCount, 'tempPromptTrigger', undefined, uncompiled));
         // tempLineTrigger(from, howMany, fn) — position-based, no pattern. Fires
         // on `howMany` lines starting `from` lines ahead (from=1 = next line),
         // then self-expires. The TriggerEngine handles the line countdown; here
         // we mirror it with a `fires` counter so the callback is released after
         // the final fire (or earlier via killTrigger).
-        this.lua.global.set('__mudlet_tempLineTrigger', (from: unknown, howMany: unknown, cbId: number) => {
+        this.lua.global.set('__mudlet_tempLineTrigger', (from: unknown, howMany: unknown, cbId: number, uncompiled?: unknown) => {
             const id = this.api.allocateItemId();
             const total = Math.max(1, Math.trunc(Number(howMany)) || 1);
             let fires = 0;
@@ -2055,7 +2060,8 @@ export class LuaRuntime implements IScriptingRuntime {
                 this.tempIds.delete(id);
             };
             unsub = this.api.triggers.addTempLine(Number(from), Number(howMany), () => {
-                if (killed || this.tempIds.get(id)?.enabled === false) return;
+                const entry = this.tempIds.get(id);
+                if (killed || entry?.enabled === false || entry?.uncompiled) return;
                 // A line trigger has no pattern and so no captures, and Mudlet
                 // changes "matches" only for a fire with captures
                 // (TLuaInterpreter::setMatches) — the script is handed the
@@ -2064,7 +2070,7 @@ export class LuaRuntime implements IScriptingRuntime {
                 fires++;
                 if (fires >= total) kill();
             });
-            this.tempIds.set(id, { kill, type: 'trigger', enabled: true });
+            this.tempIds.set(id, { kill, type: 'trigger', enabled: true, uncompiled: uncompiled === true });
             return id;
         });
         this.lua.global.set('killTrigger', (idOrName: number | string) => {
@@ -2085,7 +2091,7 @@ export class LuaRuntime implements IScriptingRuntime {
         // boardModifier bitmask (default 0 = no modifier); keyCode is a
         // Qt::Key int. The Bridge.lua wrapper resolves the optional-modifier
         // overload before passing here.
-        this.lua.global.set('__mudlet_tempKey', (modifier: number, key: string | number, cbId: number, source?: string) => {
+        this.lua.global.set('__mudlet_tempKey', (modifier: number, key: string | number, cbId: number, source?: string, uncompiled?: unknown) => {
             const mods = qtModifiersToList(modifier);
             const keyCode = qtKeyToDomCode(key, modifier);
             // Keep the raw Qt key/modifier so getKeyCode() can report them back
@@ -2094,7 +2100,7 @@ export class LuaRuntime implements IScriptingRuntime {
             this.api.warnReservedTempKey(keyCode, mods, typeof source === 'string' && source ? source : undefined);
             return this.api.keys.addTemp(keyCode, mods, () => {
                 dispatchCb(cbId, 'tempKey');
-            }, { keyCode: qtKey, modifier });
+            }, { keyCode: qtKey, modifier, uncompiled: uncompiled === true });
         });
         this.lua.global.set('killKey', (idOrName: number | string) =>
             typeof idOrName === 'string'
@@ -2817,7 +2823,8 @@ end`,
         return true;
     }
 
-    /** Whether a live temp item is enabled — backs isActive(id, type). */
+    /** Whether a live temp item is enabled — backs isActive(id, type). One
+     *  whose script never compiled is not, however it is switched. */
     tempItemEnabled(id: number): boolean {
         const entry = this.tempIds.get(id);
         return entry?.enabled === true && !entry.uncompiled;
@@ -4141,8 +4148,67 @@ end`);
             api.lua_rawset(L, -3);
         }
         api.lua_pop(L, 1);
+        this.inheritDebugHook(threadIndex);
     }
     private static readonly ENTRY_THREADS_KEY = 'mudlet.entryThreads';
+
+    /** Give the new entry thread at `threadIndex` the debug hook a script set
+     *  on the main state, if any. Desktop runs every entry on that one state,
+     *  so its hook carries over from callback to callback; Lua 5.1 keeps hooks
+     *  per thread, so each thread made here has to be handed it (Bridge.lua's
+     *  debug.sethook keeps the record). */
+    private inheritDebugHook(threadIndex: number): void {
+        const api = this.lua.global.luaApi;
+        const L = this.lua.global.address;
+        api.lua_getfield(L, LUA_REGISTRYINDEX, 'mudlet.hook');
+        if (api.lua_type(L, -1) !== LuaType.Table) {
+            api.lua_pop(L, 1);
+            return;
+        }
+        const hook = api.lua_gettop(L);
+        api.lua_getfield(L, LUA_REGISTRYINDEX, 'mudlet.rawSethook');
+        api.lua_pushvalue(L, threadIndex);
+        api.lua_rawgeti(L, hook, 1);
+        api.lua_rawgeti(L, hook, 2);
+        api.lua_rawgeti(L, hook, 3);
+        if (api.lua_pcall(L, 4, 0, 0) !== LuaReturn.Ok) api.lua_pop(L, 1);
+        api.lua_pop(L, 1);
+    }
+
+    /**
+     * Before wasmoon reads a failed thread's error, make it a string.
+     *
+     * `assertOk` renders a non-string error with its own `luaL_tolstring`,
+     * which calls `__tostring` unprotected: an error object whose `__tostring`
+     * raises is then a Lua panic, and the panic is C `exit()` — the module is
+     * gone for the session (mudlet-web#330). Desktop reports such an error and
+     * carries on, so the object is described here first, under a pcall, by
+     * Bridge.lua's `__mudlet_describe_error`. Strings, numbers and userdata
+     * (wasmoon's wrapped JS errors, whose message `assertOk` keeps) are left
+     * alone.
+     */
+    private stringifyThreadError(t: LuaThread, result: LuaReturn): void {
+        if (result === LuaReturn.Ok || result === LuaReturn.Yield || result === LuaReturn.ErrorMem) return;
+        if (t.getTop() < 1) return;
+        const api = this.lua.global.luaApi;
+        const type = api.lua_type(t.address, -1);
+        if (type === LuaType.String || type === LuaType.Number || type === LuaType.Userdata) return;
+        const L = this.lua.global.address;
+        const fallback = `(error object is a ${api.lua_typename(t.address, type)} value)`;
+        let text = fallback;
+        api.lua_getfield(L, LUA_REGISTRYINDEX, LuaRuntime.DESCRIBE_ERROR_KEY);
+        if (api.lua_type(L, -1) === LuaType.Function) {
+            api.lua_xmove(t.address, L, 1);
+            if (api.lua_pcall(L, 1, 1, 0) === LuaReturn.Ok && api.lua_type(L, -1) === LuaType.String) {
+                text = api.lua_tolstring(L, -1, null) ?? fallback;
+            }
+        } else {
+            api.lua_settop(t.address, -2);
+        }
+        api.lua_settop(L, -2);
+        api.lua_pushstring(t.address, text);
+    }
+    private static readonly DESCRIBE_ERROR_KEY = 'mudlet.describeError';
 
     private execOnThread(code: string, name: string, chunkName?: string): unknown {
         const g = this.lua.global;
@@ -4163,6 +4229,7 @@ end`);
                 this.parkDialogThread(t, name, 'exec', threadIndex);
                 return undefined;
             }
+            this.stringifyThreadError(t, res.result);
             t.assertOk(res.result);
             const top = t.getTop();
             const err = top >= 1 ? t.getValue(1) : null;
@@ -4203,6 +4270,7 @@ end`);
                 this.parkDialogThread(t, label, 'chunk', threadIndex);
                 return;
             }
+            this.stringifyThreadError(t, res.result);
             t.assertOk(res.result);
         } catch (e) {
             if (this.markFatal(e)) return;
@@ -4288,6 +4356,7 @@ end`);
                 // The handler called invokeFileDialog again.
                 reparked = this.parkDialogThread(t, park.label, park.kind, undefined, park.ref);
             } else {
+                this.stringifyThreadError(t, res.result);
                 t.assertOk(res.result);
                 if (park.kind === 'exec') {
                     // __exec finished after the original exec() caller already
@@ -4367,6 +4436,7 @@ end`);
                     this.parkDialogThread(t, label, 'chunk', threadIndex);
                     return;
                 }
+                this.stringifyThreadError(t, res.result);
                 t.assertOk(res.result);
                 this.cbReturnedTrue = t.getTop() >= 1
                     && api.lua_type(t.address, 1) === LuaType.Boolean

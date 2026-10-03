@@ -39,6 +39,10 @@ interface TempKey {
      *  still findable while no longer firing: `exists` says 1, `isActive` says
      *  0, and a second `killKey` finds a corpse and answers false. */
     dead?: boolean;
+    /** Its script did not compile. Mudlet still makes the key, but
+     *  TKey::setScript leaves it unable to fire or report active, however it
+     *  is switched. */
+    uncompiled?: boolean;
 }
 
 export class KeyEngine {
@@ -58,9 +62,12 @@ export class KeyEngine {
         return n;
     }
 
-    addTemp(key: string, modifiers: string[], fn: TempFn, qt?: { keyCode: number; modifier: number }): number {
+    addTemp(key: string, modifiers: string[], fn: TempFn, qt?: { keyCode: number; modifier: number; uncompiled?: boolean }): number {
         const id = this.idSeq.next();
-        this.temp.set(id, { key, modifiers, fn, qtKey: qt?.keyCode, qtModifier: qt?.modifier, enabled: true });
+        this.temp.set(id, {
+            key, modifiers, fn, qtKey: qt?.keyCode, qtModifier: qt?.modifier, enabled: true,
+            uncompiled: qt?.uncompiled === true,
+        });
         return id;
     }
 
@@ -68,7 +75,10 @@ export class KeyEngine {
     hasTemp(id: number): boolean { return this.temp.has(id); }
 
     /** Whether a live temp key is enabled — backs isActive(id, "key"). */
-    isTempEnabled(id: number): boolean { return this.temp.get(id)?.enabled === true; }
+    isTempEnabled(id: number): boolean {
+        const t = this.temp.get(id);
+        return t?.enabled === true && !t.uncompiled;
+    }
 
     /** enableKey/disableKey with a numeric id. False when no temp key matches. */
     setTempEnabled(id: number, enabled: boolean): boolean {
@@ -128,8 +138,8 @@ export class KeyEngine {
      *  exists to avoid. */
     processTemp(event: KeyboardEvent, all = false): boolean {
         let fired = false;
-        for (const { key, modifiers, fn, enabled } of [...this.temp.values()]) {
-            if (!enabled || !matchesEvent(key, modifiers, event)) continue;
+        for (const { key, modifiers, fn, enabled, uncompiled } of [...this.temp.values()]) {
+            if (!enabled || uncompiled || !matchesEvent(key, modifiers, event)) continue;
             fn();
             if (!all) return true;
             fired = true;
@@ -179,7 +189,7 @@ export class KeyEngine {
             && bindingMods.length === modifiers.length
             && bindingMods.every(m => modifiers.includes(m));
         for (const t of this.temp.values()) {
-            if (!t.enabled || t.dead) continue;
+            if (!t.enabled || t.dead || t.uncompiled) continue;
             if (same(t.key, t.modifiers)) return { name: '', temporary: true };
         }
         for (const binding of this.perm) {

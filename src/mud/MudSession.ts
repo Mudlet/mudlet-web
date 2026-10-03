@@ -634,6 +634,11 @@ export class MudSession {
         return this.client?.sendTelnetChannel102(msg) ?? false;
     }
 
+    /** Whether GMCP is negotiated on the live connection. False with no client. */
+    isGmcpEnabled(): boolean {
+        return this.client?.isGmcpEnabled() ?? false;
+    }
+
     /** Whether MSP was negotiated on the live connection. False with no client,
      *  which is what a never-connected profile should report. */
     isMspNegotiated(): boolean {

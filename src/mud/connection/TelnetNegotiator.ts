@@ -293,6 +293,13 @@ export class TelnetNegotiator {
         return this.mspNegotiated;
     }
 
+    /** Whether GMCP (option 201) is live — Mudlet's `isGMCPEnabled()`, which
+     *  `sendGMCP` refuses without: nothing goes to a server that has not taken
+     *  the option up. */
+    isGmcpEnabled(): boolean {
+        return this.enabledProtocols.has(OPT_GMCP);
+    }
+
     /** Whether CHARSET (option 42) is live — Mudlet's `enableCHARSET`. A
      *  REQUEST subnegotiation is read only while it is, so a server that has
      *  withdrawn the option cannot go on changing the encoding. */

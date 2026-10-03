@@ -1308,6 +1308,12 @@ export class ScriptingAPI {
         return this.session.isMspNegotiated();
     }
 
+    /** Whether the server has taken GMCP up on this connection — Mudlet's
+     *  `cTelnet::isGMCPEnabled`, which `sendGMCP` is refused without. */
+    isGmcpEnabled(): boolean {
+        return this.session.isGmcpEnabled();
+    }
+
     /** Mudlet `sendATCP(message)`. Frames + sends an ATCP (telnet 200)
      *  subnegotiation; false when the socket isn't open. */
     sendATCP(message: string): boolean {

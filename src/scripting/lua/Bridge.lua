@@ -3820,6 +3820,24 @@ function setProfileIcon(path)
     return nil, "setProfileIcon: could not set the icon"
 end
 
+-- The text an error object is reported as. Desktop reports a script's error
+-- from C, whatever was thrown, and goes on: a table, nil, false or a function
+-- is described rather than refused, and an object whose __tostring itself
+-- raises is described too instead of taking the reporter down with it. So
+-- nothing here may raise. LuaRuntime reaches it through the registry to turn
+-- a failed entry thread's error object into a string before wasmoon reads it
+-- (wasmoon calls __tostring unprotected, and a raise there is a Lua panic that
+-- ends the WASM module).
+function __mudlet_describe_error(err)
+    local t = type(err)
+    if t == 'string' then return err end
+    if t == 'number' then return tostring(err) end
+    local ok, text = pcall(tostring, err)
+    if ok and type(text) == 'string' then return text end
+    return "(error object is a " .. t .. " value)"
+end
+debug.getregistry()['mudlet.describeError'] = __mudlet_describe_error
+
 -- Callback registry: stores Lua functions handed to tempTimer/Alias/Trigger/Key
 -- so JS only ever sees a numeric ID. JS invokes __mudlet_dispatch_cb(id) via
 -- doStringSync, sidestepping wasmoon's broken Lua-function-from-JS proxy.
@@ -3904,6 +3922,57 @@ do
         return __mudlet_raw_yield(...)
     end
 
+    -- Debug hooks belong to the main state on desktop, which every script
+    -- entry runs on, so a hook a callback sets is still set in the next one
+    -- (the "start profiling, play, stop profiling" pattern). Lua 5.1 keeps a
+    -- hook per thread, and here each entry runs on a thread of its own, so a
+    -- hook set on one was gone when it returned (mudlet-web#330).
+    --
+    -- So a hook set on what a script sees as the main state — no thread
+    -- argument, outside any coroutine of its own — is recorded, set on every
+    -- client thread that is still around, and set by LuaRuntime on each entry
+    -- thread it makes from then on (and by __mudlet_pcall_co on its private
+    -- ones). debug.gethook reads the record back. A script's own coroutines
+    -- keep their own hooks, as they do on desktop.
+    local rawSethook, rawGethook = debug.sethook, debug.gethook
+    local registry = debug.getregistry()
+    registry['mudlet.rawSethook'] = rawSethook
+    local function onMainState(t)
+        return t == nil or entryThreads[t] ~= nil or standIns[t] ~= nil
+    end
+    local function applyHook(t, hook)
+        if hook then rawSethook(t, hook[1], hook[2], hook[3]) else rawSethook(t) end
+    end
+    function debug.sethook(...)
+        if type((...)) == 'thread' or not onMainState(rawRunning()) then
+            return rawSethook(...)
+        end
+        -- The stock function checks the arguments and hooks the running thread.
+        rawSethook(...)
+        local f, mask, count = rawGethook()
+        local hook = nil
+        if f ~= nil then hook = { f, mask, count } end
+        registry['mudlet.hook'] = hook
+        for t in pairs(entryThreads) do
+            if rawStatus(t) ~= 'dead' then applyHook(t, hook) end
+        end
+        for t in pairs(standIns) do
+            if rawStatus(t) ~= 'dead' then applyHook(t, hook) end
+        end
+    end
+    function debug.gethook(...)
+        if type((...)) == 'thread' or not onMainState(rawRunning()) then
+            return rawGethook(...)
+        end
+        local hook = registry['mudlet.hook']
+        if hook then return hook[1], hook[2], hook[3] end
+        return rawGethook()
+    end
+    local function inheritHook(co)
+        local hook = registry['mudlet.hook']
+        if hook then applyHook(co, hook) end
+    end
+
     -- Yield-transparent pcall. Runs `fn` on a private coroutine so a runtime
     -- error is caught like pcall, but invokeFileDialog's yield inside `fn` is
     -- forwarded outward to the JS resume boundary instead of erroring — in Lua
@@ -3931,6 +4000,7 @@ do
         end
         local co = rawCreate(function(...) return finish(fn(...)) end)
         standIns[co] = coroutine.running() or false
+        inheritHook(co)
         local function step(ok, ...)
             if not ok then return false, ... end
             if rawStatus(co) == 'suspended' then
@@ -4181,6 +4251,17 @@ function __mudlet_sync_script_handlers(flat)
     end
 end
 
+-- Report a handler's error the way Host::raiseEvent does, from C: whatever was
+-- thrown is described and the dispatch carries on. Through the unguarded
+-- binding — the Lua-visible showHandlerError raises on a non-string message, as
+-- desktop's does, and that raise left raiseEvent mid-dispatch: the handlers
+-- after it never ran and the caller was unwound (mudlet-web#330).
+local __mudlet_rawShowHandlerError = showHandlerError
+local function __mudlet_report_handler_error(event, err)
+    if type(__mudlet_rawShowHandlerError) ~= 'function' then return end
+    pcall(__mudlet_rawShowHandlerError, tostring(event), __mudlet_describe_error(err))
+end
+
 local function __mudlet_run_script_handlers(list, event, args, argc)
     for i = 1, #list do
         local rec = list[i]
@@ -4188,7 +4269,7 @@ local function __mudlet_run_script_handlers(list, event, args, argc)
             local f = __mudlet_resolve_handler(rec.name)
             if f then
                 local ok, err = __mudlet_pcall_co(f, event, unpack(args, 1, argc))
-                if not ok and type(showHandlerError) == 'function' then showHandlerError(event, err) end
+                if not ok then __mudlet_report_handler_error(event, err) end
             end
         end
     end
@@ -4231,12 +4312,17 @@ function __mudlet_dispatch(event, args, argc)
                 -- invokeFileDialog, which needs a pure-Lua path down to the JS
                 -- resume boundary.
                 local ok, err = __mudlet_pcall_co(f, event, unpack(args, 1, argc))
-                if not ok and type(showHandlerError) == 'function' then showHandlerError(event, err) end
+                if not ok then __mudlet_report_handler_error(event, err) end
             end
         end
     end
+    -- Desktop calls Other.lua's dispatcher from C, protected, so an error that
+    -- escapes it — showHandlerError refusing a handler's non-string error —
+    -- ends that walk of the anonymous handlers and is reported, and raiseEvent
+    -- still returns to its caller.
     if type(dispatchEventToFunctions) == 'function' then
-        dispatchEventToFunctions(event, unpack(args, 1, argc))
+        local ok, err = __mudlet_pcall_co(dispatchEventToFunctions, event, unpack(args, 1, argc))
+        if not ok then __mudlet_report_handler_error(event, err) end
     end
 end
 
@@ -4321,7 +4407,8 @@ end
 -- A string that does not compile is NOT a refusal. Mudlet builds the object
 -- first and calls TTrigger::setScript() on it afterwards (startTempColorTrigger
 -- in TLuaInterpreter.cpp), so a bad body still registers, still takes an ID and
--- still comes back to the caller — it simply errors when it fires. Raising here
+-- still comes back to the caller — it just never fires, and isActive() reports
+-- it off, so its caller is told through __mudlet_uncompiled. Raising here
 -- instead made every temp* constructor reject a body it should have accepted,
 -- which is what LuaApiContracts_spec's "builds nothing when it refuses" reads as
 -- a consumed ID. So the compile error is deferred into the handler itself.
@@ -4445,38 +4532,51 @@ do
     -- to reach the engine as `tostring(table)` and install a trigger nobody
     -- could ever match, instead of telling the caller (IDManager pcalls these
     -- and reports the failure rather than raising).
+    -- A body that does not compile still makes the trigger (see
+    -- __mudlet_to_fn), but TTrigger::setScript leaves it unable to fire or to
+    -- report active, as tempAlias does — so the engine is told.
+    local function body(fn, who, argN)
+        local compiled = __mudlet_to_fn(fn, who, argN)
+        return __mudlet_register_cb(compiled), __mudlet_uncompiled[compiled] == true
+    end
     local _sub = __mudlet_tempTrigger
     function tempTrigger(pattern, fn, expirationCount)
         pattern = __mudlet_check_string(pattern, "tempTrigger", 1, "pattern")
-        return _sub(pattern, __mudlet_register_cb(__mudlet_to_fn(fn, "tempTrigger", 2)), expirationCount)
+        local cb, uncompiled = body(fn, "tempTrigger", 2)
+        return _sub(pattern, cb, expirationCount, uncompiled)
     end
     local _re = __mudlet_tempRegexTrigger
     function tempRegexTrigger(pattern, fn, expirationCount)
         pattern = __mudlet_check_string(pattern, "tempRegexTrigger", 1, "pattern")
-        return _re(pattern, __mudlet_register_cb(__mudlet_to_fn(fn, "tempRegexTrigger", 2)), expirationCount)
+        local cb, uncompiled = body(fn, "tempRegexTrigger", 2)
+        return _re(pattern, cb, expirationCount, nil, uncompiled)
     end
     local _ex = __mudlet_tempExactMatchTrigger
     function tempExactMatchTrigger(pattern, fn, expirationCount)
         pattern = __mudlet_check_string(pattern, "tempExactMatchTrigger", 1, "pattern")
-        return _ex(pattern, __mudlet_register_cb(__mudlet_to_fn(fn, "tempExactMatchTrigger", 2)), expirationCount)
+        local cb, uncompiled = body(fn, "tempExactMatchTrigger", 2)
+        return _ex(pattern, cb, expirationCount, uncompiled)
     end
     local _bol = __mudlet_tempBeginOfLineTrigger
     function tempBeginOfLineTrigger(pattern, fn, expirationCount)
         pattern = __mudlet_check_string(pattern, "tempBeginOfLineTrigger", 1, "pattern")
-        return _bol(pattern, __mudlet_register_cb(__mudlet_to_fn(fn, "tempBeginOfLineTrigger", 2)), expirationCount)
+        local cb, uncompiled = body(fn, "tempBeginOfLineTrigger", 2)
+        return _bol(pattern, cb, expirationCount, uncompiled)
     end
     -- tempPromptTrigger(fn[, expirationCount]) — fires whenever the server sends
     -- a prompt (no pattern). The callback is arg #1, so __mudlet_to_fn looks there.
     local _prompt = __mudlet_tempPromptTrigger
     function tempPromptTrigger(fn, expirationCount)
-        return _prompt(__mudlet_register_cb(__mudlet_to_fn(fn, "tempPromptTrigger", 1)), expirationCount)
+        local cb, uncompiled = body(fn, "tempPromptTrigger", 1)
+        return _prompt(cb, expirationCount, uncompiled)
     end
     -- tempLineTrigger(from, howMany, code|fn) — position-based, no pattern. Fires
     -- on `howMany` lines starting `from` lines ahead (from=1 = next line), then
     -- self-expires. The code/function to run is arg #3.
     local _line = __mudlet_tempLineTrigger
     function tempLineTrigger(from, howMany, fn)
-        return _line(from, howMany, __mudlet_register_cb(__mudlet_to_fn(fn, "tempLineTrigger", 3)))
+        local cb, uncompiled = body(fn, "tempLineTrigger", 3)
+        return _line(from, howMany, cb, uncompiled)
     end
 end
 
@@ -4498,12 +4598,20 @@ do
         end
         return src
     end
+    -- A body that does not compile makes a key that neither fires nor reports
+    -- active (TKey::setScript), like the temp triggers above.
+    local function register(fn, argN)
+        local compiled = __mudlet_to_fn(fn, "tempKey", argN)
+        return __mudlet_register_cb(compiled), __mudlet_uncompiled[compiled] == true
+    end
     function tempKey(a, b, c)
         local src = _callerSource()
         if c == nil then
-            return _raw(0, a, __mudlet_register_cb(__mudlet_to_fn(b, "tempKey", 2)), src)
+            local cb, uncompiled = register(b, 2)
+            return _raw(0, a, cb, src, uncompiled)
         end
-        return _raw(a, b, __mudlet_register_cb(__mudlet_to_fn(c, "tempKey", 3)), src)
+        local cb, uncompiled = register(c, 3)
+        return _raw(a, b, cb, src, uncompiled)
     end
 end
 
@@ -8269,7 +8377,9 @@ end
 -- Mudlet sendGMCP(message [, what]) — same shape as sendATCP above: both
 -- arguments are read with getVerifiedString (so a wrong type raises), and a
 -- send with no live socket is a (nil, errMsg) refusal rather than a silent
--- no-op. GMCP_spec asserts these messages in full.
+-- no-op. GMCP_spec asserts these messages in full. So is a send before the
+-- server has offered GMCP (cTelnet::isGMCPEnabled): nothing goes out, where it
+-- used to frame the message for a server that never agreed to read one.
 do
     local _raw = sendGMCP
     function sendGMCP(message, what)
@@ -8280,6 +8390,9 @@ do
         end
         if not __mudlet_is_connected() then
             return nil, "sendGMCP: not connected to game server - connect first before sending GMCP"
+        end
+        if not __mudlet_is_gmcp_enabled() then
+            return nil, "sendGMCP: GMCP is not currently enabled"
         end
         _raw(message, what)
         return true

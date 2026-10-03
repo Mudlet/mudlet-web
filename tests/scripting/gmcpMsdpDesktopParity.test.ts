@@ -12,10 +12,12 @@ describe('issue #287 — GMCP/MSDP desktop parity', () => {
   beforeEach(async () => { env = await createTestRuntime(); });
   afterEach(() => env.dispose());
 
-  /** Pretend the socket is up, so the Lua wrappers reach the JS send. */
+  /** Pretend the socket is up and GMCP negotiated, so the Lua wrappers reach
+   *  the JS send (sendGMCP is refused before the server offers GMCP, #330). */
   const connect = () => {
     const info = env.api.getConnectionInfo();
     vi.spyOn(env.api, 'getConnectionInfo').mockReturnValue({ ...info, connected: true });
+    vi.spyOn(env.api, 'isGmcpEnabled').mockReturnValue(true);
   };
 
   // Item 2: yajl keeps an escaped NUL inside a decoded string (Lua strings are
