@@ -386,3 +386,14 @@ describe('reopening a profile with an imported archive module', () => {
         expect(has('Foo/Foo-1.2.mpackage')).toBe(true);
     });
 });
+
+describe('a module kept inside another package\'s folder', () => {
+    it('is found where its own path says it is', () => {
+        const files = desktopExport();
+        delete files['Achaea/dup/init.xml'];
+        files['Achaea/current/2026-10-03#12-00-00.xml'] = strToU8(desktopSave.replace('/home/me/dup/init.xml', '/home/me/.config/mudlet/profiles/Achaea/somepkg/init.xml'));
+        const [bundle] = extractMudletProfileZipAll(zipSync(files));
+        expect(importLikeTheConnectionScreen(bundle)).toEqual([]);
+        expect(bundle.packages.find(p => p.name === 'dup')?.xmlVfsPath).toBe('somepkg/init.xml');
+    });
+});

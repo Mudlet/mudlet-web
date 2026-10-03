@@ -327,7 +327,9 @@ export function resolveModulesFromTree(bundle: MudletProfileBundle): {
     for (const p of Object.keys(bundle.files)) {
         byLower.set(p.toLowerCase(), p);
         const base = fileBasename(p).toLowerCase();
-        byBase.set(base, [...(byBase.get(base) ?? []), p]);
+        const same = byBase.get(base);
+        if (same) same.push(p);
+        else byBase.set(base, [p]);
     }
     // Folders that belong to something else the profile has installed: a
     // module bound to a file in one of them would load that package's items
@@ -342,6 +344,7 @@ export function resolveModulesFromTree(bundle: MudletProfileBundle): {
         }
         const base = fileBasename(ref.filepath).toLowerCase();
         const key = ref.key.toLowerCase();
+        const source = ref.filepath.replace(/\\/g, '/').toLowerCase();
         const candidates = [
             ...(base ? [`${key}/${base}`] : []),
             ...(archiveExtension.test(base) ? [`${key}/${key}.xml`] : []),
@@ -352,7 +355,9 @@ export function resolveModulesFromTree(bundle: MudletProfileBundle): {
         const path = candidates.map(c => byLower.get(c)).find(p => p !== undefined && usable(p))
             ?? (base ? byBase.get(base)?.find(p => {
                 const top = p.includes('/') ? p.slice(0, p.indexOf('/')).toLowerCase() : '';
-                return (top === key || !owners.has(top)) && usable(p);
+                // ...unless the module's own path names that very file: one kept
+                // inside a package's folder travels there, not under its name
+                return (top === key || !owners.has(top) || source.endsWith(`/${p.toLowerCase()}`)) && usable(p);
             }) : undefined);
         if (path) resolved.push({ ref, xmlBytes: bundle.files[path], path });
         else unresolved.push(ref);
