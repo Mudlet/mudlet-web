@@ -1,639 +1,735 @@
-// The trigger engine's vendored wrapper, not `pcre2-wasm-universal` itself.
-// Both drive the same wasm module, but upstream's `matchAll` resumes at
-// `iter[0].end` unconditionally: a pattern that can match empty never advances,
-// spins to its hardcoded 1000-iteration cap and throws — so `rex.gmatch`,
-// `rex.gsub`, `rex.split` and `rex.count` failed outright on something as
-// ordinary as `(\d*)`, ASCII subject and all. The fork steps past a zero-width
-// match (by a whole code point, so a surrogate pair is never split) the way
-// Mudlet's own global-match loop does.
+// Desktop's rex is lrexlib (rel-2-9) over the 8-bit PCRE2 library: a subject
+// and a pattern are BYTES, matched one byte per character unless the pattern
+// asks for UTF, and every offset is a byte offset. The wasm PCRE2 here is the
+// 16-bit library and its `compile` always sets PCRE2_UTF, so byte mode is
+// emulated: Lua hands both strings over armored (byteArmor.ts — the bridge
+// would otherwise UTF-8-decode them, corrupting Latin-1 and binary text), and
+// they are matched as "byte-strings", one UTF-16 code unit per byte. Code units
+// up to 0xFF are always valid UTF-16, so the UTF flag the library forces costs
+// nothing there: `.` is one byte, `\w` is ASCII (no UCP), "日本" is six
+// characters. A pattern compiled with UTF (the flag, or a leading `(*UTF)`)
+// decodes both strings from UTF-8 instead and maps every offset back to bytes.
+//
+// Only matching happens here. The loops — gsub, gmatch, split, count — are
+// lrexlib's own (algo.h), kept in one place: `__rex_all__` walks the subject
+// the way all four do, and the Lua side builds each one's results from the
+// offsets, cutting substrings out of the original Lua string so no captured
+// text ever crosses the bridge.
 import PCRE from '../../mud/triggers/pcre/Pcre2';
+import { unarmor } from './byteArmor';
 import type { Lua } from 'wasmoon-lua5.1';
 
-type MatchGroup = { start: number; end: number; match: string; name?: string };
-type MatchResult = Record<number, MatchGroup> & { length: number };
-
-// PCRE2 compile-option bitmask constants (subset of pcre2.h). Exposed to Lua
-// via rex.flags() so Mudlet code that does `rex.flags().CASELESS` gets the
-// integer it expects. We accept these as the `cf` (compile flags) arg to
-// rex.new / rex.match / etc. and translate them into PCRE2 inline modifiers
-// on the pattern, since pcre2-wasm-universal's flag-letter parser is opaque.
-const PCRE2_FLAGS: Record<string, number> = {
-    ANCHORED: 0x80000000,
-    NO_UTF_CHECK: 0x40000000,
-    ENDANCHORED: 0x20000000,
-    ALLOW_EMPTY_CLASS: 0x00000001,
-    ALT_BSUX: 0x00000002,
-    AUTO_CALLOUT: 0x00000004,
-    CASELESS: 0x00000008,
-    DOLLAR_ENDONLY: 0x00000010,
-    DOTALL: 0x00000020,
-    DUPNAMES: 0x00000040,
-    EXTENDED: 0x00000080,
-    FIRSTLINE: 0x00000100,
-    MATCH_UNSET_BACKREF: 0x00000200,
-    MULTILINE: 0x00000400,
-    NEVER_UCP: 0x00000800,
-    NEVER_UTF: 0x00001000,
-    NO_AUTO_CAPTURE: 0x00002000,
-    NO_AUTO_POSSESS: 0x00004000,
-    NO_DOTSTAR_ANCHOR: 0x00008000,
-    NO_START_OPTIMIZE: 0x00010000,
-    UCP: 0x00020000,
-    UNGREEDY: 0x00040000,
-    UTF: 0x00080000,
-    NEVER_BACKSLASH_C: 0x00100000,
-    ALT_CIRCUMFLEX: 0x00200000,
-    ALT_VERBNAMES: 0x00400000,
-    USE_OFFSET_LIMIT: 0x00800000,
-    EXTENDED_MORE: 0x01000000,
-    LITERAL: 0x02000000,
-};
-
-// PCRE2 inline-modifier letters we can prepend to a pattern. The C library
-// understands `(?imsxUJn)` syntax natively, so this avoids any dependency on
-// how pcre2-wasm-universal parses its `flags` string argument.
-const INLINE_FLAG_BITS: Array<[number, string]> = [
-    [PCRE2_FLAGS.CASELESS, 'i'],
-    [PCRE2_FLAGS.MULTILINE, 'm'],
-    [PCRE2_FLAGS.DOTALL, 's'],
-    [PCRE2_FLAGS.EXTENDED, 'x'],
-    [PCRE2_FLAGS.UNGREEDY, 'U'],
-    [PCRE2_FLAGS.DUPNAMES, 'J'],
-    [PCRE2_FLAGS.NO_AUTO_CAPTURE, 'n'],
+// rex.flags(): lrexlib's pcre2_flags and pcre2_error_flags (lpcre2_f.c), with
+// pcre2.h's values. lrexlib stores them as C ints, so ANCHORED is negative.
+const PCRE2_FLAGS: Array<[string, number]> = [
+    ['ANCHORED', -2147483648], ['NO_UTF_CHECK', 0x40000000],
+    ['ALLOW_EMPTY_CLASS', 0x1], ['ALT_BSUX', 0x2], ['AUTO_CALLOUT', 0x4], ['CASELESS', 0x8],
+    ['DOLLAR_ENDONLY', 0x10], ['DOTALL', 0x20], ['DUPNAMES', 0x40], ['EXTENDED', 0x80],
+    ['FIRSTLINE', 0x100], ['MATCH_UNSET_BACKREF', 0x200], ['MULTILINE', 0x400],
+    ['NEVER_UCP', 0x800], ['NEVER_UTF', 0x1000], ['NO_AUTO_CAPTURE', 0x2000],
+    ['NO_AUTO_POSSESS', 0x4000], ['NO_DOTSTAR_ANCHOR', 0x8000], ['NO_START_OPTIMIZE', 0x10000],
+    ['UCP', 0x20000], ['UNGREEDY', 0x40000], ['UTF', 0x80000], ['NEVER_BACKSLASH_C', 0x100000],
+    ['ALT_CIRCUMFLEX', 0x200000], ['ALT_VERBNAMES', 0x400000], ['USE_OFFSET_LIMIT', 0x800000],
+    ['JIT_COMPLETE', 1], ['JIT_PARTIAL_SOFT', 2], ['JIT_PARTIAL_HARD', 4],
+    ['NOTBOL', 1], ['NOTEOL', 2], ['NOTEMPTY', 4], ['NOTEMPTY_ATSTART', 8],
+    ['PARTIAL_SOFT', 0x10], ['PARTIAL_HARD', 0x20], ['DFA_RESTART', 0x40], ['DFA_SHORTEST', 0x80],
+    ['SUBSTITUTE_GLOBAL', 0x100], ['SUBSTITUTE_EXTENDED', 0x200], ['SUBSTITUTE_UNSET_EMPTY', 0x400],
+    ['SUBSTITUTE_UNKNOWN_UNSET', 0x800], ['SUBSTITUTE_OVERFLOW_LENGTH', 0x1000], ['NO_JIT', 0x2000],
+    ['NEWLINE_CR', 1], ['NEWLINE_LF', 2], ['NEWLINE_CRLF', 3], ['NEWLINE_ANY', 4], ['NEWLINE_ANYCRLF', 5],
+    ['BSR_UNICODE', 1], ['BSR_ANYCRLF', 2],
+    ['INFO_ALLOPTIONS', 0], ['INFO_ARGOPTIONS', 1], ['INFO_BACKREFMAX', 2], ['INFO_BSR', 3],
+    ['INFO_CAPTURECOUNT', 4], ['INFO_FIRSTCODEUNIT', 5], ['INFO_FIRSTCODETYPE', 6],
+    ['INFO_FIRSTBITMAP', 7], ['INFO_HASCRORLF', 8], ['INFO_JCHANGED', 9], ['INFO_JITSIZE', 10],
+    ['INFO_LASTCODEUNIT', 11], ['INFO_LASTCODETYPE', 12], ['INFO_MATCHEMPTY', 13],
+    ['INFO_MATCHLIMIT', 14], ['INFO_MAXLOOKBEHIND', 15], ['INFO_MINLENGTH', 16],
+    ['INFO_NAMECOUNT', 17], ['INFO_NAMEENTRYSIZE', 18], ['INFO_NAMETABLE', 19], ['INFO_NEWLINE', 20],
+    ['INFO_RECURSIONLIMIT', 21], ['INFO_SIZE', 22], ['INFO_HASBACKSLASHC', 23],
+];
+const PCRE2_ERRORS: string[] = [
+    'NOMATCH', 'PARTIAL',
+    ...Array.from({ length: 21 }, (_, i) => `UTF8_ERR${i + 1}`),
+    'UTF16_ERR1', 'UTF16_ERR2', 'UTF16_ERR3', 'UTF32_ERR1', 'UTF32_ERR2',
+    'BADDATA', 'MIXEDTABLES', 'BADMAGIC', 'BADMODE', 'BADOFFSET', 'BADOPTION', 'BADREPLACEMENT',
+    'BADUTFOFFSET', 'CALLOUT', 'DFA_BADRESTART', 'DFA_RECURSE', 'DFA_UCOND', 'DFA_UFUNC',
+    'DFA_UITEM', 'DFA_WSSIZE', 'INTERNAL', 'JIT_BADOPTION', 'JIT_STACKLIMIT', 'MATCHLIMIT',
+    'NOMEMORY', 'NOSUBSTRING', 'NOUNIQUESUBSTRING', 'NULL', 'RECURSELOOP', 'RECURSIONLIMIT',
+    'UNAVAILABLE', 'UNSET', 'BADOFFSETLIMIT', 'BADREPESCAPE', 'REPMISSINGBRACE',
+    'BADSUBSTITUTION', 'BADSUBSPATTERN', 'TOOMANYREPLACE', 'BADSERIALIZEDDATA',
 ];
 
-const INLINE_LETTERS = new Set(['i', 'm', 's', 'x', 'U', 'J', 'n']);
+const ANCHORED = 0x80000000;
+const UTF = 0x80000;
+const NO_UTF_CHECK = 0x40000000;
+const ERROR_UTF8_ERR = (n: number) => -2 - n;
+const ERROR_BADUTFOFFSET = -36;
 
-function buildInlinePrefix(flags: string | number | null | undefined): string {
-    if (flags == null) return '';
-    let letters = '';
-    if (typeof flags === 'number') {
-        if (flags === 0) return '';
-        for (const [bit, letter] of INLINE_FLAG_BITS) {
-            if (flags & bit) letters += letter;
-        }
-    } else if (typeof flags === 'string') {
-        for (const ch of flags) {
-            if (INLINE_LETTERS.has(ch)) letters += ch;
-        }
-    }
-    return letters ? `(?${letters})` : '';
-}
+// Compile options with an in-pattern spelling. Those that have none and change
+// matching (DOLLAR_ENDONLY, FIRSTLINE, …) cannot reach the wasm `compile`,
+// whose flag string only knows a few letters.
+const INLINE_FLAG_BITS: Array<[number, string]> = [
+    [0x8, 'i'], [0x400, 'm'], [0x20, 's'], [0x80, 'x'], [0x40000, 'U'], [0x40, 'J'], [0x2000, 'n'],
+];
+const VERB_FLAG_BITS: Array<[number, string]> = [
+    [0x20000, '(*UCP)'], [0x4000, '(*NO_AUTO_POSSESS)'], [0x10000, '(*NO_START_OPT)'],
+    [0x8000, '(*NO_DOTSTAR_ANCHOR)'],
+];
+const LEADING_VERBS = /^(?:\(\*[A-Z0-9_]+(?:=\d+)?\))*/;
 
-const withRe = <T>(
-    pattern: string,
-    flags: string | number | null | undefined,
-    fn: (re: InstanceType<typeof PCRE>) => T,
-): T => {
-    if (typeof pattern !== 'string') {
-        throw new TypeError(
-            `rex: pattern must be a string, got ${typeof pattern}. ` +
-            `Pass either a string or a compiled object from rex.new().`,
-        );
-    }
-    return fn(compiled(buildInlinePrefix(flags) + pattern));
-};
-
-// Compiled patterns, most recently used last. Every rex call used to compile
-// its pattern afresh and throw it away, and a `rex.new` object only carries the
-// pattern string — so a trigger testing each line against a few dozen cached
-// `rex.new` shapes recompiled every one of them per line, which under an output
-// flood was seconds of lag on its own (#195). A compiled pattern is reusable:
-// `match` hands back fresh objects, so a `gsub` replacement function that calls
-// rex with the same pattern mid-loop cannot disturb the outer call.
-const RE_CACHE_LIMIT = 256;
-const reCache = new Map<string, InstanceType<typeof PCRE>>();
-
-function compiled(source: string): InstanceType<typeof PCRE> {
-    const hit = reCache.get(source);
-    if (hit) {
-        reCache.delete(source);
-        reCache.set(source, hit);
-        return hit;
-    }
-    // A pattern that fails to compile throws here and is not cached, so every
-    // call reports the error just as before.
-    const re = new PCRE(source, '');
-    reCache.set(source, re);
-    if (reCache.size > RE_CACHE_LIMIT) {
-        const [oldest, evicted] = reCache.entries().next().value!;
-        reCache.delete(oldest);
-        evicted.destroy();
-    }
-    return re;
-}
-
-// The wrapper's safety cap scales with the subject, so it now fires only on a
-// genuinely non-advancing loop rather than on any pattern that can match empty.
-// Log enough to identify one if that ever happens.
-function logSafetyLimit(callsite: string, pattern: string, subject: string): void {
-    const ansiCount = (subject.match(/\x1b\[/g) ?? []).length;
-    console.error('[matchAll safety limit]', {
-        callsite,
-        pattern,
-        subjectLength: subject.length,
-        ansiEscapeCount: ansiCount,
-        subjectHead: subject.slice(0, 200),
-        subjectTail: subject.slice(-200),
-    });
-}
-
-function safeMatchAll<T>(
-    re: InstanceType<typeof PCRE>, subject: string, callsite: string, pattern: string, includeEnd = false,
-): T {
-    try {
-        return re.matchAll(subject, includeEnd) as T;
-    } catch (err) {
-        if (err instanceof Error && err.message.includes('safety limit exceeded')) {
-            logSafetyLimit(callsite, pattern, subject);
-        }
-        throw err;
-    }
-}
-
-// ── Byte offsets ─────────────────────────────────────────────────────────────
-// Lua strings are bytes and lrexlib reports and accepts BYTE offsets, the same
-// as string.find — so string.sub on a rex.find result cuts where it should. The
-// subject reaches JS as a UTF-16 string, so every position crossing the bridge
-// is translated: a code unit below 0x80 is one byte, below 0x800 two, a
-// surrogate pair four, anything else three.
-
-/** UTF-8 byte length of subject[from, to). */
-function utf8Bytes(subject: string, from: number, to: number): number {
-    let n = 0;
-    for (let i = from; i < to; i++) {
-        const c = subject.charCodeAt(i);
-        if (c < 0x80) n += 1;
-        else if (c < 0x800) n += 2;
-        else if (c >= 0xd800 && c <= 0xdbff && i + 1 < to) {
-            const d = subject.charCodeAt(i + 1);
-            if (d >= 0xdc00 && d <= 0xdfff) { n += 4; i++; } else n += 3;
-        } else n += 3;
-    }
-    return n;
-}
-
-/** UTF-16 index of the first character starting at or after byte `byte` (0-based). */
-function indexAtByte(subject: string, byte: number): number {
-    let b = 0;
-    let i = 0;
-    while (i < subject.length && b < byte) {
-        const pair = subject.charCodeAt(i) >= 0xd800 && subject.charCodeAt(i) <= 0xdbff
-            && i + 1 < subject.length
-            && subject.charCodeAt(i + 1) >= 0xdc00 && subject.charCodeAt(i + 1) <= 0xdfff;
-        const step = pair ? 2 : 1;
-        b += utf8Bytes(subject, i, i + step);
-        i += step;
-    }
-    return i;
+interface Compiled {
+    re: InstanceType<typeof PCRE>;
+    utf: boolean;
+    ncap: number;
+    /** The options every match of this pattern adds (ANCHORED given at compile time). */
+    matchOptions: number;
 }
 
 /**
- * lrexlib's `init`: a 1-based byte position, negative counts back from the
- * end, and a start past the end is no match at all (-1 here). One exactly at
- * the end is allowed — `$` still matches there.
+ * A subject prepared for one pattern: the code units PCRE2 sees, and for a UTF
+ * pattern the maps between those units and the Lua string's bytes.
  */
-function resolveInit(subject: string, init: number | null | undefined): number {
-    if (init == null || init === 0) return 0;
-    const total = utf8Bytes(subject, 0, subject.length);
-    const byte = init > 0 ? init - 1 : Math.max(0, total + init);
-    if (byte > total) return -1;
-    return indexAtByte(subject, byte);
+interface Subject {
+    units: string;
+    bytes: number;
+    /** unit index → byte offset (UTF only; length units + 1). */
+    byteAt?: Int32Array;
+    /** byte offset → unit index, -1 inside a character (UTF only; length bytes + 1). */
+    unitAt?: Int32Array;
 }
 
-/** The 1-based start and inclusive end byte offsets of a match group. */
-function byteSpan(subject: string, g: MatchGroup): [number, number] {
-    const start = utf8Bytes(subject, 0, g.start);
-    return [start + 1, start + utf8Bytes(subject, g.start, g.end)];
-}
-
-function extractCaptures(m: MatchResult): (string | false)[] {
-    const caps: (string | false)[] = [];
-    // pcre2-wasm-universal's `m.length` is the ovector pair count, which includes
-    // the full match at index 0 — capture groups live at 1..length-1.
-    for (let i = 1; i < m.length; i++) {
-        // PCRE2 sets ovector to PCRE2_UNSET for unmatched optional groups,
-        // which the wasm bridge reads as start === -1. The match object still
-        // exists (with match === ""), so we must check the offset, not truthiness,
-        // to distinguish "did not match" from "matched empty string".
-        const cap = m[i];
-        caps.push(cap && cap.start >= 0 ? cap.match : false);
+/**
+ * Decode a byte-string as UTF-8 the way PCRE2's UTF check reads it, or return
+ * the PCRE2_ERROR_UTF8_ERRn code it would fail with.
+ */
+function decodeUtf8(bytes: string): Subject | number {
+    const n = bytes.length;
+    const units: number[] = [];
+    const byteAt: number[] = [];
+    const unitAt = new Int32Array(n + 1).fill(-1);
+    let i = 0;
+    while (i < n) {
+        const c = bytes.charCodeAt(i);
+        let cp: number;
+        let len: number;
+        if (c < 0x80) { cp = c; len = 1; }
+        else {
+            if (c < 0xc0) return ERROR_UTF8_ERR(20);
+            if (c >= 0xfe) return ERROR_UTF8_ERR(21);
+            len = c < 0xe0 ? 2 : c < 0xf0 ? 3 : c < 0xf8 ? 4 : c < 0xfc ? 5 : 6;
+            if (i + len > n) return ERROR_UTF8_ERR(len - 1 - (n - i - 1));
+            cp = c & (0x3f >> (len - 1));
+            for (let k = 1; k < len; k++) {
+                const cc = bytes.charCodeAt(i + k);
+                if ((cc & 0xc0) !== 0x80) return ERROR_UTF8_ERR(5 + k);
+                cp = cp * 64 + (cc & 0x3f);
+            }
+            if (len === 5) return ERROR_UTF8_ERR(11);
+            if (len === 6) return ERROR_UTF8_ERR(12);
+            if (cp < [0, 0, 0x80, 0x800, 0x10000][len]) return ERROR_UTF8_ERR(13 + len);
+            if (cp > 0x10ffff) return ERROR_UTF8_ERR(13);
+            if (cp >= 0xd800 && cp <= 0xdfff) return ERROR_UTF8_ERR(14);
+        }
+        unitAt[i] = units.length;
+        byteAt.push(i);
+        if (cp > 0xffff) {
+            byteAt.push(i);
+            cp -= 0x10000;
+            units.push(0xd800 + (cp >> 10), 0xdc00 + (cp & 0x3ff));
+        } else {
+            units.push(cp);
+        }
+        i += len;
     }
-    return caps;
+    unitAt[n] = units.length;
+    byteAt.push(n);
+    let text = '';
+    for (let k = 0; k < units.length; k += 0x8000) text += String.fromCharCode(...units.slice(k, k + 0x8000));
+    return { units: text, bytes: n, byteAt: Int32Array.from(byteAt), unitAt };
 }
 
-type NamedCapture = { index: number; name?: string; value: string | false };
+// Compiled patterns, most recently used last. A compiled pattern is reusable —
+// match hands back fresh objects — so a gsub replacement function calling rex
+// with the same pattern mid-loop cannot disturb the outer call (#195).
+const RE_CACHE_LIMIT = 256;
+const reCache = new Map<string, Compiled>();
 
-function extractNamedCaptures(m: MatchResult): NamedCapture[] {
-    const out: NamedCapture[] = [];
-    for (let i = 1; i < m.length; i++) {
-        const cap = m[i];
-        const matched = !!cap && cap.start >= 0;
-        out.push({
-            index: i,
-            name: cap?.name,
-            value: matched ? cap.match : false,
-        });
+class CompileError extends Error {}
+
+function compile(armoredPattern: string, cf: number): Compiled {
+    const key = `${cf}\u0000${armoredPattern}`;
+    const hit = reCache.get(key);
+    if (hit) {
+        reCache.delete(key);
+        reCache.set(key, hit);
+        return hit;
+    }
+    const raw = unarmor(armoredPattern);
+    const verbs = LEADING_VERBS.exec(raw)![0];
+    const utf = (cf & UTF) !== 0 || /\(\*UTF\)/.test(verbs);
+    let source = raw;
+    if (utf) {
+        const d = decodeUtf8(raw);
+        if (typeof d === 'number') throw new CompileError('UTF-8 error in the pattern (pattern offset: 1)');
+        source = d.units;
+    }
+    const ownVerbs = LEADING_VERBS.exec(source)![0];
+    let body = source.substring(ownVerbs.length);
+    if (cf & 0x02000000) body = `\\Q${body.replace(/\\E/g, '\\E\\\\E\\Q')}\\E`; // LITERAL
+    let prefix = '';
+    for (const [bit, verb] of VERB_FLAG_BITS) if (cf & bit) prefix += verb;
+    let letters = '';
+    for (const [bit, letter] of INLINE_FLAG_BITS) if (cf & bit) letters += letter;
+    if (cf & 0x01000000) letters += 'xx'; // EXTENDED_MORE
+    const inline = letters ? `(?${letters})` : '';
+    let re: InstanceType<typeof PCRE>;
+    try {
+        re = new PCRE(prefix + ownVerbs + inline + body, '');
+    } catch (err) {
+        const e = err as Error & { offset?: number };
+        let offset = typeof e.offset === 'number' ? e.offset : 0;
+        // Where in the caller's pattern: not counting what was added to it.
+        if (offset >= prefix.length + ownVerbs.length + inline.length) offset -= prefix.length + inline.length;
+        else if (offset >= prefix.length) offset -= prefix.length;
+        throw new CompileError(`${e.message} (pattern offset: ${offset + 1})`);
+    }
+    const c: Compiled = {
+        re,
+        utf,
+        ncap: re.captureCount,
+        matchOptions: ((cf & ANCHORED) | NO_UTF_CHECK) >>> 0,
+    };
+    reCache.set(key, c);
+    if (reCache.size > RE_CACHE_LIMIT) {
+        const [oldest, evicted] = reCache.entries().next().value!;
+        reCache.delete(oldest);
+        evicted.re.destroy();
+    }
+    return c;
+}
+
+function prepare(c: Compiled, armoredSubject: string): Subject | number {
+    const bytes = unarmor(armoredSubject);
+    return c.utf ? decodeUtf8(bytes) : { units: bytes, bytes: bytes.length };
+}
+
+/**
+ * One pcre2_match from byte offset `st`: the ovector as byte offsets
+ * (`[s0, e0, s1, e1, …]`, -1 for a group that did not take part), null for no
+ * match, or a (negative) PCRE2 error code.
+ */
+function execAt(c: Compiled, subj: Subject, st: number, ef: number): number[] | null | number {
+    let start = st;
+    if (subj.unitAt) {
+        start = subj.unitAt[st];
+        if (start === undefined) return -33; // BADOFFSET
+        if (start < 0) return ERROR_BADUTFOFFSET;
+    }
+    let m;
+    try {
+        m = c.re.matchFrom(subj.units, start, ((ef | c.matchOptions) >>> 0));
+    } catch (err) {
+        const code = (err as { code?: number }).code;
+        if (typeof code === 'number') return code;
+        throw err;
+    }
+    if (!m) return null;
+    const out: number[] = [];
+    for (let i = 0; i <= c.ncap; i++) {
+        const g = m[i];
+        if (!g || g.start < 0) { out.push(-1, -1); continue; }
+        if (subj.byteAt) out.push(subj.byteAt[g.start], subj.byteAt[g.end]);
+        else out.push(g.start, g.end);
     }
     return out;
 }
 
-/** Register __rex_* JS helpers and put rex_pcre2 into package.loaded.
- *  `run` executes the module's Lua source — LuaRuntime compiles it as its own
- *  ("=[C]") code, since desktop's rex is the lrexlib C library. */
+/** Register the __rex_* JS helpers and build the module. `run` executes the
+ *  module's Lua source — LuaRuntime compiles it as its own ("=[C]") code, since
+ *  desktop's rex is the lrexlib C library. */
 export async function setupRex(lua: Lua, run: (code: string) => void = code => { lua.doStringSync(code); }): Promise<void> {
     await PCRE.init();
 
-    type FlagsArg = string | number | null | undefined;
+    const toInt = (v: unknown): number => {
+        const n = Number(v);
+        return Number.isFinite(n) ? Math.trunc(n) | 0 : 0;
+    };
 
-    // match(subject, pattern, flags?, init?) → table [cap1, cap2, ...] or nil
-    lua.global.set('__rex_match__', (subject: string, pattern: string, flags: FlagsArg, init?: number) => {
-        return withRe(pattern, flags, re => {
-            const start = resolveInit(subject, init);
-            const m = start < 0 ? null : re.matchFrom(subject, start);
-            if (!m) return null;
-            const caps = extractCaptures(m);
-            return caps.length > 0 ? caps : [m[0].match];
-        });
-    });
-
-    // find(subject, pattern, flags?, init?) → table [start, end, cap1, ...] or nil  (1-indexed)
-    lua.global.set('__rex_find__', (subject: string, pattern: string, flags: FlagsArg, init?: number) => {
-        return withRe(pattern, flags, re => {
-            const start = resolveInit(subject, init);
-            const m = start < 0 ? null : re.matchFrom(subject, start);
-            if (!m) return null;
-            return [...byteSpan(subject, m[0]), ...extractCaptures(m)];
-        });
-    });
-
-    // tfind(subject, pattern, flags?, init?) → { startIdx, endIdx, captures: [{index,name?,value}] } or nil
-    // Lua-side assembles a captures table keyed by both numeric index and (when present) name.
-    lua.global.set('__rex_tfind__', (subject: string, pattern: string, flags: FlagsArg, init?: number) => {
-        return withRe(pattern, flags, re => {
-            const start = resolveInit(subject, init);
-            const m = start < 0 ? null : re.matchFrom(subject, start);
-            if (!m) return null;
-            const [startIdx, endIdx] = byteSpan(subject, m[0]);
-            return {
-                startIdx,
-                endIdx,
-                captures: extractNamedCaptures(m),
-            };
-        });
-    });
-
-    // split(subject, pattern, flags?) → array of [section, cap1, ...] for Lua iterator
-    lua.global.set('__rex_split__', (subject: string, pattern: string, flags: FlagsArg) => {
-        return withRe(pattern, flags, re => {
-            const matches = safeMatchAll<MatchResult[]>(re, subject, 'rex.split', pattern);
-            const results: (string | false)[][] = [];
-            let lastEnd = 0;
-            for (const m of matches) {
-                results.push([subject.slice(lastEnd, m[0].start), ...extractCaptures(m)]);
-                lastEnd = m[0].end;
-            }
-            results.push([subject.slice(lastEnd)]);
-            return results;
-        });
-    });
-
-    // gsub(subject, pattern, flags?, limit?) → { pieces, rows, ncap }
-    // Only the matching happens here: `pieces` is the unmatched text around the
-    // matches (one more than there are rows) and each row is [whole, cap1, ...].
-    // The Lua side applies the replacement, so a table or function repl is a
-    // real Lua value and the result string never round-trips through JS.
-    lua.global.set('__rex_gsub__', (subject: string, pattern: string, flags: FlagsArg, limit?: number | null) => {
-        return withRe(pattern, flags, re => {
-            let matches = safeMatchAll<MatchResult[]>(re, subject, 'rex.gsub', pattern, true);
-            if (typeof limit === 'number') matches = matches.slice(0, Math.max(0, Math.floor(limit)));
-            const pieces: string[] = [];
-            const rows: (string | false)[][] = [];
-            let lastEnd = 0;
-            for (const m of matches) {
-                pieces.push(subject.slice(lastEnd, m[0].start));
-                rows.push([m[0].match, ...extractCaptures(m)]);
-                lastEnd = m[0].end;
-            }
-            pieces.push(subject.slice(lastEnd));
-            return { pieces, rows, ncap: matches.length > 0 ? matches[0].length - 1 : 0 };
-        });
-    });
-
-    // exec(subject, pattern, flags?, init?) → [start, end, s1, e1, s2, e2, ...] or nil
-    // (byte offsets; an unmatched group's pair is false, false)
-    lua.global.set('__rex_exec__', (subject: string, pattern: string, flags: FlagsArg, init?: number) => {
-        return withRe(pattern, flags, re => {
-            const start = resolveInit(subject, init);
-            const m = start < 0 ? null : re.matchFrom(subject, start);
-            if (!m) return null;
-            const out: (number | false)[] = [...byteSpan(subject, m[0])];
-            for (let i = 1; i < m.length; i++) {
-                const cap = m[i];
-                if (cap && cap.start >= 0) out.push(...byteSpan(subject, cap));
-                else out.push(false, false);
-            }
-            return out;
-        });
-    });
-
-    // compile(pattern, flags?) → error message, or nil when the pattern compiles.
-    // rex.new compiles up front, as lrexlib does, so a bad pattern fails there.
-    lua.global.set('__rex_compile__', (pattern: string, flags: FlagsArg) => {
+    // compile(pattern, cf) → capture count and the name table as
+    // "name\tgroup\n…", or { err } when the pattern does not compile.
+    lua.global.set('__rex_compile__', (pattern: string, cf: number) => {
         try {
-            withRe(pattern, flags, () => undefined);
-            return null;
+            const c = compile(pattern, toInt(cf));
+            return { ncap: c.ncap, names: c.re.groupNames.map(([name, n]) => `${name}\t${n}\n`).join('') };
         } catch (err) {
-            const e = err as Error & { offset?: number };
-            return typeof e.offset === 'number'
-                ? `${e.message} (pattern offset: ${e.offset + 1})`
-                : e.message;
+            if (err instanceof CompileError) return { err: err.message };
+            throw err;
         }
     });
 
-    // gmatch(subject, pattern, flags?) → array of per-match capture rows for Lua iterator
-    // Each row is the capture list, or [full_match] if there are no capture groups.
-    lua.global.set('__rex_gmatch__', (subject: string, pattern: string, flags: FlagsArg) => {
-        return withRe(pattern, flags, re => {
-            const matches = safeMatchAll<MatchResult[]>(re, subject, 'rex.gmatch', pattern, true);
-            return matches.map(m => {
-                const caps = extractCaptures(m);
-                return caps.length > 0 ? caps : [m[0].match];
-            });
-        });
+    // exec(pattern, cf, subject, st, ef) → the ovector of one match from byte
+    // offset st, null, or a PCRE2 error code.
+    lua.global.set('__rex_exec__', (pattern: string, cf: number, subject: string, st: number, ef: number) => {
+        const c = compile(pattern, toInt(cf));
+        const subj = prepare(c, subject);
+        if (typeof subj === 'number') return subj;
+        return execAt(c, subj, toInt(st), toInt(ef));
     });
 
-    // count(subject, pattern, flags?) → number of non-overlapping matches
-    lua.global.set('__rex_count__', (subject: string, pattern: string, flags: FlagsArg) => {
-        return withRe(pattern, flags, re => {
-            return safeMatchAll<MatchResult[]>(re, subject, 'rex.count', pattern, true).length;
-        });
+    // all(pattern, cf, subject, ef, limit) → every ovector, end to end, of the
+    // matches lrexlib's gsub/count/gmatch/split loop takes (algo.h): resume at
+    // the end of a match or one byte past an empty one, and discard an empty
+    // match that ends where the previous match did. limit < 0 is no limit.
+    lua.global.set('__rex_all__', (pattern: string, cf: number, subject: string, ef: number, limit: number) => {
+        const c = compile(pattern, toInt(cf));
+        const subj = prepare(c, subject);
+        if (typeof subj === 'number') return subj;
+        const len = subj.bytes;
+        const max = toInt(limit);
+        const flags = toInt(ef);
+        const out: number[] = [];
+        let n = 0;
+        let st = 0;
+        let lastTo = -1;
+        while ((max < 0 || n < max) && st <= len) {
+            const r = execAt(c, subj, st, flags);
+            if (r === null) break;
+            if (typeof r === 'number') return r;
+            const from = r[0];
+            const to = r[1];
+            if (to === lastTo) {
+                if (st < len) { st += 1; continue; }
+                break;
+            }
+            lastTo = to;
+            n++;
+            for (const v of r) out.push(v);
+            if (st < from) st = from;
+            if (st < to) st = to;
+            else if (st < len) st += 1;
+            else break;
+        }
+        return out;
     });
 
-    // Expose the PCRE2 flag constants table to Lua, so rex.flags() can return it.
-    lua.global.set('__rex_flag_constants__', PCRE2_FLAGS);
     lua.global.set('__rex_pcre_version__', PCRE.version());
 
+    const [major, minor] = PCRE.version().split(/[.\s]/).map(Number);
+    const flagsLua = [
+        `MAJOR = ${major || 10}`, `MINOR = ${minor || 0}`,
+        ...PCRE2_FLAGS.map(([k, v]) => `${k} = ${v}`),
+        ...PCRE2_ERRORS.map((k, i) => `ERROR_${k} = ${-1 - i}`),
+    ].join(', ');
+
     run(`
-        local _match  = __rex_match__
-        local _find   = __rex_find__
-        local _tfind  = __rex_tfind__
-        local _split  = __rex_split__
-        local _gsub   = __rex_gsub__
-        local _gmatch = __rex_gmatch__
-        local _count  = __rex_count__
-        local _exec   = __rex_exec__
         local _compile = __rex_compile__
-        local _flags  = __rex_flag_constants__
+        local _exec    = __rex_exec__
+        local _all     = __rex_all__
+        local armor    = __mudlet_armor
+        local type, tostring, tonumber, error, select, pairs, setmetatable =
+              type, tostring, tonumber, error, select, pairs, setmetatable
+        local ssub, sfind, floor, concat = string.sub, string.find, math.floor, table.concat
 
         local M = {}
 
-        -- JS arrays use 0-based indexing. Collect all elements into a proper
-        -- 1-based Lua table (stopping at the first nil) then unpack it.
-        local function jsarr2vararg(t)
-            local r = {}
-            local i = 0
-            while true do
-                local v = t[i]
-                if v == nil then break end
-                r[i + 1] = v
-                i = i + 1
-            end
-            return unpack(r)
+        local FLAGS = { ${flagsLua} }
+        local ERROR_KEYS = {}
+        for k, v in pairs(FLAGS) do
+            if k:sub(1, 6) == "ERROR_" then ERROR_KEYS[v] = k end
         end
 
-        -- Convert a 0-indexed JS array of NamedCapture objects into a Lua
-        -- captures table keyed by both numeric index and (when present) name.
-        -- Unmatched optional groups arrive as boolean false.
-        local function buildCaptures(groups)
-            local t = {}
-            local i = 0
-            while true do
-                local g = groups[i]
-                if g == nil then break end
-                local v = g.value
-                if v == nil then v = false end
-                t[g.index] = v
-                if g.name and g.name ~= nil then t[g.name] = v end
-                i = i + 1
-            end
-            return t
+        -- generate_error: lrexlib names the code when it is a known one.
+        local function matchError(code)
+            local key = ERROR_KEYS[code]
+            if key then error("error PCRE2_" .. key, 3) end
+            error("PCRE2 error code " .. tostring(code), 3)
         end
 
-        -- Mudlet's rex_pcre2 accepts either a raw pattern string OR a compiled
-        -- pattern object (from rex.new) as the pattern argument to module-level
-        -- functions like rex.gsub / rex.match. We tag compiled objects with
-        -- __pattern/__flags and unwrap them here before forwarding to the JS
-        -- bridge — passing the table itself would silently coerce to a bogus
-        -- pattern in PCRE and can spin matchAll until the safety cap fires.
-        local function unwrap(p)
-            local t = type(p)
-            if (t == 'table' or t == 'userdata') and p.__pattern then
-                return p.__pattern, p.__flags
-            end
-            return p, nil
+        local function argError(n, fname, msg)
+            error("bad argument #" .. n .. " to '" .. fname .. "' (" .. msg .. ")", 3)
         end
 
-        -- Resolve effective compile flags: caller-supplied cf wins, otherwise
-        -- fall back to whatever the compiled pattern carries.
-        local function effFlags(cf, compiledFlags)
-            if cf ~= nil then return cf end
-            return compiledFlags
+        local function trunc(x)
+            if x ~= x or x == 1/0 or x == -1/0 then return 0 end
+            return x >= 0 and floor(x) or -floor(-x)
         end
 
-        M.flags = function() return _flags end
-
-        M.match = function(subject, pattern, init, cf)
-            local p, cflags = unwrap(pattern)
-            local t = _match(subject, p, effFlags(cf, cflags), init)
-            if t == nil then return nil end
-            return jsarr2vararg(t)
+        -- lua_tointeger / luaL_optinteger.
+        local function optint(v, n, fname, default)
+            if v == nil then return default end
+            local x = tonumber(v)
+            if x == nil then argError(n, fname, "number expected, got " .. type(v)) end
+            return trunc(x)
         end
 
-        M.find = function(subject, pattern, init, cf)
-            local p, cflags = unwrap(pattern)
-            local t = _find(subject, p, effFlags(cf, cflags), init)
-            if t == nil then return nil end
-            return jsarr2vararg(t)
-        end
-
-        -- Returns: start_idx, end_idx, captures_table (both numeric and named keys)
-        M.tfind = function(subject, pattern, init, cf)
-            local p, cflags = unwrap(pattern)
-            local r = _tfind(subject, p, effFlags(cf, cflags), init)
-            if r == nil then return nil end
-            return r.startIdx, r.endIdx, buildCaptures(r.captures)
-        end
-
-        M.split = function(subject, pattern, cf)
-            local p, cflags = unwrap(pattern)
-            local results = _split(subject, p, effFlags(cf, cflags))
-            local i = -1
-            return function()
-                i = i + 1
-                local row = results[i]
-                if row == nil then return nil end
-                -- row is a 0-indexed JS array: [section, cap1, cap2, ...]
-                return row[0], row[1], row[2]
-            end
-        end
-
-        -- lrexlib's gsub: repl is a string (%0 the whole match, %1-%9 the
-        -- captures, %1 the whole match when there are none, % before anything
-        -- else is that character), a table indexed by the first capture, or a
-        -- function called with the captures. A table or function yielding
-        -- false/nil keeps the match as it was. n caps the number of matches.
-        -- Returns the new string, the number of matches and the number of
-        -- substitutions made.
-        local function expand(repl, row, ncap)
-            local out = {}
-            local i, len = 1, #repl
-            while i <= len do
-                local c = repl:sub(i, i)
-                if c == "%" and i < len then
-                    local nx = repl:sub(i + 1, i + 1)
-                    local d = tonumber(nx)
-                    if d then
-                        local v
-                        if d == 0 or (d == 1 and ncap == 0) then
-                            v = row[0]
-                        elseif d <= ncap then
-                            v = row[d]
-                        else
-                            error("invalid capture index %" .. nx .. " in replacement string", 3)
-                        end
-                        if v then out[#out + 1] = v end
-                    else
-                        out[#out + 1] = nx
-                    end
-                    i = i + 2
-                else
-                    out[#out + 1] = c
-                    i = i + 1
+        -- getcflags: a number, or a string of lrexlib's letters i m s x U.
+        local LETTERS = { i = FLAGS.CASELESS, m = FLAGS.MULTILINE, s = FLAGS.DOTALL,
+                          x = FLAGS.EXTENDED, U = FLAGS.UNGREEDY }
+        local function getcflags(v, n, fname)
+            local t = type(v)
+            if v == nil then return 0 end
+            if t == "number" then return trunc(v) end
+            if t == "string" then
+                local seen, res = {}, 0
+                for k = 1, #v do
+                    local bit = LETTERS[ssub(v, k, k)]
+                    if bit and not seen[bit] then seen[bit] = true; res = res + bit end
                 end
+                return res
             end
-            return table.concat(out)
+            argError(n, fname, "number or string expected, got " .. t)
         end
 
-        M.gsub = function(subject, pattern, repl, n, cf)
-            local p, cflags = unwrap(pattern)
+        -- check_subject: a string (a number converts); lrexlib's
+        -- table/userdata-with-topointer subjects have no memory to point at here.
+        local function checkSubject(s, n, fname)
+            local t = type(s)
+            if t == "string" then return s end
+            if t == "number" then return tostring(s) end
+            argError(n, fname, "string, table or userdata expected, got " .. (s == nil and "no value" or t))
+        end
+
+        -- Compiled patterns are userdata, as lrexlib's are (Mudlet's starter UI
+        -- checks type(compiled) == "userdata"); their state lives here.
+        local regexes = setmetatable({}, { __mode = "k" })
+        local infoCache = setmetatable({}, { __mode = "v" })
+
+        local function compileInfo(pat, cf)
+            local key = cf .. "\\0" .. pat
+            local info = infoCache[key]
+            if info then return info end
+            local r = _compile(pat, cf)
+            if r.err then error(r.err, 3) end
+            info = { pat = pat, cf = cf, ncap = r.ncap, names = {} }
+            for name, idx in r.names:gmatch("([^\\t\\n]*)\\t(%d+)\\n") do
+                info.names[#info.names + 1] = { name, tonumber(idx) }
+            end
+            infoCache[key] = info
+            return info
+        end
+
+        -- check_pattern + compile_regex: a compiled pattern keeps its own
+        -- flags, whatever cf the call passes.
+        local function pattern(p, cf, cfpos, fname)
+            local ud = regexes[p]
+            if ud then return ud end
+            local t = type(p)
+            if t == "string" or t == "number" then
+                return compileInfo(armor(tostring(p)), getcflags(cf, cfpos, fname))
+            end
+            argError(2, fname, "string or rex_pcre2_regex expected, got " .. (p == nil and "no value" or t))
+        end
+
+        -- get_startoffset: a 1-based init, negative from the end, as a 0-based byte.
+        local function startoffset(init, len, n, fname)
+            local st = optint(init, n, fname, 1)
+            if st > 0 then st = st - 1
+            elseif st < 0 then
+                st = st + len
+                if st < 0 then st = 0 end
+            end
+            return st
+        end
+
+        local function exec(info, s, st, ef)
+            local r = _exec(info.pat, info.cf, armor(s), st, ef)
+            if r == nil then return nil end
+            if type(r) == "number" then matchError(r) end
+            return r
+        end
+
+        -- Capture i (0 = the whole match) of an ovector read from base: the
+        -- substring, or false for a group that did not take part.
+        local function cap(s, r, base, i)
+            local b = r[base + 2 * i]
+            if b == nil or b < 0 then return false end
+            return ssub(s, b + 1, r[base + 2 * i + 1])
+        end
+
+        local function captures(s, r, base, ncap)
+            local t = {}
+            for i = 1, ncap do t[i] = cap(s, r, base, i) end
+            return unpack(t, 1, ncap)
+        end
+
+        -- do_named_subpatterns: each named group's substring (or false) into t.
+        local function named(t, info, s, r)
+            for _, e in ipairs(info.names) do
+                if e[2] > 0 and e[2] <= info.ncap then t[e[1]] = cap(s, r, 0, e[2]) end
+            end
+        end
+
+        local FIND, MATCH, EXEC, TFIND = 0, 1, 2, 3
+
+        local function finish(method, info, s, r)
+            if method == EXEC then
+                local offsets = {}
+                for i = 1, info.ncap do
+                    local b = r[2 * i]
+                    if b >= 0 then
+                        offsets[2 * i - 1], offsets[2 * i] = b + 1, r[2 * i + 1]
+                    else
+                        offsets[2 * i - 1], offsets[2 * i] = false, false
+                    end
+                end
+                named(offsets, info, s, r)
+                return r[0] + 1, r[1], offsets
+            elseif method == TFIND then
+                local t = {}
+                for i = 1, info.ncap do t[i] = cap(s, r, 0, i) end
+                named(t, info, s, r)
+                return r[0] + 1, r[1], t
+            elseif method == FIND then
+                if info.ncap > 0 then return r[0] + 1, r[1], captures(s, r, 0, info.ncap) end
+                return r[0] + 1, r[1]
+            end
+            if info.ncap > 0 then return captures(s, r, 0, info.ncap) end
+            return cap(s, r, 0, 0)
+        end
+
+        -- find (s, patt, [st], [cf], [ef]) / match (s, patt, [st], [cf], [ef])
+        local function findFunc(method, fname)
+            return function(s, p, init, cf, ef)
+                s = checkSubject(s, 1, fname)
+                local info = pattern(p, cf, 4, fname)
+                local st = startoffset(init, #s, 3, fname)
+                ef = optint(ef, 5, fname, 0)
+                if st > #s then return nil end
+                local r = exec(info, s, st, ef)
+                if r == nil then return nil end
+                return finish(method, info, s, r)
+            end
+        end
+        M.find = findFunc(FIND, "find")
+        M.match = findFunc(MATCH, "match")
+        -- Not lrexlib functions (it has them only as methods), kept for
+        -- scripts written against earlier Mudlet Web.
+        M.tfind = findFunc(TFIND, "tfind")
+        M.exec = findFunc(EXEC, "exec")
+
+        -- Every match lrexlib's loop takes, as one flat array of ovectors.
+        local function all(info, s, ef, limit)
+            local r = _all(info.pat, info.cf, armor(s), ef, limit)
+            if type(r) == "number" then matchError(r) end
+            return r, 2 * (info.ncap + 1)
+        end
+
+        -- gmatch (s, patt, [cf], [ef]): each match's captures, or the whole match.
+        function M.gmatch(s, p, cf, ef)
+            s = checkSubject(s, 1, "gmatch")
+            local info = pattern(p, cf, 3, "gmatch")
+            ef = optint(ef, 4, "gmatch", 0)
+            local r, stride = all(info, s, ef, -1)
+            local base = -stride
+            return function()
+                base = base + stride
+                if r[base] == nil then return nil end
+                if info.ncap > 0 then return captures(s, r, base, info.ncap) end
+                return cap(s, r, base, 0)
+            end
+        end
+
+        -- split (s, patt, [cf], [ef]): the text before each match, then the
+        -- match's captures (or the match itself); last, the rest on its own.
+        function M.split(s, p, cf, ef)
+            s = checkSubject(s, 1, "split")
+            local info = pattern(p, cf, 3, "split")
+            ef = optint(ef, 4, "split", 0)
+            local r, stride = all(info, s, ef, -1)
+            local base, prev, done = -stride, 0, false
+            return function()
+                if done then return nil end
+                base = base + stride
+                if r[base] == nil then
+                    done = true
+                    return ssub(s, prev + 1)
+                end
+                local section = ssub(s, prev + 1, r[base])
+                prev = r[base + 1]
+                if info.ncap > 0 then return section, captures(s, r, base, info.ncap) end
+                return section, cap(s, r, base, 0)
+            end
+        end
+
+        -- count (s, patt, [cf], [ef])
+        function M.count(s, p, cf, ef)
+            s = checkSubject(s, 1, "count")
+            local info = pattern(p, cf, 3, "count")
+            ef = optint(ef, 4, "count", 0)
+            local r, stride = all(info, s, ef, -1)
+            local n = 0
+            while r[n * stride] ~= nil do n = n + 1 end
+            return n
+        end
+
+        -- bufferZ_putrepstring: the replacement split into literal text and
+        -- capture numbers. %0 is the whole match, %1 too when there are no
+        -- captures, a higher number is an error; % before anything else is
+        -- that character, and a trailing % is dropped.
+        local function parseRepl(repl, ncap)
+            local parts, i, len = {}, 1, #repl
+            while i <= len do
+                local q = sfind(repl, "%", i, true)
+                if not q then parts[#parts + 1] = ssub(repl, i); break end
+                if q > i then parts[#parts + 1] = ssub(repl, i, q - 1) end
+                if q < len then
+                    local c = ssub(repl, q + 1, q + 1)
+                    if c:find("^%d$") then
+                        local num = tonumber(c)
+                        if num == 1 and ncap == 0 then num = 0
+                        elseif num > ncap then error("invalid capture index", 3) end
+                        parts[#parts + 1] = num
+                    else
+                        parts[#parts + 1] = c
+                    end
+                end
+                i = q + 2
+            end
+            return parts
+        end
+
+        -- gsub (s, patt, repl, [n], [cf], [ef]): lrexlib's algf_gsub. n caps
+        -- the matches, or is a function asked about each one (with its start,
+        -- end and replacement) whether to replace it and whether to go on.
+        -- Returns the result, the number of matches and of substitutions.
+        function M.gsub(s, p, repl, n, cf, ef)
+            s = checkSubject(s, 1, "gsub")
+            local info = pattern(p, cf, 5, "gsub")
             local rt = type(repl)
             if rt == "number" then repl = tostring(repl); rt = "string" end
             if rt ~= "string" and rt ~= "table" and rt ~= "function" then
-                error("bad argument #3 to 'gsub' (string, table or function expected, got " .. rt .. ")", 2)
+                argError(3, "gsub", "string, table or function expected, got " .. (repl == nil and "no value" or rt))
             end
-            local r = _gsub(subject, p, effFlags(cf, cflags), type(n) == "number" and n or nil)
-            local pieces, rows, ncap = r.pieces, r.rows, r.ncap
-            local out = { pieces[0] }
-            local nmatch, nsub = 0, 0
-            while true do
-                local row = rows[nmatch]
-                if row == nil then break end
+            local maxmatch, cond = -1, nil
+            if n == nil then
+                maxmatch = -1
+            elseif type(n) == "function" then
+                cond = n
+            elseif tonumber(n) then
+                maxmatch = trunc(tonumber(n))
+                if maxmatch < 0 then maxmatch = 0 end
+            else
+                argError(4, "gsub", "number or function expected, got " .. type(n))
+            end
+            ef = optint(ef, 6, "gsub", 0)
+            local ncap = info.ncap
+            local parts = rt == "string" and parseRepl(repl, ncap) or nil
+            local r, stride = all(info, s, ef, cond and -1 or maxmatch)
+            local out, st, nmatch, nsub = {}, 0, 0, 0
+            local base = 0
+            while r[base] ~= nil and (cond or maxmatch < 0 or nmatch < maxmatch) do
+                local from, to = r[base], r[base + 1]
                 nmatch = nmatch + 1
-                local whole = row[0]
-                local v
+                out[#out + 1] = ssub(s, st + 1, from)
+                local whole = ssub(s, from + 1, to)
+                local v, subst, val
                 if rt == "string" then
-                    v = expand(repl, row, ncap)
-                else
-                    local first = row[ncap > 0 and 1 or 0]
-                    if rt == "table" then
-                        v = repl[first]
-                    elseif ncap == 0 then
-                        v = repl(whole)
-                    else
-                        local args = {}
-                        for k = 1, ncap do args[k] = row[k] end
-                        v = repl(unpack(args, 1, ncap))
+                    local b = {}
+                    for k = 1, #parts do
+                        local part = parts[k]
+                        if type(part) == "number" then
+                            local c = cap(s, r, base, part)
+                            if c then b[#b + 1] = c end
+                        else
+                            b[#b + 1] = part
+                        end
                     end
-                end
-                if v == nil or v == false then
-                    out[#out + 1] = whole
+                    v, subst = concat(b), true
                 else
-                    local vt = type(v)
-                    if vt ~= "string" and vt ~= "number" then
+                    if rt == "table" then
+                        val = repl[ncap > 0 and cap(s, r, base, 1) or whole]
+                    elseif ncap > 0 then
+                        val = repl(captures(s, r, base, ncap))
+                    else
+                        val = repl(whole)
+                    end
+                    local vt = type(val)
+                    if vt == "string" or vt == "number" then
+                        v, subst = tostring(val), true
+                    elseif not val then
+                        v, subst = whole, false
+                    else
                         error("invalid replacement value (a " .. vt .. ")", 2)
                     end
-                    out[#out + 1] = tostring(v)
-                    nsub = nsub + 1
                 end
-                out[#out + 1] = pieces[nmatch]
+                if cond then
+                    local a1, a2 = cond(from + 1, to, rt == "string" and v or val)
+                    local t1 = type(a1)
+                    if t1 == "string" or t1 == "number" then
+                        v, subst = tostring(a1), true
+                    elseif not a1 then
+                        v, subst = whole, false
+                    end
+                    if type(a2) == "number" then
+                        local more = trunc(a2)
+                        if more < 0 then more = 0 end
+                        maxmatch, cond = nmatch + more, nil
+                    elseif a2 then
+                        maxmatch, cond = -1, nil
+                    end
+                end
+                out[#out + 1] = v
+                if subst then nsub = nsub + 1 end
+                st = to
+                base = base + stride
             end
-            return table.concat(out), nmatch, nsub
+            out[#out + 1] = ssub(s, st + 1)
+            return concat(out), nmatch, nsub
         end
 
-        -- Returns start, end and a table of capture offsets {s1, e1, s2, e2, ...}
-        -- (false for a group that did not take part), all byte positions.
-        M.exec = function(subject, pattern, init, cf)
-            local p, cflags = unwrap(pattern)
-            local t = _exec(subject, p, effFlags(cf, cflags), init)
-            if t == nil then return nil end
-            local offsets = {}
-            local i = 2
-            while true do
-                local v = t[i]
-                if v == nil then break end
-                offsets[i - 1] = v
-                i = i + 1
-            end
-            return t[0], t[1], offsets
-        end
-
-        -- gmatch returns an iterator yielding captures of each match.
-        -- If the pattern has no capture groups, yields the whole match.
-        M.gmatch = function(subject, pattern, cf)
-            local p, cflags = unwrap(pattern)
-            local rows = _gmatch(subject, p, effFlags(cf, cflags))
-            local i = -1
-            return function()
-                i = i + 1
-                local row = rows[i]
-                if row == nil then return nil end
-                return jsarr2vararg(row)
+        -- r:find / r:match / r:tfind / r:exec (s, [st], [ef])
+        local function method(kind, fname)
+            return function(self, s, init, ef)
+                local info = regexes[self]
+                if not info then argError(1, fname, "rex_pcre2_regex expected, got " .. type(self)) end
+                s = checkSubject(s, 2, fname)
+                local st = startoffset(init, #s, 3, fname)
+                ef = optint(ef, 4, fname, 0)
+                if st > #s then return nil end
+                local r = exec(info, s, st, ef)
+                if r == nil then return nil end
+                return finish(kind, info, s, r)
             end
         end
 
-        M.count = function(subject, pattern, cf)
-            local p, cflags = unwrap(pattern)
-            return _count(subject, p, effFlags(cf, cflags))
-        end
+        local methods = {
+            find  = method(FIND, "find"),
+            match = method(MATCH, "match"),
+            tfind = method(TFIND, "tfind"),
+            exec  = method(EXEC, "exec"),
+            -- Not lrexlib methods, kept for scripts written against earlier
+            -- Mudlet Web: the module functions with the pattern first.
+            gsub   = function(self, s, repl, n) return M.gsub(s, self, repl, n) end,
+            split  = function(self, s) return M.split(s, self) end,
+            gmatch = function(self, s) return M.gmatch(s, self) end,
+            count  = function(self, s) return M.count(s, self) end,
+        }
 
-        -- A compiled pattern is USERDATA, not a table. The distinction is
-        -- visible: lrexlib hands back userdata, and scripts check for it —
-        -- Mudlet's own starter UI verifies its patterns compiled by asserting
-        -- type(compiled) == "userdata", and treats a table as "this one fell
-        -- back to recompiling per line". newproxy is Lua 5.1's only way to make
-        -- one from Lua; the fields and methods hang off its metatable.
-        M.new = function(pattern, flags)
-            if type(pattern) ~= "string" then
-                error("bad argument #1 to 'new' (string expected, got " .. type(pattern) .. ")", 2)
+        -- new (patt, [cf]): compiled up front, so a bad pattern fails here.
+        function M.new(p, cf)
+            local t = type(p)
+            if t ~= "string" and t ~= "number" then
+                argError(1, "new", "string expected, got " .. (p == nil and "no value" or t))
             end
-            local err = _compile(pattern, flags)
-            if err then error(err, 2) end
-            local methods = {
-                match  = function(self, subject, init, ef) return M.match(subject, self, init) end,
-                find   = function(self, subject, init, ef) return M.find(subject, self, init)  end,
-                tfind  = function(self, subject, init, ef) return M.tfind(subject, self, init) end,
-                exec   = function(self, subject, init, ef) return M.exec(subject, self, init) end,
-                gsub   = function(self, subject, repl, n) return M.gsub(subject, self, repl, n) end,
-                split  = function(self, subject) return M.split(subject, self) end,
-                gmatch = function(self, subject) return M.gmatch(subject, self) end,
-                count  = function(self, subject) return M.count(subject, self) end,
-            }
-            local fields = { __pattern = pattern, __flags = flags }
-            local ok, proxy = pcall(newproxy, true)
-            if not ok or proxy == nil then
-                -- No newproxy (a stripped 5.1, or 5.2+): a table still works
-                -- for everything except the type() check.
-                return setmetatable(fields, { __index = methods })
-            end
+            local info = compileInfo(armor(tostring(p)), getcflags(cf, 2, "new"))
+            local proxy = newproxy(true)
             local mt = getmetatable(proxy)
-            mt.__index = function(_, key)
-                local v = fields[key]
-                if v ~= nil then return v end
-                return methods[key]
-            end
-            mt.__tostring = function() return "pcre2 (" .. tostring(pattern) .. ")" end
+            local addr = tostring(proxy):match("0x%x+") or "0x0"
+            mt.__index = methods
+            mt.__tostring = function() return "rex_pcre2_regex (" .. addr .. ")" end
+            regexes[proxy] = info
             return proxy
+        end
+
+        -- flags ([t]): every constant, into t when one is passed.
+        function M.flags(...)
+            local t
+            if select("#", ...) == 0 then
+                t = {}
+            else
+                t = ...
+                if type(t) ~= "table" then argError(1, "flags", "not a table") end
+            end
+            for k, v in pairs(FLAGS) do t[k] = v end
+            return t
         end
 
         -- lrexlib's library-level extras (lpcre2.c / lpcre2_f.c, rel-2-9-4).
@@ -678,18 +774,7 @@ export async function setupRex(lua: Lua, run: (code: string) => void = code => {
         -- of it fails there.
         package.loaded["rex_pcre2"] = M
         rex, rex_pcre2, rex_pcre = M, M, M
-        __rex_pcre_version__ = nil
 
-        -- clean up bridge globals
-        __rex_match__  = nil
-        __rex_find__   = nil
-        __rex_tfind__  = nil
-        __rex_split__  = nil
-        __rex_gsub__   = nil
-        __rex_gmatch__ = nil
-        __rex_count__  = nil
-        __rex_exec__   = nil
-        __rex_compile__ = nil
-        __rex_flag_constants__ = nil
+        __rex_compile__, __rex_exec__, __rex_all__, __rex_pcre_version__ = nil, nil, nil, nil
     `);
 }

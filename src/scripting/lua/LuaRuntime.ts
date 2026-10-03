@@ -11,7 +11,7 @@ import type {ScriptingAPI} from '../ScriptingAPI';
 import type {ProfileVFS} from '../vfs/ProfileVFS';
 import {describeFsError} from '../vfs/fsErrors';
 import UTF8 from './utf8.lua?raw';
-import {findLuaPattern} from './utf8Patterns';
+import {findLuaPattern, findLuaPatternBytes, luaClassMatches} from './utf8Patterns';
 import {utf8CaseMap} from './utf8CaseMap';
 import {armor, unarmor} from './byteArmor';
 import VFS_LUA from './VFS.lua?raw';
@@ -228,6 +228,76 @@ const bustedSpecVfsPaths = (): string[] =>
  * table is walked on the Lua side now (see `__mudlet_headers_to_string`), where
  * it is an ordinary `pairs` loop.
  */
+/**
+ * liolib's read("*n"): `fscanf(f, "%lf")` as glibc does it, over a file body
+ * held as a byte-string from `start`. Leading white space and a sign, then
+ * "inf"/"infinity", "nan", a hex float ("0x1F", "0x1.8p1") or a decimal one
+ * (".5", "5.", "1e5"). What it read stays read, failing or not, except the one
+ * character scanf pushes back; `value` is null when nothing converted.
+ */
+function scanNumber(text: string, start: number): { value: number | null; end: number } {
+    let i = start;
+    const at = (k: number) => text.charAt(k);
+    const isDigit = (c: string) => c >= '0' && c <= '9';
+    const isHex = (c: string) => /^[0-9a-fA-F]$/.test(c);
+    while (/^[ \t\n\v\f\r]$/.test(at(i))) i++;
+    let sign = 1;
+    if (at(i) === '+' || at(i) === '-') { if (at(i) === '-') sign = -1; i++; }
+    const word = (w: string): boolean => text.substring(i, i + w.length).toLowerCase() === w;
+    if (word('inf')) {
+        i += 3;
+        if (word('inity')) i += 5;
+        return { value: sign * Infinity, end: i };
+    }
+    if (word('nan')) {
+        i += 3;
+        const paren = /^\([0-9A-Za-z_]*\)/.exec(text.substring(i));
+        if (paren) i += paren[0].length;
+        return { value: NaN, end: i };
+    }
+    if (at(i) === '0' && (at(i + 1) === 'x' || at(i + 1) === 'X')) {
+        i += 2;
+        let mant = 0;
+        let exp = 0;
+        let digits = 0;
+        while (isHex(at(i))) { mant = mant * 16 + parseInt(at(i), 16); i++; digits++; }
+        if (at(i) === '.') {
+            i++;
+            while (isHex(at(i))) { mant = mant * 16 + parseInt(at(i), 16); exp -= 4; i++; digits++; }
+        }
+        if (digits > 0 && (at(i) === 'p' || at(i) === 'P')) {
+            let j = i + 1;
+            let esign = 1;
+            if (at(j) === '+' || at(j) === '-') { if (at(j) === '-') esign = -1; j++; }
+            let e = 0;
+            let edigits = 0;
+            while (isDigit(at(j))) { e = e * 10 + Number(at(j)); j++; edigits++; }
+            i = j;
+            if (edigits > 0) exp += esign * e;
+        }
+        return { value: sign * mant * Math.pow(2, exp), end: i };
+    }
+    const numStart = i;
+    let digits = 0;
+    while (isDigit(at(i))) { i++; digits++; }
+    if (at(i) === '.') {
+        i++;
+        while (isDigit(at(i))) { i++; digits++; }
+    }
+    if (digits === 0) return { value: null, end: i };
+    let mantEnd = i;
+    if (at(i) === 'e' || at(i) === 'E') {
+        let j = i + 1;
+        if (at(j) === '+' || at(j) === '-') j++;
+        if (isDigit(at(j))) {
+            while (isDigit(at(j))) j++;
+            mantEnd = j;
+        }
+        i = j;
+    }
+    return { value: sign * parseFloat(text.substring(numStart, mantEnd)), end: i };
+}
+
 function luaTableToHeaders(h: unknown): Record<string, string> | undefined {
     if (typeof h !== 'string' || !h) return undefined;
     const parts = h.split('');
@@ -3267,7 +3337,9 @@ end`);
                     path: resolvedPath,
                     mode: m,
                     content,
-                    pos: m.startsWith('a') ? content.length : 0,
+                    // glibc starts "a" at the end, but "a+" at the start —
+                    // reads come from there, only writes go to the end.
+                    pos: m === 'a' ? content.length : 0,
                     dirty,
                 });
                 return id;
@@ -3311,7 +3383,8 @@ end`);
             if (h.mode === 'w' || h.mode === 'a') { setError('file is write-only'); return null; }
 
             if (typeof fmt === 'number') {
-                if (fmt === 0) return armor('');
+                // liolib's test_eof: "" while there is something left to read.
+                if (fmt === 0) return h.pos < h.content.length ? armor('') : null;
                 const chunk = h.content.substring(h.pos, h.pos + fmt);
                 if (chunk.length === 0) return null;
                 h.pos += chunk.length;
@@ -3341,10 +3414,9 @@ end`);
                 return armor(rest);
             }
             if (f === 'n') {
-                const m = h.content.substring(h.pos).match(/^\s*(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/);
-                if (!m) return null;
-                h.pos += m[0].length;
-                return parseFloat(m[1]);
+                const r = scanNumber(h.content, h.pos);
+                h.pos = r.end;
+                return r.value;
             }
             return null;
         });
@@ -3354,12 +3426,15 @@ end`);
             if (!h) return 'invalid file handle';
             if (h.mode === 'r') return 'file is read-only';
             const data = unarmor(armored);
-            if (h.mode === 'a' || h.mode === 'a+') {
-                h.content += data;
-            } else {
-                h.content = h.content.substring(0, h.pos) + data + h.content.substring(h.pos + data.length);
-                h.pos += data.length;
-            }
+            // Append modes write at the end whatever the position (O_APPEND),
+            // and leave the position there.
+            if (h.mode === 'a' || h.mode === 'a+') h.pos = h.content.length;
+            // A write past the end leaves a hole, which reads back as NULs.
+            const before = h.pos > h.content.length
+                ? h.content + '\0'.repeat(h.pos - h.content.length)
+                : h.content.substring(0, h.pos);
+            h.content = before + data + h.content.substring(h.pos + data.length);
+            h.pos += data.length;
             h.dirty = true;
             return null;
         });
@@ -3373,7 +3448,9 @@ end`);
             else if ((whence ?? 'cur') === 'cur') newPos = h.pos + o;
             else if (whence === 'end') newPos = h.content.length + o;
             else { setError('invalid whence'); return null; }
-            h.pos = Math.max(0, Math.min(newPos, h.content.length));
+            // fseek: before the start is EINVAL; past the end is allowed.
+            if (newPos < 0) { setError('Invalid argument', 22); return null; }
+            h.pos = newPos;
             return h.pos;
         });
 
@@ -4501,6 +4578,18 @@ end`);
             if (r.kind === 'nomatch') return false;
             return [r.start, r.end, ...r.captures];
         });
+        // The byte-position search behind utf8.gsub / utf8.gmatch: `first byte,
+        // byte after the match, capture…`, false, or nil to use the Lua matcher.
+        this.lua.global.set('__mudlet_utf8_findb', (subject: unknown, pattern: unknown, init: unknown) => {
+            if (typeof subject !== 'string' || typeof pattern !== 'string') return undefined;
+            const r = findLuaPatternBytes(subject, pattern, Number(init) || 1);
+            if (r === null) return undefined;
+            if (r === false) return false;
+            return [r.start, r.end, ...r.captures];
+        });
+        // Lua class membership for luautf8's own matcher in utf8.lua.
+        this.lua.global.set('__mudlet_utf8_isclass', (cl: unknown, cp: unknown) =>
+            luaClassMatches(String(cl), Number(cp)));
     }
 
     /**

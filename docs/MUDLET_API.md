@@ -538,10 +538,10 @@ Standard Lua 5.1 string functions (`string.byte`, `string.char`, `string.find`, 
 | `string.starts(s, prefix)` | ✅ | StringUtils.lua |
 | `string.title(s)` | ✅ | StringUtils.lua |
 | `string.trim(s)` | ✅ | StringUtils.lua |
-| `utf8.byte` / `utf8.char` / `utf8.find` / `utf8.gmatch` / `utf8.gsub` / `utf8.len` / `utf8.lower` / `utf8.match` / `utf8.reverse` / `utf8.sub` / `utf8.upper` | ✅ | Bundled `utf8.lua` (Stepets) exposed as the `utf8` global |
+| `utf8.byte` / `utf8.char` / `utf8.find` / `utf8.gmatch` / `utf8.gsub` / `utf8.len` / `utf8.lower` / `utf8.match` / `utf8.reverse` / `utf8.sub` / `utf8.upper` | ✅ | `utf8.lua`, the `utf8` global. `find`/`match`/`gmatch`/`gsub`, `len`, `sub` and `byte` are luautf8 0.2.1's, ported from its C: position captures, `%f`, `%b` and back-references work, an invalid byte is a character of its own where luautf8 only walks, and a regex-expressible pattern runs natively (`utf8Patterns.ts`). `reverse`/`char` are the Stepets helpers |
 | `utf8.patternEscape` | ✅ | StringUtils.lua. Escapes Lua-pattern magic chars (function replacement — the bundled `utf8.gsub` drops table-replacement misses) |
 | `utf8.title` / `utf8.codes` / `utf8.isvalid` / `utf8.invalidoffset` / `utf8.clean` / `utf8.isnfc` / `utf8.normalize_nfc` / `utf8.widthlimit` / `utf8.grapheme_indices` / `utf8.version` | ✅ | luautf8 0.2.1, ported from its C into `utf8.lua`. `title` maps every character to its titlecase, as luautf8 does (`utf8.title("élan")` is `ÉLAN`) — not StringUtils' first-letter `string.title`. NFC and grapheme clusters come from the JS engine (`String.prototype.normalize`, `Intl.Segmenter`) |
-| `utf8.charpos` / `utf8.escape` / `utf8.fold` / `utf8.insert` / `utf8.ncasecmp` / `utf8.next` / `utf8.remove` / `utf8.width` / `utf8.widthindex` | ✅ | luautf8 (starwing) extensions ported into `utf8.lua` over the bundled Stepets helpers. `fold`/`ncasecmp` case-fold ASCII (no Unicode CaseFolding table); `width`/`widthindex` use Markus Kuhn's wcwidth ranges (combining → 0, East-Asian wide/fullwidth → 2) and accept (but don't tabulate) `ambi_is_double` |
+| `utf8.charpos` / `utf8.escape` / `utf8.fold` / `utf8.insert` / `utf8.ncasecmp` / `utf8.next` / `utf8.offset` / `utf8.remove` / `utf8.width` / `utf8.widthindex` | ✅ | luautf8 0.2.1, ported from its C into `utf8.lua`. `fold`/`ncasecmp` use luautf8's own case-folding table; `width`/`widthindex` use Markus Kuhn's wcwidth ranges (combining → 0, East-Asian wide/fullwidth → 2) and accept (but don't tabulate) `ambi_is_double` |
 
 ---
 

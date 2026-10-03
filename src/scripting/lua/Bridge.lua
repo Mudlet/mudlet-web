@@ -330,8 +330,13 @@ do
         lualError("wrong number of arguments")
     end
 
+    -- luaL_checkint is (int)(ptrdiff_t)x: on x86-64 a value past the 64-bit
+    -- range (inf, nan, 1e300) converts to INT64_MIN, whose low 32 bits are 0 —
+    -- which srand treats as 1, glibc's default seed.
     function math.randomseed(seed)
-        srand(checkint(seed, 1, 'randomseed'))
+        local x = checkint(seed, 1, 'randomseed')
+        if x ~= x or x >= 2 ^ 63 or x < -2 ^ 63 then x = 0 end
+        srand(x)
     end
 end
 

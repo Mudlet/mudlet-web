@@ -33,9 +33,9 @@
  * call re-checks from its start offset to the end of the line, which makes a
  * global match quadratic in the line's length.
  *
- * The alias engine compiles its patterns with it too (PatternEngine). Anything
- * else (e.g. the Lua `rex` module) keeps using the upstream package directly;
- * all of them share the same wasm module instance.
+ * The alias engine compiles its patterns with it too (PatternEngine), and so
+ * does the Lua `rex` module (rex.ts); all of them share the same wasm module
+ * instance.
  *
  * Bumping pcre2-wasm-universal means re-deriving that wasm patch for the new
  * binary — see "UPGRADING" in vite-plugin/pcre2Wasm.ts. An unrecognised binary
@@ -137,6 +137,8 @@ export default class Pcre2 {
     private codePtr = 0;
     private matchData = 0;
     private readonly nametable: Record<number, string> = {};
+    /** The name table in PCRE2's own order (sorted by name), duplicates kept. */
+    private readonly nameEntries: Array<[string, number]> = [];
 
     /** Whether {@link init} has resolved, so a pattern can be compiled
      *  synchronously right now. */
@@ -217,7 +219,22 @@ export default class Pcre2 {
             const p = tableBuf + entrySize * i * 2;
             const index = libpcre2.getValue(p, 'i16', false);
             this.nametable[index] = copyStringBuffer(p + 2, utf16leLen(p + 2));
+            this.nameEntries.push([this.nametable[index], index]);
         }
+    }
+
+    /** `[name, group number]` for each named group, in PCRE2's name-table
+     *  order — what lrexlib walks to add named captures to a result table. */
+    get groupNames(): ReadonlyArray<[string, number]> {
+        return this.nameEntries;
+    }
+
+    /** The number of capturing groups (PCRE2_INFO_CAPTURECOUNT): the match
+     *  data is sized from the pattern, one ovector pair more than that. */
+    get captureCount(): number {
+        if (this.codePtr === 0) return 0;
+        if (this.matchData === 0) this.matchData = cfunc.createMatchData(this.codePtr);
+        return cfunc.getOvectorCount(this.matchData) - 1;
     }
 
     destroy(): void {

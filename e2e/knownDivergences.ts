@@ -575,6 +575,32 @@ export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
         issue: '#276',
     },
     {
+        api: 'rex, CASELESS in byte mode',
+        behaviour:
+            'Without UTF, a caseless pattern also matches bytes 0xC0-0xDE against 0xE0-0xFE (Latin-1\'s '
+            + 'letter pairs, e.g. "\\195" against "\\227"); desktop\'s C-locale tables only fold ASCII. Whole '
+            + 'UTF-8 characters still compare as desktop compares them: rex.find("É", "é", 1, "i") is nil.',
+        reason:
+            'The WebAssembly PCRE2 is the 16-bit library and its compile always sets PCRE2_UTF, so byte mode '
+            + 'runs on one code unit per byte, and caseless matching of units 0x80-0xFF uses Unicode case '
+            + 'folding. Mapping those bytes elsewhere would need every \\x escape, octal and class range in '
+            + 'the pattern rewritten to match; the gap only touches a caseless pattern that itself holds such '
+            + 'a byte.',
+        issue: '#333',
+    },
+    {
+        api: 'rex compile flags DOLLAR_ENDONLY, FIRSTLINE, ALT_*, MATCH_UNSET_BACKREF, ALLOW_EMPTY_CLASS, NEVER_*',
+        behaviour:
+            'Accepted and ignored as numeric compile flags. The rest take effect: CASELESS, MULTILINE, DOTALL, '
+            + 'EXTENDED, UNGREEDY, DUPNAMES, NO_AUTO_CAPTURE, UTF, UCP, ANCHORED, LITERAL and the NO_* '
+            + 'optimisation switches.',
+        reason:
+            'The WebAssembly library\'s compile takes a pattern and nothing else, so a flag only reaches it '
+            + 'when it has an in-pattern spelling ((?i), (*UCP), …) or is also a match option (ANCHORED). '
+            + 'These have neither.',
+        issue: '#333',
+    },
+    {
         api: 'lfs.lock / lfs.unlock',
         behaviour:
             'Always succeed on an open handle whose mode can carry the lock; desktop\'s fcntl lock can be refused '

@@ -147,7 +147,7 @@ do
         "Carg", "Cb", "C", "Cf",
         "Cg", "Cs", "Ct", "/zero",
         "Clb", "Cmt", "Cc", "Cp",
-        "div_string", "div_number", "div_table", "div_function",
+        "div_string", "div_number", "div_table", "div_function", "Cacc",
         "at least", "at most", "behind"
     }
     local function fixedlen(pt, gram, cycle)
@@ -322,6 +322,15 @@ function LL_slash (pt, aux)
         constructors.both(name, pt, aux)
 end
 LL.__div = LL_slash
+-- mudlet: LPeg 1.1's accumulator capture, patt % f — f(previous value,
+-- patt's values) replaces the value before it.
+function LL.__mod (pt, aux)
+    if type(aux) ~= "function" then
+        error("The right side of a '%' capture must be a function.")
+    end
+    return
+        constructors.both("Cacc", LL_P(pt), aux)
+end
 if Builder.proxymt then
     for k, v in pairs(LL) do
         if k:match"^__" then
@@ -633,6 +642,7 @@ local s, t, u = require"string", require"table", require"util"
 local _ENV = u.noglobals() ----------------------------------------------------
 local s_byte, s_sub, t_concat, t_insert, t_remove, t_unpack
     = s.byte, s.sub, t.concat, t.insert, t.remove, u.unpack
+local m_floor = require"math".floor
 local   load,   map,   map_all, t_pack
     = u.load, u.map, u.map_all, u.pack
 local expose = u.expose
@@ -667,6 +677,8 @@ end
 local LL_compile, LL_evaluate, LL_P
     = LL.compile, LL.evaluate, LL.P
 local function computeidex(i, len)
+    -- mudlet: LPeg reads init with luaL_optinteger, which truncates.
+    if type(i) == "number" then i = i >= 0 and m_floor(i) or -m_floor(-i) end
     if i == 0 or i == 1 or i == nil then return 1
     elseif type(i) ~= "number" then error"number or nil expected for the stating index"
     elseif i > 0 then return i > len and len + 1 or i
@@ -732,7 +744,7 @@ function LL.dmatch(...)
 end
 for _, v in pairs{
     "C", "Cf", "Cg", "Cs", "Ct", "Clb",
-    "div_string", "div_table", "div_number", "div_function"
+    "div_string", "div_table", "div_number", "div_function", "Cacc"
 } do
     compilers[v] = load(([=[
     local compile, expose, type, LL = ...
@@ -1182,7 +1194,7 @@ local patternwith = {
     },
     both = {
         "behind", "at least", "at most", "Clb", "Cmt",
-        "div_string", "div_number", "div_table", "div_function"
+        "div_string", "div_number", "div_table", "div_function", "Cacc"
     },
     none = "grammar", "Cc"
 }
@@ -1733,6 +1745,22 @@ function eval.div_function (caps, sbj, vals, ci, vi)
     vi = insert_divfunc_results(vals, vi, func(t_unpack(params, 1, divF_vi - 1)))
     return ci, vi
 end
+-- mudlet: the accumulator capture produces no value of its own; it folds
+-- its pattern's values into the one before it.
+function eval.Cacc (caps, sbj, vals, ci, vi)
+    if vi <= 1 then error("no previous value for accumulator capture") end
+    local func = caps.aux[ci]
+    local params, acc_vi
+    if caps.openclose[ci] > 0 then
+        params, acc_vi = {s_sub(sbj, caps.bounds[ci], caps.openclose[ci] - 1)}, 2
+    else
+        params = {}
+        ci, acc_vi = insert(caps, sbj, params, ci + 1, 1)
+    end
+    ci = ci + 1 -- skip the closed or closing node.
+    vals[vi - 1] = func(vals[vi - 1], t_unpack(params, 1, acc_vi - 1))
+    return ci, vi
+end
 function eval.div_number (caps, sbj, vals, ci, vi)
     local this_aux = caps.aux[ci]
     local divN_vals, divN_vi
@@ -1754,21 +1782,29 @@ local function div_str_cap_refs (caps, ci)
         refs.close = opcl[ci]
         return ci + 1, refs, 0
     end
-    local first_ci = ci
-    local depth = 1
-    ci = ci + 1
-    repeat
-        local oc = opcl[ci]
-        if depth == 1  and oc >= 0 then refs[#refs+1] = ci end
-        if oc == 0 then
-            depth = depth + 1
-        elseif oc < 0 then
-            depth = depth - 1
+    -- mudlet: as LPeg's getstrcaps, a simple capture's own nested captures
+    -- follow it in the numbering ("%2" of C(C"a" * C"b") / "%2-%1" is "a").
+    local kind = caps.kind
+    local function skip(cj)
+        if opcl[cj] > 0 then return cj + 1 end
+        cj = cj + 1
+        while opcl[cj] >= 0 do cj = skip(cj) end
+        return cj + 1
+    end
+    local function collect(cj)
+        while opcl[cj] >= 0 do
+            refs[#refs+1] = cj
+            if kind[cj] == "C" and opcl[cj] == 0 then
+                cj = collect(cj + 1) + 1
+            else
+                cj = skip(cj)
+            end
         end
-        ci = ci + 1
-    until depth == 0
-    refs.close = caps.bounds[ci - 1]
-    return ci, refs, #refs
+        return cj
+    end
+    ci = collect(ci + 1)
+    refs.close = caps.bounds[ci]
+    return ci + 1, refs, #refs
 end
 function eval.div_string (caps, sbj, vals, ci, vi)
     local n, refs
@@ -1845,7 +1881,7 @@ local unary = setify{
 }
 local unary_aux = setify{
     "behind", "at least", "at most", "Clb", "Cmt",
-    "div_string", "div_number", "div_table", "div_function"
+    "div_string", "div_number", "div_table", "div_function", "Cacc"
 }
 local unifiable = setify{"char", "set", "range"}
 local hasCmt; hasCmt = setmetatable({}, {__mode = "k", __index = function(self, pt)
@@ -2217,7 +2253,7 @@ for _, cap in pairs{"C", "Cs", "Ct"} do
         LL_pprint(pt.pattern, offset.."  ", "")
     end
 end
-for _, cap in pairs{"Cg", "Clb", "Cf", "Cmt", "div_number", "/zero", "div_function", "div_table"} do
+for _, cap in pairs{"Cg", "Clb", "Cf", "Cmt", "div_number", "/zero", "div_function", "div_table", "Cacc"} do
     printers[cap] = function (pt, offset, prefix)
         print(offset..prefix..cap.." "..tostring(pt.aux or ""))
         LL_pprint(pt.pattern, offset.."  ", "")
