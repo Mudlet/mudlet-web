@@ -1,7 +1,8 @@
 import { unzipSync, strFromU8 } from 'fflate';
 import type { PackageManifest } from '../storage/schema';
 import { extractHostPackageXml, parseMudletProfile, type MudletProfileImport, type MudletModuleRef } from './mudletHost';
-import { parseMudletXml } from './mudletXmlImport';
+import { parseMudletXml, type MudletImportResult } from './mudletXmlImport';
+import { archiveExtension, archiveXmlEntries, looksLikeZip, packageNameFromFile } from './packageInstaller';
 
 // Turn the raw files of a Mudlet profile — a directory the user picked, or a
 // .zip of one — into a structured bundle ready to provision a new Mudlet Web profile.
@@ -61,6 +62,15 @@ function rootOfCurrent(lowerPath: string): string | null {
     if (lowerPath.startsWith('current/')) return '';
     const i = lowerPath.indexOf('/current/');
     return i >= 0 ? lowerPath.slice(0, i + 1) : null;
+}
+
+/** What desktop keeps in a profile when the system keychain is off or
+ *  unavailable: the plaintext `password`, the `passwords/` store and the
+ *  `encryption_key` that opens it — plus `reconnect`, a GMCP sign-in's account
+ *  and provider, which desktop narrows to its owner. Desktop's own export
+ *  leaves them out; a folder picked or zipped by hand has them. */
+function isCredential(lowerPath: string): boolean {
+    return lowerPath === 'password' || lowerPath === 'encryption_key' || lowerPath === 'reconnect' || lowerPath.startsWith('passwords/');
 }
 
 function basename(path: string): string {
@@ -212,6 +222,7 @@ export function buildMudletProfileBundle(
         if (/^current\/[^/]+\.xml$/.test(lower)) currentXmls.push(relPath);
         else if (lower.startsWith('current/')) { /* non-xml current files: ignore */ }
         else if (lower.startsWith('map/')) maps.push(relPath);
+        else if (isCredential(lower)) { /* never into a profile any script can read */ }
         else others[relPath] = rel.get(relPath)!;
     }
     if (!currentXmls.length) throw new Error('Not a Mudlet profile: no current/*.xml found');
@@ -278,13 +289,16 @@ export function extractMudletProfileZipAll(
 }
 
 // ── modules ──────────────────────────────────────────────────────────────────
-// A Mudlet module loads its content from an external XML file on the user's disk
-// (e.g. C:/Users/.../buttons.xml). A browser can't read that path, but the file
-// is sometimes present inside the imported profile tree — so we match by
-// basename. Whatever's resolved stays a MODULE, as it is on desktop: its XML is
-// kept as a file in the new profile's VFS, which the module reloads from on
-// every open and (with its globalSave flag) syncs back to, and its priority is
-// carried over. Anything not found is surfaced for the user to upload or drop.
+// A Mudlet module loads its content from a file elsewhere on the user's disk
+// (e.g. C:/Users/.../buttons.xml). A browser can't read that path, so the file
+// has to be inside the imported tree. Desktop's "Export to Mudlet Web" puts each
+// one at `<module>/<its file name>` — for a module installed from an archive,
+// that archive, which desktop reinstalls it from on every load. Without the
+// archive, desktop's own unpacked copy at `<module>/<module>.xml` stands in, and
+// a folder the user zipped by hand may hold the file anywhere, so a last resort
+// matches by file name. Whatever's resolved stays a MODULE, as it is on desktop,
+// with its priority and sync flag. Anything not found is surfaced for the user
+// to upload or drop.
 
 export interface ResolvedModule {
     ref: MudletModuleRef;
@@ -294,54 +308,77 @@ export interface ResolvedModule {
 }
 
 function fileBasename(path: string): string {
-    return path.replace(/\\/g, '/').split('/').pop()?.toLowerCase() ?? '';
+    return path.replace(/\\/g, '/').split('/').pop() ?? '';
 }
 
-/** Split a bundle's modules into those whose XML was found in the imported tree
- *  (by filename) and those still missing. */
+/** A module's name becomes a folder in the profile, so it has to be one. */
+function safeModuleKey(key: string): boolean {
+    return key !== '' && key !== '.' && key !== '..' && !/[\\/]/.test(key);
+}
+
+/** Split a bundle's modules into those whose file was found in the imported
+ *  tree and those still missing. */
 export function resolveModulesFromTree(bundle: MudletProfileBundle): {
     resolved: ResolvedModule[];
     unresolved: MudletModuleRef[];
 } {
-    const byBase = new Map<string, string>();
-    for (const p of Object.keys(bundle.files)) byBase.set(fileBasename(p), p);
+    const byLower = new Map<string, string>();
+    const byBase = new Map<string, string[]>();
+    for (const p of Object.keys(bundle.files)) {
+        byLower.set(p.toLowerCase(), p);
+        const base = fileBasename(p).toLowerCase();
+        const same = byBase.get(base);
+        if (same) same.push(p);
+        else byBase.set(base, [p]);
+    }
+    // Folders that belong to something else the profile has installed: a
+    // module bound to a file in one of them would load that package's items
+    // twice, and a synced one would write over it.
+    const owners = new Set([...bundle.packages.map(p => p.name), ...bundle.modules.map(m => m.key)].map(n => n.toLowerCase()));
     const resolved: ResolvedModule[] = [];
     const unresolved: MudletModuleRef[] = [];
     for (const ref of bundle.modules) {
-        const path = byBase.get(fileBasename(ref.filepath));
+        if (!safeModuleKey(ref.key)) {
+            bundle.warnings.push(`Module "${ref.key}" was left out: its name can't be a folder in the profile.`);
+            continue;
+        }
+        const base = fileBasename(ref.filepath).toLowerCase();
+        const key = ref.key.toLowerCase();
+        const source = ref.filepath.replace(/\\/g, '/').toLowerCase();
+        const candidates = [
+            ...(base ? [`${key}/${base}`] : []),
+            ...(archiveExtension.test(base) ? [`${key}/${key}.xml`] : []),
+        ];
+        // An archive that won't unpack gives way to the next candidate - desktop's
+        // unpacked copy usually sits right beside it
+        const usable = (p: string) => !archiveExtension.test(p) || usableModuleArchive(bundle.files[p]);
+        const path = candidates.map(c => byLower.get(c)).find(p => p !== undefined && usable(p))
+            ?? (base ? byBase.get(base)?.find(p => {
+                const top = p.includes('/') ? p.slice(0, p.indexOf('/')).toLowerCase() : '';
+                // ...unless the module's own path names that very file: one kept
+                // inside a package's folder travels there, not under its name
+                return (top === key || !owners.has(top) || source.endsWith(`/${p.toLowerCase()}`)) && usable(p);
+            }) : undefined);
         if (path) resolved.push({ ref, xmlBytes: bundle.files[path], path });
         else unresolved.push(ref);
     }
     return { resolved, unresolved };
 }
 
-/**
- * Fold a resolved/uploaded module's XML into the bundle: its triggers/aliases/…
- * are parsed (tagged under the module key) and appended to the automation, and
- * a MODULE manifest is registered — `kind: 'module'`, the `<globalSave>` flag
- * as `sync`, its `<priority>` — so getModules/getModulePriority/getModulePath
- * see it the way desktop does, and getPackages does not (issue #279).
- *
- * The XML has to exist as a file for the module to reload from: `treePath` is
- * where the import tree already holds it (see resolveModulesFromTree); an
- * uploaded file is added to `bundle.files` under `<key>/<its filename>`. The
- * manifest's `xmlVfsPath` is that path relative to the profile root until
- * bundleToConnectionData anchors it in the new profile's VFS.
- *
- * `module` may be the bare key, in which case the rest of its entry is looked
- * up in `bundle.modules`. Mutates and returns the bundle.
- */
-export function addModuleToBundle(
-    bundle: MudletProfileBundle,
-    module: MudletModuleRef | string,
-    xmlBytes: Uint8Array,
-    treePath?: string,
-): MudletProfileBundle {
-    const ref: MudletModuleRef = typeof module === 'string'
-        ? bundle.modules.find(m => m.key === module) ?? { key: module, filepath: '', globalSave: false, priority: 0 }
-        : module;
-    const key = ref.key;
-    const parsed = parseMudletXml(strFromU8(xmlBytes), { packageName: key });
+/** Whether an archive unpacks with a package XML in it — read from its
+ *  directory alone, without inflating anything. */
+function usableModuleArchive(bytes: Uint8Array): boolean {
+    if (!looksLikeZip(bytes)) return false;
+    const names: string[] = [];
+    try {
+        unzipSync(bytes, { filter: file => { names.push(file.name); return false; } });
+    } catch {
+        return false;
+    }
+    return archiveXmlEntries(names).length > 0;
+}
+
+function foldIntoAutomation(bundle: MudletProfileBundle, key: string, parsed: MudletImportResult): void {
     const a = bundle.profile.automation;
     a.scripts.push(...parsed.scripts);
     a.aliases.push(...parsed.aliases);
@@ -350,29 +387,124 @@ export function addModuleToBundle(
     a.keys.push(...parsed.keys);
     a.buttons.push(...parsed.buttons);
     a.warnings.push(...parsed.warnings);
-    // Named, because by this point the user has hand-picked the file this came
-    // from and needs to know which one the complaint is about.
+    // Named, because by this point the user may have hand-picked the file this
+    // came from and needs to know which one the complaint is about.
     for (const w of parsed.warnings) bundle.warnings.push(`Module "${key}": ${w}`);
-    let relPath = treePath && bundle.files[treePath] ? treePath : undefined;
-    if (!relPath) {
-        const filename = ref.filepath.replace(/\\/g, '/').split('/').pop() || `${key}.xml`;
-        relPath = `${key}/${filename}`;
-        bundle.files[relPath] = xmlBytes;
+}
+
+function registerModule(bundle: MudletProfileBundle, manifest: PackageManifest): void {
+    // A module named in <mInstalledPackages> too is a module: desktop's
+    // getPackages lists only what mInstalledPackages holds, but our store keeps
+    // one manifest per name, and the module's is the one that loads it.
+    const at = bundle.packages.findIndex(p => p.name === manifest.name);
+    if (at === -1) bundle.packages.push(manifest);
+    else bundle.packages[at] = manifest;
+}
+
+/**
+ * Fold a resolved/uploaded module into the bundle: its triggers/aliases/… are
+ * parsed (tagged under the module key) and appended to the automation, and a
+ * MODULE manifest is registered — `kind: 'module'`, its sync flag, its
+ * `<priority>` — so getModules/getModulePriority/getModulePath see it the way
+ * desktop does, and getPackages does not (issue #279).
+ *
+ * The file's name decides what it is, as it does in Mudlet: a `.mpackage` or
+ * `.zip` is unpacked into `<key>/` and laid out exactly as an archive module
+ * installed in Mudlet Web is (`xmlPath`, plus `sourcePath` at the archive when
+ * it reloads from that — see below). Anything else is the module's XML, which
+ * it reloads from and syncs back to in place (`xmlVfsPath`) — except desktop's
+ * unpacked `<key>/<key>.xml` of an archive module, which keeps the archive
+ * layout (`xmlPath`) so that removing the module takes its folder. `treePath` is
+ * where the import tree already holds the file (see resolveModulesFromTree); an
+ * upload goes in under `<key>/`, as `<key>.xml` unless `filename` is an XML's.
+ * Paths stay relative to the profile root until bundleToConnectionData anchors
+ * them in the new profile's VFS.
+ *
+ * `module` may be the bare key, in which case the rest of its entry is looked
+ * up in `bundle.modules`. Mutates and returns the bundle.
+ */
+export function addModuleToBundle(
+    bundle: MudletProfileBundle,
+    module: MudletModuleRef | string,
+    bytes: Uint8Array,
+    treePath?: string,
+    filename?: string,
+): MudletProfileBundle {
+    const ref: MudletModuleRef = typeof module === 'string'
+        ? bundle.modules.find(m => m.key === module) ?? { key: module, filepath: '', globalSave: false, priority: 0 }
+        : module;
+    const key = ref.key;
+    if (!safeModuleKey(key)) {
+        bundle.warnings.push(`Module "${key}" was left out: its name can't be a folder in the profile.`);
+        return bundle;
     }
-    const manifest: PackageManifest = {
+    const inTree = treePath !== undefined && bundle.files[treePath] !== undefined;
+    const name = inTree ? fileBasename(treePath!) : filename || fileBasename(ref.filepath) || `${key}.xml`;
+
+    if (archiveExtension.test(name)) {
+        let entries: Record<string, Uint8Array> | null = null;
+        if (looksLikeZip(bytes)) {
+            try { entries = unzipSync(bytes); } catch { entries = null; }
+        }
+        if (!entries) {
+            bundle.warnings.push(`Module "${key}" was left out: could not unzip ${name}.`);
+            return bundle;
+        }
+        const unpacked = new Map<string, Uint8Array>();
+        for (const [entry, data] of Object.entries(entries)) {
+            const path = normalizePath(entry);
+            // Nothing may land outside the module's own folder
+            if (!path || path.endsWith('/') || path.split('/').includes('..')) continue;
+            unpacked.set(path, data);
+        }
+        const xmlEntries = archiveXmlEntries(Array.from(unpacked.keys()));
+        if (!xmlEntries.length) {
+            bundle.warnings.push(`Module "${key}" was left out: no package found in ${name}.`);
+            return bundle;
+        }
+        // The archive is what the module is: what it unpacks replaces what desktop
+        // had unpacked, and files the module wrote for itself stay.
+        for (const [path, data] of unpacked) bundle.files[`${key}/${path}`] = data;
+        const archivePath = inTree ? treePath! : `${key}/${name}`;
+        bundle.files[archivePath] = bytes;
+        for (const xml of xmlEntries) foldIntoAutomation(bundle, key, parseMudletXml(strFromU8(unpacked.get(xml)!), { packageName: key }));
+        registerModule(bundle, {
+            name: key,
+            installedAt: '',
+            kind: 'module',
+            sync: ref.globalSave,
+            priority: ref.priority,
+            xmlPath: xmlEntries[0],
+            sourceFile: name,
+            // Reloaded from the archive, as desktop does - unless it syncs: Mudlet
+            // Web syncs to the XML and leaves the archive alone (desktop rewrites
+            // it), so reloading from the archive would undo every synced edit.
+            // And only when the archive's own name is the module's: a reload
+            // unpacks into the folder named after the archive and renames it over
+            // the module's, which would take the archive and the module's own
+            // files with it.
+            ...(ref.globalSave || packageNameFromFile(name) !== key ? {} : { sourcePath: archivePath }),
+        });
+        return bundle;
+    }
+
+    foldIntoAutomation(bundle, key, parseMudletXml(strFromU8(bytes), { packageName: key }));
+    let relPath = inTree ? treePath! : undefined;
+    if (!relPath) {
+        relPath = `${key}/${/\.xml$/i.test(name) ? name : `${key}.xml`}`;
+        bundle.files[relPath] = bytes;
+    }
+    // Desktop's unpacked copy of an archive module sits in the folder an archive
+    // module owns; laid out like one, removing the module takes that folder too.
+    const owned = relPath.toLowerCase() === `${key.toLowerCase()}/${key.toLowerCase()}.xml` && archiveExtension.test(ref.filepath);
+    registerModule(bundle, {
         name: key,
         installedAt: '',
         kind: 'module',
         sync: ref.globalSave,
         priority: ref.priority,
-        xmlVfsPath: relPath,
-        sourceFile: relPath.split('/').pop(),
-    };
-    // A module named in <mInstalledPackages> too is a module: desktop's
-    // getPackages lists only what mInstalledPackages holds, but our store keeps
-    // one manifest per name, and the module's is the one that loads it.
-    const at = bundle.packages.findIndex(p => p.name === key);
-    if (at === -1) bundle.packages.push(manifest);
-    else bundle.packages[at] = manifest;
+        ...(owned ? { xmlPath: relPath.slice(relPath.indexOf('/') + 1) } : { xmlVfsPath: relPath }),
+        sourceFile: owned ? fileBasename(ref.filepath) : relPath.split('/').pop(),
+    });
     return bundle;
 }

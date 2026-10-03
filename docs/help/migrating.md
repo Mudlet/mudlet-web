@@ -3,8 +3,23 @@
 Mudlet Web reads desktop Mudlet's own profile format, so a profile you've built up
 over years — triggers, aliases, scripts, keybindings, buttons, saved variables,
 installed packages, your map, your colours and fonts — comes across as a unit.
-There are three ways to do it, and the right one depends on your browser and on
+There are a few ways to do it, and the right one depends on your browser and on
 whether you plan to keep using desktop Mudlet.
+
+## The quick way — export from desktop Mudlet
+
+If your desktop Mudlet has it, this is one click and works in every browser:
+
+1. Open the profile in desktop Mudlet.
+2. Choose **Toolbox → Export to Mudlet Web** and save the `.zip` it offers.
+3. In Mudlet Web, click **Import .zip…** under your profile list and pick that file.
+
+The export saves the profile first, so nothing you changed since the last save
+is left behind, and it takes the map as it is in memory. It also brings your
+**modules** along — they live outside the profile folder on desktop, which is
+why the routes below have to ask you for them.
+
+The rest of this page is for doing it by hand.
 
 ## Step 1 — find your profile folder
 
@@ -83,19 +98,28 @@ Two things to know:
 - Profile settings: command separator, wrap width, borders, foreground /
   background / command / input colours, the full 16-colour ANSI palette, display
   font family and size, and the protocol toggles.
+- Connection settings: the game's address and port, secure connection (TLS) and
+  its certificate exceptions, your character name, the profile description, and
+  the *auto-open* and *auto-reconnect* checkboxes.
+- Modules, which stay modules — with their priority and sync setting. A module
+  installed from an `.mpackage` keeps its images and other files.
 - Every other file in the profile folder, into the profile's own filesystem — so
   `io.open`, `lfs`, images, sounds and fonts keep working at the same paths.
-  `current/` and `map/` are the two exceptions, handled as above.
+  `current/` and `map/` are handled as above, and saved passwords are left
+  out (see below).
 
 ## What doesn't
 
-- **Passwords.** Desktop Mudlet keeps them in your operating system's keychain,
-  not in the profile, so there is nothing to copy. Enter them again on first
-  connect.
-- **Modules.** Mudlet syncs modules to XML files elsewhere on your disk; a browser
-  can't keep that link alive. Mudlet Web folds each module in as an ordinary
-  installed package. If it can't find a module's file in the folder you imported,
-  it asks whether to upload it or drop it.
+- **Passwords.** Desktop Mudlet usually keeps them in your operating system's
+  keychain. When it can't, it keeps them inside the profile folder — and those
+  files are deliberately left behind, by desktop's export and by the import
+  alike, rather than copied anywhere a script could read them. Enter your
+  password again on first connect.
+- **The link between a module and its file.** Mudlet syncs a module to a file
+  elsewhere on your disk; a browser can't keep that link alive, so the module's
+  file is copied into the new profile and syncs there instead. If a module's file
+  isn't in what you imported — a folder you picked or zipped yourself rarely has
+  it — Mudlet Web asks you to upload its `.xml` or `.mpackage`, or to drop it.
 - **Older saves.** Only the newest save in `current/` is read, and the rest are
   dropped rather than copied across. Desktop keeps them so you can roll back to
   one; Mudlet Web has no way to load an older save, and a profile's filesystem
