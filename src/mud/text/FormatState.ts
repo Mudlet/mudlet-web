@@ -1283,32 +1283,40 @@ export class AnsiAwareBuffer {
         return this;
     }
 
+    /**
+     * Overlays the attributes set in `format` on every segment in `range`,
+     * keeping everything else each character already had — the way
+     * TBuffer::applyBold/applyFgColor/… touch only the one attribute they set.
+     * A coloured selection stays coloured when it is made bold, and a
+     * recoloured one keeps its per-character backgrounds and attributes.
+     */
     applyFormat(range: TextRange, format: FormatStateSnapshot): this {
-        const [start, end] = range;
-        if (start >= end) return this;
-
-        const text = this.text.slice(start, end);
-        const currentState = this.getStateAt(start);
-
-        const mergedState: FormatStateSnapshot = {
-            ...currentState,
-            ...format,
-            foreground: format.foreground !== undefined ? format.foreground : currentState?.foreground,
-            background: format.background !== undefined ? format.background : currentState?.background,
-        };
-
-        this.replace([start, end], text, mergedState);
-        return this;
+        const {foreground, background, ...rest} = format;
+        const flags = Object.fromEntries(
+            Object.entries(rest).filter(([, value]) => value !== undefined),
+        ) as FormatStateSnapshot;
+        return this.overlaySegments(range, base => {
+            Object.assign(base, flags);
+            if (foreground !== undefined) base.foreground = cloneColor(foreground);
+            if (background !== undefined) base.background = cloneColor(background);
+        });
     }
 
     /**
      * Overlays a hyperlink on every segment in `range`, preserving each
      * segment's existing colors/attributes. Pass `undefined` to clear any
-     * hyperlinks in the range. Unlike `applyFormat` (which homogenizes
-     * formatting across the range), this is segment-wise — used by Mudlet
-     * `setLink` so coloured selections remain coloured after becoming clickable.
+     * hyperlinks in the range. Used by Mudlet `setLink` so coloured selections
+     * remain coloured after becoming clickable.
      */
     setHyperlink(range: TextRange, hyperlink?: FormatHyperlink): this {
+        return this.overlaySegments(range, base => {
+            base.hyperlink = hyperlink ? {...hyperlink} : undefined;
+        });
+    }
+
+    /** Split the segments at `range`'s ends and let `edit` change a copy of
+     *  each covered segment's state in place. */
+    private overlaySegments(range: TextRange, edit: (base: FormatStateSnapshot) => void): this {
         const [start, end] = range;
         if (start >= end) return this;
         this.assertRange(start, end);
@@ -1326,7 +1334,7 @@ export class AnsiAwareBuffer {
         for (let i = startIndex; i < endIndex; i++) {
             const seg = this.segments[i];
             const base = cloneState(seg.state) ?? {};
-            base.hyperlink = hyperlink ? {...hyperlink} : undefined;
+            edit(base);
             seg.state = base;
         }
         this.normalizeSegments();

@@ -594,8 +594,8 @@ export class Console {
      * current line into multiple history lines (Mudlet issue #8945): the text up
      * to the first `\n` is inserted at the cursor column, each subsequent `\n`
      * starts a new line, and the remainder of the original line trails the last
-     * inserted segment. For a single-line insert the cursor stays at the
-     * insertion point (Mudlet's `insertText` does not advance `mUserCursor` — the
+     * inserted segment. The cursor stays at the insertion point, newline or not
+     * (Mudlet's `insertText` never moves `mUserCursor` — the
      * bundled GUIUtils `xEcho`/`cinsertText` loop advances it explicitly with its
      * own `moveCursor` after each segment; advancing here too would double-count
      * and push later color segments past their intended column). Returns false
@@ -639,9 +639,11 @@ export class Console {
         const lines = cur.splitLines();
         cur.removeFromDom();
         this.history.splice(idx, 1, ...lines);
-        const segs = text.split('\n');
-        this.cursorIdx = Math.min(idx + segs.length - 1, this.history.length - 1);
-        this.cursorCol = segs[segs.length - 1].length;
+        // The cursor stays where the text went in: the first of the new lines,
+        // at the insertion column, so a following insertText or getCurrentLine
+        // acts on that line, as on desktop.
+        this.cursorIdx = idx;
+        this.cursorCol = col;
         this.evict();
         return true;
     }

@@ -1026,7 +1026,11 @@ export class ScriptingAPI {
      *  disconnect, then return to the connection screen. Wired by ProfileSession. */
     private closeProfileCallback: (() => void) | null = null;
 
-    private selection: { windowName: string | undefined; start: number; length: number } | null = null;
+    /** One selection per console, keyed by window name ('main' for the main
+     *  console), the way each desktop TConsole keeps its own P_begin/P_end:
+     *  selecting or deselecting in one window leaves every other window's
+     *  selection standing. */
+    private readonly selections = new Map<string, { windowName: string | undefined; start: number; length: number }>();
 
     // Session-global rich-text clipboard — mirrors Mudlet's host-wide
     // mClipboard. `copy()` fills it from the current selection (formatting
@@ -3361,15 +3365,14 @@ export class ScriptingAPI {
     /**
      * Mudlet `setPopup([window,] {commands}, {hints})`. Attaches a right-click
      * popup menu to the current selection — preserves the selection's existing
-     * colors/attributes (like `setLink`, unlike the homogenizing color setters).
+     * colors/attributes (like `setLink` and the colour setters).
      * `commands` are Lua code strings run when the matching menu entry is
      * chosen. Returns false when there is no selection (or it belongs to a
      * different window).
      */
     setPopup(cmds: string[], hints: string[], win?: string): boolean {
-        if (!this.selection) return false;
-        if (win !== undefined && !this.selectionMatches(win)) return false;
-        const sel = this.selection;
+        const sel = this.selectionOf(win);
+        if (!sel) return false;
         const buf = this.resolveBuffer(sel.windowName);
         if (!buf) return false;
         const span = this.selectionSpan(sel, buf);
@@ -3391,9 +3394,7 @@ export class ScriptingAPI {
     // the current pen on the resolved console for subsequent echo.
 
     setFgColor(r: number, g: number, b: number, win?: string): void {
-        if (this.selectionMatches(win)) {
-            this.applyStateToSelection({ foreground: { space: 'rgb', r, g, b } });
-        }
+        this.applyStateToSelection({ foreground: { space: 'rgb', r, g, b } }, win);
         this.penConsole(win)?.setFgColor(r, g, b);
     }
 
@@ -3401,26 +3402,24 @@ export class ScriptingAPI {
         const color: RgbColor = a !== undefined && a < 255
             ? { space: 'rgb', r, g, b, a }
             : { space: 'rgb', r, g, b };
-        if (this.selectionMatches(win)) {
-            this.applyStateToSelection({ background: color });
-        }
+        this.applyStateToSelection({ background: color }, win);
         this.penConsole(win)?.setBgColor(r, g, b, a);
     }
 
     setBold(v: boolean, win?: string): void {
-        if (this.selectionMatches(win)) this.applyStateToSelection({ bold: v });
+        this.applyStateToSelection({ bold: v }, win);
         this.penConsole(win)?.setBold(v);
     }
     setItalic(v: boolean, win?: string): void {
-        if (this.selectionMatches(win)) this.applyStateToSelection({ italic: v });
+        this.applyStateToSelection({ italic: v }, win);
         this.penConsole(win)?.setItalic(v);
     }
     setUnderline(v: boolean, win?: string): void {
-        if (this.selectionMatches(win)) this.applyStateToSelection({ underline: v });
+        this.applyStateToSelection({ underline: v }, win);
         this.penConsole(win)?.setUnderline(v);
     }
     setStrikethrough(v: boolean, win?: string): void {
-        if (this.selectionMatches(win)) this.applyStateToSelection({ strikethrough: v });
+        this.applyStateToSelection({ strikethrough: v }, win);
         this.penConsole(win)?.setStrikethrough(v);
     }
     /** Mudlet `setOverline([window,] bool)`. Renders a line above the text
@@ -3428,7 +3427,7 @@ export class ScriptingAPI {
      *  setters: applies to the active selection when one matches, and updates
      *  the resolved console's pen for subsequent echo. */
     setOverline(v: boolean, win?: string): void {
-        if (this.selectionMatches(win)) this.applyStateToSelection({ overline: v });
+        this.applyStateToSelection({ overline: v }, win);
         this.penConsole(win)?.setOverline(v);
     }
     /**
@@ -3438,7 +3437,7 @@ export class ScriptingAPI {
      * and updates the resolved console's pen for subsequent echo.
      */
     setReverse(v: boolean, win?: string): void {
-        if (this.selectionMatches(win)) this.applyStateToSelection({ inverse: v });
+        this.applyStateToSelection({ inverse: v }, win);
         this.penConsole(win)?.setReverse(v);
     }
 
@@ -3519,7 +3518,7 @@ export class ScriptingAPI {
         // which call resetFormat internally — must not clear a selection made
         // in another, which would break selectCurrentLine(buf) → copy(buf) when
         // unrelated output goes to main in between.
-        if (this.selectionMatches(windowName)) this.selection = null;
+        this.clearSelection(windowName);
         this.penConsole(windowName)?.resetFormat();
         return true;
     }
@@ -3545,7 +3544,7 @@ export class ScriptingAPI {
                 if (begin === -1) break;
             }
             if (begin >= 0) {
-                this.selection = { windowName, start: begin, length: str.length };
+                this.setSelection(windowName, begin, str.length);
                 return begin;
             }
         }
@@ -3578,7 +3577,7 @@ export class ScriptingAPI {
         if (!buf) return false;
         const lineLength = buf.length;
         if (from > lineLength || from + length > lineLength) return false;
-        this.selection = { windowName, start: from, length };
+        this.setSelection(windowName, from, length);
         return true;
     }
 
@@ -3591,18 +3590,16 @@ export class ScriptingAPI {
     selectCurrentLine(windowName?: string): boolean {
         if (!this.consoleExists(windowName)) return false;
         const line = this.getConsole(windowName)?.getLine() ?? '';
-        this.selection = { windowName, start: 0, length: line.length };
+        this.setSelection(windowName, 0, line.length);
         return true;
     }
 
     /**
-     * Mudlet `deselect([windowName])`. With a window name, only clears the
-     * selection if it belongs to that window — selections in other consoles
-     * remain intact. Without an arg, clears unconditionally.
+     * Mudlet `deselect([windowName])`. Clears the named console's selection
+     * (main when omitted); selections in other consoles remain intact.
      */
     deselect(windowName?: string): void {
-        if (windowName !== undefined && !this.selectionMatches(windowName)) return;
-        this.selection = null;
+        this.clearSelection(windowName);
     }
 
     /**
@@ -3613,11 +3610,11 @@ export class ScriptingAPI {
      * Mudlet's `false, "no selection"` 2-tuple.
      */
     getSelection(windowName?: string): { text: string; start: number; length: number } | string | null {
-        if (!this.selection) return null;
-        if (windowName !== undefined && !this.selectionMatches(windowName)) return null;
-        const buf = this.resolveBuffer(this.selection.windowName);
+        const sel = this.selectionOf(windowName);
+        if (!sel) return null;
+        const buf = this.resolveBuffer(sel.windowName);
         if (!buf) return null;
-        const { start, length } = this.selection;
+        const { start, length } = sel;
         // The selection is columns on whatever line the cursor is on NOW, not on
         // the line it was made on — so moving the cursor to a shorter line can
         // strand it past the end. Mudlet reports that as a refusal rather than
@@ -3713,10 +3710,10 @@ export class ScriptingAPI {
         channel: 'foreground' | 'background',
         windowName: string | undefined,
     ): [number, number, number] | null {
-        const selected = this.selection && this.selectionMatches(windowName);
-        const buf = this.resolveBuffer(selected ? this.selection!.windowName : windowName);
+        const selected = this.selectionOf(windowName);
+        const buf = this.resolveBuffer(windowName);
         if (!buf) return null;
-        const start = selected ? this.selection!.start : 0;
+        const start = selected ? selected.start : 0;
         if (start < 0 || start >= buf.length) return null;
         return this.readColorAt(buf, start, channel);
     }
@@ -3796,9 +3793,10 @@ export class ScriptingAPI {
         // line (so getTextFormat works after a bare moveCursor, no selectSection).
         let buf: AnsiAwareBuffer | null;
         let pos: number;
-        if (this.selection && this.selectionMatches(windowName)) {
-            buf = this.resolveBuffer(this.selection.windowName);
-            pos = this.selection.start;
+        const sel = this.selectionOf(windowName);
+        if (sel) {
+            buf = this.resolveBuffer(sel.windowName);
+            pos = sel.start;
         } else {
             const con = this.getConsole(windowName);
             buf = con?.getBuffer() ?? null;
@@ -3844,21 +3842,20 @@ export class ScriptingAPI {
     }
 
     applyFormatToSelection(state: FormatStateSnapshot): void {
-        this.applyStateToSelection(state);
+        this.applyStateToSelection(state, 'main');
     }
 
     /**
      * Mudlet `setLink([windowName], command, hint)`. Applies a clickable
      * hyperlink to the current selection — preserves existing colors/attributes
-     * on each segment (unlike setFgColor & friends which homogenize). `command`
+     * on each segment (as setFgColor & friends do). `command`
      * is the Lua code run on click; the Bridge.lua wrapper converts function
      * arguments into a `__mudlet_call_link(id)` string before reaching here.
      * Returns false if there is no selection (or it doesn't belong to `win`).
      */
     setLink(cmd: string, tooltip: string, win?: string): boolean {
-        if (!this.selection) return false;
-        if (win !== undefined && !this.selectionMatches(win)) return false;
-        const sel = this.selection;
+        const sel = this.selectionOf(win);
+        if (!sel) return false;
         const buf = this.resolveBuffer(sel.windowName);
         if (!buf) return false;
         const hyperlink: FormatHyperlink = {
@@ -3905,7 +3902,7 @@ export class ScriptingAPI {
         this.inTriggerProcessing = true;
         if (this.triggerLineDepth === 0) this.triggerEchoLines = 0;
         this.triggerLineDepth++;
-        this.selection = null;
+        this.clearSelection('main');
         this.setDeferringEcho(true);
         this.echoOnMatchedLine = true;
         // The trigger cursor sits at the end of the matched line (Mudlet fires
@@ -5130,7 +5127,7 @@ export class ScriptingAPI {
     copy(windowName?: string): boolean {
         if (windowName !== undefined && !this.consoleExists(windowName)) return false;
         const target = windowName ?? 'main';
-        const sel = this.selectionMatches(target) ? this.selection : null;
+        const sel = this.selectionOf(target);
         const buf = sel ? this.resolveBuffer(sel.windowName) : null;
         if (!sel || !buf) {
             this.clipboard = new AnsiAwareBuffer('');
@@ -5152,15 +5149,15 @@ export class ScriptingAPI {
      * a no-op without a selection there.
      */
     cut(): void {
-        if (!this.selection || !this.selectionMatches('main')) return;
-        const sel = this.selection;
+        const sel = this.selectionOf('main');
+        if (!sel) return;
         this.copy('main');
         const buf = this.resolveBuffer(sel.windowName);
         if (!buf) return;
         const start = Math.max(0, Math.min(sel.start, buf.length));
         const end = Math.max(start, Math.min(sel.start + sel.length, buf.length));
         buf.remove([start, end]);
-        this.selection = null;
+        this.clearSelection('main');
         if (!this.inTriggerProcessing) buf.rerender();
     }
 
@@ -5380,9 +5377,9 @@ export class ScriptingAPI {
      * format — same as our previous behavior.
      */
     replace(newText: string, windowName?: string, keepColor = false): void {
-        if (!this.selection) return;
-        const sel = this.selection;
-        const targetWin = windowName ?? sel.windowName;
+        const sel = this.selectionOf(windowName);
+        if (!sel) return;
+        const targetWin = sel.windowName;
         const buf = this.resolveBuffer(targetWin);
         if (!buf) return;
         // TBuffer::replaceInLine refuses a selection that no longer fits the
@@ -7395,12 +7392,21 @@ export class ScriptingAPI {
         return this.getConsole(windowName)?.getBuffer() ?? null;
     }
 
-    private selectionMatches(win: string | undefined): boolean {
-        if (!this.selection) return false;
-        const selMain = !this.selection.windowName || this.selection.windowName === 'main';
-        const argMain = !win || win === 'main';
-        if (selMain && argMain) return true;
-        return this.selection.windowName === win;
+    private selectionKey(win: string | undefined): string {
+        return !win || win === 'main' ? 'main' : win;
+    }
+
+    /** The named console's own selection (main when omitted), or null. */
+    private selectionOf(win: string | undefined): { windowName: string | undefined; start: number; length: number } | null {
+        return this.selections.get(this.selectionKey(win)) ?? null;
+    }
+
+    private setSelection(win: string | undefined, start: number, length: number): void {
+        this.selections.set(this.selectionKey(win), { windowName: win, start, length });
+    }
+
+    private clearSelection(win: string | undefined): void {
+        this.selections.delete(this.selectionKey(win));
     }
 
     /**
@@ -7415,9 +7421,9 @@ export class ScriptingAPI {
         return [sel.start, Math.min(sel.start + sel.length, buf.length)];
     }
 
-    private applyStateToSelection(state: FormatStateSnapshot | null): void {
-        if (!this.selection || !state) return;
-        const sel = this.selection;
+    private applyStateToSelection(state: FormatStateSnapshot | null, win: string | undefined): void {
+        const sel = this.selectionOf(win);
+        if (!sel || !state) return;
         const buf = this.resolveBuffer(sel.windowName);
         if (!buf) return;
         const span = this.selectionSpan(sel, buf);
