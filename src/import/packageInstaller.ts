@@ -70,9 +70,9 @@ const ZIP_MAGIC = [0x50, 0x4b, 0x03, 0x04]; // "PK\x03\x04" — local file heade
 
 /** Mudlet accepts both, and treats the name — not the content — as the claim
  *  about what the file is. */
-const archiveExtension = /\.(mpackage|zip)$/i;
+export const archiveExtension = /\.(mpackage|zip)$/i;
 
-function looksLikeZip(buf: Uint8Array): boolean {
+export function looksLikeZip(buf: Uint8Array): boolean {
     if (buf.length < 4) return false;
     return ZIP_MAGIC.every((b, i) => buf[i] === b);
 }

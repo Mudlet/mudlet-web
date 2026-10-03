@@ -60,7 +60,19 @@ export interface ConnectionSidecar {
     proxyUrl?: string;
     autoReconnect?: boolean;
     reconnectOnDrop?: boolean;
+    tls?: boolean;
+    sslIgnoreExpired?: boolean;
+    sslIgnoreSelfSigned?: boolean;
+    sslIgnoreAll?: boolean;
+    charLoginAccount?: string;
+    description?: string;
 }
+
+/** Written whether set or not: a profile imported from desktop keeps that
+ *  profile's `<Host>` and its `login`/`description` files, so an absent value
+ *  here would let those bring back a setting the user has since cleared. */
+const SIDECAR_FLAGS = ['tls', 'sslIgnoreExpired', 'sslIgnoreSelfSigned', 'sslIgnoreAll'] as const;
+const SIDECAR_TEXTS = ['charLoginAccount', 'description'] as const;
 
 export function buildConnectionSidecar(c: MudConnection): ConnectionSidecar {
     const out: ConnectionSidecar = {};
@@ -71,6 +83,8 @@ export function buildConnectionSidecar(c: MudConnection): ConnectionSidecar {
     if (c.proxyUrl !== undefined) out.proxyUrl = c.proxyUrl;
     if (c.autoReconnect !== undefined) out.autoReconnect = c.autoReconnect;
     if (c.reconnectOnDrop !== undefined) out.reconnectOnDrop = c.reconnectOnDrop;
+    for (const flag of SIDECAR_FLAGS) out[flag] = !!c[flag];
+    for (const text of SIDECAR_TEXTS) out[text] = c[text] ?? '';
     return out;
 }
 

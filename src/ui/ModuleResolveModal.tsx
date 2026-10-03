@@ -6,6 +6,8 @@ import type { MudletModuleRef } from '../import/mudletHost';
 export interface ModuleUpload {
     key: string;
     bytes: Uint8Array;
+    /** Decides whether it is unpacked as an archive or read as XML. */
+    filename: string;
 }
 
 interface Props {
@@ -58,7 +60,7 @@ export function ModuleResolveModal({ modules, onComplete, onCancel }: Props) {
         const uploads: ModuleUpload[] = [];
         for (const m of modules) {
             const d = decisions[m.key];
-            if (d?.action === 'upload') uploads.push({ key: m.key, bytes: d.bytes });
+            if (d?.action === 'upload') uploads.push({ key: m.key, bytes: d.bytes, filename: d.filename });
         }
         onComplete(uploads);
     };

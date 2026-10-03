@@ -173,7 +173,7 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
         setPendingImports(q => q.slice(1));
         void runImport(async () => {
             for (const u of uploads) {
-                addModuleToBundle(p.bundle, p.unresolved.find(m => m.key === u.key) ?? u.key, u.bytes);
+                addModuleToBundle(p.bundle, p.unresolved.find(m => m.key === u.key) ?? u.key, u.bytes, undefined, u.filename);
             }
             await provision(p.bundle);
         });

@@ -4,7 +4,7 @@ import { ProfileVFS } from '../scripting/vfs/ProfileVFS';
 import { saveProfileData } from '../storage/profileVfsData';
 import { saveMap } from '../storage/mapStorage';
 import { saveFolderHandle } from '../scripting/vfs/folderHandleStore';
-import { parseMudletProfile } from './mudletHost';
+import { parseMudletProfile, type MudletProfileIdentity } from './mudletHost';
 import { buildMudletProfileBundle, type MudletProfileBundle } from './mudletProfileImport';
 import { CONNECTION_SIDECAR_PATH, LEGACY_CONNECTION_SIDECAR_PATH, RETAINED_HOST_PATH, type ConnectionSidecar } from './mudletProfileExport';
 import type { MudConnection } from '../storage/schema';
@@ -33,13 +33,13 @@ export function bundleToConnectionData(bundle: MudletProfileBundle, installedAt:
         // Register the profile's installed packages so package managers (mpkg)
         // and getPackageInfo see them as installed. Stamp the install time here
         // (the bundle leaves it empty to stay pure/deterministic).
-        // A folded-in module's XML path is relative to the profile root until
+        // A folded-in module's paths are relative to the profile root until
         // here, where the new profile's VFS location is known.
         packages: bundle.packages.map(p => {
-            const out = p.installedAt ? p : { ...p, installedAt };
-            return profilePath && out.xmlVfsPath && !out.xmlVfsPath.startsWith('/')
-                ? { ...out, xmlVfsPath: `${profilePath}/${out.xmlVfsPath}` }
-                : out;
+            const out = p.installedAt ? { ...p } : { ...p, installedAt };
+            if (profilePath && out.xmlVfsPath && !out.xmlVfsPath.startsWith('/')) out.xmlVfsPath = `${profilePath}/${out.xmlVfsPath}`;
+            if (profilePath && out.sourcePath && !out.sourcePath.startsWith('/')) out.sourcePath = `${profilePath}/${out.sourcePath}`;
+            return out;
         }),
         profile: bundle.profile.settings,
         // Every saved variable in the imported <VariablePackage> seeds the
@@ -81,6 +81,18 @@ function profileDataItem(bundle: MudletProfileBundle, item: string): string | un
 /** Desktop stores its connection checkboxes as `Qt::CheckState` numbers. */
 const QT_CHECKED = '2';
 
+/** The TLS half of a desktop connection, set fields only. `ssl_tsl` is what
+ *  the connection dialog writes; the save's attribute is the same setting as
+ *  the profile last ran with, so it wins. */
+function tlsFromIdentity(identity: MudletProfileIdentity, sslTslFile?: string): Partial<MudConnection> {
+    const out: Partial<MudConnection> = {};
+    if (identity.tls ?? sslTslFile === QT_CHECKED) out.tls = true;
+    if (identity.sslIgnoreExpired) out.sslIgnoreExpired = true;
+    if (identity.sslIgnoreSelfSigned) out.sslIgnoreSelfSigned = true;
+    if (identity.sslIgnoreAll) out.sslIgnoreAll = true;
+    return out;
+}
+
 /**
  * The connection record for an imported bundle.
  *
@@ -109,12 +121,7 @@ export function bundleToConnectionRecord(bundle: MudletProfileBundle): Omit<MudC
         // profile that doesn't already carry them.
         mudletImported: true,
     };
-    // `ssl_tsl` is what the connection dialog writes; the save's attribute is
-    // the same setting as the profile last ran with, so it wins.
-    if (identity.tls ?? profileDataItem(bundle, 'ssl_tsl') === QT_CHECKED) base.tls = true;
-    if (identity.sslIgnoreExpired) base.sslIgnoreExpired = true;
-    if (identity.sslIgnoreSelfSigned) base.sslIgnoreSelfSigned = true;
-    if (identity.sslIgnoreAll) base.sslIgnoreAll = true;
+    Object.assign(base, tlsFromIdentity(identity, profileDataItem(bundle, 'ssl_tsl')));
     const login = profileDataItem(bundle, 'login');
     if (login) base.charLoginAccount = login;
     const description = profileDataItem(bundle, 'description');
@@ -137,6 +144,15 @@ export function bundleToConnectionRecord(bundle: MudletProfileBundle): Omit<MudC
     if (typeof side.proxyUrl === 'string') out.proxyUrl = side.proxyUrl;
     if (typeof side.autoReconnect === 'boolean') out.autoReconnect = side.autoReconnect;
     if (typeof side.reconnectOnDrop === 'boolean') out.reconnectOnDrop = side.reconnectOnDrop;
+    for (const flag of ['tls', 'sslIgnoreExpired', 'sslIgnoreSelfSigned', 'sslIgnoreAll'] as const) {
+        if (side[flag] === true) out[flag] = true;
+        else if (side[flag] === false) delete out[flag];
+    }
+    for (const text of ['charLoginAccount', 'description'] as const) {
+        if (typeof side[text] !== 'string') continue;
+        if (side[text]) out[text] = side[text];
+        else delete out[text];
+    }
     // A websocket profile's address lives in `url`; <Host><url> held it only so
     // the XML stayed valid, and as `host` it would read as a telnet hostname.
     if (out.mode === 'websocket') {
@@ -285,6 +301,7 @@ export async function linkMudletFolder(dir: FileSystemDirectoryHandle): Promise<
         mode: 'mud',
         host: profile.connection.host ?? '',
         port: profile.connection.port ?? 23,
+        ...tlsFromIdentity(profile.connection),
         mudletLinked: true,
     });
 
