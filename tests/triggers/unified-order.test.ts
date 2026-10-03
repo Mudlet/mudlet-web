@@ -102,3 +102,56 @@ describe('TriggerEngine unified perm/temp ordering', () => {
     expect(order).toEqual(['perm:perm', 'temp']);
   });
 });
+
+// Issue #328 item 8: Host::installPackage ends every install with
+// TriggerUnit::reorderTriggersAfterPackageImport, which moves the temporary
+// root triggers to the end of the root list.
+describe('TriggerEngine.reorderAfterPackageImport (mudlet-web#328)', () => {
+  let te: TriggerEngine;
+  beforeEach(async () => { await TriggerEngine.ready(); te = new TriggerEngine(); });
+
+  it('moves temps behind every permanent trigger, keeping their own order', () => {
+    const order: string[] = [];
+    te.addTemp('r10ord line', () => order.push('temp1'), 'substring');
+    const perms = [trig({ id: 'perm', patterns: [{ type: 'substring', text: 'r10ord line' }] })];
+    te.loadPerm(perms);
+    te.addTemp('r10ord line', () => order.push('temp2'), 'substring');
+
+    te.process('r10ord line', false, () => order.push('perm'));
+    expect(order).toEqual(['temp1', 'perm', 'temp2']);
+
+    order.length = 0;
+    te.reorderAfterPackageImport(perms);
+    te.process('r10ord line', false, () => order.push('perm'));
+    expect(order).toEqual(['perm', 'temp1', 'temp2']);
+  });
+
+  it('puts the installed package\'s triggers ahead of the temps as well', () => {
+    const order: string[] = [];
+    const p1 = trig({ id: 'p1', patterns: [{ type: 'substring', text: 'x' }] });
+    te.loadPerm([p1]);
+    te.addTemp('x', () => order.push('temp'), 'substring');
+    // The package's trigger arrives in the store before its triggers compile.
+    const pkg = trig({ id: 'pkg', patterns: [{ type: 'substring', text: 'x' }] });
+    te.reorderAfterPackageImport([p1, pkg]);
+    te.loadPerm([p1, pkg]);
+
+    te.process('x', false, (m) => order.push(m.trigger.id));
+    expect(order).toEqual(['p1', 'pkg', 'temp']);
+  });
+
+  it('moves a temporary tree node (tempComplexTrigger) along with the temps', () => {
+    const order: string[] = [];
+    const cplx = trig({ id: 'cplx', temporary: true, patterns: [{ type: 'substring', text: 'x' }] });
+    te.loadPerm([cplx]);
+    const perm = trig({ id: 'perm', patterns: [{ type: 'substring', text: 'x' }] });
+    te.loadPerm([cplx, perm]);
+    te.process('x', false, (m) => order.push(m.trigger.id));
+    expect(order).toEqual(['cplx', 'perm']);
+
+    order.length = 0;
+    te.reorderAfterPackageImport([cplx, perm]);
+    te.process('x', false, (m) => order.push(m.trigger.id));
+    expect(order).toEqual(['perm', 'cplx']);
+  });
+});

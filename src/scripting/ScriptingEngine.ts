@@ -311,6 +311,21 @@ function reportedSettingValues(profile: Record<string, unknown>): boolean[] {
  * nodes whose package isn't in the priority map (e.g. plain non-module
  * packages, which Mudlet treats as priority 0).
  */
+/** QString's operator<: UTF-16 code units, no locale — which is also what
+ *  JavaScript's own string comparison does. */
+function compareCodeUnits(a: string, b: string): number {
+    return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** Desktop's load order for modules of equal priority: by name, as they come
+ *  out of Host::mInstalledModules. 0 when either node is the profile's own. */
+function moduleNameOrder(a: { packageName?: string }, b: { packageName?: string }, priorityMap: Map<string, number>): number {
+    const am = a.packageName && priorityMap.has(a.packageName) ? a.packageName : null;
+    const bm = b.packageName && priorityMap.has(b.packageName) ? b.packageName : null;
+    if (am === null || bm === null) return 0;
+    return compareCodeUnits(am, bm);
+}
+
 function priorityFor(node: { packageName?: string }, priorityMap: Map<string, number>): number {
     if (!node.packageName) return 0;
     return priorityMap.get(node.packageName) ?? 0;
@@ -1245,23 +1260,35 @@ export class ScriptingEngine implements EngineHost {
         // of the copy still being read in, a second set of every item per
         // round. Refused while it is installing (or already reloading).
         if (this.installing.has(moduleName)) return false;
+        // Host::reloadModule is a sync uninstall followed by a sync install
+        // (uninstallPackage / installPackage with ModuleSync), so a reload says
+        // what those say: sysUninstall and sysSyncUninstallModule while the old
+        // copy is still loaded, then sysInstall and sysSyncInstallModule once
+        // the new one is in. A Mudlet Web-only sysReadModuleEvent stood in for
+        // all four, so a handler tracking modules going and coming never saw a
+        // reload at all.
+        this.raiseEvent('sysUninstall', [moduleName]);
+        this.raiseEvent('sysSyncUninstallModule', [moduleName]);
         try {
             const data = reloadModuleFromVfs(pkg, vfs, this.readPackageConfig);
-            // A reload re-reads the module from disk, so anything a script had
-            // set on it since the last one is gone — that is the point of asking
-            // for a reload. Keeping the overrides meant getModuleInfo went on
-            // reporting a title the script had replaced, from a config.lua that
-            // no longer said it.
-            this.moduleInfoOverrides.delete(moduleName);
+            // Desktop re-reads module info only from an archive's config.lua,
+            // which replaces whatever a script had set on it. A plain XML module
+            // has no config.lua to re-read, so what setModuleInfo put there
+            // stays — dropping it on every reload lost fields desktop keeps.
+            if (pkg.sourcePath && /\.(mpackage|zip)$/i.test(pkg.sourcePath)) {
+                this.moduleInfoOverrides.delete(moduleName);
+            }
             this.noteModuleLoaded(moduleName, data);
             const problems = this.collectInstallProblems(moduleName,
                 () => useAppStore.getState().installPackage(id, pkg, data), data);
-            this.raiseEvent('sysReadModuleEvent', [moduleName]);
-            // A reload is Mudlet's module sync (Host::reloadModule installs it
-            // again as one), so it says so the way a sync does — on the event,
-            // with whatever in the module does not work, and never on the
-            // console, where it would come back on every reload.
-            const file = moduleXmlAbsolutePath(pkg, vfs) ?? '';
+            // A reload is Mudlet's module sync, so it says so the way a sync
+            // does — on the event, with whatever in the module does not work,
+            // and never on the console, where it would come back on every
+            // reload. The file is the one the module was installed from (the
+            // .mpackage for an archive, as desktop records it and getModulePath
+            // reports), not the XML unpacked out of it.
+            this.notifyInstalled(moduleName, problems);
+            const file = this.getModulePath(moduleName) ?? moduleXmlAbsolutePath(pkg, vfs) ?? '';
             this.raiseEvent('sysSyncInstallModule', problems ? [moduleName, file, problems] : [moduleName, file]);
             return true;
         } catch (err) {
@@ -1304,10 +1331,12 @@ export class ScriptingEngine implements EngineHost {
         return pkg.priority ?? 0;
     }
 
-    /** List installed module names. Order matches install order. */
+    /** List installed module names, in byte order by name — desktop keeps
+     *  them in a QMap keyed by name (Host::mInstalledModules), so that is the
+     *  order getModules() reports, not the order they were installed in. */
     getModuleNames(): string[] {
         const packages = useAppStore.getState().connectionPackages[this.connectionId] ?? [];
-        return packages.filter(p => p.kind === 'module').map(p => p.name);
+        return packages.filter(p => p.kind === 'module').map(p => p.name).sort(compareCodeUnits);
     }
 
     /**
@@ -1370,8 +1399,11 @@ export class ScriptingEngine implements EngineHost {
      *  via setPackageInfo. Empty table when the package is unknown and nothing
      *  was set for that name. */
     getPackageInfo(name: string): Record<string, string> {
+        // Packages only: desktop keeps module info in a map of its own
+        // (mModuleInfo), so a module's config.lua fields are getModuleInfo's
+        // and getPackageInfo of a module's name has nothing to report.
         const pkg = this.findManifest(name);
-        const base = pkg ? this.manifestInfoBase(pkg) : {};
+        const base = pkg && pkg.kind !== 'module' ? this.manifestInfoBase(pkg) : {};
         this.applyInfoOverrides(base, this.packageInfoOverrides, name);
         return base;
     }
@@ -1504,12 +1536,14 @@ export class ScriptingEngine implements EngineHost {
         // listening for its own package going would take a module of the
         // same name for it.
         this.raiseEvent('sysUninstall', [moduleName]);
+        // Nothing more, sync flag or not: sysSyncUninstallModule belongs to a
+        // ModuleSync removal (the first half of a reload), and desktop does not
+        // raise it when a script uninstalls a module that happens to sync.
         this.raiseEvent('sysLuaUninstallModule', [moduleName]);
-        // Mudlet's sync-module counterpart, fired for sync-flagged modules.
-        // Mudlet Web is single-profile, so it fires locally for ported
-        // scripts that listen on it.
-        if (pkg.sync) this.raiseEvent('sysSyncUninstallModule', [moduleName]);
         this.unloadedModules.delete(moduleName);
+        // Anything setModuleInfo put on it goes with it, so a later install of
+        // the same name starts from its own config.lua.
+        this.moduleInfoOverrides.delete(moduleName);
         useAppStore.getState().uninstallPackage(this.connectionId, moduleName);
         if (this.vfs) {
             const vfs = this.vfs;
@@ -1649,7 +1683,8 @@ export class ScriptingEngine implements EngineHost {
         // install after it (mudlet::slot_connectionDialogueFinished).
         const registrationOrder = next
             .map((s, idx) => ({ s, idx, mod: isModuleScript(s), prio: priorityFor(s, priorityMap) }))
-            .sort((a, b) => Number(a.mod) - Number(b.mod) || (a.mod ? a.prio - b.prio : 0) || a.idx - b.idx);
+            .sort((a, b) => Number(a.mod) - Number(b.mod) || (a.mod ? a.prio - b.prio : 0)
+                || moduleNameOrder(a.s, b.s, priorityMap) || a.idx - b.idx);
         const handlerUpdates: ScriptHandlerEntry[] = [];
         const seen = new Set<string>();
         for (const { s } of registrationOrder) {
@@ -1697,9 +1732,12 @@ export class ScriptingEngine implements EngineHost {
             return node.enabled;
         };
         const prevById = profileLoad ? null : new Map(prev.map(s => [s.id, s] as const));
+        // Equal priorities: the profile before its modules (its XML is read
+        // before any module installs), and modules by name among themselves.
         const orderedNext = next
-            .map((s, idx) => ({ s, idx, prio: priorityFor(s, priorityMap) }))
-            .sort((a, b) => a.prio - b.prio || a.idx - b.idx);
+            .map((s, idx) => ({ s, idx, prio: priorityFor(s, priorityMap), mod: isModuleScript(s) }))
+            .sort((a, b) => a.prio - b.prio || Number(a.mod) - Number(b.mod)
+                || moduleNameOrder(a.s, b.s, priorityMap) || a.idx - b.idx);
         for (const { s } of orderedNext) {
             if (s.language !== 'lua') continue;
             let compile: boolean;
@@ -2050,6 +2088,10 @@ export class ScriptingEngine implements EngineHost {
      *  detailed event that fits how the install was asked for. */
     private notifyInstalled(name: string, problems?: string | null): void {
         this.flushPendingApplies();
+        // Host::installPackage ends every install by moving the temporary
+        // triggers behind the permanent ones, whatever the package held.
+        this.triggerEngine.reorderAfterPackageImport(
+            useAppStore.getState().connectionTriggers[this.connectionId] ?? []);
         this.registerPackageFonts(name);
         this.raiseEvent('sysInstall', problems ? [name, problems] : [name]);
     }
@@ -2813,6 +2855,11 @@ export class ScriptingEngine implements EngineHost {
         if (!isPackageRemovable(packageName)) return false;
         if (this.holdRemovalIfInstalling(packageName, 'package')) return true;
         this.notifyPackageUninstalled(packageName);
+        // What setPackageInfo set goes with the package. Kept, it outlived the
+        // uninstall (getPackageInfo still answered with it) and overrode the
+        // archive's own config.lua on a reinstall — inside the package's own
+        // load script as well — where desktop starts again from config.lua.
+        this.packageInfoOverrides.delete(packageName);
         useAppStore.getState().uninstallPackage(this.connectionId, packageName);
         if (this.vfs) {
             const vfs = this.vfs;

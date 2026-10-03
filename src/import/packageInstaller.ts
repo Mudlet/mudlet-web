@@ -141,6 +141,42 @@ function isXmlEntry(path: string): boolean {
     return /\.xml$/i.test(path);
 }
 
+/** The XML files an archive's package is read from: those at its root, by name
+ *  ignoring case (QDir's default listing order), else the first at any depth. */
+export function archiveXmlEntries(paths: string[]): string[] {
+    const xml = paths.filter(isXmlEntry);
+    const root = xml.filter(p => !p.includes('/'));
+    if (root.length === 0) return xml.slice(0, 1);
+    return root.sort((a, b) => {
+        const la = a.toLowerCase(), lb = b.toLowerCase();
+        return la < lb ? -1 : la > lb ? 1 : a < b ? -1 : a > b ? 1 : 0;
+    });
+}
+
+/** Several XML imports as one package's worth of items, each document's in the
+ *  order it was read — desktop imports them one after another into the same
+ *  package, each under its own package folder. */
+function mergeImportResults(results: MudletImportResult[]): MudletImportResult {
+    if (results.length === 1) return results[0];
+    const merged: MudletImportResult = {
+        scripts: [], aliases: [], triggers: [], timers: [], keys: [], buttons: [], warnings: [],
+    };
+    const errors: string[] = [];
+    for (const r of results) {
+        merged.scripts.push(...r.scripts);
+        merged.aliases.push(...r.aliases);
+        merged.triggers.push(...r.triggers);
+        merged.timers.push(...r.timers);
+        merged.keys.push(...r.keys);
+        merged.buttons.push(...r.buttons);
+        merged.warnings.push(...r.warnings);
+        if (r.variables) (merged.variables ??= []).push(...r.variables);
+        if (r.parseError) errors.push(r.parseError);
+    }
+    if (errors.length > 0) merged.parseError = errors.join('; ');
+    return merged;
+}
+
 const TEXT_EXT = /\.(xml|lua|txt|json|md|css|html|htm|js|csv|ini|cfg|conf|yml|yaml)$/i;
 function isTextEntry(path: string): boolean {
     return TEXT_EXT.test(path);
@@ -190,7 +226,9 @@ export function preparePackageInstall(
     const sourceInsidePkgDir = !!sourcePath
         && (sourcePath === stagedDir || sourcePath.startsWith(`${stagedDir}/`));
 
-    let xmlContent: string;
+    /** One document per XML the package is read from — an archive may hold
+     *  several, each imported in turn. */
+    let xmlContent: string[];
     let xmlRelPath: string | undefined;
     let manifestExtras: Partial<PackageManifest> & { configProblem?: string } = {};
     /** Set when config.lua gave up nothing; see InstallResult.configProblem. */
@@ -211,13 +249,17 @@ export function preparePackageInstall(
 
         try { entries = unzipSync(buf); }
         catch { throw new Error('could not unzip package'); }
-        // Pick the first .xml at any depth — Mudlet places it at the root of the archive.
-        const xmlEntry = Object.keys(entries).find(isXmlEntry);
+        // Every .xml at the archive's root, as Host::installPackage imports them
+        // (a QDir listing of the unpacked folder, sorted by name ignoring case).
+        // Taking only the first left everything in the others silently missing.
+        // An archive with none at its root falls back to the first at any depth,
+        // which is lenient where desktop would install nothing.
+        const xmlEntries = archiveXmlEntries(Object.keys(entries));
         // Mudlet's wording: an archive that unpacked fine but held nothing it could
         // install is a different complaint from one that would not unpack.
-        if (!xmlEntry) throw new Error(`no package found in ${filename}`);
-        xmlContent = strFromU8(entries[xmlEntry]);
-        xmlRelPath = xmlEntry;
+        if (xmlEntries.length === 0) throw new Error(`no package found in ${filename}`);
+        xmlContent = xmlEntries.map(e => strFromU8(entries![e]));
+        xmlRelPath = xmlEntries[0];
 
         manifestExtras = readConfigLua(entries, opts.readConfig);
         // A manifest that will not run leaves NOTHING behind — not the name, not
@@ -287,7 +329,7 @@ export function preparePackageInstall(
             if (sourceInsidePkgDir && sourcePath) sourcePath = pkgDir + sourcePath.slice(stagedDir.length);
         }
     } else {
-        xmlContent = strFromU8(buf);
+        xmlContent = [strFromU8(buf)];
         // Modules need an on-disk XML to reload from on profile open; plain XML
         // packages keep nothing on disk.
         if (kind === 'module') xmlRelPath = filename;
@@ -295,7 +337,8 @@ export function preparePackageInstall(
 
     // Parsed here, not after the files land: an XML that will not parse is
     // refused with the profile untouched rather than unpacked and then rejected.
-    const data = parseMudletXml(xmlContent, { packageName, reportParseError: true });
+    const data = mergeImportResults(
+        xmlContent.map(xml => parseMudletXml(xml, { packageName, reportParseError: true })));
 
     const manifest: PackageManifest = {
         ...manifestExtras,
@@ -327,7 +370,7 @@ export function preparePackageInstall(
         if (!entries) {
             if (kind === 'module') {
                 vfs.mkdir(pkgDir);
-                vfs.writeFile(`${pkgDir}/${filename}`, xmlContent);
+                vfs.writeFile(`${pkgDir}/${filename}`, xmlContent[0]);
             }
             return;
         }

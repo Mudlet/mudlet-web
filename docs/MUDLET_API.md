@@ -1026,7 +1026,7 @@ Reconciled against the authoritative [Mudlet Event Engine](https://wiki.mudlet.o
 
 > **Not Mudlet events** — do not implement under these names: `sysConnect` / `sysDisconnect` / `sysGmcpMessage` (Mudlet uses `sysConnectionEvent` / `sysDisconnectionEvent` and the `gmcp.<path>` event chain), `sysUserWindowCreated` / `sysUserWindowClosed`, `sysMapperLocationChanged`.
 >
-> **Mudlet Web-specific events** (no Mudlet equivalent): `output` (per output line), `gmcp.<path>` chain (✅, the real GMCP mechanism — args: eventName, fullKey), `sysMapLoadEvent` (✅, after a binary map ingest), `sysSaveProfileError` (✅), `sysReadModuleEvent` / `sysSyncOnModule` (✅, module-sync internals).
+> **Mudlet Web-specific events** (no Mudlet equivalent): `output` (per output line), `gmcp.<path>` chain (✅, the real GMCP mechanism — args: eventName, fullKey), `sysMapLoadEvent` (✅, after a binary map ingest), `sysSaveProfileError` (✅), `sysSyncOnModule` (✅, module-sync internals).
 
 ---
 

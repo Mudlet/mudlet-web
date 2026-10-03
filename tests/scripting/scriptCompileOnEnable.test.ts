@@ -200,4 +200,31 @@ describe('script bodies run where desktop compiles them', () => {
             });
         }
     });
+    it('loads equal-priority modules by name, after the profile (mudlet-web#328)', () => {
+        // Installed r10zz, r10aa, r10Mm in that order; desktop loads them out of
+        // a QMap keyed by name, so byte order wins over install order.
+        useAppStore.setState(s => ({
+            connectionPackages: { ...s.connectionPackages, [CONN]: [
+                { name: 'r10zz', kind: 'module' },
+                { name: 'r10aa', kind: 'module' },
+                { name: 'r10Mm', kind: 'module' },
+            ] as never },
+        }));
+        try {
+            setScripts([
+                script('z', 'zz', { packageName: 'r10zz', events: ['ev'] }),
+                script('a', 'aa', { packageName: 'r10aa', events: ['ev'] }),
+                script('m', 'Mm', { packageName: 'r10Mm', events: ['ev'] }),
+                script('p', 'profile', { events: ['ev'] }),
+            ]);
+            apply();
+            expect(loads).toEqual(['profile', 'Mm', 'aa', 'zz']);
+            expect(syncs[0].map(e => e.name)).toEqual(['profile', 'Mm', 'aa', 'zz']);
+        } finally {
+            useAppStore.setState(s => {
+                const { [CONN]: _d, ...rest } = s.connectionPackages;
+                return { connectionPackages: rest };
+            });
+        }
+    });
 });

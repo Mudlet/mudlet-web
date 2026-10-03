@@ -8,6 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import { zipSync, strToU8 } from 'fflate';
 import {
+    archiveXmlEntries,
     installPackageFromBytes,
     preparePackageInstall,
 } from '../../src/import/packageInstaller';
@@ -163,5 +164,22 @@ describe('preparePackageInstall', () => {
         expect(() => prepared.commit()).toThrow('quota exceeded');
         // Half an unpack is worse than none: it looks like an installed package.
         expect(vfs.exists(PKG_DIR)).toBe(false);
+    });
+});
+
+// mudlet-web#328 item 6: Host::installPackage imports every .xml at the root of
+// the unpacked archive, in QDir's name order (ignoring case).
+describe('archiveXmlEntries', () => {
+    it('takes every root-level XML, sorted by name ignoring case', () => {
+        expect(archiveXmlEntries(['config.lua', 'b.xml', 'A.xml', 'c.XML', 'sub/d.xml']))
+            .toEqual(['A.xml', 'b.xml', 'c.XML']);
+    });
+
+    it('falls back to the first nested XML when the root has none', () => {
+        expect(archiveXmlEntries(['config.lua', 'pkg/inner.xml', 'pkg/other.xml'])).toEqual(['pkg/inner.xml']);
+    });
+
+    it('is empty when the archive holds no XML at all', () => {
+        expect(archiveXmlEntries(['config.lua', 'img.png'])).toEqual([]);
     });
 });

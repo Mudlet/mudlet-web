@@ -967,6 +967,33 @@ export class TriggerEngine {
     }
 
     /**
+     * Mudlet `TriggerUnit::reorderTriggersAfterPackageImport`, which
+     * `Host::installPackage` runs after every install: every temporary root
+     * trigger is moved to the end of the root list, keeping its order among
+     * the temporaries, so the permanent ones — the profile's own and the
+     * package's — fire ahead of them all. `items` is the permanent tree as the
+     * install left it, so the package's new triggers take their place before
+     * the temporaries are moved behind them.
+     */
+    reorderAfterPackageImport(items: TriggerNode[]): void {
+        this.reserveOrder(items);
+        const moved: { seq: number; assign: (seq: number) => void }[] = [];
+        for (const t of this.temp.values()) {
+            moved.push({ seq: t.seq, assign: seq => { t.seq = seq; } });
+        }
+        // A tempComplexTrigger is a temporary node in the tree, not a temp entry.
+        for (const item of items) {
+            if (!item.temporary || item.parentId) continue;
+            const seq = this.permReg.get(item.id);
+            if (seq === undefined) continue;
+            moved.push({ seq, assign: s => { this.permReg.set(item.id, s); } });
+        }
+        moved.sort((a, b) => a.seq - b.seq);
+        for (const m of moved) m.assign(this.regCounter++);
+        this.orderDirty = true;
+    }
+
+    /**
      * `blocked`: triggers whose code (or a Lua-function pattern) will not
      * compile. Those and every trigger with a pattern PCRE rejects are
      * inactive, as desktop's `Tree::isActive` wants `state()` — they never
