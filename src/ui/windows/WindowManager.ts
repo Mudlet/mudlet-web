@@ -5,6 +5,7 @@ import type { AnsiAwareBuffer } from '../../mud/text/FormatState';
 import type { DockSide, MxpTabPage, WindowHandle, WindowOpenOptions, ScriptWindowRenderData } from './types';
 import { MAP_VIEW_ID_RE, mapViewWindowId, migrateClientWindowHints } from './types';
 import { MapStore } from '../../map/MapStore';
+import { centerviewAreaChange } from './panels/mapAreaChange';
 import { parseXmlMap } from '../../map/xmlMapImport';
 import { exportAreaImage } from '../../map/mapImageExport';
 import { withLabelPixmapBytes } from '../../map/labelPixmap';
@@ -183,6 +184,13 @@ export class WindowManager {
     private readonly mapControls   = new Map<string, MapControl>();
     /** See {@link hasMapper}. */
     private mapperCreated = false;
+    /** The area the map widget shows, and whether a centerview has run since
+     *  it opened (or its map went away) — what sysMapAreaChanged is worked out
+     *  from (centerviewAreaChange). Kept here, not in MapPanel, because desktop
+     *  builds the widget synchronously: a centerview straight after
+     *  openMapWidget raises the event even though the panel has not mounted. */
+    private mapShownArea: number | null = null;
+    private mapCentered = false;
     /** Per-window teardown for the mousedown/mouseup listeners observeMouse
      *  attaches. Keyed by window id ('main' for the central output). */
     private readonly mouseCleanups = new Map<string, () => void>();
@@ -1149,8 +1157,39 @@ export class WindowManager {
         // On success Mudlet sets the player room (mRoomIdHash) as a side effect,
         // so getPlayerRoom() returns this id afterwards.
         this.mapStore.setPlayerRoom(roomId);
+        // Mudlet `sysMapAreaChanged(newAreaID, prevAreaID)`. Only a map widget
+        // raises it, and only once however many widgets show the map.
+        const areaId = this.mapStore.getRoomArea(roomId);
+        if (areaId !== undefined && this.hasMapWidget()) {
+            const change = centerviewAreaChange(!this.mapCentered, this.mapShownArea, areaId);
+            this.mapCentered = true;
+            this.mapShownArea = areaId;
+            if (change) this.onRaiseEvent?.('sysMapAreaChanged', change);
+        }
         for (const cb of this.mapCallbacks.values()) cb(roomId);
         return true;
+    }
+
+    /** Whether a map widget (not a secondary map view) is open. */
+    private hasMapWidget(): boolean {
+        for (const win of this.windows.values()) {
+            if (win.kind === 'map' && !MAP_VIEW_ID_RE.test(win.id)) return true;
+        }
+        return false;
+    }
+
+    /** MapPanel reports the area it switched to (the area picker, or the view
+     *  restored on open), so the next centerview's sysMapAreaChanged names it
+     *  as the previous area. */
+    noteMapArea(areaId: number): void {
+        this.mapShownArea = areaId;
+    }
+
+    /** The map went away (deleteMap, a failed load): whatever map comes next is
+     *  shown fresh, so its first centerview reports -2 as the previous area. */
+    resetMapArea(): void {
+        this.mapShownArea = null;
+        this.mapCentered = false;
     }
 
     /** The area a map view is showing, or a refusal when there is no such view.
@@ -2791,6 +2830,7 @@ export class WindowManager {
         }
 
         const kind = options.kind ?? 'text';
+        if (kind === 'map' && !MAP_VIEW_ID_RE.test(id) && !this.hasMapWidget()) this.resetMapArea();
         const hint = options.ignoreHint ? undefined : this.windowHints[id];
         const def  = DEFAULT_SIZE[kind];
 

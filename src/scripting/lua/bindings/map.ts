@@ -48,11 +48,12 @@ function idOrName(v: unknown): number | string {
     return v as number | string;
 }
 
-/** A map event argument as desktop keeps it: Mudlet collects them into a
- *  QStringList with lua_tostring, so a number becomes its Lua string form
- *  (`42` → `"42"`) and anything lua_tostring can't convert — a boolean, nil, a
- *  table — becomes the empty string. */
-function mapEventArg(v: unknown): string {
+/** A value as desktop's lua_tostring reads it into a QString: a number
+ *  becomes its Lua string form (`42` → `"42"`, `1.5` → `"1.5"`) and anything
+ *  lua_tostring can't convert — a boolean, nil, a table — becomes the empty
+ *  string. Map event arguments (collected into a QStringList), room names and
+ *  symbols, and room hashes all go through it on desktop. */
+function luaToString(v: unknown): string {
     if (typeof v === 'string') return v;
     if (typeof v === 'number') {
         if (Number.isInteger(v)) return String(v);
@@ -193,8 +194,11 @@ export function installMapBindings({
     // TMap::gotoRoom goes to mRoomIdHash directly, not through getPlayerRoom).
     lua.global.set('__getPlayerRoomId', () => api.map.getPlayerRoom() ?? null);
     // Mudlet getRoomIDbyHash: returns -1 when no room has the given hash.
-    lua.global.set('getRoomIDbyHash', (hash: string)            => api.getRoomIDbyHash(hash) ?? -1);
-    lua.global.set('setRoomIDbyHash', (id: unknown, hash: unknown)=> api.map.setRoomIDbyHash(int(id), String(hash ?? '')));
+    // The hash is a string on desktop whatever the script passed — GMCP's
+    // Room.Info.num is a number, so `getRoomIDbyHash(gmcp.Room.Info.num)` has
+    // to find the room `setRoomIDbyHash(id, "777")` filed.
+    lua.global.set('getRoomIDbyHash', (hash: unknown)           => api.getRoomIDbyHash(luaToString(hash)) ?? -1);
+    lua.global.set('setRoomIDbyHash', (id: unknown, hash: unknown)=> api.map.setRoomIDbyHash(int(id), luaToString(hash)));
     // Mudlet getRoomHashByID: returns the hash string, or (false, errMsg) on
     // miss / when the room has no hash. JS hands back the string or null;
     // Bridge.lua unpacks the multi-return.
@@ -412,7 +416,9 @@ export function installMapBindings({
     // miss. JS hands back the string or null; Bridge.lua unpacks the
     // multi-return.
     lua.global.set('__getRoomName', (id: unknown)             => api.map.getRoomName(int(id)) ?? null);
-    lua.global.set('setRoomName',  (id: unknown, n: string)  => api.map.setRoomName(int(id), n));
+    // Desktop stores the name as a QString, so `setRoomName(id, 404)` keeps
+    // "404" — a raw number here broke every substring searchRoom.
+    lua.global.set('setRoomName',  (id: unknown, n: unknown) => api.map.setRoomName(int(id), luaToString(n)));
     // Mudlet `getRoomArea(id)` — area id, or -1 when the room is missing.
     lua.global.set('getRoomArea',  (id: number)              => api.map.getRoomArea(int(id)) ?? null);
     // Mudlet setRoomArea(roomID|{ids}, areaID|areaName). Bridge.lua flattens the
@@ -446,7 +452,7 @@ export function installMapBindings({
         if (!Number.isFinite(rid) || !api.map.roomExists(rid)) return null;
         return api.map.getRoomChar(rid);
     });
-    lua.global.set('setRoomChar',  (id: unknown, c: string)  => api.map.setRoomChar(int(id), c));
+    lua.global.set('setRoomChar',  (id: unknown, c: unknown) => api.map.setRoomChar(int(id), luaToString(c)));
     // Mudlet lockRoom(roomID, lockIfTrue) → true on success. roomLocked
     // returns the lock state, or nil when the room doesn't exist (Mudlet
     // distinguishes the miss from an unlocked room).
@@ -809,7 +815,7 @@ export function installMapBindings({
             String(eventName ?? ''),
             parent == null ? null : String(parent),
             displayName == null ? null : String(displayName),
-            ...args.map(mapEventArg),
+            ...args.map(luaToString),
         );
         return true;
     });

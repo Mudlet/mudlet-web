@@ -2784,7 +2784,9 @@ export class MapStore {
      * destination room id: `{ [exitRoomID] = { [command] = "0"|"1" } }`, where
      * "1" marks a locked exit. When several commands lead to the same room and
      * `listAllExits` is false (the default), only the lowest-weight command is
-     * reported; pass `true` to list every command. Returns `{}` for a missing
+     * reported — among equally weighted ones the alphabetically LAST, since
+     * desktop walks them in QMap (key) order and keeps a later tie (`<=`); pass
+     * `true` to list every command. Returns `{}` for a missing
      * room. The lock flag follows this client's data model (special-exit locks
      * are tracked by destination room id, see pathfinding.ts).
      */
@@ -2808,14 +2810,15 @@ export class MapStore {
             } else {
                 // Mudlet's rule: the cheapest UNLOCKED command wins, and only if
                 // every command to this room is locked does the cheapest locked
-                // one get reported.
+                // one get reported. Commands are visited in QString order (UTF-16
+                // code units, as Array#sort compares) and a tie goes to the later.
                 let bestUnlocked: string | null = null, bestUnlockedWeight = Infinity;
                 let bestLocked: string | null = null, bestLockedWeight = Infinity;
-                for (const cmd of cmds) {
+                for (const cmd of [...cmds].sort()) {
                     const w = weights[cmd] ?? 1;
                     if (this.isSpecialExitLocked(id, cmd)) {
-                        if (w < bestLockedWeight) { bestLockedWeight = w; bestLocked = cmd; }
-                    } else if (w < bestUnlockedWeight) {
+                        if (w <= bestLockedWeight) { bestLockedWeight = w; bestLocked = cmd; }
+                    } else if (w <= bestUnlockedWeight) {
                         bestUnlockedWeight = w; bestUnlocked = cmd;
                     }
                 }

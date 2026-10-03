@@ -3,9 +3,9 @@ import { createPortal } from 'react-dom';
 import { MapRenderer, createSettings } from 'mudlet-map-renderer';
 import type { AreaExitClickEventDetail, LodEventDetail, RoomClickEventDetail, RoomContextMenuEventDetail, RoomLens } from 'mudlet-map-renderer';
 import type { WindowManager, MapControl, MapLoadProgress } from '../WindowManager';
+import { MAP_VIEW_ID_RE } from '../types';
 import type { MapEventEntry, MapInfoResult, MapInfoContributor, MapStore } from '../../../map/MapStore';
 import { MudletMapReader } from '../../../map/MudletMapReader';
-import { centerviewAreaChange } from './mapAreaChange';
 import {
     MUDLET_MIN_MAP_ZOOM, applyAreaZoom, fitAreaWithHeadroom, toMudletZoom, toRendererZoom,
 } from '../../../map/mapZoom';
@@ -84,6 +84,8 @@ interface MapPanelProps {
 }
 
 export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProps) {
+    // A secondary map view (createMapView) rather than the map widget.
+    const isMapView = MAP_VIEW_ID_RE.test(id);
     const containerRef = useRef<HTMLDivElement>(null);
     const rendererRef = useRef<MapRenderer | null>(null);
     const readerRef = useRef<MudletMapReader | null>(null);
@@ -158,10 +160,6 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
     // can see the current selection (state values would be stale captures).
     const currentAreaRef = useRef<number | null>(null);
     const currentLevelRef = useRef<number>(0);
-    // Whether a centerview has run since this panel opened (or its map was
-    // replaced) — the first one always raises sysMapAreaChanged
-    // (centerviewAreaChange).
-    const centeredRef = useRef(false);
     currentAreaRef.current = currentArea;
     currentLevelRef.current = currentLevel;
 
@@ -390,7 +388,7 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
             setLevels([]);
             setCurrentArea(null);
             currentAreaRef.current = null;
-            centeredRef.current = false;
+            if (!isMapView) manager.resetMapArea();
             renderer.clearPosition();
             recomputeMapInfos();
             // Whatever map arrives next opens fresh: drop the one-time fit latch
@@ -455,6 +453,9 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
         // clobbering the view we just restored.
         currentAreaRef.current = restoredArea;
         currentLevelRef.current = restoredLevel;
+        // sysMapAreaChanged is worked out by the manager (centerView); tell it
+        // which area the widget now shows.
+        if (!isMapView) manager.noteMapArea(restoredArea);
         // Keep a secondary view's registry entry in step with what it actually
         // shows, so getMapViewInfo reports the live state and not just the
         // values createMapView seeded it with.
@@ -1113,10 +1114,7 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
         if (prevArea !== areaId) {
             useAppStore.getState().patchConnectionProfile(connectionId, { mapLastAreaId: areaId });
         }
-        // Mudlet `sysMapAreaChanged(newAreaID, prevAreaID)`.
-        const areaChange = centerviewAreaChange(!centeredRef.current, prevArea, areaId);
-        centeredRef.current = true;
-        if (areaChange) manager.onRaiseEvent?.('sysMapAreaChanged', areaChange);
+        // sysMapAreaChanged was already raised by WindowManager.centerView.
         setLevels(areaLevels);
         setCurrentLevel(zLevel);
         setCurrentArea(areaId);
@@ -1262,6 +1260,7 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
             // Mudlet `sysMapAreaChanged(newAreaID, prevAreaID)`.
             manager.onRaiseEvent?.('sysMapAreaChanged', [id, prevArea ?? -1]);
         }
+        if (!isMapView) manager.noteMapArea(id);
         const areaLevels = readerRef.current?.getArea(id).getZLevels().sort((a, b) => a - b) ?? [0];
         const saved = getSavedView(id);
         const level = saved && areaLevels.includes(saved.level)
@@ -1281,7 +1280,7 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
         // explicit re-center on top of it.
         if (savedZoom != null) centerOnArea(renderer, manager.mapStore);
         recomputeMapInfos();
-    }, [getSavedView, connectionId, manager, syncPositionMarker, recomputeMapInfos]);
+    }, [getSavedView, connectionId, manager, isMapView, syncPositionMarker, recomputeMapInfos]);
 
     // Switch to a specific z-level in the current area (direct selection from
     // the level dropdown). Mirrors the level-stepper path but jumps to an
