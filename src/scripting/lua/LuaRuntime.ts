@@ -17,6 +17,7 @@ import {armor, unarmor} from './byteArmor';
 import VFS_LUA from './VFS.lua?raw';
 import LUAGLOBAL from './LuaGlobal.lua?raw';
 import BRIDGE_LUA from './Bridge.lua?raw';
+import { buildArgContractLua } from './argContracts';
 import EXEC_LUA from './Exec.lua?raw';
 import WIDE_INTEGERS_LUA from './WideIntegers.lua?raw';
 import LUA_GLOBAL_SETUP from './LuaGlobalSetup.lua?raw';
@@ -2367,6 +2368,10 @@ export class LuaRuntime implements IScriptingRuntime {
         this.runInternalChunk(BRIDGE_LUA, 'mudlet');
         await setupRex(this.lua, code => this.runInternalChunk(code, 'lual'));
         this.runInternalChunk(EXEC_LUA, 'mudlet');
+        // Desktop's raise-on-wrong-type argument contracts (issue #277), wrapped
+        // over the finished bindings before the bundled mudlet-lua tree captures them.
+        // Internal, so the wrappers read as C; luaL_error-positioned at the caller.
+        this.runInternalChunk(buildArgContractLua(), 'lual');
         this.installNativeUtf8Find();
         this.lua.global.set('__mudlet_utf8_casemap', utf8CaseMap);
         this.installUtf8Natives();

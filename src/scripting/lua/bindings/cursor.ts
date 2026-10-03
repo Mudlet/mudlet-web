@@ -194,9 +194,15 @@ export function installCursorBindings({ lua, api }: BindingContext): void {
     // selection. wasmoon's nested-table marshalling is unreliable, so JS
     // hands back a flat 0-indexed array of primitives and Bridge.lua rebuilds
     // the documented table (with 1-indexed foreground/background triples).
+    // A miss comes back as desktop's message instead: an unknown window is
+    // "window 'x' not found", and no character under the cursor/selection is
+    // "current selection invalid in window 'x'" — x being the name as passed,
+    // so '' when it was left out (TLuaInterpreterUI.cpp).
     lua.global.set('__getTextFormat', (win?: unknown) => {
-        const f = api.getTextFormat(typeof win === 'string' ? win : undefined);
-        if (!f) return null;
+        const name = typeof win === 'string' || typeof win === 'number' ? String(win) : undefined;
+        if (name !== undefined && !api.hasConsole(name)) return `window '${name}' not found`;
+        const f = api.getTextFormat(name);
+        if (!f) return `current selection invalid in window '${name ?? ''}'`;
         return [
             f.bold, f.italic, f.underline, f.strikeout, f.reverse,
             f.overline, f.concealed, f.alternateFont, f.blinking,

@@ -621,4 +621,40 @@ export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
             + 'tests/scripting/mapperParity295.test.ts.',
         issue: '#295',
     },
+    {
+        api: 'getTextFormat() with nothing selected',
+        behaviour:
+            'Desktop: reads the character under the user cursor, which stays at column 0 of the last line the '
+            + 'trigger engine ran on (or on the last character after moveCursorEnd). Mudlet Web: reads the '
+            + 'character under its own cursor, which follows output on the main console and sits one past the '
+            + 'last character after moveCursorEnd — so it can answer (nil, "current selection invalid…") where '
+            + 'desktop answers a format table.',
+        reason:
+            'The two answers come from different cursor models rather than from getTextFormat: the main console '
+            + "follows output until a trigger parks it, and moveCursorEnd's column was chosen so a following "
+            + 'insertText appends. Both are wider changes than #277; the messages and the window-not-found case '
+            + 'now match desktop. Pinned by tests/scripting/argContracts.test.ts.',
+        issue: '#277',
+    },
+    {
+        api: 'Discord setters, receiveMSP: bad argument types',
+        behaviour:
+            'Desktop: setDiscordState({}) and friends raise "bad argument" while Discord is enabled for the '
+            + 'profile, and receiveMSP({}) raises while MSP is on. Mudlet Web: no raise.',
+        reason:
+            'Desktop answers (nil, msg) for the disabled feature before it looks at the arguments, so whether '
+            + 'it raises depends on state Mudlet Web does not have (no Discord integration) or rarely has. '
+            + 'The rest of the #277 sweep is enforced by src/scripting/lua/argContracts.ts.',
+        issue: '#277',
+    },
+    {
+        api: 'highlightRoom: missing alpha arguments',
+        behaviour:
+            'Desktop: highlightRoom with 8 arguments raises "bad argument #9 type (color1Alpha as number '
+            + 'expected, got no value!)". Mudlet Web: the two alphas are optional; a wrongly typed one still raises.',
+        reason:
+            'Mudlet Web documented the alphas as optional (luaCompletions.ts) before #277, so scripts written '
+            + 'here may omit them; refusing them now would break those scripts for no gain.',
+        issue: '#277',
+    },
 ];

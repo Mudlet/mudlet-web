@@ -47,9 +47,11 @@ export function installWindowBindings({ lua, api, channel }: BindingContext): vo
             ? api.setFontSize(Number(b), a)
             : api.setFontSize(Number(a));
     });
+    // A number names a window too: desktop's WINDOW_NAME is lua_isstring, so
+    // getFontSize(1) looks for a window called "1" rather than reading main.
     lua.global.set('__getFontSize', (a?: unknown) => {
-        const size = (typeof a === 'string')
-            ? api.getFontSize(a)
+        const size = (typeof a === 'string' || typeof a === 'number')
+            ? api.getFontSize(String(a))
             : api.getFontSize();
         return size ?? null;
     });
@@ -71,8 +73,8 @@ export function installWindowBindings({ lua, api, channel }: BindingContext): vo
             : api.setFont(String(a ?? ''));
     });
     lua.global.set('__getFont', (a?: unknown) => {
-        const family = (typeof a === 'string')
-            ? api.getFont(a)
+        const family = (typeof a === 'string' || typeof a === 'number')
+            ? api.getFont(String(a))
             : api.getFont();
         return family ?? null;
     });

@@ -935,7 +935,10 @@ export function installMapBindings({
     // Selection is paint-only — driven by clicks in MapPanel — but Mudlet
     // surfaces it to Lua. Bridge.lua rebuilds `rooms` as a 1-indexed
     // table; we hand the JS object straight over.
+    // Desktop answers (nil, msg) when no mapper widget was ever created, before
+    // it looks for a selection; Bridge.lua makes the pair from the string.
     lua.global.set('__getMapSelection', () => {
+        if (!api.windows.hasMapper()) return 'no map present or loaded';
         const sel = api.map.getMapSelection();
         return { rooms: sel.rooms, center: sel.center };
     });

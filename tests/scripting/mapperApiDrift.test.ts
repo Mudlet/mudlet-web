@@ -143,6 +143,9 @@ describe('getMapEvents arguments', () => {
 
 describe('return shapes', () => {
     it('getMapSelection is an empty table when nothing is selected', () => {
+        // Desktop needs the mapper widget before it reports a selection at all.
+        expect(env.run('local s, e = getMapSelection() return tostring(s) .. "|" .. e')).toBe('nil|no map present or loaded');
+        env.run('openMapWidget()');
         expect(env.run('return next(getMapSelection())')).toBe(null);
         env.run('addRoom(1)');
         env.api.map.selectMapRoom(1);

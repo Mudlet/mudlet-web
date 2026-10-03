@@ -1677,7 +1677,7 @@ end
 -- {r, g, b} foreground/background triples.
 function getTextFormat(windowName)
     local t = __getTextFormat(windowName)
-    if t == nil then return nil, "no character under cursor or selection" end
+    if type(t) == 'string' then return nil, t end
     return {
         bold = t[0],
         italic = t[1],
@@ -4268,9 +4268,11 @@ end
 -- in any position) reach the handlers as the very values the caller passed.
 -- Crossing into JS turned a table into a wasmoon proxy that the trip back
 -- clobbered — raiseEvent("e", {a = 1}, "s") arrived as ("e", "s", "s").
--- Returns true, as Mudlet does; false only for a missing event name.
+-- Returns true, as Mudlet does — even with no usable event name: desktop's
+-- TLuaInterpreter::raiseEvent hands whatever it got to Host::raiseEvent and
+-- answers true regardless (raiseEvent({}) and raiseEvent() included, #277).
 function raiseEvent(event, ...)
-    if type(event) ~= 'string' or event == '' then return false end
+    if type(event) ~= 'string' or event == '' then return true end
     local argc = select('#', ...)
     -- Drop getMainWindowSize's cache on a script-raised resize too, as
     -- LuaRuntime.dispatchEventNow does for the one Mudlet Web raises itself.
@@ -6144,6 +6146,7 @@ end
 -- in JS when nothing is selected — surface that as nil on the Lua side.
 function getMapSelection()
     local raw = __getMapSelection()
+    if type(raw) == 'string' then return nil, raw end
     local rooms = {}
     if type(raw) == 'table' and type(raw.rooms) == 'table' then
         local src = raw.rooms

@@ -202,6 +202,9 @@ describe('getMapZoom / setMapZoom / updateMap — wiring', () => {
   // with no mapper mounted — an area that has never been zoomed reads back the
   // default, and setting one succeeds whether or not a panel is showing it.
   it('answer from the area with no panel open, and do not throw', () => {
+    // ...except that getMapZoom, like desktop, refuses until a mapper exists.
+    expect(env.run('local z, e = getMapZoom() return tostring(z) .. "|" .. e')).toBe('nil|no active mapper');
+    env.run('openMapWidget()');
     expect(env.run('return (getMapZoom())')).toBe(20);
     expect(env.run('return (setMapZoom(5))')).toBe(true);
     expect(() => env.run('updateMap()')).not.toThrow();
@@ -1368,7 +1371,7 @@ describe('misc forwarders — appendLog / getProfileTabNumber / getProfiles / io
 
   it('ioprint / clearVisitedLinks / closeMudlet are callable without throwing', () => {
     expect(() => env.run('ioprint("hello", 42, nil)')).not.toThrow();
-    expect(() => env.run('clearVisitedLinks()')).not.toThrow();
+    expect(() => env.run('clearVisitedLinks("noSuchLabel")')).not.toThrow();
     // closeMudlet → disconnect() (no socket) + close callback (unwired) — clean.
     expect(() => env.run('closeMudlet()')).not.toThrow();
   });
@@ -1542,8 +1545,9 @@ describe('exportAreaImage — Lua binding', () => {
     expect((msg as string).length).toBeGreaterThan(0);
   });
 
-  it('rejects a non-numeric areaID', () => {
-    expect(env.run('return (exportAreaImage("nope", "a.png"))')).toBeNull();
+  it('raises on a non-numeric areaID, as desktop does', () => {
+    expect(() => env.run('exportAreaImage("nope", "a.png")'))
+      .toThrow('exportAreaImage: bad argument #1 type (areaID as number expected, got string!)');
   });
 
   it('delegates to ScriptingAPI.exportAreaImage with coerced args', () => {

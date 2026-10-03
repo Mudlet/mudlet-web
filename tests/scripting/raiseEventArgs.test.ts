@@ -72,8 +72,8 @@ describe('raiseEvent — argument fidelity', () => {
     expect(t.run('return namedSaw')).toBe('evtNamed:7');
   });
 
-  it('returns false for a missing event name, true otherwise', () => {
-    expect(t.run(`return raiseEvent()`)).toBe(false);
+  it('returns true, as desktop does, even without a usable event name', () => {
+    expect(t.run(`return raiseEvent()`)).toBe(true);
     expect(t.run(`return raiseEvent('evtNobody')`)).toBe(true);
     expect(errors).toHaveLength(0);
   });

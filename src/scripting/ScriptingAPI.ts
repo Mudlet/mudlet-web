@@ -5940,9 +5940,9 @@ export class ScriptingAPI {
     /**
      * Mudlet `getMapZoom([areaID])` — the number of map units visible across the
      * viewport's shorter edge. Mudlet keeps this on the area (TArea's
-     * `mLast2DMapZoom`, reached via TRoomDB::get2DMapZoom), so it answers with
-     * no mapper mounted and each area remembers its own; Mudlet Web stores it the
-     * same way. Without an areaID the live renderer's current zoom wins when one
+     * `mLast2DMapZoom`, reached via TRoomDB::get2DMapZoom), so each area
+     * remembers its own; Mudlet Web stores it the same way. Desktop still refuses
+     * the call until a mapper exists ("no active mapper"), whichever area is asked. Without an areaID the live renderer's current zoom wins when one
      * is mounted. Undefined for an areaID that doesn't exist — the binding
      * reports that as `(nil, errMsg)`.
      */
@@ -5953,6 +5953,11 @@ export class ScriptingAPI {
             if (typeof area === 'string') return `getMapZoom: ${area}`;
             return this.map.getAreaZoom(area) ?? MapStore.DEFAULT_MAP_ZOOM;
         }
+        // Desktop asks for the mapper before it looks at the area at all
+        // (TLuaInterpreterMapper.cpp), so without one even a valid areaID is
+        // refused — the zoom it would read lives on the TArea, but the call is
+        // still a mapper call.
+        if (!this.session.windows.hasMapper()) return 'no active mapper';
         if (areaID !== undefined) {
             if (!this.map.hasArea(areaID)) return undefined;
             return this.map.getAreaZoom(areaID) ?? MapStore.DEFAULT_MAP_ZOOM;
