@@ -56,14 +56,15 @@ test('saveProfile() does not change how the profile reopens', async ({ page }) =
     await page.goto('/');
     await page.reload();
     await page.getByRole('button', { name: 'Open Saved offline' }).click();
+    // One line per package: the whole list on one line runs past the main
+    // console's 100-column wrap and would be stored as several lines.
     await expect(async () => {
-        await lua(page, 'local p = getPackages() table.sort(p) echo("PKGS:" .. table.concat(p, ",") .. "\\n")');
-        await expect(page.getByText(/PKGS:[\w-]/).first()).toBeVisible({ timeout: 2_000 });
+        await lua(page, 'for _, n in ipairs(getPackages()) do echo("PKG=" .. n .. "\\n") end');
+        await expect(page.getByText(/^PKG=[\w-]/).first()).toBeVisible({ timeout: 2_000 });
     }).toPass({ timeout: 60_000 });
 
-    const pkgs = (await page.getByText(/PKGS:[\w-]/).first().textContent()) ?? '';
-    expect(pkgs.replace(/^.*PKGS:/, '').trim().split(','), 'the installed package is still registered')
-        .toContain('vpkg');
+    const pkgs = (await page.getByText(/^PKG=[\w-]/).allTextContents()).map(t => t.trim().slice('PKG='.length));
+    expect(pkgs, 'the installed package is still registered').toContain('vpkg');
     await expect(page.getByText(/SYSINSTALL:\w/), 'nothing is re-installed on a reopen').toHaveCount(0);
 
     expect(errors, 'the reopen should raise nothing').toEqual([]);
