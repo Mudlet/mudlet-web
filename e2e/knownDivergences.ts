@@ -627,7 +627,7 @@ export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
             'Desktop: reads the character under the user cursor, which stays at column 0 of the last line the '
             + 'trigger engine ran on (or on the last character after moveCursorEnd). Mudlet Web: reads the '
             + 'character under its own cursor, which follows output on the main console and sits one past the '
-            + 'last character after moveCursorEnd — so it can answer (nil, "current selection invalid…") where '
+            + 'last character of an unfinished last line after moveCursorEnd — so it can answer (nil, "current selection invalid…") where '
             + 'desktop answers a format table.',
         reason:
             'The two answers come from different cursor models rather than from getTextFormat: the main console '

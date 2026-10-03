@@ -17,7 +17,9 @@ describe('command echo colours', () => {
         expect(t.api.setCommandBackgroundColor(40, 50, 60)).toBe(true);
         t.session.echoCommand('mccCommand');
         const format = t.run(`
-            moveCursor("main", 0, getLastLineNumber("main"))
+            -- The command is the last complete line; getLastLineNumber is the
+            -- empty open line after it, which reads as '' (mudlet-web#331).
+            moveCursor("main", 0, getLastLineNumber("main") - 1)
             selectString("mccCommand", 1)
             local f = getTextFormat("main")
             return table.concat(f.foreground, ",") .. "/" .. table.concat(f.background, ",")

@@ -489,7 +489,22 @@ export class Console {
      * it made `prefix()`/`suffix()` on an unfinished line silent no-ops.
      */
     private get onPartialLine(): boolean {
-        return this.followingEnd && this.partial.length > 0;
+        return this.followingEnd && (this.partial.length > 0 || this.onEmptyOpenLine);
+    }
+
+    /**
+     * Whether a script parked the cursor on the open line while it is still
+     * empty — moveCursorEnd(), or moveCursor() onto the line after a trailing
+     * `\n`. Desktop's cursor is on that empty line then: getCurrentLine() reads
+     * '' and insertText() starts the new line. Treating the slot as "the last
+     * complete line" glued the inserted text onto the line above
+     * (mudlet-web#331). Only an explicit index counts — the main console's
+     * following-the-end cursor (-1) still reads the last complete line — and
+     * not mid trigger pass, where there is no open line (see currentBuffer).
+     */
+    private get onEmptyOpenLine(): boolean {
+        return this.cursorIdx === this.history.length && this.history.length > 0
+            && this.hasOpenLine && !this.openLineSuspended;
     }
 
     getLine(): string {

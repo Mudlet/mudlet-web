@@ -97,7 +97,7 @@ describe('selectString — overlapping occurrences', () => {
     let env: TestRuntime;
     beforeEach(async () => {
         env = await createTestRuntime();
-        env.run('createBuffer("ovl"); echo("ovl", "OVL aaaa banana\\n"); moveCursor("ovl", 0, 1)');
+        env.run('createBuffer("ovl"); echo("ovl", "OVL aaaa banana\\n"); moveCursor("ovl", 0, 0)');
     });
     afterEach(() => env.dispose());
 
@@ -128,7 +128,7 @@ describe('copy() — always replaces the clipboard', () => {
     let env: TestRuntime;
     beforeEach(async () => {
         env = await createTestRuntime();
-        env.run('createBuffer("src"); echo("src", "copy me\\n"); moveCursor("src", 0, 1); createBuffer("dst")');
+        env.run('createBuffer("src"); echo("src", "copy me\\n"); moveCursor("src", 0, 0); createBuffer("dst")');
     });
     afterEach(() => env.dispose());
 
@@ -181,6 +181,13 @@ describe('user dictionary — order and hunspell case rules', () => {
 
     it('suggests the capitalisation fix', () => {
         expect(env.run('return table.concat(spellSuggestWord("zorkmid", true), ",")')).toBe('Zorkmid');
+    });
+
+    it('suggests a word the dictionary accepts as itself, in the case asked (mudlet-web#331)', () => {
+        env.run('addWordToDictionary("xylo"); addWordToDictionary("McGuffin")');
+        const words = ['Zorkmid', 'apple', 'Banana', 'BANANA', 'Apple', 'APPLE', 'xylo', 'McGuffin'];
+        const got = words.map(w => env.run(`return table.concat(spellSuggestWord("${w}", true), ",")`));
+        expect(got).toEqual(words);
     });
 });
 

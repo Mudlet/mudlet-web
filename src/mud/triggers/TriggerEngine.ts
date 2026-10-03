@@ -881,7 +881,8 @@ export class TriggerEngine {
      *                     `tempExactMatchTrigger`). Callback receives `[line]`.
      *   - `'prompt'`    — fires on every line the server flags as a prompt
      *                     (Mudlet `tempPromptTrigger`); `pattern` is ignored.
-     *                     Callback receives `[line]`.
+     *                     Callback receives `[]` — match_prompt sets no
+     *                     capture groups.
      * Invalid regex patterns return a no-op disposer so callers don't need
      * to special-case compile failures.
      */
@@ -1301,7 +1302,10 @@ export class TriggerEngine {
         const accepted = () => !entry.accept || entry.accept();
         if (entry.kind === 'prompt') {
             if (!isPrompt || !accepted()) return false;
-            entry.fn([stripEol(line)]);
+            // match_prompt sets no capture groups, for a temp prompt trigger
+            // as for a permanent one: the script sees `matches` as the last
+            // fire left it, not the prompt line (mudlet-web#331).
+            entry.fn([]);
             return true;
         }
         if (entry.kind === 'substring') {

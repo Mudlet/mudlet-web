@@ -9726,7 +9726,11 @@ do
         if not useUser then
             return nil, SYSTEM_UNAVAILABLE_SUGGEST
         end
-        local words = readDict()
+        local words, set = readDict()
+        -- A word the dictionary accepts is hunspell's one and only suggestion,
+        -- in the case it was asked in: "APPLE" → {"APPLE"} for a stored
+        -- "apple", "McGuffin" → {"McGuffin"} (mudlet-web#331).
+        if userDictAccepts(w, set) then return { w } end
         local scored = {}
         -- A word that differs only in case is hunspell's first suggestion
         -- ("zorkmid" → "Zorkmid"), so distance 0 counts unless it is the very
