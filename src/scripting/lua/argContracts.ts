@@ -534,7 +534,10 @@ end`,
     createMapImageLabel: {
         args: [
             i('areaID'), s('imagePathFileName'), n('posX'), n('posY'), n('posZ'),
-            n('width'), n('height'), n('zoom'), b('showOnTop'), b('showOnTop', OPT_PRESENT),
+            n('width'), n('height'), n('zoom'), b('showOnTop'),
+            // Desktop's message calls the tenth argument showOnTop too, though
+            // it is the temporary flag.
+            b('showOnTop', OPT_PRESENT),
         ],
     },
     setMapZoom: { args: [n('zoom'), i('area id', OPT_PRESENT), i('view id', OPT_PRESENT)] },

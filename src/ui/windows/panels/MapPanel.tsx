@@ -1215,7 +1215,7 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
         setStatus('loading');
         try {
             // Routes through WindowManager: persists to IndexedDB, parses into
-            // MapStore, raises sysMapLoadEvent, and the store's notify drives
+            // MapStore, and the store's notify drives
             // the panel back to status='ready' via the subscribe handler.
             // `.xml` files take the IRE-style XML importer, like Mudlet.
             //

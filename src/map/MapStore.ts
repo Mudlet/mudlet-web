@@ -9,7 +9,9 @@ export type MapRendererData = ReturnType<typeof readerExport>;
 
 /** What an area with no name of its own is called — Mudlet's mUnnamedAreaName,
  *  which its area-name audit substitutes before checking for duplicates. */
-const UNNAMED_AREA_NAME = 'Unnamed Area';
+export const UNNAMED_AREA_NAME = 'Unnamed Area';
+/** Mudlet's mDefaultAreaName — the name of area -1. */
+export const DEFAULT_AREA_NAME = 'Default Area';
 
 // Mudlet direction number → field name on MudletRoom
 const DIR_FIELD: Record<number, string> = {
@@ -372,9 +374,21 @@ export function mudletJsonMapToMudletMap(src: unknown): MudletMap | null {
         }
     }
 
+    // TMap::readJsonMapFile: environment → colour number, keyed by the
+    // environment id as a string.
+    const envColors: Record<number, number> = {};
+    const envMapping = doc.envToColorMapping;
+    if (envMapping && typeof envMapping === 'object' && !Array.isArray(envMapping)) {
+        for (const [env, color] of Object.entries(envMapping as Record<string, unknown>)) {
+            const id = Number(env);
+            const n = Number(color);
+            if (Number.isInteger(id) && Number.isFinite(n)) envColors[id] = Math.trunc(n);
+        }
+    }
+
     return {
         version: 20,
-        envColors: {}, areaNames, mCustomEnvColors,
+        envColors, areaNames, mCustomEnvColors,
         mpRoomDbHashToRoomId: hashes,
         mUserData: jsonStringMap(doc.userData),
         mapSymbolFont: DEFAULT_FONT,
@@ -764,7 +778,7 @@ function labelToInfo(l: MapLabel): MapLabelInfo {
         OnTop: l.showOnTop,
         Scaling: !l.noScaling,
         // Mudlet runtime flag; binary maps never carry it, so a label read back
-        // from one is never temporary — only createMapLabel can set it.
+        // from one is never temporary — only the create calls can set it.
         Temporary: l.temporary ?? false,
         FgColor: { r: l.fgColor.r, g: l.fgColor.g, b: l.fgColor.b },
         BgColor: { r: l.bgColor.r, g: l.bgColor.g, b: l.bgColor.b },
@@ -1075,7 +1089,7 @@ export class MapStore {
         const defaultArea = makeArea();
         defaultArea.zLevels = [0];
         this.areas.set(-1, defaultArea);
-        this.areaNames.set(-1, 'Default Area');
+        this.areaNames.set(-1, DEFAULT_AREA_NAME);
         this.initialized = true;
         this.notify();
         this.notifyHighlights();
@@ -1356,21 +1370,41 @@ export class MapStore {
      * open in Mudlet, and one exported by Mudlet has to open here.
      */
     toMudletJsonString(extras: Record<string, unknown> = {}): string {
-        const doc = {
-            formatVersion: 1,
-            // Map-level settings that live in the profile rather than in the
-            // store — the symbol font and its scaling — are passed in by the
-            // caller that owns them, so a saved file carries the whole map the
-            // way Mudlet's does without this layer having to reach for config.
-            ...extras,
-            areas: [...this.areaNames.keys()].map(areaId => ({
+        const areas = [...this.areaNames.keys()].map(areaId => {
+            const rooms = (this.areas.get(areaId)?.rooms ?? []).map(id => this.roomToJson(id));
+            return {
                 id: areaId,
                 name: this.areaNames.get(areaId) ?? '',
                 ...(this.areas.get(areaId)?.gridMode ? { gridMode: true } : {}),
+                // TArea::writeJsonArea counts what it writes.
+                roomCount: rooms.length,
                 userData: this.areas.get(areaId)?.userData ?? {},
                 labels: this.labelsToJson(areaId),
-                rooms: (this.areas.get(areaId)?.rooms ?? []).map(id => this.roomToJson(id)),
-            })),
+                rooms,
+            };
+        });
+        const doc = {
+            formatVersion: 1,
+            // TMap::writeJsonMapFile's totals and the two area names it writes
+            // beside them. Desktop reads every one back on import, and a file
+            // without the names hands a desktop that loads it empty ones — which
+            // its next export then writes out as ''.
+            areaCount: areas.length,
+            roomCount: areas.reduce((n, a) => n + a.roomCount, 0),
+            labelCount: areas.reduce((n, a) => n + a.labels.length, 0),
+            defaultAreaName: DEFAULT_AREA_NAME,
+            anonymousAreaName: UNNAMED_AREA_NAME,
+            // Map-level settings that live in the profile rather than in the
+            // store — the symbol font and its scaling, the player-room marker —
+            // are passed in by the caller that owns them, so a saved file
+            // carries the whole map the way Mudlet's does without this layer
+            // having to reach for config.
+            ...extras,
+            areas,
+            // Written only when there is a mapping, as desktop does.
+            ...(this.envColors.size > 0
+                ? { envToColorMapping: Object.fromEntries([...this.envColors].map(([id, c]) => [String(id), c])) }
+                : {}),
             customEnvColors: [...this.customEnvColors].map(([id, c]) => ({
                 id, ...writeJsonColor(c),
             })),
@@ -2172,7 +2206,7 @@ export class MapStore {
         if (!area) {
             area = makeArea();
             this.areas.set(-1, area);
-            if (!this.areaNames.has(-1)) this.areaNames.set(-1, 'Default Area');
+            if (!this.areaNames.has(-1)) this.areaNames.set(-1, DEFAULT_AREA_NAME);
         }
         area.rooms.push(id);
         this.notify();
@@ -3430,7 +3464,7 @@ export class MapStore {
         if (!target) {
             target = makeArea();
             this.areas.set(-1, target);
-            if (!this.areaNames.has(-1)) this.areaNames.set(-1, 'Default Area');
+            if (!this.areaNames.has(-1)) this.areaNames.set(-1, DEFAULT_AREA_NAME);
         }
         room.area = -1;
         if (!target.rooms.includes(id)) target.rooms.push(id);
@@ -4091,35 +4125,53 @@ export class MapStore {
 
     /**
      * Mudlet `createMapImageLabel(areaID, imagePathFileName, posx, posy, posz,
-     * width, height, zoom [, showOnTop [, noScaling]])`. Adds an image label and
-     * returns its new id, or -1 if the area is missing. The image reference is
-     * stored verbatim in the label's `pixMap` (surfaced as `Pixmap` by
-     * getMapLabel); like text labels it is not yet painted by the renderer.
+     * width, height, zoom, showOnTop [, temporary])`. Adds an image label and
+     * returns its new id, or -1 if the area is missing. `pixmap` is the image
+     * itself as a base64 PNG — desktop reads the file at creation and keeps only
+     * the picture, so getMapLabel's `Pixmap`, the map file and saveJsonMap all
+     * carry image data, never the path (the Lua binding reads the file). Like
+     * TMap::createMapImageLabel, the colours are TMapLabel's untouched opaque
+     * black and the label always scales with the map.
      */
     createMapImageLabel(
-        areaId: number, imagePath: string,
+        areaId: number, pixmap: string,
         x: number, y: number, z: number,
         width: number, height: number,
-        showOnTop = true, noScaling = false,
+        showOnTop = false, temporary = false,
     ): number {
         if (!this.areas.has(areaId)) return -1;
         const id = this.nextLabelId(areaId);
-        const label: MudletLabel = {
+        const label: MapLabel = {
             id,
             pos: [x, y, z],
             size: [width, height],
             text: '',
-            fgColor: { spec: 1, alpha: 255, r: 255, g: 255, b: 255 },
-            bgColor: { spec: 1, alpha: 0, r: 0, g: 0, b: 0 },
-            pixMap: imagePath ?? '',
-            noScaling,
+            fgColor: { spec: 1, alpha: 255, r: 0, g: 0, b: 0 },
+            bgColor: { spec: 1, alpha: 255, r: 0, g: 0, b: 0 },
+            pixMap: pixmap ?? '',
+            noScaling: false,
             showOnTop,
+            temporary,
         };
         const arr = this.labels.get(areaId);
         if (arr) arr.push(label);
         else this.labels.set(areaId, [label]);
         this.notify();
         return id;
+    }
+
+    /**
+     * Replace a label's pixmap, but only while it still holds `expected` — the
+     * swap an image label's asynchronously drawn pixmap makes, which must not
+     * land on a label deleted, recreated or reloaded in the meantime. Returns
+     * whether it replaced anything.
+     */
+    replaceLabelPixmap(areaId: number, labelId: number, expected: string, pixmap: string): boolean {
+        const label = this.labels.get(areaId)?.find(l => l.id === labelId);
+        if (!label || label.pixMap !== expected) return false;
+        label.pixMap = pixmap;
+        this.notify();
+        return true;
     }
 
     /** Mudlet `deleteMapLabel(areaID, labelID)`. Removes the label; returns

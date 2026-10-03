@@ -156,7 +156,7 @@ Transactions are driven through the Luasql connection (`conn:commit()`/`conn:rol
 | `closeMapWidget()` | ✅ | Closes the dockable map widget (id `map`); returns false if none open |
 | `connectExitStub(fromID, dir)` / `(fromID, toID[, dir])` | ✅ | Direction-only finds the nearest in-area room with a matching reverse stub (Mudlet's unit-vector/compSign search); toID-only requires exactly one reverse-stub pair |
 | `createMapLabel(areaID, text, x, y, z, fg, bg, …)` | ✅ | Adds a text label (new per-area id) to `MapStore`, drawing its pixmap on a canvas as TMap::createMapLabel does (`map/labelPixmap.ts`) so a saved map carries the image desktop paints; font and outline colour ride in the area's `system.labelFont_N`/`system.labelOutlineColor_N` keys like desktop's v20 save. Round-trips through `getMapLabels`/`getMapLabel` and binary save, and is painted by the renderer (`mudlet-map-renderer` `ScenePipeline.renderLabels` → `labelToShape`, default `labelRenderMode:"image"`). `-1` when the area is missing |
-| `createMapImageLabel(areaID, imagePath, x, y, z, w, h, zoom, …)` | ✅ | Image-label sibling of `createMapLabel`; stores the image in the label `pixMap` (surfaced as `Pixmap`), which `MudletMapReader` patches through to the renderer so it paints. `scaling` arg is the inverse of the stored `noScaling`. `-1` when the area is missing |
+| `createMapImageLabel(areaID, imagePath, x, y, z, w, h, zoom, …)` | ✅ | Image-label sibling of `createMapLabel`; reads the image when the label is made and stores it as a base64 PNG in the label `pixMap` (surfaced as `Pixmap`, saved by `saveMap`/`saveJsonMap`), which `MudletMapReader` patches through to the renderer so it paints. PNG files are kept as they are and XPM files are read in place. Other formats are drawn by the browser shortly afterwards; until then the label holds a transparent `w*zoom` × `h*zoom` image. The tenth argument is `temporary`, as on desktop. `-1` when the area is missing |
 | `createMapper(x, y, w, h)` | ✅ | Singleton embedded mapper widget sharing MapStore with the dock |
 | `createRoomID([minimumID])` | ✅ | JS-exposed |
 | `deleteArea(areaID\|name)` | ✅ | JS-exposed |
@@ -217,7 +217,7 @@ Transactions are driven through the Luasql connection (`conn:commit()`/`conn:rol
 | `hasSpecialExitLock(fromID, toID, cmd)` | ✅ | `toID` ignored; returns the lock boolean or `(nil, errMsg)` when missing |
 | `highlightRoom(roomID, …)` | ✅ | JS-exposed — color1/color2 + radius + alpha |
 | `killMapInfo(label)` | ✅ | Removes a contributor entirely |
-| `loadJsonMap(path)` | ✅ | JS-exposed via `MapStore.loadFromJsonString`; raises `sysMapLoadEvent` on success |
+| `loadJsonMap(path)` | ✅ | JS-exposed via `MapStore.loadFromJsonString`; raises no event (desktop has no `sysMapLoadEvent`) |
 | `loadMap(path)` | ✅ | JS-exposed. Binary `.dat` maps, plus IRE-style XML maps when the path ends in `.xml` (Mudlet's XMLimport::readMap) |
 | `lockExit(roomID, dir, bool)` | ✅ | `MapStore.lockExit` mutates `room.exitLocks`, which `__getPath` reads — locks set from Lua are honoured by pathfinding |
 | `hasExitLock(roomID, dir)` | ✅ | `MapStore.hasExitLock`; reads `room.exitLocks` directly. Direction accepts the 1-12 int or names ("north"/"n"/…) |
@@ -1026,7 +1026,7 @@ Reconciled against the authoritative [Mudlet Event Engine](https://wiki.mudlet.o
 
 > **Not Mudlet events** — do not implement under these names: `sysConnect` / `sysDisconnect` / `sysGmcpMessage` (Mudlet uses `sysConnectionEvent` / `sysDisconnectionEvent` and the `gmcp.<path>` event chain), `sysUserWindowCreated` / `sysUserWindowClosed`, `sysMapperLocationChanged`.
 >
-> **Mudlet Web-specific events** (no Mudlet equivalent): `output` (per output line), `gmcp.<path>` chain (✅, the real GMCP mechanism — args: eventName, fullKey), `sysMapLoadEvent` (✅, after a binary map ingest), `sysSaveProfileError` (✅), `sysSyncOnModule` (✅, module-sync internals).
+> **Mudlet Web-specific events** (no Mudlet equivalent): `output` (per output line), `gmcp.<path>` chain (✅, the real GMCP mechanism — args: eventName, fullKey), `sysSaveProfileError` (✅), `sysSyncOnModule` (✅, module-sync internals).
 
 ---
 

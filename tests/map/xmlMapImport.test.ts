@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { writeMapToBuffer } from 'mudlet-map-binary-reader';
 import { parseXmlMap, parseXmlMapResult } from '../../src/map/xmlMapImport';
 import { MapStore } from '../../src/map/MapStore';
+import { WindowManager } from '../../src/ui/windows/WindowManager';
+import { readFileSync } from 'node:fs';
+import { unzipSync, strFromU8 } from 'fflate';
 
 // IRE-style XML map (the GMCP Client.Map / MMP download format), matching the
 // shape Mudlet's XMLimport::readMap consumes. The importer must mirror its
@@ -123,5 +126,77 @@ describe('parseXmlMap', () => {
         // fully save-compatible (this is what scheduleMapSave serialises).
         const bytes = writeMapToBuffer(store.toMudletMapForSave());
         expect(bytes.byteLength).toBeGreaterThan(0);
+    });
+
+    // Issue #334: desktop lists the default area even when nothing is in it,
+    // and calls an area the rooms use but <areas> never declares "Unnamed
+    // Area" — not "Area <id>".
+    it('names the default and undeclared areas as desktop does', () => {
+        const store = new MapStore();
+        store.loadFromBinary(parseXmlMap(SAMPLE)!);
+        expect(store.getAreaTable()).toEqual({
+            'Default Area': -1, 'Unnamed Area': 9, Riverside: 2,
+        });
+        expect(store.getRoomAreaName(-1)).toBe('Default Area');
+        expect(store.getRoomAreaName(9)).toBe('Unnamed Area');
+    });
+
+    it('numbers a second undeclared area the way desktop\'s audit does', () => {
+        const xml = `<map><rooms>
+            <room id="1" area="5"><coord x="0" y="0" z="0"/></room>
+            <room id="2" area="6"><coord x="1" y="0" z="0"/></room>
+        </rooms></map>`;
+        const store = new MapStore();
+        store.loadFromBinary(parseXmlMap(xml)!);
+        expect(store.getAreaTable()).toEqual({
+            'Default Area': -1, 'Unnamed Area': 5, 'Unnamed Area_001': 6,
+        });
+    });
+
+    // TRoomDB::addArea(id, name) refuses an id already named — -1 included,
+    // which clearMapDB has already named — and a name already taken.
+    it('ignores a declared area whose id or name is taken, as desktop does', () => {
+        const xml = `<map>
+            <areas>
+                <area id="-1" name="Limbo"/>
+                <area id="1" name="Twin"/>
+                <area id="2" name="Twin"/>
+                <area id="3" name="Twin"/>
+                <area id="1" name="Again"/>
+            </areas>
+            <rooms>
+                <room id="1" area="1"><coord x="0" y="0" z="0"/></room>
+                <room id="2" area="2"><coord x="0" y="0" z="0"/></room>
+            </rooms>
+        </map>`;
+        const store = new MapStore();
+        store.loadFromBinary(parseXmlMap(xml)!);
+        // Area 2's rooms bring it back unnamed; area 3 has none, so it is gone.
+        expect(store.getAreaTable()).toEqual({
+            'Default Area': -1, Twin: 1, 'Unnamed Area': 2,
+        });
+    });
+
+    // Upstream's Mapper_spec counts this map's areas on desktop: 379 declared,
+    // six of them duplicate names desktop ignores, five of those with rooms
+    // that come back unnamed, plus the default area.
+    it('reads the Achaea fixture as the 379 areas desktop does', () => {
+        const zip = unzipSync(readFileSync('src/scripting/lua/specs/fixtures/maps/achaea-map.zip'));
+        const store = new MapStore();
+        store.loadFromBinary(parseXmlMap(strFromU8(zip['achaea-map.xml']))!);
+        const table = store.getAreaTable();
+        expect(Object.keys(table)).toHaveLength(379);
+        expect(table['Default Area']).toBe(-1);
+        expect(table['Unnamed Area_004']).toBeDefined();
+    }, 60_000);
+
+    // Desktop has no sysMapLoadEvent; a script waiting on one never runs there.
+    it('raises no sysMapLoadEvent when an XML map is loaded', () => {
+        const wm = new WindowManager();
+        const events: string[] = [];
+        wm.onRaiseEvent = (event) => events.push(event);
+        expect(wm.loadMapXml(SAMPLE)).toBe(true);
+        expect(wm.mapStore.roomExists(1)).toBe(true);
+        expect(events).not.toContain('sysMapLoadEvent');
     });
 });

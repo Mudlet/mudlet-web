@@ -716,7 +716,7 @@ export class ScriptingEngine implements EngineHost {
             // before scripts run, so the initial script load (and sysLoadEvent)
             // sees an initialized map — hashes via getRoomIDbyHash and map-level
             // user data via getMapUserData are immediately queryable.
-            const mapLoaded = await this.session.windows.bootstrapMap();
+            await this.session.windows.bootstrapMap();
 
             // Closing the profile — or React's StrictMode remount, or a fast
             // profile switch — can destroy this engine while the awaits above are
@@ -842,14 +842,10 @@ export class ScriptingEngine implements EngineHost {
             // first instead makes sysInstallPackage's setup the last word for
             // this bootstrap, matching what a real first-time install feels like
             // to the package (nothing left to load/restore over it yet).
-            // sysMapLoadEvent follows when a persisted map was ingested, so
-            // scripts can register a sysMapLoadEvent handler during sysLoadEvent
-            // and still see the firing for the boot-time load.
             // Map-open notification keeps map-aware scripts in sync if the
             // map is already visible at connection time.
             // Mudlet passes `true` for a profile load, `false` after resetProfile().
             this.raiseEvent('sysLoadEvent', [true]);
-            if (mapLoaded) this.raiseEvent('sysMapLoadEvent');
             if (this.api.windows.isVisible(MAP_WIDGET_ID)) this.mapOpen.notify();
             // Default/brand packages installed just above never go through
             // installPackageFromVfsPath, so notifyPackageInstalled was never

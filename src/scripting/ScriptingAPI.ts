@@ -257,6 +257,46 @@ function parseBlankLinesBehaviour(value: unknown): BlankLinesBehaviour | null {
  *  preferences spin-box scale, 1..20) and the internal `mRoomSize` fraction of
  *  a grid cell it ends up storing: `dlgMapper::slot_roomSize` does
  *  `setRoomSize(size / 10.0)`. Mudlet's default spinner value is 5 → 0.5. */
+/** The point size saveJsonMap writes for the map symbol font: desktop's
+ *  default, since Mudlet Web's setting is a family only. */
+const MAP_SYMBOL_FONT_POINT_SIZE = 12;
+
+type Rgba = [number, number, number, number];
+
+/** Desktop's player-room marker settings (Host::mPlayerRoomStyle and friends),
+ *  which saveJsonMap writes and loadJsonMap reads. */
+interface JsonPlayerRoomSettings {
+    style: number;
+    outerDiameter: number;
+    innerDiameter: number;
+    outerColor: Rgba;
+    innerColor: Rgba;
+}
+
+/** Host's defaults: the plain marker, 120% / 70%, red outside, white inside. */
+const DESKTOP_PLAYER_ROOM: Readonly<JsonPlayerRoomSettings> = {
+    style: 0,
+    outerDiameter: 120,
+    innerDiameter: 70,
+    outerColor: [255, 0, 0, 255],
+    innerColor: [255, 255, 255, 255],
+};
+
+/** A colour as Mudlet's JSON map writes one (TMap::writeJsonColor). */
+function jsonColor([r, g, b, a]: Rgba): Record<string, number[]> {
+    return a < 255 ? { color32RGBA: [r, g, b, a] } : { color24RGB: [r, g, b] };
+}
+
+/** The inverse of {@link jsonColor}; undefined for anything else. */
+function readJsonRgba(raw: unknown): Rgba | undefined {
+    if (!raw || typeof raw !== 'object') return undefined;
+    const o = raw as Record<string, unknown>;
+    const t = Array.isArray(o.color32RGBA) ? o.color32RGBA : Array.isArray(o.color24RGB) ? o.color24RGB : null;
+    if (!t) return undefined;
+    const c = (i: number, d: number) => (Number.isFinite(Number(t[i])) ? Number(t[i]) : d);
+    return [c(0, 0), c(1, 0), c(2, 0), t.length > 3 ? c(3, 255) : 255];
+}
+
 const MUDLET_ROOM_SIZE_SCALE = 10;
 
 /** The values `setConfig("ambiguousEAsianWidthCharacters", …)` takes, in the
@@ -6141,12 +6181,29 @@ export class ScriptingAPI {
      *  the profile rather than in the map store — Mudlet writes them into the
      *  same file, so a map moved between clients keeps the way it looks. */
     saveJsonMap(): string {
+        const marker = this.jsonPlayerRoom;
         return this.session.windows.saveJsonMap({
             mapSymbolFontFudgeFactor: this.getConfig('mapSymbolFontScaling'),
-            mapSymbolFontDetails: this.getConfig('mapSymbolFont'),
+            // QFont::toString(), which is what desktop writes and reads back
+            // with QFont::fromString: a bare family name parses as a font with
+            // no size, and desktop falls back to its smaller default for it.
+            mapSymbolFontDetails: `${String(this.getConfig('mapSymbolFont'))},${MAP_SYMBOL_FONT_POINT_SIZE},-1,5,50,0,0,0,0,0`,
             onlyMapSymbolFontToBeUsed: this.getConfig('mapSymbolFontOnlyUseSelected'),
+            // Desktop's player-room marker settings. Mudlet Web draws its own
+            // marker (Settings → Mapper), so these are desktop's values carried
+            // through: its defaults, or what the last imported file said. Left
+            // out, a desktop that imports the file zeroes them — a marker with
+            // no diameter and black colours.
+            playerRoomStyle: marker.style,
+            playerRoomOuterDiameterPercentage: marker.outerDiameter,
+            playerRoomInnerDiameterPercentage: marker.innerDiameter,
+            playerRoomColors: [jsonColor(marker.outerColor), jsonColor(marker.innerColor)],
         });
     }
+
+    /** Desktop's player-room marker settings as saveJsonMap writes them — see
+     *  there. Desktop's Host defaults until a file brings its own. */
+    private jsonPlayerRoom: JsonPlayerRoomSettings = { ...DESKTOP_PLAYER_ROOM };
 
     /** The counterpart of the extras {@link saveJsonMap} writes: an imported
      *  file's map-level settings, applied after the rooms have loaded. */
@@ -6154,11 +6211,24 @@ export class ScriptingAPI {
         const scaling = Number(doc.mapSymbolFontFudgeFactor);
         if (Number.isFinite(scaling)) this.setConfig('mapSymbolFontScaling', scaling);
         if (typeof doc.mapSymbolFontDetails === 'string' && doc.mapSymbolFontDetails) {
-            this.setConfig('mapSymbolFont', doc.mapSymbolFontDetails);
+            // QFont::toString's first field is the family; the rest (size,
+            // weight, style…) has nowhere to go in a family-only setting.
+            const family = doc.mapSymbolFontDetails.split(',')[0].trim();
+            if (family) this.setConfig('mapSymbolFont', family);
         }
         if (typeof doc.onlyMapSymbolFontToBeUsed === 'boolean') {
             this.setConfig('mapSymbolFontOnlyUseSelected', doc.onlyMapSymbolFontToBeUsed);
         }
+        const marker = { ...this.jsonPlayerRoom };
+        const int = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? Math.trunc(v) : undefined);
+        marker.style = int(doc.playerRoomStyle) ?? marker.style;
+        marker.outerDiameter = int(doc.playerRoomOuterDiameterPercentage) ?? marker.outerDiameter;
+        marker.innerDiameter = int(doc.playerRoomInnerDiameterPercentage) ?? marker.innerDiameter;
+        if (Array.isArray(doc.playerRoomColors)) {
+            marker.outerColor = readJsonRgba(doc.playerRoomColors[0]) ?? marker.outerColor;
+            marker.innerColor = readJsonRgba(doc.playerRoomColors[1]) ?? marker.innerColor;
+        }
+        this.jsonPlayerRoom = marker;
     }
 
     /** Mudlet `loadJsonMap(path)` backbone — parse a JSON payload previously

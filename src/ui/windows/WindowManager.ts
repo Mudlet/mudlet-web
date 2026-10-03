@@ -1603,7 +1603,8 @@ export class WindowManager {
      * into the manager/store, and any open MapPanel is asked to re-render.
      * Without a buffer the panel is told to reload from cache. Returns false
      * on synchronous parse failure; the IndexedDB write is fire-and-forget
-     * (failures appear in console.warn). Fires sysMapLoadEvent on success.
+     * (failures appear in console.warn). Raises no event: desktop has no
+     * sysMapLoadEvent, so a script waiting on one would never run there.
      */
     loadMap(buf?: ArrayBuffer, source?: string): boolean {
         // Host::loadMapFile creates the mapper before it reads anything.
@@ -1641,16 +1642,14 @@ export class WindowManager {
             this.reportMapIssues();
         }
         // The panel callback is advisory — its return value reports render
-        // success, but sysMapLoadEvent fires on successful data ingest so
-        // headless scripts (no MapPanel open) still receive the event.
+        // success, which loadMap's result does not depend on.
         this.mapLoadCallback?.(buf);
-        if (buf) this.onRaiseEvent?.('sysMapLoadEvent', []);
         return true;
     }
 
     /**
      * Async sibling of {@link loadMap} with identical effects — IndexedDB
-     * persistence, store ingest, panel re-render, `sysMapLoadEvent` — but the
+     * persistence, store ingest, panel re-render — but the
      * parse runs in the worker and streams into the store, publishing progress
      * as it goes.
      *
@@ -1684,12 +1683,10 @@ export class WindowManager {
             this.reportMapLoadFailure('loadMapAsync parse failed', err);
             return false;
         }
-        // Same advisory contract as loadMap: the panel reports render success,
-        // but the event fires on successful ingest so headless scripts still
-        // see it. The buffer is detached by now, so the callback is invoked
-        // without it — every consumer re-reads through the store anyway.
+        // Same advisory contract as loadMap. The buffer is detached by now, so
+        // the callback is invoked without it — every consumer re-reads through
+        // the store anyway.
         this.mapLoadCallback?.();
-        this.onRaiseEvent?.('sysMapLoadEvent', []);
         return true;
     }
 
@@ -1832,7 +1829,6 @@ export class WindowManager {
         if (!this.mapStore.loadFromJsonString(json)) return false;
         this.reportMapIssues();
         this.mapLoadCallback?.();
-        this.onRaiseEvent?.('sysMapLoadEvent', []);
         return true;
     }
 
@@ -1852,7 +1848,6 @@ export class WindowManager {
         this.reportMapIssues();
         this.scheduleMapSave(0);
         this.mapLoadCallback?.();
-        this.onRaiseEvent?.('sysMapLoadEvent', []);
         return true;
     }
 

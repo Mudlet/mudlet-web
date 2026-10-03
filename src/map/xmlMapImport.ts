@@ -20,7 +20,7 @@
  *   </map>
  */
 import type { MudletMap, MudletRoom } from 'mudlet-map-binary-reader';
-import { makeRoom, makeArea, DEFAULT_FONT } from './MapStore';
+import { makeRoom, makeArea, DEFAULT_FONT, DEFAULT_AREA_NAME, UNNAMED_AREA_NAME } from './MapStore';
 
 // XML exit direction → MudletRoom field + door key, exactly the pairs
 // XMLimport::readRoom recognises (unknown directions are ignored there too).
@@ -179,12 +179,38 @@ export function parseXmlMapResult(xmlText: string): XmlMapParse {
         areas: {}, mRoomIdHash: {}, labels: {}, rooms: {},
     };
 
-    // <areas><area id name/></areas> — XMLimport::readArea requires the id.
+    // TRoomDB::clearMapDB, which reading <areas> starts with, leaves exactly
+    // one area: -1, named mDefaultAreaName — so desktop's getAreaTable() lists
+    // "Default Area" after every XML import, rooms in it or not.
+    map.areas[-1] = makeArea();
+    map.areas[-1].zLevels = [0];
+    map.areaNames[-1] = DEFAULT_AREA_NAME;
+    const takenNames = new Set<string>([DEFAULT_AREA_NAME]);
+    // TRoomDB::addArea(id): an area with no name of its own is given
+    // mUnnamedAreaName, "_001"-suffixed while that is taken.
+    const addArea = (id: number, name: string) => {
+        if (!name) {
+            name = UNNAMED_AREA_NAME;
+            for (let suffix = 1; takenNames.has(name); suffix++) {
+                name = `${UNNAMED_AREA_NAME}_${String(suffix).padStart(3, '0')}`;
+            }
+        }
+        map.areas[id] = makeArea();
+        map.areaNames[id] = name;
+        takenNames.add(name);
+    };
+
+    // <areas><area id name/></areas> — XMLimport::readArea requires the id, and
+    // TRoomDB::addArea(id, name) ignores an area whose id is already there or
+    // whose name another area already has: desktop no longer accepts duplicates
+    // from a file. Rooms filed under an ignored area come back below under an
+    // unnamed one, which is how Achaea's map reads as the 379 areas it declares.
     for (const areaEl of Array.from(root.getElementsByTagName('area'))) {
         if (!areaEl.hasAttribute('id')) continue;
         const id = toInt(areaEl.getAttribute('id'));
-        map.areas[id] = makeArea();
-        map.areaNames[id] = areaEl.getAttribute('name') ?? '';
+        const name = areaEl.getAttribute('name') ?? '';
+        if ((name && takenNames.has(name)) || id in map.areaNames) continue;
+        addArea(id, name);
     }
 
     for (const roomEl of Array.from(root.getElementsByTagName('room'))) {
@@ -198,17 +224,17 @@ export function parseXmlMapResult(xmlText: string): XmlMapParse {
     }
 
     // Tail of XMLimport::readMap + the audit() pass Mudlet runs after import:
-    // assign every room to its area (auto-creating areas the file references
-    // but never declares) and recompute the per-area z-levels and bounds the
-    // binary format normally carries precomputed.
-    for (const [key, room] of Object.entries(map.rooms)) {
+    // assign every room to its area (creating, unnamed, the areas the file
+    // references but never declares — in id order, which numbers their names)
+    // and recompute the per-area z-levels and bounds the binary format
+    // normally carries precomputed.
+    const entries = Object.entries(map.rooms);
+    for (const areaId of [...new Set(entries.map(([, room]) => room.area))].sort((a, b) => a - b)) {
+        if (!map.areas[areaId]) addArea(areaId, '');
+    }
+    for (const [key, room] of entries) {
         const id = Number(key);
-        let area = map.areas[room.area];
-        if (!area) {
-            area = makeArea();
-            map.areas[room.area] = area;
-            map.areaNames[room.area] = `Area ${room.area}`;
-        }
+        const area = map.areas[room.area];
         area.rooms.push(id);
         if (!area.zLevels.includes(room.z)) area.zLevels.push(room.z);
         if (area.rooms.length === 1) {
@@ -222,22 +248,6 @@ export function parseXmlMapResult(xmlText: string): XmlMapParse {
         }
     }
     for (const area of Object.values(map.areas)) area.zLevels.sort((a, b) => a - b);
-
-    // Mudlet's audit() guarantees the -1 default area EXISTS on every map: it is
-    // where a room with no home of its own goes, so it has to be there before
-    // one needs it.
-    //
-    // Naming it is a separate question, and the answer is only when it holds
-    // something. An area name is a key — getAreaTable() is name -> id — so a
-    // name given to an area the file never declared and nothing occupies shows
-    // up as one area more than the map has, which is exactly what Mudlet
-    // reports for the same file.
-    if (!map.areas[-1]) {
-        const defaultArea = makeArea();
-        defaultArea.zLevels = [0];
-        map.areas[-1] = defaultArea;
-    }
-    if (map.areas[-1].rooms.length > 0) map.areaNames[-1] = 'Default Area';
 
     return { ok: true, map };
 }

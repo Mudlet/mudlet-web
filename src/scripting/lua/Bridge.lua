@@ -3332,11 +3332,11 @@ function createMapLabel(areaID, text, posx, posy, posz, fgR, fgG, fgB, bgR, bgG,
 end
 
 -- Mudlet createMapImageLabel(areaID, imagePathFileName, posx, posy, posz, width,
--- height, zoom, showOnTop, scaling). `scaling` (Mudlet) is the inverse of the
--- stored noScaling flag; default scaling=true. → new labelID, or -1 if missing.
-function createMapImageLabel(areaID, imagePath, posx, posy, posz, width, height, _zoom, showOnTop, scaling)
-    local noScaling = (scaling == false)
-    return __createMapImageLabel(areaID, tostring(imagePath or ''), posx, posy, posz, width, height, showOnTop, noScaling)
+-- height, zoom, showOnTop [, temporary]). The tenth argument is `temporary`
+-- (TLuaInterpreter::createMapImageLabel), not a scaling flag: an image label
+-- always scales with the map. → new labelID, or -1 if the area is missing.
+function createMapImageLabel(areaID, imagePath, posx, posy, posz, width, height, zoom, showOnTop, temporary)
+    return __createMapImageLabel(areaID, tostring(imagePath or ''), posx, posy, posz, width, height, zoom, showOnTop, temporary == true)
 end
 
 -- Mudlet addAreaName(name) → areaID on success, or (false, errMsg) on

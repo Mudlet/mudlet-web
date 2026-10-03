@@ -134,7 +134,7 @@ describe('WindowManager map load progress', () => {
         expect(wm.mapStore.roomExists(1)).toBe(false);
     });
 
-    it('loadMapAsync ingests, notifies the panel, and raises sysMapLoadEvent', async () => {
+    it('loadMapAsync ingests and notifies the panel, raising no sysMapLoadEvent', async () => {
         onStream(async (_buf, sink) => drive(sink, 5, 2));
         const wm = new WindowManager();
         wm.setConnectionId('test-connection');
@@ -148,7 +148,7 @@ describe('WindowManager map load progress', () => {
             await expect(wm.loadMapAsync(stubMapBytes())).resolves.toBe(true);
 
             expect(wm.mapStore.roomExists(5)).toBe(true);
-            expect(events).toContain('sysMapLoadEvent');
+            expect(events).not.toContain('sysMapLoadEvent');
             expect(rerendered).toHaveBeenCalled();
         } finally {
             warn.mockRestore();
