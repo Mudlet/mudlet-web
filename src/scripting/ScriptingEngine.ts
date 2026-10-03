@@ -1649,7 +1649,7 @@ export class ScriptingEngine implements EngineHost {
         const seen = new Set<string>();
         for (const { s } of registrationOrder) {
             if (s.language !== 'lua') continue;
-            const events = s.eventHandlers.filter(e => e !== '');
+            const events = (s.eventHandlers ?? []).filter(e => e !== '');
             const had = this.scriptHandlerState.get(s.id);
             if (events.length === 0) continue;
             seen.add(s.id);
