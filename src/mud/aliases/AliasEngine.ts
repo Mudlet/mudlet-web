@@ -87,19 +87,53 @@ export class AliasEngine extends PatternEngine<AliasNode> {
      */
     processTemp(input: string): boolean {
         let fired = false;
-        for (const [id, { pattern }] of [...this.temp]) {
-            // A null pattern is an alias that exists but can never match — see
-            // PatternEngine.addTemp.
-            if (!pattern) continue;
-            const hit = matchAllCaptures(input, pattern);
-            if (!hit) continue;
-            // Re-read rather than trusting the snapshot's entry: killAlias
-            // unsubscribes, and an alias taken out while this pass was running
-            // must not still fire.
-            const live = this.temp.get(id);
-            if (!live) continue;
-            live.fn(asMatchArray(hit.all, hit.index, input, hit.named));
-            fired = true;
+        for (const id of [...this.temp.keys()]) {
+            if (this.fireTemp(id, input)) fired = true;
+        }
+        return fired;
+    }
+
+    /** Match one temp alias against `input` and run it if it hits. */
+    private fireTemp(id: number, input: string): boolean {
+        const entry = this.temp.get(id);
+        // A null pattern is an alias that exists but can never match — see
+        // PatternEngine.addTemp.
+        if (!entry?.pattern) return false;
+        const hit = matchAllCaptures(input, entry.pattern);
+        if (!hit) return false;
+        // Re-read rather than trusting the snapshot's entry: killAlias
+        // unsubscribes, and an alias taken out while this pass was running
+        // must not still fire.
+        const live = this.temp.get(id);
+        if (!live) return false;
+        live.fn(asMatchArray(hit.all, hit.index, input, hit.named));
+        return true;
+    }
+
+    /**
+     * A command's whole alias pass: every matching alias, temporary and
+     * permanent alike, in the one order desktop's `mAliasRootNodeList` holds
+     * them — creation order, with a permanent subtree walked where its root
+     * sits (see PatternEngine's unified ordering). Running all the temps first
+     * put a tempAlias made after a permAlias ahead of it (mudlet-web#327).
+     * Temps fire themselves; each permanent hit goes to `firePerm` as it is
+     * reached, for the reason {@link forEachPermMatch} gives. Both lists are
+     * the ones that stood when the pass began. True when anything fired.
+     */
+    process(input: string, firePerm: (hit: PermAliasMatch) => void): boolean {
+        const steps: { seq: number; at: number; temp?: number; perm?: string }[] = [];
+        for (const [id, { seq }] of this.temp) steps.push({ seq, at: 0, temp: id });
+        this.permOrder.forEach((id, i) => {
+            steps.push({ seq: this.permRootSeq.get(id) ?? Number.MAX_SAFE_INTEGER, at: i + 1, perm: id });
+        });
+        steps.sort((a, b) => a.seq - b.seq || a.at - b.at);
+        let fired = false;
+        for (const step of steps) {
+            if (step.temp !== undefined) {
+                if (this.fireTemp(step.temp, input)) fired = true;
+            } else if (step.perm !== undefined && this.firePermIfMatched(step.perm, input, firePerm)) {
+                fired = true;
+            }
         }
         return fired;
     }
@@ -122,12 +156,16 @@ export class AliasEngine extends PatternEngine<AliasNode> {
      * already reloaded through the store subscription.
      */
     forEachPermMatch(input: string, fire: (hit: PermAliasMatch) => void): void {
-        for (const id of this.permOrder) {
-            const entry = this.permById.get(id);
-            if (!entry) continue;
-            const hit = matchAllCaptures(input, entry.re);
-            if (hit) fire({ alias: entry.item, matchedText: hit.all[0], captures: hit.all.slice(1), named: hit.named });
-        }
+        for (const id of this.permOrder) this.firePermIfMatched(id, input, fire);
+    }
+
+    private firePermIfMatched(id: string, input: string, fire: (hit: PermAliasMatch) => void): boolean {
+        const entry = this.permById.get(id);
+        if (!entry) return false;
+        const hit = matchAllCaptures(input, entry.re);
+        if (!hit) return false;
+        fire({ alias: entry.item, matchedText: hit.all[0], captures: hit.all.slice(1), named: hit.named });
+        return true;
     }
 
     /** Every perm alias the input matches, in tree order, without firing any.

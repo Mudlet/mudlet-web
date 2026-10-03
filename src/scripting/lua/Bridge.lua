@@ -4780,97 +4780,13 @@ end
 -- trigger is built with highlight / sound / fire-length / match-all options,
 -- so imported scripts and packages rely on it.
 --
--- Mudlet Web backs it with the temp regex-trigger primitive plus the existing
--- highlight (selectString + setFgColor/setBgColor) and sound (playSoundFile)
--- globals. The features that map cleanly onto a single-pattern temp trigger
--- are honoured:
---   • regex pattern + Lua code/function callback
---   • highlight foreground/background colour on the matched text — all
---     occurrences when matchAll is set, else just the first
---   • sound file played on each fire
---   • expireAfter (fires N times, then self-removes)
---   • named triggers — re-calling with an existing name replaces it, and
---     killTrigger(name) removes it
--- Features that need the full chain/AND machinery of a *permanent* trigger
--- (multiline-AND across lines, filter chaining, fireLength stay-open,
--- lineDelta, and colour-pattern matching via the fgColor/bgColor args) are
--- not applied to a temp trigger; permRegexTrigger plus the trigger editor
--- cover those. A one-time warning is emitted when such a flag is actually
--- requested, so the gap is visible rather than silent.
+-- Mudlet Web backs it with a session-scoped trigger node (see
+-- ScriptingEngine.createTempComplexTrigger), which carries everything a
+-- permanent trigger can: multiline AND, filter, match-all, fire length, line
+-- delta, colour patterns, and the built-in highlight — painted by the trigger
+-- engine, with the colours resolved as Qt colour names on the JS side. This
+-- wrapper keeps the callback, the sound and the expireAfter count.
 do
-    local warned = {}     -- de-dupe per-feature unsupported warnings
-
-    local function warnOnce(feature)
-        if warned[feature] then return end
-        warned[feature] = true
-        printDebug("tempComplexRegexTrigger: '" .. feature .. "' is not supported "
-            .. "on a temp trigger in Mudlet Web — use permRegexTrigger / the trigger "
-            .. "editor for chain, filter, multiline-AND or colour-pattern triggers.")
-    end
-
-    -- Resolve a Mudlet highlight colour spec to r, g, b. Accepts a color_table
-    -- name ("red"), "#rrggbb"/"rrggbb", or "r,g,b". Returns nil when nothing
-    -- recognisable was passed.
-    local function resolveColor(spec)
-        if type(spec) ~= 'string' or spec == '' then return nil end
-        if color_table and color_table[spec] then
-            local c = color_table[spec]
-            return c[1], c[2], c[3]
-        end
-        local hex = spec:match('^#?(%x%x%x%x%x%x)$')
-        if hex then
-            return tonumber(hex:sub(1, 2), 16), tonumber(hex:sub(3, 4), 16), tonumber(hex:sub(5, 6), 16)
-        end
-        local r, g, b = spec:match('^(%d+)%s*,%s*(%d+)%s*,%s*(%d+)$')
-        if r then return tonumber(r), tonumber(g), tonumber(b) end
-        return nil
-    end
-
-    -- Colorize what the trigger matched on the current line.
-    --
-    -- Which part depends on whether the pattern has capture groups. Mudlet walks
-    -- the capture list and paints every entry EXCEPT the whole-match ones, but
-    -- only once there is more than one entry to choose from — so a pattern with
-    -- groups recolours its groups and leaves the rest of the match alone, and a
-    -- pattern without them recolours the match itself. Painting matches[1]
-    -- unconditionally, as this did, recoloured the whole line's match even when
-    -- the author had asked for the groups.
-    --
-    -- Groups are selected by NUMBER rather than by searching for their text:
-    -- a capture whose text also appears earlier in the line would otherwise be
-    -- painted in the wrong place.
-    local function highlight(hlFg, hlBg, matchAll)
-        if not matches or matches[1] == nil then return end
-        local fr, fg_, fb = resolveColor(hlFg)
-        local br, bg_, bb = resolveColor(hlBg)
-        if not (fr or br) then return end
-        local function paint()
-            if fr then setFgColor(fr, fg_, fb) end
-            if br then setBgColor(br, bg_, bb) end
-        end
-        if #matches > 1 then
-            -- selectCaptureGroup is 1-based over the SAME list as `matches`, so
-            -- group 1 is the whole match and the groups start at 2. It answers
-            -- 1 for a selection made, and 0 or -1 when there is none — both
-            -- truthy in Lua, so the comparison has to be explicit.
-            for i = 2, #matches do
-                if selectCaptureGroup(i) == 1 then paint() end
-            end
-        elseif matchAll then
-            local n = 1
-            while true do
-                local idx = selectString(matches[1], n)
-                if not idx or idx < 0 then break end
-                paint()
-                n = n + 1
-            end
-        elseif matches[1] ~= '' then
-            local idx = selectString(matches[1], 1)
-            if idx and idx >= 0 then paint() end
-        end
-        deselect()
-    end
-
     function tempComplexRegexTrigger(name, regex, code, multiline, fgColor, bgColor,
                                      filter, matchAll, hlFgColor, hlBgColor, soundFile,
                                      fireLength, lineDelta, expireAfter)
@@ -4886,12 +4802,10 @@ do
         -- matched nothing a game ever sends.
         local isColorPattern = not (tonumber(fgColor) ~= nil and tonumber(bgColor) ~= nil)
 
-        local hasHighlight = type(hlFgColor) == 'string' or type(hlBgColor) == 'string'
         local hasSound = type(soundFile) == 'string' and soundFile ~= ''
         local remaining, id = tonumber(expireAfter)
         local expiring = remaining and remaining > 0
         local wrapper = function()
-            if hasHighlight then highlight(hlFgColor, hlBgColor, matchAllOn) end
             if hasSound then playSoundFile(soundFile) end
             if not expiring then return userFn() end
             -- As TTrigger::execute() and the count after it: a script that

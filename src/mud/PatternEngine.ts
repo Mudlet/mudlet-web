@@ -66,7 +66,7 @@ export class PatternEngine<T extends PatternItem> {
     /** A null pattern is an empty one, which can never match; an
      *  uncompilable one is an AliasPattern that never compiles. See
      *  {@link addTemp}. */
-    protected readonly temp = new Map<number, { pattern: AliasPattern | null; fn: TempFn }>();
+    protected readonly temp = new Map<number, { pattern: AliasPattern | null; fn: TempFn; seq: number }>();
     /** Key for this engine's own temp map. NOT an item id: addTemp hands the
      *  caller an unsubscribe function, and the id Lua sees is allocated by the
      *  runtime from the profile's shared sequence. Drawing from that sequence
@@ -81,6 +81,19 @@ export class PatternEngine<T extends PatternItem> {
      *  it started with — Mudlet's `copyOfNodeList` — while a script it runs
      *  enables or disables items, which reloads this engine synchronously. */
     protected permOrder: readonly string[] = [];
+
+    // ── Unified ordering (Mudlet `mAliasRootNodeList`) ────────────────────────
+    // Desktop keeps temporary and permanent aliases in ONE root list, in the
+    // order they were created, and walks it front to back — so a temp alias
+    // made before a permAlias runs before it, and one made after runs after.
+    // The same monotonic counter numbers both: a permanent item draws its seq
+    // the first time it is seen (kept across reloads, so edits and toggles do
+    // not reshuffle), a temp item draws one when it is made. A permanent item
+    // sorts by its ROOT's seq — a subtree is walked whole where its root sits.
+    protected regCounter = 1;
+    private readonly permReg = new Map<string, number>();
+    /** Each item in {@link permOrder} → the seq of the root it hangs under. */
+    protected permRootSeq = new Map<string, number>();
 
     /** Number of live session-scoped temp items (Mudlet `getProfileStats` temp count). */
     get tempCount(): number {
@@ -103,11 +116,24 @@ export class PatternEngine<T extends PatternItem> {
     addTemp(pattern: string, fn: TempFn): () => void {
         const re = pattern !== '' ? new AliasPattern(pattern) : null;
         const id = this.nextInternalId++;
-        this.temp.set(id, { pattern: re, fn });
+        this.temp.set(id, { pattern: re, fn, seq: this.regCounter++ });
         return () => {
             this.temp.delete(id);
             re?.destroy();
         };
+    }
+
+    /**
+     * Give the profile's saved items their place in the firing order before
+     * any script can make a temporary one. Desktop builds them from the
+     * profile XML before a script runs, so a temp item a script makes at load
+     * time sorts after them — but here the scripts run before the first
+     * {@link loadPerm}, which then reuses the seqs reserved here.
+     */
+    reserveOrder(items: readonly { id: string }[]): void {
+        for (const item of items) {
+            if (!this.permReg.has(item.id)) this.permReg.set(item.id, this.regCounter++);
+        }
     }
 
     /** `blocked`: items whose code will not compile, which Mudlet leaves
@@ -116,11 +142,31 @@ export class PatternEngine<T extends PatternItem> {
         for (const { re } of this.permCompiled) re.destroy();
         this.permCompiled = [];
         this.permById = new Map();
+        // Store order puts a parent before its children, so registering in it
+        // numbers a new root ahead of anything under it.
+        this.reserveOrder(items);
+        const byId = new Map(items.map(i => [i.id, i]));
+        for (const id of this.permReg.keys()) {
+            if (!byId.has(id)) this.permReg.delete(id);
+        }
+        const rootSeq = (item: T): number => {
+            let cur = item;
+            const seen = new Set<string>([cur.id]);
+            while (cur.parentId) {
+                const parent = byId.get(cur.parentId);
+                if (!parent || seen.has(parent.id)) break;
+                seen.add(parent.id);
+                cur = parent;
+            }
+            return this.permReg.get(cur.id) ?? Number.MAX_SAFE_INTEGER;
+        };
         const order: string[] = [];
+        const rootSeqs = new Map<string, number>();
         const enabledIds = buildEffectivelyEnabledIds(items, blocked);
         for (const item of items) {
             if (!item.pattern) continue;
             order.push(item.id);
+            rootSeqs.set(item.id, rootSeq(item));
             if (!enabledIds.has(item.id)) continue;
             // An invalid pattern is kept and simply never matches.
             const entry = { item, re: new AliasPattern(item.pattern) };
@@ -128,6 +174,7 @@ export class PatternEngine<T extends PatternItem> {
             this.permById.set(item.id, entry);
         }
         this.permOrder = order;
+        this.permRootSeq = rootSeqs;
     }
 
     /** Whether the permanent item `id` is loaded with a pattern PCRE rejects. */
@@ -142,5 +189,6 @@ export class PatternEngine<T extends PatternItem> {
         this.permCompiled = [];
         this.permById = new Map();
         this.permOrder = [];
+        this.permRootSeq = new Map();
     }
 }

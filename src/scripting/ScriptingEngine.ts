@@ -731,6 +731,9 @@ export class ScriptingEngine implements EngineHost {
             // script runs.
             this.triggerEngine.reserveOrder(
                 useAppStore.getState().connectionTriggers[this.connectionId] ?? []);
+            // Likewise the saved aliases, ahead of temp aliases scripts make.
+            this.aliasEngine.reserveOrder(
+                useAppStore.getState().connectionAliases[this.connectionId] ?? []);
             this.applyScriptsFromStore();
             this.applyAliasesFromStore();
             this.applyTimersFromStore();
@@ -3658,6 +3661,12 @@ export class ScriptingEngine implements EngineHost {
             if (node.parentId && doomed.has(node.parentId)) doomed.add(node.id);
         }
         store.removeTriggers(this.connectionId, [...doomed]);
+        // Out of the engine now, not at the coalesced reload: that waits for a
+        // microtask, and a packet's lines are all processed before one runs,
+        // so a trigger killed (or expired) on its first line went on firing on
+        // the rest of the packet. Desktop stops it from the next line
+        // (mudlet-web#327).
+        this.flushPendingApplies();
     }
 
     /** The root ancestor of a trigger node — what a lineage is recorded against. */
@@ -4185,16 +4194,14 @@ export class ScriptingEngine implements EngineHost {
         // command two aliases claim runs both of them. The command is consumed
         // if any of them matched.
         //
-        // JS temp aliases
-        let consumed = this.aliasEngine.processTemp(text);
-        // Permanent aliases
-        // Each one runs as it is reached, so an alias that enables or disables
-        // a later one decides whether that one fires in this same pass.
-        this.aliasEngine.forEachPermMatch(text, permMatch => {
+        // Temporary and permanent aliases run interleaved, in creation order,
+        // as desktop's single root list holds them. Each one runs as it is
+        // reached, so an alias that enables or disables a later one decides
+        // whether that one fires in this same pass.
+        const consumed = this.aliasEngine.process(text, permMatch => {
             // matches[1] is the matched portion (Mudlet semantics), not the
             // whole input — see the perm-trigger note above (issue #4).
             this.executePermAlias(permMatch.alias, [permMatch.matchedText, ...permMatch.captures], permMatch.named);
-            consumed = true;
         });
         this.api.flushOutput();
         return consumed;
@@ -4386,6 +4393,9 @@ export class ScriptingEngine implements EngineHost {
             // Saved triggers keep their place ahead of temps the scripts create.
             this.triggerEngine.reserveOrder(
                 useAppStore.getState().connectionTriggers[this.connectionId] ?? []);
+            // Likewise the saved aliases, ahead of temp aliases scripts make.
+            this.aliasEngine.reserveOrder(
+                useAppStore.getState().connectionAliases[this.connectionId] ?? []);
             this.applyScriptsFromStore();
             this.applyAliasesFromStore();
             this.applyTriggersFromStore();

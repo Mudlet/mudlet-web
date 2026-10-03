@@ -1,4 +1,5 @@
 import type { TriggerPatternType } from '../../../storage/schema';
+import { parseQColor } from '../../../ui/labels/qColor';
 import type { BindingContext } from './context';
 
 /**
@@ -61,12 +62,20 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
                 text: entry.slice(at + 1),
             };
         });
-        const highlight = (typeof hlFg === 'string' && hlFg) || (typeof hlBg === 'string' && hlBg)
-            ? {
-                fg: typeof hlFg === 'string' && hlFg ? hlFg : undefined,
-                bg: typeof hlBg === 'string' && hlBg ? hlBg : undefined,
-            }
-            : undefined;
+        // The highlight is the trigger's own built-in one, painted by the
+        // engine exactly as a permanent trigger's is — every occurrence under
+        // match-all, the groups rather than the whole match when there are
+        // any. The colours are QColor(name) on desktop, so an SVG keyword
+        // ("green" is 0,128,0) or a #hex, not a color_table entry
+        // (mudlet-web#327).
+        const toHex = (spec: unknown): string | undefined => {
+            if (typeof spec !== 'string' || !spec) return undefined;
+            const rgb = parseQColor(spec);
+            return rgb ? '#' + rgb.map(c => c.toString(16).padStart(2, '0')).join('') : undefined;
+        };
+        const fg = toHex(hlFg);
+        const bg = toHex(hlBg);
+        const highlight = fg || bg ? { fg, bg } : undefined;
         return api.tempComplexTrigger({
             name: String(name ?? ''),
             patterns,

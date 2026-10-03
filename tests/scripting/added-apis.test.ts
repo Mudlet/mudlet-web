@@ -12,25 +12,46 @@ import { AnsiAwareBuffer } from '../../src/mud/text/FormatState';
 // exercised here directly (the dispatch pipeline that drives processTemp from
 // network input lives in ScriptingEngine and isn't wired into createTestRuntime).
 describe('tempLineTrigger — TriggerEngine.addTempLine', () => {
-  it('fires on `howMany` lines starting `from` lines ahead, then self-expires', () => {
+  // Armed outside a line pass (alias, timer, event handler), desktop skips
+  // `from` lines and then fires — TTrigger::match decrements mStartOfLineDelta
+  // and fires once it goes negative (mudlet-web#327).
+  it('fires on `howMany` lines after skipping `from`, then self-expires', () => {
     const te = new TriggerEngine();
     const fired: string[] = [];
     te.addTempLine(1, 2, (m) => fired.push(m[0] ?? ''));
-    te.processTemp('line-1');
-    te.processTemp('line-2');
-    te.processTemp('line-3'); // already expired
-    expect(fired).toEqual(['line-1', 'line-2']);
+    te.processTemp('A1'); // skipped
+    te.processTemp('A2');
+    te.processTemp('A3');
+    te.processTemp('A4'); // already expired
+    expect(fired).toEqual(['A2', 'A3']);
   });
 
-  it('skips `from - 1` lines before the first fire', () => {
+  it('skips `from` lines before the first fire', () => {
     const te = new TriggerEngine();
     const fired: string[] = [];
     te.addTempLine(3, 1, (m) => fired.push(m[0] ?? ''));
-    te.processTemp('a');
-    te.processTemp('b');
-    te.processTemp('c'); // from=3 → third line fires
-    te.processTemp('d');
-    expect(fired).toEqual(['c']);
+    for (const l of ['F1', 'F2', 'F3', 'F4', 'F5']) te.processTemp(l);
+    expect(fired).toEqual(['F4']);
+  });
+
+  it('tells `from = 0` (the next line) apart from `from = 1` (the one after)', () => {
+    const te = new TriggerEngine();
+    const zero: string[] = [];
+    const one: string[] = [];
+    te.addTempLine(0, 1, (m) => zero.push(m[0] ?? ''));
+    te.addTempLine(1, 1, (m) => one.push(m[0] ?? ''));
+    for (const l of ['L1', 'L2', 'L3']) te.processTemp(l);
+    expect(zero).toEqual(['L1']);
+    expect(one).toEqual(['L2']);
+  });
+
+  it('counts a prompt among the lines it skips', () => {
+    const te = new TriggerEngine();
+    const fired: string[] = [];
+    te.addTempLine(1, 3, (m) => fired.push(m[0] ?? ''));
+    te.processTemp('hp>', true);
+    for (const l of ['P2', 'P3', 'P4', 'P5']) te.processTemp(l);
+    expect(fired).toEqual(['P2', 'P3', 'P4']);
   });
 
   it('does not tick on the line it was created on (created mid-handler)', () => {
@@ -48,7 +69,7 @@ describe('tempLineTrigger — TriggerEngine.addTempLine', () => {
   it('early disposal cancels remaining fires', () => {
     const te = new TriggerEngine();
     const fired: string[] = [];
-    const kill = te.addTempLine(1, 5, (m) => fired.push(m[0] ?? ''));
+    const kill = te.addTempLine(0, 5, (m) => fired.push(m[0] ?? ''));
     te.processTemp('1');
     kill();
     te.processTemp('2');
@@ -62,8 +83,16 @@ describe('tempLineTrigger — Lua binding', () => {
   afterEach(() => env.dispose());
 
   it('registers from Lua and runs the code on the next line', () => {
-    env.run('tempLineTrigger(1, 1, [[echo("FIRED\\n")]])');
+    env.run('tempLineTrigger(0, 1, [[echo("FIRED\\n")]])');
     env.api.triggers.processTemp('a line of output');
+    expect(env.mainOutput.join('')).toContain('FIRED');
+  });
+
+  it('skips `from` lines when armed outside a line pass', () => {
+    env.run('tempLineTrigger(1, 1, [[echo("FIRED\\n")]])');
+    env.api.triggers.processTemp('first');
+    expect(env.mainOutput.join('')).not.toContain('FIRED');
+    env.api.triggers.processTemp('second');
     expect(env.mainOutput.join('')).toContain('FIRED');
   });
 
@@ -1606,7 +1635,7 @@ describe('engine tempCount — live session-scoped temp items', () => {
     const e = new TriggerEngine();
     expect(e.tempCount).toBe(0);
     const dispose = e.addTemp('hit', () => {}, 'substring');
-    e.addTempLine(1, 1, () => {});
+    e.addTempLine(0, 1, () => {});
     expect(e.tempCount).toBe(2);
     dispose();
     expect(e.tempCount).toBe(1);

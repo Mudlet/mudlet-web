@@ -925,22 +925,23 @@ export class TriggerEngine {
     /**
      * Mudlet `tempLineTrigger(from, howMany, fn)`. A position-based trigger with
      * no pattern: it fires `fn([lineText])` on `howMany` consecutive lines,
-     * starting `from` lines ahead (`from = 1` → the next line). It self-expires
-     * after the last fire. When created from within a handler, the line on which
-     * it was created is skipped (see `inProcessTemp`/`skipFirst`) so `from`
-     * counts from the next line in every creation context. Returns a disposer
-     * for early cancellation.
+     * after skipping `from` of them (`from = 0` → the first line it sees). It
+     * self-expires after the last fire. Returns a disposer for early
+     * cancellation.
      */
     addTempLine(from: number, howMany: number, fn: TempFn): () => void {
         const id = this.nextInternalId++;
-        // `from` counts from the line being processed when there is one, and
-        // from the next line otherwise — so a trigger armed mid-pass has one
-        // more line ahead of it than the same call made from a timer. `from = 0`
-        // therefore means "this line", which only a mid-pass call can reach.
+        // `from` lines are skipped before the first fire, counted from the
+        // first line the trigger is offered: the one being processed when it
+        // is armed mid-pass, the next one to arrive otherwise. Desktop's
+        // TTrigger::match decrements mStartOfLineDelta and fires once it goes
+        // negative, so `from = 1` armed from an alias, a timer or an event
+        // handler skips the next line rather than firing on it — treating 0
+        // and 1 alike there fired one line early (mudlet-web#327).
         const ahead = Math.max(0, Math.trunc(from) || 0);
         this.temp.set(id, {
             kind: 'line',
-            countdown: this.processingDepth > 0 ? ahead + 1 : Math.max(1, ahead),
+            countdown: ahead + 1,
             remaining: Math.max(1, Math.trunc(howMany) || 1),
             skipFirst: false,
             fn,
