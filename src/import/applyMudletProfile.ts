@@ -6,7 +6,7 @@ import { saveMap } from '../storage/mapStorage';
 import { saveFolderHandle } from '../scripting/vfs/folderHandleStore';
 import { parseMudletProfile, type MudletProfileIdentity } from './mudletHost';
 import { buildMudletProfileBundle, type MudletProfileBundle } from './mudletProfileImport';
-import { CONNECTION_SIDECAR_PATH, LEGACY_CONNECTION_SIDECAR_PATH, RETAINED_HOST_PATH, type ConnectionSidecar } from './mudletProfileExport';
+import { CONNECTION_SIDECAR_PATH, LEGACY_CONNECTION_SIDECAR_PATH, RETAINED_HOST_PATH, SIDECAR_FLAGS, SIDECAR_TEXTS, type ConnectionSidecar } from './mudletProfileExport';
 import type { MudConnection } from '../storage/schema';
 import { describeThrown } from '../utils/describeThrown';
 
@@ -142,13 +142,11 @@ export function bundleToConnectionRecord(bundle: MudletProfileBundle): Omit<MudC
     if (typeof side.host === 'string') out.host = side.host;
     if (typeof side.port === 'number' && Number.isFinite(side.port)) out.port = side.port;
     if (typeof side.proxyUrl === 'string') out.proxyUrl = side.proxyUrl;
-    if (typeof side.autoReconnect === 'boolean') out.autoReconnect = side.autoReconnect;
-    if (typeof side.reconnectOnDrop === 'boolean') out.reconnectOnDrop = side.reconnectOnDrop;
-    for (const flag of ['tls', 'sslIgnoreExpired', 'sslIgnoreSelfSigned', 'sslIgnoreAll'] as const) {
+    for (const flag of SIDECAR_FLAGS) {
         if (side[flag] === true) out[flag] = true;
         else if (side[flag] === false) delete out[flag];
     }
-    for (const text of ['charLoginAccount', 'description'] as const) {
+    for (const text of SIDECAR_TEXTS) {
         if (typeof side[text] !== 'string') continue;
         if (side[text]) out[text] = side[text];
         else delete out[text];

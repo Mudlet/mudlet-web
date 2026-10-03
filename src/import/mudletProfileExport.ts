@@ -69,10 +69,11 @@ export interface ConnectionSidecar {
 }
 
 /** Written whether set or not: a profile imported from desktop keeps that
- *  profile's `<Host>` and its `login`/`description` files, so an absent value
- *  here would let those bring back a setting the user has since cleared. */
-const SIDECAR_FLAGS = ['tls', 'sslIgnoreExpired', 'sslIgnoreSelfSigned', 'sslIgnoreAll'] as const;
-const SIDECAR_TEXTS = ['charLoginAccount', 'description'] as const;
+ *  profile's `<Host>` and its connection files (`ssl_tsl`, `login`,
+ *  `description`, `autologin`, `autoreconnect`), so an absent value here would
+ *  let those bring back a setting the user has since cleared. */
+export const SIDECAR_FLAGS = ['autoReconnect', 'reconnectOnDrop', 'tls', 'sslIgnoreExpired', 'sslIgnoreSelfSigned', 'sslIgnoreAll'] as const;
+export const SIDECAR_TEXTS = ['charLoginAccount', 'description'] as const;
 
 export function buildConnectionSidecar(c: MudConnection): ConnectionSidecar {
     const out: ConnectionSidecar = {};
@@ -81,8 +82,6 @@ export function buildConnectionSidecar(c: MudConnection): ConnectionSidecar {
     if (c.host !== undefined) out.host = c.host;
     if (c.port !== undefined) out.port = c.port;
     if (c.proxyUrl !== undefined) out.proxyUrl = c.proxyUrl;
-    if (c.autoReconnect !== undefined) out.autoReconnect = c.autoReconnect;
-    if (c.reconnectOnDrop !== undefined) out.reconnectOnDrop = c.reconnectOnDrop;
     for (const flag of SIDECAR_FLAGS) out[flag] = !!c[flag];
     for (const text of SIDECAR_TEXTS) out[text] = c[text] ?? '';
     return out;

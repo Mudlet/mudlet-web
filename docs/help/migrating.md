@@ -105,13 +105,16 @@ Two things to know:
   installed from an `.mpackage` keeps its images and other files.
 - Every other file in the profile folder, into the profile's own filesystem — so
   `io.open`, `lfs`, images, sounds and fonts keep working at the same paths.
-  `current/` and `map/` are the two exceptions, handled as above.
+  `current/` and `map/` are handled as above, and saved passwords are left
+  out (see below).
 
 ## What doesn't
 
-- **Passwords.** Desktop Mudlet keeps them in your operating system's keychain,
-  not in the profile, so there is nothing to copy. Enter them again on first
-  connect.
+- **Passwords.** Desktop Mudlet usually keeps them in your operating system's
+  keychain. When it can't, it keeps them inside the profile folder — and those
+  files are deliberately left behind, by desktop's export and by the import
+  alike, rather than copied anywhere a script could read them. Enter your
+  password again on first connect.
 - **The link between a module and its file.** Mudlet syncs a module to a file
   elsewhere on your disk; a browser can't keep that link alive, so the module's
   file is copied into the new profile and syncs there instead. If a module's file

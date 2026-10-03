@@ -26,8 +26,8 @@ type Decision =
     | { action: 'upload'; bytes: Uint8Array; filename: string };
 
 /**
- * After a Mudlet-profile import, modules that load from an external local XML
- * file (which a browser can't read, and that wasn't found inside the profile)
+ * After a Mudlet-profile import, modules that load from a file elsewhere on the
+ * user's disk (which a browser can't read, and that wasn't found inside the profile)
  * are listed here. For each, the user uploads its `.xml` (or the `.mpackage` it was
  * installed from) or drops it. The import
  * only proceeds once every module is decided.

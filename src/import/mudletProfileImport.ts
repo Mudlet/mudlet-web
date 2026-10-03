@@ -2,7 +2,7 @@ import { unzipSync, strFromU8 } from 'fflate';
 import type { PackageManifest } from '../storage/schema';
 import { extractHostPackageXml, parseMudletProfile, type MudletProfileImport, type MudletModuleRef } from './mudletHost';
 import { parseMudletXml, type MudletImportResult } from './mudletXmlImport';
-import { archiveExtension, archiveXmlEntries, looksLikeZip } from './packageInstaller';
+import { archiveExtension, archiveXmlEntries, looksLikeZip, packageNameFromFile } from './packageInstaller';
 
 // Turn the raw files of a Mudlet profile — a directory the user picked, or a
 // .zip of one — into a structured bundle ready to provision a new Mudlet Web profile.
@@ -346,15 +346,31 @@ export function resolveModulesFromTree(bundle: MudletProfileBundle): {
             ...(base ? [`${key}/${base}`] : []),
             ...(archiveExtension.test(base) ? [`${key}/${key}.xml`] : []),
         ];
-        const path = candidates.map(c => byLower.get(c)).find(Boolean)
+        // An archive that won't unpack gives way to the next candidate - desktop's
+        // unpacked copy usually sits right beside it
+        const usable = (p: string) => !archiveExtension.test(p) || usableModuleArchive(bundle.files[p]);
+        const path = candidates.map(c => byLower.get(c)).find(p => p !== undefined && usable(p))
             ?? (base ? byBase.get(base)?.find(p => {
                 const top = p.includes('/') ? p.slice(0, p.indexOf('/')).toLowerCase() : '';
-                return top === key || !owners.has(top);
+                return (top === key || !owners.has(top)) && usable(p);
             }) : undefined);
         if (path) resolved.push({ ref, xmlBytes: bundle.files[path], path });
         else unresolved.push(ref);
     }
     return { resolved, unresolved };
+}
+
+/** Whether an archive unpacks with a package XML in it — read from its
+ *  directory alone, without inflating anything. */
+function usableModuleArchive(bytes: Uint8Array): boolean {
+    if (!looksLikeZip(bytes)) return false;
+    const names: string[] = [];
+    try {
+        unzipSync(bytes, { filter: file => { names.push(file.name); return false; } });
+    } catch {
+        return false;
+    }
+    return archiveXmlEntries(names).length > 0;
 }
 
 function foldIntoAutomation(bundle: MudletProfileBundle, key: string, parsed: MudletImportResult): void {
@@ -389,12 +405,15 @@ function registerModule(bundle: MudletProfileBundle, manifest: PackageManifest):
  *
  * The file's name decides what it is, as it does in Mudlet: a `.mpackage` or
  * `.zip` is unpacked into `<key>/` and laid out exactly as an archive module
- * installed in Mudlet Web is (`xmlPath`, and `sourcePath` at the archive it
- * reloads from); anything else is the module's XML, which it reloads from
- * and syncs back to in place (`xmlVfsPath`). `treePath` is where the import tree
- * already holds the file (see resolveModulesFromTree); an upload goes in under
- * `<key>/`, named `filename`. Paths stay relative to the profile root until
- * bundleToConnectionData anchors them in the new profile's VFS.
+ * installed in Mudlet Web is (`xmlPath`, plus `sourcePath` at the archive when
+ * it reloads from that — see below). Anything else is the module's XML, which
+ * it reloads from and syncs back to in place (`xmlVfsPath`) — except desktop's
+ * unpacked `<key>/<key>.xml` of an archive module, which keeps the archive
+ * layout (`xmlPath`) so that removing the module takes its folder. `treePath` is
+ * where the import tree already holds the file (see resolveModulesFromTree); an
+ * upload goes in under `<key>/`, as `<key>.xml` unless `filename` is an XML's.
+ * Paths stay relative to the profile root until bundleToConnectionData anchors
+ * them in the new profile's VFS.
  *
  * `module` may be the bare key, in which case the rest of its entry is looked
  * up in `bundle.modules`. Mutates and returns the bundle.
@@ -455,7 +474,11 @@ export function addModuleToBundle(
             // Reloaded from the archive, as desktop does - unless it syncs: Mudlet
             // Web syncs to the XML and leaves the archive alone (desktop rewrites
             // it), so reloading from the archive would undo every synced edit.
-            ...(ref.globalSave ? {} : { sourcePath: archivePath }),
+            // And only when the archive's own name is the module's: a reload
+            // unpacks into the folder named after the archive and renames it over
+            // the module's, which would take the archive and the module's own
+            // files with it.
+            ...(ref.globalSave || packageNameFromFile(name) !== key ? {} : { sourcePath: archivePath }),
         });
         return bundle;
     }
@@ -463,9 +486,7 @@ export function addModuleToBundle(
     foldIntoAutomation(bundle, key, parseMudletXml(strFromU8(bytes), { packageName: key }));
     let relPath = inTree ? treePath! : undefined;
     if (!relPath) {
-        // XML handed over for a module desktop installed from an archive keeps
-        // an XML's name, not the archive's
-        relPath = `${key}/${archiveExtension.test(name) || !/\.xml$/i.test(name) ? `${key}.xml` : name}`;
+        relPath = `${key}/${/\.xml$/i.test(name) ? name : `${key}.xml`}`;
         bundle.files[relPath] = bytes;
     }
     // Desktop's unpacked copy of an archive module sits in the folder an archive

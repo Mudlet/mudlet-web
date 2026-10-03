@@ -10,6 +10,8 @@ import {
 import { parseMudletProfile } from '../../src/import/mudletHost';
 import { bundleToConnectionData, bundleToConnectionRecord, decodeProfileDataItem } from '../../src/import/applyMudletProfile';
 import { buildConnectionSidecar, CONNECTION_SIDECAR_PATH } from '../../src/import/mudletProfileExport';
+import { reloadModuleFromVfs } from '../../src/import/packageInstaller';
+import type { ProfileVFS } from '../../src/scripting/vfs/ProfileVFS';
 import type { MudConnection } from '../../src/storage/schema';
 
 // Desktop Mudlet's Toolbox → "Export to Mudlet Web" (MudletWebExport.cpp in
@@ -297,6 +299,90 @@ describe('a module handed over at the upload prompt', () => {
         expect(resolveModulesFromTree(bundle)).toEqual({ resolved: [], unresolved: [] });
         addModuleToBundle(bundle, '../other', mapperArchive(), undefined, 'evil.mpackage');
         expect(Object.keys(bundle.files).some(k => k.startsWith('..') || k.includes('/../'))).toBe(false);
-        expect(bundle.warnings.every(w => w.includes('its name can\'t be a folder'))).toBe(true);
+        expect(bundle.warnings).toEqual(Array(2).fill('Module "../other" was left out: its name can\'t be a folder in the profile.'));
+    });
+});
+
+describe('review follow-ups', () => {
+    it('resolves a module whose file the player kept elsewhere in the profile', () => {
+        const files = desktopExport();
+        delete files['Achaea/ui/ui.xml'];
+        files['Achaea/scripts/ui.xml'] = strToU8(moduleXml('ui'));
+        const [bundle] = extractMudletProfileZipAll(zipSync(files));
+        expect(importLikeTheConnectionScreen(bundle)).toEqual([]);
+        expect(bundle.packages.find(p => p.name === 'ui')?.xmlVfsPath).toBe('scripts/ui.xml');
+    });
+
+    it('takes desktop\'s unpacked copy when the archive beside it won\'t unpack', () => {
+        const files = desktopExport();
+        files['Achaea/mapper/mapper.mpackage'] = strToU8('truncated');
+        const [bundle] = extractMudletProfileZipAll(zipSync(files));
+        expect(importLikeTheConnectionScreen(bundle)).toEqual([]);
+        expect(bundle.warnings).toEqual([]);
+        expect(bundle.packages.find(p => p.name === 'mapper')).toMatchObject({ kind: 'module', xmlPath: 'mapper.xml' });
+    });
+
+    it('keeps auto-open and auto-reconnect off once the user turned them off', () => {
+        const off: MudConnection = { id: 'x', name: 'Achaea', mode: 'mud', host: 'achaea.com', port: 23 };
+        const files = {
+            ...desktopExport(),
+            'Achaea/autoreconnect': qstring('2'),
+            [`Achaea/${CONNECTION_SIDECAR_PATH}`]: strToU8(JSON.stringify(buildConnectionSidecar(off))),
+        };
+        const record = bundleToConnectionRecord(buildMudletProfileBundle(files));
+        expect(record.autoReconnect).toBeUndefined();
+        expect(record.reconnectOnDrop).toBeUndefined();
+    });
+});
+
+// Every profile open replays an archive module through reloadModuleFromVfs, the
+// same code an in-app .mpackage install reloads through
+describe('reopening a profile with an imported archive module', () => {
+    function memoryVfs(root: string, files: Record<string, Uint8Array>) {
+        const m = new Map(Object.entries(files).map(([k, v]) => [`${root}/${k}`, v]));
+        const under = (p: string) => [...m.keys()].filter(k => k === p || k.startsWith(`${p}/`));
+        const vfs = {
+            profilePath: root,
+            exists: (p: string) => under(p).length > 0,
+            rmdir: (p: string) => { for (const k of under(p)) m.delete(k); },
+            mkdir: () => {},
+            writeFile: (p: string, t: string) => { m.set(p, strToU8(t)); },
+            writeBinaryFile: (p: string, b: Uint8Array) => { m.set(p, b); },
+            readBinaryFile: (p: string) => m.get(p)!,
+            readFile: (p: string) => new TextDecoder().decode(m.get(p)!),
+            rename: (from: string, to: string) => { for (const k of under(from)) { m.set(to + k.slice(from.length), m.get(k)!); m.delete(k); } },
+            flush: async () => {},
+        };
+        return { vfs: vfs as unknown as ProfileVFS, has: (p: string) => m.has(`${root}/${p}`) };
+    }
+
+    function importAndReopen(archiveName: string) {
+        const archive = zipSync({ 'Foo.xml': strToU8(moduleXml('foo')), 'config.lua': strToU8('mpackage = "Foo"\n') });
+        const bundle = buildMudletProfileBundle({
+            'P/current/1.xml': strToU8(saveWith(`<key>Foo</key><filepath>/x/${archiveName}</filepath><zipSync>0</zipSync><globalSave>0</globalSave><priority>0</priority>`)),
+            [`P/Foo/${archiveName}`]: archive,
+            'P/Foo/settings.lua': strToU8('-- mine'),
+        });
+        expect(importLikeTheConnectionScreen(bundle)).toEqual([]);
+        const manifest = bundleToConnectionData(bundle, 'now', '/p').packages.find(p => p.name === 'Foo')!;
+        const { vfs, has } = memoryVfs('/p', bundle.files);
+        const data = reloadModuleFromVfs(manifest, vfs);
+        return { manifest, has, data };
+    }
+
+    it('reloads from the archive when it is named after the module', () => {
+        const { manifest, has, data } = importAndReopen('Foo.mpackage');
+        expect(manifest.sourcePath).toBe('/p/Foo/Foo.mpackage');
+        expect(data.aliases.some(a => a.name === 'foo')).toBe(true);
+        expect(has('Foo/settings.lua')).toBe(true);
+    });
+
+    // desktop names the module from config.lua, the archive keeps its file name
+    it('keeps the module\'s folder when the archive is named otherwise', () => {
+        const { manifest, has, data } = importAndReopen('Foo-1.2.mpackage');
+        expect(manifest.sourcePath).toBeUndefined();
+        expect(data.aliases.some(a => a.name === 'foo')).toBe(true);
+        expect(has('Foo/settings.lua')).toBe(true);
+        expect(has('Foo/Foo-1.2.mpackage')).toBe(true);
     });
 });

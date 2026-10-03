@@ -116,7 +116,7 @@ function sanitizePackageName(name: string): string {
 }
 
 /** Sanitize a package file's name for use as a directory name. */
-function packageNameFromFile(filename: string): string {
+export function packageNameFromFile(filename: string): string {
     return sanitizePackageName(filename) || 'package';
 }
 
