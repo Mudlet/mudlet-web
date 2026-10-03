@@ -98,6 +98,7 @@ export class ProfileVFS {
     readonly source: VFSSource;
     readonly folderName?: string;
     private readBarrier: ((absPath: string) => void) | null = null;
+    private writeObserver: ((absPath: string, kind: 'write' | 'remove') => void) | null = null;
 
     private constructor(
         readonly connectionId: string,
@@ -189,6 +190,23 @@ export class ProfileVFS {
         this.readBarrier = barrier;
     }
 
+    /**
+     * Install (or clear, with null) a hook told after a file has been written
+     * ('write') or removed, renamed away or replaced by a rename, or had its
+     * directory removed ('remove'). The sql bridge uses it so a database file
+     * changed underneath an open connection is changed for that connection
+     * too, as a file on disk is.
+     */
+    setWriteObserver(observer: ((absPath: string, kind: 'write' | 'remove') => void) | null): void {
+        this.writeObserver = observer;
+    }
+
+    private afterWrite(abs: string, kind: 'write' | 'remove'): void {
+        if (this.writeObserver) {
+            try { this.writeObserver(abs, kind); } catch (e) { console.warn('[ProfileVFS] write observer failed:', e); }
+        }
+    }
+
     private beforeRead(abs: string): string {
         if (this.readBarrier) {
             try { this.readBarrier(abs); } catch (e) { console.warn('[ProfileVFS] read barrier failed:', e); }
@@ -219,6 +237,7 @@ export class ProfileVFS {
         this.clearForOverwrite(abs);
         writeFileSync(abs, content, 'utf8');
         this.invalidate(abs);
+        this.afterWrite(abs, 'write');
     }
 
     writeBinaryFile(path: string, data: Uint8Array): void {
@@ -227,6 +246,7 @@ export class ProfileVFS {
         this.clearForOverwrite(abs);
         writeFileSync(abs, data);
         this.invalidate(abs);
+        this.afterWrite(abs, 'write');
     }
 
     /**
@@ -247,12 +267,14 @@ export class ProfileVFS {
         ensureParentDir(abs);
         appendFileSync(abs, content, 'utf8');
         this.invalidate(abs);
+        this.afterWrite(abs, 'write');
     }
 
     deleteFile(path: string): void {
         const abs = this.resolvePath(path);
         unlinkSync(abs);
         this.invalidate(abs);
+        this.afterWrite(abs, 'remove');
     }
 
     rename(oldPath: string, newPath: string): void {
@@ -262,6 +284,8 @@ export class ProfileVFS {
         renameSync(absOld, absNew);
         this.invalidate(absOld);
         this.invalidate(absNew);
+        this.afterWrite(absOld, 'remove');
+        this.afterWrite(absNew, 'remove');
     }
 
     /**
@@ -304,6 +328,7 @@ export class ProfileVFS {
             } catch {
                 rmSync(abs, { recursive: true, force: true });
             }
+            this.afterWrite(abs, 'remove');
             return;
         }
         const type = this.stat(abs)?.type;
@@ -328,6 +353,7 @@ export class ProfileVFS {
         if (isLink) {
             unlinkSync(abs);
             this.invalidate(abs);
+            this.afterWrite(abs, 'remove');
             return;
         }
         const type = this.stat(abs)?.type;
@@ -338,6 +364,7 @@ export class ProfileVFS {
             unlinkSync(abs);
         }
         this.invalidate(abs);
+        this.afterWrite(abs, 'remove');
     }
 
     /**

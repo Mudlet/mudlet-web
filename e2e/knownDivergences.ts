@@ -648,6 +648,24 @@ export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
         issue: '#277',
     },
     {
+        api: 'luasql / db:* SQL newer than SQLite 3.37',
+        behaviour:
+            'Desktop links SQLite 3.37.2; Mudlet Web ships 3.53. SQL that 3.37 does not know - the -> and ->> '
+            + 'JSON operators, format(), unixepoch(), concat()/concat_ws(), the newer strftime specifiers - runs '
+            + 'here and fails on desktop with a syntax or "no such function" error. What the two versions both '
+            + 'run gives the same answers: a REAL turned into text has desktop\'s 15 significant digits '
+            + '(SQLITE_DBCONFIG_FP_DIGITS), and round() is replaced with 3.37\'s arithmetic, so round(2.675, 2) '
+            + 'is 2.68 on both.',
+        reason:
+            'The operators and specifiers live in 3.53\'s parser and date code, which cannot be switched off, '
+            + 'and no SQLite 3.37 WebAssembly build exists to ship instead. Shadowing only the new functions '
+            + 'with failing stand-ins would still leave the operators working, and would take SQL that works '
+            + 'away from scripts written here for no gain on desktop. A script meant for both clients has to '
+            + 'keep to 3.37\'s SQL, as it would on an older desktop build. Pinned by '
+            + 'tests/scripting/luasqlDrift335.test.ts.',
+        issue: '#335',
+    },
+    {
         api: 'highlightRoom: missing alpha arguments',
         behaviour:
             'Desktop: highlightRoom with 8 arguments raises "bad argument #9 type (color1Alpha as number '

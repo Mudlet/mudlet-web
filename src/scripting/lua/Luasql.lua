@@ -102,7 +102,6 @@ local cursor_proto, connection_proto
 -- drops, and the statement (and any read lock it holds) is let go.
 local function nullify_cursor(st)
     st.closed = true
-    st.rows = nil
     local conn = st.conn
     conn.cur_counter = conn.cur_counter - 1
     if st.needs_release and not __luasql_dead then
@@ -117,23 +116,17 @@ function cursor_methods.fetch(...)
     local self, t, mode = ...
     local nargs = select("#", ...)
     local st = checkobject(cursors, CURSOR, "cursor", 1, nargs, self)
-    if st.rows == nil then
-        -- The first fetch runs the statement, as desktop's does (execute only
-        -- stepped it to learn its shape, then reset it). From here until the
-        -- rows run out, the cursor holds its read lock like a live statement.
-        local rows, err, needs_release = evalsource(__sql_cursor_fetch(st.id))
-        st.rows, st.n, st.err, st.needs_release = rows, #rows, err, needs_release
-    end
-    local pos = st.pos + 1
-    if pos > st.n then
-        -- the step that found no row finalizes the statement and closes the cursor
-        local err = st.err
+    -- One step of the statement per fetch, as desktop's cursor reads it: what
+    -- the connection writes between two fetches shows in the rows still to
+    -- come, and the statement holds its read lock until they run out.
+    local row, err = evalsource(__sql_cursor_fetch(st.id))
+    if row == nil then
+        -- the step that found no row finalized the statement: close the cursor
+        st.needs_release = false
         nullify_cursor(st)
         if err then return nil, err end
         return nil
     end
-    st.pos = pos
-    local row = st.rows[pos]
     local ncols = st.numcols
     if type(t) == "table" then
         if mode == nil then
@@ -205,7 +198,7 @@ function connection_methods.execute(...)
     cursors[cur] = {
         id = id, conn = st, connobj = self, closed = false,
         numcols = #colnames, colnames = colnames, coltypes = coltypes,
-        pos = 0, rows = nil, needs_release = true,
+        needs_release = true,
     }
     return cur
 end

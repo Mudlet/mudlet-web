@@ -22,7 +22,7 @@ import EXEC_LUA from './Exec.lua?raw';
 import WIDE_INTEGERS_LUA from './WideIntegers.lua?raw';
 import LUA_GLOBAL_SETUP from './LuaGlobalSetup.lua?raw';
 import LUASQL_LUA from './Luasql.lua?raw';
-import {encodeLuaBytes, encodeRowsToLuaSource} from './sqlRowEncoder';
+import {encodeLuaBytes, encodeRowToLuaSource} from './sqlRowEncoder';
 import YAJL_LUA from './Yajl.lua?raw';
 import LPEG_REGISTER_LUA from './Lpeg.lua?raw';
 import {setupRex} from './rex';
@@ -30,7 +30,7 @@ import {setupYajl, type YajlBridge} from './yajl';
 import {parseImageSize} from './imageSize';
 import {parseQColor} from '../../ui/labels/qColor';
 import {isQtResourcePath, qtResourceBytes} from '../../assets/qt-resources';
-import {getSqliteClient, sqliteReady} from '../../db/sqliteClient';
+import {getSqliteClient, sqliteReady, type FileHost} from '../../db/sqliteClient';
 import {QT_CURSOR_NAME_TO_INT, QT_CURSOR_TO_CSS} from '../../ui/labels/cursorShapes';
 import {qtKeyToDomCode, qtModifiersToList, domCodeToQtKey, listToQtModifiers} from '../../mud/keybindings/qtKeys';
 import xterm256 from '../../mud/text/xterm256';
@@ -2961,10 +2961,12 @@ end`);
     //     of \DDD escapes: one crossing per result, and pure ASCII on the wire.
     //
     // Persistence: a database's committed state is written back to its VFS
-    // path after writes (debounced), before anything reads that file (the VFS
-    // read barrier — a backup script copying Database_x.db right after db:add
-    // must get the row it just added, as it does from desktop's file), on
-    // saveProfile(), and when its last connection closes.
+    // path at the end of the task that wrote it, before anything reads that
+    // file (the VFS read barrier — a backup script copying Database_x.db right
+    // after db:add must get the row it just added, as it does from desktop's
+    // file), on saveProfile(), when the page unloads, and when its last
+    // connection closes. The other way round, a write to or removal of the
+    // file through the VFS reaches the open connections (the write observer).
     private setupSqlBridge(): void {
         const sql = getSqliteClient();
         const vfs = this.vfs;
@@ -2993,12 +2995,85 @@ end`);
         // failing (connect answers nil plus the reason). The hooks below only
         // walk the client's own maps, which stay empty in that case.
         this.flushPendingSqlSnapshots = () => sql.flushAll();
-        if (!sql.unavailable()) vfs?.setReadBarrier?.(abs => sql.flush(abs));
+
+        // A database's committed bytes go to its file, and on to the backing
+        // store at once: writeBinaryFile alone only reaches the VFS's RAM
+        // cache, and a page closed before some later flush would lose a commit
+        // desktop already had on disk.
+        let persisting = false;
+        const persistTo = (key: string) => (bytes: Uint8Array): void => {
+            if (!vfs) return;
+            persisting = true;
+            try {
+                vfs.writeBinaryFile(key, bytes);
+            } finally {
+                persisting = false;
+            }
+            void vfs.flush?.();
+        };
+
+        // What sqlite needs to open a database a statement names (ATTACH,
+        // VACUUM INTO): the profile file, read as __sql_open reads one.
+        const readForSql = (key: string): Uint8Array | null | false => {
+            if (!vfs) return false;
+            const st = vfs.stat(key);
+            if (st?.type === 'dir') return false;
+            if (st) {
+                try {
+                    return new Uint8Array(vfs.readBinaryFile(key));
+                } catch {
+                    return false;
+                }
+            }
+            const parent = key.substring(0, key.lastIndexOf('/')) || '/';
+            return vfs.stat(parent)?.type === 'dir' ? null : false;
+        };
+
+        const fileHost: FileHost | null = vfs ? {
+            resolve: name => vfs.resolvePath(name),
+            read: readForSql,
+            persist: (abs, bytes) => persistTo(abs)(bytes),
+        } : null;
+        if (!sql.unavailable() && vfs && fileHost) {
+            vfs.setReadBarrier?.(abs => sql.flush(abs));
+            sql.setFileHost(fileHost);
+            // A change made to a database's file from outside sqlite reaches the
+            // connections on it, as it does on desktop where the file IS the
+            // database: bytes written over it are its new contents, and a file
+            // removed or renamed away leaves them on the unlinked file.
+            vfs.setWriteObserver?.((abs, kind) => {
+                if (persisting) return;
+                if (kind === 'remove') {
+                    sql.fileRemoved(abs);
+                } else if (sql.isLive(abs)) {
+                    try {
+                        sql.fileReplaced(abs, () => new Uint8Array(vfs.readBinaryFile(abs)));
+                    } catch (e) {
+                        console.warn('[sql] could not reload', abs, e);
+                    }
+                }
+            });
+        }
+
+        // A write still waiting for the end of its task when the page goes.
+        const onUnload = () => sql.flushAll();
+        if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+            window.addEventListener('pagehide', onUnload);
+            window.addEventListener('beforeunload', onUnload);
+        }
 
         this.closeSqlConnections = () => {
             for (const id of owned) sql.close(id);
             owned.clear();
-            vfs?.setReadBarrier?.(null);
+            if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+                window.removeEventListener('pagehide', onUnload);
+                window.removeEventListener('beforeunload', onUnload);
+            }
+            if (vfs) {
+                vfs.setReadBarrier?.(null);
+                vfs.setWriteObserver?.(null);
+            }
+            if (fileHost) sql.releaseFileHost(fileHost);
         };
 
         this.lua.global.set('__sql_version', sql.version() ?? undefined);
@@ -3049,7 +3124,7 @@ end`);
                         }
                     }
                 }
-                persist = bytes => vfs.writeBinaryFile(key, bytes);
+                persist = persistTo(key);
             }
             try {
                 const id = sql.open(key, preload, {readOnly: ro, persist});
@@ -3080,14 +3155,16 @@ end`);
             return `return ${r.cursorId},${listSrc(r.columns)},${listSrc(r.declTypes)}`;
         });
 
-        // A cursor's first fetch: Lua source for `rows, err, holding`.
+        // cur:fetch, one step: Lua source for the row, for `nil` once the rows
+        // run out, or for `nil, "LuaSQL: <why>"`. Either of the last two means
+        // the cursor is gone.
         this.lua.global.set('__sql_cursor_fetch', (cursorId: unknown): string => {
             try {
                 const r = sql.cursorFetch(Number(cursorId));
-                const err = r.error ? failSrc(r.error).slice('return nil,'.length) : 'nil';
-                return `return ${encodeRowsToLuaSource(r.rows)},${err},${r.holding}`;
+                if (r.kind === 'row') return `return ${encodeRowToLuaSource(r.row)}`;
+                return r.kind === 'done' ? 'return nil' : failSrc(r.message);
             } catch (e) {
-                return `return {},${failSrc(bytesOf(e instanceof Error ? e.message : String(e))).slice('return nil,'.length)},false`;
+                return failSrc(bytesOf(e instanceof Error ? e.message : String(e)));
             }
         });
 
