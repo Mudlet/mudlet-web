@@ -53,15 +53,52 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 }
 
 /**
+ * Read one of the single-value files desktop keeps beside `current/`.
+ * `MudletApp::writeProfileData` streams a QString through QDataStream: a
+ * big-endian byte count (0xFFFFFFFF for a null string), then UTF-16BE. Anything
+ * not shaped like that is taken as plain text, as a hand-made file would be.
+ */
+export function decodeProfileDataItem(raw: Uint8Array): string {
+    if (raw.length >= 4) {
+        const size = ((raw[0] << 24) | (raw[1] << 16) | (raw[2] << 8) | raw[3]) >>> 0;
+        if (size === 0xffffffff && raw.length === 4) return '';
+        if (size % 2 === 0 && raw.length === 4 + size) {
+            let out = '';
+            for (let i = 4; i < raw.length; i += 2) out += String.fromCharCode((raw[i] << 8) | raw[i + 1]);
+            return out;
+        }
+    }
+    return strFromU8(raw);
+}
+
+/** A profile data item, trimmed; undefined when absent or empty. */
+function profileDataItem(bundle: MudletProfileBundle, item: string): string | undefined {
+    const raw = bundle.files[item];
+    const text = raw ? decodeProfileDataItem(raw).trim() : '';
+    return text ? text : undefined;
+}
+
+/** Desktop stores its connection checkboxes as `Qt::CheckState` numbers. */
+const QT_CHECKED = '2';
+
+/**
  * The connection record for an imported bundle.
  *
- * A Mudlet `<Host>` only models a telnet host/port, so that's the default. A
- * profile exported from Mudlet Web also carries `.mudlet/connection.json`, which
+ * A desktop profile gives the telnet host/port and TLS settings from its
+ * `<Host>`, and the rest of its connection dialog from the files beside
+ * `current/` (see {@link decodeProfileDataItem}): the character name (`login`), the profile's `description`, and
+ * the two checkboxes — `autologin` (open connected) and `autoreconnect`
+ * (redial a dropped connection). The password is not among them: desktop keeps
+ * it in the system keychain.
+ *
+ * A profile exported from Mudlet Web also carries `.mudlet/connection.json`, which
  * restores what Mudlet can't express — websocket mode and its ws(s):// URL, the
- * per-profile proxy override, auto-reconnect. Unknown/aliased sidecar values are
- * ignored field by field, so a hand-edited file can't produce a broken profile.
+ * per-profile proxy override — and wins over the desktop files. Unknown/aliased
+ * sidecar values are ignored field by field, so a hand-edited file can't produce
+ * a broken profile.
  */
 export function bundleToConnectionRecord(bundle: MudletProfileBundle): Omit<MudConnection, 'id'> {
+    const identity = bundle.profile.connection;
     const base: Omit<MudConnection, 'id'> = {
         name: bundle.name,
         mode: 'mud',
@@ -72,6 +109,18 @@ export function bundleToConnectionRecord(bundle: MudletProfileBundle): Omit<MudC
         // profile that doesn't already carry them.
         mudletImported: true,
     };
+    // `ssl_tsl` is what the connection dialog writes; the save's attribute is
+    // the same setting as the profile last ran with, so it wins.
+    if (identity.tls ?? profileDataItem(bundle, 'ssl_tsl') === QT_CHECKED) base.tls = true;
+    if (identity.sslIgnoreExpired) base.sslIgnoreExpired = true;
+    if (identity.sslIgnoreSelfSigned) base.sslIgnoreSelfSigned = true;
+    if (identity.sslIgnoreAll) base.sslIgnoreAll = true;
+    const login = profileDataItem(bundle, 'login');
+    if (login) base.charLoginAccount = login;
+    const description = profileDataItem(bundle, 'description');
+    if (description) base.description = description;
+    if (profileDataItem(bundle, 'autologin') === QT_CHECKED) base.autoReconnect = true;
+    if (profileDataItem(bundle, 'autoreconnect') === QT_CHECKED) base.reconnectOnDrop = true;
     const raw = bundle.files[CONNECTION_SIDECAR_PATH] ?? bundle.files[LEGACY_CONNECTION_SIDECAR_PATH];
     if (!raw) return base;
     let side: ConnectionSidecar;

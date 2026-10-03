@@ -279,9 +279,12 @@ export function extractMudletProfileZipAll(
 
 // ── modules ──────────────────────────────────────────────────────────────────
 // A Mudlet module loads its content from an external XML file on the user's disk
-// (e.g. C:/Users/.../buttons.xml). A browser can't read that path, but the file
-// is sometimes present inside the imported profile tree — so we match by
-// basename. Whatever's resolved stays a MODULE, as it is on desktop: its XML is
+// (e.g. C:/Users/.../buttons.xml). A browser can't read that path, so the file
+// has to be inside the imported tree. Desktop's "Export to Mudlet Web" puts each
+// one at `<module>/<its file name>`; a module installed from an archive needs no
+// copy, as desktop keeps it unpacked at `<module>/<module>.xml`; and a folder the
+// user zipped by hand may hold it anywhere, so a last resort matches by file
+// name. Whatever's resolved stays a MODULE, as it is on desktop: its XML is
 // kept as a file in the new profile's VFS, which the module reloads from on
 // every open and (with its globalSave flag) syncs back to, and its priority is
 // carried over. Anything not found is surfaced for the user to upload or drop.
@@ -297,22 +300,76 @@ function fileBasename(path: string): string {
     return path.replace(/\\/g, '/').split('/').pop()?.toLowerCase() ?? '';
 }
 
+function isArchivePath(path: string): boolean {
+    return /\.(mpackage|zip)$/i.test(path);
+}
+
 /** Split a bundle's modules into those whose XML was found in the imported tree
- *  (by filename) and those still missing. */
+ *  and those still missing. */
 export function resolveModulesFromTree(bundle: MudletProfileBundle): {
     resolved: ResolvedModule[];
     unresolved: MudletModuleRef[];
 } {
+    const byLower = new Map<string, string>();
     const byBase = new Map<string, string>();
-    for (const p of Object.keys(bundle.files)) byBase.set(fileBasename(p), p);
+    for (const p of Object.keys(bundle.files)) {
+        byLower.set(p.toLowerCase(), p);
+        byBase.set(fileBasename(p), p);
+    }
     const resolved: ResolvedModule[] = [];
     const unresolved: MudletModuleRef[] = [];
     for (const ref of bundle.modules) {
-        const path = byBase.get(fileBasename(ref.filepath));
+        const base = fileBasename(ref.filepath);
+        const key = ref.key.toLowerCase();
+        const candidates = [
+            ...(isArchivePath(ref.filepath) ? [`${key}/${key}.xml`] : []),
+            ...(base ? [`${key}/${base}`] : []),
+        ];
+        const path = candidates.map(c => byLower.get(c)).find(Boolean) ?? (base ? byBase.get(base) : undefined);
         if (path) resolved.push({ ref, xmlBytes: bundle.files[path], path });
         else unresolved.push(ref);
     }
     return { resolved, unresolved };
+}
+
+/** A zip's local file header — how an `.mpackage` handed over as a module's
+ *  file is told apart from its XML. */
+function isZip(bytes: Uint8Array): boolean {
+    return bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04;
+}
+
+/**
+ * Unpack a module archive into `<key>/` the way desktop does
+ * (`Host::installPackage`), keeping any other file already there, and return
+ * its XML: `<key>.xml` when it has one, else the only XML at its top level.
+ */
+function unpackModuleArchive(
+    bundle: MudletProfileBundle,
+    key: string,
+    archive: Uint8Array,
+): { xmlBytes: Uint8Array; relPath: string } | null {
+    let entries: Record<string, Uint8Array>;
+    try {
+        entries = unzipSync(archive);
+    } catch {
+        return null;
+    }
+    const unpacked = new Map<string, Uint8Array>();
+    for (const [name, bytes] of Object.entries(entries)) {
+        const path = normalizePath(name);
+        // Nothing may land outside the module's own folder
+        if (!path || path.endsWith('/') || path.split('/').includes('..')) continue;
+        unpacked.set(path, bytes);
+    }
+    const topXmls = Array.from(unpacked.keys()).filter(p => !p.includes('/') && p.toLowerCase().endsWith('.xml'));
+    const xmlName = topXmls.find(p => p.toLowerCase() === `${key.toLowerCase()}.xml`)
+        ?? (topXmls.length === 1 ? topXmls[0] : undefined);
+    if (!xmlName) return null;
+    for (const [path, bytes] of unpacked) {
+        const target = `${key}/${path}`;
+        if (path === xmlName || !(target in bundle.files)) bundle.files[target] = bytes;
+    }
+    return { xmlBytes: unpacked.get(xmlName)!, relPath: `${key}/${xmlName}` };
 }
 
 /**
@@ -341,6 +398,15 @@ export function addModuleToBundle(
         ? bundle.modules.find(m => m.key === module) ?? { key: module, filepath: '', globalSave: false, priority: 0 }
         : module;
     const key = ref.key;
+    if (isZip(xmlBytes)) {
+        const unpacked = unpackModuleArchive(bundle, key, xmlBytes);
+        if (!unpacked) {
+            bundle.warnings.push(`Module "${key}": its archive holds no module XML, so it was left out.`);
+            return bundle;
+        }
+        xmlBytes = unpacked.xmlBytes;
+        treePath = unpacked.relPath;
+    }
     const parsed = parseMudletXml(strFromU8(xmlBytes), { packageName: key });
     const a = bundle.profile.automation;
     a.scripts.push(...parsed.scripts);
