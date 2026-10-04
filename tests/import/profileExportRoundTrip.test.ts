@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { strToU8, strFromU8 } from 'fflate';
+import { strToU8, strFromU8, unzipSync } from 'fflate';
 import {
     buildProfileFolder,
     buildProfilesZip,
@@ -24,6 +24,19 @@ import type { PersistedProfileData } from '../../src/storage/profileVfsData';
 // the real pipeline end to end: profile data -> zip -> bundle -> store slices.
 
 const STAMP = formatSaveStamp(new Date(2026, 6, 29, 20, 14, 3));
+
+/** An entry's DOS date and time from the zip's central directory, comparable as one number. */
+function dosTime(zip: Uint8Array, name: string): number {
+    const view = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
+    for (let at = 0; at + 46 <= zip.length; at++) {
+        if (view.getUint32(at, true) !== 0x02014b50) continue;
+        const length = view.getUint16(at + 28, true);
+        if (strFromU8(zip.subarray(at + 46, at + 46 + length)) === name) {
+            return view.getUint16(at + 14, true) * 0x10000 + view.getUint16(at + 12, true);
+        }
+    }
+    throw new Error(`${name} is not in the archive`);
+}
 
 function profileData(over: Partial<PersistedProfileData> = {}): PersistedProfileData {
     return {
@@ -289,18 +302,68 @@ describe('for desktop Mudlet', () => {
         const folder = buildProfileFolder(src, STAMP);
         const h = host(folder);
 
+        // desktop deletes <module>/ when a module is removed, so none is listed from there
         expect(parseInstalledModules(h)).toEqual([
-            { key: 'Builtin', filepath: 'Builtin/Builtin.xml', globalSave: false, priority: 0 },
-            { key: 'Combat', filepath: 'Combat/Combat.xml', globalSave: true, priority: -1 },
+            { key: 'Builtin', filepath: 'modules/Builtin.xml', globalSave: false, priority: 0 },
+            { key: 'Combat', filepath: 'modules/Combat.xml', globalSave: true, priority: -1 },
             { key: 'Gui', filepath: 'downloads/Gui.mpackage', globalSave: false, priority: 0 },
-            { key: 'Mapper', filepath: 'Mapper/Mapper.xml', globalSave: false, priority: 0 },
+            { key: 'Mapper', filepath: 'modules/Mapper.xml', globalSave: false, priority: 0 },
         ]);
-        expect(folder['Mapper/Mapper.xml']).toBe(src.files['scripts/my-mapper.xml']);
+        expect(folder['modules/Mapper.xml']).toBe(src.files['scripts/my-mapper.xml']);
         expect(h.innerHTML).toContain('<filepath>downloads/Gui.mpackage</filepath><zipSync>0</zipSync><globalSave>0</globalSave>');
         expect(parseInstalledPackages(h)).toEqual(['run-lua-code']);
         expect(strFromU8(folder[`current/${STAMP}.xml`])).not.toContain('Combat hit');
-        expect(folder['Combat/Combat.xml']).toBe(moduleXml);
-        expect(strFromU8(folder['Builtin/Builtin.xml'])).toContain('MudletPackage');
+        expect(folder['modules/Combat.xml']).toBe(moduleXml);
+        expect(strFromU8(folder['modules/Builtin.xml'])).toContain('MudletPackage');
+    });
+
+    it('lists a synced archive module by the XML it syncs to, and keeps an archive out of the folder removal deletes', () => {
+        const archive = new Uint8Array([0x50, 0x4b, 3, 4]);
+        const synced = strToU8('<MudletPackage>edited</MudletPackage>');
+        const folder = buildProfileFolder(withModules([
+            { name: 'Gui', kind: 'module', sourcePath: '/profiles/c1/Gui/Gui.mpackage', xmlPath: 'Gui.xml', installedAt: '' },
+            { name: 'Combat', kind: 'module', sourcePath: '/profiles/c1/downloads/Combat.mpackage', xmlPath: 'Combat.xml', sync: true, installedAt: '' },
+        ], {
+            'Gui/Gui.mpackage': archive,
+            'Gui/Gui.xml': strToU8('<MudletPackage/>'),
+            'downloads/Combat.mpackage': archive,
+            'Combat/Combat.xml': synced,
+        }), STAMP);
+
+        expect(parseInstalledModules(host(folder))).toEqual([
+            { key: 'Combat', filepath: 'modules/Combat.xml', globalSave: true, priority: 0 },
+            { key: 'Gui', filepath: 'modules/Gui.mpackage', globalSave: false, priority: 0 },
+        ]);
+        expect(folder['modules/Combat.xml']).toBe(synced);
+        expect(folder['modules/Gui.mpackage']).toBe(archive);
+    });
+
+    it('keeps a websocket address out of <Host>, where desktop would take it for a hostname', () => {
+        const folder = buildProfileFolder(source({
+            connection: { id: 'c2', name: 'Web', mode: 'websocket', url: 'wss://example.org/ws' },
+        }), STAMP);
+        expect(host(folder).getElementsByTagName('url')[0]?.textContent ?? '').toBe('');
+    });
+
+    it('dates the new save and map after everything else, for desktop to load them when unzipped by hand', () => {
+        const now = new Date(2026, 6, 29, 20, 14, 4);
+        const zip = buildProfilesZip([source({
+            mapBytes: new Uint8Array([1]),
+            files: { 'current/2099-01-01#00-00-00.xml': strToU8('<old/>') },
+        })], now);
+        const times = new Map<string, number>();
+        unzipSync(zip, {
+            filter: f => {
+                times.set(f.name, dosTime(zip, f.name));
+                return false;
+            },
+        });
+        const stamp = formatSaveStamp(now);
+        const save = [...times.keys()].find(n => n.endsWith(`current/${stamp}.xml`))!;
+        const map = [...times.keys()].find(n => n.endsWith(`map/${stamp}map.dat`))!;
+        const old = [...times.keys()].find(n => n.endsWith('current/2099-01-01#00-00-00.xml'))!;
+        expect(times.get(save)).toBe(times.get(map));
+        expect(times.get(save)!).toBeGreaterThan(times.get(old)!);
     });
 
     it('finds each module again on the way back into Mudlet Web', () => {

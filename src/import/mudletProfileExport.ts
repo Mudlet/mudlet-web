@@ -1,4 +1,4 @@
-import { zipSync, strToU8 } from 'fflate';
+import { zipSync, strToU8, type Zippable } from 'fflate';
 import type { MudConnection, PackageManifest } from '../storage/schema';
 import type { PersistedProfileData } from '../storage/profileVfsData';
 import { buildLinkedWriteback } from './mudletWriteback';
@@ -136,12 +136,11 @@ export function buildDesktopConnectionFiles(c: MudConnection): Record<string, Ui
 }
 
 /** The `<url>`/`<port>` a Mudlet `<Host>` should carry for this connection.
- *  A websocket profile has no host/port pair, so its ws(s):// URL goes in
- *  `<url>` — the sidecar carries the mode, and the ws scheme is a second signal
- *  the importer can fall back on. */
+ *  A websocket profile's ws(s):// URL stays out: desktop fills an empty server
+ *  field from `<url>` and would dial it as a hostname. The sidecar carries it. */
 function hostAddress(c: MudConnection): { url: string; port: number } {
     if (c.mode === 'mud') return { url: c.host ?? '', port: c.port ?? 23 };
-    return { url: c.url ?? c.host ?? '', port: c.port ?? 23 };
+    return { url: '', port: c.port ?? 23 };
 }
 
 /**
@@ -226,13 +225,17 @@ function desktopModuleName(path: string): string {
  * has to be written because the module's own file can't be listed as it is.
  *
  * An archive module points at its archive, which is what Mudlet Web reloads it
- * from too. Otherwise the module's XML goes as it is on disk: a synced module
- * keeps it current, and one that never finished loading would lose whatever
- * didn't load if it were regenerated from its items. Only a module whose file
- * lies outside the profile, or is gone, is written fresh from its items.
+ * from too - unless it syncs: Mudlet Web syncs to the XML and leaves the
+ * archive behind, and desktop would unpack that stale archive over it. Otherwise
+ * the module's XML goes as it is on disk: a synced module keeps it current, and
+ * one that never finished loading would lose whatever didn't load if it were
+ * regenerated from its items. Only a module whose file lies outside the profile,
+ * or is gone, is written fresh from its items.
  *
  * Desktop names an XML module after its file, so one whose file is named
  * otherwise would load there under a second name; it gets a copy named for it.
+ * Desktop also deletes `<module>/` when the module is removed, so a module file
+ * there gets a copy under `modules/`, or removing it would take its only copy.
  */
 export function exportModules(src: Pick<ProfileExportSource, 'data' | 'files' | 'profilePath'>): {
     entries: MudletModuleEntry[];
@@ -245,20 +248,30 @@ export function exportModules(src: Pick<ProfileExportSource, 'data' | 'files' | 
     const generated: Record<string, Uint8Array> = {};
     // Code-unit order, as desktop's QMap of modules writes them
     const modules = moduleManifests(src.data).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    const freePath = (file: string) => {
+        let path = `modules/${file}`;
+        for (let n = 2; src.files[path] || generated[path]; n++) path = `modules/${n}/${file}`;
+        return path;
+    };
     for (const m of modules) {
         const entry = { key: m.name, sync: !!m.sync, priority: m.priority ?? 0 };
+        const removedWithModule = (path: string) => path.toLowerCase().startsWith(`${m.name.toLowerCase()}/`);
         const archive = inProfile(m.sourcePath);
-        if (archive && ARCHIVE.test(archive) && src.files[archive]) {
-            entries.push({ ...entry, filepath: archive });
+        if (archive && ARCHIVE.test(archive) && src.files[archive] && !m.sync) {
+            let path = archive;
+            if (removedWithModule(archive)) {
+                path = freePath(archive.slice(archive.lastIndexOf('/') + 1));
+                generated[path] = src.files[archive];
+            }
+            entries.push({ ...entry, filepath: path });
             continue;
         }
         const xml = m.xmlVfsPath ? inProfile(m.xmlVfsPath) : m.xmlPath ? `${m.name}/${m.xmlPath}` : undefined;
-        if (xml && src.files[xml] && desktopModuleName(xml) === m.name) {
+        if (xml && src.files[xml] && desktopModuleName(xml) === m.name && !removedWithModule(xml)) {
             entries.push({ ...entry, filepath: xml });
             continue;
         }
-        let path = `${m.name}/${m.name}.xml`;
-        for (let n = 2; src.files[path] || generated[path]; n++) path = `${m.name} (${n})/${m.name}.xml`;
+        const path = freePath(`${m.name}.xml`);
         const own = <T extends { packageName?: string }>(nodes: T[] | undefined) =>
             (nodes ?? []).filter(n => n.packageName === m.name);
         generated[path] = xml && src.files[xml] ? src.files[xml] : strToU8(serializeMudletXml({
@@ -368,7 +381,11 @@ export function buildProfileFolder(src: ProfileExportSource, stamp: string): Rec
  */
 export function buildProfilesZip(sources: ProfileExportSource[], now: Date): Uint8Array {
     const stamp = formatSaveStamp(now);
-    const entries: Record<string, Uint8Array> = {};
+    const entries: Zippable = {};
+    // Desktop loads the newest save and map by modification time, and an unzip
+    // keeps the archive's; every other file is dated a little earlier than them
+    const newest = new Set([`current/${stamp}.xml`, `map/${stamp}map.dat`]);
+    const earlier = new Date(now.getTime() - 60_000);
     const used = new Set<string>();
     sources.forEach((src, i) => {
         let folder = sanitizeFolderName(src.connection.name, `profile-${i + 1}`);
@@ -379,7 +396,7 @@ export function buildProfilesZip(sources: ProfileExportSource[], now: Date): Uin
         }
         used.add(folder.toLowerCase());
         for (const [path, bytes] of Object.entries(buildProfileFolder(src, stamp))) {
-            entries[`${folder}/${path}`] = bytes;
+            entries[`${folder}/${path}`] = [bytes, { mtime: newest.has(path) ? now : earlier }];
         }
     });
     // level 6: map files are the bulk and compress well; higher levels cost
