@@ -345,7 +345,10 @@ export function resolveModulesFromTree(bundle: MudletProfileBundle): {
         const base = fileBasename(ref.filepath).toLowerCase();
         const key = ref.key.toLowerCase();
         const source = ref.filepath.replace(/\\/g, '/').toLowerCase();
+        // A relative path is one Mudlet Web's own export wrote: the file's place in this tree
+        const relative = !/^([a-z]:)?[\\/]/i.test(ref.filepath) ? source : undefined;
         const candidates = [
+            ...(relative ? [relative] : []),
             ...(base ? [`${key}/${base}`] : []),
             ...(archiveExtension.test(base) ? [`${key}/${key}.xml`] : []),
         ];

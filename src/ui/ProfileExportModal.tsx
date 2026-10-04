@@ -75,7 +75,8 @@ export function ProfileExportModal({ connections, onClose }: Props) {
                 Downloads a <code>.zip</code> holding one folder per profile — scripts, aliases,
                 triggers, timers, keys, buttons, saved variables, settings, packages, map and session
                 logs. Load it back with <strong>Import .zip…</strong>, here or on another Mudlet Web
-                address; it also opens in desktop Mudlet.
+                address. To play in desktop Mudlet, click <strong>Import</strong> in its Connect window
+                and pick this file.
             </p>
 
             <div className="profile-export__toolbar">

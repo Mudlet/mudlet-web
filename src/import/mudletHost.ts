@@ -340,6 +340,64 @@ export function applyInstalledPackages(host: Element, names: string[]): void {
     }
 }
 
+/** One module as desktop's `<mInstalledModules>` lists it. `filepath` is what
+ *  desktop installs from, so an archive's `sync` is its `<zipSync>`. */
+export interface MudletModuleEntry {
+    key: string;
+    filepath: string;
+    sync: boolean;
+    priority: number;
+}
+
+const MODULE_ARCHIVE = /\.(mpackage|zip)$/i;
+
+/**
+ * Replace `<Host><mInstalledModules>` with `modules`, in desktop's own layout
+ * (`XMLexport::writeHost`): one block, each entry a `<key>`, `<filepath>`,
+ * `<zipSync>` plus a `<globalSave>` pinned to 0 for an archive or a bare
+ * `<globalSave>` otherwise, then `<priority>`, which is where desktop's reader
+ * closes the entry. No modules, no block, as desktop writes it.
+ */
+export function applyInstalledModules(host: Element, modules: MudletModuleEntry[]): void {
+    for (const el of Array.from(host.children).filter(c => c.tagName === 'mInstalledModules')) el.remove();
+    if (!modules.length) return;
+    const block = newHostEl(host, 'mInstalledModules');
+    const add = (tag: string, text: string) => {
+        const el = newHostEl(host, tag);
+        el.textContent = text;
+        block.appendChild(el);
+    };
+    for (const m of modules) {
+        add('key', m.key);
+        add('filepath', m.filepath);
+        if (MODULE_ARCHIVE.test(m.filepath)) {
+            add('zipSync', m.sync ? '1' : '0');
+            add('globalSave', '0');
+        } else {
+            add('globalSave', m.sync ? '1' : '0');
+        }
+        add('priority', String(m.priority));
+    }
+    const packages = host.querySelector(':scope > mInstalledPackages');
+    host.insertBefore(block, packages ? packages.nextSibling : host.firstChild);
+}
+
+/** The TLS settings desktop keeps as `<Host>` attributes. */
+export interface MudletHostTls {
+    tls: boolean;
+    sslIgnoreExpired: boolean;
+    sslIgnoreSelfSigned: boolean;
+    sslIgnoreAll: boolean;
+}
+
+export function applyHostTls(host: Element, tls: MudletHostTls): void {
+    const yesNo = (v: boolean) => (v ? 'yes' : 'no');
+    host.setAttribute('mSslTsl', yesNo(tls.tls));
+    host.setAttribute('mSslIgnoreExpired', yesNo(tls.sslIgnoreExpired));
+    host.setAttribute('mSslIgnoreSelfSigned', yesNo(tls.sslIgnoreSelfSigned));
+    host.setAttribute('mSslIgnoreAll', yesNo(tls.sslIgnoreAll));
+}
+
 /**
  * Reduce a full Mudlet profile save to a document holding just its
  * `<HostPackage>`.

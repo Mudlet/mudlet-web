@@ -135,9 +135,30 @@ Two things to know:
 ## Going back to desktop Mudlet
 
 **Export profiles…** on the start screen downloads a `.zip` holding one Mudlet
-profile folder per selected profile — the same layout you imported. To use it in
-desktop Mudlet, unzip a profile folder into `~/.config/mudlet/profiles/` (see the
-table above) and start Mudlet; the profile shows up in its list.
+profile folder per selected profile — the same layout you imported. In desktop
+Mudlet, open the **Connect** window, click **Import** and pick the file, or drop
+it on that window. Each profile is added to **My games** with its connection
+details filled in; one whose name is already taken gets a number, so nothing you
+have is overwritten. Click **Connect** to play.
+
+What comes across:
+
+- **Everything in the profile** — scripts, aliases, triggers, timers, keys,
+  buttons, saved variables, settings, packages, the map and your files.
+- **Modules** load as modules again, from the copy inside the profile folder. One
+  set to sync keeps syncing, to that copy.
+- **The connection**: server address and port, secure connection, character
+  name, description, and both connect options. Passwords are not exported:
+  enter yours again in desktop Mudlet.
+- **Session logs** land in the profile's `log` folder.
+
+Desktop Mudlet can't connect through a WebSocket address (`ws://` or `wss://`),
+so a profile that used one is imported without a server address and the import
+says so: enter the game's telnet address and port before connecting.
+
+Unzipping a profile folder into `~/.config/mudlet/profiles/` (see the table
+above) works too. Modules need a desktop Mudlet that has the **Import** button
+to find their files that way; older versions list them but can't load them.
 
 The same zip imports straight back into Mudlet Web, on this address or another
 one — which is also how you move a profile between browsers or machines.

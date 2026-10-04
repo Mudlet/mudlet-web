@@ -151,6 +151,7 @@ export async function collectProfileExport(
     let data: PersistedProfileData;
     let hostBaseXml: string | undefined;
     let files: Record<string, Uint8Array>;
+    const profilePath = vfs.profilePath;
     try {
         data = readProfileData(vfs);
         hostBaseXml = readHostBase(vfs);
@@ -176,5 +177,5 @@ export async function collectProfileExport(
         }
     }
 
-    return { connection, data, files, hostBaseXml, mapBytes, logs };
+    return { connection, data, files, hostBaseXml, profilePath, mapBytes, logs };
 }
