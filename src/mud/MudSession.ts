@@ -16,7 +16,7 @@ import { parseReplay, replayDurationMs } from './replay/replayFormat';
 import { type MudClientEvents, type MudEvents, type SessionStatus } from './events';
 import type { Console } from './text/Console';
 import {
-    DEFAULT_CONSOLE_BUFFER_SIZE,
+    MAIN_CONSOLE_BUFFER_SIZE,
     MIN_CONSOLE_BUFFER_SIZE,
     MAX_CONSOLE_BUFFER_SIZE,
     consoleBatchDeleteSize,
@@ -906,7 +906,10 @@ export class MudSession {
     // Named user windows keep their own size (Mudlet applies the preference to
     // the main console only, mudlet.cpp:2271); scripts size those with
     // setConsoleBufferSize(windowName, …).
-    private consoleBufferLines = DEFAULT_CONSOLE_BUFFER_SIZE;
+    private consoleBufferLines = MAIN_CONSOLE_BUFFER_SIZE;
+    /** The preference pair a script's setConsoleBufferSize("main", …) just
+     *  wrote, until the profile setting comes back carrying it. */
+    private scriptedBufferPreference: [number, boolean] | null = null;
 
     /** The resolved scrollback cap for the main console, in lines. */
     get consoleBufferSize(): number { return this.consoleBufferLines; }
@@ -918,12 +921,29 @@ export class MudSession {
      * Applies immediately to the main console when it exists.
      */
     setConsoleBufferSize(lines: number, useMaximum = false): void {
-        const requested = Number.isFinite(lines) ? Math.trunc(lines) : DEFAULT_CONSOLE_BUFFER_SIZE;
+        // The preference a script has just saved coming back through the store:
+        // the console already has that size, and re-applying it would replace
+        // the script's own batch size with the preference's 20%.
+        const scripted = this.scriptedBufferPreference;
+        this.scriptedBufferPreference = null;
+        if (scripted && scripted[0] === lines && scripted[1] === useMaximum) return;
+        const requested = Number.isFinite(lines) ? Math.trunc(lines) : MAIN_CONSOLE_BUFFER_SIZE;
         this.consoleBufferLines = useMaximum
             ? MAX_CONSOLE_BUFFER_SIZE
             : Math.min(MAX_CONSOLE_BUFFER_SIZE, Math.max(MIN_CONSOLE_BUFFER_SIZE, requested));
         const main = this.consoles.get('main');
         if (main) this.applyConsoleBufferSize(main);
+    }
+
+    /**
+     * Record a size a script gave the main console (`Host::setMainConsoleBufferSize`,
+     * which sets `mConsoleBufferSize` and `mUseMaxConsoleBufferSize` as well as
+     * the live buffer), so the preference it saves is not then applied over the
+     * live buffer a second time. The caller has already resized the console.
+     */
+    noteScriptedConsoleBufferSize(lines: number, useMaximum: boolean): void {
+        this.consoleBufferLines = lines;
+        this.scriptedBufferPreference = [lines, useMaximum];
     }
 
     /** Push the resolved size onto a console, batch-deletion size and all —

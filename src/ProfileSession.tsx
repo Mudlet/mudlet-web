@@ -45,7 +45,7 @@ import { applyAnsiPalette, setServerRedefineColorsAllowed, resetAllPaletteColors
 import { setOsc8HyperlinksEnabled } from './mud/text/hyperlinkConfig';
 import { effectiveAmbiguousWidthWide, setAmbiguousWidthWide } from './mud/text/wcwidth';
 import { setExpectColorSpaceId } from './mud/text/colorSpaceId';
-import { DEFAULT_CONSOLE_BUFFER_SIZE } from './mud/text/Console';
+import { MAIN_CONSOLE_BUFFER_SIZE } from './mud/text/Console';
 import type { MudSession, ControlCharacterMode } from './mud/MudSession';
 import type { FileDialogRequest } from './mud/events';
 import { replayFileName } from './mud/replay/replayFormat';
@@ -270,12 +270,14 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // preference on every render meant a script's own size lasted until the next
     // React render and was then silently reverted — the preference is a default,
     // not a policy the session re-asserts. The settings above have no scripting
-    // counterpart, so re-applying those is free.
+    // counterpart, so re-applying those is free. The script's call saves the
+    // preference too, as desktop's does; the session recognises that write
+    // coming back and leaves the script's batch size alone.
     if (appliedBufferSize.current[0] !== consoleBufferSize
         || appliedBufferSize.current[1] !== useMaxConsoleBufferSize) {
         appliedBufferSize.current = [consoleBufferSize, useMaxConsoleBufferSize];
         session.setConsoleBufferSize(
-            consoleBufferSize ?? DEFAULT_CONSOLE_BUFFER_SIZE,
+            consoleBufferSize ?? MAIN_CONSOLE_BUFFER_SIZE,
             useMaxConsoleBufferSize === true,
         );
     }

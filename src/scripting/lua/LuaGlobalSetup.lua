@@ -9,12 +9,14 @@ mudlet = {
     -- The direction names Mudlet builds for its interface language at startup
     -- (TLuaInterpreter::setupLanguageData), which translateTable() falls back
     -- to. The interface is English here, so each name is its own translation.
+    -- "i" and "o" are desktop's short forms of in and out. Desktop loses "e" to
+    -- a typo (it lands under "s"); see e2e/knownDivergences.ts.
     en_US = (function()
       local t = {}
       for _, d in ipairs({
         "north", "northeast", "east", "southeast", "south", "southwest", "west", "northwest",
         "up", "down", "in", "out",
-        "n", "ne", "e", "se", "s", "sw", "w", "nw", "u", "d",
+        "n", "ne", "e", "se", "s", "sw", "w", "nw", "u", "d", "i", "o",
       }) do t[d] = d end
       return t
     end)(),

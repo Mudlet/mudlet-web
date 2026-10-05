@@ -714,6 +714,14 @@ function getImageSize(path)
     return nil, "couldn't retrieve image size, is the location '" .. tostring(path) .. "' correct?"
 end
 
+-- Whether a window-name argument names the main console. Desktop resolves the
+-- empty string to main everywhere a console name is taken (an empty QString and
+-- "main" both select mpConsole), so a guard that only knew "main" turned
+-- getLineCount(""), moveCursor("", x, y) and the rest into "window not found".
+function __mudlet_main_name(name)
+    return name == 'main' or name == ''
+end
+
 -- Mudlet getConsoleBufferSize([consoleName]) → linesLimit, sizeOfBatchDeletion.
 -- JS returns a 0-indexed [limit, batch] array (wasmoon convention), or nil when
 -- the named console doesn't exist.
@@ -768,10 +776,10 @@ function setConsoleBufferSize(...)
         error("setConsoleBufferSize: bad argument #" .. (3 + argOffset) .. " type (use maximum as"
             .. " boolean is optional, got " .. type(useMaximum) .. "!)", 2)
     end
-    if useMaximum and name ~= 'main' then
+    if useMaximum and not __mudlet_main_name(name) then
         return nil, "useMaximum parameter is only supported for the main console"
     end
-    if name ~= nil and name ~= 'main' and __windowType(name) == nil then
+    if name ~= nil and not __mudlet_main_name(name) and __windowType(name) == nil then
         return nil, 'window "' .. tostring(name) .. '" not found'
     end
     if __setConsoleBufferSize(name, lines, batch, useMaximum) then return true end
@@ -1138,7 +1146,7 @@ do
     -- which a caller can't tell from a genuinely empty one.
     local function countGuard(fn)
         return function(win, ...)
-            if win ~= nil and win ~= 'main' and __windowType(win) == nil then
+            if win ~= nil and not __mudlet_main_name(win) and __windowType(win) == nil then
                 return nil, 'window "' .. tostring(win) .. '" not found'
             end
             return fn(win, ...)
@@ -7200,7 +7208,7 @@ do
     local function guard(fn, winArity)
         return function(...)
             local first = ...
-            if type(first) == 'string' and first ~= 'main'
+            if type(first) == 'string' and not __mudlet_main_name(first)
                 and (winArity == nil or select('#', ...) >= winArity)
                 and __windowType(first) == nil
             then
@@ -7283,7 +7291,7 @@ do
     -- but with Qt's own bars over whatever it contains, not a console's.
     local CONSOLE_KINDS = { main = true, miniconsole = true, userwindow = true, buffer = true }
     local function missingWindow(win)
-        if win == nil or win == 'main' then return nil end
+        if win == nil or __mudlet_main_name(win) then return nil end
         if CONSOLE_KINDS[__windowType(win)] then return nil end
         return 'window "' .. tostring(win) .. '" not found'
     end
@@ -7316,7 +7324,7 @@ do
         return function(win, ...)
             local err = missingWindow(win)
             if err then return nil, err end
-            if win == nil or win == 'main' then
+            if win == nil or __mudlet_main_name(win) then
                 return nil, "scrolling cannot be enabled/disabled for the 'main' window"
             end
             return fn(win, ...)
@@ -8766,7 +8774,7 @@ do
     end
 
     function getScrollBarVisible(windowName)
-        if windowName ~= nil and windowName ~= 'main' and __windowType(windowName) == nil then
+        if windowName ~= nil and not __mudlet_main_name(windowName) and __windowType(windowName) == nil then
             return nil, 'window "' .. tostring(windowName) .. '" not found'
         end
         return __getScrollBarVisible(windowName)

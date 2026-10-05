@@ -1682,9 +1682,10 @@ export class ScriptingAPI {
             case 'specialForceMxpNegotiationOff':     return !this.getProtocol('mxp');
             case 'specialForceCharsetNegotiationOff': return !this.getProtocol('charset');
             case 'specialForceCompressionOff':        return !this.getProtocol('mccp');
-            // MNES and NEW-ENVIRON share telnet option 39; "force off" means
-            // neither variant is offered, so it's true only when both are off.
-            case 'forceNewEnvironNegotiationOff':     return !this.getProtocol('mnes') && !this.getProtocol('newEnviron');
+            // Desktop keeps this the plain inverse of enableNEWENVIRON
+            // (Host::mEnableNEWENVIRON) in both directions; MNES is a separate
+            // preference it never reads or writes.
+            case 'forceNewEnvironNegotiationOff':     return !this.getProtocol('newEnviron');
             // structured — input line
             case 'autoClearInputLine':
                 return selectProfileField(useAppStore.getState(), this.connectionId, 'autoClearInput') ?? false;
@@ -1936,12 +1937,11 @@ export class ScriptingAPI {
             case 'specialForceMxpNegotiationOff':     this.setProtocol('mxp',     !configBool(value)); return true;
             case 'specialForceCharsetNegotiationOff': this.setProtocol('charset', !configBool(value)); return true;
             case 'specialForceCompressionOff':        this.setProtocol('mccp',    !configBool(value)); return true;
-            // Forcing option 39 off disables both variants; un-forcing restores
-            // the RFC-1572 default (plain NEW-ENVIRON on, MNES left off — matching
-            // Mudlet's defaults) rather than guessing which variant to re-enable.
+            // The inverse of enableNEWENVIRON and nothing more: desktop leaves
+            // enableMNES as it was, so un-forcing brings back whichever variant
+            // the profile had chosen.
             case 'forceNewEnvironNegotiationOff':
                 this.setProtocol('newEnviron', !configBool(value));
-                if (configBool(value)) this.setProtocol('mnes', false);
                 return true;
             case 'autoClearInputLine':
                 useAppStore.getState().patchConnectionProfile(this.connectionId, { autoClearInput: configBool(value) });
@@ -4387,22 +4387,22 @@ export class ScriptingAPI {
     // on the main window — we keep that policy (the binding hands Lua `false`).
 
     disableScrollBar(windowName?: string): void {
-        this.session.windows.setScrollBarVisible(windowName ?? 'main', false);
+        this.session.windows.setScrollBarVisible(windowName || 'main', false);
     }
     enableScrollBar(windowName?: string): void {
-        this.session.windows.setScrollBarVisible(windowName ?? 'main', true);
+        this.session.windows.setScrollBarVisible(windowName || 'main', true);
     }
     disableHorizontalScrollBar(windowName?: string): void {
-        this.session.windows.setHorizontalScrollBarVisible(windowName ?? 'main', false);
+        this.session.windows.setHorizontalScrollBarVisible(windowName || 'main', false);
     }
     enableHorizontalScrollBar(windowName?: string): void {
-        this.session.windows.setHorizontalScrollBarVisible(windowName ?? 'main', true);
+        this.session.windows.setHorizontalScrollBarVisible(windowName || 'main', true);
     }
     disableScrolling(windowName?: string): boolean {
-        return this.session.windows.setScrollingEnabled(windowName ?? 'main', false);
+        return this.session.windows.setScrollingEnabled(windowName || 'main', false);
     }
     enableScrolling(windowName?: string): boolean {
-        return this.session.windows.setScrollingEnabled(windowName ?? 'main', true);
+        return this.session.windows.setScrollingEnabled(windowName || 'main', true);
     }
 
     /** Mudlet `timeStampsEnabled(window)` — whether the console shows its
@@ -4421,27 +4421,30 @@ export class ScriptingAPI {
      *  this console. True unless disableScrolling was called on it; the main
      *  window is always scrollable. */
     scrollingActive(windowName?: string): boolean {
-        return this.session.windows.isScrollingEnabled(windowName ?? 'main');
+        return this.session.windows.isScrollingEnabled(windowName || 'main');
     }
 
-    /** Mudlet getScroll — 0-indexed buffer line at the top of the viewport. In
-     *  tail mode reports the last line (Mudlet's mCursorY behaviour at end). */
+    /** Mudlet getScroll — 0-indexed buffer line the console is scrolled to.
+     *  Desktop answers `max(min(mCursorY, getLastLineNumber()), 0)`
+     *  (TMainConsole::getWindowScroll), so a console following its output
+     *  reports exactly getLastLineNumber() — the comparison scripts use to ask
+     *  "am I at the bottom?" — and never a line past it. */
     getScroll(windowName?: string): number {
-        const name = windowName ?? 'main';
+        const name = windowName || 'main';
+        const last = Math.max(0, this.getLastLineNumber(name));
         // getScrollLine measures the DOM, and a console whose panel hasn't been
         // laid out measures as 0 — which would claim a 30-line buffer is
         // scrolled to the very top. Nothing has scrolled it, so it is at the
         // tail: report the last line, the same answer tail mode gives.
-        if (!this.session.windows.canMeasureScroll(name)) {
-            return Math.max(0, this.getLastLineNumber(name));
-        }
-        return this.session.windows.getScrollLine(name);
+        if (!this.session.windows.canMeasureScroll(name)) return last;
+        const line = this.session.windows.getScrollLine(name);
+        return line === null ? last : Math.max(0, Math.min(line, last));
     }
 
     /** Mudlet scrollTo. With no line (or a line past end), resume tail mode.
      *  Negative line counts back from the buffer end. */
     scrollTo(windowName: string | undefined, lineNumber: number | undefined): boolean {
-        return this.session.windows.scrollToLine(windowName ?? 'main', lineNumber);
+        return this.session.windows.scrollToLine(windowName || 'main', lineNumber);
     }
 
     /** Null when the window doesn't exist — the binding answers Mudlet's
@@ -4519,6 +4522,18 @@ export class ScriptingAPI {
             // limit that was just set (Mudlet's TBuffer::setBufferSize).
             const batch = batchSize >= limit ? Math.floor(limit / 10) : Math.floor(batchSize);
             con.setBatchDeleteSize(Math.max(1, batch));
+        }
+        if (con === this.mainConsole && Number.isFinite(limit)) {
+            // Desktop's Host::setMainConsoleBufferSize stores the size and the
+            // use-maximum flag in the profile's preferences as well, so they are
+            // saved with it and the next session opens on them (its batch then
+            // the preference's 20%, as for any saved size).
+            const lines = Math.min(MAX_CONSOLE_BUFFER_LINES, limit);
+            this.session.noteScriptedConsoleBufferSize(lines, useMaximum);
+            useAppStore.getState().patchConnectionProfile(this.connectionId, {
+                consoleBufferSize: lines,
+                useMaxConsoleBufferSize: useMaximum,
+            });
         }
         return true;
     }

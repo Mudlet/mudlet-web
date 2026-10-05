@@ -10,15 +10,9 @@ import { lineBreakOpportunities } from './lineBreak';
 export const MAX_CHARACTERS_PER_ECHO = 1_000_000;
 
 /**
- * Scrollback line limit — Mudlet's per-profile `consoleBufferSize`
- * (`Host::mConsoleBufferSize`, saved to the profile XML by XMLexport.cpp:617).
- *
- * The default is `TBuffer::mLinesLimit` (src/TBuffer.h:386) and the spin box
- * default in `src/ui/profile_preferences.ui` — 10,000 lines — rather than
- * `Host.h:687`'s 100,000. Desktop can afford the larger figure because
- * `TTextEdit` paints only the visible viewport out of the buffer; Mudlet Web keeps a
- * DOM row per line, so 100,000 rows is a cost the browser pays whether or not
- * they are on screen.
+ * Scrollback line limit of a console nothing has sized — `TBuffer::mLinesLimit`
+ * (src/TBuffer.h:386), 10,000 lines with a batch of a tenth of that. Miniconsoles,
+ * user windows and buffers keep it until a script calls setConsoleBufferSize.
  *
  * The floor is `TBuffer::setBufferSize`'s (src/TBuffer.cpp:405) — a smaller
  * buffer is not usable. The ceiling stands in for
@@ -27,6 +21,15 @@ export const MAX_CHARACTERS_PER_ECHO = 1_000_000;
  * cap instead.
  */
 export const DEFAULT_CONSOLE_BUFFER_SIZE = 10_000;
+/**
+ * The main console's scrollback on a fresh profile — Mudlet's per-profile
+ * `consoleBufferSize` (`Host::mConsoleBufferSize`, Host.h, saved to the profile
+ * XML by XMLexport.cpp), which desktop applies to main over TBuffer's own
+ * default. 100,000 lines with a batch of 20,000 (mudlet-web#341): a tenth of it
+ * dropped scrollback, fired sysBufferShrinkEvent and shifted line numbers ten
+ * times as early as desktop.
+ */
+export const MAIN_CONSOLE_BUFFER_SIZE = 100_000;
 export const MIN_CONSOLE_BUFFER_SIZE = 100;
 export const MAX_CONSOLE_BUFFER_SIZE = 1_000_000;
 

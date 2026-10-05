@@ -254,11 +254,11 @@ export interface ProfileSettings {
     /** Mudlet's `Host::mConsoleBufferSize` ("Main display size") — how many
      *  lines of scrollback the main output keeps before the oldest are dropped
      *  in batches. Bounded 100 … 1,000,000; `undefined` uses
-     *  {@link DEFAULT_CONSOLE_BUFFER_SIZE} (10,000 lines, `TBuffer.h:386`).
+     *  {@link MAIN_CONSOLE_BUFFER_SIZE} (100,000 lines, `Host.h`).
      *  Round-trips through the profile XML as `consoleBufferSize`
-     *  (XMLexport.cpp:617). Scripts reach the same cap via
-     *  `setConsoleBufferSize()`, which does not write the preference back —
-     *  matching Mudlet, where the Lua call resizes the live buffer only. */
+     *  (XMLexport.cpp:617). `setConsoleBufferSize("main", …)` writes it (and
+     *  {@link useMaxConsoleBufferSize}) back, as desktop's
+     *  `Host::setMainConsoleBufferSize` does, so a script's size is saved. */
     consoleBufferSize?: number;
     /** Mudlet's `Host::mUseMaxConsoleBufferSize` ("use the maximum buffer size
      *  your system can handle", `checkBox_useMaxBufferSize`). When true the

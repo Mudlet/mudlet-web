@@ -564,6 +564,7 @@ export class WindowManager {
             win.pendingPartial = undefined;
         }
         this.elements.set(id, element);
+        this.watchTail(element);
         this.applyScrollClasses(id);
     }
 
@@ -590,6 +591,7 @@ export class WindowManager {
     registerMainOutput(element: HTMLElement | null): void {
         if (element) {
             this.elements.set('main', element);
+            this.watchTail(element);
             this.applyScrollClasses('main');
         } else {
             this.elements.delete('main');
@@ -2214,14 +2216,6 @@ export class WindowManager {
         return this.scrollState.get(id)?.scrollingEnabled ?? DEFAULT_SCROLL_STATE.scrollingEnabled;
     }
 
-    /** Buffer-line index of the topmost visible line in `id`'s wrapper. In tail
-     *  mode returns the last line number (matching Mudlet's mCursorY behaviour at
-     *  the end of the buffer). Returns 0 if the element is unmounted or empty.
-     *
-     *  Uses getBoundingClientRect rather than offsetTop because `.output-container`
-     *  is `position: relative` — child offsetTop is relative to *that*, not to the
-     *  scroll-container `.output-wrapper`, so the rectangles are the unambiguous
-     *  way to relate child position to the scroll viewport. */
     /** Whether `id`'s wrapper is mounted with laid-out lines, i.e. whether
      *  {@link getScrollLine}'s measurement means anything. A console whose panel
      *  isn't on screen yet measures as 0, which is indistinguishable from being
@@ -2253,7 +2247,36 @@ export class WindowManager {
         this.scriptScrollLine.delete(id);
     }
 
-    getScrollLine(id: string): number {
+    /**
+     * Wrappers the reader has scrolled back from the end of — the inverse of
+     * desktop's `TTextEdit::mIsTailMode`. Kept from scroll events rather than
+     * measured when asked: new output is appended before the renderer scrolls
+     * down to it, so in between a console that is following its output measures
+     * as some way up — right after a burst of echoes, at the very top. Desktop
+     * stays in tail mode through that, and so does this; only a scroll that
+     * actually leaves the end takes a console out of it.
+     */
+    private readonly scrolledBack = new WeakMap<HTMLElement, boolean>();
+
+    private watchTail(el: HTMLElement): void {
+        if (this.scrolledBack.has(el)) return;
+        this.scrolledBack.set(el, false);
+        el.addEventListener('scroll', () => {
+            this.scrolledBack.set(el, el.scrollHeight - el.scrollTop - el.clientHeight > 1);
+        }, { passive: true });
+    }
+
+    /** Buffer-line index of the topmost visible line in `id`'s wrapper, or
+     *  null while it follows its output (tail mode), where Mudlet's getScroll
+     *  answers the last line — which the caller takes from the buffer, since
+     *  the DOM's line count is not the buffer's. Returns 0 if the element is
+     *  unmounted or empty.
+     *
+     *  Uses getBoundingClientRect rather than offsetTop because `.output-container`
+     *  is `position: relative` — child offsetTop is relative to *that*, not to the
+     *  scroll-container `.output-wrapper`, so the rectangles are the unambiguous
+     *  way to relate child position to the scroll viewport. */
+    getScrollLine(id: string): number | null {
         const parked = this.scriptScrollLine.get(id);
         if (parked !== undefined) return parked;
         const el = this.elements.get(id);
@@ -2261,8 +2284,9 @@ export class WindowManager {
         const lineEls = this.lineElements(el);
         const total = lineEls.length;
         if (total === 0) return 0;
+        if (!this.scrolledBack.get(el)) return null;
         const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-        if (distFromBottom <= 1) return total - 1;
+        if (distFromBottom <= 1) return null;
         const containerTop = el.getBoundingClientRect().top;
         for (let i = 0; i < total; i++) {
             const rect = lineEls[i].getBoundingClientRect();
