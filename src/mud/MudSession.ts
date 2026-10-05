@@ -76,6 +76,9 @@ export class MudSession {
     private client: MudClient | null = null;
     /** The most recent URL passed to connect() — replayed by reconnect(). */
     private lastUrl: string | null = null;
+    /** How many times connect() has dialed, so a caller can tell whether a
+     *  dial it asked for has been overtaken by another. */
+    private dials = 0;
     private pingTracker: PingTracker | null = null;
     private stateUnsubs: (() => void)[] = [];
     /** The profile's server encoding, as `getServerEncodingsList()` spells it.
@@ -281,8 +284,15 @@ export class MudSession {
         this._outputReady = false;
     }
 
+    /** The URL the session last dialed (and reconnect() would redial). */
+    get dialedUrl(): string | null { return this.lastUrl; }
+
+    /** The number of dials so far — see {@link dialedUrl}. */
+    get dialCount(): number { return this.dials; }
+
     connect(url: string): void {
         this.lastUrl = url;
+        this.dials += 1;
         // A running replay feeds the same parsing pipeline the live socket is
         // about to use — interleaving them would corrupt telnet/GMCP state, so
         // dialing wins and the replay stops.
@@ -1113,7 +1123,23 @@ export class MudSession {
      *  in ProfileSession. */
     private postSocketMessage(prefix: keyof typeof SOCKET_MESSAGE_PREFIX, text: string): void {
         const tag = SOCKET_MESSAGE_PREFIX[prefix];
-        this.events.emit('message', `${tag.color}${tag.label}\x1b[0m${tag.gap}- ${text}`, 'script', Date.now());
+        this.postSocketLine(`${tag.color}${tag.label}\x1b[0m${tag.gap}- ${text}`);
+    }
+
+    /** cTelnet's postMessage prints into the main console like anything else,
+     *  so its notices are lines getLineCount() counts and getLines() returns —
+     *  a script indexing lines after a connect or a disconnect lands where it
+     *  does on desktop only if they are (mudlet-web#339). Stored as well as
+     *  rendered, as {@link warnIfUnencodable} does, and wrapped at the main
+     *  window's width like any other line. */
+    private postSocketLine(styled: string): void {
+        const main = this.consoles.get('main');
+        if (main) {
+            const line = new AnsiAwareBuffer(styled);
+            main.appendLine(line);
+            main.wrapAppendedLine(line);
+        }
+        this.events.emit('message', styled, 'script', Date.now());
     }
 
     /** cTelnet's "[ INFO ]  - Attempting an open connection to %1:%2 ..."
@@ -1214,7 +1240,7 @@ export class MudSession {
     /** The indented, yellow second row of a two-line notice — Mudlet's "%1\n%2"
      *  renders as two rows, and a `message` here is one. */
     private postSocketContinuation(text: string): void {
-        this.events.emit('message', `\x1b[33m            ${text}\x1b[0m`, 'script', Date.now());
+        this.postSocketLine(`\x1b[33m            ${text}\x1b[0m`);
     }
 
     /** cTelnet's disconnect pair: the reason (ctelnet.cpp:1073-1136) and then

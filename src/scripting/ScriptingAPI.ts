@@ -6437,17 +6437,31 @@ export class ScriptingAPI {
         return Math.round(cellW * (wrapAt + 1));
     }
 
+    /** The server the last connectToServer() pointed the profile at, with the
+     *  dial it asked for — see {@link getConnectionInfo}. */
+    private connectTarget: { host: string; port: number; url: string; dials: number } | null = null;
+
     /**
      * Mudlet `getConnectionInfo()` → `host, port, connected`. Mudlet reports the
-     * MUD's telnet host/port; Mudlet Web reads them off the active connection config.
-     * For a `mud`-mode connection those are the stored host/port; for a raw
-     * `websocket` connection we parse them out of the endpoint URL (port falls
-     * back to the ws/wss default). `connected` reflects the live session status.
+     * MUD's telnet host/port — cTelnet's own, which `connectToServer` replaces
+     * whether or not it saves them, so a script that moved the profile to
+     * another server is told that server from the call on, through a failed
+     * dial and a `reconnect()` (mudlet-web#339). That target holds until a dial
+     * to somewhere else (the Connect button redialling the profile) overtakes
+     * it. Otherwise Mudlet Web reads the active connection config: for a
+     * `mud`-mode connection the stored host/port, for a raw `websocket` one the
+     * endpoint URL's (port falls back to the ws/wss default). `connected`
+     * reflects the live session status.
      */
     getConnectionInfo(): { host: string; port: number; connected: boolean } {
+        const connected = this.session.status === 'connected';
+        const target = this.connectTarget;
+        if (target && (this.session.dialCount === target.dials || this.session.dialedUrl === target.url)) {
+            return { host: target.host, port: target.port, connected };
+        }
         const conn = useAppStore.getState().connections.find(c => c.id === this.connectionId);
         const { host, port } = conn ? connectionHostPort(conn) : { host: '', port: 0 };
-        return { host, port, connected: this.session.status === 'connected' };
+        return { host, port, connected };
     }
 
     /**
@@ -6472,6 +6486,7 @@ export class ScriptingAPI {
         if (save && conn) {
             state.updateConnection(this.connectionId, { ...conn, mode: 'mud', host, port });
         }
+        this.connectTarget = { host, port, url, dials: this.session.dialCount };
         this.dialConnect(url);
         return true;
     }

@@ -607,6 +607,9 @@ export class MudClient {
     }
 
     connect(): void {
+        // A disconnect() still waiting on its output is reported first, as
+        // cTelnet::connectIt's abort() of a closing socket does.
+        if (this.pendingDisconnect !== null) this.finishDisconnect();
         if (this.socket) {
             this.socket.onmessage = null;
             this.socket.onclose = null;
@@ -698,8 +701,7 @@ export class MudClient {
                 if (isAbnormalClose(event)) {
                     this.eventBus.emit('client.error', formatCloseError(event, this.opened, this.viaProxy));
                 }
-                this.eventBus.emit('client.disconnect');
-                this.eventBus.emit('client.disconnected');
+                this.emitDisconnect();
                 this.opened = false;
                 this.mccpHandler.reset();
                 this.echoHandler.reset();
@@ -757,8 +759,7 @@ export class MudClient {
             // disconnect notice — which is what carries the error above into the
             // console — would never be posted. cTelnet is equivalent here: a
             // failed connectToHost still reaches slot_socketDisconnected.
-            this.eventBus.emit('client.disconnect');
-            this.eventBus.emit('client.disconnected');
+            this.emitDisconnect();
         }
     }
 
@@ -837,6 +838,13 @@ export class MudClient {
     }
 
     disconnect(): void {
+        // A second disconnect() — or the teardown before a redial — while the
+        // first is still waiting on its output reports that one now, as Qt's
+        // abort() does to a socket in ClosingState.
+        if (this.pendingDisconnect !== null) {
+            this.finishDisconnect();
+            return;
+        }
         if (!this.socket) return;
         const socket = this.socket;
         // Idempotent on an already-torn-down socket. Without this, a second
@@ -855,6 +863,8 @@ export class MudClient {
         socket.onclose = null;
         socket.onerror = null;
         socket.onopen = null;
+        // Measured before close(), which some implementations settle at once.
+        const outputPending = socket.bufferedAmount > 0;
         socket.close();
         this.assembler.flush(Date.now(), true);
         // Let go of the socket rather than watching it finish closing. Every
@@ -865,8 +875,32 @@ export class MudClient {
         // that as still-connected. Qt hands cTelnet the UnconnectedState at
         // once, which is what makes a disconnect()ed profile injectable again.
         this.socket = null;
-        this.eventBus.emit('client.disconnect');
-        this.eventBus.emit('client.disconnected');
+        // `QAbstractSocket::disconnectFromHost` closes at once only when there
+        // is nothing left to write. With a command still on its way out — the
+        // usual `send("quit") disconnect()` — the socket lingers in
+        // ClosingState until the bytes are gone, and `disconnected()` (and
+        // with it sysDisconnectionEvent) arrives from the event loop, after
+        // the calling script has returned. A handler that reads a flag the
+        // caller sets on the next line (`quitting = true`) depends on that.
+        // `bufferedAmount` is exactly the browser's count of bytes queued but
+        // not yet handed to the network, so it answers the same question.
+        if (outputPending) {
+            this.pendingDisconnect = setTimeout(() => this.finishDisconnect(), 0);
+            return;
+        }
+        this.finishDisconnect();
+    }
+
+    /** A disconnect() whose events are still waiting on unwritten output. */
+    private pendingDisconnect: ReturnType<typeof setTimeout> | null = null;
+
+    /** The tail of disconnect(), once the socket is really gone. */
+    private finishDisconnect(): void {
+        if (this.pendingDisconnect !== null) {
+            clearTimeout(this.pendingDisconnect);
+            this.pendingDisconnect = null;
+        }
+        this.emitDisconnect();
         this.opened = false;
         this.mccpHandler.reset();
         this.echoHandler.reset();
@@ -874,6 +908,19 @@ export class MudClient {
         this.negotiator.clearMspNegotiated();
         this.cancelCharacterModeDetection();
         this.latencyStartedAt = null;
+    }
+
+    /** Raise the disconnect, then hand over the text the final flush left in
+     *  the message buffer. cTelnet raises sysDisconnectionEvent first and only
+     *  then is the unterminated last line printed and its triggers run — a
+     *  `"Server full, bye"` sent without a newline before the close still
+     *  reaches the screen, the buffer and the trigger engine, just after the
+     *  event. Before the notices `client.disconnected` posts, which follow it
+     *  on desktop too. */
+    private emitDisconnect(): void {
+        this.eventBus.emit('client.disconnect');
+        this.flushMessageBuffer();
+        this.eventBus.emit('client.disconnected');
     }
 
     /** Whether MSP is live on this connection (negotiated, not merely allowed
