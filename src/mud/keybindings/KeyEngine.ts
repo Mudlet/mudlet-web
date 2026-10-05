@@ -1,6 +1,6 @@
 import { ItemIdSequence } from '../ItemIdSequence';
 import type { KeyNode } from '../../storage/schema';
-import { buildEffectivelyEnabledIds } from '../../storage/schema';
+import { buildEffectivelyEnabledIds, inTreeOrder } from '../../storage/schema';
 import { domCodeToQtKey, listToQtModifiers } from './qtKeys';
 
 export type { KeyNode };
@@ -153,7 +153,9 @@ export class KeyEngine {
      *  inactive — see buildEffectivelyEnabledIds. */
     loadPerm(keybindings: KeyNode[], blocked?: ReadonlySet<string>): void {
         const enabledIds = buildEffectivelyEnabledIds(keybindings, blocked);
-        this.perm = keybindings.filter(k => enabledIds.has(k.id) && k.key);
+        // Tree order, not store order: a key added later to an older group
+        // sits inside that group, ahead of root keys made since (#336).
+        this.perm = inTreeOrder(keybindings).filter(k => enabledIds.has(k.id) && k.key);
     }
 
     matchPerm(event: KeyboardEvent): KeyNode | null {

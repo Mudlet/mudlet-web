@@ -2078,6 +2078,16 @@ export class ScriptingAPI {
                 this.patchConfigBag('specialForceGAOff', on);
                 return true;
             }
+            // Host::mUSE_UNIX_EOL, which cTelnet::sendData reads on every send.
+            // Pushed at the session here as well as persisted: left to
+            // ProfileSession's next render, a send() in the same chunk as the
+            // setConfig still went out with the old line ending (#336).
+            case 'inputLineStrictUnixEndings': {
+                const on = configBool(value);
+                this.session.setInputLineStrictUnixEndings(on);
+                this.patchConfigBag('inputLineStrictUnixEndings', on);
+                return true;
+            }
             // Only the value it already has: see getConfig
             case 'lazyCaptureGlobals': return !configBool(value);
             // Mudlet Host::mUndoServerWrap — rejoin the lines the game wrapped

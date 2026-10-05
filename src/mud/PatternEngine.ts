@@ -1,4 +1,4 @@
-import { buildEffectivelyEnabledIds } from '../storage/schema';
+import { buildEffectivelyEnabledIds, inTreeOrder } from '../storage/schema';
 import Pcre2 from './triggers/pcre/Pcre2';
 
 type TempFn = (matches: RegExpMatchArray) => void;
@@ -163,7 +163,9 @@ export class PatternEngine<T extends PatternItem> {
         const order: string[] = [];
         const rootSeqs = new Map<string, number>();
         const enabledIds = buildEffectivelyEnabledIds(items, blocked);
-        for (const item of items) {
+        // Tree order, not store order: a child added later to an older group
+        // runs inside that group, ahead of root items made since (#336).
+        for (const item of inTreeOrder(items)) {
             if (!item.pattern) continue;
             order.push(item.id);
             rootSeqs.set(item.id, rootSeq(item));

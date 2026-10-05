@@ -1095,6 +1095,40 @@ export function isEffectivelyEnabled<T extends { id: string; enabled: boolean; p
 }
 
 /**
+ * The items in tree order: Mudlet's pre-order walk, each node immediately
+ * followed by its whole subtree, siblings in the order the flat array holds
+ * them. The flat array alone is not that order — an item added to an older
+ * group (`permAlias`/`permKey` into a group made earlier) is appended at the
+ * end, after root items created since, while desktop puts it inside its group.
+ * An item whose parent is missing is walked as a root where it stands; a
+ * malformed cycle is broken rather than dropped.
+ */
+export function inTreeOrder<T extends { id: string; parentId: string | null }>(items: readonly T[]): T[] {
+    const ids = new Set(items.map(i => i.id));
+    const children = new Map<string, T[]>();
+    for (const item of items) {
+        if (!item.parentId || !ids.has(item.parentId)) continue;
+        let list = children.get(item.parentId);
+        if (!list) children.set(item.parentId, list = []);
+        list.push(item);
+    }
+    const out: T[] = [];
+    const seen = new Set<string>();
+    const walk = (item: T): void => {
+        if (seen.has(item.id)) return;
+        seen.add(item.id);
+        out.push(item);
+        for (const child of children.get(item.id) ?? []) walk(child);
+    };
+    for (const item of items) {
+        if (!item.parentId || !ids.has(item.parentId)) walk(item);
+    }
+    // Whatever is left hangs off a cycle with no root above it.
+    for (const item of items) walk(item);
+    return out;
+}
+
+/**
  * One-pass build of the set of ids whose item and every ancestor is enabled.
  * Engines iterating large trees should call this once per loadPerm rather than
  * isEffectivelyEnabled per item — that path is O(N²) (rebuilds the id map on
