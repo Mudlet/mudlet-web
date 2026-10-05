@@ -1,7 +1,7 @@
 import type {MudSession, ScriptLogSource, ScriptLogSourceKind} from '../mud/MudSession';
 import type { LogFormat } from '../logging/SessionLogger';
 import { MAP_WIDGET_ID } from '../ui/windows/types';
-import { qtModifiersToList } from '../mud/keybindings/qtKeys';
+import { qtKeyToDomCode, qtModifiersToList } from '../mud/keybindings/qtKeys';
 import { splitSentCommands } from '../mud/commandSplit';
 import type {AliasEngine, AliasNode} from '../mud/aliases/AliasEngine';
 import {TriggerEngine, highlightTargets, type TriggerNode} from '../mud/triggers/TriggerEngine';
@@ -253,19 +253,17 @@ function modifiersFromMudletInt(modifier: number): string[] {
     return qtModifiersToList(modifier);
 }
 
-/** Mudlet's permKey takes a Qt::Key int. We accept either an int (best-effort
- *  mapped to the F-keys + a few common ones) or a string (passed through as the
- *  KeyNode.key — KeyEngine compares against `KeyboardEvent.code`). */
-function keyCodeFromMudletKey(key: string | number): string {
+/** Mudlet's permKey takes a Qt::Key int (or a DOM code string, passed
+ *  through as the KeyNode.key — KeyEngine compares against
+ *  `KeyboardEvent.code`). Translated the way tempKey and the XML import do
+ *  it, Keypad modifier included, so Alt+Up, Home, Ctrl+/ and Keypad+8 all
+ *  land on a key the engine can match; only letters, digits and F-keys used
+ *  to. A Qt key with no DOM code gives '' (a binding with nothing bound). */
+function keyCodeFromMudletKey(key: string | number, modifier: number): string {
     if (typeof key === 'string') return key;
     if (!Number.isFinite(key)) return '';
-    // Qt::Key_F1 = 0x01000030 .. Qt::Key_F35 = 0x01000052.
-    const n = Number(key);
-    if (n >= 0x01000030 && n <= 0x01000052) return `F${n - 0x01000030 + 1}`;
-    // Single-character keys: ascii letter 0x41..0x5A → "KeyA".."KeyZ".
-    if (n >= 0x41 && n <= 0x5a) return `Key${String.fromCharCode(n)}`;
-    if (n >= 0x30 && n <= 0x39) return `Digit${String.fromCharCode(n)}`;
-    return '';
+    const mapped = qtKeyToDomCode(Number(key), modifier < 0 ? 0 : modifier);
+    return /^[A-Za-z]/.test(mapped) ? mapped : '';
 }
 
 /** Mudlet `tempButtonToolbar` location int → ButtonLocation. */
@@ -749,6 +747,9 @@ export class ScriptingEngine implements EngineHost {
             // Likewise the saved aliases, ahead of temp aliases scripts make.
             this.aliasEngine.reserveOrder(
                 useAppStore.getState().connectionAliases[this.connectionId] ?? []);
+            // And the saved keys, ahead of temp keys scripts make.
+            this.keyEngine.reserveOrder(
+                useAppStore.getState().connectionKeybindings[this.connectionId] ?? []);
             this.applyScriptsFromStore();
             this.applyAliasesFromStore();
             this.applyTimersFromStore();
@@ -3833,8 +3834,11 @@ export class ScriptingEngine implements EngineHost {
             enabled: true,
             isGroup,
             parentId,
-            key: isGroup ? '' : keyCodeFromMudletKey(key),
+            key: isGroup ? '' : keyCodeFromMudletKey(key, modifier),
             modifiers: isGroup ? [] : modifiersFromMudletInt(modifier),
+            // Kept verbatim: getKeyCode answers with it, and a shifted symbol
+            // (Key_Exclam) is told apart from its unshifted key (Digit1) by it.
+            ...(!isGroup && typeof key === 'number' && Number.isFinite(key) ? { qtKey: Number(key) } : {}),
             code,
             language: 'lua',
             ...inheritedPackage(keys, parentId),
@@ -4256,27 +4260,11 @@ export class ScriptingEngine implements EngineHost {
         // matching desktop: two bindings on one key normally means the second
         // is a leftover, and firing both would be a surprise.
         const all = selectProfileField(useAppStore.getState(), this.connectionId, 'reactToAllKeybindings') === true;
-        // JS temp keybindings
-        const tempFired = this.keyEngine.processTemp(event, all);
-        if (tempFired && !all) {
-            this.api.flushOutput();
-            return true;
-        }
-        // Permanent keybindings
-        if (all) {
-            const matches = this.keyEngine.matchAllPerm(event);
-            for (const m of matches) this.executePermKeybinding(m);
-            this.api.flushOutput();
-            return tempFired || matches.length > 0;
-        }
-        const permMatch = this.keyEngine.matchPerm(event);
-        if (permMatch) {
-            this.executePermKeybinding(permMatch);
-            this.api.flushOutput();
-            return true;
-        }
+        // Temporary and permanent keys in one creation-ordered walk, as
+        // desktop's KeyUnit holds them.
+        const fired = this.keyEngine.process(event, all, binding => this.executePermKeybinding(binding));
         this.api.flushOutput();
-        return false;
+        return fired;
     }
 
     raiseEvent(event: string, args: unknown[] = []): void {
@@ -4439,6 +4427,9 @@ export class ScriptingEngine implements EngineHost {
             // Likewise the saved aliases, ahead of temp aliases scripts make.
             this.aliasEngine.reserveOrder(
                 useAppStore.getState().connectionAliases[this.connectionId] ?? []);
+            // And the saved keys, ahead of temp keys scripts make.
+            this.keyEngine.reserveOrder(
+                useAppStore.getState().connectionKeybindings[this.connectionId] ?? []);
             this.applyScriptsFromStore();
             this.applyAliasesFromStore();
             this.applyTriggersFromStore();

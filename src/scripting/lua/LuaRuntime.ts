@@ -32,7 +32,8 @@ import {parseQColor} from '../../ui/labels/qColor';
 import {isQtResourcePath, qtResourceBytes} from '../../assets/qt-resources';
 import {getSqliteClient, sqliteReady, type FileHost} from '../../db/sqliteClient';
 import {QT_CURSOR_NAME_TO_INT, QT_CURSOR_TO_CSS} from '../../ui/labels/cursorShapes';
-import {qtKeyToDomCode, qtModifiersToList, domCodeToQtKey, listToQtModifiers} from '../../mud/keybindings/qtKeys';
+import {qtKeyToDomCode, qtModifiersToList, domCodeToQtKey} from '../../mud/keybindings/qtKeys';
+import {permKeyCode} from '../../mud/keybindings/KeyEngine';
 import xterm256 from '../../mud/text/xterm256';
 import {cechoFastPaletteLua} from '../../mud/text/colorParsers';
 import {HttpService} from '../http/HttpService';
@@ -2189,12 +2190,7 @@ export class LuaRuntime implements IScriptingRuntime {
             // returned); the key engine indexes those by name only.
             if (!info && typeof arg === 'number') {
                 const node = this.api.keyNodeByNumericId(arg);
-                if (node) {
-                    info = {
-                        keyCode: domCodeToQtKey(node.key) ?? 0,
-                        modifiers: listToQtModifiers(node.modifiers),
-                    };
-                }
+                if (node) info = permKeyCode(node);
             }
             if (!info) {
                 return [null, typeof arg === 'number'

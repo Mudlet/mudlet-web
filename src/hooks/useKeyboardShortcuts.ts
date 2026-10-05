@@ -38,6 +38,22 @@ function isTextEntry(target: EventTarget | null): boolean {
     return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable;
 }
 
+/** Every mounted dispatcher's "would this press be mine?", so the Lua
+ *  keybinding listener — which runs first, see listenForKeybindings — can
+ *  leave a menu accelerator's key to it. */
+const claimants = new Set<(e: KeyboardEvent) => boolean>();
+
+/**
+ * Whether one of the client's shortcuts (or an `addCommand` one) would take
+ * this press: it completes or continues a sequence. Desktop resolves a
+ * QAction's shortcut before the focused widget sees the key, so a key binding
+ * on Alt+K does not run while the Mute action holds it (mudlet-web#340).
+ */
+export function claimedByAppShortcut(e: KeyboardEvent): boolean {
+    for (const claims of claimants) if (claims(e)) return true;
+    return false;
+}
+
 export function useKeyboardShortcuts(bindings: readonly ShortcutBinding[], enabled = true): void {
     // The listener is installed once and reads the current bindings through a
     // ref: they are rebuilt on every render (each closes over live state), and
@@ -57,40 +73,55 @@ export function useKeyboardShortcuts(bindings: readonly ShortcutBinding[], enabl
             timer = undefined;
         };
 
+        // Sequences are resolved fresh on every press rather than cached:
+        // one of them may have just been rebound in the settings dialog,
+        // which is open over this very window.
+        const parse = () => latest.current
+            .map(b => ({ steps: canonicalSequence(b.shortcut), run: b.run }))
+            .filter((b): b is { steps: string[]; run: () => void } => b.steps !== null);
+
+        /** What `steps` would do, without doing it. */
+        const classify = (
+            parsed: ReturnType<typeof parse>, steps: string[], e: KeyboardEvent,
+        ): { outcome: 'ran' | 'partial' | 'none'; run?: () => void } => {
+            // A bare key is only ours outside a text field. Checked here
+            // rather than when the binding is made, because the same binding
+            // is legitimate in the output area and wrong in the command line.
+            const bareInText = steps.length === 1 && !stepHasModifier(steps[0]) && isTextEntry(e.target);
+            const exact = parsed.find(b =>
+                b.steps.length === steps.length && b.steps.every((s, i) => s === steps[i]));
+            if (exact) return bareInText ? { outcome: 'none' } : { outcome: 'ran', run: exact.run };
+            const prefix = parsed.some(b =>
+                b.steps.length > steps.length && steps.every((s, i) => b.steps[i] === s));
+            if (!prefix || bareInText) return { outcome: 'none' };
+            return { outcome: 'partial' };
+        };
+
+        const claims = (e: KeyboardEvent): boolean => {
+            const step = stepFromEvent(e);
+            if (step === null) return false;
+            const parsed = parse();
+            if (classify(parsed, [...pending, step], e).outcome !== 'none') return true;
+            return pending.length > 0 && classify(parsed, [step], e).outcome === 'partial';
+        };
+        claimants.add(claims);
+
         const onKeyDown = (e: KeyboardEvent) => {
             const step = stepFromEvent(e);
             if (step === null) return;   // a modifier on its own
-
-            // Sequences are resolved fresh on every press rather than cached:
-            // one of them may have just been rebound in the settings dialog,
-            // which is open over this very window.
-            const parsed = latest.current
-                .map(b => ({ steps: canonicalSequence(b.shortcut), run: b.run }))
-                .filter((b): b is { steps: string[]; run: () => void } => b.steps !== null);
+            const parsed = parse();
 
             const attempt = (steps: string[]): 'ran' | 'partial' | 'none' => {
-                const exact = parsed.find(b =>
-                    b.steps.length === steps.length && b.steps.every((s, i) => s === steps[i]));
-                if (exact) {
-                    // A bare key is only ours outside a text field. Checked
-                    // here rather than when the binding is made, because the
-                    // same binding is legitimate in the output area and wrong
-                    // in the command line.
-                    if (steps.length === 1 && !stepHasModifier(steps[0]) && isTextEntry(e.target)) return 'none';
-                    e.preventDefault();
-                    // The Lua keybinding engine listens on the bubble phase.
-                    // A menu accelerator wins over it, as it does in Qt.
-                    e.stopPropagation();
-                    exact.run();
-                    return 'ran';
-                }
-                const prefix = parsed.some(b =>
-                    b.steps.length > steps.length && steps.every((s, i) => b.steps[i] === s));
-                if (!prefix) return 'none';
-                if (steps.length === 1 && !stepHasModifier(steps[0]) && isTextEntry(e.target)) return 'none';
+                const { outcome, run } = classify(parsed, steps, e);
+                if (outcome === 'none') return 'none';
                 e.preventDefault();
+                // A menu accelerator wins over the Lua keybinding engine, as it
+                // does in Qt: that listener yields the key to us (see
+                // claimedByAppShortcut), and this keeps it from the bubble-phase
+                // one too.
                 e.stopPropagation();
-                return 'partial';
+                run?.();
+                return outcome;
             };
 
             const outcome = attempt([...pending, step]);
@@ -118,6 +149,7 @@ export function useKeyboardShortcuts(bindings: readonly ShortcutBinding[], enabl
         document.addEventListener('keydown', onKeyDown, true);
         return () => {
             document.removeEventListener('keydown', onKeyDown, true);
+            claimants.delete(claims);
             reset();
         };
     }, [enabled]);

@@ -1,7 +1,10 @@
 import { ItemIdSequence } from '../ItemIdSequence';
 import type { KeyNode } from '../../storage/schema';
 import { buildEffectivelyEnabledIds } from '../../storage/schema';
-import { domCodeToQtKey, listToQtModifiers } from './qtKeys';
+import {
+    bindingQtModifiers, domCodeToQtKey, isKeypadBinding, isKeypadEvent, keypadEventQtKey,
+    QT_SHIFTED_SYMBOLS,
+} from './qtKeys';
 
 export type { KeyNode };
 
@@ -13,14 +16,46 @@ export interface KeyCodeInfo {
     modifiers: number;
 }
 
-function matchesEvent(key: string, modifiers: string[], event: KeyboardEvent): boolean {
-    if (event.code !== key) return false;
-    return (
-        event.ctrlKey  === modifiers.includes('ctrl')  &&
-        event.shiftKey === modifiers.includes('shift') &&
-        event.altKey   === modifiers.includes('alt')   &&
-        event.metaKey  === modifiers.includes('meta')
-    );
+/** What a binding is matched on: the DOM code it is stored under, its
+ *  modifier names, and the Qt::Key it was made with when that says more than
+ *  the code does (a shifted symbol, or a NumLock-off numpad key). */
+interface Matchable {
+    key: string;
+    modifiers: string[];
+    qtKey?: number;
+}
+
+/**
+ * Whether `event` is the key `b` is bound to — desktop's `TKey::match`, which
+ * compares the Qt::Key and the WHOLE modifier mask, Keypad bit included.
+ *
+ *  - Ctrl/Shift/Alt/Meta must be exactly the binding's.
+ *  - A numpad binding only answers the numpad, and the main keyboard's keys
+ *    only answer main-keyboard bindings: `permKey(Keypad, Key_8)` is numpad 8
+ *    and never the top-row 8.
+ *  - On the numpad the key is compared in Qt terms, so NumLock decides it as it
+ *    does on desktop: numpad 8 is Key_8 with NumLock on and Key_Up with it off.
+ *  - Elsewhere the DOM code decides, except that a shifted symbol (Key_Exclam)
+ *    is only reachable with Shift held — Qt never reports `!` for a plain 1.
+ */
+function matchesEvent(b: Matchable, event: KeyboardEvent): boolean {
+    const { modifiers } = b;
+    if (
+        event.ctrlKey  !== modifiers.includes('ctrl')  ||
+        event.shiftKey !== modifiers.includes('shift') ||
+        event.altKey   !== modifiers.includes('alt')   ||
+        event.metaKey  !== modifiers.includes('meta')
+    ) return false;
+    const keypad = isKeypadBinding(b.key, modifiers);
+    if (keypad !== isKeypadEvent(event)) return false;
+    if (keypad) {
+        // 0 is "no Qt key known" (an unmapped string handed to tempKey).
+        const want = b.qtKey || domCodeToQtKey(b.key);
+        return want !== undefined && want === keypadEventQtKey(event);
+    }
+    if (event.code !== b.key) return false;
+    if (b.qtKey !== undefined && QT_SHIFTED_SYMBOLS.has(b.qtKey) && !modifiers.includes('shift')) return false;
+    return true;
 }
 
 interface TempKey {
@@ -43,6 +78,18 @@ interface TempKey {
      *  TKey::setScript leaves it unable to fire or report active, however it
      *  is switched. */
     uncompiled?: boolean;
+    /** Place in the profile's one key list — see {@link KeyEngine.process}. */
+    seq: number;
+}
+
+/** A permanent key's getKeyCode answer: the Qt::Key it was made with when
+ *  known, else its code's, and the mask with the Keypad bit a Numpad* code
+ *  implies. */
+export function permKeyCode(node: Pick<KeyNode, 'key' | 'modifiers' | 'qtKey'>): KeyCodeInfo {
+    return {
+        keyCode: node.qtKey ?? domCodeToQtKey(node.key) ?? 0,
+        modifiers: bindingQtModifiers(node.key, node.modifiers),
+    };
 }
 
 export class KeyEngine {
@@ -51,6 +98,19 @@ export class KeyEngine {
     /** Shared with every other engine in the profile — see ItemIdSequence. */
     private idSeq = new ItemIdSequence();
     setIdSequence(seq: ItemIdSequence): void { this.idSeq = seq; }
+
+    // ── Unified ordering (Mudlet `mKeyRootNodeList`) ──────────────────────────
+    // Desktop keeps temporary and permanent keys in ONE root list, in the order
+    // they were created, and KeyUnit::processDataStream walks it front to back,
+    // so the earlier-made key wins a key two bindings share. Numbered as
+    // PatternEngine numbers aliases: a permanent key draws its seq the first
+    // time it is seen (kept across reloads), a temp key when it is made, and a
+    // permanent key sorts by its ROOT's seq — a subtree is walked whole where
+    // its root sits.
+    private regCounter = 1;
+    private readonly permReg = new Map<string, number>();
+    /** Each key in {@link perm} → the seq of the root it hangs under. */
+    private permRootSeq = new Map<string, number>();
 
     // ── Temp keybindings (session-scoped, created by scripts) ─────────────────
 
@@ -66,7 +126,7 @@ export class KeyEngine {
         const id = this.idSeq.next();
         this.temp.set(id, {
             key, modifiers, fn, qtKey: qt?.keyCode, qtModifier: qt?.modifier, enabled: true,
-            uncompiled: qt?.uncompiled === true,
+            uncompiled: qt?.uncompiled === true, seq: this.regCounter++,
         });
         return id;
     }
@@ -105,12 +165,12 @@ export class KeyEngine {
             if (!t || t.dead) return null;
             return {
                 keyCode: t.qtKey ?? (typeof t.key === 'string' ? domCodeToQtKey(t.key) ?? 0 : t.key),
-                modifiers: t.qtModifier ?? listToQtModifiers(t.modifiers),
+                modifiers: t.qtModifier ?? bindingQtModifiers(t.key, t.modifiers),
             };
         }
         const node = this.perm.find(k => k.name === idOrName && k.key);
         if (!node) return null;
-        return { keyCode: domCodeToQtKey(node.key) ?? 0, modifiers: listToQtModifiers(node.modifiers) };
+        return permKeyCode(node);
     }
 
     killKey(id: number): boolean {
@@ -138,9 +198,47 @@ export class KeyEngine {
      *  exists to avoid. */
     processTemp(event: KeyboardEvent, all = false): boolean {
         let fired = false;
-        for (const { key, modifiers, fn, enabled, uncompiled } of [...this.temp.values()]) {
-            if (!enabled || uncompiled || !matchesEvent(key, modifiers, event)) continue;
-            fn();
+        for (const t of [...this.temp.values()]) {
+            if (!this.fireTemp(t, event)) continue;
+            if (!all) return true;
+            fired = true;
+        }
+        return fired;
+    }
+
+    /** Run one temp key if it is live and `event` is its key. */
+    private fireTemp(t: TempKey, event: KeyboardEvent): boolean {
+        if (!t.enabled || t.uncompiled || !matchesEvent(t, event)) return false;
+        t.fn();
+        return true;
+    }
+
+    /**
+     * A keypress's whole key pass: temporary and permanent keys alike, in the
+     * one order desktop's `mKeyRootNodeList` holds them (creation order, see
+     * the unified-ordering note above). The first match fires and ends the
+     * pass, unless `all` (Mudlet's "React to all keybindings on the same key")
+     * asks for every match. Running all the temps first put a tempKey made
+     * after a permKey ahead of it (mudlet-web#340). Temps fire themselves; a
+     * permanent hit goes to `firePerm`. Both lists are snapshots taken when the
+     * pass began — a handler may make, kill or toggle keys. True when anything
+     * fired.
+     */
+    process(event: KeyboardEvent, all: boolean, firePerm: (binding: KeyNode) => void): boolean {
+        const steps: { seq: number; at: number; temp?: TempKey; perm?: KeyNode }[] = [];
+        for (const t of this.temp.values()) steps.push({ seq: t.seq, at: 0, temp: t });
+        this.perm.forEach((binding, i) => {
+            steps.push({ seq: this.permRootSeq.get(binding.id) ?? Number.MAX_SAFE_INTEGER, at: i + 1, perm: binding });
+        });
+        steps.sort((a, b) => a.seq - b.seq || a.at - b.at);
+        let fired = false;
+        for (const step of steps) {
+            if (step.temp) {
+                if (!this.fireTemp(step.temp, event)) continue;
+            } else if (step.perm) {
+                if (!matchesEvent(step.perm, event)) continue;
+                firePerm(step.perm);
+            }
             if (!all) return true;
             fired = true;
         }
@@ -152,22 +250,40 @@ export class KeyEngine {
     /** `blocked`: bindings whose code will not compile, which Mudlet leaves
      *  inactive — see buildEffectivelyEnabledIds. */
     loadPerm(keybindings: KeyNode[], blocked?: ReadonlySet<string>): void {
+        // Store order puts a parent before its children, so registering in it
+        // numbers a new root ahead of anything under it.
+        this.reserveOrder(keybindings);
+        const byId = new Map(keybindings.map(k => [k.id, k]));
+        for (const id of this.permReg.keys()) {
+            if (!byId.has(id)) this.permReg.delete(id);
+        }
+        const rootSeq = (node: KeyNode): number => {
+            let cur = node;
+            const seen = new Set<string>([cur.id]);
+            while (cur.parentId) {
+                const parent = byId.get(cur.parentId);
+                if (!parent || seen.has(parent.id)) break;
+                seen.add(parent.id);
+                cur = parent;
+            }
+            return this.permReg.get(cur.id) ?? Number.MAX_SAFE_INTEGER;
+        };
         const enabledIds = buildEffectivelyEnabledIds(keybindings, blocked);
         this.perm = keybindings.filter(k => enabledIds.has(k.id) && k.key);
+        this.permRootSeq = new Map(this.perm.map(k => [k.id, rootSeq(k)]));
     }
 
-    matchPerm(event: KeyboardEvent): KeyNode | null {
-        for (const binding of this.perm) {
-            if (matchesEvent(binding.key, binding.modifiers, event)) return binding;
+    /**
+     * Give the profile's saved keys their place in the firing order before any
+     * script can make a temporary one. Desktop builds them from the profile
+     * before a script runs, so a tempKey a script makes at load time sorts
+     * after them — but here the scripts run before the first {@link loadPerm},
+     * which then reuses the seqs reserved here.
+     */
+    reserveOrder(items: readonly { id: string }[]): void {
+        for (const item of items) {
+            if (!this.permReg.has(item.id)) this.permReg.set(item.id, this.regCounter++);
         }
-        return null;
-    }
-
-    /** Every permanent keybinding the event matches, in tree order. The list
-     *  form of {@link matchPerm}, for Mudlet's "React to all keybindings on the
-     *  same key". */
-    matchAllPerm(event: KeyboardEvent): KeyNode[] {
-        return this.perm.filter(b => matchesEvent(b.key, b.modifiers, event));
     }
 
     /**
@@ -201,5 +317,6 @@ export class KeyEngine {
     destroy(): void {
         this.temp.clear();
         this.perm = [];
+        this.permRootSeq = new Map();
     }
 }

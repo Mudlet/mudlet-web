@@ -36,11 +36,12 @@ function modifiersToQt(mods: string[], key: string): number {
         else if (k === 'ctrl')  bits |= QT_CTRL;
         else if (k === 'alt')   bits |= QT_ALT;
         else if (k === 'meta')  bits |= QT_META;
+        else if (k === 'keypad') bits |= QT_KEYPAD;
     }
-    // NumpadEnter has its own dedicated Qt::Key, so it doesn't need the flag;
-    // every other Numpad* key shares a Qt::Key with its main-keyboard counterpart
-    // and the modifier is the only thing that disambiguates them.
-    if (key.startsWith('Numpad') && key !== 'NumpadEnter') bits |= QT_KEYPAD;
+    // Every Numpad* key is on the keypad, and desktop's matcher compares the
+    // whole mask: Qt reports numpad Enter as Key_Enter WITH KeypadModifier, so
+    // a NumpadEnter binding exported without the bit could never fire there.
+    if (key.startsWith('Numpad')) bits |= QT_KEYPAD;
     return bits;
 }
 
@@ -323,7 +324,7 @@ function emitKeys(xml: XmlBuilder, nodes: KeyNode[], opts: ExportOptions): void 
             xml.leaf('packageName', n.packageName ?? '');
             xml.leaf('script', n.code ?? '');
             xml.leaf('command', n.command ?? '');
-            xml.leaf('keyCode', String((n.key && domCodeToQtKey(n.key)) || 0));
+            xml.leaf('keyCode', String((n.key && (n.qtKey || domCodeToQtKey(n.key))) || 0));
             xml.leaf('keyModifier', String(modifiersToQt(n.modifiers ?? [], n.key)));
         });
     xml.close('KeyPackage');

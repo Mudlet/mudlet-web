@@ -24,6 +24,7 @@ import { DEFAULT_PROXY_URL } from '../../../storage';
 import { renderMarkdown } from '../../markdown';
 import { useDebounced } from '../../search/useDebounced';
 import xterm256 from '../../../mud/text/xterm256';
+import { bindingFromEvent } from '../../../mud/keybindings/qtKeys';
 import './ScriptEditorPanel.css';
 
 type Category = 'scripts' | 'aliases' | 'triggers' | 'timers' | 'keys' | 'buttons' | 'packages' | 'errors' | 'variables';
@@ -114,7 +115,7 @@ function formatCode(code: string): string {
 
 function formatKeyCombo(key: string, modifiers: string[]): string {
     if (!key) return '';
-    const parts = [...modifiers.map(m => m[0].toUpperCase() + m.slice(1)), formatCode(key)];
+    const parts = [...modifiers.filter(m => m !== 'keypad' || !key.startsWith('Numpad')).map(m => m[0].toUpperCase() + m.slice(1)), formatCode(key)];
     return parts.join('+');
 }
 
@@ -1080,6 +1081,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     // Key extra
     const [editKey, setEditKey]               = useState('');
     const [editModifiers, setEditModifiers]   = useState<string[]>([]);
+    const [editQtKey, setEditQtKey]           = useState<number | undefined>(undefined);
     const [capturing, setCapturing]           = useState(false);
     const [editKeyCommand, setEditKeyCommand] = useState('');
     // Timer extra (command)
@@ -1440,6 +1442,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
             const k = selected as KeyNode;
             setEditKey(k.key);
             setEditModifiers(k.modifiers);
+            setEditQtKey(k.qtKey);
             setEditKeyCommand(k.command ?? '');
         }
         if (category === 'buttons') {
@@ -1510,13 +1513,12 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
             e.stopImmediatePropagation();
             if (e.code === 'Escape') { setCapturing(false); return; }
             if (MODIFIER_KEYS.has(e.key)) return;
-            const mods: string[] = [];
-            if (e.ctrlKey)  mods.push('ctrl');
-            if (e.shiftKey) mods.push('shift');
-            if (e.altKey)   mods.push('alt');
-            if (e.metaKey)  mods.push('meta');
-            setEditKey(e.code);
-            setEditModifiers(mods);
+            // Recorded as desktop's recorder would: the Qt key the press
+            // produced, and a NumLock-off numpad key as its own Keypad key.
+            const recorded = bindingFromEvent(e);
+            setEditKey(recorded.key);
+            setEditModifiers(recorded.modifiers);
+            setEditQtKey(recorded.qtKey);
             setCapturing(false);
             setDirty(true);
         };
@@ -1796,7 +1798,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
             const seconds = editHours * 3600 + editMinutes * 60 + editSecs + editMs / 1000;
             updateTimer(connectionId, targetId, { name: editName, seconds, repeat: editRepeat, language: 'lua', code: editCode, command: editTimerCommand || undefined });
         } else if (targetCategory === 'keys') {
-            updateKeybinding(connectionId, targetId, { name: editName, key: editKey, modifiers: editModifiers, language: 'lua', code: editCode, command: editKeyCommand || undefined });
+            updateKeybinding(connectionId, targetId, { name: editName, key: editKey, modifiers: editModifiers, qtKey: editQtKey, language: 'lua', code: editCode, command: editKeyCommand || undefined });
         } else {
             // buttons
             if (target.isGroup) {

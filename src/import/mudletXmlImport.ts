@@ -340,7 +340,7 @@ function parseKeys(els: Element[], parentId: string | null, out: KeyNode[], warn
         if (!group && !key && !unbound) {
             warnings.push(`Key "${getRawText(el, 'name')}": unknown Qt key code ${qtKey} — keybinding imported with no key set`);
         }
-        out.push({ id, parentId, isGroup: group, name: getRawText(el, 'name'), enabled: isYes(el, 'isActive'), key, modifiers: qtModifiersToList(qtMod), code: getText(el, 'script'), language: 'lua', command: getRawText(el, 'command'), packageName: getText(el, 'packageName') || undefined });
+        out.push({ id, parentId, isGroup: group, name: getRawText(el, 'name'), enabled: isYes(el, 'isActive'), key, modifiers: qtModifiersToList(qtMod), ...(key ? { qtKey } : {}), code: getText(el, 'script'), language: 'lua', command: getRawText(el, 'command'), packageName: getText(el, 'packageName') || undefined });
         // Unconditional, as in desktop's readKeyGroup (XMLimport.cpp:1816).
         parseKeys(directChildren(el, 'Key', 'KeyGroup'), id, out, warnings);
     }

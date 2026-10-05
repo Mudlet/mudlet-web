@@ -34,7 +34,7 @@ function formatCode(code: string): string {
 
 function formatKeyCombo(key: string, modifiers: string[]): string {
     if (!key) return '';
-    return [...modifiers.map(m => m[0].toUpperCase() + m.slice(1)), formatCode(key)].join('+');
+    return [...modifiers.filter(m => m !== 'keypad' || !key.startsWith('Numpad')).map(m => m[0].toUpperCase() + m.slice(1)), formatCode(key)].join('+');
 }
 
 // ── Matching ────────────────────────────────────────────────────────────────

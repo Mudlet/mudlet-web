@@ -6,6 +6,7 @@ import { boundShortcuts, shortcutPlatform } from './ui/commands/appShortcuts';
 import { useMudSession } from './hooks/useMudSession';
 import { useAutoReconnect } from './hooks/useAutoReconnect';
 import { useEngines } from './hooks/useEngines';
+import { claimedByAppShortcut } from './hooks/useKeyboardShortcuts';
 import { Toolbar } from './ui/Toolbar';
 import { CommandBar } from './ui/CommandBar';
 import { useCmdLineSelection } from './ui/cmdline/useCmdLineSelection';
@@ -1084,7 +1085,8 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // line is not one of those: it is a textarea that holds focus all session,
     // so it has to pass keys through — see listenForKeybindings.
     useEffect(
-        () => listenForKeybindings(document, e => engineRef.current?.processKey(e) ?? false),
+        // A key a menu accelerator holds is the accelerator's, as on desktop.
+        () => listenForKeybindings(document, e => engineRef.current?.processKey(e) ?? false, claimedByAppShortcut),
         [engineRef],
     );
 

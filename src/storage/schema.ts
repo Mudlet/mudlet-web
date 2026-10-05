@@ -975,7 +975,13 @@ export interface TimerNode extends BaseNode {
 
 export interface KeyNode extends BaseNode {
     key: string;         // KeyboardEvent.code value, e.g. "F1", "KeyA", "Numpad1"
-    modifiers: string[]; // subset of ["ctrl", "shift", "alt", "meta"]
+                         // (a numpad key with NumLock off: the key it produces, e.g. "ArrowUp", flagged "keypad")
+    modifiers: string[]; // subset of ["ctrl", "shift", "alt", "meta", "keypad"]
+    /** The Qt::Key the binding was made with (permKey, desktop XML, the key
+     *  recorder), when known. `key` alone is lossy — `!` and `1` are both
+     *  Digit1 — and desktop matches on this, so a Key_Exclam binding without
+     *  Shift never fires for a plain 1. getKeyCode and XML export report it. */
+    qtKey?: number;
     code: string;
     language: 'lua' | 'js';
     command?: string;    // plain command to send when the keybinding fires
