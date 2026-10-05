@@ -4896,10 +4896,16 @@ export class ScriptingAPI {
             // line and a getCurrentLine on no line at all (mudlet-web#273).
             const y = this.getLineCount(windowName);
             con.moveTo(y, Math.max(0, (con.lineText(y)?.length ?? 0) - 1));
-        } else {
-            con.moveToEnd();
-            con.setCursorColumn(con.getLine().length);
+            // The leading-newline latch is left as it is. beginLine set it for
+            // the matched line's missing terminator; once an echo has ended
+            // that line, a following "\n" ends the empty line after it — a
+            // blank line on desktop, whose echo always appends whatever the
+            // cursor does. Re-arming it here swallowed that blank line
+            // (generic_mapper's print_echoes, mudlet-web#343).
+            return;
         }
+        con.moveToEnd();
+        con.setCursorColumn(con.getLine().length);
         con.markCursorAtEnd();
     }
 

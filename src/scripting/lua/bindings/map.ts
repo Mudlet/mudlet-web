@@ -186,14 +186,14 @@ export function installMapBindings({
     // but never shown still answers "you haven't opened a map yet".
     lua.global.set('__getPlayerRoom', () => {
         if (!api.windows.hasMapper()) return "you haven't opened a map yet";
-        return api.map.getPlayerRoom() ?? 'the player does not have a valid roomID set';
+        return api.map.getPlayerRoomId() ?? 'the player does not have a valid roomID set';
     });
     // The same "is there a mapper" test on its own — setMapPerspective /
     // shiftMapPerspective (Bridge.lua) refuse with it before anything else.
     lua.global.set('__mudlet_mapper_open', () => api.windows.hasMapper());
     // The player room with no mapper check — what gotoRoom reads (Mudlet's
     // TMap::gotoRoom goes to mRoomIdHash directly, not through getPlayerRoom).
-    lua.global.set('__getPlayerRoomId', () => api.map.getPlayerRoom() ?? null);
+    lua.global.set('__getPlayerRoomId', () => api.map.getPlayerRoomId());
     // Mudlet getRoomIDbyHash: returns -1 when no room has the given hash.
     // The hash is a string on desktop whatever the script passed — GMCP's
     // Room.Info.num is a number, so `getRoomIDbyHash(gmcp.Room.Info.num)` has
