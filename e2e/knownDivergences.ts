@@ -380,6 +380,25 @@ export interface PlatformDivergence {
 
 export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
     {
+        api: 'postHTTP / putHTTP / deleteHTTP / customHTTP answered by a redirect, sent without the proxy',
+        behaviour:
+            'Desktop: a 301/302/303 is followed with a GET and finishes as sysGetHttpDone; a 307/308 repeats '
+            + 'the verb and finishes as that verb\'s event. Mudlet Web, through the proxy: the same. Mudlet Web, '
+            + 'fetched directly (the origin answers CORS): any redirected request finishes as sysGetHttpDone '
+            + 'with the final url, so a 307/308 reports sysGetHttpDone where desktop reports the verb\'s event; '
+            + 'and the browser re-sends a PUT (with its body), DELETE or custom verb answered by a 301/302 with '
+            + 'its own method, so the server sees that verb, not desktop\'s GET.',
+        reason:
+            'A direct request is followed by the browser under the Fetch standard, which keeps every verb but '
+            + 'POST on a 301/302, and hides the redirect\'s status and Location from script (redirect: '
+            + '"manual" answers an opaque response with neither), so neither the method of the follow-up nor '
+            + 'which redirect status was followed can be chosen or known. The event is picked for the '
+            + '301/302/303 that answer nearly every redirected POST/PUT/DELETE. The proxy follows redirects '
+            + 'itself, as Qt does, and reports the final url and method (proxy/redirects.ts). Pinned by '
+            + 'tests/scripting/httpRedirectParity.test.ts.',
+        issue: '#349',
+    },
+    {
         api: 'os.clock()',
         behaviour:
             'Desktop: CPU time the whole process has used — stands still while idle (0.0 across an idle 1.5s '
