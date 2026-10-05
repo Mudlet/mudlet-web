@@ -25,6 +25,9 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
     // exactly that reason. Takes the numeric id permScript just returned so it
     // can only ever remove the one it created, never a same-named sibling.
     lua.global.set('__mudlet_removeScriptById', (id: unknown) => api.removeScriptById(Number(id)));
+    // What the body permScript/setScript just installed raised as the engine
+    // ran it (the one and only run), or nil when it ran cleanly.
+    lua.global.set('__mudlet_scriptLoadError', (id: unknown) => api.scriptLoadError(Number(id)));
     // Mudlet permScript(name, parent, luaCode) — creates a persisted script
     // under an existing script group (parent="" → root). Returns the new
     // script's id (UUID string) or -1 on failure. The Bridge.lua wrapper

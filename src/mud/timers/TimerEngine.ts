@@ -393,6 +393,19 @@ export class TimerEngine {
     }
 
     /**
+     * Raise the runtime active flags of a profile's permanent timers as its
+     * load leaves them, without arming anything yet. Desktop builds and
+     * activates the timers from the profile XML before any script compiles,
+     * so a script body that runs at load already sees them active, and an
+     * enableTimer/disableTimer it calls is a transition from that state rather
+     * than from "never seen" — which left every other timer reporting inactive
+     * for good. {@link loadPerm} arms them afterwards.
+     */
+    seedPerm(timers: TimerNode[]): void {
+        this.reconcileActive(permTree(timers));
+    }
+
+    /**
      * Bring the runtime active flags in line with a new node list.
      *
      * - A timer seen for the first time is set as Mudlet's loader leaves it:

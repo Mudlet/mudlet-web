@@ -466,6 +466,23 @@ export class ScriptingEngine implements EngineHost {
     // registration, so applyScriptsFromStore only sends what changed. Only
     // scripts that are registered (list non-empty) are kept.
     private readonly scriptHandlerState = new Map<string, { name: string; active: boolean; key: string }>();
+    // Scripts whose body last stopped with an error, syntax or runtime, as it
+    // was compiled: desktop's `mOK_code = false`. Tree::isActive asks for it,
+    // so such a script, and everything under it, reports inactive and its
+    // handlers are skipped until a later compile (setScript, an edit) succeeds.
+    private readonly failedScripts = new Set<string>();
+    // What each script's last compile threw, for permScript/setScript to raise
+    // with; cleared by a compile that succeeds.
+    private readonly scriptLoadErrors = new Map<string, unknown>();
+    // Bumped by every compile, and stamped on the script it compiled, so a
+    // caller can tell whether a store write it just made ran the body.
+    private scriptCompileSeq = 0;
+    private readonly scriptCompiledAt = new Map<string, number>();
+    // While the profile's scripts are being compiled at load: the ones already
+    // compiled during it, so the walk does not run one again that an earlier
+    // body replaced with setScript (TScript::compileAll skips a script that no
+    // longer needs compiling).
+    private compiledThisLoad: Set<string> | null = null;
     // resetProfile() coalescing + a teardown guard so a deferred reset that
     // fires after the engine was destroyed is a no-op.
     private resetting = false;
@@ -749,6 +766,10 @@ export class ScriptingEngine implements EngineHost {
             // Likewise the saved aliases, ahead of temp aliases scripts make.
             this.aliasEngine.reserveOrder(
                 useAppStore.getState().connectionAliases[this.connectionId] ?? []);
+            // The saved timers are active before any script body runs, as on
+            // desktop, where they are built from the profile first; they are
+            // armed by applyTimersFromStore, after the scripts.
+            this.timerEngine.seedPerm(useAppStore.getState().connectionTimers[this.connectionId] ?? []);
             this.applyScriptsFromStore();
             this.applyAliasesFromStore();
             this.applyTimersFromStore();
@@ -1667,20 +1688,118 @@ export class ScriptingEngine implements EngineHost {
         if (prev === next && this.profileScriptsCompiled) return;
         const profileLoad = !this.profileScriptsCompiled;
         this.profileScriptsCompiled = true;
-        if (profileLoad) this.scriptHandlerState.clear();
+        if (profileLoad) {
+            this.scriptHandlerState.clear();
+            this.failedScripts.clear();
+            this.scriptLoadErrors.clear();
+        } else {
+            const live = new Set(next.map(s => s.id));
+            for (const id of [...this.failedScripts]) if (!live.has(id)) this.failedScripts.delete(id);
+            for (const id of [...this.scriptLoadErrors.keys()]) if (!live.has(id)) this.scriptLoadErrors.delete(id);
+            for (const id of [...this.scriptCompiledAt.keys()]) if (!live.has(id)) this.scriptCompiledAt.delete(id);
+        }
 
-        const nextEnabledIds = buildEffectivelyEnabledIds(next);
+        this.syncScriptHandlersFrom(next);
+
+        // Then the bodies — only where desktop compiles a script, which is NOT
+        // when it is switched on: ScriptUnit::enableScript only flips the flag,
+        // so a script never compiled stays that way (its handler then finds no
+        // function), and one already compiled is not run again.
+        //  - Profile load: ScriptUnit::compileAll compiles every script under a
+        //    root that is active, children whatever their own switch says;
+        //    modules are compiled as they are imported, active or not.
+        //  - Afterwards: a script that is new or whose code changed is compiled
+        //    by TScript::setScript / the XML import, active or not.
+        if (profileLoad) { this.compileProfileScripts(next); return; }
+        const prevById = new Map(prev.map(s => [s.id, s] as const));
+        for (const { s } of this.scriptLoadOrder(next)) {
+            if (s.language !== 'lua') continue;
+            const was = prevById.get(s.id);
+            if (!was || was.language !== 'lua' || was.code !== s.code) this.reloadScript(s);
+        }
+    }
+
+    /**
+     * Mudlet-style module load priority: scripts owned by modules with a
+     * negative priority load before profile scripts; non-negative priorities
+     * load after. Within a priority bucket, original array order is preserved
+     * so existing trees stay deterministic. Profile-owned scripts (no
+     * packageName) are treated as priority 0. Equal priorities: the profile
+     * before its modules (its XML is read before any module installs), and
+     * modules by name among themselves.
+     */
+    private scriptLoadOrder(list: ScriptNode[]): Array<{ s: ScriptNode; mod: boolean }> {
+        const priorityMap = this.modulePriorityMap();
+        const isModuleScript = (s: ScriptNode): boolean => !!s.packageName && priorityMap.has(s.packageName);
+        return list
+            .map((s, idx) => ({ s, idx, prio: priorityFor(s, priorityMap), mod: isModuleScript(s) }))
+            .sort((a, b) => a.prio - b.prio || Number(a.mod) - Number(b.mod)
+                || moduleNameOrder(a.s, b.s, priorityMap) || a.idx - b.idx);
+    }
+
+    /**
+     * ScriptUnit::compileAll at profile load. Desktop walks its live tree and
+     * asks each root whether it is active only when it reaches it, so a body
+     * that runs earlier can switch a later script on or off, replace its code
+     * or remove it, and the walk honours that. Here every step re-reads the
+     * store, and first takes in whatever the last body changed (handler
+     * activity, a body setScript replaced) — the store subscription is not
+     * attached yet on a first load, and the walk has to see the change before
+     * it moves on either way.
+     */
+    private compileProfileScripts(initial: ScriptNode[]): void {
+        const order = this.scriptLoadOrder(initial).map(({ s, mod }) => ({ id: s.id, mod }));
+        const compiled = new Set<string>();
+        this.compiledThisLoad = compiled;
+        let list: ScriptNode[] | null = null;
+        let byId = new Map<string, ScriptNode>();
+        try {
+            for (const { id, mod } of order) {
+                this.applyScriptsFromStore();
+                const now = useAppStore.getState().connectionScripts[this.connectionId] ?? [];
+                if (now !== list) { list = now; byId = new Map(now.map(n => [n.id, n] as const)); }
+                const s = byId.get(id);
+                if (!s || s.language !== 'lua' || compiled.has(id)) continue;
+                if (!mod && !this.scriptRootActive(s, byId)) continue;
+                this.reloadScript(s);
+            }
+            this.applyScriptsFromStore();
+        } finally {
+            this.compiledThisLoad = null;
+        }
+    }
+
+    /** Whether the root `s` sits under is switched on — what compileAll asks
+     *  of each root before compiling its subtree. */
+    private scriptRootActive(s: ScriptNode, byId: ReadonlyMap<string, ScriptNode>): boolean {
+        let node: ScriptNode = s;
+        const visited = new Set<string>();
+        while (node.parentId && !visited.has(node.id)) {
+            visited.add(node.id);
+            const parent = byId.get(node.parentId);
+            if (!parent) break;
+            node = parent;
+        }
+        return node.enabled;
+    }
+
+    /**
+     * Event-handler lists (Host::mEventHandlerMap). Every script that lists
+     * events is registered, enabled or not — desktop registers them as the XML
+     * is read and asks isActive() && ancestorsActive() only when an event comes
+     * (TScript::callEventHandler). isActive() wants the body to have compiled
+     * too, so a script that failed, or sits under one that did, is registered
+     * inactive. Registration order is load order: the profile's own tree
+     * first, then modules by priority, which install after it
+     * (mudlet::slot_connectionDialogueFinished). Only what changed since the
+     * last sync is sent.
+     */
+    private syncScriptHandlersFrom(list: ScriptNode[]): void {
+        const activeIds = buildEffectivelyEnabledIds(list, this.failedScripts);
         const priorityMap = this.modulePriorityMap();
         const isModuleScript = (s: ScriptNode): boolean =>
             !!s.packageName && priorityMap.has(s.packageName);
-
-        // Event-handler lists first (Host::mEventHandlerMap). Every script that
-        // lists events is registered, enabled or not — desktop registers them as
-        // the XML is read and asks isActive() && ancestorsActive() only when an
-        // event comes (TScript::callEventHandler). Registration order is load
-        // order: the profile's own tree first, then modules by priority, which
-        // install after it (mudlet::slot_connectionDialogueFinished).
-        const registrationOrder = next
+        const registrationOrder = list
             .map((s, idx) => ({ s, idx, mod: isModuleScript(s), prio: priorityFor(s, priorityMap) }))
             .sort((a, b) => Number(a.mod) - Number(b.mod) || (a.mod ? a.prio - b.prio : 0)
                 || moduleNameOrder(a.s, b.s, priorityMap) || a.idx - b.idx);
@@ -1692,7 +1811,7 @@ export class ScriptingEngine implements EngineHost {
             const had = this.scriptHandlerState.get(s.id);
             if (events.length === 0) continue;
             seen.add(s.id);
-            const state = { name: s.name, active: nextEnabledIds.has(s.id), key: events.join('\n') };
+            const state = { name: s.name, active: activeIds.has(s.id), key: events.join('\n') };
             if (had && had.name === state.name && had.active === state.active && had.key === state.key) continue;
             this.scriptHandlerState.set(s.id, state);
             handlerUpdates.push({ id: s.id, name: s.name, active: state.active, events });
@@ -1703,51 +1822,6 @@ export class ScriptingEngine implements EngineHost {
             handlerUpdates.push({ id, name: '', active: false, events: [] });
         }
         if (handlerUpdates.length > 0) this.syncScriptHandlers(handlerUpdates);
-
-        // Then the bodies — only where desktop compiles a script, which is NOT
-        // when it is switched on: ScriptUnit::enableScript only flips the flag,
-        // so a script never compiled stays that way (its handler then finds no
-        // function), and one already compiled is not run again.
-        //  - Profile load: ScriptUnit::compileAll compiles every script under a
-        //    root that is active, children whatever their own switch says;
-        //    modules are compiled as they are imported, active or not.
-        //  - Afterwards: a script that is new or whose code changed is compiled
-        //    by TScript::setScript / the XML import, active or not.
-        // Mudlet-style module load priority: scripts owned by modules with a
-        // negative priority load before profile scripts; non-negative priorities
-        // load after. Within a priority bucket, original array order is preserved
-        // so existing trees stay deterministic. Profile-owned scripts (no
-        // packageName) are treated as priority 0.
-        const byId = new Map(next.map(s => [s.id, s] as const));
-        const rootActive = (s: ScriptNode): boolean => {
-            let node: ScriptNode = s;
-            const visited = new Set<string>();
-            while (node.parentId && !visited.has(node.id)) {
-                visited.add(node.id);
-                const parent = byId.get(node.parentId);
-                if (!parent) break;
-                node = parent;
-            }
-            return node.enabled;
-        };
-        const prevById = profileLoad ? null : new Map(prev.map(s => [s.id, s] as const));
-        // Equal priorities: the profile before its modules (its XML is read
-        // before any module installs), and modules by name among themselves.
-        const orderedNext = next
-            .map((s, idx) => ({ s, idx, prio: priorityFor(s, priorityMap), mod: isModuleScript(s) }))
-            .sort((a, b) => a.prio - b.prio || Number(a.mod) - Number(b.mod)
-                || moduleNameOrder(a.s, b.s, priorityMap) || a.idx - b.idx);
-        for (const { s } of orderedNext) {
-            if (s.language !== 'lua') continue;
-            let compile: boolean;
-            if (prevById) {
-                const was = prevById.get(s.id);
-                compile = !was || was.language !== 'lua' || was.code !== s.code;
-            } else {
-                compile = isModuleScript(s) || rootActive(s);
-            }
-            if (compile) this.reloadScript(s);
-        }
     }
 
     private syncScriptHandlers(entries: ScriptHandlerEntry[]): void {
@@ -2889,6 +2963,7 @@ export class ScriptingEngine implements EngineHost {
             if (target.enabled === enabled) continue;
             store.updateScript(this.connectionId, target.id, { enabled });
         }
+        this.takeInScriptChanges();
         return true;
     }
 
@@ -3241,6 +3316,12 @@ export class ScriptingEngine implements EngineHost {
             if (type === 'timer') {
                 return this.timerEngine.permReportsActive(item as TimerNode, list as TimerNode[], checkAncestors);
             }
+            // A script's "compiled" is its body having run without an error.
+            if (type === 'script') {
+                if (!checkAncestors) return item.enabled && !this.failedScripts.has(item.id);
+                reachable ??= buildEffectivelyEnabledIds(list, this.failedScripts);
+                return reachable.has(item.id);
+            }
             if (!kind) return checkAncestors ? isEffectivelyEnabled(item, list) : item.enabled;
             if (!checkAncestors) return item.enabled && !this.itemCannotBeActive(kind, item as CompilableItem);
             reachable ??= buildEffectivelyEnabledIds(list,
@@ -3424,9 +3505,11 @@ export class ScriptingEngine implements EngineHost {
         if (type.toLowerCase() === 'timer') {
             return this.timerEngine.permAncestorsActive(start as TimerNode, list as TimerNode[]);
         }
+        // A script group whose body failed is not active (Tree::isActive).
+        const failed = type.toLowerCase() === 'script' ? this.failedScripts : null;
         let node = start.parentId ? byUuid.get(start.parentId) : undefined;
         while (node) {
-            if (!node.enabled) return false;
+            if (!node.enabled || failed?.has(node.id)) return false;
             node = node.parentId ? byUuid.get(node.parentId) : undefined;
         }
         return true;
@@ -3475,7 +3558,8 @@ export class ScriptingEngine implements EngineHost {
             // Mudlet counts a timer by the same state isActive reports.
             timers: tally(timers, this.timerEngine.tempCount, this.timerEngine.countPermActive(timers)),
             keys: tally(keys, this.keyEngine.tempCount),
-            scripts: tally(scripts, 0),
+            scripts: tally(scripts, 0,
+                scripts.filter(s => !s.isGroup && s.enabled && !this.failedScripts.has(s.id)).length),
             // Every label carrying a movie counts; the ones actually running
             // count as active too, so pauseMovie/startMovie move the second
             // number. This is Mudlet's own QMovie tally, and the only way a
@@ -3488,8 +3572,7 @@ export class ScriptingEngine implements EngineHost {
      * Mudlet `permScript(name, parent, luaCode)`. Creates a saved Lua script
      * named `name` under the script group `parent` (empty = root). Returns the
      * new script's id on success, -1 if `parent` is given but no script group
-     * with that name exists. The store subscription loads the script's
-     * handlers synchronously inside the addScript commit.
+     * with that name exists. The body runs once, before this returns.
      */
     createPermScript(name: string, parent: string, code: string): number {
         // No name check, here or in the other perm* creators: Mudlet never
@@ -3507,6 +3590,7 @@ export class ScriptingEngine implements EngineHost {
             if (!group) return -1;
             parentId = group.id;
         }
+        const before = this.scriptCompileSeq;
         const uuid = store.addScript(this.connectionId, {
             name,
             // Inactive on creation and a folder when there is no body, matching
@@ -3521,6 +3605,10 @@ export class ScriptingEngine implements EngineHost {
             eventHandlers: [],
             ...inheritedPackage(scripts, parentId),
         });
+        // The body runs as the script is created (TScript::setScript), once;
+        // the Bridge.lua wrapper reads the outcome back and removes the script
+        // again if it failed.
+        this.compileScriptNow(uuid, before);
         return this.numericIdFor(uuid);
     }
 
@@ -4028,9 +4116,8 @@ export class ScriptingEngine implements EngineHost {
 
     /**
      * Mudlet `setScript(name, luaCode[, pos])`. Replaces the source of the
-     * `pos`-th script (1-indexed; default 1) named `name`. Updating via the
-     * store re-runs the script load through the regular subscription pipeline,
-     * so handlers re-register cleanly. Returns true on success, -1 if no such
+     * `pos`-th script (1-indexed; default 1) named `name` and runs the new
+     * body once, before this returns. Returns the script's id, -1 if no such
      * script exists.
      */
     setScriptByName(name: string, code: string, pos: number): number {
@@ -4043,7 +4130,11 @@ export class ScriptingEngine implements EngineHost {
         const index = Math.floor(pos) - 1;
         if (index < 0 || index >= matches.length) return -1;
         const target = matches[index];
+        const before = this.scriptCompileSeq;
         store.updateScript(this.connectionId, target.id, { code });
+        // The body runs here, once, even when the code is what it was; the
+        // Bridge.lua wrapper reads the outcome back (scriptLoadErrorById).
+        this.compileScriptNow(target.id, before);
         return this.numericIdFor(target.id);
     }
 
@@ -4059,6 +4150,7 @@ export class ScriptingEngine implements EngineHost {
         const target = scripts.find(s => this.uuidToNumericId.get(s.id) === id);
         if (!target) return false;
         store.removeScript(this.connectionId, target.id);
+        this.takeInScriptChanges();
         return true;
     }
 
@@ -4135,7 +4227,18 @@ export class ScriptingEngine implements EngineHost {
         // below is the dangerous one: it survives teardown by construction, so it
         // re-checks after the await as well as before.
         if (this.disposed) return;
-        if (script.language !== 'lua' || !script.code) return;
+        if (script.language !== 'lua') return;
+        if (!script.code) {
+            // Nothing to run, and nothing that can fail: an emptied body is a
+            // clean compile, which is how setScript(name, "") repairs a script.
+            this.scriptCompiledAt.set(script.id, ++this.scriptCompileSeq);
+            this.compiledThisLoad?.add(script.id);
+            if (this.failedScripts.delete(script.id)) {
+                this.syncScriptHandlersFrom(useAppStore.getState().connectionScripts[this.connectionId] ?? []);
+            }
+            this.scriptLoadErrors.delete(script.id);
+            return;
+        }
         const rt = this.runtimes.lua;
         if (rt) { this.runScriptLoad(rt, script); return; }
         this.runtimeReady
@@ -4159,12 +4262,75 @@ export class ScriptingEngine implements EngineHost {
     }
 
     private runScriptLoad(rt: IScriptingRuntime, script: ScriptNode): void {
+        this.scriptCompiledAt.set(script.id, ++this.scriptCompileSeq);
+        this.compiledThisLoad?.add(script.id);
+        const wasFailed = this.failedScripts.has(script.id);
         try {
             rt.load(script.code, script.name);
+            this.failedScripts.delete(script.id);
+            this.scriptLoadErrors.delete(script.id);
         } catch (err) {
+            this.failedScripts.add(script.id);
+            this.scriptLoadErrors.set(script.id, err);
             this.reportEntityError('script', script.id, script.name, err);
         }
+        // A body that failed, or one that compiles again after failing, turns
+        // its own handlers and those of everything under it off or back on.
+        if (wasFailed !== this.failedScripts.has(script.id)) {
+            this.syncScriptHandlersFrom(useAppStore.getState().connectionScripts[this.connectionId] ?? []);
+        }
         this.api.flushOutput();
+    }
+
+    /**
+     * Bring the runtime up to date with the scripts in the store right now,
+     * and make sure the script `id` has been compiled since `before` (a
+     * {@link scriptCompileSeq} read ahead of the store write): a body runs as
+     * its code is set, whether or not the code changed (TScript::setScript).
+     * The store subscription will usually have run it already. Returns why
+     * that compile failed, or null when it ran. Backs permScript, setScript
+     * and appendScript, which run the body exactly once — through here — and
+     * report its error themselves.
+     */
+    private compileScriptNow(id: string, before: number): string | null {
+        this.takeInScriptChanges();
+        if ((this.scriptCompiledAt.get(id) ?? 0) <= before) {
+            const node = (useAppStore.getState().connectionScripts[this.connectionId] ?? []).find(s => s.id === id);
+            if (node) this.reloadScript(node);
+        }
+        return this.describeScriptLoadError(id);
+    }
+
+    /**
+     * Take in a script-tree change a Lua call just made, now rather than when
+     * the store subscription next runs: it is not attached while a first
+     * profile load compiles the scripts, and a script that a body switches off
+     * then must stop receiving events at once, as one it replaces must not be
+     * compiled again by the walk. A no-op once the subscription has seen it,
+     * and before the profile's scripts were first loaded, which takes in
+     * everything anyway.
+     */
+    private takeInScriptChanges(): void {
+        if (this.profileScriptsCompiled) this.applyScriptsFromStore();
+    }
+
+    /** What a script's last compile raised, for permScript/setScript's own
+     *  error: the message, or for an error object that is not one, its type
+     *  (TLuaInterpreter treats a number as a message, as lua_isstring does). */
+    private describeScriptLoadError(id: string): string | null {
+        if (!this.scriptLoadErrors.has(id)) return null;
+        const err = this.scriptLoadErrors.get(id);
+        const type = (err as { luaErrorObjectType?: unknown } | null)?.luaErrorObjectType;
+        if (typeof type === 'string') return `error object is a ${type} value`;
+        return describeThrown(err, 'script');
+    }
+
+    /** Why the script with this numeric id failed the last time its body ran,
+     *  or null if it ran cleanly. */
+    scriptLoadErrorById(id: number): string | null {
+        const scripts = useAppStore.getState().connectionScripts[this.connectionId] ?? [];
+        const target = scripts.find(s => this.uuidToNumericId.get(s.id) === id);
+        return target ? this.describeScriptLoadError(target.id) : null;
     }
 
     get currentVFS(): ProfileVFS | null { return this.vfs; }
@@ -4439,6 +4605,10 @@ export class ScriptingEngine implements EngineHost {
             // Likewise the saved aliases, ahead of temp aliases scripts make.
             this.aliasEngine.reserveOrder(
                 useAppStore.getState().connectionAliases[this.connectionId] ?? []);
+            // The saved timers are active before any script body runs, as on
+            // desktop, where they are built from the profile first; they are
+            // armed by applyTimersFromStore, after the scripts.
+            this.timerEngine.seedPerm(useAppStore.getState().connectionTimers[this.connectionId] ?? []);
             this.applyScriptsFromStore();
             this.applyAliasesFromStore();
             this.applyTriggersFromStore();

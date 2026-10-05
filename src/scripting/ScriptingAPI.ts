@@ -2863,6 +2863,12 @@ export class ScriptingAPI {
         return this.host.removeScriptById(id);
     }
 
+    /** Why the body of the script with this numeric id failed when permScript
+     *  or setScript just ran it, or null when it ran cleanly. */
+    scriptLoadError(id: number): string | null {
+        return this.host.scriptLoadErrorById(id);
+    }
+
     /** Mudlet `getScript(name [, pos]) → code, id`. Returns the source of the
      *  pos-th (1-indexed) script named `name` together with that script's own
      *  numeric id. Null when no script sits at that position, which Bridge.lua

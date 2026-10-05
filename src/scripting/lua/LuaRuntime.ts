@@ -3751,7 +3751,19 @@ end`);
         // Mudlet's own chunk name for a script, so an error reads as
         // [string "Script: name"]:LINE: exactly as it does there — package
         // authors and the install report quote it.
-        this.execInner(code, name, `Script: ${name}`);
+        try {
+            this.execInner(code, name, `Script: ${name}`);
+        } catch (e) {
+            // permScript names the type of a body's non-message error object
+            // ("error object is a table value"), as TLuaInterpreter does; the
+            // text the error arrives with by then is its tostring(). __exec
+            // notes the type of the error the run it just finished ended with.
+            const type = this.inert ? null : this.lua.global.get('__mudlet_exec_error_type');
+            if (typeof type === 'string' && e instanceof Error) {
+                (e as Error & { luaErrorObjectType?: string }).luaErrorObjectType = type;
+            }
+            throw e;
+        }
     }
 
     syntaxError(code: string, chunkName: string): string | null {
