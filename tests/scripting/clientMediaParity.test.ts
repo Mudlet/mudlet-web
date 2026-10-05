@@ -50,6 +50,7 @@ type EngineInternals = {
     handleClientMedia: (action: string, value: unknown) => Promise<void>;
     resolveMediaFile: (file: string, baseUrl: string | undefined, logPrefix: string, debug: boolean) => Promise<string | null>;
     mediaPathCandidates: (path: string) => string[];
+    resolveMediaPath: (name: string) => string;
     gmcpMediaDefaultUrl: string;
     vfs: unknown;
 };
@@ -84,7 +85,7 @@ describe('GMCP Client.Media parity', () => {
         await media('stop', { type: 'sound', tag: 'A', key: 'k', name: 'long.wav', priority: 40 });
         expect(stopMusic).not.toHaveBeenCalled();
         expect(stopSounds).toHaveBeenCalledWith({
-            name: 'long.wav', key: 'k', tag: 'a', priority: 40, fadeout: undefined, origin: 'game',
+            name: 'long.wav', key: 'k', tag: 'a', priority: 40, fadeout: undefined, fadeaway: false, origin: 'game',
         });
     });
 
@@ -147,6 +148,44 @@ describe('GMCP Client.Media parity', () => {
         expect(candidates('short.wav')).toEqual(['/profiles/p/media/short.wav', '/profiles/p/short.wav']);
         expect(candidates('media/short.wav')[1]).toBe('/profiles/p/media/short.wav');
         expect(candidates('/media/short.wav')).toEqual(['/media/short.wav', '/profiles/p/media/short.wav']);
+        internals().vfs = null;
+    });
+    // Issue #350.
+    it('raises sysMediaPaused when media is paused', () => {
+        const raised: unknown[][] = [];
+        vi.spyOn(engine, 'raiseEvent').mockImplementation((e: string, args?: unknown[]) => { raised.push([e, ...(args ?? [])]); });
+        session.sounds.onMediaPaused?.('x.wav', '/profiles/p/media/x.wav', 'sound', 'k', 't');
+        expect(raised).toEqual([['sysMediaPaused', 'x.wav', '/profiles/p/media/x.wav', 'sound', 'k', 't']]);
+    });
+
+    it('passes finish to a Play and fadeaway to a Stop', async () => {
+        vi.spyOn(internals(), 'resolveMediaFile').mockResolvedValue('/profiles/p/media/long.wav');
+        const play = vi.spyOn(session.sounds, 'playSound').mockResolvedValue(1);
+        await media('play', { name: 'long.wav', finish: 1000 });
+        expect(play).toHaveBeenCalledWith(expect.objectContaining({ finish: 1000 }));
+
+        const stopSounds = vi.spyOn(session.sounds, 'stopSounds').mockReturnValue(undefined);
+        const stopMusic = vi.spyOn(session.sounds, 'stopMusic').mockReturnValue(undefined);
+        await media('stop', { fadeaway: true });
+        expect(stopSounds).toHaveBeenCalledWith(expect.objectContaining({ fadeaway: true, origin: 'game' }));
+        expect(stopMusic).toHaveBeenCalledWith(expect.objectContaining({ fadeaway: true, origin: 'game' }));
+    });
+
+    it('plays a name from the file it finds, by its full path, and expands a wildcard', () => {
+        const files = new Set(['/profiles/p/media/long3.wav', '/profiles/p/media/mid.wav', '/profiles/p/media/middle.wav']);
+        internals().vfs = {
+            profilePath: '/profiles/p',
+            exists: (p: string) => files.has(p),
+            readdir: (dir: string) => [...files].filter(f => f.startsWith(`${dir}/`)).map(f => f.slice(dir.length + 1)),
+            stat: (p: string) => (files.has(p) ? { type: 'file' } : null),
+        };
+        const resolve = (n: string) => internals().resolveMediaPath(n);
+        expect(resolve('long3.wav')).toBe('/profiles/p/media/long3.wav');
+        expect(resolve('mid*.wav')).toMatch(/^\/profiles\/p\/media\/mid(dle)?\.wav$/);
+        expect(resolve('mi?.wav')).toBe('/profiles/p/media/mid.wav');
+        // Nothing matches, or a URL: played as given.
+        expect(resolve('nosuch*.wav')).toBe('nosuch*.wav');
+        expect(resolve('https://h/x.wav')).toBe('https://h/x.wav');
         internals().vfs = null;
     });
 });

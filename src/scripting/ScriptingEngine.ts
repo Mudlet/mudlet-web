@@ -125,6 +125,13 @@ function debugMspEnabled(): boolean {
     }
 }
 
+/** A media file-name wildcard (`*` any run, `?` one character) as a whole-name
+ *  RegExp, the way Mudlet's TMedia matches one against a directory listing. */
+function globToRegExp(glob: string): RegExp {
+    const body = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
+    return new RegExp(`^${body}$`);
+}
+
 /** `mudlet.debugGmcp` — log each incoming GMCP message's path + truncated body,
  *  so we can see exactly which modules a server drives (e.g. whether audio
  *  arrives over `Client.Media.*` GMCP or MSP tags). */
@@ -631,6 +638,9 @@ export class ScriptingEngine implements EngineHost {
         // alongside it, so a handler on that name never runs there either.
         session.sounds.onMediaFinished = (file, path, mediaType, key, tag) => {
             this.raiseEvent('sysMediaFinished', [file, path, mediaType, key, tag]);
+        };
+        session.sounds.onMediaPaused = (file, path, mediaType, key, tag) => {
+            this.raiseEvent('sysMediaPaused', [file, path, mediaType, key, tag]);
         };
         // Closed captions (Mudlet enableClosedCaption): print a text line when a
         // sound/music starts or stops, gated on the setting (decided per-event so
@@ -1980,6 +1990,34 @@ export class ScriptingEngine implements EngineHost {
         return [`${v.profilePath}/media/${path}`, `${v.profilePath}/${path}`];
     }
 
+    /**
+     * The file a media name plays: the first of its {@link mediaPathCandidates}
+     * that exists, as a full VFS path. A `*` or `?` in the file name is a
+     * wildcard, as in Mudlet's TMedia, and plays one of the files it matches,
+     * picked at random. A URL, or a name that matches nothing, is returned as
+     * it is.
+     */
+    private resolveMediaPath(name: string): string {
+        const v = this.vfs;
+        if (!v || /^https?:|^data:|^blob:/.test(name)) return name;
+        const wild = /[*?]/.test(name);
+        for (const abs of this.mediaPathCandidates(name)) {
+            if (!wild) {
+                if (v.exists(abs)) return abs;
+                continue;
+            }
+            const slash = abs.lastIndexOf('/');
+            const dir = abs.slice(0, slash);
+            if (/[*?]/.test(dir)) continue;
+            const pattern = globToRegExp(abs.slice(slash + 1));
+            let entries: string[];
+            try { entries = v.readdir(dir); } catch { continue; }
+            const matches = entries.filter(e => pattern.test(e) && v.stat(`${dir}/${e}`)?.type === 'file');
+            if (matches.length > 0) return `${dir}/${matches[Math.floor(Math.random() * matches.length)]}`;
+        }
+        return name;
+    }
+
     /** Sound/video loader: absolute URLs hit the network; everything else is
      *  read from the mounted profile VFS (see {@link mediaPathCandidates}). */
     private async loadMediaBytes(path: string): Promise<ArrayBuffer | null> {
@@ -2016,6 +2054,10 @@ export class ScriptingEngine implements EngineHost {
             // resolved against the mounted profile VFS so package-bundled sounds
             // work out of the box.
             this.session.sounds.setLoader(path => this.loadMediaBytes(path));
+            // A name is played from the file it finds, so the media events
+            // carry that file's full path, as desktop's do — and a wildcard
+            // name plays one of the files it matches.
+            this.session.sounds.setPathResolver(name => this.resolveMediaPath(name));
             // VideoManager reuses the same VFS-or-URL loader as sounds, and
             // emits sysMediaFinished on natural end (matching Mudlet).
             this.session.videos.setLoader(path => this.loadMediaBytes(path));
@@ -2561,20 +2603,21 @@ export class ScriptingEngine implements EngineHost {
             const tag = tagOf();
             const priority = num('priority');
             const fadeout = num('fadeout');
+            const fadeaway = bool('fadeaway') === true;
             if (type !== 'sound') {
-                this.session.sounds.stopMusic({ name, key, tag, fadeout, origin: 'game' });
+                this.session.sounds.stopMusic({ name, key, tag, fadeout, fadeaway, origin: 'game' });
             }
             if (type !== 'music') {
-                this.session.sounds.stopSounds({ name, key, tag, priority, fadeout, origin: 'game' });
+                this.session.sounds.stopSounds({ name, key, tag, priority, fadeout, fadeaway, origin: 'game' });
             }
             if (debug) console.debug(`[mudlet.gmcp] media stop type=${type || 'all'}`);
             return;
         }
 
         if (action === 'pause') {
-            // Client.Media.Pause [{ name, type, tag, key }] — Web Audio can't
-            // hold a source mid-track, so matching media is stopped (see
-            // SoundManager.pauseSounds). It must never fall through to Play.
+            // Client.Media.Pause [{ name, type, tag, key }] — hold matching
+            // server media where it is; a Play of the same name and key
+            // resumes it. It must never fall through to Play.
             const type = str('type').toLowerCase();
             const filter = {
                 name: str('name') || undefined,
@@ -2631,6 +2674,8 @@ export class ScriptingEngine implements EngineHost {
         if (fadeout !== undefined) opts.fadeout = fadeout;
         const start = num('start');
         if (start !== undefined) opts.start = start;
+        const finish = num('finish');
+        if (finish !== undefined) opts.finish = finish;
         const key = str('key');
         if (key) opts.key = key;
         const tag = tagOf();
@@ -4585,6 +4630,7 @@ export class ScriptingEngine implements EngineHost {
         this.session.windows.onFileDrop = undefined;
         this.session.sounds.onMediaStarted = undefined;
         this.session.sounds.onMediaFinished = undefined;
+        this.session.sounds.onMediaPaused = undefined;
         this.session.sounds.onMediaCaption = undefined;
         this.session.videos.onStarted = null;
         this.session.videos.onMediaCaption = null;
@@ -4629,6 +4675,7 @@ export class ScriptingEngine implements EngineHost {
         this.api.setHost(null);
         this.session.sounds.stopAll();
         this.session.sounds.setLoader(null);
+        this.session.sounds.setPathResolver(null);
         this.api.destroy();
         // The VFS is owned by App (it mounted/registered it before render and
         // flushes/unmounts it on profile close) — the engine only drops its

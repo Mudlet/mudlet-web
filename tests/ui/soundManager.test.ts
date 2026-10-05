@@ -22,12 +22,22 @@ class FakeGain {
 class FakeSource {
     buffer: unknown = null;
     loop = false;
+    loopStart = 0;
+    loopEnd = 0;
     onended: (() => void) | null = null;
+    /** The arguments of the start() / stop() calls, for when and where a test
+     *  needs to know a source was started or stopped. */
+    startArgs: number[] | null = null;
+    stopArgs: number[] | null = null;
     connect<T>(node: T): T { return node; }
-    start() { /* no-op */ }
-    stop() { /* no-op */ }
+    start(...args: number[]) { this.startArgs = args; }
+    stop(...args: number[]) { this.stopArgs = args; }
 }
+/** The one context SoundManager creates (it shares a single one), so a test can
+ *  move its clock. */
+let fakeContext: FakeAudioContext | null = null;
 class FakeAudioContext {
+    constructor() { fakeContext = this; }
     state = 'running';
     currentTime = 0;
     sampleRate = 44100;
@@ -427,5 +437,212 @@ describe('SoundManager priority', () => {
         await mgr.playSound({ name: 'game.wav', priority: 90, origin: 'game' });
         expect(await mgr.playSound({ name: 'api.wav', priority: 10, origin: 'api' })).toBeGreaterThan(0);
         expect(mgr.getPlaying()).toHaveLength(2);
+    });
+});
+
+// Issue #350: media drift against desktop Mudlet PTB.
+describe('SoundManager parity with desktop (#350)', () => {
+    beforeAll(() => {
+        (window as unknown as { AudioContext: unknown }).AudioContext = FakeAudioContext;
+    });
+
+    type Payload = [string, string, string, string, string];
+
+    function makeManager() {
+        const mgr = new SoundManager();
+        mgr.setLoader(async () => new ArrayBuffer(8));
+        const events: Array<[string, ...Payload]> = [];
+        mgr.onMediaStarted = (...a) => events.push(['started', ...a as Payload]);
+        mgr.onMediaFinished = (...a) => events.push(['finished', ...a as Payload]);
+        mgr.onMediaPaused = (...a) => events.push(['paused', ...a as Payload]);
+        return { mgr, events };
+    }
+    const names = (list: Array<{ name: string }>) => list.map(p => p.name).sort();
+
+    it('pauses only what the filter names, and keeps it listed as paused', async () => {
+        const { mgr, events } = makeManager();
+        await mgr.playSound({ name: 's1.wav', key: 's1' });
+        await mgr.playMusic({ name: 'm1.wav', key: 'm1' });
+        await mgr.playMusic({ name: 'm2.wav', key: 'm2' });
+        events.length = 0;
+
+        mgr.pauseSounds({ key: 's1' });
+        mgr.pauseMusic({ key: 'm1' });
+
+        expect(events.map(e => [e[0], e[1]])).toEqual([['paused', 's1.wav'], ['paused', 'm1.wav']]);
+        expect(names(mgr.getPaused())).toEqual(['s1.wav']);
+        expect(names(mgr.getPaused({}, 'music'))).toEqual(['m1.wav']);
+        expect(names(mgr.getPlaying({}, 'music'))).toEqual(['m2.wav']);
+        expect(mgr.getPlaying()).toEqual([]);
+    });
+
+    it('resumes a paused track from where it was when the same name and key play again', async () => {
+        const { mgr, events } = makeManager();
+        createdSources.length = 0;
+        fakeContext!.currentTime = 10;
+        await mgr.playMusic({ name: 'm1.wav', key: 'm1' });
+        const first = createdSources[0];
+        fakeContext!.currentTime = 10.25;
+        mgr.pauseMusic({ key: 'm1' });
+        // The paused node is let go without reporting an end.
+        first.onended?.();
+        expect(events.filter(e => e[0] === 'finished')).toEqual([]);
+
+        fakeContext!.currentTime = 20;
+        await mgr.playMusic({ name: 'm1.wav', key: 'm1', continue: true });
+        const resumed = createdSources[createdSources.length - 1];
+        expect(resumed).not.toBe(first);
+        expect(resumed.startArgs?.[1]).toBeCloseTo(0.25);
+        expect(names(mgr.getPlaying({}, 'music'))).toEqual(['m1.wav']);
+        expect(mgr.getPaused({}, 'music')).toEqual([]);
+        fakeContext!.currentTime = 0;
+    });
+
+    it('reports a paused source as finished when it is stopped', async () => {
+        const { mgr, events } = makeManager();
+        await mgr.playSound({ name: 'p.wav', key: 'p' });
+        mgr.pauseSounds();
+        events.length = 0;
+        mgr.stopSounds();
+        expect(events.map(e => e[0])).toEqual(['finished']);
+        expect(mgr.getPaused()).toEqual([]);
+    });
+
+    it('lists a sound from the play call on, before its file has loaded', async () => {
+        let release!: () => void;
+        const gate = new Promise<void>(r => { release = r; });
+        const mgr = new SoundManager();
+        mgr.setLoader(async () => { await gate; return new ArrayBuffer(8); });
+
+        const pending = mgr.playSound({ name: 'long.wav', key: 'k1', tag: 'T', volume: 40, priority: 20 });
+        expect(mgr.getPlaying()).toEqual([{ name: 'long.wav', key: 'k1', tag: 'T', volume: 40, priority: 20 }]);
+        const music = mgr.playMusic({ name: 'theme.wav' });
+        expect(names(mgr.getPlaying({}, 'music'))).toEqual(['theme.wav']);
+
+        release();
+        expect(await pending).toBeGreaterThan(0);
+        expect(await music).toBeGreaterThan(0);
+        expect(mgr.getPlaying()).toHaveLength(1);
+    });
+
+    it('drops a loading sound that is stopped, without starting it', async () => {
+        let release!: () => void;
+        const gate = new Promise<void>(r => { release = r; });
+        const mgr = new SoundManager();
+        mgr.setLoader(async () => { await gate; return new ArrayBuffer(8); });
+        const started: string[] = [];
+        mgr.onMediaStarted = (f) => started.push(f);
+
+        const pending = mgr.playSound({ name: 'late.wav' });
+        mgr.stopSounds();
+        release();
+        expect(await pending).toBe(-1);
+        expect(started).toEqual([]);
+        expect(mgr.getPlaying()).toEqual([]);
+    });
+
+    it('fades a fadeaway stop out over five seconds, listed until it ends', async () => {
+        const { mgr, events } = makeManager();
+        createdSources.length = 0;
+        await mgr.playSound({ name: 'fade.wav' });
+        events.length = 0;
+
+        mgr.stopSounds({ fadeaway: true });
+        expect(createdSources[0].stopArgs).toEqual([5]);
+        expect(names(mgr.getPlaying())).toEqual(['fade.wav']);
+        expect(events).toEqual([]);
+
+        createdSources[0].onended?.();
+        expect(mgr.getPlaying()).toEqual([]);
+        expect(events.map(e => e[0])).toEqual(['finished']);
+    });
+
+    it('fades a fadeaway stop over the fadeout it names, for music too', async () => {
+        const { mgr } = makeManager();
+        createdSources.length = 0;
+        await mgr.playMusic({ name: 'fade.ogg', fadeout: 2000 });
+        mgr.stopMusic({ fadeaway: true });
+        expect(createdSources[0].stopArgs).toEqual([2]);
+        createdSources.length = 0;
+        await mgr.playSound({ name: 'fade2.wav' });
+        mgr.stopSounds({ fadeaway: true, fadeout: 1500 });
+        expect(createdSources[0].stopArgs).toEqual([1.5]);
+    });
+
+    it('ends each pass at finish', async () => {
+        const { mgr } = makeManager();
+        createdSources.length = 0;
+        await mgr.playSound({ name: 'mid.wav', finish: 1000 });
+        expect(createdSources[0].startArgs).toEqual([0, 0, 1]);
+
+        createdSources.length = 0;
+        await mgr.playSound({ name: 'mid2.wav', start: 500, finish: 1500, loops: 2 });
+        expect(createdSources[0].startArgs).toEqual([0, 0.5, 1]);
+        createdSources[0].onended?.();
+        expect(createdSources[1].startArgs).toEqual([0, 0.5, 1]);
+
+        createdSources.length = 0;
+        await mgr.playMusic({ name: 'loop.wav', finish: 1000, loops: -1 });
+        expect(createdSources[0].loop).toBe(true);
+        expect([createdSources[0].loopStart, createdSources[0].loopEnd]).toEqual([0, 1]);
+    });
+
+    it('plays the file a resolver finds, reporting its full path, and lists the name asked for', async () => {
+        const { mgr, events } = makeManager();
+        const loaded: string[] = [];
+        mgr.setLoader(async (p) => { loaded.push(p); return new ArrayBuffer(8); });
+        mgr.setPathResolver(name => name === 'mid*.wav' ? '/profiles/p/media/mid.wav' : `/profiles/p/media/${name}`);
+
+        await mgr.playSound({ name: 'mid*.wav', key: 'w' });
+        expect(loaded).toEqual(['/profiles/p/media/mid.wav']);
+        expect(events[0]).toEqual(['started', 'mid.wav', '/profiles/p/media/mid.wav', 'sound', 'w', '']);
+        expect(mgr.getPlaying()).toEqual([expect.objectContaining({ name: 'mid*.wav', key: 'w' })]);
+        // A stop by the file that played reaches it as well as one by the name.
+        mgr.stopSounds({ name: 'mid.wav' });
+        expect(mgr.getPlaying()).toEqual([]);
+    });
+
+    it('leaves the music already playing alone when continue is set', async () => {
+        const { mgr, events } = makeManager();
+        createdSources.length = 0;
+        const first = await mgr.playMusic({ name: 'long3.wav', key: 'm', continue: true });
+        events.length = 0;
+        const again = await mgr.playMusic({ name: 'long3.wav', key: 'm', continue: true });
+        expect(again).toBe(first);
+        expect(events).toEqual([]);
+        expect(createdSources).toHaveLength(1);
+        expect(createdSources[0].stopArgs).toBeNull();
+    });
+
+    it('still restarts it when continue is off', async () => {
+        const { mgr } = makeManager();
+        createdSources.length = 0;
+        await mgr.playMusic({ name: 'long3.wav', key: 'm' });
+        await mgr.playMusic({ name: 'long3.wav', key: 'm', continue: false });
+        expect(createdSources).toHaveLength(2);
+        expect(createdSources[0].stopArgs).toEqual([]);
+    });
+
+    it('stops every sound and music track on purgeCache, reporting each', async () => {
+        const { mgr, events } = makeManager();
+        createdSources.length = 0;
+        await mgr.playSound({ name: 'a.wav' });
+        await mgr.playMusic({ name: 'b.ogg' });
+        events.length = 0;
+        expect(mgr.purgeCache()).toBe(true);
+        expect(createdSources.every(s => s.stopArgs !== null)).toBe(true);
+        for (const s of createdSources) s.onended?.();
+        expect(events.map(e => e[0])).toEqual(['finished', 'finished']);
+        expect(mgr.getPlaying()).toEqual([]);
+        expect(mgr.getPlaying({}, 'music')).toEqual([]);
+    });
+
+    it('spares a sound whose priority equals the stop filter', async () => {
+        const { mgr } = makeManager();
+        await mgr.playSound({ name: 'p50.wav', priority: 50 });
+        mgr.stopSounds({ priority: 50 });
+        expect(names(mgr.getPlaying())).toEqual(['p50.wav']);
+        mgr.stopSounds({ priority: 51 });
+        expect(mgr.getPlaying()).toEqual([]);
     });
 });

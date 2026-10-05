@@ -41,7 +41,8 @@ const strOpt = (v: unknown): string | undefined => {
  * Mudlet playSoundFile / playMusicFile / stopSounds / stopMusic and friends.
  * Web Audio backend lives on session.sounds.
  */
-export function installSoundBindings({ lua, api }: BindingContext): void {
+export function installSoundBindings(ctx: BindingContext): void {
+    const { lua, api } = ctx;
     const sounds = api.sounds;
 
     lua.global.set('__playSoundFile', (t: unknown) => {
@@ -52,6 +53,7 @@ export function installSoundBindings({ lua, api }: BindingContext): void {
             fadein: numOpt(o.fadein),
             fadeout: numOpt(o.fadeout),
             start: numOpt(o.start),
+            finish: numOpt(o.finish),
             loops: numOpt(o.loops),
             key: strOpt(o.key),
             tag: strOpt(o.tag),
@@ -69,11 +71,14 @@ export function installSoundBindings({ lua, api }: BindingContext): void {
             fadein: numOpt(o.fadein),
             fadeout: numOpt(o.fadeout),
             start: numOpt(o.start),
+            finish: numOpt(o.finish),
             loops: numOpt(o.loops),
             key: strOpt(o.key),
             tag: strOpt(o.tag),
             caption: strOpt(o.caption),
-            continue: o.continue === true || o['continue'] === true,
+            // Desktop's `continue` defaults to true: playing the track that is
+            // already playing leaves it be unless the script says false.
+            continue: o.continue !== false,
             origin: 'api',
         });
         return true;
@@ -88,6 +93,7 @@ export function installSoundBindings({ lua, api }: BindingContext): void {
             tag: strOpt(o.tag),
             priority: numOpt(o.priority),
             fadeout: numOpt(o.fadeout),
+            fadeaway: o.fadeaway === true,
         });
     });
     lua.global.set('__stopMusic', (t?: unknown) => {
@@ -97,6 +103,7 @@ export function installSoundBindings({ lua, api }: BindingContext): void {
             key: strOpt(o.key),
             tag: strOpt(o.tag),
             fadeout: numOpt(o.fadeout),
+            fadeaway: o.fadeaway === true,
         });
     });
     // getPlayingSounds([filter]) — Bridge.lua normalises both the positional
@@ -125,15 +132,25 @@ export function installSoundBindings({ lua, api }: BindingContext): void {
             origin: 'api',
         }, 'music');
     });
-    // getPausedSounds / getPausedMusic — Mudlet Web's Web Audio backend stops
-    // sources instead of pausing them (see SoundManager.pauseSounds), so
-    // nothing ever sits in a paused state. These always report empty.
-    lua.global.set('__getPausedSounds', () => [] as unknown[]);
-    lua.global.set('__getPausedMusic', () => [] as unknown[]);
-    // pauseMusic([channel/tag]) — fade-out + stop matching music tracks.
-    lua.global.set('pauseMusic', (channel?: unknown) => {
-        sounds.pauseMusic(typeof channel === 'string' && channel ? channel : undefined);
-    });
+    // getPausedSounds / getPausedMusic — the script-started media that
+    // pauseSounds / pauseMusic hold, in getPlayingSounds' shape.
+    const filterOf = (t?: unknown) => {
+        const o = detachOpts(t);
+        return {
+            name: strOpt(o.name),
+            key: strOpt(o.key),
+            tag: strOpt(o.tag),
+            priority: numOpt(o.priority),
+            origin: 'api' as const,
+        };
+    };
+    lua.global.set('__getPausedSounds', (t?: unknown) => sounds.getPaused(filterOf(t)));
+    lua.global.set('__getPausedMusic', (t?: unknown) => sounds.getPaused(filterOf(t), 'music'));
+    // pauseSounds / pauseMusic([filter]) — hold the matching script-started
+    // media where it is; playing the same name and key again resumes it.
+    // Bridge.lua validates the filter table and hands its fields down.
+    lua.global.set('__pauseSounds', (t?: unknown) => { sounds.pauseSounds(filterOf(t)); });
+    lua.global.set('__pauseMusic', (t?: unknown) => { sounds.pauseMusic(filterOf(t)); });
     // loadSoundFile(name[, url]) | ({name=...}) — preload/decode so the first
     // playSoundFile has no decode latency. Bridge.lua normalises to a name.
     lua.global.set('__loadSoundFile', (t: unknown) => {
@@ -147,8 +164,19 @@ export function installSoundBindings({ lua, api }: BindingContext): void {
         const o = detachOpts(t);
         return sounds.preload(String(o.name ?? ''));
     });
-    // Mudlet purgeMediaCache() — drop every decoded-audio buffer.
-    lua.global.set('purgeMediaCache', () => sounds.purgeCache());
+    // Mudlet purgeMediaCache() — stop every sound and music track (each
+    // raising sysMediaFinished), drop the decoded buffers, and delete the
+    // profile's media/ directory, where every downloaded file was cached
+    // (TMedia::purgeMediaCache).
+    lua.global.set('purgeMediaCache', () => {
+        sounds.purgeCache();
+        const vfs = ctx.vfs;
+        const dir = vfs ? `${vfs.profilePath}/media` : null;
+        if (vfs && dir && vfs.exists(dir)) {
+            try { vfs.rmdir(dir, { recursive: true }); } catch { /* nothing left to delete */ }
+        }
+        return true;
+    });
 }
 
 /**
@@ -162,7 +190,7 @@ export function installVideoBindings({ lua, api }: BindingContext): void {
     lua.global.set('__playVideoFile', (t: unknown) => {
         const o = detachOpts(t);
         const path = String(o.name ?? '');
-        if (!path) return;
+        if (!path) return true;
         void videos.play(path, {
             name: path,
             volume: numOpt(o.volume),
@@ -172,6 +200,9 @@ export function installVideoBindings({ lua, api }: BindingContext): void {
             caption: strOpt(o.caption),
             origin: 'api',
         });
+        // Desktop answers true once the request is accepted, as the sound
+        // and music calls do; whether the file plays is reported by events.
+        return true;
     });
     // loadVideoFile(name) | ({name=...}) — preload/cache so the first
     // playVideoFile has no fetch latency. Bridge.lua normalises to a name.

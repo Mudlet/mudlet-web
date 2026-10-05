@@ -1614,13 +1614,6 @@ export class LuaRuntime implements IScriptingRuntime {
             return this.api.addSupportedTelnetOption(n);
         });
 
-        // Mudlet `pauseSounds([channel])`. Stops all in-flight sound effects
-        // (Web Audio source nodes can't truly pause), optionally filtered by
-        // tag. Music isn't affected — stopMusic covers that path.
-        this.lua.global.set('pauseSounds', (channel?: unknown) => {
-            this.api.sounds.pauseSounds(typeof channel === 'string' ? channel : undefined);
-        });
-
         // Mudlet `startLogging(state)`. Toggle the persistent session logger
         // for this profile. ProfileSession owns the SessionLogger lifecycle;
         // the API forwards through a registered toggler.
