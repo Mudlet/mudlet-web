@@ -1609,9 +1609,17 @@ describe('resetProfile — Lua binding', () => {
 
   it('is callable and invokes the wired callback without throwing', () => {
     let called = 0;
-    env.api.setHost({ ...env.api.engineHost, resetProfile: () => { called++; } });
+    env.api.setHost({ ...env.api.engineHost, resetProfile: () => { called++; return true; } });
     expect(() => env.run('resetProfile()')).not.toThrow();
     expect(called).toBe(1);
+  });
+
+  it('answers what the engine does — true once armed, false when refused (#354)', () => {
+    let armed = true;
+    env.api.setHost({ ...env.api.engineHost, resetProfile: () => armed });
+    expect(env.run('return resetProfile()')).toBe(true);
+    armed = false;
+    expect(env.run('return resetProfile()')).toBe(false);
   });
 
   it('is a no-op (no throw) when no engine is bound', () => {

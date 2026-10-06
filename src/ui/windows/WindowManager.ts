@@ -16,6 +16,7 @@ import { serializeMapInWorker, streamMapInWorker } from '../../map/mapParserClie
 import { assertReadableMapVersion, MapVersionError } from '../../map/mapVersion';
 import { Buffer } from 'buffer';
 import { OverlayLayerOrder } from '../layout/overlayLayerOrder';
+import { TIMESTAMP_GUTTER_COLUMNS } from '../../mud/connection/TelnetNegotiator';
 
 interface ScriptWindowData extends ScriptWindowRenderData {
     pendingText: Array<string | AnsiAwareBuffer>;
@@ -875,13 +876,17 @@ export class WindowManager {
         // Skip the initial 0×0 frame and any spurious zero-size entries
         // that happen during portal moves between dock/floating shells.
         if (w <= 0 && h <= 0) return;
-        this.emitWindowSize(id, w, h);
-        // Mudlet sysConsoleSizeChanged(name, columns, rows) — fires when
-        // the char-grid changes. cols is the wrap setting (falling back to
+        // Mudlet sysConsoleSizeChanged(name, columns, rows, gutter) — fires
+        // when the char-grid changes. cols is the wrap setting (falling back to
         // an estimate from element width); rows is derived from element
         // height. Both axes use the rendered monospace cell size so the
         // event values match what scripts can use to lay out output.
+        //
+        // Raised before the window-size events, as on desktop: TConsole's
+        // resizeEvent resizes its text pane first, whose own resizeEvent
+        // raises the grid event, and only then raises sysWindowResizeEvent.
         this.emitConsoleGridIfChanged(id, w, h, element);
+        this.emitWindowSize(id, w, h);
     }
 
     /** Raise sysWindowResizeEvent/sysUserWindowResizeEvent for `id` at w×h,
@@ -994,6 +999,16 @@ export class WindowManager {
      *  resize observer last reported — which on a fast/mobile connect may be
      *  stale or not yet fired. No-op when the main element isn't mounted, or
      *  when the size is unchanged (the dedup guard in emitConsoleGridIfChanged). */
+    /** Apply the profile's setBorder* insets to the main viewport now and
+     *  re-measure the char grid inside them, raising sysConsoleSizeChanged if
+     *  it moved. Host::setBorders resizes the console — and with it the text
+     *  pane, whose resize raises that event — before it raises
+     *  sysWindowResizeEvent, so a border change reports the grid first. */
+    applyMainBorders(): void {
+        this.applyMainViewportInsets();
+        this.remeasureMainGrid();
+    }
+
     remeasureMainGrid(): void {
         const el = this.elements.get('main') ?? this.mainViewportEl;
         if (!el) return;
@@ -1030,7 +1045,14 @@ export class WindowManager {
         const last = this.lastEmittedGrid.get(id);
         if (last && last.cols === cols && last.rows === rows) return;
         this.lastEmittedGrid.set(id, { cols, rows });
-        this.onRaiseEvent?.('sysConsoleSizeChanged', [id, cols, rows]);
+        // The 4th argument is the timestamp gutter's width in columns —
+        // TConsole::raiseMudletResizeEvent's `showTimeStamps() ?
+        // TBuffer::smTimeStampFormat.size() : 0`. Only the main console can
+        // show timestamps here.
+        const gutter = id === 'main'
+            && selectProfileField(useAppStore.getState(), this._connectionId, 'showTimestamps') === true
+            ? TIMESTAMP_GUTTER_COLUMNS : 0;
+        this.onRaiseEvent?.('sysConsoleSizeChanged', [id, cols, rows, gutter]);
         // Keep NAWS in sync with the main output area's character grid.
         if (id === 'main') this.onMainConsoleResize?.(cols, rows);
     }

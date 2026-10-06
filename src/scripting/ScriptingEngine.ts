@@ -4548,13 +4548,18 @@ export class ScriptingEngine implements EngineHost {
      * exactly why Mudlet warns against calling it from a script-item — defer it
      * (`tempTimer(0, resetProfile)` works) or run it from the command line. A
      * concurrent reset is coalesced.
+     *
+     * Answers what Host::resetProfile_phase1 does: true once the reset is
+     * armed, false for one already in progress (which it folds into) or one
+     * refused because the profile is closing.
      */
-    resetProfile(): void {
-        if (this.disposed) { this.refuseDuringTeardown('resetProfile()'); return; }
+    resetProfile(): boolean {
+        if (this.disposed) { this.refuseDuringTeardown('resetProfile()'); return false; }
         // Already resetting is legitimate de-duplication, not a refusal.
-        if (this.resetting) return;
+        if (this.resetting) return false;
         this.resetting = true;
         setTimeout(() => { void this.performReset(); }, 0);
+        return true;
     }
 
     private async performReset(): Promise<void> {
@@ -4577,6 +4582,10 @@ export class ScriptingEngine implements EngineHost {
             this.session.scrollBoxes.clearAll();
             this.session.sounds.stopAll();
             this.session.videos.stopAll();
+            // Host::resetProfile_phase2 drops every stopwatch not flagged
+            // persistent (removeAllNonPersistentStopWatches); the persistent
+            // ones keep running across the reset, as across a reload.
+            this.api.stopwatches.removeNonPersistent();
             // 3. Recreate the Lua runtime against the same mounted VFS. This
             //    re-wires every api.* callback, reloads the bundled Lua, and
             //    gives a clean global table + empty event-handler registry.
@@ -5555,9 +5564,10 @@ export class ScriptingEngine implements EngineHost {
             }),
             // Mudlet `sysEchoAnomalyDetected` — raised once when the echo
             // handler trips its 5-toggles-in-5s safeguard and refuses ECHO
-            // for the rest of the session.
+            // for the rest of the session. cTelnet raises it through
+            // raiseProtocolEvent(name, ""), so it carries one empty string.
             session.events.on('telnet.echo.anomaly', () => {
-                this.raiseEvent('sysEchoAnomalyDetected', []);
+                this.raiseEvent('sysEchoAnomalyDetected', ['']);
             }),
             // Mudlet `raiseProtocolEvent("sysProtocolRejected", name)` — fired
             // when Mudlet Web refuses a telnet option it deliberately doesn't support
@@ -5586,9 +5596,10 @@ export class ScriptingEngine implements EngineHost {
             // enabled server-side echo (character-at-a-time), which Mudlet Web can't
             // drive well. Raised once per connection, and — matching Mudlet's
             // cTelnet::checkCharacterModePattern — accompanied by a visible
-            // [ WARN ] line in the main output.
+            // [ WARN ] line in the main output. Like sysEchoAnomalyDetected
+            // it goes through raiseProtocolEvent(name, ""): one empty string.
             session.events.on('charmode.detected', () => {
-                this.raiseEvent('sysCharacterModeDetected', []);
+                this.raiseEvent('sysCharacterModeDetected', ['']);
                 this.session.events.emit('message',
                     mudletWarn('This game appears to use character-at-a-time mode, which is not '
                         + 'supported. Input may not work as expected. Consider using keybindings '

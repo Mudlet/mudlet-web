@@ -18,6 +18,9 @@ const DOCKMAP: Record<string, string> = {
     main: 'main',
 };
 
+/** The point size TMainConsole::createUserWindow gives every new user window. */
+const USER_WINDOW_DEFAULT_FONT_SIZE = 10;
+
 /**
  * Creating and destroying the addressable UI surfaces Lua can open:
  * user windows, the map widget, mini-consoles, command lines, and scroll
@@ -104,9 +107,13 @@ export function installUserWindowBindings({
         // the call and resolves its percentages against it straight after.
         if (api.windows.isDocked(window)) api.windows.settleLayout();
         if (!existed) {
+            // Host::openWindow gives a new user window a font of its own —
+            // TMainConsole::createUserWindow's setFontSize(10), whatever size
+            // main is in — so it neither starts at main's size nor follows a
+            // later setFontSize("main", …). Desktop announces that font as
+            // sysFontChangeEvent like any font change.
+            api.windows.setFontSize(window, USER_WINDOW_DEFAULT_FONT_SIZE);
             api.windows.announceCreatedSize(window);
-            // Host::openWindow gives a new user window a font of its own, which
-            // desktop announces as sysFontChangeEvent like any font change.
             api.raiseFontChangeEvent(window);
         }
         return true;

@@ -229,7 +229,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('receiveMSP',   '(text) → bool',    'Parse an MSP payload (!!SOUND/!!MUSIC tags) as if sent by the server and play the resulting sounds. True when a command was parsed.'),
     fn('disconnect',   '()',               'Drop the current connection'),
     fn('closeMudlet',  '()',               'Close the active profile: disconnect and return to the connection screen (mudlet maps Mudlet\'s closeMudlet to closing the open profile).'),
-    fn('resetProfile', '()',               'Reload the entire profile as if just reopened: clears all UI (windows, labels, gauges, command lines, scroll boxes), recreates the Lua runtime, and re-runs every script/alias/trigger/timer/key. Deferred internally, so call it from an alias or the command line — not from a script-item being reloaded.'),
+    fn('resetProfile', '() → boolean',    'Reload the entire profile as if just reopened: clears all UI (windows, labels, gauges, command lines, scroll boxes), recreates the Lua runtime, and re-runs every script/alias/trigger/timer/key. Deferred internally, so call it from an alias or the command line — not from a script-item being reloaded.'),
     fn('connectToServer', '(host, port [, save]) → bool', 'Connect the session to host:port through the proxy. With save=true the host/port are persisted onto the active connection (mud mode).'),
     fn('denyCurrentSend', '()',            'Inside a sysDataSendRequest handler, cancels the in-flight command'),
     fn('echo',         '([window,] text)', 'Print plain text (optional window name as 1st arg)'),

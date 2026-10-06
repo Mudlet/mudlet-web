@@ -9184,8 +9184,11 @@ do
     local _rawAddFileWatch = addFileWatch
     function addFileWatch(path)
         path = __mudlet_check_string(path, "addFileWatch", 1, "path")
-        if _rawAddFileWatch(path) then return true end
-        return nil, 'path "' .. tostring(path) .. '" does not exist'
+        local added = _rawAddFileWatch(path)
+        if added == true then return true end
+        -- QFileSystemWatcher::addPath's false for a path it already watches
+        if added == 'watched' then return false end
+        return nil, "path '" .. tostring(path) .. "' does not exist"
     end
 
     -- Plain false for a path nobody is watching: unlike addFileWatch there is
@@ -9200,7 +9203,11 @@ do
     function unzipAsync(zipPath, destination)
         zipPath = __mudlet_check_string(zipPath, "unzipAsync", 1, "zip file path")
         destination = __mudlet_check_string(destination, "unzipAsync", 2, "extraction path")
-        return _rawUnzipAsync(zipPath, destination)
+        -- true once started; otherwise the raw call hands back the reason the
+        -- extract directory could not be made, Mudlet's `nil, message`.
+        local started = _rawUnzipAsync(zipPath, destination)
+        if started == true then return true end
+        return nil, started
     end
 
     local _rawLoadReplay = loadReplay

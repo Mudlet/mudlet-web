@@ -32,7 +32,7 @@ const STATUS_IS = 0, STATUS_SEND = 1;
 /** Columns the timestamp gutter takes off the main console when it is shown —
  *  the length of Mudlet's `TBuffer::smTimeStampFormat` ("hh:mm:ss.zzz "). Desktop
  *  takes it off the NAWS width, so a game wraps to what is left beside it. */
-const TIMESTAMP_GUTTER_COLUMNS = 13;
+export const TIMESTAMP_GUTTER_COLUMNS = 13;
 
 /** Main console wrap column before the profile says otherwise — Mudlet's
  *  `Host::mWrapAt` default (and `PROFILE_DEFAULTS.outputWrapAt`). */

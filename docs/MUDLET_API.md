@@ -276,14 +276,14 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 
 | Function | Status | Notes |
 |---|---|---|
-| `addFileWatch(path)` | ✅ | Tracks resolved VFS paths, fires `sysPathChanged` on mutation |
+| `addFileWatch(path)` | ✅ | Tracks resolved VFS paths, fires `sysPathChanged` by QFileSystemWatcher's rules: a file reports changes and its removal (which ends the watch); a directory reports direct children added, removed or touched, not writes into them. `false` for a path already watched |
 | `addSupportedTelnetOption(option)` | ✅ | Registers a telnet option byte so the next IAC WILL/DO is auto-accepted |
 | `alert([secs])` | ✅ | Flashes `document.title` for `secs` (default 10). No-op while focused |
 | `announce(text [, processing])` | ✅ | ARIA live region; `processing` (`importantall`/`importantmostrecent` → assertive, else polite) matches Mudlet's politeness mapping |
 | `appendLog(text)` | ✅ | Appends a line (type `appendLog`) to the active `SessionLogger`; false when logging is off |
 | `cfeedTriggers(text)` | ✅ | Pure Lua via GUIUtils.lua |
 | `clearVisitedLinks()` | ✅ | True no-op — Mudlet Web tracks no visited-link state, so there is nothing to clear (bound for script portability) |
-| `closeMudlet()` | ✅ | Closes the active profile — disconnects then returns to the connection screen (callback wired by `ProfileSession`) |
+| `closeMudlet()` | ✅ | Closes the active profile — disconnects then returns to the connection screen (callback wired by `ProfileSession`). Armed, like desktop's `armForceClose`: the call returns and the rest of the calling script runs first |
 | `compare(a, b)` | ✅ | Other.lua — alias for `_comp` deep equality |
 | `deleteAllNamedEventHandlers([type])` | ✅ | IDManager.lua |
 | `deleteNamedEventHandler(name)` | ✅ | IDManager.lua |
@@ -344,7 +344,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `reloadModule(name)` | ✅ | JS-exposed |
 | `removeFileWatch(path)` | ✅ | Stops watching a path |
 | `resetLinkStyle(labelName)` / `setLinkStyle(labelName, linkColor, visitedColor[, underline])` | ✅ | Styles the `<a>` links inside a label. `LabelManager` stores the per-label `linkStyle`; `LabelOverlay` injects a `<style>` scoped via the label's `data-mudlet-label` selector (`a { color; text-decoration }`, `a:visited { color }`). `underline` defaults to true. Visited links are tracked per label (`LabelState.visitedLinks`, populated on click like Mudlet's `TLabel::mVisitedLinks`) and get an explicit `a[href="…"]` rule, since CSS `:visited` only matches real browser history and so never fires for `send:`/`prompt:` links |
-| `resetProfile()` | ✅ | Reloads the profile as if just reopened: clears every UI surface (windows, labels, gauges, command lines, scroll boxes; stops sound/video), recreates the Lua runtime (fresh globals + event handlers), and re-runs all scripts/aliases/triggers/timers/keys from current profile state, re-firing `sysLoadEvent`. Deferred to a fresh task (it closes the running `lua_State`), so call it from an alias / command line, not a script-item — matching Mudlet's own guidance. Mudlet Web reloads from the live store, not a re-read of disk |
+| `resetProfile()` | ✅ | Reloads the profile as if just reopened: clears every UI surface (windows, labels, gauges, command lines, scroll boxes; stops sound/video), recreates the Lua runtime (fresh globals + event handlers), and re-runs all scripts/aliases/triggers/timers/keys from current profile state, re-firing `sysLoadEvent`; non-persistent stopwatches are removed. Returns `true` once armed, `false` while a reset is already in progress. Deferred to a fresh task (it closes the running `lua_State`), so call it from an alias / command line, not a script-item — matching Mudlet's own guidance. Mudlet Web reloads from the live store, not a re-read of disk |
 | `resumeNamedEventHandler(name)` | ✅ | IDManager.lua |
 | `saveProfile([name])` | ✅ | Bridge.lua → `__mudlet_saveProfile` forces the debounced VFS flush through to IndexedDB; `(nil, errMsg)` when no VFS, else `true, path`. `name` ignored (single-profile) |
 | `setConfig(key, value)` | ✅ | Config registry in `ScriptingAPI` (base global; Other.lua adds the table-form/no-arg wrappers). Enforced: protocol enables + `specialForce*Off`/`forceNewEnvironNegotiationOff` (next connect), `mapRoomSize`/`mapExitSize`/`mapRoundRooms`/`mapShowRoomBorders`/`mapShowGrid`, `autoClearInputLine`, `showSentText`, `mapperPanelVisible`, `showMapInfo`/`hideMapInfo` (live), `commandLineHistorySaveSize`/`showTabConnectionIndicators`/`f3SearchEnabled` (config bag, consumed by UI). Other keys persist only. Read-only/unknown → false. Absent: the six `irc*` keys (no IRC client) and `undoServerWrap`/`undoServerWrapWidth`. Details: [`docs/config-api.md`](config-api.md) |
@@ -364,7 +364,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `translateTable(t)` | ✅ | Other.lua |
 | `uninstallModule(name)` | ✅ | JS-exposed |
 | `uninstallPackage(name)` | ✅ | JS-exposed |
-| `unzipAsync(zipPath, destDir)` | ✅ | JS-exposed; fires `sysUnzipDone`/`sysUnzipError` |
+| `unzipAsync(zipPath, destDir)` | ✅ | Creates `destDir` before returning, then fires `sysUnzipDone`/`sysUnzipError` after the call has returned — a missing or invalid zip included |
 | `yajl.to_string` / `yajl.to_value` / `yajl.generator` / `yajl.parser` / `yajl.null` | ✅ | Matches desktop lua-yajl (`lua_yajl.c`). `Yajl.lua`: a port of yajl_gen (sparse arrays with null holes, `indent`, depth-128 limit, `__gen_json`) and of yajl's push parser (streaming `yajl.parser`, yajl's error text). `yajl.ts`: the `JSON.parse` fast path behind `to_value` (Lua source, or an iterative raw-API build for deep documents, capped where lua_yajl's stack check is), and `yajl.null` as a userdata. Loaded at startup via `setupYajl` |
 
 ---
@@ -987,7 +987,7 @@ Reconciled against the authoritative [Mudlet Event Engine](https://wiki.mudlet.o
 |---|---|---|
 | `sysWindowResizeEvent` | ✅ | Main output resize — args: width, height |
 | `sysUserWindowResizeEvent` | ✅ | User-window / miniconsole resize — args: width, height, name |
-| `sysConsoleSizeChanged` | ✅ | Char-grid change. Cols come from the wrap setting (falling back to `floor(width / fontSize*0.6)`); rows from `floor(height / lineHeight)`. Also force-fires on `setWindowWrap` — args: name, columns, rows |
+| `sysConsoleSizeChanged` | ✅ | Char-grid change. Cols come from the wrap setting (falling back to `floor(width / fontSize*0.6)`); rows from `floor(height / lineHeight)`. Also force-fires on `setWindowWrap`, and before `sysWindowResizeEvent` on a resize or border change — args: name, columns, rows, timestamp gutter (13 while main shows timestamps, else 0) |
 | `sysWindowOverflowEvent` | ✅ | Non-scrolling console (`scrollState.scrollingEnabled === false`) when `scrollHeight > clientHeight`; overflowLines = `ceil(overflowPx / lineHeight)` — args: name, overflowLines |
 | `sysBufferShrinkEvent` | ✅ | Whenever scrollback cap drops one or more lines (one event per evict batch) — args: name, linesRemoved |
 | `sysWindowMousePressEvent` / `sysWindowMouseReleaseEvent` | ✅ | Mouse press/release. Button is Mudlet-numbered (1=left, 2=right, 3=middle, 4=back, 5=forward, 0=other); x/y are pixels relative to the window — args: button, x, y, name |

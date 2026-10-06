@@ -228,8 +228,9 @@ export interface EngineHost {
 
     // ── Profile lifecycle ────────────────────────────────────────────────────
 
-    /** Mudlet `resetProfile()` — reload the profile with a fresh Lua VM. */
-    resetProfile(): void;
+    /** Mudlet `resetProfile()` — reload the profile with a fresh Lua VM. True
+     *  when the reset was armed, false when it was refused. */
+    resetProfile(): boolean;
     /** Render a map area to a PNG inside the profile VFS. */
     exportAreaImageToVfs(
         areaId: number,
@@ -333,6 +334,6 @@ export const NULL_ENGINE_HOST: EngineHost = Object.freeze({
     scriptLoadErrorById: () => null,
     killByName: () => false,
 
-    resetProfile: () => {},
+    resetProfile: () => false,
     exportAreaImageToVfs: () => ({ error: 'exportAreaImage: no profile filesystem' }),
 });

@@ -657,6 +657,15 @@ function labelEventForLua(event: unknown): unknown {
     return { ...event, buttons: list };
 }
 
+/** One change the VFS bindings made, as a file watch sees it: a write into a
+ *  file that was there ('modify'), a new entry ('create'), an entry gone —
+ *  removed, renamed away or replaced ('remove') — or its times changed
+ *  ('attrib'). See LuaRuntime.notifyVfsPathChange. */
+interface VfsPathChange {
+    path: string;
+    kind: 'modify' | 'create' | 'remove' | 'attrib';
+}
+
 export class LuaRuntime implements IScriptingRuntime {
 
     // Temp alias/trigger IDs → { kill fn, type }. Engines return unsub, not
@@ -1812,12 +1821,14 @@ export class LuaRuntime implements IScriptingRuntime {
         // Mudlet `disconnect()`: drop the current connection.
         this.lua.global.set('disconnect', () => { this.api.disconnect(); });
         // Mudlet `closeMudlet()`: Mudlet Web closes the active profile — disconnect
-        // and return to the connection screen.
+        // and return to the connection screen — once the calling script is done.
         this.lua.global.set('closeMudlet', () => { this.api.closeMudlet(); });
         // Mudlet `resetProfile()`: reload the whole profile (UI cleared, fresh
         // Lua VM, scripts re-run). The engine defers the actual reinit since it
         // closes this very lua_State — see ScriptingEngine.resetProfile.
-        this.lua.global.set('resetProfile', () => { this.api.resetProfile(); });
+        // True once armed, as Host::resetProfile_phase1 answers; false for a
+        // reset already in progress or one refused during teardown.
+        this.lua.global.set('resetProfile', () => this.api.resetProfile());
         // Mudlet `exportAreaImage(areaID, filePath [, zLevel])`: render the area
         // to a PNG in the profile VFS. Returns a 0-indexed [ok, pathOrErr] array
         // that Bridge.lua unpacks into Mudlet's (bool[, errMsg]) multi-return.
@@ -1870,26 +1881,31 @@ export class LuaRuntime implements IScriptingRuntime {
         // sysUnzipError(zipPath, destDir) on failure. fflate's unzip uses Web
         // Workers internally on platforms that support them, falling back to
         // a chunked main-thread decode otherwise.
-        // Answers true and nothing else: the unzip has not happened yet when it
-        // returns, so there is nothing to report but "started". Mudlet pushes the
-        // same true unconditionally (a failure can only be told through the
-        // event), and a script that branches on the return needs it — this used
-        // to return nothing at all, which Lua reads as nil.
-        this.lua.global.set('unzipAsync', (zipPath: string, destDir: string) => {
-            this.runUnzipAsync(String(zipPath ?? ''), String(destDir ?? ''));
-            return true;
-        });
+        // Answers true once the unzip is under way: it has not happened yet
+        // when it returns, so a failure to read or decode the zip can only be
+        // told through the event. The one refusal that comes back is the one
+        // desktop makes before it starts — an extract directory it cannot
+        // create — as `nil, message`: the raw binding hands back the message
+        // in place of true, and Bridge.lua turns it into the pair.
+        this.lua.global.set('unzipAsync', (zipPath: string, destDir: string) =>
+            this.runUnzipAsync(String(zipPath ?? ''), String(destDir ?? '')) ?? true);
 
         // ── File watches ──────────────────────────────────────────────────────
         // Mudlet addFileWatch(path)/removeFileWatch(path). Watches are matched
         // by resolved absolute path; the VFS mutation hooks above fire
-        // sysPathChanged(path) when a watched file or any descendant of a
-        // watched directory changes.
-        this.lua.global.set('addFileWatch', (path: unknown): boolean => {
+        // sysPathChanged(path) by QFileSystemWatcher's rules (see
+        // notifyVfsPathChange).
+        //
+        // A path already watched is not added twice — QFileSystemWatcher's
+        // addPath answers false for it — which the Bridge wrapper passes on
+        // as false, not as the missing-path refusal.
+        this.lua.global.set('addFileWatch', (path: unknown): boolean | 'watched' => {
             const vfs = this.vfs;
             if (!vfs || typeof path !== 'string' || !path) return false;
             if (!vfs.exists(path)) return false;
-            this.watchedPaths.add(vfs.resolvePath(path));
+            const abs = vfs.resolvePath(path);
+            if (this.watchedPaths.has(abs)) return 'watched';
+            this.watchedPaths.add(abs);
             return true;
         });
 
@@ -3265,12 +3281,24 @@ end`);
     // ── VFS bridge ───────────────────────────────────────────────────────────
 
     /**
-     * Fire sysPathChanged for any addFileWatch subscription whose path equals
-     * `changedPath` or is an ancestor directory of it. Mudlet's QFileSystemWatcher
-     * reports the *watched* path (not the inner file) for directory watches, so
-     * we do the same — handlers comparing `path == watchedPath` round-trip.
+     * Fire sysPathChanged for the addFileWatch subscriptions a set of VFS
+     * changes touches, by the rules desktop's QFileSystemWatcher (inotify)
+     * follows:
+     *
+     * - A watched *file* reports any change to it ('modify', 'attrib'), and
+     *   its removal — after which the watch is gone, as the watcher drops a
+     *   path whose inode was deleted or moved away: a file recreated under
+     *   the same name reports nothing, and removeFileWatch answers false.
+     * - A watched *directory* reports its direct children being created,
+     *   removed or renamed, or their attributes changing (lfs.touch) — not a
+     *   write into a child that already exists, and nothing from further
+     *   down the tree. Removing the directory itself reports and drops it.
+     *
+     * The *watched* path is what is reported, not the child, so handlers
+     * comparing `path == watchedPath` round-trip. Each watch reports at most
+     * once per batch.
      */
-    private notifyVfsPathChange(changedPath: string): void {
+    private notifyVfsPathChange(...changes: VfsPathChange[]): void {
         if (this.watchedPaths.size === 0) return;
         // Deferred, because a watch reports a change it *noticed*, not one it
         // took part in. Mudlet's QFileSystemWatcher learns about a write after
@@ -3283,17 +3311,28 @@ end`);
         // mid-call.
         //
         // The watch set is read when the timer fires, not now, so a watch
-        // removed in between correctly reports nothing.
+        // removed in between correctly reports nothing — and a watch the
+        // change itself ends is dropped then too, as the watcher drops it
+        // when it reads the deletion, not when the file goes.
         this.deferToTimerQueue(() => {
             if (this.inert) return;
-            if (this.watchedPaths.has(changedPath)) {
-                this.emitEvent('sysPathChanged', [changedPath]);
-            }
-            for (const watched of this.watchedPaths) {
-                if (watched !== changedPath && changedPath.startsWith(watched + '/')) {
-                    this.emitEvent('sysPathChanged', [watched]);
+            const fired: string[] = [];
+            const report = (watched: string) => {
+                if (!fired.includes(watched)) fired.push(watched);
+            };
+            for (const { path, kind } of changes) {
+                if (this.watchedPaths.has(path)) {
+                    if (kind === 'remove') {
+                        report(path);
+                        this.watchedPaths.delete(path);
+                    } else if (kind !== 'create') {
+                        report(path);
+                    }
                 }
+                const parent = path.substring(0, path.lastIndexOf('/')) || '/';
+                if (parent !== path && kind !== 'modify' && this.watchedPaths.has(parent)) report(parent);
             }
+            for (const watched of fired) this.emitEvent('sysPathChanged', [watched]);
         });
     }
 
@@ -3533,8 +3572,11 @@ end`);
             try {
                 // An empty path is io.tmpfile()'s handle: nothing to write back.
                 if (h.dirty && vfs && h.path !== '') {
+                    // fopen() creates the file on desktop; here it first
+                    // appears on close, which is when its directory hears of it.
+                    const existed = vfs.exists(h.path);
                     vfs.writeBinaryFile(h.path, latin1ToBytes(h.content));
-                    this.notifyVfsPathChange(h.path);
+                    this.notifyVfsPathChange({ path: h.path, kind: existed ? 'modify' : 'create' });
                 }
                 handles.delete(id);
                 return null;
@@ -3548,7 +3590,7 @@ end`);
             if (!vfs) { setError('no profile VFS'); return false; }
             const abs = vfs.resolvePath(path);
             // remove(3): a file, or an empty directory.
-            try { vfs.remove(path); this.notifyVfsPathChange(abs); return true; }
+            try { vfs.remove(path); this.notifyVfsPathChange({ path: abs, kind: 'remove' }); return true; }
             catch (e) { failWith(e, path); return false; }
         });
 
@@ -3557,9 +3599,16 @@ end`);
             const oldAbs = vfs.resolvePath(oldPath);
             const newAbs = vfs.resolvePath(newPath);
             try {
+                // A target already there is replaced: its inode goes, as a
+                // removed file's does.
+                const replaced = oldAbs !== newAbs && vfs.exists(newPath);
                 vfs.rename(oldPath, newPath);
-                this.notifyVfsPathChange(oldAbs);
-                if (oldAbs !== newAbs) this.notifyVfsPathChange(newAbs);
+                if (oldAbs !== newAbs) {
+                    this.notifyVfsPathChange(
+                        { path: oldAbs, kind: 'remove' },
+                        { path: newAbs, kind: replaced ? 'remove' : 'create' },
+                    );
+                }
                 return true;
             }
             catch (e) { failWith(e, oldPath); return false; }
@@ -3579,7 +3628,7 @@ end`);
             const abs = vfs.resolvePath(path);
             // Non-recursive, as lfs.mkdir is: a missing parent or an existing
             // path is an error, not something to paper over.
-            try { vfs.mkdir(path, { recursive: false }); this.notifyVfsPathChange(abs); return true; }
+            try { vfs.mkdir(path, { recursive: false }); this.notifyVfsPathChange({ path: abs, kind: 'create' }); return true; }
             catch (e) { failWith(e); return false; }
         });
 
@@ -3587,7 +3636,7 @@ end`);
             if (!vfs) { setError('no profile VFS'); return false; }
             const abs = vfs.resolvePath(path);
             // Non-recursive, as lfs.rmdir is: only an empty directory goes.
-            try { vfs.rmdir(path, { recursive: false }); this.notifyVfsPathChange(abs); return true; }
+            try { vfs.rmdir(path, { recursive: false }); this.notifyVfsPathChange({ path: abs, kind: 'remove' }); return true; }
             catch (e) { failWith(e); return false; }
         });
 
@@ -3596,7 +3645,7 @@ end`);
             const abs = vfs.resolvePath(path);
             try {
                 vfs.touch(path, new Date(atime * 1000), new Date(mtime * 1000));
-                this.notifyVfsPathChange(abs);
+                this.notifyVfsPathChange({ path: abs, kind: 'attrib' });
                 return true;
             }
             catch (e) { failWith(e); return false; }
@@ -3696,7 +3745,7 @@ end`);
             if (!vfs) { setError('no profile VFS'); return false; }
             try {
                 vfs.link(target, path, symbolic === true);
-                this.notifyVfsPathChange(vfs.resolvePath(path));
+                this.notifyVfsPathChange({ path: vfs.resolvePath(path), kind: 'create' });
                 return true;
             } catch (e) { failWith(e); return false; }
         });
@@ -4858,12 +4907,17 @@ end`);
     }
 
     /**
-     * Mudlet-style async unzip. Reads the zip from the profile VFS, decodes
-     * it on a worker (fflate falls back to a chunked main-thread decode where
-     * workers aren't available), writes every entry under destDir, then
-     * raises sysUnzipDone / sysUnzipError. Always fire-and-forget.
+     * Mudlet-style async unzip, after TLuaInterpreter::unzipAsync: the extract
+     * directory is created (mkpath) before the call returns, whether or not the
+     * zip turns out to be usable, and everything after that — reading the zip,
+     * decoding it, writing every entry under destDir — runs on the timer queue
+     * and ends in sysUnzipDone or sysUnzipError. A missing or broken zip is
+     * therefore reported after unzipAsync() has returned, never inside it.
+     *
+     * Returns null once started, or the message desktop's warnArgumentValue
+     * gives when the directory could not be made (and nothing is queued).
      */
-    private runUnzipAsync(zipPath: string, destDir: string): void {
+    private runUnzipAsync(zipPath: string, destDir: string): string | null {
         const vfs = this.vfs;
         // Both events carry the extract location with a trailing separator,
         // whether or not the caller gave one — Mudlet appends it before the
@@ -4873,21 +4927,16 @@ end`);
             console.warn('[unzipAsync]', msg);
             this.emitEvent('sysUnzipError', [zipPath, reported]);
         };
-        if (!vfs)         return fail('no profile VFS available');
-        if (!zipPath)     return fail('zipPath is required');
-        if (!destDir)     return fail('destDir is required');
-
-        // A zip may live in the read-only /lua/ namespace rather than the
-        // profile — that is where the spec corpus keeps its fixture archives,
-        // and Lua's own io.open sees both.
-        let buf: Uint8Array;
-        const builtin = this.readBuiltinBytes(zipPath);
-        if (builtin) {
-            buf = builtin;
-        } else {
-            if (!vfs.exists(zipPath)) return fail(`zip not found: ${zipPath}`);
-            try { buf = vfs.readBinaryFile(zipPath); }
-            catch (err) { return fail(`read failed: ${err instanceof Error ? err.message : String(err)}`); }
+        // Desktop's QDir::mkpath, which also succeeds for a directory already
+        // there. Not for an empty destDir: that is "/" on desktop, the root of
+        // the disk, which here is nowhere a profile may write.
+        if (vfs && destDir) {
+            try {
+                if (vfs.stat(destDir)?.type !== 'dir') vfs.mkdir(destDir);
+            } catch (err) {
+                console.warn('[unzipAsync] could not create', destDir, err);
+                return "couldn't create output directory to put the extracted files into";
+            }
         }
 
         const TEXT_EXT = /\.(xml|lua|txt|json|md|css|html|htm|js|csv|ini|cfg|conf|yml|yaml)$/i;
@@ -4903,9 +4952,27 @@ end`);
         //
         // The *events* still arrive later, which is the part of "async" a caller
         // actually observes: emitting from inside the binding Lua is executing
-        // would re-enter the Lua state mid-call and crash wasmoon.
+        // would re-enter the Lua state mid-call and crash wasmoon — and the
+        // failures are no exception, desktop's come from the finished future.
         this.deferToTimerQueue(() => {
             if (this.inert) return;
+            if (!vfs)     return fail('no profile VFS available');
+            if (!zipPath) return fail('zipPath is required');
+            if (!destDir) return fail('destDir is required');
+
+            // A zip may live in the read-only /lua/ namespace rather than the
+            // profile — that is where the spec corpus keeps its fixture
+            // archives, and Lua's own io.open sees both.
+            let buf: Uint8Array;
+            const builtin = this.readBuiltinBytes(zipPath);
+            if (builtin) {
+                buf = builtin;
+            } else {
+                if (!vfs.exists(zipPath)) return fail(`zip not found: ${zipPath}`);
+                try { buf = vfs.readBinaryFile(zipPath); }
+                catch (err) { return fail(`read failed: ${err instanceof Error ? err.message : String(err)}`); }
+            }
+
             let entries: Record<string, Uint8Array>;
             try { entries = unzipSync(buf); }
             catch (err) { return fail(`unzip failed: ${err instanceof Error ? err.message : String(err)}`); }
@@ -4928,6 +4995,7 @@ end`);
                 fail(`extract failed: ${e instanceof Error ? e.message : String(e)}`);
             }
         });
+        return null;
     }
 
     /** Run `fn` off the current call stack, on the queue a blocked script still

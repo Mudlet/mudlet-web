@@ -1065,6 +1065,11 @@ export class ScriptingAPI {
     /** Mudlet `closeMudlet()`. Mudlet Web maps it to "close the active profile":
      *  disconnect, then return to the connection screen. Wired by ProfileSession. */
     private closeProfileCallback: (() => void) | null = null;
+    /** A closeMudlet() is armed and has not run yet (see closeMudlet). */
+    private closeMudletArmed = false;
+    /** Set by destroy(): an armed closeMudlet() that outlives the profile
+     *  has nothing left to close. */
+    private destroyed = false;
 
     /** One selection per console, keyed by window name ('main' for the main
      *  console), the way each desktop TConsole keeps its own P_begin/P_end:
@@ -1509,14 +1514,15 @@ export class ScriptingAPI {
      *  Returns null on success, or the message for Mudlet's `nil, message`
      *  refusal when no open profile has that name. Like Mudlet, which closes the
      *  tab on the next event-loop turn, the close happens after the calling
-     *  script has returned — so a script closing its own profile still finishes. */
+     *  script has returned — so a script closing its own profile still finishes
+     *  (closeMudlet defers itself). */
     closeProfile(name: string): string | null {
         const target = name ?? '';
         const conn = useAppStore.getState().connections.find(c => c.name === target);
         const notLoaded = `closeProfile: profile '${target}' does not exist`;
         if (!conn) return notLoaded;
         if (conn.id === this.connectionId) {
-            setTimeout(() => this.closeMudlet(), 0);
+            this.closeMudlet();
             return null;
         }
         if (!this.presence.loadedIds().includes(conn.id)) return notLoaded;
@@ -2448,20 +2454,35 @@ export class ScriptingAPI {
      *  The event comes first because on desktop (TMainConsole::closeEvent) the
      *  exit handlers run while the profile is still connected, so a goodbye or
      *  save command they send reaches the game. The engine's teardown does not
-     *  raise it a second time. */
+     *  raise it a second time.
+     *
+     *  None of that happens inside the call. Desktop's closeMudlet only arms the
+     *  close (mudlet::armForceClose, a zero-delay single shot), so it returns
+     *  and the rest of the calling script runs — and its sends go out — before
+     *  the exit handlers do. A plain timeout rather than the timer queue, so a
+     *  script pumping events in waitForEvent does not close underneath itself,
+     *  which desktop's armForceClose also waits out. Calls made while a close
+     *  is already armed fold into it. */
     closeMudlet(): void {
-        this.host.raiseExitEvent();
-        this.disconnect();
-        this.closeProfileCallback?.();
+        if (this.closeMudletArmed) return;
+        this.closeMudletArmed = true;
+        setTimeout(() => {
+            this.closeMudletArmed = false;
+            if (this.destroyed) return;
+            this.host.raiseExitEvent();
+            this.disconnect();
+            this.closeProfileCallback?.();
+        }, 0);
     }
 
 
     /** Mudlet `resetProfile()` — reload the entire profile as if just opened:
      *  clear every UI surface, recreate the Lua runtime, and re-run all scripts.
      *  The actual work is deferred by the engine (it closes the Lua VM that is
-     *  currently executing this call), so this returns immediately. */
-    resetProfile(): void {
-        this.host.resetProfile();
+     *  currently executing this call), so this returns immediately — true once
+     *  the reset is armed, false when it was refused (Host::resetProfile_phase1). */
+    resetProfile(): boolean {
+        return this.host.resetProfile();
     }
 
 
@@ -7147,6 +7168,8 @@ export class ScriptingAPI {
         if (cur && cur.top === next.top && cur.right === next.right
             && cur.bottom === next.bottom && cur.left === next.left) return;
         useAppStore.getState().patchConnectionProfile(this.connectionId, { outputBorders: next });
+        // The console inside the new borders reports its grid first.
+        this.session.windows.applyMainBorders();
         // Host::setBorders raises sysWindowResizeEvent at the unchanged window
         // size whenever a border moves: the console inside it did resize, and
         // Adjustable.Container's resize handler is how a container attached to
@@ -7396,6 +7419,7 @@ export class ScriptingAPI {
     }
 
     destroy(): void {
+        this.destroyed = true;
         for (const unsub of this.apiUnsubs) unsub();
         this.apiUnsubs.length = 0;
         // Script-installed CSS is profile-local (see styleTag): a closed
