@@ -714,6 +714,14 @@ function getImageSize(path)
     return nil, "couldn't retrieve image size, is the location '" .. tostring(path) .. "' correct?"
 end
 
+-- Whether a window-name argument names the main console. Desktop resolves the
+-- empty string to main everywhere a console name is taken (an empty QString and
+-- "main" both select mpConsole), so a guard that only knew "main" turned
+-- getLineCount(""), moveCursor("", x, y) and the rest into "window not found".
+function __mudlet_main_name(name)
+    return name == 'main' or name == ''
+end
+
 -- Mudlet getConsoleBufferSize([consoleName]) → linesLimit, sizeOfBatchDeletion.
 -- JS returns a 0-indexed [limit, batch] array (wasmoon convention), or nil when
 -- the named console doesn't exist.
@@ -768,10 +776,10 @@ function setConsoleBufferSize(...)
         error("setConsoleBufferSize: bad argument #" .. (3 + argOffset) .. " type (use maximum as"
             .. " boolean is optional, got " .. type(useMaximum) .. "!)", 2)
     end
-    if useMaximum and name ~= 'main' then
+    if useMaximum and not __mudlet_main_name(name) then
         return nil, "useMaximum parameter is only supported for the main console"
     end
-    if name ~= nil and name ~= 'main' and __windowType(name) == nil then
+    if name ~= nil and not __mudlet_main_name(name) and __windowType(name) == nil then
         return nil, 'window "' .. tostring(name) .. '" not found'
     end
     if __setConsoleBufferSize(name, lines, batch, useMaximum) then return true end
@@ -1138,7 +1146,7 @@ do
     -- which a caller can't tell from a genuinely empty one.
     local function countGuard(fn)
         return function(win, ...)
-            if win ~= nil and win ~= 'main' and __windowType(win) == nil then
+            if win ~= nil and not __mudlet_main_name(win) and __windowType(win) == nil then
                 return nil, 'window "' .. tostring(win) .. '" not found'
             end
             return fn(win, ...)
@@ -1519,8 +1527,9 @@ end
 
 -- Mudlet setScript(name, luaCode [, pos]) → the id of the script it replaced.
 -- Everything is checked before the store is touched, and the new body is run as
--- it is installed; if running it raises, the previous source goes back so a bad
--- edit can't leave a script half-replaced.
+-- it is installed — once, by the engine, which hands back what it raised; if it
+-- raised, the previous source goes back so a bad edit can't leave a script
+-- half-replaced.
 do
     local _raw = setScript
     function setScript(name, code, pos)
@@ -1542,7 +1551,6 @@ do
             pos = newPos
         end
         pos = pos or 1
-        local compiled = loadstring(code)
         -- Read the old body first: it is both the existence check (a miss
         -- answers -1) and the rollback copy.
         local previous = __getScript(name, pos)
@@ -1550,8 +1558,8 @@ do
             error('setScript: script "' .. name .. '" at position ' .. pos .. ' not found', 2)
         end
         local id = _raw(name, code, pos)
-        local ok, rerr = pcall(compiled)
-        if not ok then
+        local rerr = __mudlet_scriptLoadError(id)
+        if rerr ~= nil then
             _raw(name, previous.code, pos)
             error("setScript: the new script body raised when it was run: " .. tostring(rerr), 2)
         end
@@ -4374,24 +4382,33 @@ end
 
 -- Resolve a script's event-handler function from its name.
 --
--- Mudlet evaluates the script name as a Lua expression to find the function
--- (TLuaInterpreter::callEventHandler runs `return <name>`), so a script named
--- `mmp.centerRoominfo` resolves through the `mmp` table. A flat `_G[name]`
--- lookup misses those and the handler silently never fires — which is exactly
--- how mudlet-mapper's `gmcp.Room` follow handler went dead, leaving the map
--- not tracking movement.
+-- TLuaInterpreter::callEventHandler runs `return <name>` and calls whatever
+-- comes back, so the name is a Lua expression: `mmp.centerRoominfo` resolves
+-- through the `mmp` table, `H[1]` indexes, and a callable table (one with a
+-- __call metamethod) is called like a function. A name that is not a valid
+-- expression (`Sp ace`) or that raises as it is evaluated resolves to nothing
+-- and the handler is skipped, as is one that evaluates to nil.
 --
--- Walk the dotted path instead of loadstring()ing the name: same result for the
--- names packages actually use, without letting a script name execute code.
--- Returns nil unless the whole path resolves to a function.
+-- Each name's chunk is compiled once and run in the globals table of the
+-- moment, which is what desktop's luaL_dostring on the running state sees.
+local __mudlet_handler_chunks = {}
+local __mudlet_handler_bad = {}
+local __mudlet_setfenv, __mudlet_getfenv, __mudlet_loadstring = setfenv, getfenv, loadstring
 function __mudlet_resolve_handler(name)
-    local target = _G
-    for part in string.gmatch(name, '[^.]+') do
-        if type(target) ~= 'table' then return nil end
-        target = target[part]
+    if __mudlet_handler_bad[name] then return nil end
+    local chunk = __mudlet_handler_chunks[name]
+    if not chunk then
+        chunk = __mudlet_loadstring("return " .. name, name)
+        if not chunk then
+            __mudlet_handler_bad[name] = true
+            return nil
+        end
+        __mudlet_handler_chunks[name] = chunk
     end
-    if type(target) == 'function' then return target end
-    return nil
+    __mudlet_setfenv(chunk, __mudlet_getfenv(0))
+    local ok, target = pcall(chunk)
+    if not ok then return nil end
+    return target
 end
 
 -- Mudlet REGEX_LUA_CODE pattern evaluator: run the body as a Lua chunk on
@@ -4662,25 +4679,18 @@ do
     function permScript(name, parent, code)
         -- A script's body runs as it is compiled into the tree, so both a body
         -- that won't parse AND one that raises on the way in fail creation
-        -- outright — nothing is added in either case.
+        -- outright — nothing is added in either case. The engine runs the
+        -- body, once, as it creates the script, and hands back what it raised
+        -- (a non-string error object already described, as desktop does).
         code = __mudlet_check_lua_code(code, "permScript", 3)
-        local compiled = loadstring(code)
         local id = __mudlet_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), code),
             "permScript", "script", parent)
-        local ok, rerr = pcall(compiled)
-        if not ok then
+        local rerr = __mudlet_scriptLoadError(id)
+        if rerr ~= nil then
             __mudlet_removeScriptById(id)
-            -- `error({...})` leaves a non-string on the stack, and tostring()ing
-            -- it yields "table: 0x…", naming an address instead of the problem.
-            -- Mudlet describes the object instead (TLuaInterpreter.cpp), and
-            -- treats a number as a message because lua_isstring coerces one.
-            local reason = rerr
-            if type(reason) ~= 'string' and type(reason) ~= 'number' then
-                reason = "error object is a " .. type(reason) .. " value"
-            end
             error("permScript: cannot create script (the body raised when it was run: "
-                .. tostring(reason) .. ")", 2)
+                .. tostring(rerr) .. ")", 2)
         end
         return id
     end
@@ -7200,7 +7210,7 @@ do
     local function guard(fn, winArity)
         return function(...)
             local first = ...
-            if type(first) == 'string' and first ~= 'main'
+            if type(first) == 'string' and not __mudlet_main_name(first)
                 and (winArity == nil or select('#', ...) >= winArity)
                 and __windowType(first) == nil
             then
@@ -7283,7 +7293,7 @@ do
     -- but with Qt's own bars over whatever it contains, not a console's.
     local CONSOLE_KINDS = { main = true, miniconsole = true, userwindow = true, buffer = true }
     local function missingWindow(win)
-        if win == nil or win == 'main' then return nil end
+        if win == nil or __mudlet_main_name(win) then return nil end
         if CONSOLE_KINDS[__windowType(win)] then return nil end
         return 'window "' .. tostring(win) .. '" not found'
     end
@@ -7316,7 +7326,7 @@ do
         return function(win, ...)
             local err = missingWindow(win)
             if err then return nil, err end
-            if win == nil or win == 'main' then
+            if win == nil or __mudlet_main_name(win) then
                 return nil, "scrolling cannot be enabled/disabled for the 'main' window"
             end
             return fn(win, ...)
@@ -8766,7 +8776,7 @@ do
     end
 
     function getScrollBarVisible(windowName)
-        if windowName ~= nil and windowName ~= 'main' and __windowType(windowName) == nil then
+        if windowName ~= nil and not __mudlet_main_name(windowName) and __windowType(windowName) == nil then
             return nil, 'window "' .. tostring(windowName) .. '" not found'
         end
         return __getScrollBarVisible(windowName)

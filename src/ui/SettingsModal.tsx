@@ -6,7 +6,7 @@ import { getThemeChoices, isBrandedMode } from '../branding';
 import { useModalFocus } from './components/useModalFocus';
 import { DEFAULT_ANSI_PALETTE } from '../mud/text/colors';
 import { SERVER_WRAP_WIDTH_MIN, SERVER_WRAP_WIDTH_MAX, SERVER_WRAP_WIDTH_DEFAULT } from '../mud/text/serverWrap';
-import { DEFAULT_CONSOLE_BUFFER_SIZE, MIN_CONSOLE_BUFFER_SIZE, MAX_CONSOLE_BUFFER_SIZE } from '../mud/text/Console';
+import { MAIN_CONSOLE_BUFFER_SIZE, MIN_CONSOLE_BUFFER_SIZE, MAX_CONSOLE_BUFFER_SIZE } from '../mud/text/Console';
 import { DEFAULT_HISTORY_SAVE_SIZE, MAX_HISTORY } from './commandHistory';
 import type { ShowSentTextMode, ControlCharacterMode, BlankLinesBehaviour } from '../mud/MudSession';
 
@@ -647,12 +647,12 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
     // size — so an unparseable entry reverts and anything else is clamped into
     // Mudlet's 100 … maximum range.
     const [bufferSizeText, setBufferSizeText] = useState(
-        String(consoleBufferSize ?? DEFAULT_CONSOLE_BUFFER_SIZE),
+        String(consoleBufferSize ?? MAIN_CONSOLE_BUFFER_SIZE),
     );
 
     const handleBufferSizeBlur = () => {
         const parsed = parseInt(bufferSizeText.trim(), 10);
-        const fallback = String(consoleBufferSize ?? DEFAULT_CONSOLE_BUFFER_SIZE);
+        const fallback = String(consoleBufferSize ?? MAIN_CONSOLE_BUFFER_SIZE);
         if (!Number.isFinite(parsed)) { setBufferSizeText(fallback); return; }
         const clamped = Math.min(MAX_CONSOLE_BUFFER_SIZE, Math.max(MIN_CONSOLE_BUFFER_SIZE, parsed));
         setBufferSizeText(String(clamped));
@@ -1282,10 +1282,10 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                                 scrollback (Mudlet's <code>consoleBufferSize</code>). When
                                 it is exceeded the oldest lines are dropped in batches.
                                 Minimum 100 lines; the default is
-                                {' '}<code>{DEFAULT_CONSOLE_BUFFER_SIZE.toLocaleString()}</code>.
-                                Scripts can resize the live buffer with
-                                {' '}<code>setConsoleBufferSize()</code> without changing
-                                this setting.
+                                {' '}<code>{MAIN_CONSOLE_BUFFER_SIZE.toLocaleString()}</code>.
+                                A script's
+                                {' '}<code>setConsoleBufferSize()</code> on the main
+                                window changes this setting too, as in Mudlet.
                             </HelpTip>
                         </label>
                         <div className="settings-color-field">
@@ -1297,7 +1297,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                                 step={100}
                                 disabled={useMaxBufferSize}
                                 value={useMaxBufferSize ? String(MAX_CONSOLE_BUFFER_SIZE) : bufferSizeText}
-                                placeholder={String(DEFAULT_CONSOLE_BUFFER_SIZE)}
+                                placeholder={String(MAIN_CONSOLE_BUFFER_SIZE)}
                                 onChange={e => setBufferSizeText(e.target.value)}
                                 onBlur={handleBufferSizeBlur}
                             />

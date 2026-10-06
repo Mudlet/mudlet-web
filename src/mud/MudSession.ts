@@ -16,7 +16,7 @@ import { parseReplay, replayDurationMs } from './replay/replayFormat';
 import { type MudClientEvents, type MudEvents, type SessionStatus } from './events';
 import type { Console } from './text/Console';
 import {
-    DEFAULT_CONSOLE_BUFFER_SIZE,
+    MAIN_CONSOLE_BUFFER_SIZE,
     MIN_CONSOLE_BUFFER_SIZE,
     MAX_CONSOLE_BUFFER_SIZE,
     consoleBatchDeleteSize,
@@ -76,6 +76,9 @@ export class MudSession {
     private client: MudClient | null = null;
     /** The most recent URL passed to connect() — replayed by reconnect(). */
     private lastUrl: string | null = null;
+    /** How many times connect() has dialed, so a caller can tell whether a
+     *  dial it asked for has been overtaken by another. */
+    private dials = 0;
     private pingTracker: PingTracker | null = null;
     private stateUnsubs: (() => void)[] = [];
     /** The profile's server encoding, as `getServerEncodingsList()` spells it.
@@ -281,8 +284,15 @@ export class MudSession {
         this._outputReady = false;
     }
 
+    /** The URL the session last dialed (and reconnect() would redial). */
+    get dialedUrl(): string | null { return this.lastUrl; }
+
+    /** The number of dials so far — see {@link dialedUrl}. */
+    get dialCount(): number { return this.dials; }
+
     connect(url: string): void {
         this.lastUrl = url;
+        this.dials += 1;
         // A running replay feeds the same parsing pipeline the live socket is
         // about to use — interleaving them would corrupt telnet/GMCP state, so
         // dialing wins and the replay stops.
@@ -906,7 +916,10 @@ export class MudSession {
     // Named user windows keep their own size (Mudlet applies the preference to
     // the main console only, mudlet.cpp:2271); scripts size those with
     // setConsoleBufferSize(windowName, …).
-    private consoleBufferLines = DEFAULT_CONSOLE_BUFFER_SIZE;
+    private consoleBufferLines = MAIN_CONSOLE_BUFFER_SIZE;
+    /** The preference pair a script's setConsoleBufferSize("main", …) just
+     *  wrote, until the profile setting comes back carrying it. */
+    private scriptedBufferPreference: [number, boolean] | null = null;
 
     /** The resolved scrollback cap for the main console, in lines. */
     get consoleBufferSize(): number { return this.consoleBufferLines; }
@@ -918,12 +931,29 @@ export class MudSession {
      * Applies immediately to the main console when it exists.
      */
     setConsoleBufferSize(lines: number, useMaximum = false): void {
-        const requested = Number.isFinite(lines) ? Math.trunc(lines) : DEFAULT_CONSOLE_BUFFER_SIZE;
+        // The preference a script has just saved coming back through the store:
+        // the console already has that size, and re-applying it would replace
+        // the script's own batch size with the preference's 20%.
+        const scripted = this.scriptedBufferPreference;
+        this.scriptedBufferPreference = null;
+        if (scripted && scripted[0] === lines && scripted[1] === useMaximum) return;
+        const requested = Number.isFinite(lines) ? Math.trunc(lines) : MAIN_CONSOLE_BUFFER_SIZE;
         this.consoleBufferLines = useMaximum
             ? MAX_CONSOLE_BUFFER_SIZE
             : Math.min(MAX_CONSOLE_BUFFER_SIZE, Math.max(MIN_CONSOLE_BUFFER_SIZE, requested));
         const main = this.consoles.get('main');
         if (main) this.applyConsoleBufferSize(main);
+    }
+
+    /**
+     * Record a size a script gave the main console (`Host::setMainConsoleBufferSize`,
+     * which sets `mConsoleBufferSize` and `mUseMaxConsoleBufferSize` as well as
+     * the live buffer), so the preference it saves is not then applied over the
+     * live buffer a second time. The caller has already resized the console.
+     */
+    noteScriptedConsoleBufferSize(lines: number, useMaximum: boolean): void {
+        this.consoleBufferLines = lines;
+        this.scriptedBufferPreference = [lines, useMaximum];
     }
 
     /** Push the resolved size onto a console, batch-deletion size and all —
@@ -1113,7 +1143,23 @@ export class MudSession {
      *  in ProfileSession. */
     private postSocketMessage(prefix: keyof typeof SOCKET_MESSAGE_PREFIX, text: string): void {
         const tag = SOCKET_MESSAGE_PREFIX[prefix];
-        this.events.emit('message', `${tag.color}${tag.label}\x1b[0m${tag.gap}- ${text}`, 'script', Date.now());
+        this.postSocketLine(`${tag.color}${tag.label}\x1b[0m${tag.gap}- ${text}`);
+    }
+
+    /** cTelnet's postMessage prints into the main console like anything else,
+     *  so its notices are lines getLineCount() counts and getLines() returns —
+     *  a script indexing lines after a connect or a disconnect lands where it
+     *  does on desktop only if they are (mudlet-web#339). Stored as well as
+     *  rendered, as {@link warnIfUnencodable} does, and wrapped at the main
+     *  window's width like any other line. */
+    private postSocketLine(styled: string): void {
+        const main = this.consoles.get('main');
+        if (main) {
+            const line = new AnsiAwareBuffer(styled);
+            main.appendLine(line);
+            main.wrapAppendedLine(line);
+        }
+        this.events.emit('message', styled, 'script', Date.now());
     }
 
     /** cTelnet's "[ INFO ]  - Attempting an open connection to %1:%2 ..."
@@ -1214,7 +1260,7 @@ export class MudSession {
     /** The indented, yellow second row of a two-line notice — Mudlet's "%1\n%2"
      *  renders as two rows, and a `message` here is one. */
     private postSocketContinuation(text: string): void {
-        this.events.emit('message', `\x1b[33m            ${text}\x1b[0m`, 'script', Date.now());
+        this.postSocketLine(`\x1b[33m            ${text}\x1b[0m`);
     }
 
     /** cTelnet's disconnect pair: the reason (ctelnet.cpp:1073-1136) and then

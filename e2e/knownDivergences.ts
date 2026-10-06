@@ -692,6 +692,19 @@ export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
         issue: '#335',
     },
     {
+        api: 'mudlet.translations.en_US.e',
+        behaviour:
+            'Desktop: nil — the table has 23 keys. Mudlet Web: "e", with all 24 direction names.',
+        reason:
+            'TLuaInterpreter::setupLanguageData stores the translation of "e" under the key "s", where the '
+            + 'next line overwrites it with "s"\'s own; it sizes the table for 24 entries and sets every other '
+            + 'short name, so the missing "e" is a typo rather than a choice. A script indexing it on desktop '
+            + 'gets nil, and translateTable() falls back to the key, so "e" reads as "e" on both clients that '
+            + 'way. Leaving the key out here would only reproduce the slip. The rest of the table, i and o '
+            + 'included, matches; tests/scripting/consoleConfigDrift341.test.ts pins it.',
+        issue: '#341',
+    },
+    {
         api: 'highlightRoom: missing alpha arguments',
         behaviour:
             'Desktop: highlightRoom with 8 arguments raises "bad argument #9 type (color1Alpha as number '

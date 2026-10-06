@@ -9,6 +9,10 @@ import type { BindingContext } from './context';
  * stateful with respect to the currently selected window.
  */
 export function installCursorBindings({ lua, api }: BindingContext): void {
+    // A leading window argument as desktop's WINDOW_NAME reads it: nil is the
+    // main console, anything else its string form (lua_isstring takes numbers).
+    const winName = (v: unknown): string | undefined =>
+        v === undefined || v === null ? undefined : String(v);
     // ── Line / cursor inspection ──────────────────────────────────────────
     // Mudlet `isPrompt([window])` — reports the per-line prompt flag for
     // the line at the current cursor position. ScriptingAPI tags the buffer
@@ -23,11 +27,15 @@ export function installCursorBindings({ lua, api }: BindingContext): void {
     // Mudlet `getTimestamp([console_name,] lineNumber)`. Optional leading
     // window name; lineNumber counts from 0 but 0 is refused. Returns the formatted time string
     // or false (miss) — Bridge.lua maps false to Mudlet's (nil, errMsg).
+    // Desktop picks the window form by argument count (`lua_gettop(L) > 1`),
+    // not by type, and reads the line with getVerifiedInt — so getTimestamp("3")
+    // is line 3 of main, as a trigger's `matches[2]` would pass it. Bridge.lua
+    // always forwards both slots, so a missing second one arrives as nil (null).
     lua.global.set('__getTimestamp', (a?: unknown, b?: unknown) => {
-        if (typeof a === 'string') {
-            return api.getTimestamp(b === undefined ? undefined : Number(b), a) ?? false;
+        if (b !== undefined && b !== null) {
+            return api.getTimestamp(Number(b), winName(a)) ?? false;
         }
-        return api.getTimestamp(a === undefined ? undefined : Number(a)) ?? false;
+        return api.getTimestamp(a === undefined || a === null ? undefined : Number(a)) ?? false;
     });
     lua.global.set('getLineNumber',  (win?: string)=> api.getLineNumber(win));
     lua.global.set('getLineCount',   (win?: string)=> api.getLineCount(win));
@@ -142,20 +150,25 @@ export function installCursorBindings({ lua, api }: BindingContext): void {
     });
     lua.global.set('moveCursorEnd',  (win?: string)=> api.moveCursorEnd(win));
     // moveCursor([window,] x, y) → bool. Mudlet returns true on success.
-    lua.global.set('moveCursor', (a: string | number, b: number, c?: number) => {
+    // The window form is chosen by argument count, as desktop's
+    // `lua_gettop(L) > 2`, and the coordinates go through getVerifiedInt, so a
+    // numeric string — `moveCursor(0, matches[2])` — is a number.
+    lua.global.set('moveCursor', (a: unknown, b: unknown, c?: unknown) => {
         return c !== undefined
-            ? api.moveCursor(a as string, b, c)
-            : api.moveCursor(undefined, a as number, b);
+            ? api.moveCursor(winName(a), Number(b), Number(c))
+            : api.moveCursor(undefined, Number(a), Number(b));
     });
     lua.global.set('selectString', (a: string, b: string | number, c?: number) => {
         // selectString([window,] text, occurrence)
         return c !== undefined ? api.selectString(b as string, c, a) : api.selectString(a, b as number);
     });
-    lua.global.set('selectSection', (a: string | number, b: number, c?: number) => {
-        // selectSection([window,] from, length) → bool
+    lua.global.set('selectSection', (a: unknown, b: unknown, c?: unknown) => {
+        // selectSection([window,] from, length) → bool. Like moveCursor, the
+        // window form is picked by argument count and the positions accept
+        // numeric strings (desktop's getVerifiedInt).
         return c !== undefined
-            ? api.selectSection(b, c, a as string)
-            : api.selectSection(a as number, b);
+            ? api.selectSection(Number(b), Number(c), winName(a))
+            : api.selectSection(Number(a), Number(b));
     });
     // Mudlet selectCurrentLine([window]) answers nothing on success
     // (TLuaInterpreter::selectCurrentLine returns no values); a window name

@@ -1,6 +1,6 @@
 import { ItemIdSequence } from '../ItemIdSequence';
 import type { KeyNode } from '../../storage/schema';
-import { buildEffectivelyEnabledIds } from '../../storage/schema';
+import { buildEffectivelyEnabledIds, inTreeOrder } from '../../storage/schema';
 import {
     bindingQtModifiers, domCodeToQtKey, isKeypadBinding, isPrintableQtKey, isQtKeypadEvent,
     keypadEventQtKey, printableEventQtKey,
@@ -279,7 +279,9 @@ export class KeyEngine {
         const enabledIds = buildEffectivelyEnabledIds(keybindings, blocked);
         // A key with no DOM code can still be bound by the character it types
         // (Key_Eacute from an AZERTY profile has no US position at all).
-        this.perm = keybindings.filter(k => enabledIds.has(k.id) && (k.key || isPrintableQtKey(k.qtKey)));
+        // Tree order, not store order: a key added later to an older group
+        // sits inside that group, ahead of root keys made since (#336).
+        this.perm = inTreeOrder(keybindings).filter(k => enabledIds.has(k.id) && (k.key || isPrintableQtKey(k.qtKey)));
         this.permRootSeq = new Map(this.perm.map(k => [k.id, rootSeq(k)]));
     }
 
@@ -294,6 +296,20 @@ export class KeyEngine {
         for (const item of items) {
             if (!this.permReg.has(item.id)) this.permReg.set(item.id, this.regCounter++);
         }
+    }
+
+    /** The first permanent keybinding the event matches, in tree order — the
+     *  permanent half of {@link process}, for callers that ask about the
+     *  saved keys alone. */
+    matchPerm(event: KeyboardEvent): KeyNode | null {
+        return this.perm.find(b => matchesEvent(b, event)) ?? null;
+    }
+
+    /** Every permanent keybinding the event matches, in tree order. The list
+     *  form of {@link matchPerm}, for Mudlet's "React to all keybindings on the
+     *  same key". */
+    matchAllPerm(event: KeyboardEvent): KeyNode[] {
+        return this.perm.filter(b => matchesEvent(b, event));
     }
 
     /**

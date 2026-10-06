@@ -45,6 +45,9 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
     // readDefaultTrueBool) and "Disable password masking" (off by default).
     const highlightHistory = useProfileField('highlightHistory') ?? true;
     const disablePasswordMasking = useProfileField('disablePasswordMasking') ?? false;
+    // Mudlet's "Auto clear the input line after you sent text" (off by
+    // default) — decides where history traversal resumes after a send.
+    const autoClearInput = useProfileField('autoClearInput') === true;
     const spellCheckInput = useProfileField('spellCheckInput') ?? false;
     const inputStyle = (inputBackground || inputForeground) ? {
         ...(inputBackground ? { background: inputBackground } : {}),
@@ -259,9 +262,16 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         // Empty Enter is still sent — many MUDs treat a bare newline as a
         // meaningful command (continue prompts, "look" repeats). Just don't
         // record blanks in history.
-        if (command && !passwordMode) pushHistory(command);
-        draftRef.current = command;
-        setCursor(-1);
+        const recorded = command !== '' && !passwordMode;
+        if (recorded) pushHistory(command);
+        // TCommandLine::enterCommand: a box that is not cleared after sending
+        // leaves the history position ON the command just sent (it is the
+        // newest entry and still in the box), so the first Up goes to the one
+        // before it rather than recalling the same command again, and Down
+        // steps off it to an empty line (#336). A cleared box, or a command
+        // that never reached history, starts from the empty draft slot.
+        draftRef.current = '';
+        setCursor(recorded && !autoClearInput ? 0 : -1);
         setGhostHidden(false);
         resetCycle();
         autoCompleteRef.current = -1;
@@ -390,6 +400,28 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         return true;
     };
 
+    /**
+     * TCommandLine::historyMove: Down on the draft slot — not walking history,
+     * no prefix search under way — with text in the box files that text in
+     * history and clears the line, so a half-typed command can be put aside
+     * and recalled with Up later (#336). Even with an empty history, and
+     * never for a password. In a multi-line draft only from the last row;
+     * above it Down still moves the caret. Returns false when it did nothing.
+     */
+    const stashDraft = (): boolean => {
+        const el = commandInputRef.current;
+        if (!el || passwordMode || cursor !== -1 || autoCompleteRef.current !== -1) return false;
+        const value = el.value;
+        if (value === '') return false;
+        if (value.indexOf('\n', el.selectionEnd ?? value.length) !== -1) return false;
+        pushHistory(value);
+        resetCycle();
+        draftRef.current = '';
+        pendingCaretEndRef.current = 'end';
+        setValue('');
+        return true;
+    };
+
     const qualifiesForTraversal = (dir: 'up' | 'down'): boolean => {
         const el = commandInputRef.current;
         if (!el) return false;
@@ -474,6 +506,10 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
             // caret on desktop (TCommandLine::event), and any other modifier is
             // a keybinding's or the textarea's.
             if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+            if (e.key === 'ArrowDown' && stashDraft()) {
+                e.preventDefault();
+                return;
+            }
             if (completeFromHistory(e.key === 'ArrowUp' ? 1 : -1)) {
                 e.preventDefault();
                 return;
