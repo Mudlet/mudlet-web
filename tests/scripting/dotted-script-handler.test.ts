@@ -43,10 +43,22 @@ describe('event handlers on dotted script names', () => {
       t.run(`mmp = { notafunction = 42 }`);
       expect(t.run(`return __mudlet_resolve_handler('mmp.missing')`)).toBeNull();
       expect(t.run(`return __mudlet_resolve_handler('nosuchtable.field')`)).toBeNull();
-      expect(t.run(`return __mudlet_resolve_handler('mmp.notafunction')`)).toBeNull();
       // Indexing *through* a non-table must not error either.
       expect(t.run(`return __mudlet_resolve_handler('mmp.notafunction.deeper')`)).toBeNull();
+      // Not an expression at all: `return ` alone, or a name with a space.
       expect(t.run(`return __mudlet_resolve_handler('')`)).toBeNull();
+      expect(t.run(`return __mudlet_resolve_handler('Sp ace')`)).toBeNull();
+    });
+
+    it('hands back whatever `return <name>` evaluates to, as desktop calls it', () => {
+      // TLuaInterpreter::callEventHandler calls the value itself, so a
+      // callable table or an indexed name is a handler too (mudlet-web#338).
+      t.run(`mmp = { notafunction = 42 }
+             CallT = setmetatable({}, { __call = function() end })
+             H = { function() end }`);
+      expect(t.run(`return __mudlet_resolve_handler('mmp.notafunction')`)).toBe(42);
+      expect(t.run(`return __mudlet_resolve_handler('CallT') == CallT`)).toBe(true);
+      expect(t.run(`return type(__mudlet_resolve_handler('H[1]'))`)).toBe('function');
     });
 
     it('resolves late, so re-saving a script swaps the function', () => {
@@ -87,6 +99,7 @@ describe('event handlers on dotted script names', () => {
     // handler that reads gmcp.Room.Info.num and calls centerview.
     t.run(`
       addRoom(7)
+      openMapWidget()
       gmcp = gmcp or {}
       gmcp.Room = { Info = { num = 7 } }
       mmp = {}
@@ -101,6 +114,6 @@ describe('event handlers on dotted script names', () => {
     `);
     // centerview sets the player room (Mudlet parity), so this proves the whole
     // chain ran, not just that the handler was reached.
-    expect(t.run(`openMapWidget() return getPlayerRoom()`)).toBe(7);
+    expect(t.run(`return getPlayerRoom()`)).toBe(7);
   });
 });

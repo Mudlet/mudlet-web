@@ -109,8 +109,13 @@ export class EchoHandler {
 
     private setEchoing(on: boolean): void {
         // Anomaly is sticky for the session — once we've refused ECHO we don't
-        // re-engage no matter what the server sends.
-        if (this._anomalyDetected) return;
+        // re-engage no matter what the server sends. A WILL ECHO is still
+        // answered, though, with the refusal: cTelnet's WILL branch asks
+        // checkEchoAnomalyPattern(), which stays true, and sends DONT ECHO.
+        if (this._anomalyDetected) {
+            if (on) this.sendRaw(ECHO_DONT);
+            return;
+        }
         if (on === this._serverEchoing) return;
         // The toggle counter is what stands between us and a server that misuses
         // ECHO for line editing — see trackToggleAndDetectAnomaly, which is

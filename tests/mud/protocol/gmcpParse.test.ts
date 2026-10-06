@@ -146,44 +146,40 @@ describe('GMCP payload parsing', () => {
     warn.mockRestore();
   });
 
-  it('reports a bad gmcp_msgs payload as such, not as a JSON parse error', () => {
-    // The body is valid JSON; it's the base64 in `text` that isn't. Blaming the
-    // JSON would send anyone debugging it to the wrong place.
-    const seen: string[] = [];
-    const stream = createGmcpStream({ onEnvelope: () => {}, onMessage: text => seen.push(text) });
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    stream(frame('gmcp_msgs {"type":"say","text":"not!base64"}'));
-
-    expect(seen).toEqual([]);
-    expect(warn).toHaveBeenCalledOnce();
-    expect(warn.mock.calls[0][0]).toContain('Malformed gmcp_msgs payload');
-    warn.mockRestore();
+  // Mudlet has no gmcp_msgs special case: it is an ordinary package that
+  // reaches the gmcp table and raises gmcp.gmcp_msgs (mudlet-web#362).
+  it('delivers gmcp_msgs as an ordinary package, not decoded text', () => {
+    const seen: Array<{ path: string; value: unknown }> = [];
+    const stream = createGmcpStream({ onEnvelope: e => seen.push(e) });
+    stream(frame('gmcp_msgs {"type":"x","text":"aGVsbG8="}'));
+    expect(seen).toEqual([{ path: 'gmcp_msgs', value: { type: 'x', text: 'aGVsbG8=' } }]);
   });
 
-  it('treats a null gmcp_msgs body as a bad payload, not an escaping error', () => {
-    // `gmcp_msgs null` is valid JSON, so it reaches the consumer and the
-    // property access throws. With the consumer call outside the parse guard
-    // that would escape to MudClient's frame handler and cost the rest of the
-    // frame — one nonconformant message taking unrelated game text with it.
-    const seen: string[] = [];
-    const stream = createGmcpStream({ onEnvelope: () => {}, onMessage: text => seen.push(text) });
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    expect(() => stream(frame('gmcp_msgs null'))).not.toThrow();
-
-    expect(seen).toEqual([]);
-    expect(warn.mock.calls[0][0]).toContain('Malformed gmcp_msgs payload');
-    warn.mockRestore();
+  // cTelnet::setGMCPVariables removes every LF and CR from the body before
+  // decoding, so a game leaking raw newlines into a string loses them rather
+  // than the whole message (mudlet-web#362).
+  it('drops a raw LF inside a JSON string instead of the message', () => {
+    const seen: Array<{ path: string; value: unknown }> = [];
+    const stream = createGmcpStream({ onEnvelope: e => seen.push(e) });
+    stream(frame('Room.Info {"num":1,"name":"Hall","desc":"A long hall.\nIt goes north."}'));
+    expect(seen).toEqual([{ path: 'Room.Info', value: { num: 1, name: 'Hall', desc: 'A long hall.It goes north.' } }]);
   });
 
-  it('still delivers a well-formed gmcp_msgs payload', () => {
-    const seen: Array<{ text: string; type: string }> = [];
-    const stream = createGmcpStream({ onEnvelope: () => {}, onMessage: (text, type) => seen.push({ text, type }) });
+  it('drops a raw CR, and an LF inside a key, the same way', () => {
+    const seen: Array<{ path: string; value: unknown }> = [];
+    const stream = createGmcpStream({ onEnvelope: e => seen.push(e) });
+    stream(frame('Room.Info {"desc":"A long hall.\r\nIt goes north."}'));
+    stream(frame('Room.Info {"na\nme":"Hall"}'));
+    expect(seen).toEqual([
+      { path: 'Room.Info', value: { desc: 'A long hall.It goes north.' } },
+      { path: 'Room.Info', value: { name: 'Hall' } },
+    ]);
+  });
 
-    const b64 = btoa(String.fromCharCode(...new TextEncoder().encode('héllo ⛵')));
-    stream(frame(`gmcp_msgs {"type":"say","text":"${b64}"}`));
-
-    expect(seen).toEqual([{ text: 'héllo ⛵', type: 'say' }]);
+  it('still reads a pretty-printed body separated from its name by a newline', () => {
+    const seen: Array<{ path: string; value: unknown }> = [];
+    const stream = createGmcpStream({ onEnvelope: e => seen.push(e) });
+    stream(frame('Char.Vitals\n{\r\n  "hp": 42\r\n}'));
+    expect(seen).toEqual([{ path: 'Char.Vitals', value: { hp: 42 } }]);
   });
 });

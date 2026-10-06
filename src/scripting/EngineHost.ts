@@ -40,6 +40,9 @@ export interface TempComplexTriggerSpec {
     fireLength: number;
     delta: number;
     highlight?: { fg?: string; bg?: string };
+    /** Its code string did not compile. Mudlet still makes the trigger, but it
+     *  is inactive however it is switched — it never matches or highlights. */
+    uncompiled?: boolean;
 }
 
 export interface EngineHost {
@@ -220,13 +223,17 @@ export interface EngineHost {
     getScriptByName(name: string, pos: number): { code: string; id: number } | null;
     /** Remove the script with this numeric id; true when one was removed. */
     removeScriptById(id: number): boolean;
+    /** Why the body of the script with this numeric id failed the last time it
+     *  ran, or null when it ran cleanly. */
+    scriptLoadErrorById(id: number): string | null;
     /** Mudlet's killTimer/killAlias/killTrigger/killKey by permanent-item name. */
     killByName(kind: 'timer' | 'alias' | 'trigger' | 'key', name: string): boolean;
 
     // ── Profile lifecycle ────────────────────────────────────────────────────
 
-    /** Mudlet `resetProfile()` — reload the profile with a fresh Lua VM. */
-    resetProfile(): void;
+    /** Mudlet `resetProfile()` — reload the profile with a fresh Lua VM. True
+     *  when the reset was armed, false when it was refused. */
+    resetProfile(): boolean;
     /** Render a map area to a PNG inside the profile VFS. */
     exportAreaImageToVfs(
         areaId: number,
@@ -327,8 +334,9 @@ export const NULL_ENGINE_HOST: EngineHost = Object.freeze({
     setScriptByName: () => -1,
     getScriptByName: () => null,
     removeScriptById: () => false,
+    scriptLoadErrorById: () => null,
     killByName: () => false,
 
-    resetProfile: () => {},
+    resetProfile: () => false,
     exportAreaImageToVfs: () => ({ error: 'exportAreaImage: no profile filesystem' }),
 });

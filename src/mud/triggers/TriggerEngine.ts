@@ -1,7 +1,9 @@
 import PCRE, { pcreSubject } from './pcre/Pcre2';
 import type { TriggerNode, TriggerPattern } from '../../storage/schema';
-import { buildEffectivelyEnabledIds, isColorizing } from '../../storage/schema';
+import { isColorizing } from '../../storage/schema';
 import { COLOR_DEFAULT, COLOR_IGNORED, parseColorPattern } from './legacyColorPatterns';
+import type { RgbColor } from '../text/FormatState';
+import { parseQColor } from '../../ui/labels/qColor';
 
 export type { TriggerNode };
 
@@ -77,9 +79,15 @@ type MatchResult = {
      *  `setCaptureGroups`, so the script sees `matches` as `{}` and a
      *  multiline row is an empty table. `matchedText` is then `''`. */
     captureless?: boolean;
+    /** The pattern let the line through without running anything: a line
+     *  spacer on a trigger that is not multiline. Desktop's
+     *  `match_line_spacer` returns true there without calling `execute()`, so
+     *  the trigger counts as matched — it opens its chain and re-arms its fire
+     *  length — but sends no command, paints nothing and runs no script. */
+    silent?: boolean;
 };
 
-type Matcher = (line: string, isPrompt: boolean) => MatchResult | null;
+type Matcher =(line: string, isPrompt: boolean) => MatchResult | null;
 
 /**
  * What `matchPerm`/`processAndTrigger` hand back to the engine. Adds the
@@ -118,23 +126,12 @@ function mergeAllMatches(results: MatchResult[]): MatchResult | null {
     if (results.length === 1) return first;
     const captures = [...first.captures];
     const captureSpans = [...(first.captureSpans ?? [])];
-    const namedGroups = { ...first.namedGroups };
-    const namedSpans = { ...first.namedSpans };
     for (const r of results.slice(1)) {
         captures.push(r.matchedText, ...r.captures);
         captureSpans.push(
             { start: r.matchStart ?? 0, length: r.matchedText.length },
             ...(r.captureSpans ?? r.captures.map(() => ({ start: 0, length: 0 }))),
         );
-        // A named group repeated across occurrences keeps the FIRST one, which is
-        // what a single-match trigger would have reported — later occurrences are
-        // reachable positionally.
-        for (const [name, value] of Object.entries(r.namedGroups ?? {})) {
-            if (!(name in namedGroups)) namedGroups[name] = value;
-        }
-        for (const [name, span] of Object.entries(r.namedSpans ?? {})) {
-            if (!(name in namedSpans)) namedSpans[name] = span;
-        }
     }
     return {
         captures,
@@ -146,8 +143,11 @@ function mergeAllMatches(results: MatchResult[]): MatchResult | null {
         // substring hands them only the first occurrence
         // (TTrigger::processSubstringMatch filters `captureList.front()`).
         filterMode: first.filterMode,
-        namedGroups: Object.keys(namedGroups).length > 0 ? namedGroups : undefined,
-        namedSpans: Object.keys(namedSpans).length > 0 ? namedSpans : undefined,
+        // TTrigger::match_perl reads the name table once, after the FIRST
+        // match: a later occurrence's named groups are reachable positionally
+        // only, even when the first left the name unset (#361).
+        namedGroups: first.namedGroups,
+        namedSpans: first.namedSpans,
     };
 }
 
@@ -195,6 +195,17 @@ function filterOfferings(result: MatchResult): { text: string; start: number }[]
         out.push({ text, start });
     }
     return out;
+}
+
+/**
+ * A colorizer trigger's stored colour (`mFgColor`/`mBgColor`) as desktop reads
+ * it: QColor::fromString, so a colour name, `#rgb`, `#aarrggbb` and the 9- and
+ * 12-digit forms paint as well as `#rrggbb` does. Null for a string QColor
+ * calls invalid, which leaves that side of the text as it was.
+ */
+export function highlightColor(spec: string): RgbColor | null {
+    const rgb = parseQColor(spec);
+    return rgb ? { space: 'rgb', r: rgb[0], g: rgb[1], b: rgb[2] } : null;
 }
 
 /**
@@ -259,19 +270,6 @@ type PcreMatch = { length: number; [k: number]: PcreMatchGroup; [k: string]: Pcr
 
 /** Kicked off at module load so PCRE is ready by the time anything matches. */
 const pcreReadyPromise = PCRE.init();
-
-// DEBUG: diagnose pcre2-wasm-universal's hardcoded 1000-iter cap in matchAll.
-function logSafetyLimit(callsite: string, pattern: string, subject: string): void {
-    const ansiCount = (subject.match(/\x1b\[/g) ?? []).length;
-    console.error('[matchAll safety limit]', {
-        callsite,
-        pattern,
-        subjectLength: subject.length,
-        ansiEscapeCount: ansiCount,
-        subjectHead: subject.slice(0, 200),
-        subjectTail: subject.slice(-200),
-    });
-}
 
 type CompiledOrEntry = {
     kind: 'or';
@@ -417,10 +415,38 @@ function signatureOf(item: TriggerNode): string {
     return sig;
 }
 
+/**
+ * What one walk over a line has established, for the triggers further down the
+ * same walk. Desktop walks the tree recursively: a parent's `match()` checks its
+ * own `isActive()`, tests its patterns, and only then calls `match()` on each
+ * child. Mudlet Web walks a flat pre-order list instead, so the two facts a
+ * child needs from its ancestors are recorded here as the walk passes them.
+ */
+type PassState = {
+    line: number;
+    /** Ancestors' `isActive()` as it read when the walk reached them. A
+     *  pattern-less folder is not in the walk, so it is recorded when its first
+     *  descendant is reached — the moment desktop's folder `match()` runs. A
+     *  script that disables a folder or chain head afterwards does not take the
+     *  line from its remaining children. */
+    active: Map<string, boolean>;
+    /** Chain heads that let this line through to their children: they matched
+     *  it, or spent a line of their fire length on it (desktop's
+     *  `mKeepFiring`, decremented only when the trigger is actually checked). */
+    open: Set<string>;
+};
+
 type AndState = {
     nextIdx: number;
-    startLine: number;
-    waitUntilLine: number;
+    /** How many times the trigger has been checked since this state opened.
+     *  Desktop's `TMatchState::newLine` runs from inside `TTrigger::match`, so
+     *  a line on which the trigger is not checked at all — it is disabled, or
+     *  its chain is closed — does not age the state, and a filter parent that
+     *  hands it several captures ages it once per capture. */
+    age: number;
+    /** Checks still to go before a line spacer this state reached is
+     *  satisfied — counted, like `age`, on checks rather than line numbers. */
+    spacerWait: number;
     /** One `multimatches` row per condition met: Mudlet's capture list for
      *  that line — the whole match (PCRE group 0) then its groups, repeated per
      *  occurrence for a "match all" pattern — or an empty row for a condition
@@ -568,7 +594,6 @@ function buildMatcher(
     register: (re: PcreInstance) => void,
     onError?: (pattern: TriggerPattern, reason: string) => void,
     matchAll = false,
-    triggerName = '',
 ): Matcher | null {
     switch (p.type) {
         case 'regex': {
@@ -576,29 +601,24 @@ function buildMatcher(
             const re = compilePcre(p.text, reason => onError?.(p, reason));
             if (!re) return null;
             register(re);
+            // TTrigger::match_perl treats any error from pcre2_match — the
+            // match limit a badly backtracking pattern runs into, above all — as
+            // "no match", and under "match all" as the end of the loop. Thrown,
+            // it skipped every trigger after this one for the line (#361).
             if (matchAll) {
-                const patternText = p.text;
                 return (line) => {
                     const subject = pcreSubject(line);
                     // The single match first: most lines do not match at all,
                     // and this keeps them to one PCRE call and no allocation.
-                    const first = re.match(subject) as PcreMatch | null;
+                    const first = re.tryMatchFrom(subject, 0) as PcreMatch | null;
                     if (!first) return null;
-                    let all: PcreMatch[];
-                    try {
-                        all = re.matchAll(subject) as PcreMatch[];
-                    } catch (err) {
-                        if (err instanceof Error && err.message.includes('safety limit exceeded')) {
-                            logSafetyLimit(`trigger:${triggerName}(multipleMatches)`, patternText, line);
-                        }
-                        throw err;
-                    }
+                    const all = re.matchAll(subject, true) as PcreMatch[];
                     if (all.length <= 1) return pcreToMatchResult(first);
                     return mergeAllMatches(all.map(pcreToMatchResult));
                 };
             }
             return (line) => {
-                const m = re.match(pcreSubject(line)) as PcreMatch | null;
+                const m = re.tryMatchFrom(pcreSubject(line), 0) as PcreMatch | null;
                 if (!m) return null;
                 return pcreToMatchResult(m);
             };
@@ -688,15 +708,27 @@ function buildMatcher(
                 const runs = colorMatchRef.fn(fg, bg, window);
                 if (runs.length === 0) return null;
                 const base = window?.start ?? 0;
+                // Every run goes into the one capture list, so the script's
+                // `matches` is {run1, run2, …} and the highlight paints each of
+                // them — one entry per occurrence, as a match-all substring
+                // lays its hits out (groupCount 1).
                 return {
-                    captures: [],
+                    captures: runs.slice(1).map(r => r.text),
                     matchedText: runs[0].text,
+                    matchStart: runs[0].start - base,
+                    captureSpans: runs.slice(1).map(r => ({ start: r.start - base, length: r.text.length })),
+                    groupCount: 1,
                     offerings: runs.map(r => ({ text: r.text, start: r.start - base })),
                 };
             };
         }
         case 'lineSpacer':
-            return null;
+            // Outside a multiline trigger (the AND compile handles its own
+            // spacers before getting here) `match_line_spacer` just returns
+            // true: the trigger is an always-open gate for its children, and
+            // its own command and script are never run. It calls no filter(),
+            // so a filter's children get nothing from it.
+            return () => ({ captures: [], matchedText: '', filterMode: 'none', captureless: true, silent: true });
     }
 }
 
@@ -779,12 +811,13 @@ export class TriggerEngine {
     // freed. Items currently disabled stay cached so re-enabling is free.
     private cache = new Map<string, CachedEntry>();
 
-    // Chain state: maps chain-head trigger ID → last line number on which chain
-    // is open. A chain head is any trigger with children (group or not) — Mudlet
-    // lets a leaf trigger with its own script also act as a chain head for the
-    // nested triggers it contains.
+    // Lines are numbered so per-line state (a filter's offering) can tell the
+    // line it was made for from a later one.
     private lineCounter = 0;
-    private readonly chainOpenUntil = new Map<string, number>();
+    /** What the line being walked has established so far — see PassState. A
+     *  nested pass (a trigger calling feedTriggers) has its own, and the outer
+     *  one's is put back when it returns. */
+    private pass: PassState | null = null;
 
     // IDs of triggers that have at least one child. Recomputed in loadPerm so
     // matchPerm and the chain-access helpers can answer "is this a chain head?"
@@ -792,16 +825,19 @@ export class TriggerEngine {
     private hasChildren = new Set<string>();
 
     /**
-     * IDs that are effectively enabled (own flag set, and every ancestor's too).
+     * IDs whose OWN switch is on (and that can be active at all). An
+     * ancestor's state is not folded in: desktop checks each trigger's
+     * `isActive()` once, when its parent's `match()` reaches it, so a parent
+     * disabled by one of its children's scripts still hands the line to the
+     * rest of them (see PassState.active).
      *
-     * Enabled-ness is checked HERE, on each node as the walk reaches it, rather
-     * than by leaving disabled triggers out of the processing list — desktop
-     * reads it live off `TTrigger::isActive()` inside the tree walk, so a
-     * trigger switched on by another trigger's script gets a look at the same
-     * line (mudlet-web#156). Filtering the list instead meant the enable was
-     * only visible from the NEXT line, because the pass walks a snapshot.
+     * Enabled-ness is checked on each node as the walk reaches it, rather than
+     * by leaving disabled triggers out of the processing list, so a trigger
+     * switched on by another trigger's script gets a look at the same line
+     * (mudlet-web#156). Filtering the list instead meant the enable was only
+     * visible from the NEXT line, because the pass walks a snapshot.
      */
-    private enabledIds = new Set<string>();
+    private selfEnabledIds = new Set<string>();
     /** What the last {@link loadPerm} was told cannot be active (code that will
      *  not compile), so {@link updateEnabled} keeps them out too. */
     private blocked: ReadonlySet<string> = new Set();
@@ -814,10 +850,6 @@ export class TriggerEngine {
      *  setTriggerStayOpen), and how many more lines they do it for. See
      *  applyFireLength. */
     private keepFiring = new Map<string, { remaining: number }>();
-    /** The last line each permanent trigger was walked past — whether
-     *  setTriggerStayOpen, called from another trigger's script, is still ahead
-     *  of it on the line being processed. See setStayOpen. */
-    private walkedLine = new Map<string, number>();
     /**
      * The stay-open state a single-line match left its trigger in, to be put
      * back once that match's script has run. Desktop runs a single-line
@@ -830,7 +862,6 @@ export class TriggerEngine {
      */
     private readonly stayOpenAfterScript = new WeakMap<TriggerMatch, {
         keep: { remaining: number } | undefined;
-        chainUntil: number | undefined;
     }>();
 
     // Filter state: chainHeadId → last matched/captured text
@@ -881,7 +912,8 @@ export class TriggerEngine {
      *                     `tempExactMatchTrigger`). Callback receives `[line]`.
      *   - `'prompt'`    — fires on every line the server flags as a prompt
      *                     (Mudlet `tempPromptTrigger`); `pattern` is ignored.
-     *                     Callback receives `[line]`.
+     *                     Callback receives `[]` — match_prompt sets no
+     *                     capture groups.
      * Invalid regex patterns return a no-op disposer so callers don't need
      * to special-case compile failures.
      */
@@ -925,22 +957,23 @@ export class TriggerEngine {
     /**
      * Mudlet `tempLineTrigger(from, howMany, fn)`. A position-based trigger with
      * no pattern: it fires `fn([lineText])` on `howMany` consecutive lines,
-     * starting `from` lines ahead (`from = 1` → the next line). It self-expires
-     * after the last fire. When created from within a handler, the line on which
-     * it was created is skipped (see `inProcessTemp`/`skipFirst`) so `from`
-     * counts from the next line in every creation context. Returns a disposer
-     * for early cancellation.
+     * after skipping `from` of them (`from = 0` → the first line it sees). It
+     * self-expires after the last fire. Returns a disposer for early
+     * cancellation.
      */
     addTempLine(from: number, howMany: number, fn: TempFn): () => void {
         const id = this.nextInternalId++;
-        // `from` counts from the line being processed when there is one, and
-        // from the next line otherwise — so a trigger armed mid-pass has one
-        // more line ahead of it than the same call made from a timer. `from = 0`
-        // therefore means "this line", which only a mid-pass call can reach.
+        // `from` lines are skipped before the first fire, counted from the
+        // first line the trigger is offered: the one being processed when it
+        // is armed mid-pass, the next one to arrive otherwise. Desktop's
+        // TTrigger::match decrements mStartOfLineDelta and fires once it goes
+        // negative, so `from = 1` armed from an alias, a timer or an event
+        // handler skips the next line rather than firing on it — treating 0
+        // and 1 alike there fired one line early (mudlet-web#327).
         const ahead = Math.max(0, Math.trunc(from) || 0);
         this.temp.set(id, {
             kind: 'line',
-            countdown: this.processingDepth > 0 ? ahead + 1 : Math.max(1, ahead),
+            countdown: ahead + 1,
             remaining: Math.max(1, Math.trunc(howMany) || 1),
             skipFirst: false,
             fn,
@@ -959,7 +992,7 @@ export class TriggerEngine {
      * ready — which is after the scripts have run — so the engine calls this
      * first and the later {@link loadPerm} reuses the seqs reserved here.
      */
-    reserveOrder(items: TriggerNode[]): void {
+    reserveOrder(items: readonly { id: string }[]): void {
         for (const item of items) {
             if (!this.permReg.has(item.id)) this.permReg.set(item.id, this.regCounter++);
         }
@@ -1051,7 +1084,7 @@ export class TriggerEngine {
             nextCache.set(item.id, entry);
 
             // Disabled items go into the list too; the walk checks
-            // `enabledIds` as it reaches each one, so a trigger enabled
+            // `selfEnabledIds` as it reaches each one, so a trigger enabled
             // mid-line is already in the snapshot when its turn comes.
             if (entry.compiled) {
                 newCompiled.push(entry.compiled);
@@ -1068,19 +1101,19 @@ export class TriggerEngine {
 
         this.blocked = blocked;
         this.invalidPatterns = new Set([...nextCache].filter(([, e]) => e.invalid).map(([id]) => id));
-        const enabledIds = this.buildEnabledIds(items);
-
         // Sort by depth so parents (chain heads) are always processed before children.
         newCompiled.sort((a, b) => a.depth - b.depth);
         this.permCompiled = newCompiled;
 
-        this.enabledIds = enabledIds;
+        this.selfEnabledIds = this.buildEnabledIds(items);
 
-        // Clean up AND states for triggers that are gone or switched off — a
-        // disabled multiline trigger starts over when it comes back, rather
-        // than completing on conditions met before it was switched off.
+        // Clean up AND states for triggers that are gone. A trigger that is
+        // merely switched off keeps them: desktop leaves mConditionMap alone
+        // on disable, and since the states only age while the trigger is
+        // checked, one switched back on completes on the conditions it had
+        // already met.
         for (const id of this.andStates.keys()) {
-            if (!compiledIds.has(id) || !enabledIds.has(id)) this.andStates.delete(id);
+            if (!compiledIds.has(id)) this.andStates.delete(id);
         }
     }
 
@@ -1104,14 +1137,18 @@ export class TriggerEngine {
      * recomputes the same set from scratch a moment later.
      */
     updateEnabled(items: TriggerNode[]): void {
-        this.enabledIds = this.buildEnabledIds(items);
+        this.selfEnabledIds = this.buildEnabledIds(items);
     }
 
+    /** Triggers whose own switch is on and that can be active at all — see
+     *  {@link selfEnabledIds}. */
     private buildEnabledIds(items: TriggerNode[]): Set<string> {
-        const inactive = this.invalidPatterns.size === 0
-            ? this.blocked
-            : new Set([...this.blocked, ...this.invalidPatterns]);
-        return buildEffectivelyEnabledIds(items, inactive);
+        const out = new Set<string>();
+        for (const item of items) {
+            if (!item.enabled || this.blocked.has(item.id) || this.invalidPatterns.has(item.id)) continue;
+            out.add(item.id);
+        }
+        return out;
     }
 
     /** Whether the permanent trigger `id` has a pattern that failed to compile
@@ -1162,7 +1199,9 @@ export class TriggerEngine {
         // "Match all occurrences" — not offered on a folder.
         const matchAll = !item.isGroup && !!item.multipleMatches;
 
-        if (!item.isGroup && item.multiline) {
+        // A folder with patterns is a trigger like any other — desktop runs
+        // the same TTrigger::match on it — so it can be multiline too.
+        if (item.multiline) {
             // AND trigger: compile as a sequence of conditions
             const conditions: Array<{ test: Matcher | null; spacer: number }> = [];
             for (const p of patterns) {
@@ -1181,7 +1220,7 @@ export class TriggerEngine {
                     // still takes its multimatches row, which is empty — see
                     // advanceAndState.
                     conditions.push({
-                        test: buildMatcher(p, register, reportPatternError, matchAll, item.name),
+                        test: buildMatcher(p, register, reportPatternError, matchAll),
                         spacer: 0,
                     });
                 }
@@ -1190,7 +1229,7 @@ export class TriggerEngine {
                 compiled = { kind: 'and', item, conditions, depth };
             }
         } else {
-            // OR trigger (or group): the first pattern to match fires it. With
+            // OR trigger: the first pattern to match fires it. With
             // "match all" on, that pattern's matcher has already collected
             // every occurrence of itself (see buildMatcher) — desktop breaks
             // out of the pattern loop at the first hit, so the patterns after
@@ -1199,7 +1238,7 @@ export class TriggerEngine {
             // turn, so only the last pattern could fire (issue #292).
             const tests: Matcher[] = [];
             for (const pattern of patterns) {
-                const test = buildMatcher(pattern, register, reportPatternError, matchAll, item.name);
+                const test = buildMatcher(pattern, register, reportPatternError, matchAll);
                 if (test) tests.push(test);
             }
 
@@ -1300,7 +1339,10 @@ export class TriggerEngine {
         const accepted = () => !entry.accept || entry.accept();
         if (entry.kind === 'prompt') {
             if (!isPrompt || !accepted()) return false;
-            entry.fn([stripEol(line)]);
+            // match_prompt sets no capture groups, for a temp prompt trigger
+            // as for a permanent one: the script sees `matches` as the last
+            // fire left it, not the prompt line (mudlet-web#331).
+            entry.fn([]);
             return true;
         }
         if (entry.kind === 'substring') {
@@ -1319,7 +1361,7 @@ export class TriggerEngine {
             entry.fn([text]);
             return true;
         }
-        const m = entry.re.match(pcreSubject(line)) as PcreMatch | null;
+        const m = entry.re.tryMatchFrom(pcreSubject(line), 0) as PcreMatch | null;
         if (!m || !accepted()) return false;
         const result = pcreToMatchResult(m);
         entry.fn(
@@ -1342,8 +1384,14 @@ export class TriggerEngine {
         const currentLine = this.lineCounter++;
         const seen = new Set<string>();
         const results: TriggerMatch[] = [];
-        for (const entry of this.permCompiled) {
-            this.matchPermEntry(entry, line, isPrompt, currentLine, seen, results);
+        const outerPass = this.pass;
+        this.pass = { line: currentLine, active: new Map(), open: new Set() };
+        try {
+            for (const entry of this.permCompiled) {
+                this.matchPermEntry(entry, line, isPrompt, currentLine, seen, results);
+            }
+        } finally {
+            this.pass = outerPass;
         }
         return results;
     }
@@ -1412,10 +1460,15 @@ export class TriggerEngine {
         seenSuffix: string,
     ): void {
         const { item } = entry;
-        this.walkedLine.set(item.id, currentLine);
+        const pass = this.pass;
+        if (!pass) return;
         // Desktop's `if (isActive())` at the top of TTrigger::match, read live
-        // rather than by leaving the trigger out of the list — see enabledIds.
-        if (!this.enabledIds.has(item.id)) return;
+        // rather than by leaving the trigger out of the list — see
+        // selfEnabledIds. What it read is what this trigger's children go by
+        // for the rest of the line.
+        const active = this.selfEnabledIds.has(item.id);
+        pass.active.set(item.id, active);
+        if (!active) return;
         if (!this.isChainAccessible(item, currentLine)) return;
         const seenKey = item.id + seenSuffix;
         // A colour trigger under a filter may only look at the stretch of the
@@ -1432,37 +1485,22 @@ export class TriggerEngine {
             ? null
             : { start: effOffset, length: effectiveLine.length };
 
-        // The last match this entry produced on this line, or null when nothing
-        // matched. Feeds the shared fire-length bookkeeping at the end of the
+        // Whether the trigger matched this line, and the last fire that
+        // produced. Feeds the shared fire-length bookkeeping at the end of the
         // walk — Mudlet arms mKeepFiring from BOTH the single-line and the
         // multiline branch of TTrigger::match, so it has to be decided after
         // whichever branch ran rather than inside one of them.
+        //
+        // A folder with patterns goes down the same road as any other trigger:
+        // desktop runs one TTrigger::match for both, so a folder's command,
+        // highlight, multiline mode and fire length all work without it having
+        // a script of its own.
+        let matched = false;
         let lastMatch: TriggerMatch | null = null;
 
         try {
-            if (item.isGroup) {
-                // Chain head: match opens the chain for children.
-                if (seen.has(seenKey)) return;
-                // Groups are always OR-compiled
-                const orEntry = entry as CompiledOrEntry;
-                let result: MatchResult | null = null;
-                for (const test of orEntry.tests) {
-                    result = test(effectiveLine, isPrompt);
-                    if (result !== null) break;
-                }
-                if (result !== null) {
-                    seen.add(seenKey);
-                    this.openChain(item, currentLine, result);
-                    if (item.code) {
-                        out.push(matchResultToTriggerMatch(item, this.shiftResultSpans(result, effOffset)));
-                    }
-                }
-                // A group is a folder holding the chain open for its children;
-                // its own fire length has nothing to re-run, so it is left out
-                // of the bookkeeping below.
-                return;
-            } else if (entry.kind === 'and') {
-                const completed = this.processAndTrigger(entry, effectiveLine, isPrompt, currentLine, effOffset);
+            if (entry.kind === 'and') {
+                const completed = this.processAndTrigger(entry, effectiveLine, isPrompt, effOffset);
                 for (const r of completed) {
                     if (isChainHead) {
                         this.openChain(item, currentLine, {
@@ -1480,11 +1518,14 @@ export class TriggerEngine {
                     }
                     out.push(r);
                 }
-                if (completed.length > 0) lastMatch = completed[completed.length - 1];
+                if (completed.length > 0) {
+                    matched = true;
+                    lastMatch = completed[completed.length - 1];
+                }
             } else {
-                // OR entry (non-group). A "match all occurrences" pattern
-                // still fires the trigger ONCE, with every occurrence folded
-                // into the one capture list (see buildMatcher/mergeAllMatches).
+                // OR entry. A "match all occurrences" pattern still fires the
+                // trigger ONCE, with every occurrence folded into the one
+                // capture list (see buildMatcher/mergeAllMatches).
                 if (seen.has(seenKey)) return;
                 let result: MatchResult | null = null;
                 for (const test of entry.tests) {
@@ -1493,18 +1534,20 @@ export class TriggerEngine {
                 }
                 if (result !== null) {
                     seen.add(seenKey);
+                    matched = true;
                     if (isChainHead) this.openChain(item, currentLine, result);
-                    lastMatch = matchResultToTriggerMatch(item, this.shiftResultSpans(result, effOffset));
-                    out.push(lastMatch);
+                    if (!result.silent) {
+                        lastMatch = matchResultToTriggerMatch(item, this.shiftResultSpans(result, effOffset));
+                        out.push(lastMatch);
+                    }
                 }
             }
-            this.applyFireLength(item, lastMatch, out);
+            this.applyFireLength(item, matched, out);
             // Only the single-line branch: desktop's multiline completion
             // assigns mKeepFiring before running the script, as this does.
             if (lastMatch && entry.kind !== 'and') {
                 this.stayOpenAfterScript.set(lastMatch, {
                     keep: this.keepFiring.get(item.id),
-                    chainUntil: this.chainOpenUntil.get(item.id),
                 });
             }
         } finally {
@@ -1531,10 +1574,10 @@ export class TriggerEngine {
      */
     private applyFireLength(
         item: TriggerNode,
-        lastMatch: TriggerMatch | null,
+        matched: boolean,
         out: TriggerMatch[],
     ): void {
-        if (lastMatch) {
+        if (matched) {
             // Mudlet's `mKeepFiring = mStayOpen` — an assignment, not a bump, so
             // a match on a trigger whose fire length is zero CLOSES a window
             // setTriggerStayOpen opened. Re-armed on every match, and (like
@@ -1549,15 +1592,21 @@ export class TriggerEngine {
         // desktop's `mKeepFiring--` is — not a span of line numbers. So a
         // window setTriggerStayOpen opened from an earlier trigger on the same
         // line starts on that line, and the one it lasts past is not reached
-        // (mudlet-web#262).
+        // (mudlet-web#262). Nor is it spent on a line the trigger is never
+        // checked on — disabled, or behind a closed chain — so a chain head
+        // switched off part-way through its window picks up where it left
+        // off when it comes back.
         const keep = this.keepFiring.get(item.id);
         if (!keep) return;
         if (keep.remaining <= 1) this.keepFiring.delete(item.id);
         else this.keepFiring.set(item.id, { remaining: keep.remaining - 1 });
         // Desktop re-runs the script only for a childless trigger
         // (src/TTrigger.cpp:1085); one with children is holding the chain open
-        // FOR them, and they are reached through `chainOpenUntil`.
-        if (this.hasChildren.has(item.id)) return;
+        // FOR them, and lets them have this line.
+        if (this.hasChildren.has(item.id)) {
+            this.pass?.open.add(item.id);
+            return;
+        }
         // A bare `execute()` on desktop: no capture groups are set, so the
         // script sees `matches` (and `multimatches`) as the empty tables the
         // last fire's clearCaptureGroups left — not the opening line's captures
@@ -1596,6 +1645,8 @@ export class TriggerEngine {
         // Entries below this index belong to an outer (nested feedTriggers) pass
         // and are already in this pass's snapshot.
         const firstAddedThisPass = this.addedWhileProcessing.length;
+        const outerPass = this.pass;
+        this.pass = { line: currentLine, active: new Map(), open: new Set() };
         try {
             for (const u of snapshot) {
                 if (u.kind === 'temp') {
@@ -1641,6 +1692,7 @@ export class TriggerEngine {
                 for (const m of matches) this.execPerm(m, exec);
             }
         } finally {
+            this.pass = outerPass;
             this.inProcessTemp = prev;
             this.endPass();
         }
@@ -1716,8 +1768,6 @@ export class TriggerEngine {
         const id = m.trigger.id;
         if (after.keep) this.keepFiring.set(id, after.keep);
         else this.keepFiring.delete(id);
-        if (after.chainUntil !== undefined) this.chainOpenUntil.set(id, after.chainUntil);
-        else this.chainOpenUntil.delete(id);
     }
 
     /**
@@ -1895,16 +1945,15 @@ export class TriggerEngine {
         }
         this.cache.clear();
         this.allById.clear();
-        this.chainOpenUntil.clear();
+        this.pass = null;
         this.lineCounter = 0;
         this.andStates.clear();
         this.keepFiring.clear();
-        this.walkedLine.clear();
         this.filterActiveText.clear();
         this.filterActiveOffset.clear();
         this.filterCaptures.clear();
         this.filterOfferLine.clear();
-        this.enabledIds.clear();
+        this.selfEnabledIds.clear();
         this.hasChildren.clear();
         this.permReg.clear();
         this.unified = [];
@@ -1927,15 +1976,14 @@ export class TriggerEngine {
         entry: CompiledAndEntry,
         effectiveLine: string,
         isPrompt: boolean,
-        currentLine: number,
         effOffset: number,
     ): TriggerMatch[] {
         const cache = entry.lineResultsBusy ? null : (entry.lineResults ??= new Array(entry.conditions.length));
-        if (!cache) return this.advanceAndTrigger(entry, effectiveLine, isPrompt, currentLine, effOffset);
+        if (!cache) return this.advanceAndTrigger(entry, effectiveLine, isPrompt, effOffset);
         cache.fill(undefined);
         entry.lineResultsBusy = true;
         try {
-            return this.advanceAndTrigger(entry, effectiveLine, isPrompt, currentLine, effOffset);
+            return this.advanceAndTrigger(entry, effectiveLine, isPrompt, effOffset);
         } finally {
             entry.lineResultsBusy = false;
         }
@@ -1968,13 +2016,13 @@ export class TriggerEngine {
      */
     private paintAndConditions(
         entry: CompiledAndEntry, states: readonly AndState[],
-        line: string, isPrompt: boolean, currentLine: number, effOffset: number,
+        line: string, isPrompt: boolean, effOffset: number,
     ): void {
         const { item, conditions } = entry;
         let highest = 0;
         for (const state of states) {
             const prev = conditions[state.nextIdx - 1];
-            const next = prev && prev.spacer > 0 && currentLine <= state.waitUntilLine
+            const next = prev && prev.spacer > 0 && state.spacerWait > 0
                 ? state.nextIdx - 1 : state.nextIdx;
             if (next > highest) highest = next;
         }
@@ -1993,26 +2041,31 @@ export class TriggerEngine {
         entry: CompiledAndEntry,
         effectiveLine: string,
         isPrompt: boolean,
-        currentLine: number,
         effOffset: number,
     ): TriggerMatch[] {
         const { item, conditions } = entry;
         const delta = item.delta ?? 0;
         // A state that has waited longer than the trigger's line delta allows is
         // gone before this line is offered to it. The bound is Mudlet's: a state
-        // opened on line S can still complete on lines S..S+delta, so `delta: 0`
+        // opened on check S can still complete on checks S..S+delta, so `delta: 0`
         // means every condition has to be met on the one line that opened the
         // state — not "no limit" (TMatchState::newLine is `!(mLineCount > mDelta)`
         // and mLineCount is already 1 on the opening line). Mudlet drops the
-        // state at the end of a line, after that line's completion check; doing
-        // it here, on entry to the next line, admits exactly the same lines.
-        const states = (this.andStates.get(item.id) ?? [])
-            .filter(state => currentLine - state.startLine <= delta);
+        // state at the end of a check, after that check's completion test; doing
+        // it here, on entry to the next one, admits exactly the same lines.
+        //
+        // A CHECK, not a line: newLine() runs inside TTrigger::match, so lines
+        // the trigger is not checked on (switched off, chain closed) do not
+        // count, and each capture a filter parent hands it does.
+        const states: AndState[] = [];
+        for (const state of this.andStates.get(item.id) ?? []) {
+            if (++state.age <= delta) states.push(state);
+        }
 
         // Painted before any state moves: desktop's highlight belongs to the
         // pattern loop, which reads the states as the line found them.
         if (this.highlighter && item.highlight && isColorizing(item)) {
-            this.paintAndConditions(entry, states, effectiveLine, isPrompt, currentLine, effOffset);
+            this.paintAndConditions(entry, states, effectiveLine, isPrompt, effOffset);
         }
 
         // The first condition matching always starts a state, however many are
@@ -2023,8 +2076,8 @@ export class TriggerEngine {
             if (opened) {
                 states.push({
                     nextIdx: 1,
-                    startLine: currentLine,
-                    waitUntilLine: currentLine,
+                    age: 0,
+                    spacerWait: 0,
                     rows: [andRow(opened)],
                     namedGroups: [opened.namedGroups ?? {}],
                 });
@@ -2034,7 +2087,7 @@ export class TriggerEngine {
         const stillWaiting: AndState[] = [];
         const fired: TriggerMatch[] = [];
         for (const state of states) {
-            this.advanceAndState(state, entry, effectiveLine, isPrompt, currentLine);
+            this.advanceAndState(state, entry, effectiveLine, isPrompt);
             if (state.nextIdx >= conditions.length) fired.push(this.andMatch(item, state));
             else stillWaiting.push(state);
         }
@@ -2049,16 +2102,16 @@ export class TriggerEngine {
         entry: CompiledAndEntry,
         effectiveLine: string,
         isPrompt: boolean,
-        currentLine: number,
     ): void {
         const { conditions } = entry;
+        // Still counting down a line spacer: this check is one of its lines.
+        if (state.spacerWait > 0 && --state.spacerWait > 0) return;
         while (state.nextIdx < conditions.length) {
-            if (currentLine < state.waitUntilLine) break;
             const cond = conditions[state.nextIdx];
 
             if (cond.spacer > 0) {
-                // Line spacer: set the wait and advance, then stop for this line.
-                state.waitUntilLine = currentLine + cond.spacer;
+                // Line spacer: set the wait and advance, then stop for this check.
+                state.spacerWait = cond.spacer;
                 this.pushSpacerRow(state);
                 state.nextIdx++;
                 break;
@@ -2108,12 +2161,13 @@ export class TriggerEngine {
     }
 
     /**
-     * Record a chain-head match: open the chain for `fireLength` more lines and,
-     * if the trigger is also a filter, work out what it offers its children on
+     * Record a chain-head match: let this line through to its children (the
+     * fire length keeps it open on later ones — see applyFireLength) and, if
+     * the trigger is also a filter, work out what it offers its children on
      * this line and stash that as their effective input.
      */
     private openChain(item: TriggerNode, currentLine: number, result: MatchResult): void {
-        this.chainOpenUntil.set(item.id, currentLine + (item.fireLength ?? 0));
+        this.pass?.open.add(item.id);
         if (item.isFilter) {
             // Every offering goes to the children, not just the first: desktop
             // calls `filter()` once per entry it decides to pass on, so a parent
@@ -2146,11 +2200,11 @@ export class TriggerEngine {
      * Desktop writes one counter, `mKeepFiring`, and it does two jobs at once
      * (src/TriggerUnit.cpp:455, spent at src/TTrigger.cpp:1083-1093): the
      * trigger FIRES on each of those lines whether or not its pattern is in
-     * them, and its children get a look at them. Mudlet Web keeps the two
-     * windows apart — `chainOpenUntil` for the children, `keepFiring` for the
-     * trigger itself — so both are opened here, over the same span. Arming only
-     * the first left a stay-open trigger silent on the lines it was opened for
-     * (upstream Trigger_spec, "large plain-text trigger sets").
+     * them, and its children get a look at them. Mudlet Web keeps the same
+     * single counter (`keepFiring`, spent in applyFireLength), so both jobs
+     * share one span. Arming only the chain left a stay-open trigger silent
+     * on the lines it was opened for (upstream Trigger_spec, "large plain-text
+     * trigger sets").
      *
      * The count is spent on the lines the trigger is next reached on. When
      * the call comes from the script of a trigger walked BEFORE the target on
@@ -2160,16 +2214,12 @@ export class TriggerEngine {
      * When the target has already been walked past (it sorts earlier, or the
      * call came from outside a pass), the window is the next `lines` lines.
      *
-     * `matchPerm` post-increments `lineCounter`, so during a trigger's script
-     * the line just matched is `lineCounter - 1`. Negative counts clamp to 0,
-     * which closes the window. `ids` are resolved by name by the caller.
+     * Negative counts clamp to 0, which closes the window. `ids` are resolved
+     * by name by the caller.
      */
     setStayOpen(ids: string[], lines: number): void {
-        const currentLine = this.lineCounter - 1;
         const count = Math.max(0, Math.trunc(lines));
         for (const id of ids) {
-            const ahead = this.processingDepth > 0 && this.walkedLine.get(id) !== currentLine;
-            this.chainOpenUntil.set(id, currentLine + count - (ahead ? 1 : 0));
             // No match to replay: the trigger may never have matched at all, and
             // one opened this way is being fired by the caller, not by its own
             // pattern. applyFireLength fires it with nothing captured.
@@ -2236,22 +2286,35 @@ export class TriggerEngine {
     }
 
     /**
-     * A trigger is chain-accessible if every patterned ancestor has an open
-     * chain (matched within the last fireLength lines, inclusive of the current
-     * line). Pattern-less ancestors (pure folders) always grant access. This
+     * Whether desktop's recursive walk would hand `item` this line at all: every
+     * ancestor was active when the walk reached it, and every patterned one let
+     * the line through (it matched, or is spending its fire length on it).
+     * Pattern-less ancestors (pure folders) let every line through. This
      * applies regardless of whether the ancestor is a folder or a leaf with its
      * own script — Mudlet treats any patterned trigger with children as a chain
      * head.
+     *
+     * Both facts come from {@link PassState}, as the walk recorded them on its
+     * way past the ancestor, not from the ancestor's state now: a script that
+     * disables its own chain head or folder leaves the remaining children with
+     * the line, as desktop's children loop is already under way.
      */
     private isChainAccessible(item: TriggerNode, currentLine: number): boolean {
+        const pass = this.pass;
+        if (!pass) return false;
         let parentId = item.parentId;
         while (parentId) {
             const parent = this.allById.get(parentId);
             if (!parent) break;
-            if (parent.patterns && parent.patterns.length > 0) {
-                const openUntil = this.chainOpenUntil.get(parentId);
-                if (openUntil === undefined || openUntil < currentLine) return false;
+            let active = pass.active.get(parentId);
+            if (active === undefined) {
+                // Not walked (a pattern-less folder): its match() runs as its
+                // first descendant is reached, which is now.
+                active = this.selfEnabledIds.has(parentId);
+                pass.active.set(parentId, active);
             }
+            if (!active) return false;
+            if (parent.patterns && parent.patterns.length > 0 && !pass.open.has(parentId)) return false;
             // A filter that matched this line but had nothing to hand down keeps
             // its children out of it. Desktop reaches a filter's children only
             // through `filter()` (the children loop at src/TTrigger.cpp:1072 is

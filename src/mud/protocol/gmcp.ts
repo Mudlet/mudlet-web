@@ -162,7 +162,16 @@ const parseGmcpPayload = (
     // the byte the game sent, which the script can then act on; without it
     // JSON.parse rejects the whole message over one character it could have
     // read. Mudlet does the same replace, for every module and not just one.
-    payload = payload.replace(/\x1B/g, "\\u001B");
+    //
+    // A raw LF or CR is just as invalid there, and games leak those too —
+    // unescaped newlines in a room description or a channel line. Mudlet
+    // removes every one from the body before decoding (cTelnet::setGMCPVariables
+    // — "yajl doesn't like it"), so `"A long hall.\nIt goes north."` arrives as
+    // `A long hall.It goes north.` rather than dropping the whole message
+    // (mudlet-web#362). Outside a string they are whitespace, so pretty-printed
+    // JSON loses nothing. The raw body is kept for Client.GUI's line-based form.
+    const rawPayload = payload;
+    payload = payload.replace(/[\n\r]/g, "").replace(/\x1B/g, "\\u001B");
 
     let gmcp: unknown;
     try {
@@ -175,7 +184,7 @@ const parseGmcpPayload = (
         // on its own channel, never as an envelope: Mudlet returns before
         // setGMCPTable for this shape, keeping it out of the Lua `gmcp` table.
         if (type.toLowerCase() === CLIENT_GUI_MODULE && onRawClientGui) {
-            onRawClientGui(payload);
+            onRawClientGui(rawPayload);
             return;
         }
         // A non-conformant server can send a GMCP body that isn't valid JSON.
@@ -194,7 +203,7 @@ const parseGmcpPayload = (
     }
 
     // Outside the try: it guards the parse, not the consumer. An error thrown
-    // downstream (`atob` on a malformed gmcp_msgs body, say) would otherwise be
+    // downstream would otherwise be
     // caught here and reported as the server sending bad JSON — blaming the
     // wrong party for a bug of ours, and demoting it to a warn for the same
     // reason.
@@ -226,9 +235,10 @@ export const encodeGmcpRaw = (message: string): string => {
 };
 
 export interface GmcpStreamOptions {
+    /** Every message that reaches the `gmcp` table — `gmcp_msgs` included,
+     *  which Mudlet treats as an ordinary package rather than decoding and
+     *  printing its base64 `text` (mudlet-web#362). */
     onEnvelope: (payload: GmcpEnvelope) => void;
-    /** Called for gmcp_msgs subnegotiations (base64-encoded text with a type field). */
-    onMessage?: (text: string, type: string) => void;
     /** Called for every `Client.GUI` request, in whichever wire format it
      *  arrived: the parsed `{url, version}` object, or the legacy raw
      *  `<version>\n<url>` string. Split out from `onEnvelope` so the install has
@@ -237,15 +247,11 @@ export interface GmcpStreamOptions {
      *  table-populating path. The JSON form still emits its envelope as well,
      *  and does so first, so scripts observe it before the install runs. */
     onClientGui?: (payload: unknown) => void;
-    /** Text decoder used for gmcp_msgs payloads. Defaults to UTF-8. */
-    textEncoding?: string;
 }
 
 export const createGmcpStream = ({
     onEnvelope,
-    onMessage,
     onClientGui,
-    textEncoding = 'utf-8',
 }: GmcpStreamOptions) => {
     // Once per module rather than once per message, mirroring Mudlet's
     // `mEncodingWarningIssued`: a server that mis-encodes every `Room.Info`
@@ -257,31 +263,6 @@ export const createGmcpStream = ({
         parseGmcpPayload(
             data,
             (type, payload) => {
-                if (type.toLowerCase() === "gmcp_msgs" && onMessage) {
-                    // Everything that reads the payload goes inside the guard.
-                    // `atob` throws on a `text` field that isn't base64, the
-                    // TextDecoder ctor on an unsupported `textEncoding`, and a
-                    // literal `gmcp_msgs null` body — valid JSON — throws on the
-                    // property access itself. Caught here rather than left to
-                    // the caller's frame-level handler: the body parsed as JSON,
-                    // so this is a bad gmcp_msgs payload and nothing else in the
-                    // frame should be lost over it. Reported on its own terms,
-                    // not as a JSON error.
-                    let text: string;
-                    let msgType: string;
-                    try {
-                        msgType = (payload as { type: string }).type ?? "";
-                        const binaryString = atob((payload as { text: string }).text ?? "");
-                        text = new TextDecoder(textEncoding).decode(
-                            Uint8Array.from(binaryString, c => c.charCodeAt(0))
-                        );
-                    } catch (error) {
-                        console.warn("Malformed gmcp_msgs payload:", JSON.stringify(payload), error);
-                        return;
-                    }
-                    onMessage(text, msgType);
-                    return;
-                }
                 onEnvelope({ path: type, value: payload });
                 if (type.toLowerCase() === CLIENT_GUI_MODULE) onClientGui?.(payload);
             },

@@ -93,6 +93,10 @@ export interface BindingContext {
      *  enough. */
     readonly overlayCmdLineActionCbIds: Map<string, number>;
 
+    /** The same for a miniconsole's or user window's own command line, keyed
+     *  by the window's name. */
+    readonly windowCmdLineActionCbIds: Map<string, number>;
+
     /** Run a registerMapInfo callback and read back what it produced. */
     evaluateMapInfo(
         cbId: number,

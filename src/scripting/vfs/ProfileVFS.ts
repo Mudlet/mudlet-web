@@ -98,6 +98,7 @@ export class ProfileVFS {
     readonly source: VFSSource;
     readonly folderName?: string;
     private readBarrier: ((absPath: string) => void) | null = null;
+    private writeObserver: ((absPath: string, kind: 'write' | 'remove') => void) | null = null;
 
     private constructor(
         readonly connectionId: string,
@@ -189,6 +190,23 @@ export class ProfileVFS {
         this.readBarrier = barrier;
     }
 
+    /**
+     * Install (or clear, with null) a hook told after a file has been written
+     * ('write') or removed, renamed away or replaced by a rename, or had its
+     * directory removed ('remove'). The sql bridge uses it so a database file
+     * changed underneath an open connection is changed for that connection
+     * too, as a file on disk is.
+     */
+    setWriteObserver(observer: ((absPath: string, kind: 'write' | 'remove') => void) | null): void {
+        this.writeObserver = observer;
+    }
+
+    private afterWrite(abs: string, kind: 'write' | 'remove'): void {
+        if (this.writeObserver) {
+            try { this.writeObserver(abs, kind); } catch (e) { console.warn('[ProfileVFS] write observer failed:', e); }
+        }
+    }
+
     private beforeRead(abs: string): string {
         if (this.readBarrier) {
             try { this.readBarrier(abs); } catch (e) { console.warn('[ProfileVFS] read barrier failed:', e); }
@@ -219,14 +237,18 @@ export class ProfileVFS {
         this.clearForOverwrite(abs);
         writeFileSync(abs, content, 'utf8');
         this.invalidate(abs);
+        this.afterWrite(abs, 'write');
     }
 
-    writeBinaryFile(path: string, data: Uint8Array): void {
+    /** `createParents: false` writes only into a directory that already exists,
+     *  throwing as open(2) would otherwise — what a download's QFile does. */
+    writeBinaryFile(path: string, data: Uint8Array, { createParents = true }: { createParents?: boolean } = {}): void {
         const abs = this.resolvePath(path);
-        ensureParentDir(abs);
+        if (createParents) ensureParentDir(abs);
         this.clearForOverwrite(abs);
         writeFileSync(abs, data);
         this.invalidate(abs);
+        this.afterWrite(abs, 'write');
     }
 
     /**
@@ -247,21 +269,58 @@ export class ProfileVFS {
         ensureParentDir(abs);
         appendFileSync(abs, content, 'utf8');
         this.invalidate(abs);
+        this.afterWrite(abs, 'write');
     }
 
     deleteFile(path: string): void {
         const abs = this.resolvePath(path);
         unlinkSync(abs);
         this.invalidate(abs);
+        this.afterWrite(abs, 'remove');
     }
 
-    rename(oldPath: string, newPath: string): void {
+    /**
+     * Move a file or directory. By default a missing parent of the target is
+     * created, which the app's own callers rely on. `{ posix: true }` is
+     * `rename(2)`, what Lua's `os.rename` is on desktop: the target's directory
+     * must already exist (ENOENT, or ENOTDIR under a file), a directory may
+     * replace only an empty directory (ENOTEMPTY otherwise, ENOTDIR for a
+     * file) and never move into itself (EINVAL), and a file never replaces a
+     * directory (EISDIR).
+     */
+    rename(oldPath: string, newPath: string, { posix = false }: { posix?: boolean } = {}): void {
         const absOld = this.beforeRead(this.resolvePath(oldPath));
         const absNew = this.resolvePath(newPath);
-        ensureParentDir(absNew);
+        if (posix) {
+            this.checkPosixPath(oldPath, 'EBUSY');
+            this.checkPosixPath(newPath, 'EBUSY');
+            const from = this.stat(absOld)?.type;
+            if (!from) throw new FsError('ENOENT', absOld);
+            if (from !== 'dir' && (/\/$/.test(oldPath) || /\/$/.test(newPath))) throw new FsError('ENOTDIR', absNew);
+            if (absOld === absNew) return;
+            const parent = absNew.substring(0, absNew.lastIndexOf('/')) || '/';
+            const parentType = this.stat(parent)?.type;
+            if (!parentType) throw new FsError('ENOENT', absNew);
+            if (parentType !== 'dir') throw new FsError('ENOTDIR', absNew);
+            const to = this.stat(absNew)?.type;
+            if (from === 'dir') {
+                if (absNew.startsWith(absOld + '/')) throw new FsError('EINVAL', absNew);
+                if (to && to !== 'dir') throw new FsError('ENOTDIR', absNew);
+                if (to === 'dir') {
+                    if (readdirSync(absNew).length > 0) throw new FsError('ENOTEMPTY', absNew);
+                    rmdirSync(absNew);
+                }
+            } else if (to === 'dir') {
+                throw new FsError('EISDIR', absNew);
+            }
+        } else {
+            ensureParentDir(absNew);
+        }
         renameSync(absOld, absNew);
         this.invalidate(absOld);
         this.invalidate(absNew);
+        this.afterWrite(absOld, 'remove');
+        this.afterWrite(absNew, 'remove');
     }
 
     /**
@@ -304,6 +363,7 @@ export class ProfileVFS {
             } catch {
                 rmSync(abs, { recursive: true, force: true });
             }
+            this.afterWrite(abs, 'remove');
             return;
         }
         const type = this.stat(abs)?.type;
@@ -321,6 +381,9 @@ export class ProfileVFS {
      * empty directory is removed, as `rmdir(2)` would.
      */
     remove(path: string): void {
+        // glibc's remove() unlinks, and only on EISDIR tries rmdir — which
+        // refuses a path ending in "." (EINVAL).
+        this.checkPosixPath(path, 'EINVAL');
         const abs = this.resolvePath(path);
         // A symbolic link goes itself, whatever (if anything) it points at.
         let isLink = false;
@@ -328,16 +391,40 @@ export class ProfileVFS {
         if (isLink) {
             unlinkSync(abs);
             this.invalidate(abs);
+            this.afterWrite(abs, 'remove');
             return;
         }
         const type = this.stat(abs)?.type;
         if (!type) throw new FsError('ENOENT', abs);
+        if (type !== 'dir' && /\/$/.test(path)) throw new FsError('ENOTDIR', abs);
         if (type === 'dir') {
             this.rmdir(abs, { recursive: false });
         } else {
             unlinkSync(abs);
         }
         this.invalidate(abs);
+        this.afterWrite(abs, 'remove');
+    }
+
+    /**
+     * The parts of the kernel's path walk that `resolvePath`'s normalising
+     * would hide: an empty path names nothing (ENOENT), a plain file can't
+     * have anything under it (ENOTDIR), and a path ending in "." or ".." is
+     * refused with `dotErrno` — the profile root is not what `os.remove(".")`
+     * means.
+     */
+    private checkPosixPath(path: string, dotErrno: 'EINVAL' | 'EBUSY'): void {
+        if (path === '') throw new FsError('ENOENT');
+        const last = path.replace(/\/+$/, '').split('/').pop();
+        if (last === '.' || last === '..') throw new FsError(dotErrno, path);
+        const parts = this.resolvePath(path).split('/').filter(Boolean);
+        let dir = '';
+        for (let i = 0; i < parts.length - 1; i++) {
+            dir += '/' + parts[i];
+            const type = this.stat(dir)?.type;
+            if (!type) return;
+            if (type !== 'dir') throw new FsError('ENOTDIR', path);
+        }
     }
 
     /**

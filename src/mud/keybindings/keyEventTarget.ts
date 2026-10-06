@@ -1,3 +1,5 @@
+import { isKeypadEvent } from './qtKeys';
+
 /**
  * Whether a keydown belongs to the focused text widget rather than to the
  * keybinding engine.
@@ -54,8 +56,17 @@ export function isCommandLineTarget(target: EventTarget | null): boolean {
  *  - Escape, PageUp, PageDown, Delete: plain
  *
  * Cmd counts as Ctrl, as Qt maps it on macOS.
+ *
+ * None of that holds on the numpad. Qt reports a numpad key with
+ * KeypadModifier set, so "plain" Enter or Up there is not plain to
+ * TCommandLine: numpad Enter and NumLock-off numpad 8/2/9 reach the key unit
+ * first, and a Keypad+Enter or Keypad+Up binding fires instead of sending the
+ * command or walking the history. With no binding on the key the command line
+ * still gets it (the keybinding listener lets the event through), so numpad
+ * Enter sends as before.
  */
 export function commandLineReservesKey(e: KeyboardEvent): boolean {
+    if (isKeypadEvent(e)) return false;
     const ctrl = e.ctrlKey || e.metaKey;
     const none = !ctrl && !e.shiftKey && !e.altKey;
     const ctrlOnly = ctrl && !e.shiftKey && !e.altKey;
@@ -90,14 +101,31 @@ export function commandLineReservesKey(e: KeyboardEvent): boolean {
  * with the next Enter). The combinations the command line reserves (see
  * {@link commandLineReservesKey}) never reach a binding from there.
  *
+ * That capture listener sits on the WINDOW, not the document. The client's own
+ * shortcuts (Ctrl+F's find bar, Ctrl+Shift+P's quick-open, F3) are capture
+ * listeners on the document, and `stopPropagation` does not stop a sibling
+ * listener on the same node — so with both on the document a binding on one of
+ * those keys ran AND opened the find bar, which then took focus and the rest
+ * of the typing (mudlet-web#340). The window's capture runs before any of them,
+ * and a binding that fires stops the event there, as desktop's binding
+ * replaces the find bar.
+ *
+ * The exception is a menu accelerator (`yieldTo`): on desktop Alt+K is a
+ * QAction's shortcut, which Qt resolves before the command line ever sees the
+ * key, so a binding on it does not run. A key `yieldTo` claims is left alone.
+ *
  * Everywhere else keeps a bubble-phase listener, so a modal's own key handling
  * still gets first say, and real text entry (see {@link isTextEntryTarget})
  * keeps its keys.
  */
-export function listenForKeybindings(doc: Document, processKey: (e: KeyboardEvent) => boolean): () => void {
+export function listenForKeybindings(
+    doc: Document,
+    processKey: (e: KeyboardEvent) => boolean,
+    yieldTo: (e: KeyboardEvent) => boolean = () => false,
+): () => void {
     const onCommandLineKey = (e: KeyboardEvent) => {
         if (!isCommandLineTarget(e.target) || e.isComposing) return;
-        if (commandLineReservesKey(e)) return;
+        if (commandLineReservesKey(e) || yieldTo(e)) return;
         if (processKey(e)) {
             e.preventDefault();
             e.stopPropagation();
@@ -105,12 +133,14 @@ export function listenForKeybindings(doc: Document, processKey: (e: KeyboardEven
     };
     const onKey = (e: KeyboardEvent) => {
         if (isTextEntryTarget(e.target) || isCommandLineTarget(e.target)) return;
+        if (yieldTo(e)) return;
         if (processKey(e)) e.preventDefault();
     };
-    doc.addEventListener('keydown', onCommandLineKey, true);
+    const captureRoot: EventTarget = doc.defaultView ?? doc;
+    captureRoot.addEventListener('keydown', onCommandLineKey as EventListener, true);
     doc.addEventListener('keydown', onKey);
     return () => {
-        doc.removeEventListener('keydown', onCommandLineKey, true);
+        captureRoot.removeEventListener('keydown', onCommandLineKey as EventListener, true);
         doc.removeEventListener('keydown', onKey);
     };
 }

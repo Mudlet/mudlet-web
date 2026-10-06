@@ -27,6 +27,9 @@ export function utf8CaseMap(): string {
         const low = ch.toLowerCase();
         if (low !== ch && [...low].length === 1) lines.push(`l\t${ch}\t${low}\n`);
     }
+    // U+0130's simple lowercase is plain "i"; JS only exposes the full
+    // mapping, "i" plus a combining dot above.
+    lines.push(`l\t\u0130\ti\n`);
     // The Greek letters with ypogegrammeni have a one-character *simple*
     // uppercase (U+1F80 → U+1F88), but JS only exposes the full mapping, which
     // is two characters (ἈΙ) — so they are listed from UnicodeData directly.

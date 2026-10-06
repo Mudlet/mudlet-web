@@ -56,14 +56,6 @@ export function installWindowBindings({ lua, api, channel }: BindingContext): vo
         return size ?? null;
     });
 
-    // Mudlet setMiniConsoleFontSize(name, size) — miniconsole-only sibling
-    // of setFontSize. Raw entry returns false on miss; Bridge.lua re-shapes
-    // it into Mudlet's (nil, errMsg) failure shape.
-    lua.global.set('__setMiniConsoleFontSize', (name: unknown, size: unknown) => {
-        if (typeof name !== 'string') return false;
-        return api.setMiniConsoleFontSize(name, Number(size));
-    });
-
     // setFont([windowName,] family) / getFont([windowName]). Mudlet returns
     // (nil, errMsg) when the named window doesn't exist; Bridge.lua re-
     // shapes the JS bool/string from the raw primitives below.

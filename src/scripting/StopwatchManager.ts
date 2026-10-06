@@ -441,6 +441,14 @@ export class StopwatchManager {
         return true;
     }
 
+    /** Host::removeAllNonPersistentStopWatches, which resetProfile() runs:
+     *  every watch not flagged persistent goes, freeing its ID. */
+    removeNonPersistent(): void {
+        for (const w of [...this.watches.values()]) {
+            if (!w.persistent) this.watches.delete(w.id);
+        }
+    }
+
     /**
      * Mudlet setStopWatchPersistence(id|name, state). Marks whether the watch is
      * saved to (and restored from) the backing store across reloads.

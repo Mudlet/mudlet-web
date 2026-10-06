@@ -9,13 +9,21 @@
 -- `chunkname`, when given, is used as is — Mudlet names a script's chunk
 -- "Script: <name>", which Lua reports as [string "Script: <name>"]:LINE: —
 -- and otherwise the name is treated as a file ("@name" reports as name:LINE:).
+--
+-- A failure also leaves the type of an error object that is not a message (a
+-- string, or a number lua_isstring takes for one) in __mudlet_exec_error_type,
+-- nil otherwise — permScript reports a body's failure by that type. The run
+-- that ends last sets it last, so a nested failure cannot leave its own behind.
 function __exec(code, name, chunkname)
     local fn, compile_err = loadstring(code, chunkname or ("@" .. name))
     if not fn then
+        __mudlet_exec_error_type = nil
         return compile_err, nil
     end
     local ok, result = __mudlet_pcall_co(fn)
     if not ok then
+        local t = type(result)
+        __mudlet_exec_error_type = (t ~= 'string' and t ~= 'number') and t or nil
         return tostring(result), nil
     end
     return nil, result

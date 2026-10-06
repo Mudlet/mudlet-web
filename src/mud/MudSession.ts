@@ -9,14 +9,13 @@ import { VideoManager } from '../ui/video/VideoManager';
 import { CmdLineMenuRegistry } from '../ui/CmdLineMenuRegistry';
 import { MouseEventRegistry } from '../ui/MouseEventRegistry';
 import { MudClient, type MudClientOptions, SUPPORTED_SERVER_ENCODINGS, DEFAULT_SERVER_ENCODING, canonicalServerEncoding, canEncodeForServer } from './connection/MudClient';
-import { PingTracker } from './connection/PingTracker';
 import { ReplayPlayer } from './replay/ReplayPlayer';
 import { ReplayRecorder } from './replay/ReplayRecorder';
 import { parseReplay, replayDurationMs } from './replay/replayFormat';
 import { type MudClientEvents, type MudEvents, type SessionStatus } from './events';
 import type { Console } from './text/Console';
 import {
-    DEFAULT_CONSOLE_BUFFER_SIZE,
+    MAIN_CONSOLE_BUFFER_SIZE,
     MIN_CONSOLE_BUFFER_SIZE,
     MAX_CONSOLE_BUFFER_SIZE,
     consoleBatchDeleteSize,
@@ -76,7 +75,9 @@ export class MudSession {
     private client: MudClient | null = null;
     /** The most recent URL passed to connect() — replayed by reconnect(). */
     private lastUrl: string | null = null;
-    private pingTracker: PingTracker | null = null;
+    /** How many times connect() has dialed, so a caller can tell whether a
+     *  dial it asked for has been overtaken by another. */
+    private dials = 0;
     private stateUnsubs: (() => void)[] = [];
     /** The profile's server encoding, as `getServerEncodingsList()` spells it.
      *  Lives here rather than on the client so it survives having none — see
@@ -193,6 +194,9 @@ export class MudSession {
         // The main output area reports its character grid here on every resize;
         // forward it to the client so NAWS (window size) stays in sync.
         this.windows.onMainConsoleResize = (cols, rows) => this.setWindowSize(cols, rows);
+        // A label passes the presses and releases it has no callback for to
+        // its window (TLabel → QWidget::mousePressEvent), as desktop does.
+        this.labels.onUnhandledMouse = (kind, parent, e) => this.windows.raiseUnhandledMouse(kind, parent, e);
         // Status latch. Deliberately registered here, in the constructor, rather
         // than alongside the per-client subscriptions in connect(): EventBus
         // dispatches in registration order, and the ScriptingEngine subscribes to
@@ -281,8 +285,15 @@ export class MudSession {
         this._outputReady = false;
     }
 
+    /** The URL the session last dialed (and reconnect() would redial). */
+    get dialedUrl(): string | null { return this.lastUrl; }
+
+    /** The number of dials so far — see {@link dialedUrl}. */
+    get dialCount(): number { return this.dials; }
+
     connect(url: string): void {
         this.lastUrl = url;
+        this.dials += 1;
         // A running replay feeds the same parsing pipeline the live socket is
         // about to use — interleaving them would corrupt telnet/GMCP state, so
         // dialing wins and the replay stops.
@@ -320,20 +331,6 @@ export class MudSession {
         if (this.timestampsShown) client.setTimestampsShown(true);
         if (this.windowSize) client.setWindowSize(this.windowSize.cols, this.windowSize.rows);
 
-        this.pingTracker = new PingTracker(
-            // Canonical GMCP: `Core.Ping` (PascalCase) carrying the last measured
-            // latency — the spec's second documented request form. We used to
-            // send the bare name, which the spec also allows, but servers that
-            // JSON-parse everything after the module name unconditionally (LPC
-            // ones calling `json_parse()`, notably) fail on the empty body and
-            // print a parse error into the game output. A number is valid JSON
-            // and satisfies both. sendGmcpRaw, not sendGmcp: the latter would
-            // wrap it as an object body, which isn't this message's shape.
-            (latencyMs) => client.sendGmcpRaw(`Core.Ping ${latencyMs}`),
-            (d) => this.setPing(d),
-            this.events,
-        );
-
         // Per-client subscriptions only — the status latch lives in the
         // constructor so it always runs before the scripting engine's handlers,
         // and so does the encoding latch (the encoding is the profile's and
@@ -341,9 +338,11 @@ export class MudSession {
         // was never dialled — see ensureParsingClient).
         this.stateUnsubs = [
             this.events.on('client.error', (message) => this.reportConnectionError(message)),
-            // Command → prompt-marker round trips feed the same reading the
-            // Core.Ping tracker does, as Mudlet measures latency on every
-            // GA/EOR game and not only ones that answer Core.Ping.
+            // Command → prompt-marker round trips are the only latency
+            // reading, as in Mudlet. Mudlet Web used to send GMCP `Core.Ping`
+            // itself every 3s as well; desktop never does, and each reply
+            // raised `gmcp.Core.Ping` in scripts that never asked for it
+            // (mudlet-web#362).
             this.events.on('network.latency', (duration) => this.setPing(duration)),
         ];
         this.setStatus('connecting');
@@ -453,20 +452,27 @@ export class MudSession {
         if (this.showSentText === 'never') return;
         if (!this.client || this.client.shouldEchoCommand()) {
             const styled = this.styleEchoCommand(text);
-            // Close any in-flight script partial (an `echo()` with no trailing
-            // newline) before adding a line of our own. The renderer finalizes
-            // the element showing that partial the moment this non-partial
-            // 'echo' message arrives, but the console would keep accumulating
-            // into the same partial — so the next flushOutput would emit the
-            // whole accumulated line again and everything already on screen
-            // would be drawn a second time, once more per command echoed. An
-            // alias doing `echo("TEST")`, run repeatedly, grew a line of
-            // TESTTESTTEST… that way. Mudlet has no such split: printCommand
-            // writes straight into the buffer line echo() is building.
+            // An `echo()` left without a trailing newline is the line the
+            // command is written onto: desktop's printCommand prints
+            // "command\n" into the buffer's current line, which is that echo's,
+            // so `echo("P1")` then typing `cmdA` is the one line `P1cmdA`
+            // (mudlet-web#385). The open line is finished here with the command
+            // on it and redrawn as a 'script' line, which the renderer applies
+            // to the element already showing the partial; leaving it open would
+            // have the next flushOutput draw the whole line again below the
+            // command, once more per command echoed.
             // Skipped while trigger-mode echo deferral owns the partial —
             // flushDeferredEcho completes and emits it itself, and stealing it
             // here would drop a trigger's echo off the screen entirely.
-            if (!this.scriptEchoDeferred) this.consoles.get('main')?.completePartialLine();
+            const open = this.scriptEchoDeferred ? null : this.consoles.get('main');
+            if (open && open.currentPartial.length > 0) {
+                const line = open.currentPartial;
+                line.appendBuffer(new AnsiAwareBuffer(styled));
+                open.completePartialLine();
+                open.wrapAppendedLine(line);
+                this.events.emit('message', line, 'script', Date.now());
+                return;
+            }
             // Into the buffer as well as onto the screen. Mudlet's echoed
             // command is part of the console's contents — getLines() and the
             // cursor APIs see it, and a trigger can match on it — so a version
@@ -488,11 +494,12 @@ export class MudSession {
             // has always shown it there, and storing it on a line of its own
             // as well put a phantom line in the buffer per command.
             const main = this.consoles.get('main');
+            let joinedTo: AnsiAwareBuffer[] | undefined;
             if (main) {
                 const line = new AnsiAwareBuffer(styled);
                 const prompt = this.scriptEchoDeferred ? null : main.appendToPromptLine(line);
                 if (prompt) {
-                    main.wrapAppendedLine(prompt);
+                    joinedTo = main.wrapAppendedLine(prompt);
                 } else {
                     main.appendLine(line, false);
                     main.wrapAppendedLine(line);
@@ -501,7 +508,10 @@ export class MudSession {
             // No "> " prefix: Mudlet echoes the bare command. When it joined the
             // prompt line above, OutputRenderer redraws that line (it sees the
             // line's prompt flag cleared) instead of adding a row.
-            this.events.emit('message', styled, 'echo', Date.now());
+            // The file log needs to know too: desktop logs the prompt line
+            // again with the command on it, not the command as a line of its
+            // own (mudlet-web#357).
+            this.events.emit('message', styled, 'echo', Date.now(), false, joinedTo);
         }
     }
 
@@ -906,7 +916,10 @@ export class MudSession {
     // Named user windows keep their own size (Mudlet applies the preference to
     // the main console only, mudlet.cpp:2271); scripts size those with
     // setConsoleBufferSize(windowName, …).
-    private consoleBufferLines = DEFAULT_CONSOLE_BUFFER_SIZE;
+    private consoleBufferLines = MAIN_CONSOLE_BUFFER_SIZE;
+    /** The preference pair a script's setConsoleBufferSize("main", …) just
+     *  wrote, until the profile setting comes back carrying it. */
+    private scriptedBufferPreference: [number, boolean] | null = null;
 
     /** The resolved scrollback cap for the main console, in lines. */
     get consoleBufferSize(): number { return this.consoleBufferLines; }
@@ -918,12 +931,29 @@ export class MudSession {
      * Applies immediately to the main console when it exists.
      */
     setConsoleBufferSize(lines: number, useMaximum = false): void {
-        const requested = Number.isFinite(lines) ? Math.trunc(lines) : DEFAULT_CONSOLE_BUFFER_SIZE;
+        // The preference a script has just saved coming back through the store:
+        // the console already has that size, and re-applying it would replace
+        // the script's own batch size with the preference's 20%.
+        const scripted = this.scriptedBufferPreference;
+        this.scriptedBufferPreference = null;
+        if (scripted && scripted[0] === lines && scripted[1] === useMaximum) return;
+        const requested = Number.isFinite(lines) ? Math.trunc(lines) : MAIN_CONSOLE_BUFFER_SIZE;
         this.consoleBufferLines = useMaximum
             ? MAX_CONSOLE_BUFFER_SIZE
             : Math.min(MAX_CONSOLE_BUFFER_SIZE, Math.max(MIN_CONSOLE_BUFFER_SIZE, requested));
         const main = this.consoles.get('main');
         if (main) this.applyConsoleBufferSize(main);
+    }
+
+    /**
+     * Record a size a script gave the main console (`Host::setMainConsoleBufferSize`,
+     * which sets `mConsoleBufferSize` and `mUseMaxConsoleBufferSize` as well as
+     * the live buffer), so the preference it saves is not then applied over the
+     * live buffer a second time. The caller has already resized the console.
+     */
+    noteScriptedConsoleBufferSize(lines: number, useMaximum: boolean): void {
+        this.consoleBufferLines = lines;
+        this.scriptedBufferPreference = [lines, useMaximum];
     }
 
     /** Push the resolved size onto a console, batch-deletion size and all —
@@ -957,12 +987,17 @@ export class MudSession {
     }
 
     /** Mudlet `setConfig("versionInTTYPE", …)` / `("promptForVersionInTTYPE", …)`.
-     *  Stored only: TTYPE is negotiated at connect, so both take effect on the
-     *  next dial — the same reconnect requirement Mudlet's own auto-detect works
-     *  around by redialing for you. */
+     *  Stored for the next dial and applied to the live client too: desktop
+     *  reads `mVersionInTTYPE` when it answers each `SB TTYPE SEND`, so the
+     *  server's next request already carries (or drops) the version
+     *  (mudlet-web#379). */
     setVersionInTTYPE(enabled: boolean, prompted?: boolean): void {
         this.options.versionInTTYPE = enabled;
         if (prompted !== undefined) this.options.promptForVersionInTTYPE = prompted;
+        this.client?.setProtocolFlags({
+            versionInTTYPE: enabled,
+            ...(prompted !== undefined && { versionInTTYPEPrompted: prompted }),
+        });
     }
 
     /** Mudlet `setConfig("promptForMXPProcessorOn", …)` / `("specialForceMXPProcessorOn", …)`.
@@ -993,7 +1028,13 @@ export class MudSession {
         if (opts.msspEnabled !== undefined) this.options.msspEnabled = opts.msspEnabled;
         if (opts.charsetEnabled !== undefined) this.options.charsetEnabled = opts.charsetEnabled;
         if (opts.mspEnabled !== undefined) this.options.mspEnabled = opts.mspEnabled;
-        if (opts.mccpEnabled !== undefined) this.options.mccpEnabled = opts.mccpEnabled;
+        if (opts.mccpEnabled !== undefined) {
+            this.options.mccpEnabled = opts.mccpEnabled;
+            // `specialForceCompressionOff` is read when the server offers, so
+            // it applies to the live connection too (mudlet-web#379). A stream
+            // already compressing is left running, as on desktop.
+            this.client?.setMccpEnabled(opts.mccpEnabled);
+        }
         if (opts.mxpEnabled !== undefined) this.options.mxpEnabled = opts.mxpEnabled;
         if (opts.mnesEnabled !== undefined) this.options.mnesEnabled = opts.mnesEnabled;
         if (opts.newEnvironEnabled !== undefined) this.options.newEnvironEnabled = opts.newEnvironEnabled;
@@ -1048,8 +1089,6 @@ export class MudSession {
     private teardownClient(): void {
         for (const unsub of this.stateUnsubs) unsub();
         this.stateUnsubs = [];
-        this.pingTracker?.destroy();
-        this.pingTracker = null;
         this.client?.disconnect();
         this.client = null;
     }
@@ -1059,7 +1098,7 @@ export class MudSession {
     /** Release resources that live outside the JS heap. In-memory state (maps,
      *  arrays, sub-managers) is reclaimed by GC once the instance is dropped, so
      *  this only handles the three things that don't self-clean: the WebSocket
-     *  + ping timer (via `teardownClient`), Web Audio nodes, and any EventBus
+     *  (via `teardownClient`), Web Audio nodes, and any EventBus
      *  listeners with an AbortSignal cleanup still pending. Idempotent. */
     destroy(): void {
         if (this._destroyed) return;
@@ -1113,7 +1152,23 @@ export class MudSession {
      *  in ProfileSession. */
     private postSocketMessage(prefix: keyof typeof SOCKET_MESSAGE_PREFIX, text: string): void {
         const tag = SOCKET_MESSAGE_PREFIX[prefix];
-        this.events.emit('message', `${tag.color}${tag.label}\x1b[0m${tag.gap}- ${text}`, 'script', Date.now());
+        this.postSocketLine(`${tag.color}${tag.label}\x1b[0m${tag.gap}- ${text}`);
+    }
+
+    /** cTelnet's postMessage prints into the main console like anything else,
+     *  so its notices are lines getLineCount() counts and getLines() returns —
+     *  a script indexing lines after a connect or a disconnect lands where it
+     *  does on desktop only if they are (mudlet-web#339). Stored as well as
+     *  rendered, as {@link warnIfUnencodable} does, and wrapped at the main
+     *  window's width like any other line. */
+    private postSocketLine(styled: string): void {
+        const main = this.consoles.get('main');
+        if (main) {
+            const line = new AnsiAwareBuffer(styled);
+            main.appendLine(line);
+            main.wrapAppendedLine(line);
+        }
+        this.events.emit('message', styled, 'script', Date.now());
     }
 
     /** cTelnet's "[ INFO ]  - Attempting an open connection to %1:%2 ..."
@@ -1214,7 +1269,7 @@ export class MudSession {
     /** The indented, yellow second row of a two-line notice — Mudlet's "%1\n%2"
      *  renders as two rows, and a `message` here is one. */
     private postSocketContinuation(text: string): void {
-        this.events.emit('message', `\x1b[33m            ${text}\x1b[0m`, 'script', Date.now());
+        this.postSocketLine(`\x1b[33m            ${text}\x1b[0m`);
     }
 
     /** cTelnet's disconnect pair: the reason (ctelnet.cpp:1073-1136) and then

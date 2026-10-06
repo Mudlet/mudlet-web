@@ -3,8 +3,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createTestRuntime, type TestRuntime } from '../createTestRuntime';
 
-// Regression: ScriptingEngine raises an event literally named "disconnect",
-// which collides with the JS-bound disconnect() API global. The dispatcher
+// Regression: ScriptingEngine used to raise an event literally named
+// "disconnect" (it raises only the sys* names now, #365), and a script can still
+// raise one; it collides with the JS-bound disconnect() API global. The dispatcher
 // once called any global named after the event — with pcall it silently
 // re-invoked the API; after the __mudlet_pcall_co switch it errored ("bad
 // argument #1 to 'create'"). It now calls registered handlers only.

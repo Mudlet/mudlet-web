@@ -42,7 +42,7 @@ function disposedHost(session: MudSession, log: string[]): EngineHost {
         ...NULL_ENGINE_HOST,
         requestConnect: () => refuse('connect()'),
         requestReconnect: () => { refuse('reconnect()'); return false; },
-        resetProfile: () => refuse('resetProfile()'),
+        resetProfile: () => { refuse('resetProfile()'); return false; },
     };
 }
 

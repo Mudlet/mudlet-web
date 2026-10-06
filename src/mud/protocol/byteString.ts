@@ -68,6 +68,63 @@ export const toHex = (s: string): string => {
  *  arrives as U+FEFF rather than vanishing. A sequence cut short by the end of
  *  the input keeps the lenient decoder's answer, as before. */
 export const decodeUtf8AsTBuffer = (s: string): string => {
+    const { text, pending } = decodeUtf8Desktop(s);
+    return pending ? text + fromByteString(pending).text : text;
+};
+
+/** TBuffer's rule for a socket's bytes, as desktop has had it since Mudlet PR
+ *  #11068: a malformed sequence is still ONE replacement mark — the browser's
+ *  decoder gives one per byte of an overlong form or a surrogate — but a byte
+ *  that cannot continue a sequence is not swallowed by it: the bytes before
+ *  it earn the mark and it is read in its own right, so a line ending, an
+ *  escape or a letter after a truncated sequence survives. A sequence the
+ *  end of `s` cuts short is handed back as `pending` to be prefixed to the
+ *  next frame — unless `final` (a prompt ends there), where it earns its mark. */
+export const decodeUtf8Stream = (s: string, final: boolean): { text: string; pending: string } => {
+    const fast = decodeUtf8Valid(s, final);
+    if (fast) return fast;
+    const out = decodeUtf8Desktop(s, true);
+    if (final && out.pending) return { text: out.text + "\uFFFD", pending: "" };
+    return out;
+};
+
+const utf8BomKeepingDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+/** The well-formed case, which is nearly every frame, through the browser's
+ *  decoder: where the input is valid the two rules agree, so only an invalid
+ *  frame pays for the byte-by-byte walk. Null when the frame is not valid. */
+const decodeUtf8Valid = (s: string, final: boolean): { text: string; pending: string } | null => {
+    const n = s.length;
+    // A trailing lead byte whose sequence the frame cuts short: walk back over
+    // continuation bytes (at most five) to the byte that started it.
+    let cut = n;
+    for (let k = n - 1; k >= 0 && k >= n - 6; k--) {
+        const b = s.charCodeAt(k) & 0xff;
+        if ((b & 0xc0) === 0x80) continue;
+        const len = b < 0x80 ? 1 : (b & 0xe0) === 0xc0 ? 2 : (b & 0xf0) === 0xe0 ? 3 : (b & 0xf8) === 0xf0 ? 4 : 0;
+        if (len === 0) return null;
+        if (k + len > n) cut = k;
+        break;
+    }
+    if (final && cut < n) return null;
+    const bytes = new Uint8Array(cut);
+    for (let i = 0; i < cut; i++) {
+        const c = s.charCodeAt(i);
+        if (c > 0xff) return null;
+        bytes[i] = c;
+    }
+    try {
+        return { text: utf8BomKeepingDecoder.decode(bytes), pending: s.substring(cut) };
+    } catch {
+        return null;
+    }
+};
+
+/** TBuffer's walk over `s`. A sequence the end of the input cuts short comes
+ *  back undecoded as `pending`. With `cutByNonContinuation` a byte that cannot
+ *  continue a sequence ends it there (the socket path); without, the lead's
+ *  declared length is taken whatever follows (feedTriggers' path). */
+const decodeUtf8Desktop = (s: string, cutByNonContinuation = false): { text: string; pending: string } => {
     const n = s.length;
     const byte = (i: number) => s.charCodeAt(i) & 0xff;
     let out = "";
@@ -83,10 +140,17 @@ export const decodeUtf8AsTBuffer = (s: string): string => {
             : (b0 & 0xfc) === 0xf8 ? 5
             : (b0 & 0xfe) === 0xfc ? 6
             : 1;
-        if (i + len > n) {
-            out += fromByteString(s.substring(i)).text;
-            return out;
+        if (cutByNonContinuation && len > 1) {
+            let k = 1;
+            while (k < len && i + k < n && (byte(i + k) & 0xc0) === 0x80) k++;
+            if (k < len && i + k < n) {
+                out += "\uFFFD";
+                i += k;
+                run = i;
+                continue;
+            }
         }
+        if (i + len > n) return { text: out, pending: s.substring(i) };
         let valid = len >= 2 && len <= 4;
         for (let k = 1; valid && k < len; k++) {
             if ((byte(i + k) & 0xc0) !== 0x80) valid = false;
@@ -116,5 +180,5 @@ export const decodeUtf8AsTBuffer = (s: string): string => {
         i += len;
         run = i;
     }
-    return out + s.substring(run);
+    return { text: out + s.substring(run), pending: "" };
 };

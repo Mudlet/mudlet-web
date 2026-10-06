@@ -1,6 +1,5 @@
 import type { AliasNode } from '../../storage/schema';
 import { PatternEngine, type AliasPattern } from '../PatternEngine';
-import { PCRE2_NO_UTF_CHECK, type Pcre2Match } from '../triggers/pcre/Pcre2';
 
 export type { AliasNode };
 
@@ -26,45 +25,37 @@ export interface PermAliasMatch {
 function matchAllCaptures(input: string, pattern: AliasPattern): { all: string[]; index: number; named: Record<string, string> } | null {
     const re = pattern.compiled();
     if (!re) return null;
+    // TAlias::match's loop, errors included: a pattern that runs into PCRE2's
+    // match limit is one that did not match, not an error that stops the
+    // command's other aliases (#361).
+    const hits = re.matchAll(input, true);
+    if (hits.length === 0) return null;
     const all: string[] = [];
-    // Named groups sit alongside the positional ones on the same table in
-    // Lua. A group on a branch that did not take part in the match has no
-    // capture to offer, so it is left out rather than written as an empty
-    // string — TAlias skips a PCRE2_UNSET slot for the same reason.
-    const named: Record<string, string> = {};
-    let index = -1;
-    let start = 0;
-    let m: Pcre2Match | null;
-    // Only the first call checks the input is valid UTF-16 (see Pcre2.matchAll).
-    let options = 0;
-    while ((m = re.matchFrom(input, start, options)) !== null) {
-        options = PCRE2_NO_UTF_CHECK;
-        const whole = m[0];
-        if (index < 0) index = whole.start;
+    for (const m of hits) {
         // pcre2_match returns one more than the highest group that took part,
         // and TAlias copies exactly that many — so a trailing optional group
         // that matched nothing adds no entry, while an unset one before a set
         // one still holds its place as an empty string.
         let last = m.length - 1;
         while (last > 0 && m[last].start < 0) last--;
-        all.push(whole.match);
+        all.push(m[0].match);
         for (let i = 1; i <= last; i++) all.push(m[i].start >= 0 ? m[i].match : '');
-        for (let i = 1; i < m.length; i++) {
-            const { name, start: at, match } = m[i];
-            if (name !== undefined && at >= 0 && named[name] === undefined) named[name] = match;
-        }
-        if (whole.end > whole.start) {
-            start = whole.end;
-        } else {
-            // A zero-width match would be found again at the same offset, so
-            // step past it — by a whole code point, since PCRE2 in UTF-16 mode
-            // rejects an offset that splits a surrogate pair.
-            if (whole.end >= input.length) break;
-            const cp = input.codePointAt(whole.end);
-            start = whole.end + (cp !== undefined && cp > 0xffff ? 2 : 1);
-        }
     }
-    return index < 0 ? null : { all, index, named };
+    // Named groups sit alongside the positional ones on the same table in
+    // Lua, and TAlias reads them once, from the FIRST match — a later
+    // occurrence is reachable positionally only. A group on a branch that did
+    // not take part has no capture to offer, so it is left out rather than
+    // written as an empty string — TAlias skips a PCRE2_UNSET slot for the same
+    // reason. Under (?J) several groups share a name and each one that took
+    // part overwrites the last, so the name holds the last of them, as it does
+    // for a trigger.
+    const named: Record<string, string> = {};
+    const first = hits[0];
+    for (let i = 1; i < first.length; i++) {
+        const { name, start: at, match } = first[i];
+        if (name !== undefined && at >= 0) named[name] = match;
+    }
+    return { all, index: first[0].start, named };
 }
 
 export class AliasEngine extends PatternEngine<AliasNode> {
@@ -87,19 +78,53 @@ export class AliasEngine extends PatternEngine<AliasNode> {
      */
     processTemp(input: string): boolean {
         let fired = false;
-        for (const [id, { pattern }] of [...this.temp]) {
-            // A null pattern is an alias that exists but can never match — see
-            // PatternEngine.addTemp.
-            if (!pattern) continue;
-            const hit = matchAllCaptures(input, pattern);
-            if (!hit) continue;
-            // Re-read rather than trusting the snapshot's entry: killAlias
-            // unsubscribes, and an alias taken out while this pass was running
-            // must not still fire.
-            const live = this.temp.get(id);
-            if (!live) continue;
-            live.fn(asMatchArray(hit.all, hit.index, input, hit.named));
-            fired = true;
+        for (const id of [...this.temp.keys()]) {
+            if (this.fireTemp(id, input)) fired = true;
+        }
+        return fired;
+    }
+
+    /** Match one temp alias against `input` and run it if it hits. */
+    private fireTemp(id: number, input: string): boolean {
+        const entry = this.temp.get(id);
+        // A null pattern is an alias that exists but can never match — see
+        // PatternEngine.addTemp.
+        if (!entry?.pattern) return false;
+        const hit = matchAllCaptures(input, entry.pattern);
+        if (!hit) return false;
+        // Re-read rather than trusting the snapshot's entry: killAlias
+        // unsubscribes, and an alias taken out while this pass was running
+        // must not still fire.
+        const live = this.temp.get(id);
+        if (!live) return false;
+        live.fn(asMatchArray(hit.all, hit.index, input, hit.named));
+        return true;
+    }
+
+    /**
+     * A command's whole alias pass: every matching alias, temporary and
+     * permanent alike, in the one order desktop's `mAliasRootNodeList` holds
+     * them — creation order, with a permanent subtree walked where its root
+     * sits (see PatternEngine's unified ordering). Running all the temps first
+     * put a tempAlias made after a permAlias ahead of it (mudlet-web#327).
+     * Temps fire themselves; each permanent hit goes to `firePerm` as it is
+     * reached, for the reason {@link forEachPermMatch} gives. Both lists are
+     * the ones that stood when the pass began. True when anything fired.
+     */
+    process(input: string, firePerm: (hit: PermAliasMatch) => void): boolean {
+        const steps: { seq: number; at: number; temp?: number; perm?: string }[] = [];
+        for (const [id, { seq }] of this.temp) steps.push({ seq, at: 0, temp: id });
+        this.permOrder.forEach((id, i) => {
+            steps.push({ seq: this.permRootSeq.get(id) ?? Number.MAX_SAFE_INTEGER, at: i + 1, perm: id });
+        });
+        steps.sort((a, b) => a.seq - b.seq || a.at - b.at);
+        let fired = false;
+        for (const step of steps) {
+            if (step.temp !== undefined) {
+                if (this.fireTemp(step.temp, input)) fired = true;
+            } else if (step.perm !== undefined && this.firePermIfMatched(step.perm, input, firePerm)) {
+                fired = true;
+            }
         }
         return fired;
     }
@@ -122,12 +147,16 @@ export class AliasEngine extends PatternEngine<AliasNode> {
      * already reloaded through the store subscription.
      */
     forEachPermMatch(input: string, fire: (hit: PermAliasMatch) => void): void {
-        for (const id of this.permOrder) {
-            const entry = this.permById.get(id);
-            if (!entry) continue;
-            const hit = matchAllCaptures(input, entry.re);
-            if (hit) fire({ alias: entry.item, matchedText: hit.all[0], captures: hit.all.slice(1), named: hit.named });
-        }
+        for (const id of this.permOrder) this.firePermIfMatched(id, input, fire);
+    }
+
+    private firePermIfMatched(id: string, input: string, fire: (hit: PermAliasMatch) => void): boolean {
+        const entry = this.permById.get(id);
+        if (!entry) return false;
+        const hit = matchAllCaptures(input, entry.re);
+        if (!hit) return false;
+        fire({ alias: entry.item, matchedText: hit.all[0], captures: hit.all.slice(1), named: hit.named });
+        return true;
     }
 
     /** Every perm alias the input matches, in tree order, without firing any.

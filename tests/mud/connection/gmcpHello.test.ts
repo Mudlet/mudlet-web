@@ -93,12 +93,26 @@ describe('GMCP Core.Hello handshake', () => {
     expect(out).toContain('Core.Supports.Set');
   });
 
-  it('also announces when the server requests GMCP (DO)', () => {
-    const { sock } = connected();
+  // Mudlet answers a server's DO with WILL and raises sysProtocolEnabled, but
+  // sends no Core.Hello, Core.Supports.Set or Core.Ping until the server's own
+  // WILL (mudlet-web#362).
+  it('answers a server request (DO) with WILL alone', () => {
+    const { sock, bus } = connected();
+    const enabled: string[] = [];
+    bus.on('protocol.enabled', (name) => enabled.push(name));
     sock.deliver(GMCP_DO);
     const out = sentText(sock);
-    expect(out).toContain(GMCP_WILL);
-    expect(out).toContain('Core.Hello');
+    expect(out).toBe(GMCP_WILL);
+    expect(enabled).toContain('GMCP');
+  });
+
+  it('announces once the server that asked (DO) also offers (WILL)', () => {
+    const { sock } = connected();
+    sock.deliver(GMCP_DO);
+    sock.deliver(GMCP_WILL);
+    const out = sentText(sock);
+    expect(out.split('Core.Hello').length - 1).toBe(1);
+    expect(out).toContain('Core.Supports.Set');
   });
 
   // Copyover / reboot flows: the server turns GMCP off and on again and has
@@ -134,11 +148,19 @@ describe('GMCP Core.Hello handshake', () => {
     expect(sentText(sock).split('Core.Hello').length - 1).toBe(2);
   });
 
-  it('announces once per connection when the server only asks (DO)', () => {
-    const { sock } = connected();
-    sock.deliver(GMCP_DO);
-    sock.deliver(GMCP_DO);
-    expect(sentText(sock).split('Core.Hello').length - 1).toBe(1);
+  // Desktop measures latency from GA/EOR only and never sends Core.Ping
+  // (mudlet-web#362); neither negotiation nor a reply to one starts a ping.
+  it('never sends Core.Ping on its own', () => {
+    vi.useFakeTimers();
+    try {
+      const { sock } = connected();
+      sock.deliver(GMCP_WILL);
+      sock.deliver('\xFF\xFA\xC9Core.Ping\xFF\xF0');
+      vi.advanceTimersByTime(30_000);
+      expect(sentText(sock)).not.toContain('Core.Ping');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('advertises Char.Login version 1, since version 2 is not implemented', () => {

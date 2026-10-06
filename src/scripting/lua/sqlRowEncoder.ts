@@ -1,12 +1,10 @@
-// Encode SQLite result rows as a Lua source literal so a single loadstring()
-// inside Lua can materialize the whole table tree. Avoids wasmoon's per-cell
-// JS↔WASM boundary crossings on bulk fetches (people DB, etc.) — the dominant
-// cost on /laduj-style profile loads.
+// Encode a SQLite result row as a Lua source literal so a single loadstring()
+// inside Lua can materialize it. Avoids wasmoon's per-cell JS↔WASM boundary
+// crossings: a fetch costs one crossing however wide the row.
 //
-// Output format: `{{...},{...},...}` — a Lua array of arrays, 1-indexed by
-// construction. Cells are emitted as numbers, double-quoted strings (with
-// minimal escapes), `nil` for SQL NULL, or boolean literals if sqlite ever
-// hands one back. Binary blobs are escaped byte-by-byte as `\DDD` (decimal,
+// Output format: `{...}` — a Lua array, 1-indexed by construction. Cells are
+// emitted as numbers, double-quoted strings (with minimal escapes), `nil` for
+// SQL NULL, or boolean literals if sqlite ever hands one back. Binary blobs are escaped byte-by-byte as `\DDD` (decimal,
 // always 3 digits) so non-UTF-8 byte sequences round-trip safely.
 
 type SqlCell = string | number | bigint | boolean | null | undefined | Uint8Array;
@@ -76,19 +74,12 @@ function encodeCell(v: SqlCell): string {
     return encodeLuaString(String(v));
 }
 
-export function encodeRowsToLuaSource(rows: unknown[][]): string {
-    // Array buffer + single join: ~50MB/s in V8 vs. cons-string churn from
-    // tight `+=` chains over millions of fragments.
+/** One row as a Lua array literal: `{...}`. */
+export function encodeRowToLuaSource(row: unknown[]): string {
     const parts: string[] = ['{'];
-    for (let r = 0; r < rows.length; r++) {
-        if (r > 0) parts.push(',');
-        parts.push('{');
-        const row = rows[r];
-        for (let c = 0; c < row.length; c++) {
-            if (c > 0) parts.push(',');
-            parts.push(encodeCell(row[c] as SqlCell));
-        }
-        parts.push('}');
+    for (let c = 0; c < row.length; c++) {
+        if (c > 0) parts.push(',');
+        parts.push(encodeCell(row[c] as SqlCell));
     }
     parts.push('}');
     return parts.join('');

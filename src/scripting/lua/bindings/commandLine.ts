@@ -1,4 +1,5 @@
 import type { BindingContext } from './context';
+import { cmdLinePlainText } from '../../../ui/cmdline/plainText';
 
 /**
  * The main command bar and Mudlet's createCommandLine overlays: reading and
@@ -43,12 +44,14 @@ export function installCommandLineBindings({ lua, api, emitEvent }: BindingConte
     });
     // Mudlet getCmdLine([name]) → current input string. Routes through
     // cmdLines / windows live value probes when targeting a named cmd line,
-    // else returns the main command bar's text.
+    // else returns the main command bar's text. As plain text, the way
+    // TCommandLine's toPlainText() reads it: a non-breaking space comes back as
+    // a space and U+2028/U+2029 as line feeds (#375).
     lua.global.set('getCmdLine', (name?: unknown) => {
         const kind = cmdLineKind(name);
-        if (kind === 'overlay') return api.cmdLines.getValue(name as string);
-        if (kind === 'window')  return api.windows.getCmdLineValue(name as string);
-        return api.getCmdLine();
+        if (kind === 'overlay') return cmdLinePlainText(api.cmdLines.getValue(name as string));
+        if (kind === 'window')  return cmdLinePlainText(api.windows.getCmdLineValue(name as string));
+        return cmdLinePlainText(api.getCmdLine());
     });
     // Mudlet selectCmdLineText([commandLine]) — highlight all text. Targets
     // an overlay cmd line first, then the main command bar. (User-window
@@ -116,37 +119,46 @@ export function installCommandLineBindings({ lua, api, emitEvent }: BindingConte
     });
     lua.global.set('__getCmdLineStyleSheet', (name?: unknown) =>
         api.getCmdLineStyleSheet(typeof name === 'string' ? name : 'main'));
-    // Mudlet (add|remove)CmdLineSuggestion([name], suggestion) /
-    // clearCmdLineSuggestions([name]). Suggestions feed Tab completion in
-    // the command bar (merged with command history). The optional leading
-    // command-line name arg is accepted for parity and dropped.
-    const cmdLineSuggestArg = (a: unknown, b?: unknown): string => {
-        const v = b !== undefined ? b : a;
-        return String(v ?? '');
-    };
+    // Mudlet (add|remove)CmdLineSuggestion([name], word) /
+    // clearCmdLineSuggestions([name]) and the matching blacklist trio. Each
+    // command line keeps its own two lists (TCommandLine::addSuggestion /
+    // addBlacklist); a lone argument is the word for the main command bar, two
+    // name the command line first. Bridge.lua has already refused a name that
+    // is not a command line. Suggestions add to what Tab can complete to, the
+    // blacklist strikes words out of it whichever source they came from.
+    const cmdLineSuggestArgs = (a: unknown, b?: unknown): [string, string] =>
+        b !== undefined && b !== null
+            ? [String(b), typeof a === 'string' && a ? a : 'main']
+            : [String(a ?? ''), 'main'];
+    const cmdLineNameArg = (name?: unknown): string =>
+        typeof name === 'string' && name ? name : 'main';
     lua.global.set('addCmdLineSuggestion', (a: unknown, b?: unknown) => {
-        api.addCmdLineSuggestion(cmdLineSuggestArg(a, b));
+        api.addCmdLineSuggestion(...cmdLineSuggestArgs(a, b));
     });
     lua.global.set('removeCmdLineSuggestion', (a: unknown, b?: unknown) => {
-        api.removeCmdLineSuggestion(cmdLineSuggestArg(a, b));
+        api.removeCmdLineSuggestion(...cmdLineSuggestArgs(a, b));
     });
-    lua.global.set('clearCmdLineSuggestions', (_name?: string) => {
-        api.clearCmdLineSuggestions();
+    lua.global.set('clearCmdLineSuggestions', (name?: unknown) => {
+        api.clearCmdLineSuggestions(cmdLineNameArg(name));
     });
-
-    // Mudlet (add|remove)CmdLineBlacklist([name], word) / clearCmdLineBlacklist(
-    // [name]). The mirror image of the suggestion list: these words are struck
-    // out of Tab completion whichever list they came from. Same leading-name
-    // handling as above.
     lua.global.set('__addCmdLineBlacklist', (a: unknown, b?: unknown) => {
-        api.addCmdLineBlacklist(cmdLineSuggestArg(a, b));
+        api.addCmdLineBlacklist(...cmdLineSuggestArgs(a, b));
     });
     lua.global.set('__removeCmdLineBlacklist', (a: unknown, b?: unknown) => {
-        api.removeCmdLineBlacklist(cmdLineSuggestArg(a, b));
+        api.removeCmdLineBlacklist(...cmdLineSuggestArgs(a, b));
     });
-    lua.global.set('__clearCmdLineBlacklist', (_name?: string) => {
-        api.clearCmdLineBlacklist();
+    lua.global.set('__clearCmdLineBlacklist', (name?: unknown) => {
+        api.clearCmdLineBlacklist(cmdLineNameArg(name));
     });
+
+    // Whether `name` is a command line right now: one made with
+    // createCommandLine, or a miniconsole's / user window's own line once
+    // enableCommandLine has given it one (desktop's mSubCommandLineMap). A
+    // console that never had its line enabled has none, so getCmdLine and
+    // friends refuse it rather than answer for a line that is not there (#342).
+    lua.global.set('__hasCmdLine', (name?: unknown) =>
+        typeof name === 'string' && name !== ''
+        && (api.cmdLines.has(name) || api.windows.hasCommandLine(name)));
 
     // Mudlet get/setSaveCommandHistory([cmdLineName][, save]) — the per-command
     // -line half of history saving. Bridge.lua owns the argument shapes and the

@@ -132,6 +132,25 @@ describe('mudletVariables — serialize', () => {
         expect(back.variables[0]).toMatchObject({ name: 'a&b', value: '1 < 2 & 3 > 0' });
     });
 
+    // #360: Mudlet saves a boolean key with keyType 1 and "true"/"false" as its
+    // name; reading it as a string key turned [true] into ["true"].
+    it('round-trips boolean keys as keyType 1', () => {
+        const xml = serializeVariablePackage({
+            hidden: [],
+            variables: [{ name: 'svNumKey', keyKind: 'string', valueType: 'table', value: '', children: [
+                { name: 'false', keyKind: 'boolean', valueType: 'string', value: 'fk' },
+                { name: 'true', keyKind: 'boolean', valueType: 'string', value: 'bk' },
+            ] }],
+        });
+        expect(xml).toMatch(/<name>true<\/name>\s*<keyType>1<\/keyType>/);
+        expect(xml).toMatch(/<name>false<\/name>\s*<keyType>1<\/keyType>/);
+        const kids = parseVariablePackageXml(wrapDoc(xml)).variables[0].children!;
+        expect(kids.map(c => [c.name, c.keyKind, c.value])).toEqual([
+            ['false', 'boolean', 'fk'],
+            ['true', 'boolean', 'bk'],
+        ]);
+    });
+
     it('emits populated hidden variables', () => {
         const xml = serializeVariablePackage({ hidden: ['foo', 'bar'], variables: [] });
         expect(xml).toContain('<HiddenVariables>');

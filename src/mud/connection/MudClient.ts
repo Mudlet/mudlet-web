@@ -25,8 +25,10 @@ import {
     MSSP_COMMAND_CODE,
     MXP_COMMAND_CODE,
     NEW_ENVIRON_COMMAND_CODE,
+    ATCP_COMMAND_CODE,
     OPT_ATCP,
     OPT_TELNET_102,
+    parseAtcpMessage,
     TELNET_102_COMMAND_CODE,
     SessionCodec,
     toByteString,
@@ -269,18 +271,12 @@ export class MudClient {
      *  "failed to connect" from "connection lost mid-session" in close events. */
     private opened = false;
 
-    /** True once we've sent the GMCP `Core.Hello` / `Core.Supports.Set`
-     *  handshake this session. Only a server's IAC DO GMCP consults it — an
-     *  IAC WILL GMCP always re-announces (see sendGmcpHandshake). Reset on
-     *  each connect(). */
-    private gmcpHelloSent = false;
-
     /** When the game command now awaiting a reply went out (`performance.now()`),
      *  or null when nothing is being timed. Mudlet's
      *  `cTelnet::begin/finishNetworkLatencyMeasurement`: on a server that marks
      *  its prompts with GA/EOR, the time from a command to the first read
-     *  off the socket after it is the network latency `getNetworkLatency()` reports, whether or
-     *  not the game answers GMCP `Core.Ping`. Timed from the first command of a
+     *  off the socket after it is the network latency `getNetworkLatency()` reports
+     *  — the only reading there is, as Mudlet sends no GMCP `Core.Ping`. Timed from the first command of a
      *  burst, so a queued speedwalk isn't credited with the replies to its
      *  earlier steps. */
     private latencyStartedAt: number | null = null;
@@ -396,7 +392,7 @@ export class MudClient {
             eventBus,
             {
                 sendRaw: (data) => this.sendRaw(data),
-                onGmcpNegotiated: (offered) => this.sendGmcpHandshake(offered),
+                onGmcpNegotiated: () => this.sendGmcpHandshake(),
                 getEncoding: () => this.codec.encoding,
                 isMccpEnabled: () => this.mccpHandler.enabled,
                 onKaVirProtocolDetected: () => this.eventBus.emit('kavir.detected'),
@@ -416,18 +412,7 @@ export class MudClient {
             onEnvelope: ({ path, value }) => {
                 this.handleCharLogin(path, value);
                 (this.eventBus.emit as (event: string, ...args: unknown[]) => void)(`gmcp.${path}`, value);
-                // GMCP module names are case-insensitive by convention, and the
-                // ping tracker listens on a fixed lowercase event. Route the
-                // server's Core.Ping reply regardless of spelling — the spec's
-                // canonical reply is PascalCase `Core.Ping` with no body, which
-                // `gmcp.${path}` alone would emit as `gmcp.Core.Ping`.
-                if (path !== 'core.ping' && path.toLowerCase() === 'core.ping') {
-                    this.eventBus.emit('gmcp.core.ping', value);
-                }
                 this.eventBus.emit('gmcp', { path, value });
-            },
-            onMessage: (text, type) => {
-                this.messageBuffer.push({ text, type });
             },
             onClientGui: (payload) => {
                 this.eventBus.emit('clientGui', payload);
@@ -435,6 +420,7 @@ export class MudClient {
         });
 
         this.msdpStream = createMsdpStream({
+            decode: (bytes) => this.codec.decodeOutOfBand(bytes),
             onEnvelope: ({ path, value }) => {
                 (this.eventBus.emit as (event: string, ...args: unknown[]) => void)(`msdp.${path}`, value);
                 this.eventBus.emit('msdp', { path, value });
@@ -467,6 +453,7 @@ export class MudClient {
             else if (code === MXP_COMMAND_CODE) this.negotiator.handleMxpSubneg();
             else if (code === NEW_ENVIRON_COMMAND_CODE) this.negotiator.handleNewEnvironSubneg(subneg);
             else if (code === TELNET_102_COMMAND_CODE) this.handleChannel102Subneg(subneg);
+            else if (code === ATCP_COMMAND_CODE) this.handleAtcpSubneg(subneg);
         }, this.telnetParserOpts);
         // The option commands these two handlers send themselves are noted in
         // the negotiator's option bitsets, which Mudlet keeps for every option
@@ -475,7 +462,16 @@ export class MudClient {
             this.negotiator.noteOptionsSent(data);
             this.sendRaw(data);
         };
-        this.mccpHandler = new MccpHandler(sendOptionRaw);
+        // MccpHandler answers every WILL COMPRESS2 it sees; Mudlet answers one
+        // only while the option is off (`!hisOptionState`), so a server
+        // re-offering compression it already has is not told DO again — an
+        // answer to an option already on can start a negotiation loop
+        // (mudlet-web#379).
+        this.mccpHandler = new MccpHandler((data) => {
+            if (data.length === 3 && data.charCodeAt(0) === 0xFF && data.charCodeAt(1) === 0xFD
+                && this.negotiator.isServerOptionOn(data.charCodeAt(2))) return;
+            sendOptionRaw(data);
+        });
         this.mccpHandler.enabled = mccpEnabled;
 
         this.echoHandler = new EchoHandler(
@@ -607,6 +603,9 @@ export class MudClient {
     }
 
     connect(): void {
+        // A disconnect() still waiting on its output is reported first, as
+        // cTelnet::connectIt's abort() of a closing socket does.
+        if (this.pendingDisconnect !== null) this.finishDisconnect();
         if (this.socket) {
             this.socket.onmessage = null;
             this.socket.onclose = null;
@@ -621,7 +620,6 @@ export class MudClient {
         this.subnegRepair.reset();
         this.charModeDetected = false;
         this.cancelCharacterModeDetection();
-        this.gmcpHelloSent = false;
         this.latencyStartedAt = null;
         // Redialling re-runs the handshake, so the previous verdict is stale.
         this.tlsResolved = false;
@@ -662,18 +660,26 @@ export class MudClient {
                     // which is the fallback for a proxy too old to say so.
                     this.markEstablished();
                     const decodedData = bytesToLatin1(new Uint8Array(event.data));
-                    const data = this.subnegRepair.process(this.mccpHandler.processData(decodedData));
-                    if (debugTelnetEnabled()) {
-                        logTelnetNegotiation('raw', decodedData);
-                        if (data !== decodedData) logTelnetNegotiation('post-mccp', data);
-                    }
-                    this.negotiator.processFrame(data);
-                    this.echoHandler.processData(data);
-                    this.eventBus.emit('socket.incoming', data);
-                    try {
-                        this.processIncomingData(data, undefined, receivedAt);
-                    } catch (processingError) {
-                        console.error('Error during data processing:', processingError);
+                    if (debugTelnetEnabled()) logTelnetNegotiation('raw', decodedData);
+                    // Split where compression starts or ends, and each piece
+                    // run through the pipeline on its own: desktop processes
+                    // the plain text before an MCCP start (gotRest) before it
+                    // inflates anything, and the inflated text before what
+                    // follows the end of the stream, so a trigger on the last
+                    // line of one part never sees GMCP from the next
+                    // (mudlet-web#384).
+                    const chunks = this.mccpHandler.processChunks(decodedData);
+                    for (const chunk of chunks) {
+                        const data = this.subnegRepair.process(chunk);
+                        if (debugTelnetEnabled() && (chunks.length > 1 || data !== decodedData)) {
+                            logTelnetNegotiation('post-mccp', data);
+                        }
+                        this.eventBus.emit('socket.incoming', data);
+                        try {
+                            this.processIncomingData(data, undefined, receivedAt);
+                        } catch (processingError) {
+                            console.error('Error during data processing:', processingError);
+                        }
                     }
                 } catch (error) {
                     console.error('Error processing incoming message:', error);
@@ -698,8 +704,7 @@ export class MudClient {
                 if (isAbnormalClose(event)) {
                     this.eventBus.emit('client.error', formatCloseError(event, this.opened, this.viaProxy));
                 }
-                this.eventBus.emit('client.disconnect');
-                this.eventBus.emit('client.disconnected');
+                this.emitDisconnect();
                 this.opened = false;
                 this.mccpHandler.reset();
                 this.echoHandler.reset();
@@ -757,8 +762,7 @@ export class MudClient {
             // disconnect notice — which is what carries the error above into the
             // console — would never be posted. cTelnet is equivalent here: a
             // failed connectToHost still reaches slot_socketDisconnected.
-            this.eventBus.emit('client.disconnect');
-            this.eventBus.emit('client.disconnected');
+            this.emitDisconnect();
         }
     }
 
@@ -837,6 +841,13 @@ export class MudClient {
     }
 
     disconnect(): void {
+        // A second disconnect() — or the teardown before a redial — while the
+        // first is still waiting on its output reports that one now, as Qt's
+        // abort() does to a socket in ClosingState.
+        if (this.pendingDisconnect !== null) {
+            this.finishDisconnect();
+            return;
+        }
         if (!this.socket) return;
         const socket = this.socket;
         // Idempotent on an already-torn-down socket. Without this, a second
@@ -855,6 +866,8 @@ export class MudClient {
         socket.onclose = null;
         socket.onerror = null;
         socket.onopen = null;
+        // Measured before close(), which some implementations settle at once.
+        const outputPending = socket.bufferedAmount > 0;
         socket.close();
         this.assembler.flush(Date.now(), true);
         // Let go of the socket rather than watching it finish closing. Every
@@ -865,8 +878,32 @@ export class MudClient {
         // that as still-connected. Qt hands cTelnet the UnconnectedState at
         // once, which is what makes a disconnect()ed profile injectable again.
         this.socket = null;
-        this.eventBus.emit('client.disconnect');
-        this.eventBus.emit('client.disconnected');
+        // `QAbstractSocket::disconnectFromHost` closes at once only when there
+        // is nothing left to write. With a command still on its way out — the
+        // usual `send("quit") disconnect()` — the socket lingers in
+        // ClosingState until the bytes are gone, and `disconnected()` (and
+        // with it sysDisconnectionEvent) arrives from the event loop, after
+        // the calling script has returned. A handler that reads a flag the
+        // caller sets on the next line (`quitting = true`) depends on that.
+        // `bufferedAmount` is exactly the browser's count of bytes queued but
+        // not yet handed to the network, so it answers the same question.
+        if (outputPending) {
+            this.pendingDisconnect = setTimeout(() => this.finishDisconnect(), 0);
+            return;
+        }
+        this.finishDisconnect();
+    }
+
+    /** A disconnect() whose events are still waiting on unwritten output. */
+    private pendingDisconnect: ReturnType<typeof setTimeout> | null = null;
+
+    /** The tail of disconnect(), once the socket is really gone. */
+    private finishDisconnect(): void {
+        if (this.pendingDisconnect !== null) {
+            clearTimeout(this.pendingDisconnect);
+            this.pendingDisconnect = null;
+        }
+        this.emitDisconnect();
         this.opened = false;
         this.mccpHandler.reset();
         this.echoHandler.reset();
@@ -874,6 +911,19 @@ export class MudClient {
         this.negotiator.clearMspNegotiated();
         this.cancelCharacterModeDetection();
         this.latencyStartedAt = null;
+    }
+
+    /** Raise the disconnect, then hand over the text the final flush left in
+     *  the message buffer. cTelnet raises sysDisconnectionEvent first and only
+     *  then is the unterminated last line printed and its triggers run — a
+     *  `"Server full, bye"` sent without a newline before the close still
+     *  reaches the screen, the buffer and the trigger engine, just after the
+     *  event. Before the notices `client.disconnected` posts, which follow it
+     *  on desktop too. */
+    private emitDisconnect(): void {
+        this.eventBus.emit('client.disconnect');
+        this.flushMessageBuffer();
+        this.eventBus.emit('client.disconnected');
     }
 
     /** Whether MSP is live on this connection (negotiated, not merely allowed
@@ -997,15 +1047,12 @@ export class MudClient {
      *  this hello, so without it GMCP effectively does nothing. Every server
      *  offer (IAC WILL GMCP) is answered with it, as Mudlet does: a server that
      *  turned GMCP off and on again — copyover, reboot — has dropped the module
-     *  list and would otherwise never send another packet. Mudlet sends nothing
-     *  on a server's IAC DO GMCP; Mudlet Web still announces there once per
-     *  connection, since a server that only ever asks would otherwise never
-     *  hear from us. Reports our own identity (see src/version.ts), matching
-     *  the TTYPE/MNES/MXP handshakes. */
-    private sendGmcpHandshake(offered: boolean): void {
-        if (!offered && this.gmcpHelloSent) return;
+     *  list and would otherwise never send another packet. A server's IAC DO
+     *  GMCP is answered with WILL alone, as Mudlet does — the handshake waits
+     *  for the server's own offer (mudlet-web#362). Reports our own identity
+     *  (see src/version.ts), matching the TTYPE/MNES/MXP handshakes. */
+    private sendGmcpHandshake(): void {
         if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
-        this.gmcpHelloSent = true;
         try {
             this.sendBytes(encodeGmcp('Core.Hello', {
                 client: CLIENT_NAME,
@@ -1095,7 +1142,7 @@ export class MudClient {
             return false;
         }
         try {
-            this.sendBytes(encodeMsdp(variable, values));
+            this.sendBytes(encodeMsdp(variable, values, text => this.codec.encodeOutOfBand(text)));
             return true;
         } catch (error) {
             console.error('Error sending MSDP message:', error);
@@ -1106,8 +1153,11 @@ export class MudClient {
 
     /** Mudlet `sendATCP(message)`. Frames `IAC SB ATCP <message> IAC SE` (ATCP =
      *  telnet option 200, GMCP's predecessor) and sends it raw. Returns false
-     *  when the socket isn't open. */
+     *  when ATCP isn't negotiated or the socket isn't open. */
     sendATCP(message: string): boolean {
+        // Mudlet refuses unless the option is live (`isATCPEnabled`), so a
+        // send before negotiation or after the server's WONT goes nowhere.
+        if (!this.negotiator.isAtcpEnabled()) return false;
         // Transcoded to UTF-8 rather than to the session encoding — the same
         // divergence from Mudlet's `encodeAndCookBytes` that `encodeGmcpRaw`
         // documents, and for the same reason: ATCP bodies are GMCP-shaped. Without
@@ -1142,6 +1192,19 @@ export class MudClient {
             variable: subneg.charCodeAt(1) & 0xff,
             value: subneg.charCodeAt(2) & 0xff,
         });
+    }
+
+    /** An `IAC SB ATCP <message> IAC SE` body — Mudlet's ATCP branch of
+     *  `processTelnetCommand`. The message, decoded under the server encoding,
+     *  becomes one `atcp` table entry and event (`setATCPVariables`); an empty
+     *  one is ignored. `Auth.Request` is then answered with the hello. Like
+     *  desktop, neither depends on ATCP having been negotiated. */
+    private handleAtcpSubneg(subneg: string): void {
+        const body = subneg.slice(1);
+        if (body.length === 0) return;
+        const message = parseAtcpMessage(this.codec.decodeOutOfBand(body));
+        if (message) this.eventBus.emit('atcp', message);
+        if (body.startsWith('Auth.Request')) this.negotiator.sendAtcpHello();
     }
 
     /** Frame an `IAC SB <opt> <payload> IAC SE` subnegotiation and send it.
@@ -1254,8 +1317,6 @@ export class MudClient {
         // exactly as the socket's would be — the replies go nowhere while
         // unconnected, which sendRaw()'s readyState guard already ensures.
         data = this.subnegRepair.process(data);
-        this.negotiator.processFrame(data);
-        this.echoHandler.processData(data);
         this.processIncomingData(data);
     }
 
@@ -1303,9 +1364,17 @@ export class MudClient {
         if (start < processable.length) this.processSegment(processable.substring(start), false, ts);
     }
 
-    /** Strip, decode and assemble one run of a frame. `hasPrompt` means the run
-     *  ends in an IAC GA/EOR. */
+    /** Negotiate, strip, decode and assemble one run of a frame. `hasPrompt`
+     *  means the run ends in an IAC GA/EOR. */
     private processSegment(processable: string, hasPrompt: boolean, ts: number): void {
+        // Option negotiation is applied run by run, not for the whole frame up
+        // front: desktop handles the text up to each GA before the commands
+        // that follow it, so a WILL GMCP or WILL ECHO after a prompt must not
+        // be in effect while that prompt's triggers run (mudlet-web#384).
+        // The run holds only complete sequences — processIncomingData keeps an
+        // unfinished one back for the next frame.
+        this.negotiator.processFrame(processable);
+        this.echoHandler.processData(processable);
         let sanitized = stripTelnetSequences(processable, this.telnetOptionHandler).replace(/\r/g, '');
         // `fixUnnecessaryLinebreaks` works on the whole run, before it is
         // decoded or split, because desktop decides it on the raw block at the

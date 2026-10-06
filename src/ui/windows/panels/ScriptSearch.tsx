@@ -32,9 +32,11 @@ function formatCode(code: string): string {
     return code;
 }
 
-function formatKeyCombo(key: string, modifiers: string[]): string {
+function formatKeyCombo(key: string, modifiers: string[], qtKey?: number): string {
+    // A key bound only by the character it types (AZERTY's é) has no code.
+    if (!key && qtKey !== undefined && qtKey > 0) key = String.fromCharCode(qtKey).toLowerCase();
     if (!key) return '';
-    return [...modifiers.map(m => m[0].toUpperCase() + m.slice(1)), formatCode(key)].join('+');
+    return [...modifiers.filter(m => m !== 'keypad' || !key.startsWith('Numpad')).map(m => m[0].toUpperCase() + m.slice(1)), formatCode(key)].join('+');
 }
 
 // ── Matching ────────────────────────────────────────────────────────────────
@@ -73,7 +75,7 @@ function findOccurrences(item: AnyNode, matcher: SearchMatcher): SearchOccurrenc
         for (const e of any.eventHandlers as string[]) field('event', e);
     }
     if ('key' in item && (item as KeyNode).key) {
-        field('key', formatKeyCombo((item as KeyNode).key, (item as KeyNode).modifiers));
+        field('key', formatKeyCombo((item as KeyNode).key, (item as KeyNode).modifiers, (item as KeyNode).qtKey));
     }
 
     if (typeof any.code === 'string' && any.code) {

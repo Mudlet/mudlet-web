@@ -78,3 +78,27 @@ describe('EchoHandler — masking follows the server taking ECHO', () => {
     expect(sent).toContain(ECHO_DONT);
   });
 });
+
+// cTelnet's WILL ECHO branch asks checkEchoAnomalyPattern() first, which stays
+// true once tripped, so every later offer is answered DONT ECHO (#354).
+describe('EchoHandler — after an echo anomaly', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("answers the server's next WILL ECHO with DONT ECHO and stays unmasked", () => {
+    const { handler, sent, anomalies } = makeHandler();
+    for (let i = 0; i < 5; i++) handler.processData(i % 2 === 0 ? ECHO_WILL : ECHO_WONT);
+    expect(handler.anomalyDetected).toBe(true);
+    expect(anomalies()).toBe(1);
+
+    sent.length = 0;
+    handler.processData(ECHO_WILL);
+    expect(sent).toEqual([ECHO_DONT]);
+    expect(handler.serverEchoing).toBe(false);
+
+    sent.length = 0;
+    handler.processData(ECHO_WONT);
+    expect(sent).toEqual([]);
+    expect(anomalies()).toBe(1);
+  });
+});

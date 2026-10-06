@@ -30,7 +30,7 @@ describe('WindowManager MMP map location', () => {
         expect(listener).toHaveBeenCalledTimes(2);
     });
 
-    it('loadMap ingests downloaded map bytes and raises sysMapLoadEvent', () => {
+    it('loadMap ingests downloaded map bytes without raising an event desktop lacks', () => {
         // Serialise a real map the same way a game-published .dat would arrive.
         const src = new MapStore();
         src.addRoom(1);
@@ -50,7 +50,9 @@ describe('WindowManager MMP map location', () => {
             wm.onRaiseEvent = (event) => events.push(event);
 
             expect(wm.loadMap(buf)).toBe(true);
-            expect(events).toContain('sysMapLoadEvent');
+            // Desktop has no sysMapLoadEvent (issue #334): a script written
+            // here to wait on it would never run there.
+            expect(events).not.toContain('sysMapLoadEvent');
             expect(wm.mapStore.roomExists(1)).toBe(true);
             expect(wm.mapStore.roomExists(2)).toBe(true);
         } finally {

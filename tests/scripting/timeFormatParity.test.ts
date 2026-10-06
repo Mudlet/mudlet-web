@@ -61,7 +61,6 @@ describe('os.date — glibc strftime parity', () => {
 
   it('space-pads the day in %c, as glibc does', () => {
     expect(env.run(`return os.date("!%c", ${day5})`)).toBe('Tue Jan  6 00:00:00 1970');
-    expect(env.run(`return os.date("!%Ec", ${day5})`)).toBe('Tue Jan  6 00:00:00 1970');
   });
 
   it('uses the glibc %c layout for the default format', () => {

@@ -153,34 +153,169 @@ export function qtKeyToDomCode(key: string | number, modifier = 0): string {
     return QT_KEY_TO_DOM_CODE[key] ?? String(key);
 }
 
+/** Qt::KeyboardModifier bits. */
+export const QT_SHIFT_MODIFIER   = 0x02000000;
+export const QT_CONTROL_MODIFIER = 0x04000000;
+export const QT_ALT_MODIFIER     = 0x08000000;
+export const QT_META_MODIFIER    = 0x10000000;
+
 /**
  * Translate a Qt::KeyboardModifier bitmask into an array of modifier names
- * that match the {ctrl,shift,alt,meta} strings KeyEngine compares against.
+ * that match the {ctrl,shift,alt,meta,keypad} strings KeyEngine compares
+ * against.
  *
- * Qt::ShiftModifier   = 0x02000000
- * Qt::ControlModifier = 0x04000000
- * Qt::AltModifier     = 0x08000000
- * Qt::MetaModifier    = 0x10000000
- * Qt::KeypadModifier  = 0x20000000  (ignored — DOM `code` already encodes "Numpad*")
- * Qt::GroupSwitchMod. = 0x40000000  (ignored — X11-only)
+ * Qt::KeypadModifier is kept as `keypad`: desktop's key matcher compares the
+ * whole mask, so a binding on Keypad+Up (numpad 8 with NumLock off) is a
+ * different key from the arrow, and `ArrowUp` alone cannot say which one it
+ * is. A Numpad* DOM code says it by itself, so `keypad` is redundant there but
+ * harmless. Qt::GroupSwitchModifier (0x40000000, X11-only) is ignored.
  */
 export function qtModifiersToList(modifier: number): string[] {
     const mods: string[] = [];
-    if (modifier & 0x04000000) mods.push('ctrl');
-    if (modifier & 0x02000000) mods.push('shift');
-    if (modifier & 0x08000000) mods.push('alt');
-    if (modifier & 0x10000000) mods.push('meta');
+    if (modifier & QT_CONTROL_MODIFIER) mods.push('ctrl');
+    if (modifier & QT_SHIFT_MODIFIER) mods.push('shift');
+    if (modifier & QT_ALT_MODIFIER) mods.push('alt');
+    if (modifier & QT_META_MODIFIER) mods.push('meta');
+    if (modifier & QT_KEYPAD_MODIFIER) mods.push('keypad');
     return mods;
 }
 
-/** Inverse of qtModifiersToList — {ctrl,shift,alt,meta} names → Qt bitmask. */
+/** Inverse of qtModifiersToList — {ctrl,shift,alt,meta,keypad} names → Qt bitmask. */
 export function listToQtModifiers(modifiers: string[]): number {
     let m = 0;
-    if (modifiers.includes('ctrl')) m |= 0x04000000;
-    if (modifiers.includes('shift')) m |= 0x02000000;
-    if (modifiers.includes('alt')) m |= 0x08000000;
-    if (modifiers.includes('meta')) m |= 0x10000000;
+    if (modifiers.includes('ctrl')) m |= QT_CONTROL_MODIFIER;
+    if (modifiers.includes('shift')) m |= QT_SHIFT_MODIFIER;
+    if (modifiers.includes('alt')) m |= QT_ALT_MODIFIER;
+    if (modifiers.includes('meta')) m |= QT_META_MODIFIER;
+    if (modifiers.includes('keypad')) m |= QT_KEYPAD_MODIFIER;
     return m;
+}
+
+/** Whether a stored binding is on the numpad: flagged `keypad`, or on a
+ *  Numpad* DOM code (which only the numpad reports). */
+export function isKeypadBinding(key: string, modifiers: readonly string[]): boolean {
+    return modifiers.includes('keypad') || key.startsWith('Numpad');
+}
+
+/** A stored binding's Qt modifier mask, as desktop's getKeyCode and XML would
+ *  carry it — the Keypad bit included for a Numpad* code (Key_Enter too: Qt
+ *  reports the numpad Enter as Key_Enter with KeypadModifier). */
+export function bindingQtModifiers(key: string, modifiers: string[]): number {
+    return listToQtModifiers(modifiers) | (isKeypadBinding(key, modifiers) ? QT_KEYPAD_MODIFIER : 0);
+}
+
+/**
+ * Whether a Qt::Key is a printable character — the ASCII and Latin-1 ranges,
+ * where Qt::Key IS the (upper-cased) character the press produced. Qt reports
+ * the character, not the key's position: Shift+1 is Key_Exclam on a US layout,
+ * while on French AZERTY the same key gives Key_Ampersand plain and Key_1 with
+ * Shift, and its A key (US Q) is Key_A. So a binding on one of these is matched
+ * by the character the browser says was typed, never by the US position its
+ * DOM code names.
+ */
+export function isPrintableQtKey(key: number | undefined): key is number {
+    return key !== undefined && ((key >= 0x20 && key <= 0x7e) || (key >= 0xa0 && key <= 0xff));
+}
+
+/**
+ * The printable Qt::Key a press produced, from `KeyboardEvent.key` — upper-cased
+ * as Qt does (Key_A for `a`, Key_Eacute 0xC9 for `é`). Undefined when the press
+ * named no single printable character (`Dead`, `Unidentified`, a named key, or a
+ * script beyond Latin-1), in which case its position is all there is to go on.
+ */
+export function printableEventQtKey(e: Pick<KeyboardEvent, 'key' | 'altKey'>): number | undefined {
+    // Option rewrites the character on a Mac (Option+A types `å`), but Qt
+    // keys the press by the character without it, so the browser's `key` says
+    // nothing Qt would; the position has to do.
+    if (e.altKey && isMacPlatform()) return undefined;
+    const key = e.key ?? '';
+    if (key.length !== 1) return undefined;
+    const upper = key.toUpperCase();
+    // 'ÿ' upper-cases out of Latin-1 and 'ß' to two letters; Qt keeps both as is.
+    const c = upper.length === 1 && upper.charCodeAt(0) <= 0xff ? upper.charCodeAt(0) : key.charCodeAt(0);
+    return isPrintableQtKey(c) ? c : undefined;
+}
+
+/** Whether this browser runs on macOS, where Qt sets KeypadModifier on the
+ *  arrow keys (they count as part of the keypad there, per Qt's docs), and
+ *  takes the key from the character typed *without* Option. */
+export function isMacPlatform(): boolean {
+    if (typeof navigator === 'undefined') return false;
+    const platform = navigator.platform
+        || (navigator as unknown as { userAgentData?: { platform?: string } }).userAgentData?.platform
+        || '';
+    return /mac|iphone|ipad|ipod/i.test(platform);
+}
+
+/**
+ * Whether Qt would report this press with KeypadModifier: every numpad key,
+ * and on macOS the arrow keys too. A binding desktop recorded on a Mac for
+ * Alt+Up carries the Keypad bit, and matching it against the arrows (as desktop
+ * on a Mac does) needs this; elsewhere the arrows are not the keypad.
+ */
+export function isQtKeypadEvent(e: Pick<KeyboardEvent, 'code' | 'location'>): boolean {
+    return isKeypadEvent(e) || (isMacPlatform() && /^Arrow(Up|Down|Left|Right)$/.test(e.code ?? ''));
+}
+
+/** Whether a press is a numpad key, whatever NumLock makes of it. */
+export function isKeypadEvent(e: Pick<KeyboardEvent, 'code' | 'location'>): boolean {
+    return e.location === 3 /* DOM_KEY_LOCATION_NUMPAD */ || (e.code ?? '').startsWith('Numpad');
+}
+
+/** The `KeyboardEvent.key` names a numpad key reports with NumLock off, as the
+ *  Qt::Key desktop gets for them (Key_Up|Keypad and so on). */
+const KEYPAD_NAV_KEY_TO_QT: Record<string, number> = {
+    ArrowUp: 0x01000013, ArrowDown: 0x01000015, ArrowLeft: 0x01000012, ArrowRight: 0x01000014,
+    Home: 0x01000010, End: 0x01000011, PageUp: 0x01000016, PageDown: 0x01000017,
+    Insert: 0x01000006, Delete: 0x01000007, Clear: 0x0100000B, Enter: 0x01000005,
+};
+
+/**
+ * The Qt::Key desktop would get for a numpad press. Unlike `code`, which is
+ * `Numpad8` whatever NumLock says, Qt reports what the key produced: Key_8 with
+ * NumLock on, Key_Up with it off — which is how a NumLock-off walking binding
+ * and a NumLock-on digit binding stay apart. Falls back to the code when the
+ * browser gives no usable `key`.
+ */
+export function keypadEventQtKey(e: Pick<KeyboardEvent, 'code' | 'key'>): number | undefined {
+    const key = e.key ?? '';
+    if (key.length === 1) return key.toUpperCase().charCodeAt(0);
+    const nav = KEYPAD_NAV_KEY_TO_QT[key];
+    if (nav !== undefined) return nav;
+    return domCodeToQtKey(e.code ?? '');
+}
+
+/**
+ * The Qt::Key desktop would record for a press, for the key recorder: the
+ * character it produced in the printable range (`!` for Shift+1 on a US
+ * layout, `&` for the same key on AZERTY, upper case for letters, as Qt::Key_A
+ * is), the numpad's NumLock-dependent key, and
+ * otherwise the code's own key.
+ */
+export function eventQtKey(e: Pick<KeyboardEvent, 'code' | 'key' | 'location' | 'altKey'>): number | undefined {
+    if (isQtKeypadEvent(e)) return keypadEventQtKey(e);
+    return printableEventQtKey(e) ?? domCodeToQtKey(e.code ?? '');
+}
+
+/**
+ * A press as the key + modifiers a binding stores. A numpad key with NumLock
+ * off is stored under the key it produced (`ArrowUp`) and flagged `keypad`, so
+ * it records the same Key_Up|Keypad desktop's recorder would.
+ */
+export function bindingFromEvent(e: KeyboardEvent): { key: string; modifiers: string[]; qtKey?: number } {
+    const modifiers: string[] = [];
+    if (e.ctrlKey)  modifiers.push('ctrl');
+    if (e.shiftKey) modifiers.push('shift');
+    if (e.altKey)   modifiers.push('alt');
+    if (e.metaKey)  modifiers.push('meta');
+    const qtKey = eventQtKey(e);
+    if (isQtKeypadEvent(e)) {
+        modifiers.push('keypad');
+        if (KEYPAD_NAV_KEY_TO_QT[e.key] !== undefined && e.key !== 'Enter') {
+            return { key: e.key, modifiers, qtKey };
+        }
+    }
+    return { key: e.code, modifiers, qtKey };
 }
 
 // Inverse of QT_KEY_TO_DOM_CODE. The forward map is many-to-one (e.g. both

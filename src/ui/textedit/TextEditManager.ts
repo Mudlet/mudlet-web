@@ -23,6 +23,19 @@ export interface TextEditState {
     visible: boolean;
 }
 
+/**
+ * The text a QPlainTextEdit gives back for `text` set into it. setPlainText
+ * splits blocks at CR, CRLF and LF alike, and toPlainText joins them — and any
+ * Unicode line or paragraph separator — with LF, turns a no-break space into a
+ * plain one, and leaves off a leading byte order mark.
+ */
+export function toPlainText(text: string): string {
+    return text
+        .replace(/^\uFEFF/, '')
+        .replace(/\r\n?|[\u2028\u2029]/g, '\n')
+        .replace(/\u00A0/g, ' ');
+}
+
 export class TextEditManager {
     private edits = new Map<string, TextEditState>();
 
@@ -62,9 +75,11 @@ export class TextEditManager {
         return this.edits.delete(name);
     }
 
-    /** Returns the editor's text, or null when no editor of that name exists. */
+    /** Returns the editor's text as QPlainTextEdit::toPlainText() hands it
+     *  back, or null when no editor of that name exists. */
     getText(name: string): string | null {
-        return this.edits.get(name)?.text ?? null;
+        const text = this.edits.get(name)?.text;
+        return text === undefined ? null : toPlainText(text);
     }
 
     setText(name: string, text: string): boolean {

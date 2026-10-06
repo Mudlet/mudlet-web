@@ -32,7 +32,7 @@ const STATUS_IS = 0, STATUS_SEND = 1;
 /** Columns the timestamp gutter takes off the main console when it is shown —
  *  the length of Mudlet's `TBuffer::smTimeStampFormat` ("hh:mm:ss.zzz "). Desktop
  *  takes it off the NAWS width, so a game wraps to what is left beside it. */
-const TIMESTAMP_GUTTER_COLUMNS = 13;
+export const TIMESTAMP_GUTTER_COLUMNS = 13;
 
 /** Main console wrap column before the profile says otherwise — Mudlet's
  *  `Host::mWrapAt` default (and `PROFILE_DEFAULTS.outputWrapAt`). */
@@ -148,12 +148,13 @@ export interface TelnetNegotiatorFlags {
 
 export interface TelnetNegotiatorHooks {
     sendRaw(data: string): void;
-    /** GMCP came up — send the Core.Hello / Core.Supports.Set handshake.
-     *  `offered` is true when the server offered it (IAC WILL GMCP), which
-     *  Mudlet answers with the handshake every time, re-offers included — a
-     *  server that switched GMCP off and on again has forgotten our modules.
-     *  False for a server's IAC DO GMCP. */
-    onGmcpNegotiated(offered: boolean): void;
+    /** The server offered GMCP (IAC WILL GMCP) — send the Core.Hello /
+     *  Core.Supports.Set handshake. Mudlet answers every offer with it,
+     *  re-offers included — a server that switched GMCP off and on again has
+     *  forgotten our modules. Not called for a server's IAC DO GMCP: Mudlet
+     *  answers that with WILL alone and announces nothing until the server's
+     *  own WILL (mudlet-web#362). */
+    onGmcpNegotiated(): void;
     /** Current inbound encoding (IANA label) — drives the MTTS UTF-8 bit and
      *  the MNES/NEW-ENVIRON CHARSET variable. */
     getEncoding(): string;
@@ -300,6 +301,12 @@ export class TelnetNegotiator {
         return this.enabledProtocols.has(OPT_GMCP);
     }
 
+    /** Whether ATCP (option 200) is live — Mudlet's `isATCPEnabled()`, the
+     *  gate `sendATCP` refuses without, as `sendGMCP` does for GMCP. */
+    isAtcpEnabled(): boolean {
+        return this.enabledProtocols.has(OPT_ATCP_NUM);
+    }
+
     /** Whether CHARSET (option 42) is live — Mudlet's `enableCHARSET`. A
      *  REQUEST subnegotiation is read only while it is, so a server that has
      *  withdrawn the option cannot go on changing the encoding. */
@@ -314,6 +321,12 @@ export class TelnetNegotiator {
      *  a caller is told about the option rather than about the connection. */
     isChannel102Enabled(): boolean {
         return this.enabledProtocols.has(OPT_TELNET_102_NUM);
+    }
+
+    /** Whether we have agreed to the server's side of `opt` (sent it DO) and
+     *  not since turned it off — Mudlet's `hisOptionState`. */
+    isServerOptionOn(opt: number): boolean {
+        return this.hisOn.has(opt);
     }
 
     /** Drop the negotiated-MSP latch without resetting the rest of the
@@ -655,8 +668,13 @@ export class TelnetNegotiator {
                 // and silence left the server unable to identify us (#188).
                 // The server offering its own terminal type (WILL) is taken up
                 // by the generic answer, as in Mudlet.
-                if (cmd === DO) this.sendOption(WILL, opt);
-                else this.respondToOtherOption(cmd, opt);
+                // Only while it is off: a repeated DO TTYPE goes unanswered,
+                // as desktop's `!myOptionState` guard leaves it (#379).
+                if (cmd === DO) {
+                    if (!this.myOn.has(opt)) this.sendOption(WILL, opt);
+                } else {
+                    this.respondToOtherOption(cmd, opt);
+                }
                 return;
             case OPT_NAWS: {
                 // The refusal here is announced whether or not NAWS was on —
@@ -669,23 +687,27 @@ export class TelnetNegotiator {
                     this.respondToOtherOption(cmd, opt);
                     return;
                 }
-                if (!f.nawsEnabled) {
-                    this.sendOption(WONT, opt);
-                    this.enabledProtocols.delete(OPT_NAWS);
-                    this.eventBus.emit('protocol.disabled', 'NAWS');
-                    return;
-                }
                 // The server asked for NAWS → start reporting window size.
                 // Mudlet never offers it unprompted: it waits for this DO, then
-                // answers WILL (unless already on), pushes the current
-                // dimensions, and re-sends them on every resize.
-                if (!this.myOn.has(OPT_NAWS)) {
+                // answers WILL, pushes the current dimensions, and re-sends them
+                // on every resize. A DO for NAWS we already have on is not
+                // answered at all — not even with WONT when the profile has
+                // since switched NAWS off (mudlet-web#379): desktop only
+                // answers an option that is currently off.
+                const firstAccept = !this.myOn.has(OPT_NAWS);
+                if (firstAccept) {
+                    if (!f.nawsEnabled) {
+                        this.sendOption(WONT, opt);
+                        this.nawsNegotiated = false;
+                        this.enabledProtocols.delete(OPT_NAWS);
+                        this.eventBus.emit('protocol.disabled', 'NAWS');
+                        return;
+                    }
                     this.sendOption(WILL, OPT_NAWS);
+                    this.nawsNegotiated = true;
+                    this.enabledProtocols.add(OPT_NAWS);
+                    this.eventBus.emit('protocol.enabled', 'NAWS');
                 }
-                const firstAccept = !this.nawsNegotiated;
-                this.nawsNegotiated = true;
-                this.enabledProtocols.add(OPT_NAWS);
-                this.eventBus.emit('protocol.enabled', 'NAWS');
                 // The game asked for the size now: forget what was last sent
                 // so it is answered even if unchanged (Mudlet zeroes mNaws_x/y).
                 this.lastNaws = null;
@@ -804,9 +826,10 @@ export class TelnetNegotiator {
                 this.enableProtocol(cmd, opt, cmd === WILL ? () => this.sendAtcpHello() : undefined);
                 return;
             case OPT_GMCP:
-                // Symmetric: server offers (WILL) or requests (DO) GMCP; either
-                // way we agree and announce ourselves via the Core.Hello
-                // handshake (see onGmcpNegotiated). The handshake goes out
+                // Server offers (WILL) or requests (DO) GMCP; either way we
+                // agree, but only an offer is answered with the Core.Hello
+                // handshake (see onGmcpNegotiated) — Mudlet's ctelnet.cpp sends
+                // nothing on DO until the server's WILL arrives. The handshake goes out
                 // *before* sysProtocolEnabled is raised, as in Mudlet's
                 // ctelnet.cpp: Core.Supports.Set replaces the server's whole
                 // module list, so a `Core.Supports.Add` a script sends from its
@@ -815,7 +838,7 @@ export class TelnetNegotiator {
                     this.refuseProtocol(cmd, opt);
                     return;
                 }
-                this.enableProtocol(cmd, opt, () => this.hooks.onGmcpNegotiated(cmd === WILL));
+                this.enableProtocol(cmd, opt, cmd === WILL ? () => this.hooks.onGmcpNegotiated() : undefined);
                 this.eventBus.emit('gmcp.negotiated');
                 return;
         }
@@ -850,10 +873,11 @@ export class TelnetNegotiator {
         this.eventBus.emit('protocol.disabled', PROTOCOL_NAMES.get(opt) ?? String(opt));
     }
 
-    /** Mudlet's ATCP hello, sent after `IAC DO ATCP`: the client's name and
-     *  version, then the modules it asks for. Mudlet's list less `composer`,
-     *  since there is no ATCP composer here to answer `Client.Compose`. */
-    private sendAtcpHello(): void {
+    /** Mudlet's ATCP hello, sent after `IAC DO ATCP` and again in answer to
+     *  the server's `Auth.Request`: the client's name and version, then the
+     *  modules it asks for. Mudlet's list less `composer`, since there is no
+     *  ATCP composer here to answer `Client.Compose`. */
+    sendAtcpHello(): void {
         const hello = `hello ${CLIENT_NAME} ${CLIENT_VERSION}\nchar_vitals 1\nroom_brief 1\nroom_exits 1\nmap_display 1\n`;
         this.hooks.sendRaw(GMCP_IAC + GMCP_SB + String.fromCharCode(OPT_ATCP_NUM) + toByteString(hello) + GMCP_IAC + GMCP_SE);
     }
@@ -1023,6 +1047,10 @@ export class TelnetNegotiator {
         if (rows <= 0) return; // Mudlet sends nothing while the console has no height
         if (this.lastNaws && this.lastNaws.width === width && this.lastNaws.height === rows) return;
         this.lastNaws = { width, height: rows };
+        // Desktop's `sendNAWS` reads `enableNAWS` on every call, so switching
+        // it off mid-session stops the reports at once (mudlet-web#379). The
+        // size is still recorded as sent, as `sendCurrentNAWS` records it.
+        if (!this.flags.nawsEnabled) return;
         if (debugTelnetEnabled()) {
             const fallback = this.windowSize ? '' : ' (fallback — no size measured yet)';
             // eslint-disable-next-line no-console

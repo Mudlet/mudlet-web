@@ -6,10 +6,12 @@ import { boundShortcuts, shortcutPlatform } from './ui/commands/appShortcuts';
 import { useMudSession } from './hooks/useMudSession';
 import { useAutoReconnect } from './hooks/useAutoReconnect';
 import { useEngines } from './hooks/useEngines';
+import { claimedByAppShortcut } from './hooks/useKeyboardShortcuts';
 import { Toolbar } from './ui/Toolbar';
 import { CommandBar } from './ui/CommandBar';
+import { cmdLineCommands } from './ui/cmdline/plainText';
 import { useCmdLineSelection } from './ui/cmdline/useCmdLineSelection';
-import { BufferWordIndex } from './ui/bufferWords';
+import { TAB_COMPLETION_LINES } from './ui/tabCompletion';
 import { ContentLayout } from './ui/layout/ContentLayout';
 import { ScriptEditorModal } from './ui/windows/ScriptEditorModal';
 import { SettingsModal } from './ui/SettingsModal';
@@ -30,7 +32,7 @@ import { savedServerEncoding } from './mud/protocol/charset';
 import type { TlsStatus } from './mud/events';
 import { QuickOpenPalette } from './ui/QuickOpenPalette';
 import { MAIN_OUTPUT_ID, COMMAND_INPUT_ID } from './ui/landmarks';
-import { SessionLogger } from './logging/SessionLogger';
+import { SessionLogger, hasSavedLogging } from './logging/SessionLogger';
 import { useAppStore, selectProfileField, symbolFontSource, ConnectionIdContext, connectionUrl, PROTOCOL_DEFAULTS, type MudConnection } from './storage';
 import { DEFAULT_STICKY_LINES } from './hooks/useOutput';
 import { applyOutputFont, registerFontSource, primeLocalFontsCache } from './utils/fontLoader';
@@ -45,7 +47,7 @@ import { applyAnsiPalette, setServerRedefineColorsAllowed, resetAllPaletteColors
 import { setOsc8HyperlinksEnabled } from './mud/text/hyperlinkConfig';
 import { effectiveAmbiguousWidthWide, setAmbiguousWidthWide } from './mud/text/wcwidth';
 import { setExpectColorSpaceId } from './mud/text/colorSpaceId';
-import { DEFAULT_CONSOLE_BUFFER_SIZE } from './mud/text/Console';
+import { MAIN_CONSOLE_BUFFER_SIZE } from './mud/text/Console';
 import type { MudSession, ControlCharacterMode } from './mud/MudSession';
 import type { FileDialogRequest } from './mud/events';
 import { replayFileName } from './mud/replay/replayFormat';
@@ -101,7 +103,6 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     const [cmdLineSuggestions, setCmdLineSuggestions] = useState<string[]>([]);
     const [cmdLineBlacklist, setCmdLineBlacklist] = useState<string[]>([]);
     const [saveCommandHistory, setSaveCommandHistory] = useState(true);
-    const [bufferWords, setBufferWords] = useState<BufferWordIndex | null>(null);
     // Mudlet-format replay: Record button state + the active playback's speed
     // (null while nothing is playing — the toolbar controls only render then).
     const [replayRecording, setReplayRecording] = useState(false);
@@ -270,12 +271,14 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // preference on every render meant a script's own size lasted until the next
     // React render and was then silently reverted — the preference is a default,
     // not a policy the session re-asserts. The settings above have no scripting
-    // counterpart, so re-applying those is free.
+    // counterpart, so re-applying those is free. The script's call saves the
+    // preference too, as desktop's does; the session recognises that write
+    // coming back and leaves the script's batch size alone.
     if (appliedBufferSize.current[0] !== consoleBufferSize
         || appliedBufferSize.current[1] !== useMaxConsoleBufferSize) {
         appliedBufferSize.current = [consoleBufferSize, useMaxConsoleBufferSize];
         session.setConsoleBufferSize(
-            consoleBufferSize ?? DEFAULT_CONSOLE_BUFFER_SIZE,
+            consoleBufferSize ?? MAIN_CONSOLE_BUFFER_SIZE,
             useMaxConsoleBufferSize === true,
         );
     }
@@ -296,8 +299,9 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     session.setSpecialForceGAOff((profileConfig?.specialForceGAOff as boolean | undefined) ?? false);
     // Mudlet's `versionInTTYPE` / `promptForVersionInTTYPE` (config bag) — carry
     // our version in the TTYPE client-name reply, and the latch recording that
-    // the KaVir auto-detect below has already had its say. Negotiation runs at
-    // connect, so both apply on the next dial.
+    // the KaVir auto-detect below has already had its say. Both are read when
+    // the server asks, so a change reaches the live connection's next TTYPE
+    // SEND as on desktop.
     session.setVersionInTTYPE(
         (profileConfig?.versionInTTYPE as boolean | undefined) ?? false,
         (profileConfig?.promptForVersionInTTYPE as boolean | undefined) ?? false,
@@ -438,7 +442,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     }, [ansiPalette]);
 
     // Mudlet's "Allow server to redefine your colors" (default on). Gates the
-    // global OSC 4/104 path. Turning it off also snaps the palette back to the
+    // global `ESC]P`/`ESC]R` path. Turning it off also snaps the palette back to the
     // user's colors, revoking anything the server already redefined this session.
     useEffect(() => {
         const allowed = serverRedefineColors === true;
@@ -511,6 +515,11 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         // startLogging reports the file it is writing to, which only the live
         // logger knows.
         engine.setLoggingPathProvider(() => loggerRef.current?.filePath ?? null);
+        // Host::startSavedLogging: a profile closed while it was logging left
+        // its `autolog` sentinel behind, and opening it again picks logging
+        // back up — so a script's startLogging(true) now answers "already".
+        // Only once the filesystem is there to hold the sentinel and the file.
+        if (!loggerRef.current?.filePath && hasSavedLogging(vfs)) engine.startLogging(true);
         return () => {
             engine.setLoggingToggler(null);
             engine.setLoggingPathProvider(null);
@@ -536,15 +545,6 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             engine.setCloseProfileCallback(null);
         };
     }, [engineRef, onCloseProfile, session, connection, vfs]);
-
-    // Index words from this session's output for argument-word Tab completion in
-    // the command bar. Lives for the session's lifetime; one per connection.
-    useEffect(() => {
-        const index = new BufferWordIndex(session);
-        index.start();
-        setBufferWords(index);
-        return () => { index.stop(); setBufferWords(null); };
-    }, [session]);
 
     useEffect(() => {
         void applyOutputFont(outputFont, vfs);
@@ -673,9 +673,12 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                 // start typing something of their own over it.
                 const restore = typedDuringPasswordRef.current ? '' : passwordStashRef.current;
                 swap(restore);
-                if (restore && stashWasSelectedRef.current) {
-                    queueMicrotask(() => commandInputRef.current?.select());
-                }
+                // Selected again if it was selected when put aside, else the
+                // caret at its end. Requested rather than done here: the
+                // command <textarea> only comes back on the next render, and a
+                // new one starts with its caret at the front, so the player's
+                // next key went in before the restored command (#342).
+                if (restore) requestCmdLineSelection(stashWasSelectedRef.current ? 'all' : 'end', false);
                 passwordStashRef.current = '';
                 stashWasSelectedRef.current = false;
                 typedDuringPasswordRef.current = false;
@@ -730,6 +733,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                 attempted: gmcpAutoTried.current,
                 account: stored.account,
                 password: stored.password,
+                credentialsLocked: !vaultDeclined.current && vaultNeedsUnlock(connection.id),
             });
             if (action.kind === 'decline') {
                 session.sendCharLoginCredentials();
@@ -749,7 +753,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             // have nothing to send: ask to open it rather than for a password
             // the user already saved. Safe to do here and not at connect time —
             // the server blocks until we answer, so there is no race to lose.
-            if (!vaultDeclined.current && vaultNeedsUnlock(connection.id)) {
+            if (action.kind === 'unlock') {
                 vaultPendingCharLogin.current = true;
                 setVaultUnlock(`${connection.name} has a saved login. Unlock it to sign in.`);
                 return;
@@ -1084,7 +1088,8 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     // line is not one of those: it is a textarea that holds focus all session,
     // so it has to pass keys through — see listenForKeybindings.
     useEffect(
-        () => listenForKeybindings(document, e => engineRef.current?.processKey(e) ?? false),
+        // A key a menu accelerator holds is the accelerator's, as on desktop.
+        () => listenForKeybindings(document, e => engineRef.current?.processKey(e) ?? false, claimedByAppShortcut),
         [engineRef],
     );
 
@@ -1129,7 +1134,8 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     /**
      * The vault unlock prompt closed. When a GMCP `Char.Login` request was the
      * thing waiting on it, answer that request now — with the credentials the
-     * unlock just made readable, or by falling through to the manual form.
+     * unlock just made readable, or with the empty reply that hands the sign-in
+     * to the game's own prompt.
      * Leaving it unanswered would hang the login: the server withholds its own
      * prompt until we reply.
      */
@@ -1147,7 +1153,9 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             session.sendCharLoginCredentials(stored.account, stored.password);
             return;
         }
-        setCharLogin(prev => prev ?? {});
+        // Still nothing to send: hand the sign-in to the game's own prompt, as
+        // decideCharLoginRequest does when nothing is saved at all.
+        session.sendCharLoginCredentials();
     };
     // Reads the store rather than the `connection` snapshot, so a reconnect after
     // a TLS upgrade dials the new secure port instead of the original one.
@@ -1221,7 +1229,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         if (session.windows.isVisible(MAP_WIDGET_ID)) {
             session.windows.hide(MAP_WIDGET_ID);
         } else {
-            session.windows.open(MAP_WIDGET_ID, { kind: 'map', title: 'Map', position: 'right', autoOpen: true });
+            session.windows.open(MAP_WIDGET_ID, { kind: 'map', position: 'right', autoOpen: true });
         }
     };
 
@@ -1238,7 +1246,9 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         // split, the alias pass) belongs to Host::send and lives one level down
         // in ScriptingEngine.hostSend, because Mudlet echoes the whole line
         // *before* splitting it and *before* the aliases can swallow it.
-        for (const line of command.split('\n')) {
+        // TCommandLine reads the box with toPlainText() first, so a NBSP goes
+        // out as a space and U+2028/U+2029 split lines like a newline (#375).
+        for (const line of cmdLineCommands(command)) {
             if (engineRef.current) {
                 engineRef.current.sendCommand(line);
             } else {
@@ -1378,7 +1388,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                             suggestions={cmdLineSuggestions}
                             blacklist={cmdLineBlacklist}
                             saveHistory={saveCommandHistory}
-                            bufferWords={bufferWords}
+                            completionLines={() => session.consoles.get('main')?.getEndLines(TAB_COMPLETION_LINES) ?? []}
                         />
                     }
                 />

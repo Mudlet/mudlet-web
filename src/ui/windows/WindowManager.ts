@@ -3,7 +3,7 @@ import { type OutputRendererControls } from '../output/OutputRenderer';
 import type { Console } from '../../mud/text/Console';
 import type { AnsiAwareBuffer } from '../../mud/text/FormatState';
 import type { DockSide, MxpTabPage, WindowHandle, WindowOpenOptions, ScriptWindowRenderData } from './types';
-import { MAP_VIEW_ID_RE, mapViewWindowId, migrateClientWindowHints } from './types';
+import { MAP_VIEW_ID_RE, MAP_WIDGET_ID, mapViewWindowId, migrateClientWindowHints } from './types';
 import { MapStore } from '../../map/MapStore';
 import { centerviewAreaChange } from './panels/mapAreaChange';
 import { parseXmlMap } from '../../map/xmlMapImport';
@@ -16,6 +16,8 @@ import { serializeMapInWorker, streamMapInWorker } from '../../map/mapParserClie
 import { assertReadableMapVersion, MapVersionError } from '../../map/mapVersion';
 import { Buffer } from 'buffer';
 import { OverlayLayerOrder } from '../layout/overlayLayerOrder';
+import { TIMESTAMP_GUTTER_COLUMNS } from '../../mud/connection/TelnetNegotiator';
+import { DEFAULT_CMD_LINE_HOST, SubCommandLine, type CmdLineHost } from '../cmdline/subCommandLine';
 
 interface ScriptWindowData extends ScriptWindowRenderData {
     pendingText: Array<string | AnsiAwareBuffer>;
@@ -30,6 +32,8 @@ interface WindowCmdLineState {
      *  the main connection (mirrors Mudlet's pre-setCmdLineAction default) —
      *  see {@link WindowManager.submitCmdLine}. */
     action: ((text: string) => void) | null;
+    /** The line's keyboard state (history, Tab), outliving the input's mounts. */
+    model: SubCommandLine;
 }
 
 interface ScrollState {
@@ -101,6 +105,13 @@ const TEXT_BUFFER_LIMIT = 5000;
 /** Map a DOM MouseEvent.button to Mudlet's button number for
  *  sysWindowMousePress/ReleaseEvent. DOM: 0=left,1=middle,2=right,3=back,
  *  4=forward → Mudlet: 1=left,2=right,3=middle,4=back,5=forward (0 otherwise). */
+/** The widget a mouse event belongs to: the innermost window box or label
+ *  around its target. */
+function mouseOwner(target: EventTarget | null): Element | null {
+    if (!(target instanceof Element)) return null;
+    return target.closest('[data-mouse-window], [data-mudlet-label]');
+}
+
 function mouseButtonNumber(button: number): number {
     switch (button) {
         case 0: return 1; // left
@@ -564,6 +575,7 @@ export class WindowManager {
             win.pendingPartial = undefined;
         }
         this.elements.set(id, element);
+        this.watchTail(element);
         this.applyScrollClasses(id);
     }
 
@@ -590,6 +602,7 @@ export class WindowManager {
     registerMainOutput(element: HTMLElement | null): void {
         if (element) {
             this.elements.set('main', element);
+            this.watchTail(element);
             this.applyScrollClasses('main');
         } else {
             this.elements.delete('main');
@@ -873,13 +886,17 @@ export class WindowManager {
         // Skip the initial 0×0 frame and any spurious zero-size entries
         // that happen during portal moves between dock/floating shells.
         if (w <= 0 && h <= 0) return;
-        this.emitWindowSize(id, w, h);
-        // Mudlet sysConsoleSizeChanged(name, columns, rows) — fires when
-        // the char-grid changes. cols is the wrap setting (falling back to
+        // Mudlet sysConsoleSizeChanged(name, columns, rows, gutter) — fires
+        // when the char-grid changes. cols is the wrap setting (falling back to
         // an estimate from element width); rows is derived from element
         // height. Both axes use the rendered monospace cell size so the
         // event values match what scripts can use to lay out output.
+        //
+        // Raised before the window-size events, as on desktop: TConsole's
+        // resizeEvent resizes its text pane first, whose own resizeEvent
+        // raises the grid event, and only then raises sysWindowResizeEvent.
         this.emitConsoleGridIfChanged(id, w, h, element);
+        this.emitWindowSize(id, w, h);
     }
 
     /** Raise sysWindowResizeEvent/sysUserWindowResizeEvent for `id` at w×h,
@@ -992,6 +1009,16 @@ export class WindowManager {
      *  resize observer last reported — which on a fast/mobile connect may be
      *  stale or not yet fired. No-op when the main element isn't mounted, or
      *  when the size is unchanged (the dedup guard in emitConsoleGridIfChanged). */
+    /** Apply the profile's setBorder* insets to the main viewport now and
+     *  re-measure the char grid inside them, raising sysConsoleSizeChanged if
+     *  it moved. Host::setBorders resizes the console — and with it the text
+     *  pane, whose resize raises that event — before it raises
+     *  sysWindowResizeEvent, so a border change reports the grid first. */
+    applyMainBorders(): void {
+        this.applyMainViewportInsets();
+        this.remeasureMainGrid();
+    }
+
     remeasureMainGrid(): void {
         const el = this.elements.get('main') ?? this.mainViewportEl;
         if (!el) return;
@@ -1028,7 +1055,14 @@ export class WindowManager {
         const last = this.lastEmittedGrid.get(id);
         if (last && last.cols === cols && last.rows === rows) return;
         this.lastEmittedGrid.set(id, { cols, rows });
-        this.onRaiseEvent?.('sysConsoleSizeChanged', [id, cols, rows]);
+        // The 4th argument is the timestamp gutter's width in columns —
+        // TConsole::raiseMudletResizeEvent's `showTimeStamps() ?
+        // TBuffer::smTimeStampFormat.size() : 0`. Only the main console can
+        // show timestamps here.
+        const gutter = id === 'main'
+            && selectProfileField(useAppStore.getState(), this._connectionId, 'showTimestamps') === true
+            ? TIMESTAMP_GUTTER_COLUMNS : 0;
+        this.onRaiseEvent?.('sysConsoleSizeChanged', [id, cols, rows, gutter]);
         // Keep NAWS in sync with the main output area's character grid.
         if (id === 'main') this.onMainConsoleResize?.(cols, rows);
     }
@@ -1062,23 +1096,79 @@ export class WindowManager {
      *  window's box. Args mirror Mudlet: (button, x, y, name) where button is
      *  1=left, 2=right, 3=middle, 4=back, 5=forward (0 = anything else), x/y are
      *  pixel coordinates relative to the window, and name is the window id
-     *  ('main' for the central output). */
+     *  ('main' for the central output).
+     *
+     *  Desktop's ordering is what shapes the wiring:
+     *  - The press is raised before anything inside the console acts on it — a
+     *    link runs between the press and release events (TConsole raises the
+     *    press, then TTextEdit::mousePressEvent runs the link), so the press
+     *    listens in the capture phase, ahead of the link's own handler.
+     *  - Qt gives the release to the widget the press went to (its implicit
+     *    mouse grab), wherever the pointer is let go, so the release is raised
+     *    for the window that took the press, from a document listener.
+     *  - A press on a label or a nested window belongs to that widget: labels
+     *    pass on only what they have no callback for (see
+     *    {@link raiseUnhandledMouse}), and a nested window raises its own. */
     private observeMouse(id: string, element: HTMLElement): void {
         this.mouseCleanups.get(id)?.();
-        const fire = (event: string) => (e: MouseEvent) => {
-            const rect = element.getBoundingClientRect();
-            const x = Math.round(e.clientX - rect.left);
-            const y = Math.round(e.clientY - rect.top);
-            this.onRaiseEvent?.(event, [mouseButtonNumber(e.button), x, y, id]);
+        if (element.dataset) element.dataset.mouseWindow = id;
+        const onDown = (e: MouseEvent) => {
+            if (mouseOwner(e.target) !== element) return;
+            this.raiseWindowMouse('sysWindowMousePressEvent', id, element, e);
+            this.mouseGrab = { id, element };
         };
-        const onDown = fire('sysWindowMousePressEvent');
-        const onUp = fire('sysWindowMouseReleaseEvent');
-        element.addEventListener('mousedown', onDown);
-        element.addEventListener('mouseup', onUp);
+        element.addEventListener('mousedown', onDown, true);
+        this.installMouseReleaseListener();
         this.mouseCleanups.set(id, () => {
-            element.removeEventListener('mousedown', onDown);
-            element.removeEventListener('mouseup', onUp);
+            element.removeEventListener('mousedown', onDown, true);
+            if (element.dataset?.mouseWindow === id) delete element.dataset.mouseWindow;
+            if (this.mouseGrab?.id === id) this.mouseGrab = null;
+            this.mouseCleanups.delete(id);
+            if (this.mouseCleanups.size === 0 && this.mouseReleaseListener) {
+                document.removeEventListener('mouseup', this.mouseReleaseListener, true);
+                this.mouseReleaseListener = null;
+            }
         });
+    }
+
+    /** The window holding Qt's implicit mouse grab: the one the last press
+     *  went to, until every button is up again. */
+    private mouseGrab: { id: string; element: HTMLElement } | null = null;
+    private mouseReleaseListener: ((e: MouseEvent) => void) | null = null;
+
+    private installMouseReleaseListener(): void {
+        if (this.mouseReleaseListener || typeof document === 'undefined') return;
+        const onUp = (e: MouseEvent) => {
+            const grab = this.mouseGrab;
+            if (!grab) return;
+            if (e.buttons === 0) this.mouseGrab = null;
+            this.raiseWindowMouse('sysWindowMouseReleaseEvent', grab.id, grab.element, e);
+        };
+        this.mouseReleaseListener = onUp;
+        document.addEventListener('mouseup', onUp, true);
+    }
+
+    private raiseWindowMouse(event: string, id: string, element: HTMLElement, e: MouseEvent): void {
+        const rect = element.getBoundingClientRect();
+        const x = Math.round(e.clientX - rect.left);
+        const y = Math.round(e.clientY - rect.top);
+        this.onRaiseEvent?.(event, [mouseButtonNumber(e.button), x, y, id]);
+    }
+
+    /**
+     * A press or release a label had no callback for. TLabel::mousePressEvent
+     * and mouseReleaseEvent hand an event they don't use on to the widget
+     * under them — the label's window — which raises it as its own
+     * sysWindowMousePressEvent / sysWindowMouseReleaseEvent, at the pointer's
+     * position in that window.
+     */
+    raiseUnhandledMouse(kind: 'press' | 'release', windowId: string, e: MouseEvent): void {
+        const element = windowId === 'main' ? this.mainViewportEl : this.viewports.get(windowId);
+        if (!element) return;
+        this.raiseWindowMouse(
+            kind === 'press' ? 'sysWindowMousePressEvent' : 'sysWindowMouseReleaseEvent',
+            windowId, element, e,
+        );
     }
 
     /** Mudlet `sysDropEvent(filepath, suffix, x, y, name)` and
@@ -1307,7 +1397,9 @@ export class WindowManager {
             areaId: area,
             zoom: this.mapStore.getAreaZoom(area) ?? MapStore.DEFAULT_MAP_ZOOM,
             zLevel: 0,
-            centeredRoomId: this.mapStore.getAreaCenterRoomId(area, 0) ?? 0,
+            // Desktop's new view hasn't been centred on anything yet: it
+            // reports 0 until a centerview(roomID, viewID) aims it.
+            centeredRoomId: 0,
         });
         // Opens floating but stays dockable, matching Mudlet: the view is a real
         // dock widget added to the right dock area and then immediately floated,
@@ -1603,7 +1695,8 @@ export class WindowManager {
      * into the manager/store, and any open MapPanel is asked to re-render.
      * Without a buffer the panel is told to reload from cache. Returns false
      * on synchronous parse failure; the IndexedDB write is fire-and-forget
-     * (failures appear in console.warn). Fires sysMapLoadEvent on success.
+     * (failures appear in console.warn). Raises no event: desktop has no
+     * sysMapLoadEvent, so a script waiting on one would never run there.
      */
     loadMap(buf?: ArrayBuffer, source?: string): boolean {
         // Host::loadMapFile creates the mapper before it reads anything.
@@ -1641,16 +1734,14 @@ export class WindowManager {
             this.reportMapIssues();
         }
         // The panel callback is advisory — its return value reports render
-        // success, but sysMapLoadEvent fires on successful data ingest so
-        // headless scripts (no MapPanel open) still receive the event.
+        // success, which loadMap's result does not depend on.
         this.mapLoadCallback?.(buf);
-        if (buf) this.onRaiseEvent?.('sysMapLoadEvent', []);
         return true;
     }
 
     /**
      * Async sibling of {@link loadMap} with identical effects — IndexedDB
-     * persistence, store ingest, panel re-render, `sysMapLoadEvent` — but the
+     * persistence, store ingest, panel re-render — but the
      * parse runs in the worker and streams into the store, publishing progress
      * as it goes.
      *
@@ -1684,12 +1775,10 @@ export class WindowManager {
             this.reportMapLoadFailure('loadMapAsync parse failed', err);
             return false;
         }
-        // Same advisory contract as loadMap: the panel reports render success,
-        // but the event fires on successful ingest so headless scripts still
-        // see it. The buffer is detached by now, so the callback is invoked
-        // without it — every consumer re-reads through the store anyway.
+        // Same advisory contract as loadMap. The buffer is detached by now, so
+        // the callback is invoked without it — every consumer re-reads through
+        // the store anyway.
         this.mapLoadCallback?.();
-        this.onRaiseEvent?.('sysMapLoadEvent', []);
         return true;
     }
 
@@ -1832,7 +1921,6 @@ export class WindowManager {
         if (!this.mapStore.loadFromJsonString(json)) return false;
         this.reportMapIssues();
         this.mapLoadCallback?.();
-        this.onRaiseEvent?.('sysMapLoadEvent', []);
         return true;
     }
 
@@ -1852,7 +1940,6 @@ export class WindowManager {
         this.reportMapIssues();
         this.scheduleMapSave(0);
         this.mapLoadCallback?.();
-        this.onRaiseEvent?.('sysMapLoadEvent', []);
         return true;
     }
 
@@ -2164,12 +2251,25 @@ export class WindowManager {
 
     /** Mudlet enable/disableScrolling — when disabled, the wrapper sticks to the
      *  bottom (wheel/touch/keys cannot scroll back). Mudlet forbids this on the
-     *  main window; we follow that policy. Returns false on 'main', true otherwise. */
+     *  main window; we follow that policy. Returns false on 'main', true otherwise.
+     *  Disabling also closes the split view (TConsole::setScrolling calls
+     *  clearSplit), so a console a script had scrolled up does not stay parked
+     *  there with no way left to scroll it down. */
     setScrollingEnabled(id: string, enabled: boolean): boolean {
         if (id === 'main') return false;
         this.getScrollStateMut(id).scrollingEnabled = enabled;
         this.applyScrollClasses(id);
+        if (!enabled) this.clearSplit(id);
         return true;
+    }
+
+    /** Mudlet `TConsole::clearSplit` for a script: forget any scrolled-to line
+     *  and put the console back on its tail. The renderer's own scroll handler
+     *  sees the wrapper reach the bottom and drops the split pane. */
+    clearSplit(id: string): void {
+        this.scriptScrollLine.delete(id);
+        const el = this.elements.get(id);
+        if (el) el.scrollTop = el.scrollHeight;
     }
 
     /**
@@ -2219,14 +2319,6 @@ export class WindowManager {
         return this.scrollState.get(id)?.scrollingEnabled ?? DEFAULT_SCROLL_STATE.scrollingEnabled;
     }
 
-    /** Buffer-line index of the topmost visible line in `id`'s wrapper. In tail
-     *  mode returns the last line number (matching Mudlet's mCursorY behaviour at
-     *  the end of the buffer). Returns 0 if the element is unmounted or empty.
-     *
-     *  Uses getBoundingClientRect rather than offsetTop because `.output-container`
-     *  is `position: relative` — child offsetTop is relative to *that*, not to the
-     *  scroll-container `.output-wrapper`, so the rectangles are the unambiguous
-     *  way to relate child position to the scroll viewport. */
     /** Whether `id`'s wrapper is mounted with laid-out lines, i.e. whether
      *  {@link getScrollLine}'s measurement means anything. A console whose panel
      *  isn't on screen yet measures as 0, which is indistinguishable from being
@@ -2258,7 +2350,66 @@ export class WindowManager {
         this.scriptScrollLine.delete(id);
     }
 
-    getScrollLine(id: string): number {
+    /** The wrapper's scrollTop as scrollToLine left it. A scroll event that
+     *  lands anywhere else was the reader's (wheel, scroll bar, PageUp, the
+     *  split view closing), so the scripted position stops being the answer. */
+    private readonly scriptScrollTop = new WeakMap<HTMLElement, number>();
+
+    /**
+     * Wrappers the reader has scrolled back from the end of — the inverse of
+     * desktop's `TTextEdit::mIsTailMode`. Kept from scroll events rather than
+     * measured when asked: new output is appended before the renderer scrolls
+     * down to it, so in between a console that is following its output measures
+     * as some way up — right after a burst of echoes, at the very top. Desktop
+     * stays in tail mode through that, and so does this; only a scroll that
+     * actually leaves the end takes a console out of it.
+     */
+    private readonly scrolledBack = new WeakMap<HTMLElement, boolean>();
+
+    private watchTail(el: HTMLElement): void {
+        if (this.scrolledBack.has(el)) return;
+        this.scrolledBack.set(el, false);
+        el.addEventListener('scroll', () => {
+            this.scrolledBack.set(el, el.scrollHeight - el.scrollTop - el.clientHeight > 1);
+            const expected = this.scriptScrollTop.get(el);
+            if (expected === undefined || Math.abs(el.scrollTop - expected) <= 1) return;
+            this.scriptScrollTop.delete(el);
+            for (const [id, e] of this.elements) {
+                if (e === el) this.noteUserScroll(id);
+            }
+        }, { passive: true });
+    }
+
+    /** Height of the split view's lower pane laid over the bottom of `el` —
+     *  the sticky area StickyOutputPanel renders as the wrapper's sibling. It
+     *  keeps its height while hidden, which is the height it will cover once a
+     *  scroll back raises it. */
+    private splitPaneHeight(el: HTMLElement): number {
+        const parent = el.parentElement;
+        if (!parent) return 0;
+        for (const child of Array.from(parent.children)) {
+            if (child.classList.contains('output-sticky')) return child.getBoundingClientRect().height;
+        }
+        return 0;
+    }
+
+    /** Mudlet's scroll position for `id`'s wrapper, or null while it follows
+     *  its output (tail mode), where Mudlet's getScroll answers the last line —
+     *  which the caller takes from the buffer, since the DOM's line count is not
+     *  the buffer's. Returns 0 if the element is unmounted or empty.
+     *
+     *  Desktop's position is the upper pane's `mCursorY`, and that pane draws
+     *  the rows *above* it (TTextEdit::imageTopLine is `mCursorY -
+     *  mScreenHeight`): the number is the first line below the scrolled view,
+     *  one past its bottom row — not the top row. The scrolled view ends where
+     *  the split view's lower pane begins, so that pane's height comes off the
+     *  bottom.
+     *
+     *  Uses getBoundingClientRect rather than offsetTop because `.output-container`
+     *  is `position: relative` — child offsetTop is relative to *that*, not to the
+     *  scroll-container `.output-wrapper`, so the rectangles are the unambiguous
+     *  way to relate child position to the scroll viewport. */
+    getScrollLine(id: string): number | null {
         const parked = this.scriptScrollLine.get(id);
         if (parked !== undefined) return parked;
         const el = this.elements.get(id);
@@ -2266,64 +2417,80 @@ export class WindowManager {
         const lineEls = this.lineElements(el);
         const total = lineEls.length;
         if (total === 0) return 0;
+        if (!this.scrolledBack.get(el)) return null;
         const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-        if (distFromBottom <= 1) return total - 1;
-        const containerTop = el.getBoundingClientRect().top;
+        if (distFromBottom <= 1) return null;
+        const viewBottom = el.getBoundingClientRect().top + el.clientHeight - this.splitPaneHeight(el);
         for (let i = 0; i < total; i++) {
-            const rect = lineEls[i].getBoundingClientRect();
-            // First line whose bottom edge sits inside the viewport — that's the
-            // topmost partly-visible line. -1 tolerates sub-pixel rounding.
-            if (rect.bottom > containerTop + 1) return i;
+            // First line starting at or below the view's bottom edge. -1
+            // tolerates sub-pixel rounding.
+            if (lineEls[i].getBoundingClientRect().top >= viewBottom - 1) return i;
         }
-        return total - 1;
+        return total;
     }
 
-    /** Scroll `id`'s wrapper so `line` (0-indexed) sits at the top. `undefined`
-     *  resumes tail mode (scroll-to-bottom); negative values count from the end
-     *  (Mudlet semantics). Returns false if the wrapper is not mounted. */
+    /** Mudlet `scrollTo(window, line)`: scroll `id`'s wrapper so `line` is the
+     *  first line below the scrolled view — its bottom row is `line - 1`, the
+     *  same edge {@link getScrollLine} reads. `undefined`, or a line at or past
+     *  the last one, resumes tail mode (TMainConsole::scrollWindowTo); negative
+     *  values count back from the last line. Returns false if the console has
+     *  neither a buffer nor a mounted wrapper. */
     scrollToLine(id: string, line: number | undefined): boolean {
         // disableScrolling parks the console at the end and keeps it there, and
         // that holds for a scripted scroll as much as for the wheel — Mudlet
         // gates both on the same flag.
         if (!this.isScrollingEnabled(id)) return false;
         // Line counts come from the buffer, not the DOM: the console may have
-        // 200 lines and no laid-out panel to measure them in.
+        // 200 lines and no laid-out panel to measure them in. `last` is Lua's
+        // getLastLineNumber, which counts the always-open line the buffer keeps
+        // past the finished ones.
         const total = this.consoleRegistry?.get(id)?.getLineCount() ?? -1;
-        const lineCount = total >= 0 ? total + 1 : 0;
+        const last = total >= 0 ? total + 1 : 0;
         const el = this.elements.get(id);
-        if (!el && lineCount === 0) return false;
+        if (!el && last === 0) return false;
 
-        if (line === undefined) {
-            // Tail mode: forget the parked line so the measurement takes over.
-            this.scriptScrollLine.delete(id);
-            if (el) el.scrollTop = el.scrollHeight;
+        if (line === undefined || line >= last) {
+            this.clearSplit(id);
             return true;
         }
-        let target = line;
-        if (target < 0) target = Math.max(lineCount + target, 0);
-        // Clamped to the last line index, which counts the always-open line the
-        // buffer keeps past the finished ones (as getLastLineNumber does).
-        target = Math.max(0, Math.min(target, lineCount));
+        const target = line < 0 ? Math.max(last + line, 0) : line;
         this.scriptScrollLine.set(id, target);
 
         const lineEls = el ? this.lineElements(el) : [];
         if (!el || lineEls.length === 0) return true;
-        if (target >= lineEls.length - 1) {
-            el.scrollTop = el.scrollHeight;
-            return true;
-        }
         if (target <= 0) {
             el.scrollTop = 0;
-            return true;
+        } else {
+            // Bounding-rect math: convert the bottom row's viewport-relative
+            // bottom edge into a scroll position within the wrapper. offsetTop
+            // is relative to the nearest positioned ancestor
+            // (`.output-container`), not to the scroll container, so we can't
+            // read it directly.
+            const bottomRow = lineEls[Math.min(target, lineEls.length) - 1];
+            const rowBottom = bottomRow.getBoundingClientRect().bottom - el.getBoundingClientRect().top + el.scrollTop;
+            el.scrollTop = Math.max(0, rowBottom - (el.clientHeight - this.splitPaneHeight(el)));
         }
-        // Bounding-rect math: convert the line's viewport-relative top into a
-        // scroll position within the wrapper. offsetTop is relative to the
-        // nearest positioned ancestor (`.output-container`), not to the scroll
-        // container, so we can't read it directly.
-        const containerRect = el.getBoundingClientRect();
-        const lineRect = lineEls[target].getBoundingClientRect();
-        el.scrollTop = Math.max(0, lineRect.top - containerRect.top + el.scrollTop);
+        this.scriptScrollTop.set(el, el.scrollTop);
         return true;
+    }
+
+    /** Mudlet's PageUp / PageDown in the command line (TCommandLine::event):
+     *  scroll `id`'s console a page — the scrolled view's height, the split
+     *  pane excluded — up or down. Paging down into what the split pane already
+     *  shows closes it and resumes tail mode, as TConsole::scrollDown does. */
+    scrollPage(id: string, direction: 'up' | 'down'): void {
+        if (!this.isScrollingEnabled(id)) return;
+        const el = this.elements.get(id);
+        if (!el) return;
+        const pane = this.splitPaneHeight(el);
+        const page = Math.max(1, el.clientHeight - pane);
+        if (direction === 'up') {
+            el.scrollTop = Math.max(0, el.scrollTop - page);
+            return;
+        }
+        const next = el.scrollTop + page;
+        if (el.scrollHeight - next - el.clientHeight <= pane) this.clearSplit(id);
+        else el.scrollTop = next;
     }
 
     private getScrollStateMut(id: string): ScrollState {
@@ -2412,7 +2579,7 @@ export class WindowManager {
     enableCommandLine(id: string): boolean {
         const win = this.windows.get(id);
         if (!win) return false;
-        if (!this.cmdLineState.has(id)) this.cmdLineState.set(id, { action: null });
+        if (!this.cmdLineState.has(id)) this.cmdLineState.set(id, { action: null, model: new SubCommandLine(id) });
         if (win.cmdLineEnabled) return true;
         win.cmdLineEnabled = true;
         this.notify();
@@ -2468,12 +2635,52 @@ export class WindowManager {
      *  window's command line. Pass null to clear. Returns false when the
      *  window doesn't exist. */
     setCmdLineAction(id: string, cb: ((text: string) => void) | null): boolean {
-        const win = this.windows.get(id);
-        if (!win) return false;
-        const state = this.cmdLineState.get(id) ?? { action: null };
+        const state = this.cmdLineState.get(id);
+        if (!this.windows.has(id) || !state) return false;
         state.action = cb;
-        this.cmdLineState.set(id, state);
         return true;
+    }
+
+    /** Whether window `id` has a command line of its own: one enableCommandLine
+     *  made, which disableCommandLine only hides. A console that never had one
+     *  enabled has none (#342). */
+    hasCommandLine(id: string): boolean {
+        return this.windows.has(id) && this.cmdLineState.has(id);
+    }
+
+    /** Window `id`'s command-line keyboard state, or null when it has none. */
+    cmdLineModel(id: string): SubCommandLine | null {
+        return this.cmdLineState.get(id)?.model ?? null;
+    }
+
+    /** The profile settings and Tab pool every command line reads. Set by the
+     *  ScriptingEngine. */
+    cmdLineHost: CmdLineHost = DEFAULT_CMD_LINE_HOST;
+
+    /**
+     * Mudlet deleteCommandLine(name) on a miniconsole's or user window's own
+     * line (TMainConsole::deleteCommandLine finds it in mSubCommandLineMap,
+     * under the console's name): the line goes, action and history with it,
+     * and the console has none until enableCommandLine makes a new one.
+     * False when it has none.
+     */
+    deleteCommandLine(id: string): boolean {
+        const win = this.windows.get(id);
+        if (!win || !this.cmdLineState.has(id)) return false;
+        this.cmdLineState.delete(id);
+        this.cmdLineValueProbes.delete(id);
+        win.cmdLineEnabled = false;
+        win.cmdLineValue = '';
+        win.cmdLineValueSeq = (win.cmdLineValueSeq ?? 0) + 1;
+        this.notify();
+        return true;
+    }
+
+    /** What a script last put on window `id`'s command line, and the count
+     *  that changes with every such write. */
+    cmdLineSeed(id: string): { value: string; seq: number } | null {
+        const win = this.windows.get(id);
+        return win ? { value: win.cmdLineValue ?? '', seq: win.cmdLineValueSeq ?? 0 } : null;
     }
 
     /** Whether a script has bound a per-window Enter handler. */
@@ -2501,6 +2708,9 @@ export class WindowManager {
     submitCmdLine(id: string, text: string): boolean {
         const cb = this.getCmdLineAction(id);
         if (cb) {
+            // TLuaInterpreter::callCmdLineAction: no action runs while the
+            // server is masking input for a password (#342).
+            if (this.cmdLineHost.remoteEcho()) return true;
             try { cb(text); } catch (err) { console.warn(`[WindowCmdLine ${id}] action threw:`, err); }
             return true;
         }
@@ -2515,7 +2725,7 @@ export class WindowManager {
      *  exist or has no command line. */
     clearWindowCmdLine(id: string): boolean {
         const win = this.windows.get(id);
-        if (!win || !win.cmdLineEnabled) return false;
+        if (!win || !this.cmdLineState.has(id)) return false;
         win.cmdLineValue = '';
         win.cmdLineValueSeq = (win.cmdLineValueSeq ?? 0) + 1;
         this.notify();
@@ -2526,7 +2736,7 @@ export class WindowManager {
      *  the input contents and moves the caret to the end (React side). */
     printWindowCmdLine(id: string, text: string): boolean {
         const win = this.windows.get(id);
-        if (!win || !win.cmdLineEnabled) return false;
+        if (!win || !this.cmdLineState.has(id)) return false;
         win.cmdLineValue = String(text ?? '');
         win.cmdLineValueSeq = (win.cmdLineValueSeq ?? 0) + 1;
         this.notify();
@@ -2537,7 +2747,7 @@ export class WindowManager {
      *  `text` onto the end of the current contents. */
     appendWindowCmdLine(id: string, text: string): boolean {
         const win = this.windows.get(id);
-        if (!win || !win.cmdLineEnabled) return false;
+        if (!win || !this.cmdLineState.has(id)) return false;
         win.cmdLineValue = String(win.cmdLineValue ?? '') + String(text ?? '');
         win.cmdLineValueSeq = (win.cmdLineValueSeq ?? 0) + 1;
         this.notify();
@@ -2876,7 +3086,7 @@ export class WindowManager {
 
         const win: ScriptWindowData = {
             id,
-            title:       options.title ?? (kind === 'map' ? 'Map' : id),
+            title:       options.title ?? (id === MAP_WIDGET_ID ? this.defaultTitle(id) : kind === 'map' ? 'Map' : id),
             kind,
             // Honor `hidden` from options (setWindowHints spreads the saved
             // hint into options for autoOpen restore) but NOT from the bare
@@ -3110,6 +3320,9 @@ export class WindowManager {
         // Also reset the upstream Console — without this the next echo would
         // re-include any pre-clear partial text when drainWindowConsole fires.
         this.consoleRegistry?.get(id)?.clear();
+        // The lines a script scrolled to are gone: the console follows its
+        // output again, so the next lines move getScroll with them.
+        this.clearSplit(id);
     }
 
     /**
@@ -3134,16 +3347,21 @@ export class WindowManager {
 
     /**
      * The title a window carries when nobody has set one. Mudlet builds it from
-     * the profile and the window's own name ("<profile> - <window>"), which is
-     * what a player sees on a freshly opened user window; Mudlet Web used to fall
-     * back to the bare id, so resetting a title lost the profile half of it.
+     * the profile and the window's own name ("User window - <profile> -
+     * <window>", TMainConsole's tr() string), which is what
+     * setUserWindowTitle(name) with no title goes back to; Mudlet Web used to
+     * fall back to the bare id, then to "<profile> - <window>" (mudlet-web#380).
      * The profile name is injected by ScriptingAPI — the manager has no other
      * reason to know it.
      */
     profileName = '';
 
     defaultTitle(id: string): string {
-        return this.profileName ? `${this.profileName} - ${id}` : id;
+        // The map dock is the exception: desktop heads it "Map - <profile>"
+        // (TMainConsole::createMapper) and setMapWindowTitle("") goes back to
+        // that, never to the client's internal window id.
+        if (id === MAP_WIDGET_ID) return this.profileName ? `Map - ${this.profileName}` : 'Map';
+        return `User window - ${this.profileName} - ${id}`;
     }
 
     focus(id: string): void { this.bringToFront(id); }

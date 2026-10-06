@@ -74,11 +74,60 @@ describe('MxpParser — formatting & entities', () => {
 
   it('layers MXP formatting on top of interspersed ANSI SGR', () => {
     const { parser } = makeParser();
-    // ANSI red, then MXP bold — the 'hi' run should be both.
-    const r = parser.parseLine(`${SECURE}${ESC}[31m<b>hi</b>`);
+    // ANSI red, then MXP italics — the 'hi' run should be both.
+    const r = parser.parseLine(`${SECURE}${ESC}[31m<i>hi</i>`);
     const st = stateOf(r.segments, 'hi');
-    expect(st?.bold).toBe(true);
+    expect(st?.italic).toBe(true);
     expect(st?.foreground).toBeTruthy();
+  });
+});
+
+// mudlet-web#363 item 1: TBuffer writes a cell's Bold as
+// `mIsDefaultColor ? mBold : false` whether or not MXP is on — so on one of the
+// sixteen ANSI colours the text is not bold, an MXP <B> included. Before, only
+// the non-MXP parser applied the rule.
+describe('MxpParser — bold on the sixteen ANSI colours (#363)', () => {
+  const boldOf = (line: string, text: string) => {
+    const { parser } = makeParser();
+    return !!stateOf(parser.parseLine(line).segments, text)?.bold;
+  };
+
+  it.each([
+    ['ESC[1;31m', `${ESC}[1;31mXX`],
+    ['ESC[1;91m', `${ESC}[1;91mXX`],
+    ['ESC[1;38;5;1m', `${ESC}[1;38;5;1mXX`],
+    ['ESC[1;30m', `${ESC}[1;30mXX`],
+    ['ESC[1;37m', `${ESC}[1;37mXX`],
+    ['ESC[1;7;31m', `${ESC}[1;7;31mXX`],
+    ['ESC[1;31;4m', `${ESC}[1;31;4mXX`],
+    ['ESC[31m ESC[1m', `${ESC}[31m${ESC}[1mXX`],
+    ['ESC[1m ESC[31m', `${ESC}[1m${ESC}[31mXX`],
+  ])('%s is not bold', (_name, line) => {
+    expect(boldOf(line, 'XX')).toBe(false);
+  });
+
+  it('ANSI red plus MXP <B> is not bold', () => {
+    expect(boldOf(`${SECURE}${ESC}[31m<b>XX</b>`, 'XX')).toBe(false);
+    expect(boldOf(`${SECURE}<b>${ESC}[31mXX</b>`, 'XX')).toBe(false);
+  });
+
+  it('still brightens: ESC[1;31m paints light red', () => {
+    const { parser } = makeParser();
+    const st = stateOf(parser.parseLine(`${ESC}[1;31mXX`).segments, 'XX');
+    expect(st?.foreground).toMatchObject({ color: '#ff0000' });
+  });
+
+  it('keeps bold on the default colour, a 256-colour one and a 24-bit one', () => {
+    expect(boldOf(`${ESC}[1mXX`, 'XX')).toBe(true);
+    expect(boldOf(`${SECURE}<b>XX</b>`, 'XX')).toBe(true);
+    expect(boldOf(`${ESC}[1;38;5;196mXX`, 'XX')).toBe(true);
+    expect(boldOf(`${ESC}[1;38;2;1;2;3mXX`, 'XX')).toBe(true);
+  });
+
+  it('carries the bold to the next line so a colour there is brightened', () => {
+    const { parser } = makeParser();
+    const first = parser.parseLine(`${ESC}[1;31mXX`);
+    expect(first.trailingSnapshot?.bold).toBe(true);
   });
 });
 

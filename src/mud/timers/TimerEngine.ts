@@ -361,7 +361,10 @@ export class TimerEngine {
                 continue;
             }
 
-            const wantRun = runnable(timer) && !(timer.isGroup && !timer.code);
+            // A folder never fires, whatever script or time it carries:
+            // TTimer::execute stops a folder's QTimer and returns before the
+            // body, so only the timers inside it run.
+            const wantRun = runnable(timer) && !timer.isGroup;
             if (!wantRun) {
                 // Drop any live handle for an item that is no longer enabled.
                 if (isLive) this.killPermHandle(timer.id);
@@ -390,6 +393,19 @@ export class TimerEngine {
         for (const [k, v] of nextDesc) this.prevDesc.set(k, v);
         this.permNameToId.clear();
         for (const [k, v] of nextNames) this.permNameToId.set(k, v);
+    }
+
+    /**
+     * Raise the runtime active flags of a profile's permanent timers as its
+     * load leaves them, without arming anything yet. Desktop builds and
+     * activates the timers from the profile XML before any script compiles,
+     * so a script body that runs at load already sees them active, and an
+     * enableTimer/disableTimer it calls is a transition from that state rather
+     * than from "never seen" — which left every other timer reporting inactive
+     * for good. {@link loadPerm} arms them afterwards.
+     */
+    seedPerm(timers: TimerNode[]): void {
+        this.reconcileActive(permTree(timers));
     }
 
     /**

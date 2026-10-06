@@ -47,17 +47,18 @@ describe('utf8.gsub / utf8.gmatch', () => {
             ['"", "x*", "-"'],
             ['"ab", "%s*", "_"'],
             ['"abc", "", "."'],
+            ['"abc", "b*", "-"'],
+            ['"a b", "%s*", "_"'],
         ])('utf8.gsub(%s) agrees with string.gsub on ASCII', (args) => {
-            // Lua 5.1's string.gsub keeps an empty match straight after a
-            // non-empty one; luautf8 (what Mudlet's utf8 is) skips it, as Lua
-            // 5.4 does. Only compare where the two agree, and pin the rest.
+            // luautf8 0.2.1's gsub is Lua 5.1's loop (lutf8lib.c Lutf8_gsub):
+            // an empty match straight after a non-empty one counts. Skipping
+            // it (Lua 5.4, luautf8 0.3) came later.
             expect(gsub(args)).toBe(rt.run(`return table.concat({string.gsub(${args})}, "|")`));
         });
 
-        it('skips an empty match where the previous match ended, as luautf8 does', () => {
-            expect(gsub('"abc", "b*", "-"')).toBe('-a-c-|3');
-            expect(gsub('"a b", "%s*", "_"')).toBe('_a_b_|3');
-            expect(gmatch('"abc", "b*"')).toBe('|b|');
+        it('keeps an empty match where the previous match ended, as luautf8 0.2.1 does', () => {
+            expect(gsub('"abc", "b*", "-"')).toBe('-a--c-|4');
+            expect(gmatch('"abc", "b*"')).toBe('|b||');
         });
 
         it('gmatch still walks every match', () => {

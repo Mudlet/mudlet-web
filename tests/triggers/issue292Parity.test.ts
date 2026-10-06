@@ -134,6 +134,13 @@ describe('issue #292 — trigger parity with desktop', () => {
             expect(luaMatches(m)).toEqual([]);
         });
 
+        it('temp prompt trigger (mudlet-web#331)', () => {
+            const got: (string | undefined)[][] = [];
+            te.addTemp('', matches => { got.push(matches); }, 'prompt');
+            feed(te, ['not a prompt', ['PRM> ', true]]);
+            expect(got).toEqual([[]]);
+        });
+
         it('fire-length lines after the match', () => {
             te.loadPerm([trig({ id: 'so', fireLength: 2, patterns: [{ type: 'substring', text: 'STAYO' }] })]);
             const [open, a1, a2, a3] = feed(te, ['STAYO', 'after1', 'after2', 'after3']);
