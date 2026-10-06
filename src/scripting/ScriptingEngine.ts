@@ -1041,7 +1041,8 @@ export class ScriptingEngine implements EngineHost {
      * persisted state, and again after a profile reset (fresh global table).
      */
     /**
-     * Put a package's own `<VariablePackage>` globals into `_G`.
+     * Put a package's own `<VariablePackage>` globals into `_G` and onto the
+     * profile's save-list.
      *
      * A package may carry nothing else — a module of variables, fonts, images or
      * a map loads completely and leaves every one of the six item units empty —
@@ -1056,6 +1057,39 @@ export class ScriptingEngine implements EngineHost {
             this.runtimes.lua?.restoreVariables(values);
         } catch (err) {
             console.warn('[ScriptingEngine] package variable restore failed:', err);
+        }
+    }
+
+    /**
+     * Load an installed package's `<VariablePackage>` globals: into `_G`, and
+     * onto the save-list. For the installs that commit in one step — the
+     * Package Manager, the repository and Client.GUI — which desktop reads the
+     * same way as a script's installPackage. Call before the package's items go
+     * into the store, so its scripts see the values as they load.
+     */
+    loadPackageVariables(data: MudletImportResult): void {
+        this.restorePackageVariables(data);
+        this.savePackageVariables(data);
+    }
+
+    /**
+     * Put an installed package's `<VariablePackage>` globals on the profile's
+     * save-list.
+     *
+     * Desktop's `XMLimport::readVariable` reads a package's variables exactly as
+     * it reads the profile's own, so each one lands on `VarUnit`'s saved list
+     * and it — and any later change to it — survives a restart. Called once the
+     * install commits, so a refused one adds nothing; the store change schedules
+     * the profile-data save that captures their values.
+     */
+    private savePackageVariables(data: MudletImportResult): void {
+        const values = data.variables;
+        if (!values || values.length === 0) return;
+        const state = useAppStore.getState();
+        const saveList = state.connectionVariables[this.connectionId]?.saveList ?? [];
+        const added = values.map(v => v.name).filter(n => n !== '' && !saveList.includes(n));
+        if (added.length > 0) {
+            state.setVariableSaveList(this.connectionId, [...saveList, ...new Set(added)]);
         }
     }
 
@@ -1221,6 +1255,17 @@ export class ScriptingEngine implements EngineHost {
             name = `${name}.xml`;
         }
         const path = `${dir || 'current'}/${name}`;
+        // The saved variables go out as they are in `_G` now, as desktop's
+        // saveProfile writes them — not as the last debounced profile-data
+        // flush captured them. profile.json is rewritten with them too, so a
+        // reopen after a crash that follows the save restores the same values
+        // the save wrote; the caller's VFS flush makes both durable.
+        this.captureSavedVariables();
+        try {
+            saveProfileData(vfs, this.connectionId);
+        } catch (err) {
+            console.warn('[ScriptingEngine] profile data save failed:', err);
+        }
         try {
             const base = readNewestParseableXml(vfs);
             // A named save is Mudlet's "save as", which writes the items and
@@ -1543,6 +1588,7 @@ export class ScriptingEngine implements EngineHost {
             }
             prepared.commit();
             const { manifest, data } = prepared;
+            this.savePackageVariables(data);
             this.noteModuleLoaded(manifest.name, data);
             const problems = this.collectInstallProblems(manifest.name,
                 () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data);
@@ -2437,6 +2483,7 @@ export class ScriptingEngine implements EngineHost {
             }
             prepared.commit();
             const { manifest, data } = prepared;
+            this.savePackageVariables(data);
             const problems = this.collectInstallProblems(manifest.name,
                 () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data);
             this.notifyPackageInstalled(manifest.name, path, problems);
@@ -2885,6 +2932,7 @@ export class ScriptingEngine implements EngineHost {
             // Client.GUI delivery repairs, instead of a half-install that
             // dedupe treats as complete.
             await vfs.flush();
+            this.loadPackageVariables(data);
             useAppStore.getState().installPackage(this.connectionId, finalManifest, data);
             this.notifyPackageInstalled(finalManifest.name);
             // Mudlet 5.0 (ctelnet.cpp, after installPackage) — tell scripts the

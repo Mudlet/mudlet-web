@@ -361,8 +361,9 @@ local function build(d)
     if kids then
       for _, c in pairs(kids) do
         local key = c.name
-        if c.keyKind == 'number' then key = tonumber(key) end
-        t[key] = build(c)
+        if c.keyKind == 'number' then key = tonumber(key)
+        elseif c.keyKind == 'boolean' then key = (key == 'true') end
+        if key ~= nil then t[key] = build(c) end
       end
     end
     return t
@@ -398,7 +399,7 @@ local function capture(v, seen)
     local children = {}
     for k, val in pairs(v) do
       local kt = type(k)
-      if kt == 'string' or kt == 'number' then
+      if kt == 'string' or kt == 'number' or kt == 'boolean' then
         local child = capture(val, seen)
         if child then
           child.name = tostring(k)

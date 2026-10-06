@@ -10,7 +10,7 @@
 //     <HiddenVariables />
 //     <VariableGroup>                 (a table; valueType 5; children nested inside)
 //       <name>demoVar</name>
-//       <keyType>4</keyType>          (4 = string key, 3 = numeric key)
+//       <keyType>4</keyType>          (4 = string key, 3 = numeric key, 1 = boolean key)
 //       <value></value>              (empty for tables)
 //       <valueType>5</valueType>
 //       <Variable>                    (a leaf)
@@ -33,9 +33,10 @@ export const LUA_TNUMBER = 3;
 export const LUA_TSTRING = 4;
 export const LUA_TTABLE = 5;
 
-/** How a variable's key is typed in its parent table. Lua only distinguishes
- *  string vs number keys here (Mudlet never saves other key types). */
-export type VarKeyKind = 'string' | 'number';
+/** How a variable's key is typed in its parent table. Mudlet saves string,
+ *  number and boolean keys (a boolean key's <name> is "true"/"false"); other
+ *  key types are never saved. */
+export type VarKeyKind = 'string' | 'number' | 'boolean';
 
 /** Scalar value types we round-trip. Tables are represented by `children`. */
 export type VarValueType = 'boolean' | 'number' | 'string' | 'table';
@@ -65,7 +66,7 @@ export interface MudletVariablePackage {
 // ── parsing ──────────────────────────────────────────────────────────────────
 
 function keyKindFromInt(n: number): VarKeyKind {
-    return n === LUA_TNUMBER ? 'number' : 'string';
+    return n === LUA_TNUMBER ? 'number' : n === LUA_TBOOLEAN ? 'boolean' : 'string';
 }
 
 function valueTypeFromInt(n: number): VarValueType {
@@ -142,7 +143,8 @@ function normalizeNode(n: unknown): MudletVariable | null {
     if (!n || typeof n !== 'object') return null;
     const o = n as Record<string, unknown>;
     const name = String(o.name ?? '');
-    const keyKind: VarKeyKind = o.keyKind === 'number' ? 'number' : 'string';
+    const keyKind: VarKeyKind =
+        o.keyKind === 'number' ? 'number' : o.keyKind === 'boolean' ? 'boolean' : 'string';
     if (o.valueType === 'table') {
         const kids = Array.isArray(o.children) ? o.children : [];
         return {
@@ -158,7 +160,7 @@ function normalizeNode(n: unknown): MudletVariable | null {
 // ── serializing ──────────────────────────────────────────────────────────────
 
 function keyTypeInt(kind: VarKeyKind): number {
-    return kind === 'number' ? LUA_TNUMBER : LUA_TSTRING;
+    return kind === 'number' ? LUA_TNUMBER : kind === 'boolean' ? LUA_TBOOLEAN : LUA_TSTRING;
 }
 
 function valueTypeInt(t: VarValueType): number {

@@ -928,6 +928,9 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
             // engine's store subscription synchronously loads them into Lua
             // before this call returns. By the time notifyPackageInstalled
             // raises sysInstallPackage, all handlers are already registered.
+            // The package's saved variables go into _G (and onto the
+            // save-list) first, so its scripts see them as they load.
+            scriptingEngineRef?.current?.loadPackageVariables(data);
             installPackage(connectionId, manifest, data);
             scriptingEngineRef?.current?.notifyPackageInstalled(manifest.name);
             const total = data.scripts.length + data.aliases.length + data.triggers.length + data.timers.length + data.keys.length;
@@ -951,6 +954,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         // same store state and emit the same sysInstallPackage event as a file import.
         const { manifest, data } = installPackageFromBytes(entry.filename, bytes, vfs);
         await vfs.flush();
+        scriptingEngineRef?.current?.loadPackageVariables(data);
         installPackage(connectionId, manifest, data);
         scriptingEngineRef?.current?.notifyPackageInstalled(manifest.name);
         const total = data.scripts.length + data.aliases.length + data.triggers.length + data.timers.length + data.keys.length;
