@@ -1654,7 +1654,7 @@ export class LuaRuntime implements IScriptingRuntime {
         // since it needs access to the line's AnsiAwareBuffer (the trigger
         // engine itself only sees plain text). Self-expires after
         // `expirationCount` fires.
-        this.lua.global.set('__mudlet_tempColorTrigger', (fg: unknown, bg: unknown, cbId: number, expirationCount?: number) => {
+        this.lua.global.set('__mudlet_tempColorTrigger', (fg: unknown, bg: unknown, cbId: number, expirationCount?: number, uncompiled?: unknown) => {
             const wantFg = Number(fg);
             const wantBg = Number(bg);
             const max = (typeof expirationCount === 'number' && expirationCount > 0) ? expirationCount : -1;
@@ -1666,7 +1666,8 @@ export class LuaRuntime implements IScriptingRuntime {
             // colour counts as a miss rather than a match that did nothing —
             // which is what lets a stay-open window fire on it.
             const unsub = this.api.triggers.addTemp('', (matches) => {
-                if (killed || this.tempIds.get(id)?.enabled === false) return;
+                const entry = this.tempIds.get(id);
+                if (killed || entry?.enabled === false || entry?.uncompiled) return;
                 // matches[1] is the coloured RUN, not the whole line — the
                 // empty-substring pattern this rides on has no match text of
                 // its own, so the colour lookup supplies it. A fire with no
@@ -1690,9 +1691,14 @@ export class LuaRuntime implements IScriptingRuntime {
                 // Named after its id, as every temp trigger is, so
                 // setTriggerStayOpen(tostring(id), n) finds it.
                 name: String(id),
-                accept: () => this.api.currentLineColorMatch(wantFg, wantBg) !== null,
+                accept: () => uncompiled !== true && this.api.currentLineColorMatch(wantFg, wantBg) !== null,
             });
-            this.tempIds.set(id, { kill: () => { unsub(); releaseCb(cbId); }, type: 'trigger', enabled: true });
+            // A body that did not compile: made, but never fires and isActive()
+            // says 0 (tempItemEnabled), as installTempTrigger's.
+            this.tempIds.set(id, {
+                kill: () => { unsub(); releaseCb(cbId); }, type: 'trigger', enabled: true,
+                uncompiled: uncompiled === true,
+            });
             return id;
         });
 
@@ -3680,7 +3686,7 @@ end`);
                 // A target already there is replaced: its inode goes, as a
                 // removed file's does.
                 const replaced = oldAbs !== newAbs && vfs.exists(newPath);
-                vfs.rename(oldPath, newPath);
+                vfs.rename(oldPath, newPath, { posix: true });
                 if (oldAbs !== newAbs) {
                     this.notifyVfsPathChange(
                         { path: oldAbs, kind: 'remove' },
@@ -3690,6 +3696,27 @@ end`);
                 return true;
             }
             catch (e) { failWith(e, oldPath); return false; }
+        });
+
+        // os.tmpname(): Lua 5.1 on desktop uses mkstemp, so the name it returns
+        // is a file that already exists, empty, in /tmp — ready for io.open.
+        // /tmp here is in the VFS's in-memory root, outside every profile, and
+        // so as temporary as the real one.
+        this.lua.global.set('__vfs_os_tmpname__', (): string | null => {
+            if (!vfs) { setError('no profile VFS'); return null; }
+            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+            try {
+                vfs.mkdir('/tmp');
+                for (let attempt = 0; attempt < 100; attempt++) {
+                    let suffix = '';
+                    for (let i = 0; i < 6; i++) suffix += chars[Math.floor(Math.random() * chars.length)];
+                    const name = `/tmp/lua_${suffix}`;
+                    if (vfs.exists(name)) continue;
+                    vfs.writeBinaryFile(name, new Uint8Array(0), { createParents: false });
+                    return name;
+                }
+            } catch { /* fall through to the failure */ }
+            return null;
         });
 
         this.lua.global.set('__vfs_lfs_chdir__', (path: string): boolean => {
@@ -5001,6 +5028,15 @@ end`);
         this.lua.global.set('__mudlet_channel102_val', value);
         this.runChunk('__mudlet_set_channel102(__mudlet_channel102_var, __mudlet_channel102_val)',
             `set-channel102 ${variable}`);
+    }
+
+    /** Records one ATCP message in the Lua `atcp` global — Mudlet's
+     *  setAtcpTable rawset. The event is raised separately by the engine. */
+    setAtcpValue(name: string, value: string): void {
+        if (this.inert) return;
+        this.lua.global.set('__mudlet_atcp_name', name);
+        this.lua.global.set('__mudlet_atcp_val', value);
+        this.runChunk('__mudlet_set_atcp(__mudlet_atcp_name, __mudlet_atcp_val)', `set-atcp "${name}"`);
     }
 
     // Bridges a single MSSP variable into the Lua `mssp` global. `name` is the

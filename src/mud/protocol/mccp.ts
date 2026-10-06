@@ -4,6 +4,15 @@ const MCCP_WILL = "\xFF\xFB\x56";         // IAC WILL COMPRESS2
 const MCCP_START = "\xFF\xFA\x56\xFF\xF0"; // IAC SB COMPRESS2 IAC SE
 const MCCP_DO = "\xFF\xFD\x56";           // IAC DO COMPRESS2
 
+// MCCP v1 (COMPRESS, option 85). Its start sequence is the malformed
+// `IAC SB COMPRESS WILL SE` — no IAC before the SE — which Mudlet still
+// recognises (cTelnet::processSocketData) once it has agreed to v1.
+const MCCP1_WILL = "\xFF\xFB\x55";        // IAC WILL COMPRESS
+const MCCP1_WONT = "\xFF\xFC\x55";        // IAC WONT COMPRESS
+const MCCP1_START = "\xFF\xFA\x55\xFB\xF0"; // IAC SB COMPRESS WILL SE
+const MCCP1_DO = "\xFF\xFD\x55";          // IAC DO COMPRESS
+const MCCP1_DONT = "\xFF\xFE\x55";        // IAC DONT COMPRESS
+
 interface InflateInternal extends pako.Inflate {
     strm: { output: Uint8Array; next_in: number; next_out: number; avail_out: number };
     options: { chunkSize: number };
@@ -18,6 +27,12 @@ const ZLIB_TRAILER_LEN = 4;
 
 export class MccpHandler {
     private compressing = false;
+    /** We answered the server's `WILL COMPRESS` with DO — Mudlet's
+     *  `mMCCP_version_1`. Only then is a v1 start sequence honoured. */
+    private v1Accepted = false;
+    /** We answered `WILL COMPRESS2` with DO — after which Mudlet turns a v1
+     *  offer down, as the MCCP spec asks. */
+    private v2Accepted = false;
     private inflator: pako.Inflate | null = null;
     /** zlib header bytes still to skip before the deflate data starts. */
     private headerLeft = 0;
@@ -57,13 +72,21 @@ export class MccpHandler {
 
         if (data.indexOf(MCCP_WILL) !== -1) {
             this.sendRaw(MCCP_DO);
+            this.v2Accepted = true;
         }
+        this.negotiateV1(data);
 
-        const startIdx = data.indexOf(MCCP_START);
+        // Whichever start sequence comes first; v1's only once agreed to.
+        let startIdx = data.indexOf(MCCP_START);
+        if (this.v1Accepted) {
+            const v1Idx = data.indexOf(MCCP1_START);
+            if (v1Idx !== -1 && (startIdx === -1 || v1Idx < startIdx)) startIdx = v1Idx;
+        }
         if (startIdx === -1) {
             return data;
         }
 
+        // Both start sequences are five bytes long.
         const before = data.substring(0, startIdx);
         const after = data.substring(startIdx + MCCP_START.length);
 
@@ -77,7 +100,38 @@ export class MccpHandler {
         return before;
     }
 
+    /** Forget the connection: the stream and what was agreed for it. */
     reset(): void {
+        this.endStream();
+        this.v1Accepted = false;
+        this.v2Accepted = false;
+    }
+
+    /** Mudlet's answer to `WILL COMPRESS` — DO, unless v2 was taken up first
+     *  (then DONT), and nothing for a repeat of an offer already accepted.
+     *  `WONT COMPRESS` withdraws it. The negotiator answers both for a profile
+     *  with compression forced off; this never runs then. */
+    private negotiateV1(data: string): void {
+        // In stream order, so WILL then WONT in one packet ends up off.
+        let will = data.indexOf(MCCP1_WILL);
+        let wont = data.indexOf(MCCP1_WONT);
+        while (will !== -1 || wont !== -1) {
+            if (wont !== -1 && (will === -1 || wont < will)) {
+                this.v1Accepted = false;
+                wont = data.indexOf(MCCP1_WONT, wont + 3);
+                continue;
+            }
+            if (this.v2Accepted) {
+                this.sendRaw(MCCP1_DONT);
+            } else if (!this.v1Accepted) {
+                this.sendRaw(MCCP1_DO);
+                this.v1Accepted = true;
+            }
+            will = data.indexOf(MCCP1_WILL, will + 3);
+        }
+    }
+
+    private endStream(): void {
         this.compressing = false;
         this.inflator = null;
         this.headerLeft = 0;
@@ -134,7 +188,7 @@ export class MccpHandler {
                 // Whatever follows is undecodable; showing it as text would
                 // only print raw zlib bytes.
                 console.error('MCCP decompression error:', this.inflator.msg);
-                this.reset();
+                this.endStream();
                 return bytesToString(output);
             }
 
@@ -157,7 +211,7 @@ export class MccpHandler {
             return text;
         }
 
-        this.reset();
+        this.endStream();
         const rest = bytesToString([bytes.subarray(pos)]);
         return rest.length > 0 ? text + this.processData(rest) : text;
     }

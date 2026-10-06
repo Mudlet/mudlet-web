@@ -1,4 +1,5 @@
 import { TabCompletionCycle } from '../tabCompletion';
+import { cmdLinePlainText } from './plainText';
 
 /**
  * What a named command line needs from the profile around it. Desktop's
@@ -76,18 +77,21 @@ export class SubCommandLine {
      * the server is masking input for a password.
      */
     enter(text: string, host: CmdLineHost): { commands: string[]; after: CmdLineView } {
+        const plain = cmdLinePlainText(text);
         this.tab.reset();
         this.autoCompletionCount = -1;
         const autoClear = host.autoClear();
         if (text !== '' && (!host.remoteEcho() || host.disablePasswordMasking())) {
             this.historyBuffer = autoClear ? 0 : 1;
-            this.historyList = this.historyList.filter(h => h !== text);
-            if (this.historyList.length > 0) this.historyList[0] = text;
-            else this.historyList.unshift(text);
+            this.historyList = this.historyList.filter(h => h !== plain);
+            if (this.historyList.length > 0) this.historyList[0] = plain;
+            else this.historyList.unshift(plain);
             this.historyList.unshift('');
         }
         return {
-            commands: text.split('\n'),
+            // toPlainText(), then split at line feeds — so a NBSP goes out as
+            // a space and U+2028/U+2029 break the line like a newline (#375).
+            commands: plain.split('\n'),
             after: autoClear ? caretAtEnd('') : allSelected(text),
         };
     }

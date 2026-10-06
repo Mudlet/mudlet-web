@@ -365,8 +365,8 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('resetUserWindowTitle', '(windowName)',          'Reset a user window title back to its default'),
     fn('scrollUp',           '([window,] [lines])',     'Scroll the window up by N lines (default 1)'),
     fn('scrollDown',         '([window,] [lines])',     'Scroll the window down by N lines (default 1)'),
-    fn('scrollTo',           '([window,] [lineNumber])', 'Scroll a console to a buffer line (negative counts from end). With no line, or a line past end, resume tail mode.'),
-    fn('getScroll',          '([window]) → number',     'Buffer line index at the top of the console viewport. Returns the last line number when in tail mode.'),
+    fn('scrollTo',           '([window,] [lineNumber])', 'Scroll a console so lineNumber is the first line below the view (negative counts from end; a lone number scrolls main). With no line, or the last line or past it, resume tail mode.'),
+    fn('getScroll',          '([window]) → number',     'The first buffer line below the console view (its bottom row + 1), the line scrollTo puts there. Returns the last line number when in tail mode.'),
     fn('scrollingActive',    '([window]) → boolean',    'Whether the user can scroll back in this console — false only after disableScrolling. The main window is always scrollable. Returns (nil, message) for a window that does not exist.'),
     fn('pasteWindow',        '(windowName)',            'Paste the last copy() into the named console. Same as paste(name), but the window name is required — a missing or non-string one raises instead of falling back to the main window.'),
     fn('echoUserWindow',     '(windowName, text)',      'Older name for echo(windowName, text) — sets a label\'s text or appends a line to a miniconsole. Kept for packages written against it; prefer echo in new code.'),
@@ -1042,9 +1042,9 @@ const MUDLET_GLOBALS: Completion[] = [
     variable('command',      'The last command-bar input, set before alias processing (Mudlet `command`)'),
     variable('multimatches', 'Multiline trigger captures'),
     variable('color_table',  'Mudlet color table: { colorName = {r, g, b} }'),
-    variable('speedWalkPath',   'getPath result: 1-indexed list of room IDs along the path (excludes the start room). Reset on every getPath call.'),
-    variable('speedWalkDir',    'getPath result: 1-indexed list of direction strings ("n"/"ne"/"up"/special-exit cmd) taken at each step. Reset on every getPath call.'),
-    variable('speedWalkWeight', 'getPath result: 1-indexed list of step costs (target room weights or per-exit weight overrides). Reset on every getPath call.'),
+    variable('speedWalkPath',   'getPath result: 1-indexed list of room IDs along the path (excludes the start room). Reset on every getPath call; nil until the first one.'),
+    variable('speedWalkDir',    'getPath result: 1-indexed list of direction strings ("n"/"ne"/"up"/special-exit cmd) taken at each step. Reset on every getPath call; nil until the first one.'),
+    variable('speedWalkWeight', 'getPath result: 1-indexed list of step costs (target room weights or per-exit weight overrides). Reset on every getPath call; nil until the first one.'),
 ];
 
 // ── Global completions (everything available at top level) ────────────────────

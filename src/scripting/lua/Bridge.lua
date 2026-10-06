@@ -388,11 +388,9 @@ do
     end
 end
 
--- Mudlet's getPath populates these globals (cleared on every call). Predeclare
--- them as empty tables so user code reading them before any getPath call
--- doesn't crash on nil-indexing — Mudlet's C++ side leaves them undefined
--- until first call but most scripts assume they exist.
-speedWalkPath, speedWalkDir, speedWalkWeight = {}, {}, {}
+-- getPath populates speedWalkPath/Dir/Weight (cleared on every call). They are
+-- not predeclared: desktop leaves them nil until the first getPath, and a
+-- script's `if speedWalkPath then` has to give the same answer here.
 
 -- Mudlet getPath(from, to) — A* over the map graph. A non-number roomID is a
 -- Lua argument error, raised before anything is touched (TLuaInterpreter's
@@ -3670,11 +3668,14 @@ end
 --     glibc space-pads it, "Jan  6";
 --   %Z prints the zone's full name ("Central European Standard Time") where
 --     glibc prints its abbreviation ("CET");
+--   %z gives a zone's minutes as a fraction of the hour times 100, "+0580"
+--     for India's "+0530";
 --   %s, the epoch seconds, and the GNU %P / %k / %l are not implemented and
 --     come out as themselves.
 -- Those are rewritten here before the format reaches it; everything else
--- already matches. %E and %O modifiers are dropped, which is what glibc does
--- with them in the C locale.
+-- already matches. Lua 5.1 hands strftime one conversion at a time ("%E", then
+-- "c" as plain text), so an %E or %O modifier is never seen with its
+-- conversion: glibc prints the pair as written, and so does this.
 -- os.clock() is CPU time on desktop (Lua 5.1's clock()) but wall time since
 -- start in emscripten; __mudlet_cpu_clock (bindings/session.ts) approximates
 -- the CPU clock by counting only the busy tasks that read it.
@@ -3708,17 +3709,17 @@ do
                 i = i + 1
             else
                 local spec = fmt:sub(i + 1, i + 1)
-                if (spec == "E" or spec == "O") and fmt:sub(i + 2, i + 2):match("%a") then
-                    i = i + 1
-                    spec = fmt:sub(i + 1, i + 1)
-                end
                 local rep
-                if spec == "c" then
+                if spec == "E" or spec == "O" then
+                    rep = "%%" .. spec
+                elseif spec == "c" then
                     rep = "%a %b %e %H:%M:%S %Y"
                 elseif spec == "s" and when then
                     -- glibc runs mktime over the broken-down time, so with "!"
                     -- the UTC fields are read back as local time.
                     rep = string.format("%d", utc and os.time(date("!*t", when)) or when)
+                elseif spec == "z" and when then
+                    rep = utc and "+0000" or __mudlet_tz_offset(when)
                 elseif spec == "Z" and not utc and when then
                     rep = __mudlet_tz_abbrev(when):gsub("%%", "%%%%")
                 elseif spec == "P" and when then
@@ -3740,6 +3741,87 @@ do
     end
 end
 
+-- ── os.time, for the years 0 to 99 ─────────────────────────────────────────
+-- emscripten's mktime builds a JavaScript Date, which reads a year from 0 to
+-- 99 as 1900 plus it, so os.time{year=50, ...} came out in 1950. The Gregorian
+-- calendar repeats every 400 years (146097 days, a whole number of weeks), and
+-- a year that early is before any zone's rules, so such a date is made 400
+-- years later and moved back. Lua 5.1's os.time never writes the normalised
+-- fields back to its table, so a copy is passed.
+do
+    local time = os.time
+    local SHIFT = 146097 * 86400
+
+    function os.time(t)
+        if type(t) == "table" then
+            local year = tonumber(rawget(t, "year"))
+            if year and year >= 0 and year < 100 then
+                local copy = {}
+                for k, v in pairs(t) do copy[k] = v end
+                copy.year = year + 400
+                local r = time(copy)
+                return r and r - SHIFT
+            end
+        end
+        local r = time(t)
+        return r
+    end
+end
+
+-- ── os.setlocale, as glibc answers it ──────────────────────────────────────
+-- emscripten's setlocale takes any name at all, and for LC_ALL reports
+-- musl's per-category list ("C.UTF-8;C;C;C;C;C"). glibc refuses a locale that
+-- isn't installed, returning nil, and names a uniform LC_ALL by its one name.
+-- A page has no locales to load: the C locale and its UTF-8 variant, the only
+-- ones every Linux has, are what it accepts, and the environment's ("") is
+-- C.UTF-8. Nothing is switched by it — the C library here only ever behaves
+-- as the C locale — but a script reading the name back sees what it set.
+do
+    local CATEGORIES = { "LC_CTYPE", "LC_NUMERIC", "LC_TIME", "LC_COLLATE", "LC_MONETARY", "LC_MESSAGES",
+        "LC_PAPER", "LC_NAME", "LC_ADDRESS", "LC_TELEPHONE", "LC_MEASUREMENT", "LC_IDENTIFICATION" }
+    local OPTIONS = { all = true, collate = "LC_COLLATE", ctype = "LC_CTYPE", monetary = "LC_MONETARY",
+        numeric = "LC_NUMERIC", time = "LC_TIME" }
+    local KNOWN = { C = true, POSIX = true, ["C.UTF-8"] = true, ["C.utf8"] = true }
+    local current = {}
+    for _, c in ipairs(CATEGORIES) do current[c] = "C" end
+
+    local function all()
+        local first = current[CATEGORIES[1]]
+        local parts, same = {}, true
+        for _, c in ipairs(CATEGORIES) do
+            if current[c] ~= first then same = false end
+            parts[#parts + 1] = c .. "=" .. current[c]
+        end
+        return same and first or table.concat(parts, ";")
+    end
+
+    function os.setlocale(locale, category)
+        if locale ~= nil and type(locale) ~= "string" and type(locale) ~= "number" then
+            error("bad argument #1 to 'setlocale' (string expected, got " .. type(locale) .. ")", 2)
+        end
+        if category ~= nil and type(category) ~= "string" and type(category) ~= "number" then
+            error("bad argument #2 to 'setlocale' (string expected, got " .. type(category) .. ")", 2)
+        end
+        local option = category == nil and "all" or tostring(category)
+        local which = OPTIONS[option]
+        if not which then
+            error("bad argument #2 to 'setlocale' (invalid option '" .. option .. "')", 2)
+        end
+        if locale == nil then
+            return which == true and all() or current[which]
+        end
+        local name = tostring(locale)
+        if name == "" then name = "C.UTF-8" end
+        if not KNOWN[name] then return nil end
+        if which == true then
+            for _, c in ipairs(CATEGORIES) do current[c] = name end
+            return name
+        end
+        current[which] = name
+        return name
+    end
+end
+
 -- Mudlet-compatible getMudletVersion. Behaviour:
 --   no arg / nil      → table { major, minor, revision, build }
 --   "string"          → "major.minor.revision[-build]"
@@ -3752,8 +3834,13 @@ end
 -- takes" for being handed more than one argument — and both RAISE, so a caller
 -- has to pcall to see either. Both are Mudlet's strings verbatim: the list of
 -- styles is the only documentation of them a script author gets.
+--
+-- The level is the Mudlet release whose Lua API this runtime follows: the
+-- bundled Lua and the spec corpus are synced from Mudlet's 5.0 development
+-- line, so a package gating on `mudletOlderThan(5)` gets the features that
+-- work here. No build suffix — desktop's PTB tag names a desktop build.
 do
-    local MAJOR, MINOR, REVISION, BUILD = 4, 21, 0, ""
+    local MAJOR, MINOR, REVISION, BUILD = 5, 0, 0, ""
     local STYLES = "   \"major\", \"minor\", \"revision\", \"build\", \"string\" or \"table\"."
     function getMudletVersion(...)
         local count = select('#', ...)
@@ -4165,6 +4252,13 @@ channel102 = channel102 or {}
 function __mudlet_set_channel102(variable, value)
     if type(channel102) ~= 'table' then channel102 = {} end
     channel102[variable] = value
+end
+
+-- Mudlet's `atcp` table (Other.lua declares it): setAtcpTable rawsets one
+-- string per inbound ATCP message, keyed by its dotless name.
+function __mudlet_set_atcp(name, value)
+    if type(atcp) ~= 'table' then atcp = {} end
+    rawset(atcp, name, value)
 end
 
 function __mudlet_set_mssp(key, value)
@@ -4889,10 +4983,15 @@ end
 -- matching foreground/background.
 do
     local _raw = __mudlet_tempColorTrigger
+    -- A body that does not compile still makes the trigger, inactive, as
+    -- the plain temp triggers do (see __mudlet_uncompiled).
+    local function body(fn, who)
+        local compiled = __mudlet_to_fn(fn, who, 3)
+        return __mudlet_register_cb(compiled), __mudlet_uncompiled[compiled] == true
+    end
     function tempColorTrigger(fg, bg, fn, expirationCount)
-        return _raw(tonumber(fg) or -1, tonumber(bg) or -1,
-            __mudlet_register_cb(__mudlet_to_fn(fn, "tempColorTrigger", 3)),
-            expirationCount)
+        local cb, uncompiled = body(fn, "tempColorTrigger")
+        return _raw(tonumber(fg) or -1, tonumber(bg) or -1, cb, expirationCount, uncompiled)
     end
     -- Mudlet tempAnsiColorTrigger(ansiFg, ansiBg, code [, expirationCount]).
     -- ANSI 256-colour indices (0..255), plus the two sentinels TTrigger declares:
@@ -4907,9 +5006,8 @@ do
         local nb = tonumber(bg)
         if not nf or (nf < 0 and nf ~= -2) then nf = -1 end
         if not nb or (nb < 0 and nb ~= -2) then nb = -1 end
-        return _raw(nf, nb,
-            __mudlet_register_cb(__mudlet_to_fn(fn, "tempAnsiColorTrigger", 3)),
-            expirationCount)
+        local cb, uncompiled = body(fn, "tempAnsiColorTrigger")
+        return _raw(nf, nb, cb, expirationCount, uncompiled)
     end
 end
 
@@ -4930,6 +5028,9 @@ do
                                      filter, matchAll, hlFgColor, hlBgColor, soundFile,
                                      fireLength, lineDelta, expireAfter)
         local userFn = __mudlet_to_fn(code, "tempComplexRegexTrigger", 3)
+        -- A body that does not compile still makes the trigger, but it is
+        -- inactive however it is switched: no fire, no highlight.
+        local uncompiled = __mudlet_uncompiled[userFn] == true
         local matchAllOn = tonumber(matchAll) == 1
 
         -- Arguments 5 and 6 decide what KIND of pattern argument 2 is, and
@@ -4979,7 +5080,7 @@ do
             matchAllOn,
             tonumber(fireLength) or 0,
             tonumber(lineDelta) or 0,
-            hlFgColor, hlBgColor)
+            hlFgColor, hlBgColor, uncompiled)
         return id
     end
 end
@@ -7375,7 +7476,19 @@ do
     end
     scrollingActive            = knownWindowGuard(scrollingActive)
     getScroll                  = knownWindowGuard(getScroll)
-    scrollTo                   = knownWindowGuard(scrollTo)
+    -- scrollTo returns nothing on success, as desktop's does — a disabled
+    -- console included, where desktop's scroll simply doesn't happen. A lone
+    -- argument that lua_isnumber accepts ("40" as much as 40) is a line on
+    -- main, not a window name (TLuaInterpreter::scrollTo).
+    do
+        local guarded = knownWindowGuard(scrollTo, true)
+        scrollTo = function(...)
+            if select('#', ...) == 1 and tonumber((...)) then
+                return guarded("main", tonumber((...)))
+            end
+            return guarded(...)
+        end
+    end
     disableScrollBar           = knownWindowGuard(disableScrollBar, true)
     enableScrollBar            = knownWindowGuard(enableScrollBar, true)
     disableHorizontalScrollBar = knownWindowGuard(disableHorizontalScrollBar, true)
@@ -7396,6 +7509,15 @@ do
     end
     enableScrolling  = scrollGuard(enableScrolling)
     disableScrolling = scrollGuard(disableScrolling)
+
+    -- clearWindow / clearUserWindow return nothing at all, found or not:
+    -- desktop leaves them silent so a `lua clearWindow()` typed at the command
+    -- line doesn't print a result onto the console it just cleared.
+    do
+        local rawClearWindow, rawClearUserWindow = clearWindow, clearUserWindow
+        clearWindow = function(...) rawClearWindow(...) end
+        clearUserWindow = function(...) rawClearUserWindow(...) end
+    end
 
     -- setBackgroundColor([win,] r, g, b [, a]) — each component is 0-255 and the
     -- message names the offending one. Without a leading window name the call

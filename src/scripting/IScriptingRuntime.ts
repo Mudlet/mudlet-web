@@ -87,6 +87,11 @@ export interface IScriptingRuntime {
      * Both halves are the raw bytes the subnegotiation carried.
      */
     setChannel102Value(variable: number, value: number): void;
+    /**
+     * Write one ATCP message into the runtime's `atcp` table: `name` is the
+     * dotless message name (`CharVitals`), `value` its string.
+     */
+    setAtcpValue(name: string, value: string): void;
     runWithMatches(
         code: string,
         name: string,
