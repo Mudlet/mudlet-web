@@ -135,15 +135,41 @@ describe('wrapLine', () => {
   beforeEach(async () => { env = await createTestRuntime(); });
   afterEach(() => env.dispose());
 
-  it('returns true for an in-range line and false out of range', () => {
+  // TLuaInterpreter::wrapLine returns 0 values, found line or not.
+  it('returns nothing, for an in-range line or not', () => {
     env.run('createBuffer("tb"); cecho("tb", "Hello\\n")');
     // one line at index 0; getLineCount is the line *count* (Mudlet semantics),
     // so a single line reports 1 and the last index is getLineCount()-1.
     expect(env.run('return (getLineCount("tb"))')).toBe(1);
-    expect(env.run('return (wrapLine("tb", 0))')).toBe(true);
-    expect(env.run('return (wrapLine("tb", 0))')).toBe(true); // idempotent re-render
-    expect(env.run('return (wrapLine("tb", 5))')).toBe(false);
-    expect(env.run('return (wrapLine("tb", -1))')).toBe(false);
+    expect(env.run('return select("#", wrapLine("tb", 0))')).toBe(0);
+    expect(env.run('return select("#", wrapLine("tb", 5))')).toBe(0);
+    expect(env.run('return select("#", wrapLine("tb", -1))')).toBe(0);
+    expect(env.run('return select("#", wrapLine(0))')).toBe(0);
+  });
+
+  // mudlet-web#364 item 3: TBuffer::wrapLine re-wraps from the given line to
+  // the end of the buffer, not that one line alone.
+  it('re-wraps every line from the given one to the end', () => {
+    env.run(`createBuffer("tb"); setWindowWrap("tb", 0)
+      for _, l in ipairs({"line zero is long enough", "line one is also long", "line two is also long", "line three is long too"}) do
+        echo("tb", l .. "\\n")
+      end
+      setWindowWrap("tb", 10)`);
+    expect(env.run('return select("#", wrapLine("tb", 1))')).toBe(0);
+    expect(String(env.run('return table.concat(getLines("tb", 0, getLineCount("tb")), "|")')).split('|')).toEqual([
+      'line zero is long enough',
+      'line one ', 'is also ', 'long',
+      'line two ', 'is also ', 'long',
+      'line three', 'is long ', 'too',
+    ]);
+  });
+
+  // Item 2: an echo's hanging indent takes the format of the text it starts.
+  it('gives an echo\'s hanging indent the colour of the text it precedes', () => {
+    env.run(`createBuffer("tb"); setWindowWrap("tb", 12); setWindowWrapHangingIndent("tb", 2)
+      cecho("tb", "<red>echo3 ggggg<blue> hhhhh iiiii\\n")`);
+    expect(String(env.run('return table.concat(getLines("tb", 0, 3), "|")')).split('|')).toEqual(['echo3 ggggg ', '  hhhhh ', '  iiiii']);
+    expect(env.run('moveCursor("tb", 0, 1); local r, g, b = getFgColor("tb"); return r .. "," .. g .. "," .. b')).toBe('0,0,255');
   });
 
   it('targets the last line via getLineCount and does not throw', () => {

@@ -241,7 +241,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('resetFormat',  '()',               'Reset text formatting'),
     fn('feedTriggers', '(text)',           'Feed text through triggers'),
     fn('deleteLine',   '([window])',       'Delete current trigger line'),
-    fn('wrapLine',     '([window,] lineNumber)', 'Re-display a line (0-indexed), re-interpreting embedded \\n and re-wrapping'),
+    fn('wrapLine',     '([window,] lineNumber)', 'Re-wrap from a line (0-indexed) to the end of the buffer, re-interpreting embedded \\n'),
     fn('insertText',   '([window,] text)', 'Insert text at trigger cursor'),
     fn('cinsertText',  '([window,] text)', 'Insert Mudlet-color-tagged text at trigger cursor'),
     fn('dinsertText',  '([window,] text)', 'Insert decimal-RGB-formatted text at trigger cursor'),

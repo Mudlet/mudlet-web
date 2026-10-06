@@ -4051,7 +4051,7 @@ export class ScriptingAPI {
     /** The lines a network line is stored as once its triggers are done — see
      *  Console.wrapAppendedLine. */
     wrapNetworkLine(buffer: AnsiAwareBuffer): AnsiAwareBuffer[] {
-        return this.mainConsole.wrapAppendedLine(buffer);
+        return this.mainConsole.wrapAppendedLine(buffer, true);
     }
 
     /**
@@ -4521,10 +4521,11 @@ export class ScriptingAPI {
     }
 
     /**
-     * Mudlet `wrapLine([window,] lineNumber)`. Re-displays the line at
-     * `lineNumber` (0-indexed, like getLineNumber/getLineCount), re-interpreting
-     * its embedded `\n` and re-wrapping to the current width. Returns false when
-     * the window or line doesn't exist.
+     * Mudlet `wrapLine([window,] lineNumber)`. Re-wraps the buffer from the line
+     * at `lineNumber` (0-indexed, like getLineNumber/getLineCount) to its end,
+     * re-interpreting embedded `\n` and splitting to the current width, as
+     * TBuffer::wrapLine does. Returns false when the window or line doesn't
+     * exist; the Lua binding returns nothing either way, as desktop does.
      */
     wrapLine(lineNumber: number, windowName?: string): boolean {
         const con = this.getConsole(windowName);

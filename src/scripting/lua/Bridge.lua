@@ -1317,7 +1317,8 @@ do
             error('wrapLine: bad argument #1 type (window name as string expected, got '
                 .. __mudlet_typename(first, select('#', ...) > 0) .. '!)', 2)
         end
-        return _rawWrapLine(...)
+        -- no values at all, as desktop returns 0 of them
+        _rawWrapLine(...)
     end
 
     setUserWindowTitle      = userWindowGuard(setUserWindowTitle,      "user window name '%s' not found",

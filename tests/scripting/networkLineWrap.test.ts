@@ -200,4 +200,59 @@ describe('network line wrap', () => {
 
         expect(main().getLines(before, main().getLineCount() + 1)).toEqual([long]);
     });
+    // mudlet-web#364 item 1: a break that falls in a line's trailing spaces
+    // leaves an empty last piece. Desktop keeps that as the next current line
+    // (translateToPlainText adds none when the wrap left an empty one), so the
+    // buffer holds no "" line between this line and the next.
+    it('stores no empty line after a wrapped line whose trailing space overflowed', async () => {
+        await boot();
+        api().setWindowWrap('main', 20);
+        const before = main().getLineCount() + 1;
+
+        engine.processFlushBatch([{ text: 'prompt text that is long enough to wrap> \n-\n', type: 'mud', fromServer: true }]);
+
+        expect(main().getLines(before, main().getLineCount() + 1))
+            .toEqual(['prompt text that is ', 'long enough to wrap>', '-']);
+    });
+
+    it('stores no empty line after a wide character at width 1', async () => {
+        await boot();
+        api().setWindowWrap('main', 1);
+        const before = main().getLineCount() + 1;
+
+        engine.processFlushBatch([{ text: '日本\n-\nす\n-\n😀\n-\n', type: 'mud', fromServer: true }]);
+
+        expect(main().getLines(before, main().getLineCount() + 1))
+            .toEqual(['日', '本', '-', 'す', '-', '😀', '-']);
+    });
+
+    // Item 2: TBuffer::wrapLine copies the TChar the indent precedes, so the
+    // hanging indent is the colour of the text it starts, not of the end of
+    // the piece above.
+    it('gives the hanging indent the format of the character it precedes', async () => {
+        await boot();
+        api().setWindowWrap('main', 20);
+        (api() as unknown as { setWindowWrapHangingIndent: (n: string, i: number) => boolean })
+            .setWindowWrapHangingIndent('main', 3);
+        const pieces: { text: string; getSegments: () => { text: string; state?: { fg?: unknown } }[] }[] = [];
+        session.events.on('message', (m) => { if (m && typeof m !== 'string') pieces.push(m as never); });
+
+        engine.processFlushBatch([{ text: '\x1b[32mgreen first word \x1b[0mand then more text here\n', type: 'mud', fromServer: true }]);
+
+        expect(pieces.map(p => p.text)).toEqual(['green first word and', '   then more text ', '   here']);
+        const continuation = pieces[1].getSegments();
+        // One run: the indent is not split off in the green of the line above.
+        expect(continuation).toHaveLength(1);
+        expect(continuation[0].state?.fg).toBeUndefined();
+    });
+
+    // Item 4: the line desktop opens after a game line has no timestamp.
+    it('answers "" for getTimestamp on main\'s empty last line after a game line', async () => {
+        await boot();
+        engine.processFlushBatch([{ text: 'first\nhello\n', type: 'mud', fromServer: true }]);
+        const lua = api() as unknown as { getTimestamp: (n?: number) => string | null; getLineCount: () => number };
+        const last = lua.getLineCount();
+        expect(lua.getTimestamp(last)).toBe('');
+        expect(lua.getTimestamp(last - 1)).toMatch(/^\d\d:\d\d:\d\d\.\d\d\d $/);
+    });
 });
