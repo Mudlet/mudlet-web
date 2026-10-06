@@ -1,3 +1,5 @@
+import { isSvgCandidate } from '../../ui/labels/backgroundImageSize';
+
 // Synchronous image-dimension parser for Mudlet's getImageSize(path). The
 // browser's natural way to read image dimensions (new Image()) is async, which
 // can't satisfy Mudlet's synchronous `local w, h = getImageSize(path)` shape.
@@ -60,4 +62,21 @@ export function parseImageSize(b: Uint8Array): { width: number; height: number }
     }
 
     return null;
+}
+
+/**
+ * Whether `bytes` hold something a QPixmap or QSvgRenderer would load, judged
+ * by content the way Qt's image readers are: a recognised raster header, an
+ * ICO/CUR or TIFF signature, or an SVG candidate (markup or gzip). A missing
+ * file, a text file, or an empty one is not an image.
+ */
+export function looksLikeImage(b: Uint8Array): boolean {
+    if (b.length < 4) return false;
+    if (parseImageSize(b) !== null) return true;
+    // ICO / CUR — reserved 0, then type 1 (icon) or 2 (cursor).
+    if (b[0] === 0 && b[1] === 0 && (b[2] === 1 || b[2] === 2) && b[3] === 0) return true;
+    // TIFF — "II*\0" or "MM\0*".
+    if ((b[0] === 0x49 && b[1] === 0x49 && b[2] === 0x2a && b[3] === 0)
+        || (b[0] === 0x4d && b[1] === 0x4d && b[2] === 0 && b[3] === 0x2a)) return true;
+    return isSvgCandidate(b);
 }

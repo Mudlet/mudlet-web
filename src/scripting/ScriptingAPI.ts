@@ -16,6 +16,7 @@ import { classifyLabelLink } from '../ui/labels/labelLinks';
 import { AddonCommandRegistry } from '../ui/commands/addonCommands';
 import { decodeGif, decodeAnimatedImage, sniffDecodableImage, supportsImageDecoder, MoviePlayer } from '../ui/labels/gifMovie';
 import { isSvgCandidate, isSvgUrl, resolveSvgIntrinsicSize, svgIntrinsicSizeFromBytes } from '../ui/labels/backgroundImageSize';
+import { looksLikeImage } from './lua/imageSize';
 import type { CommandLineManager } from '../ui/cmdline/CommandLineManager';
 import type { ScrollBoxManager } from '../ui/scrollbox/ScrollBoxManager';
 import { TextEditManager } from '../ui/textedit/TextEditManager';
@@ -6798,50 +6799,54 @@ export class ScriptingAPI {
      * Mudlet `setBackgroundImage`. Dispatcher across labels, miniconsoles /
      * userwindows, and the main window — matches Mudlet's overload set:
      *
-     *   setBackgroundImage(labelName, imageLocation)           → label
      *   setBackgroundImage(imageLocation, [mode])              → main console
-     *   setBackgroundImage(windowName, imageLocation, [mode])  → miniconsole / userwindow
+     *   setBackgroundImage(name, imageLocation, [mode])        → label, or
+     *                                                            miniconsole / userwindow
      *
-     * Disambiguation matches Mudlet's C++ semantics — label lookup wins when
-     * the named widget is a label; otherwise the call is treated as a console
-     * form. `mode` arrives already coerced to a number by the GUIUtils.lua
-     * wrapper (string mode like "center" → 2 via `mudlet.BgImageMode`). For
-     * label form `imageLocation` is a VFS path, resolved through the same
-     * rewriter that powers setLabelStyleSheet so package-bundled images work
-     * without scripts knowing about the vfs:// scheme.
+     * Routing follows Host::setBackgroundImage: "main" is the main console, a
+     * label name wins next whatever the argument count (a label takes no mode
+     * and ignores the one it is given), and anything else is a sub-console.
+     * `mode` arrives already coerced to a number by the GUIUtils.lua wrapper
+     * (string mode like "center" → 2 via `mudlet.BgImageMode`). For the label
+     * form `imageLocation` is a VFS path, resolved through the same rewriter
+     * that powers setLabelStyleSheet so package-bundled images work without
+     * scripts knowing about the vfs:// scheme.
+     *
+     * Returns true, or desktop's refusal message — one wording for a name
+     * nothing answers to and for a label image that cannot be loaded, since
+     * TLuaInterpreter::setBackgroundImage only learns that one of them failed.
      */
-    setBackgroundImage(a: string, b?: string | number, c?: number): boolean {
-        // 1 arg: setBackgroundImage(path) → main, default to border (mode 1).
-        if (b === undefined) {
-            return this.applyBackgroundImage(undefined, a, 1);
+    setBackgroundImage(a: string, b?: string | number, c?: number): true | string {
+        // 1 arg, or (path, mode): the main window, default border (mode 1).
+        if (b === undefined) return this.applyBackgroundImage(undefined, a, 1);
+        if (typeof b === 'number') return this.applyBackgroundImage(undefined, a, b);
+        // (name, path[, mode]).
+        const mode = c === undefined ? 1 : Number(c) || 1;
+        if (a === 'main') return this.applyBackgroundImage(undefined, b, mode);
+        const refused = `console or label '${a}' not found, or '${b}' could not be loaded as an image`;
+        if (this.session.labels.has(a)) {
+            // TLabel::setBackgroundImage keeps what the label shows when the
+            // file is not an image at all, and the caller is told.
+            if (!this.labelImageLoads(b)) return refused;
+            return this.applyLabelBackgroundImage(a, b) ? true : refused;
         }
-        // 2 args.
-        if (c === undefined) {
-            // (path, mode) → main window with explicit mode.
-            if (typeof b === 'number') {
-                return this.applyBackgroundImage(undefined, a, b);
-            }
-            // (name, path). Mudlet checks label first; only then the console
-            // path. Fall through to main when the name is literally "main"
-            // (matches setBackgroundColor's special case), default mode 1.
-            if (this.session.labels.has(a)) {
-                return this.applyLabelBackgroundImage(a, b);
-            }
-            if (a === 'main') {
-                return this.applyBackgroundImage(undefined, b, 1);
-            }
-            if (this.session.windows.has(a)) {
-                return this.session.windows.setBackgroundImage(a, this.resolveImageUrl(b), 1);
-            }
-            return false;
+        if (this.session.windows.has(a)) {
+            return this.session.windows.setBackgroundImage(a, this.resolveImageUrl(b), mode) ? true : refused;
         }
-        // 3 args: (windowName, path, mode).
-        if (typeof b !== 'string') return false;
-        const mode = Number(c) || 1;
-        if (a === 'main') {
-            return this.applyBackgroundImage(undefined, b, mode);
-        }
-        return this.session.windows.setBackgroundImage(a, this.resolveImageUrl(b), mode);
+        return refused;
+    }
+
+    /** Whether a label could load `path` as an image, as far as can be told
+     *  now: a vendored Qt resource, a profile file whose content is an SVG or a
+     *  raster format Qt reads (QPixmap judges by content, not by name), or a
+     *  remote / inline URL — which cannot be judged synchronously and is taken
+     *  on trust. */
+    private labelImageLoads(path: string): boolean {
+        if (isQtResourcePath(path)) return qtResourceUrl(path) !== null;
+        if (/^(?:https?|data|blob):/i.test(path)) return true;
+        let bytes: Uint8Array | null;
+        try { bytes = this.host.readFileBytes(path); } catch { bytes = null; }
+        return !!bytes && looksLikeImage(bytes);
     }
 
     /**
@@ -7011,7 +7016,7 @@ export class ScriptingAPI {
         return ok;
     }
 
-    private applyBackgroundImage(_target: undefined, path: string, mode: number): boolean {
+    private applyBackgroundImage(_target: undefined, path: string, mode: number): true {
         // Mode 4 is a raw stylesheet body, not an image path — skip the URL
         // resolver so multi-property strings (with their own url(...) refs)
         // are handed to the renderer verbatim, where backgroundImageStyle

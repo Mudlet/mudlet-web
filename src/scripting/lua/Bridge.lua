@@ -589,11 +589,11 @@ end
 -- over the whole tree — re-issues move/resize for every widget, but most land on
 -- coordinates the widget already holds (the unaffected panes don't actually move).
 -- Caching last-applied geometry per window name and dropping no-ops removes that
--- half on reflow-heavy ops. Safe because the Lua moveWindow/resizeWindow globals
--- are the SOLE writers of widget geometry (verified: LabelManager.move/resize have
--- no other JS callers), and Geyser creates every widget at its computed position,
--- so a cache hit always means the widget is already there. Invalidated on
--- deleteLabel so a recycled name can never match a stale entry.
+-- half on reflow-heavy ops. Safe because every other call that writes widget
+-- geometry from Lua — the create*/delete* family and setWindow — drops the
+-- name's entry (__mudlet_forget_geometry below), and Geyser creates every widget
+-- at its computed position, so a cache hit always means the widget is already
+-- there.
 __mwGeo = {}
 
 -- Drop a name's cached geometry. Every call that creates or destroys a widget
@@ -1265,6 +1265,11 @@ do
         if __windowType(element) == nil then
             return nil, "element '" .. tostring(element) .. "' not found"
         end
+        -- setWindow places the element at its own (x, y) straight in JS, behind
+        -- the moveWindow cache's back. Left cached, the moveWindow back to the
+        -- old coordinates that Geyser's changeContainer issues right after
+        -- looks like a no-op and the widget stays at 0,0.
+        __mudlet_forget_geometry(element)
         return _rawSetWindow(parent, element, ...)
     end
 
@@ -8774,7 +8779,9 @@ do
                 return nil, "setBackgroundImage: mode 'cover' is only available for the main window"
             end
         end
-        return _rawSetBackgroundImage(...)
+        local r = _rawSetBackgroundImage(unpack(args, 1, n))
+        if type(r) == 'string' then return nil, r end
+        return r
     end
 end
 
