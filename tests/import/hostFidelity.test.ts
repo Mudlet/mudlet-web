@@ -205,9 +205,17 @@ describe('buildHostBaseXml', () => {
 describe('buildProfileXml with a retained <Host>', () => {
     const xml = buildProfileXml(CONNECTION, profileData(), IMPORTED_SAVE);
 
+    it('takes TLS from the live connection, not from the save it was imported with', () => {
+        expect(IMPORTED_SAVE).toContain('mSslTsl="yes"');
+        expect(xml).toContain('mSslTsl="no"');
+        const secure = buildProfileXml({ ...CONNECTION, tls: true, sslIgnoreSelfSigned: true }, profileData(), IMPORTED_SAVE);
+        expect(secure).toContain('mSslTsl="yes"');
+        expect(secure).toContain('mSslIgnoreSelfSigned="yes"');
+        expect(secure).toContain('mSslIgnoreExpired="no"');
+    });
+
     it('carries the unmodeled settings through to the export', () => {
         expect(xml).toContain('mProxyAddress="10.0.0.9"');
-        expect(xml).toContain('mSslTsl="yes"');
         expect(xml).toContain('<consoleBufferSize>250000</consoleBufferSize>');
         expect(xml).toContain('<mSpellDic>en_GB</mSpellDic>');
         expect(xml).toContain('<mBlack2>#111111</mBlack2>');

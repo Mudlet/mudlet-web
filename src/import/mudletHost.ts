@@ -177,9 +177,15 @@ export interface MudletProfileIdentity {
     name?: string;
     host?: string;
     port?: number;
+    /** `mSslTsl` and the three certificate exemptions, as {@link MudConnection} names them. */
+    tls?: boolean;
+    sslIgnoreExpired?: boolean;
+    sslIgnoreSelfSigned?: boolean;
+    sslIgnoreAll?: boolean;
 }
 
-/** Read `<name>`/`<url>`/`<port>` (direct children of `<Host>`). */
+/** Read `<name>`/`<url>`/`<port>` (direct children of `<Host>`) and the TLS
+ *  attributes on `<Host>` itself. */
 export function parseMudletHostIdentity(host: Element): MudletProfileIdentity {
     const out: MudletProfileIdentity = {};
     const name = childText(host, 'name');
@@ -188,6 +194,14 @@ export function parseMudletHostIdentity(host: Element): MudletProfileIdentity {
     if (url) out.host = url;
     const port = childText(host, 'port');
     if (port !== undefined && Number.isFinite(Number(port))) out.port = Number(port);
+    const tls = attrBool(host, 'mSslTsl');
+    if (tls !== undefined) out.tls = tls;
+    const ignoreExpired = attrBool(host, 'mSslIgnoreExpired');
+    if (ignoreExpired !== undefined) out.sslIgnoreExpired = ignoreExpired;
+    const ignoreSelfSigned = attrBool(host, 'mSslIgnoreSelfSigned');
+    if (ignoreSelfSigned !== undefined) out.sslIgnoreSelfSigned = ignoreSelfSigned;
+    const ignoreAll = attrBool(host, 'mSslIgnoreAll');
+    if (ignoreAll !== undefined) out.sslIgnoreAll = ignoreAll;
     return out;
 }
 
@@ -326,6 +340,64 @@ export function applyInstalledPackages(host: Element, names: string[]): void {
     }
 }
 
+/** One module as desktop's `<mInstalledModules>` lists it. `filepath` is what
+ *  desktop installs from, so an archive's `sync` is its `<zipSync>`. */
+export interface MudletModuleEntry {
+    key: string;
+    filepath: string;
+    sync: boolean;
+    priority: number;
+}
+
+const MODULE_ARCHIVE = /\.(mpackage|zip)$/i;
+
+/**
+ * Replace `<Host><mInstalledModules>` with `modules`, in desktop's own layout
+ * (`XMLexport::writeHost`): one block, each entry a `<key>`, `<filepath>`,
+ * `<zipSync>` plus a `<globalSave>` pinned to 0 for an archive or a bare
+ * `<globalSave>` otherwise, then `<priority>`, which is where desktop's reader
+ * closes the entry. No modules, no block, as desktop writes it.
+ */
+export function applyInstalledModules(host: Element, modules: MudletModuleEntry[]): void {
+    for (const el of Array.from(host.children).filter(c => c.tagName === 'mInstalledModules')) el.remove();
+    if (!modules.length) return;
+    const block = newHostEl(host, 'mInstalledModules');
+    const add = (tag: string, text: string) => {
+        const el = newHostEl(host, tag);
+        el.textContent = text;
+        block.appendChild(el);
+    };
+    for (const m of modules) {
+        add('key', m.key);
+        add('filepath', m.filepath);
+        if (MODULE_ARCHIVE.test(m.filepath)) {
+            add('zipSync', m.sync ? '1' : '0');
+            add('globalSave', '0');
+        } else {
+            add('globalSave', m.sync ? '1' : '0');
+        }
+        add('priority', String(m.priority));
+    }
+    const packages = host.querySelector(':scope > mInstalledPackages');
+    host.insertBefore(block, packages ? packages.nextSibling : host.firstChild);
+}
+
+/** The TLS settings desktop keeps as `<Host>` attributes. */
+export interface MudletHostTls {
+    tls: boolean;
+    sslIgnoreExpired: boolean;
+    sslIgnoreSelfSigned: boolean;
+    sslIgnoreAll: boolean;
+}
+
+export function applyHostTls(host: Element, tls: MudletHostTls): void {
+    const yesNo = (v: boolean) => (v ? 'yes' : 'no');
+    host.setAttribute('mSslTsl', yesNo(tls.tls));
+    host.setAttribute('mSslIgnoreExpired', yesNo(tls.sslIgnoreExpired));
+    host.setAttribute('mSslIgnoreSelfSigned', yesNo(tls.sslIgnoreSelfSigned));
+    host.setAttribute('mSslIgnoreAll', yesNo(tls.sslIgnoreAll));
+}
+
 /**
  * Reduce a full Mudlet profile save to a document holding just its
  * `<HostPackage>`.
@@ -405,17 +477,40 @@ export interface MudletModuleRef {
     priority: number;
 }
 
-/** Parse the repeated `<mInstalledModules>` blocks under `<Host>`. */
+/**
+ * Parse `<Host><mInstalledModules>`.
+ *
+ * Desktop writes every module into one `<mInstalledModules>` as a run of
+ * `<key>`, `<filepath>`, `<zipSync>` (archives only), `<globalSave>` and
+ * `<priority>`, and its reader (`XMLimport::readModulesDetailsMap`) closes an
+ * entry at each `<priority>` — so this walks the children in order the same
+ * way, which also reads one block per module. An archive's sync flag is its
+ * `<zipSync>`; the `<globalSave>` after it is pinned to 0 for older Mudlets.
+ */
 export function parseInstalledModules(host: Element): MudletModuleRef[] {
-    return Array.from(host.children)
-        .filter(c => c.tagName === 'mInstalledModules')
-        .map(el => ({
-            key: childText(el, 'key') ?? '',
-            filepath: childText(el, 'filepath') ?? '',
-            globalSave: (childText(el, 'globalSave') ?? '0') !== '0',
-            priority: Number(childText(el, 'priority') ?? '0') || 0,
-        }))
-        .filter(m => m.key);
+    const byKey = new Map<string, MudletModuleRef>();
+    for (const block of Array.from(host.children).filter(c => c.tagName === 'mInstalledModules')) {
+        let key = '';
+        let filepath = '';
+        let sync: string | undefined;
+        const close = (priority: string) => {
+            if (key) byKey.set(key, { key, filepath, globalSave: (sync ?? '0') !== '0', priority: Number(priority) || 0 });
+            key = '';
+            filepath = '';
+            sync = undefined;
+        };
+        for (const el of Array.from(block.children)) {
+            const text = el.textContent?.trim() ?? '';
+            if (el.tagName === 'key') key = text;
+            else if (el.tagName === 'filepath') filepath = text;
+            else if (el.tagName === 'zipSync') sync = text;
+            else if (el.tagName === 'globalSave') sync ??= text;
+            else if (el.tagName === 'priority') close(text);
+        }
+        // A hand-written block may stop short of <priority>; desktop's own never does.
+        close('0');
+    }
+    return Array.from(byKey.values());
 }
 
 /**

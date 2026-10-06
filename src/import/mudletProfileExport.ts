@@ -1,8 +1,12 @@
-import { zipSync, strToU8 } from 'fflate';
-import type { MudConnection } from '../storage/schema';
+import { zipSync, strToU8, type Zippable } from 'fflate';
+import type { MudConnection, PackageManifest } from '../storage/schema';
 import type { PersistedProfileData } from '../storage/profileVfsData';
 import { buildLinkedWriteback } from './mudletWriteback';
-import { applyHostIdentity, extractHostPackageXml, MUDLET_XML_PROLOG } from './mudletHost';
+import { serializeMudletXml } from './mudletXmlExport';
+import {
+    applyHostIdentity, applyHostTls, applyInstalledModules, extractHostPackageXml, MUDLET_XML_PROLOG,
+    type MudletModuleEntry,
+} from './mudletHost';
 
 // The inverse of mudletProfileImport: turn a Mudlet Web profile back into a *Mudlet
 // profile folder* — `current/<stamp>.xml`, `map/`, and the profile's loose VFS
@@ -60,7 +64,20 @@ export interface ConnectionSidecar {
     proxyUrl?: string;
     autoReconnect?: boolean;
     reconnectOnDrop?: boolean;
+    tls?: boolean;
+    sslIgnoreExpired?: boolean;
+    sslIgnoreSelfSigned?: boolean;
+    sslIgnoreAll?: boolean;
+    charLoginAccount?: string;
+    description?: string;
 }
+
+/** Written whether set or not: a profile imported from desktop keeps that
+ *  profile's `<Host>` and its connection files (`ssl_tsl`, `login`,
+ *  `description`, `autologin`, `autoreconnect`), so an absent value here would
+ *  let those bring back a setting the user has since cleared. */
+export const SIDECAR_FLAGS = ['autoReconnect', 'reconnectOnDrop', 'tls', 'sslIgnoreExpired', 'sslIgnoreSelfSigned', 'sslIgnoreAll'] as const;
+export const SIDECAR_TEXTS = ['charLoginAccount', 'description'] as const;
 
 export function buildConnectionSidecar(c: MudConnection): ConnectionSidecar {
     const out: ConnectionSidecar = {};
@@ -69,18 +86,61 @@ export function buildConnectionSidecar(c: MudConnection): ConnectionSidecar {
     if (c.host !== undefined) out.host = c.host;
     if (c.port !== undefined) out.port = c.port;
     if (c.proxyUrl !== undefined) out.proxyUrl = c.proxyUrl;
-    if (c.autoReconnect !== undefined) out.autoReconnect = c.autoReconnect;
-    if (c.reconnectOnDrop !== undefined) out.reconnectOnDrop = c.reconnectOnDrop;
+    for (const flag of SIDECAR_FLAGS) out[flag] = !!c[flag];
+    for (const text of SIDECAR_TEXTS) out[text] = c[text] ?? '';
+    return out;
+}
+
+/** Desktop keeps each connection-dialog field in a file of its own beside
+ *  `current/`, written by `MudletApp::writeProfileData` as one `QDataStream`
+ *  `QString`: a big-endian byte count, then UTF-16BE. */
+export function encodeProfileDataItem(text: string): Uint8Array {
+    const out = new Uint8Array(4 + text.length * 2);
+    const size = text.length * 2;
+    out[0] = size >>> 24;
+    out[1] = (size >>> 16) & 0xff;
+    out[2] = (size >>> 8) & 0xff;
+    out[3] = size & 0xff;
+    for (let i = 0; i < text.length; i++) {
+        const unit = text.charCodeAt(i);
+        out[4 + i * 2] = unit >>> 8;
+        out[5 + i * 2] = unit & 0xff;
+    }
+    return out;
+}
+
+/** Desktop's checkboxes are stored as `Qt::CheckState` numbers. */
+const checkState = (on: boolean | undefined) => (on ? '2' : '0');
+
+/**
+ * The connection files desktop's Connect dialog reads, so the profile opens
+ * there with its address, character and checkboxes filled in. Every one is
+ * written, empty or not: a profile imported from desktop still carries the
+ * files it came with, and a stale one would bring back what the user changed.
+ * A websocket profile has no address desktop can dial, so its `url` is empty.
+ */
+export function buildDesktopConnectionFiles(c: MudConnection): Record<string, Uint8Array> {
+    const telnet = c.mode === 'mud';
+    const items: Record<string, string> = {
+        url: telnet ? c.host ?? '' : '',
+        port: telnet ? String(c.port ?? 23) : '',
+        login: c.charLoginAccount ?? '',
+        description: c.description ?? '',
+        autologin: checkState(c.autoReconnect),
+        autoreconnect: checkState(c.reconnectOnDrop),
+        ssl_tsl: checkState(c.tls),
+    };
+    const out: Record<string, Uint8Array> = {};
+    for (const [name, text] of Object.entries(items)) out[name] = encodeProfileDataItem(text);
     return out;
 }
 
 /** The `<url>`/`<port>` a Mudlet `<Host>` should carry for this connection.
- *  A websocket profile has no host/port pair, so its ws(s):// URL goes in
- *  `<url>` — the sidecar carries the mode, and the ws scheme is a second signal
- *  the importer can fall back on. */
+ *  A websocket profile's ws(s):// URL stays out: desktop fills an empty server
+ *  field from `<url>` and would dial it as a hostname. The sidecar carries it. */
 function hostAddress(c: MudConnection): { url: string; port: number } {
     if (c.mode === 'mud') return { url: c.host ?? '', port: c.port ?? 23 };
-    return { url: c.url ?? c.host ?? '', port: c.port ?? 23 };
+    return { url: '', port: c.port ?? 23 };
 }
 
 /**
@@ -118,16 +178,113 @@ export function buildHostBaseXml(
     connection: MudConnection,
     packageNames: string[],
     retained?: string,
+    /** Written as `<mInstalledModules>` when given; a retained `<Host>` never
+     *  carries one (see extractHostPackageXml). */
+    modules?: MudletModuleEntry[],
 ): string {
     const doc = hostBaseDoc(retained);
+    const host = doc.getElementsByTagName('Host')[0];
     const { url, port } = hostAddress(connection);
-    applyHostIdentity(doc.getElementsByTagName('Host')[0], {
+    applyHostIdentity(host, {
         name: connection.name,
         url,
         port,
         installedPackages: packageNames,
     });
+    applyHostTls(host, {
+        tls: !!connection.tls,
+        sslIgnoreExpired: !!connection.sslIgnoreExpired,
+        sslIgnoreSelfSigned: !!connection.sslIgnoreSelfSigned,
+        sslIgnoreAll: !!connection.sslIgnoreAll,
+    });
+    if (modules) applyInstalledModules(host, modules);
     return new XMLSerializer().serializeToString(doc);
+}
+
+const ARCHIVE = /\.(mpackage|zip)$/i;
+
+function moduleManifests(data: PersistedProfileData): PackageManifest[] {
+    return (data.packages ?? []).filter(p => p.kind === 'module' && p.name);
+}
+
+/** The name desktop gives a module installed from `path`
+ *  (`Host::sanitizePackageName`): the file name, less every package extension. */
+function desktopModuleName(path: string): string {
+    let name = path;
+    let before;
+    do {
+        before = name;
+        name = name.slice(name.lastIndexOf('/') + 1).replace(/\.(trigger|xml|zip|mpackage)/gi, '').replace(/\\/g, '');
+    } while (name !== before);
+    return name;
+}
+
+/**
+ * Where each module's file sits in the exported folder, as the relative
+ * `<filepath>` desktop's `<mInstalledModules>` lists, plus any module XML that
+ * has to be written because the module's own file can't be listed as it is.
+ *
+ * An archive module points at its archive, which is what Mudlet Web reloads it
+ * from too - unless it syncs: Mudlet Web syncs to the XML and leaves the
+ * archive behind, and desktop would unpack that stale archive over it. Otherwise
+ * the module's XML goes as it is on disk: a synced module keeps it current, and
+ * one that never finished loading would lose whatever didn't load if it were
+ * regenerated from its items. Only a module whose file lies outside the profile,
+ * or is gone, is written fresh from its items.
+ *
+ * Desktop names an XML module after its file, so one whose file is named
+ * otherwise would load there under a second name; it gets a copy named for it.
+ * Desktop also deletes `<module>/` when the module is removed, so a module file
+ * there gets a copy under `modules/`, or removing it would take its only copy.
+ */
+export function exportModules(src: Pick<ProfileExportSource, 'data' | 'files' | 'profilePath'>): {
+    entries: MudletModuleEntry[];
+    generated: Record<string, Uint8Array>;
+} {
+    const root = src.profilePath ? `${src.profilePath}/` : undefined;
+    const inProfile = (abs: string | undefined) =>
+        abs && root && abs.startsWith(root) ? abs.slice(root.length) : undefined;
+    const entries: MudletModuleEntry[] = [];
+    const generated: Record<string, Uint8Array> = {};
+    // Code-unit order, as desktop's QMap of modules writes them
+    const modules = moduleManifests(src.data).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    const freePath = (file: string) => {
+        let path = `modules/${file}`;
+        for (let n = 2; src.files[path] || generated[path]; n++) path = `modules/${n}/${file}`;
+        return path;
+    };
+    for (const m of modules) {
+        const entry = { key: m.name, sync: !!m.sync, priority: m.priority ?? 0 };
+        const removedWithModule = (path: string) => path.toLowerCase().startsWith(`${m.name.toLowerCase()}/`);
+        const archive = inProfile(m.sourcePath);
+        if (archive && ARCHIVE.test(archive) && src.files[archive] && !m.sync) {
+            let path = archive;
+            if (removedWithModule(archive)) {
+                path = freePath(archive.slice(archive.lastIndexOf('/') + 1));
+                generated[path] = src.files[archive];
+            }
+            entries.push({ ...entry, filepath: path });
+            continue;
+        }
+        const xml = m.xmlVfsPath ? inProfile(m.xmlVfsPath) : m.xmlPath ? `${m.name}/${m.xmlPath}` : undefined;
+        if (xml && src.files[xml] && desktopModuleName(xml) === m.name && !removedWithModule(xml)) {
+            entries.push({ ...entry, filepath: xml });
+            continue;
+        }
+        const path = freePath(`${m.name}.xml`);
+        const own = <T extends { packageName?: string }>(nodes: T[] | undefined) =>
+            (nodes ?? []).filter(n => n.packageName === m.name);
+        generated[path] = xml && src.files[xml] ? src.files[xml] : strToU8(serializeMudletXml({
+            scripts: own(src.data.scripts),
+            aliases: own(src.data.aliases),
+            triggers: own(src.data.triggers),
+            timers: own(src.data.timers),
+            keys: own(src.data.keybindings),
+            buttons: own(src.data.buttons),
+        }, m.name));
+        entries.push({ ...entry, filepath: path });
+    }
+    return { entries, generated };
 }
 
 /** Serialize one profile's automation, variables and settings as Mudlet profile XML. */
@@ -137,17 +294,23 @@ export function buildProfileXml(
     /** The profile's retained `<HostPackage>` (or a full save to take it from),
      *  so unmodeled Mudlet settings survive. See {@link RETAINED_HOST_PATH}. */
     hostBaseXml?: string,
+    modules: MudletModuleEntry[] = [],
 ): string {
-    const packageNames = (data.packages ?? []).map(p => p.name).filter(Boolean);
+    // A module's items live in its own file, as on desktop: in the save as
+    // well, they would load twice and stop belonging to the module
+    const moduleNames = new Set(moduleManifests(data).map(m => m.name));
+    const packageNames = (data.packages ?? []).map(p => p.name).filter(n => n && !moduleNames.has(n));
+    const notModule = <T extends { packageName?: string }>(nodes: T[] | undefined) =>
+        (nodes ?? []).filter(n => !n.packageName || !moduleNames.has(n.packageName));
     return buildLinkedWriteback(
-        buildHostBaseXml(connection, packageNames, hostBaseXml),
+        buildHostBaseXml(connection, packageNames, hostBaseXml, modules),
         {
-            scripts: data.scripts ?? [],
-            aliases: data.aliases ?? [],
-            triggers: data.triggers ?? [],
-            timers: data.timers ?? [],
-            keys: data.keybindings ?? [],
-            buttons: data.buttons ?? [],
+            scripts: notModule(data.scripts),
+            aliases: notModule(data.aliases),
+            triggers: notModule(data.triggers),
+            timers: notModule(data.timers),
+            keys: notModule(data.keybindings),
+            buttons: notModule(data.buttons),
         },
         { hidden: data.variables?.hidden ?? [], variables: data.variables?.values ?? [] },
         data.profile,
@@ -171,6 +334,9 @@ export interface ProfileExportSource {
      *  linked folder's own newest save. Undefined for a profile that was never
      *  imported from Mudlet: it has no unmodeled Host settings to preserve. */
     hostBaseXml?: string;
+    /** The profile's VFS root, so a module referenced by absolute path can be
+     *  found among `files`. */
+    profilePath?: string;
     mapBytes?: Uint8Array;
     logs?: ExportLog[];
 }
@@ -196,7 +362,10 @@ export function buildProfileFolder(src: ProfileExportSource, stamp: string): Rec
         if (path === '.mudlet/profile.json' || path === '.mudix/profile.json') continue;
         out[path] = bytes;
     }
-    out[`current/${stamp}.xml`] = strToU8(buildProfileXml(src.connection, src.data, src.hostBaseXml));
+    const modules = exportModules(src);
+    Object.assign(out, modules.generated);
+    Object.assign(out, buildDesktopConnectionFiles(src.connection));
+    out[`current/${stamp}.xml`] = strToU8(buildProfileXml(src.connection, src.data, src.hostBaseXml, modules.entries));
     out[CONNECTION_SIDECAR_PATH] = strToU8(JSON.stringify(buildConnectionSidecar(src.connection), null, 2));
     if (src.mapBytes) out[`map/${stamp}map.dat`] = src.mapBytes;
     for (const log of src.logs ?? []) {
@@ -212,7 +381,11 @@ export function buildProfileFolder(src: ProfileExportSource, stamp: string): Rec
  */
 export function buildProfilesZip(sources: ProfileExportSource[], now: Date): Uint8Array {
     const stamp = formatSaveStamp(now);
-    const entries: Record<string, Uint8Array> = {};
+    const entries: Zippable = {};
+    // Desktop loads the newest save and map by modification time, and an unzip
+    // keeps the archive's; every other file is dated a little earlier than them
+    const newest = new Set([`current/${stamp}.xml`, `map/${stamp}map.dat`]);
+    const earlier = new Date(now.getTime() - 60_000);
     const used = new Set<string>();
     sources.forEach((src, i) => {
         let folder = sanitizeFolderName(src.connection.name, `profile-${i + 1}`);
@@ -223,7 +396,7 @@ export function buildProfilesZip(sources: ProfileExportSource[], now: Date): Uin
         }
         used.add(folder.toLowerCase());
         for (const [path, bytes] of Object.entries(buildProfileFolder(src, stamp))) {
-            entries[`${folder}/${path}`] = bytes;
+            entries[`${folder}/${path}`] = [bytes, { mtime: newest.has(path) ? now : earlier }];
         }
     });
     // level 6: map files are the bulk and compress well; higher levels cost

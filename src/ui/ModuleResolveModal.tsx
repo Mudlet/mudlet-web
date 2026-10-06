@@ -6,6 +6,8 @@ import type { MudletModuleRef } from '../import/mudletHost';
 export interface ModuleUpload {
     key: string;
     bytes: Uint8Array;
+    /** Decides whether it is unpacked as an archive or read as XML. */
+    filename: string;
 }
 
 interface Props {
@@ -24,9 +26,10 @@ type Decision =
     | { action: 'upload'; bytes: Uint8Array; filename: string };
 
 /**
- * After a Mudlet-profile import, modules that load from an external local XML
- * file (which a browser can't read, and that wasn't found inside the profile)
- * are listed here. For each, the user uploads its `.xml` or drops it. The import
+ * After a Mudlet-profile import, modules that load from a file elsewhere on the
+ * user's disk (which a browser can't read, and that wasn't found inside the profile)
+ * are listed here. For each, the user uploads its `.xml` (or the `.mpackage` it was
+ * installed from) or drops it. The import
  * only proceeds once every module is decided.
  */
 export function ModuleResolveModal({ modules, onComplete, onCancel }: Props) {
@@ -57,7 +60,7 @@ export function ModuleResolveModal({ modules, onComplete, onCancel }: Props) {
         const uploads: ModuleUpload[] = [];
         for (const m of modules) {
             const d = decisions[m.key];
-            if (d?.action === 'upload') uploads.push({ key: m.key, bytes: d.bytes });
+            if (d?.action === 'upload') uploads.push({ key: m.key, bytes: d.bytes, filename: d.filename });
         }
         onComplete(uploads);
     };
@@ -72,8 +75,9 @@ export function ModuleResolveModal({ modules, onComplete, onCancel }: Props) {
                 </div>
                 <div className="modal-body">
                     <p style={{ marginTop: 0, opacity: 0.8, fontSize: 13 }}>
-                        These modules load from a file on your computer that mudlet can't read. Upload each module's
-                        <code> .xml</code>, or drop it from the profile.
+                        These modules load from a file on your computer that Mudlet Web can't read. Upload each module's
+                        <code> .xml</code> or <code>.mpackage</code>, or drop it from the profile. Next time, desktop
+                        Mudlet's <b>Toolbox → Export to Mudlet Web</b> brings modules along for you.
                     </p>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                         {modules.map(m => {
@@ -114,7 +118,7 @@ export function ModuleResolveModal({ modules, onComplete, onCancel }: Props) {
                         <Button variant="primary" onClick={finish} disabled={!allDecided}>Finish import</Button>
                     </div>
                 </div>
-                <input ref={fileRef} type="file" accept=".xml" style={{ display: 'none' }} onChange={onFile} />
+                <input ref={fileRef} type="file" accept=".xml,.mpackage,.zip" style={{ display: 'none' }} onChange={onFile} />
             </div>
         </>
     );

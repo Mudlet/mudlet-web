@@ -173,7 +173,7 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
         setPendingImports(q => q.slice(1));
         void runImport(async () => {
             for (const u of uploads) {
-                addModuleToBundle(p.bundle, p.unresolved.find(m => m.key === u.key) ?? u.key, u.bytes);
+                addModuleToBundle(p.bundle, p.unresolved.find(m => m.key === u.key) ?? u.key, u.bytes, undefined, u.filename);
             }
             await provision(p.bundle);
         });
@@ -310,7 +310,7 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
                         </Button>
                     )}
                     <Button variant="secondary" size="sm" onClick={() => zipInputRef.current?.click()} disabled={connecting || importing}
-                        title="Import a zipped Mudlet profile folder, or a .zip exported from Mudlet Web">
+                        title="Import a .zip from desktop Mudlet's Toolbox → Export to Mudlet Web, a zipped Mudlet profile folder, or a .zip exported from Mudlet Web">
                         {importing && !dirPicker ? 'Importing…' : 'Import .zip…'}
                     </Button>
                     {dirPicker && (

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { strToU8, strFromU8 } from 'fflate';
+import { strToU8, strFromU8, unzipSync } from 'fflate';
 import {
     buildProfileFolder,
     buildProfilesZip,
@@ -13,14 +13,30 @@ import {
     extractMudletProfileZipAll,
     findProfileRoots,
     buildMudletProfileBundle,
+    resolveModulesFromTree,
 } from '../../src/import/mudletProfileImport';
-import { bundleToConnectionData, bundleToConnectionRecord } from '../../src/import/applyMudletProfile';
+import { bundleToConnectionData, bundleToConnectionRecord, decodeProfileDataItem } from '../../src/import/applyMudletProfile';
+import { parseInstalledModules, parseInstalledPackages } from '../../src/import/mudletHost';
+import { serializeMudletXml } from '../../src/import/mudletXmlExport';
 import type { PersistedProfileData } from '../../src/storage/profileVfsData';
 
 // Export is only worth anything if import reads it back, so these tests drive
 // the real pipeline end to end: profile data -> zip -> bundle -> store slices.
 
 const STAMP = formatSaveStamp(new Date(2026, 6, 29, 20, 14, 3));
+
+/** An entry's DOS date and time from the zip's central directory, comparable as one number. */
+function dosTime(zip: Uint8Array, name: string): number {
+    const view = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
+    for (let at = 0; at + 46 <= zip.length; at++) {
+        if (view.getUint32(at, true) !== 0x02014b50) continue;
+        const length = view.getUint16(at + 28, true);
+        if (strFromU8(zip.subarray(at + 46, at + 46 + length)) === name) {
+            return view.getUint16(at + 14, true) * 0x10000 + view.getUint16(at + 12, true);
+        }
+    }
+    throw new Error(`${name} is not in the archive`);
+}
 
 function profileData(over: Partial<PersistedProfileData> = {}): PersistedProfileData {
     return {
@@ -219,6 +235,149 @@ describe('export → import round-trip', () => {
         ]);
         expect(bundles).toHaveLength(2);
         expect(bundles.map(b => b.host).sort()).toEqual(['arkadia.rpg.pl', 'other.host']);
+    });
+});
+
+describe('for desktop Mudlet', () => {
+    const host = (folder: Record<string, Uint8Array>) =>
+        new DOMParser().parseFromString(strFromU8(folder[`current/${STAMP}.xml`]), 'text/xml').getElementsByTagName('Host')[0];
+    const item = (folder: Record<string, Uint8Array>, name: string) => decodeProfileDataItem(folder[name]);
+
+    it('writes the connection files desktop\'s Connect dialog reads', () => {
+        const folder = buildProfileFolder(source({
+            connection: {
+                id: 'c1', name: 'Arkadia', mode: 'mud', host: 'arkadia.rpg.pl', port: 7000, tls: true,
+                charLoginAccount: 'Zoë', description: 'main', autoReconnect: true,
+            },
+            files: { login: strToU8('stale'), autoreconnect: strToU8('2') },
+        }), STAMP);
+        expect(item(folder, 'url')).toBe('arkadia.rpg.pl');
+        expect(item(folder, 'port')).toBe('7000');
+        expect(item(folder, 'login')).toBe('Zoë');
+        expect(item(folder, 'description')).toBe('main');
+        expect(item(folder, 'autologin')).toBe('2');
+        expect(item(folder, 'autoreconnect')).toBe('0');
+        expect(item(folder, 'ssl_tsl')).toBe('2');
+        // QDataStream's QString: byte count, then UTF-16BE
+        expect(Array.from(folder.port)).toEqual([0, 0, 0, 8, 0, 0x37, 0, 0x30, 0, 0x30, 0, 0x30]);
+        expect(host(folder).getAttribute('mSslTsl')).toBe('yes');
+    });
+
+    it('leaves a websocket profile without an address desktop would misdial', () => {
+        const folder = buildProfileFolder(source({
+            connection: { id: 'c2', name: 'Web', mode: 'websocket', url: 'wss://example.org/ws' },
+        }), STAMP);
+        expect(item(folder, 'url')).toBe('');
+        expect(item(folder, 'port')).toBe('');
+    });
+
+    const TRIGGER = {
+        id: 'mt1', name: 'Combat hit', enabled: true, isGroup: false, parentId: null, packageName: 'Combat',
+        patterns: [{ text: 'You hit', type: 'substring' }], code: 'x()', language: 'lua', fireLength: 0,
+        multipleMatches: false, multiline: false, delta: 0, isFilter: false,
+    };
+
+    function withModules(packages: object[], files: Record<string, Uint8Array>) {
+        const data = profileData();
+        return source({
+            profilePath: '/profiles/c1',
+            data: { ...data, triggers: [...data.triggers, TRIGGER], packages: [...data.packages, ...packages] } as PersistedProfileData,
+            files,
+        });
+    }
+
+    it('lists modules as modules, with paths inside the folder, and keeps their items in their own files', () => {
+        const moduleXml = strToU8(serializeMudletXml({ scripts: [], aliases: [], timers: [], keys: [], buttons: [], triggers: [TRIGGER] } as never, 'Combat'));
+        const src = withModules([
+            { name: 'Combat', kind: 'module', xmlPath: 'Combat.xml', sync: true, priority: -1, installedAt: '' },
+            { name: 'Gui', kind: 'module', sourcePath: '/profiles/c1/downloads/Gui.mpackage', xmlPath: 'Gui.xml', installedAt: '' },
+            { name: 'Builtin', kind: 'module', xmlVfsPath: '/lua/builtin.xml', installedAt: '' },
+            // desktop would call a module in this file "my-mapper"
+            { name: 'Mapper', kind: 'module', xmlVfsPath: '/profiles/c1/scripts/my-mapper.xml', installedAt: '' },
+        ], {
+            'Combat/Combat.xml': moduleXml,
+            'downloads/Gui.mpackage': new Uint8Array([0x50, 0x4b, 3, 4]),
+            'scripts/my-mapper.xml': strToU8('<MudletPackage/>'),
+        });
+        const folder = buildProfileFolder(src, STAMP);
+        const h = host(folder);
+
+        // desktop deletes <module>/ when a module is removed, so none is listed from there
+        expect(parseInstalledModules(h)).toEqual([
+            { key: 'Builtin', filepath: 'modules/Builtin.xml', globalSave: false, priority: 0 },
+            { key: 'Combat', filepath: 'modules/Combat.xml', globalSave: true, priority: -1 },
+            { key: 'Gui', filepath: 'downloads/Gui.mpackage', globalSave: false, priority: 0 },
+            { key: 'Mapper', filepath: 'modules/Mapper.xml', globalSave: false, priority: 0 },
+        ]);
+        expect(folder['modules/Mapper.xml']).toBe(src.files['scripts/my-mapper.xml']);
+        expect(h.innerHTML).toContain('<filepath>downloads/Gui.mpackage</filepath><zipSync>0</zipSync><globalSave>0</globalSave>');
+        expect(parseInstalledPackages(h)).toEqual(['run-lua-code']);
+        expect(strFromU8(folder[`current/${STAMP}.xml`])).not.toContain('Combat hit');
+        expect(folder['modules/Combat.xml']).toBe(moduleXml);
+        expect(strFromU8(folder['modules/Builtin.xml'])).toContain('MudletPackage');
+    });
+
+    it('lists a synced archive module by the XML it syncs to, and keeps an archive out of the folder removal deletes', () => {
+        const archive = new Uint8Array([0x50, 0x4b, 3, 4]);
+        const synced = strToU8('<MudletPackage>edited</MudletPackage>');
+        const folder = buildProfileFolder(withModules([
+            { name: 'Gui', kind: 'module', sourcePath: '/profiles/c1/Gui/Gui.mpackage', xmlPath: 'Gui.xml', installedAt: '' },
+            { name: 'Combat', kind: 'module', sourcePath: '/profiles/c1/downloads/Combat.mpackage', xmlPath: 'Combat.xml', sync: true, installedAt: '' },
+        ], {
+            'Gui/Gui.mpackage': archive,
+            'Gui/Gui.xml': strToU8('<MudletPackage/>'),
+            'downloads/Combat.mpackage': archive,
+            'Combat/Combat.xml': synced,
+        }), STAMP);
+
+        expect(parseInstalledModules(host(folder))).toEqual([
+            { key: 'Combat', filepath: 'modules/Combat.xml', globalSave: true, priority: 0 },
+            { key: 'Gui', filepath: 'modules/Gui.mpackage', globalSave: false, priority: 0 },
+        ]);
+        expect(folder['modules/Combat.xml']).toBe(synced);
+        expect(folder['modules/Gui.mpackage']).toBe(archive);
+    });
+
+    it('keeps a websocket address out of <Host>, where desktop would take it for a hostname', () => {
+        const folder = buildProfileFolder(source({
+            connection: { id: 'c2', name: 'Web', mode: 'websocket', url: 'wss://example.org/ws' },
+        }), STAMP);
+        expect(host(folder).getElementsByTagName('url')[0]?.textContent ?? '').toBe('');
+    });
+
+    it('dates the new save and map after everything else, for desktop to load them when unzipped by hand', () => {
+        const now = new Date(2026, 6, 29, 20, 14, 4);
+        const zip = buildProfilesZip([source({
+            mapBytes: new Uint8Array([1]),
+            files: { 'current/2099-01-01#00-00-00.xml': strToU8('<old/>') },
+        })], now);
+        const times = new Map<string, number>();
+        unzipSync(zip, {
+            filter: f => {
+                times.set(f.name, dosTime(zip, f.name));
+                return false;
+            },
+        });
+        const stamp = formatSaveStamp(now);
+        const save = [...times.keys()].find(n => n.endsWith(`current/${stamp}.xml`))!;
+        const map = [...times.keys()].find(n => n.endsWith(`map/${stamp}map.dat`))!;
+        const old = [...times.keys()].find(n => n.endsWith('current/2099-01-01#00-00-00.xml'))!;
+        expect(times.get(save)).toBe(times.get(map));
+        expect(times.get(save)!).toBeGreaterThan(times.get(old)!);
+    });
+
+    it('finds each module again on the way back into Mudlet Web', () => {
+        const moduleXml = strToU8(serializeMudletXml({ scripts: [], aliases: [], timers: [], keys: [], buttons: [], triggers: [TRIGGER] } as never, 'Combat'));
+        const zip = buildProfilesZip([withModules(
+            [{ name: 'Combat', kind: 'module', xmlVfsPath: '/profiles/c1/scripts/Combat.xml', installedAt: '' }],
+            { 'scripts/Combat.xml': moduleXml },
+        )], new Date(2026, 6, 29, 20, 14, 3));
+        const [bundle] = extractMudletProfileZipAll(zip);
+        expect(bundle.packages.map(p => p.name)).toEqual(['run-lua-code']);
+        const { resolved, unresolved } = resolveModulesFromTree(bundle);
+        expect(unresolved).toEqual([]);
+        expect(resolved.map(r => r.path)).toEqual(['scripts/Combat.xml']);
+        expect(strFromU8(resolved[0].xmlBytes)).toContain('Combat hit');
     });
 });
 
