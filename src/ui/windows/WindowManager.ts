@@ -101,6 +101,13 @@ const TEXT_BUFFER_LIMIT = 5000;
 /** Map a DOM MouseEvent.button to Mudlet's button number for
  *  sysWindowMousePress/ReleaseEvent. DOM: 0=left,1=middle,2=right,3=back,
  *  4=forward → Mudlet: 1=left,2=right,3=middle,4=back,5=forward (0 otherwise). */
+/** The widget a mouse event belongs to: the innermost window box or label
+ *  around its target. */
+function mouseOwner(target: EventTarget | null): Element | null {
+    if (!(target instanceof Element)) return null;
+    return target.closest('[data-mouse-window], [data-mudlet-label]');
+}
+
 function mouseButtonNumber(button: number): number {
     switch (button) {
         case 0: return 1; // left
@@ -1064,23 +1071,79 @@ export class WindowManager {
      *  window's box. Args mirror Mudlet: (button, x, y, name) where button is
      *  1=left, 2=right, 3=middle, 4=back, 5=forward (0 = anything else), x/y are
      *  pixel coordinates relative to the window, and name is the window id
-     *  ('main' for the central output). */
+     *  ('main' for the central output).
+     *
+     *  Desktop's ordering is what shapes the wiring:
+     *  - The press is raised before anything inside the console acts on it — a
+     *    link runs between the press and release events (TConsole raises the
+     *    press, then TTextEdit::mousePressEvent runs the link), so the press
+     *    listens in the capture phase, ahead of the link's own handler.
+     *  - Qt gives the release to the widget the press went to (its implicit
+     *    mouse grab), wherever the pointer is let go, so the release is raised
+     *    for the window that took the press, from a document listener.
+     *  - A press on a label or a nested window belongs to that widget: labels
+     *    pass on only what they have no callback for (see
+     *    {@link raiseUnhandledMouse}), and a nested window raises its own. */
     private observeMouse(id: string, element: HTMLElement): void {
         this.mouseCleanups.get(id)?.();
-        const fire = (event: string) => (e: MouseEvent) => {
-            const rect = element.getBoundingClientRect();
-            const x = Math.round(e.clientX - rect.left);
-            const y = Math.round(e.clientY - rect.top);
-            this.onRaiseEvent?.(event, [mouseButtonNumber(e.button), x, y, id]);
+        if (element.dataset) element.dataset.mouseWindow = id;
+        const onDown = (e: MouseEvent) => {
+            if (mouseOwner(e.target) !== element) return;
+            this.raiseWindowMouse('sysWindowMousePressEvent', id, element, e);
+            this.mouseGrab = { id, element };
         };
-        const onDown = fire('sysWindowMousePressEvent');
-        const onUp = fire('sysWindowMouseReleaseEvent');
-        element.addEventListener('mousedown', onDown);
-        element.addEventListener('mouseup', onUp);
+        element.addEventListener('mousedown', onDown, true);
+        this.installMouseReleaseListener();
         this.mouseCleanups.set(id, () => {
-            element.removeEventListener('mousedown', onDown);
-            element.removeEventListener('mouseup', onUp);
+            element.removeEventListener('mousedown', onDown, true);
+            if (element.dataset?.mouseWindow === id) delete element.dataset.mouseWindow;
+            if (this.mouseGrab?.id === id) this.mouseGrab = null;
+            this.mouseCleanups.delete(id);
+            if (this.mouseCleanups.size === 0 && this.mouseReleaseListener) {
+                document.removeEventListener('mouseup', this.mouseReleaseListener, true);
+                this.mouseReleaseListener = null;
+            }
         });
+    }
+
+    /** The window holding Qt's implicit mouse grab: the one the last press
+     *  went to, until every button is up again. */
+    private mouseGrab: { id: string; element: HTMLElement } | null = null;
+    private mouseReleaseListener: ((e: MouseEvent) => void) | null = null;
+
+    private installMouseReleaseListener(): void {
+        if (this.mouseReleaseListener || typeof document === 'undefined') return;
+        const onUp = (e: MouseEvent) => {
+            const grab = this.mouseGrab;
+            if (!grab) return;
+            if (e.buttons === 0) this.mouseGrab = null;
+            this.raiseWindowMouse('sysWindowMouseReleaseEvent', grab.id, grab.element, e);
+        };
+        this.mouseReleaseListener = onUp;
+        document.addEventListener('mouseup', onUp, true);
+    }
+
+    private raiseWindowMouse(event: string, id: string, element: HTMLElement, e: MouseEvent): void {
+        const rect = element.getBoundingClientRect();
+        const x = Math.round(e.clientX - rect.left);
+        const y = Math.round(e.clientY - rect.top);
+        this.onRaiseEvent?.(event, [mouseButtonNumber(e.button), x, y, id]);
+    }
+
+    /**
+     * A press or release a label had no callback for. TLabel::mousePressEvent
+     * and mouseReleaseEvent hand an event they don't use on to the widget
+     * under them — the label's window — which raises it as its own
+     * sysWindowMousePressEvent / sysWindowMouseReleaseEvent, at the pointer's
+     * position in that window.
+     */
+    raiseUnhandledMouse(kind: 'press' | 'release', windowId: string, e: MouseEvent): void {
+        const element = windowId === 'main' ? this.mainViewportEl : this.viewports.get(windowId);
+        if (!element) return;
+        this.raiseWindowMouse(
+            kind === 'press' ? 'sysWindowMousePressEvent' : 'sysWindowMouseReleaseEvent',
+            windowId, element, e,
+        );
     }
 
     /** Mudlet `sysDropEvent(filepath, suffix, x, y, name)` and

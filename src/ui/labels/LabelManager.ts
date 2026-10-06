@@ -334,6 +334,10 @@ const scheduleFlush: (fn: () => void) => void =
         : (fn) => { setTimeout(fn, 0); };
 
 export class LabelManager {
+    /** Where a press or release a label has no callback for goes: TLabel hands
+     *  it to the window under the label (`parent`), which raises it as that
+     *  window's sysWindowMousePressEvent / ReleaseEvent. Wired by MudSession. */
+    onUnhandledMouse?: (kind: 'press' | 'release', parent: string, e: MouseEvent) => void;
     private readonly labels = new Map<string, LabelState>();
     // Labels bucketed by parent, insertion-ordered within each bucket (which is
     // the render/z order list() has always produced). Kept in sync at the four

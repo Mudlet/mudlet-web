@@ -90,6 +90,22 @@ describe('addMouseEvent / getMouseEvents / removeMouseEvent', () => {
     expect(rt.run('return removeMouseEvent("m1")')).toBe(true);
     expect(rt.run('return getMouseEvents().m1')).toBeNull();
   });
+
+  // Desktop's TTextEdit::slot_mouseAction raises the event with the entry's
+  // unique name, the console it was chosen from, and that console's selection
+  // (start x/y, end x/y) — not just the window name (issue #352).
+  it('passes the unique name, window and selection to the handler', () => {
+    rt.run(`
+      mouseEvArgs = nil
+      addMouseEvent("zz_one", "myMouseEv", "Probe One", "tip")
+      registerAnonymousEventHandler("myMouseEv", function(...) mouseEvArgs = {...} end)
+    `);
+    rt.session.mouseEvents.dispatch('zz_one', 'main', { startX: 0, startY: 0, endX: 5, endY: 1 });
+    expect(rt.run('return table.concat(mouseEvArgs, ",")')).toBe('myMouseEv,zz_one,main,0,0,5,1');
+    rt.session.mouseEvents.dispatch('zz_one', 'MC');
+    expect(rt.run('return table.concat(mouseEvArgs, ",")')).toBe('myMouseEv,zz_one,MC,0,0,0,0');
+    rt.run('removeMouseEvent("zz_one")');
+  });
 });
 
 describe('addCustomLine', () => {

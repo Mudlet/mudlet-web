@@ -8,6 +8,8 @@ import { OutputSearchBar } from './OutputSearchBar';
 import { searchStepDirection } from './outputSearch';
 import { matchClearSplitKey } from './clearSplit';
 import type { OutputMenuExtraItem } from './OutputContextMenu';
+import type { SelectionBounds } from './outputCopy';
+import { mouseEventMenuItems } from '../MouseEventRegistry';
 import { ScreenReaderLog } from './ScreenReaderLog';
 import { CaretReviewPanel } from './CaretReviewPanel';
 import { LabelOverlay } from '../labels/LabelOverlay';
@@ -152,12 +154,8 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
 
     // Mudlet addMouseEvent: custom entries folded into the output right-click
     // menu. Evaluated lazily when the menu opens (the registry can change).
-    const getMenuExtraItems = useCallback((): OutputMenuExtraItem[] =>
-        session.mouseEvents.list().map(item => ({
-            label: item.displayName,
-            tooltip: item.tooltip || undefined,
-            onClick: () => session.mouseEvents.dispatch(item.uniqueName),
-        })), [session]);
+    const getMenuExtraItems = useCallback((selection: SelectionBounds): OutputMenuExtraItem[] =>
+        mouseEventMenuItems(session.mouseEvents, 'main', selection), [session]);
 
     useEffect(() => {
         session.markOutputReady();

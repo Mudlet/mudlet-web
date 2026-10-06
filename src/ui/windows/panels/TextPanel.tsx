@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import type React from 'react';
 import type { WindowManager } from '../WindowManager';
 import type { LabelManager } from '../../labels/LabelManager';
@@ -11,6 +11,8 @@ import { CommandLineOverlay } from '../../cmdline/CommandLineOverlay';
 import { ScrollBoxOverlay } from '../../scrollbox/ScrollBoxOverlay';
 import { backgroundImageStyle } from '../../output/backgroundImageStyle';
 import { WindowCmdLine } from './WindowCmdLine';
+import { mouseEventMenuItems, type MouseEventRegistry } from '../../MouseEventRegistry';
+import type { SelectionBounds } from '../../output/outputCopy';
 
 interface TextPanelProps {
     id: string;
@@ -21,6 +23,8 @@ interface TextPanelProps {
     labels?: LabelManager;
     cmdLines?: CommandLineManager;
     scrollBoxes?: ScrollBoxManager;
+    /** addMouseEvent entries, which desktop puts in every console's menu. */
+    mouseEvents?: MouseEventRegistry;
     fontSize?: number;
     fontFamily?: string;
     /** Rendered row height in px (MXP frames). See WindowManager.setLineHeight. */
@@ -36,7 +40,7 @@ interface TextPanelProps {
     cmdLineValueSeq?: number;
 }
 
-export function TextPanel({ id, title, manager, labels, cmdLines, scrollBoxes, fontSize, fontFamily, lineHeight, wrapAt, wrapIndent, wrapHangingIndent, backgroundColor, backgroundImage, cmdLineEnabled, cmdLineStyleSheet, cmdLineValue, cmdLineValueSeq }: TextPanelProps) {
+export function TextPanel({ id, title, manager, labels, cmdLines, scrollBoxes, mouseEvents, fontSize, fontFamily, lineHeight, wrapAt, wrapIndent, wrapHangingIndent, backgroundColor, backgroundImage, cmdLineEnabled, cmdLineStyleSheet, cmdLineValue, cmdLineValueSeq }: TextPanelProps) {
     const viewportRef = useRef<HTMLDivElement>(null);
     const { outputRef, sentinelRef, stickyAreaRef, isSplitView, scrollToBottom, controls } =
         useStickyOutput(null, {
@@ -63,6 +67,9 @@ export function TextPanel({ id, title, manager, labels, cmdLines, scrollBoxes, f
         : 'rgb(0, 0, 0)';
     const backgroundExtra = backgroundImageStyle(backgroundImage) ?? undefined;
 
+    const getMenuExtraItems = useCallback((selection: SelectionBounds) =>
+        mouseEvents ? mouseEventMenuItems(mouseEvents, id, selection) : [], [mouseEvents, id]);
+
     // The viewport div carries the data-mudlet-window attribute and is the
     // target of setUserWindowStyleSheet (padding, background, etc). LabelOverlay
     // must be a direct child so its `inset: 0` spans the padding box — labels
@@ -79,6 +86,7 @@ export function TextPanel({ id, title, manager, labels, cmdLines, scrollBoxes, f
             scrollToBottom={scrollToBottom}
             className="window-text-panel"
             sourceName={id}
+            getMenuExtraItems={getMenuExtraItems}
             fontSize={fontSize}
             fontFamily={fontFamily}
             lineHeight={lineHeight}

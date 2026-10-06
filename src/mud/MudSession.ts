@@ -196,6 +196,9 @@ export class MudSession {
         // The main output area reports its character grid here on every resize;
         // forward it to the client so NAWS (window size) stays in sync.
         this.windows.onMainConsoleResize = (cols, rows) => this.setWindowSize(cols, rows);
+        // A label passes the presses and releases it has no callback for to
+        // its window (TLabel → QWidget::mousePressEvent), as desktop does.
+        this.labels.onUnhandledMouse = (kind, parent, e) => this.windows.raiseUnhandledMouse(kind, parent, e);
         // Status latch. Deliberately registered here, in the constructor, rather
         // than alongside the per-client subscriptions in connect(): EventBus
         // dispatches in registration order, and the ScriptingEngine subscribes to

@@ -1733,9 +1733,30 @@ export class AnsiAwareBuffer {
                 });
 
                 if (link.onClick) {
+                    // Desktop runs a link on the *press*: TTextEdit::
+                    // mousePressEvent executes it and returns, between the
+                    // window's sysWindowMousePressEvent and its release, so a
+                    // press that drags off the link and lets go elsewhere still
+                    // runs it. The press is also never the start of a selection
+                    // drag. The second press of a double-click is Qt's
+                    // mouseDoubleClickEvent, not a press, so it doesn't run the
+                    // link again. An unrevealed spoiler keeps its first click
+                    // for the reveal (below), so it stays on the click path.
+                    const onPress = !link.config?.spoiler;
+                    if (onPress) {
+                        element.addEventListener('mousedown', (e) => {
+                            if (e.button !== 0) return;
+                            e.preventDefault();
+                            if (e.detail >= 2 && e.detail % 2 === 0) return;
+                            link.onClick!(e);
+                        });
+                    }
                     element.addEventListener('click', (e) => {
                         e.preventDefault();
                         e.stopPropagation();
+                        // A mouse click (detail > 0) already ran on its press;
+                        // keyboard activation (link.click(), detail 0) runs here.
+                        if (onPress && e.detail > 0) return;
                         link.onClick!(e);
                     });
                 }
