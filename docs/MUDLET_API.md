@@ -373,13 +373,13 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 
 | Function | Status | Notes |
 |---|---|---|
-| `addCmdLineSuggestion([name,] text)` | ✅ | Main command bar; `name` argument is dropped (Tab-completion merged with command history) |
+| `addCmdLineSuggestion([name,] text)` | ✅ | Per command line (main bar, `createCommandLine`, or a console's own line once enabled); Tab completes from these plus the main console's last 500 lines |
 | `adjustStopWatch(id\|name, seconds)` | ✅ | Add (or subtract) seconds |
 | `ancestors(id, type)` | ✅ | Ancestor chain (immediate parent → root) as 1-indexed `{id, name, node, isActive}`; `node` is "package"/"group"/"item". `(false, errMsg)` when no item of that type has the id |
 | `appendCmdLine([name,] text)` | ✅ | Routes to overlay cmd lines (`createCommandLine`), per-userwindow cmd lines, or the main bar |
 | `appendScript(name, code)` | ✅ | JS-exposed |
 | `clearCmdLine([name])` | ✅ | Routes to overlay cmd lines, per-userwindow cmd lines, or the main bar |
-| `clearCmdLineSuggestions([name])` | ✅ | Main bar |
+| `clearCmdLineSuggestions([name])` | ✅ | Per command line |
 | `clearProfileInformation()` | ✅ | Resets the profile description to `""` |
 | `createStopWatch([name], [autostart])` | ✅ | `performance.now()`-based high-res stopwatch (`StopwatchManager`). Named watches default autostart off |
 | `deleteAllNamedTimers(parent)` | ✅ | IDManager.lua |
@@ -400,7 +400,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `exists(name, type)` | ✅ | `ScriptingAPI.exists` |
 | `findItems(name, type [, exact [, caseSensitive]])` | ✅ | 1-indexed numeric ids of matching items/groups. `exact`/`caseSensitive` default true (Mudlet). type as for `exists` |
 | `getButtonState(name)` | ✅ | Two-state button pressed state; nil when missing |
-| `getCmdLine([name])` | ✅ | Reads the live main bar or a named overlay command line |
+| `getCmdLine([name])` | ✅ | Reads the live main bar, a named overlay command line, or a console's own line (nil + error until `enableCommandLine` gives it one) |
 | `getConsoleBufferSize([window])` | ✅ | Bridge.lua → linesLimit, batchSize; nil when console missing |
 | `getExitStubsNames(roomID)` | ✅ | Stub direction names ("north"/…/"other"), 1-indexed |
 | `getNamedTimers(parent)` | ✅ | IDManager.lua |
@@ -438,7 +438,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `registerNamedTimer(parent, name, delay, code)` | ✅ | IDManager.lua |
 | `registerNamedTrigger(parent, name, pattern, code)` | ✅ | IDManager.lua |
 | `remainingTime(id)` | ✅ | JS-exposed |
-| `removeCmdLineSuggestion([name,] text)` | ✅ | Main bar |
+| `removeCmdLineSuggestion([name,] text)` | ✅ | Per command line |
 | `resetProfileIcon()` | ✅ | Clears `ProfileSettings.icon` so the connection screen falls back to the auto-generated name tile |
 | `resetStopWatch(id\|name)` | ✅ | Zeroes elapsed; a running watch keeps running |
 | `resumeNamedTimer(parent, name)` | ✅ | IDManager.lua |
@@ -898,7 +898,7 @@ through byte-identical — app stylesheets are also Mudlet Web's brand-styling h
 | `windowType(name)` | ✅ | Bridge.lua → `__windowType` |
 | `wrapLine([window,] linenum)` | ✅ | Re-renders the line buffer (0-indexed) so embedded `\n` is interpreted; Mudlet Web renders with `white-space: pre-wrap` |
 
-Mudlet Web-specific extras: `color_table`, `addCmdLineSuggestion`/`removeCmdLineSuggestion`/`clearCmdLineSuggestions` Tab-completion hooks against the main bar.
+Mudlet Web-specific extras: `color_table`.
 
 ---
 

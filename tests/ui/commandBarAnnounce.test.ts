@@ -77,11 +77,13 @@ describe('command line live region', () => {
     });
 
     it('announces each word as the cycle advances', () => {
+        // The newest candidate comes first: the last suggestion added.
         mount('ch', { suggestions: ['chameleon', 'cathedral', 'chalice'] });
         press('Tab');
+        expect(announced()).toBe('chalice');
         press('Tab');
-        expect(announced()).toContain('chalice');
-        expect(input().value).toBe('chalice');
+        expect(announced()).toBe('chameleon');
+        expect(input().value).toBe('chameleon');
     });
 
     it('re-announces a repeated word by replacing the node, not the text', () => {
@@ -158,7 +160,7 @@ describe('command line Tab completion sources', () => {
     });
 
     it('still completes the first word from output buffer words', () => {
-        mount('dr', { bufferWords: { getWords: () => ['dragon'] } });
+        mount('dr', { completionLines: () => ['A dragon lands.'] });
         press('Tab');
         expect(input().value).toBe('dragon');
     });

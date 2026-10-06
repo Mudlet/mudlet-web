@@ -10,7 +10,7 @@ import { claimedByAppShortcut } from './hooks/useKeyboardShortcuts';
 import { Toolbar } from './ui/Toolbar';
 import { CommandBar } from './ui/CommandBar';
 import { useCmdLineSelection } from './ui/cmdline/useCmdLineSelection';
-import { BufferWordIndex } from './ui/bufferWords';
+import { TAB_COMPLETION_LINES } from './ui/tabCompletion';
 import { ContentLayout } from './ui/layout/ContentLayout';
 import { ScriptEditorModal } from './ui/windows/ScriptEditorModal';
 import { SettingsModal } from './ui/SettingsModal';
@@ -102,7 +102,6 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     const [cmdLineSuggestions, setCmdLineSuggestions] = useState<string[]>([]);
     const [cmdLineBlacklist, setCmdLineBlacklist] = useState<string[]>([]);
     const [saveCommandHistory, setSaveCommandHistory] = useState(true);
-    const [bufferWords, setBufferWords] = useState<BufferWordIndex | null>(null);
     // Mudlet-format replay: Record button state + the active playback's speed
     // (null while nothing is playing — the toolbar controls only render then).
     const [replayRecording, setReplayRecording] = useState(false);
@@ -540,15 +539,6 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         };
     }, [engineRef, onCloseProfile, session, connection, vfs]);
 
-    // Index words from this session's output for argument-word Tab completion in
-    // the command bar. Lives for the session's lifetime; one per connection.
-    useEffect(() => {
-        const index = new BufferWordIndex(session);
-        index.start();
-        setBufferWords(index);
-        return () => { index.stop(); setBufferWords(null); };
-    }, [session]);
-
     useEffect(() => {
         void applyOutputFont(outputFont, vfs);
     }, [outputFont, vfs]);
@@ -676,9 +666,12 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                 // start typing something of their own over it.
                 const restore = typedDuringPasswordRef.current ? '' : passwordStashRef.current;
                 swap(restore);
-                if (restore && stashWasSelectedRef.current) {
-                    queueMicrotask(() => commandInputRef.current?.select());
-                }
+                // Selected again if it was selected when put aside, else the
+                // caret at its end. Requested rather than done here: the
+                // command <textarea> only comes back on the next render, and a
+                // new one starts with its caret at the front, so the player's
+                // next key went in before the restored command (#342).
+                if (restore) requestCmdLineSelection(stashWasSelectedRef.current ? 'all' : 'end', false);
                 passwordStashRef.current = '';
                 stashWasSelectedRef.current = false;
                 typedDuringPasswordRef.current = false;
@@ -1382,7 +1375,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                             suggestions={cmdLineSuggestions}
                             blacklist={cmdLineBlacklist}
                             saveHistory={saveCommandHistory}
-                            bufferWords={bufferWords}
+                            completionLines={() => session.consoles.get('main')?.getEndLines(TAB_COMPLETION_LINES) ?? []}
                         />
                     }
                 />

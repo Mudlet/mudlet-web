@@ -17,6 +17,7 @@ import { assertReadableMapVersion, MapVersionError } from '../../map/mapVersion'
 import { Buffer } from 'buffer';
 import { OverlayLayerOrder } from '../layout/overlayLayerOrder';
 import { TIMESTAMP_GUTTER_COLUMNS } from '../../mud/connection/TelnetNegotiator';
+import { DEFAULT_CMD_LINE_HOST, SubCommandLine, type CmdLineHost } from '../cmdline/subCommandLine';
 
 interface ScriptWindowData extends ScriptWindowRenderData {
     pendingText: Array<string | AnsiAwareBuffer>;
@@ -31,6 +32,8 @@ interface WindowCmdLineState {
      *  the main connection (mirrors Mudlet's pre-setCmdLineAction default) —
      *  see {@link WindowManager.submitCmdLine}. */
     action: ((text: string) => void) | null;
+    /** The line's keyboard state (history, Tab), outliving the input's mounts. */
+    model: SubCommandLine;
 }
 
 interface ScrollState {
@@ -2453,7 +2456,7 @@ export class WindowManager {
     enableCommandLine(id: string): boolean {
         const win = this.windows.get(id);
         if (!win) return false;
-        if (!this.cmdLineState.has(id)) this.cmdLineState.set(id, { action: null });
+        if (!this.cmdLineState.has(id)) this.cmdLineState.set(id, { action: null, model: new SubCommandLine(id) });
         if (win.cmdLineEnabled) return true;
         win.cmdLineEnabled = true;
         this.notify();
@@ -2509,12 +2512,52 @@ export class WindowManager {
      *  window's command line. Pass null to clear. Returns false when the
      *  window doesn't exist. */
     setCmdLineAction(id: string, cb: ((text: string) => void) | null): boolean {
-        const win = this.windows.get(id);
-        if (!win) return false;
-        const state = this.cmdLineState.get(id) ?? { action: null };
+        const state = this.cmdLineState.get(id);
+        if (!this.windows.has(id) || !state) return false;
         state.action = cb;
-        this.cmdLineState.set(id, state);
         return true;
+    }
+
+    /** Whether window `id` has a command line of its own: one enableCommandLine
+     *  made, which disableCommandLine only hides. A console that never had one
+     *  enabled has none (#342). */
+    hasCommandLine(id: string): boolean {
+        return this.windows.has(id) && this.cmdLineState.has(id);
+    }
+
+    /** Window `id`'s command-line keyboard state, or null when it has none. */
+    cmdLineModel(id: string): SubCommandLine | null {
+        return this.cmdLineState.get(id)?.model ?? null;
+    }
+
+    /** The profile settings and Tab pool every command line reads. Set by the
+     *  ScriptingEngine. */
+    cmdLineHost: CmdLineHost = DEFAULT_CMD_LINE_HOST;
+
+    /**
+     * Mudlet deleteCommandLine(name) on a miniconsole's or user window's own
+     * line (TMainConsole::deleteCommandLine finds it in mSubCommandLineMap,
+     * under the console's name): the line goes, action and history with it,
+     * and the console has none until enableCommandLine makes a new one.
+     * False when it has none.
+     */
+    deleteCommandLine(id: string): boolean {
+        const win = this.windows.get(id);
+        if (!win || !this.cmdLineState.has(id)) return false;
+        this.cmdLineState.delete(id);
+        this.cmdLineValueProbes.delete(id);
+        win.cmdLineEnabled = false;
+        win.cmdLineValue = '';
+        win.cmdLineValueSeq = (win.cmdLineValueSeq ?? 0) + 1;
+        this.notify();
+        return true;
+    }
+
+    /** What a script last put on window `id`'s command line, and the count
+     *  that changes with every such write. */
+    cmdLineSeed(id: string): { value: string; seq: number } | null {
+        const win = this.windows.get(id);
+        return win ? { value: win.cmdLineValue ?? '', seq: win.cmdLineValueSeq ?? 0 } : null;
     }
 
     /** Whether a script has bound a per-window Enter handler. */
@@ -2542,6 +2585,9 @@ export class WindowManager {
     submitCmdLine(id: string, text: string): boolean {
         const cb = this.getCmdLineAction(id);
         if (cb) {
+            // TLuaInterpreter::callCmdLineAction: no action runs while the
+            // server is masking input for a password (#342).
+            if (this.cmdLineHost.remoteEcho()) return true;
             try { cb(text); } catch (err) { console.warn(`[WindowCmdLine ${id}] action threw:`, err); }
             return true;
         }
@@ -2556,7 +2602,7 @@ export class WindowManager {
      *  exist or has no command line. */
     clearWindowCmdLine(id: string): boolean {
         const win = this.windows.get(id);
-        if (!win || !win.cmdLineEnabled) return false;
+        if (!win || !this.cmdLineState.has(id)) return false;
         win.cmdLineValue = '';
         win.cmdLineValueSeq = (win.cmdLineValueSeq ?? 0) + 1;
         this.notify();
@@ -2567,7 +2613,7 @@ export class WindowManager {
      *  the input contents and moves the caret to the end (React side). */
     printWindowCmdLine(id: string, text: string): boolean {
         const win = this.windows.get(id);
-        if (!win || !win.cmdLineEnabled) return false;
+        if (!win || !this.cmdLineState.has(id)) return false;
         win.cmdLineValue = String(text ?? '');
         win.cmdLineValueSeq = (win.cmdLineValueSeq ?? 0) + 1;
         this.notify();
@@ -2578,7 +2624,7 @@ export class WindowManager {
      *  `text` onto the end of the current contents. */
     appendWindowCmdLine(id: string, text: string): boolean {
         const win = this.windows.get(id);
-        if (!win || !win.cmdLineEnabled) return false;
+        if (!win || !this.cmdLineState.has(id)) return false;
         win.cmdLineValue = String(win.cmdLineValue ?? '') + String(text ?? '');
         win.cmdLineValueSeq = (win.cmdLineValueSeq ?? 0) + 1;
         this.notify();

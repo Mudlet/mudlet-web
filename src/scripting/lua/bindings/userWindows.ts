@@ -36,6 +36,7 @@ export function installUserWindowBindings({
     emitEvent,
     unregisterCb,
     overlayCmdLineActionCbIds,
+    windowCmdLineActionCbIds,
     vfs,
 }: BindingContext): void {
     /** profile.ini as it stands. Written on every change rather than held open
@@ -292,10 +293,25 @@ export function installUserWindowBindings({
         // Free any bound action callback chunk so the Lua registry slot is
         // released — overlayCmdLineActionCbIds bookkeeping mirrors the
         // per-window cmd-line lifecycle.
-        const prev = overlayCmdLineActionCbIds.get(name);
-        if (prev) { unregisterCb(prev); overlayCmdLineActionCbIds.delete(name); }
-        const ok = api.cmdLines.destroy(name);
-        if (ok) emitEvent('sysCommandLineDeleted', [name]);
+        const free = (ids: Map<string, number>) => {
+            const prev = ids.get(name);
+            if (prev) { unregisterCb(prev); ids.delete(name); }
+        };
+        let ok = false;
+        if (api.cmdLines.has(name)) {
+            free(overlayCmdLineActionCbIds);
+            ok = api.cmdLines.destroy(name);
+        } else if (api.windows.hasCommandLine(name)) {
+            // A miniconsole's or user window's own line is registered under the
+            // console's name, so it is deleted by that name too — the console
+            // stays, without a command line (#342).
+            free(windowCmdLineActionCbIds);
+            ok = api.windows.deleteCommandLine(name);
+        }
+        if (ok) {
+            api.forgetCmdLineCompletion(name);
+            emitEvent('sysCommandLineDeleted', [name]);
+        }
         return ok;
     });
     // Mudlet deleteMiniConsole(name) → true, or (false, errMsg) when the named

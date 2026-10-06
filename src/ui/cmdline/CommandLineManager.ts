@@ -1,4 +1,5 @@
 import { OverlayLayerOrder } from '../layout/overlayLayerOrder';
+import { DEFAULT_CMD_LINE_HOST, SubCommandLine, type CmdLineHost } from './subCommandLine';
 
 export interface CmdLineCreateOptions {
     /** Parent window id ('main' for the main viewport). */
@@ -57,6 +58,13 @@ export class CommandLineManager {
     /** Per-cmdline imperative control registered by the React mount —
      *  selectAll() drives <input>.select() (Mudlet selectCmdLineText). */
     private readonly controls = new Map<string, { selectAll: () => void }>();
+    /** Per-cmdline keyboard state (history, Tab) — held here rather than in
+     *  the React input so it outlives a remount. */
+    private readonly models = new Map<string, SubCommandLine>();
+
+    /** The profile settings and Tab pool every command line reads. Set by the
+     *  ScriptingEngine. */
+    cmdLineHost: CmdLineHost = DEFAULT_CMD_LINE_HOST;
 
     // Public so CommandLineOverlay (and other overlay components sharing this
     // registry via the other managers) can read/subscribe to the wrapper
@@ -99,6 +107,7 @@ export class CommandLineManager {
         this.cmdLines.delete(name);
         this.valueProbes.delete(name);
         this.controls.delete(name);
+        this.models.delete(name);
         this.overlayZ.forget(cl.parent, 'cmdlines', name);
         this.notify(cl.parent);
         return true;
@@ -253,12 +262,22 @@ export class CommandLineManager {
     submit(name: string, text: string): boolean {
         const cb = this.getAction(name);
         if (cb) {
+            // TLuaInterpreter::callCmdLineAction: no action runs while the
+            // server is masking input for a password (#342).
+            if (this.cmdLineHost.remoteEcho()) return true;
             try { cb(text); } catch (err) { console.warn(`[CommandLine ${name}] action threw:`, err); }
             return true;
         }
         if (!this.onDefaultSend) return false;
         this.onDefaultSend(text);
         return true;
+    }
+
+    /** The keyboard state of command line `name`, made on first use. */
+    model(name: string): SubCommandLine {
+        let m = this.models.get(name);
+        if (!m) { m = new SubCommandLine(name); this.models.set(name, m); }
+        return m;
     }
 
     hasAction(name: string): boolean {
@@ -310,6 +329,7 @@ export class CommandLineManager {
         this.cmdLines.clear();
         this.valueProbes.clear();
         this.controls.clear();
+        this.models.clear();
         for (const p of parents) this.notify(p);
     }
 

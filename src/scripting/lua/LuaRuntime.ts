@@ -57,7 +57,7 @@ import {installSessionBindings} from './bindings/session';
 import {installUserWindowBindings} from './bindings/userWindows';
 import {MAPPER_WIDGET_ID} from '../../ui/windows/types';
 import {describeThrown} from '../../utils/describeThrown';
-import {installWellFormedPush} from './wellFormedStrings';
+import {installDesktopUtf8Read, installWellFormedPush} from './wellFormedStrings';
 
 // wasmoon doesn't re-export its opaque lua_State pointer type; derive it from
 // the public API so the raw lua_* bindings (see pushJsValue / registerRawGlobal)
@@ -842,6 +842,7 @@ export class LuaRuntime implements IScriptingRuntime {
     ): Promise<LuaRuntime> {
         const lua = await Lua.create({ customWasmUri: luaWasmUrl });
         installWellFormedPush(lua.global.luaApi);
+        installDesktopUtf8Read(lua.global.luaApi as unknown as Parameters<typeof installDesktopUtf8Read>[0]);
         const rt = new LuaRuntime(lua, api, vfs, proxyUrlGetter);
         await rt.setup();
         return rt;
@@ -913,6 +914,7 @@ export class LuaRuntime implements IScriptingRuntime {
             popNestedDispatchState: (depth) => this.popNestedDispatchState(depth),
             vfs: this.vfs,
             overlayCmdLineActionCbIds: this.overlayCmdLineActionCbIds,
+            windowCmdLineActionCbIds: this.windowCmdLineActionCbIds,
             unregisterCb: (cbId) => this.unregisterCb(cbId),
             pushJsValue: (L, value, depth) => this.pushJsValue(L, value, depth),
             registerRawGlobal: (name, fn) => this.registerRawGlobal(name, fn),
@@ -1622,13 +1624,6 @@ export class LuaRuntime implements IScriptingRuntime {
             const n = Number(option);
             if (!Number.isFinite(n)) return false;
             return this.api.addSupportedTelnetOption(n);
-        });
-
-        // Mudlet `pauseSounds([channel])`. Stops all in-flight sound effects
-        // (Web Audio source nodes can't truly pause), optionally filtered by
-        // tag. Music isn't affected — stopMusic covers that path.
-        this.lua.global.set('pauseSounds', (channel?: unknown) => {
-            this.api.sounds.pauseSounds(typeof channel === 'string' ? channel : undefined);
         });
 
         // Mudlet `startLogging(state)`. Toggle the persistent session logger

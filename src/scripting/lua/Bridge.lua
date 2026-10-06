@@ -5141,10 +5141,12 @@ end
 -- (nil, 'command line "<name>" not found') instead. print/appendCmdLine name
 -- one only in their two-argument form; a lone argument is the text.
 do
+    -- A console only has a command line once enableCommandLine gave it one;
+    -- naming a miniconsole or user window that has none is refused like any
+    -- other name that isn't a command line (#342).
     local function cmdLineNotFound(name)
         if type(name) ~= 'string' or name == '' or name == 'main' then return nil end
-        local t = __windowType(name)
-        if t == 'commandline' or t == 'miniconsole' or t == 'userwindow' then return nil end
+        if __hasCmdLine(name) then return nil end
         return 'command line "' .. name .. '" not found'
     end
 
@@ -5176,10 +5178,9 @@ do
                 .. type(name) .. "!)", 3)
         end
         if name == '' then return "command line name cannot be an empty string" end
-        -- Same reach as missingCmdLine above: a console's own command line is
-        -- named for the console, not registered as a command line of its own.
-        local t = __windowType(name)
-        if t ~= 'commandline' and t ~= 'miniconsole' and t ~= 'userwindow' then
+        -- A console's own command line is named for the console, and only
+        -- exists once enableCommandLine has made it (#342).
+        if not __hasCmdLine(name) then
             return "command line name '" .. name .. "' not found"
         end
         return nil
@@ -5794,6 +5795,9 @@ function playSoundFile(...)
     if opts.name == nil or opts.name == '' then
         return nil, "playSoundFile: missing argument 1 (file to play)"
     end
+    -- The ordered form's tenth argument is a url, fetched just as the table
+    -- form's is.
+    if __mudlet_media_deferred(opts, __playSoundFile) then return true end
     return __playSoundFile(opts)
 end
 
@@ -5855,21 +5859,28 @@ function playMusicFile(...)
     if opts.name == nil or opts.name == '' then
         return nil, "playMusicFile: missing argument 1 (file to play)"
     end
+    if __mudlet_media_deferred(opts, __playMusicFile) then return true end
     return __playMusicFile(opts)
+end
+
+-- The url a load names, in either form, as the table __mudlet_media_deferred
+-- takes: the table itself, or the positional (name, url) pair.
+function __mudlet_media_load_request(name, ...)
+    local a, b = ...
+    if type(a) == 'table' then return a end
+    return { name = name, url = __mudlet_str(b) }
 end
 
 -- Mudlet `loadSoundFile`. Preloads a sound so the first playSoundFile has no
 -- decode latency. Accepts:
 --   loadSoundFile(name [, url])            -- positional
 --   loadSoundFile({name=..., url=...})     -- table
--- Mudlet Web resolves `name` against the profile VFS (or treats it as a URL); the
--- optional `url` is accepted for Mudlet compatibility and used only when no
--- name is supplied.
+-- `name` resolves against the profile VFS (or is taken as a URL); a `url`, in
+-- either form, is the directory to fetch it from into media/ first.
 function loadSoundFile(...)
     local name, err = __mudlet_media_load_args("loadSoundFile", ...)
     if err then return nil, err end
-    local a = ...
-    if type(a) == 'table' and __mudlet_media_deferred(a, __loadSoundFile) then return true end
+    if __mudlet_media_deferred(__mudlet_media_load_request(name, ...), __loadSoundFile) then return true end
     return __loadSoundFile({ name = name })
 end
 
@@ -5880,8 +5891,7 @@ end
 function loadMusicFile(...)
     local name, err = __mudlet_media_load_args("loadMusicFile", ...)
     if err then return nil, err end
-    local a = ...
-    if type(a) == 'table' and __mudlet_media_deferred(a, __loadMusicFile) then return true end
+    if __mudlet_media_deferred(__mudlet_media_load_request(name, ...), __loadMusicFile) then return true end
     return __loadMusicFile({ name = name })
 end
 
@@ -5904,11 +5914,12 @@ do
         if type(opts) == 'table' then
             __mudlet_check_media_table(opts, "stopSounds")
             filter = { name = opts.name, key = opts.key, tag = opts.tag,
-                priority = opts.priority, fadeout = opts.fadeout }
+                priority = opts.priority, fadeaway = opts.fadeaway, fadeout = opts.fadeout }
         else
             -- A positional call may leave the name out and filter on the rest.
             __mudlet_check_media_filter_args("stopSounds", opts, key, tag, priority, fadeaway, fadeout)
-            filter = { name = opts, key = key, tag = tag, priority = priority, fadeout = fadeout }
+            filter = { name = opts, key = key, tag = tag, priority = priority,
+                fadeaway = fadeaway, fadeout = fadeout }
         end
         _rawStopSounds(filter)
         return true
@@ -5929,11 +5940,8 @@ end
 
 -- pauseSounds / pauseMusic take no arguments or a filter *table* in Mudlet
 -- (TLuaInterpreterMedia.cpp), and reject anything else with this exact wording.
--- The JS primitives underneath take an optional channel string instead, so the
--- table's `tag` — Mudlet's channel field — is what gets handed down.
+-- Every field the filter sets must match, as for a stop.
 do
-    local _rawPauseSounds = pauseSounds
-    local _rawPauseMusic = pauseMusic
     local function pause(raw, who, opts)
         if opts == nil then
             raw()
@@ -5943,11 +5951,11 @@ do
             error(who .. ": needs to be a table", 2)
         end
         __mudlet_check_media_table(opts, who)
-        raw(opts.tag)
+        raw({ name = opts.name, key = opts.key, tag = opts.tag, priority = opts.priority })
         return true
     end
-    function pauseSounds(opts) return pause(_rawPauseSounds, "pauseSounds", opts) end
-    function pauseMusic(opts) return pause(_rawPauseMusic, "pauseMusic", opts) end
+    function pauseSounds(opts) return pause(__pauseSounds, "pauseSounds", opts) end
+    function pauseMusic(opts) return pause(__pauseMusic, "pauseMusic", opts) end
 end
 
 -- The query, pause and stop family all take a media filter, and the ones below
@@ -6010,17 +6018,26 @@ function getPlayingMusic(a, b, c, d)
     return out
 end
 
--- Mudlet `getPausedSounds([filter])` / `getPausedMusic([filter])`. Mudlet Web's Web
--- Audio backend stops rather than pauses sources, so these always return an
--- empty list (kept for ported-script parity). The filter is accepted and
--- ignored.
+-- Mudlet `getPausedSounds([filter])` / `getPausedMusic([filter])`: the
+-- script-started media pauseSounds / pauseMusic hold, in the shape
+-- getPlayingSounds lists.
+local function reindexPaused(raw)
+    local out = {}
+    if type(raw) == 'table' then
+        for _, v in pairs(raw) do
+            out[#out + 1] = { name = v.name, key = v.key, tag = v.tag, volume = v.volume,
+                priority = v.priority }
+        end
+    end
+    return out
+end
 function getPausedSounds(filter)
     __mudlet_check_media_filter_table(filter, "getPausedSounds")
-    return {}
+    return reindexPaused(__getPausedSounds(filter))
 end
 function getPausedMusic(filter)
     __mudlet_check_media_filter_table(filter, "getPausedMusic")
-    return {}
+    return reindexPaused(__getPausedMusic(filter))
 end
 
 -- Mudlet `getPlayingVideos([filter])` / `getPausedVideos([filter])`. Returns a
@@ -6396,7 +6413,7 @@ function stopMusic(opts, key, tag, fadeaway, fadeout)
     if fadeout ~= nil and fadeout < 0 then
         error("stopMusic: bad argument range for fadeout, got " .. tostring(fadeout) .. "!", 2)
     end
-    __stopMusic({ name = opts, key = key, tag = tag, fadeout = fadeout })
+    __stopMusic({ name = opts, key = key, tag = tag, fadeaway = fadeaway, fadeout = fadeout })
     return true
 end
 
@@ -9333,9 +9350,11 @@ end
 -- so the type check ran against whatever the previous call had left behind and a
 -- leftover string blacklisted itself (upstream #9683, covered by UI_spec).
 do
+    -- Any command line: a createCommandLine one, or a miniconsole's / user
+    -- window's own once enabled — each keeps lists of its own (#342).
     local function cmdLineMissing(name)
         if name == nil or name == 'main' then return nil end
-        if __windowType(name) == 'commandline' then return nil end
+        if __hasCmdLine(name) then return nil end
         return 'command line "' .. tostring(name) .. '" not found'
     end
 

@@ -841,6 +841,17 @@ export class Console {
         return lines;
     }
 
+    /** TBuffer::getEndLines(n) — the text of the last `n` lines, oldest first,
+     *  the open line included. Fewer when the buffer holds fewer. */
+    getEndLines(n: number): string[] {
+        const total = this.lineTotal;
+        const lines: string[] = [];
+        for (let i = Math.max(0, total - Math.max(0, Math.trunc(n))); i < total; i++) {
+            lines.push(this.lineAt(i) ?? '');
+        }
+        return lines;
+    }
+
     /**
      * Mudlet `getTimestamp(lineNumber)` — the wall-clock time (epoch ms) the
      * line entered the buffer, or {@link BLANK_TIMESTAMP} for a line wrapping

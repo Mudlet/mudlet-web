@@ -240,9 +240,11 @@ export class ProfileVFS {
         this.afterWrite(abs, 'write');
     }
 
-    writeBinaryFile(path: string, data: Uint8Array): void {
+    /** `createParents: false` writes only into a directory that already exists,
+     *  throwing as open(2) would otherwise — what a download's QFile does. */
+    writeBinaryFile(path: string, data: Uint8Array, { createParents = true }: { createParents?: boolean } = {}): void {
         const abs = this.resolvePath(path);
-        ensureParentDir(abs);
+        if (createParents) ensureParentDir(abs);
         this.clearForOverwrite(abs);
         writeFileSync(abs, data);
         this.invalidate(abs);

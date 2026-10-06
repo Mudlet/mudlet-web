@@ -2228,6 +2228,7 @@ export class MapStore {
         if (room.hash) this.hashToRoom.delete(room.hash);
         this.rooms.delete(id);
         this.severExitsTo(new Set([id]));
+        this.forgetPlayerRoomIn(new Set([id]));
         // Selection is paint-only but it tracks room ids — drop the deleted
         // one so getMapSelection doesn't dangle.
         if (this.selectedRooms.delete(id)) {
@@ -2273,6 +2274,16 @@ export class MapStore {
         }
     }
 
+    /**
+     * TRoomDB::removeRoom resets the player's room to 0 when it removes the
+     * room the player is in (deleteArea goes through it room by room). Keeping
+     * the old id instead put the player silently back "in" whatever unrelated
+     * room was later created with that number (mudlet-web#343).
+     */
+    private forgetPlayerRoomIn(gone: ReadonlySet<number>): void {
+        if (this.playerRoomId != null && gone.has(this.playerRoomId)) this.playerRoomId = 0;
+    }
+
     roomExists(id: number): boolean { return this.rooms.has(id); }
 
     // ── Player position ───────────────────────────────────────────────────────
@@ -2284,6 +2295,14 @@ export class MapStore {
     getPlayerRoom(): number | null {
         if (this.playerRoomId == null) return null;
         return this.rooms.has(this.playerRoomId) ? this.playerRoomId : null;
+    }
+
+    /** The player room as stored — Mudlet's `mRoomIdHash` entry, which is what
+     *  the Lua getPlayerRoom()/gotoRoom read. Unlike {@link getPlayerRoom} it is
+     *  not checked against the map: after the player's room is deleted it is 0,
+     *  as on desktop, rather than unset. null only when it was never set. */
+    getPlayerRoomId(): number | null {
+        return this.playerRoomId;
     }
 
     /** Display-only fallback room for the map view when there is no real player
@@ -3598,6 +3617,7 @@ export class MapStore {
         // still standing are walked once, and an exit between two rooms that
         // are both going is never looked at.
         if (removed.size > 0) this.severExitsTo(removed);
+        this.forgetPlayerRoomIn(removed);
         this.areas.delete(id);
         this.areaNames.delete(id);
         // The area's labels go with it (TMap::deleteArea deletes the TArea that

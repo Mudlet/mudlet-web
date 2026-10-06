@@ -4,7 +4,7 @@ import { useConnectionId, useProfileField } from '../storage';
 import { useIsMobile, useIsTouch } from '../hooks/useViewportMode';
 import { useCommandHistory } from './useCommandHistory';
 import { matchHistory, type Match } from './commandHistory';
-import { matchWordCandidates, splitTrailingWord, type ActiveWord, type BufferWordIndex } from './bufferWords';
+import { TabCompletionCycle, tabCompletionPool } from './tabCompletion';
 import { flushScreenReaderLines } from './output/ScreenReaderLog';
 import { COMMAND_INPUT_ID } from './landmarks';
 import type { CmdLineMenuEntry, CmdLineMenuRegistry } from './CmdLineMenuRegistry';
@@ -24,20 +24,21 @@ interface CommandBarProps {
     commandInputRef: React.RefObject<HTMLInputElement | HTMLTextAreaElement | null>;
     onSubmit: () => void;
     cmdLineMenu: CmdLineMenuRegistry;
-    /** Tab-completion suggestions added via Mudlet's addCmdLineSuggestion API.
-     *  Merged ahead of command history (dedup, case-insensitive). */
+    /** The main command line's addCmdLineSuggestion words: Tab completes to
+     *  them as well as to the buffer's, and the history ghost offers them. */
     suggestions?: string[];
-    /** Words Mudlet's addCmdLineBlacklist API has taken out of Tab completion.
-     *  Subtractive across every source below, not just `suggestions`. */
+    /** Words Mudlet's addCmdLineBlacklist API has taken out of Tab completion,
+     *  whether they came from the buffer or from `suggestions`. */
     blacklist?: string[];
     /** Mudlet's per-command-line setSaveCommandHistory. False keeps the history
      *  for this session but stops persisting it. */
     saveHistory?: boolean;
-    /** Recency-ordered words seen in output, for argument-word Tab completion. */
-    bufferWords?: BufferWordIndex | null;
+    /** The main console's last lines, oldest first, read at each Tab — what
+     *  TCommandLine::handleTabCompletion completes from besides `suggestions`. */
+    completionLines?: () => readonly string[];
 }
 
-export function CommandBar({ command, onCommandChange, passwordMode, commandInputRef, onSubmit, cmdLineMenu, suggestions, blacklist, saveHistory, bufferWords }: CommandBarProps) {
+export function CommandBar({ command, onCommandChange, passwordMode, commandInputRef, onSubmit, cmdLineMenu, suggestions, blacklist, saveHistory, completionLines }: CommandBarProps) {
     const [menu, setMenu] = useState<{ x: number; y: number; items: CmdLineMenuEntry[] } | null>(null);
     const inputBackground = useProfileField('inputBackground');
     const inputForeground = useProfileField('inputForeground');
@@ -95,11 +96,10 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
     // landed on, -1 when none is in progress. See completeFromHistory.
     const autoCompleteRef = useRef(-1);
 
-    // In-progress argument-word Tab cycle. `lastValue` is the value we last wrote
-    // — if the box no longer matches it, the user has edited and the cycle is
-    // stale, so the next Tab recomputes matches from scratch.
-    const cycleRef = useRef<{ matches: string[]; index: number; lastValue: string } | null>(null);
-    const resetCycle = () => { cycleRef.current = null; };
+    // The Tab completion in progress (desktop's mTabCompletionTyped/Count). It
+    // notices on its own when the box no longer holds what it last wrote.
+    const cycleRef = useRef(new TabCompletionCycle());
+    const resetCycle = () => { cycleRef.current.reset(); };
 
     const [ghostHidden, setGhostHidden] = useState(false);
 
@@ -161,7 +161,7 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         draftRef.current = command;
         setCursor(-1);
         setGhostHidden(false);
-        cycleRef.current = null;
+        cycleRef.current.reset();
         autoCompleteRef.current = -1;
     }, [command]);
 
@@ -220,8 +220,17 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
     // would re-open, with the game hidden behind a keyboard nobody asked for.
     // The player taps the box when they actually mean to type (see the matching
     // opt-out in StickyOutputPanel, and the blur-on-send in `submit` below).
+    //
+    // Only when the focus was ours to give back, though. The swap leaves focus
+    // on the page body when the old element held it; anywhere else — a script's
+    // command line, a dialog — the player is typing there, and a password prompt
+    // must not drag them out of it: their next line went to the game as a raw
+    // command instead of to the command line's action (#342). Desktop's
+    // setEchoSuppression never moves focus at all.
     useEffect(() => {
         if (isMobile && isTouch) return;
+        const active = document.activeElement;
+        if (active && active !== document.body && active !== commandInputRef.current) return;
         commandInputRef.current?.focus();
     }, [commandInputRef, passwordMode, isMobile, isTouch]);
 
@@ -312,34 +321,20 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         setValue(next);
     };
 
-    // Complete the trailing word by cycling through prefix matches. `dir` is +1
-    // for Tab (forward) / -1 for Shift+Tab (backward); the index wraps. The first
-    // press computes + caches the candidate list from the typed word; subsequent
-    // presses just advance the cached index (the snapshot survives until the user
-    // edits, which clears cycleRef). `lists` are the candidate pools in priority
-    // order: suggestions, then buffer words.
-    //
-    // Returns false when there was nothing to complete.
-    const cycleWord = (active: ActiveWord, dir: 1 | -1, lists: string[][]): boolean => {
-        let state = cycleRef.current;
-        if (!state || state.lastValue !== command) {
-            const matched = matchWordCandidates(active.word, lists);
-            if (matched.length === 0) { cycleRef.current = null; return false; }
-            state = { matches: matched, index: dir === 1 ? 0 : matched.length - 1, lastValue: '' };
-            cycleRef.current = state;
-        } else {
-            const n = state.matches.length;
-            state.index = (state.index + dir + n) % n;
-        }
-        const proposal = state.matches[state.index];
-        const next = active.prefix + proposal;
-        state.lastValue = next;
-        draftRef.current = next;
+    // TCommandLine::handleTabCompletion: Tab (`dir` 1) or Shift+Tab (-1)
+    // completes the word at the end of the line from the main console's last
+    // 500 lines and the suggestions, less the blacklist — see tabCompletion.ts
+    // for the rules (#342). Returns false when there was nothing to complete.
+    const tabComplete = (dir: 1 | -1): boolean => {
+        const step = cycleRef.current.step(command, dir,
+            () => tabCompletionPool(completionLines?.() ?? [], suggestions ?? [], blacklist ?? []));
+        if (!step) return false;
+        draftRef.current = step.text;
         setCursor(-1);
         pendingCaretEndRef.current = 'end';
-        setValue(next);
+        setValue(step.text);
         // Mudlet announces the proposal alone, not the whole rewritten line.
-        announce(proposal);
+        announce(step.proposal);
         return true;
     };
 
@@ -444,11 +439,19 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         if (isComposingRef.current || e.nativeEvent.isComposing) return;
 
         if (e.key === 'Escape') {
+            // TCommandLine::event: a plain Escape leaves Tab completion and
+            // history browsing and selects the whole line, so whatever is
+            // typed next replaces it (#342). It also puts the ghost away.
+            if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+            e.preventDefault();
             resetCycle();
-            if (ghostText) {
-                setGhostHidden(true);
-                e.preventDefault();
+            autoCompleteRef.current = -1;
+            if (cursor !== -1) {
+                draftRef.current = command;
+                setCursor(-1);
             }
+            setGhostHidden(true);
+            commandInputRef.current?.select();
             return;
         }
 
@@ -472,32 +475,22 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         }
 
         if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey && !passwordMode) {
-            const active = splitTrailingWord(command);
             // Nothing to complete — empty box or trailing whitespace. Desktop
             // swallows this Tab anyway (TCommandLine.cpp:293-329) because a
             // native window has nowhere else for focus to go; in a browser it is
             // the documented way out of the command line, and swallowing a key
             // that does nothing is exactly what WCAG 2.1.2 objects to. See the
             // hint span below, which tells a screen-reader user it is there.
-            if (!active) return;
+            if (command === '' || /\s$/.test(command)) return;
             // From here on Tab belongs to the command line, completion or not,
             // as on desktop. Letting a Tab with no match move focus away sent
             // the player's next keystrokes somewhere else, and their typing
             // was lost (#188). The empty box and a trailing space above stay
-            // the way out.
-            e.preventDefault();
-            // Candidates are suggestions + words seen in the output, for the
-            // first word and arguments alike. Command history is not one:
+            // the way out. Command history is not a source:
             // TCommandLine::handleTabCompletion completes only from the buffer
-            // and setCmdLineSuggestions, so a Tab never recalls an old command.
-            const lists = [suggestions ?? [], bufferWords?.getWords() ?? []];
-            // The blacklist subtracts from every list, matched case-insensitively
-            // (TCommandLine::tabComplete does the same).
-            const banned = new Set((blacklist ?? []).map(w => w.toLowerCase()));
-            const allowed = banned.size === 0
-                ? lists
-                : lists.map(l => l.filter(w => !banned.has(w.toLowerCase())));
-            cycleWord(active, e.shiftKey ? -1 : 1, allowed);
+            // and the suggestions, so a Tab never recalls an old command.
+            e.preventDefault();
+            tabComplete(e.shiftKey ? -1 : 1);
             return;
         }
 

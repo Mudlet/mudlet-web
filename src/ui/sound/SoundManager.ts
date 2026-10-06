@@ -41,6 +41,9 @@ export interface PlaySoundOptions {
     fadeout?: number;
     /** Start offset within the buffer, in milliseconds. */
     start?: number;
+    /** Position in the track, in milliseconds, at which playback ends (Mudlet's
+     *  `finish`). Absent → the end of the file. Each pass of a loop ends there. */
+    finish?: number;
     /** Loop count. 1 = play once (default). -1 = infinite. N>1 = N total plays. */
     loops?: number;
     /** Dedupe key — calling again with same key replaces the previous one. */
@@ -61,9 +64,12 @@ export interface PlaySoundOptions {
 }
 
 export interface PlayMusicOptions extends PlaySoundOptions {
-    /** If true and a music track with the same name+key is already playing, do nothing. */
+    /** If true and a music track with the same name (and key, when one is
+     *  given) is already playing, do nothing. Mudlet's default is true; the
+     *  callers supply it, so absent here means false. */
     continue?: boolean;
 }
+
 
 export interface StopMusicOptions {
     name?: string;
@@ -71,13 +77,19 @@ export interface StopMusicOptions {
     tag?: string;
     /** Fade-out duration in milliseconds. Overrides the source's own fadeout. */
     fadeout?: number;
+    /** Mudlet's `fadeaway`: fade out before stopping — over `fadeout`, else
+     *  the source's own fadeout, else {@link DEFAULT_FADEAWAY_MS} — and keep
+     *  the media listed as playing until the fade is over. */
+    fadeaway?: boolean;
 }
 
 /**
  * Which playing media a stop, pause or query applies to. Every field that is
- * set must match. `name` matches the path a source was played under or its
- * trailing filename; `priority` is a ceiling — a source whose own priority is
- * above it is passed over, and a source without one counts as 0; `origin`
+ * set must match. `name` matches the name a source was played under, the path
+ * it resolved to, or either's trailing filename; `priority` is a ceiling — a
+ * query passes over a source whose own priority is above it, and a stop or
+ * pause also spares one whose priority equals it (only lower priorities are
+ * stopped, as on desktop). A source without a priority counts as 0; `origin`
  * narrows to script- or server-started media.
  */
 export interface MediaFilter {
@@ -91,24 +103,71 @@ export interface MediaFilter {
 export interface StopSoundsOptions extends MediaFilter {
     /** Fade-out duration in milliseconds. Overrides the source's own fadeout. */
     fadeout?: number;
+    /** See {@link StopMusicOptions.fadeaway}. */
+    fadeaway?: boolean;
 }
+
+/** How long a `fadeaway` stop fades for when neither the stop nor the media
+ *  names a fadeout — desktop's TMedia default. */
+export const DEFAULT_FADEAWAY_MS = 5000;
+
+/**
+ * Turns a media name into the path that is actually played. The engine wires
+ * one that finds the file in the profile VFS (so the media events carry its
+ * full path, as desktop's do) and expands a `*`/`?` wildcard to one matching
+ * file. Null means there is no such file: the request is refused there and
+ * then, and never listed as playing. Without a resolver, the name is played as
+ * given.
+ */
+export type MediaPathResolver = (name: string) => string | null;
 
 interface ActiveSource {
     id: number;
     kind: 'sound' | 'music';
+    /** The name the media was requested under — what queries report. */
     name: string;
+    /** What that name resolved to — what is loaded and what events carry. */
+    path: string;
     key?: string;
     tag?: string;
     origin: MediaOrigin;
     caption?: string;
     priority?: number;
-    /** The pass currently playing; replaced on each pass of a finite loop. */
-    source: AudioBufferSourceNode;
+    /**
+     * `loading` from the play call until the file is decoded — it is listed as
+     * playing already, as desktop lists a player from the moment it is asked
+     * to play; `playing` once a source node runs; `paused` while held by
+     * pauseSounds / pauseMusic, with no node at all.
+     */
+    state: 'loading' | 'playing' | 'paused';
+    /** Set once decoded. */
+    buffer?: AudioBuffer;
+    /** The pass currently playing; replaced on each pass of a finite loop.
+     *  Absent while loading or paused. */
+    source?: AudioBufferSourceNode;
     gain: GainNode;
+    fadein: number;
     fadeout: number;
     volume: number;
+    /** Where each pass begins, in seconds. */
+    startSec: number;
+    /** Where each pass ends, in seconds; undefined → the end of the file. */
+    finishSec?: number;
+    /** -1 forever, else the passes still to play after the current one. */
+    passesLeft: number;
+    /** Context time the current pass's node started, and the track offset it
+     *  started at — together they give the position to pause at. */
+    passStartedAt: number;
+    passOffset: number;
+    /** Where a paused source picks up again, in seconds. */
+    pausedAt: number;
+    /** Whether a sysMediaStarted has gone out for it — a source stopped or
+     *  paused before it ever started announces neither. */
+    announced: boolean;
     /** Set once stop() has been called so the onended handler doesn't try to fade a stopped source. */
     stopping: boolean;
+    /** Stopping, but still fading out — listed as playing until it ends. */
+    fading: boolean;
 }
 
 // Gain applied to the keepalive source. ~-60 dB — inaudible on typical
@@ -226,6 +285,7 @@ export class SoundManager {
     private nextId = 1;
     private active = new Map<number, ActiveSource>();
     private loader: LoaderFn = defaultLoader;
+    private resolver: MediaPathResolver | null = null;
     /**
      * Bumped by every {@link stopAll}. `play()` has to await a fetch + decode
      * before it can build a source, and a profile close (or resetProfile)
@@ -256,9 +316,11 @@ export class SoundManager {
      *
      * Fired after `source.start()` has actually been accepted, so a decode
      * failure or a rejected start never announces a playback that isn't
-     * happening. Mudlet withholds it for preload-volume loads; Mudlet Web has no
-     * preload volume (`preload()` only warms the decode cache and never builds
-     * a source), so there is nothing to withhold it for.
+     * happening. A paused source raises it again when it resumes, as a player
+     * re-entering PlayingState does. Mudlet withholds it for preload-volume
+     * loads; Mudlet Web has no preload volume (`preload()` only warms the
+     * decode cache and never builds a source), so there is nothing to withhold
+     * it for.
      */
     onMediaStarted?: (file: string, path: string, mediaType: MediaKind, key: string, tag: string) => void;
     /**
@@ -268,6 +330,9 @@ export class SoundManager {
      * each source's onended before stopping, so engine teardown never fires it.
      */
     onMediaFinished?: (file: string, path: string, mediaType: MediaKind, key: string, tag: string) => void;
+    /** Raised when pauseSounds / pauseMusic hold a playing source — Mudlet's
+     *  `sysMediaPaused`, with the same five arguments. */
+    onMediaPaused?: (file: string, path: string, mediaType: MediaKind, key: string, tag: string) => void;
     /**
      * Raised when a tracked source starts ('plays') or ends ('stops'), so the
      * engine can print a closed caption (Mudlet's enableClosedCaption). Fires
@@ -282,6 +347,10 @@ export class SoundManager {
         // on every loader swap so cross-profile contamination is impossible.
         decodeCache.clear();
         this.loader = fn ?? defaultLoader;
+    }
+
+    setPathResolver(fn: MediaPathResolver | null): void {
+        this.resolver = fn;
     }
 
     setMasterVolume(value: number): void {
@@ -332,7 +401,12 @@ export class SoundManager {
     }
 
     async playMusic(opts: PlayMusicOptions): Promise<number> {
-        if (opts.continue && this.isMusicPlaying(opts.name, opts.key)) return -1;
+        const resumed = this.resumeMatching('music', opts);
+        if (resumed !== undefined) return resumed;
+        if (opts.continue) {
+            const playing = this.playingMusic(opts.name, opts.key);
+            if (playing) return playing.id;
+        }
         // Mudlet music semantics: a new music track replaces the previous one
         // matching the same key (or, when no key, the same name).
         this.stopMusicMatching(opts.name, opts.key);
@@ -340,52 +414,31 @@ export class SoundManager {
     }
 
     /** Mudlet `stopSounds([filter])` — stop the sounds matching `filter`
-     *  (every sound when it is empty). */
+     *  (every sound when it is empty). Only priorities below the filter's are
+     *  stopped. */
     stopSounds(opts: StopSoundsOptions = {}): void {
         const ctx = sharedContext;
         if (!ctx) return;
         for (const a of [...this.active.values()]) {
-            if (a.kind !== 'sound' || !matchesFilter(a, opts)) continue;
-            this.fadeAndStop(ctx, a, opts.fadeout !== undefined ? opts.fadeout : a.fadeout);
+            if (a.kind !== 'sound' || !matchesFilter(a, opts, true)) continue;
+            this.fadeAndStop(ctx, a, stopFade(a, opts));
         }
     }
 
     /**
-     * Mudlet `pauseSounds([channel])`. Web Audio source nodes can be
-     * scheduled to start but not paused once playing — they're transient by
-     * design, with no equivalent of QMediaPlayer::pause(). We approximate
-     * Mudlet's contract by stopping the matching sources outright (so the
-     * mute happens immediately) and let the player retrigger them with
-     * `playSoundFile` to resume. The optional `channel` filters by the
-     * source's `tag` (matches Mudlet's "channel" semantics: a Tag string
-     * passed to playSoundFile). Music sources are untouched — they have a
-     * separate `stopMusic` codepath.
+     * Mudlet `pauseSounds([filter])`. A Web Audio source node can't be paused,
+     * so a paused source drops its node and remembers its position; playing
+     * the same name and key again ({@link play}) resumes it from there on a new
+     * node. A string filters by tag, Mudlet's "channel". Music is untouched —
+     * {@link pauseMusic} covers it.
      */
     pauseSounds(channel?: string | MediaFilter): void {
-        const ctx = sharedContext;
-        if (!ctx) return;
-        const filter = typeof channel === 'string' ? { tag: channel } : channel ?? {};
-        for (const a of [...this.active.values()]) {
-            if (a.kind !== 'sound' || !matchesFilter(a, filter)) continue;
-            this.fadeAndStop(ctx, a, a.fadeout);
-        }
+        this.pauseKind('sound', channel);
     }
 
-    /**
-     * Mudlet `pauseMusic([settings])`. Web Audio source nodes can't truly
-     * pause once started (same constraint as {@link pauseSounds}), so this is
-     * an immediate fade-out + stop of the matching music sources — re-trigger
-     * `playMusicFile` to "resume". The optional `channel`/tag filters which
-     * music tracks are affected; sound effects are untouched.
-     */
+    /** Mudlet `pauseMusic([filter])` — {@link pauseSounds} for music. */
     pauseMusic(channel?: string | MediaFilter): void {
-        const ctx = sharedContext;
-        if (!ctx) return;
-        const filter = typeof channel === 'string' ? { tag: channel } : channel ?? {};
-        for (const a of [...this.active.values()]) {
-            if (a.kind !== 'music' || !matchesFilter(a, filter)) continue;
-            this.fadeAndStop(ctx, a, a.fadeout);
-        }
+        this.pauseKind('music', channel);
         this.updateMediaSessionState();
     }
 
@@ -393,32 +446,28 @@ export class SoundManager {
         const ctx = sharedContext;
         if (!ctx) return;
         for (const a of [...this.active.values()]) {
-            if (a.kind !== 'music' || !matchesFilter(a, opts)) continue;
-            const fade = opts.fadeout !== undefined ? opts.fadeout : a.fadeout;
-            this.fadeAndStop(ctx, a, fade);
+            if (a.kind !== 'music' || !matchesFilter(a, opts, true)) continue;
+            this.fadeAndStop(ctx, a, stopFade(a, opts));
         }
         this.updateMediaSessionState();
     }
 
     /**
-     * Mudlet getPlayingSounds / getPlayingMusic. Returns the currently-playing
-     * sources of the requested `kind` (default 'sound' — music is reported
-     * separately by getPlayingMusic) optionally filtered. Mudlet lists only
-     * the media its Lua API started, so the Lua bindings pass
+     * Mudlet getPlayingSounds / getPlayingMusic. Returns the sources of the
+     * requested `kind` (default 'sound' — music is reported separately by
+     * getPlayingMusic) that are playing — from the moment they are asked to
+     * play until they end, a fade-out included — optionally filtered. Mudlet
+     * lists only the media its Lua API started, so the Lua bindings pass
      * `origin: 'api'`. Volume is reported on Mudlet's 0..100 scale.
      */
-    getPlaying(
-        filter: MediaFilter = {},
-        kind: 'sound' | 'music' = 'sound',
-    ): Array<{
-        name: string; key?: string; tag?: string; volume: number; priority?: number;
-    }> {
-        const out: Array<{ name: string; key?: string; tag?: string; volume: number; priority?: number }> = [];
-        for (const a of this.active.values()) {
-            if (a.kind !== kind || a.stopping || !matchesFilter(a, filter)) continue;
-            out.push({ name: a.name, key: a.key, tag: a.tag, volume: Math.round(a.volume * 100), priority: a.priority });
-        }
-        return out;
+    getPlaying(filter: MediaFilter = {}, kind: 'sound' | 'music' = 'sound'): MediaListing[] {
+        return this.list(filter, kind, a => a.state !== 'paused' && (!a.stopping || a.fading));
+    }
+
+    /** Mudlet getPausedSounds / getPausedMusic — {@link getPlaying} for the
+     *  sources pauseSounds / pauseMusic hold. */
+    getPaused(filter: MediaFilter = {}, kind: 'sound' | 'music' = 'sound'): MediaListing[] {
+        return this.list(filter, kind, a => a.state === 'paused' && !a.stopping);
     }
 
     /**
@@ -434,16 +483,23 @@ export class SoundManager {
         if (!ctx) return false;
         // Swallow rejection — decodeBuffer already evicts failed entries from
         // the cache, and preload is advisory.
-        decodeBuffer(ctx, target, this.loader).catch(() => {});
+        decodeBuffer(ctx, this.resolve(target) ?? target, this.loader).catch(() => {});
         return true;
     }
 
     /**
-     * Mudlet `purgeMediaCache()` — drop every decoded-audio buffer so the next
-     * play of any file re-fetches and re-decodes it. Active playback is
-     * untouched (the cache only fronts the decode step). Always returns true.
+     * Mudlet `purgeMediaCache()` — stop every sound and music track, each
+     * raising its sysMediaFinished as TMedia::stopAllMediaPlayers does, and
+     * drop every decoded-audio buffer so the next play re-fetches and
+     * re-decodes. Deleting the cached files themselves is the caller's part.
+     * Always returns true.
      */
     purgeCache(): boolean {
+        const ctx = sharedContext;
+        if (ctx) {
+            for (const a of [...this.active.values()]) this.fadeAndStop(ctx, a, 0);
+            this.updateMediaSessionState();
+        }
         decodeCache.clear();
         return true;
     }
@@ -456,6 +512,7 @@ export class SoundManager {
         const ctx = sharedContext;
         if (!ctx) return;
         for (const a of [...this.active.values()]) {
+            if (!a.source) continue;
             try { a.source.onended = null; a.source.stop(); } catch { /* already stopped */ }
         }
         this.active.clear();
@@ -469,6 +526,24 @@ export class SoundManager {
 
     // ── internal ──────────────────────────────────────────────────────────────
 
+    private resolve(name: string): string | null {
+        if (!this.resolver) return name;
+        try {
+            return this.resolver(name);
+        } catch {
+            return name;
+        }
+    }
+
+    private list(filter: MediaFilter, kind: 'sound' | 'music', keep: (a: ActiveSource) => boolean): MediaListing[] {
+        const out: MediaListing[] = [];
+        for (const a of this.active.values()) {
+            if (a.kind !== kind || !keep(a) || !matchesFilter(a, filter, false)) continue;
+            out.push({ name: a.name, key: a.key, tag: a.tag, volume: Math.round(a.volume * 100), priority: a.priority });
+        }
+        return out;
+    }
+
     private async play(kind: 'sound' | 'music', opts: PlaySoundOptions): Promise<number> {
         if (this.destroyed) return -1;
         const ctx = getContext();
@@ -478,6 +553,10 @@ export class SoundManager {
         const epoch = this.epoch;
         const origin: MediaOrigin = opts.origin ?? 'api';
 
+        // Playing the name and key of a paused source picks it up where it was.
+        const resumed = this.resumeMatching(kind, opts);
+        if (resumed !== undefined) return resumed;
+
         // Priority (sounds only): refused while a sound of this origin with an
         // equal or higher priority is playing; otherwise it takes over from the
         // lower-priority ones, including those that have no priority at all.
@@ -486,9 +565,27 @@ export class SoundManager {
             : undefined;
         if (priority !== undefined) {
             const rivals = [...this.active.values()]
-                .filter(a => a.kind === 'sound' && a.origin === origin && !a.stopping);
+                .filter(a => a.kind === 'sound' && a.origin === origin && !a.stopping && a.state !== 'paused');
             if (rivals.some(a => (a.priority ?? 0) >= priority)) return -1;
-            for (const a of rivals) this.fadeAndStop(ctx, a, 0);
+        }
+
+        // A file that isn't there is refused before anything changes: it is
+        // never listed, and it ends nothing it would have replaced.
+        const path = this.resolve(name);
+        if (path === null) return -1;
+
+        if (priority !== undefined) {
+            for (const a of [...this.active.values()]) {
+                if (a.kind === 'sound' && a.origin === origin && !a.stopping && a.state !== 'paused') {
+                    this.fadeAndStop(ctx, a, 0);
+                }
+            }
+        }
+
+        // A new request ends whatever of its kind sits paused: desktop hands a
+        // request the paused player first, which stops what it held.
+        for (const a of [...this.active.values()]) {
+            if (a.kind === kind && a.origin === origin && a.state === 'paused') this.fadeAndStop(ctx, a, 0);
         }
 
         // Replace any source with the same explicit key in this kind.
@@ -505,141 +602,294 @@ export class SoundManager {
             void ctx.resume();
         }
 
-        let buffer: AudioBuffer;
-        try {
-            buffer = await decodeBuffer(ctx, name, this.loader);
-        } catch (e) {
-            console.warn(`[sound] decode failed for "${name}":`, e);
-            return -1;
-        }
-        // The fetch + decode above is the whole race window: a profile close or
-        // resetProfile in here already ran its stop pass, so building a source
-        // now would leave it playing unreachably. Nothing has been created yet,
-        // so dropping out is all the cleanup needed.
-        if (this.destroyed || this.epoch !== epoch) return -1;
-
-        const volume = clamp01((opts.volume ?? 50) / 100);
-        const fadein = Math.max(0, opts.fadein ?? 0);
-        const fadeout = Math.max(0, opts.fadeout ?? 0);
         // -1 repeats forever and N>0 plays N passes; 0 and anything below -1
         // mean nothing, and fall back to a single pass as Mudlet does.
         const rawLoops = opts.loops ?? 1;
         const loops = rawLoops === -1 ? -1 : rawLoops >= 1 ? Math.floor(rawLoops) : 1;
-        const startOffset = Math.max(0, (opts.start ?? 0) / 1000);
+        const startSec = Math.max(0, (opts.start ?? 0) / 1000);
+        const finishSec = opts.finish !== undefined && Number.isFinite(opts.finish) && opts.finish / 1000 > startSec
+            ? opts.finish / 1000
+            : undefined;
 
+        // Registered before the file is even fetched: desktop lists a player
+        // from the play call on, so getPlayingSounds right after playSoundFile
+        // must already see it.
         const gain = ctx.createGain();
         gain.connect(ctx.destination);
-        const newSource = (): AudioBufferSourceNode => {
-            const src = ctx.createBufferSource();
-            src.buffer = buffer;
-            src.connect(gain);
-            return src;
-        };
-        const source = newSource();
-
-        // A muted origin plays silently from the start; unmuting later restores it.
-        const target = this.muted[origin] ? 0 : volume * this.masterVolume;
-        const now = ctx.currentTime;
-        if (fadein > 0) {
-            gain.gain.setValueAtTime(0, now);
-            gain.gain.linearRampToValueAtTime(target, now + fadein / 1000);
-        } else {
-            gain.gain.setValueAtTime(target, now);
-        }
-
-        // Web Audio's loop flag only repeats forever, so it serves -1 alone. A
-        // finite count plays each pass on a fresh source node (a node can be
-        // started once), and each pass is reported with its own
-        // sysMediaStarted / sysMediaFinished, as Mudlet's playlist does.
-        if (loops === -1) source.loop = true;
-
-        try {
-            source.start(now, startOffset);
-        } catch (e) {
-            console.warn(`[sound] start failed for "${name}":`, e);
-            return -1;
-        }
-
         const id = this.nextId++;
         const record: ActiveSource = {
             id,
             kind,
             name,
+            path,
             key: opts.key,
             tag: opts.tag,
             origin,
             caption: opts.caption,
             priority,
-            source,
+            state: 'loading',
             gain,
-            fadeout,
-            volume,
+            fadein: Math.max(0, opts.fadein ?? 0),
+            fadeout: Math.max(0, opts.fadeout ?? 0),
+            volume: clamp01((opts.volume ?? 50) / 100),
+            startSec,
+            finishSec,
+            passesLeft: loops === -1 ? -1 : loops - 1,
+            passStartedAt: 0,
+            passOffset: startSec,
+            pausedAt: startSec,
+            announced: false,
             stopping: false,
+            fading: false,
         };
         this.active.set(id, record);
-        ensureKeepAlive();
-        this.onMediaCaption?.({ kind, name, key: opts.key, caption: opts.caption, action: 'plays' });
-        // Mudlet's media events are (file, path, mediaType, key, tag): the URL's
-        // trailing filename, then its full path. We resolve a path for playback,
-        // so split the name the script passed in the same way. An absent key or
-        // tag is an empty QString there, so it must be '' here and not
-        // undefined — a nil would shift every argument after it in Lua.
-        const filename = name.split(/[\\/]/).pop() || name;
-        this.onMediaStarted?.(filename, name, kind, opts.key ?? '', opts.tag ?? '');
 
-        let passesLeft = loops === -1 ? 0 : loops - 1;
-        const onPassEnded = () => {
-            if (!record.stopping && passesLeft > 0 && this.active.get(id) === record) {
-                passesLeft--;
-                this.onMediaFinished?.(filename, name, kind, opts.key ?? '', opts.tag ?? '');
-                const next = newSource();
-                next.onended = onPassEnded;
-                try {
-                    next.start(ctx.currentTime);
-                    record.source = next;
-                    this.onMediaStarted?.(filename, name, kind, opts.key ?? '', opts.tag ?? '');
-                    return;
-                } catch (e) {
-                    console.warn(`[sound] start failed for "${name}":`, e);
-                    this.active.delete(id);
-                    if (kind === 'music') this.updateMediaSessionState();
-                    this.onMediaCaption?.({ kind, name, key: opts.key, caption: opts.caption, action: 'stops' });
-                    return;
-                }
-            }
+        let buffer: AudioBuffer;
+        try {
+            buffer = await decodeBuffer(ctx, record.path, this.loader);
+        } catch (e) {
+            console.warn(`[sound] decode failed for "${name}":`, e);
+            if (this.active.get(id) === record) this.active.delete(id);
+            return -1;
+        }
+        // The fetch + decode above is the whole race window: a profile close or
+        // resetProfile in here already ran its stop pass, so building a source
+        // now would leave it playing unreachably. A stop aimed at this play
+        // while it loaded has already dropped it, and a pause leaves it held
+        // until it is resumed.
+        if (this.destroyed || this.epoch !== epoch || this.active.get(id) !== record || record.stopping) return -1;
+        record.buffer = buffer;
+        if (record.state === 'paused') return id;
+
+        // A muted origin plays silently from the start; unmuting later restores it.
+        const target = this.effectiveGain(record);
+        const now = ctx.currentTime;
+        if (record.fadein > 0) {
+            gain.gain.setValueAtTime(0, now);
+            gain.gain.linearRampToValueAtTime(target, now + record.fadein / 1000);
+        } else {
+            gain.gain.setValueAtTime(target, now);
+        }
+
+        if (!this.startPass(ctx, record, startSec)) {
             this.active.delete(id);
-            if (kind === 'music') this.updateMediaSessionState();
-            this.onMediaCaption?.({ kind, name, key: opts.key, caption: opts.caption, action: 'stops' });
-            this.onMediaFinished?.(filename, name, kind, opts.key ?? '', opts.tag ?? '');
-        };
-        source.onended = onPassEnded;
-
+            return -1;
+        }
+        ensureKeepAlive();
+        this.announceStart(record);
         if (kind === 'music') this.updateMediaSessionState(name);
         return id;
+    }
+
+    /**
+     * Start a pass of `a` at `offsetSec` on a fresh node (a node can be started
+     * once). Web Audio's loop flag only repeats forever, so it serves -1 alone,
+     * looping between start and finish when a finish is set; a finite count
+     * plays each pass on its own node, and each pass is reported with its own
+     * sysMediaStarted / sysMediaFinished, as Mudlet's playlist does. A finish
+     * ends each finite pass there.
+     */
+    private startPass(ctx: AudioContext, a: ActiveSource, offsetSec: number): boolean {
+        const src = ctx.createBufferSource();
+        src.buffer = a.buffer ?? null;
+        src.connect(a.gain);
+        if (a.passesLeft === -1) {
+            src.loop = true;
+            if (a.finishSec !== undefined) {
+                src.loopStart = a.startSec;
+                src.loopEnd = a.finishSec;
+            }
+        }
+        const now = ctx.currentTime;
+        try {
+            if (a.passesLeft !== -1 && a.finishSec !== undefined) {
+                src.start(now, offsetSec, Math.max(0, a.finishSec - offsetSec));
+            } else {
+                src.start(now, offsetSec);
+            }
+        } catch (e) {
+            console.warn(`[sound] start failed for "${a.name}":`, e);
+            return false;
+        }
+        a.source = src;
+        a.state = 'playing';
+        a.passStartedAt = now;
+        a.passOffset = offsetSec;
+        src.onended = () => this.onPassEnded(ctx, a, src);
+        return true;
+    }
+
+    private onPassEnded(ctx: AudioContext, a: ActiveSource, src: AudioBufferSourceNode): void {
+        // A node a pause or a later pass has replaced is no longer this
+        // source's to report.
+        if (a.source !== src || this.active.get(a.id) !== a) return;
+        if (!a.stopping && a.passesLeft > 0) {
+            a.passesLeft--;
+            this.announceFinish(a);
+            if (this.startPass(ctx, a, a.startSec)) {
+                this.announceStart(a);
+                return;
+            }
+            this.active.delete(a.id);
+            if (a.kind === 'music') this.updateMediaSessionState();
+            this.onMediaCaption?.({ kind: a.kind, name: a.name, key: a.key, caption: a.caption, action: 'stops' });
+            return;
+        }
+        this.end(a, false);
+    }
+
+    /**
+     * Take `a` off the books and report its end. A stop reports it inside the
+     * call, as desktop's does, but prints the closing caption a turn later:
+     * TMedia releases a stopped player one event-loop turn late, and that turn
+     * is what prints it.
+     */
+    private end(a: ActiveSource, deferCaption: boolean): void {
+        this.active.delete(a.id);
+        if (a.kind === 'music') this.updateMediaSessionState();
+        if (!a.announced) return;
+        const caption = () =>
+            this.onMediaCaption?.({ kind: a.kind, name: a.name, key: a.key, caption: a.caption, action: 'stops' });
+        if (deferCaption) setTimeout(caption, 0);
+        else caption();
+        this.announceFinish(a);
+    }
+
+    /**
+     * Mudlet's media events are (file, path, mediaType, key, tag): the played
+     * file's name, then its full path. An absent key or tag is an empty
+     * QString there, so it must be '' here and not undefined — a nil would
+     * shift every argument after it in Lua.
+     */
+    private eventArgs(a: ActiveSource): [string, string, MediaKind, string, string] {
+        return [baseName(a.path), a.path, a.kind, a.key ?? '', a.tag ?? ''];
+    }
+
+    private announceStart(a: ActiveSource): void {
+        if (!a.announced) {
+            this.onMediaCaption?.({ kind: a.kind, name: a.name, key: a.key, caption: a.caption, action: 'plays' });
+        }
+        a.announced = true;
+        this.onMediaStarted?.(...this.eventArgs(a));
+    }
+
+    private announceFinish(a: ActiveSource): void {
+        this.onMediaFinished?.(...this.eventArgs(a));
+    }
+
+    private pauseKind(kind: 'sound' | 'music', channel?: string | MediaFilter): void {
+        const ctx = sharedContext;
+        if (!ctx) return;
+        const filter = typeof channel === 'string' ? { tag: channel } : channel ?? {};
+        for (const a of [...this.active.values()]) {
+            if (a.kind !== kind || a.stopping || a.state === 'paused' || !matchesFilter(a, filter, true)) continue;
+            if (a.state === 'loading') {
+                // Nothing has started yet: hold it at its start once decoded.
+                a.state = 'paused';
+                continue;
+            }
+            a.pausedAt = this.position(ctx, a);
+            const src = a.source;
+            a.source = undefined;
+            a.state = 'paused';
+            if (src) {
+                src.onended = null;
+                try { src.stop(); } catch { /* already stopped */ }
+            }
+            this.onMediaPaused?.(...this.eventArgs(a));
+        }
+    }
+
+    /** Where in the track `a`'s current pass has got to, in seconds. */
+    private position(ctx: AudioContext, a: ActiveSource): number {
+        let pos = a.passOffset + Math.max(0, ctx.currentTime - a.passStartedAt);
+        const end = a.finishSec ?? a.buffer?.duration;
+        if (end !== undefined && pos >= end) {
+            if (a.passesLeft === -1 && end > a.startSec) {
+                pos = a.startSec + ((pos - a.startSec) % (end - a.startSec));
+            } else {
+                pos = end;
+            }
+        }
+        return pos;
+    }
+
+    /** Resume the paused source a play request names — see {@link resume}. */
+    private resumeMatching(kind: 'sound' | 'music', opts: PlaySoundOptions): number | undefined {
+        return this.resume(kind, { name: opts.name, key: opts.key, tag: opts.tag, origin: opts.origin ?? 'api' });
+    }
+
+    /**
+     * Resume a paused source of `kind` that the request matches, the way
+     * desktop's isMediaMatch() picks one: each of name, key and tag that the
+     * request gives must match, and it must give at least one. This is how a
+     * server resumes over GMCP with a key or tag alone. Returns the source's
+     * id, or undefined when nothing paused matches.
+     */
+    resume(kind: 'sound' | 'music', req: { name?: string; key?: string; tag?: string; origin?: MediaOrigin }): number | undefined {
+        if (!req.name && !req.key && !req.tag) return undefined;
+        const origin: MediaOrigin = req.origin ?? 'api';
+        for (const a of this.active.values()) {
+            if (a.kind !== kind || a.state !== 'paused' || a.stopping || a.origin !== origin) continue;
+            if (req.name && a.name !== req.name && a.path !== req.name) continue;
+            if (req.key && a.key !== req.key) continue;
+            if (req.tag && a.tag !== req.tag) continue;
+            const ctx = sharedContext;
+            if (!ctx) return undefined;
+            if (!a.buffer) {
+                // Paused before it had loaded: let the pending play start it.
+                a.state = 'loading';
+                return a.id;
+            }
+            a.gain.gain.cancelScheduledValues(ctx.currentTime);
+            a.gain.gain.setValueAtTime(this.effectiveGain(a), ctx.currentTime);
+            if (!this.startPass(ctx, a, a.pausedAt)) {
+                this.active.delete(a.id);
+                return -1;
+            }
+            ensureKeepAlive();
+            this.announceStart(a);
+            if (kind === 'music') this.updateMediaSessionState(a.name);
+            return a.id;
+        }
+        return undefined;
     }
 
     private fadeAndStop(ctx: AudioContext, a: ActiveSource, fadeMs: number): void {
         if (a.stopping) return;
         a.stopping = true;
-        const now = ctx.currentTime;
-        if (fadeMs > 0) {
-            const cur = a.gain.gain.value;
-            a.gain.gain.cancelScheduledValues(now);
-            a.gain.gain.setValueAtTime(cur, now);
-            a.gain.gain.linearRampToValueAtTime(0, now + fadeMs / 1000);
-            try { a.source.stop(now + fadeMs / 1000); } catch { /* already stopped */ }
-        } else {
-            try { a.source.stop(); } catch { /* already stopped */ }
+        const src = a.source;
+        if (!src) {
+            // Still loading, or paused: there is no node to stop. A paused
+            // source did start, so its end is reported like any other.
+            this.end(a, true);
+            return;
         }
+        const now = ctx.currentTime;
+        if (fadeMs <= 0) {
+            // Ended here and now, so reported here and now rather than when
+            // the node gets round to its onended.
+            src.onended = null;
+            try { src.stop(); } catch { /* already stopped */ }
+            this.end(a, true);
+            return;
+        }
+        a.fading = true;
+        const cur = a.gain.gain.value;
+        a.gain.gain.cancelScheduledValues(now);
+        a.gain.gain.setValueAtTime(cur, now);
+        a.gain.gain.linearRampToValueAtTime(0, now + fadeMs / 1000);
+        try { src.stop(now + fadeMs / 1000); } catch { /* already stopped */ }
     }
 
-    private isMusicPlaying(name: string, key: string | undefined): boolean {
+    /** The music track a `continue` request would carry on with: the same
+     *  name, and the same key when the request gives one. */
+    private playingMusic(name: string, key: string | undefined): ActiveSource | undefined {
         for (const a of this.active.values()) {
-            if (a.kind !== 'music') continue;
-            if (key !== undefined) { if (a.key === key) return true; }
-            else if (a.name === name) return true;
+            if (a.kind !== 'music' || a.stopping || a.state === 'paused') continue;
+            if (a.name === name && (key === undefined || a.key === key)) return a;
         }
-        return false;
+        return undefined;
     }
 
     private stopMusicMatching(name: string, key: string | undefined): void {
@@ -671,23 +921,56 @@ export class SoundManager {
 
     private firstActiveMusicName(): string | null {
         for (const a of this.active.values()) {
-            if (a.kind === 'music' && !a.stopping) return a.name;
+            if (a.kind === 'music' && !a.stopping && a.state !== 'paused') return a.name;
         }
         return null;
     }
+}
+
+/** One entry of {@link SoundManager.getPlaying} / {@link SoundManager.getPaused}. */
+export interface MediaListing {
+    name: string;
+    key?: string;
+    tag?: string;
+    volume: number;
+    priority?: number;
 }
 
 function baseName(path: string): string {
     return path.split(/[\\/]/).pop() || path;
 }
 
-function matchesFilter(a: ActiveSource, f: MediaFilter): boolean {
-    if (f.name && a.name !== f.name && baseName(a.name) !== baseName(f.name)) return false;
+/** How long a stop fades `a` out for. A `fadeaway` stop always fades — over
+ *  its own fadeout, else the source's, else desktop's five seconds. */
+function stopFade(a: ActiveSource, opts: { fadeout?: number; fadeaway?: boolean }): number {
+    if (opts.fadeaway) {
+        if (opts.fadeout !== undefined && opts.fadeout > 0) return opts.fadeout;
+        return a.fadeout > 0 ? a.fadeout : DEFAULT_FADEAWAY_MS;
+    }
+    return opts.fadeout !== undefined ? opts.fadeout : a.fadeout;
+}
+
+/**
+ * Whether `a` is one `f` names. `forStop` is for a stop or pause, which spares
+ * a source whose priority equals the filter's — desktop's TMedia stops only
+ * the lower ones — where a query lists it.
+ */
+function matchesFilter(a: ActiveSource, f: MediaFilter, forStop: boolean): boolean {
+    if (f.name && !nameMatches(a, f.name)) return false;
     if (f.key && a.key !== f.key) return false;
     if (f.tag && a.tag !== f.tag) return false;
-    if (f.priority !== undefined && (a.priority ?? 0) > f.priority) return false;
+    if (f.priority !== undefined) {
+        const p = a.priority ?? 0;
+        if (forStop ? p >= f.priority : p > f.priority) return false;
+    }
     if (f.origin && a.origin !== f.origin) return false;
     return true;
+}
+
+function nameMatches(a: ActiveSource, name: string): boolean {
+    if (a.name === name || a.path === name) return true;
+    const want = baseName(name);
+    return baseName(a.name) === want || baseName(a.path) === want;
 }
 
 function clamp01(v: number): number {

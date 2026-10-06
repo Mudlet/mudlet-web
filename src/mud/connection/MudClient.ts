@@ -435,6 +435,7 @@ export class MudClient {
         });
 
         this.msdpStream = createMsdpStream({
+            decode: (bytes) => this.codec.decodeOutOfBand(bytes),
             onEnvelope: ({ path, value }) => {
                 (this.eventBus.emit as (event: string, ...args: unknown[]) => void)(`msdp.${path}`, value);
                 this.eventBus.emit('msdp', { path, value });
@@ -1142,7 +1143,7 @@ export class MudClient {
             return false;
         }
         try {
-            this.sendBytes(encodeMsdp(variable, values));
+            this.sendBytes(encodeMsdp(variable, values, text => this.codec.encodeOutOfBand(text)));
             return true;
         } catch (error) {
             console.error('Error sending MSDP message:', error);

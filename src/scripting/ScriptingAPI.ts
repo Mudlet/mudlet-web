@@ -57,6 +57,7 @@ import { ProfilesPresence } from './profilesPresence';
 import { MapStore } from '../map/MapStore';
 import { type EngineHost, type TempComplexTriggerSpec, NULL_ENGINE_HOST } from './EngineHost';
 import { BUNDLED_GAMES, findBundledGame } from '../mud/games/bundledGames';
+import { TAB_COMPLETION_LINES, tabCompletionPool } from '../ui/tabCompletion';
 
 // Mudlet's TChar always carries baked-in fg/bg colors (the rendered pair), so
 // getFgColor/getBgColor never return "no color" for in-bounds positions. Mudlet Web
@@ -793,6 +794,12 @@ class ScriptingWindowsAPI {
     getCmdLineValue(id: string): string {
         return this.session.windows.getCmdLineValue(id);
     }
+    hasCommandLine(id: string): boolean {
+        return this.session.windows.hasCommandLine(id);
+    }
+    deleteCommandLine(id: string): boolean {
+        return this.session.windows.deleteCommandLine(id);
+    }
 }
 
 // ── Labels ────────────────────────────────────────────────────────────────────
@@ -1294,8 +1301,8 @@ export class ScriptingAPI {
         // the coalesced reload cannot run while that chunk is on the stack.
         this.host.flushPendingApplies();
         // `data` is a BYTE-STRING: one char per byte, as a socket produces and
-        // as everything downstream reads it (MSDP decodes its values from UTF-8
-        // bytes, for one). The Lua binding unarmors it into that shape — see
+        // as everything downstream reads it (MSDP decodes its values from the
+        // game's bytes, for one). The Lua binding unarmors it into that shape — see
         // byteArmor.ts for why the crossing cannot be made in plain text.
         //
         // The `<T_IAC><T_GA>`-style placeholders are decoded after: a telnet
@@ -4948,10 +4955,16 @@ export class ScriptingAPI {
             // line and a getCurrentLine on no line at all (mudlet-web#273).
             const y = this.getLineCount(windowName);
             con.moveTo(y, Math.max(0, (con.lineText(y)?.length ?? 0) - 1));
-        } else {
-            con.moveToEnd();
-            con.setCursorColumn(con.getLine().length);
+            // The leading-newline latch is left as it is. beginLine set it for
+            // the matched line's missing terminator; once an echo has ended
+            // that line, a following "\n" ends the empty line after it — a
+            // blank line on desktop, whose echo always appends whatever the
+            // cursor does. Re-arming it here swallowed that blank line
+            // (generic_mapper's print_echoes, mudlet-web#343).
+            return;
         }
+        con.moveToEnd();
+        con.setCursorColumn(con.getLine().length);
         con.markCursorAtEnd();
     }
 
@@ -5643,73 +5656,100 @@ export class ScriptingAPI {
         return this.cmdLineValue ?? this.cmdLineProvider?.() ?? '';
     }
 
-    // ── Command-line tab-completion suggestions ───────────────────────────────
-    // Mudlet's addCmdLineSuggestion family. Stored as an insertion-ordered Set
-    // so addCmdLineSuggestion("a"); add("b") feeds tab completion as ["a","b"].
-    // CommandBar merges these with command history when computing matches.
-    // Mutations emit `script.cmdlinesuggestions` with the current snapshot so
-    // React can re-render without polling.
-    private cmdLineSuggestions = new Set<string>();
+    // ── Command-line tab-completion suggestions and blacklist ─────────────────
+    // Mudlet's addCmdLineSuggestion / addCmdLineBlacklist families. Each
+    // TCommandLine keeps its own two lists, so they are held per command-line
+    // name here: "main" for the command bar, else a createCommandLine line or a
+    // miniconsole's / user window's own one. Words added for a named line used
+    // to land on the main bar (#342). The suggestions are insertion-ordered
+    // Sets; the blacklist is subtractive across everything Tab draws from (the
+    // buffer and the suggestions alike) and matched case-insensitively, as
+    // TCommandLine does — it is how you stop Tab offering a word the game keeps
+    // saying. The main bar's lists also go out as `script.cmdlinesuggestions` /
+    // `script.cmdlineblacklist` snapshots, so React re-renders without polling;
+    // a named line reads its own at Tab time through cmdLineCompletionWords.
+    private cmdLineSuggestions = new Map<string, Set<string>>();
+    private cmdLineBlacklist = new Map<string, Set<string>>();
 
-    addCmdLineSuggestion(suggestion: string): void {
-        const s = suggestion ?? '';
-        if (!s) return;
-        if (this.cmdLineSuggestions.has(s)) return;
-        this.cmdLineSuggestions.add(s);
-        this.emitCmdLineSuggestions();
+    private completionList(lists: Map<string, Set<string>>, cmdLine: string): Set<string> {
+        let set = lists.get(cmdLine);
+        if (!set) { set = new Set(); lists.set(cmdLine, set); }
+        return set;
     }
 
-    removeCmdLineSuggestion(suggestion: string): void {
-        if (this.cmdLineSuggestions.delete(suggestion ?? '')) {
-            this.emitCmdLineSuggestions();
+    addCmdLineSuggestion(suggestion: string, cmdLine = 'main'): void {
+        const s = suggestion ?? '';
+        const set = this.completionList(this.cmdLineSuggestions, cmdLine);
+        if (!s || set.has(s)) return;
+        set.add(s);
+        this.emitCmdLineSuggestions(cmdLine);
+    }
+
+    removeCmdLineSuggestion(suggestion: string, cmdLine = 'main'): void {
+        if (this.cmdLineSuggestions.get(cmdLine)?.delete(suggestion ?? '')) {
+            this.emitCmdLineSuggestions(cmdLine);
         }
     }
 
-    clearCmdLineSuggestions(): void {
-        if (this.cmdLineSuggestions.size === 0) return;
-        this.cmdLineSuggestions.clear();
-        this.emitCmdLineSuggestions();
+    clearCmdLineSuggestions(cmdLine = 'main'): void {
+        const set = this.cmdLineSuggestions.get(cmdLine);
+        if (!set || set.size === 0) return;
+        set.clear();
+        this.emitCmdLineSuggestions(cmdLine);
     }
 
-    getCmdLineSuggestions(): string[] {
-        return [...this.cmdLineSuggestions];
+    getCmdLineSuggestions(cmdLine = 'main'): string[] {
+        return [...(this.cmdLineSuggestions.get(cmdLine) ?? [])];
     }
 
-    private emitCmdLineSuggestions(): void {
-        this.session.events.emit('script.cmdlinesuggestions', [...this.cmdLineSuggestions]);
+    private emitCmdLineSuggestions(cmdLine: string): void {
+        if (cmdLine !== 'main') return;
+        this.session.events.emit('script.cmdlinesuggestions', this.getCmdLineSuggestions());
     }
 
-    // ── Command-line tab-completion blacklist ────────────────────────────────
-    // Mudlet's addCmdLineBlacklist family. The blacklist is subtractive, and it
-    // applies to every source Tab draws from — buffer words, history and the
-    // suggestions above — not just the ones a script added, which is the point
-    // of it: it's how you stop Tab offering a word the game keeps saying.
-    // Matched case-insensitively, as TCommandLine does.
-    private cmdLineBlacklist = new Set<string>();
-
-    addCmdLineBlacklist(word: string): void {
+    addCmdLineBlacklist(word: string, cmdLine = 'main'): void {
         const w = word ?? '';
-        if (!w || this.cmdLineBlacklist.has(w)) return;
-        this.cmdLineBlacklist.add(w);
-        this.emitCmdLineBlacklist();
+        const set = this.completionList(this.cmdLineBlacklist, cmdLine);
+        if (!w || set.has(w)) return;
+        set.add(w);
+        this.emitCmdLineBlacklist(cmdLine);
     }
 
-    removeCmdLineBlacklist(word: string): void {
-        if (this.cmdLineBlacklist.delete(word ?? '')) this.emitCmdLineBlacklist();
+    removeCmdLineBlacklist(word: string, cmdLine = 'main'): void {
+        if (this.cmdLineBlacklist.get(cmdLine)?.delete(word ?? '')) this.emitCmdLineBlacklist(cmdLine);
     }
 
-    clearCmdLineBlacklist(): void {
-        if (this.cmdLineBlacklist.size === 0) return;
-        this.cmdLineBlacklist.clear();
-        this.emitCmdLineBlacklist();
+    clearCmdLineBlacklist(cmdLine = 'main'): void {
+        const set = this.cmdLineBlacklist.get(cmdLine);
+        if (!set || set.size === 0) return;
+        set.clear();
+        this.emitCmdLineBlacklist(cmdLine);
     }
 
-    getCmdLineBlacklist(): string[] {
-        return [...this.cmdLineBlacklist];
+    getCmdLineBlacklist(cmdLine = 'main'): string[] {
+        return [...(this.cmdLineBlacklist.get(cmdLine) ?? [])];
     }
 
-    private emitCmdLineBlacklist(): void {
-        this.session.events.emit('script.cmdlineblacklist', [...this.cmdLineBlacklist]);
+    private emitCmdLineBlacklist(cmdLine: string): void {
+        if (cmdLine !== 'main') return;
+        this.session.events.emit('script.cmdlineblacklist', this.getCmdLineBlacklist());
+    }
+
+    /** A deleted command line takes its lists with it; one made later under
+     *  the same name starts empty, as a new TCommandLine does. */
+    forgetCmdLineCompletion(cmdLine: string): void {
+        if (cmdLine === 'main') return;
+        this.cmdLineSuggestions.delete(cmdLine);
+        this.cmdLineBlacklist.delete(cmdLine);
+    }
+
+    /** The Tab-completion pool for command line `cmdLine` as it stands now:
+     *  the main console's last 500 lines, then the line's suggestions, less
+     *  its blacklist — what TCommandLine::handleTabCompletion assembles on
+     *  every press. Every command line reads the MAIN console's buffer. */
+    cmdLineCompletionWords(cmdLine = 'main'): string[] {
+        const lines = this.session.consoles.get('main')?.getEndLines(TAB_COMPLETION_LINES) ?? [];
+        return tabCompletionPool(lines, this.getCmdLineSuggestions(cmdLine), this.getCmdLineBlacklist(cmdLine));
     }
 
     // ── Per-command-line history saving ─────────────────────────────────────
