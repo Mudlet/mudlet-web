@@ -1651,7 +1651,7 @@ export class LuaRuntime implements IScriptingRuntime {
         // since it needs access to the line's AnsiAwareBuffer (the trigger
         // engine itself only sees plain text). Self-expires after
         // `expirationCount` fires.
-        this.lua.global.set('__mudlet_tempColorTrigger', (fg: unknown, bg: unknown, cbId: number, expirationCount?: number) => {
+        this.lua.global.set('__mudlet_tempColorTrigger', (fg: unknown, bg: unknown, cbId: number, expirationCount?: number, uncompiled?: unknown) => {
             const wantFg = Number(fg);
             const wantBg = Number(bg);
             const max = (typeof expirationCount === 'number' && expirationCount > 0) ? expirationCount : -1;
@@ -1663,7 +1663,8 @@ export class LuaRuntime implements IScriptingRuntime {
             // colour counts as a miss rather than a match that did nothing —
             // which is what lets a stay-open window fire on it.
             const unsub = this.api.triggers.addTemp('', (matches) => {
-                if (killed || this.tempIds.get(id)?.enabled === false) return;
+                const entry = this.tempIds.get(id);
+                if (killed || entry?.enabled === false || entry?.uncompiled) return;
                 // matches[1] is the coloured RUN, not the whole line — the
                 // empty-substring pattern this rides on has no match text of
                 // its own, so the colour lookup supplies it. A fire with no
@@ -1687,9 +1688,14 @@ export class LuaRuntime implements IScriptingRuntime {
                 // Named after its id, as every temp trigger is, so
                 // setTriggerStayOpen(tostring(id), n) finds it.
                 name: String(id),
-                accept: () => this.api.currentLineColorMatch(wantFg, wantBg) !== null,
+                accept: () => uncompiled !== true && this.api.currentLineColorMatch(wantFg, wantBg) !== null,
             });
-            this.tempIds.set(id, { kill: () => { unsub(); releaseCb(cbId); }, type: 'trigger', enabled: true });
+            // A body that did not compile: made, but never fires and isActive()
+            // says 0 (tempItemEnabled), as installTempTrigger's.
+            this.tempIds.set(id, {
+                kill: () => { unsub(); releaseCb(cbId); }, type: 'trigger', enabled: true,
+                uncompiled: uncompiled === true,
+            });
             return id;
         });
 

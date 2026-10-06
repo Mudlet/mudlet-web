@@ -4884,10 +4884,15 @@ end
 -- matching foreground/background.
 do
     local _raw = __mudlet_tempColorTrigger
+    -- A body that does not compile still makes the trigger, inactive, as
+    -- the plain temp triggers do (see __mudlet_uncompiled).
+    local function body(fn, who)
+        local compiled = __mudlet_to_fn(fn, who, 3)
+        return __mudlet_register_cb(compiled), __mudlet_uncompiled[compiled] == true
+    end
     function tempColorTrigger(fg, bg, fn, expirationCount)
-        return _raw(tonumber(fg) or -1, tonumber(bg) or -1,
-            __mudlet_register_cb(__mudlet_to_fn(fn, "tempColorTrigger", 3)),
-            expirationCount)
+        local cb, uncompiled = body(fn, "tempColorTrigger")
+        return _raw(tonumber(fg) or -1, tonumber(bg) or -1, cb, expirationCount, uncompiled)
     end
     -- Mudlet tempAnsiColorTrigger(ansiFg, ansiBg, code [, expirationCount]).
     -- ANSI 256-colour indices (0..255), plus the two sentinels TTrigger declares:
@@ -4902,9 +4907,8 @@ do
         local nb = tonumber(bg)
         if not nf or (nf < 0 and nf ~= -2) then nf = -1 end
         if not nb or (nb < 0 and nb ~= -2) then nb = -1 end
-        return _raw(nf, nb,
-            __mudlet_register_cb(__mudlet_to_fn(fn, "tempAnsiColorTrigger", 3)),
-            expirationCount)
+        local cb, uncompiled = body(fn, "tempAnsiColorTrigger")
+        return _raw(nf, nb, cb, expirationCount, uncompiled)
     end
 end
 
@@ -4925,6 +4929,9 @@ do
                                      filter, matchAll, hlFgColor, hlBgColor, soundFile,
                                      fireLength, lineDelta, expireAfter)
         local userFn = __mudlet_to_fn(code, "tempComplexRegexTrigger", 3)
+        -- A body that does not compile still makes the trigger, but it is
+        -- inactive however it is switched: no fire, no highlight.
+        local uncompiled = __mudlet_uncompiled[userFn] == true
         local matchAllOn = tonumber(matchAll) == 1
 
         -- Arguments 5 and 6 decide what KIND of pattern argument 2 is, and
@@ -4974,7 +4981,7 @@ do
             matchAllOn,
             tonumber(fireLength) or 0,
             tonumber(lineDelta) or 0,
-            hlFgColor, hlBgColor)
+            hlFgColor, hlBgColor, uncompiled)
         return id
     end
 end
