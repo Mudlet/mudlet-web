@@ -945,6 +945,60 @@ describe("Trigger processing", function()
             assert.has_error(function() feedTriggers({}) end)
         end)
 
+        it("stops a trigger that feeds itself more than one matching line", function()
+            local fired = 0
+            local refusals = 0
+            local id
+            id = tempRegexTrigger("^feed_myself_twice$", function()
+                fired = fired + 1
+                -- Without the fix this branches 2^50 ways; bail out so the spec fails instead of hanging
+                if fired > 1000 then
+                    disableTrigger(id)
+                    return
+                end
+                local ok = feedTriggers("feed_myself_twice\nfeed_myself_twice\n")
+                if ok == nil then
+                    refusals = refusals + 1
+                end
+            end)
+
+            feedTriggers("\nfeed_myself_twice\n")
+
+            killTrigger(id)
+            -- Each line the outermost fire feeds runs one chain down to the cap
+            assert.is_true(fired < 1000, "the loop should be stopped at the cap, fired " .. fired .. " times")
+            assert.is_true(refusals > 0, "feeds below a stopped chain should be refused")
+        end)
+
+        it("still lets another trigger on the same line feed after a runaway is stopped", function()
+            local fired = 0
+            local runaway
+            runaway = tempRegexTrigger("^runaway_(start|again)$", function()
+                fired = fired + 1
+                if fired > 1000 then
+                    disableTrigger(runaway)
+                    return
+                end
+                pcall(feedTriggers, "runaway_again\nrunaway_again\n")
+            end)
+            -- Matches only the outermost line, so it runs once, after the runaway's chain
+            local other = tempRegexTrigger("^runaway_start$", function()
+                feedTriggers("other_trigger_line\n")
+            end)
+            local reached = false
+            local receiver = tempRegexTrigger("^other_trigger_line$", function()
+                reached = true
+            end)
+
+            feedTriggers("\nrunaway_start\n")
+
+            killTrigger(runaway)
+            killTrigger(other)
+            killTrigger(receiver)
+            assert.is_true(fired < 1000, "the runaway should be stopped, fired " .. fired .. " times")
+            assert.is_true(reached, "the other trigger's feed should still be processed")
+        end)
+
     end)
 
     describe("temporary trigger creation and firing", function()
@@ -3848,6 +3902,154 @@ describe("Trigger processing", function()
                 "the first fire's capture was overwritten by the second fire")
         end)
 
+    end)
+
+    -- Building "matches" or "multimatches" makes a Lua value per capture, and any
+    -- of those allocations can run a __gc finaliser. One that starts an alias or
+    -- trigger pass would replace the capture lists the build is still walking, so
+    -- such a pass is refused until the build is done.
+    describe("a pass a finaliser starts while the capture tables are built", function()
+        local triggerIds, triggerNames, aliasIds = {}, {}, {}
+        local finaliser = {armed = false, inside = false, runs = 0, limit = 500}
+
+        -- Each finaliser leaves another proxy behind, so one runs at every allocation
+        local function chain()
+            local proxy = newproxy(true)
+            getmetatable(proxy).__gc = function()
+                if not finaliser.armed then
+                    return
+                end
+                if not finaliser.inside and finaliser.runs < finaliser.limit then
+                    finaliser.runs = finaliser.runs + 1
+                    finaliser.inside = true
+                    pcall(finaliser.onRun)
+                    finaliser.inside = false
+                end
+                chain()
+            end
+        end
+
+        -- With a pause of 0 every allocation finishes a whole collection cycle
+        local function withFinaliserAtEveryAllocation(run)
+            local pause = collectgarbage("setpause", 0)
+            local stepmul = collectgarbage("setstepmul", 0)
+            finaliser.armed, finaliser.inside, finaliser.runs = true, false, 0
+            chain()
+            collectgarbage()
+            local ok, message = pcall(run)
+            finaliser.armed = false
+            collectgarbage("setpause", pause)
+            collectgarbage("setstepmul", stepmul)
+            collectgarbage()
+            assert(ok, message)
+        end
+
+        before_each(function()
+            _G.CaptureBuildSpec = {}
+            aliasIds[#aliasIds + 1] = tempAlias("^capturebuildalias$", function() end)
+            -- Most runs land outside a build, where the pass goes ahead as usual
+            finaliser.onRun = function()
+                if expandAlias("capturebuildalias", false) == false then
+                    CaptureBuildSpec.refused = true
+                end
+            end
+        end)
+
+        after_each(function()
+            for _, id in ipairs(triggerIds) do
+                killTrigger(id)
+            end
+            for _, name in ipairs(triggerNames) do
+                killTrigger(name)
+            end
+            for _, id in ipairs(aliasIds) do
+                killAlias(id)
+            end
+            triggerIds, triggerNames, aliasIds = {}, {}, {}
+            _G.CaptureBuildSpec = nil
+        end)
+
+        -- Long enough that a finaliser lands between two captures, not only before the first
+        local word = string.rep("abcdefghij", 12)
+
+        it("keeps a multiline trigger's captures when a finaliser expands an alias", function()
+            triggerNames[#triggerNames + 1] = "CaptureBuildMulti"
+            tempComplexRegexTrigger("CaptureBuildMulti", [[^capturebuild one (\w+)$]], [[]], 1, 0, 0, 0, 0, 0, 0, 0, 0, 3)
+            tempComplexRegexTrigger("CaptureBuildMulti", [[^capturebuild two (\w+)$]], [==[
+                CaptureBuildSpec.multi = {multimatches[1] and multimatches[1][2], multimatches[2] and multimatches[2][2]}
+            ]==], 1, 0, 0, 0, 0, 0, 0, 0, 0, 3)
+
+            feedTriggers("capturebuild one " .. word .. "1\n")
+            withFinaliserAtEveryAllocation(function()
+                feedTriggers("capturebuild two " .. word .. "2\n")
+            end)
+
+            assert.is_true(finaliser.runs > 20, "finalisers stopped running before the capture tables were built")
+            assert.are.same({word .. "1", word .. "2"}, CaptureBuildSpec.multi)
+            assert.is_true(CaptureBuildSpec.refused, "no finaliser ran while the capture tables were being built")
+        end)
+
+        it("keeps a single-line trigger's captures when a finaliser expands an alias", function()
+            triggerIds[#triggerIds + 1] = tempRegexTrigger("^CaptureBuildSingle (\\w+) (\\w+) (\\w+)$", function()
+                CaptureBuildSpec.matches = {matches[2], matches[3], matches[4]}
+            end)
+
+            withFinaliserAtEveryAllocation(function()
+                feedTriggers("\nCaptureBuildSingle " .. word .. "1 " .. word .. "2 " .. word .. "3\n")
+            end)
+
+            assert.is_true(finaliser.runs > 20, "finalisers stopped running before the capture tables were built")
+            assert.are.same({word .. "1", word .. "2", word .. "3"}, CaptureBuildSpec.matches)
+            assert.is_true(CaptureBuildSpec.refused, "no finaliser ran while the capture tables were being built")
+        end)
+
+        -- A line fed just before the build still goes through, so the outer
+        -- script's captures are not checked here, only that the build is not cut into
+        it("turns away a line a finaliser feeds the triggers while the capture tables are built", function()
+            -- The first trigger starts the feeding before the second one's captures are built, which
+            -- is before its script runs or, with the capture globals deferred, when it reads matches
+            triggerIds[#triggerIds + 1] = tempRegexTrigger("^CaptureBuildFed (\\w+) (\\w+)$", function()
+                CaptureBuildSpec.feeding = true
+            end)
+            triggerIds[#triggerIds + 1] = tempRegexTrigger("^CaptureBuildFed (\\w+) (\\w+)$", function()
+                local _ = matches[2]
+                CaptureBuildSpec.feeding = false
+            end)
+            triggerIds[#triggerIds + 1] = tempRegexTrigger("^CaptureBuildInner (\\w+)$", function()
+                CaptureBuildSpec.inner = (CaptureBuildSpec.inner or 0) + 1
+            end)
+            finaliser.onRun = function()
+                if CaptureBuildSpec.feeding then
+                    CaptureBuildSpec.fed = (CaptureBuildSpec.fed or 0) + 1
+                    feedTriggers("\nCaptureBuildInner x\n")
+                end
+            end
+
+            withFinaliserAtEveryAllocation(function()
+                feedTriggers("\nCaptureBuildFed " .. word .. "1 " .. word .. "2\n")
+            end)
+
+            local fed, inner = CaptureBuildSpec.fed or 0, CaptureBuildSpec.inner or 0
+            assert.is_true(fed > 0, "no finaliser fed a line")
+            assert.is_true(inner < fed, "every line a finaliser fed was processed, so none arrived while the capture tables were being built")
+        end)
+
+        it("still expands aliases once the capture tables are built", function()
+            local expanded = false
+            aliasIds[#aliasIds + 1] = tempAlias("^capturebuildafter$", function()
+                expanded = true
+            end)
+            triggerIds[#triggerIds + 1] = tempRegexTrigger("^CaptureBuildAfter (\\w+)$", function()
+                local _ = matches[2]
+            end)
+
+            withFinaliserAtEveryAllocation(function()
+                feedTriggers("\nCaptureBuildAfter " .. word .. "\n")
+            end)
+
+            assert.is_true(expandAlias("capturebuildafter", false))
+            assert.is_true(expanded)
+        end)
     end)
 
     -- "matches", "multimatches" and "line" are only built for a script that
