@@ -4936,6 +4936,15 @@ end`);
             `set-channel102 ${variable}`);
     }
 
+    /** Records one ATCP message in the Lua `atcp` global — Mudlet's
+     *  setAtcpTable rawset. The event is raised separately by the engine. */
+    setAtcpValue(name: string, value: string): void {
+        if (this.inert) return;
+        this.lua.global.set('__mudlet_atcp_name', name);
+        this.lua.global.set('__mudlet_atcp_val', value);
+        this.runChunk('__mudlet_set_atcp(__mudlet_atcp_name, __mudlet_atcp_val)', `set-atcp "${name}"`);
+    }
+
     // Bridges a single MSSP variable into the Lua `mssp` global. `name` is the
     // flat variable name (e.g. "PLAYERS"); `value` is the reported string.
     setMsspValue(name: string, value: string): void {

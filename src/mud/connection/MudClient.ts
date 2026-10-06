@@ -25,8 +25,10 @@ import {
     MSSP_COMMAND_CODE,
     MXP_COMMAND_CODE,
     NEW_ENVIRON_COMMAND_CODE,
+    ATCP_COMMAND_CODE,
     OPT_ATCP,
     OPT_TELNET_102,
+    parseAtcpMessage,
     TELNET_102_COMMAND_CODE,
     SessionCodec,
     toByteString,
@@ -451,6 +453,7 @@ export class MudClient {
             else if (code === MXP_COMMAND_CODE) this.negotiator.handleMxpSubneg();
             else if (code === NEW_ENVIRON_COMMAND_CODE) this.negotiator.handleNewEnvironSubneg(subneg);
             else if (code === TELNET_102_COMMAND_CODE) this.handleChannel102Subneg(subneg);
+            else if (code === ATCP_COMMAND_CODE) this.handleAtcpSubneg(subneg);
         }, this.telnetParserOpts);
         // The option commands these two handlers send themselves are noted in
         // the negotiator's option bitsets, which Mudlet keeps for every option
@@ -1133,8 +1136,11 @@ export class MudClient {
 
     /** Mudlet `sendATCP(message)`. Frames `IAC SB ATCP <message> IAC SE` (ATCP =
      *  telnet option 200, GMCP's predecessor) and sends it raw. Returns false
-     *  when the socket isn't open. */
+     *  when ATCP isn't negotiated or the socket isn't open. */
     sendATCP(message: string): boolean {
+        // Mudlet refuses unless the option is live (`isATCPEnabled`), so a
+        // send before negotiation or after the server's WONT goes nowhere.
+        if (!this.negotiator.isAtcpEnabled()) return false;
         // Transcoded to UTF-8 rather than to the session encoding — the same
         // divergence from Mudlet's `encodeAndCookBytes` that `encodeGmcpRaw`
         // documents, and for the same reason: ATCP bodies are GMCP-shaped. Without
@@ -1169,6 +1175,19 @@ export class MudClient {
             variable: subneg.charCodeAt(1) & 0xff,
             value: subneg.charCodeAt(2) & 0xff,
         });
+    }
+
+    /** An `IAC SB ATCP <message> IAC SE` body — Mudlet's ATCP branch of
+     *  `processTelnetCommand`. The message, decoded under the server encoding,
+     *  becomes one `atcp` table entry and event (`setATCPVariables`); an empty
+     *  one is ignored. `Auth.Request` is then answered with the hello. Like
+     *  desktop, neither depends on ATCP having been negotiated. */
+    private handleAtcpSubneg(subneg: string): void {
+        const body = subneg.slice(1);
+        if (body.length === 0) return;
+        const message = parseAtcpMessage(this.codec.decodeOutOfBand(body));
+        if (message) this.eventBus.emit('atcp', message);
+        if (body.startsWith('Auth.Request')) this.negotiator.sendAtcpHello();
     }
 
     /** Frame an `IAC SB <opt> <payload> IAC SE` subnegotiation and send it.

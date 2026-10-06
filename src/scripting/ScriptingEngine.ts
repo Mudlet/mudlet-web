@@ -5912,6 +5912,13 @@ export class ScriptingEngine implements EngineHost {
                 this.runtimes.lua?.setChannel102Value(variable, value);
                 this.emit('channel102Message', [variable, value]);
             }),
+            // Mudlet `setAtcpTable` — an inbound ATCP message is stored as
+            // atcp[name] and raised as an event of that name, its value the
+            // one argument after it ("CharVitals", "H:100/120 ...").
+            session.events.on('atcp', ({ name, value }) => {
+                this.runtimes.lua?.setAtcpValue(name, value);
+                this.emit(name, [value]);
+            }),
             session.events.on('mssp', ({ name, value }) => {
                 // Mirror Mudlet TLuaInterpreter::parseMSSP: write the value into
                 // the Lua `mssp` global, then raise a single `mssp.<VARNAME>`

@@ -4163,6 +4163,13 @@ function __mudlet_set_channel102(variable, value)
     channel102[variable] = value
 end
 
+-- Mudlet's `atcp` table (Other.lua declares it): setAtcpTable rawsets one
+-- string per inbound ATCP message, keyed by its dotless name.
+function __mudlet_set_atcp(name, value)
+    if type(atcp) ~= 'table' then atcp = {} end
+    rawset(atcp, name, value)
+end
+
 function __mudlet_set_mssp(key, value)
     if type(mssp) ~= 'table' then mssp = {} end
     mssp[key] = value
