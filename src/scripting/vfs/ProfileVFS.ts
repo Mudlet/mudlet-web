@@ -279,10 +279,43 @@ export class ProfileVFS {
         this.afterWrite(abs, 'remove');
     }
 
-    rename(oldPath: string, newPath: string): void {
+    /**
+     * Move a file or directory. By default a missing parent of the target is
+     * created, which the app's own callers rely on. `{ posix: true }` is
+     * `rename(2)`, what Lua's `os.rename` is on desktop: the target's directory
+     * must already exist (ENOENT, or ENOTDIR under a file), a directory may
+     * replace only an empty directory (ENOTEMPTY otherwise, ENOTDIR for a
+     * file) and never move into itself (EINVAL), and a file never replaces a
+     * directory (EISDIR).
+     */
+    rename(oldPath: string, newPath: string, { posix = false }: { posix?: boolean } = {}): void {
         const absOld = this.beforeRead(this.resolvePath(oldPath));
         const absNew = this.resolvePath(newPath);
-        ensureParentDir(absNew);
+        if (posix) {
+            this.checkPosixPath(oldPath, 'EBUSY');
+            this.checkPosixPath(newPath, 'EBUSY');
+            const from = this.stat(absOld)?.type;
+            if (!from) throw new FsError('ENOENT', absOld);
+            if (from !== 'dir' && (/\/$/.test(oldPath) || /\/$/.test(newPath))) throw new FsError('ENOTDIR', absNew);
+            if (absOld === absNew) return;
+            const parent = absNew.substring(0, absNew.lastIndexOf('/')) || '/';
+            const parentType = this.stat(parent)?.type;
+            if (!parentType) throw new FsError('ENOENT', absNew);
+            if (parentType !== 'dir') throw new FsError('ENOTDIR', absNew);
+            const to = this.stat(absNew)?.type;
+            if (from === 'dir') {
+                if (absNew.startsWith(absOld + '/')) throw new FsError('EINVAL', absNew);
+                if (to && to !== 'dir') throw new FsError('ENOTDIR', absNew);
+                if (to === 'dir') {
+                    if (readdirSync(absNew).length > 0) throw new FsError('ENOTEMPTY', absNew);
+                    rmdirSync(absNew);
+                }
+            } else if (to === 'dir') {
+                throw new FsError('EISDIR', absNew);
+            }
+        } else {
+            ensureParentDir(absNew);
+        }
         renameSync(absOld, absNew);
         this.invalidate(absOld);
         this.invalidate(absNew);
@@ -348,6 +381,9 @@ export class ProfileVFS {
      * empty directory is removed, as `rmdir(2)` would.
      */
     remove(path: string): void {
+        // glibc's remove() unlinks, and only on EISDIR tries rmdir — which
+        // refuses a path ending in "." (EINVAL).
+        this.checkPosixPath(path, 'EINVAL');
         const abs = this.resolvePath(path);
         // A symbolic link goes itself, whatever (if anything) it points at.
         let isLink = false;
@@ -360,6 +396,7 @@ export class ProfileVFS {
         }
         const type = this.stat(abs)?.type;
         if (!type) throw new FsError('ENOENT', abs);
+        if (type !== 'dir' && /\/$/.test(path)) throw new FsError('ENOTDIR', abs);
         if (type === 'dir') {
             this.rmdir(abs, { recursive: false });
         } else {
@@ -367,6 +404,27 @@ export class ProfileVFS {
         }
         this.invalidate(abs);
         this.afterWrite(abs, 'remove');
+    }
+
+    /**
+     * The parts of the kernel's path walk that `resolvePath`'s normalising
+     * would hide: an empty path names nothing (ENOENT), a plain file can't
+     * have anything under it (ENOTDIR), and a path ending in "." or ".." is
+     * refused with `dotErrno` — the profile root is not what `os.remove(".")`
+     * means.
+     */
+    private checkPosixPath(path: string, dotErrno: 'EINVAL' | 'EBUSY'): void {
+        if (path === '') throw new FsError('ENOENT');
+        const last = path.replace(/\/+$/, '').split('/').pop();
+        if (last === '.' || last === '..') throw new FsError(dotErrno, path);
+        const parts = this.resolvePath(path).split('/').filter(Boolean);
+        let dir = '';
+        for (let i = 0; i < parts.length - 1; i++) {
+            dir += '/' + parts[i];
+            const type = this.stat(dir)?.type;
+            if (!type) return;
+            if (type !== 'dir') throw new FsError('ENOTDIR', path);
+        }
     }
 
     /**

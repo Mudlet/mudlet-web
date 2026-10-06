@@ -3677,11 +3677,14 @@ end
 --     glibc space-pads it, "Jan  6";
 --   %Z prints the zone's full name ("Central European Standard Time") where
 --     glibc prints its abbreviation ("CET");
+--   %z gives a zone's minutes as a fraction of the hour times 100, "+0580"
+--     for India's "+0530";
 --   %s, the epoch seconds, and the GNU %P / %k / %l are not implemented and
 --     come out as themselves.
 -- Those are rewritten here before the format reaches it; everything else
--- already matches. %E and %O modifiers are dropped, which is what glibc does
--- with them in the C locale.
+-- already matches. Lua 5.1 hands strftime one conversion at a time ("%E", then
+-- "c" as plain text), so an %E or %O modifier is never seen with its
+-- conversion: glibc prints the pair as written, and so does this.
 -- os.clock() is CPU time on desktop (Lua 5.1's clock()) but wall time since
 -- start in emscripten; __mudlet_cpu_clock (bindings/session.ts) approximates
 -- the CPU clock by counting only the busy tasks that read it.
@@ -3715,17 +3718,17 @@ do
                 i = i + 1
             else
                 local spec = fmt:sub(i + 1, i + 1)
-                if (spec == "E" or spec == "O") and fmt:sub(i + 2, i + 2):match("%a") then
-                    i = i + 1
-                    spec = fmt:sub(i + 1, i + 1)
-                end
                 local rep
-                if spec == "c" then
+                if spec == "E" or spec == "O" then
+                    rep = "%%" .. spec
+                elseif spec == "c" then
                     rep = "%a %b %e %H:%M:%S %Y"
                 elseif spec == "s" and when then
                     -- glibc runs mktime over the broken-down time, so with "!"
                     -- the UTC fields are read back as local time.
                     rep = string.format("%d", utc and os.time(date("!*t", when)) or when)
+                elseif spec == "z" and when then
+                    rep = utc and "+0000" or __mudlet_tz_offset(when)
                 elseif spec == "Z" and not utc and when then
                     rep = __mudlet_tz_abbrev(when):gsub("%%", "%%%%")
                 elseif spec == "P" and when then
@@ -3744,6 +3747,87 @@ do
         end
         local r = date(table.concat(out), time)
         return r
+    end
+end
+
+-- ── os.time, for the years 0 to 99 ─────────────────────────────────────────
+-- emscripten's mktime builds a JavaScript Date, which reads a year from 0 to
+-- 99 as 1900 plus it, so os.time{year=50, ...} came out in 1950. The Gregorian
+-- calendar repeats every 400 years (146097 days, a whole number of weeks), and
+-- a year that early is before any zone's rules, so such a date is made 400
+-- years later and moved back. Lua 5.1's os.time never writes the normalised
+-- fields back to its table, so a copy is passed.
+do
+    local time = os.time
+    local SHIFT = 146097 * 86400
+
+    function os.time(t)
+        if type(t) == "table" then
+            local year = tonumber(rawget(t, "year"))
+            if year and year >= 0 and year < 100 then
+                local copy = {}
+                for k, v in pairs(t) do copy[k] = v end
+                copy.year = year + 400
+                local r = time(copy)
+                return r and r - SHIFT
+            end
+        end
+        local r = time(t)
+        return r
+    end
+end
+
+-- ── os.setlocale, as glibc answers it ──────────────────────────────────────
+-- emscripten's setlocale takes any name at all, and for LC_ALL reports
+-- musl's per-category list ("C.UTF-8;C;C;C;C;C"). glibc refuses a locale that
+-- isn't installed, returning nil, and names a uniform LC_ALL by its one name.
+-- A page has no locales to load: the C locale and its UTF-8 variant, the only
+-- ones every Linux has, are what it accepts, and the environment's ("") is
+-- C.UTF-8. Nothing is switched by it — the C library here only ever behaves
+-- as the C locale — but a script reading the name back sees what it set.
+do
+    local CATEGORIES = { "LC_CTYPE", "LC_NUMERIC", "LC_TIME", "LC_COLLATE", "LC_MONETARY", "LC_MESSAGES",
+        "LC_PAPER", "LC_NAME", "LC_ADDRESS", "LC_TELEPHONE", "LC_MEASUREMENT", "LC_IDENTIFICATION" }
+    local OPTIONS = { all = true, collate = "LC_COLLATE", ctype = "LC_CTYPE", monetary = "LC_MONETARY",
+        numeric = "LC_NUMERIC", time = "LC_TIME" }
+    local KNOWN = { C = true, POSIX = true, ["C.UTF-8"] = true, ["C.utf8"] = true }
+    local current = {}
+    for _, c in ipairs(CATEGORIES) do current[c] = "C" end
+
+    local function all()
+        local first = current[CATEGORIES[1]]
+        local parts, same = {}, true
+        for _, c in ipairs(CATEGORIES) do
+            if current[c] ~= first then same = false end
+            parts[#parts + 1] = c .. "=" .. current[c]
+        end
+        return same and first or table.concat(parts, ";")
+    end
+
+    function os.setlocale(locale, category)
+        if locale ~= nil and type(locale) ~= "string" and type(locale) ~= "number" then
+            error("bad argument #1 to 'setlocale' (string expected, got " .. type(locale) .. ")", 2)
+        end
+        if category ~= nil and type(category) ~= "string" and type(category) ~= "number" then
+            error("bad argument #2 to 'setlocale' (string expected, got " .. type(category) .. ")", 2)
+        end
+        local option = category == nil and "all" or tostring(category)
+        local which = OPTIONS[option]
+        if not which then
+            error("bad argument #2 to 'setlocale' (invalid option '" .. option .. "')", 2)
+        end
+        if locale == nil then
+            return which == true and all() or current[which]
+        end
+        local name = tostring(locale)
+        if name == "" then name = "C.UTF-8" end
+        if not KNOWN[name] then return nil end
+        if which == true then
+            for _, c in ipairs(CATEGORIES) do current[c] = name end
+            return name
+        end
+        current[which] = name
+        return name
     end
 end
 

@@ -3671,7 +3671,7 @@ end`);
                 // A target already there is replaced: its inode goes, as a
                 // removed file's does.
                 const replaced = oldAbs !== newAbs && vfs.exists(newPath);
-                vfs.rename(oldPath, newPath);
+                vfs.rename(oldPath, newPath, { posix: true });
                 if (oldAbs !== newAbs) {
                     this.notifyVfsPathChange(
                         { path: oldAbs, kind: 'remove' },
@@ -3681,6 +3681,27 @@ end`);
                 return true;
             }
             catch (e) { failWith(e, oldPath); return false; }
+        });
+
+        // os.tmpname(): Lua 5.1 on desktop uses mkstemp, so the name it returns
+        // is a file that already exists, empty, in /tmp — ready for io.open.
+        // /tmp here is in the VFS's in-memory root, outside every profile, and
+        // so as temporary as the real one.
+        this.lua.global.set('__vfs_os_tmpname__', (): string | null => {
+            if (!vfs) { setError('no profile VFS'); return null; }
+            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+            try {
+                vfs.mkdir('/tmp');
+                for (let attempt = 0; attempt < 100; attempt++) {
+                    let suffix = '';
+                    for (let i = 0; i < 6; i++) suffix += chars[Math.floor(Math.random() * chars.length)];
+                    const name = `/tmp/lua_${suffix}`;
+                    if (vfs.exists(name)) continue;
+                    vfs.writeBinaryFile(name, new Uint8Array(0), { createParents: false });
+                    return name;
+                }
+            } catch { /* fall through to the failure */ }
+            return null;
         });
 
         this.lua.global.set('__vfs_lfs_chdir__', (path: string): boolean => {

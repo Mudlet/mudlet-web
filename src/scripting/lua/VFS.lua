@@ -11,6 +11,7 @@ do
     local _profile_dir = __vfs_profile_dir__
     local _os_remove   = __vfs_os_remove__
     local _os_rename   = __vfs_os_rename__
+    local _os_tmpname  = __vfs_os_tmpname__
     local _chdir       = __vfs_lfs_chdir__
     local _currentdir  = __vfs_lfs_currentdir__
     local _mkdir       = __vfs_lfs_mkdir__
@@ -30,6 +31,7 @@ do
     __vfs_profile_dir__    = nil
     __vfs_os_remove__      = nil
     __vfs_os_rename__      = nil
+    __vfs_os_tmpname__     = nil
     __vfs_lfs_chdir__      = nil
     __vfs_lfs_currentdir__ = nil
     __vfs_lfs_mkdir__      = nil
@@ -699,6 +701,14 @@ do
             return _fail()
         end
         return true
+    end
+
+    -- The name of a new, empty file in /tmp, as Lua 5.1's mkstemp-backed
+    -- tmpname gives it on desktop; raises as that one does when it can't.
+    os.tmpname = function()
+        local name = _os_tmpname()
+        if not name then error("unable to generate a unique filename", 0) end
+        return name
     end
 
     -- ── zip ──────────────────────────────────────────────────────────────────
