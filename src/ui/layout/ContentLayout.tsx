@@ -117,7 +117,7 @@ export function ContentLayout({
     const showTop    = hasTop    || dragState?.potentialDock === 'top';
     const showBottom = hasBottom || dragState?.potentialDock === 'bottom';
 
-    const buttonStrips = useButtonStrips({ connectionId, engineRef: scriptingEngineRef ?? NULL_ENGINE_REF, vfs });
+    const buttonStrips = useButtonStrips({ connectionId, engineRef: scriptingEngineRef ?? NULL_ENGINE_REF, vfs, commandInputRef });
 
     // Content pool — one panel component per open window, mounted once for its
     // lifetime. Each renders into a stable portal-target div that the layout

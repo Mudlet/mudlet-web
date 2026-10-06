@@ -868,6 +868,7 @@ export class ScriptingEngine implements EngineHost {
             // Map-open notification keeps map-aware scripts in sync if the
             // map is already visible at connection time.
             // Mudlet passes `true` for a profile load, `false` after resetProfile().
+            this.runPushDownButtonsAtLoad();
             this.raiseEvent('sysLoadEvent', [true]);
             if (this.api.windows.isVisible(MAP_WIDGET_ID)) this.mapOpen.notify();
             // Default/brand packages installed just above never go through
@@ -1648,6 +1649,23 @@ export class ScriptingEngine implements EngineHost {
         const buttons = useAppStore.getState().connectionButtons[this.connectionId] ?? [];
         inactiveButtons.set(this.connectionId, this.uncompilableIds('button', buttons));
         this.publishedInactiveButtons = inactiveButtons.get(this.connectionId);
+    }
+
+    /**
+     * Run every active push-down button once, in its saved state, as desktop
+     * does while a profile loads: TToolBar/TEasyButtonBar::addActionButtons
+     * and fillMenu execute each push-down button (menus' too) when
+     * `mIsProfileLoadingSequence` is set, with the console's mButtonState set
+     * from the saved state first. That is how a state-restoring button script
+     * re-applies itself on start (mudlet-web#356). Plain buttons do not run.
+     */
+    private runPushDownButtonsAtLoad(): void {
+        const buttons = useAppStore.getState().connectionButtons[this.connectionId] ?? [];
+        const active = buildEffectivelyEnabledIds(buttons, this.uncompilableIds('button', buttons));
+        for (const button of buttons) {
+            if (button.isGroup || !button.isPushDown || !active.has(button.id)) continue;
+            this.executeButton(button, !!button.buttonState);
+        }
     }
 
     /**
@@ -4051,15 +4069,19 @@ export class ScriptingEngine implements EngineHost {
         return !!target.buttonState;
     }
 
-    /** Mudlet `setButtonStyleSheet(name, css)`. Stores raw CSS on the
-     *  ButtonNode; ButtonsBar applies it inline. */
+    /** Mudlet `setButtonStyleSheet(name, css)`. Stores raw CSS on every
+     *  button, toolbar and menu with that name — desktop's
+     *  `getActionUnit()->findItems(name)` styles each match, and a toolbar's
+     *  sheet restyles the whole bar (mudlet-web#356). ButtonsBar applies it. */
     setButtonStyleSheetByName(name: string, css: string): boolean {
         if (!name) return false;
         const store = useAppStore.getState();
         const buttons = store.connectionButtons[this.connectionId] ?? [];
-        const target = buttons.find(b => !b.isGroup && b.name === name);
-        if (!target) return false;
-        store.updateButton(this.connectionId, target.id, { styleSheet: String(css ?? '') });
+        const targets = buttons.filter(b => b.name === name);
+        if (targets.length === 0) return false;
+        for (const target of targets) {
+            store.updateButton(this.connectionId, target.id, { styleSheet: String(css ?? '') });
+        }
         return true;
     }
 
@@ -5158,6 +5180,17 @@ export class ScriptingEngine implements EngineHost {
         // A button whose code will not compile cannot be active, and desktop
         // does not put it on a toolbar to be clicked (see applyButtonsFromStore).
         if (this.cannotCompile('button', button)) return;
+        // Desktop's TToolBar/TEasyButtonBar::slot_pressed flips the button's
+        // mButtonState before TAction::execute runs it, so the button's own
+        // script reading getButtonState("<its name>") sees the state it just
+        // went to, not the one it left (mudlet-web#356).
+        if (button.isPushDown) {
+            const live = (useAppStore.getState().connectionButtons[this.connectionId] ?? [])
+                .find(b => b.id === button.id);
+            if (live && !!live.buttonState !== nextState) {
+                useAppStore.getState().updateButton(this.connectionId, button.id, { buttonState: nextState });
+            }
+        }
         const cmd = button.isPushDown
             ? (nextState ? button.commandDown : button.command)
             : (button.commandDown || button.command);
