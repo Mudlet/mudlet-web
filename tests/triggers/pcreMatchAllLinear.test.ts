@@ -148,7 +148,8 @@ describe('match-all checks the line once', () => {
         try {
             const line = 'a\u{1F600}b';
             const starts = re.matchAll(line).map(m => m[0].start);
-            expect(starts).toEqual([0, 1, 3]);
+            // and on to the end of the line, where Mudlet's loop matches too
+            expect(starts).toEqual([0, 1, 3, 4]);
         } finally {
             re.destroy();
         }

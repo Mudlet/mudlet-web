@@ -1,6 +1,5 @@
 import type { AliasNode } from '../../storage/schema';
 import { PatternEngine, type AliasPattern } from '../PatternEngine';
-import { PCRE2_NO_UTF_CHECK, type Pcre2Match } from '../triggers/pcre/Pcre2';
 
 export type { AliasNode };
 
@@ -26,45 +25,37 @@ export interface PermAliasMatch {
 function matchAllCaptures(input: string, pattern: AliasPattern): { all: string[]; index: number; named: Record<string, string> } | null {
     const re = pattern.compiled();
     if (!re) return null;
+    // TAlias::match's loop, errors included: a pattern that runs into PCRE2's
+    // match limit is one that did not match, not an error that stops the
+    // command's other aliases (#361).
+    const hits = re.matchAll(input, true);
+    if (hits.length === 0) return null;
     const all: string[] = [];
-    // Named groups sit alongside the positional ones on the same table in
-    // Lua. A group on a branch that did not take part in the match has no
-    // capture to offer, so it is left out rather than written as an empty
-    // string — TAlias skips a PCRE2_UNSET slot for the same reason.
-    const named: Record<string, string> = {};
-    let index = -1;
-    let start = 0;
-    let m: Pcre2Match | null;
-    // Only the first call checks the input is valid UTF-16 (see Pcre2.matchAll).
-    let options = 0;
-    while ((m = re.matchFrom(input, start, options)) !== null) {
-        options = PCRE2_NO_UTF_CHECK;
-        const whole = m[0];
-        if (index < 0) index = whole.start;
+    for (const m of hits) {
         // pcre2_match returns one more than the highest group that took part,
         // and TAlias copies exactly that many — so a trailing optional group
         // that matched nothing adds no entry, while an unset one before a set
         // one still holds its place as an empty string.
         let last = m.length - 1;
         while (last > 0 && m[last].start < 0) last--;
-        all.push(whole.match);
+        all.push(m[0].match);
         for (let i = 1; i <= last; i++) all.push(m[i].start >= 0 ? m[i].match : '');
-        for (let i = 1; i < m.length; i++) {
-            const { name, start: at, match } = m[i];
-            if (name !== undefined && at >= 0 && named[name] === undefined) named[name] = match;
-        }
-        if (whole.end > whole.start) {
-            start = whole.end;
-        } else {
-            // A zero-width match would be found again at the same offset, so
-            // step past it — by a whole code point, since PCRE2 in UTF-16 mode
-            // rejects an offset that splits a surrogate pair.
-            if (whole.end >= input.length) break;
-            const cp = input.codePointAt(whole.end);
-            start = whole.end + (cp !== undefined && cp > 0xffff ? 2 : 1);
-        }
     }
-    return index < 0 ? null : { all, index, named };
+    // Named groups sit alongside the positional ones on the same table in
+    // Lua, and TAlias reads them once, from the FIRST match — a later
+    // occurrence is reachable positionally only. A group on a branch that did
+    // not take part has no capture to offer, so it is left out rather than
+    // written as an empty string — TAlias skips a PCRE2_UNSET slot for the same
+    // reason. Under (?J) several groups share a name and each one that took
+    // part overwrites the last, so the name holds the last of them, as it does
+    // for a trigger.
+    const named: Record<string, string> = {};
+    const first = hits[0];
+    for (let i = 1; i < first.length; i++) {
+        const { name, start: at, match } = first[i];
+        if (name !== undefined && at >= 0) named[name] = match;
+    }
+    return { all, index: first[0].start, named };
 }
 
 export class AliasEngine extends PatternEngine<AliasNode> {

@@ -124,23 +124,12 @@ function mergeAllMatches(results: MatchResult[]): MatchResult | null {
     if (results.length === 1) return first;
     const captures = [...first.captures];
     const captureSpans = [...(first.captureSpans ?? [])];
-    const namedGroups = { ...first.namedGroups };
-    const namedSpans = { ...first.namedSpans };
     for (const r of results.slice(1)) {
         captures.push(r.matchedText, ...r.captures);
         captureSpans.push(
             { start: r.matchStart ?? 0, length: r.matchedText.length },
             ...(r.captureSpans ?? r.captures.map(() => ({ start: 0, length: 0 }))),
         );
-        // A named group repeated across occurrences keeps the FIRST one, which is
-        // what a single-match trigger would have reported — later occurrences are
-        // reachable positionally.
-        for (const [name, value] of Object.entries(r.namedGroups ?? {})) {
-            if (!(name in namedGroups)) namedGroups[name] = value;
-        }
-        for (const [name, span] of Object.entries(r.namedSpans ?? {})) {
-            if (!(name in namedSpans)) namedSpans[name] = span;
-        }
     }
     return {
         captures,
@@ -152,8 +141,11 @@ function mergeAllMatches(results: MatchResult[]): MatchResult | null {
         // substring hands them only the first occurrence
         // (TTrigger::processSubstringMatch filters `captureList.front()`).
         filterMode: first.filterMode,
-        namedGroups: Object.keys(namedGroups).length > 0 ? namedGroups : undefined,
-        namedSpans: Object.keys(namedSpans).length > 0 ? namedSpans : undefined,
+        // TTrigger::match_perl reads the name table once, after the FIRST
+        // match: a later occurrence's named groups are reachable positionally
+        // only, even when the first left the name unset (#361).
+        namedGroups: first.namedGroups,
+        namedSpans: first.namedSpans,
     };
 }
 
@@ -265,19 +257,6 @@ type PcreMatch = { length: number; [k: number]: PcreMatchGroup; [k: string]: Pcr
 
 /** Kicked off at module load so PCRE is ready by the time anything matches. */
 const pcreReadyPromise = PCRE.init();
-
-// DEBUG: diagnose pcre2-wasm-universal's hardcoded 1000-iter cap in matchAll.
-function logSafetyLimit(callsite: string, pattern: string, subject: string): void {
-    const ansiCount = (subject.match(/\x1b\[/g) ?? []).length;
-    console.error('[matchAll safety limit]', {
-        callsite,
-        pattern,
-        subjectLength: subject.length,
-        ansiEscapeCount: ansiCount,
-        subjectHead: subject.slice(0, 200),
-        subjectTail: subject.slice(-200),
-    });
-}
 
 type CompiledOrEntry = {
     kind: 'or';
@@ -602,7 +581,6 @@ function buildMatcher(
     register: (re: PcreInstance) => void,
     onError?: (pattern: TriggerPattern, reason: string) => void,
     matchAll = false,
-    triggerName = '',
 ): Matcher | null {
     switch (p.type) {
         case 'regex': {
@@ -610,29 +588,24 @@ function buildMatcher(
             const re = compilePcre(p.text, reason => onError?.(p, reason));
             if (!re) return null;
             register(re);
+            // TTrigger::match_perl treats any error from pcre2_match — the
+            // match limit a badly backtracking pattern runs into, above all — as
+            // "no match", and under "match all" as the end of the loop. Thrown,
+            // it skipped every trigger after this one for the line (#361).
             if (matchAll) {
-                const patternText = p.text;
                 return (line) => {
                     const subject = pcreSubject(line);
                     // The single match first: most lines do not match at all,
                     // and this keeps them to one PCRE call and no allocation.
-                    const first = re.match(subject) as PcreMatch | null;
+                    const first = re.tryMatchFrom(subject, 0) as PcreMatch | null;
                     if (!first) return null;
-                    let all: PcreMatch[];
-                    try {
-                        all = re.matchAll(subject) as PcreMatch[];
-                    } catch (err) {
-                        if (err instanceof Error && err.message.includes('safety limit exceeded')) {
-                            logSafetyLimit(`trigger:${triggerName}(multipleMatches)`, patternText, line);
-                        }
-                        throw err;
-                    }
+                    const all = re.matchAll(subject, true) as PcreMatch[];
                     if (all.length <= 1) return pcreToMatchResult(first);
                     return mergeAllMatches(all.map(pcreToMatchResult));
                 };
             }
             return (line) => {
-                const m = re.match(pcreSubject(line)) as PcreMatch | null;
+                const m = re.tryMatchFrom(pcreSubject(line), 0) as PcreMatch | null;
                 if (!m) return null;
                 return pcreToMatchResult(m);
             };
@@ -1234,7 +1207,7 @@ export class TriggerEngine {
                     // still takes its multimatches row, which is empty — see
                     // advanceAndState.
                     conditions.push({
-                        test: buildMatcher(p, register, reportPatternError, matchAll, item.name),
+                        test: buildMatcher(p, register, reportPatternError, matchAll),
                         spacer: 0,
                     });
                 }
@@ -1252,7 +1225,7 @@ export class TriggerEngine {
             // turn, so only the last pattern could fire (issue #292).
             const tests: Matcher[] = [];
             for (const pattern of patterns) {
-                const test = buildMatcher(pattern, register, reportPatternError, matchAll, item.name);
+                const test = buildMatcher(pattern, register, reportPatternError, matchAll);
                 if (test) tests.push(test);
             }
 
@@ -1375,7 +1348,7 @@ export class TriggerEngine {
             entry.fn([text]);
             return true;
         }
-        const m = entry.re.match(pcreSubject(line)) as PcreMatch | null;
+        const m = entry.re.tryMatchFrom(pcreSubject(line), 0) as PcreMatch | null;
         if (!m || !accepted()) return false;
         const result = pcreToMatchResult(m);
         entry.fn(

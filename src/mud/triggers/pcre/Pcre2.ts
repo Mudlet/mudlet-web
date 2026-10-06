@@ -31,7 +31,9 @@
  * `_match` export takes no options argument, so the pcre2 wasm is patched as it
  * is served (vite-plugin/pcre2Wasm.ts) to take one; without the patch every
  * call re-checks from its start offset to the end of the line, which makes a
- * global match quadratic in the line's length.
+ * global match quadratic in the line's length. The same options argument
+ * carries the NOTEMPTY_ATSTART | ANCHORED retry that loop makes after an empty
+ * match, as Mudlet's does.
  *
  * The alias engine compiles its patterns with it too (PatternEngine), and so
  * does the Lua `rex` module (rex.ts); all of them share the same wasm module
@@ -49,6 +51,9 @@ const PCRE2_NO_MATCH = -1;
 /** pcre2_match option: the subject has already been checked for valid UTF, so
  *  don't scan it again. Only honoured by a patched wasm — see the header. */
 export const PCRE2_NO_UTF_CHECK = 0x40000000;
+/** pcre2_match options Mudlet's global-match loop retries an empty match with. */
+const PCRE2_NOTEMPTY_ATSTART = 0x00000008;
+const PCRE2_ANCHORED = 0x80000000;
 
 type Cfunc = (...args: number[]) => number;
 interface CFuncs {
@@ -294,54 +299,87 @@ export default class Pcre2 {
     }
 
     /**
-     * `includeEnd` also tries the offset at the very end of the subject, so a
-     * trailing empty match is reported — what lrexlib's `gmatch`/`gsub`/`count`
-     * do (`rex.count("abc", "x*")` is 4). The trigger engine leaves it off.
+     * {@link matchFrom} as Mudlet's trigger and alias code calls pcre2_match:
+     * any error is "no match". TTrigger::match_perl and TAlias::match treat a
+     * negative return from the first pcre2_match the same whatever it is, so a
+     * pattern that backtracks into the match limit (-47) is simply a pattern
+     * that did not match this line, and the triggers and aliases after it still
+     * run. Throwing here took the rest of the line's pass with it (#361).
      */
-    matchAll(subject: string, includeEnd = false): Pcre2Match[] {
-        // Mudlet's global-match loop (TAlias::match, TTrigger::match_perl):
-        // resume at the end of the last match, and when that match was
-        // zero-width step past the position rather than asking PCRE2 for the
-        // same empty match at the same offset for ever. Upstream's wrapper only
-        // does `start = iter[0].end`, so a pattern that can match nothing —
-        // `(\d*)`, the one Trigger_spec and Alias_spec use — spins until the
-        // safety cap fires, and that throw takes the whole line's trigger pass
-        // down with it.
-        //
-        // Mudlet retries at the same offset with PCRE2_NOTEMPTY_ATSTART before
-        // stepping; the `match` export this wrapper is built on takes no options
-        // argument, so the step here is unconditional. The two differ only for a
-        // pattern that prefers an empty match where a non-empty one also starts.
+    tryMatchFrom(subject: string, startOffset: number, options = 0): Pcre2Match | null {
+        try {
+            return this.matchFrom(subject, startOffset, options);
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Every match of the pattern in `subject`, by Mudlet's global-match loop
+     * (TTrigger::match_perl under "match all", and TAlias::match, which always
+     * runs it) — pcre2demo's loop:
+     *
+     *  - resume at the end of the last match, even when that is the end of the
+     *    subject, where a pattern that can match nothing still finds its empty
+     *    match (`(\d*)` on a line gives one there);
+     *  - after an EMPTY match, first ask again at the same offset with
+     *    PCRE2_NOTEMPTY_ATSTART | PCRE2_ANCHORED, so a pattern that preferred
+     *    nothing still reports the non-empty match it could make there (`a??`
+     *    on "aa" gives "", "a", "", "a", ""); only when that fails step one
+     *    code point on and match normally from there;
+     *  - stop after an empty match at the end of the subject.
+     *
+     * `lenient` is how the trigger and alias engines call it: an error from
+     * pcre2_match (the match limit, say) ends the loop with what was found so
+     * far, and an error on the first call means no match — desktop's
+     * `if (rc < 0) goto END`. Without it the error is thrown, as
+     * {@link matchFrom} throws.
+     */
+    matchAll(subject: string, lenient = false): Pcre2Match[] {
         const results: Pcre2Match[] = [];
-        let start = 0;
-        // Stepping one code point at a time over a long line is legitimate, so
-        // the cap has to scale with the subject. It is only here so that a bug
-        // in the loop terminates instead of hanging the tab.
-        let safety = 2 * subject.length + 1000;
+        const length = subject.length;
+        const call = (at: number, options: number): Pcre2Match | null =>
+            lenient ? this.tryMatchFrom(subject, at, options) : this.matchFrom(subject, at, options);
         // The first call checks the whole subject is valid UTF-16 — from offset
-        // 0 to the end — and throws if it isn't, as before. Every later call
-        // would repeat that check from its own offset to the end of the line,
-        // once per match, so it is skipped: pcre2_substitute's global loop does
+        // 0 to the end — and refuses it if it isn't. Every later call would
+        // repeat that check from its own offset to the end of the line, once
+        // per match, so it is skipped: Mudlet's loop and pcre2_substitute's do
         // the same. The loop only resumes at the end of a match or a whole code
         // point further on, so no offset it hands over splits a surrogate pair,
         // which is the other thing the check guards.
-        let options = 0;
-        let iter: Pcre2Match | null;
-        while ((start < subject.length || (includeEnd && start === subject.length))
-            && (iter = this.matchFrom(subject, start, options)) !== null) {
-            options = PCRE2_NO_UTF_CHECK;
-            results.push(iter);
-            const whole = iter[0];
-            if (whole.end > whole.start) {
-                start = whole.end;
-            } else {
+        const first = call(0, 0);
+        if (first === null) return results;
+        results.push(first);
+        let matchStart = first[0].start;
+        let matchEnd = first[0].end;
+        // Only here so that a bug in the loop terminates instead of hanging the
+        // tab: each offset costs at most an empty match, a retry and a
+        // non-empty match.
+        let safety = 3 * length + 1000;
+        for (;;) {
+            const at = matchEnd;
+            let options = PCRE2_NO_UTF_CHECK;
+            const retry = matchStart === matchEnd;
+            if (retry) {
+                if (at >= length) break;
+                options |= PCRE2_NOTEMPTY_ATSTART | PCRE2_ANCHORED;
+            }
+            let m = call(at, options);
+            // The empty match again means the module dropped the options (the
+            // unpatched wasm — see the header), which NOTEMPTY_ATSTART forbids.
+            if (m !== null && retry && m[0].start === at && m[0].end === at) m = null;
+            if (m === null) {
+                if (!retry) break;
                 // A surrogate pair is one code point but two UTF-16 code units,
                 // and PCRE2 in 16-bit UTF mode rejects an offset splitting one.
-                const cp = subject.codePointAt(whole.end);
-                start = whole.end + (cp !== undefined && cp > 0xffff ? 2 : 1);
+                const cp = subject.codePointAt(at);
+                matchEnd = at + (cp !== undefined && cp > 0xffff ? 2 : 1);
+            } else {
+                results.push(m);
+                matchStart = m[0].start;
+                matchEnd = m[0].end;
             }
-            safety--;
-            if (safety <= 0) throw new Error('safety limit exceeded');
+            if (--safety <= 0) throw new Error('safety limit exceeded');
         }
         return results;
     }
