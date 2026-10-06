@@ -5438,6 +5438,22 @@ export class ScriptingEngine implements EngineHost {
     }
 
     /**
+     * Lead the first server group with whatever an unterminated feedTriggers
+     * left held. Mudlet feeds both into the one TBuffer, whose mMudLine the
+     * fed text is still sitting in, so the server's next line completes it
+     * rather than arriving above it.
+     */
+    private withHeldFeedText(
+        groups: { text: string; type: string; fromServer?: boolean }[],
+    ): { text: string; type: string; fromServer?: boolean }[] {
+        const at = groups.findIndex(g => g.type === 'mud');
+        if (at < 0) return groups;
+        const held = this.api.takeHeldFeedText();
+        if (!held) return groups;
+        return groups.map((g, i) => (i === at ? { ...g, text: held + g.text } : g));
+    }
+
+    /**
      * Free everything killed while this batch was processed.
      *
      * Mudlet's alias/trigger/timer/key units each defer freeing a killed item to
@@ -5679,7 +5695,7 @@ export class ScriptingEngine implements EngineHost {
                     console.log('[FLUSH BATCH]', groups.map(g => ({ type: g.type, text: g.text })));
                 }
                 try {
-                    this.processFlushBatch(groups);
+                    this.processFlushBatch(this.withHeldFeedText(groups));
                 } catch (err) {
                     this.api.printError(`[scripting] line flush failed: ${err instanceof Error ? err.message : String(err)}`);
                 }

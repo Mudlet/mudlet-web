@@ -4002,6 +4002,10 @@ export class ScriptingAPI {
             // everything the outer pass does afterwards — selectString, the
             // colour calls that follow it — lands on that line instead.
             if (outerLine >= 0) this.mainConsole.moveTo(outerLine);
+            // But echoes no longer land on it: TConsole::echo writes onto the
+            // buffer's last line, which is now the open one after the fed
+            // lines, so what the outer trigger echoes next follows them.
+            this.echoOnMatchedLine = false;
             return;
         }
         this.inTriggerProcessing = false;
@@ -4238,8 +4242,17 @@ export class ScriptingAPI {
     // ── Triggers ──────────────────────────────────────────────────────────────
 
     /** Raw tail of the last {@link feedTriggers} call that had no trailing
-     *  newline, carried into the next one — see there. */
-    private feedTriggersRemainder = '';
+     *  newline, held until later data completes it — see feedTriggersText. */
+    private heldFeedText = '';
+
+    /** Hand over the held unterminated fed text, for the next batch to lead
+     *  with. The server's next lines complete it as well as a later feed does:
+     *  Mudlet runs both through the one TBuffer. */
+    takeHeldFeedText(): string {
+        const held = this.heldFeedText;
+        this.heldFeedText = '';
+        return held;
+    }
 
     /**
      * Feed bytes through the trigger pipeline as if they arrived from the MUD.
@@ -4300,45 +4313,36 @@ export class ScriptingAPI {
         // enable/disableTrigger immediately, so a script that creates or toggles
         // a trigger and feeds a line in the same chunk must see the new state.
         this.host.flushPendingApplies();
-        // A line the caller left unterminated is carried, as RAW text, into the
-        // next call: Mudlet feeds every call into the same TBuffer, so an escape
-        // sequence split across two feedTriggers is still parsed as one. Only
-        // re-joining the raw bytes reproduces that — the rendered partial has
-        // already lost the half-consumed sequence. It stays on screen meanwhile
-        // (echoed below) and is re-emitted from the batch once completed, which
-        // is why the display copy is cleared before the batch runs.
-        const lines = (this.feedTriggersRemainder + text).split('\n');
-        const remainder = lines[lines.length - 1];
-        const completeLines = lines.slice(0, -1);
-        this.feedTriggersRemainder = remainder;
-
-        if (completeLines.length === 0) {
-            // Only the new bytes: whatever was carried in is already displayed.
-            this.mainConsole.echo(text);
-            this.drainMain();
-            const partial = this.mainConsole.currentPartial;
-            if (partial.length > 0) this.session.events.emit('message', partial, 'script-partial');
+        // A line the caller left unterminated is held, as RAW text, until the
+        // next data completes it — Mudlet's TBuffer keeps it in mMudLine, which
+        // every later feed and every server packet appends to, and draws it only
+        // once a '\n' commits it. So it is not shown in the meantime (an echo
+        // made before then lands above it), and its triggers see it whole, once.
+        // Re-joining the raw bytes also keeps an escape sequence split across two
+        // feedTriggers parsed as one — the rendered text would have lost it.
+        const joined = this.takeHeldFeedText() + text;
+        const cut = joined.lastIndexOf('\n');
+        if (cut < 0) {
+            this.heldFeedText = joined;
             return true;
         }
+        const remainder = joined.slice(cut + 1);
 
-        // Drop any stray partial left by direct echo() calls (and the displayed
-        // copy of the carried-over remainder, which the batch below re-emits) so
-        // trigger echo accumulates fresh during batch processing — but keep
-        // history, so successive feedTriggers calls accumulate lines the way
-        // Mudlet appends fed text to the buffer (a full clear() would strand
-        // earlier lines).
+        // Drop any stray partial left by direct echo() calls so trigger echo
+        // accumulates fresh during batch processing — but keep history, so
+        // successive feedTriggers calls accumulate lines the way Mudlet appends
+        // fed text to the buffer (a full clear() would strand earlier lines).
         this.mainConsole.clearPartial();
 
         // With no engine bound yet (early init) the default host falls back to
         // emitting a raw flushLines event.
         // fromServer: false — an MXP `ESC[#z` in fed text is consumed but does
         // not switch the parser's mode, as in Mudlet.
-        this.host.processFlushBatch([{ text: completeLines.join('\n'), type: 'mud', fromServer: false }]);
+        this.host.processFlushBatch([{ text: joined.slice(0, cut), type: 'mud', fromServer: false }]);
 
-        if (remainder) {
-            this.mainConsole.echo(remainder);
-            this.drainMain();
-        }
+        // Appended rather than assigned: a trigger in the batch may have fed an
+        // unterminated line of its own, which this one's tail follows in mMudLine.
+        this.heldFeedText += remainder;
         const partial = this.mainConsole.currentPartial;
         if (partial.length > 0) this.session.events.emit('message', partial, 'script-partial');
         // Mudlet answers true once the text has been handed to the display.

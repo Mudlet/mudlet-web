@@ -2751,8 +2751,16 @@ end`,
         local n = select('#', ...)
         local a, b = ...
         local win, str
-        if n >= 2 and type(a) == 'string' and type(b) == 'string' then
-          win, str = a, b
+        -- As the original xEcho reads it: any second argument is the text,
+        -- whatever its type, so cecho("win", 42) echoes 42 into "win". Only a
+        -- number has a text the fast path can take as it is; anything else
+        -- goes the Lua way.
+        if n >= 2 and type(a) == 'string' and b then
+          if type(b) == 'string' then
+            win, str = a, b
+          elseif type(b) == 'number' then
+            win, str = a, tostring(b)
+          end
         elseif n >= 1 and type(a) == 'string' then
           win, str = 'main', a
         end
