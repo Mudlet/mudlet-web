@@ -7341,7 +7341,19 @@ do
     end
     scrollingActive            = knownWindowGuard(scrollingActive)
     getScroll                  = knownWindowGuard(getScroll)
-    scrollTo                   = knownWindowGuard(scrollTo)
+    -- scrollTo returns nothing on success, as desktop's does — a disabled
+    -- console included, where desktop's scroll simply doesn't happen. A lone
+    -- argument that lua_isnumber accepts ("40" as much as 40) is a line on
+    -- main, not a window name (TLuaInterpreter::scrollTo).
+    do
+        local guarded = knownWindowGuard(scrollTo, true)
+        scrollTo = function(...)
+            if select('#', ...) == 1 and tonumber((...)) then
+                return guarded("main", tonumber((...)))
+            end
+            return guarded(...)
+        end
+    end
     disableScrollBar           = knownWindowGuard(disableScrollBar, true)
     enableScrollBar            = knownWindowGuard(enableScrollBar, true)
     disableHorizontalScrollBar = knownWindowGuard(disableHorizontalScrollBar, true)
@@ -7362,6 +7374,15 @@ do
     end
     enableScrolling  = scrollGuard(enableScrolling)
     disableScrolling = scrollGuard(disableScrolling)
+
+    -- clearWindow / clearUserWindow return nothing at all, found or not:
+    -- desktop leaves them silent so a `lua clearWindow()` typed at the command
+    -- line doesn't print a result onto the console it just cleared.
+    do
+        local rawClearWindow, rawClearUserWindow = clearWindow, clearUserWindow
+        clearWindow = function(...) rawClearWindow(...) end
+        clearUserWindow = function(...) rawClearUserWindow(...) end
+    end
 
     -- setBackgroundColor([win,] r, g, b [, a]) — each component is 0-255 and the
     -- message names the offending one. Without a leading window name the call
