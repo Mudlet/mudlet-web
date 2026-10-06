@@ -73,7 +73,7 @@ describe('issue 4 — perm regex trigger matches[1] is the match, not the line',
   });
 });
 
-// setMatches builds matches/multimatches/namedCaptures with raw lua_createtable
+// setMatches builds matches/multimatches with raw lua_createtable
 // pushes (≈2.4× cheaper than wasmoon's auto-converting global.set). Lock the full
 // table shape so the optimization can't silently drop the named-capture merge or
 // the multimatches nesting.
@@ -82,9 +82,9 @@ describe('setMatches — raw-stack table shape', () => {
   beforeEach(async () => { env = await createTestRuntime(); });
   afterEach(() => env.dispose());
 
-  it('exposes numeric + named captures on matches, plus namedCaptures', () => {
+  it('exposes numeric + named captures on matches, and no namedCaptures global', () => {
     env.rt.runWithMatches(
-      'R = { matches[1], matches[2], matches[3], matches.hp, namedCaptures.hp }',
+      'R = { matches[1], matches[2], matches[3], matches.hp, rawget(_G, "namedCaptures") == nil }',
       'shape',
       ['HP 137/200', '137', '200'],   // matches: whole match + 2 captures
       undefined,
@@ -94,7 +94,7 @@ describe('setMatches — raw-stack table shape', () => {
     expect(env.run('return R[2]')).toBe('137');
     expect(env.run('return R[3]')).toBe('200');
     expect(env.run('return R[4]')).toBe('137');   // named merged onto matches
-    expect(env.run('return R[5]')).toBe('137');   // separate namedCaptures table
+    expect(env.run('return R[5]')).toBe(true);    // desktop has no namedCaptures (#374)
   });
 
   // TLuaInterpreter::setMatches: a multiline fire is handed multimatches and

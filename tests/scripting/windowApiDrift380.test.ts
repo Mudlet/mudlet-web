@@ -119,6 +119,13 @@ describe('window API matches desktop (#380)', () => {
       expect(env.run('return getFontSize()')).toBe(12);
     });
 
+    it("is not redirected by a script's own setFontSize", () => {
+      env.run('local real = setFontSize; setFontSize = function() return "hijacked" end; '
+        + 'R = setMiniConsoleFontSize("main", 14); setFontSize = real');
+      expect(env.run('return R')).toBe(true);
+      expect(env.run('return getFontSize("main")')).toBe(14);
+    });
+
     it('reports an unknown window as setFontSize does', () => {
       expect(all('setMiniConsoleFontSize("nope", 12)')).toBe('nil | window "nope" not found');
     });

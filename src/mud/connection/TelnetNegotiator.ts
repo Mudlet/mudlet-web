@@ -323,6 +323,12 @@ export class TelnetNegotiator {
         return this.enabledProtocols.has(OPT_TELNET_102_NUM);
     }
 
+    /** Whether we have agreed to the server's side of `opt` (sent it DO) and
+     *  not since turned it off — Mudlet's `hisOptionState`. */
+    isServerOptionOn(opt: number): boolean {
+        return this.hisOn.has(opt);
+    }
+
     /** Drop the negotiated-MSP latch without resetting the rest of the
      *  negotiation state — used on disconnect, where the option dies with the
      *  connection but reset() isn't otherwise run. */
@@ -662,8 +668,13 @@ export class TelnetNegotiator {
                 // and silence left the server unable to identify us (#188).
                 // The server offering its own terminal type (WILL) is taken up
                 // by the generic answer, as in Mudlet.
-                if (cmd === DO) this.sendOption(WILL, opt);
-                else this.respondToOtherOption(cmd, opt);
+                // Only while it is off: a repeated DO TTYPE goes unanswered,
+                // as desktop's `!myOptionState` guard leaves it (#379).
+                if (cmd === DO) {
+                    if (!this.myOn.has(opt)) this.sendOption(WILL, opt);
+                } else {
+                    this.respondToOtherOption(cmd, opt);
+                }
                 return;
             case OPT_NAWS: {
                 // The refusal here is announced whether or not NAWS was on —
@@ -676,23 +687,27 @@ export class TelnetNegotiator {
                     this.respondToOtherOption(cmd, opt);
                     return;
                 }
-                if (!f.nawsEnabled) {
-                    this.sendOption(WONT, opt);
-                    this.enabledProtocols.delete(OPT_NAWS);
-                    this.eventBus.emit('protocol.disabled', 'NAWS');
-                    return;
-                }
                 // The server asked for NAWS → start reporting window size.
                 // Mudlet never offers it unprompted: it waits for this DO, then
-                // answers WILL (unless already on), pushes the current
-                // dimensions, and re-sends them on every resize.
-                if (!this.myOn.has(OPT_NAWS)) {
+                // answers WILL, pushes the current dimensions, and re-sends them
+                // on every resize. A DO for NAWS we already have on is not
+                // answered at all — not even with WONT when the profile has
+                // since switched NAWS off (mudlet-web#379): desktop only
+                // answers an option that is currently off.
+                const firstAccept = !this.myOn.has(OPT_NAWS);
+                if (firstAccept) {
+                    if (!f.nawsEnabled) {
+                        this.sendOption(WONT, opt);
+                        this.nawsNegotiated = false;
+                        this.enabledProtocols.delete(OPT_NAWS);
+                        this.eventBus.emit('protocol.disabled', 'NAWS');
+                        return;
+                    }
                     this.sendOption(WILL, OPT_NAWS);
+                    this.nawsNegotiated = true;
+                    this.enabledProtocols.add(OPT_NAWS);
+                    this.eventBus.emit('protocol.enabled', 'NAWS');
                 }
-                const firstAccept = !this.nawsNegotiated;
-                this.nawsNegotiated = true;
-                this.enabledProtocols.add(OPT_NAWS);
-                this.eventBus.emit('protocol.enabled', 'NAWS');
                 // The game asked for the size now: forget what was last sent
                 // so it is answered even if unchanged (Mudlet zeroes mNaws_x/y).
                 this.lastNaws = null;
@@ -1032,6 +1047,10 @@ export class TelnetNegotiator {
         if (rows <= 0) return; // Mudlet sends nothing while the console has no height
         if (this.lastNaws && this.lastNaws.width === width && this.lastNaws.height === rows) return;
         this.lastNaws = { width, height: rows };
+        // Desktop's `sendNAWS` reads `enableNAWS` on every call, so switching
+        // it off mid-session stops the reports at once (mudlet-web#379). The
+        // size is still recorded as sent, as `sendCurrentNAWS` records it.
+        if (!this.flags.nawsEnabled) return;
         if (debugTelnetEnabled()) {
             const fallback = this.windowSize ? '' : ' (fallback — no size measured yet)';
             // eslint-disable-next-line no-console
