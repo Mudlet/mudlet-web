@@ -1042,9 +1042,9 @@ const MUDLET_GLOBALS: Completion[] = [
     variable('command',      'The last command-bar input, set before alias processing (Mudlet `command`)'),
     variable('multimatches', 'Multiline trigger captures'),
     variable('color_table',  'Mudlet color table: { colorName = {r, g, b} }'),
-    variable('speedWalkPath',   'getPath result: 1-indexed list of room IDs along the path (excludes the start room). Reset on every getPath call.'),
-    variable('speedWalkDir',    'getPath result: 1-indexed list of direction strings ("n"/"ne"/"up"/special-exit cmd) taken at each step. Reset on every getPath call.'),
-    variable('speedWalkWeight', 'getPath result: 1-indexed list of step costs (target room weights or per-exit weight overrides). Reset on every getPath call.'),
+    variable('speedWalkPath',   'getPath result: 1-indexed list of room IDs along the path (excludes the start room). Reset on every getPath call; nil until the first one.'),
+    variable('speedWalkDir',    'getPath result: 1-indexed list of direction strings ("n"/"ne"/"up"/special-exit cmd) taken at each step. Reset on every getPath call; nil until the first one.'),
+    variable('speedWalkWeight', 'getPath result: 1-indexed list of step costs (target room weights or per-exit weight overrides). Reset on every getPath call; nil until the first one.'),
 ];
 
 // ── Global completions (everything available at top level) ────────────────────
