@@ -20,6 +20,11 @@ const CORS_HEADERS: Record<string, string> = {
 // instead of a generic 502. Must match PROXY_ERROR_HEADER there.
 const PROXY_ERROR_HEADER = 'X-Mudlet-Proxy-Error';
 
+// Set when the target redirected: the url the reply came from. The browser
+// only sees the proxy's own url, and Mudlet reports the final one. Must match
+// PROXY_FINAL_URL_HEADER in HttpService.
+const FINAL_URL_HEADER = 'X-Mudlet-Final-Url';
+
 function fetchFailureReason(err: unknown, host: string): string {
     const cause = (err as { cause?: { code?: string } })?.cause;
     switch (cause?.code) {
@@ -111,6 +116,7 @@ async function forwardHttp(req: http.IncomingMessage, res: http.ServerResponse, 
         if (lk === 'content-encoding' || lk === 'content-length' || lk === 'transfer-encoding') return;
         outHeaders[k] = v;
     });
+    if (upstream.redirected) outHeaders[FINAL_URL_HEADER] = upstream.url;
     Object.assign(outHeaders, CORS_HEADERS);
     res.writeHead(upstream.status, outHeaders);
 

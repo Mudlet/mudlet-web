@@ -11,6 +11,7 @@ do
     local _profile_dir = __vfs_profile_dir__
     local _os_remove   = __vfs_os_remove__
     local _os_rename   = __vfs_os_rename__
+    local _os_tmpname  = __vfs_os_tmpname__
     local _chdir       = __vfs_lfs_chdir__
     local _currentdir  = __vfs_lfs_currentdir__
     local _mkdir       = __vfs_lfs_mkdir__
@@ -30,6 +31,7 @@ do
     __vfs_profile_dir__    = nil
     __vfs_os_remove__      = nil
     __vfs_os_rename__      = nil
+    __vfs_os_tmpname__     = nil
     __vfs_lfs_chdir__      = nil
     __vfs_lfs_currentdir__ = nil
     __vfs_lfs_mkdir__      = nil
@@ -82,8 +84,11 @@ do
 
     -- ── File handles ─────────────────────────────────────────────────────────
     -- Lua 5.1's liolib, over the VFS. A handle is userdata, as it is on
-    -- desktop (type(io.stdout) == "userdata"), sharing one metatable whose
-    -- __index holds the methods; what each one refers to lives in `files`.
+    -- desktop (type(io.stdout) == "userdata"), sharing one metatable shaped
+    -- like liolib's createmeta: the methods, __gc and __tostring live in the
+    -- metatable itself and __index is the metatable, so a script extending
+    -- every handle with `getmetatable(io.stdout).writeln = ...` works as it
+    -- does there. What each handle refers to lives in `files`.
     --   kind 'vfs'    — a VFS file (or io.tmpfile()'s unnamed one), by JS id
     --   kind 'stdin'  — always at end of file
     --   kind 'stdout' / 'stderr' — the process streams desktop writes to; here
@@ -95,8 +100,8 @@ do
     local files = setmetatable({}, { __mode = 'k' })
     local proto = newproxy(true)
     local fmeta = getmetatable(proto)
-    local methods = {}
-    fmeta.__index = methods
+    local methods = fmeta
+    fmeta.__index = fmeta
     fmeta.__tostring = function(f)
         local st = files[f]
         if st == nil or st.closed then return 'file (closed)' end
@@ -205,6 +210,17 @@ do
         st.closed = true
         if e then return nil, e end
         return true
+    end
+
+    -- io_gc: a handle collected while still open is closed, so what was
+    -- written to it reaches the file; the standard files are left alone.
+    -- Protected, because a finalizer has no caller to raise to — it can run
+    -- from any allocation, or from lua_close once the VFS is gone.
+    fmeta.__gc = function(f)
+        local st = files[f]
+        if st ~= nil and not st.closed and st.kind == 'vfs' then
+            pcall(closeFile, st)
+        end
     end
 
     function methods.read(f, ...)
@@ -699,6 +715,14 @@ do
             return _fail()
         end
         return true
+    end
+
+    -- The name of a new, empty file in /tmp, as Lua 5.1's mkstemp-backed
+    -- tmpname gives it on desktop; raises as that one does when it can't.
+    os.tmpname = function()
+        local name = _os_tmpname()
+        if not name then error("unable to generate a unique filename", 0) end
+        return name
     end
 
     -- ── zip ──────────────────────────────────────────────────────────────────

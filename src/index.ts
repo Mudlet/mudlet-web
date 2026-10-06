@@ -101,7 +101,6 @@ export type { OutputRendererControls } from "./ui/output/OutputRenderer";
 // Client (lower-level API)
 export { MudClient } from "./mud/connection/MudClient";
 export type { MudClientOptions } from "./mud/connection/MudClient";
-export { PingTracker } from "./mud/connection/PingTracker";
 export { createPassthroughProcessor } from "./mud/triggers/ChunkProcessor";
 export type { ChunkProcessor } from "./mud/triggers/ChunkProcessor";
 export { TriggerEngine } from "./mud/triggers/TriggerEngine";

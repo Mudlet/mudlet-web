@@ -1,4 +1,5 @@
 import type { TriggerPatternType } from '../../../storage/schema';
+import { parseQColor } from '../../../ui/labels/qColor';
 import type { BindingContext } from './context';
 
 /**
@@ -24,6 +25,9 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
     // exactly that reason. Takes the numeric id permScript just returned so it
     // can only ever remove the one it created, never a same-named sibling.
     lua.global.set('__mudlet_removeScriptById', (id: unknown) => api.removeScriptById(Number(id)));
+    // What the body permScript/setScript just installed raised as the engine
+    // ran it (the one and only run), or nil when it ran cleanly.
+    lua.global.set('__mudlet_scriptLoadError', (id: unknown) => api.scriptLoadError(Number(id)));
     // Mudlet permScript(name, parent, luaCode) — creates a persisted script
     // under an existing script group (parent="" → root). Returns the new
     // script's id (UUID string) or -1 on failure. The Bridge.lua wrapper
@@ -51,7 +55,7 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
     lua.global.set('__mudlet_tempComplexTrigger', (
         name: unknown, patternsStr: unknown, code: unknown,
         multiline: unknown, isFilter: unknown, multipleMatches: unknown,
-        fireLength: unknown, delta: unknown, hlFg: unknown, hlBg: unknown,
+        fireLength: unknown, delta: unknown, hlFg: unknown, hlBg: unknown, uncompiled?: unknown,
     ) => {
         const raw = String(patternsStr ?? '');
         const patterns = (raw.length === 0 ? [] : raw.split('\x01')).map(entry => {
@@ -61,12 +65,20 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
                 text: entry.slice(at + 1),
             };
         });
-        const highlight = (typeof hlFg === 'string' && hlFg) || (typeof hlBg === 'string' && hlBg)
-            ? {
-                fg: typeof hlFg === 'string' && hlFg ? hlFg : undefined,
-                bg: typeof hlBg === 'string' && hlBg ? hlBg : undefined,
-            }
-            : undefined;
+        // The highlight is the trigger's own built-in one, painted by the
+        // engine exactly as a permanent trigger's is — every occurrence under
+        // match-all, the groups rather than the whole match when there are
+        // any. The colours are QColor(name) on desktop, so an SVG keyword
+        // ("green" is 0,128,0) or a #hex, not a color_table entry
+        // (mudlet-web#327).
+        const toHex = (spec: unknown): string | undefined => {
+            if (typeof spec !== 'string' || !spec) return undefined;
+            const rgb = parseQColor(spec);
+            return rgb ? '#' + rgb.map(c => c.toString(16).padStart(2, '0')).join('') : undefined;
+        };
+        const fg = toHex(hlFg);
+        const bg = toHex(hlBg);
+        const highlight = fg || bg ? { fg, bg } : undefined;
         return api.tempComplexTrigger({
             name: String(name ?? ''),
             patterns,
@@ -77,6 +89,7 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
             fireLength: Math.max(0, Math.trunc(Number(fireLength)) || 0),
             delta: Math.max(0, Math.trunc(Number(delta)) || 0),
             highlight,
+            uncompiled: uncompiled === true,
         });
     });
     // Mudlet permSubstringTrigger(name, parent, patterns, luaCode). Same

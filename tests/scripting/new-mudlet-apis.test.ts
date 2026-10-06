@@ -90,6 +90,22 @@ describe('addMouseEvent / getMouseEvents / removeMouseEvent', () => {
     expect(rt.run('return removeMouseEvent("m1")')).toBe(true);
     expect(rt.run('return getMouseEvents().m1')).toBeNull();
   });
+
+  // Desktop's TTextEdit::slot_mouseAction raises the event with the entry's
+  // unique name, the console it was chosen from, and that console's selection
+  // (start x/y, end x/y) — not just the window name (issue #352).
+  it('passes the unique name, window and selection to the handler', () => {
+    rt.run(`
+      mouseEvArgs = nil
+      addMouseEvent("zz_one", "myMouseEv", "Probe One", "tip")
+      registerAnonymousEventHandler("myMouseEv", function(...) mouseEvArgs = {...} end)
+    `);
+    rt.session.mouseEvents.dispatch('zz_one', 'main', { startX: 0, startY: 0, endX: 5, endY: 1 });
+    expect(rt.run('return table.concat(mouseEvArgs, ",")')).toBe('myMouseEv,zz_one,main,0,0,5,1');
+    rt.session.mouseEvents.dispatch('zz_one', 'MC');
+    expect(rt.run('return table.concat(mouseEvArgs, ",")')).toBe('myMouseEv,zz_one,MC,0,0,0,0');
+    rt.run('removeMouseEvent("zz_one")');
+  });
 });
 
 describe('addCustomLine', () => {
@@ -100,8 +116,8 @@ describe('addCustomLine', () => {
   it('adds a point-list custom line that round-trips through getCustomLines', () => {
     rt.run('addRoom(1)');
     // A custom line decorates an exit the room already has — Mudlet refuses a
-    // direction with no exit (a stub counts), so give it one first.
-    rt.run('setExitStub(1, "north", true)');
+    // direction with no exit (a stub is not enough), so give it one first.
+    rt.run('addRoom(100); setExit(1, 100, "north")');
     expect(rt.run('return addCustomLine(1, {{0,0,0},{5,5,0}}, "north", "dot line", {255,0,0}, true)')).toBe(true);
     // Keyed by the SHORT direction name, which is what Mudlet's dirToString
     // normalises to and what its saved maps carry.
@@ -117,7 +133,7 @@ describe('addCustomLine', () => {
     rt.run('setExitStub(2, "north", true)');
     // Mudlet reports the refusal as (nil, errMsg), not a bare false.
     expect(rt.run('local _, e = addCustomLine(2, {{0,0,0}}, "north", "squiggle", {0,0,0}, false) return e'))
-      .toMatch(/not a valid line style/);
+      .toBe('line style must be "solid line", "dot line", "dash line", "dash dot line" or "dash dot dot line", got "squiggle"');
   });
 });
 
@@ -129,7 +145,8 @@ describe('setWindowWrapIndent / setWindowWrapHangingIndent', () => {
   it('accepts the main window and rejects an unknown named window', () => {
     expect(rt.run('return setWindowWrapIndent("main", 4)')).toBe(true);
     expect(rt.run('return setWindowWrapHangingIndent("main", 2)')).toBe(true);
-    expect(rt.run('return setWindowWrapIndent("nope", 4)')).toBe(false);
+    expect(rt.run('return select("#", setWindowWrapIndent("nope", 4))')).toBe(2);
+    expect(rt.run('return select(2, setWindowWrapIndent("nope", 4))')).toBe('window "nope" not found');
   });
 });
 

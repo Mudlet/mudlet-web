@@ -19,7 +19,7 @@ describe('echo', () => {
     afterAll(() => t.dispose());
 
     it('raises on a missing or wrongly typed argument, naming it', () => {
-        expect(raised(t, 'echo()')).toContain('echo: bad argument #1 type (text as string expected, got no value!)');
+        expect(raised(t, 'echo()')).toContain('echo: bad argument #1 type (text to display as string expected, got no value!)');
         expect(raised(t, 'echo({}, "x")')).toContain('echo: bad argument #1 type');
         expect(raised(t, 'echo("main", {})')).toContain('echo: bad argument #2 type');
     });

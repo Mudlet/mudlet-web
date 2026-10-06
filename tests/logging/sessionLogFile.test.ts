@@ -36,6 +36,7 @@ function fakeVfs() {
             writeFile: (p: string, c: string) => { files.set(p, c); },
             exists: (p: string) => files.has(p),
             readFile: (p: string) => files.get(p) ?? '',
+            deleteFile: (p: string) => { files.delete(p); },
         },
     };
 }

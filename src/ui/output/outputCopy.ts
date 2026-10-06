@@ -65,6 +65,68 @@ function collectLines(container: HTMLElement, keep: (el: Element) => boolean): S
     return out;
 }
 
+/** A selection as desktop's TTextEdit holds it (mPA / mPB): the line and
+ *  column of its first character and of its last, buffer lines counted from
+ *  0. All zero when nothing in the console is selected. */
+export interface SelectionBounds {
+    startX: number;
+    startY: number;
+    endX: number;
+    endY: number;
+}
+
+export const NO_SELECTION_BOUNDS: SelectionBounds = { startX: 0, startY: 0, endX: 0, endY: 0 };
+
+/** The column a range boundary falls on within a rendered line — the length
+ *  of the line's text before it, the timestamp gutter left out. */
+function columnAt(line: Element, node: Node, offset: number, buffer: AnsiAwareBuffer): number {
+    const content = line.querySelector('.output-msg-content');
+    if (!content) return 0;
+    const range = document.createRange();
+    range.setStart(content, 0);
+    try {
+        range.setEnd(node, offset);
+    } catch {
+        return 0;
+    }
+    // A boundary before the content collapses the range onto its end.
+    if (range.collapsed) return 0;
+    return Math.min(range.toString().length, buffer.length);
+}
+
+/**
+ * Where the selection lies in `container`, in the form addMouseEvent handlers
+ * receive it (TTextEdit::slot_mouseAction passes mPA.x, mPA.y, mPB.x, mPB.y).
+ * The end is the last selected character, not one past it.
+ */
+export function selectionBounds(container: HTMLElement): SelectionBounds {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return NO_SELECTION_BOUNDS;
+    const range = sel.getRangeAt(0);
+    if (!range.intersectsNode(container)) return NO_SELECTION_BOUNDS;
+    const lines = Array.from(container.querySelectorAll('.output-msg'));
+    let first = -1;
+    let last = -1;
+    lines.forEach((el, i) => {
+        if (!range.intersectsNode(el)) return;
+        if (first < 0) first = i;
+        last = i;
+    });
+    if (first < 0) return NO_SELECTION_BOUNDS;
+    const firstEl = lines[first];
+    const lastEl = lines[last];
+    const firstBuf = elementBuffers.get(firstEl);
+    const lastBuf = elementBuffers.get(lastEl);
+    const startX = firstBuf && firstEl.contains(range.startContainer)
+        ? columnAt(firstEl, range.startContainer, range.startOffset, firstBuf)
+        : 0;
+    const endLen = !lastBuf ? 0
+        : lastEl.contains(range.endContainer)
+            ? columnAt(lastEl, range.endContainer, range.endOffset, lastBuf)
+            : lastBuf.length;
+    return { startX, startY: first, endX: Math.max(0, endLen - 1), endY: last };
+}
+
 /** Every line whose element the selection intersects. */
 function selectedLines(container: HTMLElement): SelectedLine[] {
     const sel = window.getSelection();

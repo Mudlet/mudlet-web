@@ -92,7 +92,7 @@ describe('createCommandLine overlay: printCmdLine then selectCmdLineText', () =>
         const manager = new CommandLineManager();
         manager.create('c1', { x: 0, y: 0, width: 100, height: 20 });
         act(() => { root.render(createElement(CommandLineOverlay, { manager, parent: 'main' })); });
-        const input = () => container.querySelector('input[data-mudlet-cmdline-overlay="c1"]') as HTMLInputElement;
+        const input = () => container.querySelector('textarea[data-mudlet-cmdline-overlay="c1"]') as HTMLTextAreaElement;
         act(() => {
             manager.setValue('c1', 'ghi');
             manager.selectAll('c1');

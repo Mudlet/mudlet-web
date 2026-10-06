@@ -1,5 +1,6 @@
 import type { BindingContext } from './context';
 import { parseXmlMapResult } from '../../../map/xmlMapImport';
+import { imageLabelPixmap } from '../../../map/labelPixmap';
 
 /**
  * Mudlet's map API: the 2D view, room and area CRUD, exits, doors, custom
@@ -185,14 +186,14 @@ export function installMapBindings({
     // but never shown still answers "you haven't opened a map yet".
     lua.global.set('__getPlayerRoom', () => {
         if (!api.windows.hasMapper()) return "you haven't opened a map yet";
-        return api.map.getPlayerRoom() ?? 'the player does not have a valid roomID set';
+        return api.map.getPlayerRoomId() ?? 'the player does not have a valid roomID set';
     });
     // The same "is there a mapper" test on its own — setMapPerspective /
     // shiftMapPerspective (Bridge.lua) refuse with it before anything else.
     lua.global.set('__mudlet_mapper_open', () => api.windows.hasMapper());
     // The player room with no mapper check — what gotoRoom reads (Mudlet's
     // TMap::gotoRoom goes to mRoomIdHash directly, not through getPlayerRoom).
-    lua.global.set('__getPlayerRoomId', () => api.map.getPlayerRoom() ?? null);
+    lua.global.set('__getPlayerRoomId', () => api.map.getPlayerRoomId());
     // Mudlet getRoomIDbyHash: returns -1 when no room has the given hash.
     // The hash is a string on desktop whatever the script passed — GMCP's
     // Room.Info.num is a number, so `getRoomIDbyHash(gmcp.Room.Info.num)` has
@@ -338,8 +339,7 @@ export function installMapBindings({
         return undefined;
     });
     // Mudlet `loadJsonMap(path)` — read a JSON map previously produced by
-    // saveJsonMap and replace the in-memory map. Raises sysMapLoadEvent
-    // on success. Returns false on missing file / bad JSON / wrong shape.
+    // saveJsonMap and replace the in-memory map. Returns false on missing file / bad JSON / wrong shape.
     // Each refusal names what it actually found, in Mudlet's words: a package
     // that hands a user's file to this needs to say which of "not there", "not
     // JSON", "not a map" and "not a map this build reads" happened.
@@ -680,11 +680,11 @@ export function installMapBindings({
         return api.map.setExitWeight(int(id), dir, int(w));
     });
     // Mudlet `getCustomLines(roomID)` → { [dir] = { attributes={color,style,arrow}, points=[{x,y},...] } }.
-    // Returns nil when the room doesn't exist; wasmoon converts the JS
-    // arrays/objects directly — the `points` array lands 0-indexed on the
-    // Lua side, matching Mudlet's documented shape. A point is x and y only:
+    // Returns nil when the room doesn't exist (Bridge.lua adds desktop's
+    // message); wasmoon converts the JS arrays/objects directly — the
+    // `points` array lands 0-indexed on the Lua side, matching Mudlet's documented shape. A point is x and y only:
     // desktop pushes no z here (getCustomLines1's triples carry the room's).
-    lua.global.set('getCustomLines', (id: unknown) => {
+    lua.global.set('__getCustomLines', (id: unknown) => {
         const rid = int(id);
         if (!Number.isFinite(rid)) return null;
         return api.map.getCustomLines(rid) ?? null;
@@ -692,7 +692,8 @@ export function installMapBindings({
     // Mudlet removeCustomLine(roomID, direction). A numeric-string direction
     // (e.g. a regex capture "4") is coerced back to a number so MapStore's
     // parseDirection recognizes it; arbitrary special-exit commands pass through.
-    lua.global.set('removeCustomLine', (id: unknown, dir: unknown) => {
+    // Hands back the refusal message or null; Bridge.lua shapes true / (nil, errMsg).
+    lua.global.set('__removeCustomLine', (id: unknown, dir: unknown) => {
         let d: number | string;
         if (typeof dir === 'number') d = dir;
         else { const s = String(dir ?? ''); d = /^-?\d+$/.test(s.trim()) ? Number(s) : s; }
@@ -849,9 +850,13 @@ export function installMapBindings({
         );
         return true;
     });
-    lua.global.set('removeMapMenu', (name: unknown) => {
-        api.map.removeMapMenu(String(name ?? ''));
-        return true;
+    // Answers with desktop's refusal for an empty name, null otherwise;
+    // Bridge.lua shapes that into true / (nil, errMsg).
+    lua.global.set('__removeMapMenu', (name: unknown) => {
+        const menu = String(name ?? '');
+        if (!menu) return 'the menu name cannot be empty';
+        api.map.removeMapMenu(menu);
+        return null;
     });
     // Mudlet shape: { [menuName] = { ["parent"]=..., ["display name"]=... } }.
     // JS hands back an array of entries (0-indexed); Bridge.lua rebuilds the
@@ -1239,20 +1244,43 @@ export function installMapBindings({
                 : { r: Number(olR) || 0, g: Number(olG) || 0, b: Number(olB) || 0 },
         },
     ));
-    // Mudlet createMapImageLabel(areaID, imagePath, x, y, z, w, h, [zoom,]
-    // showOnTop, noScaling). → new labelID or -1.
+    // Mudlet createMapImageLabel(areaID, imagePath, x, y, z, w, h, zoom,
+    // showOnTop [, temporary]). → new labelID or -1.
+    //
+    // Desktop reads the image when the label is made and keeps the picture,
+    // not the path (TMap::createMapImageLabel paints it into the label's
+    // pixmap), so getMapLabel, saveMap and saveJsonMap all carry image data.
+    // See imageLabelPixmap for which images are ready at once and which the
+    // browser finishes decoding a moment later.
     lua.global.set('__createMapImageLabel', (
         areaId: unknown, imagePath: unknown,
         x: unknown, y: unknown, z: unknown,
-        w: unknown, h: unknown,
-        showOnTop?: unknown, noScaling?: unknown,
-    ) => api.map.createMapImageLabel(
-        int(areaId), String(imagePath ?? ''),
-        Number(x) || 0, Number(y) || 0, Number(z) || 0,
-        Number(w) || 0, Number(h) || 0,
-        showOnTop == null ? true : !!showOnTop,
-        !!noScaling,
-    ));
+        w: unknown, h: unknown, zoom?: unknown,
+        showOnTop?: unknown, temporary?: unknown,
+    ) => {
+        const area = int(areaId);
+        const path = String(imagePath ?? '');
+        const width = Number(w) || 0;
+        const height = Number(h) || 0;
+        let bytes: Uint8Array | null = null;
+        if (vfs && path !== '') {
+            try { bytes = vfs.readBinaryFile(path); } catch { bytes = null; }
+        }
+        const { pixmap, pending } = imageLabelPixmap(bytes, width, height, Number(zoom) || 0);
+        const id = api.map.createMapImageLabel(
+            area, pixmap,
+            Number(x) || 0, Number(y) || 0, Number(z) || 0,
+            width, height,
+            !!showOnTop,
+            !!temporary,
+        );
+        if (id >= 0 && pending) {
+            void pending.then(drawn => {
+                if (drawn) api.map.replaceLabelPixmap(area, id, pixmap, drawn);
+            });
+        }
+        return id;
+    });
     lua.global.set('deleteMapLabel', (areaId: unknown, labelId: unknown) =>
         api.map.deleteMapLabel(int(areaId), int(labelId)));
     // Mudlet auditAreas() — repair area/room membership consistency. Returns

@@ -2293,6 +2293,10 @@ body.is-sorting {
     font-size: 13px;
     padding: 4px 8px;
     outline: none;
+    /* A one-row <textarea> (Shift+Enter stages more lines, as on desktop). */
+    display: block;
+    resize: none;
+    overflow: auto;
 }
 .window-cmdline:focus {
     border-color: var(--accent);

@@ -29,14 +29,17 @@ interface ToolbarStripProps {
     shown: ReadonlySet<string>;
     engineRef: RefObject<ScriptingEngine | null>;
     vfs: ProfileVFS | null;
-    onStateChange: (id: string, next: boolean) => void;
+    onClicked: (el: HTMLElement) => void;
 }
 
 interface ButtonViewProps {
     button: ButtonNode;
     engineRef: RefObject<ScriptingEngine | null>;
     vfs: ProfileVFS | null;
-    onStateChange: (id: string, next: boolean) => void;
+    onClicked: (el: HTMLElement) => void;
+    /** The flat declarations of the toolbar's own style sheet, which Qt
+     *  cascades onto every button on it under the button's own sheet. */
+    inheritedStyle?: React.CSSProperties;
 }
 
 function resolveIconUrl(vfs: ProfileVFS | null, iconPath: string): string | null {
@@ -59,7 +62,7 @@ function resolveIconUrl(vfs: ProfileVFS | null, iconPath: string): string | null
     return null;
 }
 
-function ButtonView({ button, engineRef, vfs, onStateChange }: ButtonViewProps) {
+function ButtonView({ button, engineRef, vfs, onClicked, inheritedStyle }: ButtonViewProps) {
     const [iconUrl, setIconUrl] = useState<string | null>(null);
 
     useEffect(() => {
@@ -69,10 +72,12 @@ function ButtonView({ button, engineRef, vfs, onStateChange }: ButtonViewProps) 
         return () => { if (url) URL.revokeObjectURL(url); };
     }, [vfs, button.icon]);
 
-    const handleClick = () => {
+    const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+        // The engine records a push-down button's new state before it runs
+        // the button, as desktop's slot_pressed does (mudlet-web#356).
         const next = button.isPushDown ? !button.buttonState : true;
         engineRef.current?.executeButton(button, next);
-        if (button.isPushDown) onStateChange(button.id, next);
+        onClicked(e.currentTarget);
     };
 
     const pressed = button.isPushDown && button.buttonState;
@@ -94,9 +99,10 @@ function ButtonView({ button, engineRef, vfs, onStateChange }: ButtonViewProps) 
     // Mudlet setButtonStyleSheet stores a Qt-style stylesheet on the node;
     // convert to inline React style here. Only the flat-declarations subset is
     // applied — pseudo-state selectors (`:hover`, `:pressed`) drop through.
-    const sheet = button.styleSheet
-        ? cssTextToStyle(button.styleSheet)
-        : undefined;
+    // A toolbar's sheet is set on the toolbar widget on desktop, and Qt
+    // cascades its bare declarations onto the buttons; the button's own wins.
+    const own = button.styleSheet ? cssTextToStyle(button.styleSheet) : undefined;
+    const sheet = inheritedStyle || own ? { ...inheritedStyle, ...own } : undefined;
 
     return (
         <button
@@ -123,7 +129,7 @@ function renderToolbarGroup(
     leaves: ButtonNode[],
     engineRef: RefObject<ScriptingEngine | null>,
     vfs: ProfileVFS | null,
-    onStateChange: (id: string, next: boolean) => void,
+    onClicked: (el: HTMLElement) => void,
 ): React.ReactNode {
     if (leaves.length === 0) return null;
     const cols = toolbar.columns ?? 0;
@@ -168,21 +174,22 @@ function renderToolbarGroup(
                     button={b}
                     engineRef={engineRef}
                     vfs={vfs}
-                    onStateChange={onStateChange}
+                    onClicked={onClicked}
+                    inheritedStyle={sheet}
                 />
             ))}
         </div>
     );
 }
 
-function ToolbarStrip({ side, toolbars, allButtons, shown, engineRef, vfs, onStateChange }: ToolbarStripProps) {
+function ToolbarStrip({ side, toolbars, allButtons, shown, engineRef, vfs, onClicked }: ToolbarStripProps) {
     if (toolbars.length === 0) return null;
     const cls = `mudlet-toolbar-strip mudlet-toolbar-strip--${side}`;
     return (
         <div className={cls}>
             {toolbars.map(toolbar => (
                 <Fragment key={toolbar.id}>
-                    {renderToolbarGroup(toolbar, leavesOf(toolbar, allButtons, shown), engineRef, vfs, onStateChange)}
+                    {renderToolbarGroup(toolbar, leavesOf(toolbar, allButtons, shown), engineRef, vfs, onClicked)}
                 </Fragment>
             ))}
         </div>
@@ -292,12 +299,12 @@ interface FloatingToolbarsLayerProps {
     shown: ReadonlySet<string>;
     engineRef: RefObject<ScriptingEngine | null>;
     vfs: ProfileVFS | null;
-    onStateChange: (id: string, next: boolean) => void;
+    onClicked: (el: HTMLElement) => void;
     onPositionChange: (id: string, x: number, y: number) => void;
 }
 
 function FloatingToolbarsLayer({
-    toolbars, allButtons, shown, engineRef, vfs, onStateChange, onPositionChange,
+    toolbars, allButtons, shown, engineRef, vfs, onClicked, onPositionChange,
 }: FloatingToolbarsLayerProps) {
     const renderable = useMemo(
         () => toolbars
@@ -314,7 +321,7 @@ function FloatingToolbarsLayer({
                     toolbar={toolbar}
                     onPositionChange={(x, y) => onPositionChange(toolbar.id, x, y)}
                 >
-                    {renderToolbarGroup(toolbar, leaves, engineRef, vfs, onStateChange)}
+                    {renderToolbarGroup(toolbar, leaves, engineRef, vfs, onClicked)}
                 </FloatingToolbar>
             ))}
         </div>,
@@ -326,18 +333,26 @@ interface ButtonsLayerProps {
     connectionId: string;
     engineRef: RefObject<ScriptingEngine | null>;
     vfs: ProfileVFS | null;
+    /** The main command line, which gets focus back after every click. */
+    commandInputRef?: RefObject<HTMLElement | null>;
 }
 
 /**
  * Returns the four edge strips of toolbars (top/bottom/left/right). The caller
  * places each strip in the appropriate spot inside ContentLayout.
  */
-export function useButtonStrips({ connectionId, engineRef, vfs }: ButtonsLayerProps) {
+export function useButtonStrips({ connectionId, engineRef, vfs, commandInputRef }: ButtonsLayerProps) {
     const buttons = useAppStore(s => connectionId ? (s.connectionButtons[connectionId] ?? EMPTY) : EMPTY);
     const updateButton = useAppStore(s => s.updateButton);
 
-    const onStateChange = (id: string, next: boolean) => {
-        updateButton(connectionId, id, { buttonState: next });
+    // Desktop's TAction::execute ends with setFocusOnHostActiveCommandLine,
+    // so typing after a click goes to the command line and Space or Enter
+    // does not click the button again (mudlet-web#356). Left alone when the
+    // button's script moved focus somewhere on purpose.
+    const onClicked = (el: HTMLElement) => {
+        const active = document.activeElement;
+        if (active && active !== el && active !== document.body) return;
+        commandInputRef?.current?.focus();
     };
 
     const onPositionChange = (id: string, x: number, y: number) => {
@@ -371,7 +386,7 @@ export function useButtonStrips({ connectionId, engineRef, vfs }: ButtonsLayerPr
             shown={shown}
             engineRef={engineRef}
             vfs={vfs}
-            onStateChange={onStateChange}
+            onClicked={onClicked}
         />
     );
 
@@ -382,7 +397,7 @@ export function useButtonStrips({ connectionId, engineRef, vfs }: ButtonsLayerPr
             shown={shown}
             engineRef={engineRef}
             vfs={vfs}
-            onStateChange={onStateChange}
+            onClicked={onClicked}
             onPositionChange={onPositionChange}
         />
     );

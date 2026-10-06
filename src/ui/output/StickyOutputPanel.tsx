@@ -6,6 +6,7 @@ import { restoreFocusAfterLinkClick } from './linkNavigation';
 import {
     hasSelectionIn, hasCopyableLines, selectAll, copySelectionText, saveSelection, restoreSelection,
     copySelectionAsHtml, copySelectionAsImage, searchSelectionOnline, selectionText,
+    selectionBounds, NO_SELECTION_BOUNDS, type SelectionBounds,
 } from './outputCopy';
 import { TextAnalyzerModal } from './TextAnalyzerModal';
 import { useProfileField } from '../../storage';
@@ -35,8 +36,10 @@ interface StickyOutputPanelProps {
      *  profile name for the main console, the window name for a script one. */
     sourceName?: string;
     /** Script-provided right-click entries (Mudlet addMouseEvent), evaluated
-     *  lazily when the menu opens since the registry can change. */
-    getMenuExtraItems?: () => OutputMenuExtraItem[];
+     *  lazily when the menu opens since the registry can change. Given the
+     *  console's selection as it stood when the menu opened, which is what
+     *  the entry's handler is passed. */
+    getMenuExtraItems?: (selection: SelectionBounds) => OutputMenuExtraItem[];
     commandInputRef?: React.RefObject<HTMLInputElement | HTMLTextAreaElement | null>;
     /** When set, the scrollback becomes a named, Tab-reachable landmark — an id
      *  a skip link can target, a region role, and an explicit tab stop rather
@@ -190,7 +193,7 @@ export function StickyOutputPanel({
             y: e.clientY,
             hasSelection: container ? hasSelectionIn(container) : false,
             hasContent: container ? hasCopyableLines(container) : false,
-            extraItems: getMenuExtraItems?.() ?? [],
+            extraItems: getMenuExtraItems?.(container ? selectionBounds(container) : NO_SELECTION_BOUNDS) ?? [],
         });
     }, [outputRef, getMenuExtraItems, takeSavedSelection]);
 

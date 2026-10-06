@@ -322,3 +322,67 @@ export function findLuaPattern(
     // capture, so every `(` in a matched pattern captured something.
     return { kind: 'match', start, end, captures: m.slice(1).map(c => c ?? '') };
 }
+
+/**
+ * `utf8.gsub` / `utf8.gmatch` walk the subject in BYTES, as luautf8 does, so
+ * their native search reports bytes: the first match at or after the 1-based
+ * byte position `initByte` (a character boundary), as `[first byte, byte after
+ * the match, capture…]`. Null when the pattern needs the Lua matcher, and for
+ * a subject or pattern holding U+FFFD — which is also what invalid UTF-8
+ * becomes on its way over the bridge, and luautf8 raises on that.
+ */
+export function findLuaPatternBytes(
+    subject: string,
+    pattern: string,
+    initByte: number,
+): { start: number; end: number; captures: string[] } | false | null {
+    if (subject.includes('�') || pattern.includes('�')) return null;
+    const compiled = compileLuaPattern(pattern);
+    if (!compiled) return null;
+    let unit = 0;
+    let byte = 1;
+    while (byte < initByte && unit < subject.length) {
+        const cp = subject.codePointAt(unit) as number;
+        byte += utf8Length(cp);
+        unit += cp > 0xffff ? 2 : 1;
+    }
+    // Past the end of the subject there is nothing left to find.
+    if (byte < initByte) return false;
+    compiled.re.lastIndex = unit;
+    const m = compiled.re.exec(subject);
+    if (!m) return false;
+    const start = byte + utf8Span(subject, unit, m.index);
+    const end = start + utf8Span(subject, m.index, m.index + m[0].length);
+    return { start, end, captures: m.slice(1).map(c => c ?? '') };
+}
+
+const utf8Length = (cp: number): number => (cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4);
+
+function utf8Span(s: string, from: number, to: number): number {
+    let n = 0;
+    for (let i = from; i < to; i++) {
+        const c = s.charCodeAt(i);
+        if (c >= 0xd800 && c <= 0xdbff) { n += 4; i++; } else n += utf8Length(c);
+    }
+    return n;
+}
+
+const CLASS_TESTS = new Map<string, RegExp>();
+
+/**
+ * Whether codepoint `cp` is in Lua class `%<cl>` (lowercase: the class itself),
+ * by the same Unicode tables the native matcher uses — for luautf8's own
+ * matcher in utf8.lua, which takes the patterns a regex cannot express. `%t`
+ * is luautf8's "compose" class, the combining marks.
+ */
+export function luaClassMatches(cl: string, cp: number): boolean {
+    if (!(cp >= 0 && cp <= 0x10ffff)) return false;
+    let re = CLASS_TESTS.get(cl);
+    if (!re) {
+        const atom = cl === 't' ? '\\p{M}' : CLASSES[cl]?.atom;
+        if (!atom) return false;
+        re = new RegExp(`^${atom}$`, 'u');
+        CLASS_TESTS.set(cl, re);
+    }
+    return re.test(String.fromCodePoint(cp));
+}

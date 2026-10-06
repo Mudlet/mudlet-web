@@ -2,6 +2,7 @@ import type {MudletArea, MudletColor, MudletFont, MudletLabel, MudletMap, Mudlet
 import {readerExport} from 'mudlet-map-binary-reader';
 import {findPath, type ExitWeightFilter, type PathfindResult} from './pathfinding';
 import {renderLabelPixmap} from './labelPixmap';
+import {mustBeOneOf} from '../utils/mustBeOneOf';
 
 export type {ExitWeightFilter, PathfindResult} from './pathfinding';
 
@@ -9,7 +10,9 @@ export type MapRendererData = ReturnType<typeof readerExport>;
 
 /** What an area with no name of its own is called — Mudlet's mUnnamedAreaName,
  *  which its area-name audit substitutes before checking for duplicates. */
-const UNNAMED_AREA_NAME = 'Unnamed Area';
+export const UNNAMED_AREA_NAME = 'Unnamed Area';
+/** Mudlet's mDefaultAreaName — the name of area -1. */
+export const DEFAULT_AREA_NAME = 'Default Area';
 
 // Mudlet direction number → field name on MudletRoom
 const DIR_FIELD: Record<number, string> = {
@@ -72,9 +75,14 @@ function sameSign(a: number, b: number): boolean {
     return (a < 0) === (b < 0);
 }
 
+/** A stock direction code (1-12) from a number or a direction name. A number
+ *  is read the way desktop's lua_tointeger reads it, truncating toward zero,
+ *  so `4.5` is east (4) — the same rule room ids and coordinates follow. */
 export function parseDirection(dir: unknown): number | undefined {
     if (typeof dir === 'number') {
-        return DIR_FIELD[dir] ? dir : undefined;
+        if (!Number.isFinite(dir)) return undefined;
+        const n = Math.trunc(dir);
+        return DIR_FIELD[n] ? n : undefined;
     }
     if (typeof dir === 'string') {
         return DIR_NAME_TO_INT[dir.toLowerCase()];
@@ -372,9 +380,21 @@ export function mudletJsonMapToMudletMap(src: unknown): MudletMap | null {
         }
     }
 
+    // TMap::readJsonMapFile: environment → colour number, keyed by the
+    // environment id as a string.
+    const envColors: Record<number, number> = {};
+    const envMapping = doc.envToColorMapping;
+    if (envMapping && typeof envMapping === 'object' && !Array.isArray(envMapping)) {
+        for (const [env, color] of Object.entries(envMapping as Record<string, unknown>)) {
+            const id = Number(env);
+            const n = Number(color);
+            if (Number.isInteger(id) && Number.isFinite(n)) envColors[id] = Math.trunc(n);
+        }
+    }
+
     return {
         version: 20,
-        envColors: {}, areaNames, mCustomEnvColors,
+        envColors, areaNames, mCustomEnvColors,
         mpRoomDbHashToRoomId: hashes,
         mUserData: jsonStringMap(doc.userData),
         mapSymbolFont: DEFAULT_FONT,
@@ -764,7 +784,7 @@ function labelToInfo(l: MapLabel): MapLabelInfo {
         OnTop: l.showOnTop,
         Scaling: !l.noScaling,
         // Mudlet runtime flag; binary maps never carry it, so a label read back
-        // from one is never temporary — only createMapLabel can set it.
+        // from one is never temporary — only the create calls can set it.
         Temporary: l.temporary ?? false,
         FgColor: { r: l.fgColor.r, g: l.fgColor.g, b: l.fgColor.b },
         BgColor: { r: l.bgColor.r, g: l.bgColor.g, b: l.bgColor.b },
@@ -1075,7 +1095,7 @@ export class MapStore {
         const defaultArea = makeArea();
         defaultArea.zLevels = [0];
         this.areas.set(-1, defaultArea);
-        this.areaNames.set(-1, 'Default Area');
+        this.areaNames.set(-1, DEFAULT_AREA_NAME);
         this.initialized = true;
         this.notify();
         this.notifyHighlights();
@@ -1356,21 +1376,41 @@ export class MapStore {
      * open in Mudlet, and one exported by Mudlet has to open here.
      */
     toMudletJsonString(extras: Record<string, unknown> = {}): string {
-        const doc = {
-            formatVersion: 1,
-            // Map-level settings that live in the profile rather than in the
-            // store — the symbol font and its scaling — are passed in by the
-            // caller that owns them, so a saved file carries the whole map the
-            // way Mudlet's does without this layer having to reach for config.
-            ...extras,
-            areas: [...this.areaNames.keys()].map(areaId => ({
+        const areas = [...this.areaNames.keys()].map(areaId => {
+            const rooms = (this.areas.get(areaId)?.rooms ?? []).map(id => this.roomToJson(id));
+            return {
                 id: areaId,
                 name: this.areaNames.get(areaId) ?? '',
                 ...(this.areas.get(areaId)?.gridMode ? { gridMode: true } : {}),
+                // TArea::writeJsonArea counts what it writes.
+                roomCount: rooms.length,
                 userData: this.areas.get(areaId)?.userData ?? {},
                 labels: this.labelsToJson(areaId),
-                rooms: (this.areas.get(areaId)?.rooms ?? []).map(id => this.roomToJson(id)),
-            })),
+                rooms,
+            };
+        });
+        const doc = {
+            formatVersion: 1,
+            // TMap::writeJsonMapFile's totals and the two area names it writes
+            // beside them. Desktop reads every one back on import, and a file
+            // without the names hands a desktop that loads it empty ones — which
+            // its next export then writes out as ''.
+            areaCount: areas.length,
+            roomCount: areas.reduce((n, a) => n + a.roomCount, 0),
+            labelCount: areas.reduce((n, a) => n + a.labels.length, 0),
+            defaultAreaName: DEFAULT_AREA_NAME,
+            anonymousAreaName: UNNAMED_AREA_NAME,
+            // Map-level settings that live in the profile rather than in the
+            // store — the symbol font and its scaling, the player-room marker —
+            // are passed in by the caller that owns them, so a saved file
+            // carries the whole map the way Mudlet's does without this layer
+            // having to reach for config.
+            ...extras,
+            areas,
+            // Written only when there is a mapping, as desktop does.
+            ...(this.envColors.size > 0
+                ? { envToColorMapping: Object.fromEntries([...this.envColors].map(([id, c]) => [String(id), c])) }
+                : {}),
             customEnvColors: [...this.customEnvColors].map(([id, c]) => ({
                 id, ...writeJsonColor(c),
             })),
@@ -2172,7 +2212,7 @@ export class MapStore {
         if (!area) {
             area = makeArea();
             this.areas.set(-1, area);
-            if (!this.areaNames.has(-1)) this.areaNames.set(-1, 'Default Area');
+            if (!this.areaNames.has(-1)) this.areaNames.set(-1, DEFAULT_AREA_NAME);
         }
         area.rooms.push(id);
         this.notify();
@@ -2194,6 +2234,7 @@ export class MapStore {
         if (room.hash) this.hashToRoom.delete(room.hash);
         this.rooms.delete(id);
         this.severExitsTo(new Set([id]));
+        this.forgetPlayerRoomIn(new Set([id]));
         // Selection is paint-only but it tracks room ids — drop the deleted
         // one so getMapSelection doesn't dangle.
         if (this.selectedRooms.delete(id)) {
@@ -2239,6 +2280,16 @@ export class MapStore {
         }
     }
 
+    /**
+     * TRoomDB::removeRoom resets the player's room to 0 when it removes the
+     * room the player is in (deleteArea goes through it room by room). Keeping
+     * the old id instead put the player silently back "in" whatever unrelated
+     * room was later created with that number (mudlet-web#343).
+     */
+    private forgetPlayerRoomIn(gone: ReadonlySet<number>): void {
+        if (this.playerRoomId != null && gone.has(this.playerRoomId)) this.playerRoomId = 0;
+    }
+
     roomExists(id: number): boolean { return this.rooms.has(id); }
 
     // ── Player position ───────────────────────────────────────────────────────
@@ -2250,6 +2301,14 @@ export class MapStore {
     getPlayerRoom(): number | null {
         if (this.playerRoomId == null) return null;
         return this.rooms.has(this.playerRoomId) ? this.playerRoomId : null;
+    }
+
+    /** The player room as stored — Mudlet's `mRoomIdHash` entry, which is what
+     *  the Lua getPlayerRoom()/gotoRoom read. Unlike {@link getPlayerRoom} it is
+     *  not checked against the map: after the player's room is deleted it is 0,
+     *  as on desktop, rather than unset. null only when it was never set. */
+    getPlayerRoomId(): number | null {
+        return this.playerRoomId;
     }
 
     /** Display-only fallback room for the map view when there is no real player
@@ -2533,14 +2592,16 @@ export class MapStore {
     // ── Coordinates / position ────────────────────────────────────────────────
 
     /** Mudlet `getRoomsByPosition(areaID, x, y, z)` — undefined for an unknown
-     *  area, matching {@link getAreaRooms}. */
+     *  area, matching {@link getAreaRooms}. Ids come back ascending, as
+     *  desktop's TArea::getRoomsByPosition sorts them, not in the order the
+     *  rooms joined the area. */
     getRoomsByPosition(areaId: number, x: number, y: number, z: number): number[] | undefined {
         const area = this.areas.get(areaId);
         if (!area) return undefined;
         return area.rooms.filter(id => {
             const r = this.rooms.get(id);
             return r && r.x === x && r.y === y && r.z === z;
-        });
+        }).sort((a, b) => a - b);
     }
 
     // ── Hash management ───────────────────────────────────────────────────────
@@ -2741,16 +2802,21 @@ export class MapStore {
 
     /**
      * Drop everything keyed by a special exit's command once the exit itself is
-     * gone: its door, its lock, its weight. Mudlet does this in every path that
-     * removes one (removeAllSpecialExitsToRoom cleans up "related elements
+     * gone: its door, its lock, its weight, its custom line. Mudlet does this
+     * in every path that removes one (TRoom::setSpecialExit(-1, cmd) drops the
+     * custom line; removeAllSpecialExitsToRoom cleans up "related elements
      * first"), and leaving them behind is not inert — the command name is the
-     * key, so re-adding the same exit later found a door and a lock it never
-     * asked for, and the room stayed unwalkable for reasons nothing showed.
+     * key, so re-adding the same exit later found a door, a lock and a line it
+     * never asked for, and the room stayed unwalkable for reasons nothing showed.
      */
     private clearSpecialExitAttributes(roomId: number, cmd: string): void {
         const room = this.rooms.get(roomId);
         if (!room) return;
         delete room.doors?.[cmd];
+        delete room.customLines?.[cmd];
+        delete room.customLinesColor?.[cmd];
+        delete room.customLinesStyle?.[cmd];
+        delete room.customLinesArrow?.[cmd];
         if (!this.hasExitOrSpecialExitNamed(room, cmd)) delete room.exitWeights?.[cmd];
         // The per-command set is the authority; the destination-keyed list on
         // the room is the mirror the binary writer repacks, so it is rebuilt
@@ -2980,13 +3046,13 @@ export class MapStore {
     /**
      * Mudlet `getAllRoomEntrances(roomID)` — every room that has an exit (stock
      * or special) leading into this room, as a sorted, de-duplicated id list.
+     * A room with an exit back into itself lists itself, as on desktop.
      * Returns `undefined` when the room doesn't exist.
      */
     getAllRoomEntrances(id: number): number[] | undefined {
         if (!this.rooms.has(id)) return undefined;
         const entrances = new Set<number>();
         for (const [otherId, r] of this.rooms) {
-            if (otherId === id) continue;
             let found = false;
             for (const field of Object.values(DIR_FIELD)) {
                 if ((r as unknown as Record<string, number>)[field] === id) { found = true; break; }
@@ -3021,7 +3087,7 @@ export class MapStore {
         if (arg3 !== undefined) {
             const dir = parseDirection(arg3);
             if (dir == null) return `connectExitStub: argument '${arg3}' cannot be parsed as a valid direction`;
-            return this.connectStubByDirAndTo(fromId, dir, Number(arg2));
+            return this.connectStubByDirAndTo(fromId, dir, Math.trunc(Number(arg2)));
         }
 
         // A string second argument is always a direction name (the binding has
@@ -3032,7 +3098,9 @@ export class MapStore {
             return this.connectStubByDir(fromId, dir);
         }
 
-        const value = Number(arg2);
+        // A number is a toID or a direction code, both truncated as desktop's
+        // lua_tointeger reads them.
+        const value = Math.trunc(Number(arg2));
         if (!Number.isFinite(value)) {
             return `connectExitStub: argument '${String(arg2)}' cannot be parsed as a toID or direction`;
         }
@@ -3167,24 +3235,32 @@ export class MapStore {
      * Mudlet `removeCustomLine(roomID, direction)` — drop the custom exit line
      * for a direction (stock direction number/name or a special-exit command).
      * The key form stored varies by map source, so we try the raw command, the
-     * canonical long name and the short name. Returns true when a line was
-     * removed, false when the room or the line doesn't exist.
+     * canonical long name and the short name. Like desktop, every refusal — no
+     * such room, no exit in that direction, no line on it — is a message (the
+     * Lua side's `nil, errMsg`); null means the line was removed.
      */
-    removeCustomLine(id: number, dir: number | string): boolean {
+    removeCustomLine(id: number, dir: number | string): string | null {
         const room = this.rooms.get(id);
-        if (!room) return false;
+        if (!room) return `removeCustomLine: number ${id} is not a valid roomID`;
+        const dirInt = parseDirection(dir);
+        const label = String(dir);
+        const exitKey = dirInt != null ? DIR_SHORT[dirInt] : label;
+        if (!this.hasExitOrSpecialExit(room, dirInt, exitKey)) {
+            return `removeCustomLine: roomID ${id} does not have an exit in a direction that can be identified from '${label}'`;
+        }
         const candidates: string[] = [];
         if (typeof dir === 'string') candidates.push(dir);
-        const dirInt = parseDirection(dir);
         if (dirInt != null) { candidates.push(DIR_FIELD[dirInt], DIR_SHORT[dirInt]); }
         const key = candidates.find(k => k != null && Object.prototype.hasOwnProperty.call(room.customLines, k));
-        if (key == null) return false;
+        if (key == null) {
+            return `removeCustomLine: roomID ${id} does not have a custom line for the exit '${label}'`;
+        }
         delete room.customLines[key];
         delete room.customLinesColor[key];
         delete room.customLinesStyle[key];
         delete room.customLinesArrow[key];
         this.notify();
-        return true;
+        return null;
     }
 
     /**
@@ -3228,8 +3304,11 @@ export class MapStore {
             points = target.map(p => [Number(p[0]), Number(p[1])] as [number, number]);
         }
 
+        // Desktop reads each channel with lua_tointeger, so a fractional colour
+        // is truncated before the range check and stored as the integer.
+        color = { r: Math.trunc(Number(color.r)), g: Math.trunc(Number(color.g)), b: Math.trunc(Number(color.b)) };
         for (const [channel, value] of [['red', color.r], ['green', color.g], ['blue', color.b]] as const) {
-            if (!Number.isFinite(Number(value)) || Number(value) < 0 || Number(value) > 255) {
+            if (!Number.isFinite(value) || value < 0 || value > 255) {
                 return `${channel} value ${value} needs to be between 0-255`;
             }
         }
@@ -3237,7 +3316,7 @@ export class MapStore {
         const styleNum = Number(
             Object.keys(PEN_STYLE_NAMES).find(k => PEN_STYLE_NAMES[Number(k)] === style),
         );
-        if (!styleNum) return `"${style}" is not a valid line style`;
+        if (!styleNum) return mustBeOneOf('line style', ['solid line', 'dot line', 'dash line', 'dash dot line', 'dash dot dot line'], style);
 
         // Key by the SHORT direction name ("e", "up", …), which is what Mudlet
         // normalises to via dirToString and what its saved maps carry — keying
@@ -3248,7 +3327,7 @@ export class MapStore {
         const key = dirInt != null ? DIR_SHORT[dirInt] : String(direction);
         if (!key) return `"${direction}" is not a direction this room has an exit for`;
         if (!this.hasExitOrSpecialExit(room, dirInt, key)) {
-            return `roomID ${id} does not have an exit in a direction that can be identified from "${direction}"`;
+            return `roomID ${id} does not have an exit in a direction that can be identified from '${direction}'`;
         }
 
         room.customLines[key] = points;
@@ -3269,10 +3348,10 @@ export class MapStore {
         if (dirInt != null) {
             const field = DIR_FIELD[dirInt];
             const target = field ? (room as unknown as Record<string, number>)[field] : 0;
-            if (target && target > 0) return true;
-            // A stub counts as an exit for drawing purposes.
-            if ((room.stubs ?? []).includes(dirInt)) return true;
-            return false;
+            // A stub alone is not an exit here: TRoom::hasExitOrSpecialExit
+            // looks at the exit itself, so desktop refuses a line for a
+            // direction that only has a stub.
+            return !!target && target > 0;
         }
         return Object.prototype.hasOwnProperty.call(room.mSpecialExits ?? {}, key);
     }
@@ -3430,7 +3509,7 @@ export class MapStore {
         if (!target) {
             target = makeArea();
             this.areas.set(-1, target);
-            if (!this.areaNames.has(-1)) this.areaNames.set(-1, 'Default Area');
+            if (!this.areaNames.has(-1)) this.areaNames.set(-1, DEFAULT_AREA_NAME);
         }
         room.area = -1;
         if (!target.rooms.includes(id)) target.rooms.push(id);
@@ -3564,6 +3643,7 @@ export class MapStore {
         // still standing are walked once, and an exit between two rooms that
         // are both going is never looked at.
         if (removed.size > 0) this.severExitsTo(removed);
+        this.forgetPlayerRoomIn(removed);
         this.areas.delete(id);
         this.areaNames.delete(id);
         // The area's labels go with it (TMap::deleteArea deletes the TArea that
@@ -4091,35 +4171,53 @@ export class MapStore {
 
     /**
      * Mudlet `createMapImageLabel(areaID, imagePathFileName, posx, posy, posz,
-     * width, height, zoom [, showOnTop [, noScaling]])`. Adds an image label and
-     * returns its new id, or -1 if the area is missing. The image reference is
-     * stored verbatim in the label's `pixMap` (surfaced as `Pixmap` by
-     * getMapLabel); like text labels it is not yet painted by the renderer.
+     * width, height, zoom, showOnTop [, temporary])`. Adds an image label and
+     * returns its new id, or -1 if the area is missing. `pixmap` is the image
+     * itself as a base64 PNG — desktop reads the file at creation and keeps only
+     * the picture, so getMapLabel's `Pixmap`, the map file and saveJsonMap all
+     * carry image data, never the path (the Lua binding reads the file). Like
+     * TMap::createMapImageLabel, the colours are TMapLabel's untouched opaque
+     * black and the label always scales with the map.
      */
     createMapImageLabel(
-        areaId: number, imagePath: string,
+        areaId: number, pixmap: string,
         x: number, y: number, z: number,
         width: number, height: number,
-        showOnTop = true, noScaling = false,
+        showOnTop = false, temporary = false,
     ): number {
         if (!this.areas.has(areaId)) return -1;
         const id = this.nextLabelId(areaId);
-        const label: MudletLabel = {
+        const label: MapLabel = {
             id,
             pos: [x, y, z],
             size: [width, height],
             text: '',
-            fgColor: { spec: 1, alpha: 255, r: 255, g: 255, b: 255 },
-            bgColor: { spec: 1, alpha: 0, r: 0, g: 0, b: 0 },
-            pixMap: imagePath ?? '',
-            noScaling,
+            fgColor: { spec: 1, alpha: 255, r: 0, g: 0, b: 0 },
+            bgColor: { spec: 1, alpha: 255, r: 0, g: 0, b: 0 },
+            pixMap: pixmap ?? '',
+            noScaling: false,
             showOnTop,
+            temporary,
         };
         const arr = this.labels.get(areaId);
         if (arr) arr.push(label);
         else this.labels.set(areaId, [label]);
         this.notify();
         return id;
+    }
+
+    /**
+     * Replace a label's pixmap, but only while it still holds `expected` — the
+     * swap an image label's asynchronously drawn pixmap makes, which must not
+     * land on a label deleted, recreated or reloaded in the meantime. Returns
+     * whether it replaced anything.
+     */
+    replaceLabelPixmap(areaId: number, labelId: number, expected: string, pixmap: string): boolean {
+        const label = this.labels.get(areaId)?.find(l => l.id === labelId);
+        if (!label || label.pixMap !== expected) return false;
+        label.pixMap = pixmap;
+        this.notify();
+        return true;
     }
 
     /** Mudlet `deleteMapLabel(areaID, labelID)`. Removes the label; returns
@@ -4224,9 +4322,14 @@ export class MapStore {
     removeMapMenu(name: string): boolean {
         const had = this.mapMenus.delete(name);
         // Mudlet removes a menu *and its children* — cascade to any submenus
-        // nested under it (recursively, so grandchildren go too).
+        // nested under it (recursively, so grandchildren go too), and to the
+        // events filed under each removed menu, which desktop drops with it
+        // rather than leaving behind pointing at a parent that is gone.
         for (const [childName, menu] of [...this.mapMenus]) {
             if (menu.parent === name) this.removeMapMenu(childName);
+        }
+        for (const [eventName, event] of [...this.mapEvents]) {
+            if (event.parent === name) this.mapEvents.delete(eventName);
         }
         return had;
     }
@@ -4746,10 +4849,11 @@ export class MapStore {
         return true;
     }
 
-    /** Mudlet unHighlightRoom(roomID). Returns false when the room had no highlight. */
+    /** Mudlet unHighlightRoom(roomID). False only for a room that doesn't
+     *  exist; a room with no highlight to remove is still true, as on desktop. */
     unHighlightRoom(id: number): boolean {
-        if (!this.roomHighlights.delete(id)) return false;
-        this.notifyHighlights();
+        if (!this.rooms.has(id)) return false;
+        if (this.roomHighlights.delete(id)) this.notifyHighlights();
         return true;
     }
 

@@ -4,10 +4,24 @@ import { useConnectionId, useProfileField } from '../storage';
 import { useIsMobile, useIsTouch } from '../hooks/useViewportMode';
 import { useCommandHistory } from './useCommandHistory';
 import { matchHistory, type Match } from './commandHistory';
-import { matchWordCandidates, splitTrailingWord, type ActiveWord, type BufferWordIndex } from './bufferWords';
+import { TabCompletionCycle, tabCompletionPool } from './tabCompletion';
 import { flushScreenReaderLines } from './output/ScreenReaderLog';
 import { COMMAND_INPUT_ID } from './landmarks';
 import type { CmdLineMenuEntry, CmdLineMenuRegistry } from './CmdLineMenuRegistry';
+import { cmdLinePlainText } from './cmdline/plainText';
+
+/**
+ * Desktop's password box is still TCommandLine, a multi-line text edit that
+ * only masks what it shows: a pasted `pw1\npw2` or a Shift+Enter keeps its
+ * line break and Enter sends each line (#375). A masked <input> is the only
+ * way to mask here that every browser supports and that password managers and
+ * screen readers treat as a password, but it strips line feeds from its value.
+ * So the field shows each line feed as this private-use character — masked
+ * like any other, one UTF-16 unit, so carets line up — and its edits map back.
+ */
+const PASSWORD_LF = '\uE000';
+const toPasswordField = (text: string) => text.replace(/\n/g, PASSWORD_LF);
+const fromPasswordField = (text: string) => text.replace(/\uE000/g, '\n');
 
 /** The live region holds exactly one announcement. Keeping only the newest means
  *  the default `aria-atomic` of role="status" reads that one word and nothing
@@ -24,20 +38,21 @@ interface CommandBarProps {
     commandInputRef: React.RefObject<HTMLInputElement | HTMLTextAreaElement | null>;
     onSubmit: () => void;
     cmdLineMenu: CmdLineMenuRegistry;
-    /** Tab-completion suggestions added via Mudlet's addCmdLineSuggestion API.
-     *  Merged ahead of command history (dedup, case-insensitive). */
+    /** The main command line's addCmdLineSuggestion words: Tab completes to
+     *  them as well as to the buffer's, and the history ghost offers them. */
     suggestions?: string[];
-    /** Words Mudlet's addCmdLineBlacklist API has taken out of Tab completion.
-     *  Subtractive across every source below, not just `suggestions`. */
+    /** Words Mudlet's addCmdLineBlacklist API has taken out of Tab completion,
+     *  whether they came from the buffer or from `suggestions`. */
     blacklist?: string[];
     /** Mudlet's per-command-line setSaveCommandHistory. False keeps the history
      *  for this session but stops persisting it. */
     saveHistory?: boolean;
-    /** Recency-ordered words seen in output, for argument-word Tab completion. */
-    bufferWords?: BufferWordIndex | null;
+    /** The main console's last lines, oldest first, read at each Tab — what
+     *  TCommandLine::handleTabCompletion completes from besides `suggestions`. */
+    completionLines?: () => readonly string[];
 }
 
-export function CommandBar({ command, onCommandChange, passwordMode, commandInputRef, onSubmit, cmdLineMenu, suggestions, blacklist, saveHistory, bufferWords }: CommandBarProps) {
+export function CommandBar({ command, onCommandChange, passwordMode, commandInputRef, onSubmit, cmdLineMenu, suggestions, blacklist, saveHistory, completionLines }: CommandBarProps) {
     const [menu, setMenu] = useState<{ x: number; y: number; items: CmdLineMenuEntry[] } | null>(null);
     const inputBackground = useProfileField('inputBackground');
     const inputForeground = useProfileField('inputForeground');
@@ -45,6 +60,9 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
     // readDefaultTrueBool) and "Disable password masking" (off by default).
     const highlightHistory = useProfileField('highlightHistory') ?? true;
     const disablePasswordMasking = useProfileField('disablePasswordMasking') ?? false;
+    // Mudlet's "Auto clear the input line after you sent text" (off by
+    // default) — decides where history traversal resumes after a send.
+    const autoClearInput = useProfileField('autoClearInput') === true;
     const spellCheckInput = useProfileField('spellCheckInput') ?? false;
     const inputStyle = (inputBackground || inputForeground) ? {
         ...(inputBackground ? { background: inputBackground } : {}),
@@ -92,11 +110,10 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
     // landed on, -1 when none is in progress. See completeFromHistory.
     const autoCompleteRef = useRef(-1);
 
-    // In-progress argument-word Tab cycle. `lastValue` is the value we last wrote
-    // — if the box no longer matches it, the user has edited and the cycle is
-    // stale, so the next Tab recomputes matches from scratch.
-    const cycleRef = useRef<{ matches: string[]; index: number; lastValue: string } | null>(null);
-    const resetCycle = () => { cycleRef.current = null; };
+    // The Tab completion in progress (desktop's mTabCompletionTyped/Count). It
+    // notices on its own when the box no longer holds what it last wrote.
+    const cycleRef = useRef(new TabCompletionCycle());
+    const resetCycle = () => { cycleRef.current.reset(); };
 
     const [ghostHidden, setGhostHidden] = useState(false);
 
@@ -158,7 +175,7 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         draftRef.current = command;
         setCursor(-1);
         setGhostHidden(false);
-        cycleRef.current = null;
+        cycleRef.current.reset();
         autoCompleteRef.current = -1;
     }, [command]);
 
@@ -191,7 +208,7 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
 
     // Auto-grow the multi-line command box to fit its content (up to the CSS
     // max-height, beyond which it scrolls). Reset to 'auto' first so it can
-    // shrink back when lines are removed. Single-line <input> (password mode)
+    // shrink back when lines are removed. The masked password <input>
     // is left untouched.
     //
     // The field is `box-sizing: border-box`, but `scrollHeight` excludes the
@@ -217,8 +234,17 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
     // would re-open, with the game hidden behind a keyboard nobody asked for.
     // The player taps the box when they actually mean to type (see the matching
     // opt-out in StickyOutputPanel, and the blur-on-send in `submit` below).
+    //
+    // Only when the focus was ours to give back, though. The swap leaves focus
+    // on the page body when the old element held it; anywhere else — a script's
+    // command line, a dialog — the player is typing there, and a password prompt
+    // must not drag them out of it: their next line went to the game as a raw
+    // command instead of to the command line's action (#342). Desktop's
+    // setEchoSuppression never moves focus at all.
     useEffect(() => {
         if (isMobile && isTouch) return;
+        const active = document.activeElement;
+        if (active && active !== document.body && active !== commandInputRef.current) return;
         commandInputRef.current?.focus();
     }, [commandInputRef, passwordMode, isMobile, isTouch]);
 
@@ -244,8 +270,11 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         onCommandChange(val);
     };
 
+    // The masked field is the only one that can't hold a line feed.
+    const maskedPassword = !!passwordMode && !disablePasswordMasking;
+
     const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-        const val = e.target.value;
+        const val = maskedPassword ? fromPasswordField(e.target.value) : e.target.value;
         draftRef.current = val;
         setCursor(-1);
         setGhostHidden(false);
@@ -259,9 +288,17 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         // Empty Enter is still sent — many MUDs treat a bare newline as a
         // meaningful command (continue prompts, "look" repeats). Just don't
         // record blanks in history.
-        if (command && !passwordMode) pushHistory(command);
-        draftRef.current = command;
-        setCursor(-1);
+        const recorded = command !== '' && !passwordMode;
+        // History holds what was sent: the box's plain text (#375).
+        if (recorded) pushHistory(cmdLinePlainText(command));
+        // TCommandLine::enterCommand: a box that is not cleared after sending
+        // leaves the history position ON the command just sent (it is the
+        // newest entry and still in the box), so the first Up goes to the one
+        // before it rather than recalling the same command again, and Down
+        // steps off it to an empty line (#336). A cleared box, or a command
+        // that never reached history, starts from the empty draft slot.
+        draftRef.current = '';
+        setCursor(recorded && !autoClearInput ? 0 : -1);
         setGhostHidden(false);
         resetCycle();
         autoCompleteRef.current = -1;
@@ -286,50 +323,50 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         submit();
     };
 
-    // Insert a newline at the caret. Mudlet binds Shift+Enter to this so the user
-    // can stage several commands in the box; a plain Enter then sends each line
-    // (split downstream in handleSend).
-    const insertNewlineAtCaret = () => {
+    // Replace the selection with `text` and put the caret after it.
+    const insertAtCaret = (text: string) => {
         const el = commandInputRef.current;
         const start = el?.selectionStart ?? command.length;
         const end = el?.selectionEnd ?? command.length;
-        const next = command.slice(0, start) + '\n' + command.slice(end);
+        const next = command.slice(0, start) + text + command.slice(end);
         draftRef.current = next;
         setCursor(-1);
         setGhostHidden(true);
         resetCycle();
-        pendingCaretPosRef.current = start + 1;
+        pendingCaretPosRef.current = start + text.length;
         setValue(next);
     };
 
-    // Complete the trailing word by cycling through prefix matches. `dir` is +1
-    // for Tab (forward) / -1 for Shift+Tab (backward); the index wraps. The first
-    // press computes + caches the candidate list from the typed word; subsequent
-    // presses just advance the cached index (the snapshot survives until the user
-    // edits, which clears cycleRef). `lists` are the candidate pools in priority
-    // order: suggestions, then buffer words.
-    //
-    // Returns false when there was nothing to complete.
-    const cycleWord = (active: ActiveWord, dir: 1 | -1, lists: string[][]): boolean => {
-        let state = cycleRef.current;
-        if (!state || state.lastValue !== command) {
-            const matched = matchWordCandidates(active.word, lists);
-            if (matched.length === 0) { cycleRef.current = null; return false; }
-            state = { matches: matched, index: dir === 1 ? 0 : matched.length - 1, lastValue: '' };
-            cycleRef.current = state;
-        } else {
-            const n = state.matches.length;
-            state.index = (state.index + dir + n) % n;
-        }
-        const proposal = state.matches[state.index];
-        const next = active.prefix + proposal;
-        state.lastValue = next;
-        draftRef.current = next;
+    // Insert a newline at the caret. Mudlet binds Shift+Enter to this so the user
+    // can stage several commands in the box; a plain Enter then sends each line
+    // (split downstream in handleSend).
+    const insertNewlineAtCaret = () => insertAtCaret('\n');
+
+    // A paste with line breaks into the masked password field, which would
+    // drop them (see PASSWORD_LF): put it in ourselves, line feeds kept, CRLF
+    // and a lone CR read as one, as the <textarea> does. Anything else is the
+    // browser's own paste.
+    const handlePasswordPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+        const text = e.clipboardData.getData('text/plain');
+        if (!/[\r\n]/.test(text)) return;
+        e.preventDefault();
+        insertAtCaret(text.replace(/\r\n?/g, '\n'));
+    };
+
+    // TCommandLine::handleTabCompletion: Tab (`dir` 1) or Shift+Tab (-1)
+    // completes the word at the end of the line from the main console's last
+    // 500 lines and the suggestions, less the blacklist — see tabCompletion.ts
+    // for the rules (#342). Returns false when there was nothing to complete.
+    const tabComplete = (dir: 1 | -1): boolean => {
+        const step = cycleRef.current.step(command, dir,
+            () => tabCompletionPool(completionLines?.() ?? [], suggestions ?? [], blacklist ?? []));
+        if (!step) return false;
+        draftRef.current = step.text;
         setCursor(-1);
         pendingCaretEndRef.current = 'end';
-        setValue(next);
+        setValue(step.text);
         // Mudlet announces the proposal alone, not the whole rewritten line.
-        announce(proposal);
+        announce(step.proposal);
         return true;
     };
 
@@ -390,6 +427,28 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         return true;
     };
 
+    /**
+     * TCommandLine::historyMove: Down on the draft slot — not walking history,
+     * no prefix search under way — with text in the box files that text in
+     * history and clears the line, so a half-typed command can be put aside
+     * and recalled with Up later (#336). Even with an empty history, and
+     * never for a password. In a multi-line draft only from the last row;
+     * above it Down still moves the caret. Returns false when it did nothing.
+     */
+    const stashDraft = (): boolean => {
+        const el = commandInputRef.current;
+        if (!el || passwordMode || cursor !== -1 || autoCompleteRef.current !== -1) return false;
+        const value = el.value;
+        if (value === '') return false;
+        if (value.indexOf('\n', el.selectionEnd ?? value.length) !== -1) return false;
+        pushHistory(cmdLinePlainText(value));
+        resetCycle();
+        draftRef.current = '';
+        pendingCaretEndRef.current = 'end';
+        setValue('');
+        return true;
+    };
+
     const qualifiesForTraversal = (dir: 'up' | 'down'): boolean => {
         const el = commandInputRef.current;
         if (!el) return false;
@@ -412,11 +471,19 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         if (isComposingRef.current || e.nativeEvent.isComposing) return;
 
         if (e.key === 'Escape') {
+            // TCommandLine::event: a plain Escape leaves Tab completion and
+            // history browsing and selects the whole line, so whatever is
+            // typed next replaces it (#342). It also puts the ghost away.
+            if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+            e.preventDefault();
             resetCycle();
-            if (ghostText) {
-                setGhostHidden(true);
-                e.preventDefault();
+            autoCompleteRef.current = -1;
+            if (cursor !== -1) {
+                draftRef.current = command;
+                setCursor(-1);
             }
+            setGhostHidden(true);
+            commandInputRef.current?.select();
             return;
         }
 
@@ -426,12 +493,13 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
             // the split is up) and otherwise does nothing; any other modified
             // Enter a keybinding didn't claim (ProfileSession offers it first)
             // stages a newline, as the text edit underneath does on desktop,
-            // so several commands can be composed at once. Passwords stay
-            // single line. preventDefault so the textarea never inserts its own.
+            // so several commands can be composed at once — in a password box
+            // too, which is the same text edit, only masked (#375).
+            // preventDefault so the textarea never inserts its own.
             e.preventDefault();
             const ctrl = e.ctrlKey || e.metaKey;
             if (ctrl && !e.shiftKey && !e.altKey) return;
-            if (!passwordMode && (ctrl || e.shiftKey || e.altKey)) {
+            if (ctrl || e.shiftKey || e.altKey) {
                 insertNewlineAtCaret();
             } else {
                 submit();
@@ -440,32 +508,22 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         }
 
         if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey && !passwordMode) {
-            const active = splitTrailingWord(command);
             // Nothing to complete — empty box or trailing whitespace. Desktop
             // swallows this Tab anyway (TCommandLine.cpp:293-329) because a
             // native window has nowhere else for focus to go; in a browser it is
             // the documented way out of the command line, and swallowing a key
             // that does nothing is exactly what WCAG 2.1.2 objects to. See the
             // hint span below, which tells a screen-reader user it is there.
-            if (!active) return;
+            if (command === '' || /\s$/.test(command)) return;
             // From here on Tab belongs to the command line, completion or not,
             // as on desktop. Letting a Tab with no match move focus away sent
             // the player's next keystrokes somewhere else, and their typing
             // was lost (#188). The empty box and a trailing space above stay
-            // the way out.
-            e.preventDefault();
-            // Candidates are suggestions + words seen in the output, for the
-            // first word and arguments alike. Command history is not one:
+            // the way out. Command history is not a source:
             // TCommandLine::handleTabCompletion completes only from the buffer
-            // and setCmdLineSuggestions, so a Tab never recalls an old command.
-            const lists = [suggestions ?? [], bufferWords?.getWords() ?? []];
-            // The blacklist subtracts from every list, matched case-insensitively
-            // (TCommandLine::tabComplete does the same).
-            const banned = new Set((blacklist ?? []).map(w => w.toLowerCase()));
-            const allowed = banned.size === 0
-                ? lists
-                : lists.map(l => l.filter(w => !banned.has(w.toLowerCase())));
-            cycleWord(active, e.shiftKey ? -1 : 1, allowed);
+            // and the suggestions, so a Tab never recalls an old command.
+            e.preventDefault();
+            tabComplete(e.shiftKey ? -1 : 1);
             return;
         }
 
@@ -474,6 +532,10 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
             // caret on desktop (TCommandLine::event), and any other modifier is
             // a keybinding's or the textarea's.
             if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+            if (e.key === 'ArrowDown' && stashDraft()) {
+                e.preventDefault();
+                return;
+            }
             if (completeFromHistory(e.key === 'ArrowUp' ? 1 : -1)) {
                 e.preventDefault();
                 return;
@@ -522,18 +584,17 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
                     </div>
                 )}
 
-                {passwordMode ? (
+                {maskedPassword ? (
                     <Input
                         ref={commandInputRef as React.RefObject<HTMLInputElement>}
                         id={COMMAND_INPUT_ID}
                         className="command-input"
-                        // Mudlet's "Disable password masking": still the
-                        // single-line password field (no history, no ghost
-                        // completion), just readable — for a player who would
-                        // rather see a typo than retype a long passphrase.
-                        type={disablePasswordMasking ? 'text' : 'password'}
-                        value={command}
+                        type="password"
+                        // Line feeds shown as PASSWORD_LF, which a masked
+                        // <input> keeps and handleChange maps back.
+                        value={toPasswordField(command)}
                         onChange={handleChange}
+                        onPaste={handlePasswordPaste}
                         onKeyDown={handleKeyDown}
                         onCompositionStart={handleCompositionStart}
                         onCompositionEnd={handleCompositionEnd}
@@ -550,6 +611,10 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
                     // A <textarea> (not <input>) so Ctrl/Shift+Enter can stage
                     // multiple lines. rows=1 keeps it single-line until the user
                     // adds a newline; the auto-grow effect resizes it to fit.
+                    // Also a password prompt's box under Mudlet's "Disable
+                    // password masking" — readable, for a player who would
+                    // rather see a typo than retype a long passphrase, and
+                    // still without history or ghost completion.
                     <textarea
                         ref={commandInputRef as React.RefObject<HTMLTextAreaElement>}
                         id={COMMAND_INPUT_ID}
@@ -561,7 +626,7 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
                         onCompositionStart={handleCompositionStart}
                         onCompositionEnd={handleCompositionEnd}
                         onContextMenu={handleContextMenu}
-                        placeholder="Enter command…"
+                        placeholder={passwordMode ? 'Enter password…' : 'Enter command…'}
                         autoComplete="off"
                         autoCapitalize="none"
                         autoCorrect="off"
@@ -569,7 +634,7 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
                         // here, and it is off by default: a command line is
                         // full of words no dictionary has. The password field
                         // above never gets it, whatever this says.
-                        spellCheck={spellCheckInput}
+                        spellCheck={spellCheckInput && !passwordMode}
                         aria-label="Command input"
                         aria-describedby={HINT_ID}
                         style={inputStyle}

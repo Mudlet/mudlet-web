@@ -82,6 +82,10 @@ export type MudClientEvents = {
      *  (ctelnet.cpp slot_socketDisconnected), so the notice hangs off this. */
     'client.disconnected': void;
     'client.error': [message: string];
+    /** One of cTelnet's `[ WARN  ]` notices about the data stream (a broken
+     *  MCCP stream, a read too big to inflate), in desktop's words: the first
+     *  line carries the prefix, any after a `\n` are its continuation. */
+    'client.warning': [message: string];
     /** The link to the *game* is up — the point in Mudlet's
      *  `slot_socketConnected` where `mConnectionTimer` starts (ctelnet.cpp:723).
      *  Emitted immediately after `client.connect`, for the same socket; kept as
@@ -154,7 +158,10 @@ export type MudClientEvents = {
     'charset.negotiated': [encoding: string, acceptedRequest?: boolean];
     'socket.incoming': [data: string];
     'socket.outgoing': [data: string];
-    'message': [text?: string | AnsiAwareBuffer, type?: string, timestamp?: number, isPrompt?: boolean];
+    /** `joinedTo`: the buffer lines this text was written onto instead of a
+     *  line of its own — a command echoed onto the GA prompt line it was typed
+     *  at (TConsole::printCommand's insertInLine branch). */
+    'message': [text?: string | AnsiAwareBuffer, type?: string, timestamp?: number, isPrompt?: boolean, joinedTo?: AnsiAwareBuffer[]];
     'flushLines': [groups: { text: string; type: string }[]];
     'gmcp': [payload: { path: string; value: unknown }];
     /** A `Client.GUI` server package-install request, in either wire format:
@@ -169,7 +176,10 @@ export type MudClientEvents = {
      *  exactly two bytes: Aardwolf's variable number and its value. Reaches Lua
      *  as the `channel102` table plus a `channel102Message` event. */
     'channel102': [payload: { variable: number; value: number }];
-    'gmcp.core.ping': [value: unknown];
+    /** An inbound ATCP message (telnet option 200), split as desktop's
+     *  `setATCPVariables` does: `name` keys the Lua `atcp` table and is the
+     *  event raised, `value` the string both carry. */
+    'atcp': [payload: { name: string; value: string }];
     /** Fires when the server requests GMCP login (Char.Login.Default). The
      *  argument is the list of supported authentication methods it advertised
      *  (e.g. `["password-credentials"]`). The UI shows a credentials popup and

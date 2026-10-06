@@ -9,6 +9,11 @@ import {
 } from "./constants";
 import { fromByteString, toByteString } from "./byteString";
 
+/** MSDP values are the game's own bytes, decoded through the session's encoding
+ *  as desktop's msdp2Lua does (`decodeBytes`); a caller with no session gets
+ *  UTF-8, the encoding a session starts in. */
+const defaultDecode = (bytes: string): string => fromByteString(bytes).text;
+
 // MSDP control bytes, as numeric codes for the byte-at-a-time parser below.
 const VAR = 1;          // MSDP_VAR
 const VAL = 2;          // MSDP_VAL
@@ -21,12 +26,14 @@ const CONTROL_BYTES = new Set([VAR, VAL, TABLE_OPEN, TABLE_CLOSE, ARRAY_OPEN, AR
 /**
  * Frame a Mudlet-style `sendMSDP(variable, ...values)` call as an MSDP
  * subnegotiation: `IAC SB MSDP MSDP_VAR <variable> [MSDP_VAL <value>]... IAC SE`.
- * The returned string is a Latin-1 byte-string ready for sendBytes.
+ * The returned string is a Latin-1 byte-string ready for sendBytes. `encode`
+ * turns text into the game's bytes — the session's encoding, as desktop
+ * writes them; UTF-8 for a caller with no session.
  */
-export function encodeMsdp(variable: string, values: string[]): string {
-    let out = GMCP_IAC + GMCP_SB + OPT_MSDP + MSDP_VAR + toByteString(variable);
+export function encodeMsdp(variable: string, values: string[], encode: (text: string) => string = toByteString): string {
+    let out = GMCP_IAC + GMCP_SB + OPT_MSDP + MSDP_VAR + encode(variable);
     for (const v of values) {
-        out += MSDP_VAL + toByteString(v);
+        out += MSDP_VAL + encode(v);
     }
     out += GMCP_IAC + GMCP_SE;
     return out;
@@ -77,7 +84,10 @@ class MsdpParser {
     private truncated = false;
     /** How many tables/arrays enclose the cursor - Mudlet's `nest`. */
     private depth = 0;
-    constructor(private readonly data: string) {}
+    constructor(
+        private readonly data: string,
+        private readonly decode: (bytes: string) => string = defaultDecode,
+    ) {}
 
     /** Top-level variables in wire order. Mudlet flushes each one separately, so
      *  a repeated name arrives twice rather than collapsing into one entry. */
@@ -215,15 +225,19 @@ class MsdpParser {
         while (this.i < n && !CONTROL_BYTES.has(this.data.charCodeAt(this.i))) {
             this.i++;
         }
-        // MSDP names are ASCII but values may carry UTF-8. Malformed bytes are
-        // substituted rather than reported: unlike GMCP there's no envelope to
-        // name in a warning, and a bad value is already visible as such.
-        return fromByteString(this.data.substring(start, this.i)).text;
+        // Decoded under the game's encoding, so a GBK or KOI8-R game's values
+        // read as text. Malformed bytes are substituted rather than reported:
+        // unlike GMCP there's no envelope to name in a warning, and a bad value
+        // is already visible as such.
+        return this.decode(this.data.substring(start, this.i));
     }
 }
 
 export interface MsdpStreamOptions {
     onEnvelope: (payload: MsdpEnvelope) => void;
+    /** Byte-string to text under the session's game encoding. Defaults to
+     *  UTF-8. */
+    decode?: (bytes: string) => string;
 }
 
 /** Mirror of createGmcpStream for MSDP subnegotiations. The handler receives a
@@ -231,10 +245,10 @@ export interface MsdpStreamOptions {
  *  top-level variable is emitted as its own envelope. A variable the parser
  *  dropped as malformed yields no envelope at all, so no arrival event fires
  *  for data the game never finished sending. */
-export const createMsdpStream = ({ onEnvelope }: MsdpStreamOptions) => {
+export const createMsdpStream = ({ onEnvelope, decode }: MsdpStreamOptions) => {
     return (data: string) => {
         if (data.length === 0 || data.charCodeAt(0) !== MSDP_COMMAND_CODE) return;
-        for (const envelope of new MsdpParser(data.substring(1)).parseTopLevel()) {
+        for (const envelope of new MsdpParser(data.substring(1), decode).parseTopLevel()) {
             onEnvelope(envelope);
         }
     };

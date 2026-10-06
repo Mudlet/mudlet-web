@@ -47,6 +47,20 @@ const PROXIED_ORIGIN_TTL_MS = 5 * 60_000;
 // refused"), rather than the 502 it rides on.
 const PROXY_ERROR_HEADER = 'X-Mudlet-Proxy-Error';
 
+// Set by proxy/server.ts when the target redirected: the url the reply came
+// from. A reply through the proxy has the proxy's own url as `Response.url`,
+// so this is the only place the target's final url can come from. It is not
+// the target's header, so it is kept out of the response record.
+const PROXY_FINAL_URL_HEADER = 'X-Mudlet-Final-Url';
+const PROXY_HEADERS = new Set([PROXY_FINAL_URL_HEADER.toLowerCase()]);
+
+// What Mudlet raises when the downloaded bytes cannot be written: QFile::open
+// fails before anything is written, for a directory that does not exist as
+// much as for a path that is itself a directory. The reason takes the place of
+// the url in the event (slot_httpRequestFinished).
+const SAVE_FAILED = "Couldn't save to the destination file";
+const SAVE_OPEN_FAILED = "Couldn't open the destination file for writing (permission errors?)";
+
 /** A request that failed before any reply from the target arrived. */
 class TransportError extends Error {}
 
@@ -87,7 +101,8 @@ export class HttpService {
      * should read nil, not fail on indexing a missing table.
      */
     private responseRecord(headers: Headers): Record<string, unknown> {
-        return { headers: Object.fromEntries(headers.entries()), cookies: {} };
+        const entries = [...headers.entries()].filter(([k]) => !PROXY_HEADERS.has(k));
+        return { headers: Object.fromEntries(entries), cookies: {} };
     }
 
     constructor(
@@ -221,10 +236,9 @@ export class HttpService {
             // Same unterminated quote as the install path had — Mudlet closes it.
             if (!data) return this.emit('sysDownloadError', [`could not open file '${path}'`, saveTo, url, EMPTY_RECORD()]);
 
-            try { vfs.writeBinaryFile(saveTo, data); }
-            catch (err) {
-                return this.emit('sysDownloadError',
-                    [`save to '${saveTo}' failed: ${errorMessage(err)}`, saveTo, url, EMPTY_RECORD()]);
+            try { vfs.writeBinaryFile(saveTo, data, { createParents: false }); }
+            catch {
+                return this.emit('sysDownloadError', [SAVE_FAILED, saveTo, SAVE_OPEN_FAILED, EMPTY_RECORD()]);
             }
             // Empty headers: a file: copy never spoke HTTP. Still a record, so a
             // handler can index it without knowing which kind of URL it got.
@@ -235,7 +249,7 @@ export class HttpService {
     private async runDownload(saveTo: string, url: string): Promise<void> {
         const res = await this.fetchWithFallback(url, {});
         const record = this.responseRecord(res.headers);
-        if (!res.ok) {
+        if (!isHttpSuccess(res)) {
             await res.body?.cancel().catch(() => {});
             this.emit('sysDownloadError', [httpErrorMessage(url, res), saveTo, url, record]);
             return;
@@ -246,10 +260,12 @@ export class HttpService {
             this.emit('sysDownloadError', ['no profile VFS available', saveTo, url, record]);
             return;
         }
+        // Into a directory that already exists, as QFile::open would: Mudlet
+        // never creates the path a script names.
         try {
-            vfs.writeBinaryFile(saveTo, data);
-        } catch (err) {
-            this.emit('sysDownloadError', [`save to '${saveTo}' failed: ${errorMessage(err)}`, saveTo, url, record]);
+            vfs.writeBinaryFile(saveTo, data, { createParents: false });
+        } catch {
+            this.emit('sysDownloadError', [SAVE_FAILED, saveTo, SAVE_OPEN_FAILED, record]);
             return;
         }
         // The third argument is the response record, not the body: the bytes are
@@ -259,6 +275,8 @@ export class HttpService {
     }
 
     private async readWithProgress(res: Response, url: string): Promise<Uint8Array> {
+        // Mudlet passes nil for a total it does not know (a chunked reply with
+        // no Content-Length: Qt's -1), not the -1 itself.
         const total = Number(res.headers.get('Content-Length')) || 0;
         const reader = res.body?.getReader();
         if (!reader) {
@@ -276,7 +294,7 @@ export class HttpService {
             received += value.byteLength;
             const now = Date.now();
             if (now - lastEmit >= PROGRESS_THROTTLE_MS) {
-                this.emit('sysDownloadFileProgress', [url, received, total || -1]);
+                this.emit('sysDownloadFileProgress', [url, received, total || undefined]);
                 lastEmit = now;
             }
         }
@@ -327,6 +345,9 @@ export class HttpService {
             const raw = vfs.readBinaryFile(file);
             const fresh = new Uint8Array(raw.byteLength);
             fresh.set(raw);
+            // An empty file uploads the data string instead: Mudlet only sends
+            // the file when it read something from it.
+            if (fresh.byteLength === 0 && data != null) return data;
             return fresh;
         }
         return data == null ? undefined : data;
@@ -345,11 +366,25 @@ export class HttpService {
             const res = await this.fetchWithFallback(url, { method, body, headers });
             const text = await res.text();
             const record = this.responseRecord(res.headers);
-            if (!res.ok) {
-                this.emitNamed(errorEvent, [httpErrorMessage(url, res), url, ...extraArgs, record]);
+            // Mudlet reports the url the reply came from, so a redirect names
+            // where it ended up. And the event follows the operation Qt ended
+            // on: a 301/302/303 turns any verb but HEAD into a GET, which then
+            // finishes as sysGetHttpDone with no verb argument. fetch hides
+            // which redirect status it followed, so a redirected request is
+            // taken to have ended on GET — what Qt does for the 301/302/303
+            // that answer nearly every POST/PUT/DELETE (see
+            // PLATFORM_DIVERGENCES for the 307/308 case).
+            const finalUrl = replyUrl(res) ?? url;
+            if (method.toUpperCase() !== 'GET' && method.toUpperCase() !== 'HEAD' && finalUrl !== url) {
+                doneEvent = STANDARD_VERBS.get.done;
+                errorEvent = STANDARD_VERBS.get.error;
+                extraArgs = [];
+            }
+            if (!isHttpSuccess(res)) {
+                this.emitNamed(errorEvent, [httpErrorMessage(finalUrl, res), finalUrl, ...extraArgs, record]);
                 return;
             }
-            this.emitNamed(doneEvent, [url, text, ...extraArgs, record]);
+            this.emitNamed(doneEvent, [finalUrl, text, ...extraArgs, record]);
         } catch (err) {
             this.emitNamed(errorEvent, [errorMessage(err), url, ...extraArgs, EMPTY_RECORD()]);
         }
@@ -477,6 +512,23 @@ function parseOrigin(url: string): string | null {
 // the bare status code stands in for one.
 function httpErrorMessage(url: string, res: Response): string {
     return `Error transferring ${url} - server replied: ${res.statusText || res.status}`;
+}
+
+// Qt flags a reply as an error from 400 up; anything below it that was not
+// followed as a redirect — a 300 without a Location, a 304 — is a reply like
+// any other, where fetch's `ok` stops at 299.
+function isHttpSuccess(res: Response): boolean {
+    return res.status < 400;
+}
+
+// Where the reply came from when it was not the url requested: the proxy
+// says so in a header, a direct fetch in `Response.url`. Null when nothing
+// redirected — including a github `/raw/` url rewritten before the request,
+// which still reports the url the script asked for (see fetchWithFallback).
+function replyUrl(res: Response): string | null {
+    const viaProxy = res.headers.get(PROXY_FINAL_URL_HEADER);
+    if (viaProxy) return viaProxy;
+    return res.redirected && res.url ? res.url : null;
 }
 
 function errorMessage(err: unknown): string {

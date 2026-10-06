@@ -156,7 +156,7 @@ Transactions are driven through the Luasql connection (`conn:commit()`/`conn:rol
 | `closeMapWidget()` | ✅ | Closes the dockable map widget (id `map`); returns false if none open |
 | `connectExitStub(fromID, dir)` / `(fromID, toID[, dir])` | ✅ | Direction-only finds the nearest in-area room with a matching reverse stub (Mudlet's unit-vector/compSign search); toID-only requires exactly one reverse-stub pair |
 | `createMapLabel(areaID, text, x, y, z, fg, bg, …)` | ✅ | Adds a text label (new per-area id) to `MapStore`, drawing its pixmap on a canvas as TMap::createMapLabel does (`map/labelPixmap.ts`) so a saved map carries the image desktop paints; font and outline colour ride in the area's `system.labelFont_N`/`system.labelOutlineColor_N` keys like desktop's v20 save. Round-trips through `getMapLabels`/`getMapLabel` and binary save, and is painted by the renderer (`mudlet-map-renderer` `ScenePipeline.renderLabels` → `labelToShape`, default `labelRenderMode:"image"`). `-1` when the area is missing |
-| `createMapImageLabel(areaID, imagePath, x, y, z, w, h, zoom, …)` | ✅ | Image-label sibling of `createMapLabel`; stores the image in the label `pixMap` (surfaced as `Pixmap`), which `MudletMapReader` patches through to the renderer so it paints. `scaling` arg is the inverse of the stored `noScaling`. `-1` when the area is missing |
+| `createMapImageLabel(areaID, imagePath, x, y, z, w, h, zoom, …)` | ✅ | Image-label sibling of `createMapLabel`; reads the image when the label is made and stores it as a base64 PNG in the label `pixMap` (surfaced as `Pixmap`, saved by `saveMap`/`saveJsonMap`), which `MudletMapReader` patches through to the renderer so it paints. PNG files are kept as they are and XPM files are read in place. Other formats are drawn by the browser shortly afterwards; until then the label holds a transparent `w*zoom` × `h*zoom` image. The tenth argument is `temporary`, as on desktop. `-1` when the area is missing |
 | `createMapper(x, y, w, h)` | ✅ | Singleton embedded mapper widget sharing MapStore with the dock |
 | `createRoomID([minimumID])` | ✅ | JS-exposed |
 | `deleteArea(areaID\|name)` | ✅ | JS-exposed |
@@ -217,7 +217,7 @@ Transactions are driven through the Luasql connection (`conn:commit()`/`conn:rol
 | `hasSpecialExitLock(fromID, toID, cmd)` | ✅ | `toID` ignored; returns the lock boolean or `(nil, errMsg)` when missing |
 | `highlightRoom(roomID, …)` | ✅ | JS-exposed — color1/color2 + radius + alpha |
 | `killMapInfo(label)` | ✅ | Removes a contributor entirely |
-| `loadJsonMap(path)` | ✅ | JS-exposed via `MapStore.loadFromJsonString`; raises `sysMapLoadEvent` on success |
+| `loadJsonMap(path)` | ✅ | JS-exposed via `MapStore.loadFromJsonString`; raises no event (desktop has no `sysMapLoadEvent`) |
 | `loadMap(path)` | ✅ | JS-exposed. Binary `.dat` maps, plus IRE-style XML maps when the path ends in `.xml` (Mudlet's XMLimport::readMap) |
 | `lockExit(roomID, dir, bool)` | ✅ | `MapStore.lockExit` mutates `room.exitLocks`, which `__getPath` reads — locks set from Lua are honoured by pathfinding |
 | `hasExitLock(roomID, dir)` | ✅ | `MapStore.hasExitLock`; reads `room.exitLocks` directly. Direction accepts the 1-12 int or names ("north"/"n"/…) |
@@ -276,14 +276,14 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 
 | Function | Status | Notes |
 |---|---|---|
-| `addFileWatch(path)` | ✅ | Tracks resolved VFS paths, fires `sysPathChanged` on mutation |
+| `addFileWatch(path)` | ✅ | Tracks resolved VFS paths, fires `sysPathChanged` by QFileSystemWatcher's rules: a file reports changes and its removal (which ends the watch); a directory reports direct children added, removed or touched, not writes into them. `false` for a path already watched |
 | `addSupportedTelnetOption(option)` | ✅ | Registers a telnet option byte so the next IAC WILL/DO is auto-accepted |
 | `alert([secs])` | ✅ | Flashes `document.title` for `secs` (default 10). No-op while focused |
 | `announce(text [, processing])` | ✅ | ARIA live region; `processing` (`importantall`/`importantmostrecent` → assertive, else polite) matches Mudlet's politeness mapping |
 | `appendLog(text)` | ✅ | Appends a line (type `appendLog`) to the active `SessionLogger`; false when logging is off |
 | `cfeedTriggers(text)` | ✅ | Pure Lua via GUIUtils.lua |
 | `clearVisitedLinks()` | ✅ | True no-op — Mudlet Web tracks no visited-link state, so there is nothing to clear (bound for script portability) |
-| `closeMudlet()` | ✅ | Closes the active profile — disconnects then returns to the connection screen (callback wired by `ProfileSession`) |
+| `closeMudlet()` | ✅ | Closes the active profile — disconnects then returns to the connection screen (callback wired by `ProfileSession`). Armed, like desktop's `armForceClose`: the call returns and the rest of the calling script runs first |
 | `compare(a, b)` | ✅ | Other.lua — alias for `_comp` deep equality |
 | `deleteAllNamedEventHandlers([type])` | ✅ | IDManager.lua |
 | `deleteNamedEventHandler(name)` | ✅ | IDManager.lua |
@@ -344,7 +344,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `reloadModule(name)` | ✅ | JS-exposed |
 | `removeFileWatch(path)` | ✅ | Stops watching a path |
 | `resetLinkStyle(labelName)` / `setLinkStyle(labelName, linkColor, visitedColor[, underline])` | ✅ | Styles the `<a>` links inside a label. `LabelManager` stores the per-label `linkStyle`; `LabelOverlay` injects a `<style>` scoped via the label's `data-mudlet-label` selector (`a { color; text-decoration }`, `a:visited { color }`). `underline` defaults to true. Visited links are tracked per label (`LabelState.visitedLinks`, populated on click like Mudlet's `TLabel::mVisitedLinks`) and get an explicit `a[href="…"]` rule, since CSS `:visited` only matches real browser history and so never fires for `send:`/`prompt:` links |
-| `resetProfile()` | ✅ | Reloads the profile as if just reopened: clears every UI surface (windows, labels, gauges, command lines, scroll boxes; stops sound/video), recreates the Lua runtime (fresh globals + event handlers), and re-runs all scripts/aliases/triggers/timers/keys from current profile state, re-firing `sysLoadEvent`. Deferred to a fresh task (it closes the running `lua_State`), so call it from an alias / command line, not a script-item — matching Mudlet's own guidance. Mudlet Web reloads from the live store, not a re-read of disk |
+| `resetProfile()` | ✅ | Reloads the profile as if just reopened: clears every UI surface (windows, labels, gauges, command lines, scroll boxes; stops sound/video), recreates the Lua runtime (fresh globals + event handlers), and re-runs all scripts/aliases/triggers/timers/keys from current profile state, re-firing `sysLoadEvent`; non-persistent stopwatches are removed. Returns `true` once armed, `false` while a reset is already in progress. Deferred to a fresh task (it closes the running `lua_State`), so call it from an alias / command line, not a script-item — matching Mudlet's own guidance. Mudlet Web reloads from the live store, not a re-read of disk |
 | `resumeNamedEventHandler(name)` | ✅ | IDManager.lua |
 | `saveProfile([name])` | ✅ | Bridge.lua → `__mudlet_saveProfile` forces the debounced VFS flush through to IndexedDB; `(nil, errMsg)` when no VFS, else `true, path`. `name` ignored (single-profile) |
 | `setConfig(key, value)` | ✅ | Config registry in `ScriptingAPI` (base global; Other.lua adds the table-form/no-arg wrappers). Enforced: protocol enables + `specialForce*Off`/`forceNewEnvironNegotiationOff` (next connect), `mapRoomSize`/`mapExitSize`/`mapRoundRooms`/`mapShowRoomBorders`/`mapShowGrid`, `autoClearInputLine`, `showSentText`, `mapperPanelVisible`, `showMapInfo`/`hideMapInfo` (live), `commandLineHistorySaveSize`/`showTabConnectionIndicators`/`f3SearchEnabled` (config bag, consumed by UI). Other keys persist only. Read-only/unknown → false. Absent: the six `irc*` keys (no IRC client) and `undoServerWrap`/`undoServerWrapWidth`. Details: [`docs/config-api.md`](config-api.md) |
@@ -364,7 +364,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `translateTable(t)` | ✅ | Other.lua |
 | `uninstallModule(name)` | ✅ | JS-exposed |
 | `uninstallPackage(name)` | ✅ | JS-exposed |
-| `unzipAsync(zipPath, destDir)` | ✅ | JS-exposed; fires `sysUnzipDone`/`sysUnzipError` |
+| `unzipAsync(zipPath, destDir)` | ✅ | Creates `destDir` before returning, then fires `sysUnzipDone`/`sysUnzipError` after the call has returned — a missing or invalid zip included |
 | `yajl.to_string` / `yajl.to_value` / `yajl.generator` / `yajl.parser` / `yajl.null` | ✅ | Matches desktop lua-yajl (`lua_yajl.c`). `Yajl.lua`: a port of yajl_gen (sparse arrays with null holes, `indent`, depth-128 limit, `__gen_json`) and of yajl's push parser (streaming `yajl.parser`, yajl's error text). `yajl.ts`: the `JSON.parse` fast path behind `to_value` (Lua source, or an iterative raw-API build for deep documents, capped where lua_yajl's stack check is), and `yajl.null` as a userdata. Loaded at startup via `setupYajl` |
 
 ---
@@ -373,13 +373,13 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 
 | Function | Status | Notes |
 |---|---|---|
-| `addCmdLineSuggestion([name,] text)` | ✅ | Main command bar; `name` argument is dropped (Tab-completion merged with command history) |
+| `addCmdLineSuggestion([name,] text)` | ✅ | Per command line (main bar, `createCommandLine`, or a console's own line once enabled); Tab completes from these plus the main console's last 500 lines |
 | `adjustStopWatch(id\|name, seconds)` | ✅ | Add (or subtract) seconds |
 | `ancestors(id, type)` | ✅ | Ancestor chain (immediate parent → root) as 1-indexed `{id, name, node, isActive}`; `node` is "package"/"group"/"item". `(false, errMsg)` when no item of that type has the id |
 | `appendCmdLine([name,] text)` | ✅ | Routes to overlay cmd lines (`createCommandLine`), per-userwindow cmd lines, or the main bar |
 | `appendScript(name, code)` | ✅ | JS-exposed |
 | `clearCmdLine([name])` | ✅ | Routes to overlay cmd lines, per-userwindow cmd lines, or the main bar |
-| `clearCmdLineSuggestions([name])` | ✅ | Main bar |
+| `clearCmdLineSuggestions([name])` | ✅ | Per command line |
 | `clearProfileInformation()` | ✅ | Resets the profile description to `""` |
 | `createStopWatch([name], [autostart])` | ✅ | `performance.now()`-based high-res stopwatch (`StopwatchManager`). Named watches default autostart off |
 | `deleteAllNamedTimers(parent)` | ✅ | IDManager.lua |
@@ -400,7 +400,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `exists(name, type)` | ✅ | `ScriptingAPI.exists` |
 | `findItems(name, type [, exact [, caseSensitive]])` | ✅ | 1-indexed numeric ids of matching items/groups. `exact`/`caseSensitive` default true (Mudlet). type as for `exists` |
 | `getButtonState(name)` | ✅ | Two-state button pressed state; nil when missing |
-| `getCmdLine([name])` | ✅ | Reads the live main bar or a named overlay command line |
+| `getCmdLine([name])` | ✅ | Reads the live main bar, a named overlay command line, or a console's own line (nil + error until `enableCommandLine` gives it one) |
 | `getConsoleBufferSize([window])` | ✅ | Bridge.lua → linesLimit, batchSize; nil when console missing |
 | `getExitStubsNames(roomID)` | ✅ | Stub direction names ("north"/…/"other"), 1-indexed |
 | `getNamedTimers(parent)` | ✅ | IDManager.lua |
@@ -438,7 +438,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `registerNamedTimer(parent, name, delay, code)` | ✅ | IDManager.lua |
 | `registerNamedTrigger(parent, name, pattern, code)` | ✅ | IDManager.lua |
 | `remainingTime(id)` | ✅ | JS-exposed |
-| `removeCmdLineSuggestion([name,] text)` | ✅ | Main bar |
+| `removeCmdLineSuggestion([name,] text)` | ✅ | Per command line |
 | `resetProfileIcon()` | ✅ | Clears `ProfileSettings.icon` so the connection screen falls back to the auto-generated name tile |
 | `resetStopWatch(id\|name)` | ✅ | Zeroes elapsed; a running watch keeps running |
 | `resumeNamedTimer(parent, name)` | ✅ | IDManager.lua |
@@ -500,7 +500,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `putHTTP(url, data [, headers])` | ✅ | Bridge.lua → `HttpService.putHTTP` |
 | `reconnect()` | ✅ | Disconnect + redial the last-connected URL (`MudSession.lastUrl`, set by every `connect()`), else the profile's configured server; returns nothing, as Mudlet's does |
 | `sendAll(text1, text2, ...)` | ✅ | Other.lua |
-| `sendATCP(msg)` | ✅ | `IAC SB ATCP(200) <payload> IAC SE` via `MudClient.sendRaw` (shared `sendSubnegotiation` helper); false when the socket is closed |
+| `sendATCP(msg)` | ✅ | `IAC SB ATCP(200) <payload> IAC SE` via `MudClient.sendRaw` (shared `sendSubnegotiation` helper); `nil, "ATCP is not currently enabled"` unless the server has taken ATCP up (`isATCPEnabled`). Inbound ATCP fills the `atcp` table and raises one event per message, named after it without dots (`CharVitals`), and `Auth.Request` is answered with the hello |
 | `sendGMCP(message)` | ✅ | Frames as IAC SB GMCP … |
 | `sendMSDP(var, ...)` | ✅ | Frames `IAC SB MSDP MSDP_VAR var [MSDP_VAL val]… IAC SE`. Bridge.lua packs varargs |
 | `sendSocket(data)` | ✅ | Literal bytes (no telnet/encoding processing) |
@@ -538,10 +538,10 @@ Standard Lua 5.1 string functions (`string.byte`, `string.char`, `string.find`, 
 | `string.starts(s, prefix)` | ✅ | StringUtils.lua |
 | `string.title(s)` | ✅ | StringUtils.lua |
 | `string.trim(s)` | ✅ | StringUtils.lua |
-| `utf8.byte` / `utf8.char` / `utf8.find` / `utf8.gmatch` / `utf8.gsub` / `utf8.len` / `utf8.lower` / `utf8.match` / `utf8.reverse` / `utf8.sub` / `utf8.upper` | ✅ | Bundled `utf8.lua` (Stepets) exposed as the `utf8` global |
+| `utf8.byte` / `utf8.char` / `utf8.find` / `utf8.gmatch` / `utf8.gsub` / `utf8.len` / `utf8.lower` / `utf8.match` / `utf8.reverse` / `utf8.sub` / `utf8.upper` | ✅ | `utf8.lua`, the `utf8` global. `find`/`match`/`gmatch`/`gsub`, `len`, `sub` and `byte` are luautf8 0.2.1's, ported from its C: position captures, `%f`, `%b` and back-references work, an invalid byte is a character of its own where luautf8 only walks, and a regex-expressible pattern runs natively (`utf8Patterns.ts`). `reverse`/`char` are the Stepets helpers |
 | `utf8.patternEscape` | ✅ | StringUtils.lua. Escapes Lua-pattern magic chars (function replacement — the bundled `utf8.gsub` drops table-replacement misses) |
 | `utf8.title` / `utf8.codes` / `utf8.isvalid` / `utf8.invalidoffset` / `utf8.clean` / `utf8.isnfc` / `utf8.normalize_nfc` / `utf8.widthlimit` / `utf8.grapheme_indices` / `utf8.version` | ✅ | luautf8 0.2.1, ported from its C into `utf8.lua`. `title` maps every character to its titlecase, as luautf8 does (`utf8.title("élan")` is `ÉLAN`) — not StringUtils' first-letter `string.title`. NFC and grapheme clusters come from the JS engine (`String.prototype.normalize`, `Intl.Segmenter`) |
-| `utf8.charpos` / `utf8.escape` / `utf8.fold` / `utf8.insert` / `utf8.ncasecmp` / `utf8.next` / `utf8.remove` / `utf8.width` / `utf8.widthindex` | ✅ | luautf8 (starwing) extensions ported into `utf8.lua` over the bundled Stepets helpers. `fold`/`ncasecmp` case-fold ASCII (no Unicode CaseFolding table); `width`/`widthindex` use Markus Kuhn's wcwidth ranges (combining → 0, East-Asian wide/fullwidth → 2) and accept (but don't tabulate) `ambi_is_double` |
+| `utf8.charpos` / `utf8.escape` / `utf8.fold` / `utf8.insert` / `utf8.ncasecmp` / `utf8.next` / `utf8.offset` / `utf8.remove` / `utf8.width` / `utf8.widthindex` | ✅ | luautf8 0.2.1, ported from its C into `utf8.lua`. `fold`/`ncasecmp` use luautf8's own case-folding table; `width`/`widthindex` use Markus Kuhn's wcwidth ranges (combining → 0, East-Asian wide/fullwidth → 2) and accept (but don't tabulate) `ambi_is_double` |
 
 ---
 
@@ -898,7 +898,7 @@ through byte-identical — app stylesheets are also Mudlet Web's brand-styling h
 | `windowType(name)` | ✅ | Bridge.lua → `__windowType` |
 | `wrapLine([window,] linenum)` | ✅ | Re-renders the line buffer (0-indexed) so embedded `\n` is interpreted; Mudlet Web renders with `white-space: pre-wrap` |
 
-Mudlet Web-specific extras: `color_table`, `addCmdLineSuggestion`/`removeCmdLineSuggestion`/`clearCmdLineSuggestions` Tab-completion hooks against the main bar.
+Mudlet Web-specific extras: `color_table`.
 
 ---
 
@@ -987,7 +987,7 @@ Reconciled against the authoritative [Mudlet Event Engine](https://wiki.mudlet.o
 |---|---|---|
 | `sysWindowResizeEvent` | ✅ | Main output resize — args: width, height |
 | `sysUserWindowResizeEvent` | ✅ | User-window / miniconsole resize — args: width, height, name |
-| `sysConsoleSizeChanged` | ✅ | Char-grid change. Cols come from the wrap setting (falling back to `floor(width / fontSize*0.6)`); rows from `floor(height / lineHeight)`. Also force-fires on `setWindowWrap` — args: name, columns, rows |
+| `sysConsoleSizeChanged` | ✅ | Char-grid change. Cols come from the wrap setting (falling back to `floor(width / fontSize*0.6)`); rows from `floor(height / lineHeight)`. Also force-fires on `setWindowWrap`, and before `sysWindowResizeEvent` on a resize or border change — args: name, columns, rows, timestamp gutter (13 while main shows timestamps, else 0) |
 | `sysWindowOverflowEvent` | ✅ | Non-scrolling console (`scrollState.scrollingEnabled === false`) when `scrollHeight > clientHeight`; overflowLines = `ceil(overflowPx / lineHeight)` — args: name, overflowLines |
 | `sysBufferShrinkEvent` | ✅ | Whenever scrollback cap drops one or more lines (one event per evict batch) — args: name, linesRemoved |
 | `sysWindowMousePressEvent` / `sysWindowMouseReleaseEvent` | ✅ | Mouse press/release. Button is Mudlet-numbered (1=left, 2=right, 3=middle, 4=back, 5=forward, 0=other); x/y are pixels relative to the window — args: button, x, y, name |
@@ -1026,7 +1026,7 @@ Reconciled against the authoritative [Mudlet Event Engine](https://wiki.mudlet.o
 
 > **Not Mudlet events** — do not implement under these names: `sysConnect` / `sysDisconnect` / `sysGmcpMessage` (Mudlet uses `sysConnectionEvent` / `sysDisconnectionEvent` and the `gmcp.<path>` event chain), `sysUserWindowCreated` / `sysUserWindowClosed`, `sysMapperLocationChanged`.
 >
-> **Mudlet Web-specific events** (no Mudlet equivalent): `output` (per output line), `gmcp.<path>` chain (✅, the real GMCP mechanism — args: eventName, fullKey), `sysMapLoadEvent` (✅, after a binary map ingest), `sysSaveProfileError` (✅), `sysSyncOnModule` (✅, module-sync internals).
+> **Mudlet Web-specific events** (no Mudlet equivalent): `output` (per output line), `gmcp.<path>` chain (✅, the real GMCP mechanism — args: eventName, fullKey), `sysSaveProfileError` (✅), `sysSyncOnModule` (✅, module-sync internals).
 
 ---
 

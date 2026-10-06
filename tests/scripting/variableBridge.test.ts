@@ -3,6 +3,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createTestRuntime, type TestRuntime } from '../createTestRuntime';
 import {
+    normalizeVariableTree,
     serializeVariablePackage,
     type MudletVariable,
 } from '../../src/import/mudletVariables';
@@ -57,6 +58,25 @@ describe('LuaRuntime variable bridge — restore + capture', () => {
         expect(byName['s']).toMatchObject({ valueType: 'string', value: 'x' });
         expect(byName['t']).toMatchObject({ valueType: 'table' });
         expect(byName['t'].children![0]).toMatchObject({ name: 'inner', valueType: 'boolean', value: 'true' });
+    });
+
+    // #360: boolean keys were skipped on capture, so a saved table lost them.
+    it('round-trips boolean keys next to number and string keys', () => {
+        rt.run('svNumKey = { [10] = "ten", ["10"] = "strten", [true] = "bk", [false] = "fk", n = { [true] = 1 } }');
+        const tree = rt.rt.captureVariables(['svNumKey']);
+        const kids = tree[0].children!;
+        expect(kids.filter(c => c.keyKind === 'boolean').map(c => [c.name, c.value]).sort())
+            .toEqual([['false', 'fk'], ['true', 'bk']]);
+        // Through JSON, as profile.json stores it.
+        const stored = normalizeVariableTree(JSON.parse(JSON.stringify(tree)));
+        rt.run('svNumKey = nil');
+        rt.rt.restoreVariables(stored);
+        expect(rt.run('return svNumKey[10]')).toBe('ten');
+        expect(rt.run('return svNumKey["10"]')).toBe('strten');
+        expect(rt.run('return svNumKey[true]')).toBe('bk');
+        expect(rt.run('return svNumKey[false]')).toBe('fk');
+        expect(rt.run('return svNumKey["true"]')).toBeNull();
+        expect(rt.run('return svNumKey.n[true]')).toBe(1);
     });
 
     it('skips unset names and non-serializable values', () => {

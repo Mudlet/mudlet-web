@@ -1,10 +1,10 @@
 import type {MudSession, ScriptLogSource, ScriptLogSourceKind} from '../mud/MudSession';
 import type { LogFormat } from '../logging/SessionLogger';
 import { MAP_WIDGET_ID } from '../ui/windows/types';
-import { qtModifiersToList } from '../mud/keybindings/qtKeys';
+import { qtKeyToDomCode, qtModifiersToList } from '../mud/keybindings/qtKeys';
 import { splitSentCommands } from '../mud/commandSplit';
 import type {AliasEngine, AliasNode} from '../mud/aliases/AliasEngine';
-import {TriggerEngine, highlightTargets, type TriggerNode} from '../mud/triggers/TriggerEngine';
+import {TriggerEngine, highlightColor, highlightTargets, type TriggerNode} from '../mud/triggers/TriggerEngine';
 import type {TimerEngine} from '../mud/timers/TimerEngine';
 import type {KeyEngine, KeyNode} from '../mud/keybindings/KeyEngine';
 import {findReservedKeybindings, reservedKeyNote} from '../mud/keybindings/browserReservedKeys';
@@ -13,7 +13,7 @@ import {buildEffectivelyEnabledIds, isColorizing, isEffectivelyEnabled} from '..
 import {useAppStore, connectionUrl, selectProfileField} from '../storage';
 import {isPackageRemovable} from '../branding';
 import {saveProfileData} from '../storage/profileVfsData';
-import type {BufferSegment, FormatColor, FormatStateSnapshot, RgbColor} from '../mud/text/FormatState';
+import type {BufferSegment, FormatColor, FormatStateSnapshot} from '../mud/text/FormatState';
 import {AnsiAwareBuffer, computeTrailingState} from '../mud/text/FormatState';
 import {HyperlinkPresetRegistry} from '../mud/text/hyperlinkConfig';
 import {HyperlinkVisibilityController} from '../mud/text/hyperlinkVisibility';
@@ -106,12 +106,7 @@ const EMPTY_PROFILE_XML =
     '<?xml version="1.0" encoding="UTF-8"?>'
     + '<MudletPackage version="1.001"><HostPackage><Host></Host></HostPackage></MudletPackage>';
 import type {PackageManifest} from '../storage/schema';
-
-function hexToRgb(hex: string): RgbColor | null {
-    const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
-    if (!m) return null;
-    return { space: 'rgb', r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) };
-}
+import {DEFAULT_CMD_LINE_HOST, type CmdLineHost} from '../ui/cmdline/subCommandLine';
 
 /** Mirrors `debugMspEnabled` in MudClient.ts — same `mudlet.debugMsp`
  *  localStorage gate, duplicated here because the engine and the client
@@ -123,6 +118,13 @@ function debugMspEnabled(): boolean {
     } catch {
         return false;
     }
+}
+
+/** A media file-name wildcard (`*` any run, `?` one character) as a whole-name
+ *  RegExp, the way Mudlet's TMedia matches one against a directory listing. */
+function globToRegExp(glob: string): RegExp {
+    const body = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
+    return new RegExp(`^${body}$`);
 }
 
 /** `mudlet.debugGmcp` — log each incoming GMCP message's path + truncated body,
@@ -253,19 +255,18 @@ function modifiersFromMudletInt(modifier: number): string[] {
     return qtModifiersToList(modifier);
 }
 
-/** Mudlet's permKey takes a Qt::Key int. We accept either an int (best-effort
- *  mapped to the F-keys + a few common ones) or a string (passed through as the
- *  KeyNode.key — KeyEngine compares against `KeyboardEvent.code`). */
-function keyCodeFromMudletKey(key: string | number): string {
+/** Mudlet's permKey takes a Qt::Key int (or a DOM code string, passed
+ *  through as the KeyNode.key — KeyEngine compares against
+ *  `KeyboardEvent.code`). Translated the way tempKey and the XML import do
+ *  it, Keypad modifier included, so Alt+Up, Home, Ctrl+/ and Keypad+8 all
+ *  land on a key the engine can match; only letters, digits and F-keys used
+ *  to. A Qt key with no DOM code gives '': the binding is then bound by
+ *  its Qt key alone, which a printable character (Key_Eacute) still is. */
+function keyCodeFromMudletKey(key: string | number, modifier: number): string {
     if (typeof key === 'string') return key;
     if (!Number.isFinite(key)) return '';
-    // Qt::Key_F1 = 0x01000030 .. Qt::Key_F35 = 0x01000052.
-    const n = Number(key);
-    if (n >= 0x01000030 && n <= 0x01000052) return `F${n - 0x01000030 + 1}`;
-    // Single-character keys: ascii letter 0x41..0x5A → "KeyA".."KeyZ".
-    if (n >= 0x41 && n <= 0x5a) return `Key${String.fromCharCode(n)}`;
-    if (n >= 0x30 && n <= 0x39) return `Digit${String.fromCharCode(n)}`;
-    return '';
+    const mapped = qtKeyToDomCode(Number(key), modifier < 0 ? 0 : modifier);
+    return /^[A-Za-z]/.test(mapped) ? mapped : '';
 }
 
 /** Mudlet `tempButtonToolbar` location int → ButtonLocation. */
@@ -466,6 +467,23 @@ export class ScriptingEngine implements EngineHost {
     // registration, so applyScriptsFromStore only sends what changed. Only
     // scripts that are registered (list non-empty) are kept.
     private readonly scriptHandlerState = new Map<string, { name: string; active: boolean; key: string }>();
+    // Scripts whose body last stopped with an error, syntax or runtime, as it
+    // was compiled: desktop's `mOK_code = false`. Tree::isActive asks for it,
+    // so such a script, and everything under it, reports inactive and its
+    // handlers are skipped until a later compile (setScript, an edit) succeeds.
+    private readonly failedScripts = new Set<string>();
+    // What each script's last compile threw, for permScript/setScript to raise
+    // with; cleared by a compile that succeeds.
+    private readonly scriptLoadErrors = new Map<string, unknown>();
+    // Bumped by every compile, and stamped on the script it compiled, so a
+    // caller can tell whether a store write it just made ran the body.
+    private scriptCompileSeq = 0;
+    private readonly scriptCompiledAt = new Map<string, number>();
+    // While the profile's scripts are being compiled at load: the ones already
+    // compiled during it, so the walk does not run one again that an earlier
+    // body replaced with setScript (TScript::compileAll skips a script that no
+    // longer needs compiling).
+    private compiledThisLoad: Set<string> | null = null;
     // resetProfile() coalescing + a teardown guard so a deferred reset that
     // fires after the engine was destroyed is a no-op.
     private resetting = false;
@@ -606,6 +624,20 @@ export class ScriptingEngine implements EngineHost {
             this.api.printCommandToWindow(id, text);
         };
         session.cmdLines.onDefaultSend = (text) => this.hostSend(text);
+        // What every named command line reads off the profile, as desktop's
+        // TCommandLine reads it off its Host: the auto-clear and highlight-
+        // history settings, the password prompt, and its Tab pool.
+        const profileField = <K extends 'autoClearInput' | 'highlightHistory' | 'disablePasswordMasking'>(key: K) =>
+            selectProfileField(useAppStore.getState(), connectionId, key);
+        const cmdLineHost: CmdLineHost = {
+            autoClear: () => profileField('autoClearInput') === true,
+            highlightHistory: () => profileField('highlightHistory') ?? true,
+            remoteEcho: () => this.session.isRemoteEchoingActive(),
+            disablePasswordMasking: () => profileField('disablePasswordMasking') ?? false,
+            completionWords: (name) => this.api.cmdLineCompletionWords(name),
+        };
+        session.windows.cmdLineHost = cmdLineHost;
+        session.cmdLines.cmdLineHost = cmdLineHost;
         // Mudlet's postMessage(): client messages for the player (e.g. a map file
         // whose format version can't be read) go on the main console, coloured off
         // their "[ PREFIX ] -" the way cTelnet::postMessage does.
@@ -631,6 +663,9 @@ export class ScriptingEngine implements EngineHost {
         // alongside it, so a handler on that name never runs there either.
         session.sounds.onMediaFinished = (file, path, mediaType, key, tag) => {
             this.raiseEvent('sysMediaFinished', [file, path, mediaType, key, tag]);
+        };
+        session.sounds.onMediaPaused = (file, path, mediaType, key, tag) => {
+            this.raiseEvent('sysMediaPaused', [file, path, mediaType, key, tag]);
         };
         // Closed captions (Mudlet enableClosedCaption): print a text line when a
         // sound/music starts or stops, gated on the setting (decided per-event so
@@ -716,7 +751,7 @@ export class ScriptingEngine implements EngineHost {
             // before scripts run, so the initial script load (and sysLoadEvent)
             // sees an initialized map — hashes via getRoomIDbyHash and map-level
             // user data via getMapUserData are immediately queryable.
-            const mapLoaded = await this.session.windows.bootstrapMap();
+            await this.session.windows.bootstrapMap();
 
             // Closing the profile — or React's StrictMode remount, or a fast
             // profile switch — can destroy this engine while the awaits above are
@@ -746,6 +781,16 @@ export class ScriptingEngine implements EngineHost {
             // script runs.
             this.triggerEngine.reserveOrder(
                 useAppStore.getState().connectionTriggers[this.connectionId] ?? []);
+            // Likewise the saved aliases, ahead of temp aliases scripts make.
+            this.aliasEngine.reserveOrder(
+                useAppStore.getState().connectionAliases[this.connectionId] ?? []);
+            // And the saved keys, ahead of temp keys scripts make.
+            this.keyEngine.reserveOrder(
+                useAppStore.getState().connectionKeybindings[this.connectionId] ?? []);
+            // The saved timers are active before any script body runs, as on
+            // desktop, where they are built from the profile first; they are
+            // armed by applyTimersFromStore, after the scripts.
+            this.timerEngine.seedPerm(useAppStore.getState().connectionTimers[this.connectionId] ?? []);
             this.applyScriptsFromStore();
             this.applyAliasesFromStore();
             this.applyTimersFromStore();
@@ -839,14 +884,11 @@ export class ScriptingEngine implements EngineHost {
             // first instead makes sysInstallPackage's setup the last word for
             // this bootstrap, matching what a real first-time install feels like
             // to the package (nothing left to load/restore over it yet).
-            // sysMapLoadEvent follows when a persisted map was ingested, so
-            // scripts can register a sysMapLoadEvent handler during sysLoadEvent
-            // and still see the firing for the boot-time load.
             // Map-open notification keeps map-aware scripts in sync if the
             // map is already visible at connection time.
             // Mudlet passes `true` for a profile load, `false` after resetProfile().
+            this.runPushDownButtonsAtLoad();
             this.raiseEvent('sysLoadEvent', [true]);
-            if (mapLoaded) this.raiseEvent('sysMapLoadEvent');
             if (this.api.windows.isVisible(MAP_WIDGET_ID)) this.mapOpen.notify();
             // Default/brand packages installed just above never go through
             // installPackageFromVfsPath, so notifyPackageInstalled was never
@@ -994,7 +1036,8 @@ export class ScriptingEngine implements EngineHost {
      * persisted state, and again after a profile reset (fresh global table).
      */
     /**
-     * Put a package's own `<VariablePackage>` globals into `_G`.
+     * Put a package's own `<VariablePackage>` globals into `_G` and onto the
+     * profile's save-list.
      *
      * A package may carry nothing else — a module of variables, fonts, images or
      * a map loads completely and leaves every one of the six item units empty —
@@ -1009,6 +1052,39 @@ export class ScriptingEngine implements EngineHost {
             this.runtimes.lua?.restoreVariables(values);
         } catch (err) {
             console.warn('[ScriptingEngine] package variable restore failed:', err);
+        }
+    }
+
+    /**
+     * Load an installed package's `<VariablePackage>` globals: into `_G`, and
+     * onto the save-list. For the installs that commit in one step — the
+     * Package Manager, the repository and Client.GUI — which desktop reads the
+     * same way as a script's installPackage. Call before the package's items go
+     * into the store, so its scripts see the values as they load.
+     */
+    loadPackageVariables(data: MudletImportResult): void {
+        this.restorePackageVariables(data);
+        this.savePackageVariables(data);
+    }
+
+    /**
+     * Put an installed package's `<VariablePackage>` globals on the profile's
+     * save-list.
+     *
+     * Desktop's `XMLimport::readVariable` reads a package's variables exactly as
+     * it reads the profile's own, so each one lands on `VarUnit`'s saved list
+     * and it — and any later change to it — survives a restart. Called once the
+     * install commits, so a refused one adds nothing; the store change schedules
+     * the profile-data save that captures their values.
+     */
+    private savePackageVariables(data: MudletImportResult): void {
+        const values = data.variables;
+        if (!values || values.length === 0) return;
+        const state = useAppStore.getState();
+        const saveList = state.connectionVariables[this.connectionId]?.saveList ?? [];
+        const added = values.map(v => v.name).filter(n => n !== '' && !saveList.includes(n));
+        if (added.length > 0) {
+            state.setVariableSaveList(this.connectionId, [...saveList, ...new Set(added)]);
         }
     }
 
@@ -1174,6 +1250,17 @@ export class ScriptingEngine implements EngineHost {
             name = `${name}.xml`;
         }
         const path = `${dir || 'current'}/${name}`;
+        // The saved variables go out as they are in `_G` now, as desktop's
+        // saveProfile writes them — not as the last debounced profile-data
+        // flush captured them. profile.json is rewritten with them too, so a
+        // reopen after a crash that follows the save restores the same values
+        // the save wrote; the caller's VFS flush makes both durable.
+        this.captureSavedVariables();
+        try {
+            saveProfileData(vfs, this.connectionId);
+        } catch (err) {
+            console.warn('[ScriptingEngine] profile data save failed:', err);
+        }
         try {
             const base = readNewestParseableXml(vfs);
             // A named save is Mudlet's "save as", which writes the items and
@@ -1496,7 +1583,11 @@ export class ScriptingEngine implements EngineHost {
             }
             prepared.commit();
             const { manifest, data } = prepared;
+            this.savePackageVariables(data);
             this.noteModuleLoaded(manifest.name, data);
+            // A module whose XML will not read is installed and stays listed,
+            // and desktop says it could not be loaded.
+            if (data.parseError) this.announceUnreadableContents(manifest.name, 'module');
             const problems = this.collectInstallProblems(manifest.name,
                 () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data);
             // Host::installPackage raises the generic sysInstall and exactly one
@@ -1594,8 +1685,11 @@ export class ScriptingEngine implements EngineHost {
             // hostSend, not a bare wire send: TTimer::execute calls
             // Host::send(mCommand) with both defaults, so the command is echoed
             // under showSentText, split on the command separator, and run
-            // through the aliases like anything else typed.
-            if (timer.command) this.hostSend(timer.command);
+            // through the aliases like anything else typed. A temporary timer
+            // (isTempTimer="yes" in an XML) takes TTimer::execute's tempTimer
+            // branch instead: its script runs once, its command is never sent,
+            // and it is deleted with everything under it.
+            if (timer.command && !timer.temporary) this.hostSend(timer.command);
             if (timer.code && timer.language === 'lua') {
                 try {
                     this.runtimes.lua?.run(timer.code, `timer "${timer.name}"`, itemChunkName('timer', timer.name));
@@ -1603,6 +1697,7 @@ export class ScriptingEngine implements EngineHost {
                     this.reportEntityError('timer', timer.id, timer.name, err);
                 }
             }
+            if (timer.temporary) useAppStore.getState().removeTimer(this.connectionId, timer.id);
             this.api.flushOutput();
         }, this.uncompilableIds('timer', timers));
     }
@@ -1626,6 +1721,23 @@ export class ScriptingEngine implements EngineHost {
         const buttons = useAppStore.getState().connectionButtons[this.connectionId] ?? [];
         inactiveButtons.set(this.connectionId, this.uncompilableIds('button', buttons));
         this.publishedInactiveButtons = inactiveButtons.get(this.connectionId);
+    }
+
+    /**
+     * Run every active push-down button once, in its saved state, as desktop
+     * does while a profile loads: TToolBar/TEasyButtonBar::addActionButtons
+     * and fillMenu execute each push-down button (menus' too) when
+     * `mIsProfileLoadingSequence` is set, with the console's mButtonState set
+     * from the saved state first. That is how a state-restoring button script
+     * re-applies itself on start (mudlet-web#356). Plain buttons do not run.
+     */
+    private runPushDownButtonsAtLoad(): void {
+        const buttons = useAppStore.getState().connectionButtons[this.connectionId] ?? [];
+        const active = buildEffectivelyEnabledIds(buttons, this.uncompilableIds('button', buttons));
+        for (const button of buttons) {
+            if (button.isGroup || !button.isPushDown || !active.has(button.id)) continue;
+            this.executeButton(button, !!button.buttonState);
+        }
     }
 
     /**
@@ -1668,20 +1780,118 @@ export class ScriptingEngine implements EngineHost {
         if (prev === next && this.profileScriptsCompiled) return;
         const profileLoad = !this.profileScriptsCompiled;
         this.profileScriptsCompiled = true;
-        if (profileLoad) this.scriptHandlerState.clear();
+        if (profileLoad) {
+            this.scriptHandlerState.clear();
+            this.failedScripts.clear();
+            this.scriptLoadErrors.clear();
+        } else {
+            const live = new Set(next.map(s => s.id));
+            for (const id of [...this.failedScripts]) if (!live.has(id)) this.failedScripts.delete(id);
+            for (const id of [...this.scriptLoadErrors.keys()]) if (!live.has(id)) this.scriptLoadErrors.delete(id);
+            for (const id of [...this.scriptCompiledAt.keys()]) if (!live.has(id)) this.scriptCompiledAt.delete(id);
+        }
 
-        const nextEnabledIds = buildEffectivelyEnabledIds(next);
+        this.syncScriptHandlersFrom(next);
+
+        // Then the bodies — only where desktop compiles a script, which is NOT
+        // when it is switched on: ScriptUnit::enableScript only flips the flag,
+        // so a script never compiled stays that way (its handler then finds no
+        // function), and one already compiled is not run again.
+        //  - Profile load: ScriptUnit::compileAll compiles every script under a
+        //    root that is active, children whatever their own switch says;
+        //    modules are compiled as they are imported, active or not.
+        //  - Afterwards: a script that is new or whose code changed is compiled
+        //    by TScript::setScript / the XML import, active or not.
+        if (profileLoad) { this.compileProfileScripts(next); return; }
+        const prevById = new Map(prev.map(s => [s.id, s] as const));
+        for (const { s } of this.scriptLoadOrder(next)) {
+            if (s.language !== 'lua') continue;
+            const was = prevById.get(s.id);
+            if (!was || was.language !== 'lua' || was.code !== s.code) this.reloadScript(s);
+        }
+    }
+
+    /**
+     * Mudlet-style module load priority: scripts owned by modules with a
+     * negative priority load before profile scripts; non-negative priorities
+     * load after. Within a priority bucket, original array order is preserved
+     * so existing trees stay deterministic. Profile-owned scripts (no
+     * packageName) are treated as priority 0. Equal priorities: the profile
+     * before its modules (its XML is read before any module installs), and
+     * modules by name among themselves.
+     */
+    private scriptLoadOrder(list: ScriptNode[]): Array<{ s: ScriptNode; mod: boolean }> {
+        const priorityMap = this.modulePriorityMap();
+        const isModuleScript = (s: ScriptNode): boolean => !!s.packageName && priorityMap.has(s.packageName);
+        return list
+            .map((s, idx) => ({ s, idx, prio: priorityFor(s, priorityMap), mod: isModuleScript(s) }))
+            .sort((a, b) => a.prio - b.prio || Number(a.mod) - Number(b.mod)
+                || moduleNameOrder(a.s, b.s, priorityMap) || a.idx - b.idx);
+    }
+
+    /**
+     * ScriptUnit::compileAll at profile load. Desktop walks its live tree and
+     * asks each root whether it is active only when it reaches it, so a body
+     * that runs earlier can switch a later script on or off, replace its code
+     * or remove it, and the walk honours that. Here every step re-reads the
+     * store, and first takes in whatever the last body changed (handler
+     * activity, a body setScript replaced) — the store subscription is not
+     * attached yet on a first load, and the walk has to see the change before
+     * it moves on either way.
+     */
+    private compileProfileScripts(initial: ScriptNode[]): void {
+        const order = this.scriptLoadOrder(initial).map(({ s, mod }) => ({ id: s.id, mod }));
+        const compiled = new Set<string>();
+        this.compiledThisLoad = compiled;
+        let list: ScriptNode[] | null = null;
+        let byId = new Map<string, ScriptNode>();
+        try {
+            for (const { id, mod } of order) {
+                this.applyScriptsFromStore();
+                const now = useAppStore.getState().connectionScripts[this.connectionId] ?? [];
+                if (now !== list) { list = now; byId = new Map(now.map(n => [n.id, n] as const)); }
+                const s = byId.get(id);
+                if (!s || s.language !== 'lua' || compiled.has(id)) continue;
+                if (!mod && !this.scriptRootActive(s, byId)) continue;
+                this.reloadScript(s);
+            }
+            this.applyScriptsFromStore();
+        } finally {
+            this.compiledThisLoad = null;
+        }
+    }
+
+    /** Whether the root `s` sits under is switched on — what compileAll asks
+     *  of each root before compiling its subtree. */
+    private scriptRootActive(s: ScriptNode, byId: ReadonlyMap<string, ScriptNode>): boolean {
+        let node: ScriptNode = s;
+        const visited = new Set<string>();
+        while (node.parentId && !visited.has(node.id)) {
+            visited.add(node.id);
+            const parent = byId.get(node.parentId);
+            if (!parent) break;
+            node = parent;
+        }
+        return node.enabled;
+    }
+
+    /**
+     * Event-handler lists (Host::mEventHandlerMap). Every script that lists
+     * events is registered, enabled or not — desktop registers them as the XML
+     * is read and asks isActive() && ancestorsActive() only when an event comes
+     * (TScript::callEventHandler). isActive() wants the body to have compiled
+     * too, so a script that failed, or sits under one that did, is registered
+     * inactive. Registration order is load order: the profile's own tree
+     * first, then modules by priority, which install after it
+     * (mudlet::slot_connectionDialogueFinished). Only what changed since the
+     * last sync is sent.
+     */
+    private syncScriptHandlersFrom(list: ScriptNode[]): void {
+        const activeIds = buildEffectivelyEnabledIds(list, this.failedScripts);
         const priorityMap = this.modulePriorityMap();
         const isModuleScript = (s: ScriptNode): boolean =>
             !!s.packageName && priorityMap.has(s.packageName);
-
-        // Event-handler lists first (Host::mEventHandlerMap). Every script that
-        // lists events is registered, enabled or not — desktop registers them as
-        // the XML is read and asks isActive() && ancestorsActive() only when an
-        // event comes (TScript::callEventHandler). Registration order is load
-        // order: the profile's own tree first, then modules by priority, which
-        // install after it (mudlet::slot_connectionDialogueFinished).
-        const registrationOrder = next
+        const registrationOrder = list
             .map((s, idx) => ({ s, idx, mod: isModuleScript(s), prio: priorityFor(s, priorityMap) }))
             .sort((a, b) => Number(a.mod) - Number(b.mod) || (a.mod ? a.prio - b.prio : 0)
                 || moduleNameOrder(a.s, b.s, priorityMap) || a.idx - b.idx);
@@ -1693,7 +1903,7 @@ export class ScriptingEngine implements EngineHost {
             const had = this.scriptHandlerState.get(s.id);
             if (events.length === 0) continue;
             seen.add(s.id);
-            const state = { name: s.name, active: nextEnabledIds.has(s.id), key: events.join('\n') };
+            const state = { name: s.name, active: activeIds.has(s.id), key: events.join('\n') };
             if (had && had.name === state.name && had.active === state.active && had.key === state.key) continue;
             this.scriptHandlerState.set(s.id, state);
             handlerUpdates.push({ id: s.id, name: s.name, active: state.active, events });
@@ -1704,51 +1914,6 @@ export class ScriptingEngine implements EngineHost {
             handlerUpdates.push({ id, name: '', active: false, events: [] });
         }
         if (handlerUpdates.length > 0) this.syncScriptHandlers(handlerUpdates);
-
-        // Then the bodies — only where desktop compiles a script, which is NOT
-        // when it is switched on: ScriptUnit::enableScript only flips the flag,
-        // so a script never compiled stays that way (its handler then finds no
-        // function), and one already compiled is not run again.
-        //  - Profile load: ScriptUnit::compileAll compiles every script under a
-        //    root that is active, children whatever their own switch says;
-        //    modules are compiled as they are imported, active or not.
-        //  - Afterwards: a script that is new or whose code changed is compiled
-        //    by TScript::setScript / the XML import, active or not.
-        // Mudlet-style module load priority: scripts owned by modules with a
-        // negative priority load before profile scripts; non-negative priorities
-        // load after. Within a priority bucket, original array order is preserved
-        // so existing trees stay deterministic. Profile-owned scripts (no
-        // packageName) are treated as priority 0.
-        const byId = new Map(next.map(s => [s.id, s] as const));
-        const rootActive = (s: ScriptNode): boolean => {
-            let node: ScriptNode = s;
-            const visited = new Set<string>();
-            while (node.parentId && !visited.has(node.id)) {
-                visited.add(node.id);
-                const parent = byId.get(node.parentId);
-                if (!parent) break;
-                node = parent;
-            }
-            return node.enabled;
-        };
-        const prevById = profileLoad ? null : new Map(prev.map(s => [s.id, s] as const));
-        // Equal priorities: the profile before its modules (its XML is read
-        // before any module installs), and modules by name among themselves.
-        const orderedNext = next
-            .map((s, idx) => ({ s, idx, prio: priorityFor(s, priorityMap), mod: isModuleScript(s) }))
-            .sort((a, b) => a.prio - b.prio || Number(a.mod) - Number(b.mod)
-                || moduleNameOrder(a.s, b.s, priorityMap) || a.idx - b.idx);
-        for (const { s } of orderedNext) {
-            if (s.language !== 'lua') continue;
-            let compile: boolean;
-            if (prevById) {
-                const was = prevById.get(s.id);
-                compile = !was || was.language !== 'lua' || was.code !== s.code;
-            } else {
-                compile = isModuleScript(s) || rootActive(s);
-            }
-            if (compile) this.reloadScript(s);
-        }
     }
 
     private syncScriptHandlers(entries: ScriptHandlerEntry[]): void {
@@ -1981,6 +2146,34 @@ export class ScriptingEngine implements EngineHost {
         return [`${v.profilePath}/media/${path}`, `${v.profilePath}/${path}`];
     }
 
+    /**
+     * The file a media name plays: the first of its {@link mediaPathCandidates}
+     * that exists, as a full VFS path. A `*` or `?` in the file name is a
+     * wildcard, as in Mudlet's TMedia, and plays one of the files it matches,
+     * picked at random. A URL is returned as it is; a name that matches no
+     * file is null, which the SoundManager refuses without listing it.
+     */
+    private resolveMediaPath(name: string): string | null {
+        const v = this.vfs;
+        if (!v || /^https?:|^data:|^blob:/.test(name)) return name;
+        const wild = /[*?]/.test(name);
+        for (const abs of this.mediaPathCandidates(name)) {
+            if (!wild) {
+                if (v.exists(abs)) return abs;
+                continue;
+            }
+            const slash = abs.lastIndexOf('/');
+            const dir = abs.slice(0, slash);
+            if (/[*?]/.test(dir)) continue;
+            const pattern = globToRegExp(abs.slice(slash + 1));
+            let entries: string[];
+            try { entries = v.readdir(dir); } catch { continue; }
+            const matches = entries.filter(e => pattern.test(e) && v.stat(`${dir}/${e}`)?.type === 'file');
+            if (matches.length > 0) return `${dir}/${matches[Math.floor(Math.random() * matches.length)]}`;
+        }
+        return null;
+    }
+
     /** Sound/video loader: absolute URLs hit the network; everything else is
      *  read from the mounted profile VFS (see {@link mediaPathCandidates}). */
     private async loadMediaBytes(path: string): Promise<ArrayBuffer | null> {
@@ -2017,6 +2210,10 @@ export class ScriptingEngine implements EngineHost {
             // resolved against the mounted profile VFS so package-bundled sounds
             // work out of the box.
             this.session.sounds.setLoader(path => this.loadMediaBytes(path));
+            // A name is played from the file it finds, so the media events
+            // carry that file's full path, as desktop's do — and a wildcard
+            // name plays one of the files it matches.
+            this.session.sounds.setPathResolver(name => this.resolveMediaPath(name));
             // VideoManager reuses the same VFS-or-URL loader as sounds, and
             // emits sysMediaFinished on natural end (matching Mudlet).
             this.session.videos.setLoader(path => this.loadMediaBytes(path));
@@ -2305,6 +2502,7 @@ export class ScriptingEngine implements EngineHost {
             }
             prepared.commit();
             const { manifest, data } = prepared;
+            this.savePackageVariables(data);
             const problems = this.collectInstallProblems(manifest.name,
                 () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data);
             this.notifyPackageInstalled(manifest.name, path, problems);
@@ -2562,20 +2760,21 @@ export class ScriptingEngine implements EngineHost {
             const tag = tagOf();
             const priority = num('priority');
             const fadeout = num('fadeout');
+            const fadeaway = bool('fadeaway') === true;
             if (type !== 'sound') {
-                this.session.sounds.stopMusic({ name, key, tag, fadeout, origin: 'game' });
+                this.session.sounds.stopMusic({ name, key, tag, fadeout, fadeaway, origin: 'game' });
             }
             if (type !== 'music') {
-                this.session.sounds.stopSounds({ name, key, tag, priority, fadeout, origin: 'game' });
+                this.session.sounds.stopSounds({ name, key, tag, priority, fadeout, fadeaway, origin: 'game' });
             }
             if (debug) console.debug(`[mudlet.gmcp] media stop type=${type || 'all'}`);
             return;
         }
 
         if (action === 'pause') {
-            // Client.Media.Pause [{ name, type, tag, key }] — Web Audio can't
-            // hold a source mid-track, so matching media is stopped (see
-            // SoundManager.pauseSounds). It must never fall through to Play.
+            // Client.Media.Pause [{ name, type, tag, key }] — hold matching
+            // server media where it is; a Play of the same name and key
+            // resumes it. It must never fall through to Play.
             const type = str('type').toLowerCase();
             const filter = {
                 name: str('name') || undefined,
@@ -2606,9 +2805,19 @@ export class ScriptingEngine implements EngineHost {
             return;
         }
 
-        // Play / Load both need a resolved file.
+        // Play / Load both need a resolved file — except a Play that names no
+        // file, which can still resume what the server paused by its key or
+        // tag alone (TMedia::playMedia looks for a paused player before it
+        // looks at the file).
         const name = str('name');
-        if (!name) return;
+        if (!name) {
+            if (action === 'play' && type !== 'video') {
+                this.session.sounds.resume(type === 'music' ? 'music' : 'sound', {
+                    key: str('key') || undefined, tag: tagOf(), origin: 'game',
+                });
+            }
+            return;
+        }
         const baseUrl = str('url') || this.gmcpMediaDefaultUrl || undefined;
         const resolved = await this.resolveMediaFile(name, baseUrl, '[mudlet.gmcp] media', debug);
         if (!resolved) return;
@@ -2632,6 +2841,8 @@ export class ScriptingEngine implements EngineHost {
         if (fadeout !== undefined) opts.fadeout = fadeout;
         const start = num('start');
         if (start !== undefined) opts.start = start;
+        const finish = num('finish');
+        if (finish !== undefined) opts.finish = finish;
         const key = str('key');
         if (key) opts.key = key;
         const tag = tagOf();
@@ -2671,11 +2882,17 @@ export class ScriptingEngine implements EngineHost {
      * itself settles later.
      */
     private handleClientGui(value: unknown): void {
-        const allowInstall = useAppStore.getState().connectionProfile[this.connectionId]?.allowMudPackageInstall;
+        if (!this.serverGuiAccepted()) return;
         void this.handleClientGuiInstall(value);
-        if (allowInstall !== false && clientGuiDeclinesBaseUi(value)) {
+        if (clientGuiDeclinesBaseUi(value)) {
             this.raiseEvent('sysServerGuiInstalled', []);
         }
+    }
+
+    /** Mudlet's `mAcceptServerGUI` — the profile's `allowMudPackageInstall`,
+     *  where undefined means allowed. */
+    private serverGuiAccepted(): boolean {
+        return useAppStore.getState().connectionProfile[this.connectionId]?.allowMudPackageInstall !== false;
     }
 
     private async handleClientGuiInstall(value: unknown): Promise<void> {
@@ -2683,14 +2900,9 @@ export class ScriptingEngine implements EngineHost {
         if (!parsed) return;
         const { url, version } = parsed;
 
-        // Per-profile opt-out (undefined/true = allowed).
-        const allowInstall = useAppStore.getState().connectionProfile[this.connectionId]?.allowMudPackageInstall;
-        if (allowInstall === false) {
-            this.session.events.emit('message',
-                mudletInfo(`ignored install request for ${url} (disabled in settings)`),
-                'info', Date.now());
-            return;
-        }
+        // Per-profile opt-out. handleClientGui already dropped the offer, as
+        // Mudlet does without a word; this keeps the install itself honest.
+        if (!this.serverGuiAccepted()) return;
 
         // Same URL already installed, and the server names no newer delivery
         // revision → no-op. Compared against sourceVersion (what the server
@@ -2740,6 +2952,7 @@ export class ScriptingEngine implements EngineHost {
             // Client.GUI delivery repairs, instead of a half-install that
             // dedupe treats as complete.
             await vfs.flush();
+            this.loadPackageVariables(data);
             useAppStore.getState().installPackage(this.connectionId, finalManifest, data);
             this.notifyPackageInstalled(finalManifest.name);
             // Mudlet 5.0 (ctelnet.cpp, after installPackage) — tell scripts the
@@ -2890,6 +3103,7 @@ export class ScriptingEngine implements EngineHost {
             if (target.enabled === enabled) continue;
             store.updateScript(this.connectionId, target.id, { enabled });
         }
+        this.takeInScriptChanges();
         return true;
     }
 
@@ -3010,8 +3224,8 @@ export class ScriptingEngine implements EngineHost {
      *  all stop matching with nothing to go on. */
     /** Said when a package's XML would not read. Only modules were ever asked
      *  whether their contents loaded, so a package installed to silence. */
-    private announceUnreadableContents(packageName: string): void {
-        this.api.postInfo(`Failed to load package "${packageName}" — its contents could not be read,`
+    private announceUnreadableContents(packageName: string, kind: 'package' | 'module' = 'package'): void {
+        this.api.postInfo(`Failed to load ${kind} "${packageName}" — its contents could not be read,`
             + ' so it is installed but owns nothing.');
     }
 
@@ -3242,6 +3456,12 @@ export class ScriptingEngine implements EngineHost {
             if (type === 'timer') {
                 return this.timerEngine.permReportsActive(item as TimerNode, list as TimerNode[], checkAncestors);
             }
+            // A script's "compiled" is its body having run without an error.
+            if (type === 'script') {
+                if (!checkAncestors) return item.enabled && !this.failedScripts.has(item.id);
+                reachable ??= buildEffectivelyEnabledIds(list, this.failedScripts);
+                return reachable.has(item.id);
+            }
             if (!kind) return checkAncestors ? isEffectivelyEnabled(item, list) : item.enabled;
             if (!checkAncestors) return item.enabled && !this.itemCannotBeActive(kind, item as CompilableItem);
             reachable ??= buildEffectivelyEnabledIds(list,
@@ -3425,9 +3645,11 @@ export class ScriptingEngine implements EngineHost {
         if (type.toLowerCase() === 'timer') {
             return this.timerEngine.permAncestorsActive(start as TimerNode, list as TimerNode[]);
         }
+        // A script group whose body failed is not active (Tree::isActive).
+        const failed = type.toLowerCase() === 'script' ? this.failedScripts : null;
         let node = start.parentId ? byUuid.get(start.parentId) : undefined;
         while (node) {
-            if (!node.enabled) return false;
+            if (!node.enabled || failed?.has(node.id)) return false;
             node = node.parentId ? byUuid.get(node.parentId) : undefined;
         }
         return true;
@@ -3476,7 +3698,8 @@ export class ScriptingEngine implements EngineHost {
             // Mudlet counts a timer by the same state isActive reports.
             timers: tally(timers, this.timerEngine.tempCount, this.timerEngine.countPermActive(timers)),
             keys: tally(keys, this.keyEngine.tempCount),
-            scripts: tally(scripts, 0),
+            scripts: tally(scripts, 0,
+                scripts.filter(s => !s.isGroup && s.enabled && !this.failedScripts.has(s.id)).length),
             // Every label carrying a movie counts; the ones actually running
             // count as active too, so pauseMovie/startMovie move the second
             // number. This is Mudlet's own QMovie tally, and the only way a
@@ -3489,8 +3712,7 @@ export class ScriptingEngine implements EngineHost {
      * Mudlet `permScript(name, parent, luaCode)`. Creates a saved Lua script
      * named `name` under the script group `parent` (empty = root). Returns the
      * new script's id on success, -1 if `parent` is given but no script group
-     * with that name exists. The store subscription loads the script's
-     * handlers synchronously inside the addScript commit.
+     * with that name exists. The body runs once, before this returns.
      */
     createPermScript(name: string, parent: string, code: string): number {
         // No name check, here or in the other perm* creators: Mudlet never
@@ -3508,6 +3730,7 @@ export class ScriptingEngine implements EngineHost {
             if (!group) return -1;
             parentId = group.id;
         }
+        const before = this.scriptCompileSeq;
         const uuid = store.addScript(this.connectionId, {
             name,
             // Inactive on creation and a folder when there is no body, matching
@@ -3522,6 +3745,10 @@ export class ScriptingEngine implements EngineHost {
             eventHandlers: [],
             ...inheritedPackage(scripts, parentId),
         });
+        // The body runs as the script is created (TScript::setScript), once;
+        // the Bridge.lua wrapper reads the outcome back and removes the script
+        // again if it failed.
+        this.compileScriptNow(uuid, before);
         return this.numericIdFor(uuid);
     }
 
@@ -3616,6 +3843,12 @@ export class ScriptingEngine implements EngineHost {
             isFilter: false,
             ...inheritedPackage(triggers, parentId),
         });
+        // Its place in the firing order is its creation, now: while the
+        // profile's scripts load the store is not yet watched (and triggers
+        // not yet compiled), so the reload that would number it comes after
+        // every temp item those scripts make, and it fired behind temps
+        // created after it (mudlet-web#371).
+        this.triggerEngine.reserveOrder([{ id: uuid }]);
         // A trigger created while a line is being processed is offered that
         // line, and joins the lineage of whatever created it — the same rule
         // temporaries follow. The reload is normally coalesced into a
@@ -3670,6 +3903,11 @@ export class ScriptingEngine implements EngineHost {
             highlight: spec.highlight,
             temporary: true,
         });
+        // Its code is the dispatch stub, which always compiles — the script's
+        // own body is what did not, so the trigger is marked for cannotCompile.
+        if (spec.uncompiled) this.uncompiledTempTriggers.add(uuid);
+        // Ordered by its creation, as createPermTrigger's (mudlet-web#371).
+        this.triggerEngine.reserveOrder([{ id: uuid }]);
         // Same reason as createPermTrigger: compiled now, so a trigger armed
         // while a line is being processed can still match that line.
         this.flushPendingApplies();
@@ -3705,6 +3943,13 @@ export class ScriptingEngine implements EngineHost {
             if (node.parentId && doomed.has(node.parentId)) doomed.add(node.id);
         }
         store.removeTriggers(this.connectionId, [...doomed]);
+        for (const id of doomed) this.uncompiledTempTriggers.delete(id);
+        // Out of the engine now, not at the coalesced reload: that waits for a
+        // microtask, and a packet's lines are all processed before one runs,
+        // so a trigger killed (or expired) on its first line went on firing on
+        // the rest of the packet. Desktop stops it from the next line
+        // (mudlet-web#327).
+        this.flushPendingApplies();
     }
 
     /** The root ancestor of a trigger node — what a lineage is recorded against. */
@@ -3754,6 +3999,8 @@ export class ScriptingEngine implements EngineHost {
             language: 'lua',
             ...inheritedPackage(aliases, parentId),
         });
+        // Ordered by its creation, as createPermTrigger's (mudlet-web#371).
+        this.aliasEngine.reserveOrder([{ id: uuid }]);
         return this.numericIdFor(uuid);
     }
 
@@ -3828,12 +4075,17 @@ export class ScriptingEngine implements EngineHost {
             enabled: true,
             isGroup,
             parentId,
-            key: isGroup ? '' : keyCodeFromMudletKey(key),
+            key: isGroup ? '' : keyCodeFromMudletKey(key, modifier),
             modifiers: isGroup ? [] : modifiersFromMudletInt(modifier),
+            // Kept verbatim: getKeyCode answers with it, and a shifted symbol
+            // (Key_Exclam) is told apart from its unshifted key (Digit1) by it.
+            ...(!isGroup && typeof key === 'number' && Number.isFinite(key) ? { qtKey: Number(key) } : {}),
             code,
             language: 'lua',
             ...inheritedPackage(keys, parentId),
         });
+        // Ordered by its creation, as createPermTrigger's (mudlet-web#371).
+        this.keyEngine.reserveOrder([{ id: uuid }]);
         return this.numericIdFor(uuid);
     }
 
@@ -3953,15 +4205,19 @@ export class ScriptingEngine implements EngineHost {
         return !!target.buttonState;
     }
 
-    /** Mudlet `setButtonStyleSheet(name, css)`. Stores raw CSS on the
-     *  ButtonNode; ButtonsBar applies it inline. */
+    /** Mudlet `setButtonStyleSheet(name, css)`. Stores raw CSS on every
+     *  button, toolbar and menu with that name — desktop's
+     *  `getActionUnit()->findItems(name)` styles each match, and a toolbar's
+     *  sheet restyles the whole bar (mudlet-web#356). ButtonsBar applies it. */
     setButtonStyleSheetByName(name: string, css: string): boolean {
         if (!name) return false;
         const store = useAppStore.getState();
         const buttons = store.connectionButtons[this.connectionId] ?? [];
-        const target = buttons.find(b => !b.isGroup && b.name === name);
-        if (!target) return false;
-        store.updateButton(this.connectionId, target.id, { styleSheet: String(css ?? '') });
+        const targets = buttons.filter(b => b.name === name);
+        if (targets.length === 0) return false;
+        for (const target of targets) {
+            store.updateButton(this.connectionId, target.id, { styleSheet: String(css ?? '') });
+        }
         return true;
     }
 
@@ -4023,9 +4279,8 @@ export class ScriptingEngine implements EngineHost {
 
     /**
      * Mudlet `setScript(name, luaCode[, pos])`. Replaces the source of the
-     * `pos`-th script (1-indexed; default 1) named `name`. Updating via the
-     * store re-runs the script load through the regular subscription pipeline,
-     * so handlers re-register cleanly. Returns true on success, -1 if no such
+     * `pos`-th script (1-indexed; default 1) named `name` and runs the new
+     * body once, before this returns. Returns the script's id, -1 if no such
      * script exists.
      */
     setScriptByName(name: string, code: string, pos: number): number {
@@ -4038,7 +4293,11 @@ export class ScriptingEngine implements EngineHost {
         const index = Math.floor(pos) - 1;
         if (index < 0 || index >= matches.length) return -1;
         const target = matches[index];
+        const before = this.scriptCompileSeq;
         store.updateScript(this.connectionId, target.id, { code });
+        // The body runs here, once, even when the code is what it was; the
+        // Bridge.lua wrapper reads the outcome back (scriptLoadErrorById).
+        this.compileScriptNow(target.id, before);
         return this.numericIdFor(target.id);
     }
 
@@ -4054,6 +4313,7 @@ export class ScriptingEngine implements EngineHost {
         const target = scripts.find(s => this.uuidToNumericId.get(s.id) === id);
         if (!target) return false;
         store.removeScript(this.connectionId, target.id);
+        this.takeInScriptChanges();
         return true;
     }
 
@@ -4130,7 +4390,18 @@ export class ScriptingEngine implements EngineHost {
         // below is the dangerous one: it survives teardown by construction, so it
         // re-checks after the await as well as before.
         if (this.disposed) return;
-        if (script.language !== 'lua' || !script.code) return;
+        if (script.language !== 'lua') return;
+        if (!script.code) {
+            // Nothing to run, and nothing that can fail: an emptied body is a
+            // clean compile, which is how setScript(name, "") repairs a script.
+            this.scriptCompiledAt.set(script.id, ++this.scriptCompileSeq);
+            this.compiledThisLoad?.add(script.id);
+            if (this.failedScripts.delete(script.id)) {
+                this.syncScriptHandlersFrom(useAppStore.getState().connectionScripts[this.connectionId] ?? []);
+            }
+            this.scriptLoadErrors.delete(script.id);
+            return;
+        }
         const rt = this.runtimes.lua;
         if (rt) { this.runScriptLoad(rt, script); return; }
         this.runtimeReady
@@ -4154,12 +4425,75 @@ export class ScriptingEngine implements EngineHost {
     }
 
     private runScriptLoad(rt: IScriptingRuntime, script: ScriptNode): void {
+        this.scriptCompiledAt.set(script.id, ++this.scriptCompileSeq);
+        this.compiledThisLoad?.add(script.id);
+        const wasFailed = this.failedScripts.has(script.id);
         try {
             rt.load(script.code, script.name);
+            this.failedScripts.delete(script.id);
+            this.scriptLoadErrors.delete(script.id);
         } catch (err) {
+            this.failedScripts.add(script.id);
+            this.scriptLoadErrors.set(script.id, err);
             this.reportEntityError('script', script.id, script.name, err);
         }
+        // A body that failed, or one that compiles again after failing, turns
+        // its own handlers and those of everything under it off or back on.
+        if (wasFailed !== this.failedScripts.has(script.id)) {
+            this.syncScriptHandlersFrom(useAppStore.getState().connectionScripts[this.connectionId] ?? []);
+        }
         this.api.flushOutput();
+    }
+
+    /**
+     * Bring the runtime up to date with the scripts in the store right now,
+     * and make sure the script `id` has been compiled since `before` (a
+     * {@link scriptCompileSeq} read ahead of the store write): a body runs as
+     * its code is set, whether or not the code changed (TScript::setScript).
+     * The store subscription will usually have run it already. Returns why
+     * that compile failed, or null when it ran. Backs permScript, setScript
+     * and appendScript, which run the body exactly once — through here — and
+     * report its error themselves.
+     */
+    private compileScriptNow(id: string, before: number): string | null {
+        this.takeInScriptChanges();
+        if ((this.scriptCompiledAt.get(id) ?? 0) <= before) {
+            const node = (useAppStore.getState().connectionScripts[this.connectionId] ?? []).find(s => s.id === id);
+            if (node) this.reloadScript(node);
+        }
+        return this.describeScriptLoadError(id);
+    }
+
+    /**
+     * Take in a script-tree change a Lua call just made, now rather than when
+     * the store subscription next runs: it is not attached while a first
+     * profile load compiles the scripts, and a script that a body switches off
+     * then must stop receiving events at once, as one it replaces must not be
+     * compiled again by the walk. A no-op once the subscription has seen it,
+     * and before the profile's scripts were first loaded, which takes in
+     * everything anyway.
+     */
+    private takeInScriptChanges(): void {
+        if (this.profileScriptsCompiled) this.applyScriptsFromStore();
+    }
+
+    /** What a script's last compile raised, for permScript/setScript's own
+     *  error: the message, or for an error object that is not one, its type
+     *  (TLuaInterpreter treats a number as a message, as lua_isstring does). */
+    private describeScriptLoadError(id: string): string | null {
+        if (!this.scriptLoadErrors.has(id)) return null;
+        const err = this.scriptLoadErrors.get(id);
+        const type = (err as { luaErrorObjectType?: unknown } | null)?.luaErrorObjectType;
+        if (typeof type === 'string') return `error object is a ${type} value`;
+        return describeThrown(err, 'script');
+    }
+
+    /** Why the script with this numeric id failed the last time its body ran,
+     *  or null if it ran cleanly. */
+    scriptLoadErrorById(id: number): string | null {
+        const scripts = useAppStore.getState().connectionScripts[this.connectionId] ?? [];
+        const target = scripts.find(s => this.uuidToNumericId.get(s.id) === id);
+        return target ? this.describeScriptLoadError(target.id) : null;
     }
 
     get currentVFS(): ProfileVFS | null { return this.vfs; }
@@ -4232,16 +4566,14 @@ export class ScriptingEngine implements EngineHost {
         // command two aliases claim runs both of them. The command is consumed
         // if any of them matched.
         //
-        // JS temp aliases
-        let consumed = this.aliasEngine.processTemp(text);
-        // Permanent aliases
-        // Each one runs as it is reached, so an alias that enables or disables
-        // a later one decides whether that one fires in this same pass.
-        this.aliasEngine.forEachPermMatch(text, permMatch => {
+        // Temporary and permanent aliases run interleaved, in creation order,
+        // as desktop's single root list holds them. Each one runs as it is
+        // reached, so an alias that enables or disables a later one decides
+        // whether that one fires in this same pass.
+        const consumed = this.aliasEngine.process(text, permMatch => {
             // matches[1] is the matched portion (Mudlet semantics), not the
             // whole input — see the perm-trigger note above (issue #4).
             this.executePermAlias(permMatch.alias, [permMatch.matchedText, ...permMatch.captures], permMatch.named);
-            consumed = true;
         });
         this.api.flushOutput();
         return consumed;
@@ -4253,27 +4585,11 @@ export class ScriptingEngine implements EngineHost {
         // matching desktop: two bindings on one key normally means the second
         // is a leftover, and firing both would be a surprise.
         const all = selectProfileField(useAppStore.getState(), this.connectionId, 'reactToAllKeybindings') === true;
-        // JS temp keybindings
-        const tempFired = this.keyEngine.processTemp(event, all);
-        if (tempFired && !all) {
-            this.api.flushOutput();
-            return true;
-        }
-        // Permanent keybindings
-        if (all) {
-            const matches = this.keyEngine.matchAllPerm(event);
-            for (const m of matches) this.executePermKeybinding(m);
-            this.api.flushOutput();
-            return tempFired || matches.length > 0;
-        }
-        const permMatch = this.keyEngine.matchPerm(event);
-        if (permMatch) {
-            this.executePermKeybinding(permMatch);
-            this.api.flushOutput();
-            return true;
-        }
+        // Temporary and permanent keys in one creation-ordered walk, as
+        // desktop's KeyUnit holds them.
+        const fired = this.keyEngine.process(event, all, binding => this.executePermKeybinding(binding));
         this.api.flushOutput();
-        return false;
+        return fired;
     }
 
     raiseEvent(event: string, args: unknown[] = []): void {
@@ -4328,6 +4644,12 @@ export class ScriptingEngine implements EngineHost {
      *  the actual SessionLogger lifecycle. */
     setLoggingToggler(fn: ((enabled: boolean, format: LogFormat) => boolean) | null): void {
         this.api.setLoggingToggler(fn);
+    }
+
+    /** Mudlet `startLogging(state)` from outside a script — the autolog resume
+     *  on profile load (Host::startSavedLogging). */
+    startLogging(enabled: boolean): void {
+        this.api.startLogging(enabled);
     }
 
     /** Where the live logger is writing, so startLogging can report the file. */
@@ -4390,13 +4712,18 @@ export class ScriptingEngine implements EngineHost {
      * exactly why Mudlet warns against calling it from a script-item — defer it
      * (`tempTimer(0, resetProfile)` works) or run it from the command line. A
      * concurrent reset is coalesced.
+     *
+     * Answers what Host::resetProfile_phase1 does: true once the reset is
+     * armed, false for one already in progress (which it folds into) or one
+     * refused because the profile is closing.
      */
-    resetProfile(): void {
-        if (this.disposed) { this.refuseDuringTeardown('resetProfile()'); return; }
+    resetProfile(): boolean {
+        if (this.disposed) { this.refuseDuringTeardown('resetProfile()'); return false; }
         // Already resetting is legitimate de-duplication, not a refusal.
-        if (this.resetting) return;
+        if (this.resetting) return false;
         this.resetting = true;
         setTimeout(() => { void this.performReset(); }, 0);
+        return true;
     }
 
     private async performReset(): Promise<void> {
@@ -4419,6 +4746,10 @@ export class ScriptingEngine implements EngineHost {
             this.session.scrollBoxes.clearAll();
             this.session.sounds.stopAll();
             this.session.videos.stopAll();
+            // Host::resetProfile_phase2 drops every stopwatch not flagged
+            // persistent (removeAllNonPersistentStopWatches); the persistent
+            // ones keep running across the reset, as across a reload.
+            this.api.stopwatches.removeNonPersistent();
             // 3. Recreate the Lua runtime against the same mounted VFS. This
             //    re-wires every api.* callback, reloads the bundled Lua, and
             //    gives a clean global table + empty event-handler registry.
@@ -4433,6 +4764,16 @@ export class ScriptingEngine implements EngineHost {
             // Saved triggers keep their place ahead of temps the scripts create.
             this.triggerEngine.reserveOrder(
                 useAppStore.getState().connectionTriggers[this.connectionId] ?? []);
+            // Likewise the saved aliases, ahead of temp aliases scripts make.
+            this.aliasEngine.reserveOrder(
+                useAppStore.getState().connectionAliases[this.connectionId] ?? []);
+            // And the saved keys, ahead of temp keys scripts make.
+            this.keyEngine.reserveOrder(
+                useAppStore.getState().connectionKeybindings[this.connectionId] ?? []);
+            // The saved timers are active before any script body runs, as on
+            // desktop, where they are built from the profile first; they are
+            // armed by applyTimersFromStore, after the scripts.
+            this.timerEngine.seedPerm(useAppStore.getState().connectionTimers[this.connectionId] ?? []);
             this.applyScriptsFromStore();
             this.applyAliasesFromStore();
             this.applyTriggersFromStore();
@@ -4575,10 +4916,13 @@ export class ScriptingEngine implements EngineHost {
         this.session.windows.onDownloadMap = undefined;
         this.session.windows.onCmdLineDefaultSend = undefined;
         this.session.cmdLines.onDefaultSend = undefined;
+        this.session.windows.cmdLineHost = DEFAULT_CMD_LINE_HOST;
+        this.session.cmdLines.cmdLineHost = DEFAULT_CMD_LINE_HOST;
         this.session.windows.onStartSpeedWalk = undefined;
         this.session.windows.onFileDrop = undefined;
         this.session.sounds.onMediaStarted = undefined;
         this.session.sounds.onMediaFinished = undefined;
+        this.session.sounds.onMediaPaused = undefined;
         this.session.sounds.onMediaCaption = undefined;
         this.session.videos.onStarted = null;
         this.session.videos.onMediaCaption = null;
@@ -4623,6 +4967,7 @@ export class ScriptingEngine implements EngineHost {
         this.api.setHost(null);
         this.session.sounds.stopAll();
         this.session.sounds.setLoader(null);
+        this.session.sounds.setPathResolver(null);
         this.api.destroy();
         // The VFS is owned by App (it mounted/registered it before render and
         // flushes/unmounts it on profile close) — the engine only drops its
@@ -4697,6 +5042,10 @@ export class ScriptingEngine implements EngineHost {
     /** Compile errors already put in the error log, by kind, chunk and code —
      *  not by id, so a module re-read under new ids does not report again. */
     private readonly reportedCompileErrors = new Set<string>();
+    /** tempComplexRegexTrigger nodes whose code string did not compile. The
+     *  node's own code is a stub that dispatches to the script's callback, so
+     *  only the Lua side knows; Mudlet leaves such a trigger inactive. */
+    private readonly uncompiledTempTriggers = new Set<string>();
 
     /**
      * The error compiling a piece of an item's code gives (see itemSyntaxError),
@@ -4734,6 +5083,7 @@ export class ScriptingEngine implements EngineHost {
      * the editor, where it is found when the item "does nothing".
      */
     private cannotCompile(kind: CodeItemKind, node: CompilableItem): boolean {
+        if (kind === 'trigger' && this.uncompiledTempTriggers.has(node.id)) return true;
         let broken = false;
         if (node.code && node.language === 'lua') {
             const chunkName = itemChunkName(kind, node.name);
@@ -4947,8 +5297,8 @@ export class ScriptingEngine implements EngineHost {
     ): void {
         if (!isColorizing(trigger) || !trigger.highlight) return;
         const { fg, bg } = trigger.highlight;
-        const fgColor = fg ? hexToRgb(fg) : null;
-        const bgColor = bg ? hexToRgb(bg) : null;
+        const fgColor = fg ? highlightColor(fg) : null;
+        const bgColor = bg ? highlightColor(bg) : null;
         if (!fgColor && !bgColor) return;
         const format = {
             ...(fgColor ? { foreground: fgColor } : {}),
@@ -4990,6 +5340,17 @@ export class ScriptingEngine implements EngineHost {
         // A button whose code will not compile cannot be active, and desktop
         // does not put it on a toolbar to be clicked (see applyButtonsFromStore).
         if (this.cannotCompile('button', button)) return;
+        // Desktop's TToolBar/TEasyButtonBar::slot_pressed flips the button's
+        // mButtonState before TAction::execute runs it, so the button's own
+        // script reading getButtonState("<its name>") sees the state it just
+        // went to, not the one it left (mudlet-web#356).
+        if (button.isPushDown) {
+            const live = (useAppStore.getState().connectionButtons[this.connectionId] ?? [])
+                .find(b => b.id === button.id);
+            if (live && !!live.buttonState !== nextState) {
+                useAppStore.getState().updateButton(this.connectionId, button.id, { buttonState: nextState });
+            }
+        }
         const cmd = button.isPushDown
             ? (nextState ? button.commandDown : button.command)
             : (button.commandDown || button.command);
@@ -5044,7 +5405,7 @@ export class ScriptingEngine implements EngineHost {
                         // blank line to render (true for an intentional <BR>-split gap;
                         // for a single line it mirrors the old `line === ''` rule so a
                         // text-free MXP line — e.g. pure <!ENTITY> defs — stays hidden).
-                        const units: { plain: string; buffer: AnsiAwareBuffer; outputLine: string; blankRenders: boolean }[] = [];
+                        const units: { plain: string; buffer: AnsiAwareBuffer; blankRenders: boolean }[] = [];
                         if ((this.mxpActive || this.forceMxpProcessorOn) && type === 'mud') {
                             // MXP is live: parse the in-band markup into styled
                             // segments + clean (tag/entity-decoded) plain text, and
@@ -5063,7 +5424,6 @@ export class ScriptingEngine implements EngineHost {
                                 units.push({
                                     plain: part.plain,
                                     buffer,
-                                    outputLine: multiLine ? part.plain : line,
                                     blankRenders: multiLine ? true : line === '',
                                 });
                             }
@@ -5082,7 +5442,7 @@ export class ScriptingEngine implements EngineHost {
                                 this.wireMxpLinks(fbuf, rd.links);
                                 this.wireOsc8Links(fbuf);
                                 if (!this.api.mxpWriteToFrame(rd.frame, fbuf, rd.eof, rd.eol)) {
-                                    units.push({ plain: rd.plain, buffer: fbuf, outputLine: rd.plain, blankRenders: rd.plain === '' });
+                                    units.push({ plain: rd.plain, buffer: fbuf, blankRenders: rd.plain === '' });
                                 }
                             }
                             // MXP <SOUND>/<MUSIC> are the same server-driven audio
@@ -5103,11 +5463,11 @@ export class ScriptingEngine implements EngineHost {
                             // blank lines — unlike buffer.trailingState() which only
                             // sees the last text segment's state.
                             carryState = computeTrailingState(line, carryState);
-                            units.push({ plain, buffer, outputLine: line, blankRenders: line === '' });
+                            units.push({ plain, buffer, blankRenders: line === '' });
                         }
 
                         for (let u = 0; u < units.length; u++) {
-                            let { plain, buffer, outputLine, blankRenders } = units[u];
+                            let { plain, buffer, blankRenders } = units[u];
                             // Only the final visual line of a prompt-bearing network
                             // line is the prompt (e.g. just the "> ", not the room).
                             const isPrompt = lineIsPrompt && u === units.length - 1;
@@ -5128,7 +5488,6 @@ export class ScriptingEngine implements EngineHost {
                                 if (behaviour === 'hide') continue;
                                 if (behaviour === 'replacewithspace') {
                                     plain = ' ';
-                                    outputLine = ' ';
                                     buffer = new AnsiAwareBuffer(' ');
                                     blankRenders = true;
                                 }
@@ -5144,7 +5503,6 @@ export class ScriptingEngine implements EngineHost {
                             // every fire-length and line-delta window by however many
                             // blanks the server sent.
                             this.processLineTriggers(plain, buffer, isPrompt);
-                            if (plain.length > 0) this.emit('output', [outputLine, type]);
 
                             const shouldRender =
                                 !buffer.deleted &&
@@ -5193,6 +5551,22 @@ export class ScriptingEngine implements EngineHost {
             }
             this.reapKilledTempItems();
         }
+    }
+
+    /**
+     * Lead the first server group with whatever an unterminated feedTriggers
+     * left held. Mudlet feeds both into the one TBuffer, whose mMudLine the
+     * fed text is still sitting in, so the server's next line completes it
+     * rather than arriving above it.
+     */
+    private withHeldFeedText(
+        groups: { text: string; type: string; fromServer?: boolean }[],
+    ): { text: string; type: string; fromServer?: boolean }[] {
+        const at = groups.findIndex(g => g.type === 'mud');
+        if (at < 0) return groups;
+        const held = this.api.takeHeldFeedText();
+        if (!held) return groups;
+        return groups.map((g, i) => (i === at ? { ...g, text: held + g.text } : g));
     }
 
     /**
@@ -5387,9 +5761,10 @@ export class ScriptingEngine implements EngineHost {
             }),
             // Mudlet `sysEchoAnomalyDetected` — raised once when the echo
             // handler trips its 5-toggles-in-5s safeguard and refuses ECHO
-            // for the rest of the session.
+            // for the rest of the session. cTelnet raises it through
+            // raiseProtocolEvent(name, ""), so it carries one empty string.
             session.events.on('telnet.echo.anomaly', () => {
-                this.raiseEvent('sysEchoAnomalyDetected', []);
+                this.raiseEvent('sysEchoAnomalyDetected', ['']);
             }),
             // Mudlet `raiseProtocolEvent("sysProtocolRejected", name)` — fired
             // when Mudlet Web refuses a telnet option it deliberately doesn't support
@@ -5418,9 +5793,10 @@ export class ScriptingEngine implements EngineHost {
             // enabled server-side echo (character-at-a-time), which Mudlet Web can't
             // drive well. Raised once per connection, and — matching Mudlet's
             // cTelnet::checkCharacterModePattern — accompanied by a visible
-            // [ WARN ] line in the main output.
+            // [ WARN ] line in the main output. Like sysEchoAnomalyDetected
+            // it goes through raiseProtocolEvent(name, ""): one empty string.
             session.events.on('charmode.detected', () => {
-                this.raiseEvent('sysCharacterModeDetected', []);
+                this.raiseEvent('sysCharacterModeDetected', ['']);
                 this.session.events.emit('message',
                     mudletWarn('This game appears to use character-at-a-time mode, which is not '
                         + 'supported. Input may not work as expected. Consider using keybindings '
@@ -5437,7 +5813,7 @@ export class ScriptingEngine implements EngineHost {
                     console.log('[FLUSH BATCH]', groups.map(g => ({ type: g.type, text: g.text })));
                 }
                 try {
-                    this.processFlushBatch(groups);
+                    this.processFlushBatch(this.withHeldFeedText(groups));
                 } catch (err) {
                     this.api.printError(`[scripting] line flush failed: ${err instanceof Error ? err.message : String(err)}`);
                 }
@@ -5465,14 +5841,11 @@ export class ScriptingEngine implements EngineHost {
                 this.setForceMxpProcessorOn(
                     useAppStore.getState().connectionProfile[this.connectionId]?.config?.specialForceMXPProcessorOn === true,
                 );
-                // Mudlet Web's native `connect` plus the Mudlet-standard name — the
-                // bundled generic mapper and ported scripts register a
-                // sysConnectionEvent handler, so both must fire.
-                this.emit('connect', []);
+                // Desktop raises only the sys* names: a "*" catch-all or a handler
+                // registered for "connect" sees nothing else (mudlet-web#365).
                 this.emit('sysConnectionEvent', []);
             }),
             session.events.on('client.disconnect', () => {
-                this.emit('disconnect', []);
                 this.emit('sysDisconnectionEvent', []);
                 // A dropped socket sends no WONT/DONT, so the protocols the
                 // connection enabled are forgotten here. Mudlet raises only
@@ -5498,6 +5871,10 @@ export class ScriptingEngine implements EngineHost {
                 // emit() supplies the event name itself, so only fullKey is
                 // passed — a parent-node handler must see the leaf's key.
                 if (!path) return;
+                // A profile refusing server packages ignores Client.GUI whole:
+                // cTelnet::setGMCPVariables returns before setGMCPTable, so no
+                // gmcp.Client.GUI table and no event (mudlet-web#362).
+                if (path.toLowerCase().startsWith('client.gui') && !this.serverGuiAccepted()) return;
                 if (debugGmcpEnabled()) {
                     const body = JSON.stringify(value);
                     console.debug(`[mudlet.gmcp] ${path}`,
@@ -5558,6 +5935,13 @@ export class ScriptingEngine implements EngineHost {
             session.events.on('channel102', ({ variable, value }) => {
                 this.runtimes.lua?.setChannel102Value(variable, value);
                 this.emit('channel102Message', [variable, value]);
+            }),
+            // Mudlet `setAtcpTable` — an inbound ATCP message is stored as
+            // atcp[name] and raised as an event of that name, its value the
+            // one argument after it ("CharVitals", "H:100/120 ...").
+            session.events.on('atcp', ({ name, value }) => {
+                this.runtimes.lua?.setAtcpValue(name, value);
+                this.emit(name, [value]);
             }),
             session.events.on('mssp', ({ name, value }) => {
                 // Mirror Mudlet TLuaInterpreter::parseMSSP: write the value into

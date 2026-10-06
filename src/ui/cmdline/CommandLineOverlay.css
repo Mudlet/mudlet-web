@@ -22,6 +22,11 @@
     border: 1px solid #444;
     padding: 2px 6px;
     outline: none;
+    /* A <textarea>, so Shift+Enter can stage several lines as on desktop;
+       the geometry is the script's, never the browser's grip. */
+    resize: none;
+    overflow: hidden;
+    white-space: pre-wrap;
 }
 
 .cmdline-overlay-input:focus {

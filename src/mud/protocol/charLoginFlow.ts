@@ -3,8 +3,9 @@
  *
  * The server sends `Char.Login.Default` to ask for credentials and then waits,
  * withholding its text login prompt until the client answers. Answering is
- * therefore mandatory — every path here ends in either a credentials reply or a
- * popup that will produce one. `Char.Login.Result` reports the outcome, and a
+ * therefore mandatory — every path here ends in a credentials reply (the empty
+ * one when there is nothing to send), or a popup or vault unlock that will
+ * produce one. `Char.Login.Result` reports the outcome, and a
  * server that rejects an attempt commonly re-sends `Char.Login.Default` to ask
  * again, so these rules run repeatedly within one connection.
  *
@@ -20,7 +21,9 @@ export type CharLoginAction =
     /** Send stored credentials without troubling the player. */
     | { kind: 'autofill'; account: string; password: string }
     /** Raise the credentials popup. */
-    | { kind: 'prompt' };
+    | { kind: 'prompt' }
+    /** Ask to unlock the vault holding this profile's saved login. */
+    | { kind: 'unlock' };
 
 export interface CharLoginRequestState {
     /** The `type` list from `Char.Login.Default`; empty when the server sent none. */
@@ -32,6 +35,9 @@ export interface CharLoginRequestState {
     /** Stored/in-memory credentials, if any. */
     account?: string;
     password?: string;
+    /** A saved password exists but sits in a locked vault, so it can't be read
+     *  yet. Mudlet Web only — desktop has no vault to unlock. */
+    credentialsLocked?: boolean;
 }
 
 /**
@@ -58,7 +64,21 @@ export function decideCharLoginRequest(state: CharLoginRequestState): CharLoginA
     if (state.account && state.password && !state.attempted) {
         return { kind: 'autofill', account: state.account, password: state.password };
     }
-    return { kind: 'prompt' };
+    // An attempt already went out this connection and the server is asking
+    // again — it rejected it. Replaying the same credentials would loop
+    // silently, so the player gets the form to correct them.
+    if (state.attempted) {
+        return { kind: 'prompt' };
+    }
+    // The password is saved, just not readable until the vault is opened.
+    if (state.credentialsLocked) {
+        return { kind: 'unlock' };
+    }
+    // Nothing to send: hand the sign-in to the game's own login prompt with the
+    // empty reply, straight away, as Mudlet does (GMCPAuthenticator::
+    // selectAuthMethod → sendCredentials). Raising a popup instead left the
+    // server waiting on it for as long as it stayed open (mudlet-web#362).
+    return { kind: 'decline' };
 }
 
 /**

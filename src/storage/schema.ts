@@ -226,8 +226,8 @@ export interface ProfileSettings {
      *  the built-in default). `undefined` for the whole array = no override. */
     ansiPalette?: (string | undefined)[];
     /** Mudlet "Allow server to redefine your colors". When enabled, the server
-     *  may remap the ANSI/256 palette at runtime via OSC 4 (set color) / OSC 104
-     *  (reset). When disabled, those sequences are ignored and the user palette
+     *  may remap the sixteen ANSI colours at runtime via `ESC]P<i><rrggbb>` (set
+     *  colour) / `ESC]R` (reset). When disabled, those sequences are ignored and the user palette
      *  stands. Off by default — only an explicit `true` enables it. */
     serverRedefineColors?: boolean;
     /** Mudlet 5.0's `Host::mEnableOSC8Hyperlinks` ("Enable OSC 8 hyperlinks").
@@ -254,11 +254,11 @@ export interface ProfileSettings {
     /** Mudlet's `Host::mConsoleBufferSize` ("Main display size") — how many
      *  lines of scrollback the main output keeps before the oldest are dropped
      *  in batches. Bounded 100 … 1,000,000; `undefined` uses
-     *  {@link DEFAULT_CONSOLE_BUFFER_SIZE} (10,000 lines, `TBuffer.h:386`).
+     *  {@link MAIN_CONSOLE_BUFFER_SIZE} (100,000 lines, `Host.h`).
      *  Round-trips through the profile XML as `consoleBufferSize`
-     *  (XMLexport.cpp:617). Scripts reach the same cap via
-     *  `setConsoleBufferSize()`, which does not write the preference back —
-     *  matching Mudlet, where the Lua call resizes the live buffer only. */
+     *  (XMLexport.cpp:617). `setConsoleBufferSize("main", …)` writes it (and
+     *  {@link useMaxConsoleBufferSize}) back, as desktop's
+     *  `Host::setMainConsoleBufferSize` does, so a script's size is saved. */
     consoleBufferSize?: number;
     /** Mudlet's `Host::mUseMaxConsoleBufferSize` ("use the maximum buffer size
      *  your system can handle", `checkBox_useMaxBufferSize`). When true the
@@ -718,7 +718,9 @@ export const MAPPER_DEFAULTS: Required<MapperSettings> = {
     borders: true,
     lineWidth: 0.05,
     backgroundColor: '#000000',
-    lineColor: '#e1ffe1',
+    // Host::mFgColor_2, Qt::lightGray — what desktop draws exits in and what
+    // getMapRoomExitsColor() answers on a fresh profile.
+    lineColor: '#c0c0c0',
     showDefaultArea: true,
     gridEnabled: false,
     // Both mirror mudlet-map-renderer's createSettings() defaults, so leaving
@@ -971,11 +973,25 @@ export interface TimerNode extends BaseNode {
     language: 'lua' | 'js';
     repeat: boolean;
     command?: string;    // plain command to send when the timer fires
+    /**
+     * Session-scoped: an `isTempTimer="yes"` timer from a package or profile
+     * XML. Desktop loads it as a TTimer with mIsTempTimer set, so it fires once
+     * — its script only, never its command — and is then deleted, the way a
+     * `tempTimer` is. Not persisted (see persistableNodes), and neither is
+     * anything hanging under it.
+     */
+    temporary?: boolean;
 }
 
 export interface KeyNode extends BaseNode {
     key: string;         // KeyboardEvent.code value, e.g. "F1", "KeyA", "Numpad1"
-    modifiers: string[]; // subset of ["ctrl", "shift", "alt", "meta"]
+                         // (a numpad key with NumLock off: the key it produces, e.g. "ArrowUp", flagged "keypad")
+    modifiers: string[]; // subset of ["ctrl", "shift", "alt", "meta", "keypad"]
+    /** The Qt::Key the binding was made with (permKey, desktop XML, the key
+     *  recorder), when known. `key` alone is lossy — `!` and `1` are both
+     *  Digit1 — and desktop matches on this, so a Key_Exclam binding without
+     *  Shift never fires for a plain 1. getKeyCode and XML export report it. */
+    qtKey?: number;
     code: string;
     language: 'lua' | 'js';
     command?: string;    // plain command to send when the keybinding fires
@@ -1079,6 +1095,33 @@ export function isColorizing(t: Pick<TriggerNode, 'colorize' | 'highlight'>): bo
 
 // ── Tree utilities ────────────────────────────────────────────────────────────
 
+/**
+ * The items that belong in a save: everything except the session-scoped
+ * (`temporary`) ones, and anything hanging under them.
+ *
+ * The descendants matter as much as the temporaries themselves. A permanent
+ * item can be parented to a temporary one — Mudlet allows it, and its own
+ * specs do it — and that child dies with its parent at the end of the session.
+ * Saving it alone would restore an item whose `parentId` names a node that
+ * was never written, leaving it orphaned in the tree. Desktop's XMLexport
+ * skips a temporary item the same way, subtree and all.
+ */
+export function persistableNodes<T extends { id: string; parentId: string | null; temporary?: boolean }>(items: T[]): T[] {
+    if (!items.some(t => t.temporary)) return items;
+    const byId = new Map(items.map(t => [t.id, t]));
+    const isTemporary = (node: T): boolean => {
+        let cur: T | undefined = node;
+        const guard = new Set<string>();
+        while (cur && !guard.has(cur.id)) {
+            if (cur.temporary) return true;
+            guard.add(cur.id);
+            cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+        }
+        return false;
+    };
+    return items.filter(t => !isTemporary(t));
+}
+
 /** Returns true if the item and all its ancestors are enabled. */
 export function isEffectivelyEnabled<T extends { id: string; enabled: boolean; parentId: string | null }>(
     item: T,
@@ -1092,6 +1135,40 @@ export function isEffectivelyEnabled<T extends { id: string; enabled: boolean; p
         node = byId.get(node.parentId);
     }
     return true;
+}
+
+/**
+ * The items in tree order: Mudlet's pre-order walk, each node immediately
+ * followed by its whole subtree, siblings in the order the flat array holds
+ * them. The flat array alone is not that order — an item added to an older
+ * group (`permAlias`/`permKey` into a group made earlier) is appended at the
+ * end, after root items created since, while desktop puts it inside its group.
+ * An item whose parent is missing is walked as a root where it stands; a
+ * malformed cycle is broken rather than dropped.
+ */
+export function inTreeOrder<T extends { id: string; parentId: string | null }>(items: readonly T[]): T[] {
+    const ids = new Set(items.map(i => i.id));
+    const children = new Map<string, T[]>();
+    for (const item of items) {
+        if (!item.parentId || !ids.has(item.parentId)) continue;
+        let list = children.get(item.parentId);
+        if (!list) children.set(item.parentId, list = []);
+        list.push(item);
+    }
+    const out: T[] = [];
+    const seen = new Set<string>();
+    const walk = (item: T): void => {
+        if (seen.has(item.id)) return;
+        seen.add(item.id);
+        out.push(item);
+        for (const child of children.get(item.id) ?? []) walk(child);
+    };
+    for (const item of items) {
+        if (!item.parentId || !ids.has(item.parentId)) walk(item);
+    }
+    // Whatever is left hangs off a cycle with no root above it.
+    for (const item of items) walk(item);
+    return out;
 }
 
 /**

@@ -120,12 +120,16 @@ describe('Window/Geyser parity with Mudlet (#236)', () => {
       expect(env.run('return getLineNumber("mm") == getLastLineNumber("mm")')).toBe(true);
     });
 
-    it('returns to line 0 on clearWindow', () => {
+    // TConsole::clear empties the buffer and leaves mUserCursor alone
+    // (ConsoleClearByName_spec), so the cursor is still on line 1 after it.
+    it('stays on its line through clearWindow', () => {
       env.run('createMiniConsole("mm", 0, 0, 300, 100); echo("mm", "abc\\ndef\\n"); moveCursor("mm", 0, 1)');
       expect(env.run('return getCurrentLine("mm")')).toBe('def');
-      env.run('clearWindow("mm"); echo("mm", "x\\ny\\n")');
-      expect(env.run('return getLineNumber("mm")')).toBe(0);
-      expect(env.run('return getCurrentLine("mm")')).toBe('x');
+      env.run('clearWindow("mm")');
+      expect(env.run('return getLineNumber("mm")')).toBe(1);
+      env.run('echo("mm", "x\\ny\\n")');
+      expect(env.run('return getLineNumber("mm")')).toBe(1);
+      expect(env.run('return getCurrentLine("mm")')).toBe('y');
     });
 
     it('takes a negative column, as Mudlet does, and paste then leaves the line alone', () => {

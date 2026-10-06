@@ -36,7 +36,8 @@ describe('utf8 extensions', () => {
   it('next: walks characters by byte offset, nil past the end', () => {
     expect(run('local p = utf8.next("ab", 0); return p')).toBe(1);
     expect(run('local p = utf8.next("ab", 1); return p')).toBe(2);
-    expect(run('return utf8.next("ab", 2)')).toBeNull();
+    // luautf8 returns nothing at all past the end.
+    expect(run('return select("#", utf8.next("ab", 2))')).toBe(0);
     expect(run('local _, c = utf8.next("ab", 1); return c')).toBe(98);
   });
 

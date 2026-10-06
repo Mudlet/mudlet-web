@@ -10,12 +10,13 @@ import { CLIENT_VERSION } from '../version';
 import { timeZoneAbbreviation, timeZoneLongName, timeZoneOffset } from '../utils/timeZone';
 import { getBrand } from '../branding';
 import type { WindowHandle, WindowOpenOptions } from '../ui/windows/types';
-import { MAP_WIDGET_ID, MAPPER_WIDGET_ID } from '../ui/windows/types';
+import { MAP_WIDGET_ID, MAPPER_WIDGET_ID, mapViewWindowId } from '../ui/windows/types';
 import type { LabelManager, LabelCreateOptions, LabelMouseEvent, LabelWheelEvent } from '../ui/labels/LabelManager';
 import { classifyLabelLink } from '../ui/labels/labelLinks';
 import { AddonCommandRegistry } from '../ui/commands/addonCommands';
 import { decodeGif, decodeAnimatedImage, sniffDecodableImage, supportsImageDecoder, MoviePlayer } from '../ui/labels/gifMovie';
 import { isSvgCandidate, isSvgUrl, resolveSvgIntrinsicSize, svgIntrinsicSizeFromBytes } from '../ui/labels/backgroundImageSize';
+import { looksLikeImage } from './lua/imageSize';
 import type { CommandLineManager } from '../ui/cmdline/CommandLineManager';
 import type { ScrollBoxManager } from '../ui/scrollbox/ScrollBoxManager';
 import { TextEditManager } from '../ui/textedit/TextEditManager';
@@ -57,6 +58,7 @@ import { ProfilesPresence } from './profilesPresence';
 import { MapStore } from '../map/MapStore';
 import { type EngineHost, type TempComplexTriggerSpec, NULL_ENGINE_HOST } from './EngineHost';
 import { BUNDLED_GAMES, findBundledGame } from '../mud/games/bundledGames';
+import { TAB_COMPLETION_LINES, tabCompletionPool } from '../ui/tabCompletion';
 
 // Mudlet's TChar always carries baked-in fg/bg colors (the rendered pair), so
 // getFgColor/getBgColor never return "no color" for in-bounds positions. Mudlet Web
@@ -89,6 +91,23 @@ type RgbKey = number;
  *  ("any colour") and `TTrigger::scmDefault` (the console's default). */
 /** The font size Mudlet gives a new miniconsole (TMainConsole::createMiniConsole). */
 const MINICONSOLE_DEFAULT_FONT_SIZE = 12;
+
+/** What a createBuffer buffer remembers of the window calls made on it. */
+interface BufferWidget {
+    visible: boolean;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    background: { r: number; g: number; b: number; a: number };
+    /** Null until setFontSize — the profile's size reads back until then. */
+    fontSize: number | null;
+    /** Null until setFont — the profile's family reads back until then. */
+    fontFamily: string | null;
+    /** enable/disableTimeStamps. A buffer is never drawn, but it keeps the
+     *  setting as any console does, so a script reads back what it set. */
+    timestamps: boolean;
+}
 
 const COLOR_IGNORED = -1;
 const COLOR_DEFAULT = -2;
@@ -257,6 +276,46 @@ function parseBlankLinesBehaviour(value: unknown): BlankLinesBehaviour | null {
  *  preferences spin-box scale, 1..20) and the internal `mRoomSize` fraction of
  *  a grid cell it ends up storing: `dlgMapper::slot_roomSize` does
  *  `setRoomSize(size / 10.0)`. Mudlet's default spinner value is 5 → 0.5. */
+/** The point size saveJsonMap writes for the map symbol font: desktop's
+ *  default, since Mudlet Web's setting is a family only. */
+const MAP_SYMBOL_FONT_POINT_SIZE = 12;
+
+type Rgba = [number, number, number, number];
+
+/** Desktop's player-room marker settings (Host::mPlayerRoomStyle and friends),
+ *  which saveJsonMap writes and loadJsonMap reads. */
+interface JsonPlayerRoomSettings {
+    style: number;
+    outerDiameter: number;
+    innerDiameter: number;
+    outerColor: Rgba;
+    innerColor: Rgba;
+}
+
+/** Host's defaults: the plain marker, 120% / 70%, red outside, white inside. */
+const DESKTOP_PLAYER_ROOM: Readonly<JsonPlayerRoomSettings> = {
+    style: 0,
+    outerDiameter: 120,
+    innerDiameter: 70,
+    outerColor: [255, 0, 0, 255],
+    innerColor: [255, 255, 255, 255],
+};
+
+/** A colour as Mudlet's JSON map writes one (TMap::writeJsonColor). */
+function jsonColor([r, g, b, a]: Rgba): Record<string, number[]> {
+    return a < 255 ? { color32RGBA: [r, g, b, a] } : { color24RGB: [r, g, b] };
+}
+
+/** The inverse of {@link jsonColor}; undefined for anything else. */
+function readJsonRgba(raw: unknown): Rgba | undefined {
+    if (!raw || typeof raw !== 'object') return undefined;
+    const o = raw as Record<string, unknown>;
+    const t = Array.isArray(o.color32RGBA) ? o.color32RGBA : Array.isArray(o.color24RGB) ? o.color24RGB : null;
+    if (!t) return undefined;
+    const c = (i: number, d: number) => (Number.isFinite(Number(t[i])) ? Number(t[i]) : d);
+    return [c(0, 0), c(1, 0), c(2, 0), t.length > 3 ? c(3, 255) : 255];
+}
+
 const MUDLET_ROOM_SIZE_SCALE = 10;
 
 /** The values `setConfig("ambiguousEAsianWidthCharacters", …)` takes, in the
@@ -505,6 +564,10 @@ if (typeof document !== 'undefined') {
 // generation moves (see fontLoader.getFontGeneration) rather than keyed by it,
 // so the entries measured against the fallback don't linger.
 let measureCtx: CanvasRenderingContext2D | null | undefined;
+/** The addresses an MXP `<A>` click opens in a browser tab — see
+ *  {@link ScriptingAPI.createMxpHyperlink}. */
+const MXP_OPENABLE_URL = /^(https?|ftp|mailto):/i;
+
 const measureCache = new Map<string, [number, number]>();
 let measureCacheGeneration = -1;
 
@@ -752,6 +815,12 @@ class ScriptingWindowsAPI {
     }
     getCmdLineValue(id: string): string {
         return this.session.windows.getCmdLineValue(id);
+    }
+    hasCommandLine(id: string): boolean {
+        return this.session.windows.hasCommandLine(id);
+    }
+    deleteCommandLine(id: string): boolean {
+        return this.session.windows.deleteCommandLine(id);
     }
 }
 
@@ -1025,6 +1094,11 @@ export class ScriptingAPI {
     /** Mudlet `closeMudlet()`. Mudlet Web maps it to "close the active profile":
      *  disconnect, then return to the connection screen. Wired by ProfileSession. */
     private closeProfileCallback: (() => void) | null = null;
+    /** A closeMudlet() is armed and has not run yet (see closeMudlet). */
+    private closeMudletArmed = false;
+    /** Set by destroy(): an armed closeMudlet() that outlives the profile
+     *  has nothing left to close. */
+    private destroyed = false;
 
     /** One selection per console, keyed by window name ('main' for the main
      *  console), the way each desktop TConsole keeps its own P_begin/P_end:
@@ -1050,7 +1124,12 @@ export class ScriptingAPI {
     // backing Console lives in `session.consoles` like any window console, but
     // has no panel — so output to them is never pushed to the WindowManager
     // (which would force a panel open). See `drainWindowConsole`.
-    private buffers = new Set<string>();
+    //
+    // Desktop's buffer is a full TConsole that is simply never shown, so the
+    // window functions accept it like any console: it keeps a background
+    // colour, a font size, a geometry and a visible flag of its own, all of
+    // which read back exactly as they were set (mudlet-web#380).
+    private buffers = new Map<string, BufferWidget>();
 
     constructor(
         private readonly session: MudSession,
@@ -1222,10 +1301,12 @@ export class ScriptingAPI {
         return this.session.sendMSDP(variable, values);
     }
 
-    /** Mudlet `sendSocket(data)`. Sends a literal byte-string over the socket
-     *  with no telnet/encoding processing (each char is one byte). */
-    sendSocket(data: string): boolean {
-        return this.session.sendSocket(data);
+    /** Mudlet `sendSocket(data [, parseTelnetCodes])`. Sends a literal
+     *  byte-string over the socket with no telnet/encoding processing (each
+     *  char is one byte). With `parseTelnetCodes` the `<T_IAC>`-style tags are
+     *  decoded first, as feedTelnet's are (TLuaInterpreter::parseTelnetCodes). */
+    sendSocket(data: string, parseTelnetCodes = false): boolean {
+        return this.session.sendSocket(parseTelnetCodes ? decodeTelnetByteTags(data) : data);
     }
 
     /** Mudlet `feedTelnet(data)`. Injects raw server bytes into the inbound
@@ -1249,8 +1330,8 @@ export class ScriptingAPI {
         // the coalesced reload cannot run while that chunk is on the stack.
         this.host.flushPendingApplies();
         // `data` is a BYTE-STRING: one char per byte, as a socket produces and
-        // as everything downstream reads it (MSDP decodes its values from UTF-8
-        // bytes, for one). The Lua binding unarmors it into that shape — see
+        // as everything downstream reads it (MSDP decodes its values from the
+        // game's bytes, for one). The Lua binding unarmors it into that shape — see
         // byteArmor.ts for why the crossing cannot be made in plain text.
         //
         // The `<T_IAC><T_GA>`-style placeholders are decoded after: a telnet
@@ -1469,14 +1550,15 @@ export class ScriptingAPI {
      *  Returns null on success, or the message for Mudlet's `nil, message`
      *  refusal when no open profile has that name. Like Mudlet, which closes the
      *  tab on the next event-loop turn, the close happens after the calling
-     *  script has returned — so a script closing its own profile still finishes. */
+     *  script has returned — so a script closing its own profile still finishes
+     *  (closeMudlet defers itself). */
     closeProfile(name: string): string | null {
         const target = name ?? '';
         const conn = useAppStore.getState().connections.find(c => c.name === target);
         const notLoaded = `closeProfile: profile '${target}' does not exist`;
         if (!conn) return notLoaded;
         if (conn.id === this.connectionId) {
-            setTimeout(() => this.closeMudlet(), 0);
+            this.closeMudlet();
             return null;
         }
         if (!this.presence.loadedIds().includes(conn.id)) return notLoaded;
@@ -1642,9 +1724,10 @@ export class ScriptingAPI {
             case 'specialForceMxpNegotiationOff':     return !this.getProtocol('mxp');
             case 'specialForceCharsetNegotiationOff': return !this.getProtocol('charset');
             case 'specialForceCompressionOff':        return !this.getProtocol('mccp');
-            // MNES and NEW-ENVIRON share telnet option 39; "force off" means
-            // neither variant is offered, so it's true only when both are off.
-            case 'forceNewEnvironNegotiationOff':     return !this.getProtocol('mnes') && !this.getProtocol('newEnviron');
+            // Desktop keeps this the plain inverse of enableNEWENVIRON
+            // (Host::mEnableNEWENVIRON) in both directions; MNES is a separate
+            // preference it never reads or writes.
+            case 'forceNewEnvironNegotiationOff':     return !this.getProtocol('newEnviron');
             // structured — input line
             case 'autoClearInputLine':
                 return selectProfileField(useAppStore.getState(), this.connectionId, 'autoClearInput') ?? false;
@@ -1896,12 +1979,11 @@ export class ScriptingAPI {
             case 'specialForceMxpNegotiationOff':     this.setProtocol('mxp',     !configBool(value)); return true;
             case 'specialForceCharsetNegotiationOff': this.setProtocol('charset', !configBool(value)); return true;
             case 'specialForceCompressionOff':        this.setProtocol('mccp',    !configBool(value)); return true;
-            // Forcing option 39 off disables both variants; un-forcing restores
-            // the RFC-1572 default (plain NEW-ENVIRON on, MNES left off — matching
-            // Mudlet's defaults) rather than guessing which variant to re-enable.
+            // The inverse of enableNEWENVIRON and nothing more: desktop leaves
+            // enableMNES as it was, so un-forcing brings back whichever variant
+            // the profile had chosen.
             case 'forceNewEnvironNegotiationOff':
                 this.setProtocol('newEnviron', !configBool(value));
-                if (configBool(value)) this.setProtocol('mnes', false);
                 return true;
             case 'autoClearInputLine':
                 useAppStore.getState().patchConnectionProfile(this.connectionId, { autoClearInput: configBool(value) });
@@ -2036,6 +2118,16 @@ export class ScriptingAPI {
                 const on = configBool(value);
                 this.session.setSpecialForceGAOff(on);
                 this.patchConfigBag('specialForceGAOff', on);
+                return true;
+            }
+            // Host::mUSE_UNIX_EOL, which cTelnet::sendData reads on every send.
+            // Pushed at the session here as well as persisted: left to
+            // ProfileSession's next render, a send() in the same chunk as the
+            // setConfig still went out with the old line ending (#336).
+            case 'inputLineStrictUnixEndings': {
+                const on = configBool(value);
+                this.session.setInputLineStrictUnixEndings(on);
+                this.patchConfigBag('inputLineStrictUnixEndings', on);
                 return true;
             }
             // Only the value it already has: see getConfig
@@ -2398,20 +2490,35 @@ export class ScriptingAPI {
      *  The event comes first because on desktop (TMainConsole::closeEvent) the
      *  exit handlers run while the profile is still connected, so a goodbye or
      *  save command they send reaches the game. The engine's teardown does not
-     *  raise it a second time. */
+     *  raise it a second time.
+     *
+     *  None of that happens inside the call. Desktop's closeMudlet only arms the
+     *  close (mudlet::armForceClose, a zero-delay single shot), so it returns
+     *  and the rest of the calling script runs — and its sends go out — before
+     *  the exit handlers do. A plain timeout rather than the timer queue, so a
+     *  script pumping events in waitForEvent does not close underneath itself,
+     *  which desktop's armForceClose also waits out. Calls made while a close
+     *  is already armed fold into it. */
     closeMudlet(): void {
-        this.host.raiseExitEvent();
-        this.disconnect();
-        this.closeProfileCallback?.();
+        if (this.closeMudletArmed) return;
+        this.closeMudletArmed = true;
+        setTimeout(() => {
+            this.closeMudletArmed = false;
+            if (this.destroyed) return;
+            this.host.raiseExitEvent();
+            this.disconnect();
+            this.closeProfileCallback?.();
+        }, 0);
     }
 
 
     /** Mudlet `resetProfile()` — reload the entire profile as if just opened:
      *  clear every UI surface, recreate the Lua runtime, and re-run all scripts.
      *  The actual work is deferred by the engine (it closes the Lua VM that is
-     *  currently executing this call), so this returns immediately. */
-    resetProfile(): void {
-        this.host.resetProfile();
+     *  currently executing this call), so this returns immediately — true once
+     *  the reset is armed, false when it was refused (Host::resetProfile_phase1). */
+    resetProfile(): boolean {
+        return this.host.resetProfile();
     }
 
 
@@ -2823,6 +2930,12 @@ export class ScriptingAPI {
         return this.host.removeScriptById(id);
     }
 
+    /** Why the body of the script with this numeric id failed when permScript
+     *  or setScript just ran it, or null when it ran cleanly. */
+    scriptLoadError(id: number): string | null {
+        return this.host.scriptLoadErrorById(id);
+    }
+
     /** Mudlet `getScript(name [, pos]) → code, id`. Returns the source of the
      *  pos-th (1-indexed) script named `name` together with that script's own
      *  numeric id. Null when no script sits at that position, which Bridge.lua
@@ -2892,11 +3005,20 @@ export class ScriptingAPI {
             // The last line, not strictly the cursor's: TConsoleModel::echo
             // writes onto line size() - 1, which is the line above once a
             // trigger has deleted the one it matched.
-            const buf = this.mainConsole.getBuffer() ?? this.mainConsole.lastLine();
+            const matched = this.mainConsole.getBuffer();
+            const buf = matched ?? this.mainConsole.lastLine();
             if (buf) {
                 const nl = text.indexOf('\n');
                 const head = nl < 0 ? text : text.slice(0, nl);
-                if (head) buf.insert(buf.text.length, head, state ?? this.mainConsole.format.toSnapshot());
+                if (head) {
+                    buf.insert(buf.text.length, head, state ?? this.mainConsole.format.toSnapshot());
+                    // The line above a gagged one has already been drawn, and
+                    // nothing renders it again after this pass the way the
+                    // matched line is — so the text was in the buffer but never
+                    // on screen (mudlet-web#383). Redraw it now; a line not yet
+                    // drawn makes this a no-op and renders with the text anyway.
+                    if (!matched) buf.rerender();
+                }
                 if (nl < 0) return;          // stayed on the matched line
                 this.echoOnMatchedLine = false;
                 text = text.slice(nl);        // remainder leads with the advancing \n
@@ -3166,8 +3288,13 @@ export class ScriptingAPI {
         // nothing, from a click or from its menu (TLinkStore::expireLinks
         // leaves the text and drops what it ran).
         if (kind === 'url') {
+            // An <A> is only ever opened, as Mudlet's openUrl(…) action is,
+            // never sent to the game, whatever its address. A browser can only
+            // safely open a web address, though: a scheme-less one would load
+            // a page of this app, and `javascript:` would run in it — those do
+            // nothing, as an address the desktop cannot open does nothing.
             return {
-                onClick: () => { if (isLive()) window.open(payload, '_blank', 'noopener'); },
+                onClick: () => { if (isLive() && MXP_OPENABLE_URL.test(payload)) this.openUrl(payload); },
                 title: hint || undefined,
                 autoUnderline: true,
             };
@@ -3353,9 +3480,10 @@ export class ScriptingAPI {
         }
         const at = Math.min(col, buf.text.length);
         // The padding is not part of the link: applyLink covers the inserted
-        // text only.
+        // text only, and the gap takes the console's current format, as
+        // TBuffer::expandLine fills it — not the link's, nor its neighbour's.
         const padding = ' '.repeat(col - at);
-        if (padding) buf.insert(at, padding);
+        if (padding) buf.insert(at, padding, con.format.toSnapshot());
         buf.insert(col, text, state);
         if (onTriggerLine) {
             // As for insertText: TConsole::insertLink moves the capture
@@ -3616,18 +3744,26 @@ export class ScriptingAPI {
      * Mudlet's `false, "no selection"` 2-tuple.
      */
     getSelection(windowName?: string): { text: string; start: number; length: number } | string | null {
+        // A name that is no console refuses, rather than reading as "nothing
+        // selected": GUIUtils' replace() goes on to the C replace() after any
+        // answer but the empty one, which answers nothing for such a window.
+        if (!this.consoleExists(windowName)) return `window "${windowName}" not found`;
         const sel = this.selectionOf(windowName);
         if (!sel) return null;
-        const buf = this.resolveBuffer(sel.windowName);
-        if (!buf) return null;
+        // A console whose cursor is on no stored line — just cleared down to
+        // its one empty line — still has a line for the selection to be read
+        // from: an empty one.
+        const text = this.resolveBuffer(sel.windowName)?.text ?? '';
         const { start, length } = sel;
         // The selection is columns on whatever line the cursor is on NOW, not on
-        // the line it was made on — so moving the cursor to a shorter line can
-        // strand it past the end. Mudlet reports that as a refusal rather than
-        // silently answering with the empty string the slice would give, which a
-        // script cannot tell from a line that really is blank there.
-        if (buf.length < start) return 'getSelection: the selection is no longer valid';
-        return { text: buf.text.slice(start, start + length), start, length };
+        // the line it was made on — so moving the cursor to a shorter line (or
+        // clearing the window) can strand it past the end. Mudlet reports that
+        // as a refusal rather than silently answering with the empty string the
+        // slice would give, which a script cannot tell from a line that really
+        // is blank there. A selection that starts AT the end is still valid,
+        // and reads as "".
+        if (text.length < start) return 'the selection is no longer valid';
+        return { text: text.slice(start, start + length), start, length };
     }
 
     /**
@@ -3668,6 +3804,16 @@ export class ScriptingAPI {
 
     isAnsiBgColor(ansiColor: number): boolean {
         return this.matchesAnsiColor('background', ansiColor);
+    }
+
+    /**
+     * Whether the main console's selection (or, with none, the cursor line's
+     * first column) is on a character — what isAnsiFgColor/isAnsiBgColor read.
+     * Desktop answers "current selection invalid in window 'main'" when it is
+     * not, ahead of checking the colour number.
+     */
+    hasReadableSelection(): boolean {
+        return this.readSelectionColor('foreground', undefined) !== null;
     }
 
     private matchesAnsiColor(channel: 'foreground' | 'background', ansiColor: number): boolean {
@@ -3887,6 +4033,18 @@ export class ScriptingAPI {
      */
     beginLine(buffer: AnsiAwareBuffer, isPrompt = false): void {
         buffer.isPrompt = isPrompt;
+        // An echo without a newline from outside the trigger engine — an event
+        // handler, a timer — is still the open line when the next server line
+        // arrives. Desktop ends that line before the server's is added, so the
+        // echo comes first in the buffer and on screen. Left open here, the
+        // server line went into history above it, and flushDeferredEcho then
+        // emitted it after the line as a second copy of what the screen was
+        // already showing (mudlet-web#384). Emitted as 'script' so the renderer
+        // finalizes the element it is drawn in rather than adding one.
+        if (this.triggerLineDepth === 0 && !this.isDeferringEcho) {
+            const open = this.mainConsole.completePartialLine();
+            if (open) this.session.events.emit('message', open, 'script');
+        }
         // Snapshot the colours the SERVER sent, before any trigger runs. Mudlet
         // matches colour triggers against the line as it arrived, so a trigger
         // that recolours the line cannot change what a later (or nested) colour
@@ -3894,12 +4052,8 @@ export class ScriptingAPI {
         // Pushed, not assigned: a trigger may call feedTriggers itself, and the
         // outer line's snapshot has to survive the nested pass.
         this.triggerLinePrompts.push(isPrompt);
-        const defaults = this.triggerDefaultColorKeys();
-        this.lineColorSnapshots.push(buffer.getSegments().map(seg => ({
-            fg: segmentColorKey(seg.state?.foreground) ?? defaults.fg,
-            bg: segmentColorKey(seg.state?.background) ?? defaults.bg,
-            text: seg.text ?? '',
-        })));
+        this.lineColorSnapshots.push(this.colorKeySegments(buffer, 0));
+        this.lineColorLive.push(buffer);
         // Which line the cursor was on before this one was appended, so a line
         // fed from inside a trigger can hand the outer pass its own line back.
         this.outerTriggerLines.push(this.triggerLineDepth > 0 ? this.mainConsole.getLineNumber() : -1);
@@ -3924,6 +4078,7 @@ export class ScriptingAPI {
      */
     endLine(): void {
         this.lineColorSnapshots.pop();
+        this.lineColorLive.pop();
         this.triggerLinePrompts.pop();
         // A trigger can call feedTriggers, which processes a line of its own
         // inside this one. Only the OUTERMOST line leaves trigger context —
@@ -3939,6 +4094,10 @@ export class ScriptingAPI {
             // everything the outer pass does afterwards — selectString, the
             // colour calls that follow it — lands on that line instead.
             if (outerLine >= 0) this.mainConsole.moveTo(outerLine);
+            // But echoes no longer land on it: TConsole::echo writes onto the
+            // buffer's last line, which is now the open one after the fed
+            // lines, so what the outer trigger echoes next follows them.
+            this.echoOnMatchedLine = false;
             return;
         }
         this.inTriggerProcessing = false;
@@ -3958,7 +4117,7 @@ export class ScriptingAPI {
     /** The lines a network line is stored as once its triggers are done — see
      *  Console.wrapAppendedLine. */
     wrapNetworkLine(buffer: AnsiAwareBuffer): AnsiAwareBuffer[] {
-        return this.mainConsole.wrapAppendedLine(buffer);
+        return this.mainConsole.wrapAppendedLine(buffer, true);
     }
 
     /**
@@ -4001,8 +4160,17 @@ export class ScriptingAPI {
         limit = Infinity,
     ): { text: string; start: number }[] {
         const runs: { text: string; start: number }[] = [];
-        const snapshot = this.lineColorSnapshots[this.lineColorSnapshots.length - 1];
-        if (!snapshot) return runs;
+        const retained = this.lineColorSnapshots[this.lineColorSnapshots.length - 1];
+        if (!retained) return runs;
+        // Past the end of the snapshot the colours are the line's own: text a
+        // trigger appended there (appendBuffer pastes onto the end of the line
+        // without refreshing the snapshot, unlike echo()) came from nowhere
+        // the server coloured, and is matched as it now stands.
+        const live = this.lineColorLive[this.lineColorLive.length - 1];
+        const retainedLength = retained.reduce((n, seg) => n + seg.text.length, 0);
+        const snapshot = live && live.length > retainedLength
+            ? [...retained, ...this.colorKeySegments(live, retainedLength)]
+            : retained;
         // `window` narrows the scan to one stretch of the line — a colour
         // trigger inside a filter chain is only shown what its parent captured,
         // so a colour elsewhere on the line is not a match for it.
@@ -4051,6 +4219,28 @@ export class ScriptingAPI {
      *  on the console's default colour holds the default's RGB, as a desktop
      *  TChar does. A stack, because a trigger can feedTriggers another line. */
     private lineColorSnapshots: { fg: RgbKey; bg: RgbKey; text: string }[][] = [];
+    /** The live buffer of each line in {@link lineColorSnapshots}, read for
+     *  whatever has been written past the snapshot's end. */
+    private lineColorLive: AnsiAwareBuffer[] = [];
+
+    /** `buffer`'s segments from character `from` on, as colour keys. */
+    private colorKeySegments(buffer: AnsiAwareBuffer, from: number): { fg: RgbKey; bg: RgbKey; text: string }[] {
+        const defaults = this.triggerDefaultColorKeys();
+        const out: { fg: RgbKey; bg: RgbKey; text: string }[] = [];
+        let at = 0;
+        for (const seg of buffer.getSegments()) {
+            const text = seg.text ?? '';
+            const segStart = at;
+            at += text.length;
+            if (at <= from) continue;
+            out.push({
+                fg: segmentColorKey(seg.state?.foreground) ?? defaults.fg,
+                bg: segmentColorKey(seg.state?.background) ?? defaults.bg,
+                text: text.slice(Math.max(0, from - segStart)),
+            });
+        }
+        return out;
+    }
 
     /** The console's default foreground/background as {@link RgbKey}s — what
      *  uncoloured text is drawn in, and what a `-2` pattern asks for. */
@@ -4175,8 +4365,17 @@ export class ScriptingAPI {
     // ── Triggers ──────────────────────────────────────────────────────────────
 
     /** Raw tail of the last {@link feedTriggers} call that had no trailing
-     *  newline, carried into the next one — see there. */
-    private feedTriggersRemainder = '';
+     *  newline, held until later data completes it — see feedTriggersText. */
+    private heldFeedText = '';
+
+    /** Hand over the held unterminated fed text, for the next batch to lead
+     *  with. The server's next lines complete it as well as a later feed does:
+     *  Mudlet runs both through the one TBuffer. */
+    takeHeldFeedText(): string {
+        const held = this.heldFeedText;
+        this.heldFeedText = '';
+        return held;
+    }
 
     /**
      * Feed bytes through the trigger pipeline as if they arrived from the MUD.
@@ -4232,50 +4431,48 @@ export class ScriptingAPI {
         // (MudClient drops every '\r' before parsing): a package fed
         // "line\r\n" must match `^line$` exactly as the game's own copy does.
         text = text.replace(/\r/g, '');
+        // An EOT (0x04) ends a line as '\n' does, in fed text as in the game's:
+        // TBuffer::translateToPlainText commits on it whatever the source.
+        text = text.replace(/\x04/g, '\n');
         // Trigger reloads are coalesced onto a microtask, which cannot run while
         // the calling Lua chunk is still on the stack. Mudlet applies perm* and
         // enable/disableTrigger immediately, so a script that creates or toggles
         // a trigger and feeds a line in the same chunk must see the new state.
         this.host.flushPendingApplies();
-        // A line the caller left unterminated is carried, as RAW text, into the
-        // next call: Mudlet feeds every call into the same TBuffer, so an escape
-        // sequence split across two feedTriggers is still parsed as one. Only
-        // re-joining the raw bytes reproduces that — the rendered partial has
-        // already lost the half-consumed sequence. It stays on screen meanwhile
-        // (echoed below) and is re-emitted from the batch once completed, which
-        // is why the display copy is cleared before the batch runs.
-        const lines = (this.feedTriggersRemainder + text).split('\n');
-        const remainder = lines[lines.length - 1];
-        const completeLines = lines.slice(0, -1);
-        this.feedTriggersRemainder = remainder;
-
-        if (completeLines.length === 0) {
-            // Only the new bytes: whatever was carried in is already displayed.
-            this.mainConsole.echo(text);
-            this.drainMain();
-            const partial = this.mainConsole.currentPartial;
-            if (partial.length > 0) this.session.events.emit('message', partial, 'script-partial');
+        // A line the caller left unterminated is held, as RAW text, until the
+        // next data completes it — Mudlet's TBuffer keeps it in mMudLine, which
+        // every later feed and every server packet appends to, and draws it only
+        // once a '\n' commits it. So it is not shown in the meantime (an echo
+        // made before then lands above it), and its triggers see it whole, once.
+        // Re-joining the raw bytes also keeps an escape sequence split across two
+        // feedTriggers parsed as one — the rendered text would have lost it.
+        const joined = this.takeHeldFeedText() + text;
+        const cut = joined.lastIndexOf('\n');
+        if (cut < 0) {
+            this.heldFeedText = joined;
             return true;
         }
+        const remainder = joined.slice(cut + 1);
 
-        // Drop any stray partial left by direct echo() calls (and the displayed
-        // copy of the carried-over remainder, which the batch below re-emits) so
-        // trigger echo accumulates fresh during batch processing — but keep
-        // history, so successive feedTriggers calls accumulate lines the way
-        // Mudlet appends fed text to the buffer (a full clear() would strand
-        // earlier lines).
+        // Drop any stray partial left by direct echo() calls so trigger echo
+        // accumulates fresh during batch processing — but keep history, so
+        // successive feedTriggers calls accumulate lines the way Mudlet appends
+        // fed text to the buffer (a full clear() would strand earlier lines).
         this.mainConsole.clearPartial();
 
         // With no engine bound yet (early init) the default host falls back to
         // emitting a raw flushLines event.
         // fromServer: false — an MXP `ESC[#z` in fed text is consumed but does
         // not switch the parser's mode, as in Mudlet.
-        this.host.processFlushBatch([{ text: completeLines.join('\n'), type: 'mud', fromServer: false }]);
+        // The batch keeps its last '\n': processFlushBatch drops one empty piece
+        // after a trailing terminator, so cutting it off here lost the last line
+        // whenever it was empty — "F1\n\n" committed only F1, and "\n" nothing,
+        // where Mudlet commits an empty line for each '\n' (mudlet-web#385).
+        this.host.processFlushBatch([{ text: joined.slice(0, cut + 1), type: 'mud', fromServer: false }]);
 
-        if (remainder) {
-            this.mainConsole.echo(remainder);
-            this.drainMain();
-        }
+        // Appended rather than assigned: a trigger in the batch may have fed an
+        // unterminated line of its own, which this one's tail follows in mMudLine.
+        this.heldFeedText += remainder;
         const partial = this.mainConsole.currentPartial;
         if (partial.length > 0) this.session.events.emit('message', partial, 'script-partial');
         // Mudlet answers true once the text has been handed to the display.
@@ -4347,61 +4544,94 @@ export class ScriptingAPI {
     // on the main window — we keep that policy (the binding hands Lua `false`).
 
     disableScrollBar(windowName?: string): void {
-        this.session.windows.setScrollBarVisible(windowName ?? 'main', false);
+        this.session.windows.setScrollBarVisible(windowName || 'main', false);
     }
     enableScrollBar(windowName?: string): void {
-        this.session.windows.setScrollBarVisible(windowName ?? 'main', true);
+        this.session.windows.setScrollBarVisible(windowName || 'main', true);
     }
     disableHorizontalScrollBar(windowName?: string): void {
-        this.session.windows.setHorizontalScrollBarVisible(windowName ?? 'main', false);
+        this.session.windows.setHorizontalScrollBarVisible(windowName || 'main', false);
     }
     enableHorizontalScrollBar(windowName?: string): void {
-        this.session.windows.setHorizontalScrollBarVisible(windowName ?? 'main', true);
+        this.session.windows.setHorizontalScrollBarVisible(windowName || 'main', true);
     }
+    // A buffer has no pane to scroll, so turning its scrolling off is accepted
+    // and changes nothing: it always reports itself scrolling.
     disableScrolling(windowName?: string): boolean {
-        return this.session.windows.setScrollingEnabled(windowName ?? 'main', false);
+        if (windowName && this.buffers.has(windowName)) return true;
+        return this.session.windows.setScrollingEnabled(windowName || 'main', false);
     }
     enableScrolling(windowName?: string): boolean {
-        return this.session.windows.setScrollingEnabled(windowName ?? 'main', true);
+        if (windowName && this.buffers.has(windowName)) return true;
+        return this.session.windows.setScrollingEnabled(windowName || 'main', true);
     }
 
     /** Mudlet `timeStampsEnabled(window)` — whether the console shows its
      *  timestamp column. Null when no such window exists. */
     timeStampsEnabled(windowName: string): boolean | null {
+        const buf = this.buffers.get(windowName);
+        if (buf) return buf.timestamps;
+        // The main console's column is the profile's own setting — the one the
+        // output's context menu toggles.
+        if (!windowName || windowName === 'main') {
+            return selectProfileField(useAppStore.getState(), this.connectionId, 'showTimestamps') === true;
+        }
         return this.session.windows.timeStampsEnabled(windowName);
     }
 
     /** Mudlet `enableTimeStamps(window)` / `disableTimeStamps(window)`. False
      *  when no such window exists. */
     setTimeStamps(windowName: string, visible: boolean): boolean {
-        return this.session.windows.setTimeStamps(windowName, visible);
+        const buf = this.buffers.get(windowName);
+        if (buf) {
+            buf.timestamps = visible;
+            return true;
+        }
+        if (!windowName || windowName === 'main') {
+            useAppStore.getState().patchConnectionProfile(this.connectionId, { showTimestamps: visible });
+            return true;
+        }
+        if (!this.session.windows.setTimeStamps(windowName, visible)) return false;
+        // The column moves the text over, so the console reports its grid
+        // (with the gutter) — and with it any size a font change left
+        // unreported. A buffer is never shown, so it has none to report.
+        this.session.windows.reportConsoleGrid(windowName, this.getColumnCount(windowName), this.getRowCount(windowName));
+        return true;
     }
 
     /** Mudlet `scrollingActive([window])` — whether the user can scroll back in
      *  this console. True unless disableScrolling was called on it; the main
      *  window is always scrollable. */
     scrollingActive(windowName?: string): boolean {
-        return this.session.windows.isScrollingEnabled(windowName ?? 'main');
+        if (windowName && this.buffers.has(windowName)) return true;
+        return this.session.windows.isScrollingEnabled(windowName || 'main');
     }
 
-    /** Mudlet getScroll — 0-indexed buffer line at the top of the viewport. In
-     *  tail mode reports the last line (Mudlet's mCursorY behaviour at end). */
+    /** Mudlet getScroll — the buffer line the console is scrolled to, which
+     *  desktop counts as the first line below the scrolled view (its bottom row
+     *  plus one), the same edge scrollTo(window, line) puts a line on.
+     *  Desktop answers `max(min(mCursorY, getLastLineNumber()), 0)`
+     *  (TMainConsole::getWindowScroll), so a console following its output
+     *  reports exactly getLastLineNumber() — the comparison scripts use to ask
+     *  "am I at the bottom?" — and never a line past it. */
     getScroll(windowName?: string): number {
-        const name = windowName ?? 'main';
+        const name = windowName || 'main';
+        const last = Math.max(0, this.getLastLineNumber(name));
         // getScrollLine measures the DOM, and a console whose panel hasn't been
         // laid out measures as 0 — which would claim a 30-line buffer is
         // scrolled to the very top. Nothing has scrolled it, so it is at the
         // tail: report the last line, the same answer tail mode gives.
-        if (!this.session.windows.canMeasureScroll(name)) {
-            return Math.max(0, this.getLastLineNumber(name));
-        }
-        return this.session.windows.getScrollLine(name);
+        if (!this.session.windows.canMeasureScroll(name)) return last;
+        const line = this.session.windows.getScrollLine(name);
+        return line === null ? last : Math.max(0, Math.min(line, last));
     }
 
-    /** Mudlet scrollTo. With no line (or a line past end), resume tail mode.
-     *  Negative line counts back from the buffer end. */
+    /** Mudlet scrollTo. With no line (or a line at or past the last one),
+     *  resume tail mode. Negative line counts back from the buffer end. False
+     *  only where desktop does nothing (scrolling disabled); Bridge.lua drops
+     *  the result either way, as desktop's scrollTo returns nothing. */
     scrollTo(windowName: string | undefined, lineNumber: number | undefined): boolean {
-        return this.session.windows.scrollToLine(windowName ?? 'main', lineNumber);
+        return this.session.windows.scrollToLine(windowName || 'main', lineNumber);
     }
 
     /** Null when the window doesn't exist — the binding answers Mudlet's
@@ -4425,10 +4655,11 @@ export class ScriptingAPI {
     }
 
     /**
-     * Mudlet `wrapLine([window,] lineNumber)`. Re-displays the line at
-     * `lineNumber` (0-indexed, like getLineNumber/getLineCount), re-interpreting
-     * its embedded `\n` and re-wrapping to the current width. Returns false when
-     * the window or line doesn't exist.
+     * Mudlet `wrapLine([window,] lineNumber)`. Re-wraps the buffer from the line
+     * at `lineNumber` (0-indexed, like getLineNumber/getLineCount) to its end,
+     * re-interpreting embedded `\n` and splitting to the current width, as
+     * TBuffer::wrapLine does. Returns false when the window or line doesn't
+     * exist; the Lua binding returns nothing either way, as desktop does.
      */
     wrapLine(lineNumber: number, windowName?: string): boolean {
         const con = this.getConsole(windowName);
@@ -4479,6 +4710,18 @@ export class ScriptingAPI {
             // limit that was just set (Mudlet's TBuffer::setBufferSize).
             const batch = batchSize >= limit ? Math.floor(limit / 10) : Math.floor(batchSize);
             con.setBatchDeleteSize(Math.max(1, batch));
+        }
+        if (con === this.mainConsole && Number.isFinite(limit)) {
+            // Desktop's Host::setMainConsoleBufferSize stores the size and the
+            // use-maximum flag in the profile's preferences as well, so they are
+            // saved with it and the next session opens on them (its batch then
+            // the preference's 20%, as for any saved size).
+            const lines = Math.min(MAX_CONSOLE_BUFFER_LINES, limit);
+            this.session.noteScriptedConsoleBufferSize(lines, useMaximum);
+            useAppStore.getState().patchConnectionProfile(this.connectionId, {
+                consoleBufferSize: lines,
+                useMaxConsoleBufferSize: useMaximum,
+            });
         }
         return true;
     }
@@ -4533,18 +4776,28 @@ export class ScriptingAPI {
         const el = isMain
             ? this.session.windows.getElement('main')
             : this.session.windows.getElement(windowName!);
-        const measured = measureColumnCapacity(el);
-        if (measured > 0) return measured;
-        if (isMain) return 0;
+        if (isMain) return measureColumnCapacity(el);
 
-        const size = this.session.windows.getSize(windowName!);
-        if (!size || size.width <= 0) return 0;
+        // A sub-console is measured in the font it has been given rather than
+        // the one its panel has painted yet: setFont/setFontSize take effect on
+        // the next render, and a script that changes the font and then counts
+        // the columns — or a timestamp change reporting them — has to see the
+        // new count, as getRowCount already does.
         const profileFamily = selectProfileField(useAppStore.getState(), this.connectionId, 'outputFont')?.family ?? '';
         const profileSize   = selectProfileField(useAppStore.getState(), this.connectionId, 'fontSize') ?? 12;
         const family = this.session.windows.getFont(windowName!) ?? profileFamily;
         const fontSize = this.session.windows.getFontSize(windowName!) ?? profileSize;
         const [cellW] = measureMonospaceCell(family, fontSize);
         if (cellW <= 0) return 0;
+        if (el) {
+            const cs = getComputedStyle(el);
+            const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+            const width = Math.max(0, el.clientWidth - pad);
+            if (width > 0) return Math.floor(width / cellW);
+        }
+
+        const size = this.session.windows.getSize(windowName!);
+        if (!size || size.width <= 0) return 0;
         // Match the gutter/padding measureColumnCapacity would subtract once
         // the element mounts (~8px per side on text panels).
         const usable = Math.max(0, size.width - 16);
@@ -4574,14 +4827,16 @@ export class ScriptingAPI {
         if (el) {
             const cs = getComputedStyle(el);
             const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
-            const height = Math.max(0, el.clientHeight - pad);
+            const pending = isMain ? 0 : this.session.windows.pendingCmdLineHeightDelta(windowName!);
+            const height = Math.max(0, el.clientHeight - pad + pending);
             if (height > 0) return Math.floor(height / cellH);
         }
         if (isMain) return 0;
 
         const size = this.session.windows.getSize(windowName!);
         if (!size || size.height <= 0) return 0;
-        return Math.floor(size.height / cellH);
+        const height = Math.max(0, size.height + this.session.windows.pendingCmdLineHeightDelta(windowName!));
+        return Math.floor(height / cellH);
     }
 
     /**
@@ -4722,7 +4977,7 @@ export class ScriptingAPI {
 
     /**
      * Mudlet `setMapWindowTitle(title)`. Sets the dockable map panel's tab
-     * title; an empty string resets it to the default ("Map"). Returns false
+     * title; an empty string resets it to the default ("Map - <profile>"). Returns false
      * when the map widget isn't open.
      */
     setMapWindowTitle(title: string): boolean {
@@ -4767,6 +5022,16 @@ export class ScriptingAPI {
         }
         // No current line: degrade to an echo so the text isn't lost.
         if (isMain) {
+            // Mid trigger pass that means deleteLine() removed the matched
+            // line. TConsole::insertText then hands TBuffer::insertInLine a y
+            // past the end, which appends the text to the buffer's last line —
+            // the trigger-mode echo — so it joins the line above rather than
+            // starting one of its own (mudlet-web#383).
+            if (this.inTriggerPass(this.mainConsole)) {
+                this.echoMain(text, this.mainConsole.format.toSnapshot());
+                this.drainMain();
+                return true;
+            }
             this.mainConsole.echoText(text);
             this.drainMain();
             return true;
@@ -4856,10 +5121,18 @@ export class ScriptingAPI {
             // line and a getCurrentLine on no line at all (mudlet-web#273).
             const y = this.getLineCount(windowName);
             con.moveTo(y, Math.max(0, (con.lineText(y)?.length ?? 0) - 1));
-        } else {
-            con.moveToEnd();
-            con.setCursorColumn(con.getLine().length);
+            // The leading-newline latch is left as it is. beginLine set it for
+            // the matched line's missing terminator; once an echo has ended
+            // that line, a following "\n" ends the empty line after it — a
+            // blank line on desktop, whose echo always appends whatever the
+            // cursor does. Re-arming it here swallowed that blank line
+            // (generic_mapper's print_echoes, mudlet-web#343).
+            return;
         }
+        // Outside one, the last line is the open line, and the cursor goes onto
+        // its last character all the same (column 0 while it is empty).
+        con.moveToEnd();
+        con.setCursorColumn(Math.max(0, con.getLine().length - 1));
         con.markCursorAtEnd();
     }
 
@@ -4873,10 +5146,12 @@ export class ScriptingAPI {
             // longer see — Mudlet's clearWindow empties the buffer itself.
             this.mainConsole.clear();
             this.session.events.emit('script.clearwindow');
+            this.session.windows.clearSplit('main');
         } else if (this.buffers.has(name)) {
             // Off-screen buffer: WindowManager.clear no-ops (no panel), so clear
             // the backing console directly.
             this.getConsole(name)?.clear();
+            this.session.windows.clearSplit(name);
         } else {
             this.session.windows.clear(name);
         }
@@ -4893,6 +5168,17 @@ export class ScriptingAPI {
     createMiniConsole(name: string, x: number, y: number, width: number, height: number, parent?: string): boolean {
         if (!name) return false;
         const wm = this.session.windows;
+        // A name already taken by a buffer or a user window is not handed to a
+        // new miniconsole (TMainConsole::createMiniConsole): the buffer is moved
+        // and resized as a miniconsole of that name would be, and stays a
+        // buffer; a user window is left alone. Either way the call reports
+        // false, and Bridge.lua words the reason.
+        if (this.buffers.has(name)) {
+            this.moveBuffer(name, Math.round(x), Math.round(y));
+            this.resizeBuffer(name, Math.round(width), Math.round(height));
+            return false;
+        }
+        if (wm.has(name) && !wm.isMiniConsole(name)) return false;
         const created = !wm.has(name);
         if (created) {
             wm.open(name, {
@@ -4927,6 +5213,15 @@ export class ScriptingAPI {
      */
     deleteMiniConsole(name: string): boolean {
         if (!name || name === 'main') return false;
+        // A buffer is a console too, and desktop's deleteMiniConsole finds it
+        // in the same map a miniconsole lives in: it goes, with its lines.
+        if (this.buffers.has(name)) {
+            this.buffers.delete(name);
+            this.session.consoles.delete(name);
+            this.windowCommandColors.delete(name);
+            this.host.raiseEvent('sysMiniConsoleDeleted', [name]);
+            return true;
+        }
         // A user window counts: Geyser's UserWindow:delete goes through
         // MiniConsole.type_delete, which calls this — a user window is a
         // miniconsole with a dock around it, and refusing here left the window
@@ -5095,7 +5390,12 @@ export class ScriptingAPI {
         if (!name || name === 'main') return;
         if (this.session.windows.has(name)) return;
         const fresh = !this.buffers.has(name);
-        this.buffers.add(name);
+        if (fresh) {
+            this.buffers.set(name, {
+                visible: false, x: 0, y: 0, width: 0, height: 0,
+                background: { r: 0, g: 0, b: 0, a: 255 }, fontSize: null, fontFamily: null, timestamps: false,
+            });
+        }
         // Register the backing console so echo/selection resolve it by name.
         const con = this.outputConsole(name);
         // A buffer wraps like the main console (TConsole::changeColors gives
@@ -5113,6 +5413,33 @@ export class ScriptingAPI {
     /** True when `name` is an off-screen buffer created via createBuffer. */
     isBuffer(name: string): boolean {
         return this.buffers.has(name);
+    }
+
+    /** showWindow / hideWindow on a buffer: desktop finds it and flips the
+     *  flag windowVisible reads back. False when `name` is no buffer. */
+    setBufferVisible(name: string, visible: boolean): boolean {
+        const buf = this.buffers.get(name);
+        if (!buf) return false;
+        buf.visible = visible;
+        return true;
+    }
+
+    /** moveWindow on a buffer — kept for getWindowGeometry to report. */
+    moveBuffer(name: string, x: number, y: number): boolean {
+        const buf = this.buffers.get(name);
+        if (!buf) return false;
+        buf.x = x;
+        buf.y = y;
+        return true;
+    }
+
+    /** resizeWindow on a buffer — kept for getWindowGeometry to report. */
+    resizeBuffer(name: string, width: number, height: number): boolean {
+        const buf = this.buffers.get(name);
+        if (!buf) return false;
+        buf.width = width;
+        buf.height = height;
+        return true;
     }
 
     /**
@@ -5178,6 +5505,24 @@ export class ScriptingAPI {
         const isMain = !windowName || windowName === 'main';
         const con = this.penConsole(windowName);
         if (!con) return;
+        if (isMain && this.echoOnMatchedLine) {
+            // Mid trigger pass the matched line is the buffer's last line —
+            // desktop fires before its terminator opens the next one — so
+            // TBuffer::appendBuffer writes the chunk onto the END of the matched
+            // line and only then ends it, exactly as echo(text .. "\n") from a
+            // trigger does. Appending to the open line below put the pasted
+            // text on a line of its own, out of reach of the triggers still to
+            // run on this one.
+            const matched = this.mainConsole.getBuffer();
+            const buf = matched ?? this.mainConsole.lastLine();
+            if (buf) {
+                buf.insertBuffer(buf.length, this.clipboard.clone());
+                if (!matched) buf.rerender();
+                this.echoMain('\n');
+                this.drainMain();
+                return;
+            }
+        }
         con.appendBuffer(this.clipboard.clone());
         if (isMain) this.drainMain();
         else this.drainWindowConsole(windowName!, con);
@@ -5210,7 +5555,9 @@ export class ScriptingAPI {
             // Past the end of the line, Mudlet's insertInLine pads out to the
             // cursor (expandLine) rather than clamping back to it, so the pasted
             // text lands at the column that was asked for.
-            if (at > buf.length) buf.insert(buf.length, ' '.repeat(at - buf.length));
+            // The padding takes the console's current format, as expandLine
+            // fills with the console's own pen, not the pasted text's.
+            if (at > buf.length) buf.insert(buf.length, ' '.repeat(at - buf.length), con.format.toSnapshot());
             buf.insertBuffer(at, this.clipboard.clone());
             if (!this.inTriggerProcessing) buf.rerender();
             return;
@@ -5279,6 +5626,8 @@ export class ScriptingAPI {
             const { x, y, width, height } = overlay;
             return { x, y, width, height };
         }
+        const buf = this.buffers.get(name);
+        if (buf) return { x: buf.x, y: buf.y, width: buf.width, height: buf.height };
         return this.session.windows.getGeometry(name);
     }
 
@@ -5313,6 +5662,8 @@ export class ScriptingAPI {
             ?? this.textEdits.get(name) ?? this.scrollBoxes.get(name);
         if (overlay) return overlay.visible;
         if (this.session.windows.has(name)) return this.session.windows.isVisible(name);
+        const buf = this.buffers.get(name);
+        if (buf) return buf.visible;
         return null;
     }
 
@@ -5551,73 +5902,100 @@ export class ScriptingAPI {
         return this.cmdLineValue ?? this.cmdLineProvider?.() ?? '';
     }
 
-    // ── Command-line tab-completion suggestions ───────────────────────────────
-    // Mudlet's addCmdLineSuggestion family. Stored as an insertion-ordered Set
-    // so addCmdLineSuggestion("a"); add("b") feeds tab completion as ["a","b"].
-    // CommandBar merges these with command history when computing matches.
-    // Mutations emit `script.cmdlinesuggestions` with the current snapshot so
-    // React can re-render without polling.
-    private cmdLineSuggestions = new Set<string>();
+    // ── Command-line tab-completion suggestions and blacklist ─────────────────
+    // Mudlet's addCmdLineSuggestion / addCmdLineBlacklist families. Each
+    // TCommandLine keeps its own two lists, so they are held per command-line
+    // name here: "main" for the command bar, else a createCommandLine line or a
+    // miniconsole's / user window's own one. Words added for a named line used
+    // to land on the main bar (#342). The suggestions are insertion-ordered
+    // Sets; the blacklist is subtractive across everything Tab draws from (the
+    // buffer and the suggestions alike) and matched case-insensitively, as
+    // TCommandLine does — it is how you stop Tab offering a word the game keeps
+    // saying. The main bar's lists also go out as `script.cmdlinesuggestions` /
+    // `script.cmdlineblacklist` snapshots, so React re-renders without polling;
+    // a named line reads its own at Tab time through cmdLineCompletionWords.
+    private cmdLineSuggestions = new Map<string, Set<string>>();
+    private cmdLineBlacklist = new Map<string, Set<string>>();
 
-    addCmdLineSuggestion(suggestion: string): void {
-        const s = suggestion ?? '';
-        if (!s) return;
-        if (this.cmdLineSuggestions.has(s)) return;
-        this.cmdLineSuggestions.add(s);
-        this.emitCmdLineSuggestions();
+    private completionList(lists: Map<string, Set<string>>, cmdLine: string): Set<string> {
+        let set = lists.get(cmdLine);
+        if (!set) { set = new Set(); lists.set(cmdLine, set); }
+        return set;
     }
 
-    removeCmdLineSuggestion(suggestion: string): void {
-        if (this.cmdLineSuggestions.delete(suggestion ?? '')) {
-            this.emitCmdLineSuggestions();
+    addCmdLineSuggestion(suggestion: string, cmdLine = 'main'): void {
+        const s = suggestion ?? '';
+        const set = this.completionList(this.cmdLineSuggestions, cmdLine);
+        if (!s || set.has(s)) return;
+        set.add(s);
+        this.emitCmdLineSuggestions(cmdLine);
+    }
+
+    removeCmdLineSuggestion(suggestion: string, cmdLine = 'main'): void {
+        if (this.cmdLineSuggestions.get(cmdLine)?.delete(suggestion ?? '')) {
+            this.emitCmdLineSuggestions(cmdLine);
         }
     }
 
-    clearCmdLineSuggestions(): void {
-        if (this.cmdLineSuggestions.size === 0) return;
-        this.cmdLineSuggestions.clear();
-        this.emitCmdLineSuggestions();
+    clearCmdLineSuggestions(cmdLine = 'main'): void {
+        const set = this.cmdLineSuggestions.get(cmdLine);
+        if (!set || set.size === 0) return;
+        set.clear();
+        this.emitCmdLineSuggestions(cmdLine);
     }
 
-    getCmdLineSuggestions(): string[] {
-        return [...this.cmdLineSuggestions];
+    getCmdLineSuggestions(cmdLine = 'main'): string[] {
+        return [...(this.cmdLineSuggestions.get(cmdLine) ?? [])];
     }
 
-    private emitCmdLineSuggestions(): void {
-        this.session.events.emit('script.cmdlinesuggestions', [...this.cmdLineSuggestions]);
+    private emitCmdLineSuggestions(cmdLine: string): void {
+        if (cmdLine !== 'main') return;
+        this.session.events.emit('script.cmdlinesuggestions', this.getCmdLineSuggestions());
     }
 
-    // ── Command-line tab-completion blacklist ────────────────────────────────
-    // Mudlet's addCmdLineBlacklist family. The blacklist is subtractive, and it
-    // applies to every source Tab draws from — buffer words, history and the
-    // suggestions above — not just the ones a script added, which is the point
-    // of it: it's how you stop Tab offering a word the game keeps saying.
-    // Matched case-insensitively, as TCommandLine does.
-    private cmdLineBlacklist = new Set<string>();
-
-    addCmdLineBlacklist(word: string): void {
+    addCmdLineBlacklist(word: string, cmdLine = 'main'): void {
         const w = word ?? '';
-        if (!w || this.cmdLineBlacklist.has(w)) return;
-        this.cmdLineBlacklist.add(w);
-        this.emitCmdLineBlacklist();
+        const set = this.completionList(this.cmdLineBlacklist, cmdLine);
+        if (!w || set.has(w)) return;
+        set.add(w);
+        this.emitCmdLineBlacklist(cmdLine);
     }
 
-    removeCmdLineBlacklist(word: string): void {
-        if (this.cmdLineBlacklist.delete(word ?? '')) this.emitCmdLineBlacklist();
+    removeCmdLineBlacklist(word: string, cmdLine = 'main'): void {
+        if (this.cmdLineBlacklist.get(cmdLine)?.delete(word ?? '')) this.emitCmdLineBlacklist(cmdLine);
     }
 
-    clearCmdLineBlacklist(): void {
-        if (this.cmdLineBlacklist.size === 0) return;
-        this.cmdLineBlacklist.clear();
-        this.emitCmdLineBlacklist();
+    clearCmdLineBlacklist(cmdLine = 'main'): void {
+        const set = this.cmdLineBlacklist.get(cmdLine);
+        if (!set || set.size === 0) return;
+        set.clear();
+        this.emitCmdLineBlacklist(cmdLine);
     }
 
-    getCmdLineBlacklist(): string[] {
-        return [...this.cmdLineBlacklist];
+    getCmdLineBlacklist(cmdLine = 'main'): string[] {
+        return [...(this.cmdLineBlacklist.get(cmdLine) ?? [])];
     }
 
-    private emitCmdLineBlacklist(): void {
-        this.session.events.emit('script.cmdlineblacklist', [...this.cmdLineBlacklist]);
+    private emitCmdLineBlacklist(cmdLine: string): void {
+        if (cmdLine !== 'main') return;
+        this.session.events.emit('script.cmdlineblacklist', this.getCmdLineBlacklist());
+    }
+
+    /** A deleted command line takes its lists with it; one made later under
+     *  the same name starts empty, as a new TCommandLine does. */
+    forgetCmdLineCompletion(cmdLine: string): void {
+        if (cmdLine === 'main') return;
+        this.cmdLineSuggestions.delete(cmdLine);
+        this.cmdLineBlacklist.delete(cmdLine);
+    }
+
+    /** The Tab-completion pool for command line `cmdLine` as it stands now:
+     *  the main console's last 500 lines, then the line's suggestions, less
+     *  its blacklist — what TCommandLine::handleTabCompletion assembles on
+     *  every press. Every command line reads the MAIN console's buffer. */
+    cmdLineCompletionWords(cmdLine = 'main'): string[] {
+        const lines = this.session.consoles.get('main')?.getEndLines(TAB_COMPLETION_LINES) ?? [];
+        return tabCompletionPool(lines, this.getCmdLineSuggestions(cmdLine), this.getCmdLineBlacklist(cmdLine));
     }
 
     // ── Per-command-line history saving ─────────────────────────────────────
@@ -5987,6 +6365,8 @@ export class ScriptingAPI {
             const area = this.session.windows.mapViewArea(viewId);
             if (typeof area === 'string') return `setMapZoom: ${area}`;
             this.map.setAreaZoom(area, zoom);
+            // The view itself now shows that zoom, so getMapViewInfo says so.
+            this.session.windows.noteMapViewState(mapViewWindowId(viewId), { zoom });
             return null;
         }
         if (areaID !== undefined && !this.map.hasArea(areaID)) {
@@ -6141,12 +6521,29 @@ export class ScriptingAPI {
      *  the profile rather than in the map store — Mudlet writes them into the
      *  same file, so a map moved between clients keeps the way it looks. */
     saveJsonMap(): string {
+        const marker = this.jsonPlayerRoom;
         return this.session.windows.saveJsonMap({
             mapSymbolFontFudgeFactor: this.getConfig('mapSymbolFontScaling'),
-            mapSymbolFontDetails: this.getConfig('mapSymbolFont'),
+            // QFont::toString(), which is what desktop writes and reads back
+            // with QFont::fromString: a bare family name parses as a font with
+            // no size, and desktop falls back to its smaller default for it.
+            mapSymbolFontDetails: `${String(this.getConfig('mapSymbolFont'))},${MAP_SYMBOL_FONT_POINT_SIZE},-1,5,50,0,0,0,0,0`,
             onlyMapSymbolFontToBeUsed: this.getConfig('mapSymbolFontOnlyUseSelected'),
+            // Desktop's player-room marker settings. Mudlet Web draws its own
+            // marker (Settings → Mapper), so these are desktop's values carried
+            // through: its defaults, or what the last imported file said. Left
+            // out, a desktop that imports the file zeroes them — a marker with
+            // no diameter and black colours.
+            playerRoomStyle: marker.style,
+            playerRoomOuterDiameterPercentage: marker.outerDiameter,
+            playerRoomInnerDiameterPercentage: marker.innerDiameter,
+            playerRoomColors: [jsonColor(marker.outerColor), jsonColor(marker.innerColor)],
         });
     }
+
+    /** Desktop's player-room marker settings as saveJsonMap writes them — see
+     *  there. Desktop's Host defaults until a file brings its own. */
+    private jsonPlayerRoom: JsonPlayerRoomSettings = { ...DESKTOP_PLAYER_ROOM };
 
     /** The counterpart of the extras {@link saveJsonMap} writes: an imported
      *  file's map-level settings, applied after the rooms have loaded. */
@@ -6154,11 +6551,24 @@ export class ScriptingAPI {
         const scaling = Number(doc.mapSymbolFontFudgeFactor);
         if (Number.isFinite(scaling)) this.setConfig('mapSymbolFontScaling', scaling);
         if (typeof doc.mapSymbolFontDetails === 'string' && doc.mapSymbolFontDetails) {
-            this.setConfig('mapSymbolFont', doc.mapSymbolFontDetails);
+            // QFont::toString's first field is the family; the rest (size,
+            // weight, style…) has nowhere to go in a family-only setting.
+            const family = doc.mapSymbolFontDetails.split(',')[0].trim();
+            if (family) this.setConfig('mapSymbolFont', family);
         }
         if (typeof doc.onlyMapSymbolFontToBeUsed === 'boolean') {
             this.setConfig('mapSymbolFontOnlyUseSelected', doc.onlyMapSymbolFontToBeUsed);
         }
+        const marker = { ...this.jsonPlayerRoom };
+        const int = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? Math.trunc(v) : undefined);
+        marker.style = int(doc.playerRoomStyle) ?? marker.style;
+        marker.outerDiameter = int(doc.playerRoomOuterDiameterPercentage) ?? marker.outerDiameter;
+        marker.innerDiameter = int(doc.playerRoomInnerDiameterPercentage) ?? marker.innerDiameter;
+        if (Array.isArray(doc.playerRoomColors)) {
+            marker.outerColor = readJsonRgba(doc.playerRoomColors[0]) ?? marker.outerColor;
+            marker.innerColor = readJsonRgba(doc.playerRoomColors[1]) ?? marker.innerColor;
+        }
+        this.jsonPlayerRoom = marker;
     }
 
     /** Mudlet `loadJsonMap(path)` backbone — parse a JSON payload previously
@@ -6282,8 +6692,8 @@ export class ScriptingAPI {
 
     /**
      * Mudlet `getNetworkLatency()` — the most recent round trip measured,
-     * either a command to the game's next GA/EOR prompt marker (as Mudlet
-     * times it) or a GMCP `Core.Ping` keep-alive. Returns the last measured value (in ms) for as long as
+     * from a command to the game's next GA/EOR prompt marker (as Mudlet
+     * times it). Returns the last measured value (in ms) for as long as
      * the connection is up; -1 when no measurement has been made yet (mirrors
      * Mudlet's "not yet measured" sentinel — better than a fake 0 which would
      * read as "instant" in scripts charting latency).
@@ -6364,20 +6774,38 @@ export class ScriptingAPI {
         const size = selectProfileField(state, this.connectionId, 'fontSize') ?? 12;
         const [cellW] = measureMonospaceCell(family, size);
         const wrapAt = this.mainWrapAt() || this.getColumnCount('main');
-        return Math.round(cellW * (wrapAt + 1));
+        // Not rounded: desktop's width is a qreal, and the column width a script
+        // works out of it (width / (wrapAt + 1)) has to multiply back exactly.
+        // The cell is held to Qt's 1/64 px font-metric grid (QFixed), so that
+        // division and multiplication are exact in floating point.
+        return (Math.round(cellW * 64) / 64) * (wrapAt + 1);
     }
+
+    /** The server the last connectToServer() pointed the profile at, with the
+     *  dial it asked for — see {@link getConnectionInfo}. */
+    private connectTarget: { host: string; port: number; url: string; dials: number } | null = null;
 
     /**
      * Mudlet `getConnectionInfo()` → `host, port, connected`. Mudlet reports the
-     * MUD's telnet host/port; Mudlet Web reads them off the active connection config.
-     * For a `mud`-mode connection those are the stored host/port; for a raw
-     * `websocket` connection we parse them out of the endpoint URL (port falls
-     * back to the ws/wss default). `connected` reflects the live session status.
+     * MUD's telnet host/port — cTelnet's own, which `connectToServer` replaces
+     * whether or not it saves them, so a script that moved the profile to
+     * another server is told that server from the call on, through a failed
+     * dial and a `reconnect()` (mudlet-web#339). That target holds until a dial
+     * to somewhere else (the Connect button redialling the profile) overtakes
+     * it. Otherwise Mudlet Web reads the active connection config: for a
+     * `mud`-mode connection the stored host/port, for a raw `websocket` one the
+     * endpoint URL's (port falls back to the ws/wss default). `connected`
+     * reflects the live session status.
      */
     getConnectionInfo(): { host: string; port: number; connected: boolean } {
+        const connected = this.session.status === 'connected';
+        const target = this.connectTarget;
+        if (target && (this.session.dialCount === target.dials || this.session.dialedUrl === target.url)) {
+            return { host: target.host, port: target.port, connected };
+        }
         const conn = useAppStore.getState().connections.find(c => c.id === this.connectionId);
         const { host, port } = conn ? connectionHostPort(conn) : { host: '', port: 0 };
-        return { host, port, connected: this.session.status === 'connected' };
+        return { host, port, connected };
     }
 
     /**
@@ -6402,6 +6830,7 @@ export class ScriptingAPI {
         if (save && conn) {
             state.updateConnection(this.connectionId, { ...conn, mode: 'mud', host, port });
         }
+        this.connectTarget = { host, port, url, dials: this.session.dialCount };
         this.dialConnect(url);
         return true;
     }
@@ -6531,6 +6960,13 @@ export class ScriptingAPI {
             useAppStore.getState().patchConnectionProfile(this.connectionId, { fontSize: whole });
             return true;
         }
+        // A buffer keeps the size for getFontSize; it draws nothing, and
+        // desktop raises no sysFontChangeEvent for one.
+        const buf = this.buffers.get(win);
+        if (buf) {
+            buf.fontSize = whole;
+            return true;
+        }
         return this.withFontChangeEvent(win, () => this.session.windows.setFontSize(win, whole));
     }
 
@@ -6560,18 +6996,12 @@ export class ScriptingAPI {
     }
 
     /**
-     * Mudlet setMiniConsoleFontSize. Strictly targets miniconsoles (created via
-     * createMiniConsole / createConsole) — userwindows and labels are rejected
-     * the same way Mudlet's CONSOLE-only lookup rejects them.
+     * Mudlet setMiniConsoleFontSize. Desktop registers it as another name for
+     * setFontSize, so it reaches every console setFontSize does — main
+     * included, and main when no name is given (mudlet-web#380).
      */
-    setMiniConsoleFontSize(name: string, size: number): boolean {
-        // A user window carries a console of its own, so it takes this too —
-        // Geyser.UserWindow:setFontSize goes through here, and refusing left a
-        // window created with `fontSize = 12` showing the profile default.
-        if (!name || !this.session.windows.has(name)) return false;
-        const whole = fontSizePoints(size);
-        if (whole === null) return false;
-        return this.withFontChangeEvent(name, () => this.session.windows.setFontSize(name, whole));
+    setMiniConsoleFontSize(name: string | undefined, size: number): boolean {
+        return this.setFontSize(size, name);
     }
 
     /**
@@ -6581,6 +7011,8 @@ export class ScriptingAPI {
      */
     getFontSize(win?: string): number | null {
         if (!win || win === 'main') return selectProfileField(useAppStore.getState(), this.connectionId, 'fontSize');
+        const buf = this.buffers.get(win);
+        if (buf) return buf.fontSize ?? selectProfileField(useAppStore.getState(), this.connectionId, 'fontSize');
         if (!this.session.windows.has(win)) return null;
         return this.session.windows.getFontSize(win) ?? selectProfileField(useAppStore.getState(), this.connectionId, 'fontSize');
     }
@@ -6600,6 +7032,11 @@ export class ScriptingAPI {
             // authored copy of the label's stylesheet in step with the
             // background-color declaration the manager patches.
             return this.labels.setBackgroundColor(name, r, g, b, a);
+        }
+        const buf = this.buffers.get(name);
+        if (buf) {
+            buf.background = { r, g, b, a };
+            return true;
         }
         return this.session.windows.setBackgroundColor(name, r, g, b, a);
     }
@@ -6635,6 +7072,8 @@ export class ScriptingAPI {
         if (this.session.labels.has(name)) {
             return this.session.labels.getBackgroundColor(name);
         }
+        const buf = this.buffers.get(name);
+        if (buf) return { ...buf.background };
         return this.session.windows.getBackgroundColor(name);
     }
 
@@ -6642,50 +7081,54 @@ export class ScriptingAPI {
      * Mudlet `setBackgroundImage`. Dispatcher across labels, miniconsoles /
      * userwindows, and the main window — matches Mudlet's overload set:
      *
-     *   setBackgroundImage(labelName, imageLocation)           → label
      *   setBackgroundImage(imageLocation, [mode])              → main console
-     *   setBackgroundImage(windowName, imageLocation, [mode])  → miniconsole / userwindow
+     *   setBackgroundImage(name, imageLocation, [mode])        → label, or
+     *                                                            miniconsole / userwindow
      *
-     * Disambiguation matches Mudlet's C++ semantics — label lookup wins when
-     * the named widget is a label; otherwise the call is treated as a console
-     * form. `mode` arrives already coerced to a number by the GUIUtils.lua
-     * wrapper (string mode like "center" → 2 via `mudlet.BgImageMode`). For
-     * label form `imageLocation` is a VFS path, resolved through the same
-     * rewriter that powers setLabelStyleSheet so package-bundled images work
-     * without scripts knowing about the vfs:// scheme.
+     * Routing follows Host::setBackgroundImage: "main" is the main console, a
+     * label name wins next whatever the argument count (a label takes no mode
+     * and ignores the one it is given), and anything else is a sub-console.
+     * `mode` arrives already coerced to a number by the GUIUtils.lua wrapper
+     * (string mode like "center" → 2 via `mudlet.BgImageMode`). For the label
+     * form `imageLocation` is a VFS path, resolved through the same rewriter
+     * that powers setLabelStyleSheet so package-bundled images work without
+     * scripts knowing about the vfs:// scheme.
+     *
+     * Returns true, or desktop's refusal message — one wording for a name
+     * nothing answers to and for a label image that cannot be loaded, since
+     * TLuaInterpreter::setBackgroundImage only learns that one of them failed.
      */
-    setBackgroundImage(a: string, b?: string | number, c?: number): boolean {
-        // 1 arg: setBackgroundImage(path) → main, default to border (mode 1).
-        if (b === undefined) {
-            return this.applyBackgroundImage(undefined, a, 1);
+    setBackgroundImage(a: string, b?: string | number, c?: number): true | string {
+        // 1 arg, or (path, mode): the main window, default border (mode 1).
+        if (b === undefined) return this.applyBackgroundImage(undefined, a, 1);
+        if (typeof b === 'number') return this.applyBackgroundImage(undefined, a, b);
+        // (name, path[, mode]).
+        const mode = c === undefined ? 1 : Number(c) || 1;
+        if (a === 'main') return this.applyBackgroundImage(undefined, b, mode);
+        const refused = `console or label '${a}' not found, or '${b}' could not be loaded as an image`;
+        if (this.session.labels.has(a)) {
+            // TLabel::setBackgroundImage keeps what the label shows when the
+            // file is not an image at all, and the caller is told.
+            if (!this.labelImageLoads(b)) return refused;
+            return this.applyLabelBackgroundImage(a, b) ? true : refused;
         }
-        // 2 args.
-        if (c === undefined) {
-            // (path, mode) → main window with explicit mode.
-            if (typeof b === 'number') {
-                return this.applyBackgroundImage(undefined, a, b);
-            }
-            // (name, path). Mudlet checks label first; only then the console
-            // path. Fall through to main when the name is literally "main"
-            // (matches setBackgroundColor's special case), default mode 1.
-            if (this.session.labels.has(a)) {
-                return this.applyLabelBackgroundImage(a, b);
-            }
-            if (a === 'main') {
-                return this.applyBackgroundImage(undefined, b, 1);
-            }
-            if (this.session.windows.has(a)) {
-                return this.session.windows.setBackgroundImage(a, this.resolveImageUrl(b), 1);
-            }
-            return false;
+        if (this.session.windows.has(a)) {
+            return this.session.windows.setBackgroundImage(a, this.resolveImageUrl(b), mode) ? true : refused;
         }
-        // 3 args: (windowName, path, mode).
-        if (typeof b !== 'string') return false;
-        const mode = Number(c) || 1;
-        if (a === 'main') {
-            return this.applyBackgroundImage(undefined, b, mode);
-        }
-        return this.session.windows.setBackgroundImage(a, this.resolveImageUrl(b), mode);
+        return refused;
+    }
+
+    /** Whether a label could load `path` as an image, as far as can be told
+     *  now: a vendored Qt resource, a profile file whose content is an SVG or a
+     *  raster format Qt reads (QPixmap judges by content, not by name), or a
+     *  remote / inline URL — which cannot be judged synchronously and is taken
+     *  on trust. */
+    private labelImageLoads(path: string): boolean {
+        if (isQtResourcePath(path)) return qtResourceUrl(path) !== null;
+        if (/^(?:https?|data|blob):/i.test(path)) return true;
+        let bytes: Uint8Array | null;
+        try { bytes = this.host.readFileBytes(path); } catch { bytes = null; }
+        return !!bytes && looksLikeImage(bytes);
     }
 
     /**
@@ -6855,7 +7298,7 @@ export class ScriptingAPI {
         return ok;
     }
 
-    private applyBackgroundImage(_target: undefined, path: string, mode: number): boolean {
+    private applyBackgroundImage(_target: undefined, path: string, mode: number): true {
         // Mode 4 is a raw stylesheet body, not an image path — skip the URL
         // resolver so multi-property strings (with their own url(...) refs)
         // are handed to the renderer verbatim, where backgroundImageStyle
@@ -7031,6 +7474,8 @@ export class ScriptingAPI {
         if (cur && cur.top === next.top && cur.right === next.right
             && cur.bottom === next.bottom && cur.left === next.left) return;
         useAppStore.getState().patchConnectionProfile(this.connectionId, { outputBorders: next });
+        // The console inside the new borders reports its grid first.
+        this.session.windows.applyMainBorders();
         // Host::setBorders raises sysWindowResizeEvent at the unchanged window
         // size whenever a border moves: the console inside it did resize, and
         // Adjustable.Container's resize handler is how a container attached to
@@ -7064,6 +7509,13 @@ export class ScriptingAPI {
             useAppStore.getState().patchConnectionProfile(this.connectionId, { outputFont: next });
             return true;
         }
+        // A buffer keeps the family for getFont; it draws nothing, and desktop
+        // raises no sysFontChangeEvent for one.
+        const buf = this.buffers.get(win);
+        if (buf) {
+            buf.fontFamily = fam || null;
+            return true;
+        }
         // Labels are not in the window registry — they are overlay widgets with
         // their own manager — so a label was the one window kind setFont could
         // not reach at all, and Geyser.Label:setFont took its "Qt will pick
@@ -7087,6 +7539,8 @@ export class ScriptingAPI {
             selectProfileField(useAppStore.getState(), this.connectionId, 'outputFont')?.family
             || DEFAULT_OUTPUT_FONT_FAMILY;
         if (!win || win === 'main') return configured();
+        const buf = this.buffers.get(win);
+        if (buf) return buf.fontFamily ?? configured();
         if (!this.session.windows.has(win)) {
             // A label, or nothing at all. Its own font when it has one; the
             // profile font when it does not, matching what a window with no
@@ -7280,6 +7734,7 @@ export class ScriptingAPI {
     }
 
     destroy(): void {
+        this.destroyed = true;
         for (const unsub of this.apiUnsubs) unsub();
         this.apiUnsubs.length = 0;
         // Script-installed CSS is profile-local (see styleTag): a closed

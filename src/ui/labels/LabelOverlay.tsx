@@ -322,32 +322,41 @@ function Label({ l, manager, zIndex }: { l: LabelState; manager: LabelManager; z
     // The second press of a double-click is Qt's mouseDoubleClickEvent rather
     // than a press, so it runs the double-click callback only — see
     // classifyPress. The DOM's own dblclick is therefore not listened to.
+    //
+    // A press or release the label has no callback for isn't swallowed:
+    // TLabel::mousePressEvent / mouseReleaseEvent pass it on to the window
+    // underneath, which raises it as sysWindowMousePressEvent / ReleaseEvent
+    // (LabelManager.onUnhandledMouse → WindowManager.raiseUnhandledMouse). The
+    // label keeps the pointer from press to release either way, like Qt's grab,
+    // so the release it forwards is the one for its own press.
     const dragCapable = !!(l.onMouseMove || l.onMouseUp);
     const hasPress = !!(l.onClick || l.onMouseDown || l.onDoubleClick) || dragCapable;
-    const onPointerDown = hasPress
-        ? (e: React.PointerEvent<HTMLDivElement>) => {
-            // A press on an <a href> belongs to the link, not the label: Qt's
-            // QLabel consumes it and TLabel returns before running the click
-            // callback (TLabel::mousePressEvent). Skipping capture too, so a
-            // drag-capable label doesn't swallow the click that follows.
-            if (labelLinkHref(e.target) !== null) return;
-            // A move still waiting for its frame happened before this press, and
-            // Qt delivers it first: a pointer moved onto the label and clicked in
-            // the same frame reports move, then click, then release on desktop.
-            flushPendingMove();
-            if (dragCapable) {
-                try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not supported */ }
-            }
-            const press = classifyPress(e.detail, e.button, e.timeStamp, lastPress.current);
-            lastPress.current = press;
-            if (press.double) {
-                ref.current.onDoubleClick?.(buildMouseEvent(e));
-                return;
-            }
-            ref.current.onMouseDown?.(buildMouseEvent(e));
-            ref.current.onClick?.(buildMouseEvent(e));
+    const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+        // A press on an <a href> belongs to the link, not the label: Qt's
+        // QLabel consumes it and TLabel returns before running the click
+        // callback (TLabel::mousePressEvent). Skipping capture too, so a
+        // drag-capable label doesn't swallow the click that follows.
+        if (labelLinkHref(e.target) !== null) return;
+        // A move still waiting for its frame happened before this press, and
+        // Qt delivers it first: a pointer moved onto the label and clicked in
+        // the same frame reports move, then click, then release on desktop.
+        flushPendingMove();
+        try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not supported */ }
+        const press = classifyPress(e.detail, e.button, e.timeStamp, lastPress.current);
+        lastPress.current = press;
+        const cur = ref.current;
+        if (press.double && cur.onDoubleClick) {
+            cur.onDoubleClick(buildMouseEvent(e));
+            return;
         }
-        : undefined;
+        if (!cur.onClick && !cur.onMouseDown) {
+            manager.onUnhandledMouse?.('press', cur.parent, e.nativeEvent);
+            return;
+        }
+        if (press.double) return;
+        cur.onMouseDown?.(buildMouseEvent(e));
+        cur.onClick?.(buildMouseEvent(e));
+    };
 
     const flushMove = () => {
         const st = moveState.current;
@@ -378,17 +387,20 @@ function Label({ l, manager, zIndex }: { l: LabelState; manager: LabelManager; z
             }
         }
         : undefined;
-    const onPointerUp = l.onMouseUp
-        ? (e: React.PointerEvent<HTMLDivElement>) => {
-            // Release over a link is the link's, matching the same guard in
-            // TLabel::mouseReleaseEvent.
-            if (labelLinkHref(e.target) !== null) return;
-            // Flush any frame-pending move first so the release sees the final
-            // drag position (e.g. the insertion target picked on the last move).
-            flushPendingMove();
-            ref.current.onMouseUp?.(buildMouseEvent(e));
+    const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+        // Release over a link is the link's, matching the same guard in
+        // TLabel::mouseReleaseEvent.
+        if (labelLinkHref(e.target) !== null) return;
+        const cur = ref.current;
+        if (!cur.onMouseUp) {
+            manager.onUnhandledMouse?.('release', cur.parent, e.nativeEvent);
+            return;
         }
-        : undefined;
+        // Flush any frame-pending move first so the release sees the final
+        // drag position (e.g. the insertion target picked on the last move).
+        flushPendingMove();
+        cur.onMouseUp(buildMouseEvent(e));
+    };
 
     // Mudlet's TLabel connects QLabel::linkActivated, so an <a href> echoed
     // into a label drives the game: `send:` fires a command, `prompt:` stages

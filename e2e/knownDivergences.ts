@@ -380,6 +380,43 @@ export interface PlatformDivergence {
 
 export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
     {
+        api: 'trigger and alias regex: PCRE2 10.34 in 16-bit mode',
+        behaviour:
+            'Desktop matches with PCRE2 10.39 over UTF-8; Mudlet Web with 10.34 over UTF-16. So: letters '
+            + 'added in Unicode 13 (Yezidi, U+10E80…) are not \\p{L} or \\w here, and \\p{Yezidi} does not compile; '
+            + '\\K inside a lookaround (^KL a(?=b\\K)) compiles and fires here where desktop (10.38+) rejects the '
+            + 'pattern; and \\C matches one UTF-16 code unit here (é) where desktop matches one byte (<C3>). '
+            + 'Everything else the #361 comparison covered matches.',
+        reason:
+            'These are properties of the PCRE2 build itself: its Unicode tables, its compile rules and its '
+            + 'code-unit width. pcre2-wasm-universal is the only WebAssembly PCRE2 there is and ships 10.34 as '
+            + 'the 16-bit library; its wasm is also byte-patched at build time (vite-plugin/pcre2Wasm.ts), so a '
+            + 'newer one is a rebuild of the library, not a version bump. Rewriting patterns to imitate a newer '
+            + 'release (rejecting \\K in lookarounds, say) would need a PCRE pattern parser in front of PCRE and '
+            + 'still could not supply the newer Unicode tables. Pinned by tests/triggers/regexDrift361.test.ts.',
+        issue: '#361',
+    },
+    {
+        api: 'postHTTP / putHTTP / deleteHTTP / customHTTP answered by a redirect',
+        behaviour:
+            'Desktop: a 301/302/303 is followed with a GET and finishes as sysGetHttpDone; a 307/308 repeats '
+            + 'the verb and finishes as that verb\'s event. Mudlet Web: any redirected request finishes as '
+            + 'sysGetHttpDone with the final url, so a 307/308 reports sysGetHttpDone where desktop reports '
+            + 'the verb\'s event; and a PUT (with its body), DELETE or custom verb answered by a 301/302 is '
+            + 're-sent with its own method, so the server sees that verb, not desktop\'s GET. A POST is '
+            + 'followed with a GET as on desktop.',
+        reason:
+            'Redirects are followed under the Fetch standard - by the browser for a direct request, by the '
+            + 'proxy\'s own fetch for a proxied one - which keeps every verb but POST on a 301/302 and hides '
+            + 'the redirect\'s status from script (redirect: "manual" in a browser answers an opaque response '
+            + 'with neither status nor Location), so neither the follow-up\'s method nor which status was '
+            + 'followed can be chosen or known. The event is picked for the 301/302/303 that answer nearly '
+            + 'every redirected POST/PUT/DELETE. Following redirects by hand in the proxy would close the gap '
+            + 'for proxied requests only, at the cost of the proxy fetching Location urls itself. Pinned by '
+            + 'tests/scripting/httpRedirectParity.test.ts.',
+        issue: '#349',
+    },
+    {
         api: 'os.clock()',
         behaviour:
             'Desktop: CPU time the whole process has used — stands still while idle (0.0 across an idle 1.5s '
@@ -575,6 +612,32 @@ export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
         issue: '#276',
     },
     {
+        api: 'rex, CASELESS in byte mode',
+        behaviour:
+            'Without UTF, a caseless pattern also matches bytes 0xC0-0xDE against 0xE0-0xFE (Latin-1\'s '
+            + 'letter pairs, e.g. "\\195" against "\\227"); desktop\'s C-locale tables only fold ASCII. Whole '
+            + 'UTF-8 characters still compare as desktop compares them: rex.find("É", "é", 1, "i") is nil.',
+        reason:
+            'The WebAssembly PCRE2 is the 16-bit library and its compile always sets PCRE2_UTF, so byte mode '
+            + 'runs on one code unit per byte, and caseless matching of units 0x80-0xFF uses Unicode case '
+            + 'folding. Mapping those bytes elsewhere would need every \\x escape, octal and class range in '
+            + 'the pattern rewritten to match; the gap only touches a caseless pattern that itself holds such '
+            + 'a byte.',
+        issue: '#333',
+    },
+    {
+        api: 'rex compile flags DOLLAR_ENDONLY, FIRSTLINE, ALT_*, MATCH_UNSET_BACKREF, ALLOW_EMPTY_CLASS, NEVER_*',
+        behaviour:
+            'Accepted and ignored as numeric compile flags. The rest take effect: CASELESS, MULTILINE, DOTALL, '
+            + 'EXTENDED, UNGREEDY, DUPNAMES, NO_AUTO_CAPTURE, UTF, UCP, ANCHORED, LITERAL and the NO_* '
+            + 'optimisation switches.',
+        reason:
+            'The WebAssembly library\'s compile takes a pattern and nothing else, so a flag only reaches it '
+            + 'when it has an in-pattern spelling ((?i), (*UCP), …) or is also a match option (ANCHORED). '
+            + 'These have neither.',
+        issue: '#333',
+    },
+    {
         api: 'lfs.lock / lfs.unlock',
         behaviour:
             'Always succeed on an open handle whose mode can carry the lock; desktop\'s fcntl lock can be refused '
@@ -627,7 +690,7 @@ export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
             'Desktop: reads the character under the user cursor, which stays at column 0 of the last line the '
             + 'trigger engine ran on (or on the last character after moveCursorEnd). Mudlet Web: reads the '
             + 'character under its own cursor, which follows output on the main console and sits one past the '
-            + 'last character after moveCursorEnd — so it can answer (nil, "current selection invalid…") where '
+            + 'last character of an unfinished last line after moveCursorEnd — so it can answer (nil, "current selection invalid…") where '
             + 'desktop answers a format table.',
         reason:
             'The two answers come from different cursor models rather than from getTextFormat: the main console '
@@ -646,6 +709,37 @@ export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
             + 'it raises depends on state Mudlet Web does not have (no Discord integration) or rarely has. '
             + 'The rest of the #277 sweep is enforced by src/scripting/lua/argContracts.ts.',
         issue: '#277',
+    },
+    {
+        api: 'luasql / db:* SQL newer than SQLite 3.37',
+        behaviour:
+            'Desktop links SQLite 3.37.2; Mudlet Web ships 3.53. SQL that 3.37 does not know - the -> and ->> '
+            + 'JSON operators, format(), unixepoch(), concat()/concat_ws(), the newer strftime specifiers - runs '
+            + 'here and fails on desktop with a syntax or "no such function" error. What the two versions both '
+            + 'run gives the same answers: a REAL turned into text has desktop\'s 15 significant digits '
+            + '(SQLITE_DBCONFIG_FP_DIGITS), and round() is replaced with 3.37\'s arithmetic, so round(2.675, 2) '
+            + 'is 2.68 on both.',
+        reason:
+            'The operators and specifiers live in 3.53\'s parser and date code, which cannot be switched off, '
+            + 'and no SQLite 3.37 WebAssembly build exists to ship instead. Shadowing only the new functions '
+            + 'with failing stand-ins would still leave the operators working, and would take SQL that works '
+            + 'away from scripts written here for no gain on desktop. A script meant for both clients has to '
+            + 'keep to 3.37\'s SQL, as it would on an older desktop build. Pinned by '
+            + 'tests/scripting/luasqlDrift335.test.ts.',
+        issue: '#335',
+    },
+    {
+        api: 'mudlet.translations.en_US.e',
+        behaviour:
+            'Desktop: nil — the table has 23 keys. Mudlet Web: "e", with all 24 direction names.',
+        reason:
+            'TLuaInterpreter::setupLanguageData stores the translation of "e" under the key "s", where the '
+            + 'next line overwrites it with "s"\'s own; it sizes the table for 24 entries and sets every other '
+            + 'short name, so the missing "e" is a typo rather than a choice. A script indexing it on desktop '
+            + 'gets nil, and translateTable() falls back to the key, so "e" reads as "e" on both clients that '
+            + 'way. Leaving the key out here would only reproduce the slip. The rest of the table, i and o '
+            + 'included, matches; tests/scripting/consoleConfigDrift341.test.ts pins it.',
+        issue: '#341',
     },
     {
         api: 'highlightRoom: missing alpha arguments',

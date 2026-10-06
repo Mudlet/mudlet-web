@@ -29,8 +29,11 @@ export function parseQColor(input: string): [number, number, number] | null {
             default: return null;
         }
     }
-    const named = SVG_COLOR_NAMES[s.toLowerCase()];
-    return named ? [(named >> 16) & 0xff, (named >> 8) & 0xff, named & 0xff] : null;
+    const key = s.toLowerCase();
+    // `black` is 0, so the test is for presence, not truthiness — and an own
+    // key, so `constructor` and friends are not colours.
+    const named = Object.prototype.hasOwnProperty.call(SVG_COLOR_NAMES, key) ? SVG_COLOR_NAMES[key] : undefined;
+    return named !== undefined ? [(named >> 16) & 0xff, (named >> 8) & 0xff, named & 0xff] : null;
 }
 
 /** The SVG 1.0 colour keywords QColor::setNamedColor knows (qcolor_p.cpp). */

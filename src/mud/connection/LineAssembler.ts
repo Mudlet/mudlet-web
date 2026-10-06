@@ -184,7 +184,7 @@ export class LineAssembler {
         if (decoded.length > 0) {
             this.clearTailTimer();
             const combined = this.pendingLineTail + decoded;
-            const lastNl = combined.lastIndexOf('\n');
+            const lastNl = lastLineEnd(combined);
             if (lastNl === -1) {
                 this.pendingLineTail = combined;
             } else {
@@ -276,15 +276,26 @@ export class LineAssembler {
      */
     private emitServerLines(ready: string, ts: number): void {
         if (!this.undoServerWrap) {
-            this.callbacks.onChunk(ready, ts);
+            this.callbacks.onChunk(ready.replace(EOT_PATTERN, '\n'), ts);
             return;
         }
-        // `ready` always ends in '\n', so the split's last element is the empty
-        // string after it rather than a line of its own.
-        const lines = ready.split('\n');
-        lines.pop();
+        // `ready` always ends in a line end, so the split's last element is the
+        // empty string after it rather than a line of its own.
+        const parts = ready.split(LINE_END_SPLIT);
         let out = '';
-        for (const line of lines) out += this.consumeServerLine(line);
+        for (let i = 0; i + 1 < parts.length; i += 2) {
+            const line = parts[i];
+            if (parts[i + 1] === '\n') {
+                out += this.consumeServerLine(line);
+                continue;
+            }
+            // An EOT is never a wrap the game made: Mudlet's server-wrap join
+            // looks only at '\n', and any other line ending commits the held
+            // line on its own first (TBuffer::flushPendingServerWrapJoin).
+            const pending = this.takeServerWrapPending();
+            if (pending !== null) out += pending + '\n';
+            out += line + '\n';
+        }
         if (out.length > 0) this.callbacks.onChunk(out, ts);
     }
 
@@ -417,6 +428,21 @@ export class LineAssembler {
             this.pendingTailTimer = null;
         }
     }
+}
+
+/**
+ * EOT (0x04) from the game ends a line exactly as '\n' does: Mudlet's TBuffer
+ * counts it among the characters that commit a line (CHAR_IS_COMMIT_CHAR), drops
+ * the byte, and stores the line as an ordinary, non-prompt one. Unlike '\n' it is
+ * never taken for a server wrap, and the "fix unnecessary linebreaks" strip —
+ * done on the raw block before this — does not touch it.
+ */
+const EOT_PATTERN = /\x04/g;
+const LINE_END_SPLIT = /([\n\x04])/;
+
+/** Index of the last line end ('\n' or EOT) in `s`, or -1. */
+function lastLineEnd(s: string): number {
+    return Math.max(s.lastIndexOf('\n'), s.lastIndexOf('\x04'));
 }
 
 /**

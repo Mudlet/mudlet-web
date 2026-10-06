@@ -38,9 +38,10 @@ export function installOutputBindings({ lua, api }: BindingContext): void {
     // The argument TYPES are settled in Bridge.lua, where a Lua table is still
     // a table — it reaches JS as an ordinary object, and a message built from
     // `typeof` here would name the wrong thing.
+    // Like desktop it answers nothing, whether or not there was a line to wrap.
     lua.global.set('wrapLine', (a: unknown, b?: unknown) => {
-        if (typeof a === 'string') return api.wrapLine(Number(b), a);
-        return api.wrapLine(Number(a));
+        if (typeof a === 'string') api.wrapLine(Number(b), a);
+        else api.wrapLine(Number(a));
     });
     // Mudlet `printError(msg, [showStackTrace], [haltExecution])`. Mudlet Web
     // routes every script-emitted error through the same logging path so
@@ -107,7 +108,8 @@ export function installOutputBindings({ lua, api }: BindingContext): void {
     // Lua wrapper converts cmds/hints tables to \x01-delimited strings before calling here.
     // xEcho always passes (win, text, cmds_str, hints_str, fmt); win defaults to "main".
     lua.global.set('echoPopup', (win: unknown, text: unknown, cmds: unknown, hints: unknown, fmt?: unknown) => {
-        const textStr = text as string;
+        // Desktop reads the text with lua_tostring, so a number echoes as its digits.
+        const textStr = typeof text === 'number' ? String(text) : text as string;
         if (!textStr) return;
         const split = (s: unknown) => s ? String(s).split('\x01').filter(Boolean) : [];
         const cmdsArr = split(cmds);
@@ -122,7 +124,8 @@ export function installOutputBindings({ lua, api }: BindingContext): void {
     // wrapper (Bridge.lua) handles overload disambiguation + table flatten;
     // cinsertPopup/dinsertPopup/hinsertPopup (GUIUtils.lua) route here via xEcho.
     lua.global.set('insertPopup', (win: unknown, text: unknown, cmds: unknown, hints: unknown, fmt?: unknown) => {
-        const textStr = text as string;
+        // Desktop reads the text with lua_tostring, so a number echoes as its digits.
+        const textStr = typeof text === 'number' ? String(text) : text as string;
         if (!textStr) return;
         const split = (s: unknown) => s ? String(s).split('\x01').filter(Boolean) : [];
         const winStr = (win && win !== 'main') ? win as string : undefined;

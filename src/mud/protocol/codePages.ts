@@ -1,10 +1,13 @@
+import { QT_CODE_PAGES } from './qtCodePages.generated';
+
 /**
  * Single-byte code pages whose table Mudlet Web carries rather than asks the
  * browser for.
  *
- * TextDecoder covers the WHATWG encoding set, which is where charset.ts gets
- * the ISO 8859 family, KOI8-R and the WINDOWS-125x pages. The DOS code pages
- * below are not in that set and never will be — they are legacy MUD encodings,
+ * The ISO 8859 family, KOI8-R and the WINDOWS-125x pages are carried too, in
+ * qtCodePages.generated.ts, because the browser's WHATWG decoders for them do
+ * not read them as desktop does — that file's generator says how. The DOS code
+ * pages below are not in the WHATWG set at all and never will be — they are legacy MUD encodings,
  * not web ones — so the only way to read a game that speaks one is to carry the
  * table.
  *
@@ -204,18 +207,22 @@ const CODE_PAGES: Record<string, string> = {
         + '25B2E124E125E137E13825BC2660FFFD', // F8-FF
 };
 
-/** Lazily expanded 128-entry char arrays, keyed as {@link CODE_PAGES}. */
+/** Lazily expanded 128-entry char arrays, keyed as {@link CODE_PAGES} or
+ *  {@link QT_CODE_PAGES}. */
 const expanded = new Map<string, readonly string[]>();
 
 /**
  * The 0x80-0xFF half of `name` as characters, or null when it is not one of the
- * pages carried here (which is the usual case — most encodings are TextDecoder's
- * job). Names are matched exactly as {@link CODE_PAGES} spells them.
+ * pages carried here. Names are matched exactly as {@link CODE_PAGES} spells
+ * them (upper case), or as the decoder labels {@link QT_CODE_PAGES} is keyed by
+ * (lower case) for the pages desktop reads through Qt rather than its own
+ * tables — every other single-byte encoding Mudlet Web speaks.
  */
 export function codePageUpperHalf(name: string): readonly string[] | null {
     const cached = expanded.get(name);
     if (cached) return cached;
-    const packed = CODE_PAGES[name];
+    const packed = Object.hasOwn(CODE_PAGES, name) ? CODE_PAGES[name]
+        : Object.hasOwn(QT_CODE_PAGES, name) ? QT_CODE_PAGES[name] : undefined;
     if (!packed) return null;
     const chars: string[] = [];
     for (let i = 0; i < packed.length; i += 4) {
