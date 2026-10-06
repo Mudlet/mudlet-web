@@ -212,6 +212,38 @@ describe('Lua error handling matches desktop (#330)', () => {
       expect(t.run(`return killTrigger(${id})`)).toBe(true);
     });
 
+    it.each([
+      // tempColorTrigger's legacy scale has red at 4; ANSI's at 1.
+      ['tempColorTrigger', 'tempColorTrigger(4, -1, "x = = 1")'],
+      ['tempAnsiColorTrigger', 'tempAnsiColorTrigger(1, -1, "x = = 1")'],
+    ])('%s is made but not active, and does not fire on a line of its colour (#371)', (_fn, call) => {
+      const id = t.run(`return ${call}`) as number;
+      expect(typeof id).toBe('number');
+      expect(t.rt.tempItemExists(id, 'trigger')).toBe(true);
+      expect(t.rt.tempItemEnabled(id)).toBe(false);
+      t.run(`enableTrigger(${id})`);
+      expect(t.rt.tempItemEnabled(id)).toBe(false);
+      // A compiling one on the same colour proves the line is one it matches.
+      const good = t.run(`return tempAnsiColorTrigger(1, -1, "rec('colour')")`) as number;
+      expect(t.rt.tempItemEnabled(good)).toBe(true);
+      feed('\x1b[31mX\x1b[0m');
+      expect(record()).toBe('colour');
+      expect(errors).toEqual([]);
+    });
+
+    it('tempComplexRegexTrigger tells the engine its body did not compile (#371)', () => {
+      t.run(`
+        GOT = {}
+        __mudlet_tempComplexTrigger = function(...)
+          GOT[#GOT + 1] = tostring(select(11, ...))
+          return 7
+        end`);
+      expect(t.run(`return tempComplexRegexTrigger("c1", "^X", "x = = 1", 0, 0, 0, 0, 0, "red", "", "", 0, 0)`)).toBe(7);
+      expect(t.run(`return tempComplexRegexTrigger("c2", "^X", "rec('ok')", 0, 0, 0, 0, 0, "red", "", "", 0, 0)`)).toBe(7);
+      expect(t.run(`return tempComplexRegexTrigger("c3", "^X", function() end, 0, 0, 0, 0, 0, "", "", "", 0, 0)`)).toBe(7);
+      expect(t.run(`return table.concat(GOT, '|')`)).toBe('true|false|false');
+    });
+
     it('a compiling body is still active, and fires', () => {
       const id = t.run(`return tempTrigger("X", "rec('fired')")`) as number;
       expect(t.rt.tempItemEnabled(id)).toBe(true);

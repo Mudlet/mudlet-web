@@ -164,6 +164,15 @@ describe('setConfig mid-session matches desktop Mudlet (#379)', () => {
       expect(enabled).toEqual(['NAWS']);
     });
 
+    it('MCCP v1 too: a repeat WILL COMPRESS goes unanswered once forced off', () => {
+      const sock = connect();
+      sock.deliver(IAC + WILL + '\x55');
+      expect(sock.take()).toBe(IAC + DO + '\x55');
+      session.setProtocolOptions({ mccpEnabled: false });
+      sock.deliver(IAC + WILL + '\x55');
+      expect(sock.take()).toBe('');
+    });
+
     it('compression forced off mid-session turns a first offer down', () => {
       const sock = connect();
       session.setProtocolOptions({ mccpEnabled: false });

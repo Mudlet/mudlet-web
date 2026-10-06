@@ -55,7 +55,7 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
     lua.global.set('__mudlet_tempComplexTrigger', (
         name: unknown, patternsStr: unknown, code: unknown,
         multiline: unknown, isFilter: unknown, multipleMatches: unknown,
-        fireLength: unknown, delta: unknown, hlFg: unknown, hlBg: unknown,
+        fireLength: unknown, delta: unknown, hlFg: unknown, hlBg: unknown, uncompiled?: unknown,
     ) => {
         const raw = String(patternsStr ?? '');
         const patterns = (raw.length === 0 ? [] : raw.split('\x01')).map(entry => {
@@ -89,6 +89,7 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
             fireLength: Math.max(0, Math.trunc(Number(fireLength)) || 0),
             delta: Math.max(0, Math.trunc(Number(delta)) || 0),
             highlight,
+            uncompiled: uncompiled === true,
         });
     });
     // Mudlet permSubstringTrigger(name, parent, patterns, luaCode). Same

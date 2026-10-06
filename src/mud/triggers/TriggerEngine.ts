@@ -992,7 +992,7 @@ export class TriggerEngine {
      * ready — which is after the scripts have run — so the engine calls this
      * first and the later {@link loadPerm} reuses the seqs reserved here.
      */
-    reserveOrder(items: TriggerNode[]): void {
+    reserveOrder(items: readonly { id: string }[]): void {
         for (const item of items) {
             if (!this.permReg.has(item.id)) this.permReg.set(item.id, this.regCounter++);
         }

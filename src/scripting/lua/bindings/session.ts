@@ -2,7 +2,7 @@ import { LuaType } from 'wasmoon-lua5.1';
 import type { GlobalEventChannel } from '../../GlobalEventChannel';
 import type { BindingContext, LuaState } from './context';
 import { isRefusal, type StopwatchRefusal, type StopwatchSubject } from '../../StopwatchManager';
-import { timeZoneAbbreviation } from '../../../utils/timeZone';
+import { timeZoneAbbreviation, timeZoneOffset } from '../../../utils/timeZone';
 
 /**
  * Session-level introspection and event raising: stopwatches, the console
@@ -163,6 +163,10 @@ export function installSessionBindings(
     // which Bridge.lua's os.date wrapper substitutes for emscripten's full name.
     lua.global.set('__mudlet_tz_abbrev', (seconds: unknown) =>
         timeZoneAbbreviation(new Date(Number(seconds) * 1000)));
+    // Its offset from UTC as glibc's %z prints it ("+0530"); emscripten's
+    // gives the minutes as a fraction of an hour.
+    lua.global.set('__mudlet_tz_offset', (seconds: unknown) =>
+        timeZoneOffset(new Date(Number(seconds) * 1000)));
 
     // Helpers for the user-dictionary functions in Bridge.lua, which need the
     // Unicode case mappings and the collation Lua's C-locale string library

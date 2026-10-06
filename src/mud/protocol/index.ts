@@ -6,6 +6,7 @@ export * from "./mssp";
 // decode side has no consumer outside this directory.
 export { toByteString } from "./byteString";
 export { MccpHandler } from "./mccp";
+export { parseAtcpMessage, type AtcpMessage } from "./atcp";
 export { EchoHandler } from "./echo";
 export { MspParser, type MspCommand, type MspKind } from "./msp";
 export { MxpParser, splitMxpResultLines, type MxpLink, type MxpLineResult } from "./mxp";

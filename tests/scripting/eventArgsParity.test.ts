@@ -16,7 +16,7 @@ vi.mock('../../src/scripting/lua/LuaRuntime', () => ({
             emitEvent: (event: string, args: unknown[]) => { emitted.push({ event, args }); },
             runWithMatches: () => {}, destroy: () => {},
             evalTriggerPattern: () => false, startSpeedWalk: () => {},
-            setGmcpValue: () => {}, setMsdpValue: () => {}, setMsspValue: () => {},
+            setGmcpValue: () => {}, setMsdpValue: () => {}, setMsspValue: () => {}, setAtcpValue: () => {},
         }),
     },
 }));
@@ -77,6 +77,14 @@ describe('engine-raised event arguments match Mudlet', () => {
         session.events.emit('mssp', { name: 'PLAYERS', value: '3' });
         expect(eventsNamed('msdp.')).toEqual([{ event: 'msdp.HEALTH', args: ['msdp.HEALTH'] }]);
         expect(eventsNamed('mssp.')).toEqual([{ event: 'mssp.PLAYERS', args: ['mssp.PLAYERS'] }]);
+    });
+
+    // setAtcpTable raises the message's own name with its value (#368).
+    it('an ATCP message raises its dotless name with the value', () => {
+        session.events.emit('atcp', { name: 'CharVitals', value: 'H:100/120 M:50/60 NL:10/100' });
+        expect(eventsNamed('CharVitals')).toEqual([
+            { event: 'CharVitals', args: ['H:100/120 M:50/60 NL:10/100'] },
+        ]);
     });
 
     it('a disconnect raises sysDisconnectionEvent and no sysProtocolDisabled', () => {
