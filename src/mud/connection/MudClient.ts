@@ -462,7 +462,16 @@ export class MudClient {
             this.negotiator.noteOptionsSent(data);
             this.sendRaw(data);
         };
-        this.mccpHandler = new MccpHandler(sendOptionRaw);
+        // MccpHandler answers every WILL COMPRESS2 it sees; Mudlet answers one
+        // only while the option is off (`!hisOptionState`), so a server
+        // re-offering compression it already has is not told DO again — an
+        // answer to an option already on can start a negotiation loop
+        // (mudlet-web#379).
+        this.mccpHandler = new MccpHandler((data) => {
+            if (data.length === 3 && data.charCodeAt(0) === 0xFF && data.charCodeAt(1) === 0xFD
+                && this.negotiator.isServerOptionOn(data.charCodeAt(2))) return;
+            sendOptionRaw(data);
+        });
         this.mccpHandler.enabled = mccpEnabled;
 
         this.echoHandler = new EchoHandler(
