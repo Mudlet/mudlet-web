@@ -9,6 +9,7 @@ import { useEngines } from './hooks/useEngines';
 import { claimedByAppShortcut } from './hooks/useKeyboardShortcuts';
 import { Toolbar } from './ui/Toolbar';
 import { CommandBar } from './ui/CommandBar';
+import { cmdLineCommands } from './ui/cmdline/plainText';
 import { useCmdLineSelection } from './ui/cmdline/useCmdLineSelection';
 import { TAB_COMPLETION_LINES } from './ui/tabCompletion';
 import { ContentLayout } from './ui/layout/ContentLayout';
@@ -1244,7 +1245,9 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         // split, the alias pass) belongs to Host::send and lives one level down
         // in ScriptingEngine.hostSend, because Mudlet echoes the whole line
         // *before* splitting it and *before* the aliases can swallow it.
-        for (const line of command.split('\n')) {
+        // TCommandLine reads the box with toPlainText() first, so a NBSP goes
+        // out as a space and U+2028/U+2029 split lines like a newline (#375).
+        for (const line of cmdLineCommands(command)) {
             if (engineRef.current) {
                 engineRef.current.sendCommand(line);
             } else {
