@@ -575,7 +575,10 @@ export class Console {
         // TBuffer::deleteLines refuses a y past the end, so a second gag of the
         // same line is a no-op on desktop. Clamping onto the line above deleted
         // a line nobody matched, one more per extra call (mudlet-web#383).
-        if (this.openLineSuspended && this.cursorIdx >= this.history.length) return;
+        // A trigger that cleared the window first is the exception: that left
+        // the one empty line clearWindow() keeps, which is a line to delete.
+        if (this.openLineSuspended && this.history.length > 0
+            && this.cursorIdx >= this.history.length) return;
         const idx = this.cursor;
         const buf = this.history[idx];
         // A cursor a script put on the open line — the last one, still being

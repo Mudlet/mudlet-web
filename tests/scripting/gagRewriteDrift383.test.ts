@@ -163,6 +163,25 @@ describe('mudlet-web#383 — gag and rewrite parity with desktop', () => {
 
             expect(lines()).toEqual(['one', 'two', 'three', 'four']);
         });
+
+        it('still deletes the line clearWindow() left, in a trigger that cleared the window', async () => {
+            await boot([trig({ id: 'e', name: 'empty', patterns: [{ type: 'regex', text: '^EMPTY$' }] })]);
+            let emptied: unknown;
+            scripts.empty = () => {
+                api.clearWindow();
+                api.moveCursor(undefined, 0, 0);
+                api.deleteLine();
+                emptied = api.getLines(0, 1)?.[0];
+                api.echo('from inside\n');
+            };
+
+            feed('before\nEMPTY\n');
+
+            // EmptyBufferOps_spec: the buffer is emptied outright, then the echo
+            // writes into it again.
+            expect(emptied).toBe('ERROR: invalid line number');
+            expect(lines()).toContain('from inside');
+        });
     });
 
     describe('2. an echo after deleteLine()', () => {
