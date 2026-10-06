@@ -3,7 +3,6 @@ import { describe, it, expect, vi, afterEach, beforeAll, afterAll } from 'vitest
 import { configure, InMemory, mkdirSync, existsSync } from '@zenfs/core';
 import { HttpService } from '../../src/scripting/http/HttpService';
 import { ProfileVFS } from '../../src/scripting/vfs/ProfileVFS';
-import { fetchFollowingLikeQt } from '../../proxy/redirects';
 import { createTestRuntime, type TestRuntime } from '../createTestRuntime';
 
 /**
@@ -56,7 +55,7 @@ describe('a redirected request reports where it ended up', () => {
     it('names the final url the proxy reports, and keeps its headers out of the record', async () => {
         stubFetch(() => new Response('echo', {
             status: 200,
-            headers: { 'X-Mudlet-Final-Url': 'http://h.invalid/echo', 'X-Mudlet-Final-Method': 'GET', 'X-Real': '1' },
+            headers: { 'X-Mudlet-Final-Url': 'http://h.invalid/echo', 'X-Real': '1' },
         }));
         const events: Events = [];
         service(events, null, PROXY).getHTTP('http://h.invalid/r302');
@@ -108,26 +107,10 @@ describe('a 301/302/303 ends a non-GET request as a GET', () => {
         expect(events[0][1][1]).toBe('http://h.invalid/gone');
     });
 
-    it('keeps the verb event when the proxy says the verb survived (a 307)', async () => {
-        stubFetch(() => new Response('PUT 2 ud', {
-            status: 200,
-            headers: { 'X-Mudlet-Final-Url': 'http://h.invalid/echo', 'X-Mudlet-Final-Method': 'PUT' },
-        }));
-        const events: Events = [];
-        // Known to need the proxy, so the PUT goes straight there.
-        const http = service(events, null, PROXY);
-        (http as unknown as { proxiedOrigins: Map<string, number> }).proxiedOrigins.set('http://h.invalid', Date.now());
-        http.putHTTP('ud', 'http://h.invalid/r307');
-        await flush();
-
-        expect(names(events)).toEqual(['sysPutHttpDone']);
-        expect(events[0][1].slice(0, 2)).toEqual(['http://h.invalid/echo', 'PUT 2 ud']);
-    });
-
-    it('takes the GET event from the proxy too, with the custom verb argument dropped', async () => {
+    it('takes the GET event after a redirect the proxy reports, with the custom verb argument dropped', async () => {
         stubFetch(() => new Response('GET 0 ', {
             status: 200,
-            headers: { 'X-Mudlet-Final-Url': 'http://h.invalid/echo', 'X-Mudlet-Final-Method': 'GET' },
+            headers: { 'X-Mudlet-Final-Url': 'http://h.invalid/echo' },
         }));
         const events: Events = [];
         const http = service(events, null, PROXY);
@@ -137,59 +120,6 @@ describe('a 301/302/303 ends a non-GET request as a GET', () => {
 
         expect(names(events)).toEqual(['sysGetHttpDone']);
         expect(events[0][1]).toHaveLength(3);
-    });
-});
-
-describe('the proxy follows redirects as Qt does', () => {
-    function upstream(routes: Record<string, () => Response>) {
-        return stubFetch(url => {
-            const route = routes[new URL(url).pathname];
-            if (!route) throw new Error(`unexpected ${url}`);
-            return route();
-        });
-    }
-    const to = (status: number, location: string) => () => new Response(null, { status, headers: { Location: location } });
-    const body = (text: string) => () => new Response(text, { status: 200 });
-
-    for (const status of [301, 302, 303]) {
-        it(`turns a PUT answered with a ${status} into a GET without a body`, async () => {
-            const calls = upstream({ '/r': to(status, '/echo'), '/echo': body('done') });
-            const reply = await fetchFollowingLikeQt('http://h.invalid/r', 'PUT',
-                { 'Content-Type': 'text/plain', 'X-Keep': '1' }, new TextEncoder().encode('ud'));
-
-            expect(calls.map(c => [c.init.method, c.url])).toEqual([
-                ['PUT', 'http://h.invalid/r'], ['GET', 'http://h.invalid/echo']]);
-            expect(calls[1].init.body).toBeUndefined();
-            expect(calls[1].init.headers).toEqual({ 'X-Keep': '1' });
-            expect(calls.every(c => c.init.redirect === 'manual')).toBe(true);
-            expect(reply).toMatchObject({ finalUrl: 'http://h.invalid/echo', finalMethod: 'GET', redirected: true });
-            expect(await reply.upstream.text()).toBe('done');
-        });
-    }
-
-    for (const status of [307, 308]) {
-        it(`repeats a PUT answered with a ${status} as it was`, async () => {
-            const calls = upstream({ '/r': to(status, 'http://other.invalid/echo'), '/echo': body('done') });
-            const payload = new TextEncoder().encode('ud');
-            const reply = await fetchFollowingLikeQt('http://h.invalid/r', 'PUT', {}, payload);
-
-            expect(calls.map(c => [c.init.method, c.url])).toEqual([
-                ['PUT', 'http://h.invalid/r'], ['PUT', 'http://other.invalid/echo']]);
-            expect(calls[1].init.body).toBe(payload);
-            expect(reply).toMatchObject({ finalUrl: 'http://other.invalid/echo', finalMethod: 'PUT', redirected: true });
-        });
-    }
-
-    it('passes a 300 without a Location, or a 304, through as the reply', async () => {
-        upstream({ '/s300': () => new Response('multiple', { status: 300 }), '/s304': () => new Response(null, { status: 304 }) });
-        const r300 = await fetchFollowingLikeQt('http://h.invalid/s300', 'GET', {}, undefined);
-        const r304 = await fetchFollowingLikeQt('http://h.invalid/s304', 'GET', {}, undefined);
-        expect([r300.upstream.status, r300.redirected, r304.upstream.status, r304.redirected]).toEqual([300, false, 304, false]);
-    });
-
-    it('gives up after Qt\'s 50 redirects', async () => {
-        upstream({ '/loop': to(302, '/loop') });
-        await expect(fetchFollowingLikeQt('http://h.invalid/loop', 'GET', {}, undefined)).rejects.toThrow('Too many redirects');
     });
 });
 

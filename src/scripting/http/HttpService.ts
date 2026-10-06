@@ -47,14 +47,12 @@ const PROXIED_ORIGIN_TTL_MS = 5 * 60_000;
 // refused"), rather than the 502 it rides on.
 const PROXY_ERROR_HEADER = 'X-Mudlet-Proxy-Error';
 
-// Set by proxy/server.ts when it followed redirects: the url the reply came
-// from, and the method of the request that fetched it. A reply through the
-// proxy has the proxy's own url as `Response.url`, so this is the only place
-// the target's final url can come from. Neither is the target's header, so
-// both are kept out of the response record.
+// Set by proxy/server.ts when the target redirected: the url the reply came
+// from. A reply through the proxy has the proxy's own url as `Response.url`,
+// so this is the only place the target's final url can come from. It is not
+// the target's header, so it is kept out of the response record.
 const PROXY_FINAL_URL_HEADER = 'X-Mudlet-Final-Url';
-const PROXY_FINAL_METHOD_HEADER = 'X-Mudlet-Final-Method';
-const PROXY_HEADERS = new Set([PROXY_FINAL_URL_HEADER, PROXY_FINAL_METHOD_HEADER].map(h => h.toLowerCase()));
+const PROXY_HEADERS = new Set([PROXY_FINAL_URL_HEADER.toLowerCase()]);
 
 // What Mudlet raises when the downloaded bytes cannot be written: QFile::open
 // fails before anything is written, for a directory that does not exist as
@@ -371,10 +369,13 @@ export class HttpService {
             // Mudlet reports the url the reply came from, so a redirect names
             // where it ended up. And the event follows the operation Qt ended
             // on: a 301/302/303 turns any verb but HEAD into a GET, which then
-            // finishes as sysGetHttpDone with no verb argument.
+            // finishes as sysGetHttpDone with no verb argument. fetch hides
+            // which redirect status it followed, so a redirected request is
+            // taken to have ended on GET — what Qt does for the 301/302/303
+            // that answer nearly every POST/PUT/DELETE (see
+            // PLATFORM_DIVERGENCES for the 307/308 case).
             const finalUrl = replyUrl(res) ?? url;
-            if (method.toUpperCase() !== 'GET' && method.toUpperCase() !== 'HEAD'
-                && replyMethod(res) === 'GET') {
+            if (method.toUpperCase() !== 'GET' && method.toUpperCase() !== 'HEAD' && finalUrl !== url) {
                 doneEvent = STANDARD_VERBS.get.done;
                 errorEvent = STANDARD_VERBS.get.error;
                 extraArgs = [];
@@ -528,18 +529,6 @@ function replyUrl(res: Response): string | null {
     const viaProxy = res.headers.get(PROXY_FINAL_URL_HEADER);
     if (viaProxy) return viaProxy;
     return res.redirected && res.url ? res.url : null;
-}
-
-// The method of the request whose reply this is, when a redirect may have
-// changed it. The proxy follows redirects as Qt does and says which it ended
-// on. A direct fetch hides the redirect status, so a redirected request is
-// taken to have ended on GET — what Qt does for the 301/302/303 that answer
-// nearly every POST/PUT/DELETE (see PLATFORM_DIVERGENCES for the 307/308 case).
-function replyMethod(res: Response): string | null {
-    const viaProxy = res.headers.get(PROXY_FINAL_METHOD_HEADER);
-    if (viaProxy) return viaProxy.toUpperCase();
-    if (res.headers.has(PROXY_FINAL_URL_HEADER)) return null;
-    return res.redirected ? 'GET' : null;
 }
 
 function errorMessage(err: unknown): string {

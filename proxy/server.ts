@@ -2,7 +2,6 @@ import * as http from 'http';
 import * as net from 'net';
 import * as tls from 'tls';
 import { WebSocketServer, WebSocket } from 'ws';
-import { fetchFollowingLikeQt } from './redirects';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 
@@ -21,12 +20,10 @@ const CORS_HEADERS: Record<string, string> = {
 // instead of a generic 502. Must match PROXY_ERROR_HEADER there.
 const PROXY_ERROR_HEADER = 'X-Mudlet-Proxy-Error';
 
-// Set when the proxy followed a redirect: the url the reply came from, and the
-// method of the request that fetched it. The browser only sees the proxy's own
-// url, and Mudlet reports the final one and picks its event by the final
-// operation. Must match the headers HttpService reads.
+// Set when the target redirected: the url the reply came from. The browser
+// only sees the proxy's own url, and Mudlet reports the final one. Must match
+// PROXY_FINAL_URL_HEADER in HttpService.
 const FINAL_URL_HEADER = 'X-Mudlet-Final-Url';
-const FINAL_METHOD_HEADER = 'X-Mudlet-Final-Method';
 
 function fetchFailureReason(err: unknown, host: string): string {
     const cause = (err as { cause?: { code?: string } })?.cause;
@@ -97,14 +94,8 @@ async function forwardHttp(req: http.IncomingMessage, res: http.ServerResponse, 
     const body = (method === 'GET' || method === 'HEAD') ? undefined : await readRequestBody(req);
 
     let upstream: Response;
-    const outHeaders: Record<string, string> = {};
     try {
-        const reply = await fetchFollowingLikeQt(targetUrl.toString(), method, headers, body);
-        upstream = reply.upstream;
-        if (reply.redirected) {
-            outHeaders[FINAL_URL_HEADER] = reply.finalUrl;
-            outHeaders[FINAL_METHOD_HEADER] = reply.finalMethod;
-        }
+        upstream = await fetch(targetUrl.toString(), { method, headers, body, redirect: 'follow' });
     } catch (err) {
         const reason = fetchFailureReason(err, targetUrl.hostname);
         res.writeHead(502, { ...CORS_HEADERS, [PROXY_ERROR_HEADER]: reason });
@@ -118,12 +109,14 @@ async function forwardHttp(req: http.IncomingMessage, res: http.ServerResponse, 
     // the browser try to decompress already-decompressed bytes — silently
     // mangling binary downloads. Content-Length / Transfer-Encoding similarly
     // describe the on-wire shape, not the bytes we re-emit chunked below.
+    const outHeaders: Record<string, string> = {};
     upstream.headers.forEach((v, k) => {
         const lk = k.toLowerCase();
         if (lk.startsWith('access-control-')) return;
         if (lk === 'content-encoding' || lk === 'content-length' || lk === 'transfer-encoding') return;
         outHeaders[k] = v;
     });
+    if (upstream.redirected) outHeaders[FINAL_URL_HEADER] = upstream.url;
     Object.assign(outHeaders, CORS_HEADERS);
     res.writeHead(upstream.status, outHeaders);
 

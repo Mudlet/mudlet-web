@@ -8,5 +8,5 @@
     "esModuleInterop": true,
     "skipLibCheck": true
   },
-  "include": ["server.ts", "redirects.ts"]
+  "include": ["server.ts"]
 }

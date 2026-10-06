@@ -380,21 +380,22 @@ export interface PlatformDivergence {
 
 export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
     {
-        api: 'postHTTP / putHTTP / deleteHTTP / customHTTP answered by a redirect, sent without the proxy',
+        api: 'postHTTP / putHTTP / deleteHTTP / customHTTP answered by a redirect',
         behaviour:
             'Desktop: a 301/302/303 is followed with a GET and finishes as sysGetHttpDone; a 307/308 repeats '
-            + 'the verb and finishes as that verb\'s event. Mudlet Web, through the proxy: the same. Mudlet Web, '
-            + 'fetched directly (the origin answers CORS): any redirected request finishes as sysGetHttpDone '
-            + 'with the final url, so a 307/308 reports sysGetHttpDone where desktop reports the verb\'s event; '
-            + 'and the browser re-sends a PUT (with its body), DELETE or custom verb answered by a 301/302 with '
-            + 'its own method, so the server sees that verb, not desktop\'s GET.',
+            + 'the verb and finishes as that verb\'s event. Mudlet Web: any redirected request finishes as '
+            + 'sysGetHttpDone with the final url, so a 307/308 reports sysGetHttpDone where desktop reports '
+            + 'the verb\'s event; and a PUT (with its body), DELETE or custom verb answered by a 301/302 is '
+            + 're-sent with its own method, so the server sees that verb, not desktop\'s GET. A POST is '
+            + 'followed with a GET as on desktop.',
         reason:
-            'A direct request is followed by the browser under the Fetch standard, which keeps every verb but '
-            + 'POST on a 301/302, and hides the redirect\'s status and Location from script (redirect: '
-            + '"manual" answers an opaque response with neither), so neither the method of the follow-up nor '
-            + 'which redirect status was followed can be chosen or known. The event is picked for the '
-            + '301/302/303 that answer nearly every redirected POST/PUT/DELETE. The proxy follows redirects '
-            + 'itself, as Qt does, and reports the final url and method (proxy/redirects.ts). Pinned by '
+            'Redirects are followed under the Fetch standard - by the browser for a direct request, by the '
+            + 'proxy\'s own fetch for a proxied one - which keeps every verb but POST on a 301/302 and hides '
+            + 'the redirect\'s status from script (redirect: "manual" in a browser answers an opaque response '
+            + 'with neither status nor Location), so neither the follow-up\'s method nor which status was '
+            + 'followed can be chosen or known. The event is picked for the 301/302/303 that answer nearly '
+            + 'every redirected POST/PUT/DELETE. Following redirects by hand in the proxy would close the gap '
+            + 'for proxied requests only, at the cost of the proxy fetching Location urls itself. Pinned by '
             + 'tests/scripting/httpRedirectParity.test.ts.',
         issue: '#349',
     },
