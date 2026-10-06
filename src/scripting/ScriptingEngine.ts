@@ -258,7 +258,8 @@ function modifiersFromMudletInt(modifier: number): string[] {
  *  `KeyboardEvent.code`). Translated the way tempKey and the XML import do
  *  it, Keypad modifier included, so Alt+Up, Home, Ctrl+/ and Keypad+8 all
  *  land on a key the engine can match; only letters, digits and F-keys used
- *  to. A Qt key with no DOM code gives '' (a binding with nothing bound). */
+ *  to. A Qt key with no DOM code gives '': the binding is then bound by
+ *  its Qt key alone, which a printable character (Key_Eacute) still is. */
 function keyCodeFromMudletKey(key: string | number, modifier: number): string {
     if (typeof key === 'string') return key;
     if (!Number.isFinite(key)) return '';

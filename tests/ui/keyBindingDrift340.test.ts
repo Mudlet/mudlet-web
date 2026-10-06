@@ -29,6 +29,17 @@ describe('mudlet-web#340 item 3 — the command line and the numpad', () => {
         expect(commandLineReservesKey(keydown('NumpadEnter', { key: 'Enter', location: 3 }))).toBe(false);
     });
 
+    it('still reserves plain Up on a Mac, where Qt calls the arrows keypad keys', () => {
+        const original = Object.getOwnPropertyDescriptor(navigator, 'platform');
+        Object.defineProperty(navigator, 'platform', { value: 'MacIntel', configurable: true });
+        try {
+            expect(commandLineReservesKey(keydown('ArrowUp', { key: 'ArrowUp' }))).toBe(true);
+        } finally {
+            if (original) Object.defineProperty(navigator, 'platform', original);
+            else delete (navigator as { platform?: string }).platform;
+        }
+    });
+
     it('reserves Up but not NumLock-off numpad 8, 2 or 9', () => {
         expect(commandLineReservesKey(keydown('ArrowUp', { key: 'ArrowUp' }))).toBe(true);
         expect(commandLineReservesKey(keydown('Numpad8', { key: 'ArrowUp', location: 3 }))).toBe(false);
@@ -187,6 +198,13 @@ describe('mudlet-web#340 items 2 and 4 — Mudlet XML keeps the Qt key', () => {
         const { k, xml } = roundTrip(KEY_EXCLAM, SHIFT);
         expect(k).toMatchObject({ key: 'Digit1', modifiers: ['shift'], qtKey: KEY_EXCLAM });
         expect(xml).toContain(`<keyCode>${KEY_EXCLAM}</keyCode>`);
+    });
+
+    it('AZERTY Key_Eacute imports bound by its character and exports unchanged', () => {
+        const { k, xml } = roundTrip(0xc9, 0);
+        expect(k).toMatchObject({ key: '', qtKey: 0xc9 });
+        expect(xml).toContain('<keyCode>201</keyCode>');
+        expect(parseMudletXml(xmlKey(0xc9, 0)).warnings ?? []).toEqual([]);
     });
 
     it('numpad Enter exports with the Keypad bit, as Qt reports it', () => {

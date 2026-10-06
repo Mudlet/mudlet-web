@@ -324,7 +324,7 @@ function emitKeys(xml: XmlBuilder, nodes: KeyNode[], opts: ExportOptions): void 
             xml.leaf('packageName', n.packageName ?? '');
             xml.leaf('script', n.code ?? '');
             xml.leaf('command', n.command ?? '');
-            xml.leaf('keyCode', String((n.key && (n.qtKey || domCodeToQtKey(n.key))) || 0));
+            xml.leaf('keyCode', String(n.qtKey || (n.key && domCodeToQtKey(n.key)) || 0));
             xml.leaf('keyModifier', String(modifiersToQt(n.modifiers ?? [], n.key)));
         });
     xml.close('KeyPackage');

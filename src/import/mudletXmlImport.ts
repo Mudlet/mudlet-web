@@ -1,6 +1,6 @@
 import type { AliasNode, ButtonLocation, ButtonNode, ButtonOrientation, KeyNode, ScriptNode, TimerNode, TriggerNode, TriggerPattern, TriggerPatternType } from '../storage/schema';
 import { asButtonRotation } from '../storage/schema';
-import { qtKeyToDomCode, qtModifiersToList, QT_KEY_UNKNOWN } from '../mud/keybindings/qtKeys';
+import { isPrintableQtKey, qtKeyToDomCode, qtModifiersToList, QT_KEY_UNKNOWN } from '../mud/keybindings/qtKeys';
 import { desanitizeControlChars } from './mudletControlChars';
 import { remapLegacyColorPattern } from '../mud/triggers/legacyColorPatterns';
 import { parseVariablePackage, type MudletVariable } from './mudletVariables';
@@ -337,10 +337,14 @@ function parseKeys(els: Element[], parentId: string | null, out: KeyNode[], warn
         // valid DOM codes always start with a letter, so the regex separates them.
         const mapped = unbound ? '' : qtKeyToDomCode(qtKey, qtMod);
         const key = /^[A-Za-z]/.test(mapped) ? mapped : '';
-        if (!group && !key && !unbound) {
+        // A Latin-1 character (Key_Eacute from an AZERTY profile) has no US
+        // key position for a DOM code, but is still bound: it matches by the
+        // character typed (see KeyEngine's matchesEvent).
+        const byChar = !unbound && isPrintableQtKey(qtKey);
+        if (!group && !key && !unbound && !byChar) {
             warnings.push(`Key "${getRawText(el, 'name')}": unknown Qt key code ${qtKey} — keybinding imported with no key set`);
         }
-        out.push({ id, parentId, isGroup: group, name: getRawText(el, 'name'), enabled: isYes(el, 'isActive'), key, modifiers: qtModifiersToList(qtMod), ...(key ? { qtKey } : {}), code: getText(el, 'script'), language: 'lua', command: getRawText(el, 'command'), packageName: getText(el, 'packageName') || undefined });
+        out.push({ id, parentId, isGroup: group, name: getRawText(el, 'name'), enabled: isYes(el, 'isActive'), key, modifiers: qtModifiersToList(qtMod), ...(key || byChar ? { qtKey } : {}), code: getText(el, 'script'), language: 'lua', command: getRawText(el, 'command'), packageName: getText(el, 'packageName') || undefined });
         // Unconditional, as in desktop's readKeyGroup (XMLimport.cpp:1816).
         parseKeys(directChildren(el, 'Key', 'KeyGroup'), id, out, warnings);
     }

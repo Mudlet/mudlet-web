@@ -216,6 +216,72 @@ describe('mudlet-web#340 — permKey, matching and order', () => {
         });
     });
 
+    // SlySven on the PR: a French AZERTY user's top row needs Shift for every
+    // digit. Qt keys a press by the character it produced, so desktop records
+    // that row's unshifted keys as & é " ' ( … and Shift+them as Key_1|Shift …
+    describe('non-US layouts: printable keys match by the character typed, as Qt does', () => {
+        it('AZERTY: Key_Ampersand fires on the unshifted 1-key, not on the US 7 position', () => {
+            permKey('amp', 0, 0x26, 'amp');
+            expect(engine.processKey(press('Digit7', { key: '7' }))).toBe(false);
+            expect(engine.processKey(press('Digit1', { key: '&' }))).toBe(true);
+            expect(ran).toEqual(['amp']);
+        });
+
+        it('AZERTY: Key_1|Shift fires on Shift + the 1-key', () => {
+            permKey('one', SHIFT, Key['1'], 'one');
+            expect(engine.processKey(press('Digit1', { key: '&' }))).toBe(false);
+            expect(engine.processKey(press('Digit1', { key: '1', shiftKey: true }))).toBe(true);
+            expect(ran).toEqual(['one']);
+        });
+
+        it('AZERTY: Key_A fires on the key that types a (the US Q position)', () => {
+            permKey('a', 0, 0x41, 'a');
+            expect(engine.processKey(press('KeyQ', { key: 'a' }))).toBe(true);
+            expect(engine.processKey(press('KeyA', { key: 'q' }))).toBe(false);
+            expect(ran).toEqual(['a']);
+        });
+
+        it('AZERTY: Key_Eacute, which has no US position, still binds', () => {
+            const id = permKey('eacute', 0, 0xc9, 'eacute');
+            expect(id).toBeGreaterThan(0);
+            expect(engine.processKey(press('Digit2', { key: 'é' }))).toBe(true);
+            expect(ran).toEqual(['eacute']);
+            expect(keyEngine.getKeyCode('eacute')).toEqual({ keyCode: 0xc9, modifiers: 0 });
+        });
+
+        it('a binding stored only as a DOM code keeps matching the physical key', () => {
+            keyEngine.loadPerm([{
+                id: 'web', name: 'web', isGroup: false, parentId: null, enabled: true,
+                key: 'Digit1', modifiers: ['shift'], code: 'web', language: 'lua',
+            }]);
+            expect(engine.processKey(press('Digit1', { key: '1', shiftKey: true }))).toBe(true);
+            expect(ran).toEqual(['web']);
+        });
+
+        it('a layout beyond Latin-1 (Cyrillic) falls back to the physical key', () => {
+            permKey('ctrl-a', CTRL, 0x41, 'ctrl-a');
+            expect(engine.processKey(press('KeyA', { key: 'ф', ctrlKey: true }))).toBe(true);
+            expect(ran).toEqual(['ctrl-a']);
+        });
+    });
+
+    describe('macOS: Qt sets KeypadModifier on the arrows and keys Option presses without Option', () => {
+        beforeEach(() => { vi.stubGlobal('navigator', { platform: 'MacIntel' }); });
+        afterEach(() => { vi.unstubAllGlobals(); });
+
+        it('a Mac desktop Alt+Up (Key_Up|Alt|Keypad) fires on the arrow', () => {
+            permKey('altup', ALT | KEYPAD, Key.Up, 'altup');
+            expect(engine.processKey(press('ArrowUp', { key: 'ArrowUp', altKey: true }))).toBe(true);
+            expect(ran).toEqual(['altup']);
+        });
+
+        it('Option+A (which types å) fires Key_A|Alt', () => {
+            permKey('opt-a', ALT, 0x41, 'opt-a');
+            expect(engine.processKey(press('KeyA', { key: 'å', altKey: true }))).toBe(true);
+            expect(ran).toEqual(['opt-a']);
+        });
+    });
+
     describe('5. temporary and permanent keys share one creation order', () => {
         const F5 = press('F5', { key: 'F5' });
         const F6 = press('F6', { key: 'F6' });

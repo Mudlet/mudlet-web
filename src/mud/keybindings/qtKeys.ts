@@ -205,15 +205,57 @@ export function bindingQtModifiers(key: string, modifiers: string[]): number {
 }
 
 /**
- * The Qt::Key codes that are the shifted half of a key on a US keyboard —
- * `!` is Shift+1, `+` is Shift+=. Qt reports the character the press produced,
- * so desktop's matcher sees Key_Exclam only with Shift held: a binding on one
- * of these without Shift in its mask never fires, and must not fire on the
- * unshifted key that shares its DOM code.
+ * Whether a Qt::Key is a printable character — the ASCII and Latin-1 ranges,
+ * where Qt::Key IS the (upper-cased) character the press produced. Qt reports
+ * the character, not the key's position: Shift+1 is Key_Exclam on a US layout,
+ * while on French AZERTY the same key gives Key_Ampersand plain and Key_1 with
+ * Shift, and its A key (US Q) is Key_A. So a binding on one of these is matched
+ * by the character the browser says was typed, never by the US position its
+ * DOM code names.
  */
-export const QT_SHIFTED_SYMBOLS: ReadonlySet<number> = new Set(
-    [...'!"#$%&()*+:<>?@^_{|}~'].map(c => c.charCodeAt(0)),
-);
+export function isPrintableQtKey(key: number | undefined): key is number {
+    return key !== undefined && ((key >= 0x20 && key <= 0x7e) || (key >= 0xa0 && key <= 0xff));
+}
+
+/**
+ * The printable Qt::Key a press produced, from `KeyboardEvent.key` — upper-cased
+ * as Qt does (Key_A for `a`, Key_Eacute 0xC9 for `é`). Undefined when the press
+ * named no single printable character (`Dead`, `Unidentified`, a named key, or a
+ * script beyond Latin-1), in which case its position is all there is to go on.
+ */
+export function printableEventQtKey(e: Pick<KeyboardEvent, 'key' | 'altKey'>): number | undefined {
+    // Option rewrites the character on a Mac (Option+A types `å`), but Qt
+    // keys the press by the character without it, so the browser's `key` says
+    // nothing Qt would; the position has to do.
+    if (e.altKey && isMacPlatform()) return undefined;
+    const key = e.key ?? '';
+    if (key.length !== 1) return undefined;
+    const upper = key.toUpperCase();
+    // 'ÿ' upper-cases out of Latin-1 and 'ß' to two letters; Qt keeps both as is.
+    const c = upper.length === 1 && upper.charCodeAt(0) <= 0xff ? upper.charCodeAt(0) : key.charCodeAt(0);
+    return isPrintableQtKey(c) ? c : undefined;
+}
+
+/** Whether this browser runs on macOS, where Qt sets KeypadModifier on the
+ *  arrow keys (they count as part of the keypad there, per Qt's docs), and
+ *  takes the key from the character typed *without* Option. */
+export function isMacPlatform(): boolean {
+    if (typeof navigator === 'undefined') return false;
+    const platform = navigator.platform
+        || (navigator as unknown as { userAgentData?: { platform?: string } }).userAgentData?.platform
+        || '';
+    return /mac|iphone|ipad|ipod/i.test(platform);
+}
+
+/**
+ * Whether Qt would report this press with KeypadModifier: every numpad key,
+ * and on macOS the arrow keys too. A binding desktop recorded on a Mac for
+ * Alt+Up carries the Keypad bit, and matching it against the arrows (as desktop
+ * on a Mac does) needs this; elsewhere the arrows are not the keypad.
+ */
+export function isQtKeypadEvent(e: Pick<KeyboardEvent, 'code' | 'location'>): boolean {
+    return isKeypadEvent(e) || (isMacPlatform() && /^Arrow(Up|Down|Left|Right)$/.test(e.code ?? ''));
+}
 
 /** Whether a press is a numpad key, whatever NumLock makes of it. */
 export function isKeypadEvent(e: Pick<KeyboardEvent, 'code' | 'location'>): boolean {
@@ -245,18 +287,14 @@ export function keypadEventQtKey(e: Pick<KeyboardEvent, 'code' | 'key'>): number
 
 /**
  * The Qt::Key desktop would record for a press, for the key recorder: the
- * character it produced in the printable ASCII range (`!` for Shift+1, upper
- * case for letters, as Qt::Key_A is), the numpad's NumLock-dependent key, and
+ * character it produced in the printable range (`!` for Shift+1 on a US
+ * layout, `&` for the same key on AZERTY, upper case for letters, as Qt::Key_A
+ * is), the numpad's NumLock-dependent key, and
  * otherwise the code's own key.
  */
-export function eventQtKey(e: Pick<KeyboardEvent, 'code' | 'key' | 'location'>): number | undefined {
-    if (isKeypadEvent(e)) return keypadEventQtKey(e);
-    const key = e.key ?? '';
-    if (key.length === 1) {
-        const c = key.toUpperCase().charCodeAt(0);
-        if (c >= 0x20 && c <= 0x7e) return c;
-    }
-    return domCodeToQtKey(e.code ?? '');
+export function eventQtKey(e: Pick<KeyboardEvent, 'code' | 'key' | 'location' | 'altKey'>): number | undefined {
+    if (isQtKeypadEvent(e)) return keypadEventQtKey(e);
+    return printableEventQtKey(e) ?? domCodeToQtKey(e.code ?? '');
 }
 
 /**
@@ -271,7 +309,7 @@ export function bindingFromEvent(e: KeyboardEvent): { key: string; modifiers: st
     if (e.altKey)   modifiers.push('alt');
     if (e.metaKey)  modifiers.push('meta');
     const qtKey = eventQtKey(e);
-    if (isKeypadEvent(e)) {
+    if (isQtKeypadEvent(e)) {
         modifiers.push('keypad');
         if (KEYPAD_NAV_KEY_TO_QT[e.key] !== undefined && e.key !== 'Enter') {
             return { key: e.key, modifiers, qtKey };

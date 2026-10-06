@@ -113,7 +113,9 @@ function formatCode(code: string): string {
     return code;
 }
 
-function formatKeyCombo(key: string, modifiers: string[]): string {
+function formatKeyCombo(key: string, modifiers: string[], qtKey?: number): string {
+    // A key bound only by the character it types (AZERTY's é) has no code.
+    if (!key && qtKey !== undefined && qtKey > 0) key = String.fromCharCode(qtKey).toLowerCase();
     if (!key) return '';
     const parts = [...modifiers.filter(m => m !== 'keypad' || !key.startsWith('Numpad')).map(m => m[0].toUpperCase() + m.slice(1)), formatCode(key)];
     return parts.join('+');
@@ -2270,7 +2272,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                     )}
                                     {'key' in item && (item as KeyNode).key && (
                                         <span className="script-editor__item-key">
-                                            {formatKeyCombo((item as KeyNode).key, (item as KeyNode).modifiers)}
+                                            {formatKeyCombo((item as KeyNode).key, (item as KeyNode).modifiers, (item as KeyNode).qtKey)}
                                         </span>
                                     )}
                                 </span>
@@ -2905,7 +2907,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                     >
                                         {capturing
                                             ? 'Press a key… (Esc to cancel)'
-                                            : (formatKeyCombo(editKey, editModifiers) || 'Click to capture key')}
+                                            : (formatKeyCombo(editKey, editModifiers, editQtKey) || 'Click to capture key')}
                                     </button>
                                 </div>
                                 {!selected.isGroup && (

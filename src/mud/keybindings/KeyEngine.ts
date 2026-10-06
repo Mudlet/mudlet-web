@@ -2,8 +2,8 @@ import { ItemIdSequence } from '../ItemIdSequence';
 import type { KeyNode } from '../../storage/schema';
 import { buildEffectivelyEnabledIds } from '../../storage/schema';
 import {
-    bindingQtModifiers, domCodeToQtKey, isKeypadBinding, isKeypadEvent, keypadEventQtKey,
-    QT_SHIFTED_SYMBOLS,
+    bindingQtModifiers, domCodeToQtKey, isKeypadBinding, isPrintableQtKey, isQtKeypadEvent,
+    keypadEventQtKey, printableEventQtKey,
 } from './qtKeys';
 
 export type { KeyNode };
@@ -35,8 +35,14 @@ interface Matchable {
  *    and never the top-row 8.
  *  - On the numpad the key is compared in Qt terms, so NumLock decides it as it
  *    does on desktop: numpad 8 is Key_8 with NumLock on and Key_Up with it off.
- *  - Elsewhere the DOM code decides, except that a shifted symbol (Key_Exclam)
- *    is only reachable with Shift held — Qt never reports `!` for a plain 1.
+ *  - A binding made with a printable Qt key (permKey, tempKey, desktop XML,
+ *    the recorder) is compared with the character the press produced, as Qt
+ *    compares it — layout and all. `!` without Shift never fires on a US plain
+ *    1 (Qt never reports `!` for it), while on AZERTY the unshifted `&/1` key
+ *    is Key_Ampersand and Shift+it is Key_1|Shift, which a US-position match
+ *    would put on the 7 key and on nothing respectively.
+ *  - Otherwise — a named key, a binding stored only as a DOM code, or a press
+ *    with no usable character — the DOM code (the physical key) decides.
  */
 function matchesEvent(b: Matchable, event: KeyboardEvent): boolean {
     const { modifiers } = b;
@@ -47,15 +53,17 @@ function matchesEvent(b: Matchable, event: KeyboardEvent): boolean {
         event.metaKey  !== modifiers.includes('meta')
     ) return false;
     const keypad = isKeypadBinding(b.key, modifiers);
-    if (keypad !== isKeypadEvent(event)) return false;
+    if (keypad !== isQtKeypadEvent(event)) return false;
     if (keypad) {
         // 0 is "no Qt key known" (an unmapped string handed to tempKey).
         const want = b.qtKey || domCodeToQtKey(b.key);
         return want !== undefined && want === keypadEventQtKey(event);
     }
-    if (event.code !== b.key) return false;
-    if (b.qtKey !== undefined && QT_SHIFTED_SYMBOLS.has(b.qtKey) && !modifiers.includes('shift')) return false;
-    return true;
+    if (isPrintableQtKey(b.qtKey)) {
+        const typed = printableEventQtKey(event);
+        if (typed !== undefined) return typed === b.qtKey;
+    }
+    return b.key !== '' && event.code === b.key;
 }
 
 interface TempKey {
@@ -168,7 +176,7 @@ export class KeyEngine {
                 modifiers: t.qtModifier ?? bindingQtModifiers(t.key, t.modifiers),
             };
         }
-        const node = this.perm.find(k => k.name === idOrName && k.key);
+        const node = this.perm.find(k => k.name === idOrName);
         if (!node) return null;
         return permKeyCode(node);
     }
@@ -269,7 +277,9 @@ export class KeyEngine {
             return this.permReg.get(cur.id) ?? Number.MAX_SAFE_INTEGER;
         };
         const enabledIds = buildEffectivelyEnabledIds(keybindings, blocked);
-        this.perm = keybindings.filter(k => enabledIds.has(k.id) && k.key);
+        // A key with no DOM code can still be bound by the character it types
+        // (Key_Eacute from an AZERTY profile has no US position at all).
+        this.perm = keybindings.filter(k => enabledIds.has(k.id) && (k.key || isPrintableQtKey(k.qtKey)));
         this.permRootSeq = new Map(this.perm.map(k => [k.id, rootSeq(k)]));
     }
 
