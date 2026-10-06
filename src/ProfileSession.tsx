@@ -298,8 +298,9 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     session.setSpecialForceGAOff((profileConfig?.specialForceGAOff as boolean | undefined) ?? false);
     // Mudlet's `versionInTTYPE` / `promptForVersionInTTYPE` (config bag) — carry
     // our version in the TTYPE client-name reply, and the latch recording that
-    // the KaVir auto-detect below has already had its say. Negotiation runs at
-    // connect, so both apply on the next dial.
+    // the KaVir auto-detect below has already had its say. Both are read when
+    // the server asks, so a change reaches the live connection's next TTYPE
+    // SEND as on desktop.
     session.setVersionInTTYPE(
         (profileConfig?.versionInTTYPE as boolean | undefined) ?? false,
         (profileConfig?.promptForVersionInTTYPE as boolean | undefined) ?? false,
