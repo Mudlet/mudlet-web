@@ -258,81 +258,27 @@ export function classifyHyperlinkUri(uri: string): HyperlinkAction | null {
     }
 }
 
-// ── OSC 4 / 104 colour palette protocol ───────────────────────────────────
-// OSC 4 redefines a palette entry: `ESC ] 4 ; index ; spec ST` (repeatable as
-// `4;i1;s1;i2;s2…`). OSC 104 resets entries: `ESC ] 104 ST` clears the whole
-// palette, `ESC ] 104 ; i1 ; i2 … ST` resets the listed indices. `spec` is an
-// XParseColor string — `rgb:RR/GG/BB` (1–4 hex digits per channel) or
-// `#RGB` / `#RRGGBB` / `#RRRRGGGGBBBB`. The query form `4;index;?` (server asks
-// us to report a colour) is parsed but produces no op — we don't answer.
+// ── Linux-console palette OSC ────────────────────────────────────────────
+// The two palette commands Mudlet's TBuffer::decodeOSC obeys, both only while
+// "Allow server to redefine your colors" is on:
+//   `ESC ] P <i> <rr> <gg> <bb> ST` — set ANSI colour i (one hex digit, 0–f)
+//   `ESC ] R ST`                    — reset the sixteen colours
+// The payload is exactly the 8 characters `Pirrggbb`; any other length is
+// dropped. xterm's OSC 4 / OSC 104 are NOT among them — desktop ignores those,
+// so they are consumed here like any other unrecognised OSC.
 
 export type OscPaletteOp =
     | { kind: "set"; index: number; color: string }  // color is "#rrggbb"
-    | { kind: "reset"; index: number }
-    | { kind: "reset-all" };
+    | { kind: "reset" };
 
-/** Scale a `width`-hex-digit channel value to 8 bits, per XParseColor (each
- *  field is treated as a fraction of its max, e.g. `f` → 255, `ffff` → 255). */
-function scaleHexChannel(hex: string): number {
-    const max = (1 << (4 * hex.length)) - 1;
-    const v = parseInt(hex, 16);
-    return Math.round((v / max) * 255);
-}
-
-function toHex2(n: number): string {
-    return Math.max(0, Math.min(255, n)).toString(16).padStart(2, "0");
-}
-
-/**
- * Parse an XParseColor spec into a `#rrggbb` string, or null if unrecognised.
- * Handles the two forms MUDs use in practice — `rgb:r/g/b` and `#`-hex — and
- * rejects named colours and other X forms (`rgbi:`, `cmyk:`, …).
- */
-export function parseXColorSpec(spec: string): string | null {
-    const rgb = /^rgb:([0-9a-f]{1,4})\/([0-9a-f]{1,4})\/([0-9a-f]{1,4})$/i.exec(spec);
-    if (rgb) {
-        return `#${toHex2(scaleHexChannel(rgb[1]))}${toHex2(scaleHexChannel(rgb[2]))}${toHex2(scaleHexChannel(rgb[3]))}`;
-    }
-    const hash = /^#([0-9a-f]+)$/i.exec(spec);
-    if (hash && hash[1].length % 3 === 0) {
-        const w = hash[1].length / 3;
-        if (w >= 1 && w <= 4) {
-            const r = hash[1].slice(0, w), g = hash[1].slice(w, 2 * w), b = hash[1].slice(2 * w);
-            return `#${toHex2(scaleHexChannel(r))}${toHex2(scaleHexChannel(g))}${toHex2(scaleHexChannel(b))}`;
-        }
-    }
-    return null;
-}
-
-/**
- * Parse an OSC payload as an OSC 4 (set) or OSC 104 (reset) palette command.
- * Returns the ordered list of operations, or null if the payload is neither.
- * Malformed index/spec pairs are skipped rather than aborting the whole list.
- */
-export function parseOscColorPalette(payload: string): OscPaletteOp[] | null {
-    if (payload === "104" || payload.startsWith("104;")) {
-        const rest = payload.slice(3);
-        if (rest === "") return [{ kind: "reset-all" }];
-        const ops: OscPaletteOp[] = [];
-        for (const part of rest.split(";")) {
-            if (part === "") continue;
-            const idx = Number(part);
-            if (Number.isInteger(idx) && idx >= 0 && idx <= 255) ops.push({ kind: "reset", index: idx });
-        }
-        return ops;
-    }
-    if (payload === "4" || payload.startsWith("4;")) {
-        const fields = payload.split(";").slice(1); // drop the leading "4"
-        const ops: OscPaletteOp[] = [];
-        for (let i = 0; i + 1 < fields.length; i += 2) {
-            const idx = Number(fields[i]);
-            const spec = fields[i + 1];
-            if (!Number.isInteger(idx) || idx < 0 || idx > 255) continue;
-            if (spec === "?") continue; // query form — we don't report colours back
-            const color = parseXColorSpec(spec);
-            if (color) ops.push({ kind: "set", index: idx, color });
-        }
-        return ops;
+/** Parse an OSC payload as a Linux-console palette command, or null if it is
+ *  not one (or is a malformed one). */
+export function parseOscPalette(payload: string): OscPaletteOp | null {
+    if (payload.startsWith("R")) return { kind: "reset" };
+    if (payload.startsWith("P")) {
+        const m = /^P([0-9a-f])([0-9a-f]{6})$/i.exec(payload);
+        if (!m) return null;
+        return { kind: "set", index: parseInt(m[1], 16), color: `#${m[2].toLowerCase()}` };
     }
     return null;
 }

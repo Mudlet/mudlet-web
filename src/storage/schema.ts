@@ -226,8 +226,8 @@ export interface ProfileSettings {
      *  the built-in default). `undefined` for the whole array = no override. */
     ansiPalette?: (string | undefined)[];
     /** Mudlet "Allow server to redefine your colors". When enabled, the server
-     *  may remap the ANSI/256 palette at runtime via OSC 4 (set color) / OSC 104
-     *  (reset). When disabled, those sequences are ignored and the user palette
+     *  may remap the sixteen ANSI colours at runtime via `ESC]P<i><rrggbb>` (set
+     *  colour) / `ESC]R` (reset). When disabled, those sequences are ignored and the user palette
      *  stands. Off by default — only an explicit `true` enables it. */
     serverRedefineColors?: boolean;
     /** Mudlet 5.0's `Host::mEnableOSC8Hyperlinks` ("Enable OSC 8 hyperlinks").

@@ -1,12 +1,11 @@
-import { colorCodes, setPaletteColor, resetPaletteColor, resetAllPaletteColors, isServerRedefineColorsAllowed } from "./colors";
+import { colorCodes, setAnsiPaletteColor, resetAnsiPaletteToDefaults, isServerRedefineColorsAllowed } from "./colors";
 import mudletColorsJson from "./mudletColors.json";
 import {
     scanEscape,
     cursorForwardCount,
     parseOsc8Payload,
     classifyHyperlinkUri,
-    parseOscColorPalette,
-    type OscPaletteOp,
+    parseOscPalette,
 } from "./ansiEscapes";
 import {
     parseOsc8Uri,
@@ -21,18 +20,19 @@ import { appendCells, cellsToHtml, columnAfter } from "./cellRender";
 import { getControlCharacterMode } from "./controlCharacterMode";
 import { getExpectColorSpaceId } from "./colorSpaceId";
 
-/** Apply OSC 4/104 palette operations to the global colour tables. Palette
- *  changes affect text parsed *after* this point — which is exactly document
- *  order, since lines are fed to the parser in the order the server sent them. */
-export function applyOscPaletteOps(ops: ReadonlyArray<OscPaletteOp>): void {
-    // Mudlet's "Allow server to redefine your colors": when off, OSC 4/104 from
-    // the server is ignored and the user's palette stands.
+/** Obey a Linux-console palette OSC (`ESC]P…` / `ESC]R`, see
+ *  {@link parseOscPalette}) against the global colour tables. Palette changes
+ *  affect text parsed *after* this point — which is exactly document order,
+ *  since lines are fed to the parser in the order the server sent them. Any
+ *  other payload — xterm's OSC 4/104 included — changes nothing. */
+export function applyOscPalette(payload: string): void {
+    // Mudlet's "Allow server to redefine your colors": when off, the server's
+    // palette commands are ignored and the user's palette stands.
     if (!isServerRedefineColorsAllowed()) return;
-    for (const op of ops) {
-        if (op.kind === "set") setPaletteColor(op.index, op.color);
-        else if (op.kind === "reset") resetPaletteColor(op.index);
-        else resetAllPaletteColors();
-    }
+    const op = parseOscPalette(payload);
+    if (!op) return;
+    if (op.kind === "set") setAnsiPaletteColor(op.index, op.color);
+    else resetAnsiPaletteToDefaults();
 }
 
 const ESC = "";
@@ -918,11 +918,10 @@ function parseAnsiSegments(
                         // current hyperlink state untouched (text stays plain).
                     }
                 } else {
-                    // OSC 4/104: server-driven colour palette redefinition. No
-                    // text or state change — it retargets the colour tables for
-                    // the SGR runs that follow.
-                    const palette = parseOscColorPalette(esc.oscPayload);
-                    if (palette) applyOscPaletteOps(palette);
+                    // `ESC]P`/`ESC]R`: server-driven colour palette
+                    // redefinition. No text or state change — it retargets the
+                    // colour tables for the SGR runs that follow.
+                    applyOscPalette(esc.oscPayload);
                 }
             }
             // Every other recognized sequence (non-OSC-8 OSC commands, cursor

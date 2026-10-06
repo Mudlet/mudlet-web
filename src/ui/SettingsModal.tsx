@@ -1133,8 +1133,8 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                         <span className="settings-label" id="server-redefine-colors-label">
                             Server allowed to redefine these colors
                             <HelpTip label="About server color redefinition">
-                                When on, the MUD server may remap the ANSI and 256-color
-                                palette at runtime (via OSC 4 / 104 escape sequences) to
+                                When on, the MUD server may remap the 16 ANSI colors at
+                                runtime (via the OSC P / OSC R escape sequences) to
                                 theme its own output. When off, those sequences are ignored
                                 and your palette always wins. Matches Mudlet's option of the
                                 same name.

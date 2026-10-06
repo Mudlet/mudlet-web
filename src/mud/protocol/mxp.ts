@@ -21,10 +21,10 @@
 //    parsed-and-discarded: the tag is consumed so it never renders literally,
 //    while any enclosed text still renders inline.
 
-import { FormatState, applyOscPaletteOps, parseSgrCodes } from "../text/FormatState";
+import { FormatState, applyOscPalette, parseSgrCodes } from "../text/FormatState";
 import type { BufferSegment, FormatColor, FormatStateSnapshot, FormatHyperlink } from "../text/FormatState";
 import { mxpColor } from "../text/colorParsers";
-import { scanEscape, cursorForwardCount, parseOsc8Payload, classifyHyperlinkUri, parseOscColorPalette } from "../text/ansiEscapes";
+import { scanEscape, cursorForwardCount, parseOsc8Payload, classifyHyperlinkUri } from "../text/ansiEscapes";
 import { parseOsc8Uri, HyperlinkPresetRegistry } from "../text/hyperlinkConfig";
 import type { MspCommand, MspKind } from "./msp";
 import { CLIENT_NAME, CLIENT_VERSION } from "../../version";
@@ -607,7 +607,11 @@ export class MxpParser {
 
     private flushRun(transparent = false): void {
         if (this.run.length === 0) return;
-        const state = this.fmt.toSnapshot();
+        // The attributes the characters are written with, not the pen: on one
+        // of the sixteen ANSI colours bold only picks the bright twin and the
+        // text itself is not bold — an MXP <B> included, which sets the same
+        // bold the SGR does (TBuffer's `mIsDefaultColor ? mBold : false`).
+        const state = this.fmt.toCellSnapshot();
         // An open MXP <COLOR>/<FONT> colour wins over the ANSI pen (Mudlet
         // semantics): the ANSI fg/bg still tracks in `fmt` so it resumes once
         // the colour tag closes, but it isn't what gets painted meanwhile.
@@ -679,10 +683,10 @@ export class MxpParser {
                             // preset definition / disallowed scheme: leave as-is.
                         }
                     } else {
-                        // OSC 4/104 colour palette redefinition (no text/state
-                        // change — retargets colour tables for following runs).
-                        const palette = parseOscColorPalette(esc.oscPayload);
-                        if (palette) applyOscPaletteOps(palette);
+                        // `ESC]P`/`ESC]R` colour palette redefinition (no
+                        // text/state change — retargets colour tables for
+                        // following runs).
+                        applyOscPalette(esc.oscPayload);
                     }
                 }
                 // Every other recognized sequence (non-OSC-8 OSC commands,

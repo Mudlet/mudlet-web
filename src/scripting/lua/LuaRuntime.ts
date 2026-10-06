@@ -35,6 +35,7 @@ import {QT_CURSOR_NAME_TO_INT, QT_CURSOR_TO_CSS} from '../../ui/labels/cursorSha
 import {qtKeyToDomCode, qtModifiersToList, domCodeToQtKey} from '../../mud/keybindings/qtKeys';
 import {permKeyCode} from '../../mud/keybindings/KeyEngine';
 import xterm256 from '../../mud/text/xterm256';
+import {getAnsi16Palette, onAnsiPaletteChange} from '../../mud/text/colors';
 import {cechoFastPaletteLua} from '../../mud/text/colorParsers';
 import {HttpService} from '../http/HttpService';
 import {normalizeUserUrl, userUrlInvalidReason} from '../http/userUrl';
@@ -819,6 +820,9 @@ export class LuaRuntime implements IScriptingRuntime {
     // immediately. Called from saveProfile() so user code can ensure SQL state
     // is durable before the default 500 ms debounce window elapses.
     private flushPendingSqlSnapshots: () => void = () => {};
+    // Stops color_table following the ANSI palette; set by setupAnsiColorTable,
+    // run by destroy().
+    private stopAnsiPaletteSync: () => void = () => {};
     // Set by setupSqlBridge — closes every luasql connection this runtime
     // opened. destroy() runs it before lua_close.
     private closeSqlConnections: () => void = () => {};
@@ -2797,21 +2801,6 @@ __mudletFastColorEcho = nil`,
             const b = parseInt(hex.slice(5, 7), 16);
             return `{${r},${g},${b}}`;
         }).join(',');
-        // The 16 base colours also get Mudlet's named aliases, in BOTH the
-        // snake_case (ansi_light_red) and camelCase (ansiLightRed) conventions
-        // Mudlet ships — keyed to indices 0..15. cecho/hecho conversions and
-        // cecho2string reference these names.
-        const named = [
-            'black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white',
-            'light_black', 'light_red', 'light_green', 'light_yellow',
-            'light_blue', 'light_magenta', 'light_cyan', 'light_white',
-        ].flatMap((name, i) => {
-            const camel = 'ansi' + name.split('_').map(w => w[0].toUpperCase() + w.slice(1)).join('');
-            return [
-                `  if not color_table["ansi_${name}"] then color_table["ansi_${name}"] = p[${i + 1}] end`,
-                `  if not color_table["${camel}"] then color_table["${camel}"] = p[${i + 1}] end`,
-            ];
-        }).join('\n');
         this.exec(
             `do
   color_table = color_table or {}
@@ -2820,10 +2809,74 @@ __mudletFastColorEcho = nil`,
     local k = string.format("ansi_%03d", i)
     if not color_table[k] then color_table[k] = p[i + 1] end
   end
-${named}
 end`,
             'ansi-color-table',
         );
+        // The sixteen ANSI entries then follow the palette actually in force —
+        // the profile's own colours, and whatever the server redefines with
+        // `ESC]P`/`ESC]R` — as desktop's do: Host calls
+        // updateAnsi16ColorsInTable when the profile loads and on every one of
+        // those changes, so `<ansi_red>` paints the colour the game's red does.
+        this.updateAnsi16ColorsInTable();
+        this.stopAnsiPaletteSync = onAnsiPaletteChange(() => this.updateAnsi16ColorsInTable());
+    }
+
+    private static readonly ANSI16_NAMES = [
+        'black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white',
+        'light_black', 'light_red', 'light_green', 'light_yellow',
+        'light_blue', 'light_magenta', 'light_cyan', 'light_white',
+    ];
+
+    /**
+     * TLuaInterpreter::updateAnsi16ColorsInTable: write the sixteen ANSI colours
+     * in force into `color_table` under all three of their names (`ansi_001`,
+     * `ansi_red`, `ansiRed`), each a fresh `{r, g, b}`. Unconditional — the
+     * entries describe the palette, so they replace whatever was there.
+     *
+     * Raw table writes on the main state rather than a Lua chunk: this runs
+     * whenever the palette moves, which can be in the middle of a script (a
+     * `feedTriggers` carrying `ESC]P`), and it must neither dispatch anything
+     * nor be able to fail half-way.
+     */
+    private updateAnsi16ColorsInTable(): void {
+        if (this.inert) return;
+        const api = this.lua.global.luaApi;
+        const L = this.lua.global.address;
+        this.syncGlobalsFromRunning();
+        const top = api.lua_gettop(L);
+        try {
+            api.lua_pushstring(L, 'color_table');
+            api.lua_rawget(L, LUA_GLOBALSINDEX);
+            if (api.lua_type(L, -1) !== LuaType.Table) {
+                // `color_table = color_table or {}` — but a script that put
+                // something truthy other than a table there keeps it.
+                if (api.lua_toboolean(L, -1)) return;
+                api.lua_settop(L, top);
+                api.lua_createtable(L, 0, 0);
+                api.lua_pushvalue(L, -1);
+                this.rawSetGlobal('color_table');
+            }
+            const palette = getAnsi16Palette();
+            for (let i = 0; i < 16; i++) {
+                const hex = palette[i];
+                const rgb = [1, 3, 5].map(o => parseInt(hex.slice(o, o + 2), 16));
+                const name = LuaRuntime.ANSI16_NAMES[i];
+                const camel = 'ansi' + name.split('_').map(w => w[0].toUpperCase() + w.slice(1)).join('');
+                for (const key of [`ansi_${String(i).padStart(3, '0')}`, `ansi_${name}`, camel]) {
+                    api.lua_pushstring(L, key);
+                    api.lua_createtable(L, 3, 0);
+                    for (let c = 0; c < 3; c++) {
+                        api.lua_pushnumber(L, rgb[c]);
+                        api.lua_rawseti(L, -2, c + 1);
+                    }
+                    api.lua_rawset(L, -3);
+                }
+            }
+        } catch (e) {
+            if (!this.markFatal(e)) throw e;
+        } finally {
+            if (!this.inert) api.lua_settop(L, top);
+        }
     }
 
     /**
@@ -5273,6 +5326,7 @@ end`);
         // Likewise every reference a parked nested dispatch holds: they belong
         // to the state about to go, and nothing may hand one back afterwards.
         this.nestedDispatchStates = [];
+        this.stopAnsiPaletteSync();
         this.globalEvents?.close();
         this.tts?.destroy();
         // Close the luasql connections as desktop does when the profile closes:

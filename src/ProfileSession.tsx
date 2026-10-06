@@ -440,7 +440,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     }, [ansiPalette]);
 
     // Mudlet's "Allow server to redefine your colors" (default on). Gates the
-    // global OSC 4/104 path. Turning it off also snaps the palette back to the
+    // global `ESC]P`/`ESC]R` path. Turning it off also snaps the palette back to the
     // user's colors, revoking anything the server already redefined this session.
     useEffect(() => {
         const allowed = serverRedefineColors === true;

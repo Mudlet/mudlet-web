@@ -4,8 +4,7 @@ import {
   scanEscape,
   parseOsc8Payload,
   classifyHyperlinkUri,
-  parseXColorSpec,
-  parseOscColorPalette,
+  parseOscPalette,
 } from '../../../src/mud/text/ansiEscapes';
 import { AnsiAwareBuffer } from '../../../src/mud/text/FormatState';
 import { colorCodes, resetAllPaletteColors, setServerRedefineColorsAllowed } from '../../../src/mud/text/colors';
@@ -247,108 +246,98 @@ describe('classifyHyperlinkUri', () => {
   });
 });
 
-describe('parseXColorSpec', () => {
-  it('parses rgb:RR/GG/BB (8-bit channels)', () => {
-    expect(parseXColorSpec('rgb:ff/80/00')).toBe('#ff8000');
+describe('parseOscPalette', () => {
+  it('parses ESC]P<i><rrggbb> — one hex digit of index, six of colour', () => {
+    expect(parseOscPalette('P1ff8800')).toEqual({ kind: 'set', index: 1, color: '#ff8800' });
+    expect(parseOscPalette('PfABCDEF')).toEqual({ kind: 'set', index: 15, color: '#abcdef' });
   });
 
-  it('scales wider rgb: channels to 8 bits', () => {
-    expect(parseXColorSpec('rgb:ffff/0000/8080')).toBe('#ff0080');
-    expect(parseXColorSpec('rgb:f/0/8')).toBe('#ff0088'); // f→255, 8→136
+  it('drops a P of the wrong length or with a non-hex digit', () => {
+    expect(parseOscPalette('P1ff880')).toBeNull();
+    expect(parseOscPalette('P1ff88000')).toBeNull();
+    expect(parseOscPalette('Pgff8800')).toBeNull();
+    expect(parseOscPalette('P1ff88zz')).toBeNull();
   });
 
-  it('parses #-hex of 3/6/12 digits', () => {
-    expect(parseXColorSpec('#f80')).toBe('#ff8800');
-    expect(parseXColorSpec('#ff8000')).toBe('#ff8000');
-    expect(parseXColorSpec('#ffff00008080')).toBe('#ff0080');
+  it('parses ESC]R as the reset', () => {
+    expect(parseOscPalette('R')).toEqual({ kind: 'reset' });
   });
 
-  it('rejects named colours and other X forms', () => {
-    expect(parseXColorSpec('red')).toBeNull();
-    expect(parseXColorSpec('rgbi:1.0/0.5/0.0')).toBeNull();
-    expect(parseXColorSpec('#abcd')).toBeNull(); // 4 digits: not divisible by 3
-  });
-});
-
-describe('parseOscColorPalette', () => {
-  it('parses an OSC 4 set with one index', () => {
-    expect(parseOscColorPalette('4;1;rgb:ff/00/00')).toEqual([{ kind: 'set', index: 1, color: '#ff0000' }]);
-  });
-
-  it('parses multiple index/spec pairs in one OSC 4', () => {
-    expect(parseOscColorPalette('4;0;#000000;15;#ffffff')).toEqual([
-      { kind: 'set', index: 0, color: '#000000' },
-      { kind: 'set', index: 15, color: '#ffffff' },
-    ]);
-  });
-
-  it('skips the query form (4;index;?) without producing an op', () => {
-    expect(parseOscColorPalette('4;2;?')).toEqual([]);
-  });
-
-  it('parses OSC 104 reset-all and per-index resets', () => {
-    expect(parseOscColorPalette('104')).toEqual([{ kind: 'reset-all' }]);
-    expect(parseOscColorPalette('104;3;7')).toEqual([
-      { kind: 'reset', index: 3 },
-      { kind: 'reset', index: 7 },
-    ]);
-  });
-
-  it('returns null for non-palette OSC payloads', () => {
-    expect(parseOscColorPalette('8;;https://x')).toBeNull();
-    expect(parseOscColorPalette('0;window title')).toBeNull();
+  it('is not xterm OSC 4/104, which desktop ignores', () => {
+    expect(parseOscPalette('4;1;rgb:ff/00/00')).toBeNull();
+    expect(parseOscPalette('104')).toBeNull();
+    expect(parseOscPalette('8;;https://x')).toBeNull();
+    expect(parseOscPalette('0;window title')).toBeNull();
   });
 });
 
-describe('OSC 4/104 palette applied through the parser', () => {
-  const ESC = '\x1b';
-  const ST = `${ESC}\\`;
+// mudlet-web#363 item 2: TBuffer::decodeOSC honours the Linux-console palette
+// commands and ignores xterm's.
+describe('ESC]P / ESC]R palette applied through the parsers (#363)', () => {
   afterEach(() => resetAllPaletteColors());
+  const fgOf = (text: string) => new AnsiAwareBuffer(text).getStateAt(0)?.foreground;
 
-  it('OSC 4 retargets a palette index for following 256-colour SGR', () => {
-    // Redefine index 196 to pure blue, then use it via 38;5;196.
-    new AnsiAwareBuffer(`${ESC}]4;196;rgb:00/00/ff${ST}`);
-    expect(colorCodes.xterm[196]).toBe('#0000ff');
-    const buf = new AnsiAwareBuffer(`${ESC}[38;5;196mX${ESC}[0m`);
-    expect(buf.getStateAt(0)?.foreground).toMatchObject({ space: 'hex', color: '#0000ff' });
+  it('ESC]P1 redefines red for SGR 31 and 38;5;1', () => {
+    new AnsiAwareBuffer(`${ESC}]P1ff8800${ST}`);
+    expect(colorCodes.ansi.dark[1]).toBe('#ff8800');
+    expect(fgOf(`${ESC}[31mX`)).toMatchObject({ color: '#ff8800' });
+    expect(colorCodes.xterm[1]).toBe('#ff8800');
   });
 
-  it('OSC 4 on a low index also updates the 16-colour ANSI table (SGR 31)', () => {
-    new AnsiAwareBuffer(`${ESC}]4;1;#00ff00${ST}`);
-    expect(colorCodes.ansi.dark[1]).toBe('#00ff00');
-    const buf = new AnsiAwareBuffer(`${ESC}[31mred-now-green${ESC}[0m`);
-    expect(buf.getStateAt(0)?.foreground).toMatchObject({ space: 'hex', color: '#00ff00' });
+  it('ESC]P9 redefines light red, BEL-terminated too', () => {
+    new AnsiAwareBuffer(`${ESC}]P9123456${BEL}`);
+    expect(fgOf(`${ESC}[91mX`)).toMatchObject({ color: '#123456' });
+    expect(fgOf(`${ESC}[1;31mX`)).toMatchObject({ color: '#123456' });
   });
 
-  it('OSC 104 resets a redefined index back to default', () => {
-    const original = colorCodes.xterm[196];
+  it('ESC]R puts the sixteen colours back to the built-in ones', () => {
+    new AnsiAwareBuffer(`${ESC}]P3123456${ST}`);
+    new AnsiAwareBuffer(`${ESC}]R${ST}`);
+    expect(fgOf(`${ESC}[33mX`)).toMatchObject({ color: '#808000' });
+  });
+
+  it('ignores OSC 4 and OSC 104', () => {
+    new AnsiAwareBuffer(`${ESC}]4;3;rgb:12/34/56${ST}`);
+    expect(colorCodes.ansi.dark[3]).toBe('#808000');
+    expect(fgOf(`${ESC}[33mX`)).toMatchObject({ color: '#808000' });
     new AnsiAwareBuffer(`${ESC}]4;196;rgb:00/00/ff${ST}`);
-    new AnsiAwareBuffer(`${ESC}]104;196${ST}`);
-    expect(colorCodes.xterm[196]).toBe(original);
+    expect(colorCodes.xterm[196]).not.toBe('#0000ff');
+  });
+
+  it('the MXP parser obeys the same commands', () => {
+    const mxp = new MxpParser({ send: () => {} });
+    mxp.parseLine(`${ESC}]P1ff8800${ST}${ESC}[31mX`);
+    expect(colorCodes.ansi.dark[1]).toBe('#ff8800');
+    mxp.parseLine(`${ESC}]4;3;rgb:12/34/56${ST}`);
+    expect(colorCodes.ansi.dark[3]).toBe('#808000');
+    mxp.parseLine(`${ESC}]R${ST}`);
+    expect(colorCodes.ansi.dark[1]).toBe('#800000');
   });
 });
 
 describe('server-redefine-colors gate', () => {
-  const ESC = '\x1b';
-  const ST = `${ESC}\\`;
   afterEach(() => {
     setServerRedefineColorsAllowed(true);
     resetAllPaletteColors();
   });
 
-  it('ignores OSC 4 from the server when redefinition is disabled', () => {
-    const original = colorCodes.xterm[196];
+  it('ignores ESC]P and ESC]R from the server when redefinition is disabled', () => {
     setServerRedefineColorsAllowed(false);
-    new AnsiAwareBuffer(`${ESC}]4;196;rgb:00/00/ff${ST}`);
-    expect(colorCodes.xterm[196]).toBe(original);
+    new AnsiAwareBuffer(`${ESC}]P1ff8800${ST}`);
+    expect(colorCodes.ansi.dark[1]).toBe('#800000');
+    setServerRedefineColorsAllowed(true);
+    new AnsiAwareBuffer(`${ESC}]P1ff8800${ST}`);
+    setServerRedefineColorsAllowed(false);
+    new AnsiAwareBuffer(`${ESC}]R${ST}`);
+    expect(colorCodes.ansi.dark[1]).toBe('#ff8800');
   });
 
-  it('re-enabling restores the OSC 4 path', () => {
+  it('re-enabling restores the path', () => {
     setServerRedefineColorsAllowed(false);
-    new AnsiAwareBuffer(`${ESC}]4;196;rgb:00/00/ff${ST}`);
+    new AnsiAwareBuffer(`${ESC}]P1ff8800${ST}`);
     setServerRedefineColorsAllowed(true);
-    new AnsiAwareBuffer(`${ESC}]4;196;rgb:00/00/ff${ST}`);
-    expect(colorCodes.xterm[196]).toBe('#0000ff');
+    new AnsiAwareBuffer(`${ESC}]P1ff8800${ST}`);
+    expect(colorCodes.ansi.dark[1]).toBe('#ff8800');
   });
 });
 
