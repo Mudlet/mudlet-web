@@ -1289,8 +1289,8 @@ export class ScriptingAPI {
         // the coalesced reload cannot run while that chunk is on the stack.
         this.host.flushPendingApplies();
         // `data` is a BYTE-STRING: one char per byte, as a socket produces and
-        // as everything downstream reads it (MSDP decodes its values from UTF-8
-        // bytes, for one). The Lua binding unarmors it into that shape — see
+        // as everything downstream reads it (MSDP decodes its values from the
+        // game's bytes, for one). The Lua binding unarmors it into that shape — see
         // byteArmor.ts for why the crossing cannot be made in plain text.
         //
         // The `<T_IAC><T_GA>`-style placeholders are decoded after: a telnet

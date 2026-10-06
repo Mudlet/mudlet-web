@@ -56,7 +56,7 @@ import {installSessionBindings} from './bindings/session';
 import {installUserWindowBindings} from './bindings/userWindows';
 import {MAPPER_WIDGET_ID} from '../../ui/windows/types';
 import {describeThrown} from '../../utils/describeThrown';
-import {installWellFormedPush} from './wellFormedStrings';
+import {installDesktopUtf8Read, installWellFormedPush} from './wellFormedStrings';
 
 // wasmoon doesn't re-export its opaque lua_State pointer type; derive it from
 // the public API so the raw lua_* bindings (see pushJsValue / registerRawGlobal)
@@ -832,6 +832,7 @@ export class LuaRuntime implements IScriptingRuntime {
     ): Promise<LuaRuntime> {
         const lua = await Lua.create({ customWasmUri: luaWasmUrl });
         installWellFormedPush(lua.global.luaApi);
+        installDesktopUtf8Read(lua.global.luaApi as unknown as Parameters<typeof installDesktopUtf8Read>[0]);
         const rt = new LuaRuntime(lua, api, vfs, proxyUrlGetter);
         await rt.setup();
         return rt;
