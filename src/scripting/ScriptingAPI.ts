@@ -3983,6 +3983,18 @@ export class ScriptingAPI {
      */
     beginLine(buffer: AnsiAwareBuffer, isPrompt = false): void {
         buffer.isPrompt = isPrompt;
+        // An echo without a newline from outside the trigger engine — an event
+        // handler, a timer — is still the open line when the next server line
+        // arrives. Desktop ends that line before the server's is added, so the
+        // echo comes first in the buffer and on screen. Left open here, the
+        // server line went into history above it, and flushDeferredEcho then
+        // emitted it after the line as a second copy of what the screen was
+        // already showing (mudlet-web#384). Emitted as 'script' so the renderer
+        // finalizes the element it is drawn in rather than adding one.
+        if (this.triggerLineDepth === 0 && !this.isDeferringEcho) {
+            const open = this.mainConsole.completePartialLine();
+            if (open) this.session.events.emit('message', open, 'script');
+        }
         // Snapshot the colours the SERVER sent, before any trigger runs. Mudlet
         // matches colour triggers against the line as it arrived, so a trigger
         // that recolours the line cannot change what a later (or nested) colour
