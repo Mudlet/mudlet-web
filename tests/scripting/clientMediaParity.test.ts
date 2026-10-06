@@ -50,7 +50,7 @@ type EngineInternals = {
     handleClientMedia: (action: string, value: unknown) => Promise<void>;
     resolveMediaFile: (file: string, baseUrl: string | undefined, logPrefix: string, debug: boolean) => Promise<string | null>;
     mediaPathCandidates: (path: string) => string[];
-    resolveMediaPath: (name: string) => string;
+    resolveMediaPath: (name: string) => string | null;
     gmcpMediaDefaultUrl: string;
     vfs: unknown;
 };
@@ -183,9 +183,19 @@ describe('GMCP Client.Media parity', () => {
         expect(resolve('long3.wav')).toBe('/profiles/p/media/long3.wav');
         expect(resolve('mid*.wav')).toMatch(/^\/profiles\/p\/media\/mid(dle)?\.wav$/);
         expect(resolve('mi?.wav')).toBe('/profiles/p/media/mid.wav');
-        // Nothing matches, or a URL: played as given.
-        expect(resolve('nosuch*.wav')).toBe('nosuch*.wav');
+        // Nothing matches: no file to play. A URL is played as given.
+        expect(resolve('nosuch*.wav')).toBeNull();
+        expect(resolve('nosuch.wav')).toBeNull();
         expect(resolve('https://h/x.wav')).toBe('https://h/x.wav');
         internals().vfs = null;
+    });
+    it('resumes what the server paused from a Play that names only a key or tag', async () => {
+        const resolve = vi.spyOn(internals(), 'resolveMediaFile');
+        const resume = vi.spyOn(session.sounds, 'resume').mockReturnValue(1);
+        await media('play', { key: 'k' });
+        expect(resume).toHaveBeenLastCalledWith('sound', { key: 'k', tag: undefined, origin: 'game' });
+        await media('play', { type: 'music', tag: 'A' });
+        expect(resume).toHaveBeenLastCalledWith('music', { key: undefined, tag: 'a', origin: 'game' });
+        expect(resolve).not.toHaveBeenCalled();
     });
 });

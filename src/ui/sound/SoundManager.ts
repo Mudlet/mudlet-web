@@ -115,9 +115,11 @@ export const DEFAULT_FADEAWAY_MS = 5000;
  * Turns a media name into the path that is actually played. The engine wires
  * one that finds the file in the profile VFS (so the media events carry its
  * full path, as desktop's do) and expands a `*`/`?` wildcard to one matching
- * file. Without one, the name is played as given.
+ * file. Null means there is no such file: the request is refused there and
+ * then, and never listed as playing. Without a resolver, the name is played as
+ * given.
  */
-export type MediaPathResolver = (name: string) => string;
+export type MediaPathResolver = (name: string) => string | null;
 
 interface ActiveSource {
     id: number;
@@ -481,7 +483,7 @@ export class SoundManager {
         if (!ctx) return false;
         // Swallow rejection — decodeBuffer already evicts failed entries from
         // the cache, and preload is advisory.
-        decodeBuffer(ctx, this.resolve(target), this.loader).catch(() => {});
+        decodeBuffer(ctx, this.resolve(target) ?? target, this.loader).catch(() => {});
         return true;
     }
 
@@ -524,9 +526,10 @@ export class SoundManager {
 
     // ── internal ──────────────────────────────────────────────────────────────
 
-    private resolve(name: string): string {
+    private resolve(name: string): string | null {
+        if (!this.resolver) return name;
         try {
-            return this.resolver?.(name) || name;
+            return this.resolver(name);
         } catch {
             return name;
         }
@@ -564,7 +567,25 @@ export class SoundManager {
             const rivals = [...this.active.values()]
                 .filter(a => a.kind === 'sound' && a.origin === origin && !a.stopping && a.state !== 'paused');
             if (rivals.some(a => (a.priority ?? 0) >= priority)) return -1;
-            for (const a of rivals) this.fadeAndStop(ctx, a, 0);
+        }
+
+        // A file that isn't there is refused before anything changes: it is
+        // never listed, and it ends nothing it would have replaced.
+        const path = this.resolve(name);
+        if (path === null) return -1;
+
+        if (priority !== undefined) {
+            for (const a of [...this.active.values()]) {
+                if (a.kind === 'sound' && a.origin === origin && !a.stopping && a.state !== 'paused') {
+                    this.fadeAndStop(ctx, a, 0);
+                }
+            }
+        }
+
+        // A new request ends whatever of its kind sits paused: desktop hands a
+        // request the paused player first, which stops what it held.
+        for (const a of [...this.active.values()]) {
+            if (a.kind === kind && a.origin === origin && a.state === 'paused') this.fadeAndStop(ctx, a, 0);
         }
 
         // Replace any source with the same explicit key in this kind.
@@ -600,7 +621,7 @@ export class SoundManager {
             id,
             kind,
             name,
-            path: this.resolve(name),
+            path,
             key: opts.key,
             tag: opts.tag,
             origin,
@@ -714,9 +735,23 @@ export class SoundManager {
             this.onMediaCaption?.({ kind: a.kind, name: a.name, key: a.key, caption: a.caption, action: 'stops' });
             return;
         }
+        this.end(a, false);
+    }
+
+    /**
+     * Take `a` off the books and report its end. A stop reports it inside the
+     * call, as desktop's does, but prints the closing caption a turn later:
+     * TMedia releases a stopped player one event-loop turn late, and that turn
+     * is what prints it.
+     */
+    private end(a: ActiveSource, deferCaption: boolean): void {
         this.active.delete(a.id);
         if (a.kind === 'music') this.updateMediaSessionState();
-        this.onMediaCaption?.({ kind: a.kind, name: a.name, key: a.key, caption: a.caption, action: 'stops' });
+        if (!a.announced) return;
+        const caption = () =>
+            this.onMediaCaption?.({ kind: a.kind, name: a.name, key: a.key, caption: a.caption, action: 'stops' });
+        if (deferCaption) setTimeout(caption, 0);
+        else caption();
         this.announceFinish(a);
     }
 
@@ -779,16 +814,26 @@ export class SoundManager {
         return pos;
     }
 
-    /**
-     * Resume the paused source a play request names — same kind, origin and
-     * name, and the same key (or none on either side). Returns its id, or
-     * undefined when no paused source matches.
-     */
+    /** Resume the paused source a play request names — see {@link resume}. */
     private resumeMatching(kind: 'sound' | 'music', opts: PlaySoundOptions): number | undefined {
-        const origin: MediaOrigin = opts.origin ?? 'api';
+        return this.resume(kind, { name: opts.name, key: opts.key, tag: opts.tag, origin: opts.origin ?? 'api' });
+    }
+
+    /**
+     * Resume a paused source of `kind` that the request matches, the way
+     * desktop's isMediaMatch() picks one: each of name, key and tag that the
+     * request gives must match, and it must give at least one. This is how a
+     * server resumes over GMCP with a key or tag alone. Returns the source's
+     * id, or undefined when nothing paused matches.
+     */
+    resume(kind: 'sound' | 'music', req: { name?: string; key?: string; tag?: string; origin?: MediaOrigin }): number | undefined {
+        if (!req.name && !req.key && !req.tag) return undefined;
+        const origin: MediaOrigin = req.origin ?? 'api';
         for (const a of this.active.values()) {
             if (a.kind !== kind || a.state !== 'paused' || a.stopping || a.origin !== origin) continue;
-            if (a.name !== opts.name || (a.key ?? '') !== (opts.key ?? '')) continue;
+            if (req.name && a.name !== req.name && a.path !== req.name) continue;
+            if (req.key && a.key !== req.key) continue;
+            if (req.tag && a.tag !== req.tag) continue;
             const ctx = sharedContext;
             if (!ctx) return undefined;
             if (!a.buffer) {
@@ -817,25 +862,24 @@ export class SoundManager {
         if (!src) {
             // Still loading, or paused: there is no node to stop. A paused
             // source did start, so its end is reported like any other.
-            this.active.delete(a.id);
-            if (a.announced) {
-                if (a.kind === 'music') this.updateMediaSessionState();
-                this.onMediaCaption?.({ kind: a.kind, name: a.name, key: a.key, caption: a.caption, action: 'stops' });
-                this.announceFinish(a);
-            }
+            this.end(a, true);
             return;
         }
         const now = ctx.currentTime;
-        if (fadeMs > 0) {
-            a.fading = true;
-            const cur = a.gain.gain.value;
-            a.gain.gain.cancelScheduledValues(now);
-            a.gain.gain.setValueAtTime(cur, now);
-            a.gain.gain.linearRampToValueAtTime(0, now + fadeMs / 1000);
-            try { src.stop(now + fadeMs / 1000); } catch { /* already stopped */ }
-        } else {
+        if (fadeMs <= 0) {
+            // Ended here and now, so reported here and now rather than when
+            // the node gets round to its onended.
+            src.onended = null;
             try { src.stop(); } catch { /* already stopped */ }
+            this.end(a, true);
+            return;
         }
+        a.fading = true;
+        const cur = a.gain.gain.value;
+        a.gain.gain.cancelScheduledValues(now);
+        a.gain.gain.setValueAtTime(cur, now);
+        a.gain.gain.linearRampToValueAtTime(0, now + fadeMs / 1000);
+        try { src.stop(now + fadeMs / 1000); } catch { /* already stopped */ }
     }
 
     /** The music track a `continue` request would carry on with: the same

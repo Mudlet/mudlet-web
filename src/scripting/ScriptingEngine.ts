@@ -1994,10 +1994,10 @@ export class ScriptingEngine implements EngineHost {
      * The file a media name plays: the first of its {@link mediaPathCandidates}
      * that exists, as a full VFS path. A `*` or `?` in the file name is a
      * wildcard, as in Mudlet's TMedia, and plays one of the files it matches,
-     * picked at random. A URL, or a name that matches nothing, is returned as
-     * it is.
+     * picked at random. A URL is returned as it is; a name that matches no
+     * file is null, which the SoundManager refuses without listing it.
      */
-    private resolveMediaPath(name: string): string {
+    private resolveMediaPath(name: string): string | null {
         const v = this.vfs;
         if (!v || /^https?:|^data:|^blob:/.test(name)) return name;
         const wild = /[*?]/.test(name);
@@ -2015,7 +2015,7 @@ export class ScriptingEngine implements EngineHost {
             const matches = entries.filter(e => pattern.test(e) && v.stat(`${dir}/${e}`)?.type === 'file');
             if (matches.length > 0) return `${dir}/${matches[Math.floor(Math.random() * matches.length)]}`;
         }
-        return name;
+        return null;
     }
 
     /** Sound/video loader: absolute URLs hit the network; everything else is
@@ -2648,9 +2648,19 @@ export class ScriptingEngine implements EngineHost {
             return;
         }
 
-        // Play / Load both need a resolved file.
+        // Play / Load both need a resolved file — except a Play that names no
+        // file, which can still resume what the server paused by its key or
+        // tag alone (TMedia::playMedia looks for a paused player before it
+        // looks at the file).
         const name = str('name');
-        if (!name) return;
+        if (!name) {
+            if (action === 'play' && type !== 'video') {
+                this.session.sounds.resume(type === 'music' ? 'music' : 'sound', {
+                    key: str('key') || undefined, tag: tagOf(), origin: 'game',
+                });
+            }
+            return;
+        }
         const baseUrl = str('url') || this.gmcpMediaDefaultUrl || undefined;
         const resolved = await this.resolveMediaFile(name, baseUrl, '[mudlet.gmcp] media', debug);
         if (!resolved) return;

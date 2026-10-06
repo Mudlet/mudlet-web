@@ -645,4 +645,72 @@ describe('SoundManager parity with desktop (#350)', () => {
         mgr.stopSounds({ priority: 51 });
         expect(mgr.getPlaying()).toEqual([]);
     });
+    it('ends a paused sound when a different one is played, inside the call', async () => {
+        const { mgr, events } = makeManager();
+        await mgr.playSound({ name: 'parked.wav', key: 'parked', tag: 'pt' });
+        mgr.pauseSounds();
+        events.length = 0;
+
+        const pending = mgr.playSound({ name: 'other.wav', key: 'new' });
+        expect(events.map(e => [e[0], e[1], e[4], e[5]])).toEqual([['finished', 'parked.wav', 'parked', 'pt']]);
+        await pending;
+        expect(names(mgr.getPlaying())).toEqual(['other.wav']);
+        expect(mgr.getPaused()).toEqual([]);
+    });
+
+    it('leaves the paused sound alone when the new request is refused on priority', async () => {
+        const { mgr, events } = makeManager();
+        await mgr.playSound({ name: 'loud.wav', priority: 90 });
+        await mgr.playSound({ name: 'parked.wav', key: 'parked' });
+        mgr.pauseSounds({ key: 'parked' });
+        events.length = 0;
+        expect(await mgr.playSound({ name: 'quiet.wav', priority: 10 })).toBe(-1);
+        expect(events).toEqual([]);
+        expect(names(mgr.getPaused())).toEqual(['parked.wav']);
+    });
+
+    it('refuses a file the resolver cannot find, without listing it or ending anything', async () => {
+        const { mgr, events } = makeManager();
+        mgr.setPathResolver(name => (name === 'here.wav' ? '/profiles/p/media/here.wav' : null));
+        await mgr.playSound({ name: 'here.wav', key: 'h' });
+        mgr.pauseSounds();
+        events.length = 0;
+        const pending = mgr.playSound({ name: 'absent.wav' });
+        expect(mgr.getPlaying()).toEqual([]);
+        expect(await pending).toBe(-1);
+        expect(events).toEqual([]);
+        expect(names(mgr.getPaused())).toEqual(['here.wav']);
+    });
+
+    it('reports an immediate stop inside the call, and its closing caption a turn later', async () => {
+        const { mgr, events } = makeManager();
+        const captions: string[] = [];
+        mgr.onMediaCaption = (info) => captions.push(info.action);
+        await mgr.playSound({ name: 'now.wav' });
+        events.length = 0;
+        captions.length = 0;
+        mgr.stopSounds();
+        expect(events.map(e => e[0])).toEqual(['finished']);
+        expect(captions).toEqual([]);
+        await new Promise(r => setTimeout(r, 0));
+        expect(captions).toEqual(['stops']);
+    });
+
+    it('resumes by key or tag alone, as a name-less server request does', async () => {
+        const { mgr, events } = makeManager();
+        await mgr.playSound({ name: 'r.wav', key: 'rk', tag: 'rt', origin: 'game' });
+        await mgr.playMusic({ name: 'm.wav', tag: 'mt', origin: 'game' });
+        mgr.pauseSounds({ origin: 'game' });
+        mgr.pauseMusic({ origin: 'game' });
+        events.length = 0;
+
+        // Nothing given, or another origin's request: nothing resumes.
+        expect(mgr.resume('sound', { origin: 'game' })).toBeUndefined();
+        expect(mgr.resume('sound', { key: 'rk' })).toBeUndefined();
+        expect(mgr.resume('sound', { key: 'rk', origin: 'game' })).toBeGreaterThan(0);
+        expect(mgr.resume('music', { tag: 'mt', origin: 'game' })).toBeGreaterThan(0);
+        expect(events.map(e => [e[0], e[1]])).toEqual([['started', 'r.wav'], ['started', 'm.wav']]);
+        expect(mgr.getPaused({}, 'sound')).toEqual([]);
+        expect(mgr.getPaused({}, 'music')).toEqual([]);
+    });
 });
