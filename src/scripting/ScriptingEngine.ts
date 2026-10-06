@@ -106,6 +106,7 @@ const EMPTY_PROFILE_XML =
     '<?xml version="1.0" encoding="UTF-8"?>'
     + '<MudletPackage version="1.001"><HostPackage><Host></Host></HostPackage></MudletPackage>';
 import type {PackageManifest} from '../storage/schema';
+import {DEFAULT_CMD_LINE_HOST, type CmdLineHost} from '../ui/cmdline/subCommandLine';
 
 function hexToRgb(hex: string): RgbColor | null {
     const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
@@ -606,6 +607,20 @@ export class ScriptingEngine implements EngineHost {
             this.api.printCommandToWindow(id, text);
         };
         session.cmdLines.onDefaultSend = (text) => this.hostSend(text);
+        // What every named command line reads off the profile, as desktop's
+        // TCommandLine reads it off its Host: the auto-clear and highlight-
+        // history settings, the password prompt, and its Tab pool.
+        const profileField = <K extends 'autoClearInput' | 'highlightHistory' | 'disablePasswordMasking'>(key: K) =>
+            selectProfileField(useAppStore.getState(), connectionId, key);
+        const cmdLineHost: CmdLineHost = {
+            autoClear: () => profileField('autoClearInput') === true,
+            highlightHistory: () => profileField('highlightHistory') ?? true,
+            remoteEcho: () => this.session.isRemoteEchoingActive(),
+            disablePasswordMasking: () => profileField('disablePasswordMasking') ?? false,
+            completionWords: (name) => this.api.cmdLineCompletionWords(name),
+        };
+        session.windows.cmdLineHost = cmdLineHost;
+        session.cmdLines.cmdLineHost = cmdLineHost;
         // Mudlet's postMessage(): client messages for the player (e.g. a map file
         // whose format version can't be read) go on the main console, coloured off
         // their "[ PREFIX ] -" the way cTelnet::postMessage does.
@@ -4581,6 +4596,8 @@ export class ScriptingEngine implements EngineHost {
         this.session.windows.onDownloadMap = undefined;
         this.session.windows.onCmdLineDefaultSend = undefined;
         this.session.cmdLines.onDefaultSend = undefined;
+        this.session.windows.cmdLineHost = DEFAULT_CMD_LINE_HOST;
+        this.session.cmdLines.cmdLineHost = DEFAULT_CMD_LINE_HOST;
         this.session.windows.onStartSpeedWalk = undefined;
         this.session.windows.onFileDrop = undefined;
         this.session.sounds.onMediaStarted = undefined;

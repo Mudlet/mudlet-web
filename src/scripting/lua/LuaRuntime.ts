@@ -903,6 +903,7 @@ export class LuaRuntime implements IScriptingRuntime {
             popNestedDispatchState: (depth) => this.popNestedDispatchState(depth),
             vfs: this.vfs,
             overlayCmdLineActionCbIds: this.overlayCmdLineActionCbIds,
+            windowCmdLineActionCbIds: this.windowCmdLineActionCbIds,
             unregisterCb: (cbId) => this.unregisterCb(cbId),
             pushJsValue: (L, value, depth) => this.pushJsValue(L, value, depth),
             registerRawGlobal: (name, fn) => this.registerRawGlobal(name, fn),

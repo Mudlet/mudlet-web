@@ -3,6 +3,7 @@ import type React from 'react';
 import type { CommandLineManager, CmdLineState } from './CommandLineManager';
 import { cmdLineQssToScopedCss, cssEscape } from '../labels/qtCss';
 import { useCmdLineSelection } from './useCmdLineSelection';
+import { useSubCommandLineKeys } from './useSubCommandLineKeys';
 import './CommandLineOverlay.css';
 
 interface CommandLineOverlayProps {
@@ -34,7 +35,7 @@ function CommandLine({ c, manager, zIndex }: { c: CmdLineState; manager: Command
     const [value, setValue] = useState(c.value);
     const valueRef = useRef(value);
     valueRef.current = value;
-    const inputRef = useRef<HTMLInputElement>(null);
+    const inputRef = useRef<HTMLTextAreaElement>(null);
     const lastSeedSeq = useRef<number>(c.valueSeq);
     const requestSelection = useCmdLineSelection(inputRef, value);
     /** The seed a selectCmdLineText arrived after, while that seed was still
@@ -71,17 +72,27 @@ function CommandLine({ c, manager, zIndex }: { c: CmdLineState; manager: Command
         });
     }, [c.name, manager, requestSelection]);
 
-    const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-        if (e.key !== 'Enter') return;
-        e.preventDefault();
-        // Match WindowCmdLine: the line clears once the text went somewhere —
-        // the bound action, or the game when there is none.
-        if (manager.submit(c.name, valueRef.current)) setValue('');
-    };
+    // History, Tab completion, Shift+Enter, Escape and what Enter leaves
+    // behind, as on every desktop TCommandLine (#342).
+    const { onKeyDown, onChange } = useSubCommandLineKeys({
+        model: manager.model(c.name),
+        host: () => manager.cmdLineHost,
+        inputRef,
+        valueRef,
+        setValue,
+        dispatch: command => { manager.submit(c.name, command); },
+        takeScripted: () => {
+            const now = manager.get(c.name);
+            if (!now || now.valueSeq === lastSeedSeq.current) return null;
+            lastSeedSeq.current = now.valueSeq;
+            selectAfterSeed.current = null;
+            return now.value;
+        },
+    });
 
     if (!c.visible) return null;
 
-    const scope = `input[data-mudlet-cmdline-overlay="${cssEscape(c.name)}"]`;
+    const scope = `textarea[data-mudlet-cmdline-overlay="${cssEscape(c.name)}"]`;
     const scopedCss = c.styleSheet ? cmdLineQssToScopedCss(c.styleSheet, scope) : '';
 
     const style: React.CSSProperties = {
@@ -92,15 +103,16 @@ function CommandLine({ c, manager, zIndex }: { c: CmdLineState; manager: Command
     return (
         <>
             {scopedCss && <style>{scopedCss}</style>}
-            <input
+            <textarea
                 ref={inputRef}
                 data-mudlet-cmdline-overlay={c.name}
                 className="cmdline-overlay-input"
                 style={style}
+                rows={1}
                 value={value}
                 disabled={!c.enabled}
-                onChange={e => setValue(e.target.value)}
-                onKeyDown={handleKeyDown}
+                onChange={onChange}
+                onKeyDown={onKeyDown}
                 spellCheck={false}
                 autoComplete="off"
                 autoCorrect="off"

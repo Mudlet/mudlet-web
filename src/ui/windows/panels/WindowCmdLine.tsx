@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import type React from 'react';
 import type { WindowManager } from '../WindowManager';
 import { cmdLineQssToScopedCss, cssEscape } from '../../labels/qtCss';
+import { useSubCommandLineKeys } from '../../cmdline/useSubCommandLineKeys';
+import { SubCommandLine } from '../../cmdline/subCommandLine';
 
 interface WindowCmdLineProps {
     id: string;
@@ -22,13 +23,15 @@ interface WindowCmdLineProps {
  *
  * Enter dispatches to the bound Lua callback (setCmdLineAction). When no
  * callback is bound, the text is sent to the game as typed input, the way
- * Mudlet's TCommandLine::enterCommand falls back to Host::send.
+ * Mudlet's TCommandLine::enterCommand falls back to Host::send. History, Tab
+ * completion, Shift+Enter, Escape and what Enter leaves behind follow desktop's
+ * TCommandLine (see useSubCommandLineKeys).
  */
 export function WindowCmdLine({ id, manager, styleSheet, seedValue, seedSeq }: WindowCmdLineProps) {
     const [value, setValue] = useState(seedValue ?? '');
     const valueRef = useRef(value);
     valueRef.current = value;
-    const inputRef = useRef<HTMLInputElement>(null);
+    const inputRef = useRef<HTMLTextAreaElement>(null);
     const lastSeedSeq = useRef<number | undefined>(seedSeq);
 
     // Apply script-pushed seeds (printCmdLine / clearCmdLine / appendCmdLine).
@@ -53,29 +56,39 @@ export function WindowCmdLine({ id, manager, styleSheet, seedValue, seedSeq }: W
         return manager.registerCmdLineValueProbe(id, () => valueRef.current);
     }, [id, manager]);
 
-    const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-        if (e.key !== 'Enter') return;
-        e.preventDefault();
-        // Mudlet auto-clears a userwindow command line after Enter (mirrors
-        // TCommandLine::handleEnter for sub-cmd lines). Without this, scripts
-        // written for Mudlet that don't explicitly clearCmdLine would leave the
-        // prior text in the input.
-        if (manager.submitCmdLine(id, valueRef.current)) setValue('');
-    };
+    // Only a window enableCommandLine gave a line renders this, so the model
+    // is there; the fallback covers a render racing a deleteCommandLine.
+    const fallbackModel = useRef<SubCommandLine | null>(null);
+    const model = manager.cmdLineModel(id) ?? (fallbackModel.current ??= new SubCommandLine(id));
+    const { onKeyDown, onChange } = useSubCommandLineKeys({
+        model,
+        host: () => manager.cmdLineHost,
+        inputRef,
+        valueRef,
+        setValue,
+        dispatch: command => { manager.submitCmdLine(id, command); },
+        takeScripted: () => {
+            const seed = manager.cmdLineSeed(id);
+            if (!seed || seed.seq === (lastSeedSeq.current ?? 0)) return null;
+            lastSeedSeq.current = seed.seq;
+            return seed.value;
+        },
+    });
 
-    const scope = `input[data-mudlet-cmdline="${cssEscape(id)}"]`;
+    const scope = `textarea[data-mudlet-cmdline="${cssEscape(id)}"]`;
     const scopedCss = styleSheet ? cmdLineQssToScopedCss(styleSheet, scope) : '';
 
     return (
         <>
             {scopedCss && <style>{scopedCss}</style>}
-            <input
+            <textarea
                 ref={inputRef}
                 data-mudlet-cmdline={id}
                 className="window-cmdline"
+                rows={1}
                 value={value}
-                onChange={e => setValue(e.target.value)}
-                onKeyDown={handleKeyDown}
+                onChange={onChange}
+                onKeyDown={onKeyDown}
                 spellCheck={false}
                 autoComplete="off"
                 autoCorrect="off"

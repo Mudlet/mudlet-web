@@ -5131,10 +5131,12 @@ end
 -- (nil, 'command line "<name>" not found') instead. print/appendCmdLine name
 -- one only in their two-argument form; a lone argument is the text.
 do
+    -- A console only has a command line once enableCommandLine gave it one;
+    -- naming a miniconsole or user window that has none is refused like any
+    -- other name that isn't a command line (#342).
     local function cmdLineNotFound(name)
         if type(name) ~= 'string' or name == '' or name == 'main' then return nil end
-        local t = __windowType(name)
-        if t == 'commandline' or t == 'miniconsole' or t == 'userwindow' then return nil end
+        if __hasCmdLine(name) then return nil end
         return 'command line "' .. name .. '" not found'
     end
 
@@ -5166,10 +5168,9 @@ do
                 .. type(name) .. "!)", 3)
         end
         if name == '' then return "command line name cannot be an empty string" end
-        -- Same reach as missingCmdLine above: a console's own command line is
-        -- named for the console, not registered as a command line of its own.
-        local t = __windowType(name)
-        if t ~= 'commandline' and t ~= 'miniconsole' and t ~= 'userwindow' then
+        -- A console's own command line is named for the console, and only
+        -- exists once enableCommandLine has made it (#342).
+        if not __hasCmdLine(name) then
             return "command line name '" .. name .. "' not found"
         end
         return nil
@@ -9316,9 +9317,11 @@ end
 -- so the type check ran against whatever the previous call had left behind and a
 -- leftover string blacklisted itself (upstream #9683, covered by UI_spec).
 do
+    -- Any command line: a createCommandLine one, or a miniconsole's / user
+    -- window's own once enabled — each keeps lists of its own (#342).
     local function cmdLineMissing(name)
         if name == nil or name == 'main' then return nil end
-        if __windowType(name) == 'commandline' then return nil end
+        if __hasCmdLine(name) then return nil end
         return 'command line "' .. tostring(name) .. '" not found'
     end
 
