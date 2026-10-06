@@ -680,11 +680,11 @@ export function installMapBindings({
         return api.map.setExitWeight(int(id), dir, int(w));
     });
     // Mudlet `getCustomLines(roomID)` → { [dir] = { attributes={color,style,arrow}, points=[{x,y},...] } }.
-    // Returns nil when the room doesn't exist; wasmoon converts the JS
-    // arrays/objects directly — the `points` array lands 0-indexed on the
-    // Lua side, matching Mudlet's documented shape. A point is x and y only:
+    // Returns nil when the room doesn't exist (Bridge.lua adds desktop's
+    // message); wasmoon converts the JS arrays/objects directly — the
+    // `points` array lands 0-indexed on the Lua side, matching Mudlet's documented shape. A point is x and y only:
     // desktop pushes no z here (getCustomLines1's triples carry the room's).
-    lua.global.set('getCustomLines', (id: unknown) => {
+    lua.global.set('__getCustomLines', (id: unknown) => {
         const rid = int(id);
         if (!Number.isFinite(rid)) return null;
         return api.map.getCustomLines(rid) ?? null;
@@ -692,7 +692,8 @@ export function installMapBindings({
     // Mudlet removeCustomLine(roomID, direction). A numeric-string direction
     // (e.g. a regex capture "4") is coerced back to a number so MapStore's
     // parseDirection recognizes it; arbitrary special-exit commands pass through.
-    lua.global.set('removeCustomLine', (id: unknown, dir: unknown) => {
+    // Hands back the refusal message or null; Bridge.lua shapes true / (nil, errMsg).
+    lua.global.set('__removeCustomLine', (id: unknown, dir: unknown) => {
         let d: number | string;
         if (typeof dir === 'number') d = dir;
         else { const s = String(dir ?? ''); d = /^-?\d+$/.test(s.trim()) ? Number(s) : s; }

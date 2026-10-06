@@ -667,9 +667,15 @@ function addCustomLine(roomID, id_to, direction, style, color, arrow)
         -- few of them is caught by the count afterwards as a value mistake
         -- rather than a type error. That distinction is the whole of issue
         -- #5272: {{}} has to be refused, not raised on.
+        -- The points are walked with pairs, as desktop walks them with
+        -- lua_next: a sparse list ({[1]=..., [3]=...}) keeps every point
+        -- rather than stopping at the first hole, and `i` counts points in
+        -- that walk, which is what desktop's messages number them by.
         local AXES = {'x', 'y', 'z'}
-        local pts, counted = {}, 0
-        for i, p in ipairs(id_to) do
+        local pts, counted, i = {}, 0, 0
+        local firstZ, wrongZ, wrongAt
+        for _, p in pairs(id_to) do
+            i = i + 1
             if type(p) ~= 'table' then
                 error('addCustomLine: bad argument #2 table item index #' .. i
                     .. ' type (coordinate list must be a table containing tables of three'
@@ -694,9 +700,24 @@ function addCustomLine(roomID, id_to, direction, style, color, arrow)
             -- counts allow a two-coordinate point through to the mismatch test.
             if present > 0 then counted = counted + 1 end
             pts[#pts + 1] = table.concat(coords, ',')
+            -- A line lies on one level: desktop reads each z with
+            -- lua_tointeger and refuses the line at the first point whose z
+            -- differs from the first point's.
+            if p[3] ~= nil then
+                local z = __mudlet_int(p[3])
+                if firstZ == nil then
+                    firstZ = z
+                elseif z ~= firstZ and wrongAt == nil then
+                    wrongZ, wrongAt = z, i
+                end
+            end
         end
         if #pts == 0 or counted == 0 then
             return nil, "addCustomLine: missing coordinates to create the line to"
+        end
+        if wrongAt then
+            return nil, "addCustomLine: the z values are not all on the same level (first wrong value is "
+                .. tostring(wrongZ) .. " at index " .. tostring(wrongAt) .. ")"
         end
         target = 'P:' .. table.concat(pts, ';')
     else
@@ -1824,6 +1845,24 @@ function getAreaExits(areaID, fullData)
         return out
     end
     return reindex1(raw)
+end
+
+-- Mudlet getCustomLines(roomID). A missing room is desktop's (nil, errMsg),
+-- not a bare nil.
+function getCustomLines(id)
+    local raw = __getCustomLines(id)
+    if raw == nil then
+        return nil, "getCustomLines: room " .. tostring(__mudlet_int(id) or id) .. " doesn't exist"
+    end
+    return raw
+end
+
+-- Mudlet removeCustomLine(roomID, direction) → true, or (nil, errMsg) when the
+-- room, the exit or the line is missing.
+function removeCustomLine(id, direction)
+    local err = __removeCustomLine(id, direction)
+    if err == nil then return true end
+    return nil, err
 end
 
 -- Mudlet getCustomLines1(roomID) → getCustomLines with 1-indexed point arrays.
@@ -3184,6 +3223,9 @@ function getMapLabel(areaId, key)
     if kt ~= 'number' and kt ~= 'string' then
         error('getMapLabel: bad argument #2 type (labelID as number or labelText as string expected, got ' .. kt .. '!)', 2)
     end
+    -- A numeric id is read with lua_tointeger, so 0.9 is label 0 (as room
+    -- ids truncate, #295).
+    if kt == 'number' then key = __mudlet_int(key) end
     if kt == 'number' and key < 0 then
         return nil, 'getMapLabel: labelID ' .. tostring(key) .. ' is invalid, it must be zero or greater'
     end
