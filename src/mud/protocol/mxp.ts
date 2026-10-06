@@ -246,13 +246,33 @@ const SUPPORTED_ELEMENTS: ReadonlyMap<string, readonly string[]> = new Map([
     ['h', []], ['high', []],
 ]);
 
-/** Built-in XML/HTML entities. User and `<V>`-defined entities augment these via
- *  the per-session `entities` map. */
-const BUILTIN_ENTITIES: Record<string, string> = {
-    // `&nbsp;` is a plain space, as in Mudlet's TEntityResolver — U+00A0 would
-    // make every trigger pattern with a space in it miss the text.
-    lt: "<", gt: ">", amp: "&", quot: '"', apos: "'", nbsp: " ",
-};
+/** The entities every game gets — Mudlet's TEntityResolver table, whole: the
+ *  ASCII punctuation names, `&tab;` and `&newline;`, and HTML's Latin-1 set.
+ *  Names are case-sensitive here (`&Auml;` is not `&auml;`); a name that
+ *  matches none exactly is tried again lowercased, as Mudlet tries it. A game's
+ *  own `<!ENTITY>` of the same name is looked up first and wins.
+ *  `&nbsp;` is a plain space, as in Mudlet — U+00A0 would make every trigger
+ *  pattern with a space in it miss the text. A Map, so a name like
+ *  `&constructor;` is not found on Object's prototype. */
+const BUILTIN_ENTITIES: ReadonlyMap<string, string> = new Map(Object.entries({
+    tab: "\t", newline: "\n", excl: "!", quot: "\"", num: "#", dollar: "$", percnt: "%", amp: "&",
+    apos: "'", lpar: "(", rpar: ")", ast: "*", plus: "+", comma: ",", period: ".", sol: "/",
+    colon: ":", semi: ";", lt: "<", equals: "=", gt: ">", quest: "?", commat: "@", lsqb: "[",
+    bsol: "\\", rsqb: "]", hat: "^", lowbar: "_", grave: "`", lcub: "{", verbar: "|", rcub: "}",
+    nbsp: " ", iexcl: "¡", cent: "¢", pound: "£", curren: "¤", yen: "¥", brvbar: "¦", sect: "§",
+    dot: "¨", copy: "©", ordf: "ª", laquo: "«", not: "¬", shy: "\u00ad", reg: "®", macr: "¯",
+    deg: "°", plusmn: "±", divide: "÷", times: "×", sup2: "²", sup3: "³", acute: "´", uml: "¨",
+    micro: "µ", para: "¶", middot: "·", cedil: "¸", sup1: "¹", ordm: "º", raquo: "»", frac14: "¼",
+    frac12: "½", frac34: "¾", iquest: "¿", Aacute: "Á", aacute: "á", Acirc: "Â", acirc: "â",
+    AElig: "Æ", aelig: "æ", Agrave: "À", agrave: "à", Aring: "Å", aring: "å", Atilde: "Ã",
+    atilde: "ã", Auml: "Ä", auml: "ä", Ccedil: "Ç", ccedil: "ç", Eacute: "É", eacute: "é",
+    Ecirc: "Ê", ecirc: "ê", Egrave: "È", egrave: "è", Euml: "Ë", euml: "ë", Iacute: "Í",
+    iacute: "í", Icirc: "Î", icirc: "î", Igrave: "Ì", igrave: "ì", Iuml: "Ï", iuml: "ï", ETH: "Ð",
+    eth: "ð", Ntilde: "Ñ", ntilde: "ñ", Oacute: "Ó", oacute: "ó", Ocirc: "Ô", ocirc: "ô",
+    Ograve: "Ò", ograve: "ò", Oslash: "Ø", oslash: "ø", Otilde: "Õ", otilde: "õ", Ouml: "Ö",
+    ouml: "ö", Uacute: "Ú", uacute: "ú", Ucirc: "Û", ucirc: "û", Ugrave: "Ù", ugrave: "ù",
+    Uuml: "Ü", uuml: "ü", Yacute: "Ý", yacute: "ý", THORN: "Þ", thorn: "þ", szlig: "ß",
+}));
 
 /** Tags the MXP spec defines that this parser consumes without acting on —
  *  structural ones and the heavy ones it deliberately leaves alone. Anything
@@ -683,13 +703,23 @@ export class MxpParser {
                     i++;
                     continue;
                 }
-                const close = findTagEnd(text, i);
+                const { close, restart } = scanTag(text, i);
+                const cutAt = text.indexOf("\x1b", i + 1);
+                // A second `<` before the tag closed — outside quotes, and not
+                // in a comment — means the first never was one: what was read
+                // of it is text, and the new `<` starts afresh (TMxpProcessor's
+                // nested-'<' recovery). Read as one tag instead, `a<b and <3> ok`
+                // lost "b and <3" and turned bold.
+                if (restart !== -1 && (cutAt === -1 || restart < cutAt)) {
+                    this.appendText(text.slice(i, restart), true);
+                    i = restart;
+                    continue;
+                }
                 // An ANSI escape cannot be part of a tag, so one arriving
                 // before the tag closed cuts it short: what was read of it is
                 // shown as the text it was, in the colours in use before the
                 // escape, and the escape then acts as usual (TBuffer's
                 // `abortCurrentTag()` on an ESC while a tag is being built).
-                const cutAt = text.indexOf("\x1b", i + 1);
                 if (cutAt !== -1 && (close === -1 || cutAt < close)) {
                     this.appendText(text.slice(i, cutAt), true);
                     i = cutAt;
@@ -1263,7 +1293,7 @@ export class MxpParser {
         this.stack.push({ name: "v", closeFmt: this.fmt.toSnapshot(), varName, varStart: this.plain.length });
     }
 
-    private handleCloseTag(name: string): void {
+    private handleCloseTag(name: string, depth = 0): void {
         // </DEST> isn't a formatting tag on the stack — it ends text redirection.
         // eol attr controls whether the frame write is a complete line.
         if (name === "dest") {
@@ -1281,7 +1311,17 @@ export class MxpParser {
                 return;
             }
         }
-        // Stray closing tag with no matching open — ignore.
+        // A custom element with nothing open to close — an EMPTY one, which
+        // never leaves a marker: close what its definition opens, innermost
+        // first, as Mudlet's handleEndTag does for any element with a
+        // definition (`<!ELEMENT rd '<COLOR red><B>' EMPTY>` makes `</rd>` a
+        // `</B></COLOR>`). Anything else is a stray close, and is ignored.
+        const def = this.elements.get(name);
+        if (!def || depth >= MAX_DEPTH) return;
+        const opened = [...def.template.matchAll(/<\s*([A-Za-z][\w-]*)/g)].map(m => m[1].toLowerCase());
+        for (let k = opened.length - 1; k >= 0; k--) {
+            if (opened[k] !== name) this.handleCloseTag(opened[k], depth + 1);
+        }
     }
 
     private finalizeTag(tag: OpenTag): void {
@@ -1302,9 +1342,9 @@ export class MxpParser {
             const payload = link.href.replace(/&text;/gi, link.content);
             const actions = this.linkActions(link, link.content);
             if (this.currentLink?.id === link.id && this.isLinkLive(link.id)) this.currentLink.actions = actions;
-            // An <A> opens its address; one that is not a web address is
-            // offered to the game as a command, as it always was here.
-            const kind = link.tag === "a" && !/^(https?|mailto):/i.test(payload) ? "command" : link.kind;
+            // An <A> keeps its "url" kind whatever its address: Mudlet's action
+            // for one is always openUrl(…), so nothing in it reaches the game.
+            const kind = link.kind;
             if (payload && end > link.start) {
                 // Split, but not trimmed: a trailing space is part of the command a
                 // game means to be completed (<SEND "tell Zugg " PROMPT>), and Mudlet
@@ -1333,7 +1373,7 @@ export class MxpParser {
             if (link.tag === "send") this.reportSend(link, link.content.trim(), payload, actions);
         }
         if (tag.varName !== undefined && tag.varName !== "") {
-            this.entities.set(tag.varName, this.plain.slice(tag.varStart ?? this.plain.length, this.plain.length));
+            this.entities.set(tag.varName.toLowerCase(), this.plain.slice(tag.varStart ?? this.plain.length, this.plain.length));
         }
     }
 
@@ -1414,8 +1454,8 @@ export class MxpParser {
             else if (up === "PRIVATE" || up === "PUBLISH" || up === "ADD" || up === "REMOVE") continue;
             else if (!valueSeen) { value = t.value; valueSeen = true; }
         }
-        if (del) { this.entities.delete(name); return true; }
-        this.entities.set(name, value);
+        if (del) { this.entities.delete(name.toLowerCase()); return true; }
+        this.entities.set(name.toLowerCase(), value);
         return true;
     }
 
@@ -1424,7 +1464,9 @@ export class MxpParser {
         const before = this.fmt.toSnapshot();
         this.flushRun();
         // Push the close marker *below* the tags the template will open, so
-        // `</name>` reverts everything the definition introduced.
+        // `</name>` reverts everything the definition introduced. An EMPTY
+        // element is not closed, so it gets none — see handleCloseTag for a
+        // game that closes one anyway.
         if (!def.empty) this.stack.push({ name: def.name, closeFmt: before });
         this.runTemplate(def.template, this.elementValues(def, named, positional), depth + 1);
         // Reported once the definition has run, as Mudlet reports it after
@@ -1475,6 +1517,9 @@ export class MxpParser {
 
     // ---- entities ----
 
+    /** What `&ent;` stands for, or null when it names nothing. A game's
+     *  entities are kept under their lowercased names, as Mudlet's
+     *  registerEntity keeps them. */
     private decodeEntity(ent: string): string | null {
         if (ent.length === 0) return null;
         if (ent[0] === "#") {
@@ -1486,11 +1531,11 @@ export class MxpParser {
             }
             return null;
         }
+        // TEntityResolver::getResolution: the game's own first, by any case,
+        // so a game can redefine `&lt;` or `&amp;`; then the built-in name as
+        // written, then lowercased.
         const lc = ent.toLowerCase();
-        if (lc in BUILTIN_ENTITIES) return BUILTIN_ENTITIES[lc];
-        if (this.entities.has(ent)) return this.entities.get(ent)!;
-        if (this.entities.has(lc)) return this.entities.get(lc)!;
-        return null;
+        return this.entities.get(lc) ?? BUILTIN_ENTITIES.get(ent) ?? BUILTIN_ENTITIES.get(lc) ?? null;
     }
 }
 
@@ -1571,6 +1616,29 @@ function findTagEnd(text: string, start: number): number {
         }
     }
     return -1;
+}
+
+/** Read the tag starting at `start` (the `<`) up to whichever comes first
+ *  outside a quoted value: the `>` that closes it (`close`), or another `<`
+ *  that shows it never was a tag (`restart`). The other is -1, and both are
+ *  when the line ends first. A comment (`<!--`) takes `<` as text, as Mudlet's
+ *  tag builder does. */
+function scanTag(text: string, start: number): { close: number; restart: number } {
+    if (text.startsWith("<!--", start)) return { close: findTagEnd(text, start), restart: -1 };
+    let quote = "";
+    for (let j = start + 1; j < text.length; j++) {
+        const c = text[j];
+        if (quote) {
+            if (c === quote) quote = "";
+        } else if (c === '"' || c === "'") {
+            quote = c;
+        } else if (c === ">") {
+            return { close: j, restart: -1 };
+        } else if (c === "<") {
+            return { close: -1, restart: j };
+        }
+    }
+    return { close: -1, restart: -1 };
 }
 
 function firstWhitespace(s: string): number {

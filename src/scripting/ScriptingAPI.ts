@@ -545,6 +545,10 @@ if (typeof document !== 'undefined') {
 // generation moves (see fontLoader.getFontGeneration) rather than keyed by it,
 // so the entries measured against the fallback don't linger.
 let measureCtx: CanvasRenderingContext2D | null | undefined;
+/** The addresses an MXP `<A>` click opens in a browser tab — see
+ *  {@link ScriptingAPI.createMxpHyperlink}. */
+const MXP_OPENABLE_URL = /^(https?|ftp|mailto):/i;
+
 const measureCache = new Map<string, [number, number]>();
 let measureCacheGeneration = -1;
 
@@ -3222,8 +3226,13 @@ export class ScriptingAPI {
         // nothing, from a click or from its menu (TLinkStore::expireLinks
         // leaves the text and drops what it ran).
         if (kind === 'url') {
+            // An <A> is only ever opened, as Mudlet's openUrl(…) action is,
+            // never sent to the game, whatever its address. A browser can only
+            // safely open a web address, though: a scheme-less one would load
+            // a page of this app, and `javascript:` would run in it — those do
+            // nothing, as an address the desktop cannot open does nothing.
             return {
-                onClick: () => { if (isLive()) window.open(payload, '_blank', 'noopener'); },
+                onClick: () => { if (isLive() && MXP_OPENABLE_URL.test(payload)) this.openUrl(payload); },
                 title: hint || undefined,
                 autoUnderline: true,
             };
