@@ -4341,6 +4341,9 @@ export class ScriptingAPI {
         // (MudClient drops every '\r' before parsing): a package fed
         // "line\r\n" must match `^line$` exactly as the game's own copy does.
         text = text.replace(/\r/g, '');
+        // An EOT (0x04) ends a line as '\n' does, in fed text as in the game's:
+        // TBuffer::translateToPlainText commits on it whatever the source.
+        text = text.replace(/\x04/g, '\n');
         // Trigger reloads are coalesced onto a microtask, which cannot run while
         // the calling Lua chunk is still on the stack. Mudlet applies perm* and
         // enable/disableTrigger immediately, so a script that creates or toggles
