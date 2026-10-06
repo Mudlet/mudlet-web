@@ -980,12 +980,17 @@ export class MudSession {
     }
 
     /** Mudlet `setConfig("versionInTTYPE", …)` / `("promptForVersionInTTYPE", …)`.
-     *  Stored only: TTYPE is negotiated at connect, so both take effect on the
-     *  next dial — the same reconnect requirement Mudlet's own auto-detect works
-     *  around by redialing for you. */
+     *  Stored for the next dial and applied to the live client too: desktop
+     *  reads `mVersionInTTYPE` when it answers each `SB TTYPE SEND`, so the
+     *  server's next request already carries (or drops) the version
+     *  (mudlet-web#379). */
     setVersionInTTYPE(enabled: boolean, prompted?: boolean): void {
         this.options.versionInTTYPE = enabled;
         if (prompted !== undefined) this.options.promptForVersionInTTYPE = prompted;
+        this.client?.setProtocolFlags({
+            versionInTTYPE: enabled,
+            ...(prompted !== undefined && { versionInTTYPEPrompted: prompted }),
+        });
     }
 
     /** Mudlet `setConfig("promptForMXPProcessorOn", …)` / `("specialForceMXPProcessorOn", …)`.
@@ -1016,7 +1021,13 @@ export class MudSession {
         if (opts.msspEnabled !== undefined) this.options.msspEnabled = opts.msspEnabled;
         if (opts.charsetEnabled !== undefined) this.options.charsetEnabled = opts.charsetEnabled;
         if (opts.mspEnabled !== undefined) this.options.mspEnabled = opts.mspEnabled;
-        if (opts.mccpEnabled !== undefined) this.options.mccpEnabled = opts.mccpEnabled;
+        if (opts.mccpEnabled !== undefined) {
+            this.options.mccpEnabled = opts.mccpEnabled;
+            // `specialForceCompressionOff` is read when the server offers, so
+            // it applies to the live connection too (mudlet-web#379). A stream
+            // already compressing is left running, as on desktop.
+            this.client?.setMccpEnabled(opts.mccpEnabled);
+        }
         if (opts.mxpEnabled !== undefined) this.options.mxpEnabled = opts.mxpEnabled;
         if (opts.mnesEnabled !== undefined) this.options.mnesEnabled = opts.mnesEnabled;
         if (opts.newEnvironEnabled !== undefined) this.options.newEnvironEnabled = opts.newEnvironEnabled;

@@ -54,6 +54,16 @@ export function claimedByAppShortcut(e: KeyboardEvent): boolean {
     return false;
 }
 
+/**
+ * Hold keys for a client action that is not a ShortcutBinding — the buffer
+ * search's F3 while `f3SearchEnabled` is on — so the Lua keybinding listener
+ * yields them the way it yields a menu accelerator's. Returns the release.
+ */
+export function claimShortcutKeys(claims: (e: KeyboardEvent) => boolean): () => void {
+    claimants.add(claims);
+    return () => { claimants.delete(claims); };
+}
+
 export function useKeyboardShortcuts(bindings: readonly ShortcutBinding[], enabled = true): void {
     // The listener is installed once and reads the current bindings through a
     // ref: they are rebuilt on every render (each closes over live state), and

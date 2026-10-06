@@ -388,11 +388,9 @@ do
     end
 end
 
--- Mudlet's getPath populates these globals (cleared on every call). Predeclare
--- them as empty tables so user code reading them before any getPath call
--- doesn't crash on nil-indexing — Mudlet's C++ side leaves them undefined
--- until first call but most scripts assume they exist.
-speedWalkPath, speedWalkDir, speedWalkWeight = {}, {}, {}
+-- getPath populates speedWalkPath/Dir/Weight (cleared on every call). They are
+-- not predeclared: desktop leaves them nil until the first getPath, and a
+-- script's `if speedWalkPath then` has to give the same answer here.
 
 -- Mudlet getPath(from, to) — A* over the map graph. A non-number roomID is a
 -- Lua argument error, raised before anything is touched (TLuaInterpreter's
@@ -1233,13 +1231,6 @@ do
     -- with a note that the wording should change, so it is mirrored as-is.
     enableTimeStamps  = timeStampSetter(true,  "enableTimeStamps",  "not enabled")
     disableTimeStamps = timeStampSetter(false, "disableTimeStamps", "not disabled")
-end
-
--- Mudlet echoUserWindow(windowName, text) — the older name for echo(name, text),
--- kept because packages written against it are still in circulation. It targets
--- labels and miniconsoles alike, which is exactly what echo already does.
-function echoUserWindow(windowName, text)
-    return echo(windowName, text)
 end
 
 -- addMouseEvent / removeMouseEvent, setWindow, and the user-window title and
@@ -3885,8 +3876,13 @@ end
 -- takes" for being handed more than one argument — and both RAISE, so a caller
 -- has to pcall to see either. Both are Mudlet's strings verbatim: the list of
 -- styles is the only documentation of them a script author gets.
+--
+-- The level is the Mudlet release whose Lua API this runtime follows: the
+-- bundled Lua and the spec corpus are synced from Mudlet's 5.0 development
+-- line, so a package gating on `mudletOlderThan(5)` gets the features that
+-- work here. No build suffix — desktop's PTB tag names a desktop build.
 do
-    local MAJOR, MINOR, REVISION, BUILD = 4, 21, 0, ""
+    local MAJOR, MINOR, REVISION, BUILD = 5, 0, 0, ""
     local STYLES = "   \"major\", \"minor\", \"revision\", \"build\", \"string\" or \"table\"."
     function getMudletVersion(...)
         local count = select('#', ...)
@@ -3988,6 +3984,17 @@ function __mudlet_describe_error(err)
     return "(error object is a " .. t .. " value)"
 end
 debug.getregistry()['mudlet.describeError'] = __mudlet_describe_error
+
+-- How LuaRuntime hands a dispatch's scripts `matches` and `multimatches`: an
+-- ordinary assignment to the globals table, so a metatable a package put on it
+-- (a proxy, a persistence layer, a sandbox) hears about it through __newindex,
+-- as it does from desktop's lua_setglobal. A Lua function rather than a write
+-- from JS so that LuaRuntime can run it under lua_pcall: a raising __newindex
+-- reached from a JS-side lua_setglobal would unwind through wasmoon's C closure
+-- and take the lua_State with it.
+debug.getregistry()['mudlet.assignGlobal'] = function(globals, name, value)
+    globals[name] = value
+end
 
 -- Callback registry: stores Lua functions handed to tempTimer/Alias/Trigger/Key
 -- so JS only ever sees a numeric ID. JS invokes __mudlet_dispatch_cb(id) via
@@ -4177,7 +4184,7 @@ end
 -- we yield a sentinel plus the request args to the JS resume boundary. JS
 -- parks this thread, shows the picker, and resumes it with the chosen path —
 -- from the calling script's perspective the function simply returns it.
--- matches/multimatches/namedCaptures are globals shared with any trigger that
+-- matches/multimatches are globals shared with any trigger that
 -- fires while the picker is open, so snapshot and restore them around the
 -- suspension.
 do
@@ -4196,12 +4203,12 @@ do
                 .. type(dialogTitle) .. "!)", 2)
         end
         dialogTitle = title
-        local m, mm, nc = matches, multimatches, namedCaptures
+        local m, mm = matches, multimatches
         local path = __mudlet_raw_yield(SENTINEL,
             fileOrFolder and true or false,
             dialogTitle == nil and '' or tostring(dialogTitle),
             dialogLocation == nil and '' or tostring(dialogLocation))
-        matches, multimatches, namedCaptures = m, mm, nc
+        matches, multimatches = m, mm
         return type(path) == 'string' and path or ''
     end
 end
@@ -5670,6 +5677,18 @@ function echo(...)
         return nil, "console/label '" .. name .. "' does not exist"
     end
     return true
+end
+
+-- Mudlet echoUserWindow(windowName, text) — the older name for echo(name, text),
+-- kept because packages written against it are still in circulation. It targets
+-- labels and miniconsoles alike, which is exactly what echo already does. The
+-- echo above rather than the global: desktop's is C and never calls a Lua
+-- `echo` a script put in its place (mudlet-web#374).
+do
+    local stockEcho = echo
+    function echoUserWindow(windowName, text)
+        return stockEcho(windowName, text)
+    end
 end
 
 -- Mudlet's setServerEncoding (TLuaInterpreter::setServerEncoding): a non-string

@@ -8,6 +8,20 @@ import { TabCompletionCycle, tabCompletionPool } from './tabCompletion';
 import { flushScreenReaderLines } from './output/ScreenReaderLog';
 import { COMMAND_INPUT_ID } from './landmarks';
 import type { CmdLineMenuEntry, CmdLineMenuRegistry } from './CmdLineMenuRegistry';
+import { cmdLinePlainText } from './cmdline/plainText';
+
+/**
+ * Desktop's password box is still TCommandLine, a multi-line text edit that
+ * only masks what it shows: a pasted `pw1\npw2` or a Shift+Enter keeps its
+ * line break and Enter sends each line (#375). A masked <input> is the only
+ * way to mask here that every browser supports and that password managers and
+ * screen readers treat as a password, but it strips line feeds from its value.
+ * So the field shows each line feed as this private-use character — masked
+ * like any other, one UTF-16 unit, so carets line up — and its edits map back.
+ */
+const PASSWORD_LF = '\uE000';
+const toPasswordField = (text: string) => text.replace(/\n/g, PASSWORD_LF);
+const fromPasswordField = (text: string) => text.replace(/\uE000/g, '\n');
 
 /** The live region holds exactly one announcement. Keeping only the newest means
  *  the default `aria-atomic` of role="status" reads that one word and nothing
@@ -194,7 +208,7 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
 
     // Auto-grow the multi-line command box to fit its content (up to the CSS
     // max-height, beyond which it scrolls). Reset to 'auto' first so it can
-    // shrink back when lines are removed. Single-line <input> (password mode)
+    // shrink back when lines are removed. The masked password <input>
     // is left untouched.
     //
     // The field is `box-sizing: border-box`, but `scrollHeight` excludes the
@@ -256,8 +270,11 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         onCommandChange(val);
     };
 
+    // The masked field is the only one that can't hold a line feed.
+    const maskedPassword = !!passwordMode && !disablePasswordMasking;
+
     const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-        const val = e.target.value;
+        const val = maskedPassword ? fromPasswordField(e.target.value) : e.target.value;
         draftRef.current = val;
         setCursor(-1);
         setGhostHidden(false);
@@ -272,7 +289,8 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         // meaningful command (continue prompts, "look" repeats). Just don't
         // record blanks in history.
         const recorded = command !== '' && !passwordMode;
-        if (recorded) pushHistory(command);
+        // History holds what was sent: the box's plain text (#375).
+        if (recorded) pushHistory(cmdLinePlainText(command));
         // TCommandLine::enterCommand: a box that is not cleared after sending
         // leaves the history position ON the command just sent (it is the
         // newest entry and still in the box), so the first Up goes to the one
@@ -305,20 +323,34 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         submit();
     };
 
-    // Insert a newline at the caret. Mudlet binds Shift+Enter to this so the user
-    // can stage several commands in the box; a plain Enter then sends each line
-    // (split downstream in handleSend).
-    const insertNewlineAtCaret = () => {
+    // Replace the selection with `text` and put the caret after it.
+    const insertAtCaret = (text: string) => {
         const el = commandInputRef.current;
         const start = el?.selectionStart ?? command.length;
         const end = el?.selectionEnd ?? command.length;
-        const next = command.slice(0, start) + '\n' + command.slice(end);
+        const next = command.slice(0, start) + text + command.slice(end);
         draftRef.current = next;
         setCursor(-1);
         setGhostHidden(true);
         resetCycle();
-        pendingCaretPosRef.current = start + 1;
+        pendingCaretPosRef.current = start + text.length;
         setValue(next);
+    };
+
+    // Insert a newline at the caret. Mudlet binds Shift+Enter to this so the user
+    // can stage several commands in the box; a plain Enter then sends each line
+    // (split downstream in handleSend).
+    const insertNewlineAtCaret = () => insertAtCaret('\n');
+
+    // A paste with line breaks into the masked password field, which would
+    // drop them (see PASSWORD_LF): put it in ourselves, line feeds kept, CRLF
+    // and a lone CR read as one, as the <textarea> does. Anything else is the
+    // browser's own paste.
+    const handlePasswordPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+        const text = e.clipboardData.getData('text/plain');
+        if (!/[\r\n]/.test(text)) return;
+        e.preventDefault();
+        insertAtCaret(text.replace(/\r\n?/g, '\n'));
     };
 
     // TCommandLine::handleTabCompletion: Tab (`dir` 1) or Shift+Tab (-1)
@@ -409,7 +441,7 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
         const value = el.value;
         if (value === '') return false;
         if (value.indexOf('\n', el.selectionEnd ?? value.length) !== -1) return false;
-        pushHistory(value);
+        pushHistory(cmdLinePlainText(value));
         resetCycle();
         draftRef.current = '';
         pendingCaretEndRef.current = 'end';
@@ -461,12 +493,13 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
             // the split is up) and otherwise does nothing; any other modified
             // Enter a keybinding didn't claim (ProfileSession offers it first)
             // stages a newline, as the text edit underneath does on desktop,
-            // so several commands can be composed at once. Passwords stay
-            // single line. preventDefault so the textarea never inserts its own.
+            // so several commands can be composed at once — in a password box
+            // too, which is the same text edit, only masked (#375).
+            // preventDefault so the textarea never inserts its own.
             e.preventDefault();
             const ctrl = e.ctrlKey || e.metaKey;
             if (ctrl && !e.shiftKey && !e.altKey) return;
-            if (!passwordMode && (ctrl || e.shiftKey || e.altKey)) {
+            if (ctrl || e.shiftKey || e.altKey) {
                 insertNewlineAtCaret();
             } else {
                 submit();
@@ -551,18 +584,17 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
                     </div>
                 )}
 
-                {passwordMode ? (
+                {maskedPassword ? (
                     <Input
                         ref={commandInputRef as React.RefObject<HTMLInputElement>}
                         id={COMMAND_INPUT_ID}
                         className="command-input"
-                        // Mudlet's "Disable password masking": still the
-                        // single-line password field (no history, no ghost
-                        // completion), just readable — for a player who would
-                        // rather see a typo than retype a long passphrase.
-                        type={disablePasswordMasking ? 'text' : 'password'}
-                        value={command}
+                        type="password"
+                        // Line feeds shown as PASSWORD_LF, which a masked
+                        // <input> keeps and handleChange maps back.
+                        value={toPasswordField(command)}
                         onChange={handleChange}
+                        onPaste={handlePasswordPaste}
                         onKeyDown={handleKeyDown}
                         onCompositionStart={handleCompositionStart}
                         onCompositionEnd={handleCompositionEnd}
@@ -579,6 +611,10 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
                     // A <textarea> (not <input>) so Ctrl/Shift+Enter can stage
                     // multiple lines. rows=1 keeps it single-line until the user
                     // adds a newline; the auto-grow effect resizes it to fit.
+                    // Also a password prompt's box under Mudlet's "Disable
+                    // password masking" — readable, for a player who would
+                    // rather see a typo than retype a long passphrase, and
+                    // still without history or ghost completion.
                     <textarea
                         ref={commandInputRef as React.RefObject<HTMLTextAreaElement>}
                         id={COMMAND_INPUT_ID}
@@ -590,7 +626,7 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
                         onCompositionStart={handleCompositionStart}
                         onCompositionEnd={handleCompositionEnd}
                         onContextMenu={handleContextMenu}
-                        placeholder="Enter command…"
+                        placeholder={passwordMode ? 'Enter password…' : 'Enter command…'}
                         autoComplete="off"
                         autoCapitalize="none"
                         autoCorrect="off"
@@ -598,7 +634,7 @@ export function CommandBar({ command, onCommandChange, passwordMode, commandInpu
                         // here, and it is off by default: a command line is
                         // full of words no dictionary has. The password field
                         // above never gets it, whatever this says.
-                        spellCheck={spellCheckInput}
+                        spellCheck={spellCheckInput && !passwordMode}
                         aria-label="Command input"
                         aria-describedby={HINT_ID}
                         style={inputStyle}

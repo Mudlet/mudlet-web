@@ -1,4 +1,5 @@
 import type { BindingContext } from './context';
+import { cmdLinePlainText } from '../../../ui/cmdline/plainText';
 
 /**
  * The main command bar and Mudlet's createCommandLine overlays: reading and
@@ -43,12 +44,14 @@ export function installCommandLineBindings({ lua, api, emitEvent }: BindingConte
     });
     // Mudlet getCmdLine([name]) → current input string. Routes through
     // cmdLines / windows live value probes when targeting a named cmd line,
-    // else returns the main command bar's text.
+    // else returns the main command bar's text. As plain text, the way
+    // TCommandLine's toPlainText() reads it: a non-breaking space comes back as
+    // a space and U+2028/U+2029 as line feeds (#375).
     lua.global.set('getCmdLine', (name?: unknown) => {
         const kind = cmdLineKind(name);
-        if (kind === 'overlay') return api.cmdLines.getValue(name as string);
-        if (kind === 'window')  return api.windows.getCmdLineValue(name as string);
-        return api.getCmdLine();
+        if (kind === 'overlay') return cmdLinePlainText(api.cmdLines.getValue(name as string));
+        if (kind === 'window')  return cmdLinePlainText(api.windows.getCmdLineValue(name as string));
+        return cmdLinePlainText(api.getCmdLine());
     });
     // Mudlet selectCmdLineText([commandLine]) — highlight all text. Targets
     // an overlay cmd line first, then the main command bar. (User-window

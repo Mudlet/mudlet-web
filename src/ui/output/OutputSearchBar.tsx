@@ -19,6 +19,10 @@ interface OutputSearchBarProps {
      *  output selection, so pressing the shortcut again behaves like the
      *  browser's find rather than doing nothing. */
     focusNonce: number;
+    /** Whether that open moves focus into the box (default true). False for
+     *  the F3 that `f3SearchEnabled` lets open the bar: it must leave focus on
+     *  the command line, as desktop's toolbar search does. */
+    takeFocus?: boolean;
     onClose: () => void;
     /** Rebuilds the split-view panel from the (now highlighted) source lines —
      *  its contents are clones, so marks only reach it via a re-populate. */
@@ -37,7 +41,7 @@ interface OutputSearchBarProps {
 const RESCAN_DELAY = 120;
 
 export function OutputSearchBar({
-    session, outputRef, focusNonce, onClose, refreshSticky, commandInputRef,
+    session, outputRef, focusNonce, takeFocus = true, onClose, refreshSticky, commandInputRef,
     a11ySearch = false,
 }: OutputSearchBarProps) {
     const [query, setQuery] = useState('');
@@ -70,6 +74,7 @@ export function OutputSearchBar({
     useEffect(() => {
         const seed = seedFromSelection(outputRef.current);
         if (seed) setQuery(seed);
+        if (!takeFocus) return;
         inputRef.current?.focus();
         inputRef.current?.select();
     }, [focusNonce]);

@@ -7,6 +7,7 @@ import { StickyOutputPanel } from './StickyOutputPanel';
 import { OutputSearchBar } from './OutputSearchBar';
 import { searchStepDirection } from './outputSearch';
 import { matchClearSplitKey, matchPageScrollKey } from './clearSplit';
+import { claimShortcutKeys } from '../../hooks/useKeyboardShortcuts';
 import type { OutputMenuExtraItem } from './OutputContextMenu';
 import type { SelectionBounds } from './outputCopy';
 import { mouseEventMenuItems } from '../MouseEventRegistry';
@@ -65,6 +66,11 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
     // Bumped on every Ctrl+F so a second press re-focuses and re-seeds the
     // already-open bar instead of being a no-op.
     const [searchFocusNonce, setSearchFocusNonce] = useState(0);
+    // Whether that open moves focus into the find box. Ctrl+F does; F3 under
+    // f3SearchEnabled does not — desktop's search box sits in the toolbar and
+    // F3 drives it from wherever focus is, so typing still reaches the command
+    // line (mudlet-web#379).
+    const [searchTakesFocus, setSearchTakesFocus] = useState(true);
 
     // The split-view panel shows cloned lines, so search highlights only appear
     // there if it is rebuilt from the freshly marked originals. No-op when the
@@ -75,8 +81,9 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
         if (isSplitViewRef.current) controls?.populateStickyArea();
     }, [controls]);
 
-    const openSearch = useCallback(() => {
+    const openSearch = useCallback((takeFocus = true) => {
         setSearchOpen(true);
+        setSearchTakesFocus(takeFocus);
         setSearchFocusNonce(n => n + 1);
     }, []);
 
@@ -154,16 +161,27 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
     // reach rather than taking a working shortcut away.
     const searchOpenRef = useRef(searchOpen);
     searchOpenRef.current = searchOpen;
+    //
+    // While the setting is on the search HOLDS F3 / Shift+F3, open or closed:
+    // desktop makes them QShortcuts, which Qt resolves before the command line
+    // offers the key to the key unit, so a key binding on F3 does not fire
+    // (mudlet-web#379). Claimed like a menu accelerator, so the Lua keybinding
+    // listener leaves the key to us — and the bar opens without taking focus,
+    // so the player's typing and their other bindings keep working.
     useEffect(() => {
         if (!a11ySearch) return;
+        const release = claimShortcutKeys(e => searchStepDirection(e) !== null);
         const onKey = (e: KeyboardEvent) => {
             if (searchStepDirection(e) === null) return;
             if (searchOpenRef.current) return;
             e.preventDefault();
-            openSearch();
+            openSearch(false);
         };
         document.addEventListener('keydown', onKey, true);
-        return () => document.removeEventListener('keydown', onKey, true);
+        return () => {
+            release();
+            document.removeEventListener('keydown', onKey, true);
+        };
     }, [a11ySearch, openSearch]);
 
     // Mudlet addMouseEvent: custom entries folded into the output right-click
@@ -241,7 +259,7 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
                     foreground={outputForeground}
                     showTimestamps={showTimestamps}
                     onToggleTimestamps={() => connectionId && patchConnectionProfile(connectionId, { showTimestamps: !showTimestamps })}
-                    onFind={openSearch}
+                    onFind={() => openSearch()}
                     sourceName={connectionName}
                     getMenuExtraItems={getMenuExtraItems}
                     commandInputRef={commandInputRef}
@@ -258,6 +276,7 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
                         session={session}
                         outputRef={outputRef}
                         focusNonce={searchFocusNonce}
+                        takeFocus={searchTakesFocus}
                         onClose={() => setSearchOpen(false)}
                         refreshSticky={refreshSticky}
                         commandInputRef={commandInputRef}
