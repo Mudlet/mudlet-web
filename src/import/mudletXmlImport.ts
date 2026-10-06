@@ -116,7 +116,10 @@ function parseScripts(els: Element[], parentId: string | null, out: ScriptNode[]
         const handlerListEl = Array.from(el.children).find(c => c.tagName === 'eventHandlerList');
         const eventHandlers = Array.from(handlerListEl?.children ?? [])
             .filter(c => c.tagName === 'string')
-            .map(s => s.textContent?.trim() ?? '').filter(Boolean);
+            // Verbatim, as XMLimport::readScript reads each <string>: " evt " is
+            // registered for raiseEvent(" evt ") and not for "evt". Only an
+            // empty name is dropped, which registers nothing on desktop either.
+            .map(s => s.textContent ?? '').filter(Boolean);
         out.push({ id, parentId, isGroup: group, name: getRawText(el, 'name'), enabled: isYes(el, 'isActive'), code: getText(el, 'script'), language: 'lua', eventHandlers, packageName: getText(el, 'packageName') || undefined });
         // Scripts (like triggers) can nest under a NON-folder parent: Mudlet's
         // TScript model lets a script carry both its own body and child scripts,
@@ -165,7 +168,6 @@ function parseHighlight(el: Element): TriggerNode['highlight'] {
 
 function parseTriggers(els: Element[], parentId: string | null, out: TriggerNode[], warnings: string[]): void {
     for (const el of els) {
-        if (isYes(el, 'isTempTrigger')) continue;
         const id = crypto.randomUUID();
         const group = isGroup(el);
 
@@ -246,6 +248,10 @@ function parseTriggers(els: Element[], parentId: string | null, out: TriggerNode
             colorize: isYes(el, 'isColorizerTrigger'),
             highlight: parseHighlight(el),
             packageName: getText(el, 'packageName') || undefined,
+            // Desktop loads an isTempTrigger="yes" trigger like any other
+            // (XMLimport::readTrigger keeps the flag), so it exists and fires
+            // this session; XMLexport then leaves it out of every save.
+            ...(isYes(el, 'isTempTrigger') ? { temporary: true } : {}),
         });
         // Triggers (unlike scripts/aliases/timers/keys) can nest under a non-folder
         // parent: Mudlet's chain-trigger model lets any trigger with children act as
@@ -256,7 +262,6 @@ function parseTriggers(els: Element[], parentId: string | null, out: TriggerNode
 
 function parseTimers(els: Element[], parentId: string | null, out: TimerNode[], underTimer = false): void {
     for (const el of els) {
-        if (isYes(el, 'isTempTimer')) continue;
         const id = crypto.randomUUID();
         const group = isGroup(el);
         const seconds = parseTimerTime(getText(el, 'time'));
@@ -265,7 +270,10 @@ function parseTimers(els: Element[], parentId: string | null, out: TimerNode[], 
         // offset timer (nested under another timer), whose zero means "as soon
         // as the parent fires". TTimer refuses the same way on enableTimer().
         const enabled = isYes(el, 'isActive') && (group || seconds > 0 || underTimer);
-        out.push({ id, parentId, isGroup: group, name: getRawText(el, 'name'), enabled, seconds, code: getText(el, 'script'), language: 'lua', command: getRawText(el, 'command'), repeat: true, packageName: getText(el, 'packageName') || undefined });
+        // An isTempTimer="yes" timer loads too, and runs as a tempTimer does:
+        // once, then gone (see TimerNode.temporary).
+        const temporary = isYes(el, 'isTempTimer');
+        out.push({ id, parentId, isGroup: group, name: getRawText(el, 'name'), enabled, seconds, code: getText(el, 'script'), language: 'lua', command: getRawText(el, 'command'), repeat: !temporary, packageName: getText(el, 'packageName') || undefined, ...(temporary ? { temporary } : {}) });
         // Unconditional, as in desktop's readTimerGroup (XMLimport.cpp:1517).
         parseTimers(directChildren(el, 'Timer', 'TimerGroup'), id, out, !group);
     }

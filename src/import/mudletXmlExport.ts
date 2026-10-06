@@ -1,5 +1,5 @@
 import { sanitizeControlChars } from './mudletControlChars';
-import { isColorizing } from '../storage/schema';
+import { isColorizing, persistableNodes } from '../storage/schema';
 import { toSaveFileColorPattern } from '../mud/triggers/legacyColorPatterns';
 import { domCodeToQtKey } from '../mud/keybindings/qtKeys';
 import type {
@@ -389,8 +389,9 @@ export function serializeMudletXml(input: SerializeInput, packageName?: string):
     // Package order matches Mudlet's XMLexport (Trigger, Timer, Alias, Action,
     // Script, Key) so a linked-profile write-back produces a minimal diff against
     // Mudlet's own saves.
-    emitTriggers(xml, input.triggers, opts);
-    emitTimers(xml,   input.timers,   opts);
+    // Temporary items are the session's alone: desktop's XMLexport skips them.
+    emitTriggers(xml, persistableNodes(input.triggers), opts);
+    emitTimers(xml,   persistableNodes(input.timers),   opts);
     emitAliases(xml,  input.aliases,  opts);
     emitButtons(xml,  input.buttons,  opts);
     emitScripts(xml,  input.scripts,  opts);

@@ -4,7 +4,7 @@ import { MAP_WIDGET_ID } from '../ui/windows/types';
 import { qtKeyToDomCode, qtModifiersToList } from '../mud/keybindings/qtKeys';
 import { splitSentCommands } from '../mud/commandSplit';
 import type {AliasEngine, AliasNode} from '../mud/aliases/AliasEngine';
-import {TriggerEngine, highlightTargets, type TriggerNode} from '../mud/triggers/TriggerEngine';
+import {TriggerEngine, highlightColor, highlightTargets, type TriggerNode} from '../mud/triggers/TriggerEngine';
 import type {TimerEngine} from '../mud/timers/TimerEngine';
 import type {KeyEngine, KeyNode} from '../mud/keybindings/KeyEngine';
 import {findReservedKeybindings, reservedKeyNote} from '../mud/keybindings/browserReservedKeys';
@@ -13,7 +13,7 @@ import {buildEffectivelyEnabledIds, isColorizing, isEffectivelyEnabled} from '..
 import {useAppStore, connectionUrl, selectProfileField} from '../storage';
 import {isPackageRemovable} from '../branding';
 import {saveProfileData} from '../storage/profileVfsData';
-import type {BufferSegment, FormatColor, FormatStateSnapshot, RgbColor} from '../mud/text/FormatState';
+import type {BufferSegment, FormatColor, FormatStateSnapshot} from '../mud/text/FormatState';
 import {AnsiAwareBuffer, computeTrailingState} from '../mud/text/FormatState';
 import {HyperlinkPresetRegistry} from '../mud/text/hyperlinkConfig';
 import {HyperlinkVisibilityController} from '../mud/text/hyperlinkVisibility';
@@ -107,12 +107,6 @@ const EMPTY_PROFILE_XML =
     + '<MudletPackage version="1.001"><HostPackage><Host></Host></HostPackage></MudletPackage>';
 import type {PackageManifest} from '../storage/schema';
 import {DEFAULT_CMD_LINE_HOST, type CmdLineHost} from '../ui/cmdline/subCommandLine';
-
-function hexToRgb(hex: string): RgbColor | null {
-    const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
-    if (!m) return null;
-    return { space: 'rgb', r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) };
-}
 
 /** Mirrors `debugMspEnabled` in MudClient.ts — same `mudlet.debugMsp`
  *  localStorage gate, duplicated here because the engine and the client
@@ -1642,8 +1636,11 @@ export class ScriptingEngine implements EngineHost {
             // hostSend, not a bare wire send: TTimer::execute calls
             // Host::send(mCommand) with both defaults, so the command is echoed
             // under showSentText, split on the command separator, and run
-            // through the aliases like anything else typed.
-            if (timer.command) this.hostSend(timer.command);
+            // through the aliases like anything else typed. A temporary timer
+            // (isTempTimer="yes" in an XML) takes TTimer::execute's tempTimer
+            // branch instead: its script runs once, its command is never sent,
+            // and it is deleted with everything under it.
+            if (timer.command && !timer.temporary) this.hostSend(timer.command);
             if (timer.code && timer.language === 'lua') {
                 try {
                     this.runtimes.lua?.run(timer.code, `timer "${timer.name}"`, itemChunkName('timer', timer.name));
@@ -1651,6 +1648,7 @@ export class ScriptingEngine implements EngineHost {
                     this.reportEntityError('timer', timer.id, timer.name, err);
                 }
             }
+            if (timer.temporary) useAppStore.getState().removeTimer(this.connectionId, timer.id);
             this.api.flushOutput();
         }, this.uncompilableIds('timer', timers));
     }
@@ -5220,8 +5218,8 @@ export class ScriptingEngine implements EngineHost {
     ): void {
         if (!isColorizing(trigger) || !trigger.highlight) return;
         const { fg, bg } = trigger.highlight;
-        const fgColor = fg ? hexToRgb(fg) : null;
-        const bgColor = bg ? hexToRgb(bg) : null;
+        const fgColor = fg ? highlightColor(fg) : null;
+        const bgColor = bg ? highlightColor(bg) : null;
         if (!fgColor && !bgColor) return;
         const format = {
             ...(fgColor ? { foreground: fgColor } : {}),

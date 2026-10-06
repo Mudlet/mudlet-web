@@ -361,7 +361,10 @@ export class TimerEngine {
                 continue;
             }
 
-            const wantRun = runnable(timer) && !(timer.isGroup && !timer.code);
+            // A folder never fires, whatever script or time it carries:
+            // TTimer::execute stops a folder's QTimer and returns before the
+            // body, so only the timers inside it run.
+            const wantRun = runnable(timer) && !timer.isGroup;
             if (!wantRun) {
                 // Drop any live handle for an item that is no longer enabled.
                 if (isLive) this.killPermHandle(timer.id);

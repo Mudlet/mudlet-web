@@ -2,6 +2,8 @@ import PCRE, { pcreSubject } from './pcre/Pcre2';
 import type { TriggerNode, TriggerPattern } from '../../storage/schema';
 import { isColorizing } from '../../storage/schema';
 import { COLOR_DEFAULT, COLOR_IGNORED, parseColorPattern } from './legacyColorPatterns';
+import type { RgbColor } from '../text/FormatState';
+import { parseQColor } from '../../ui/labels/qColor';
 
 export type { TriggerNode };
 
@@ -201,6 +203,17 @@ function filterOfferings(result: MatchResult): { text: string; start: number }[]
         out.push({ text, start });
     }
     return out;
+}
+
+/**
+ * A colorizer trigger's stored colour (`mFgColor`/`mBgColor`) as desktop reads
+ * it: QColor::fromString, so a colour name, `#rgb`, `#aarrggbb` and the 9- and
+ * 12-digit forms paint as well as `#rrggbb` does. Null for a string QColor
+ * calls invalid, which leaves that side of the text as it was.
+ */
+export function highlightColor(spec: string): RgbColor | null {
+    const rgb = parseQColor(spec);
+    return rgb ? { space: 'rgb', r: rgb[0], g: rgb[1], b: rgb[2] } : null;
 }
 
 /**

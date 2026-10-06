@@ -973,6 +973,14 @@ export interface TimerNode extends BaseNode {
     language: 'lua' | 'js';
     repeat: boolean;
     command?: string;    // plain command to send when the timer fires
+    /**
+     * Session-scoped: an `isTempTimer="yes"` timer from a package or profile
+     * XML. Desktop loads it as a TTimer with mIsTempTimer set, so it fires once
+     * — its script only, never its command — and is then deleted, the way a
+     * `tempTimer` is. Not persisted (see persistableNodes), and neither is
+     * anything hanging under it.
+     */
+    temporary?: boolean;
 }
 
 export interface KeyNode extends BaseNode {
@@ -1086,6 +1094,33 @@ export function isColorizing(t: Pick<TriggerNode, 'colorize' | 'highlight'>): bo
 }
 
 // ── Tree utilities ────────────────────────────────────────────────────────────
+
+/**
+ * The items that belong in a save: everything except the session-scoped
+ * (`temporary`) ones, and anything hanging under them.
+ *
+ * The descendants matter as much as the temporaries themselves. A permanent
+ * item can be parented to a temporary one — Mudlet allows it, and its own
+ * specs do it — and that child dies with its parent at the end of the session.
+ * Saving it alone would restore an item whose `parentId` names a node that
+ * was never written, leaving it orphaned in the tree. Desktop's XMLexport
+ * skips a temporary item the same way, subtree and all.
+ */
+export function persistableNodes<T extends { id: string; parentId: string | null; temporary?: boolean }>(items: T[]): T[] {
+    if (!items.some(t => t.temporary)) return items;
+    const byId = new Map(items.map(t => [t.id, t]));
+    const isTemporary = (node: T): boolean => {
+        let cur: T | undefined = node;
+        const guard = new Set<string>();
+        while (cur && !guard.has(cur.id)) {
+            if (cur.temporary) return true;
+            guard.add(cur.id);
+            cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+        }
+        return false;
+    };
+    return items.filter(t => !isTemporary(t));
+}
 
 /** Returns true if the item and all its ancestors are enabled. */
 export function isEffectivelyEnabled<T extends { id: string; enabled: boolean; parentId: string | null }>(
