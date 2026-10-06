@@ -695,7 +695,7 @@ describe('gotoRoom', () => {
   // tables and calls the mapper package's doSpeedWalk, which owns the pacing,
   // balance checks and off-path recovery.
   it('hands the path to the mapper doSpeedWalk instead of sending it', () => {
-    env.run('addRoom(1); addRoom(2); addRoom(3); setExit(1, 2, "north"); setExit(2, 3, "north"); centerview(1)');
+    env.run('addRoom(1); addRoom(2); addRoom(3); setExit(1, 2, "north"); setExit(2, 3, "north"); openMapWidget(); centerview(1)');
     env.run('walked = nil; function doSpeedWalk() walked = table.concat(speedWalkDir, ",") end');
     const before = env.mainOutput.length;
     expect(env.run('return (gotoRoom(3))')).toBe(true);
@@ -710,7 +710,7 @@ describe('gotoRoom', () => {
   // move; Mudlet Web keeps the pre-delegation behaviour so a profile with no mapper
   // package installed still walks.
   it('falls back to sending the moves when no mapper defines doSpeedWalk', () => {
-    env.run('addRoom(1); addRoom(2); setExit(1, 2, "north"); centerview(1)');
+    env.run('addRoom(1); addRoom(2); setExit(1, 2, "north"); openMapWidget(); centerview(1)');
     const before = env.mainOutput.length;
     expect(env.run('return (gotoRoom(2))')).toBe(true);
     expect(env.run('return #speedWalkDir')).toBe(1);
@@ -729,7 +729,7 @@ describe('gotoRoom', () => {
   });
 
   it('fails for an invalid target room', () => {
-    env.run('addRoom(1); centerview(1)');
+    env.run('addRoom(1); openMapWidget(); centerview(1)');
     expect(env.run('return (gotoRoom(999))')).toBeNull();
   });
 });
@@ -747,19 +747,19 @@ describe('map double-click speedwalk', () => {
   afterEach(() => env.dispose());
 
   it('pathfinds from the player room and hands the route to doSpeedWalk', () => {
-    env.run('addRoom(1); addRoom(2); addRoom(3); setExit(1, 2, "east"); setExit(2, 3, "east"); centerview(1)');
+    env.run('addRoom(1); addRoom(2); addRoom(3); setExit(1, 2, "east"); setExit(2, 3, "east"); openMapWidget(); centerview(1)');
     env.run('walked = nil; function doSpeedWalk() walked = table.concat(speedWalkDir, ",") end');
     expect(env.session.windows.startSpeedWalk(3)).toBe(true);
     expect(env.run('return walked')).toBe('e,e');
   });
 
   it('ignores a double-click on a room that is not in the map', () => {
-    env.run('addRoom(1); centerview(1)');
+    env.run('addRoom(1); openMapWidget(); centerview(1)');
     expect(env.session.windows.startSpeedWalk(999)).toBe(false);
   });
 
   it('reports the mapper message when no path exists', () => {
-    env.run('addRoom(1); addRoom(2); centerview(1)'); // no exits between them
+    env.run('addRoom(1); addRoom(2); openMapWidget(); centerview(1)'); // no exits between them
     env.run('walked = nil; function doSpeedWalk() walked = "walked" end');
     const before = env.mainOutput.length;
     expect(env.session.windows.startSpeedWalk(2)).toBe(true);
@@ -779,7 +779,7 @@ describe('map double-click speedwalk', () => {
   // mudlet.custom_speedwalk hands the endpoints to a mapper that does its own
   // pathfinding; Mudlet computes no path at all in that case.
   it('honours mudlet.custom_speedwalk', () => {
-    env.run('addRoom(1); addRoom(2); centerview(1)'); // no path between them
+    env.run('addRoom(1); addRoom(2); openMapWidget(); centerview(1)'); // no path between them
     env.run('mudlet = mudlet or {}; mudlet.custom_speedwalk = true');
     env.run('endpoints = nil; function doSpeedWalk() endpoints = speedWalkFrom .. "->" .. speedWalkTo end');
     expect(env.session.windows.startSpeedWalk(2)).toBe(true);

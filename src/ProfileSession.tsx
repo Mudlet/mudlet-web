@@ -1225,7 +1225,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         if (session.windows.isVisible(MAP_WIDGET_ID)) {
             session.windows.hide(MAP_WIDGET_ID);
         } else {
-            session.windows.open(MAP_WIDGET_ID, { kind: 'map', title: 'Map', position: 'right', autoOpen: true });
+            session.windows.open(MAP_WIDGET_ID, { kind: 'map', position: 'right', autoOpen: true });
         }
     };
 

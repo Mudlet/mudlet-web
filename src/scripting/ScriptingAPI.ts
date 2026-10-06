@@ -10,7 +10,7 @@ import { CLIENT_VERSION } from '../version';
 import { timeZoneAbbreviation, timeZoneLongName, timeZoneOffset } from '../utils/timeZone';
 import { getBrand } from '../branding';
 import type { WindowHandle, WindowOpenOptions } from '../ui/windows/types';
-import { MAP_WIDGET_ID, MAPPER_WIDGET_ID } from '../ui/windows/types';
+import { MAP_WIDGET_ID, MAPPER_WIDGET_ID, mapViewWindowId } from '../ui/windows/types';
 import type { LabelManager, LabelCreateOptions, LabelMouseEvent, LabelWheelEvent } from '../ui/labels/LabelManager';
 import { classifyLabelLink } from '../ui/labels/labelLinks';
 import { AddonCommandRegistry } from '../ui/commands/addonCommands';
@@ -4793,7 +4793,7 @@ export class ScriptingAPI {
 
     /**
      * Mudlet `setMapWindowTitle(title)`. Sets the dockable map panel's tab
-     * title; an empty string resets it to the default ("Map"). Returns false
+     * title; an empty string resets it to the default ("Map - <profile>"). Returns false
      * when the map widget isn't open.
      */
     setMapWindowTitle(title: string): boolean {
@@ -6058,6 +6058,8 @@ export class ScriptingAPI {
             const area = this.session.windows.mapViewArea(viewId);
             if (typeof area === 'string') return `setMapZoom: ${area}`;
             this.map.setAreaZoom(area, zoom);
+            // The view itself now shows that zoom, so getMapViewInfo says so.
+            this.session.windows.noteMapViewState(mapViewWindowId(viewId), { zoom });
             return null;
         }
         if (areaID !== undefined && !this.map.hasArea(areaID)) {

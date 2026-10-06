@@ -3,7 +3,7 @@ import { type OutputRendererControls } from '../output/OutputRenderer';
 import type { Console } from '../../mud/text/Console';
 import type { AnsiAwareBuffer } from '../../mud/text/FormatState';
 import type { DockSide, MxpTabPage, WindowHandle, WindowOpenOptions, ScriptWindowRenderData } from './types';
-import { MAP_VIEW_ID_RE, mapViewWindowId, migrateClientWindowHints } from './types';
+import { MAP_VIEW_ID_RE, MAP_WIDGET_ID, mapViewWindowId, migrateClientWindowHints } from './types';
 import { MapStore } from '../../map/MapStore';
 import { centerviewAreaChange } from './panels/mapAreaChange';
 import { parseXmlMap } from '../../map/xmlMapImport';
@@ -1309,7 +1309,9 @@ export class WindowManager {
             areaId: area,
             zoom: this.mapStore.getAreaZoom(area) ?? MapStore.DEFAULT_MAP_ZOOM,
             zLevel: 0,
-            centeredRoomId: this.mapStore.getAreaCenterRoomId(area, 0) ?? 0,
+            // Desktop's new view hasn't been centred on anything yet: it
+            // reports 0 until a centerview(roomID, viewID) aims it.
+            centeredRoomId: 0,
         });
         // Opens floating but stays dockable, matching Mudlet: the view is a real
         // dock widget added to the right dock area and then immediately floated,
@@ -2895,7 +2897,7 @@ export class WindowManager {
 
         const win: ScriptWindowData = {
             id,
-            title:       options.title ?? (kind === 'map' ? 'Map' : id),
+            title:       options.title ?? (id === MAP_WIDGET_ID ? this.defaultTitle(id) : kind === 'map' ? 'Map' : id),
             kind,
             // Honor `hidden` from options (setWindowHints spreads the saved
             // hint into options for autoOpen restore) but NOT from the bare
@@ -3162,6 +3164,10 @@ export class WindowManager {
     profileName = '';
 
     defaultTitle(id: string): string {
+        // The map dock is the exception: desktop heads it "Map - <profile>"
+        // (TMainConsole::createMapper) and setMapWindowTitle("") goes back to
+        // that, never to the client's internal window id.
+        if (id === MAP_WIDGET_ID) return this.profileName ? `Map - ${this.profileName}` : 'Map';
         return this.profileName ? `${this.profileName} - ${id}` : id;
     }
 

@@ -849,9 +849,13 @@ export function installMapBindings({
         );
         return true;
     });
-    lua.global.set('removeMapMenu', (name: unknown) => {
-        api.map.removeMapMenu(String(name ?? ''));
-        return true;
+    // Answers with desktop's refusal for an empty name, null otherwise;
+    // Bridge.lua shapes that into true / (nil, errMsg).
+    lua.global.set('__removeMapMenu', (name: unknown) => {
+        const menu = String(name ?? '');
+        if (!menu) return 'the menu name cannot be empty';
+        api.map.removeMapMenu(menu);
+        return null;
     });
     // Mudlet shape: { [menuName] = { ["parent"]=..., ["display name"]=... } }.
     // JS hands back an array of entries (0-indexed); Bridge.lua rebuilds the

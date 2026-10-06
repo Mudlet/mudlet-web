@@ -113,7 +113,8 @@ export function installUserWindowBindings({
     });
     // Mudlet `openMapWidget([dockingArea | x, y [, w, h]]) → true`.
     //   no args            → restore saved layout, or right-dock if none
-    //   (area)             → "f" floating, or "l"/"r"/"t"/"b" dock side
+    //   (area)             → "f"/"floating", or "l"/"r"/"t"/"b" (or the full
+    //                        word, any case) dock side; "" is the 0-arg form
     //   (x, y)             → floating at (x, y); width/height inherit the
     //                        saved hint (or panel defaults if none)
     //   (x, y, w, h)       → floating at given pixel position and size
@@ -128,10 +129,9 @@ export function installUserWindowBindings({
             const keepPosition = Number(a) < 0 && Number(b) < 0;
             api.windows.open(MAP_WIDGET_ID, {
                 kind: 'map',
-                // Only names a *new* widget: reopening one keeps the title it
-                // was given, since it is the same dock coming back rather than
-                // a fresh one (Mapper_spec pins that).
-                ...(api.windows.has(MAP_WIDGET_ID) ? {} : { title: 'Map' }),
+                // No title: a new widget is headed "Map - <profile>" by the
+                // manager, and reopening one keeps the title it was given,
+                // since it is the same dock coming back (Mapper_spec pins that).
                 autoDock: false,
                 ignoreHint: true,
                 ...(keepPosition ? {} : { x: Number(a), y: Number(b) }),
@@ -139,27 +139,28 @@ export function installUserWindowBindings({
             });
             return true;
         }
-        // 0-arg: restore saved layout, fall back to right dock
-        if (a === undefined || a === null) {
+        // 0-arg (or ""): restore saved layout, fall back to right dock
+        if (a === undefined || a === null || a === '') {
             api.windows.open(MAP_WIDGET_ID, {
                 kind: 'map',
-                // Only names a *new* widget: reopening one keeps the title it
-                // was given, since it is the same dock coming back rather than
-                // a fresh one (Mapper_spec pins that).
-                ...(api.windows.has(MAP_WIDGET_ID) ? {} : { title: 'Map' }),
+                // No title: a new widget is headed "Map - <profile>" by the
+                // manager, and reopening one keeps the title it was given,
+                // since it is the same dock coming back (Mapper_spec pins that).
                 dockingArea: 'right',
             });
             return true;
         }
         // 1-arg: dockingArea string
-        const area = String(a);
-        if (area === 'f') {
+        const area = String(a).toLowerCase();
+        if (area === 'f' || area === 'floating') {
+            // Host::openMapWidget floats the dock it already has, so a docked
+            // widget comes out of its dock rather than staying put.
+            api.windows.setDockArea(MAP_WIDGET_ID, 'main');
             api.windows.open(MAP_WIDGET_ID, {
                 kind: 'map',
-                // Only names a *new* widget: reopening one keeps the title it
-                // was given, since it is the same dock coming back rather than
-                // a fresh one (Mapper_spec pins that).
-                ...(api.windows.has(MAP_WIDGET_ID) ? {} : { title: 'Map' }),
+                // No title: a new widget is headed "Map - <profile>" by the
+                // manager, and reopening one keeps the title it was given,
+                // since it is the same dock coming back (Mapper_spec pins that).
                 autoDock: false,
                 ignoreHint: true,
             });
@@ -169,7 +170,6 @@ export function installUserWindowBindings({
         const existed = api.windows.has(MAP_WIDGET_ID);
         api.windows.open(MAP_WIDGET_ID, {
             kind: 'map',
-            title: 'Map',
             ignoreHint: true,
             dockingArea: side,
         });

@@ -99,6 +99,7 @@ describe('event handlers on dotted script names', () => {
     // handler that reads gmcp.Room.Info.num and calls centerview.
     t.run(`
       addRoom(7)
+      openMapWidget()
       gmcp = gmcp or {}
       gmcp.Room = { Info = { num = 7 } }
       mmp = {}
@@ -113,6 +114,6 @@ describe('event handlers on dotted script names', () => {
     `);
     // centerview sets the player room (Mudlet parity), so this proves the whole
     // chain ran, not just that the handler was reached.
-    expect(t.run(`openMapWidget() return getPlayerRoom()`)).toBe(7);
+    expect(t.run(`return getPlayerRoom()`)).toBe(7);
   });
 });

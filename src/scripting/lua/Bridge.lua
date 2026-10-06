@@ -450,7 +450,13 @@ end
 -- returns false in that case, so translate it here.
 -- A second argument aims a secondary map window instead: that view centres on
 -- the room and the player stays where they are.
+-- Before any map has been opened desktop refuses outright (warnArgumentValue:
+-- the message alone) and records no location, so a later getPlayerRoom()
+-- still has no room to report.
 function centerview(roomID, viewID)
+    if not __mudlet_mapper_open() then
+        return nil, "you haven't opened a map yet"
+    end
     local r = __centerview(roomID, viewID)
     if type(r) == 'string' then return nil, "centerview: " .. r end
     if r then return true end
@@ -7755,6 +7761,7 @@ do
     removeSpecialExit = shaped(__removeSpecialExit)
     setCustomEnvColor = shaped(__setCustomEnvColor)
     setMapZoom        = shaped(__setMapZoom)
+    removeMapMenu     = shaped(__removeMapMenu)
 
     setRoomEnv         = roomGuard(setRoomEnv, "setRoomEnv")
     setRoomWeight      = roomGuard(setRoomWeight, "setRoomWeight")
@@ -8791,10 +8798,16 @@ do
     end
 
     -- Mudlet takes the dock position as one of "f" (floating) or "l"/"r"/"t"/
-    -- "b", and refuses anything else rather than quietly picking a side —
-    -- Geyser.Mapper:setDockPosition passes whatever it was handed straight
-    -- through, so this is where a typo has to be caught.
-    local DOCK_POSITIONS = { f = true, l = true, r = true, t = true, b = true }
+    -- "b", or the full word for any of them in any case (Host::openMapWidget
+    -- lowercases it first), and "" just shows the widget. Anything else is
+    -- refused rather than quietly picking a side — Geyser.Mapper:setDockPosition
+    -- passes whatever it was handed straight through, so this is where a typo
+    -- has to be caught.
+    local DOCK_POSITIONS = {
+        [''] = true,
+        f = true, floating = true, l = true, left = true, r = true, right = true,
+        t = true, top = true, b = true, bottom = true,
+    }
     local _rawOpenMapWidget = openMapWidget
     function openMapWidget(...)
         local n = select('#', ...)

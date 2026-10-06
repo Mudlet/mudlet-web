@@ -718,7 +718,9 @@ export const MAPPER_DEFAULTS: Required<MapperSettings> = {
     borders: true,
     lineWidth: 0.05,
     backgroundColor: '#000000',
-    lineColor: '#e1ffe1',
+    // Host::mFgColor_2, Qt::lightGray — what desktop draws exits in and what
+    // getMapRoomExitsColor() answers on a fresh profile.
+    lineColor: '#c0c0c0',
     showDefaultArea: true,
     gridEnabled: false,
     // Both mirror mudlet-map-renderer's createSettings() defaults, so leaving

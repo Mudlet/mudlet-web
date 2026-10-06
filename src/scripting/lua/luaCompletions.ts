@@ -301,7 +301,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('copy2html',    '([window, stringToCopy, instance])', 'Copy text/selection into clipboard as HTML'),
     // Windows
     fn('openUserWindow',  '(name, restoreLayout?, autoDock?, dockingArea?)', 'Open a user window'),
-    fn('openMapWidget',   '([area | x, y, w, h])',                          'Open the map widget. No args: saved layout (right by default). One arg: dock area "f"/"l"/"r"/"t"/"b". Four args: floating at x,y with size w,h.'),
+    fn('openMapWidget',   '([area | x, y, w, h])',                          'Open the map widget. No args: saved layout (right by default). One arg: dock area "f"/"l"/"r"/"t"/"b" or "floating"/"left"/"right"/"top"/"bottom". Four args: floating at x,y with size w,h.'),
     fn('closeMapWidget',  '() → bool',                                      'Close the dockable map widget. Returns false if no map widget is open.'),
     fn('createMapView',   '([areaID]) → viewID | (nil, errMsg)',            'Open a secondary map window pinned to an area (omit or 0 for the player\'s area), so several areas can be watched while the main mapper follows the player. Opens floating and can be docked afterwards; never persisted, so a profile reopen starts with none.'),
     fn('closeMapView',    '(viewID) → true | (nil, errMsg)',                'Close one secondary map view.'),
@@ -856,7 +856,7 @@ const MUDLET_GLOBALS: Completion[] = [
        'Get all registered map context-menu entries.'),
     fn('addMapMenu',           '(menuName [, parent [, displayName]]) → bool',
        "Add a submenu to the map's right-click context menu. addMapEvent entries nest under it by passing menuName as their `parent`. Pass another menu's name as `parent` to nest submenus."),
-    fn('removeMapMenu',        '(menuName) → bool',                'Remove a previously registered map context-menu submenu. Returns true if it existed.'),
+    fn('removeMapMenu',        '(menuName) → bool',                'Remove a map context-menu submenu with its submenus and the events filed under them. nil + message for an empty name.'),
     fn('getMapMenus',          '([keyByUniqueName]) → {displayName = parent}',
        'Get all registered map context-menu submenus, keyed by display name with the value "top-level" or the parent menu\'s name. Pass true to key by unique name instead, with each value a {["display name"], parent} table — that form\'s keys match the `parent` getMapEvents reports.'),
     fn('registerMapInfo',      '(label, function) → true',

@@ -4276,9 +4276,14 @@ export class MapStore {
     removeMapMenu(name: string): boolean {
         const had = this.mapMenus.delete(name);
         // Mudlet removes a menu *and its children* — cascade to any submenus
-        // nested under it (recursively, so grandchildren go too).
+        // nested under it (recursively, so grandchildren go too), and to the
+        // events filed under each removed menu, which desktop drops with it
+        // rather than leaving behind pointing at a parent that is gone.
         for (const [childName, menu] of [...this.mapMenus]) {
             if (menu.parent === name) this.removeMapMenu(childName);
+        }
+        for (const [eventName, event] of [...this.mapEvents]) {
+            if (event.parent === name) this.mapEvents.delete(eventName);
         }
         return had;
     }
@@ -4798,10 +4803,11 @@ export class MapStore {
         return true;
     }
 
-    /** Mudlet unHighlightRoom(roomID). Returns false when the room had no highlight. */
+    /** Mudlet unHighlightRoom(roomID). False only for a room that doesn't
+     *  exist; a room with no highlight to remove is still true, as on desktop. */
     unHighlightRoom(id: number): boolean {
-        if (!this.roomHighlights.delete(id)) return false;
-        this.notifyHighlights();
+        if (!this.rooms.has(id)) return false;
+        if (this.roomHighlights.delete(id)) this.notifyHighlights();
         return true;
     }
 
