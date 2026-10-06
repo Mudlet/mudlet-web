@@ -145,7 +145,8 @@ describe('setWindowWrapIndent / setWindowWrapHangingIndent', () => {
   it('accepts the main window and rejects an unknown named window', () => {
     expect(rt.run('return setWindowWrapIndent("main", 4)')).toBe(true);
     expect(rt.run('return setWindowWrapHangingIndent("main", 2)')).toBe(true);
-    expect(rt.run('return setWindowWrapIndent("nope", 4)')).toBe(false);
+    expect(rt.run('return select("#", setWindowWrapIndent("nope", 4))')).toBe(2);
+    expect(rt.run('return select(2, setWindowWrapIndent("nope", 4))')).toBe('window "nope" not found');
   });
 });
 

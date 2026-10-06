@@ -447,7 +447,12 @@ export class Console {
         this.history = [];
         this.pending = [];
         this.partial = new AnsiAwareBuffer();
-        this.resetCursor();
+        // Only the main console's cursor goes back to following the output.
+        // Every other console's user cursor stays where a script put it, past
+        // the one line left as it may now be — TConsole::clear empties the
+        // buffer and leaves mUserCursor alone, so getLineNumber() still reads
+        // it and the next write lands on that one line all the same.
+        if (this.followsOutput) this.resetCursor();
         this.consumeLeadingNewline = false;
         // Mudlet's clearWindow() leaves exactly ONE empty line, not none — the
         // current line every TBuffer keeps. deleteLine() on that line is what
@@ -791,7 +796,11 @@ export class Console {
         // that line yet still has Mudlet's "no current line" sentinel.
         // A console whose cursor was never moved sits on line 0 even before
         // anything is written into it — Mudlet's fresh miniconsole says 0.
-        if (len === 0) return this.partial.length > 0 || (!this.followsOutput && this.hasOpenLine) ? 0 : -1;
+        // That is wherever the user cursor was left, which a clear does not move.
+        if (len === 0) {
+            if (!this.followsOutput && this.hasOpenLine) return Math.max(0, this.cursorIdx);
+            return this.partial.length > 0 ? 0 : -1;
+        }
         if (this.onPartialLine) return len;
         // Following-end (cursorIdx < 0, after output/echo) reports as the last
         // line. An in-range or past-end cursorIdx is reported verbatim: after

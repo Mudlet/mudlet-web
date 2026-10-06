@@ -172,41 +172,37 @@ export function installCommandLineBindings({ lua, api, emitEvent }: BindingConte
     // ── Command-line context menu ─────────────────────────────────────────
     // Mudlet addCommandLineMenuEvent([cmdLineName,] menuLabel, eventName).
     // The menuLabel is both the unique key and the display string — there
-    // is no separate displayName arg. We support the single command bar
-    // and ignore the optional cmdLineName arg.
+    // is no separate displayName arg. Each command line has its own menu; no
+    // name (or "" / "main") is the main command bar's. Bridge.lua refuses a
+    // name that is no command line before this runs.
+    const menuOf = (name: unknown): string =>
+        (typeof name === 'string' || typeof name === 'number') && String(name) !== '' ? String(name) : 'main';
     api.cmdLineMenu.setDispatcher((event, args) => emitEvent(event, args));
     lua.global.set('addCommandLineMenuEvent', (
         a: unknown, b: unknown, c?: unknown,
     ) => {
         // 2 args: (menuLabel, eventName).
-        // 3 args: (cmdLineName, menuLabel, eventName) — drop cmdLineName.
+        // 3 args: (cmdLineName, menuLabel, eventName).
         // `== null` rather than `!== undefined`: a Lua nil handed over the
         // wasmoon boundary is not reliably `undefined`, and reading it as a
         // present third argument shifted everything one place, registering an
         // entry with an empty event name (which `add` then refused).
-        let menuLabel: unknown, eventName: unknown;
         if (c == null) {
-            menuLabel = a; eventName = b;
-        } else {
-            menuLabel = b; eventName = c;
+            return api.cmdLineMenu.add(String(a ?? ''), String(b ?? ''));
         }
-        return api.cmdLineMenu.add(
-            String(menuLabel ?? ''),
-            String(eventName ?? ''),
-        );
+        return api.cmdLineMenu.add(String(b ?? ''), String(c ?? ''), undefined, menuOf(a));
     });
-    // Mudlet removeCommandLineMenuEvent(uniqueName) → true on success, or
-    // (false, errMsg) when the entry doesn't exist. The optional leading
-    // cmdLineName arg is accepted for parity and ignored.
+    // Mudlet removeCommandLineMenuEvent([cmdLineName,] uniqueName) → true on
+    // success, or (false, errMsg) when that command line has no such entry.
     lua.global.set('__removeCommandLineMenuEvent', (a: unknown, b?: unknown) => {
         // Same nil-vs-undefined trap as addCommandLineMenuEvent above.
-        const uniqueName = b == null ? a : b;
-        return api.cmdLineMenu.remove(String(uniqueName ?? ''));
+        if (b == null) return api.cmdLineMenu.remove(String(a ?? ''));
+        return api.cmdLineMenu.remove(String(b ?? ''), menuOf(a));
     });
     // Mudlet shape: { [uniqueName] = { event, display } }
-    lua.global.set('getCommandLineMenuEvents', () => {
+    lua.global.set('getCommandLineMenuEvents', (name?: unknown) => {
         const out: Record<string, unknown> = {};
-        for (const e of api.cmdLineMenu.list()) {
+        for (const e of api.cmdLineMenu.list(menuOf(name))) {
             out[e.uniqueName] = { event: e.eventName, display: e.displayName };
         }
         return out;

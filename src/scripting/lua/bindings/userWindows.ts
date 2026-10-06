@@ -309,6 +309,7 @@ export function installUserWindowBindings({
         }
         if (ok) {
             api.forgetCmdLineCompletion(name);
+            api.cmdLineMenu.drop(name);
             emitEvent('sysCommandLineDeleted', [name]);
         }
         return ok;

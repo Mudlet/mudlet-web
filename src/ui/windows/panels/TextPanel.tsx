@@ -106,9 +106,13 @@ export function TextPanel({ id, title, manager, labels, cmdLines, scrollBoxes, m
             role="region"
             aria-label={`${title || id} window`}
         >
-            {cmdLineEnabled ? (
-                <div style={STACK_STYLE}>
-                    <div style={OUTPUT_FILL_STYLE}>{stickyPanel}</div>
+            {/* One structure whether or not there is a command line: the output
+                stays the same DOM node when enableCommandLine/disableCommandLine
+                adds or drops the input under it. Re-parenting it left the
+                window manager measuring (getRowCount) a node no longer on screen. */}
+            <div style={STACK_STYLE}>
+                <div style={OUTPUT_FILL_STYLE}>{stickyPanel}</div>
+                {cmdLineEnabled && (
                     <WindowCmdLine
                         id={id}
                         manager={manager}
@@ -116,10 +120,8 @@ export function TextPanel({ id, title, manager, labels, cmdLines, scrollBoxes, m
                         seedValue={cmdLineValue}
                         seedSeq={cmdLineValueSeq}
                     />
-                </div>
-            ) : (
-                stickyPanel
-            )}
+                )}
+            </div>
             {labels && <LabelOverlay manager={labels} parent={id} />}
             {cmdLines && <CommandLineOverlay manager={cmdLines} parent={id} />}
             {scrollBoxes && labels && cmdLines && (

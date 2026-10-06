@@ -122,9 +122,11 @@ describe('echoPopup / insertPopup / setPopup', () => {
     expect(env.run('return (getCurrentLine("tb"))')).toBe('ABXXCD');
   });
 
-  it('setPopup returns false with no selection and true once a selection exists', () => {
+  // Desktop's setPopup answers true for any console it finds, selection or
+  // not (ConsoleLinksByName_spec); there is just nothing for it to attach to.
+  it('setPopup returns true with no selection and once a selection exists', () => {
     env.run('createBuffer("tb"); cecho("tb", "<red>Hello<reset>\\n")');
-    expect(env.run('return (setPopup("tb", {"look"}, {"Look"}))')).toBe(false);
+    expect(env.run('return (setPopup("tb", {"look"}, {"Look"}))')).toBe(true);
     env.run('selectCurrentLine("tb")');
     expect(env.run('return (setPopup("tb", {"look"}, {"Look"}))')).toBe(true);
   });

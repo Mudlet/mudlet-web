@@ -102,6 +102,11 @@ interface BufferWidget {
     background: { r: number; g: number; b: number; a: number };
     /** Null until setFontSize — the profile's size reads back until then. */
     fontSize: number | null;
+    /** Null until setFont — the profile's family reads back until then. */
+    fontFamily: string | null;
+    /** enable/disableTimeStamps. A buffer is never drawn, but it keeps the
+     *  setting as any console does, so a script reads back what it set. */
+    timestamps: boolean;
 }
 
 const COLOR_IGNORED = -1;
@@ -3475,9 +3480,10 @@ export class ScriptingAPI {
         }
         const at = Math.min(col, buf.text.length);
         // The padding is not part of the link: applyLink covers the inserted
-        // text only.
+        // text only, and the gap takes the console's current format, as
+        // TBuffer::expandLine fills it — not the link's, nor its neighbour's.
         const padding = ' '.repeat(col - at);
-        if (padding) buf.insert(at, padding);
+        if (padding) buf.insert(at, padding, con.format.toSnapshot());
         buf.insert(col, text, state);
         if (onTriggerLine) {
             // As for insertText: TConsole::insertLink moves the capture
@@ -4549,29 +4555,55 @@ export class ScriptingAPI {
     enableHorizontalScrollBar(windowName?: string): void {
         this.session.windows.setHorizontalScrollBarVisible(windowName || 'main', true);
     }
+    // A buffer has no pane to scroll, so turning its scrolling off is accepted
+    // and changes nothing: it always reports itself scrolling.
     disableScrolling(windowName?: string): boolean {
+        if (windowName && this.buffers.has(windowName)) return true;
         return this.session.windows.setScrollingEnabled(windowName || 'main', false);
     }
     enableScrolling(windowName?: string): boolean {
+        if (windowName && this.buffers.has(windowName)) return true;
         return this.session.windows.setScrollingEnabled(windowName || 'main', true);
     }
 
     /** Mudlet `timeStampsEnabled(window)` — whether the console shows its
      *  timestamp column. Null when no such window exists. */
     timeStampsEnabled(windowName: string): boolean | null {
+        const buf = this.buffers.get(windowName);
+        if (buf) return buf.timestamps;
+        // The main console's column is the profile's own setting — the one the
+        // output's context menu toggles.
+        if (!windowName || windowName === 'main') {
+            return selectProfileField(useAppStore.getState(), this.connectionId, 'showTimestamps') === true;
+        }
         return this.session.windows.timeStampsEnabled(windowName);
     }
 
     /** Mudlet `enableTimeStamps(window)` / `disableTimeStamps(window)`. False
      *  when no such window exists. */
     setTimeStamps(windowName: string, visible: boolean): boolean {
-        return this.session.windows.setTimeStamps(windowName, visible);
+        const buf = this.buffers.get(windowName);
+        if (buf) {
+            buf.timestamps = visible;
+            return true;
+        }
+        if (!windowName || windowName === 'main') {
+            useAppStore.getState().patchConnectionProfile(this.connectionId, { showTimestamps: visible });
+            return true;
+        }
+        if (!this.session.windows.setTimeStamps(windowName, visible)) return false;
+        // The column moves the text over, so the console reports its grid
+        // (with the gutter) — and with it any size a font change left
+        // unreported. A buffer is never shown, so it has none to report.
+        this.session.windows.reportConsoleGrid(windowName, this.getColumnCount(windowName), this.getRowCount(windowName));
+        return true;
     }
 
     /** Mudlet `scrollingActive([window])` — whether the user can scroll back in
      *  this console. True unless disableScrolling was called on it; the main
      *  window is always scrollable. */
     scrollingActive(windowName?: string): boolean {
+        if (windowName && this.buffers.has(windowName)) return true;
         return this.session.windows.isScrollingEnabled(windowName || 'main');
     }
 
@@ -4744,18 +4776,28 @@ export class ScriptingAPI {
         const el = isMain
             ? this.session.windows.getElement('main')
             : this.session.windows.getElement(windowName!);
-        const measured = measureColumnCapacity(el);
-        if (measured > 0) return measured;
-        if (isMain) return 0;
+        if (isMain) return measureColumnCapacity(el);
 
-        const size = this.session.windows.getSize(windowName!);
-        if (!size || size.width <= 0) return 0;
+        // A sub-console is measured in the font it has been given rather than
+        // the one its panel has painted yet: setFont/setFontSize take effect on
+        // the next render, and a script that changes the font and then counts
+        // the columns — or a timestamp change reporting them — has to see the
+        // new count, as getRowCount already does.
         const profileFamily = selectProfileField(useAppStore.getState(), this.connectionId, 'outputFont')?.family ?? '';
         const profileSize   = selectProfileField(useAppStore.getState(), this.connectionId, 'fontSize') ?? 12;
         const family = this.session.windows.getFont(windowName!) ?? profileFamily;
         const fontSize = this.session.windows.getFontSize(windowName!) ?? profileSize;
         const [cellW] = measureMonospaceCell(family, fontSize);
         if (cellW <= 0) return 0;
+        if (el) {
+            const cs = getComputedStyle(el);
+            const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+            const width = Math.max(0, el.clientWidth - pad);
+            if (width > 0) return Math.floor(width / cellW);
+        }
+
+        const size = this.session.windows.getSize(windowName!);
+        if (!size || size.width <= 0) return 0;
         // Match the gutter/padding measureColumnCapacity would subtract once
         // the element mounts (~8px per side on text panels).
         const usable = Math.max(0, size.width - 16);
@@ -4785,14 +4827,16 @@ export class ScriptingAPI {
         if (el) {
             const cs = getComputedStyle(el);
             const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
-            const height = Math.max(0, el.clientHeight - pad);
+            const pending = isMain ? 0 : this.session.windows.pendingCmdLineHeightDelta(windowName!);
+            const height = Math.max(0, el.clientHeight - pad + pending);
             if (height > 0) return Math.floor(height / cellH);
         }
         if (isMain) return 0;
 
         const size = this.session.windows.getSize(windowName!);
         if (!size || size.height <= 0) return 0;
-        return Math.floor(size.height / cellH);
+        const height = Math.max(0, size.height + this.session.windows.pendingCmdLineHeightDelta(windowName!));
+        return Math.floor(height / cellH);
     }
 
     /**
@@ -5085,8 +5129,10 @@ export class ScriptingAPI {
             // (generic_mapper's print_echoes, mudlet-web#343).
             return;
         }
+        // Outside one, the last line is the open line, and the cursor goes onto
+        // its last character all the same (column 0 while it is empty).
         con.moveToEnd();
-        con.setCursorColumn(con.getLine().length);
+        con.setCursorColumn(Math.max(0, con.getLine().length - 1));
         con.markCursorAtEnd();
     }
 
@@ -5347,7 +5393,7 @@ export class ScriptingAPI {
         if (fresh) {
             this.buffers.set(name, {
                 visible: false, x: 0, y: 0, width: 0, height: 0,
-                background: { r: 0, g: 0, b: 0, a: 255 }, fontSize: null,
+                background: { r: 0, g: 0, b: 0, a: 255 }, fontSize: null, fontFamily: null, timestamps: false,
             });
         }
         // Register the backing console so echo/selection resolve it by name.
@@ -5509,7 +5555,9 @@ export class ScriptingAPI {
             // Past the end of the line, Mudlet's insertInLine pads out to the
             // cursor (expandLine) rather than clamping back to it, so the pasted
             // text lands at the column that was asked for.
-            if (at > buf.length) buf.insert(buf.length, ' '.repeat(at - buf.length));
+            // The padding takes the console's current format, as expandLine
+            // fills with the console's own pen, not the pasted text's.
+            if (at > buf.length) buf.insert(buf.length, ' '.repeat(at - buf.length), con.format.toSnapshot());
             buf.insertBuffer(at, this.clipboard.clone());
             if (!this.inTriggerProcessing) buf.rerender();
             return;
@@ -6726,7 +6774,11 @@ export class ScriptingAPI {
         const size = selectProfileField(state, this.connectionId, 'fontSize') ?? 12;
         const [cellW] = measureMonospaceCell(family, size);
         const wrapAt = this.mainWrapAt() || this.getColumnCount('main');
-        return Math.round(cellW * (wrapAt + 1));
+        // Not rounded: desktop's width is a qreal, and the column width a script
+        // works out of it (width / (wrapAt + 1)) has to multiply back exactly.
+        // The cell is held to Qt's 1/64 px font-metric grid (QFixed), so that
+        // division and multiplication are exact in floating point.
+        return (Math.round(cellW * 64) / 64) * (wrapAt + 1);
     }
 
     /** The server the last connectToServer() pointed the profile at, with the
@@ -7457,6 +7509,13 @@ export class ScriptingAPI {
             useAppStore.getState().patchConnectionProfile(this.connectionId, { outputFont: next });
             return true;
         }
+        // A buffer keeps the family for getFont; it draws nothing, and desktop
+        // raises no sysFontChangeEvent for one.
+        const buf = this.buffers.get(win);
+        if (buf) {
+            buf.fontFamily = fam || null;
+            return true;
+        }
         // Labels are not in the window registry — they are overlay widgets with
         // their own manager — so a label was the one window kind setFont could
         // not reach at all, and Geyser.Label:setFont took its "Qt will pick
@@ -7480,6 +7539,8 @@ export class ScriptingAPI {
             selectProfileField(useAppStore.getState(), this.connectionId, 'outputFont')?.family
             || DEFAULT_OUTPUT_FONT_FAMILY;
         if (!win || win === 'main') return configured();
+        const buf = this.buffers.get(win);
+        if (buf) return buf.fontFamily ?? configured();
         if (!this.session.windows.has(win)) {
             // A label, or nothing at all. Its own font when it has one; the
             // profile font when it does not, matching what a window with no

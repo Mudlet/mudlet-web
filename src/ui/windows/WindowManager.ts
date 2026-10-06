@@ -18,6 +18,7 @@ import { Buffer } from 'buffer';
 import { OverlayLayerOrder } from '../layout/overlayLayerOrder';
 import { TIMESTAMP_GUTTER_COLUMNS } from '../../mud/connection/TelnetNegotiator';
 import { DEFAULT_CMD_LINE_HOST, SubCommandLine, type CmdLineHost } from '../cmdline/subCommandLine';
+import { cssEscape } from '../labels/qtCss';
 
 interface ScriptWindowData extends ScriptWindowRenderData {
     pendingText: Array<string | AnsiAwareBuffer>;
@@ -1052,16 +1053,29 @@ export class WindowManager {
         const wrap = win?.wrapAt ?? 0;
         const cols = wrap > 0 ? wrap : Math.max(1, Math.floor(Math.max(0, usableW) / cellW));
         const rows = Math.max(1, Math.floor(Math.max(0, usableH) / cellH));
+        this.reportConsoleGrid(id, cols, rows);
+    }
+
+    /**
+     * Raise sysConsoleSizeChanged(name, columns, rows, gutter) for a console
+     * whose character grid is now `cols` × `rows`, unless that is the grid it
+     * last reported — TConsole::raiseMudletResizeEvent compares against what
+     * it reported before. Called by the resize path above, and by a timestamp
+     * column being shown or hidden, which reports a grid that a font change
+     * (which reports nothing on its own) left unreported.
+     */
+    reportConsoleGrid(id: string, cols: number, rows: number): void {
         const last = this.lastEmittedGrid.get(id);
         if (last && last.cols === cols && last.rows === rows) return;
         this.lastEmittedGrid.set(id, { cols, rows });
         // The 4th argument is the timestamp gutter's width in columns —
         // TConsole::raiseMudletResizeEvent's `showTimeStamps() ?
-        // TBuffer::smTimeStampFormat.size() : 0`. Only the main console can
-        // show timestamps here.
-        const gutter = id === 'main'
-            && selectProfileField(useAppStore.getState(), this._connectionId, 'showTimestamps') === true
-            ? TIMESTAMP_GUTTER_COLUMNS : 0;
+        // TBuffer::smTimeStampFormat.size() : 0`. Main's column is the
+        // profile's setting; every other console's is its own.
+        const shown = id === 'main'
+            ? selectProfileField(useAppStore.getState(), this._connectionId, 'showTimestamps') === true
+            : this.timeStampsEnabled(id) === true;
+        const gutter = shown ? TIMESTAMP_GUTTER_COLUMNS : 0;
         this.onRaiseEvent?.('sysConsoleSizeChanged', [id, cols, rows, gutter]);
         // Keep NAWS in sync with the main output area's character grid.
         if (id === 'main') this.onMainConsoleResize?.(cols, rows);
@@ -2640,6 +2654,46 @@ export class WindowManager {
         state.action = cb;
         return true;
     }
+
+    /**
+     * How much taller (positive) or shorter (negative) window `id`'s text pane
+     * is about to be than it measures now: enable/disableCommandLine change
+     * whether it has a command line under it at once, but the panel only takes
+     * the input in or out on its next render, which a script still running
+     * does not let happen. getRowCount adds this so it counts the rows the pane
+     * has, not the ones it had.
+     */
+    pendingCmdLineHeightDelta(id: string): number {
+        const win = this.windows.get(id);
+        if (!win || typeof document === 'undefined') return 0;
+        // A panel that has not mounted yet has no input either.
+        const viewport = this.viewports.get(id);
+        const shown = viewport?.querySelector<HTMLElement>(
+            `textarea.window-cmdline[data-mudlet-cmdline="${cssEscape(id)}"]`) ?? null;
+        if (win.cmdLineEnabled && !shown) return -this.cmdLineHeight(viewport);
+        if (!win.cmdLineEnabled && shown) return shown.offsetHeight;
+        return 0;
+    }
+
+    /** The height a window's one-row command line takes, measured once off a
+     *  hidden probe styled as the real one; 0 where nothing can be measured. */
+    private cmdLineHeight(host: HTMLElement | undefined): number {
+        if (this.measuredCmdLineHeight > 0) return this.measuredCmdLineHeight;
+        try {
+            const probe = document.createElement('textarea');
+            probe.className = 'window-cmdline';
+            probe.rows = 1;
+            probe.style.cssText = 'position:absolute;visibility:hidden;left:0;top:0;';
+            (host ?? document.body).appendChild(probe);
+            const height = probe.offsetHeight;
+            probe.remove();
+            if (height > 0) this.measuredCmdLineHeight = height;
+            return height > 0 ? height : 0;
+        } catch {
+            return 0;
+        }
+    }
+    private measuredCmdLineHeight = 0;
 
     /** Whether window `id` has a command line of its own: one enableCommandLine
      *  made, which disableCommandLine only hides. A console that never had one
