@@ -1739,8 +1739,8 @@ export class LuaRuntime implements IScriptingRuntime {
             const values = n === 0 ? [] : s.split('\x01');
             return this.api.sendMSDP(v, values);
         });
-        // Mudlet `sendSocket(data)`: send literal bytes over the socket, no
-        // telnet/encoding processing.
+        // Mudlet `sendSocket(data [, parseTelnetCodes])`: send literal bytes over
+        // the socket, no telnet/encoding processing.
         // `sendSocket` itself is a Bridge.lua wrapper over __mudlet_sendSocket,
         // which adds Mudlet's type check and (nil, errMsg) failure return.
         // Mudlet getServerEncoding/setServerEncoding/getServerEncodingsList —
@@ -1772,7 +1772,9 @@ export class LuaRuntime implements IScriptingRuntime {
         this.lua.global.set('__mudlet_sendTelnetChannel102', (b1: unknown, b2: unknown) =>
             this.api.sendTelnetChannel102(
                 String.fromCharCode(Number(b1) & 0xff, Number(b2) & 0xff)));
-        this.lua.global.set('__mudlet_sendSocket', (data: unknown) => this.api.sendSocket(String(data ?? '')));
+        // Armored by the Bridge.lua wrapper: the data is bytes, not text.
+        this.lua.global.set('__mudlet_sendSocket', (data: unknown, parse: unknown) =>
+            this.api.sendSocket(unarmor(String(data ?? '')), parse === true));
         /** Whether the session currently has a live connection — drives the
          *  "not connected to game server" guards Mudlet applies before sending
          *  ATCP/GMCP/MSDP. */
@@ -2567,6 +2569,12 @@ export class LuaRuntime implements IScriptingRuntime {
      * wasmoon's habit of stringifying a bound global into its entire JS source.
      * Lua 5.1's `print` reads the global at call time, so it follows along.
      *
+     * It counts its arguments rather than naming one: a named parameter turns
+     * `tostring()` into `tostring(nil)` and answers "nil", where stock Lua
+     * raises "bad argument #1 to 'tostring' (value expected)" — with no
+     * position, as luaL_argerror gives a C function — and a buggy
+     * `tostring(select(2, ...))` has to fail here as it does on desktop.
+     *
      * Installed after every `global.set` above and before Bridge.lua, so no
      * bundled or user chunk can capture the unsafe version as an upvalue.
      */
@@ -2575,7 +2583,11 @@ export class LuaRuntime implements IScriptingRuntime {
             `do
   local raw = tostring
   local getmt, setmt = debug.getmetatable, debug.setmetatable
-  function tostring(v)
+  function tostring(...)
+    if select('#', ...) == 0 then
+      error("bad argument #1 to 'tostring' (value expected)", 0)
+    end
+    local v = ...
     if type(v) ~= 'function' then return raw(v) end
     local mt = getmt(v)
     if mt == nil then return raw(v) end

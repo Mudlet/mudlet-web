@@ -222,7 +222,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('sendATCP',     '(message) → bool', "Send an ATCP subnegotiation (telnet option 200, GMCP's predecessor). False when the socket is closed."),
     fn('sendTelnetChannel102', '(msg) → bool', 'Send a zMUD "channel 102" subnegotiation (telnet option 102). False when the socket is closed.'),
     fn('reconnect',    '()', 'Disconnect and redial the last-connected URL (or the configured server when nothing has been dialled yet). Returns nothing; the outcome arrives as sysConnectionEvent or sysDisconnectionEvent.'),
-    fn('sendSocket',   '(data)',           'Send literal bytes over the socket (no telnet/encoding processing)'),
+    fn('sendSocket',   '(data [, parse])', 'Send literal bytes over the socket (no telnet/encoding processing); parse decodes <T_IAC>-style tags'),
     fn('feedTelnet',   '(data)',           'Inject raw server bytes into the inbound pipeline as if received from the MUD'),
     fn('loadReplay',   '(fileName) → true | nil,err', 'Play back a Mudlet binary replay (.dat) from the profile filesystem on its recorded timeline (e.g. loadReplay(getMudletHomeDir().."/log/rec.dat")).'),
     fn('loadRawFile',  '(fileName) → true | nil,err', 'Legacy alias of loadReplay.'),

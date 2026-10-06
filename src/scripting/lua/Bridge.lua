@@ -5465,7 +5465,7 @@ do
     end
 end
 
--- Mudlet sendATCP(message [, what]) / sendTelnetChannel102(msg) / sendSocket(data).
+-- Mudlet sendATCP(message [, what]) / sendTelnetChannel102(msg) / sendSocket(data [, parse]).
 -- Each validates its arguments (raising, as Mudlet's C++ bindings do) and then
 -- reports a refusal as (nil, errMsg) rather than a bare false. Messages are
 -- Mudlet's verbatim — Networking_spec asserts several of them in full.
@@ -5538,9 +5538,26 @@ function setServerEncoding(newEncoding)
     return true
 end
 
-function sendSocket(data)
-    data = __mudlet_check_string(data, "sendSocket", 1, "data")
-    if not __mudlet_sendSocket(data) then
+-- sendSocket(data [, parseTelnetCodes]) sends the string's own BYTES, so it is
+-- armored over the bridge like feedTelnet's data: sent plain, wasmoon decoded
+-- the UTF-8 and "é" went out as the one byte e9 rather than c3 a9. Desktop reads
+-- it with lua_tostring into a QByteArray, so the data ends at its first NUL. The
+-- optional flag decodes the same <T_IAC>-style tags feedTelnet does
+-- (TLuaInterpreter::parseTelnetCodes); present, it has to be a boolean.
+function sendSocket(...)
+    local data, parse = ...
+    local n = select('#', ...)
+    data = __mudlet_check_string(data, "sendSocket", 1, "data", n >= 1)
+    local parseCodes = false
+    if n > 1 then
+        if type(parse) ~= 'boolean' then
+            error("sendSocket: bad argument #2 type (parse telnet codes {default = false} as boolean"
+                .. " is optional, got " .. type(parse) .. "!)", 2)
+        end
+        parseCodes = parse
+    end
+    data = data:match("^[^%z]*")
+    if not __mudlet_sendSocket(__mudlet_armor(data), parseCodes) then
         return nil, "sendSocket: unable to send any/all of the data, is the Server connected?"
     end
     return true

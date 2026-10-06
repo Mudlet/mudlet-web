@@ -5328,7 +5328,7 @@ export class ScriptingEngine implements EngineHost {
                         // blank line to render (true for an intentional <BR>-split gap;
                         // for a single line it mirrors the old `line === ''` rule so a
                         // text-free MXP line — e.g. pure <!ENTITY> defs — stays hidden).
-                        const units: { plain: string; buffer: AnsiAwareBuffer; outputLine: string; blankRenders: boolean }[] = [];
+                        const units: { plain: string; buffer: AnsiAwareBuffer; blankRenders: boolean }[] = [];
                         if ((this.mxpActive || this.forceMxpProcessorOn) && type === 'mud') {
                             // MXP is live: parse the in-band markup into styled
                             // segments + clean (tag/entity-decoded) plain text, and
@@ -5347,7 +5347,6 @@ export class ScriptingEngine implements EngineHost {
                                 units.push({
                                     plain: part.plain,
                                     buffer,
-                                    outputLine: multiLine ? part.plain : line,
                                     blankRenders: multiLine ? true : line === '',
                                 });
                             }
@@ -5366,7 +5365,7 @@ export class ScriptingEngine implements EngineHost {
                                 this.wireMxpLinks(fbuf, rd.links);
                                 this.wireOsc8Links(fbuf);
                                 if (!this.api.mxpWriteToFrame(rd.frame, fbuf, rd.eof, rd.eol)) {
-                                    units.push({ plain: rd.plain, buffer: fbuf, outputLine: rd.plain, blankRenders: rd.plain === '' });
+                                    units.push({ plain: rd.plain, buffer: fbuf, blankRenders: rd.plain === '' });
                                 }
                             }
                             // MXP <SOUND>/<MUSIC> are the same server-driven audio
@@ -5387,11 +5386,11 @@ export class ScriptingEngine implements EngineHost {
                             // blank lines — unlike buffer.trailingState() which only
                             // sees the last text segment's state.
                             carryState = computeTrailingState(line, carryState);
-                            units.push({ plain, buffer, outputLine: line, blankRenders: line === '' });
+                            units.push({ plain, buffer, blankRenders: line === '' });
                         }
 
                         for (let u = 0; u < units.length; u++) {
-                            let { plain, buffer, outputLine, blankRenders } = units[u];
+                            let { plain, buffer, blankRenders } = units[u];
                             // Only the final visual line of a prompt-bearing network
                             // line is the prompt (e.g. just the "> ", not the room).
                             const isPrompt = lineIsPrompt && u === units.length - 1;
@@ -5412,7 +5411,6 @@ export class ScriptingEngine implements EngineHost {
                                 if (behaviour === 'hide') continue;
                                 if (behaviour === 'replacewithspace') {
                                     plain = ' ';
-                                    outputLine = ' ';
                                     buffer = new AnsiAwareBuffer(' ');
                                     blankRenders = true;
                                 }
@@ -5428,7 +5426,6 @@ export class ScriptingEngine implements EngineHost {
                             // every fire-length and line-delta window by however many
                             // blanks the server sent.
                             this.processLineTriggers(plain, buffer, isPrompt);
-                            if (plain.length > 0) this.emit('output', [outputLine, type]);
 
                             const shouldRender =
                                 !buffer.deleted &&
@@ -5751,14 +5748,11 @@ export class ScriptingEngine implements EngineHost {
                 this.setForceMxpProcessorOn(
                     useAppStore.getState().connectionProfile[this.connectionId]?.config?.specialForceMXPProcessorOn === true,
                 );
-                // Mudlet Web's native `connect` plus the Mudlet-standard name — the
-                // bundled generic mapper and ported scripts register a
-                // sysConnectionEvent handler, so both must fire.
-                this.emit('connect', []);
+                // Desktop raises only the sys* names: a "*" catch-all or a handler
+                // registered for "connect" sees nothing else (mudlet-web#365).
                 this.emit('sysConnectionEvent', []);
             }),
             session.events.on('client.disconnect', () => {
-                this.emit('disconnect', []);
                 this.emit('sysDisconnectionEvent', []);
                 // A dropped socket sends no WONT/DONT, so the protocols the
                 // connection enabled are forgotten here. Mudlet raises only

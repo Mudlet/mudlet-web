@@ -33,4 +33,9 @@ mudlet = {
     packageDownloading = { message = "Downloading package from: %s" },
   },
 }
-toNativeSeparators = function(p) return p end
+-- Desktop's (TLuaInterpreter::initLuaGlobals) on a '/' platform, which every
+-- browser path is: backslashes become slashes, and gsub's count comes back too,
+-- so a package written on Windows builds the same paths it does on Linux.
+function toNativeSeparators(rawPath)
+  return string.gsub(rawPath, '\\', '/')
+end

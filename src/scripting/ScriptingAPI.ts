@@ -1278,10 +1278,12 @@ export class ScriptingAPI {
         return this.session.sendMSDP(variable, values);
     }
 
-    /** Mudlet `sendSocket(data)`. Sends a literal byte-string over the socket
-     *  with no telnet/encoding processing (each char is one byte). */
-    sendSocket(data: string): boolean {
-        return this.session.sendSocket(data);
+    /** Mudlet `sendSocket(data [, parseTelnetCodes])`. Sends a literal
+     *  byte-string over the socket with no telnet/encoding processing (each
+     *  char is one byte). With `parseTelnetCodes` the `<T_IAC>`-style tags are
+     *  decoded first, as feedTelnet's are (TLuaInterpreter::parseTelnetCodes). */
+    sendSocket(data: string, parseTelnetCodes = false): boolean {
+        return this.session.sendSocket(parseTelnetCodes ? decodeTelnetByteTags(data) : data);
     }
 
     /** Mudlet `feedTelnet(data)`. Injects raw server bytes into the inbound
