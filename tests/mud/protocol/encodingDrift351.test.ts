@@ -102,6 +102,25 @@ describe('#351 item 4: invalid UTF-8 from the game', () => {
         expect(new SessionCodec().decode(`a${bytes(seq)}b`)).toBe('a\uFFFDb');
     });
 
+    // Desktop's TBufferEncoding_spec: a byte that cannot continue a sequence
+    // ends it, and is then read in its own right.
+    it.each([
+        ['c3', 'AZ', '\uFFFDAZ'],
+        ['e2 82', 'AZ', '\uFFFDAZ'],
+        ['f0 9f 98', 'AZ', '\uFFFDAZ'],
+        ['f8', 'ABCDZ', '\uFFFDABCDZ'],
+        ['e2 e6 97 a5', 'Z', '\uFFFD日Z'],
+        ['e2', '\r\n', '\uFFFD\r\n'],
+    ])('keeps the byte that cuts %s short', (seq, after, text) => {
+        expect(new SessionCodec().decode(bytes(seq) + after)).toBe(text);
+    });
+
+    it('keeps a line ending that cuts short a sequence held from the last frame', () => {
+        const codec = new SessionCodec();
+        expect(codec.decode('one\xe2')).toBe('one');
+        expect(codec.decode('\r\ntwo')).toBe('\uFFFD\r\ntwo');
+    });
+
     it('holds a sequence split across frames', () => {
         const codec = new SessionCodec();
         expect(codec.decode('x\xe4\xb8')).toBe('x');

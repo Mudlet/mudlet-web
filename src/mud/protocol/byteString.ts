@@ -72,15 +72,19 @@ export const decodeUtf8AsTBuffer = (s: string): string => {
     return pending ? text + fromByteString(pending).text : text;
 };
 
-/** The same rule over a stream: `decodeUtf8AsTBuffer` for a socket's bytes,
- *  which desktop runs through TBuffer too. A sequence the end of `s` cuts
- *  short is handed back as `pending` to be prefixed to the next frame — unless
- *  `final`, where it is decoded leniently as {@link decodeUtf8AsTBuffer} does. */
+/** TBuffer's rule for a socket's bytes, as desktop has had it since Mudlet PR
+ *  #11068: a malformed sequence is still ONE replacement mark — the browser's
+ *  decoder gives one per byte of an overlong form or a surrogate — but a byte
+ *  that cannot continue a sequence is not swallowed by it: the bytes before
+ *  it earn the mark and it is read in its own right, so a line ending, an
+ *  escape or a letter after a truncated sequence survives. A sequence the
+ *  end of `s` cuts short is handed back as `pending` to be prefixed to the
+ *  next frame — unless `final` (a prompt ends there), where it earns its mark. */
 export const decodeUtf8Stream = (s: string, final: boolean): { text: string; pending: string } => {
     const fast = decodeUtf8Valid(s, final);
     if (fast) return fast;
-    const out = decodeUtf8Desktop(s);
-    if (final && out.pending) return { text: out.text + fromByteString(out.pending).text, pending: "" };
+    const out = decodeUtf8Desktop(s, true);
+    if (final && out.pending) return { text: out.text + "\uFFFD", pending: "" };
     return out;
 };
 
@@ -117,8 +121,10 @@ const decodeUtf8Valid = (s: string, final: boolean): { text: string; pending: st
 };
 
 /** TBuffer's walk over `s`. A sequence the end of the input cuts short comes
- *  back undecoded as `pending`. */
-const decodeUtf8Desktop = (s: string): { text: string; pending: string } => {
+ *  back undecoded as `pending`. With `cutByNonContinuation` a byte that cannot
+ *  continue a sequence ends it there (the socket path); without, the lead's
+ *  declared length is taken whatever follows (feedTriggers' path). */
+const decodeUtf8Desktop = (s: string, cutByNonContinuation = false): { text: string; pending: string } => {
     const n = s.length;
     const byte = (i: number) => s.charCodeAt(i) & 0xff;
     let out = "";
@@ -134,6 +140,16 @@ const decodeUtf8Desktop = (s: string): { text: string; pending: string } => {
             : (b0 & 0xfc) === 0xf8 ? 5
             : (b0 & 0xfe) === 0xfc ? 6
             : 1;
+        if (cutByNonContinuation && len > 1) {
+            let k = 1;
+            while (k < len && i + k < n && (byte(i + k) & 0xc0) === 0x80) k++;
+            if (k < len && i + k < n) {
+                out += "\uFFFD";
+                i += k;
+                run = i;
+                continue;
+            }
+        }
         if (i + len > n) return { text: out, pending: s.substring(i) };
         let valid = len >= 2 && len <= 4;
         for (let k = 1; valid && k < len; k++) {
