@@ -500,7 +500,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `putHTTP(url, data [, headers])` | ✅ | Bridge.lua → `HttpService.putHTTP` |
 | `reconnect()` | ✅ | Disconnect + redial the last-connected URL (`MudSession.lastUrl`, set by every `connect()`), else the profile's configured server; returns nothing, as Mudlet's does |
 | `sendAll(text1, text2, ...)` | ✅ | Other.lua |
-| `sendATCP(msg)` | ✅ | `IAC SB ATCP(200) <payload> IAC SE` via `MudClient.sendRaw` (shared `sendSubnegotiation` helper); false when the socket is closed |
+| `sendATCP(msg)` | ✅ | `IAC SB ATCP(200) <payload> IAC SE` via `MudClient.sendRaw` (shared `sendSubnegotiation` helper); `nil, "ATCP is not currently enabled"` unless the server has taken ATCP up (`isATCPEnabled`). Inbound ATCP fills the `atcp` table and raises one event per message, named after it without dots (`CharVitals`), and `Auth.Request` is answered with the hello |
 | `sendGMCP(message)` | ✅ | Frames as IAC SB GMCP … |
 | `sendMSDP(var, ...)` | ✅ | Frames `IAC SB MSDP MSDP_VAR var [MSDP_VAL val]… IAC SE`. Bridge.lua packs varargs |
 | `sendSocket(data)` | ✅ | Literal bytes (no telnet/encoding processing) |

@@ -40,6 +40,9 @@ export interface TempComplexTriggerSpec {
     fireLength: number;
     delta: number;
     highlight?: { fg?: string; bg?: string };
+    /** Its code string did not compile. Mudlet still makes the trigger, but it
+     *  is inactive however it is switched — it never matches or highlights. */
+    uncompiled?: boolean;
 }
 
 export interface EngineHost {

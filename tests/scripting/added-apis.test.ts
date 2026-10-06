@@ -344,6 +344,24 @@ describe('mssp global — setMsspValue', () => {
   });
 });
 
+// setAtcpValue is Mudlet's setAtcpTable rawset: one string per inbound ATCP
+// message under its dotless name (mudlet-web#368). The split itself is covered
+// in tests/mud/connection/atcpMccp1Drift368.test.ts.
+describe('atcp global — setAtcpValue', () => {
+  let env: TestRuntime;
+  beforeEach(async () => { env = await createTestRuntime(); });
+  afterEach(() => env.dispose());
+
+  it('starts empty and fills flat string keys', () => {
+    expect(env.run('return type(atcp) .. "/" .. tostring(next(atcp))')).toBe('table/nil');
+    env.rt.setAtcpValue('CharVitals', 'H:100/120 M:50/60 NL:10/100');
+    env.rt.setAtcpValue('RoomNum', '1234');
+    env.rt.setAtcpValue('RoomNum', '1235');
+    expect(env.run('return atcp.CharVitals')).toBe('H:100/120 M:50/60 NL:10/100');
+    expect(env.run('return atcp.RoomNum')).toBe('1235');
+  });
+});
+
 // Mapper data completeness: room/area user-data, grid mode, getAreaTableSwap
 // and resetRoomArea. All are pure MapStore operations; these drive the real
 // Lua globals end-to-end (wasmoon → MapStore → back) on an empty in-memory map.

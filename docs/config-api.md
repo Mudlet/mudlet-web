@@ -56,7 +56,7 @@ Mudlet); the rest are live.
 | `enableNAWS` | `protocols.naws` | next connect — window-size negotiation (telnet option 31) |
 | `specialForceMxpNegotiationOff` | `!protocols.mxp` | inverse flag |
 | `specialForceCharsetNegotiationOff` | `!protocols.charset` | inverse flag |
-| `specialForceCompressionOff` | `!protocols.mccp` | inverse flag — forces MCCP (option 86) off |
+| `specialForceCompressionOff` | `!protocols.mccp` | inverse flag — forces MCCP (options 85 and 86) off |
 | `forceNewEnvironNegotiationOff` | `!(protocols.mnes \|\| protocols.newEnviron)` | inverse flag — disables both option-39 variants |
 | `autoClearInputLine` | `autoClearInput` | live |
 | `askTlsAvailable` | `askTlsAvailable` | live — whether an MSSP-advertised TLS port still earns a "switch to the secure port?" offer (Mudlet `Host::mAskTlsAvailable`). A **typed field, not a config-bag key**: the offer logic (`shouldOfferTlsUpgrade`) and the Settings → Network checkbox both read it, and declining an offer — or reverting a failed upgrade — clears it, so a script writing the bag instead would have been silently inert. Default `true`. |

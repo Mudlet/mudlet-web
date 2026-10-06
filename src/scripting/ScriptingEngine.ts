@@ -3840,6 +3840,12 @@ export class ScriptingEngine implements EngineHost {
             isFilter: false,
             ...inheritedPackage(triggers, parentId),
         });
+        // Its place in the firing order is its creation, now: while the
+        // profile's scripts load the store is not yet watched (and triggers
+        // not yet compiled), so the reload that would number it comes after
+        // every temp item those scripts make, and it fired behind temps
+        // created after it (mudlet-web#371).
+        this.triggerEngine.reserveOrder([{ id: uuid }]);
         // A trigger created while a line is being processed is offered that
         // line, and joins the lineage of whatever created it — the same rule
         // temporaries follow. The reload is normally coalesced into a
@@ -3894,6 +3900,11 @@ export class ScriptingEngine implements EngineHost {
             highlight: spec.highlight,
             temporary: true,
         });
+        // Its code is the dispatch stub, which always compiles — the script's
+        // own body is what did not, so the trigger is marked for cannotCompile.
+        if (spec.uncompiled) this.uncompiledTempTriggers.add(uuid);
+        // Ordered by its creation, as createPermTrigger's (mudlet-web#371).
+        this.triggerEngine.reserveOrder([{ id: uuid }]);
         // Same reason as createPermTrigger: compiled now, so a trigger armed
         // while a line is being processed can still match that line.
         this.flushPendingApplies();
@@ -3929,6 +3940,7 @@ export class ScriptingEngine implements EngineHost {
             if (node.parentId && doomed.has(node.parentId)) doomed.add(node.id);
         }
         store.removeTriggers(this.connectionId, [...doomed]);
+        for (const id of doomed) this.uncompiledTempTriggers.delete(id);
         // Out of the engine now, not at the coalesced reload: that waits for a
         // microtask, and a packet's lines are all processed before one runs,
         // so a trigger killed (or expired) on its first line went on firing on
@@ -3984,6 +3996,8 @@ export class ScriptingEngine implements EngineHost {
             language: 'lua',
             ...inheritedPackage(aliases, parentId),
         });
+        // Ordered by its creation, as createPermTrigger's (mudlet-web#371).
+        this.aliasEngine.reserveOrder([{ id: uuid }]);
         return this.numericIdFor(uuid);
     }
 
@@ -4067,6 +4081,8 @@ export class ScriptingEngine implements EngineHost {
             language: 'lua',
             ...inheritedPackage(keys, parentId),
         });
+        // Ordered by its creation, as createPermTrigger's (mudlet-web#371).
+        this.keyEngine.reserveOrder([{ id: uuid }]);
         return this.numericIdFor(uuid);
     }
 
@@ -5023,6 +5039,10 @@ export class ScriptingEngine implements EngineHost {
     /** Compile errors already put in the error log, by kind, chunk and code —
      *  not by id, so a module re-read under new ids does not report again. */
     private readonly reportedCompileErrors = new Set<string>();
+    /** tempComplexRegexTrigger nodes whose code string did not compile. The
+     *  node's own code is a stub that dispatches to the script's callback, so
+     *  only the Lua side knows; Mudlet leaves such a trigger inactive. */
+    private readonly uncompiledTempTriggers = new Set<string>();
 
     /**
      * The error compiling a piece of an item's code gives (see itemSyntaxError),
@@ -5060,6 +5080,7 @@ export class ScriptingEngine implements EngineHost {
      * the editor, where it is found when the item "does nothing".
      */
     private cannotCompile(kind: CodeItemKind, node: CompilableItem): boolean {
+        if (kind === 'trigger' && this.uncompiledTempTriggers.has(node.id)) return true;
         let broken = false;
         if (node.code && node.language === 'lua') {
             const chunkName = itemChunkName(kind, node.name);
@@ -5911,6 +5932,13 @@ export class ScriptingEngine implements EngineHost {
             session.events.on('channel102', ({ variable, value }) => {
                 this.runtimes.lua?.setChannel102Value(variable, value);
                 this.emit('channel102Message', [variable, value]);
+            }),
+            // Mudlet `setAtcpTable` — an inbound ATCP message is stored as
+            // atcp[name] and raised as an event of that name, its value the
+            // one argument after it ("CharVitals", "H:100/120 ...").
+            session.events.on('atcp', ({ name, value }) => {
+                this.runtimes.lua?.setAtcpValue(name, value);
+                this.emit(name, [value]);
             }),
             session.events.on('mssp', ({ name, value }) => {
                 // Mirror Mudlet TLuaInterpreter::parseMSSP: write the value into

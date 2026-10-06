@@ -226,11 +226,10 @@ export function installUserWindowBindings({
         return true;
     });
     // Mudlet clearUserWindow([name]) — defaults to clearing the main
-    // console when no name is given (matches `clearWindow` behaviour).
+    // console when no name is given. The same function as clearWindow on
+    // desktop, so it clears a buffer too.
     lua.global.set("clearUserWindow", (window?: unknown) => {
-        const name = typeof window === 'string' ? window : undefined;
-        if (!name || name === 'main') api.clearWindow();
-        else api.windows.clear(name);
+        api.clearWindow(typeof window === 'string' ? window : undefined);
     });
     // createMiniConsole has two calling conventions:
     //   createMiniConsole(name, x, y, w, h)              — 5 args, parent defaults to main

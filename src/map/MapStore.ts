@@ -74,9 +74,14 @@ function sameSign(a: number, b: number): boolean {
     return (a < 0) === (b < 0);
 }
 
+/** A stock direction code (1-12) from a number or a direction name. A number
+ *  is read the way desktop's lua_tointeger reads it, truncating toward zero,
+ *  so `4.5` is east (4) — the same rule room ids and coordinates follow. */
 export function parseDirection(dir: unknown): number | undefined {
     if (typeof dir === 'number') {
-        return DIR_FIELD[dir] ? dir : undefined;
+        if (!Number.isFinite(dir)) return undefined;
+        const n = Math.trunc(dir);
+        return DIR_FIELD[n] ? n : undefined;
     }
     if (typeof dir === 'string') {
         return DIR_NAME_TO_INT[dir.toLowerCase()];
@@ -2586,14 +2591,16 @@ export class MapStore {
     // ── Coordinates / position ────────────────────────────────────────────────
 
     /** Mudlet `getRoomsByPosition(areaID, x, y, z)` — undefined for an unknown
-     *  area, matching {@link getAreaRooms}. */
+     *  area, matching {@link getAreaRooms}. Ids come back ascending, as
+     *  desktop's TArea::getRoomsByPosition sorts them, not in the order the
+     *  rooms joined the area. */
     getRoomsByPosition(areaId: number, x: number, y: number, z: number): number[] | undefined {
         const area = this.areas.get(areaId);
         if (!area) return undefined;
         return area.rooms.filter(id => {
             const r = this.rooms.get(id);
             return r && r.x === x && r.y === y && r.z === z;
-        });
+        }).sort((a, b) => a - b);
     }
 
     // ── Hash management ───────────────────────────────────────────────────────
@@ -3033,13 +3040,13 @@ export class MapStore {
     /**
      * Mudlet `getAllRoomEntrances(roomID)` — every room that has an exit (stock
      * or special) leading into this room, as a sorted, de-duplicated id list.
+     * A room with an exit back into itself lists itself, as on desktop.
      * Returns `undefined` when the room doesn't exist.
      */
     getAllRoomEntrances(id: number): number[] | undefined {
         if (!this.rooms.has(id)) return undefined;
         const entrances = new Set<number>();
         for (const [otherId, r] of this.rooms) {
-            if (otherId === id) continue;
             let found = false;
             for (const field of Object.values(DIR_FIELD)) {
                 if ((r as unknown as Record<string, number>)[field] === id) { found = true; break; }
@@ -3074,7 +3081,7 @@ export class MapStore {
         if (arg3 !== undefined) {
             const dir = parseDirection(arg3);
             if (dir == null) return `connectExitStub: argument '${arg3}' cannot be parsed as a valid direction`;
-            return this.connectStubByDirAndTo(fromId, dir, Number(arg2));
+            return this.connectStubByDirAndTo(fromId, dir, Math.trunc(Number(arg2)));
         }
 
         // A string second argument is always a direction name (the binding has
@@ -3085,7 +3092,9 @@ export class MapStore {
             return this.connectStubByDir(fromId, dir);
         }
 
-        const value = Number(arg2);
+        // A number is a toID or a direction code, both truncated as desktop's
+        // lua_tointeger reads them.
+        const value = Math.trunc(Number(arg2));
         if (!Number.isFinite(value)) {
             return `connectExitStub: argument '${String(arg2)}' cannot be parsed as a toID or direction`;
         }
