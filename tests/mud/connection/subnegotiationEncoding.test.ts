@@ -40,9 +40,9 @@ describe('raw subnegotiation encoding (sendATCP / sendTelnetChannel102)', () => 
     (globalThis as Record<string, unknown>).WebSocket = realWebSocket;
   });
 
-  function connected() {
+  function connected(opts: Record<string, unknown> = {}) {
     const bus = new EventBus<MudClientEvents>();
-    const client = new MudClient({ url: 'ws://test.invalid' }, bus);
+    const client = new MudClient({ url: 'ws://test.invalid', ...opts }, bus);
     client.connect();
     const sock = MockWebSocket.instances[0];
     sock.onopen?.({});
@@ -61,14 +61,25 @@ describe('raw subnegotiation encoding (sendATCP / sendTelnetChannel102)', () => 
     return { client, sock };
   }
 
+  /** sendATCP is refused until ATCP is live (Mudlet's `isATCPEnabled`), which
+   *  needs GMCP off and the server's IAC WILL 200. */
+  function withAtcp() {
+    const { client, sock } = connected({ gmcpEnabled: false });
+    sock.onmessage?.({
+      data: Uint8Array.from([0xFF, 0xFB, 200]).buffer,
+    });
+    sock.sent.length = 0; // discard our IAC DO 200 and the hello
+    return { client, sock };
+  }
+
   it('frames an ASCII ATCP message unchanged', () => {
-    const { client, sock } = connected();
+    const { client, sock } = withAtcp();
     expect(client.sendATCP('Char.Login')).toBe(true);
     expect(sentText(sock)).toBe(`${GMCP_IAC}${GMCP_SB}${OPT_ATCP}Char.Login${GMCP_IAC}${GMCP_SE}`);
   });
 
   it('UTF-8-encodes a non-ASCII ATCP message rather than truncating it', () => {
-    const { client, sock } = connected();
+    const { client, sock } = withAtcp();
     client.sendATCP('Char.Login Michał');
     const body = sentText(sock).slice(3, -2);
     // 'ł' is U+0142 — one char, two UTF-8 bytes. Truncation to Latin-1 would
@@ -80,7 +91,7 @@ describe('raw subnegotiation encoding (sendATCP / sendTelnetChannel102)', () => 
   });
 
   it('never emits a bare IAC inside an ATCP body', () => {
-    const { client, sock } = connected();
+    const { client, sock } = withAtcp();
     client.sendATCP('xÿy'); // U+00FF used to go out as the raw byte 0xFF
     const body = sentText(sock).slice(3, -2);
     expect(body).toBe('x\xC3\xBFy');

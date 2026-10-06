@@ -301,6 +301,12 @@ export class TelnetNegotiator {
         return this.enabledProtocols.has(OPT_GMCP);
     }
 
+    /** Whether ATCP (option 200) is live — Mudlet's `isATCPEnabled()`, the
+     *  gate `sendATCP` refuses without, as `sendGMCP` does for GMCP. */
+    isAtcpEnabled(): boolean {
+        return this.enabledProtocols.has(OPT_ATCP_NUM);
+    }
+
     /** Whether CHARSET (option 42) is live — Mudlet's `enableCHARSET`. A
      *  REQUEST subnegotiation is read only while it is, so a server that has
      *  withdrawn the option cannot go on changing the encoding. */
@@ -852,10 +858,11 @@ export class TelnetNegotiator {
         this.eventBus.emit('protocol.disabled', PROTOCOL_NAMES.get(opt) ?? String(opt));
     }
 
-    /** Mudlet's ATCP hello, sent after `IAC DO ATCP`: the client's name and
-     *  version, then the modules it asks for. Mudlet's list less `composer`,
-     *  since there is no ATCP composer here to answer `Client.Compose`. */
-    private sendAtcpHello(): void {
+    /** Mudlet's ATCP hello, sent after `IAC DO ATCP` and again in answer to
+     *  the server's `Auth.Request`: the client's name and version, then the
+     *  modules it asks for. Mudlet's list less `composer`, since there is no
+     *  ATCP composer here to answer `Client.Compose`. */
+    sendAtcpHello(): void {
         const hello = `hello ${CLIENT_NAME} ${CLIENT_VERSION}\nchar_vitals 1\nroom_brief 1\nroom_exits 1\nmap_display 1\n`;
         this.hooks.sendRaw(GMCP_IAC + GMCP_SB + String.fromCharCode(OPT_ATCP_NUM) + toByteString(hello) + GMCP_IAC + GMCP_SE);
     }

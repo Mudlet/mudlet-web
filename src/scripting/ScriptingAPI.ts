@@ -4484,7 +4484,9 @@ export class ScriptingAPI {
         return this.session.windows.isScrollingEnabled(windowName || 'main');
     }
 
-    /** Mudlet getScroll — 0-indexed buffer line the console is scrolled to.
+    /** Mudlet getScroll — the buffer line the console is scrolled to, which
+     *  desktop counts as the first line below the scrolled view (its bottom row
+     *  plus one), the same edge scrollTo(window, line) puts a line on.
      *  Desktop answers `max(min(mCursorY, getLastLineNumber()), 0)`
      *  (TMainConsole::getWindowScroll), so a console following its output
      *  reports exactly getLastLineNumber() — the comparison scripts use to ask
@@ -4501,8 +4503,10 @@ export class ScriptingAPI {
         return line === null ? last : Math.max(0, Math.min(line, last));
     }
 
-    /** Mudlet scrollTo. With no line (or a line past end), resume tail mode.
-     *  Negative line counts back from the buffer end. */
+    /** Mudlet scrollTo. With no line (or a line at or past the last one),
+     *  resume tail mode. Negative line counts back from the buffer end. False
+     *  only where desktop does nothing (scrolling disabled); Bridge.lua drops
+     *  the result either way, as desktop's scrollTo returns nothing. */
     scrollTo(windowName: string | undefined, lineNumber: number | undefined): boolean {
         return this.session.windows.scrollToLine(windowName || 'main', lineNumber);
     }
@@ -4995,10 +4999,12 @@ export class ScriptingAPI {
             // longer see — Mudlet's clearWindow empties the buffer itself.
             this.mainConsole.clear();
             this.session.events.emit('script.clearwindow');
+            this.session.windows.clearSplit('main');
         } else if (this.buffers.has(name)) {
             // Off-screen buffer: WindowManager.clear no-ops (no panel), so clear
             // the backing console directly.
             this.getConsole(name)?.clear();
+            this.session.windows.clearSplit(name);
         } else {
             this.session.windows.clear(name);
         }

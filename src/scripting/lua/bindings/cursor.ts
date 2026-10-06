@@ -56,7 +56,7 @@ export function installCursorBindings({ lua, api }: BindingContext): void {
         api.timeStampsEnabled(typeof win === 'string' ? win : 'main'));
     lua.global.set('__setTimeStamps', (win: unknown, visible: unknown) =>
         api.setTimeStamps(typeof win === 'string' ? win : 'main', !!visible));
-    // Mudlet getScroll([windowName]) — buffer line index at viewport top.
+    // Mudlet getScroll([windowName]) — the first buffer line below the view.
     lua.global.set('getScroll', (win?: unknown) => api.getScroll(scrollWin(win)));
     // Mudlet scrollTo([windowName,] [lineNumber]). With no line (or no args)
     // resume tail mode. Wasmoon hands regex captures as strings, so the

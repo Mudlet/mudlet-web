@@ -6,7 +6,7 @@ import { useAppStore, useProfileField, useConnectionId } from '../../storage';
 import { StickyOutputPanel } from './StickyOutputPanel';
 import { OutputSearchBar } from './OutputSearchBar';
 import { searchStepDirection } from './outputSearch';
-import { matchClearSplitKey } from './clearSplit';
+import { matchClearSplitKey, matchPageScrollKey } from './clearSplit';
 import type { OutputMenuExtraItem } from './OutputContextMenu';
 import type { SelectionBounds } from './outputCopy';
 import { mouseEventMenuItems } from '../MouseEventRegistry';
@@ -126,6 +126,20 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
         document.addEventListener('keydown', onKey, true);
         return () => document.removeEventListener('keydown', onKey, true);
     }, [scrollToBottom]);
+
+    // PageUp / PageDown in the command line page the main console up and down
+    // (TCommandLine::event) — the textarea would otherwise swallow them moving
+    // its own caret. Capture phase, like Ctrl+Return above.
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            const direction = matchPageScrollKey(e);
+            if (!direction) return;
+            e.preventDefault();
+            session.windows.scrollPage('main', direction);
+        };
+        document.addEventListener('keydown', onKey, true);
+        return () => document.removeEventListener('keydown', onKey, true);
+    }, [session]);
 
     // Mudlet's f3SearchEnabled: F3 / Shift+F3 reach buffer search even when the
     // find bar is closed. Mudlet's search box lives permanently in the console

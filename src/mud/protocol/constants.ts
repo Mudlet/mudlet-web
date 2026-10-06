@@ -90,8 +90,8 @@ export const GMCP_WILL = "\xFF\xFB\xC9"; // IAC WILL GMCP - server offers GMCP
 export const GMCP_DO   = "\xFF\xFD\xC9"; // IAC DO GMCP   - client requests GMCP
 
 // ATCP (Achaea Telnet Client Protocol) — telnet option 200, GMCP's predecessor.
-// Same `IAC SB <opt> <payload> IAC SE` framing as GMCP. Mudlet Web only sends it
-// (sendATCP); it doesn't negotiate ATCP inbound.
+// Same `IAC SB <opt> <payload> IAC SE` framing as GMCP. Taken up only while GMCP
+// is off (TelnetNegotiator); inbound messages fill the Lua `atcp` table (atcp.ts).
 export const ATCP_COMMAND_CODE = 200;
 export const OPT_ATCP = "\xC8"; // 200
 

@@ -2251,12 +2251,25 @@ export class WindowManager {
 
     /** Mudlet enable/disableScrolling — when disabled, the wrapper sticks to the
      *  bottom (wheel/touch/keys cannot scroll back). Mudlet forbids this on the
-     *  main window; we follow that policy. Returns false on 'main', true otherwise. */
+     *  main window; we follow that policy. Returns false on 'main', true otherwise.
+     *  Disabling also closes the split view (TConsole::setScrolling calls
+     *  clearSplit), so a console a script had scrolled up does not stay parked
+     *  there with no way left to scroll it down. */
     setScrollingEnabled(id: string, enabled: boolean): boolean {
         if (id === 'main') return false;
         this.getScrollStateMut(id).scrollingEnabled = enabled;
         this.applyScrollClasses(id);
+        if (!enabled) this.clearSplit(id);
         return true;
+    }
+
+    /** Mudlet `TConsole::clearSplit` for a script: forget any scrolled-to line
+     *  and put the console back on its tail. The renderer's own scroll handler
+     *  sees the wrapper reach the bottom and drops the split pane. */
+    clearSplit(id: string): void {
+        this.scriptScrollLine.delete(id);
+        const el = this.elements.get(id);
+        if (el) el.scrollTop = el.scrollHeight;
     }
 
     /**
@@ -2337,6 +2350,11 @@ export class WindowManager {
         this.scriptScrollLine.delete(id);
     }
 
+    /** The wrapper's scrollTop as scrollToLine left it. A scroll event that
+     *  lands anywhere else was the reader's (wheel, scroll bar, PageUp, the
+     *  split view closing), so the scripted position stops being the answer. */
+    private readonly scriptScrollTop = new WeakMap<HTMLElement, number>();
+
     /**
      * Wrappers the reader has scrolled back from the end of — the inverse of
      * desktop's `TTextEdit::mIsTailMode`. Kept from scroll events rather than
@@ -2353,14 +2371,39 @@ export class WindowManager {
         this.scrolledBack.set(el, false);
         el.addEventListener('scroll', () => {
             this.scrolledBack.set(el, el.scrollHeight - el.scrollTop - el.clientHeight > 1);
+            const expected = this.scriptScrollTop.get(el);
+            if (expected === undefined || Math.abs(el.scrollTop - expected) <= 1) return;
+            this.scriptScrollTop.delete(el);
+            for (const [id, e] of this.elements) {
+                if (e === el) this.noteUserScroll(id);
+            }
         }, { passive: true });
     }
 
-    /** Buffer-line index of the topmost visible line in `id`'s wrapper, or
-     *  null while it follows its output (tail mode), where Mudlet's getScroll
-     *  answers the last line — which the caller takes from the buffer, since
-     *  the DOM's line count is not the buffer's. Returns 0 if the element is
-     *  unmounted or empty.
+    /** Height of the split view's lower pane laid over the bottom of `el` —
+     *  the sticky area StickyOutputPanel renders as the wrapper's sibling. It
+     *  keeps its height while hidden, which is the height it will cover once a
+     *  scroll back raises it. */
+    private splitPaneHeight(el: HTMLElement): number {
+        const parent = el.parentElement;
+        if (!parent) return 0;
+        for (const child of Array.from(parent.children)) {
+            if (child.classList.contains('output-sticky')) return child.getBoundingClientRect().height;
+        }
+        return 0;
+    }
+
+    /** Mudlet's scroll position for `id`'s wrapper, or null while it follows
+     *  its output (tail mode), where Mudlet's getScroll answers the last line —
+     *  which the caller takes from the buffer, since the DOM's line count is not
+     *  the buffer's. Returns 0 if the element is unmounted or empty.
+     *
+     *  Desktop's position is the upper pane's `mCursorY`, and that pane draws
+     *  the rows *above* it (TTextEdit::imageTopLine is `mCursorY -
+     *  mScreenHeight`): the number is the first line below the scrolled view,
+     *  one past its bottom row — not the top row. The scrolled view ends where
+     *  the split view's lower pane begins, so that pane's height comes off the
+     *  bottom.
      *
      *  Uses getBoundingClientRect rather than offsetTop because `.output-container`
      *  is `position: relative` — child offsetTop is relative to *that*, not to the
@@ -2377,62 +2420,77 @@ export class WindowManager {
         if (!this.scrolledBack.get(el)) return null;
         const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
         if (distFromBottom <= 1) return null;
-        const containerTop = el.getBoundingClientRect().top;
+        const viewBottom = el.getBoundingClientRect().top + el.clientHeight - this.splitPaneHeight(el);
         for (let i = 0; i < total; i++) {
-            const rect = lineEls[i].getBoundingClientRect();
-            // First line whose bottom edge sits inside the viewport — that's the
-            // topmost partly-visible line. -1 tolerates sub-pixel rounding.
-            if (rect.bottom > containerTop + 1) return i;
+            // First line starting at or below the view's bottom edge. -1
+            // tolerates sub-pixel rounding.
+            if (lineEls[i].getBoundingClientRect().top >= viewBottom - 1) return i;
         }
-        return total - 1;
+        return total;
     }
 
-    /** Scroll `id`'s wrapper so `line` (0-indexed) sits at the top. `undefined`
-     *  resumes tail mode (scroll-to-bottom); negative values count from the end
-     *  (Mudlet semantics). Returns false if the wrapper is not mounted. */
+    /** Mudlet `scrollTo(window, line)`: scroll `id`'s wrapper so `line` is the
+     *  first line below the scrolled view — its bottom row is `line - 1`, the
+     *  same edge {@link getScrollLine} reads. `undefined`, or a line at or past
+     *  the last one, resumes tail mode (TMainConsole::scrollWindowTo); negative
+     *  values count back from the last line. Returns false if the console has
+     *  neither a buffer nor a mounted wrapper. */
     scrollToLine(id: string, line: number | undefined): boolean {
         // disableScrolling parks the console at the end and keeps it there, and
         // that holds for a scripted scroll as much as for the wheel — Mudlet
         // gates both on the same flag.
         if (!this.isScrollingEnabled(id)) return false;
         // Line counts come from the buffer, not the DOM: the console may have
-        // 200 lines and no laid-out panel to measure them in.
+        // 200 lines and no laid-out panel to measure them in. `last` is Lua's
+        // getLastLineNumber, which counts the always-open line the buffer keeps
+        // past the finished ones.
         const total = this.consoleRegistry?.get(id)?.getLineCount() ?? -1;
-        const lineCount = total >= 0 ? total + 1 : 0;
+        const last = total >= 0 ? total + 1 : 0;
         const el = this.elements.get(id);
-        if (!el && lineCount === 0) return false;
+        if (!el && last === 0) return false;
 
-        if (line === undefined) {
-            // Tail mode: forget the parked line so the measurement takes over.
-            this.scriptScrollLine.delete(id);
-            if (el) el.scrollTop = el.scrollHeight;
+        if (line === undefined || line >= last) {
+            this.clearSplit(id);
             return true;
         }
-        let target = line;
-        if (target < 0) target = Math.max(lineCount + target, 0);
-        // Clamped to the last line index, which counts the always-open line the
-        // buffer keeps past the finished ones (as getLastLineNumber does).
-        target = Math.max(0, Math.min(target, lineCount));
+        const target = line < 0 ? Math.max(last + line, 0) : line;
         this.scriptScrollLine.set(id, target);
 
         const lineEls = el ? this.lineElements(el) : [];
         if (!el || lineEls.length === 0) return true;
-        if (target >= lineEls.length - 1) {
-            el.scrollTop = el.scrollHeight;
-            return true;
-        }
         if (target <= 0) {
             el.scrollTop = 0;
-            return true;
+        } else {
+            // Bounding-rect math: convert the bottom row's viewport-relative
+            // bottom edge into a scroll position within the wrapper. offsetTop
+            // is relative to the nearest positioned ancestor
+            // (`.output-container`), not to the scroll container, so we can't
+            // read it directly.
+            const bottomRow = lineEls[Math.min(target, lineEls.length) - 1];
+            const rowBottom = bottomRow.getBoundingClientRect().bottom - el.getBoundingClientRect().top + el.scrollTop;
+            el.scrollTop = Math.max(0, rowBottom - (el.clientHeight - this.splitPaneHeight(el)));
         }
-        // Bounding-rect math: convert the line's viewport-relative top into a
-        // scroll position within the wrapper. offsetTop is relative to the
-        // nearest positioned ancestor (`.output-container`), not to the scroll
-        // container, so we can't read it directly.
-        const containerRect = el.getBoundingClientRect();
-        const lineRect = lineEls[target].getBoundingClientRect();
-        el.scrollTop = Math.max(0, lineRect.top - containerRect.top + el.scrollTop);
+        this.scriptScrollTop.set(el, el.scrollTop);
         return true;
+    }
+
+    /** Mudlet's PageUp / PageDown in the command line (TCommandLine::event):
+     *  scroll `id`'s console a page — the scrolled view's height, the split
+     *  pane excluded — up or down. Paging down into what the split pane already
+     *  shows closes it and resumes tail mode, as TConsole::scrollDown does. */
+    scrollPage(id: string, direction: 'up' | 'down'): void {
+        if (!this.isScrollingEnabled(id)) return;
+        const el = this.elements.get(id);
+        if (!el) return;
+        const pane = this.splitPaneHeight(el);
+        const page = Math.max(1, el.clientHeight - pane);
+        if (direction === 'up') {
+            el.scrollTop = Math.max(0, el.scrollTop - page);
+            return;
+        }
+        const next = el.scrollTop + page;
+        if (el.scrollHeight - next - el.clientHeight <= pane) this.clearSplit(id);
+        else el.scrollTop = next;
     }
 
     private getScrollStateMut(id: string): ScrollState {
@@ -3262,6 +3320,9 @@ export class WindowManager {
         // Also reset the upstream Console — without this the next echo would
         // re-include any pre-clear partial text when drainWindowConsole fires.
         this.consoleRegistry?.get(id)?.clear();
+        // The lines a script scrolled to are gone: the console follows its
+        // output again, so the next lines move getScroll with them.
+        this.clearSplit(id);
     }
 
     /**
