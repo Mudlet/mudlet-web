@@ -471,6 +471,12 @@ export class MudClient {
             if (data.length === 3 && data.charCodeAt(0) === 0xFF && data.charCodeAt(1) === 0xFD
                 && this.negotiator.isServerOptionOn(data.charCodeAt(2))) return;
             sendOptionRaw(data);
+        }, () => {
+            // The end of a stream leaves both compression options off on
+            // desktop (hisOptionState reset in decompressBuffer), so a game
+            // offering compression again afterwards is told DO again.
+            this.negotiator.forgetServerOption(0x55);
+            this.negotiator.forgetServerOption(0x56);
         });
         this.mccpHandler.enabled = mccpEnabled;
 
@@ -661,26 +667,7 @@ export class MudClient {
                     this.markEstablished();
                     const decodedData = bytesToLatin1(new Uint8Array(event.data));
                     if (debugTelnetEnabled()) logTelnetNegotiation('raw', decodedData);
-                    // Split where compression starts or ends, and each piece
-                    // run through the pipeline on its own: desktop processes
-                    // the plain text before an MCCP start (gotRest) before it
-                    // inflates anything, and the inflated text before what
-                    // follows the end of the stream, so a trigger on the last
-                    // line of one part never sees GMCP from the next
-                    // (mudlet-web#384).
-                    const chunks = this.mccpHandler.processChunks(decodedData);
-                    for (const chunk of chunks) {
-                        const data = this.subnegRepair.process(chunk);
-                        if (debugTelnetEnabled() && (chunks.length > 1 || data !== decodedData)) {
-                            logTelnetNegotiation('post-mccp', data);
-                        }
-                        this.eventBus.emit('socket.incoming', data);
-                        try {
-                            this.processIncomingData(data, undefined, receivedAt);
-                        } catch (processingError) {
-                            console.error('Error during data processing:', processingError);
-                        }
-                    }
+                    this.ingest(decodedData, receivedAt);
                 } catch (error) {
                     console.error('Error processing incoming message:', error);
                 }
@@ -1316,8 +1303,49 @@ export class MudClient {
         // processSocketData (cTelnet::loopbackTest), so negotiation is answered
         // exactly as the socket's would be — the replies go nowhere while
         // unconnected, which sendRaw()'s readyState guard already ensures.
-        data = this.subnegRepair.process(data);
-        this.processIncomingData(data);
+        // That includes MCCP: desktop's loopbackTest() runs injected bytes
+        // through the same decompression as a socket read, so a script can
+        // switch a profile to a compressed stream and back.
+        this.ingest(data);
+    }
+
+    /** A chunk of a replay. A replay holds what the game sent after
+     *  decompression, and desktop plays it back through a parser of its own
+     *  (cTelnet::slot_processReplayChunk) that knows nothing of MCCP, so
+     *  unlike {@link feedTelnet} this skips it. */
+    feedReplay(data: string): void {
+        this.processIncomingData(this.subnegRepair.process(data));
+    }
+
+    /** One read from the game, or bytes injected as if they were one: split
+     *  where compression starts or ends, and each piece run through the
+     *  pipeline on its own. Desktop processes the plain text before an MCCP
+     *  start (gotRest) before it inflates anything, and the inflated text
+     *  before what follows the end of the stream, so a trigger on the last
+     *  line of one part never sees GMCP from the next (mudlet-web#384). The
+     *  MCCP warnings desktop posts while inflating land between the pieces,
+     *  where it posts them. */
+    private ingest(decodedData: string, receivedAt?: number): void {
+        const pieces = this.mccpHandler.processPieces(decodedData);
+        // A read that yields no text still goes through, as one empty piece.
+        if (!pieces.some(piece => typeof piece === 'string')) pieces.push('');
+        const split = pieces.length !== 1 || pieces[0] !== decodedData;
+        for (const piece of pieces) {
+            if (typeof piece !== 'string') {
+                this.eventBus.emit('client.warning', piece.notice);
+                continue;
+            }
+            const data = this.subnegRepair.process(piece);
+            if (debugTelnetEnabled() && (split || data !== decodedData)) {
+                logTelnetNegotiation('post-mccp', data);
+            }
+            if (receivedAt !== undefined) this.eventBus.emit('socket.incoming', data);
+            try {
+                this.processIncomingData(data, undefined, receivedAt);
+            } catch (processingError) {
+                console.error('Error during data processing:', processingError);
+            }
+        }
     }
 
     output(text?: string | AnsiAwareBuffer, type?: string, timestamp?: number): void {

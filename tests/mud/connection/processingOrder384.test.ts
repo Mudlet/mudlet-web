@@ -98,13 +98,19 @@ describe('mudlet-web#384 — processing order', () => {
     });
 
     it('still joins the pieces for processData', () => {
-      const h = new MccpHandler(() => {});
+      // A start sequence counts only once the offer has been taken up.
+      const accepted = (): MccpHandler => {
+        const h = new MccpHandler(() => {});
+        h.processChunks(COMPRESS2_WILL);
+        return h;
+      };
+      const h = accepted();
       expect(h.processChunks('plain')).toEqual(['plain']);
       expect(h.processChunks(MCCP2_START)).toEqual(['']);
-      const h2 = new MccpHandler(() => {});
+      const h2 = accepted();
       const data = 'A\r\n' + MCCP2_START + deflate('B\r\n', true) + 'C\r\n';
       expect(h2.processChunks(data)).toEqual(['A\r\n', 'B\r\n', 'C\r\n']);
-      const h3 = new MccpHandler(() => {});
+      const h3 = accepted();
       expect(h3.processData(data)).toBe('A\r\nB\r\nC\r\n');
     });
   });

@@ -329,6 +329,12 @@ export class TelnetNegotiator {
         return this.hisOn.has(opt);
     }
 
+    /** Clear `opt` from `hisOn` without answering anything — for an option
+     *  that lapses on its own, as compression does when its stream ends. */
+    forgetServerOption(opt: number): void {
+        this.hisOn.delete(opt);
+    }
+
     /** Drop the negotiated-MSP latch without resetting the rest of the
      *  negotiation state — used on disconnect, where the option dies with the
      *  connection but reset() isn't otherwise run. */

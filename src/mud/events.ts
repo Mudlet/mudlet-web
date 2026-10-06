@@ -82,6 +82,10 @@ export type MudClientEvents = {
      *  (ctelnet.cpp slot_socketDisconnected), so the notice hangs off this. */
     'client.disconnected': void;
     'client.error': [message: string];
+    /** One of cTelnet's `[ WARN  ]` notices about the data stream (a broken
+     *  MCCP stream, a read too big to inflate), in desktop's words: the first
+     *  line carries the prefix, any after a `\n` are its continuation. */
+    'client.warning': [message: string];
     /** The link to the *game* is up — the point in Mudlet's
      *  `slot_socketConnected` where `mConnectionTimer` starts (ctelnet.cpp:723).
      *  Emitted immediately after `client.connect`, for the same socket; kept as

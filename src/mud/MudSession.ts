@@ -225,6 +225,9 @@ export class MudSession {
         // dial-time subscription left an injected REQUEST changing the decoder
         // while getServerEncoding() went on reporting the old name.
         this.events.on('charset.negotiated', (name, acceptedRequest) => this.noteNegotiatedEncoding(name, acceptedRequest));
+        // cTelnet's warnings about the data stream (MCCP). Session-long for the
+        // same reason: feedTelnet's parsing client was never dialled.
+        this.events.on('client.warning', (message) => this.postClientWarning(message));
         // Mudlet's `mConnectionTimer.start()` (ctelnet.cpp:723). It hangs off
         // the *game* socket, not the proxy one: `client.connect` in `mud` mode
         // only means the proxy accepted our WebSocket, so timing a session from
@@ -714,7 +717,7 @@ export class MudSession {
         const durationMs = replayDurationMs(chunks);
         this.replayPlayer = new ReplayPlayer(chunks, {
             speed: () => this._replaySpeed,
-            feed: (data) => client.feedTelnet(data),
+            feed: (data) => client.feedReplay(data),
             onDone: () => {
                 this.replayPlayer = null;
                 this.postReplayInfo('The replay has ended.');
@@ -1264,6 +1267,19 @@ export class MudSession {
         if (this.failedConnectionRetry === null) return;
         clearTimeout(this.failedConnectionRetry);
         this.failedConnectionRetry = null;
+    }
+
+    /** A `[ WARN  ]` notice from the client, laid out as cTelnet::postMessage
+     *  does: the prefix in cyan and the text in orange (here the ANSI yellow
+     *  its other notices use), each further line indented to the end of the
+     *  prefix. */
+    private postClientWarning(message: string): void {
+        const [first, ...rest] = message.replace(/\n+$/, '').split('\n');
+        const match = /^(\[[^\]]*\]\s*- *)(.*)$/.exec(first);
+        const prefix = match ? match[1] : '';
+        const body = match ? match[2] : first;
+        this.postSocketLine(`\x1b[36m${prefix}\x1b[33m${body}\x1b[0m`);
+        for (const line of rest) this.postSocketLine(`\x1b[33m${' '.repeat(prefix.length)}${line}\x1b[0m`);
     }
 
     /** The indented, yellow second row of a two-line notice — Mudlet's "%1\n%2"
