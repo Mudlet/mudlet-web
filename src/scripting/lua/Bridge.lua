@@ -1214,13 +1214,6 @@ do
     disableTimeStamps = timeStampSetter(false, "disableTimeStamps", "not disabled")
 end
 
--- Mudlet echoUserWindow(windowName, text) — the older name for echo(name, text),
--- kept because packages written against it are still in circulation. It targets
--- labels and miniconsoles alike, which is exactly what echo already does.
-function echoUserWindow(windowName, text)
-    return echo(windowName, text)
-end
-
 -- addMouseEvent / removeMouseEvent, setWindow, and the user-window title and
 -- stylesheet setters all report their misses as (nil, message) rather than a
 -- bare false. Each wording is Mudlet's own — note "user window name" for the
@@ -3863,6 +3856,17 @@ function __mudlet_describe_error(err)
 end
 debug.getregistry()['mudlet.describeError'] = __mudlet_describe_error
 
+-- How LuaRuntime hands a dispatch's scripts `matches` and `multimatches`: an
+-- ordinary assignment to the globals table, so a metatable a package put on it
+-- (a proxy, a persistence layer, a sandbox) hears about it through __newindex,
+-- as it does from desktop's lua_setglobal. A Lua function rather than a write
+-- from JS so that LuaRuntime can run it under lua_pcall: a raising __newindex
+-- reached from a JS-side lua_setglobal would unwind through wasmoon's C closure
+-- and take the lua_State with it.
+debug.getregistry()['mudlet.assignGlobal'] = function(globals, name, value)
+    globals[name] = value
+end
+
 -- Callback registry: stores Lua functions handed to tempTimer/Alias/Trigger/Key
 -- so JS only ever sees a numeric ID. JS invokes __mudlet_dispatch_cb(id) via
 -- doStringSync, sidestepping wasmoon's broken Lua-function-from-JS proxy.
@@ -4051,7 +4055,7 @@ end
 -- we yield a sentinel plus the request args to the JS resume boundary. JS
 -- parks this thread, shows the picker, and resumes it with the chosen path —
 -- from the calling script's perspective the function simply returns it.
--- matches/multimatches/namedCaptures are globals shared with any trigger that
+-- matches/multimatches are globals shared with any trigger that
 -- fires while the picker is open, so snapshot and restore them around the
 -- suspension.
 do
@@ -4070,12 +4074,12 @@ do
                 .. type(dialogTitle) .. "!)", 2)
         end
         dialogTitle = title
-        local m, mm, nc = matches, multimatches, namedCaptures
+        local m, mm = matches, multimatches
         local path = __mudlet_raw_yield(SENTINEL,
             fileOrFolder and true or false,
             dialogTitle == nil and '' or tostring(dialogTitle),
             dialogLocation == nil and '' or tostring(dialogLocation))
-        matches, multimatches, namedCaptures = m, mm, nc
+        matches, multimatches = m, mm
         return type(path) == 'string' and path or ''
     end
 end
@@ -5530,6 +5534,18 @@ function echo(...)
         return nil, "console/label '" .. name .. "' does not exist"
     end
     return true
+end
+
+-- Mudlet echoUserWindow(windowName, text) — the older name for echo(name, text),
+-- kept because packages written against it are still in circulation. It targets
+-- labels and miniconsoles alike, which is exactly what echo already does. The
+-- echo above rather than the global: desktop's is C and never calls a Lua
+-- `echo` a script put in its place (mudlet-web#374).
+do
+    local stockEcho = echo
+    function echoUserWindow(windowName, text)
+        return stockEcho(windowName, text)
+    end
 end
 
 -- Mudlet's setServerEncoding (TLuaInterpreter::setServerEncoding): a non-string

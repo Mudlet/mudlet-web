@@ -80,9 +80,8 @@ interface ParkedDialogThread {
 
 // The globals one dispatch sets for the scripts it runs, and so the ones an
 // alias pass a script asked for has to hand back when it returns — see
-// LuaRuntime.pushNestedDispatchState. `namedCaptures` is on the list because
-// setMatches writes it alongside the other two; Mudlet has no such global and
-// parks only the three it does have.
+// LuaRuntime.pushNestedDispatchState. The three Mudlet parks; named groups
+// live only in `matches`, as on desktop, which has no `namedCaptures` global.
 // wasmoon pushes every integral JS number with lua_pushinteger, and lua_Integer
 // is 32 bits in this wasm build, so a whole number past int32 reached Lua as the
 // wraparound: a map zoom of 1e40 read back as 0, an elapsed time of 1e12 as
@@ -164,7 +163,7 @@ interface ParkedDialogThread {
     };
 }
 
-const NESTED_DISPATCH_GLOBALS = ['matches', 'multimatches', 'namedCaptures', 'command'] as const;
+const NESTED_DISPATCH_GLOBALS = ['matches', 'multimatches', 'command'] as const;
 
 // All *.lua and *.json files under mudlet-lua/ are served via the VFS at
 // /lua/<relative-path>. Adding a new file to the directory tree automatically
@@ -2753,11 +2752,21 @@ end`,
     //   * it only accelerates func == "echo"; insertText/echoLink/echoPopup and
     //     the label-HTML path route through the untouched original.
     // The bundled GUIUtils.lua is not modified. Runs after LuaGlobal.lua.
+    //
+    // The fast path stands in for xEcho's calls to the global `echo`, so it is
+    // taken only while that global is still the stock one: desktop's colour
+    // echoes go through whatever `echo` a script installed (a wrapper that
+    // upper-cases, logs, redirects), and with one in place every colour echo
+    // goes the Lua way and calls it (mudlet-web#374). The builtins it uses are
+    // bound once here, so a script's own global `select` or `type` reaches
+    // xEcho's own code exactly as on desktop and nothing more.
     private installFastColorEcho(): void {
         this.exec(
             `do
   local fast = __mudletFastColorEcho
   local orig_xEcho = xEcho
+  local stockEcho = echo
+  local select, type, tostring = select, type, tostring
   local styleKind = { Decimal = 'decho', Color = 'cecho', Hex = 'hecho' }
   -- The palette the native cecho resolves names with. Mudlet's xEcho reads the
   -- live color_table per tag, so any tag whose color_table entry no longer
@@ -2778,7 +2787,7 @@ end`,
     return true
   end
   function xEcho(style, func, ...)
-    if func == 'echo' then
+    if func == 'echo' and _G.echo == stockEcho then
       local kind = styleKind[style]
       if kind then
         local n = select('#', ...)
@@ -4020,15 +4029,12 @@ end`);
                 this.pushMatchesTable(L, multimatches[i], multiNamedGroups?.[i]);
                 api.lua_rawseti(L, -2, i + 1);
             }
-            this.rawSetGlobal('multimatches');
+            this.assignGlobal('multimatches');
             return;
         }
         if (matches.length === 0) return;
         this.pushMatchesTable(L, matches, namedGroups);
-        this.rawSetGlobal('matches');
-        // Mudlet also exposes a separate `namedCaptures` table; keep parity.
-        this.pushJsValue(L, namedGroups ?? {});
-        this.rawSetGlobal('namedCaptures');
+        this.assignGlobal('matches');
     }
 
     /** Whether {@link setMatches} handed the scripts anything for these
@@ -4061,11 +4067,9 @@ end`);
         const L = this.lua.global.address;
         const top = api.lua_gettop(L);
         this.pushUnusedEmptyMatches();
-        this.rawSetGlobal('matches');
+        this.assignGlobal('matches');
         api.lua_createtable(L, 0, 0);
-        this.rawSetGlobal('multimatches');
-        api.lua_createtable(L, 0, 0);
-        this.rawSetGlobal('namedCaptures');
+        this.assignGlobal('multimatches');
         api.lua_settop(L, top);
     }
 
@@ -4091,8 +4095,9 @@ end`);
     /**
      * Store the value on top of the stack as the global `name`, raw.
      *
-     * This is how a dispatch hands the scripts it runs their own `command`,
-     * `line`, `matches` and `multimatches`, and it runs with the whole dispatch
+     * This is how a dispatch hands the scripts it runs their own `command` and
+     * `line` (`matches` and `multimatches` go through {@link assignGlobal},
+     * as desktop's do), and it runs with the whole dispatch
      * on the JS stack below it. `lua_setglobal` honours a metatable on the
      * globals table, so a `__newindex` a package installed there runs from
      * inside this call on the first write of a name that is absent — and a Lua
@@ -4113,6 +4118,45 @@ end`);
         api.lua_insert(L, -2);
         api.lua_rawset(L, LUA_GLOBALSINDEX);
     }
+
+    /**
+     * Store the value on top of the stack as the global `name` by assignment,
+     * popping it — how desktop's setMatches and clearCaptureGroups hand out
+     * `matches` and `multimatches` (lua_setglobal), so a `__newindex` on the
+     * globals table sees each write of a name it does not hold.
+     *
+     * The assignment runs in Bridge.lua's `mudlet.assignGlobal` under
+     * lua_pcall, never as a lua_setglobal from here: see {@link rawSetGlobal}
+     * for what a raising metamethod does to a write made from JS. A handler
+     * that raises is reported, and the value is then stored raw, so the
+     * scripts of the fire still get their captures.
+     */
+    private assignGlobal(name: string): void {
+        const api = this.lua.global.luaApi;
+        const L = this.lua.global.address;
+        this.syncGlobalsFromRunning();
+        const value = api.lua_gettop(L);
+        api.lua_getfield(L, LUA_REGISTRYINDEX, LuaRuntime.ASSIGN_GLOBAL_KEY);
+        if (api.lua_type(L, -1) !== LuaType.Function) {
+            api.lua_pop(L, 1);
+            this.rawSetGlobal(name);
+            return;
+        }
+        api.lua_pushvalue(L, LUA_GLOBALSINDEX);
+        api.lua_pushstring(L, name);
+        api.lua_pushvalue(L, value);
+        if (api.lua_pcall(L, 3, 0, 0) === LuaReturn.Ok) {
+            api.lua_settop(L, value - 1);
+            return;
+        }
+        const message = api.lua_type(L, -1) === LuaType.String
+            ? api.lua_tolstring(L, -1, null) ?? ''
+            : `(error object is a ${api.lua_typename(L, api.lua_type(L, -1))} value)`;
+        api.lua_settop(L, value);
+        this.rawSetGlobal(name);
+        this.api.printError(`[${name}] ${message}`);
+    }
+    private static readonly ASSIGN_GLOBAL_KEY = 'mudlet.assignGlobal';
 
     /**
      * Park the dispatch state the calling script is holding, and answer the
@@ -4232,6 +4276,26 @@ end`);
     static readonly INTERNAL_CHUNK = '=[C]';
 
     /**
+     * The standard library as it stood when an internal chunk loaded, bound as
+     * locals of that chunk, so Mudlet Web's own Lua never looks these up in the
+     * globals table at call time. Desktop's API is C and reaches none of them
+     * through Lua globals, so a script's own global `select` (a "select target"
+     * helper), `type` or `unpack = nil` must leave `send`, `echo`,
+     * `tempTrigger` and the rest working (mudlet-web#374). The tables are bound
+     * too, which still follows a script that changes a function inside one, as
+     * desktop's Lua-side code does. Part of {@link INTERNAL_PROLOGUE}, so it
+     * stays on the chunk's first line.
+     */
+    private static readonly BUILTIN_LOCALS =
+        'local select, type, unpack, tonumber, getfenv, setfenv, pairs, ipairs, next, '
+        + 'rawget, rawset, rawequal, getmetatable, setmetatable, pcall, xpcall, assert, loadstring, '
+        + 'string, table, math, coroutine, debug = '
+        + 'select, type, unpack, tonumber, getfenv, setfenv, pairs, ipairs, next, '
+        + 'rawget, rawset, rawequal, getmetatable, setmetatable, pcall, xpcall, assert, loadstring, '
+        + 'string, table, math, coroutine, debug; ';
+    private static readonly TOSTRING_LOCAL = 'local tostring = tostring; ';
+
+    /**
      * Put in front of an internal chunk, on its first line so the chunk's line
      * numbers don't move: `error` there is one of {@link C_ERROR_LUA}'s, so an
      * error raised from that code is positioned the way the C it stands in for
@@ -4246,9 +4310,12 @@ end`);
      * caller's frame for its position, a Lua replacement would not.
      */
     private static readonly INTERNAL_PROLOGUE = {
-        mudlet: 'local error = __mudlet_c_error; ',
-        lual: 'local error = __mudlet_lual_error; ',
-        none: '',
+        mudlet: 'local error = __mudlet_c_error; ' + LuaRuntime.BUILTIN_LOCALS + LuaRuntime.TOSTRING_LOCAL,
+        lual: 'local error = __mudlet_lual_error; ' + LuaRuntime.BUILTIN_LOCALS + LuaRuntime.TOSTRING_LOCAL,
+        // The chunk that installs the safe global `tostring` is one of these,
+        // and with a local of that name in scope its `function tostring`
+        // would define the local instead.
+        none: LuaRuntime.BUILTIN_LOCALS,
     } as const;
 
     /** Run one of Mudlet Web's own bootstrap chunks on the main state, under
