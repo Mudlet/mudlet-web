@@ -22,7 +22,15 @@ export interface ReplayChunk {
     offsetMs: number;
     /** Raw telnet bytes as received post-MCCP. */
     data: Uint8Array;
+    /** Byte offset of this chunk's header in the file it was parsed from. Set
+     *  by {@link parseReplayLayout}, so playback can read the chunk again from
+     *  disk when it comes due — see readReplayChunkAt. */
+    position?: number;
 }
+
+/** The width of the delay field: 4 in the original layout, 8 in the PR #4400
+ *  "modified format". */
+export type ReplayOffsetSize = 4 | 8;
 
 /** Mudlet's replay read buffer size (cTelnet BUFFER_SIZE). A record whose
  *  length field exceeds this is treated as corrupt by Mudlet's loader, so the
@@ -85,34 +93,84 @@ export function encodeReplay(chunks: ReplayChunk[]): Uint8Array {
  *  testReadReplayFile does: trial-parse original first, fall back to modified.
  *  Returns null when the data is readable as neither — "seems to be corrupt". */
 export function parseReplay(bytes: Uint8Array): ReplayChunk[] | null {
-    return tryParse(bytes, 4) ?? tryParse(bytes, 8);
+    return parseReplayLayout(bytes)?.chunks ?? null;
 }
 
-function tryParse(bytes: Uint8Array, offsetSize: 4 | 8): ReplayChunk[] | null {
+/** {@link parseReplay}, also saying which layout the file turned out to be in,
+ *  which is what reading a chunk back from disk at play time needs to know. */
+export function parseReplayLayout(bytes: Uint8Array): { chunks: ReplayChunk[]; offsetSize: ReplayOffsetSize } | null {
+    for (const offsetSize of [4, 8] as const) {
+        const chunks = tryParse(bytes, offsetSize);
+        if (chunks) return { chunks, offsetSize };
+    }
+    return null;
+}
+
+/** One chunk header — the delay and the payload length — or null when it is
+ *  not one a recording can produce: a negative delay or length, or a length
+ *  past Mudlet's read buffer. The same test the load-time vetting
+ *  (testReadReplayFile) and the play-time read (cTelnet::loadReplayChunk's
+ *  `headerUsable`) both apply. */
+function readHeader(view: DataView, pos: number, offsetSize: ReplayOffsetSize): { offsetMs: number; amount: number } | null {
+    let offsetMs: number;
+    if (offsetSize === 4) {
+        offsetMs = view.getInt32(pos, false);
+    } else {
+        // qint64 offset — reject anything a sane recording can't produce
+        // (negative, or beyond int32 range), matching Mudlet's checks.
+        const high = view.getInt32(pos, false);
+        const low = view.getUint32(pos + 4, false);
+        if (high !== 0 || low > INT32_MAX) return null;
+        offsetMs = low;
+    }
+    const amount = view.getInt32(pos + offsetSize, false);
+    // A length of zero is an empty chunk, not corruption: older Mudlets
+    // recorded one whenever a compressed read inflated to nothing, and
+    // Mudlet plays on past it, keeping its delay.
+    if (offsetMs < 0 || amount < 0 || amount > REPLAY_MAX_CHUNK) return null;
+    return { offsetMs, amount };
+}
+
+/**
+ * The chunk whose header starts at `position`, read again from the file as it
+ * is NOW — or null when that header has stopped being a usable one.
+ *
+ * Mudlet vets a replay file once, when it is loaded, and then reads it a chunk
+ * at a time as it plays (cTelnet::loadReplayChunk), so a file that changes
+ * underneath a running replay is played as it has become — and a chunk header
+ * that went bad since is where the replay ends ("seems to be corrupt"), rather
+ * than a negative delay arming a timer that never fires and leaves the replay
+ * stuck as running. `readAt` reads up to `length` bytes from `position`; a
+ * payload cut short by the end of the file is played as far as it goes, as
+ * QDataStream::readRawData returns what it got.
+ */
+export function readReplayChunkAt(
+    readAt: (position: number, length: number) => Uint8Array,
+    position: number,
+    offsetSize: ReplayOffsetSize,
+): ReplayChunk | null {
+    const headerSize = offsetSize + 4;
+    const header = readAt(position, headerSize);
+    if (header.length < headerSize) return null;
+    const parsed = readHeader(new DataView(header.buffer, header.byteOffset, header.byteLength), 0, offsetSize);
+    if (!parsed) return null;
+    const data = parsed.amount > 0 ? readAt(position + headerSize, parsed.amount) : new Uint8Array(0);
+    return { offsetMs: parsed.offsetMs, data, position };
+}
+
+function tryParse(bytes: Uint8Array, offsetSize: ReplayOffsetSize): ReplayChunk[] | null {
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const chunks: ReplayChunk[] = [];
     let pos = 0;
     while (pos < bytes.length) {
         if (pos + offsetSize + 4 > bytes.length) return null;
-        let offsetMs: number;
-        if (offsetSize === 4) {
-            offsetMs = view.getInt32(pos, false);
-        } else {
-            // qint64 offset — reject anything a sane recording can't produce
-            // (negative, or beyond int32 range), matching Mudlet's checks.
-            const high = view.getInt32(pos, false);
-            const low = view.getUint32(pos + 4, false);
-            if (high !== 0 || low > INT32_MAX) return null;
-            offsetMs = low;
-        }
-        const amount = view.getInt32(pos + offsetSize, false);
-        // A length of zero is an empty chunk, not corruption: older Mudlets
-        // recorded one whenever a compressed read inflated to nothing, and
-        // Mudlet plays on past it, keeping its delay.
-        if (offsetMs < 0 || amount < 0 || amount > REPLAY_MAX_CHUNK) return null;
+        const header = readHeader(view, pos, offsetSize);
+        if (!header) return null;
+        const { offsetMs, amount } = header;
+        const position = pos;
         pos += offsetSize + 4;
         if (pos + amount > bytes.length) return null;
-        chunks.push({ offsetMs, data: bytes.subarray(pos, pos + amount) });
+        chunks.push({ offsetMs, data: bytes.subarray(pos, pos + amount), position });
         pos += amount;
     }
     // Chunks that are ALL empty are not a recording, they are a run of zero

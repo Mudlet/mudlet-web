@@ -37,8 +37,8 @@ export interface ExitWeightFilterResult {
 }
 
 /**
- * Called once per candidate exit while the graph is explored, with the room
- * being expanded and the exit's key — the short direction name ("e", "up") for
+ * Called once for every exit in the map before a search (see filterEveryExit),
+ * with the exit's source room and its key — the short direction name ("e", "up") for
  * stock exits, or the verbatim command for special exits. Mirrors Mudlet's
  * `applyExitWeightFilter(source, exitKey)` (TMap.cpp).
  */
@@ -88,6 +88,16 @@ export function findPath(
     const startRoom = rooms.get(from);
     const goalRoom = rooms.get(to);
     if (!startRoom || !goalRoom) return null;
+
+    // Desktop runs the exit weight filter while TMap::initGraph builds the
+    // whole routing graph — once for every exit of every room in the map, not
+    // only the ones a search happens to reach — so a filter sees (and can
+    // count, or act on) rooms nowhere near the route. Ask it the same
+    // questions up front, in initGraph's order, and let the search read the
+    // verdicts back. Before the from == to short-cut, as findPath builds the
+    // graph before taking it.
+    const verdicts = exitFilter ? filterEveryExit(rooms, exitFilter) : null;
+
     if (from === to) return { path: [], dirs: [], weights: [], totalWeight: 0 };
 
     const goalArea = goalRoom.area;
@@ -165,7 +175,7 @@ export function findPath(
         // Without a filter a locked source room kills every exit, so bail early
         // as before. With one, a numeric weight override rescues individual
         // exits (Mudlet's `filterOverridesBlocks`), so the check moves per-exit.
-        if (room.isLocked && !exitFilter) continue;
+        if (room.isLocked && !verdicts) continue;
 
         const exitWeights = room.exitWeights ?? {};
         const lockedDirs = room.exitLocks ?? [];
@@ -174,13 +184,13 @@ export function findPath(
         // where Mudlet does (TMap.cpp): "block" drops the edge outright, while
         // a numeric override both replaces the cost and bypasses every lock —
         // source room, exit, and target room alike.
-        const relax = (target: number, exitKey: string, exitLocked: boolean): void => {
+        const relax = (target: number, exitKey: string, exitLocked: boolean, special = false): void => {
             if (!target || target <= 0 || target === current) return;
             let override: number | undefined;
-            if (exitFilter) {
-                const verdict = exitFilter(current, exitKey);
-                if (verdict.blocked) return;
-                override = verdict.weightOverride;
+            if (verdicts) {
+                const verdict = verdicts.get(current)?.get(verdictKey(exitKey, special));
+                if (verdict?.blocked) return;
+                override = verdict?.weightOverride;
             }
             const bypassesLocks = override !== undefined;
             if (!bypassesLocks && (room.isLocked || exitLocked)) return;
@@ -217,8 +227,45 @@ export function findPath(
             const locked = isSpecialExitLocked
                 ? isSpecialExitLocked(current, cmd)
                 : lockedSpecialTargets.includes(target);
-            relax(target, cmd, locked);
+            relax(target, cmd, locked, true);
         }
     }
     return null;
+}
+
+/** A special exit may be named "n" too, and is asked about separately, so
+ *  its verdict is kept apart from the stock exit's. */
+const verdictKey = (exitKey: string, special: boolean): string => (special ? `\0${exitKey}` : exitKey);
+
+/**
+ * The exit weight filter's verdict on every exit in the map, keyed by source
+ * room and then exit key — the questions TMap::initGraph asks it while
+ * building the graph. Every room with an id of one or more is asked about,
+ * locked ones included (initGraph keeps a locked room in the graph whenever a
+ * filter is active, since a weight override can rescue its exits), and each
+ * exit in the order addDirectionalRoute is called: the stock directions in
+ * STOCK_EXIT_ORDER, then the special exits sorted by command. An exit with no
+ * destination, or one leading back into its own room, is never offered.
+ */
+function filterEveryExit(
+    rooms: ReadonlyMap<number, MudletRoom>,
+    exitFilter: ExitWeightFilter,
+): Map<number, Map<string, ExitWeightFilterResult>> {
+    const verdicts = new Map<number, Map<string, ExitWeightFilterResult>>();
+    // A snapshot of the ids: the filter is a script, and may add rooms.
+    for (const id of [...rooms.keys()]) {
+        const room = rooms.get(id);
+        if (id < 1 || !room) continue;
+        const own = new Map<string, ExitWeightFilterResult>();
+        const ask = (target: number | undefined, exitKey: string, special: boolean): void => {
+            if (!target || target <= 0 || target === id) return;
+            own.set(verdictKey(exitKey, special), exitFilter(id, exitKey));
+        };
+        const fields = room as unknown as Record<string, number>;
+        for (const [, field, short] of STOCK_EXIT_ORDER) ask(fields[field], short, false);
+        const specials = room.mSpecialExits ?? {};
+        for (const cmd of Object.keys(specials).sort()) ask(specials[cmd], cmd, true);
+        if (own.size > 0) verdicts.set(id, own);
+    }
+    return verdicts;
 }

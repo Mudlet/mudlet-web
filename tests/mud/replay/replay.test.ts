@@ -257,6 +257,54 @@ describe('MudSession replay integration', () => {
         session.destroy();
     });
 
+    // cTelnet::loadReplayChunk reads each chunk from the file as it comes up,
+    // so a header that goes bad after the load ends the replay there.
+    it('reads each chunk again as it comes up and ends at one that has gone bad', async () => {
+        vi.useFakeTimers();
+        const session = new MudSession();
+        const text: string[] = [];
+        session.events.on('flushLines', groups => { for (const g of groups) text.push(g.text); });
+        const notices: string[] = [];
+        session.events.on('message', line => notices.push(String(line)));
+        const file = encodeReplay([
+            { offsetMs: 0, data: latin1('first line\r\n') },
+            { offsetMs: 10, data: latin1('second line\r\n') },
+        ]);
+        const readAt = (position: number, length: number) => file.subarray(position, position + length);
+        expect(session.loadReplayData(file.slice(), readAt)).toBeNull();
+        // the second chunk's length, turned negative after the load
+        file.set([0xff, 0xff, 0xff, 0xff], 8 + 'first line\r\n'.length + 4);
+        await vi.runAllTimersAsync();
+
+        expect(text.join('')).toContain('first line');
+        expect(text.join('')).not.toContain('second line');
+        expect(notices.join('\n')).toContain('The replay has been aborted as the file seems to be corrupt.');
+        expect(session.isReplaying).toBe(false);
+        session.destroy();
+    });
+
+    it('plays on from what was loaded when the file can no longer be read', async () => {
+        vi.useFakeTimers();
+        const session = new MudSession();
+        const text: string[] = [];
+        session.events.on('flushLines', groups => { for (const g of groups) text.push(g.text); });
+        const file = encodeReplay([
+            { offsetMs: 0, data: latin1('first line\r\n') },
+            { offsetMs: 10, data: latin1('second line\r\n') },
+        ]);
+        let gone = false;
+        const readAt = (position: number, length: number) => {
+            if (gone) throw new Error('ENOENT');
+            return file.subarray(position, position + length);
+        };
+        expect(session.loadReplayData(file, readAt)).toBeNull();
+        gone = true;
+        await vi.runAllTimersAsync();
+        expect(text.join('')).toContain('second line');
+        expect(session.isReplaying).toBe(false);
+        session.destroy();
+    });
+
     it('records the socket.incoming tap and round-trips through its own player', () => {
         const session = new MudSession();
         expect(session.startReplayRecording()).toBe(true);

@@ -203,6 +203,9 @@ export class WindowManager {
      *  openMapWidget raises the event even though the panel has not mounted. */
     private mapShownArea: number | null = null;
     private mapCentered = false;
+    /** A repaint of the map widget was asked for and has not run its map info
+     *  contributors yet — see {@link pumpMapPaint}. */
+    private mapPaintDue = false;
     /** Per-window teardown for the mousedown/mouseup listeners observeMouse
      *  attaches. Keyed by window id ('main' for the central output). */
     private readonly mouseCleanups = new Map<string, () => void>();
@@ -1271,6 +1274,30 @@ export class WindowManager {
             if (change) this.onRaiseEvent?.('sysMapAreaChanged', change);
         }
         for (const cb of this.mapCallbacks.values()) cb(roomId);
+        this.mapPaintDue = true;
+        return true;
+    }
+
+    /**
+     * Run the map info contributors as a paint of the map widget would
+     * (T2DMap::paintEvent → dlgMapper::paintMapInfo), for the paint that
+     * updateMap() or a centerview asked for. MapPanel does this on its own
+     * render, but a script that blocks the event loop (a busted run, a
+     * pumpEvents() wait) never lets React render — where desktop's
+     * pumpEvents delivers the queued repaint. So the busted pump calls this,
+     * and a contributor runs as it would on desktop: with the selection's
+     * centre or else the player's room, and not at all without one.
+     */
+    pumpMapPaint(): boolean {
+        if (!this.mapPaintDue) return false;
+        this.mapPaintDue = false;
+        if (!this.hasMapWidget()) return false;
+        const store = this.mapStore;
+        const roomId = store.getSelectionCenter() ?? store.getPlayerRoom();
+        const roomArea = roomId == null ? undefined : store.getRoomArea(roomId);
+        if (roomId == null || roomArea === undefined) return false;
+        const displayedArea = this.mapShownArea ?? roomArea;
+        store.evaluateMapInfos(roomId, store.getMapSelectionSize(), roomArea, displayedArea);
         return true;
     }
 
@@ -1368,6 +1395,7 @@ export class WindowManager {
 
     /** Force the map to re-read MapStore and redraw (Mudlet `updateMap`). */
     updateMap(): boolean {
+        this.mapPaintDue = true;
         let redrawn = false;
         for (const c of this.mapControls.values()) {
             c.redraw();

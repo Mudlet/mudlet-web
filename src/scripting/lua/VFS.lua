@@ -456,9 +456,14 @@ do
         return name
     end
     dmethods.next = dirIter
-    dmethods.close = function(d)
+    dmethods.close = function(...)
+        local d = ...
         local st = dirs[d]
-        if st then st.closed = true end
+        if st == nil then
+            argError(1, 'close', "directory metatable expected, got "
+                .. (select('#', ...) == 0 and 'no value' or type(d)))
+        end
+        st.closed = true
     end
 
     -- lock_dir's lock: userdata with free().

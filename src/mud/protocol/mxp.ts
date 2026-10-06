@@ -24,7 +24,7 @@
 import { FormatState, applyOscPalette, parseSgrCodes } from "../text/FormatState";
 import type { BufferSegment, FormatColor, FormatStateSnapshot, FormatHyperlink } from "../text/FormatState";
 import { mxpColor } from "../text/colorParsers";
-import { scanEscape, cursorForwardCount, parseOsc8Payload, classifyHyperlinkUri } from "../text/ansiEscapes";
+import { scanEscape, cursorForwardCount, cursorForwardSpaces, parseOsc8Payload, classifyHyperlinkUri } from "../text/ansiEscapes";
 import { parseOsc8Uri, HyperlinkPresetRegistry } from "../text/hyperlinkConfig";
 import type { MspCommand, MspKind } from "./msp";
 import { CLIENT_NAME, CLIENT_VERSION } from "../../version";
@@ -296,8 +296,11 @@ const MAX_PENDING = 256;
  *  falls off the end can no longer be retired — Mudlet's store recycles its ids
  *  after as many (TLinkStore::scmMaxLinks). */
 const MAX_EXPIRING_LINKS = 20000;
-/** Recursion guard for custom-element template expansion. */
-const MAX_DEPTH = 8;
+/** How many custom elements may be expanding inside one another at once —
+ *  TMxpCustomElementTagHandler's `maxElementExpansionDepth`: far deeper than
+ *  any game nests its elements, shallow enough that a chain of thousands a
+ *  game defines cannot exhaust the stack. */
+const MAX_ELEMENT_EXPANSION_DEPTH = 32;
 /** Narrowest an `<HR>` rule may be drawn, however narrow the window wraps.
  *  Mudlet's `TMxpMudlet::getWrapWidth` floor. */
 const HR_MIN_WIDTH = 40;
@@ -317,6 +320,10 @@ export class MxpParser {
 
     // --- persistent across the whole session ---
     private elements = new Map<string, ElementDef>();
+    /** The custom elements whose definitions are running right now, innermost
+     *  last — TMxpCustomElementTagHandler's `mElementsBeingExpanded`. See
+     *  {@link mayExpand}. */
+    private readonly expanding = new Set<string>();
     private entities = new Map<string, string>();
     private lineMode: LineMode = "open";
     /** Mudlet's mMXP_DEFAULT — the mode a newline, an `ESC[3z` reset and the
@@ -651,7 +658,10 @@ export class MxpParser {
                         this.fmt.applySgr(sgr);
                     }
                 } else if (esc.kind === "csi" && esc.finalByte === "C") {
-                    const spaces = cursorForwardCount(esc.params);
+                    // Stopping at the main window's right margin, measured
+                    // from the line written so far (cursorForwardSpaces).
+                    const column = (this.destName === null ? this.plain : this.destPlain).length;
+                    const spaces = cursorForwardSpaces(cursorForwardCount(esc.params), column, this.opts.wrapWidth?.());
                     if (spaces > 0) this.appendCursorForward(spaces);
                 } else if (esc.kind === "csi" && esc.finalByte === "z") {
                     // Consumed either way — it is never text — but only obeyed
@@ -1297,7 +1307,7 @@ export class MxpParser {
         this.stack.push({ name: "v", closeFmt: this.fmt.toSnapshot(), varName, varStart: this.plain.length });
     }
 
-    private handleCloseTag(name: string, depth = 0): void {
+    private handleCloseTag(name: string): void {
         // </DEST> isn't a formatting tag on the stack — it ends text redirection.
         // eol attr controls whether the frame write is a complete line.
         if (name === "dest") {
@@ -1319,13 +1329,28 @@ export class MxpParser {
         // never leaves a marker: close what its definition opens, innermost
         // first, as Mudlet's handleEndTag does for any element with a
         // definition (`<!ELEMENT rd '<COLOR red><B>' EMPTY>` makes `</rd>` a
-        // `</B></COLOR>`). Anything else is a stray close, and is ignored.
+        // `</B></COLOR>`) — only its opening tags, as a closing tag in a
+        // definition is ignored, and not for an element already being closed
+        // or past the expansion cap (mayExpand). Anything else is a stray
+        // close, and is ignored.
         const def = this.elements.get(name);
-        if (!def || depth >= MAX_DEPTH) return;
+        if (!def || !this.mayExpand(name)) return;
         const opened = [...def.template.matchAll(/<\s*([A-Za-z][\w-]*)/g)].map(m => m[1].toLowerCase());
-        for (let k = opened.length - 1; k >= 0; k--) {
-            if (opened[k] !== name) this.handleCloseTag(opened[k], depth + 1);
+        this.expanding.add(name);
+        try {
+            for (let k = opened.length - 1; k >= 0; k--) this.handleCloseTag(opened[k]);
+        } finally {
+            this.expanding.delete(name);
         }
+    }
+
+    /** TMxpCustomElementTagHandler::mayExpand: a game can define an element
+     *  that expands to itself, directly or through other elements, or a chain
+     *  of elements long enough to exhaust the stack. An element already being
+     *  expanded, or one past {@link MAX_ELEMENT_EXPANSION_DEPTH} of them, is
+     *  handled without running its definition. */
+    private mayExpand(name: string): boolean {
+        return this.expanding.size < MAX_ELEMENT_EXPANSION_DEPTH && !this.expanding.has(name);
     }
 
     private finalizeTag(tag: OpenTag): void {
@@ -1464,15 +1489,26 @@ export class MxpParser {
     }
 
     private expandElement(def: ElementDef, named: Map<string, string>, positional: string[], depth: number): void {
-        if (depth >= MAX_DEPTH) return;
-        const before = this.fmt.toSnapshot();
-        this.flushRun();
-        // Push the close marker *below* the tags the template will open, so
-        // `</name>` reverts everything the definition introduced. An EMPTY
-        // element is not closed, so it gets none — see handleCloseTag for a
-        // game that closes one anyway.
-        if (!def.empty) this.stack.push({ name: def.name, closeFmt: before });
-        this.runTemplate(def.template, this.elementValues(def, named, positional), depth + 1);
+        // One that may not expand (mayExpand) is still handled — its event
+        // below is reported — but its definition does not run, and it leaves
+        // no marker: on desktop its `</name>` is handled as doing nothing, and
+        // a marker would have that close revert the definition of the element
+        // around it that it is the self-reference of.
+        if (this.mayExpand(def.name)) {
+            const before = this.fmt.toSnapshot();
+            this.flushRun();
+            // Push the close marker *below* the tags the template will open, so
+            // `</name>` reverts everything the definition introduced. An EMPTY
+            // element is not closed, so it gets none — see handleCloseTag for a
+            // game that closes one anyway.
+            if (!def.empty) this.stack.push({ name: def.name, closeFmt: before });
+            this.expanding.add(def.name);
+            try {
+                this.runTemplate(def.template, this.elementValues(def, named, positional), depth + 1);
+            } finally {
+                this.expanding.delete(def.name);
+            }
+        }
         // Reported once the definition has run, as Mudlet reports it after
         // handling the tag: `actions` is the newest link's, which may be the
         // one the definition just made.
@@ -1500,7 +1536,10 @@ export class MxpParser {
     /** Run a definition's markup. Its tags are read first and filled in after,
      *  attribute by attribute, so a value cannot rewrite the tag it lands in:
      *  a quote in it stays in the value. The text between them is filled in
-     *  and read as the game's own. */
+     *  and read as the game's own. Per the MXP spec a definition holds only
+     *  opening tags, so a closing tag in one is skipped, as
+     *  TMxpCustomElementTagHandler::handleStartTag skips it — `'<B>x</B>'`
+     *  leaves its element bold until the element itself is closed. */
     private runTemplate(template: string, fill: (s: string) => string, depth: number): void {
         let textStart = 0;
         let i = 0;
@@ -1509,7 +1548,8 @@ export class MxpParser {
                 const close = findTagEnd(template, i);
                 if (close === -1) break;
                 if (i > textStart) this.parseFragment(fill(template.slice(textStart, i)), depth);
-                this.handleTag(template.slice(i + 1, close), depth, fill);
+                const tag = template.slice(i + 1, close);
+                if (!tag.trimStart().startsWith("/")) this.handleTag(tag, depth, fill);
                 i = close + 1;
                 textStart = i;
                 continue;

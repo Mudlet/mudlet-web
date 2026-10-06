@@ -180,6 +180,10 @@ export interface IScriptingRuntime {
      *  which is Mudlet's deferred per-unit cleanup: aliases are reaped when
      *  nested alias processing unwinds, triggers when the line batch finishes. */
     reapKilledTempItems(type?: 'alias' | 'trigger'): void;
+    /** Whether the capture globals are being built, when a pass a __gc
+     *  finaliser starts is refused (TLuaInterpreter::buildingCaptureTables).
+     *  Optional: a runtime with no finalisers never builds under one. */
+    buildingCaptureTables?(): boolean;
     /** Rebuild saved Lua globals (a Mudlet `<VariablePackage>` tree) into `_G`. */
     restoreVariables(vars: MudletVariable[]): void;
     /** Snapshot the save-listed globals out of `_G` into a variable tree. */

@@ -10,6 +10,19 @@ export interface ReplayPlayerCallbacks {
     feed: (data: string) => void;
     /** Fired once, after the last chunk has been delivered. Not fired on abort. */
     onDone: () => void;
+    /**
+     * Reads a chunk again as it comes up, from the file as it is now. Mudlet
+     * reads its replay file a chunk at a time while it plays
+     * (cTelnet::loadReplayChunk), so the chunks parsed at load time are only
+     * what the file held THEN. Returning null says the chunk can no longer be
+     * read — a header turned negative or too long — and the replay ends there
+     * through {@link onCorrupt}. Left out, the parsed chunks are played as they
+     * are (a replay with no file behind it).
+     */
+    reread?: (chunk: ReplayChunk, index: number) => ReplayChunk | null;
+    /** Fired once, instead of onDone, when {@link reread} found a chunk that
+     *  will not read. Nothing after it is played. */
+    onCorrupt?: () => void;
 }
 
 /**
@@ -23,10 +36,16 @@ export class ReplayPlayer {
     private index = 0;
     private finished = false;
 
+    /** Our own copy: {@link ReplayPlayerCallbacks.reread} replaces entries as
+     *  they come up, and the caller's array is not ours to write. */
+    private readonly chunks: ReplayChunk[];
+
     constructor(
-        private readonly chunks: ReplayChunk[],
+        chunks: ReplayChunk[],
         private readonly callbacks: ReplayPlayerCallbacks,
-    ) {}
+    ) {
+        this.chunks = chunks.slice();
+    }
 
     start(): void {
         this.scheduleNext();
@@ -96,7 +115,20 @@ export class ReplayPlayer {
             this.callbacks.onDone();
             return;
         }
-        const chunk = this.chunks[this.index];
+        // The chunk's header is read here, as it comes up and before its delay
+        // is waited out — where Mudlet's loadReplayChunk reads it, straight
+        // after the chunk before it was processed.
+        let chunk = this.chunks[this.index];
+        if (this.callbacks.reread) {
+            const fresh = this.callbacks.reread(chunk, this.index);
+            if (!fresh) {
+                this.finished = true;
+                this.dueAt = null;
+                this.callbacks.onCorrupt?.();
+                return;
+            }
+            chunk = this.chunks[this.index] = fresh;
+        }
         const speed = Math.max(1, this.callbacks.speed());
         const delay = chunk.offsetMs / speed;
         this.dueAt = Date.now() + delay;

@@ -234,11 +234,12 @@ export interface EngineHost {
     /** Mudlet `resetProfile()` — reload the profile with a fresh Lua VM. True
      *  when the reset was armed, false when it was refused. */
     resetProfile(): boolean;
-    /** Render a map area to a PNG inside the profile VFS. */
+    /** Render a map area to a PNG inside the profile VFS — one z level, or
+     *  every level to a file each for `true`. */
     exportAreaImageToVfs(
         areaId: number,
         filePath: string,
-        zLevel?: number,
+        zLevel?: number | true,
     ): { path: string } | { error: string };
 }
 

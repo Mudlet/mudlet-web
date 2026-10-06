@@ -613,8 +613,17 @@ export function installMapBindings({
         if (!api.map.roomExists(toId)) {
             return `getPath: number ${toId} is not a valid target roomID`;
         }
+        // TLuaInterpreter::getPath's csmPathfindingInExitWeightFilter.
+        if (api.map.graphBuildInProgress()) {
+            return 'a path cannot be found from inside an exit weight filter';
+        }
         return api.map.findPath(fromId, toId);
     });
+    // TMap::scriptCallbackInProgress / graphBuildInProgress, for the Bridge.lua
+    // guards on deleteRoom, deleteArea, deleteMap, loadMap, loadJsonMap and
+    // gotoRoom, which desktop checks in each of those Lua functions.
+    lua.global.set('__mudlet_map_callback_busy', () => api.map.scriptCallbackInProgress());
+    lua.global.set('__mudlet_map_graph_building', () => api.map.graphBuildInProgress());
     // Mudlet getCollisionLocationsInArea(areaID). JS returns a 0-indexed array
     // of [x,y,z] arrays (or null for an unknown area); the Bridge.lua wrapper
     // rebases both levels to 1-indexed and makes the (nil, errMsg) pair.

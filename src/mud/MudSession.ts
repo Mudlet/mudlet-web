@@ -11,7 +11,7 @@ import { MouseEventRegistry } from '../ui/MouseEventRegistry';
 import { MudClient, type MudClientOptions, SUPPORTED_SERVER_ENCODINGS, DEFAULT_SERVER_ENCODING, canonicalServerEncoding, canEncodeForServer } from './connection/MudClient';
 import { ReplayPlayer } from './replay/ReplayPlayer';
 import { ReplayRecorder } from './replay/ReplayRecorder';
-import { parseReplay, replayDurationMs } from './replay/replayFormat';
+import { parseReplayLayout, readReplayChunkAt, replayDurationMs } from './replay/replayFormat';
 import { type MudClientEvents, type MudEvents, type SessionStatus } from './events';
 import type { Console } from './text/Console';
 import {
@@ -708,14 +708,23 @@ export class MudSession {
     /** Start playing a Mudlet-format replay (the Lua `loadReplay` core).
      *  Works offline — with no live connection the chunks feed a detached
      *  client's parsing pipeline. Returns null on success or a human-readable
-     *  failure reason (mirroring Mudlet's loadReplay error strings). */
-    loadReplayData(bytes: Uint8Array): string | null {
+     *  failure reason (mirroring Mudlet's loadReplay error strings).
+     *
+     *  `readAt`, when given, reads the file the bytes came from as it is now:
+     *  each chunk is read again from it as it comes up, as Mudlet reads its
+     *  replay file a chunk at a time while playing (cTelnet::loadReplayChunk),
+     *  and a chunk header that has gone bad since the load ends the replay as
+     *  corrupt rather than playing on. It throws when the file cannot be read at
+     *  all, and then the bytes loaded here are played: Mudlet holds the file
+     *  open, and an open file outlives its name being removed. */
+    loadReplayData(bytes: Uint8Array, readAt?: (position: number, length: number) => Uint8Array): string | null {
         if (this.replayPlayer) return 'another one may already be in progress';
-        const chunks = parseReplay(bytes);
-        if (chunks === null) return 'replay file seems to be corrupt';
+        const layout = parseReplayLayout(bytes);
+        if (layout === null) return 'replay file seems to be corrupt';
+        const { chunks, offsetSize } = layout;
         const client = this.ensureParsingClient();
         const durationMs = replayDurationMs(chunks);
-        this.replayPlayer = new ReplayPlayer(chunks, {
+        const player: ReplayPlayer = new ReplayPlayer(chunks, {
             speed: () => this._replaySpeed,
             feed: (data) => client.feedReplay(data),
             onDone: () => {
@@ -723,7 +732,23 @@ export class MudSession {
                 this.postReplayInfo('The replay has ended.');
                 this.events.emit('replay.over');
             },
+            reread: readAt && ((chunk) => {
+                if (chunk.position === undefined) return chunk;
+                try {
+                    return readReplayChunkAt(readAt, chunk.position, offsetSize);
+                } catch {
+                    return chunk;
+                }
+            }),
+            // cTelnet::endReplay with its corrupt-file warning: the replay is
+            // over, so the next loadReplay is free to start.
+            onCorrupt: () => {
+                if (this.replayPlayer === player) this.replayPlayer = null;
+                this.postClientWarning('[ WARN ]  - The replay has been aborted as the file seems to be corrupt.');
+                this.events.emit('replay.over');
+            },
         });
+        this.replayPlayer = player;
         this.postReplayInfo(`Loading replay: ${chunks.length} chunks covering ${formatReplayDuration(durationMs)}.`);
         this.events.emit('replay.start', durationMs);
         this.replayPlayer.start();
@@ -1164,6 +1189,12 @@ export class MudSession {
      *  does on desktop only if they are (mudlet-web#339). Stored as well as
      *  rendered, as {@link warnIfUnencodable} does, and wrapped at the main
      *  window's width like any other line. */
+    /** Host::postMessage for a notice from elsewhere in the client (a failed
+     *  exportAreaImage save): a stored main-console line, as cTelnet's are. */
+    postMessageLine(styled: string): void {
+        this.postSocketLine(styled);
+    }
+
     private postSocketLine(styled: string): void {
         const main = this.consoles.get('main');
         if (main) {

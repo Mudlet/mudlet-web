@@ -3,6 +3,7 @@ import mudletColorsJson from "./mudletColors.json";
 import {
     scanEscape,
     cursorForwardCount,
+    cursorForwardSpaces,
     parseOsc8Payload,
     classifyHyperlinkUri,
     parseOscPalette,
@@ -838,9 +839,13 @@ function parseAnsiSegments(
     text: string,
     baseState?: FormatStateSnapshot,
     presets?: HyperlinkPresetRegistry,
+    wrapAt?: number,
 ): BufferSegment[] {
     const segments: BufferSegment[] = [];
     const state = new FormatState(baseState);
+    // The line's length so far — TBuffer's mMudLine.size(), which a cursor
+    // forward measures its column from.
+    let written = 0;
     // A bare parse (e.g. script-echoed text) still resolves config and presets
     // within this one string via an ephemeral registry; cross-line presets need
     // the session registry passed in.
@@ -851,6 +856,7 @@ function parseAnsiSegments(
         const snapshot = state.toCellSnapshot();
         const storedState = isDefaultState(snapshot) ? undefined : snapshot;
         segments.push({text: buffer, state: storedState});
+        written += buffer.length;
         buffer = "";
     };
     for (let i = 0; i < text.length;) {
@@ -872,10 +878,12 @@ function parseAnsiSegments(
             } else if (esc.kind === "csi" && esc.finalByte === "C") {
                 // CUF: n spaces in the background colour (see
                 // cursorForwardCount), so column-aligned output keeps its
-                // columns. An unreadable or zero count is consumed, nothing more.
-                const spaces = cursorForwardCount(esc.params);
+                // columns, stopping at the right margin (cursorForwardSpaces).
+                // An unreadable or zero count is consumed, nothing more.
+                const spaces = cursorForwardSpaces(cursorForwardCount(esc.params), written + buffer.length, wrapAt);
                 if (spaces > 0) {
                     flush();
+                    written += spaces;
                     const snapshot = state.toCursorForwardSnapshot();
                     segments.push({
                         text: " ".repeat(spaces),
@@ -970,13 +978,16 @@ export class AnsiAwareBuffer {
     // drops lines from the buffer and `TTextEdit` repaints only what remains.
     private _lineElement: HTMLElement | null = null;
 
+    /** `wrapAt` is the wrap of the window a string `initial` is a line of —
+     *  where a cursor forward in it stops (see cursorForwardSpaces). */
     constructor(
         initial?: string | BufferSegment[],
         state?: FormatStateSnapshot,
         presets?: HyperlinkPresetRegistry,
+        wrapAt?: number,
     ) {
         if (typeof initial === "string") {
-            this.segments = parseAnsiSegments(initial, state, presets);
+            this.segments = parseAnsiSegments(initial, state, presets, wrapAt);
             this.normalizeSegments();
         } else if (Array.isArray(initial)) {
             this.segments = initial.map(segment => ({

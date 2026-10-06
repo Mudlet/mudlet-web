@@ -115,10 +115,24 @@ export function withLabelPixmapBytes(map: MudletMap): MudletMap {
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 export const isPng = (b: Uint8Array) => b.length > PNG_SIGNATURE.length && PNG_SIGNATURE.every((v, i) => b[i] === v);
 
+/** TMap.cpp's cMaxImageLabelPixels: the most pixels an image label's pixmap
+ *  may hold, so a huge label (or zoom) cannot ask for gigabytes of image. */
+const MAX_IMAGE_LABEL_PIXELS = 4096 * 4096;
+
 /** Desktop's image-label pixmap size: the label's map size times the zoom it
- *  was made at, rounded as QSizeF::toSize does. */
+ *  was made at, shrunk to MAX_IMAGE_LABEL_PIXELS keeping its aspect ratio
+ *  when it is over that (TMap::createMapImageLabel), and rounded as
+ *  QSizeF::toSize does. */
 function imageLabelSize(width: number, height: number, zoom: number): { w: number; h: number } {
-    return { w: Math.round(width * zoom), h: Math.round(height * zoom) };
+    let w = width * zoom;
+    let h = height * zoom;
+    const pixels = w * h;
+    if (Number.isFinite(pixels) && pixels > MAX_IMAGE_LABEL_PIXELS) {
+        const scale = Math.sqrt(MAX_IMAGE_LABEL_PIXELS / pixels);
+        w *= scale;
+        h *= scale;
+    }
+    return { w: Math.round(w), h: Math.round(h) };
 }
 
 /**

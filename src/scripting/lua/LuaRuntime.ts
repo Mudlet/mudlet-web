@@ -916,6 +916,7 @@ export class LuaRuntime implements IScriptingRuntime {
             emitEvent: (name, args) => this.emitEvent(name, args),
             pushNestedDispatchState: () => this.pushNestedDispatchState(),
             popNestedDispatchState: (depth) => this.popNestedDispatchState(depth),
+            buildingCaptureTables: () => this.buildingCaptureTables(),
             vfs: this.vfs,
             overlayCmdLineActionCbIds: this.overlayCmdLineActionCbIds,
             windowCmdLineActionCbIds: this.windowCmdLineActionCbIds,
@@ -1822,7 +1823,27 @@ export class LuaRuntime implements IScriptingRuntime {
             let bytes: Uint8Array;
             try { bytes = this.vfs.readBinaryFile(p); }
             catch { return [false, `Cannot read file "${p}"`]; }
-            const err = this.api.loadReplay(bytes);
+            // Playback reads each chunk again as it comes up, from the file as
+            // it is by then (see MudSession.loadReplayData). The bytes are only
+            // read again when something has written the file since — once a
+            // chunk, a whole-file read would cost the whole file per chunk.
+            // Resolved now: Mudlet holds the file it opened, so an lfs.chdir()
+            // during playback must not point the rest of it at another file.
+            const vfs = this.vfs;
+            const abs = vfs.resolvePath(p);
+            let current = bytes;
+            let seen = vfs.writeGeneration(abs);
+            const readAt = (position: number, length: number): Uint8Array => {
+                const generation = vfs.writeGeneration(abs);
+                if (generation !== seen) {
+                    // Throws when the file has gone, which plays on from what
+                    // was loaded; tried again at the next chunk.
+                    current = vfs.readBinaryFile(abs);
+                    seen = generation;
+                }
+                return current.subarray(position, position + length);
+            };
+            const err = this.api.loadReplay(bytes, readAt);
             return err ? [false, `unable to start replay, reason: '${err}'`] : [true, ''];
         });
         // Mudlet `receiveMSP(text)`: parse an MSP payload and dispatch its
@@ -1857,7 +1878,7 @@ export class LuaRuntime implements IScriptingRuntime {
                 if (!zLevel) {
                     return [false, 'exportAreaImage: zLevel parameter when boolean must be true to export all Z levels'];
                 }
-                return this.api.exportAreaImage(Math.trunc(aid), String(filePath ?? ''), undefined);
+                return this.api.exportAreaImage(Math.trunc(aid), String(filePath ?? ''), true);
             }
             const z = zLevel != null && zLevel !== '' ? Number(zLevel) : undefined;
             return this.api.exportAreaImage(
@@ -3075,6 +3096,9 @@ end`);
             this.api.pumpHyperlinkReveals();
             // And the size a user window just opened arrives at.
             this.api.pumpCreatedWindowSizes();
+            // And the map repaint updateMap() or centerview() asked for, which
+            // is what runs the registerMapInfo contributors.
+            this.api.pumpMapPaint();
             if (Date.now() >= deadline) return true;
             // Let real time advance a little so pending timers come due, without
             // overshooting the caller's deadline.
@@ -4054,21 +4078,41 @@ end`);
         if (this.inert) return;
         const api = this.lua.global.luaApi;
         const L = this.lua.global.address;
-        if (multimatches !== undefined) {
-            if (multimatches.length === 0) return;
-            api.lua_createtable(L, multimatches.length, 0);
-            for (let i = 0; i < multimatches.length; i++) {
-                // Each row gets the names its own line defined, alongside the
-                // numbered captures — the same table shape as .
-                this.pushMatchesTable(L, multimatches[i], multiNamedGroups?.[i]);
-                api.lua_rawseti(L, -2, i + 1);
+        // Every push below can run a __gc finaliser, and one that starts an
+        // alias or trigger pass would replace the capture globals mid-build, so
+        // those passes are refused until it ends (TLuaInterpreter::
+        // pushMatchesTable's mCaptureBuildDepth). Counted, not flagged: a
+        // finaliser can run a script whose own fire builds tables inside this.
+        this.captureBuildDepth++;
+        try {
+            if (multimatches !== undefined) {
+                if (multimatches.length === 0) return;
+                api.lua_createtable(L, multimatches.length, 0);
+                for (let i = 0; i < multimatches.length; i++) {
+                    // Each row gets the names its own line defined, alongside the
+                    // numbered captures — the same table shape as .
+                    this.pushMatchesTable(L, multimatches[i], multiNamedGroups?.[i]);
+                    api.lua_rawseti(L, -2, i + 1);
+                }
+                this.assignGlobal('multimatches');
+                return;
             }
-            this.assignGlobal('multimatches');
-            return;
+            if (matches.length === 0) return;
+            this.pushMatchesTable(L, matches, namedGroups);
+            this.assignGlobal('matches');
+        } finally {
+            this.captureBuildDepth--;
         }
-        if (matches.length === 0) return;
-        this.pushMatchesTable(L, matches, namedGroups);
-        this.assignGlobal('matches');
+    }
+
+    /** Nesting of {@link setMatches}' table builds — see the note there. */
+    private captureBuildDepth = 0;
+
+    /** Mudlet's TLuaInterpreter::buildingCaptureTables: true while
+     *  `matches`/`multimatches` are being built, when only a __gc finaliser can
+     *  be running Lua — and an alias or trigger pass it starts is turned away. */
+    buildingCaptureTables(): boolean {
+        return this.captureBuildDepth > 0;
     }
 
     /** Whether {@link setMatches} handed the scripts anything for these

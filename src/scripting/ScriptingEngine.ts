@@ -4530,7 +4530,17 @@ export class ScriptingEngine implements EngineHost {
         // stops at 50 and lets the command through UNEXPANDED rather than
         // dropping it — the player asked for something, and a command the game
         // does not understand is a better answer than silence.
+        // Once a chain has hit the cap, every expansion still nested under it is
+        // turned away too, as AliasUnit does: an alias that expands into itself
+        // twice per run would otherwise re-run a whole chain from every level
+        // on the way back up — 2^50 runs. The outermost pass is untouched, so
+        // its next expansion, or another alias on the same command, goes ahead.
+        if (this.aliasRunawayStopped) return true;
+        // A command a __gc finaliser sends while the capture tables are being
+        // built goes to the game unexpanded (AliasUnit::processDataStream).
+        if (this.runtimes.lua?.buildingCaptureTables?.()) return false;
         if (this.aliasDepth >= ScriptingEngine.MAX_ALIAS_DEPTH) {
+            this.aliasRunawayStopped = true;
             this.api.postError(
                 `Alias processing stopped to prevent a crash: "${text}" was expanded by an alias `
                 + `${ScriptingEngine.MAX_ALIAS_DEPTH} times in a row, each time producing a command that matched `
@@ -4547,12 +4557,15 @@ export class ScriptingEngine implements EngineHost {
         try {
             return this.processInputPass(text);
         } finally {
-            if (--this.aliasDepth === 0) this.runtimes.lua?.reapKilledTempItems('alias');
+            if (--this.aliasDepth <= 1) this.aliasRunawayStopped = false;
+            if (this.aliasDepth === 0) this.runtimes.lua?.reapKilledTempItems('alias');
         }
     }
 
     /** Nesting depth of {@link processInput} — see the note there. */
     private aliasDepth = 0;
+    /** Set when a chain hits {@link MAX_ALIAS_DEPTH}, until it unwinds to the outermost pass. */
+    private aliasRunawayStopped = false;
     /** AliasUnit::scmMaxProcessingDepth. */
     private static readonly MAX_ALIAS_DEPTH = 50;
 
@@ -4683,23 +4696,49 @@ export class ScriptingEngine implements EngineHost {
      * failure). Mudlet requires the mapper open; Mudlet Web's renderer lives in the
      * map widget, so the same precondition applies.
      */
-    exportAreaImageToVfs(areaId: number, filePath: string, zLevel?: number): { path: string } | { error: string } {
+    exportAreaImageToVfs(areaId: number, filePath: string, zLevel?: number | true): { path: string } | { error: string } {
         const vfs = this.vfs;
         if (!vfs) return { error: 'no profile filesystem mounted' };
         if (!filePath) return { error: 'filePath is required' };
+        if (zLevel === true) return this.exportEveryAreaLevelToVfs(areaId, filePath);
         const bytes = this.session.windows.exportAreaImage(areaId, zLevel);
         if (!bytes) return { error: `area ${areaId} could not be rendered (is the mapper open?)` };
         const abs = filePath.startsWith('/') ? filePath : `${vfs.profilePath}/${filePath}`;
-        const slash = abs.lastIndexOf('/');
-        const parent = slash > 0 ? abs.slice(0, slash) : '';
+        // Desktop renders at once and saves on a pool thread
+        // (T2DMap::performImageSave), so a save that fails — a directory that
+        // is not there, which is not made for it — has already been answered
+        // true, and is reported on the main console instead, naming the path
+        // the script gave.
         try {
-            if (parent && !vfs.exists(parent)) vfs.mkdir(parent);
-            vfs.writeBinaryFile(abs, bytes);
+            vfs.writeBinaryFile(abs, bytes, { createParents: false });
             void vfs.flush();
-            return { path: abs };
-        } catch (e) {
-            return { error: e instanceof Error ? e.message : String(e) };
+        } catch {
+            this.session.postMessageLine(`[MAP]: Failed to save image to ${filePath}`);
         }
+        return { path: abs };
+    }
+
+    /** exportAreaImage(areaID, filePath, true) — T2DMap::exportAreaToImage's
+     *  every-z-level branch: one image per level of the area, each named
+     *  `<base>_level_<z>.<suffix>` beside `filePath` (QFileInfo's
+     *  completeBaseName and suffix, `png` when there is none). */
+    private exportEveryAreaLevelToVfs(areaId: number, filePath: string): { path: string } | { error: string } {
+        const store = this.session.windows.mapStore;
+        const levels = [...new Set((store.getAreaRooms(areaId) ?? [])
+            .map(id => store.getRoomCoordinates(id)?.[2])
+            .filter((z): z is number => z !== undefined))].sort((a, b) => a - b);
+        if (levels.length === 0) return { error: `Area ${areaId} has no Z levels` };
+        const slash = filePath.lastIndexOf('/');
+        const dir = slash >= 0 ? filePath.slice(0, slash + 1) : '';
+        const name = filePath.slice(slash + 1);
+        const dot = name.lastIndexOf('.');
+        const base = dot >= 0 ? name.slice(0, dot) : name;
+        const suffix = dot >= 0 ? name.slice(dot + 1) : '';
+        for (const z of levels) {
+            const r = this.exportAreaImageToVfs(areaId, `${dir}${base}_level_${z}.${suffix || 'png'}`, z);
+            if ('error' in r) return { error: `Failed to export Z level ${z}: ${r.error}` };
+        }
+        return { path: filePath.startsWith('/') || !this.vfs ? filePath : `${this.vfs.profilePath}/${filePath}` };
     }
 
     /**
@@ -5451,7 +5490,9 @@ export class ScriptingEngine implements EngineHost {
                             // mute gate).
                             if (r.sounds) for (const s of r.sounds) void this.handleMspCommand(s);
                         } else {
-                            const buffer = new AnsiAwareBuffer(line, carryState, this.osc8Presets);
+                            // Main's wrap is where a cursor forward in the
+                            // line stops (TBuffer's mWrapAt margin).
+                            const buffer = new AnsiAwareBuffer(line, carryState, this.osc8Presets, this.api.getWindowWrap('main'));
                             this.wireOsc8Links(buffer);
                             // The buffer's text is the line with every escape
                             // sequence (SGR, OSC 8 links, cursor moves, …) already
@@ -5633,6 +5674,11 @@ export class ScriptingEngine implements EngineHost {
         this.api.beginLine(buffer, isPrompt);
         try {
             this.runtimes.lua?.setCurrentLine(plain, isPrompt);
+            // A line a __gc finaliser feeds while the capture tables are being
+            // built is shown but runs no triggers, as TriggerUnit::
+            // processDataStream turns it away: a pass would replace the
+            // captures the build is in the middle of.
+            if (this.runtimes.lua?.buildingCaptureTables?.()) return;
             // Single Mudlet-style pass over permanent + temporary triggers in one
             // ordered list: each node is matched and acted on in registration
             // order, so a permanent trigger fires before a temp created later

@@ -25,6 +25,36 @@ export interface KnownDivergence {
     reason: string;
 }
 
+// Specs that need a SECOND profile running beside the one under test, which
+// they make by hand: a folder beside getMudletHomeDir(), a saved profile XML
+// in its current/ folder, then loadProfile(name) and pumpEvents() while that
+// profile runs and closes. Recorded once here because the reason is the same
+// for each, whichever subsystem the spec is really about.
+const SECOND_PROFILE_FROM_A_FOLDER =
+    'The spec builds a second profile on disk — lfs.mkdir() of a folder beside getMudletHomeDir(), a '
+    + 'saved profile XML written into its current/ folder — then loadProfile()s it and pumps the event loop '
+    + 'while that profile runs and closes. In Mudlet that is fair: a folder holding current/<date>.xml IS a '
+    + 'profile, and every profile shares one process and one event loop. Here it meets two walls, and the '
+    + 'spec stops at the first. (1) A profile VFS is mounted AT its own directory and cannot reach its '
+    + 'siblings — the boundary the "leaves no file or folder of its own behind" and Package "refuses a name '
+    + 'that trims down to a step out of the profile" entries already rest on: a profile writing into another '
+    + 'profile\'s storage is what the mount exists to prevent, so the mkdir answers "No such file or '
+    + 'directory". (2) Even past that, a profile is an app-store record, not a folder (see "lists a profile '
+    + 'that is not loaded"), and loadProfile() opens it in a new browser tab: its own page, its own Lua state, '
+    + 'its own event loop. Nothing this tab\'s pumpEvents() drives reaches it. Passing would take a script '
+    + 'that can write into every other profile, profiles conjured out of folders, and a second profile run '
+    + 'inside one page — three things the app never does for a player, built to satisfy a test. ';
+
+// The four teardown specs share one reason; see SECOND_PROFILE_FROM_A_FOLDER.
+const TORN_DOWN_REASON =
+    SECOND_PROFILE_FROM_A_FOLDER
+    + 'These need the second profile only because the self-test profile cannot close or reset itself; what '
+    + 'they guard is closeProfile()/resetProfile() queueing the lua_close() of a state whose script is still '
+    + 'running a nested event loop. Mudlet Web defers both the same way — closeProfile() of the running '
+    + 'profile closes after the calling script returns, and a reset is armed and run later behind a teardown '
+    + 'guard (ScriptingEngine.resetProfile) — but a second profile here is another tab, so there is no shared '
+    + 'loop for one profile\'s teardown to happen underneath another\'s script.';
+
 export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
     Mapper: [
         {
@@ -58,6 +88,15 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
                 + 'mudlet-map-binary-reader reads 16-20 but every legacy model\'s write throws, by its author\'s '
                 + 'decision, so saveMap accepts the version argument and writes 20 regardless (see the map format '
                 + 'version row of docs/settings-divergence.md). Saving for an older Mudlet stays a job for desktop.',
+        },
+        {
+            name: 'Tests closing another profile that opened a map widget / survives the main window being activated again after the close',
+            reason:
+                SECOND_PROFILE_FROM_A_FOLDER
+                + 'What the spec guards is a desktop crash: the main window keeping a pointer to the closed '
+                + 'profile\'s command line, to give focus back to when the mapper-script reminder dialog lets go. '
+                + 'There is no shared main window here for a closed profile to leave a pointer in — each profile '
+                + 'is its own tab, and closing one takes its whole page with it.',
         },
     ],
     Media: (() => {
@@ -136,6 +175,41 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
                 + 'it. lfs.mkdir() is now the non-recursive call LuaFileSystem makes (#233), that mkdir fails as '
                 + 'it must, and lfs.dir() over the parent answers nil, which the spec\'s `for entry in lfs.dir(...)` '
                 + 'calls. There is nothing of a profile\'s own that could be left up there to find.',
+        },
+        {
+            name: 'Tests C++ functions in the Miscallaneous category / Tests the functionality of unzipAsync / survives the profile that asked for it closing before the extraction reports back',
+            reason:
+                SECOND_PROFILE_FROM_A_FOLDER
+                + 'The hazard itself — an extraction reporting back to a profile that has gone — cannot cross '
+                + 'profiles here: an unzipAsync() belongs to the runtime of the tab that asked for it, and that '
+                + 'tab closing takes the extraction, and anything it would report to, down with it.',
+        },
+        {
+            name: 'Tests C++ functions in the Miscallaneous category / Tests a profile torn down while its script spins the event loop / loads another profile after closeProfile(), then closes',
+            reason: TORN_DOWN_REASON,
+        },
+        {
+            name: 'Tests C++ functions in the Miscallaneous category / Tests a profile torn down while its script spins the event loop / loads another profile after resetProfile(), then resets',
+            reason: TORN_DOWN_REASON,
+        },
+        {
+            name: 'Tests C++ functions in the Miscallaneous category / Tests a profile torn down while its script spins the event loop / closes another profile after closeProfile(), then closes',
+            reason: TORN_DOWN_REASON,
+        },
+        {
+            name: 'Tests C++ functions in the Miscallaneous category / Tests a profile torn down while its script spins the event loop / closes after resetProfile() then closeProfile()',
+            reason: TORN_DOWN_REASON,
+        },
+    ],
+    Networking: [
+        {
+            name: 'MMCP chat with a profile that closes / should hang up its calls when the profile running the server closes',
+            reason:
+                SECOND_PROFILE_FROM_A_FOLDER
+                + 'And past both, the spec needs that profile to auto-start an MMCP chat server and this one to '
+                + 'call it — peer-to-peer TCP, listening as well as dialing, which a browser tab can do neither of '
+                + '(see the MMCP entry in UNSUPPORTED_AREAS). It is not caught by that entry\'s skip because it '
+                + 'is gated on MUDLET_TEST_MODE rather than on the peer fixture, so it runs and fails instead.',
         },
     ],
     Package: [

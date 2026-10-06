@@ -99,6 +99,9 @@ export class ProfileVFS {
     readonly folderName?: string;
     private readBarrier: ((absPath: string) => void) | null = null;
     private writeObserver: ((absPath: string, kind: 'write' | 'remove') => void) | null = null;
+    /** See {@link writeGeneration}. Bumped in afterWrite, the one place every
+     *  write, removal and rename already reports through. */
+    private readonly writeGenerations = new Map<string, number>();
 
     private constructor(
         readonly connectionId: string,
@@ -202,6 +205,7 @@ export class ProfileVFS {
     }
 
     private afterWrite(abs: string, kind: 'write' | 'remove'): void {
+        this.writeGenerations.set(abs, (this.writeGenerations.get(abs) ?? 0) + 1);
         if (this.writeObserver) {
             try { this.writeObserver(abs, kind); } catch (e) { console.warn('[ProfileVFS] write observer failed:', e); }
         }
@@ -229,6 +233,18 @@ export class ProfileVFS {
 
     readBinaryFile(path: string): Uint8Array {
         return readFileSync(this.beforeRead(this.resolvePath(path))) as unknown as Uint8Array;
+    }
+
+    /**
+     * A count that moves whenever the file at `path` is written, removed or
+     * renamed through this VFS, and never otherwise. For a reader that holds a
+     * file's bytes and must notice when they have gone stale, without reading
+     * the whole file again to find out — a replay being played comes back to
+     * its file once a chunk. A stat cannot stand in for it: mtime is in
+     * milliseconds, and a rewrite in place keeps the size.
+     */
+    writeGeneration(path: string): number {
+        return this.writeGenerations.get(this.resolvePath(path)) ?? 0;
     }
 
     writeFile(path: string, content: string): void {

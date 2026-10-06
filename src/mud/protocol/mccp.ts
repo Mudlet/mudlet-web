@@ -355,7 +355,22 @@ export class MccpHandler {
         this.endStream();
         this.onStreamEnd();
         const rest = data.substring(pos);
-        return rest.length > 0 ? [text, ...this.pieces(rest)] : [text];
+        const inflated = this.skipNestedStarts(text);
+        return rest.length > 0 ? [inflated, ...this.pieces(rest)] : [inflated];
+    }
+
+    /** cTelnet::processSocketData scans the output of a stream that ended in
+     *  this read (out_buffer, with mNeedDecompression already cleared) and
+     *  skips any start sequence it finds there whole rather than inflating
+     *  out_buffer back into itself (#10662): a server has no reason to nest a
+     *  stream in its own output. It has to go here, not to the telnet parser
+     *  downstream — MCCP1's start has no IAC before its SE, and would leave
+     *  that parser inside a subnegotiation swallowing the text after it. Only
+     *  the versions agreed to are recognised, as desktop's look-ahead is. */
+    private skipNestedStarts(text: string): string {
+        if (this.v1Accepted) text = text.split(MCCP1_START).join('');
+        if (this.v2Accepted) text = text.split(MCCP_START).join('');
+        return text;
     }
 
     /** Feed deflate data to the inflater; report how much of it was used, and

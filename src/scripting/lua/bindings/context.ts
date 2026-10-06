@@ -67,6 +67,10 @@ export interface BindingContext {
     pushNestedDispatchState(): number;
     popNestedDispatchState(depth: number): void;
 
+    /** Whether `matches`/`multimatches` are being built — see
+     *  LuaRuntime.buildingCaptureTables. */
+    buildingCaptureTables(): boolean;
+
     /** This profile's virtual filesystem, or null before one is mounted.
      *  Never reassigned after the runtime is constructed, so a plain reference
      *  is safe here. */

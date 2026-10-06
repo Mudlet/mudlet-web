@@ -62,11 +62,14 @@ const REVERSE_DIR: Record<number, number> = {
 };
 
 // Unit displacement vector per stock direction (Mudlet's scmUnitVectors). in/out
-// (11/12) are intentionally absent — they have no spatial component, so the
-// direction-only connectExitStub form can't resolve them, matching Mudlet.
+// (11/12) have no spatial component: desktop's TMap::connectExitStubByDirection
+// gets the zero vector for them, which matches a room at the very same
+// coordinates — so the direction-only connectExitStub form joins an in stub to
+// an out stub on a room stacked on top of it.
 const UNIT_VECTORS: Record<number, [number, number, number]> = {
     1: [0, -1, 0], 2: [1, -1, 0], 3: [-1, -1, 0], 4: [1, 0, 0], 5: [-1, 0, 0],
     6: [0, 1, 0], 7: [1, 1, 0], 8: [-1, 1, 0], 9: [0, 0, 1], 10: [0, 0, -1],
+    11: [0, 0, 0], 12: [0, 0, 0],
 };
 
 /** True when both values share a sign (Mudlet's compSign). Only meaningful for
@@ -275,7 +278,14 @@ export function mudletJsonMapToMudletMap(src: unknown): MudletMap | null {
             room.y = Number(coords[1]) || 0;
             room.z = Number(coords[2]) || 0;
             room.environment = Number(rawRoom.environment) || 0;
-            room.weight = Number(rawRoom.weight) || 1;
+            // TRoom::readJsonRoom: a number only (QJsonValue::toInt, which
+            // reads a fraction or an out-of-range value as 0), and never below
+            // one — a weight under one breaks the route costs findPath relies on.
+            const rawWeight = rawRoom.weight;
+            if (typeof rawWeight === 'number') {
+                const asInt = Number.isInteger(rawWeight) && Math.abs(rawWeight) <= 0x7fffffff ? rawWeight : 0;
+                room.weight = Math.max(1, asInt);
+            }
             room.isLocked = !!rawRoom.locked;
             room.userData = (rawRoom.userData as Record<string, string>) ?? {};
 
@@ -905,6 +915,15 @@ export class MapStore {
     private areaIdHint = 1;
     /** Installed by `setExitWeightFilter`; consulted per exit in findPath. */
     private exitWeightFilter: ExitWeightFilter | null = null;
+    /** TMap::mScriptCallbackDepth — how many script callbacks the map is
+     *  inside (the exit weight filter, a map info contributor). Desktop holds
+     *  raw room and area pointers across both, so rooms and areas may not be
+     *  deleted, nor the map replaced, while it is above zero; Mudlet Web keeps
+     *  the same rule so a script behaves the same on both. */
+    private scriptCallbackDepth = 0;
+    /** TMap::mGraphBuildInProgress — the exit weight filter is being asked
+     *  about the map's exits, and a search started from inside it is refused. */
+    private graphBuilding = false;
     // In-flight state for a three-phase binary load (beginBinaryLoad →
     // ingestBinaryRooms* → endBinaryLoad). Empty/false outside a load.
     private pendingBinaryHashIndex: Record<string, number> = {};
@@ -2269,8 +2288,10 @@ export class MapStore {
     private severExitsTo(gone: ReadonlySet<number>): void {
         for (const [roomId, room] of this.rooms) {
             const fields = room as unknown as Record<string, number>;
-            for (const field of Object.values(DIR_FIELD)) {
-                if (gone.has(fields[field])) fields[field] = -1;
+            for (const [dir, field] of Object.entries(DIR_FIELD)) {
+                if (!gone.has(fields[field])) continue;
+                fields[field] = -1;
+                this.clearStockExitAttributes(room, Number(dir));
             }
             for (const [cmd, dest] of Object.entries(room.mSpecialExits ?? {})) {
                 if (!gone.has(dest)) continue;
@@ -2672,6 +2693,7 @@ export class MapStore {
         const field = DIR_FIELD[dirInt];
         (room as unknown as Record<string, number>)[field] = dest;
         if (dest >= 0) room.stubs = room.stubs.filter(s => s !== dirInt);
+        else this.clearStockExitAttributes(room, dirInt);
         this.notify();
         return true;
     }
@@ -2699,8 +2721,36 @@ export class MapStore {
     /** Mudlet `findPath(from, to)` — see {@link findPath} in `./pathfinding`
      *  for the algorithm (A* with Mudlet's Euclidean-or-1 heuristic). */
     findPath(from: number, to: number): PathfindResult | null {
-        return findPath(this.rooms, from, to, this.exitWeightFilter,
-            (roomId, command) => this.isSpecialExitLocked(roomId, command));
+        // TMap::findPath: no search from inside the filter, which would ask
+        // the filter about every exit again from inside itself.
+        if (this.graphBuilding) return null;
+        const filter = this.exitWeightFilter;
+        const isSpecialExitLocked = (roomId: number, command: string) => this.isSpecialExitLocked(roomId, command);
+        if (!filter) return findPath(this.rooms, from, to, null, isSpecialExitLocked);
+        // The filter only runs while findPath builds its verdicts, before the
+        // search starts, so holding the scope over the whole call is the same
+        // as desktop holding it over initGraph (ScriptCallbackScope).
+        this.graphBuilding = true;
+        this.scriptCallbackDepth++;
+        try {
+            return findPath(this.rooms, from, to, filter, isSpecialExitLocked);
+        } finally {
+            this.scriptCallbackDepth--;
+            this.graphBuilding = false;
+        }
+    }
+
+    /** TMap::scriptCallbackInProgress — inside the exit weight filter or a map
+     *  info contributor, where rooms and areas may not be deleted nor the map
+     *  replaced (see {@link scriptCallbackDepth}). */
+    scriptCallbackInProgress(): boolean {
+        return this.scriptCallbackDepth > 0;
+    }
+
+    /** TMap::graphBuildInProgress — inside the exit weight filter, where no
+     *  path may be searched for. */
+    graphBuildInProgress(): boolean {
+        return this.graphBuilding;
     }
 
     /** Mudlet `setExitWeightFilter(fn|nil)` — the callback consulted for every
@@ -2823,6 +2873,25 @@ export class MapStore {
         // rather than edited (two commands can share a destination, and only
         // one of them is going).
         if (this.specialExitLocks.get(roomId)?.delete(cmd)) this.syncSpecialExitLockMirror(roomId);
+    }
+
+    /**
+     * The stock-exit twin of {@link clearSpecialExitAttributes}: an exit that
+     * is cleared (setExit to a room below one, or the room it led to deleted)
+     * takes its door, lock, weight and custom line with it, as TRoom::setExit
+     * and TRoomDB::__removeRoom do — otherwise an exit made there again starts
+     * out locked behind a door with a weight nothing shows.
+     */
+    private clearStockExitAttributes(room: MudletRoom, dirInt: number): void {
+        const key = DIR_SHORT[dirInt];
+        if (!key) return;
+        delete room.doors?.[key];
+        delete room.customLines?.[key];
+        delete room.customLinesColor?.[key];
+        delete room.customLinesStyle?.[key];
+        delete room.customLinesArrow?.[key];
+        if (!this.hasExitOrSpecialExitNamed(room, key)) delete room.exitWeights?.[key];
+        if (room.exitLocks?.includes(dirInt)) room.exitLocks = room.exitLocks.filter(d => d !== dirInt);
     }
 
     /**
@@ -3104,30 +3173,32 @@ export class MapStore {
         if (!Number.isFinite(value)) {
             return `connectExitStub: argument '${String(arg2)}' cannot be parsed as a toID or direction`;
         }
-        // Mudlet treats a bare numeric 2..11 as a toID; only 1, 12, and out-of-range
-        // values (which collide with the DIR_NORTH / DIR_OUT codes) are resolved
-        // against what exists — a stub in that direction vs. a room with that id.
-        if (value >= 2 && value <= 11) {
+        // Outside DIR_NORTH..DIR_OUT (1..12) a number can only be a toID (zero
+        // and negatives too, so they fail as one). Inside it, desktop's
+        // TLuaInterpreter::connectExitStub weighs the code against what exists
+        // — a room with that id vs. a stub in that direction — and refuses only
+        // when both are there.
+        if (value < 1 || value > 12) {
             return this.connectStubByTo(fromId, value);
         }
-        const asDir = parseDirection(value);
-        const isStubDir = asDir != null && from.stubs.includes(asDir);
+        const isStubDir = from.stubs.includes(value);
         const isRoomId = this.rooms.has(value);
         if (isRoomId) {
             if (isStubDir) {
-                return `connectExitStub: ${value} is ambiguous (both a stub direction and a roomID); pass the direction as a string`;
+                return `connectExitStub: ${value} is too ambiguous a number to parse into a toID or a direction code`
+                    + ' as both are valid in this case. If this is a direction, try providing it as a string';
             }
             return this.connectStubByTo(fromId, value);
         }
-        if (isStubDir) return this.connectStubByDir(fromId, asDir!);
-        return `connectExitStub: ${value} is not valid as a toID nor a direction with a stub on roomID ${fromId}`;
+        if (isStubDir) return this.connectStubByDir(fromId, value);
+        return `connectExitStub: ${value} is not valid as a toID nor a direction code`;
     }
 
     /** connectExitStub direction-only form (Mudlet connectExitStubByDirection). */
     private connectStubByDir(fromId: number, dir: number): true | string {
         const from = this.rooms.get(fromId)!;
         const uv = UNIT_VECTORS[dir];
-        if (!uv) return `connectExitStub: direction ${dir} has no spatial component (in/out can't be auto-resolved)`;
+        if (!uv) return `connectExitStub: direction ${dir} is not a stock direction`;
         if (!from.stubs.includes(dir)) return `connectExitStub: fromID (${fromId}) does not have an exit stub in the given direction`;
         const reverse = REVERSE_DIR[dir];
         const area = this.areas.get(from.area);
@@ -4485,16 +4556,28 @@ export class MapStore {
         if (this.mapInfoContributors.length === 0) return [];
         const evaluator = this.mapInfoEvaluator;
         const out: MapInfoResult[] = [];
-        for (const c of this.mapInfoContributors) {
-            if (!c.enabled) continue;
-            let r: Omit<MapInfoResult, 'label'> | null = null;
-            if (c.builtin) {
-                const native = this.builtinMapInfo.get(c.label);
-                if (native) r = native(roomId, selectionSize, areaId, displayedAreaId);
-            } else if (c.callbackId != null && evaluator) {
-                r = evaluator(c.callbackId, roomId, selectionSize, areaId, displayedAreaId);
+        // dlgMapper::paintMapInfo: a contributor is a script, which may
+        // register or kill contributors (itself included), so walk a copy of
+        // the labels and look each one up again as it comes, skipping any that
+        // went away or were switched off. And it runs inside the map's script
+        // callback scope, which refuses deleting rooms and areas.
+        const labels = this.mapInfoContributors.map(c => c.label);
+        this.scriptCallbackDepth++;
+        try {
+            for (const label of labels) {
+                const c = this.mapInfoContributors.find(x => x.label === label);
+                if (!c || !c.enabled) continue;
+                let r: Omit<MapInfoResult, 'label'> | null = null;
+                if (c.builtin) {
+                    const native = this.builtinMapInfo.get(c.label);
+                    if (native) r = native(roomId, selectionSize, areaId, displayedAreaId);
+                } else if (c.callbackId != null && evaluator) {
+                    r = evaluator(c.callbackId, roomId, selectionSize, areaId, displayedAreaId);
+                }
+                if (r && r.text) out.push({ label: c.label, ...r });
             }
-            if (r && r.text) out.push({ label: c.label, ...r });
+        } finally {
+            this.scriptCallbackDepth--;
         }
         return out;
     }

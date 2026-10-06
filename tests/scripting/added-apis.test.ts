@@ -616,12 +616,19 @@ describe('connectExitStub', () => {
     expect(env.run('return #getExitStubs1(1)')).toBe(0);
   });
 
+  // Above 12, so the toID is not also weighed as a direction code
   it('toID-only form connects the single matching reverse-stub pair', () => {
+    env.run('addRoom(13); addRoom(14)');
+    env.run('setExitStub(13, "east", true); setExitStub(14, "west", true)');
+    expect(env.run('return (connectExitStub(13, 14))')).toBe(true);
+    expect(env.run('return (getRoomExits(13)).east')).toBe(14);
+    expect(env.run('return (getRoomExits(14)).west')).toBe(13);
+  });
+
+  it('a number from 1 to 12 that is both a room and a stub direction is too ambiguous', () => {
     env.run('addRoom(3); addRoom(4)');
     env.run('setExitStub(3, "east", true); setExitStub(4, "west", true)');
-    expect(env.run('return (connectExitStub(3, 4))')).toBe(true);
-    expect(env.run('return (getRoomExits(3)).east')).toBe(4);
-    expect(env.run('return (getRoomExits(4)).west')).toBe(3);
+    expect(env.run('return select(2, connectExitStub(3, 4))')).toContain('too ambiguous');
   });
 
   it('direction-only form finds the nearest in-area room with a reverse stub', () => {
@@ -1629,7 +1636,7 @@ describe('exportAreaImage — Lua binding', () => {
   });
 
   it('delegates to ScriptingAPI.exportAreaImage with coerced args', () => {
-    const calls: Array<[number, string, number | undefined]> = [];
+    const calls: Array<[number, string, number | true | undefined]> = [];
     env.api.setHost({
       ...env.api.engineHost,
       exportAreaImageToVfs: (areaId, filePath, zLevel) => {

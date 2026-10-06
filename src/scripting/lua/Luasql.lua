@@ -327,6 +327,15 @@ local function makeproto(kind, store, methods, gc)
         mt.__tostring = describe
         return kind .. " (" .. (raw:match("0x%x+") or raw:match(": (.+)$") or raw) .. ")"
     end
+    -- luasql's metatable is its own __index, so obj.__tostring is reachable
+    -- as a method and checks its self like every other one does
+    methods.__tostring = function(...)
+        local self = ...
+        if store[self] == nil then
+            argerror(1, 1, kind .. " expected, got " .. typename(select("#", ...) >= 1, self))
+        end
+        return describe(self)
+    end
     mt.__index = methods
     mt.__gc = gc
     mt.__tostring = describe

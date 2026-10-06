@@ -503,6 +503,11 @@ function gotoRoom(targetRoomID)
     if not roomExists(targetRoomID) then
         return nil, "gotoRoom: number " .. tostring(targetRoomID) .. " is not a valid target roomID"
     end
+    -- TLuaInterpreter::gotoRoom's csmPathfindingInExitWeightFilter: refused
+    -- before the path (or the speedwalk tables) are touched
+    if __mudlet_map_graph_building() then
+        return nil, "a path cannot be found from inside an exit weight filter"
+    end
     local ok = getPath(from, targetRoomID)
     if not ok then
         speedWalkPath, speedWalkDir, speedWalkWeight = {}, {}, {}
@@ -925,6 +930,17 @@ end
 -- the documented multi-return (and surface the written path as the 2nd value on
 -- success, which Mudlet Web adds for convenience).
 function exportAreaImage(areaID, filePath, zLevel)
+    -- A nil areaID is the area the player is in (TLuaInterpreter::exportAreaImage)
+    if areaID == nil then
+        local roomID = __getPlayerRoomId()
+        if not roomID then
+            return nil, "no areaID provided and the player does not have a valid roomID set"
+        end
+        if not roomExists(roomID) then
+            return nil, "no areaID provided and the player's current room is invalid"
+        end
+        areaID = getRoomArea(roomID)
+    end
     local t = __mudlet_exportAreaImage(areaID, filePath, zLevel)
     if t and t[0] then return true, t[1] end
     return nil, (t and t[1]) or "exportAreaImage failed"
@@ -7207,41 +7223,80 @@ end
 __mudlet_mmcp_chat_name = ""
 
 -- ── Reading a package's config.lua ─────────────────────────────────────────
--- A manifest is a Lua chunk, and Mudlet reads it by RUNNING it in a bare
--- lua_State — one with no standard libraries at all, so a config.lua that
--- reaches for `os` or `string` raises and the whole manifest above the offending
--- line goes with it. That is a contract packages are written against, and
--- guessing at it with a pattern match reads manifests Mudlet throws away.
+-- A manifest is a Lua chunk, and Mudlet reads it by RUNNING it in a fresh
+-- lua_State of its own (Host::getPackageConfig), sandboxed by
+-- Host::setupSandboxedLuaState: the base, table, string and math libraries,
+-- minus everything that reaches outside the state — dofile/loadfile/load/
+-- loadstring, require/module/package, io/os/debug, getfenv/setfenv,
+-- collectgarbage and the raw* accessors. A config.lua that reaches for `os`
+-- raises and the whole manifest above the offending line goes with it. That is
+-- a contract packages are written against, and guessing at it with a pattern
+-- match reads manifests Mudlet throws away.
 --
--- An empty function environment is the same sandbox: every global is nil, so
--- `os.date(...)` fails to index exactly as it does there. Only strings and
--- numbers are collected, matching what Mudlet's lua_isstring accepts.
+-- The chunk's function environment stands in for that separate state. It is a
+-- table of its own with its own `_G`, and the libraries are copies, so a
+-- manifest that rewrites `string.format` or leaves a metatable on its globals
+-- (the trickyconfig fixture does both kinds of thing) changes nothing the
+-- profile's own scripts see.
+--
+-- The manifest is collected with next(), never through indexing: desktop reads
+-- it back with lua_rawget/lua_next outside the protected call, because a
+-- metatable the script left on its globals would raise there. Only string keys
+-- holding strings or numbers are kept (lua_isstring), and `_VERSION` is dropped
+-- as desktop drops it — a number-named global is not a detail.
 -- The answer crosses as JSON in a global rather than as a table: a Lua table
 -- read back through the wasmoon proxy is fragile to iterate, and a manifest is
 -- a handful of short strings, so the encoding costs nothing.
-function __mudlet_read_package_config(src)
-    __mudlet_cfg_ok, __mudlet_cfg_reason, __mudlet_cfg_info = false, '', '{}'
-    local chunk, syntaxError = loadstring(tostring(src or ''), 'config.lua')
-    if not chunk then
-        __mudlet_cfg_reason = tostring(syntaxError)
-        return
+do
+    local function copyOf(library)
+        local copy = {}
+        for k, v in next, library do copy[k] = v end
+        return copy
     end
-    local env = {}
-    setfenv(chunk, env)
-    local ok, runtimeError = pcall(chunk)
-    if not ok then
-        __mudlet_cfg_reason = tostring(runtimeError)
-        return
-    end
-    local info = {}
-    for key, value in pairs(env) do
-        local t = type(value)
-        if type(key) == 'string' and (t == 'string' or t == 'number') then
-            info[key] = tostring(value)
+
+    local function sandbox()
+        local env = {}
+        for _, name in ipairs({
+            "assert", "error", "ipairs", "next", "pairs", "pcall", "select",
+            "setmetatable", "getmetatable", "tonumber", "tostring", "type",
+            "unpack", "xpcall", "gcinfo", "newproxy",
+        }) do
+            env[name] = _G[name]
         end
+        -- desktop's print writes to the process's stdout, which no player sees
+        env.print = function() end
+        env.table = copyOf(table)
+        env.string = copyOf(string)
+        env.math = copyOf(math)
+        env._VERSION = _VERSION
+        env._G = env
+        return env
     end
-    __mudlet_cfg_ok = true
-    __mudlet_cfg_info = yajl.to_string(info)
+
+    function __mudlet_read_package_config(src)
+        __mudlet_cfg_ok, __mudlet_cfg_reason, __mudlet_cfg_info = false, '', '{}'
+        local chunk, syntaxError = loadstring(tostring(src or ''), 'config.lua')
+        if not chunk then
+            __mudlet_cfg_reason = tostring(syntaxError)
+            return
+        end
+        local env = sandbox()
+        setfenv(chunk, env)
+        local ok, runtimeError = pcall(chunk)
+        if not ok then
+            __mudlet_cfg_reason = tostring(runtimeError)
+            return
+        end
+        local info = {}
+        for key, value in next, env do
+            local t = type(value)
+            if type(key) == 'string' and key ~= '_VERSION' and (t == 'string' or t == 'number') then
+                info[key] = tostring(value)
+            end
+        end
+        __mudlet_cfg_ok = true
+        __mudlet_cfg_info = yajl.to_string(info)
+    end
 end
 
 -- ── JSON map import/export ─────────────────────────────────────────────────
@@ -8521,7 +8576,12 @@ do
             isUtf8 = true
         end
         local err = _rawFeedTriggers(__mudlet_armor(data), isUtf8)
-        if err ~= nil then return nil, err end
+        if err ~= nil then
+            -- the nesting cap is raised, as Mudlet's lua_error does; a feed
+            -- refused under a chain already stopped is answered with nil
+            if err:find("^feedTriggers stopped to prevent a crash") then error(err, 0) end
+            return nil, err
+        end
         return true
     end
 end
@@ -8744,6 +8804,54 @@ do
         local r = __loadMap(path, xml)
         if type(r) == 'string' then return nil, r end
         return r and true or false
+    end
+end
+
+-- Desktop's exit weight filter runs while the routing graph is built, and a map
+-- info contributor while the map is painted, both holding raw room and area
+-- pointers across the script (TMap::ScriptCallbackScope). So from inside either
+-- one these refuse with csmMapInUseByCallback (TLuaInterpreterMapper.cpp), after
+-- their own argument checks and before touching anything. Mudlet Web frees
+-- nothing under the script, but a script that deletes the map from a filter
+-- works on one client and not the other otherwise.
+do
+    local MAP_IN_USE = "rooms and areas cannot be deleted, nor the map replaced,"
+        .. " from inside an exit weight filter or map info callback"
+
+    local _deleteRoom = deleteRoom
+    function deleteRoom(id, ...)
+        -- getVerifiedInt raises first, and an id below one returns nothing
+        -- before the guard is reached
+        local n = __mudlet_int(id)
+        if n ~= nil and n > 0 and __mudlet_map_callback_busy() then return nil, MAP_IN_USE end
+        return _deleteRoom(id, ...)
+    end
+
+    local _deleteArea = deleteArea
+    function deleteArea(...)
+        if __mudlet_map_callback_busy() then return nil, MAP_IN_USE end
+        return _deleteArea(...)
+    end
+
+    local _deleteMap = deleteMap
+    function deleteMap(...)
+        if __mudlet_map_callback_busy() then return nil, MAP_IN_USE end
+        return _deleteMap(...)
+    end
+
+    -- the path is read (and a wrong type raised) before the guard
+    local _loadMap = loadMap
+    function loadMap(location, ...)
+        if (location == nil or __mudlet_str(location) ~= nil) and __mudlet_map_callback_busy() then
+            return nil, MAP_IN_USE
+        end
+        return _loadMap(location, ...)
+    end
+
+    local _loadJsonMap = loadJsonMap
+    function loadJsonMap(...)
+        if __mudlet_map_callback_busy() then return nil, MAP_IN_USE end
+        return _loadJsonMap(...)
     end
 end
 

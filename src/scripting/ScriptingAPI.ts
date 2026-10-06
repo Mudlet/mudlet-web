@@ -76,6 +76,11 @@ import { TAB_COMPLETION_LINES, tabCompletionPool } from '../ui/tabCompletion';
 // the app chrome's colour, so a colour trigger for background 0 never matched
 // uncoloured text until the profile set its background to black by hand.
 const DEFAULT_FG_RGB: [number, number, number] = [0xc0, 0xc0, 0xc0];
+/** Mudlet's error for a feedTriggers() chain that hit the nesting cap. Raised,
+ *  not returned, by the Lua wrapper in Bridge.lua, which matches on its start. */
+const FEED_RUNAWAY_ERROR = 'feedTriggers stopped to prevent a crash: a trigger (or another trigger it feeds) is stuck '
+    + 'in an endless loop - the text being fed keeps re-matching a trigger and firing it again and again. '
+    + "Change the trigger's pattern or the fed text so they don't match each other.";
 const DEFAULT_BG_RGB: [number, number, number] = [0x00, 0x00, 0x00];
 
 /**
@@ -1343,9 +1348,11 @@ export class ScriptingAPI {
 
     /** Mudlet `loadReplay(fileName)` core. Starts playback of a Mudlet binary
      *  replay (.dat). The LuaRuntime binding reads the bytes from the VFS
-     *  before calling here. Returns null on success or the failure reason. */
-    loadReplay(bytes: Uint8Array): string | null {
-        return this.session.loadReplayData(bytes);
+     *  before calling here, and hands over `readAt` so playback reads each
+     *  chunk again from the file as it comes up (see MudSession.loadReplayData).
+     *  Returns null on success or the failure reason. */
+    loadReplay(bytes: Uint8Array, readAt?: (position: number, length: number) => Uint8Array): string | null {
+        return this.session.loadReplayData(bytes, readAt);
     }
 
     /** Deliver any replay chunk that has come due. Only the busted pump calls
@@ -1372,6 +1379,13 @@ export class ScriptingAPI {
      *  runner blocks the turn that report was queued for. */
     pumpCreatedWindowSizes(): boolean {
         return this.session.windows.pumpCreatedSizes();
+    }
+
+    /** Run the map info contributors for a repaint of the map widget that
+     *  updateMap() or centerview() asked for. Same reason again: the runner
+     *  blocks the render that paint would have come with. */
+    pumpMapPaint(): boolean {
+        return this.session.windows.pumpMapPaint();
     }
 
     /** Mudlet `receiveMSP(text)`. Parses an MSP payload (`!!SOUND(...)` /
@@ -2527,7 +2541,7 @@ export class ScriptingAPI {
      *  `[false, errorMessage]` (e.g. the mapper isn't open, or the area is
      *  unknown). The 0-indexed array is unpacked into Mudlet's multi-return by
      *  Bridge.lua. */
-    exportAreaImage(areaId: number, filePath: string, zLevel?: number): [boolean, string] {
+    exportAreaImage(areaId: number, filePath: string, zLevel?: number | true): [boolean, string] {
         const r = this.host.exportAreaImageToVfs(areaId, filePath, zLevel);
         return 'path' in r ? [true, r.path] : [false, r.error];
     }
@@ -4087,6 +4101,7 @@ export class ScriptingAPI {
         // position it went on to select was left unshifted by the text the
         // nested pass had inserted.
         this.triggerLineDepth = Math.max(0, this.triggerLineDepth - 1);
+        if (this.triggerLineDepth <= 1) this.runawayFeedStopped = false;
         const outerLine = this.outerTriggerLines.pop() ?? -1;
         if (this.triggerLineDepth > 0) {
             // Back to the line the outer pass is still working on. Without this
@@ -4319,6 +4334,10 @@ export class ScriptingAPI {
     /** How many lines are being processed at once — more than one whenever a
      *  trigger calls feedTriggers. See beginLine/endLine. */
     private triggerLineDepth = 0;
+    /** TriggerUnit::scmMaxProcessingDepth — see {@link feedTriggers}. */
+    private static readonly MAX_TRIGGER_DEPTH = 50;
+    /** Set when a feed chain hits {@link MAX_TRIGGER_DEPTH}, until it unwinds to the outermost pass. */
+    private runawayFeedStopped = false;
     /** Main-console lines the trigger pass's own echoes have completed. Mudlet's
      *  TConsole::echo embeds a trigger echo's newlines in the line being
      *  processed rather than opening lines, so the line count leaves them out
@@ -4400,6 +4419,19 @@ export class ScriptingAPI {
      * shapes that into Mudlet's `true` / `(nil, errMsg)`.
      */
     feedTriggers(data: string, utf8Encoded = true): string | null {
+        // A self-feeding trigger nests one line pass per re-match, and the
+        // wasm stack is what runs out. Mudlet stops at TriggerUnit's
+        // scmMaxProcessingDepth with a raised error, then refuses every feed
+        // still nested under that chain until it unwinds to the outermost
+        // pass — a trigger feeding two matching lines would otherwise re-run a
+        // whole chain from every level on the way back up (2^50 passes).
+        if (this.runawayFeedStopped) {
+            return 'feedTriggers: refused, an endless loop further along this chain of fed text was already stopped';
+        }
+        if (this.triggerLineDepth >= ScriptingAPI.MAX_TRIGGER_DEPTH) {
+            this.runawayFeedStopped = true;
+            return FEED_RUNAWAY_ERROR;
+        }
         const encoding = this.session.getServerEncoding();
         let text: string;
         if (utf8Encoded && encoding === 'UTF-8') {
@@ -6355,7 +6387,14 @@ export class ScriptingAPI {
      * message, or null on success, for the binding to shape.
      */
     setMapZoom(zoom: number, areaID?: number, viewId?: number): string | null {
-        if (!Number.isFinite(zoom) || zoom < MapStore.MIN_MAP_ZOOM) {
+        // T2DMap::setMapZoom: NaN would pass the minimum check (every
+        // comparison with it is false) and an infinite zoom shows nothing, so
+        // both are refused first — named as QString::number writes them.
+        if (!Number.isFinite(zoom)) {
+            const named = Number.isNaN(zoom) ? 'nan' : zoom > 0 ? 'inf' : '-inf';
+            return `setMapZoom: zoom ${named} is invalid, it must be a finite number`;
+        }
+        if (zoom < MapStore.MIN_MAP_ZOOM) {
             return `setMapZoom: zoom ${zoom} is too small, it must be at least ${MapStore.MIN_MAP_ZOOM}`;
         }
         // Through a view the areaID is ignored and the zoom lands on the area

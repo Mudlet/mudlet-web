@@ -9,7 +9,7 @@ import { describeThrown } from '../../../utils/describeThrown';
  * expanding an alias without executing it.
  */
 export function installDiagnosticsBindings(
-    { lua, api, pushNestedDispatchState, popNestedDispatchState }: BindingContext,
+    { lua, api, pushNestedDispatchState, popNestedDispatchState, buildingCaptureTables }: BindingContext,
 ): void {
     // ── Error / debug ─────────────────────────────────────────────────────
     // showHandlerError is called by Other.lua's dispatchEventToFunctions when
@@ -51,7 +51,12 @@ export function installDiagnosticsBindings(
     // script-initiated nesting (alias, trigger, timer, event handler) while
     // leaving the top-level path alone, where a command the player typed is
     // meant to leave `command` holding it.
+    //
+    // A __gc finaliser that runs while `matches` is being built gets false and
+    // no pass, as TLuaInterpreter::expandAlias does: parking and handing back
+    // the capture globals would swap them under the build.
     lua.global.set('expandAlias', (text: unknown, echo?: unknown) => {
+        if (buildingCaptureTables()) return false;
         const depth = pushNestedDispatchState();
         try {
             api.expandAlias(String(text ?? ''), echo == null ? true : !!echo);

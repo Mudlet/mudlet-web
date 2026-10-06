@@ -60,7 +60,10 @@ describe.each([
 
         it('clamps a huge count instead of throwing, and the text after it still renders', () => {
             const p = parse(`a${E}[999999999C${E}[32mafter`);
-            expect(p.text).toBe(`a${' '.repeat(MAX_CURSOR_FORWARD)}after`);
+            // With no window behind the parse the margin is the 1000-column
+            // cap, and the cursor stops one short of it, measured from the
+            // column after `a` (TBuffer's `margin - 1 - column`).
+            expect(p.text).toBe(`a${' '.repeat(MAX_CURSOR_FORWARD - 2)}after`);
             expect(p.stateAt(p.text.length - 1)?.foreground).toEqual({ space: 'hex', color: '#008000' });
         });
 
