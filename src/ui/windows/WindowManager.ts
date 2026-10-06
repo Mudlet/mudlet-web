@@ -3347,9 +3347,10 @@ export class WindowManager {
 
     /**
      * The title a window carries when nobody has set one. Mudlet builds it from
-     * the profile and the window's own name ("<profile> - <window>"), which is
-     * what a player sees on a freshly opened user window; Mudlet Web used to fall
-     * back to the bare id, so resetting a title lost the profile half of it.
+     * the profile and the window's own name ("User window - <profile> -
+     * <window>", TMainConsole's tr() string), which is what
+     * setUserWindowTitle(name) with no title goes back to; Mudlet Web used to
+     * fall back to the bare id, then to "<profile> - <window>" (mudlet-web#380).
      * The profile name is injected by ScriptingAPI — the manager has no other
      * reason to know it.
      */
@@ -3360,7 +3361,7 @@ export class WindowManager {
         // (TMainConsole::createMapper) and setMapWindowTitle("") goes back to
         // that, never to the client's internal window id.
         if (id === MAP_WIDGET_ID) return this.profileName ? `Map - ${this.profileName}` : 'Map';
-        return this.profileName ? `${this.profileName} - ${id}` : id;
+        return `User window - ${this.profileName} - ${id}`;
     }
 
     focus(id: string): void { this.bringToFront(id); }

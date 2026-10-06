@@ -1357,6 +1357,9 @@ export class LuaRuntime implements IScriptingRuntime {
             // (see TextEditManager), so there is no stacking order to change.
             if (this.api.textEdits.has(name)) return true;
             if (this.api.windows.has(name)) { this.api.windows.bringToFront(name); return true; }
+            // A createBuffer buffer is found too; never drawn, it has no
+            // stacking order to change.
+            if (this.api.isBuffer(name)) return true;
             if (mapperNamed(name)) { this.api.windows.bringToFront(MAPPER_WIDGET_ID); return true; }
             // A bare Geyser container identity (no real widget of its own —
             // e.g. Adjustable.Container's raiseAll() raises self.name before
@@ -1374,6 +1377,7 @@ export class LuaRuntime implements IScriptingRuntime {
             // (see TextEditManager), so there is no stacking order to change.
             if (this.api.textEdits.has(name)) return true;
             if (this.api.windows.has(name)) { this.api.windows.sendToBack(name); return true; }
+            if (this.api.isBuffer(name)) return true;
             if (mapperNamed(name)) { this.api.windows.sendToBack(MAPPER_WIDGET_ID); return true; }
             return false;
         };

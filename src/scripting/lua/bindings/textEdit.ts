@@ -100,6 +100,7 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
         else if (api.cmdLines.has(name)) api.cmdLines.hide(name);
         else if (api.textEdits.has(name)) api.textEdits.hide(name);
         else if (api.scrollBoxes.has(name)) api.scrollBoxes.hide(name);
+        else if (api.isBuffer(name)) api.setBufferVisible(name, false);
         else api.windows.hide(name);
     });
     // Mudlet showWindow(name) → bool. Returns true when the named label,
@@ -111,6 +112,8 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
         if (api.cmdLines.has(name)) return api.cmdLines.show(name);
         if (api.textEdits.has(name)) return api.textEdits.show(name);
         if (api.scrollBoxes.has(name)) return api.scrollBoxes.show(name);
+        // A createBuffer buffer is a console desktop finds by name, too.
+        if (api.isBuffer(name)) return api.setBufferVisible(name, true);
         return api.windows.show(name);
     });
     // Geometry crosses into Mudlet as C++ ints, so a fractional pixel is
@@ -126,6 +129,7 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
         else if (api.cmdLines.has(name)) api.cmdLines.move(name, xn, yn);
         else if (api.textEdits.has(name)) api.textEdits.move(name, xn, yn);
         else if (api.scrollBoxes.has(name)) api.scrollBoxes.move(name, xn, yn);
+        else if (api.isBuffer(name)) api.moveBuffer(name, xn, yn);
         else if (api.windows.has(name)) {
             api.windows.floatForGeometryChange(name);
             api.windows.move(name, xn, yn);
@@ -137,6 +141,7 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
         else if (api.cmdLines.has(name)) api.cmdLines.resize(name, wn, hn);
         else if (api.textEdits.has(name)) api.textEdits.resize(name, wn, hn);
         else if (api.scrollBoxes.has(name)) api.scrollBoxes.resize(name, wn, hn);
+        else if (api.isBuffer(name)) api.resizeBuffer(name, wn, hn);
         else if (api.windows.has(name)) {
             api.windows.floatForGeometryChange(name);
             api.windows.resize(name, wn, hn);
@@ -205,7 +210,7 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
     // {0, 0, 0, 255} when no override is set).
     lua.global.set('__getBackgroundColor', (name?: unknown) => {
         const win = typeof name === 'string' && name && name !== 'main' ? name : undefined;
-        if (win && !api.labels.has(win) && !api.windows.has(win)) {
+        if (win && !api.labels.has(win) && !api.windows.has(win) && !api.isBuffer(win)) {
             return null;
         }
         const c = api.getBackgroundColor(win) ?? { r: 0, g: 0, b: 0, a: 255 };

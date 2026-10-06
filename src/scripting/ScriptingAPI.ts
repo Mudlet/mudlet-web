@@ -92,6 +92,18 @@ type RgbKey = number;
 /** The font size Mudlet gives a new miniconsole (TMainConsole::createMiniConsole). */
 const MINICONSOLE_DEFAULT_FONT_SIZE = 12;
 
+/** What a createBuffer buffer remembers of the window calls made on it. */
+interface BufferWidget {
+    visible: boolean;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    background: { r: number; g: number; b: number; a: number };
+    /** Null until setFontSize — the profile's size reads back until then. */
+    fontSize: number | null;
+}
+
 const COLOR_IGNORED = -1;
 const COLOR_DEFAULT = -2;
 /** No colour at all: an ANSI code outside 0-255, or a colour that does not
@@ -1107,7 +1119,12 @@ export class ScriptingAPI {
     // backing Console lives in `session.consoles` like any window console, but
     // has no panel — so output to them is never pushed to the WindowManager
     // (which would force a panel open). See `drainWindowConsole`.
-    private buffers = new Set<string>();
+    //
+    // Desktop's buffer is a full TConsole that is simply never shown, so the
+    // window functions accept it like any console: it keeps a background
+    // colour, a font size, a geometry and a visible flag of its own, all of
+    // which read back exactly as they were set (mudlet-web#380).
+    private buffers = new Map<string, BufferWidget>();
 
     constructor(
         private readonly session: MudSession,
@@ -5021,6 +5038,17 @@ export class ScriptingAPI {
     createMiniConsole(name: string, x: number, y: number, width: number, height: number, parent?: string): boolean {
         if (!name) return false;
         const wm = this.session.windows;
+        // A name already taken by a buffer or a user window is not handed to a
+        // new miniconsole (TMainConsole::createMiniConsole): the buffer is moved
+        // and resized as a miniconsole of that name would be, and stays a
+        // buffer; a user window is left alone. Either way the call reports
+        // false, and Bridge.lua words the reason.
+        if (this.buffers.has(name)) {
+            this.moveBuffer(name, Math.round(x), Math.round(y));
+            this.resizeBuffer(name, Math.round(width), Math.round(height));
+            return false;
+        }
+        if (wm.has(name) && !wm.isMiniConsole(name)) return false;
         const created = !wm.has(name);
         if (created) {
             wm.open(name, {
@@ -5055,6 +5083,15 @@ export class ScriptingAPI {
      */
     deleteMiniConsole(name: string): boolean {
         if (!name || name === 'main') return false;
+        // A buffer is a console too, and desktop's deleteMiniConsole finds it
+        // in the same map a miniconsole lives in: it goes, with its lines.
+        if (this.buffers.has(name)) {
+            this.buffers.delete(name);
+            this.session.consoles.delete(name);
+            this.windowCommandColors.delete(name);
+            this.host.raiseEvent('sysMiniConsoleDeleted', [name]);
+            return true;
+        }
         // A user window counts: Geyser's UserWindow:delete goes through
         // MiniConsole.type_delete, which calls this — a user window is a
         // miniconsole with a dock around it, and refusing here left the window
@@ -5223,7 +5260,12 @@ export class ScriptingAPI {
         if (!name || name === 'main') return;
         if (this.session.windows.has(name)) return;
         const fresh = !this.buffers.has(name);
-        this.buffers.add(name);
+        if (fresh) {
+            this.buffers.set(name, {
+                visible: false, x: 0, y: 0, width: 0, height: 0,
+                background: { r: 0, g: 0, b: 0, a: 255 }, fontSize: null,
+            });
+        }
         // Register the backing console so echo/selection resolve it by name.
         const con = this.outputConsole(name);
         // A buffer wraps like the main console (TConsole::changeColors gives
@@ -5241,6 +5283,33 @@ export class ScriptingAPI {
     /** True when `name` is an off-screen buffer created via createBuffer. */
     isBuffer(name: string): boolean {
         return this.buffers.has(name);
+    }
+
+    /** showWindow / hideWindow on a buffer: desktop finds it and flips the
+     *  flag windowVisible reads back. False when `name` is no buffer. */
+    setBufferVisible(name: string, visible: boolean): boolean {
+        const buf = this.buffers.get(name);
+        if (!buf) return false;
+        buf.visible = visible;
+        return true;
+    }
+
+    /** moveWindow on a buffer — kept for getWindowGeometry to report. */
+    moveBuffer(name: string, x: number, y: number): boolean {
+        const buf = this.buffers.get(name);
+        if (!buf) return false;
+        buf.x = x;
+        buf.y = y;
+        return true;
+    }
+
+    /** resizeWindow on a buffer — kept for getWindowGeometry to report. */
+    resizeBuffer(name: string, width: number, height: number): boolean {
+        const buf = this.buffers.get(name);
+        if (!buf) return false;
+        buf.width = width;
+        buf.height = height;
+        return true;
     }
 
     /**
@@ -5407,6 +5476,8 @@ export class ScriptingAPI {
             const { x, y, width, height } = overlay;
             return { x, y, width, height };
         }
+        const buf = this.buffers.get(name);
+        if (buf) return { x: buf.x, y: buf.y, width: buf.width, height: buf.height };
         return this.session.windows.getGeometry(name);
     }
 
@@ -5441,6 +5512,8 @@ export class ScriptingAPI {
             ?? this.textEdits.get(name) ?? this.scrollBoxes.get(name);
         if (overlay) return overlay.visible;
         if (this.session.windows.has(name)) return this.session.windows.isVisible(name);
+        const buf = this.buffers.get(name);
+        if (buf) return buf.visible;
         return null;
     }
 
@@ -6733,6 +6806,13 @@ export class ScriptingAPI {
             useAppStore.getState().patchConnectionProfile(this.connectionId, { fontSize: whole });
             return true;
         }
+        // A buffer keeps the size for getFontSize; it draws nothing, and
+        // desktop raises no sysFontChangeEvent for one.
+        const buf = this.buffers.get(win);
+        if (buf) {
+            buf.fontSize = whole;
+            return true;
+        }
         return this.withFontChangeEvent(win, () => this.session.windows.setFontSize(win, whole));
     }
 
@@ -6762,18 +6842,12 @@ export class ScriptingAPI {
     }
 
     /**
-     * Mudlet setMiniConsoleFontSize. Strictly targets miniconsoles (created via
-     * createMiniConsole / createConsole) — userwindows and labels are rejected
-     * the same way Mudlet's CONSOLE-only lookup rejects them.
+     * Mudlet setMiniConsoleFontSize. Desktop registers it as another name for
+     * setFontSize, so it reaches every console setFontSize does — main
+     * included, and main when no name is given (mudlet-web#380).
      */
-    setMiniConsoleFontSize(name: string, size: number): boolean {
-        // A user window carries a console of its own, so it takes this too —
-        // Geyser.UserWindow:setFontSize goes through here, and refusing left a
-        // window created with `fontSize = 12` showing the profile default.
-        if (!name || !this.session.windows.has(name)) return false;
-        const whole = fontSizePoints(size);
-        if (whole === null) return false;
-        return this.withFontChangeEvent(name, () => this.session.windows.setFontSize(name, whole));
+    setMiniConsoleFontSize(name: string | undefined, size: number): boolean {
+        return this.setFontSize(size, name);
     }
 
     /**
@@ -6783,6 +6857,8 @@ export class ScriptingAPI {
      */
     getFontSize(win?: string): number | null {
         if (!win || win === 'main') return selectProfileField(useAppStore.getState(), this.connectionId, 'fontSize');
+        const buf = this.buffers.get(win);
+        if (buf) return buf.fontSize ?? selectProfileField(useAppStore.getState(), this.connectionId, 'fontSize');
         if (!this.session.windows.has(win)) return null;
         return this.session.windows.getFontSize(win) ?? selectProfileField(useAppStore.getState(), this.connectionId, 'fontSize');
     }
@@ -6802,6 +6878,11 @@ export class ScriptingAPI {
             // authored copy of the label's stylesheet in step with the
             // background-color declaration the manager patches.
             return this.labels.setBackgroundColor(name, r, g, b, a);
+        }
+        const buf = this.buffers.get(name);
+        if (buf) {
+            buf.background = { r, g, b, a };
+            return true;
         }
         return this.session.windows.setBackgroundColor(name, r, g, b, a);
     }
@@ -6837,6 +6918,8 @@ export class ScriptingAPI {
         if (this.session.labels.has(name)) {
             return this.session.labels.getBackgroundColor(name);
         }
+        const buf = this.buffers.get(name);
+        if (buf) return { ...buf.background };
         return this.session.windows.getBackgroundColor(name);
     }
 
