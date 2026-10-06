@@ -146,17 +146,19 @@ describe('os library parity with desktop (issue #370)', () => {
 
     describe('os.tmpname', () => {
         it('returns a new, empty file in /tmp that io.open and os.remove can use', () => {
-            const name = t.run('return os.tmpname()') as string;
+            // The name stays in a Lua global rather than being spliced back
+            // into the Lua source.
+            const name = t.run('__tmp_name = os.tmpname() return __tmp_name') as string;
             expect(name).toMatch(/^\/tmp\/lua_[A-Za-z0-9]{6}$/);
             expect(existsSync(name)).toBe(true);
             expect(readFileSync(name).length).toBe(0);
             t.run(`
-                local f = assert(io.open(${JSON.stringify(name)}, "w"))
+                local f = assert(io.open(__tmp_name, "w"))
                 f:write("hello") f:close()
             `);
-            expect(t.run(`local f = io.open(${JSON.stringify(name)}) local s = f:read("*a") f:close() return s`))
+            expect(t.run('local f = io.open(__tmp_name) local s = f:read("*a") f:close() return s'))
                 .toBe('hello');
-            expect(all(`os.remove(${JSON.stringify(name)})`)).toEqual([true]);
+            expect(all('os.remove(__tmp_name)')).toEqual([true]);
             expect(existsSync(name)).toBe(false);
         });
 
