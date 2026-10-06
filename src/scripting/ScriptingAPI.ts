@@ -4371,7 +4371,11 @@ export class ScriptingAPI {
         // emitting a raw flushLines event.
         // fromServer: false — an MXP `ESC[#z` in fed text is consumed but does
         // not switch the parser's mode, as in Mudlet.
-        this.host.processFlushBatch([{ text: joined.slice(0, cut), type: 'mud', fromServer: false }]);
+        // The batch keeps its last '\n': processFlushBatch drops one empty piece
+        // after a trailing terminator, so cutting it off here lost the last line
+        // whenever it was empty — "F1\n\n" committed only F1, and "\n" nothing,
+        // where Mudlet commits an empty line for each '\n' (mudlet-web#385).
+        this.host.processFlushBatch([{ text: joined.slice(0, cut + 1), type: 'mud', fromServer: false }]);
 
         // Appended rather than assigned: a trigger in the batch may have fed an
         // unterminated line of its own, which this one's tail follows in mMudLine.

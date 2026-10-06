@@ -452,20 +452,27 @@ export class MudSession {
         if (this.showSentText === 'never') return;
         if (!this.client || this.client.shouldEchoCommand()) {
             const styled = this.styleEchoCommand(text);
-            // Close any in-flight script partial (an `echo()` with no trailing
-            // newline) before adding a line of our own. The renderer finalizes
-            // the element showing that partial the moment this non-partial
-            // 'echo' message arrives, but the console would keep accumulating
-            // into the same partial — so the next flushOutput would emit the
-            // whole accumulated line again and everything already on screen
-            // would be drawn a second time, once more per command echoed. An
-            // alias doing `echo("TEST")`, run repeatedly, grew a line of
-            // TESTTESTTEST… that way. Mudlet has no such split: printCommand
-            // writes straight into the buffer line echo() is building.
+            // An `echo()` left without a trailing newline is the line the
+            // command is written onto: desktop's printCommand prints
+            // "command\n" into the buffer's current line, which is that echo's,
+            // so `echo("P1")` then typing `cmdA` is the one line `P1cmdA`
+            // (mudlet-web#385). The open line is finished here with the command
+            // on it and redrawn as a 'script' line, which the renderer applies
+            // to the element already showing the partial; leaving it open would
+            // have the next flushOutput draw the whole line again below the
+            // command, once more per command echoed.
             // Skipped while trigger-mode echo deferral owns the partial —
             // flushDeferredEcho completes and emits it itself, and stealing it
             // here would drop a trigger's echo off the screen entirely.
-            if (!this.scriptEchoDeferred) this.consoles.get('main')?.completePartialLine();
+            const open = this.scriptEchoDeferred ? null : this.consoles.get('main');
+            if (open && open.currentPartial.length > 0) {
+                const line = open.currentPartial;
+                line.appendBuffer(new AnsiAwareBuffer(styled));
+                open.completePartialLine();
+                open.wrapAppendedLine(line);
+                this.events.emit('message', line, 'script', Date.now());
+                return;
+            }
             // Into the buffer as well as onto the screen. Mudlet's echoed
             // command is part of the console's contents — getLines() and the
             // cursor APIs see it, and a trigger can match on it — so a version
