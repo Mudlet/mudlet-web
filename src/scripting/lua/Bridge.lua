@@ -721,6 +721,18 @@ function addCustomLine(roomID, id_to, direction, style, color, arrow)
     else
         target = 'R:' .. tostring(id_to)
     end
+    -- An unknown style is refused in Mudlet's shared enum wording, which
+    -- carries no function-name prefix — so it is answered here rather than
+    -- coming back through the "addCustomLine: <reason>" path below.
+    local styleName = tostring(style)
+    local LINE_STYLES = { "solid line", "dot line", "dash line", "dash dot line", "dash dot dot line" }
+    local knownStyle = false
+    for _, s in ipairs(LINE_STYLES) do
+        if s == styleName then knownStyle = true break end
+    end
+    if not knownStyle then
+        return nil, __mudlet_must_be_one_of("line style", LINE_STYLES, styleName)
+    end
     local reason = __mudlet_addCustomLine(roomID, target, tostring(direction), tostring(style),
         r, g, b, arrow and true or false)
     if reason then return nil, "addCustomLine: " .. tostring(reason) end
@@ -1214,25 +1226,26 @@ do
         return v
     end
 
-    local function timeStampSetter(want, who, already)
+    -- The refusal names the console the way desktop does: the main console
+    -- reached by an empty (or omitted) name is "the main console", any other
+    -- name is quoted as given -- "main" included.
+    local function timeStampSetter(want, state)
         return function(windowName)
             local current = __timeStampsEnabled(windowName)
             if current == nil then
                 return nil, 'window "' .. tostring(windowName) .. '" not found'
             end
             if current == want then
-                return nil, who .. ": timestamps were " .. already .. " for '"
-                    .. tostring(windowName) .. "'"
+                local which = (windowName == nil or windowName == '') and 'the main console'
+                    or ('the "' .. tostring(windowName) .. '" console')
+                return nil, 'timestamps were ' .. state .. ' for ' .. which
             end
             __setTimeStamps(windowName, want)
             return true
         end
     end
-    -- The enable-path wording is Mudlet's own and reads backwards ("were not
-    -- enabled" when they in fact already are); its spec asserts only the shape,
-    -- with a note that the wording should change, so it is mirrored as-is.
-    enableTimeStamps  = timeStampSetter(true,  "enableTimeStamps",  "not enabled")
-    disableTimeStamps = timeStampSetter(false, "disableTimeStamps", "not disabled")
+    enableTimeStamps  = timeStampSetter(true,  "already enabled")
+    disableTimeStamps = timeStampSetter(false, "not enabled")
 end
 
 -- addMouseEvent / removeMouseEvent, setWindow, and the user-window title and
@@ -2336,6 +2349,16 @@ do
     function setTextFormat(win, ...)
         local n = select('#', ...)
         local a = { ... }
+        -- #1 is type-checked with the rest, before the window is looked for.
+        -- An empty name, like an omitted one, is the main console.
+        if win ~= nil then
+            local name = __mudlet_str(win)
+            if name == nil then
+                error("setTextFormat: bad argument #1 type (window name as string expected, got "
+                    .. type(win) .. "!)", 2)
+            end
+            win = name ~= '' and name or 'main'
+        end
         -- #2..#7 are the two colour triples, #8..#10 the required attributes.
         for i = 1, 6 do a[i] = checkNumber(a[i], i + 1) end
         for i = 7, 9 do a[i] = checkFlag(a[i], i + 1) end
@@ -2353,7 +2376,7 @@ do
             end
             a[13] = blink
             if blink ~= 'none' and blink ~= 'slow' and blink ~= 'fast' then
-                return nil, 'blink mode must be "none", "slow", or "fast", got "' .. blink .. '"'
+                return nil, __mudlet_must_be_one_of("blink mode", { "none", "slow", "fast" }, blink)
             end
         end
         if win ~= nil and win ~= 'main' and __windowType(win) == nil then
@@ -2454,26 +2477,26 @@ end
 function getTextEditText(name)
     local t = __getTextEditText(name)
     if t == false then
-        return nil, "getTextEditText: text edit '" .. tostring(name) .. "' does not exist"
+        return nil, "text edit name '" .. tostring(name) .. "' not found"
     end
     return t
 end
 
 do
-    local function teSetter(raw, fname)
+    local function teSetter(raw)
         return function(name, ...)
             if raw(name, ...) then return true end
-            return nil, fname .. ": text edit '" .. tostring(name) .. "' does not exist"
+            return nil, "text edit name '" .. tostring(name) .. "' not found"
         end
     end
-    setTextEditText          = teSetter(__setTextEditText, "setTextEditText")
-    clearTextEdit            = teSetter(__clearTextEdit, "clearTextEdit")
-    setTextEditReadOnly      = teSetter(__setTextEditReadOnly, "setTextEditReadOnly")
-    setTextEditPlaceholder   = teSetter(__setTextEditPlaceholder, "setTextEditPlaceholder")
-    setTextEditStyleSheet    = teSetter(__setTextEditStyleSheet, "setTextEditStyleSheet")
-    setTextEditFont          = teSetter(__setTextEditFont, "setTextEditFont")
-    setTextEditFontSize      = teSetter(__setTextEditFontSize, "setTextEditFontSize")
-    setTextEditTabMovesFocus = teSetter(__setTextEditTabMovesFocus, "setTextEditTabMovesFocus")
+    setTextEditText          = teSetter(__setTextEditText)
+    clearTextEdit            = teSetter(__clearTextEdit)
+    setTextEditReadOnly      = teSetter(__setTextEditReadOnly)
+    setTextEditPlaceholder   = teSetter(__setTextEditPlaceholder)
+    setTextEditStyleSheet    = teSetter(__setTextEditStyleSheet)
+    setTextEditFont          = teSetter(__setTextEditFont)
+    setTextEditFontSize      = teSetter(__setTextEditFontSize)
+    setTextEditTabMovesFocus = teSetter(__setTextEditTabMovesFocus)
 end
 
 -- Mudlet HTTP APIs: every call dispatches a fire-and-forget background
@@ -2576,6 +2599,29 @@ function __mudlet_str(value)
     if t == 'string' then return value end
     if t == 'number' then return tostring(value) end
     return nil
+end
+
+-- The refusal Mudlet gives a value outside a fixed set of words, in the one
+-- wording its API settled on: `<what> must be "a", "b" or "c", got "x"` — no
+-- function-name prefix, double quotes, no comma before the "or". The TS twin is
+-- mustBeOneOf in src/utils/mustBeOneOf.ts; keep the two in step.
+function __mudlet_must_be_one_of(what, values, got)
+    local quoted = {}
+    for i = 1, #values do quoted[i] = '"' .. tostring(values[i]) .. '"' end
+    local list
+    if #quoted <= 1 then
+        list = quoted[1] or ''
+    else
+        list = table.concat(quoted, ', ', 1, #quoted - 1) .. ' or ' .. quoted[#quoted]
+    end
+    return what .. ' must be ' .. list .. ', got "' .. tostring(got) .. '"'
+end
+
+-- The item types the tree-walking APIs (isActive, exists, findItems, ancestors,
+-- isAncestorsActive...) take, in the order Mudlet names them when refusing one.
+__mudlet_ITEM_TYPES = { "alias", "button", "script", "keybind", "timer", "trigger" }
+function __mudlet_bad_item_type(got)
+    return __mudlet_must_be_one_of("item type", __mudlet_ITEM_TYPES, got)
 end
 
 -- luaL_typename, which every Mudlet bad-argument message ends with. It reads
@@ -4472,6 +4518,7 @@ end
 -- for the next raise instead of receiving the one that registered it. The
 -- anonymous half of that differs from desktop, which walks Other.lua's live
 -- table; see PLATFORM_DIVERGENCES in e2e/knownDivergences.ts.
+local __mudlet_dispatch_getfenv = getfenv
 function __mudlet_dispatch(event, args, argc)
     local scriptList = __mudlet_script_events[event]
     if scriptList then __mudlet_run_script_handlers(scriptList, event, args, argc) end
@@ -4498,8 +4545,13 @@ function __mudlet_dispatch(event, args, argc)
     -- escapes it — showHandlerError refusing a handler's non-string error —
     -- ends that walk of the anonymous handlers and is reported, and raiseEvent
     -- still returns to its caller.
-    if type(dispatchEventToFunctions) == 'function' then
-        local ok, err = __mudlet_pcall_co(dispatchEventToFunctions, event, unpack(args, 1, argc))
+    -- Looked up by name in the running thread's globals for every event, as
+    -- desktop's lua_getglobal does — so a dispatcher swapped in with
+    -- setfenv(0, ...) is the one called, not the one this chunk's own
+    -- environment holds.
+    local dispatcher = __mudlet_dispatch_getfenv(0).dispatchEventToFunctions
+    if type(dispatcher) == 'function' then
+        local ok, err = __mudlet_pcall_co(dispatcher, event, unpack(args, 1, argc))
         if not ok then __mudlet_report_handler_error(event, err) end
     end
 end
@@ -6284,9 +6336,7 @@ function ancestors(...)
             .. " does not seem to be parseable as a positive integer"
     end
     if not __isKnownItemType(itemType) then
-        return nil, "ancestors: invalid item type '" .. tostring(itemType)
-            .. "' given, it should be one (case insensitive) of: 'alias', 'button',"
-            .. " 'script', 'keybind', 'timer' or 'trigger'"
+        return nil, __mudlet_bad_item_type(itemType)
     end
     local raw = __ancestors(id, itemType)
     if not raw then
@@ -6314,9 +6364,7 @@ function findItems(name, itemType, exact, caseSensitive)
     if caseSensitive == nil then caseSensitive = true end
     local raw = __findItems(name, itemType, exact, caseSensitive)
     if raw == nil then
-        return nil, "findItems: invalid item type '" .. tostring(itemType)
-            .. "' given, it should be one (case insensitive) of: 'alias', 'button',"
-            .. " 'script', 'keybind', 'timer' or 'trigger'"
+        return nil, __mudlet_bad_item_type(itemType)
     end
     local out = {}
     local i = 0
@@ -6342,9 +6390,7 @@ function isAncestorsActive(id, itemType)
             .. " does not seem to be parseable as a positive integer"
     end
     if not __isKnownItemType(itemType) then
-        return nil, "isAncestorsActive: invalid item type '" .. tostring(itemType)
-            .. "' given, it should be one (case insensitive) of: 'alias', 'button',"
-            .. " 'script', 'keybind', 'timer' or 'trigger'"
+        return nil, __mudlet_bad_item_type(itemType)
     end
     local raw = __isAncestorsActive(id, itemType)
     if raw == nil then
@@ -6528,7 +6574,7 @@ function getLabelText(name)
     end
     local t = __getLabelText(name)
     if t == nil then
-        return nil, 'getLabelText: label "' .. tostring(name) .. '" not found'
+        return nil, 'label "' .. tostring(name) .. '" not found'
     end
     return t
 end
@@ -6818,6 +6864,12 @@ do
         -- that is missing or out of range; a non-table is a refusal rather
         -- than a raise. Components are truncated to integers, as its
         -- static_cast<int> does.
+        -- showSentText takes a boolean (the old on/off form) or one of its mode
+        -- names; anything else is not a mode at all, and is refused as such
+        -- rather than as a mode it does not have.
+        if key == "showSentText" and type(value) ~= 'boolean' and __mudlet_str(value) == nil then
+            return nil, "showSentText must be a boolean or a string, got " .. type(value)
+        end
         if key == "mapInfoColor" then
             if type(value) ~= "table" then
                 return nil, "mapInfoColor requires a table {r, g, b} or {r, g, b, a}"
@@ -6872,8 +6924,7 @@ do
                 local i = 0
                 while raw[i] ~= nil do accepted[#accepted + 1] = raw[i] i = i + 1 end
                 if #accepted > 0 then
-                    return nil, "setConfig: '" .. tostring(value) .. "' is not a valid value for '"
-                        .. key .. "', it should be one of '" .. table.concat(accepted, "', '") .. "'"
+                    return nil, __mudlet_must_be_one_of(key, accepted, value)
                 end
             end
             return nil, "setConfig: '" .. tostring(value) .. "' is not a valid value for '" .. key .. "'"
@@ -7394,8 +7445,7 @@ do
         setSensitivity = function(mode)
             local name = __mudlet_str(mode)
             if name ~= "short" and name ~= "default" and name ~= "long" then
-                return nil, "stt.setSensitivity: unknown sensitivity " .. tostring(mode)
-                    .. ", expected one of short, default, long"
+                return nil, __mudlet_must_be_one_of("sensitivity", { "short", "default", "long" }, mode)
             end
             return refuse(NO_ENGINE)
         end,
@@ -7493,6 +7543,11 @@ do
         return function(...)
             local code = ...
             local n = __mudlet_check_int(code, name, 1, "ANSI color", select('#', ...) > 0)
+            -- A selection with no character under its start is refused first,
+            -- whatever the colour number is.
+            if not __ansiSelectionValid() then
+                return nil, "current selection invalid in window 'main'"
+            end
             if n < 0 or n > 16 then
                 return nil, "ANSI color " .. n .. " out of range (0 to 16)"
             end
@@ -7615,7 +7670,7 @@ do
     local function itemLookupGuard(fn, funcName)
         return function(nameOrId, itemType, ...)
             if type(itemType) ~= 'string' or not ITEM_TYPES[itemType] then
-                return nil, funcName .. ": invalid item type '" .. tostring(itemType) .. "'"
+                return nil, __mudlet_bad_item_type(itemType)
             end
             if type(nameOrId) == 'number' and nameOrId < 1 then
                 return nil, funcName .. ": item id " .. tostring(nameOrId) .. " is not a valid id"
@@ -9139,15 +9194,18 @@ do
             if __windowType(labelName) ~= 'label' then
                 return nil, 'label "' .. tostring(labelName) .. '" not found'
             end
+            -- The movie is looked up with the label, before the rest of the
+            -- arguments are checked: a missing one is reported rather than a
+            -- bad argument raised.
+            if not __hasMovie(labelName) then
+                return nil, "no movie found at label '" .. tostring(labelName) .. "'"
+            end
             if checkArg then
                 -- The checker hands back the converted value, and the coerced
                 -- list is what the binding is called with.
                 local bad, coerced = checkArg(who, args[1])
                 if bad then error(bad, 2) end
                 if coerced ~= nil then args[1] = coerced end
-            end
-            if not __hasMovie(labelName) then
-                return nil, "no movie found at label '" .. tostring(labelName) .. "'"
             end
             local r = fn(labelName, unpack(args, 1, n))
             -- setMovieFrame's false is a real answer (no such frame); the rest

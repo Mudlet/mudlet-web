@@ -2,6 +2,7 @@ import type {MudletArea, MudletColor, MudletFont, MudletLabel, MudletMap, Mudlet
 import {readerExport} from 'mudlet-map-binary-reader';
 import {findPath, type ExitWeightFilter, type PathfindResult} from './pathfinding';
 import {renderLabelPixmap} from './labelPixmap';
+import {mustBeOneOf} from '../utils/mustBeOneOf';
 
 export type {ExitWeightFilter, PathfindResult} from './pathfinding';
 
@@ -3315,7 +3316,7 @@ export class MapStore {
         const styleNum = Number(
             Object.keys(PEN_STYLE_NAMES).find(k => PEN_STYLE_NAMES[Number(k)] === style),
         );
-        if (!styleNum) return `"${style}" is not a valid line style`;
+        if (!styleNum) return mustBeOneOf('line style', ['solid line', 'dot line', 'dash line', 'dash dot line', 'dash dot dot line'], style);
 
         // Key by the SHORT direction name ("e", "up", …), which is what Mudlet
         // normalises to via dirToString and what its saved maps carry — keying

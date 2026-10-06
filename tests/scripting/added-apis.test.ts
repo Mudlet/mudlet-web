@@ -1129,7 +1129,7 @@ describe('Mudlet-API batch — Lua bindings', () => {
       .toContain('does not exist');
     // A type there is no family for is told apart from a plain miss.
     expect(env.run('local _, err = isAncestorsActive(1, "sandwich"); return err'))
-      .toContain("invalid item type 'sandwich' given");
+      .toBe('item type must be "alias", "button", "script", "keybind", "timer" or "trigger", got "sandwich"');
   });
 
   it('setModuleInfo / setPackageInfo are callable (no-op without an install)', () => {

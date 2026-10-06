@@ -133,7 +133,7 @@ describe('addCustomLine', () => {
     rt.run('setExitStub(2, "north", true)');
     // Mudlet reports the refusal as (nil, errMsg), not a bare false.
     expect(rt.run('local _, e = addCustomLine(2, {{0,0,0}}, "north", "squiggle", {0,0,0}, false) return e'))
-      .toMatch(/not a valid line style/);
+      .toBe('line style must be "solid line", "dot line", "dash line", "dash dot line" or "dash dot dot line", got "squiggle"');
   });
 });
 
