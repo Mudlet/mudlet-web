@@ -269,18 +269,12 @@ export class MudClient {
      *  "failed to connect" from "connection lost mid-session" in close events. */
     private opened = false;
 
-    /** True once we've sent the GMCP `Core.Hello` / `Core.Supports.Set`
-     *  handshake this session. Only a server's IAC DO GMCP consults it — an
-     *  IAC WILL GMCP always re-announces (see sendGmcpHandshake). Reset on
-     *  each connect(). */
-    private gmcpHelloSent = false;
-
     /** When the game command now awaiting a reply went out (`performance.now()`),
      *  or null when nothing is being timed. Mudlet's
      *  `cTelnet::begin/finishNetworkLatencyMeasurement`: on a server that marks
      *  its prompts with GA/EOR, the time from a command to the first read
-     *  off the socket after it is the network latency `getNetworkLatency()` reports, whether or
-     *  not the game answers GMCP `Core.Ping`. Timed from the first command of a
+     *  off the socket after it is the network latency `getNetworkLatency()` reports
+     *  — the only reading there is, as Mudlet sends no GMCP `Core.Ping`. Timed from the first command of a
      *  burst, so a queued speedwalk isn't credited with the replies to its
      *  earlier steps. */
     private latencyStartedAt: number | null = null;
@@ -396,7 +390,7 @@ export class MudClient {
             eventBus,
             {
                 sendRaw: (data) => this.sendRaw(data),
-                onGmcpNegotiated: (offered) => this.sendGmcpHandshake(offered),
+                onGmcpNegotiated: () => this.sendGmcpHandshake(),
                 getEncoding: () => this.codec.encoding,
                 isMccpEnabled: () => this.mccpHandler.enabled,
                 onKaVirProtocolDetected: () => this.eventBus.emit('kavir.detected'),
@@ -416,18 +410,7 @@ export class MudClient {
             onEnvelope: ({ path, value }) => {
                 this.handleCharLogin(path, value);
                 (this.eventBus.emit as (event: string, ...args: unknown[]) => void)(`gmcp.${path}`, value);
-                // GMCP module names are case-insensitive by convention, and the
-                // ping tracker listens on a fixed lowercase event. Route the
-                // server's Core.Ping reply regardless of spelling — the spec's
-                // canonical reply is PascalCase `Core.Ping` with no body, which
-                // `gmcp.${path}` alone would emit as `gmcp.Core.Ping`.
-                if (path !== 'core.ping' && path.toLowerCase() === 'core.ping') {
-                    this.eventBus.emit('gmcp.core.ping', value);
-                }
                 this.eventBus.emit('gmcp', { path, value });
-            },
-            onMessage: (text, type) => {
-                this.messageBuffer.push({ text, type });
             },
             onClientGui: (payload) => {
                 this.eventBus.emit('clientGui', payload);
@@ -625,7 +608,6 @@ export class MudClient {
         this.subnegRepair.reset();
         this.charModeDetected = false;
         this.cancelCharacterModeDetection();
-        this.gmcpHelloSent = false;
         this.latencyStartedAt = null;
         // Redialling re-runs the handshake, so the previous verdict is stale.
         this.tlsResolved = false;
@@ -1045,15 +1027,12 @@ export class MudClient {
      *  this hello, so without it GMCP effectively does nothing. Every server
      *  offer (IAC WILL GMCP) is answered with it, as Mudlet does: a server that
      *  turned GMCP off and on again — copyover, reboot — has dropped the module
-     *  list and would otherwise never send another packet. Mudlet sends nothing
-     *  on a server's IAC DO GMCP; Mudlet Web still announces there once per
-     *  connection, since a server that only ever asks would otherwise never
-     *  hear from us. Reports our own identity (see src/version.ts), matching
-     *  the TTYPE/MNES/MXP handshakes. */
-    private sendGmcpHandshake(offered: boolean): void {
-        if (!offered && this.gmcpHelloSent) return;
+     *  list and would otherwise never send another packet. A server's IAC DO
+     *  GMCP is answered with WILL alone, as Mudlet does — the handshake waits
+     *  for the server's own offer (mudlet-web#362). Reports our own identity
+     *  (see src/version.ts), matching the TTYPE/MNES/MXP handshakes. */
+    private sendGmcpHandshake(): void {
         if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
-        this.gmcpHelloSent = true;
         try {
             this.sendBytes(encodeGmcp('Core.Hello', {
                 client: CLIENT_NAME,

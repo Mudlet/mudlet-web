@@ -726,6 +726,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                 attempted: gmcpAutoTried.current,
                 account: stored.account,
                 password: stored.password,
+                credentialsLocked: !vaultDeclined.current && vaultNeedsUnlock(connection.id),
             });
             if (action.kind === 'decline') {
                 session.sendCharLoginCredentials();
@@ -745,7 +746,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             // have nothing to send: ask to open it rather than for a password
             // the user already saved. Safe to do here and not at connect time —
             // the server blocks until we answer, so there is no race to lose.
-            if (!vaultDeclined.current && vaultNeedsUnlock(connection.id)) {
+            if (action.kind === 'unlock') {
                 vaultPendingCharLogin.current = true;
                 setVaultUnlock(`${connection.name} has a saved login. Unlock it to sign in.`);
                 return;
@@ -1126,7 +1127,8 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     /**
      * The vault unlock prompt closed. When a GMCP `Char.Login` request was the
      * thing waiting on it, answer that request now — with the credentials the
-     * unlock just made readable, or by falling through to the manual form.
+     * unlock just made readable, or with the empty reply that hands the sign-in
+     * to the game's own prompt.
      * Leaving it unanswered would hang the login: the server withholds its own
      * prompt until we reply.
      */
@@ -1144,7 +1146,9 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             session.sendCharLoginCredentials(stored.account, stored.password);
             return;
         }
-        setCharLogin(prev => prev ?? {});
+        // Still nothing to send: hand the sign-in to the game's own prompt, as
+        // decideCharLoginRequest does when nothing is saved at all.
+        session.sendCharLoginCredentials();
     };
     // Reads the store rather than the `connection` snapshot, so a reconnect after
     // a TLS upgrade dials the new secure port instead of the original one.

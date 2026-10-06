@@ -2834,11 +2834,17 @@ export class ScriptingEngine implements EngineHost {
      * itself settles later.
      */
     private handleClientGui(value: unknown): void {
-        const allowInstall = useAppStore.getState().connectionProfile[this.connectionId]?.allowMudPackageInstall;
+        if (!this.serverGuiAccepted()) return;
         void this.handleClientGuiInstall(value);
-        if (allowInstall !== false && clientGuiDeclinesBaseUi(value)) {
+        if (clientGuiDeclinesBaseUi(value)) {
             this.raiseEvent('sysServerGuiInstalled', []);
         }
+    }
+
+    /** Mudlet's `mAcceptServerGUI` — the profile's `allowMudPackageInstall`,
+     *  where undefined means allowed. */
+    private serverGuiAccepted(): boolean {
+        return useAppStore.getState().connectionProfile[this.connectionId]?.allowMudPackageInstall !== false;
     }
 
     private async handleClientGuiInstall(value: unknown): Promise<void> {
@@ -2846,14 +2852,9 @@ export class ScriptingEngine implements EngineHost {
         if (!parsed) return;
         const { url, version } = parsed;
 
-        // Per-profile opt-out (undefined/true = allowed).
-        const allowInstall = useAppStore.getState().connectionProfile[this.connectionId]?.allowMudPackageInstall;
-        if (allowInstall === false) {
-            this.session.events.emit('message',
-                mudletInfo(`ignored install request for ${url} (disabled in settings)`),
-                'info', Date.now());
-            return;
-        }
+        // Per-profile opt-out. handleClientGui already dropped the offer, as
+        // Mudlet does without a word; this keeps the install itself honest.
+        if (!this.serverGuiAccepted()) return;
 
         // Same URL already installed, and the server names no newer delivery
         // revision → no-op. Compared against sourceVersion (what the server
@@ -5784,6 +5785,10 @@ export class ScriptingEngine implements EngineHost {
                 // emit() supplies the event name itself, so only fullKey is
                 // passed — a parent-node handler must see the leaf's key.
                 if (!path) return;
+                // A profile refusing server packages ignores Client.GUI whole:
+                // cTelnet::setGMCPVariables returns before setGMCPTable, so no
+                // gmcp.Client.GUI table and no event (mudlet-web#362).
+                if (path.toLowerCase().startsWith('client.gui') && !this.serverGuiAccepted()) return;
                 if (debugGmcpEnabled()) {
                     const body = JSON.stringify(value);
                     console.debug(`[mudlet.gmcp] ${path}`,

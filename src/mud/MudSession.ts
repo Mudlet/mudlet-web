@@ -9,7 +9,6 @@ import { VideoManager } from '../ui/video/VideoManager';
 import { CmdLineMenuRegistry } from '../ui/CmdLineMenuRegistry';
 import { MouseEventRegistry } from '../ui/MouseEventRegistry';
 import { MudClient, type MudClientOptions, SUPPORTED_SERVER_ENCODINGS, DEFAULT_SERVER_ENCODING, canonicalServerEncoding, canEncodeForServer } from './connection/MudClient';
-import { PingTracker } from './connection/PingTracker';
 import { ReplayPlayer } from './replay/ReplayPlayer';
 import { ReplayRecorder } from './replay/ReplayRecorder';
 import { parseReplay, replayDurationMs } from './replay/replayFormat';
@@ -79,7 +78,6 @@ export class MudSession {
     /** How many times connect() has dialed, so a caller can tell whether a
      *  dial it asked for has been overtaken by another. */
     private dials = 0;
-    private pingTracker: PingTracker | null = null;
     private stateUnsubs: (() => void)[] = [];
     /** The profile's server encoding, as `getServerEncodingsList()` spells it.
      *  Lives here rather than on the client so it survives having none — see
@@ -333,20 +331,6 @@ export class MudSession {
         if (this.timestampsShown) client.setTimestampsShown(true);
         if (this.windowSize) client.setWindowSize(this.windowSize.cols, this.windowSize.rows);
 
-        this.pingTracker = new PingTracker(
-            // Canonical GMCP: `Core.Ping` (PascalCase) carrying the last measured
-            // latency — the spec's second documented request form. We used to
-            // send the bare name, which the spec also allows, but servers that
-            // JSON-parse everything after the module name unconditionally (LPC
-            // ones calling `json_parse()`, notably) fail on the empty body and
-            // print a parse error into the game output. A number is valid JSON
-            // and satisfies both. sendGmcpRaw, not sendGmcp: the latter would
-            // wrap it as an object body, which isn't this message's shape.
-            (latencyMs) => client.sendGmcpRaw(`Core.Ping ${latencyMs}`),
-            (d) => this.setPing(d),
-            this.events,
-        );
-
         // Per-client subscriptions only — the status latch lives in the
         // constructor so it always runs before the scripting engine's handlers,
         // and so does the encoding latch (the encoding is the profile's and
@@ -354,9 +338,11 @@ export class MudSession {
         // was never dialled — see ensureParsingClient).
         this.stateUnsubs = [
             this.events.on('client.error', (message) => this.reportConnectionError(message)),
-            // Command → prompt-marker round trips feed the same reading the
-            // Core.Ping tracker does, as Mudlet measures latency on every
-            // GA/EOR game and not only ones that answer Core.Ping.
+            // Command → prompt-marker round trips are the only latency
+            // reading, as in Mudlet. Mudlet Web used to send GMCP `Core.Ping`
+            // itself every 3s as well; desktop never does, and each reply
+            // raised `gmcp.Core.Ping` in scripts that never asked for it
+            // (mudlet-web#362).
             this.events.on('network.latency', (duration) => this.setPing(duration)),
         ];
         this.setStatus('connecting');
@@ -1081,8 +1067,6 @@ export class MudSession {
     private teardownClient(): void {
         for (const unsub of this.stateUnsubs) unsub();
         this.stateUnsubs = [];
-        this.pingTracker?.destroy();
-        this.pingTracker = null;
         this.client?.disconnect();
         this.client = null;
     }
@@ -1092,7 +1076,7 @@ export class MudSession {
     /** Release resources that live outside the JS heap. In-memory state (maps,
      *  arrays, sub-managers) is reclaimed by GC once the instance is dropped, so
      *  this only handles the three things that don't self-clean: the WebSocket
-     *  + ping timer (via `teardownClient`), Web Audio nodes, and any EventBus
+     *  (via `teardownClient`), Web Audio nodes, and any EventBus
      *  listeners with an AbortSignal cleanup still pending. Idempotent. */
     destroy(): void {
         if (this._destroyed) return;

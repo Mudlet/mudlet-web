@@ -10,7 +10,7 @@ vi.mock('../../src/scripting/lua/LuaRuntime', () => ({
         create: () => Promise.resolve({
             load: () => {}, emitEvent: () => {}, processInput: () => false,
             runWithMatches: () => {}, destroy: () => {},
-            evalTriggerPattern: () => false, startSpeedWalk: () => {},
+            evalTriggerPattern: () => false, startSpeedWalk: () => {}, setGmcpValue: () => {},
         }),
     },
 }));
@@ -56,6 +56,7 @@ type EngineInternals = {
     handleClientGui: (value: unknown) => void;
     vfs: unknown;
     raiseEvent: (event: string, args: unknown[]) => void;
+    emit: (event: string, args: unknown[]) => void;
 };
 
 // Mudlet raises sysServerGuiInstalled once a game has supplied its own
@@ -140,5 +141,58 @@ describe('Client.GUI install raises sysServerGuiInstalled', () => {
         useAppStore.getState().patchConnectionProfile(CONN, { allowMudPackageInstall: false });
         (engine as unknown as EngineInternals).handleClientGui({ baseui: false });
         expect(raised.map(r => r.event)).not.toContain('sysServerGuiInstalled');
+    });
+});
+
+// With server GUI acceptance off, cTelnet::setGMCPVariables returns before it
+// touches the gmcp table: no gmcp.Client.GUI table, no gmcp.Client event, no
+// install (mudlet-web#362).
+describe('Client.GUI with server GUI acceptance off', () => {
+    let engine: InstanceType<typeof ScriptingEngine>;
+    let session: InstanceType<typeof MudSession>;
+    let emitted: string[];
+    let offers: unknown[];
+
+    beforeEach(() => {
+        if (!useAppStore.getState().connections.some(c => c.id === CONN)) {
+            useAppStore.setState(s => ({
+                connections: [...s.connections, { id: CONN, name: 'GUI', url: 'ws://localhost' }],
+            }));
+        }
+        session = new MudSession();
+        engine = new ScriptingEngine(
+            session, new AliasEngine(), new TriggerEngine(), new TimerEngine(), new KeyEngine(), CONN,
+        );
+        emitted = [];
+        offers = [];
+        vi.spyOn(engine as unknown as EngineInternals, 'emit')
+            .mockImplementation((event: string) => { emitted.push(event); });
+        vi.spyOn(engine as unknown as EngineInternals, 'handleClientGuiInstall')
+            .mockImplementation(async (value: unknown) => { offers.push(value); });
+    });
+
+    afterEach(() => {
+        useAppStore.getState().patchConnectionProfile(CONN, { allowMudPackageInstall: undefined });
+        vi.restoreAllMocks();
+        try { engine.destroy(); } catch { /* teardown best-effort */ }
+    });
+
+    const offer = { version: '1', url: 'https://example.invalid/ui/game-ui.mpackage' };
+    const deliver = () => {
+        session.events.emit('gmcp', { path: 'Client.GUI', value: offer });
+        session.events.emit('clientGui', offer);
+    };
+
+    it('raises no gmcp event and installs nothing', () => {
+        useAppStore.getState().patchConnectionProfile(CONN, { allowMudPackageInstall: false });
+        deliver();
+        expect(emitted.filter(e => e.startsWith('gmcp'))).toEqual([]);
+        expect(offers).toEqual([]);
+    });
+
+    it('raises the events and acts on the offer when acceptance is on', () => {
+        deliver();
+        expect(emitted).toEqual(expect.arrayContaining(['gmcp.Client', 'gmcp.Client.GUI']));
+        expect(offers).toEqual([offer]);
     });
 });

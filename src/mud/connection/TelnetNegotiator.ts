@@ -148,12 +148,13 @@ export interface TelnetNegotiatorFlags {
 
 export interface TelnetNegotiatorHooks {
     sendRaw(data: string): void;
-    /** GMCP came up — send the Core.Hello / Core.Supports.Set handshake.
-     *  `offered` is true when the server offered it (IAC WILL GMCP), which
-     *  Mudlet answers with the handshake every time, re-offers included — a
-     *  server that switched GMCP off and on again has forgotten our modules.
-     *  False for a server's IAC DO GMCP. */
-    onGmcpNegotiated(offered: boolean): void;
+    /** The server offered GMCP (IAC WILL GMCP) — send the Core.Hello /
+     *  Core.Supports.Set handshake. Mudlet answers every offer with it,
+     *  re-offers included — a server that switched GMCP off and on again has
+     *  forgotten our modules. Not called for a server's IAC DO GMCP: Mudlet
+     *  answers that with WILL alone and announces nothing until the server's
+     *  own WILL (mudlet-web#362). */
+    onGmcpNegotiated(): void;
     /** Current inbound encoding (IANA label) — drives the MTTS UTF-8 bit and
      *  the MNES/NEW-ENVIRON CHARSET variable. */
     getEncoding(): string;
@@ -804,9 +805,10 @@ export class TelnetNegotiator {
                 this.enableProtocol(cmd, opt, cmd === WILL ? () => this.sendAtcpHello() : undefined);
                 return;
             case OPT_GMCP:
-                // Symmetric: server offers (WILL) or requests (DO) GMCP; either
-                // way we agree and announce ourselves via the Core.Hello
-                // handshake (see onGmcpNegotiated). The handshake goes out
+                // Server offers (WILL) or requests (DO) GMCP; either way we
+                // agree, but only an offer is answered with the Core.Hello
+                // handshake (see onGmcpNegotiated) — Mudlet's ctelnet.cpp sends
+                // nothing on DO until the server's WILL arrives. The handshake goes out
                 // *before* sysProtocolEnabled is raised, as in Mudlet's
                 // ctelnet.cpp: Core.Supports.Set replaces the server's whole
                 // module list, so a `Core.Supports.Add` a script sends from its
@@ -815,7 +817,7 @@ export class TelnetNegotiator {
                     this.refuseProtocol(cmd, opt);
                     return;
                 }
-                this.enableProtocol(cmd, opt, () => this.hooks.onGmcpNegotiated(cmd === WILL));
+                this.enableProtocol(cmd, opt, cmd === WILL ? () => this.hooks.onGmcpNegotiated() : undefined);
                 this.eventBus.emit('gmcp.negotiated');
                 return;
         }

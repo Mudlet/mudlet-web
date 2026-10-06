@@ -13,12 +13,23 @@ const request = (over: Partial<CharLoginRequestState> = {}): CharLoginRequestSta
 });
 
 describe('decideCharLoginRequest', () => {
-    it('prompts when the server asks and nothing is stored', () => {
-        expect(decideCharLoginRequest(request())).toEqual({ kind: 'prompt' });
+    // Mudlet sends the empty reply at once, so the game falls back to its own
+    // login prompt; a popup left the server waiting on it (mudlet-web#362).
+    it('declines straight away when the server asks and nothing is stored', () => {
+        expect(decideCharLoginRequest(request())).toEqual({ kind: 'decline' });
     });
 
-    it('prompts when the server sends no method list at all', () => {
-        expect(decideCharLoginRequest(request({ methods: [] }))).toEqual({ kind: 'prompt' });
+    it('declines when the server sends no method list and nothing is stored', () => {
+        expect(decideCharLoginRequest(request({ methods: [] }))).toEqual({ kind: 'decline' });
+    });
+
+    it('autofills when the server sends no method list but a login is stored', () => {
+        expect(decideCharLoginRequest(request({ methods: [], account: 'rahjiii', password: 'hunter2' })))
+            .toEqual({ kind: 'autofill', account: 'rahjiii', password: 'hunter2' });
+    });
+
+    it('asks to unlock the vault when the saved login is locked away', () => {
+        expect(decideCharLoginRequest(request({ credentialsLocked: true }))).toEqual({ kind: 'unlock' });
     });
 
     it('declines a method we cannot satisfy', () => {
@@ -38,9 +49,9 @@ describe('decideCharLoginRequest', () => {
             .toEqual({ kind: 'autofill', account: 'rahjiii', password: 'hunter2' });
     });
 
-    it('needs both halves to autofill', () => {
-        expect(decideCharLoginRequest(request({ account: 'rahjiii' }))).toEqual({ kind: 'prompt' });
-        expect(decideCharLoginRequest(request({ password: 'hunter2' }))).toEqual({ kind: 'prompt' });
+    it('needs both halves to autofill, and declines with half a login', () => {
+        expect(decideCharLoginRequest(request({ account: 'rahjiii' }))).toEqual({ kind: 'decline' });
+        expect(decideCharLoginRequest(request({ password: 'hunter2' }))).toEqual({ kind: 'decline' });
     });
 
     // The regression that motivated this file: a server that rejects an attempt
