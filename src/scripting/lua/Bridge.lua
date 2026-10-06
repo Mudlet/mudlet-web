@@ -388,11 +388,9 @@ do
     end
 end
 
--- Mudlet's getPath populates these globals (cleared on every call). Predeclare
--- them as empty tables so user code reading them before any getPath call
--- doesn't crash on nil-indexing — Mudlet's C++ side leaves them undefined
--- until first call but most scripts assume they exist.
-speedWalkPath, speedWalkDir, speedWalkWeight = {}, {}, {}
+-- getPath populates speedWalkPath/Dir/Weight (cleared on every call). They are
+-- not predeclared: desktop leaves them nil until the first getPath, and a
+-- script's `if speedWalkPath then` has to give the same answer here.
 
 -- Mudlet getPath(from, to) — A* over the map graph. A non-number roomID is a
 -- Lua argument error, raised before anything is touched (TLuaInterpreter's
@@ -3843,8 +3841,13 @@ end
 -- takes" for being handed more than one argument — and both RAISE, so a caller
 -- has to pcall to see either. Both are Mudlet's strings verbatim: the list of
 -- styles is the only documentation of them a script author gets.
+--
+-- The level is the Mudlet release whose Lua API this runtime follows: the
+-- bundled Lua and the spec corpus are synced from Mudlet's 5.0 development
+-- line, so a package gating on `mudletOlderThan(5)` gets the features that
+-- work here. No build suffix — desktop's PTB tag names a desktop build.
 do
-    local MAJOR, MINOR, REVISION, BUILD = 4, 21, 0, ""
+    local MAJOR, MINOR, REVISION, BUILD = 5, 0, 0, ""
     local STYLES = "   \"major\", \"minor\", \"revision\", \"build\", \"string\" or \"table\"."
     function getMudletVersion(...)
         local count = select('#', ...)

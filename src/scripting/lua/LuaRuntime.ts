@@ -4091,7 +4091,10 @@ end`);
         this.rawSetGlobal('matches');
         api.lua_createtable(L, 0, 0);
         this.rawSetGlobal('multimatches');
-        api.lua_createtable(L, 0, 0);
+        // namedCaptures is ours alone (desktop has no such global), so between
+        // fires it is nil, as it is on desktop — not an empty table that makes
+        // a fresh profile's globals differ from desktop's.
+        api.lua_pushnil(L);
         this.rawSetGlobal('namedCaptures');
         api.lua_settop(L, top);
     }
