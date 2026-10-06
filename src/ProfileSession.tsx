@@ -31,7 +31,7 @@ import { savedServerEncoding } from './mud/protocol/charset';
 import type { TlsStatus } from './mud/events';
 import { QuickOpenPalette } from './ui/QuickOpenPalette';
 import { MAIN_OUTPUT_ID, COMMAND_INPUT_ID } from './ui/landmarks';
-import { SessionLogger } from './logging/SessionLogger';
+import { SessionLogger, hasSavedLogging } from './logging/SessionLogger';
 import { useAppStore, selectProfileField, symbolFontSource, ConnectionIdContext, connectionUrl, PROTOCOL_DEFAULTS, type MudConnection } from './storage';
 import { DEFAULT_STICKY_LINES } from './hooks/useOutput';
 import { applyOutputFont, registerFontSource, primeLocalFontsCache } from './utils/fontLoader';
@@ -513,6 +513,11 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         // startLogging reports the file it is writing to, which only the live
         // logger knows.
         engine.setLoggingPathProvider(() => loggerRef.current?.filePath ?? null);
+        // Host::startSavedLogging: a profile closed while it was logging left
+        // its `autolog` sentinel behind, and opening it again picks logging
+        // back up — so a script's startLogging(true) now answers "already".
+        // Only once the filesystem is there to hold the sentinel and the file.
+        if (!loggerRef.current?.filePath && hasSavedLogging(vfs)) engine.startLogging(true);
         return () => {
             engine.setLoggingToggler(null);
             engine.setLoggingPathProvider(null);

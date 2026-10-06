@@ -594,6 +594,10 @@ export class Console {
             return;
         }
         buf.removeFromDom();
+        // Flagged as well as removed: the file log holds the newest line back
+        // until the next one arrives, and drops it if it was deleted meanwhile
+        // (TBuffer::deleteLines) — the "gag the previous line" trigger.
+        buf.markAsDeleted();
         this.history.splice(idx, 1);
         // Keep the cursor at the same row index (Mudlet: deleteLine leaves the
         // cursor on the line that shifts up into the slot). When the deleted line

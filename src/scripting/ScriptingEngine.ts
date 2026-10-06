@@ -4558,6 +4558,12 @@ export class ScriptingEngine implements EngineHost {
         this.api.setLoggingToggler(fn);
     }
 
+    /** Mudlet `startLogging(state)` from outside a script — the autolog resume
+     *  on profile load (Host::startSavedLogging). */
+    startLogging(enabled: boolean): void {
+        this.api.startLogging(enabled);
+    }
+
     /** Where the live logger is writing, so startLogging can report the file. */
     setLoggingPathProvider(fn: (() => string | null) | null): void {
         this.api.setLoggingPathProvider(fn);

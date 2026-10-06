@@ -18,6 +18,26 @@ export interface LogFormat {
     foreground?: { r: number; g: number; b: number };
 }
 
+/** The slice of the profile filesystem the logger writes into. */
+export interface LogVfs {
+    profilePath: string;
+    mkdir(p: string): void;
+    writeFile(p: string, c: string): void;
+    exists(p: string): boolean;
+    readFile(p: string): string;
+    deleteFile(p: string): void;
+}
+
+/**
+ * Whether a profile was closed while it was logging, so opening it resumes
+ * logging — Host::startSavedLogging, which tests for the `autolog` sentinel
+ * {@link SessionLogger.startFileLog} leaves in the profile directory.
+ */
+export function hasSavedLogging(vfs: Pick<LogVfs, 'profilePath' | 'exists'> | null | undefined): boolean {
+    if (!vfs) return false;
+    try { return vfs.exists(`${vfs.profilePath}/autolog`); } catch { return false; }
+}
+
 const DEFAULT_LOG_FG = { r: 192, g: 192, b: 192 };
 const DEFAULT_LOG_BG = { r: 0, g: 0, b: 0 };
 
@@ -114,13 +134,13 @@ export class SessionLogger {
         private readonly connectionName: string,
         /** Profile filesystem the plain-text log is written into. Optional: the
          *  IndexedDB record is the primary log and works without one. */
-        private readonly vfs?: { profilePath: string; mkdir(p: string): void; writeFile(p: string, c: string): void; exists(p: string): boolean; readFile(p: string): string } | null,
+        private readonly vfs?: LogVfs | null,
     ) {}
 
     start(): void {
         if (this.unsubscribe) return;
-        this.unsubscribe = this.session.events.on('message', (text, type, timestamp) => {
-            this.capture(text, type, timestamp);
+        this.unsubscribe = this.session.events.on('message', (text, type, timestamp, _isPrompt, joinedTo) => {
+            this.capture(text, type, timestamp, joinedTo);
         });
         this.flushTimer = setInterval(() => { void this.flush(); }, FLUSH_INTERVAL_MS);
     }
@@ -140,7 +160,9 @@ export class SessionLogger {
      * `startLogging(true)` report "already on" for ever.
      *
      * The file is created up front, before any line has arrived, so a script can
-     * hand its path straight to something else. Named as Mudlet names its own:
+     * hand its path straight to something else. Named as Mudlet names its own,
+     * after the moment logging starts (TConsoleModel::toggleLogging's
+     * `logDateTime`), so every start opens a file of its own:
      * `<profile>/log/<yyyy-MM-dd#hh-mm-ss>.txt` — or `.html` when `format.html`
      * is set (Mudlet's `logInHTML`), which is a whole second document format
      * rather than the same lines with markup: a `<html>` wrapper, a stylesheet
@@ -153,7 +175,17 @@ export class SessionLogger {
         this.logBackground = format?.background ?? DEFAULT_LOG_BG;
         this.logForeground = format?.foreground ?? DEFAULT_LOG_FG;
         this.openLogFile(format);
+        // Mudlet's `autolog` sentinel (Host::startSavedLogging): it stays in the
+        // profile directory for as long as logging is on, so a profile closed
+        // while logging resumes it the next time it is opened.
+        if (this.logFilePath && this.vfs) {
+            try { this.vfs.writeFile(this.autologPath(), ''); } catch { /* resume is best-effort */ }
+        }
         return this.logFilePath;
+    }
+
+    private autologPath(): string {
+        return `${this.vfs!.profilePath}/autolog`;
     }
 
     /** Stop mirroring to the file, writing out whatever is buffered, then the
@@ -161,6 +193,14 @@ export class SessionLogger {
      *  that make it a document. */
     stopFileLog(): void {
         if (this.logFilePath) {
+            // TBuffer::logRemainingOutput: the line held back for a possible
+            // command echo goes out before the closing line.
+            this.commitPendingLine();
+            if (this.vfs) {
+                try {
+                    if (this.vfs.exists(this.autologPath())) this.vfs.deleteFile(this.autologPath());
+                } catch { /* nothing to resume from either way */ }
+            }
             const end = logSessionLine('ending', new Date());
             this.fileBuffer.push(this.logHtml ? `<p>${end}</p>\n  </div></body>\n</html>\n` : `${end}\n`);
         }
@@ -178,18 +218,17 @@ export class SessionLogger {
 
     private openLogFile(format?: LogFormat): void {
         if (!this.vfs) return;
-        const d = new Date(this.startedAt);
+        const d = new Date();
         const p = (n: number, w = 2) => String(n).padStart(w, '0');
         const stamp = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
             + `#${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
         const path = `${this.vfs.profilePath}/log/${stamp}.${this.logHtml ? 'html' : 'txt'}`;
         try {
             this.vfs.mkdir(`${this.vfs.profilePath}/log`);
-            // Never blank one that is already there. The name carries the
-            // second this logger was built, so stopping and restarting logging
-            // inside one session comes back to the same file, and truncating it
-            // would throw away everything the first stretch had written. Mudlet
-            // reopens it the way TConsoleModel::toggleLogging does: a text log
+            // Never blank one that is already there: a start within the same
+            // second as the last one comes back to the same name, and
+            // truncating it would throw away everything the first stretch had
+            // written. Mudlet reopens it the way TConsoleModel::toggleLogging does: a text log
             // is appended to after a rule, and an HTML one is rebuilt with the
             // old body carried forward and an <hr> before the new session.
             const existing = this.vfs.exists(path) ? this.vfs.readFile(path) : '';
@@ -231,7 +270,37 @@ export class SessionLogger {
         }
     }
 
-    private capture(text?: string | AnsiAwareBuffer, type?: string, timestamp?: number): void {
+    /**
+     * The line most recently given to the file log, not yet written to it —
+     * TBuffer's `lastTextToLog`. Desktop holds every line back by one: the
+     * command the player types at a prompt is written onto the prompt line
+     * after that line was logged, and the line's log text is re-assembled
+     * rather than the command going in on a line of its own; and a trigger on
+     * the next line that deletes this one ("gag the previous line") keeps it
+     * out of the log altogether. Each entry pairs a buffer line with its log
+     * text as it read when it was logged.
+     */
+    private pendingLog: { line: AnsiAwareBuffer; text: string }[] = [];
+
+    private logText(line: AnsiAwareBuffer): string {
+        // An HTML log line is TBuffer::bufferToHtml's: spans naming both
+        // colours, ending in <br> (the body is nowrap, so that is what breaks
+        // the lines); a text log takes the plain line.
+        return this.logHtml
+            ? line.toLogHtml({ foreground: this.logForeground, background: this.logBackground })
+            : line.text + '\n';
+    }
+
+    /** Write the held-back line out, unless a script has deleted it from the
+     *  buffer since (TBuffer::deleteLines drops it from the deferred state). */
+    private commitPendingLine(): void {
+        for (const { line, text } of this.pendingLog) {
+            if (!line.deleted) this.fileBuffer.push(text);
+        }
+        this.pendingLog = [];
+    }
+
+    private capture(text?: string | AnsiAwareBuffer, type?: string, timestamp?: number, joinedTo?: AnsiAwareBuffer[]): void {
         if (text === undefined || text === null) return;
         const entryType = type ?? 'mud';
         if (SKIP_TYPES.has(entryType)) return;
@@ -248,24 +317,32 @@ export class SessionLogger {
             plain: buffer.text,
         });
         this.totalCount++;
-        // An HTML log line is TBuffer::bufferToHtml's: spans naming both
-        // colours, ending in <br> (the body is nowrap, so that is what breaks
-        // the lines); a text log takes the plain line.
-        if (this.logFilePath) {
-            this.fileBuffer.push(this.logHtml
-                ? buffer.toLogHtml({ foreground: this.logForeground, background: this.logBackground })
-                : buffer.text + '\n');
+        if (this.logFilePath && entryType !== 'appendLog') {
+            const held = joinedTo?.length ? this.pendingLog.findIndex(p => p.line === joinedTo[0]) : -1;
+            if (held >= 0) {
+                // A command written onto the held-back prompt line: log() called
+                // again for the same line replaces its text instead of writing
+                // the old one, so the file gets "prompt command" as one line.
+                this.pendingLog = this.pendingLog.slice(0, held)
+                    .concat(joinedTo!.map(line => ({ line, text: this.logText(line) })));
+            } else {
+                this.commitPendingLine();
+                this.pendingLog = [{ line: buffer, text: this.logText(buffer) }];
+            }
         }
         if (this.buffer.length >= FLUSH_AT) void this.flush();
     }
 
     /**
-     * Mudlet `appendLog(text)` — append an arbitrary line to the current log,
-     * outside the normal output stream. Recorded with type 'appendLog'; any
-     * embedded ANSI is parsed for the HTML snapshot.
+     * Mudlet `appendLog(text)` — TBuffer::appendLog writes the text straight
+     * into the log file: no newline added, nothing escaped or wrapped in HTML,
+     * ANSI codes left as the raw bytes they are, and ahead of the held-back
+     * line (which is only written once the next line arrives). The log browser
+     * still records it as an entry of its own, with type 'appendLog'.
      */
     appendLine(text: string): void {
         this.capture(text ?? '', 'appendLog');
+        if (this.logFilePath && text) this.fileBuffer.push(text);
     }
 
     /** Persist any buffered lines and bump the session's end time/count. */
@@ -300,8 +377,11 @@ export class SessionLogger {
         }
     }
 
-    /** Detach the listener and write out whatever is buffered. */
+    /** Detach the listener and write out whatever is buffered. The file log is
+     *  left without its closing line, and the autolog sentinel stays, as
+     *  closing a profile that is still logging leaves them on desktop. */
     async stop(): Promise<void> {
+        this.commitPendingLine();
         if (this.flushTimer !== null) {
             clearInterval(this.flushTimer);
             this.flushTimer = null;

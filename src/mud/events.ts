@@ -154,7 +154,10 @@ export type MudClientEvents = {
     'charset.negotiated': [encoding: string, acceptedRequest?: boolean];
     'socket.incoming': [data: string];
     'socket.outgoing': [data: string];
-    'message': [text?: string | AnsiAwareBuffer, type?: string, timestamp?: number, isPrompt?: boolean];
+    /** `joinedTo`: the buffer lines this text was written onto instead of a
+     *  line of its own — a command echoed onto the GA prompt line it was typed
+     *  at (TConsole::printCommand's insertInLine branch). */
+    'message': [text?: string | AnsiAwareBuffer, type?: string, timestamp?: number, isPrompt?: boolean, joinedTo?: AnsiAwareBuffer[]];
     'flushLines': [groups: { text: string; type: string }[]];
     'gmcp': [payload: { path: string; value: unknown }];
     /** A `Client.GUI` server package-install request, in either wire format:

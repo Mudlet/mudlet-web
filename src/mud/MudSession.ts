@@ -498,11 +498,12 @@ export class MudSession {
             // has always shown it there, and storing it on a line of its own
             // as well put a phantom line in the buffer per command.
             const main = this.consoles.get('main');
+            let joinedTo: AnsiAwareBuffer[] | undefined;
             if (main) {
                 const line = new AnsiAwareBuffer(styled);
                 const prompt = this.scriptEchoDeferred ? null : main.appendToPromptLine(line);
                 if (prompt) {
-                    main.wrapAppendedLine(prompt);
+                    joinedTo = main.wrapAppendedLine(prompt);
                 } else {
                     main.appendLine(line, false);
                     main.wrapAppendedLine(line);
@@ -511,7 +512,10 @@ export class MudSession {
             // No "> " prefix: Mudlet echoes the bare command. When it joined the
             // prompt line above, OutputRenderer redraws that line (it sees the
             // line's prompt flag cleared) instead of adding a row.
-            this.events.emit('message', styled, 'echo', Date.now());
+            // The file log needs to know too: desktop logs the prompt line
+            // again with the command on it, not the command as a line of its
+            // own (mudlet-web#357).
+            this.events.emit('message', styled, 'echo', Date.now(), false, joinedTo);
         }
     }
 
