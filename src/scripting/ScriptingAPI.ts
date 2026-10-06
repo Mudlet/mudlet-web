@@ -3000,11 +3000,20 @@ export class ScriptingAPI {
             // The last line, not strictly the cursor's: TConsoleModel::echo
             // writes onto line size() - 1, which is the line above once a
             // trigger has deleted the one it matched.
-            const buf = this.mainConsole.getBuffer() ?? this.mainConsole.lastLine();
+            const matched = this.mainConsole.getBuffer();
+            const buf = matched ?? this.mainConsole.lastLine();
             if (buf) {
                 const nl = text.indexOf('\n');
                 const head = nl < 0 ? text : text.slice(0, nl);
-                if (head) buf.insert(buf.text.length, head, state ?? this.mainConsole.format.toSnapshot());
+                if (head) {
+                    buf.insert(buf.text.length, head, state ?? this.mainConsole.format.toSnapshot());
+                    // The line above a gagged one has already been drawn, and
+                    // nothing renders it again after this pass the way the
+                    // matched line is — so the text was in the buffer but never
+                    // on screen (mudlet-web#383). Redraw it now; a line not yet
+                    // drawn makes this a no-op and renders with the text anyway.
+                    if (!matched) buf.rerender();
+                }
                 if (nl < 0) return;          // stayed on the matched line
                 this.echoOnMatchedLine = false;
                 text = text.slice(nl);        // remainder leads with the advancing \n
@@ -4000,6 +4009,18 @@ export class ScriptingAPI {
      */
     beginLine(buffer: AnsiAwareBuffer, isPrompt = false): void {
         buffer.isPrompt = isPrompt;
+        // An echo without a newline from outside the trigger engine — an event
+        // handler, a timer — is still the open line when the next server line
+        // arrives. Desktop ends that line before the server's is added, so the
+        // echo comes first in the buffer and on screen. Left open here, the
+        // server line went into history above it, and flushDeferredEcho then
+        // emitted it after the line as a second copy of what the screen was
+        // already showing (mudlet-web#384). Emitted as 'script' so the renderer
+        // finalizes the element it is drawn in rather than adding one.
+        if (this.triggerLineDepth === 0 && !this.isDeferringEcho) {
+            const open = this.mainConsole.completePartialLine();
+            if (open) this.session.events.emit('message', open, 'script');
+        }
         // Snapshot the colours the SERVER sent, before any trigger runs. Mudlet
         // matches colour triggers against the line as it arrived, so a trigger
         // that recolours the line cannot change what a later (or nested) colour
@@ -4391,7 +4412,11 @@ export class ScriptingAPI {
         // emitting a raw flushLines event.
         // fromServer: false — an MXP `ESC[#z` in fed text is consumed but does
         // not switch the parser's mode, as in Mudlet.
-        this.host.processFlushBatch([{ text: joined.slice(0, cut), type: 'mud', fromServer: false }]);
+        // The batch keeps its last '\n': processFlushBatch drops one empty piece
+        // after a trailing terminator, so cutting it off here lost the last line
+        // whenever it was empty — "F1\n\n" committed only F1, and "\n" nothing,
+        // where Mudlet commits an empty line for each '\n' (mudlet-web#385).
+        this.host.processFlushBatch([{ text: joined.slice(0, cut + 1), type: 'mud', fromServer: false }]);
 
         // Appended rather than assigned: a trigger in the batch may have fed an
         // unterminated line of its own, which this one's tail follows in mMudLine.
@@ -4907,6 +4932,16 @@ export class ScriptingAPI {
         }
         // No current line: degrade to an echo so the text isn't lost.
         if (isMain) {
+            // Mid trigger pass that means deleteLine() removed the matched
+            // line. TConsole::insertText then hands TBuffer::insertInLine a y
+            // past the end, which appends the text to the buffer's last line —
+            // the trigger-mode echo — so it joins the line above rather than
+            // starting one of its own (mudlet-web#383).
+            if (this.inTriggerPass(this.mainConsole)) {
+                this.echoMain(text, this.mainConsole.format.toSnapshot());
+                this.drainMain();
+                return true;
+            }
             this.mainConsole.echoText(text);
             this.drainMain();
             return true;

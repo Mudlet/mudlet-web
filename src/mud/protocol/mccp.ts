@@ -62,12 +62,31 @@ export class MccpHandler {
      * Must be called BEFORE stripTelnetSequences.
      */
     processData(data: string): string {
+        return this.processChunks(data).join('');
+    }
+
+    /**
+     * {@link processData}, but cut where compression starts and where it ends:
+     * the plain text before an MCCP start, the inflated text, and the plain
+     * text after the end of the stream come back as separate pieces, in order.
+     * Desktop processes each of them as a unit of its own (cTelnet calls
+     * gotRest on the plain part before it inflates the rest), so a caller that
+     * runs the pieces through the pipeline one at a time keeps a trigger on the
+     * last line of one part from seeing out-of-band data from the next. Never
+     * empty: a frame that yields no bytes still comes back as one empty piece.
+     */
+    processChunks(data: string): string[] {
+        const chunks = this.chunks(data).filter(chunk => chunk.length > 0);
+        return chunks.length > 0 ? chunks : [''];
+    }
+
+    private chunks(data: string): string[] {
         if (this.compressing) {
             return this.decompress(data);
         }
 
         if (!this._enabled) {
-            return data;
+            return [data];
         }
 
         if (data.indexOf(MCCP_WILL) !== -1) {
@@ -83,7 +102,7 @@ export class MccpHandler {
             if (v1Idx !== -1 && (startIdx === -1 || v1Idx < startIdx)) startIdx = v1Idx;
         }
         if (startIdx === -1) {
-            return data;
+            return [data];
         }
 
         // Both start sequences are five bytes long.
@@ -92,12 +111,7 @@ export class MccpHandler {
 
         this.startCompression();
 
-        if (after.length > 0) {
-            const decompressed = this.decompress(after);
-            return before + decompressed;
-        }
-
-        return before;
+        return after.length > 0 ? [before, ...this.decompress(after)] : [before];
     }
 
     /** Forget the connection: the stream and what was agreed for it. */
@@ -149,9 +163,9 @@ export class MccpHandler {
         this.trailerLeft = ZLIB_TRAILER_LEN;
     }
 
-    private decompress(data: string): string {
+    private decompress(data: string): string[] {
         if (!this.inflator) {
-            return data;
+            return [data];
         }
 
         const bytes = stringToBytes(data);
@@ -189,7 +203,7 @@ export class MccpHandler {
                 // only print raw zlib bytes.
                 console.error('MCCP decompression error:', this.inflator.msg);
                 this.endStream();
-                return bytesToString(output);
+                return [bytesToString(output)];
             }
 
             pos += inf.ended ? inf.strm.next_in : input.length;
@@ -198,7 +212,7 @@ export class MccpHandler {
         const text = bytesToString(output);
 
         if (!inf.ended) {
-            return text;
+            return [text];
         }
 
         // The compressed stream has ended (Z_STREAM_END): skip its trailer,
@@ -208,12 +222,12 @@ export class MccpHandler {
         this.trailerLeft -= skipTrailer;
         pos += skipTrailer;
         if (this.trailerLeft > 0) {
-            return text;
+            return [text];
         }
 
         this.endStream();
         const rest = bytesToString([bytes.subarray(pos)]);
-        return rest.length > 0 ? text + this.processData(rest) : text;
+        return rest.length > 0 ? [text, ...this.chunks(rest)] : [text];
     }
 }
 

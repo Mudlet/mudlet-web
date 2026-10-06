@@ -116,8 +116,8 @@ describe('addCustomLine', () => {
   it('adds a point-list custom line that round-trips through getCustomLines', () => {
     rt.run('addRoom(1)');
     // A custom line decorates an exit the room already has — Mudlet refuses a
-    // direction with no exit (a stub counts), so give it one first.
-    rt.run('setExitStub(1, "north", true)');
+    // direction with no exit (a stub is not enough), so give it one first.
+    rt.run('addRoom(100); setExit(1, 100, "north")');
     expect(rt.run('return addCustomLine(1, {{0,0,0},{5,5,0}}, "north", "dot line", {255,0,0}, true)')).toBe(true);
     // Keyed by the SHORT direction name, which is what Mudlet's dirToString
     // normalises to and what its saved maps carry.

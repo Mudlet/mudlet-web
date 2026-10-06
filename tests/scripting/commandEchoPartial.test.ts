@@ -1,6 +1,6 @@
 // @vitest-environment node
 //
-// A command echo must close the in-flight script partial before it prints.
+// A command echo is written onto the in-flight script partial, and closes it.
 //
 // `echo("TEST")` with no trailing newline leaves the main console's `partial`
 // open and accumulating, and flushOutput emits that WHOLE partial as a
@@ -14,6 +14,11 @@
 // ggTEST, ggTESTTEST, ggTESTTESTTEST… where Mudlet prints one TEST per gg
 // (its printCommand writes into the very buffer line echo() is building, so
 // there is no second copy to make).
+//
+// And it is written onto that line rather than below it (mudlet-web#385):
+// desktop prints "command\n" into the current line, so `echo("P1")` then
+// typing `cmdA` is the single line `P1cmdA`. The finished line goes out as a
+// 'script' message, which the renderer applies to the partial's own element.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createTestRuntime, type TestRuntime } from '../createTestRuntime';
 
@@ -47,8 +52,8 @@ describe('command echo vs. an open script partial', () => {
         }
         expect(messages).toEqual([
             ['echo', 'gg'], ['script-partial', 'TEST'],
-            ['echo', 'gg'], ['script-partial', 'TEST'],
-            ['echo', 'gg'], ['script-partial', 'TEST'],
+            ['script', 'TESTgg'], ['script-partial', 'TEST'],
+            ['script', 'TESTgg'], ['script-partial', 'TEST'],
         ]);
     });
 
@@ -65,9 +70,9 @@ describe('command echo vs. an open script partial', () => {
         ]);
     });
 
-    it('keeps the closed partial in the buffer, above the command', () => {
-        // Closing it must not lose it: getLines()/the cursor APIs still have to
-        // see what the player can plainly read.
+    it('stores the command on the partial\'s line, and the line as finished', () => {
+        // getLines()/the cursor APIs see what the player can plainly read: the
+        // echo and the command on one line, as desktop's buffer has them.
         t.api.echo('TEST');
         t.api.flushOutput();
         t.session.echoCommand('gg');
@@ -78,6 +83,32 @@ describe('command echo vs. an open script partial', () => {
         // list. That is the contract EmptyBufferOps_spec is built on.
         const con = t.session.consoles.get('main')!;
         const lines = con.getLines(0, con.getLineCount() + 1).map(plain);
-        expect(lines).toEqual(['TEST', 'gg']);
+        expect(lines).toEqual(['TESTgg']);
+        // Finished: the next echo starts a line of its own.
+        t.api.echo('next');
+        t.api.flushOutput();
+        expect(messages.at(-1)).toEqual(['script-partial', 'next']);
+        expect(con.getLines(0, con.getLineCount() + 1).map(plain)).toEqual(['TESTgg']);
+    });
+
+    it('puts a command after an unterminated message on that message\'s line', () => {
+        // The deleteOldProfiles alias's messages have no trailing newline.
+        t.session.echoCommand('delete old profiles');
+        t.api.echo('No modules have been backed up yet, nothing to delete.');
+        t.api.flushOutput();
+        t.session.echoCommand('cmdB');
+        const con = t.session.consoles.get('main')!;
+        expect(con.getLines(0, con.getLineCount() + 1).map(plain)).toEqual([
+            'delete old profiles',
+            'No modules have been backed up yet, nothing to delete.cmdB',
+        ]);
+    });
+
+    it('starts a line of its own after a terminated echo, as before', () => {
+        t.api.echo('P2\n');
+        t.api.flushOutput();
+        t.session.echoCommand('cmdC');
+        const con = t.session.consoles.get('main')!;
+        expect(con.getLines(0, con.getLineCount() + 1).map(plain)).toEqual(['P2', 'cmdC']);
     });
 });

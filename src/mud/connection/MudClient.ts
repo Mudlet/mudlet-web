@@ -660,18 +660,26 @@ export class MudClient {
                     // which is the fallback for a proxy too old to say so.
                     this.markEstablished();
                     const decodedData = bytesToLatin1(new Uint8Array(event.data));
-                    const data = this.subnegRepair.process(this.mccpHandler.processData(decodedData));
-                    if (debugTelnetEnabled()) {
-                        logTelnetNegotiation('raw', decodedData);
-                        if (data !== decodedData) logTelnetNegotiation('post-mccp', data);
-                    }
-                    this.negotiator.processFrame(data);
-                    this.echoHandler.processData(data);
-                    this.eventBus.emit('socket.incoming', data);
-                    try {
-                        this.processIncomingData(data, undefined, receivedAt);
-                    } catch (processingError) {
-                        console.error('Error during data processing:', processingError);
+                    if (debugTelnetEnabled()) logTelnetNegotiation('raw', decodedData);
+                    // Split where compression starts or ends, and each piece
+                    // run through the pipeline on its own: desktop processes
+                    // the plain text before an MCCP start (gotRest) before it
+                    // inflates anything, and the inflated text before what
+                    // follows the end of the stream, so a trigger on the last
+                    // line of one part never sees GMCP from the next
+                    // (mudlet-web#384).
+                    const chunks = this.mccpHandler.processChunks(decodedData);
+                    for (const chunk of chunks) {
+                        const data = this.subnegRepair.process(chunk);
+                        if (debugTelnetEnabled() && (chunks.length > 1 || data !== decodedData)) {
+                            logTelnetNegotiation('post-mccp', data);
+                        }
+                        this.eventBus.emit('socket.incoming', data);
+                        try {
+                            this.processIncomingData(data, undefined, receivedAt);
+                        } catch (processingError) {
+                            console.error('Error during data processing:', processingError);
+                        }
                     }
                 } catch (error) {
                     console.error('Error processing incoming message:', error);
@@ -1309,8 +1317,6 @@ export class MudClient {
         // exactly as the socket's would be — the replies go nowhere while
         // unconnected, which sendRaw()'s readyState guard already ensures.
         data = this.subnegRepair.process(data);
-        this.negotiator.processFrame(data);
-        this.echoHandler.processData(data);
         this.processIncomingData(data);
     }
 
@@ -1358,9 +1364,17 @@ export class MudClient {
         if (start < processable.length) this.processSegment(processable.substring(start), false, ts);
     }
 
-    /** Strip, decode and assemble one run of a frame. `hasPrompt` means the run
-     *  ends in an IAC GA/EOR. */
+    /** Negotiate, strip, decode and assemble one run of a frame. `hasPrompt`
+     *  means the run ends in an IAC GA/EOR. */
     private processSegment(processable: string, hasPrompt: boolean, ts: number): void {
+        // Option negotiation is applied run by run, not for the whole frame up
+        // front: desktop handles the text up to each GA before the commands
+        // that follow it, so a WILL GMCP or WILL ECHO after a prompt must not
+        // be in effect while that prompt's triggers run (mudlet-web#384).
+        // The run holds only complete sequences — processIncomingData keeps an
+        // unfinished one back for the next frame.
+        this.negotiator.processFrame(processable);
+        this.echoHandler.processData(processable);
         let sanitized = stripTelnetSequences(processable, this.telnetOptionHandler).replace(/\r/g, '');
         // `fixUnnecessaryLinebreaks` works on the whole run, before it is
         // decoded or split, because desktop decides it on the raw block at the

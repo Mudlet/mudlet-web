@@ -147,6 +147,8 @@ describe('feedTriggers with CRLF (#184)', () => {
             processFlushBatch: groups => { for (const g of groups) batches.push(g.text); },
         });
         env.run('feedTriggers("FEED line\\r\\nSECOND\\r\\n")');
-        expect(batches).toEqual(['FEED line\nSECOND']);
+        // The batch keeps its last '\n', as a network batch does — without it
+        // processFlushBatch lost a final empty line (mudlet-web#385).
+        expect(batches).toEqual(['FEED line\nSECOND\n']);
     });
 });

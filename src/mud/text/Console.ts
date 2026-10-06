@@ -570,6 +570,15 @@ export class Console {
     cursorPastEnd(): boolean { return this.cursorIdx >= this.history.length; }
 
     deleteLine(): void {
+        // Mid trigger pass a cursor past the end is on no line at all: the
+        // matched line was the last one and an earlier deleteLine() removed it.
+        // TBuffer::deleteLines refuses a y past the end, so a second gag of the
+        // same line is a no-op on desktop. Clamping onto the line above deleted
+        // a line nobody matched, one more per extra call (mudlet-web#383).
+        // A trigger that cleared the window first is the exception: that left
+        // the one empty line clearWindow() keeps, which is a line to delete.
+        if (this.openLineSuspended && this.history.length > 0
+            && this.cursorIdx >= this.history.length) return;
         const idx = this.cursor;
         const buf = this.history[idx];
         // A cursor a script put on the open line — the last one, still being

@@ -553,10 +553,10 @@ describe('getCustomLines1 / removeCustomLine', () => {
     expect(env.run('return (getCustomLines1(999))')).toBe(null);   // missing room
   });
 
-  it('removeCustomLine is false when the room or line is absent', () => {
+  it('removeCustomLine is (nil, errMsg) when the room or line is absent', () => {
     env.run('addRoom(1)');
-    expect(env.run('return (removeCustomLine(1, "north"))')).toBe(false); // no such line
-    expect(env.run('return (removeCustomLine(999, "north"))')).toBe(false); // no such room
+    expect(env.run('return (removeCustomLine(1, "north"))')).toBeNull(); // no such exit or line
+    expect(env.run('return (removeCustomLine(999, "north"))')).toBeNull(); // no such room
   });
 });
 

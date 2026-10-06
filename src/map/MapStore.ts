@@ -2801,16 +2801,21 @@ export class MapStore {
 
     /**
      * Drop everything keyed by a special exit's command once the exit itself is
-     * gone: its door, its lock, its weight. Mudlet does this in every path that
-     * removes one (removeAllSpecialExitsToRoom cleans up "related elements
+     * gone: its door, its lock, its weight, its custom line. Mudlet does this
+     * in every path that removes one (TRoom::setSpecialExit(-1, cmd) drops the
+     * custom line; removeAllSpecialExitsToRoom cleans up "related elements
      * first"), and leaving them behind is not inert — the command name is the
-     * key, so re-adding the same exit later found a door and a lock it never
-     * asked for, and the room stayed unwalkable for reasons nothing showed.
+     * key, so re-adding the same exit later found a door, a lock and a line it
+     * never asked for, and the room stayed unwalkable for reasons nothing showed.
      */
     private clearSpecialExitAttributes(roomId: number, cmd: string): void {
         const room = this.rooms.get(roomId);
         if (!room) return;
         delete room.doors?.[cmd];
+        delete room.customLines?.[cmd];
+        delete room.customLinesColor?.[cmd];
+        delete room.customLinesStyle?.[cmd];
+        delete room.customLinesArrow?.[cmd];
         if (!this.hasExitOrSpecialExitNamed(room, cmd)) delete room.exitWeights?.[cmd];
         // The per-command set is the authority; the destination-keyed list on
         // the room is the mirror the binary writer repacks, so it is rebuilt
@@ -3229,24 +3234,32 @@ export class MapStore {
      * Mudlet `removeCustomLine(roomID, direction)` — drop the custom exit line
      * for a direction (stock direction number/name or a special-exit command).
      * The key form stored varies by map source, so we try the raw command, the
-     * canonical long name and the short name. Returns true when a line was
-     * removed, false when the room or the line doesn't exist.
+     * canonical long name and the short name. Like desktop, every refusal — no
+     * such room, no exit in that direction, no line on it — is a message (the
+     * Lua side's `nil, errMsg`); null means the line was removed.
      */
-    removeCustomLine(id: number, dir: number | string): boolean {
+    removeCustomLine(id: number, dir: number | string): string | null {
         const room = this.rooms.get(id);
-        if (!room) return false;
+        if (!room) return `removeCustomLine: number ${id} is not a valid roomID`;
+        const dirInt = parseDirection(dir);
+        const label = String(dir);
+        const exitKey = dirInt != null ? DIR_SHORT[dirInt] : label;
+        if (!this.hasExitOrSpecialExit(room, dirInt, exitKey)) {
+            return `removeCustomLine: roomID ${id} does not have an exit in a direction that can be identified from '${label}'`;
+        }
         const candidates: string[] = [];
         if (typeof dir === 'string') candidates.push(dir);
-        const dirInt = parseDirection(dir);
         if (dirInt != null) { candidates.push(DIR_FIELD[dirInt], DIR_SHORT[dirInt]); }
         const key = candidates.find(k => k != null && Object.prototype.hasOwnProperty.call(room.customLines, k));
-        if (key == null) return false;
+        if (key == null) {
+            return `removeCustomLine: roomID ${id} does not have a custom line for the exit '${label}'`;
+        }
         delete room.customLines[key];
         delete room.customLinesColor[key];
         delete room.customLinesStyle[key];
         delete room.customLinesArrow[key];
         this.notify();
-        return true;
+        return null;
     }
 
     /**
@@ -3290,8 +3303,11 @@ export class MapStore {
             points = target.map(p => [Number(p[0]), Number(p[1])] as [number, number]);
         }
 
+        // Desktop reads each channel with lua_tointeger, so a fractional colour
+        // is truncated before the range check and stored as the integer.
+        color = { r: Math.trunc(Number(color.r)), g: Math.trunc(Number(color.g)), b: Math.trunc(Number(color.b)) };
         for (const [channel, value] of [['red', color.r], ['green', color.g], ['blue', color.b]] as const) {
-            if (!Number.isFinite(Number(value)) || Number(value) < 0 || Number(value) > 255) {
+            if (!Number.isFinite(value) || value < 0 || value > 255) {
                 return `${channel} value ${value} needs to be between 0-255`;
             }
         }
@@ -3310,7 +3326,7 @@ export class MapStore {
         const key = dirInt != null ? DIR_SHORT[dirInt] : String(direction);
         if (!key) return `"${direction}" is not a direction this room has an exit for`;
         if (!this.hasExitOrSpecialExit(room, dirInt, key)) {
-            return `roomID ${id} does not have an exit in a direction that can be identified from "${direction}"`;
+            return `roomID ${id} does not have an exit in a direction that can be identified from '${direction}'`;
         }
 
         room.customLines[key] = points;
@@ -3331,10 +3347,10 @@ export class MapStore {
         if (dirInt != null) {
             const field = DIR_FIELD[dirInt];
             const target = field ? (room as unknown as Record<string, number>)[field] : 0;
-            if (target && target > 0) return true;
-            // A stub counts as an exit for drawing purposes.
-            if ((room.stubs ?? []).includes(dirInt)) return true;
-            return false;
+            // A stub alone is not an exit here: TRoom::hasExitOrSpecialExit
+            // looks at the exit itself, so desktop refuses a line for a
+            // direction that only has a stub.
+            return !!target && target > 0;
         }
         return Object.prototype.hasOwnProperty.call(room.mSpecialExits ?? {}, key);
     }
