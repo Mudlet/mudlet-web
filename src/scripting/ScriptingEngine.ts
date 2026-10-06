@@ -1585,6 +1585,9 @@ export class ScriptingEngine implements EngineHost {
             const { manifest, data } = prepared;
             this.savePackageVariables(data);
             this.noteModuleLoaded(manifest.name, data);
+            // A module whose XML will not read is installed and stays listed,
+            // and desktop says it could not be loaded.
+            if (data.parseError) this.announceUnreadableContents(manifest.name, 'module');
             const problems = this.collectInstallProblems(manifest.name,
                 () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data);
             // Host::installPackage raises the generic sysInstall and exactly one
@@ -3221,8 +3224,8 @@ export class ScriptingEngine implements EngineHost {
      *  all stop matching with nothing to go on. */
     /** Said when a package's XML would not read. Only modules were ever asked
      *  whether their contents loaded, so a package installed to silence. */
-    private announceUnreadableContents(packageName: string): void {
-        this.api.postInfo(`Failed to load package "${packageName}" — its contents could not be read,`
+    private announceUnreadableContents(packageName: string, kind: 'package' | 'module' = 'package'): void {
+        this.api.postInfo(`Failed to load ${kind} "${packageName}" — its contents could not be read,`
             + ' so it is installed but owns nothing.');
     }
 

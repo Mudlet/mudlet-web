@@ -3738,18 +3738,26 @@ export class ScriptingAPI {
      * Mudlet's `false, "no selection"` 2-tuple.
      */
     getSelection(windowName?: string): { text: string; start: number; length: number } | string | null {
+        // A name that is no console refuses, rather than reading as "nothing
+        // selected": GUIUtils' replace() goes on to the C replace() after any
+        // answer but the empty one, which answers nothing for such a window.
+        if (!this.consoleExists(windowName)) return `window "${windowName}" not found`;
         const sel = this.selectionOf(windowName);
         if (!sel) return null;
-        const buf = this.resolveBuffer(sel.windowName);
-        if (!buf) return null;
+        // A console whose cursor is on no stored line — just cleared down to
+        // its one empty line — still has a line for the selection to be read
+        // from: an empty one.
+        const text = this.resolveBuffer(sel.windowName)?.text ?? '';
         const { start, length } = sel;
         // The selection is columns on whatever line the cursor is on NOW, not on
-        // the line it was made on — so moving the cursor to a shorter line can
-        // strand it past the end. Mudlet reports that as a refusal rather than
-        // silently answering with the empty string the slice would give, which a
-        // script cannot tell from a line that really is blank there.
-        if (buf.length < start) return 'getSelection: the selection is no longer valid';
-        return { text: buf.text.slice(start, start + length), start, length };
+        // the line it was made on — so moving the cursor to a shorter line (or
+        // clearing the window) can strand it past the end. Mudlet reports that
+        // as a refusal rather than silently answering with the empty string the
+        // slice would give, which a script cannot tell from a line that really
+        // is blank there. A selection that starts AT the end is still valid,
+        // and reads as "".
+        if (text.length < start) return 'the selection is no longer valid';
+        return { text: text.slice(start, start + length), start, length };
     }
 
     /**
@@ -3790,6 +3798,16 @@ export class ScriptingAPI {
 
     isAnsiBgColor(ansiColor: number): boolean {
         return this.matchesAnsiColor('background', ansiColor);
+    }
+
+    /**
+     * Whether the main console's selection (or, with none, the cursor line's
+     * first column) is on a character — what isAnsiFgColor/isAnsiBgColor read.
+     * Desktop answers "current selection invalid in window 'main'" when it is
+     * not, ahead of checking the colour number.
+     */
+    hasReadableSelection(): boolean {
+        return this.readSelectionColor('foreground', undefined) !== null;
     }
 
     private matchesAnsiColor(channel: 'foreground' | 'background', ansiColor: number): boolean {
@@ -4028,12 +4046,8 @@ export class ScriptingAPI {
         // Pushed, not assigned: a trigger may call feedTriggers itself, and the
         // outer line's snapshot has to survive the nested pass.
         this.triggerLinePrompts.push(isPrompt);
-        const defaults = this.triggerDefaultColorKeys();
-        this.lineColorSnapshots.push(buffer.getSegments().map(seg => ({
-            fg: segmentColorKey(seg.state?.foreground) ?? defaults.fg,
-            bg: segmentColorKey(seg.state?.background) ?? defaults.bg,
-            text: seg.text ?? '',
-        })));
+        this.lineColorSnapshots.push(this.colorKeySegments(buffer, 0));
+        this.lineColorLive.push(buffer);
         // Which line the cursor was on before this one was appended, so a line
         // fed from inside a trigger can hand the outer pass its own line back.
         this.outerTriggerLines.push(this.triggerLineDepth > 0 ? this.mainConsole.getLineNumber() : -1);
@@ -4058,6 +4072,7 @@ export class ScriptingAPI {
      */
     endLine(): void {
         this.lineColorSnapshots.pop();
+        this.lineColorLive.pop();
         this.triggerLinePrompts.pop();
         // A trigger can call feedTriggers, which processes a line of its own
         // inside this one. Only the OUTERMOST line leaves trigger context —
@@ -4139,8 +4154,17 @@ export class ScriptingAPI {
         limit = Infinity,
     ): { text: string; start: number }[] {
         const runs: { text: string; start: number }[] = [];
-        const snapshot = this.lineColorSnapshots[this.lineColorSnapshots.length - 1];
-        if (!snapshot) return runs;
+        const retained = this.lineColorSnapshots[this.lineColorSnapshots.length - 1];
+        if (!retained) return runs;
+        // Past the end of the snapshot the colours are the line's own: text a
+        // trigger appended there (appendBuffer pastes onto the end of the line
+        // without refreshing the snapshot, unlike echo()) came from nowhere
+        // the server coloured, and is matched as it now stands.
+        const live = this.lineColorLive[this.lineColorLive.length - 1];
+        const retainedLength = retained.reduce((n, seg) => n + seg.text.length, 0);
+        const snapshot = live && live.length > retainedLength
+            ? [...retained, ...this.colorKeySegments(live, retainedLength)]
+            : retained;
         // `window` narrows the scan to one stretch of the line — a colour
         // trigger inside a filter chain is only shown what its parent captured,
         // so a colour elsewhere on the line is not a match for it.
@@ -4189,6 +4213,28 @@ export class ScriptingAPI {
      *  on the console's default colour holds the default's RGB, as a desktop
      *  TChar does. A stack, because a trigger can feedTriggers another line. */
     private lineColorSnapshots: { fg: RgbKey; bg: RgbKey; text: string }[][] = [];
+    /** The live buffer of each line in {@link lineColorSnapshots}, read for
+     *  whatever has been written past the snapshot's end. */
+    private lineColorLive: AnsiAwareBuffer[] = [];
+
+    /** `buffer`'s segments from character `from` on, as colour keys. */
+    private colorKeySegments(buffer: AnsiAwareBuffer, from: number): { fg: RgbKey; bg: RgbKey; text: string }[] {
+        const defaults = this.triggerDefaultColorKeys();
+        const out: { fg: RgbKey; bg: RgbKey; text: string }[] = [];
+        let at = 0;
+        for (const seg of buffer.getSegments()) {
+            const text = seg.text ?? '';
+            const segStart = at;
+            at += text.length;
+            if (at <= from) continue;
+            out.push({
+                fg: segmentColorKey(seg.state?.foreground) ?? defaults.fg,
+                bg: segmentColorKey(seg.state?.background) ?? defaults.bg,
+                text: text.slice(Math.max(0, from - segStart)),
+            });
+        }
+        return out;
+    }
 
     /** The console's default foreground/background as {@link RgbKey}s — what
      *  uncoloured text is drawn in, and what a `-2` pattern asks for. */
@@ -5413,6 +5459,24 @@ export class ScriptingAPI {
         const isMain = !windowName || windowName === 'main';
         const con = this.penConsole(windowName);
         if (!con) return;
+        if (isMain && this.echoOnMatchedLine) {
+            // Mid trigger pass the matched line is the buffer's last line —
+            // desktop fires before its terminator opens the next one — so
+            // TBuffer::appendBuffer writes the chunk onto the END of the matched
+            // line and only then ends it, exactly as echo(text .. "\n") from a
+            // trigger does. Appending to the open line below put the pasted
+            // text on a line of its own, out of reach of the triggers still to
+            // run on this one.
+            const matched = this.mainConsole.getBuffer();
+            const buf = matched ?? this.mainConsole.lastLine();
+            if (buf) {
+                buf.insertBuffer(buf.length, this.clipboard.clone());
+                if (!matched) buf.rerender();
+                this.echoMain('\n');
+                this.drainMain();
+                return;
+            }
+        }
         con.appendBuffer(this.clipboard.clone());
         if (isMain) this.drainMain();
         else this.drainWindowConsole(windowName!, con);

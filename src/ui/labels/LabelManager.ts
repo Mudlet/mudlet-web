@@ -120,6 +120,11 @@ export interface LabelState {
     /** Animated GIF player installed by Mudlet's setMovie. Rendered as a
      *  <canvas> instead of the html content (QLabel shows one or the other). */
     movie?: MoviePlayer;
+    /** A movie text has taken the place of: QLabel::setText drops the movie
+     *  from the label's display, but TLabel still owns the QMovie, so the
+     *  profile goes on counting it (getProfileStats().gifs) until setMovie
+     *  replaces it or the label is deleted. Nothing drives it any more. */
+    hiddenMovie?: MoviePlayer;
 }
 
 /** Event payload for label mouse callbacks. `button` is the Qt button *name*
@@ -414,6 +419,7 @@ export class LabelManager {
         const lbl = this.labels.get(name);
         if (!lbl) return false;
         lbl.movie?.stop();
+        lbl.hiddenMovie?.stop();
         this.labels.delete(name);
         this.indexRemove(lbl.parent, name);
         this.overlayZ.forget(lbl.parent, 'labels', name);
@@ -557,7 +563,7 @@ export class LabelManager {
         if (!lbl) return false;
         // QLabel shows one content at a time — setText replaces a running
         // movie, so echo()/setLabelText after setMovie drops the animation.
-        if (lbl.movie) { lbl.movie.stop(); lbl.movie = undefined; }
+        if (lbl.movie) { lbl.movie.stop(); lbl.hiddenMovie = lbl.movie; lbl.movie = undefined; }
         lbl.html = styleAnchors(html, lbl.linkStyle, lbl.visitedLinks);
         this.notify(lbl.parent);
         return true;
@@ -568,6 +574,8 @@ export class LabelManager {
         const lbl = this.labels.get(name);
         if (!lbl) return false;
         lbl.movie?.stop();
+        lbl.hiddenMovie?.stop();
+        lbl.hiddenMovie = undefined;
         lbl.movie = player;
         this.notify(lbl.parent);
         return true;
@@ -583,7 +591,10 @@ export class LabelManager {
     movieStats(): { total: number; active: number } {
         let total = 0, active = 0;
         for (const lbl of this.labels.values()) {
-            if (!lbl.movie) continue;
+            if (!lbl.movie) {
+                if (lbl.hiddenMovie) total++;
+                continue;
+            }
             total++;
             if (lbl.movie.isPlaying) active++;
         }
@@ -871,6 +882,7 @@ export class LabelManager {
         for (const l of this.labels.values()) {
             parents.add(l.parent);
             l.movie?.stop();
+            l.hiddenMovie?.stop();
         }
         this.labels.clear();
         this.byParent.clear();

@@ -1677,12 +1677,15 @@ export class LuaRuntime implements IScriptingRuntime {
                 // its own, so the colour lookup supplies it. A fire with no
                 // matches at all is a stay-open window (setTriggerStayOpen)
                 // firing on a line it did not match, with nothing captured.
-                const run = matches.length === 0 ? null : this.api.currentLineColorMatch(wantFg, wantBg);
-                this.setMatches(run === null ? [] : [run]);
+                // Every run of the colour on the line is a match of its own, as
+                // TTrigger::match_color_pattern collects them all: `matches` is
+                // {run1, run2, …}.
+                const runs = matches.length === 0 ? [] : this.api.currentLineColorRuns(wantFg, wantBg);
+                this.setMatches(runs.map(r => r.text));
                 try {
                     dispatchCb(cbId, 'tempColorTrigger');
                 } finally {
-                    if (run !== null) this.clearCaptureGlobals();
+                    if (runs.length > 0) this.clearCaptureGlobals();
                 }
                 fires++;
                 if (max > 0 && fires >= max) {

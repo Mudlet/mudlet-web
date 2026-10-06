@@ -98,6 +98,10 @@ export function installCursorBindings({ lua, api }: BindingContext): void {
     // captures arrive from Lua as strings.
     lua.global.set('isAnsiFgColor', (c: unknown) => api.isAnsiFgColor(Number(c)));
     lua.global.set('isAnsiBgColor', (c: unknown) => api.isAnsiBgColor(Number(c)));
+    // Whether the main console's selection starts on a character the two
+    // above can read: Bridge.lua refuses one that does not before it looks at
+    // the colour number, as desktop does.
+    lua.global.set('__ansiSelectionValid', () => api.hasReadableSelection());
     // Mudlet getConsoleBufferSize([consoleName]) → linesLimit, batchSize.
     // JS returns a 0-indexed [limit, batch] array (or nil for a missing
     // console); Bridge.lua unpacks it to the two return values.
