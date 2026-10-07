@@ -70,6 +70,12 @@ export interface FormatHyperlink {
      * for it (`{"style":{"underline":true}}` / a matching pseudo-class state).
      */
     autoUnderline?: boolean;
+    /**
+     * The Lua code a scripted link runs — every entry, for a popup. Read by
+     * the clipboard, which holds its own reference to each function a copied
+     * link calls (see `ScriptingAPI.clipboardLinkCommands`).
+     */
+    luaCommands?: string[];
 }
 
 export interface IndexedColor {

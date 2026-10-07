@@ -695,6 +695,13 @@ function addCustomLine(roomID, id_to, direction, style, color, arrow)
                             .. ' expected, but got a ' .. type(value) .. ' as the ' .. AXES[j]
                             .. '-coordinate at that index!)', 2)
                     end
+                    -- Room coordinates are ints: anything past them, NaN and
+                    -- the infinities included, is refused as it is walked
+                    local n = tonumber(value)
+                    if not (n >= -2147483648 and n <= 2147483647) then
+                        return nil, 'addCustomLine: the ' .. AXES[j] .. '-coordinate of point #' .. i
+                            .. ' is outside the range of room coordinates'
+                    end
                     present = present + 1
                 end
                 coords[j] = tostring(value == nil and 0 or value)
@@ -5582,17 +5589,48 @@ end
 -- then the console is looked for (__mudlet_console_missing), BEFORE any
 -- function is stored — a call that is refused or raises keeps no function.
 do
-    local _fns = {}
+    -- Each function is held straight in the registry, as desktop holds a link's
+    -- function by a registry reference: ConsoleClipboardByName_spec counts
+    -- those references. String keys keep clear of luaL_ref's integer slots.
+    local registry = debug.getregistry()
     local _id  = 0
-    function __mudlet_call_link(id) _fns[id]() end
+    local function key(id) return 'mudlet-web link ' .. id end
+    function __mudlet_call_link(id) registry[key(id)]() end
 
     -- Store a Lua function and return the Lua code that calls it. tostring()
     -- on the function would give "function: 0x…", which runs as nothing when
     -- clicked.
     function __mudlet_link_ref(fn)
         _id = _id + 1
-        _fns[_id] = fn
+        registry[key(_id)] = fn
         return '__mudlet_call_link(' .. _id .. ')'
+    end
+
+    -- The clipboard holds a reference of its own to every function a link it
+    -- copied calls, and lets go of them when it is given something else to
+    -- hold (TBuffer's copied link store). copy() always replaces the
+    -- clipboard, and cut() is a copy() and a deletion.
+    local clipboardHeld = 0
+    local function holdClipboardLinks()
+        for i = 1, clipboardHeld do
+            registry['mudlet-web clipboard link ' .. i] = nil
+        end
+        clipboardHeld = 0
+        for id in __clipboardLinkCommands():gmatch('__mudlet_call_link%((%d+)%)') do
+            clipboardHeld = clipboardHeld + 1
+            registry['mudlet-web clipboard link ' .. clipboardHeld] = registry[key(tonumber(id))]
+        end
+    end
+    local _rawCopy, _rawCut = copy, cut
+    function copy(...)
+        local result = _rawCopy(...)
+        holdClipboardLinks()
+        return result
+    end
+    function cut(...)
+        local result = _rawCut(...)
+        holdClipboardLinks()
+        return result
     end
 
     -- A popup or link command is Lua code or a Lua function, as in Mudlet.

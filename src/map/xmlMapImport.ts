@@ -215,7 +215,9 @@ export function parseXmlMapResult(xmlText: string): XmlMapParse {
 
     for (const roomEl of Array.from(root.getElementsByTagName('room'))) {
         const parsed = readRoom(roomEl);
-        if (parsed) map.rooms[parsed.id] = parsed.room;
+        // A room whose ID an earlier one in the file took is refused, as
+        // TRoomDB::addRoom refuses it, and the first keeps its exits
+        if (parsed && !(parsed.id in map.rooms)) map.rooms[parsed.id] = parsed.room;
     }
 
     // <environments><environment id color/></environments>

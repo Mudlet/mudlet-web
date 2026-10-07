@@ -68,6 +68,8 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
     // Mudlet `cut()`. copy() plus the deletion of what was copied. No window
     // argument in Mudlet — it only ever acts on the main console.
     lua.global.set('cut', () => api.cut());
+    // One string, as Bridge.lua only searches the code for the functions it calls.
+    lua.global.set('__clipboardLinkCommands', () => api.clipboardLinkCommands().join('\n'));
     // Mudlet `paste([window])`. Pastes the clipboard at the cursor (or
     // appends at the end when the cursor is on the last line).
     lua.global.set('paste', (name?: unknown) =>
