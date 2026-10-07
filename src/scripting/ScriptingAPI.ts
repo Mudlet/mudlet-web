@@ -5716,7 +5716,10 @@ export class ScriptingAPI {
         return this.labels.get(name)?.html ?? null;
     }
 
-    setWindow(windowName: string, name: string, x = 0, y = 0, show = true): boolean {
+    /** A move that would make a parent cycle answers desktop's refusal message
+     *  (TMainConsole::reparentWindow) rather than false, for Bridge.lua to
+     *  return as (nil, message). */
+    setWindow(windowName: string, name: string, x = 0, y = 0, show = true): boolean | string {
         const wm = this.session.windows;
         if (windowName !== 'main' && !wm.has(windowName) && !this.scrollBoxes.has(windowName)) {
             return false;
@@ -5742,7 +5745,7 @@ export class ScriptingAPI {
             // descendants would recurse forever in ScrollBoxOverlay.
             for (let p: string | undefined = windowName; p && p !== 'main';
                  p = this.scrollBoxes.get(p)?.parent) {
-                if (p === name) return false;
+                if (p === name) return `element '${name}' cannot be moved into itself or into one of its own children`;
             }
             this.scrollBoxes.setParent(name, windowName);
             this.scrollBoxes.move(name, x, y);

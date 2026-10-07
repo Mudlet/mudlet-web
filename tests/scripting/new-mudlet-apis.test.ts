@@ -299,8 +299,10 @@ describe('setWindow (element reparenting)', () => {
     rt.run('createScrollBox("sw_outer", "sw_inner", 0, 0, 50, 50)');
     // inner -> uw is fine; outer -> inner would make outer its own ancestor
     expect(rt.run('return setWindow("sw_uw", "sw_inner")')).toBe(true);
-    expect(rt.run('return setWindow("sw_inner", "sw_inner")')).toBe(false);
+    const cycle = "element '%s' cannot be moved into itself or into one of its own children";
+    expect(rt.run('return select(2, setWindow("sw_inner", "sw_inner"))')).toBe(cycle.replace('%s', 'sw_inner'));
     rt.run('return setWindow("sw_outer", "sw_inner")'); // restore nesting
-    expect(rt.run('return setWindow("sw_inner", "sw_outer")')).toBe(false);
+    expect(rt.run('return setWindow("sw_inner", "sw_outer")')).toBeNull();
+    expect(rt.run('return select(2, setWindow("sw_inner", "sw_outer"))')).toBe(cycle.replace('%s', 'sw_outer'));
   });
 });

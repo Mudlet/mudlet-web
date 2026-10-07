@@ -171,15 +171,15 @@ describe('mudlet-web#383 — gag and rewrite parity with desktop', () => {
                 api.clearWindow();
                 api.moveCursor(undefined, 0, 0);
                 api.deleteLine();
-                emptied = api.getLines(0, 1)?.[0];
+                emptied = api.getLines(0, 1);
                 api.echo('from inside\n');
             };
 
             feed('before\nEMPTY\n');
 
             // EmptyBufferOps_spec: the buffer is emptied outright, then the echo
-            // writes into it again.
-            expect(emptied).toBe('ERROR: invalid line number');
+            // writes into it again. An empty buffer has no line 0 to read.
+            expect(emptied).toEqual([]);
             expect(lines()).toContain('from inside');
         });
     });

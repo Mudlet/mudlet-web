@@ -161,7 +161,8 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
     });
     lua.global.set('__getLabelText', (name: unknown) =>
         (typeof name === 'string' ? api.getLabelText(name) : null));
-    // Mudlet setWindow(windowName, name[, x, y, show]) → bool. Reparents a
+    // Mudlet setWindow(windowName, name[, x, y, show]) → bool, or the refusal
+    // message for a parent cycle (Bridge.lua makes it (nil, msg)). Reparents a
     // label / cmdline / scroll box / miniconsole into another window
     // ('main', a userwindow, or a scroll box). Geyser's setContainerWindow
     // and GUIUtils' setGaugeWindow drive this.

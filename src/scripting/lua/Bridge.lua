@@ -1349,7 +1349,8 @@ do
     -- first, matching the order Mudlet resolves them in. Only the "no such
     -- name" cases become (nil, message); the raw result is passed straight
     -- through otherwise, because it still says false for moves that exist but
-    -- are illegal (reparenting a userwindow, or making a cycle).
+    -- are illegal (reparenting a userwindow). A cycle is refused with desktop's
+    -- message, which the raw binding hands back as a string.
     local _rawSetWindow = setWindow
     function setWindow(parent, element, ...)
         -- The TYPE is settled before the lookup: a table where a name belongs is
@@ -1377,7 +1378,12 @@ do
         -- old coordinates that Geyser's changeContainer issues right after
         -- looks like a no-op and the widget stays at 0,0.
         __mudlet_forget_geometry(element)
-        return _rawSetWindow(parent, element, ...)
+        local result = _rawSetWindow(parent, element, ...)
+        -- a move that would make a parent cycle comes back as its message
+        if type(result) == 'string' then
+            return nil, result
+        end
+        return result
     end
 
     -- `what` names argument #1 the way Mudlet's own message does, and the
