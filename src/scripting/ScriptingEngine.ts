@@ -82,7 +82,7 @@ import {MapOpenNotifier} from './MapOpenNotifier';
 import {installPackageFonts, refreshPackageFonts} from '../import/packageFonts';
 import {installPackageFromBytes, moduleXmlAbsolutePath, prepareModuleInstallFromVfsPath, preparePackageInstall, reloadModuleFromVfs, uninstallPackageFiles} from '../import/packageInstaller';
 import type {MudletImportResult} from '../import/mudletXmlImport';
-import {clientGuiDeclinesBaseUi, downloadFromUrl, filenameFromUrl, isClientGuiRedelivery, parseClientGuiPayload, parseClientMapPayload} from '../import/remotePackageInstall';
+import {clientGuiDeclinesBaseUi, clientGuiPackageName, downloadFromUrl, filenameFromUrl, isClientGuiRedelivery, parseClientGuiPayload, parseClientMapPayload} from '../import/remotePackageInstall';
 import {ensureDefaultPackages} from '../import/defaultPackages';
 import {serializeMudletXml, type SerializeInput} from '../import/mudletXmlExport';
 import {isMudletProfileVfs, readNewestParseableXml} from '../import/mudletLink';
@@ -2916,18 +2916,38 @@ export class ScriptingEngine implements EngineHost {
         // Mudlet does without a word; this keeps the install itself honest.
         if (!this.serverGuiAccepted()) return;
 
-        // Same URL already installed, and the server names no newer delivery
-        // revision → no-op. Compared against sourceVersion (what the server
-        // said last time), never the package's own version — see
-        // isClientGuiRedelivery for why an absent version means "skip".
-        const existing = (useAppStore.getState().connectionPackages[this.connectionId] ?? [])
-            .find(p => p.sourceUrl === url);
+        // Already installed, and the server names no newer delivery revision →
+        // no-op. Compared against sourceVersion (what the server said last
+        // time), never the package's own version — see isClientGuiRedelivery.
+        // Found by its URL, or else by the name desktop derives from that URL,
+        // which is how desktop finds it: a package the player installed by hand
+        // is then upgraded (from version -1, nothing having been recorded)
+        // rather than installed over.
+        const installed = useAppStore.getState().connectionPackages[this.connectionId] ?? [];
+        const urlName = clientGuiPackageName(url);
+        const existing = installed.find(p => p.sourceUrl === url)
+            ?? installed.find(p => p.kind !== 'module' && p.name === urlName);
         if (isClientGuiRedelivery(existing, version)) return;
 
         const vfs = this.vfs;
         if (!vfs) {
             this.api.printError(`[Client.GUI] no profile VFS available`);
             return;
+        }
+
+        // An upgrade takes the old version out first, through the ordinary
+        // uninstall (cTelnet::handleGUIPackageInstallationAndUpgrade): its
+        // sysUninstall/sysUninstallPackage handlers tear down what it built,
+        // and its items and files go. Installing over it instead left the old
+        // version's event handlers running beside the new one's.
+        if (existing) {
+            this.postMainMessage(`[ INFO ]  - Upgrading the GUI to new version '${version}' from version `
+                + `'${existing.sourceVersion ?? '-1'}' (url='${url}').`);
+            if (!this.uninstallPackageByName(existing.name)) {
+                this.postMainMessage(`[ WARN ]  - Could not remove "${existing.name}" to upgrade it. `
+                    + 'The game will offer the upgrade again.');
+                return;
+            }
         }
 
         const displayName = filenameFromUrl(url).replace(/\.[^.]+$/, '') || 'package';

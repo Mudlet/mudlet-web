@@ -60,6 +60,19 @@ export function filenameFromUrl(url: string): string {
     return segment || 'package.xml';
 }
 
+/**
+ * The name desktop gives a `Client.GUI` package (cTelnet's
+ * handleGUIPackageInstallationAndUpgrade): the URL's last segment with the
+ * package extensions and every dot, slash and backslash taken out. It is what desktop
+ * looks for among the installed packages to tell a first install from an
+ * upgrade — so a package the player installed by hand counts as installed.
+ */
+export function clientGuiPackageName(url: string): string {
+    return filenameFromUrl(url)
+        .replace(/\.(zip|trigger|xml|mpackage)/gi, '')
+        .replace(/[/\\.]/g, '');
+}
+
 export interface ClientGuiPayload {
     url: string;
     version: string;
