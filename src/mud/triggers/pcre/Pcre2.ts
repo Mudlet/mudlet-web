@@ -35,6 +35,10 @@
  * carries the NOTEMPTY_ATSTART | ANCHORED retry that loop makes after an empty
  * match, as Mudlet's does.
  *
+ * A fourth is {@link leadingDotPlus}: a pattern that opens with `.+` is
+ * matched ANCHORED, newline-free stretch by newline-free stretch, which finds
+ * the same match without trying the pattern at every offset of a long line.
+ *
  * The alias engine compiles its patterns with it too (PatternEngine), and so
  * does the Lua `rex` module (rex.ts); all of them share the same wasm module
  * instance.
@@ -54,6 +58,29 @@ export const PCRE2_NO_UTF_CHECK = 0x40000000;
 /** pcre2_match options Mudlet's global-match loop retries an empty match with. */
 const PCRE2_NOTEMPTY_ATSTART = 0x00000008;
 const PCRE2_ANCHORED = 0x80000000;
+/** pcre2_match options that leave the leading-`.+` anchoring equivalent (see
+ *  {@link leadingDotPlus}): NOTBOL, NOTEOL, NOTEMPTY, NOTEMPTY_ATSTART, NO_JIT,
+ *  ENDANCHORED and NO_UTF_CHECK. Anything else — the PARTIAL modes above all,
+ *  which report a match that can start anywhere — runs the plain search. */
+const DOT_PLUS_SAFE_OPTIONS = 0x1 | 0x2 | 0x4 | PCRE2_NOTEMPTY_ATSTART | 0x2000 | 0x20000000 | PCRE2_NO_UTF_CHECK;
+
+/**
+ * The match limit trigger and alias patterns are compiled with, as a
+ * start-of-pattern verb. PCRE2's default is 10 000 000, which desktop's JIT
+ * gets through in a blink; the wasm build here is the interpreter, at about
+ * 50 ns a step, so a nested quantifier like `^(\w+\s?)+$` failing on an
+ * ordinary 50-character line spent half a second to several seconds per line
+ * before giving up (#435) — the page frozen all the while, for a pattern that
+ * then counts as no match anyway (#361). Half a million steps gives up in
+ * tens of milliseconds, and is still more than ten times what an ordinary
+ * pattern needs on a 20 kB line (a few tens of thousands), so no line that
+ * matched before stops matching. A pattern carrying its own
+ * `(*LIMIT_MATCH=n)` comes after this one, and its value wins.
+ * Lua's `rex` keeps the library default: it is lrexlib, where a script can
+ * read the limit back (rex.config) and handle MATCHLIMIT itself.
+ */
+export const ENGINE_MATCH_LIMIT = 500_000;
+export const ENGINE_MATCH_LIMIT_VERB = `(*LIMIT_MATCH=${ENGINE_MATCH_LIMIT})`;
 
 type Cfunc = (...args: number[]) => number;
 interface CFuncs {
@@ -138,9 +165,125 @@ export function resetLineBuffer(): void {
     bufLen = 0;
 }
 
+// ── Leading `.+` ──────────────────────────────────────────────────────────────
+// A pattern like generic_mapper's `.+ (?:is not going to|will not) let you
+// pass.$` has no first character for PCRE2 to look for, so an unanchored search
+// tries it at every offset, and at each one the `.+` runs to the end of the
+// line and backtracks all the way: quadratic. A 20 kB line took the wasm
+// interpreter (no JIT here) over fifteen seconds to fail it (#435). PCRE2 spots
+// a leading `.*` and anchors it itself (DOTSTAR_ANCHOR), but not `.+`.
+//
+// It can be anchored all the same. Say the pattern is `.+R` and a match
+// starts at p, after the start offset s but before the first newline past s.
+// Its `.+` covers p..q-1 for some q > p, none of them a newline, so s..q-1 is
+// newline-free too and the `.+` can cover that instead, leaving R to match
+// from q exactly as before — R cannot tell where the match began. So if any
+// match starts in that stretch, one starts at s, and since PCRE2 returns the
+// leftmost match, the search from s finds it there: the same match the
+// ANCHORED search finds, captures and all. The lazy `.+?` and possessive
+// `.++` try the same coverings (the possessive only the longest, from either
+// start), so the argument holds for them too. Nothing can start ON a newline,
+// as `.` does not match one, so if the anchored search fails the next
+// candidate is just past the next newline: {@link Pcre2.matchFrom} steps from
+// stretch to stretch, which is one call for a trigger's line (whose only
+// newline is the one the engine appends at its end).
+//
+// What breaks the argument, and so is refused:
+//  - a top-level `|`: another branch need not start with `.+`;
+//  - `(?s)`/DOTALL, where `.` also matches the newline;
+//  - a newline convention other than LF, the build's default, so that `.`
+//    excludes exactly `\n`;
+//  - backtracking verbs and callouts — (*COMMIT), (*SKIP), (*PRUNE) and the
+//    rest act on the start offset of the attempt, which anchoring changes;
+//  - `(?x)`, whose comments and spacing this scan does not try to follow.
+// `\G` is fine: it compares against the start offset given to pcre2_match,
+// which is the same for every attempt either way.
+
+/** Start-of-pattern verbs that leave {@link leadingDotPlus} sound. */
+const DOT_PLUS_VERBS = /^\((?:\*(?:UTF|UTF16|UCP|LF|NO_AUTO_POSSESS|NO_START_OPT|NO_DOTSTAR_ANCHOR|NO_JIT|NOTEMPTY|NOTEMPTY_ATSTART|BSR_ANYCRLF|BSR_UNICODE|LIMIT_(?:MATCH|DEPTH|HEAP|RECURSION)=\d+))\)/;
+/** An option setting (not a group): `(?i)`, `(?-i)`, `(?im-U)`… */
+const OPTION_SETTING = /^\(\?([a-zA-Z^-]*)\)/;
+
+/**
+ * Whether `pattern` (as compiled, with no flags) starts with a top-level `.+`,
+ * `.+?` or `.++` that PCRE2 may be told to match ANCHORED — see the note above.
+ * Conservative: anything the scan is unsure of is a no.
+ */
+export function leadingDotPlus(pattern: string): boolean {
+    let i = 0;
+    for (let m; (m = DOT_PLUS_VERBS.exec(pattern.substring(i))); ) i += m[0].length;
+    for (let m; (m = OPTION_SETTING.exec(pattern.substring(i))); ) {
+        if (/[sx^]/.test(m[1])) return false;
+        i += m[0].length;
+    }
+    if (pattern[i] !== '.' || pattern[i + 1] !== '+') return false;
+    i += 2;
+    if (pattern[i] === '?' || pattern[i] === '+') i++;
+    // A `{` straight after is a quantifier on the quantifier, or a literal —
+    // either way not the shape argued for.
+    if (pattern[i] === '{') return false;
+    // The rest: no top-level alternation, no verbs or callouts, no (?x).
+    let depth = 0;
+    const n = pattern.length;
+    while (i < n) {
+        const c = pattern[i];
+        if (c === '\\') {
+            if (pattern[i + 1] === 'Q') {
+                const end = pattern.indexOf('\\E', i + 2);
+                if (end < 0) return true; // literal to the end of the pattern
+                i = end + 2;
+            } else {
+                i += 2;
+            }
+        } else if (c === '[') {
+            // A class: `]` first (after an optional `^`) is literal, `[:…:]`
+            // is a POSIX class, and an escape may hide a `]`.
+            i++;
+            if (pattern[i] === '^') i++;
+            if (pattern[i] === ']') i++;
+            while (i < n && pattern[i] !== ']') {
+                if (pattern[i] === '\\' && pattern[i + 1] === 'Q') return false;
+                if (pattern[i] === '\\') i += 2;
+                else if (pattern[i] === '[' && pattern[i + 1] === ':') {
+                    const end = pattern.indexOf(':]', i + 2);
+                    i = end < 0 ? i + 1 : end + 2;
+                } else i++;
+            }
+            i++;
+        } else if (c === '(') {
+            if (pattern[i + 1] === '*') return false;
+            if (pattern[i + 1] === '?') {
+                const next = pattern[i + 2];
+                if (next === 'C') return false;
+                if (next === '#') {
+                    const end = pattern.indexOf(')', i);
+                    if (end < 0) return false;
+                    i = end + 1;
+                    continue;
+                }
+                const opts = /^[a-zA-Z^-]*[):]/.exec(pattern.substring(i + 2));
+                if (opts && /x/.test(opts[0])) return false;
+            }
+            depth++;
+            i++;
+        } else if (c === ')') {
+            depth--;
+            i++;
+        } else if (c === '|') {
+            if (depth <= 0) return false;
+            i++;
+        } else {
+            i++;
+        }
+    }
+    return true;
+}
+
 export default class Pcre2 {
     private codePtr = 0;
     private matchData = 0;
+    /** {@link leadingDotPlus} of the pattern: match it ANCHORED, stretch by stretch. */
+    private readonly dotPlus: boolean;
     private readonly nametable: Record<number, string> = {};
     /** The name table in PCRE2's own order (sorted by name), duplicates kept. */
     private readonly nameEntries: Array<[string, number]> = [];
@@ -215,6 +358,7 @@ export default class Pcre2 {
             throw err;
         }
         this.codePtr = ptr;
+        this.dotPlus = flags === '' && leadingDotPlus(pattern);
 
         // Extract the named-group table once at compile time.
         const nameCount = cfunc.getMatchNameCount(ptr);
@@ -268,6 +412,25 @@ export default class Pcre2 {
      */
     matchFrom(subject: string, startOffset: number, options = 0): Pcre2Match | null {
         if (this.codePtr === 0) return null;
+        if (!this.dotPlus || (options & ~DOT_PLUS_SAFE_OPTIONS) !== 0) return this.matchOnce(subject, startOffset, options);
+        // Leading `.+`: the same match, anchored at the start of each
+        // newline-free stretch in turn (see leadingDotPlus). The first call
+        // checks the subject's UTF from the start offset on, which covers
+        // every later one.
+        let at = startOffset;
+        for (;;) {
+            const m = this.matchOnce(subject, at, (options | PCRE2_ANCHORED) >>> 0);
+            if (m !== null) return m;
+            const newline = subject.indexOf('\n', at);
+            // `.+` needs a character that is not a newline, so the end of the
+            // subject is no candidate.
+            if (newline < 0 || newline + 1 >= subject.length) return null;
+            at = newline + 1;
+            options = (options | PCRE2_NO_UTF_CHECK) >>> 0;
+        }
+    }
+
+    private matchOnce(subject: string, startOffset: number, options: number): Pcre2Match | null {
         ensureLineEncoded(subject);
         if (this.matchData === 0) this.matchData = cfunc.createMatchData(this.codePtr);
 

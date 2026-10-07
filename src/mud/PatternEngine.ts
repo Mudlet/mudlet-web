@@ -1,5 +1,5 @@
 import { buildEffectivelyEnabledIds, inTreeOrder } from '../storage/schema';
-import Pcre2 from './triggers/pcre/Pcre2';
+import Pcre2, { ENGINE_MATCH_LIMIT_VERB } from './triggers/pcre/Pcre2';
 
 type TempFn = (matches: RegExpMatchArray) => void;
 
@@ -16,8 +16,9 @@ type PatternItem = {
 
 // Same verbs TriggerEngine prepends: Mudlet compiles alias patterns with
 // PCRE2_UTF | PCRE2_UCP just as it does trigger ones, so `\w` and friends
-// classify by Unicode property. See the note on UNICODE_VERBS there.
-const UNICODE_VERBS = '(*UTF)(*UCP)';
+// classify by Unicode property. See the note on UNICODE_VERBS there; the
+// match limit is TriggerEngine's too (ENGINE_MATCH_LIMIT).
+const UNICODE_VERBS = '(*UTF)(*UCP)' + ENGINE_MATCH_LIMIT_VERB;
 
 /**
  * An alias pattern, compiled with PCRE2 the way TAlias::compileRegex does —

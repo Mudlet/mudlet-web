@@ -1,4 +1,4 @@
-import PCRE, { pcreSubject } from './pcre/Pcre2';
+import PCRE, { ENGINE_MATCH_LIMIT_VERB, pcreSubject } from './pcre/Pcre2';
 import type { TriggerNode, TriggerPattern } from '../../storage/schema';
 import { isColorizing } from '../../storage/schema';
 import { COLOR_DEFAULT, COLOR_IGNORED, parseColorPattern } from './legacyColorPatterns';
@@ -559,7 +559,9 @@ function pcreToMatchResult(m: PcreMatch): MatchResult {
 // a run of them, so a pattern carrying its own `(*...)` still compiles. Note the
 // library runs in 16-bit mode, which makes UTF mean UTF-16: offsets stay in the
 // code units JS strings are indexed by, so nothing downstream has to convert.
-const UNICODE_VERBS = '(*UTF)(*UCP)';
+// The match limit is the wasm build's own, lower than desktop's: see
+// ENGINE_MATCH_LIMIT.
+const UNICODE_VERBS = '(*UTF)(*UCP)' + ENGINE_MATCH_LIMIT_VERB;
 
 /**
  * Compile a PCRE pattern. Returns null if compilation fails, with the failure
