@@ -161,6 +161,7 @@ export class ProfileVFS {
                     const fs = disableAtime(await resolveMountConfig({ backend: WebAccess, handle }) as Syncable);
                     claimSlot();
                     mount(profilePath, fs);
+                    ensureProfileDirs(profilePath);
                     return new ProfileVFS(connectionId, fs, 'folder', handle);
                 } catch (err) {
                     console.warn('[ProfileVFS] folder mount failed, falling back to IDB:', err);
@@ -175,9 +176,7 @@ export class ProfileVFS {
         const fs = disableAtime(await resolveMountConfig({ backend: IndexedDB, storeName: profileVfsDatabaseName(connectionId) }) as Syncable);
         claimSlot();
         mount(profilePath, fs);
-        if (!existsSync(profilePath)) {
-            mkdirSync(profilePath, { recursive: true });
-        }
+        ensureProfileDirs(profilePath);
         return new ProfileVFS(connectionId, fs, 'idb');
     }
 
@@ -610,6 +609,24 @@ function normalizePath(path: string): string {
         out.push(p);
     }
     return '/' + out.join('/');
+}
+
+/**
+ * The directories desktop makes every time a profile loads: the profile root
+ * and its `log` folder (Host's constructor mkpaths `<profile>/log`). Scripts
+ * write `getMudletHomeDir() .. "/log/..."` straight away, and `io.open` —
+ * rightly — won't create a missing parent, so the folder has to be there.
+ */
+function ensureProfileDirs(profilePath: string): void {
+    if (!existsSync(profilePath)) mkdirSync(profilePath, { recursive: true });
+    const log = `${profilePath}/log`;
+    // A file the user left named `log` is theirs; desktop's mkpath fails
+    // quietly over it too, and the profile still opens.
+    try {
+        if (!existsSync(log)) mkdirSync(log);
+    } catch (err) {
+        console.warn('[ProfileVFS] could not create the log directory:', err);
+    }
 }
 
 function ensureParentDir(absPath: string): void {
