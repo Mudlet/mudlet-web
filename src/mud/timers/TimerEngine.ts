@@ -1,6 +1,7 @@
 import { ItemIdSequence } from '../ItemIdSequence';
 import type { TimerNode } from '../../storage/schema';
 import { buildEffectivelyEnabledIds } from '../../storage/schema';
+import { workerClock, type Clock, type ClockHandle } from './workerClock';
 
 export type { TimerNode };
 
@@ -8,7 +9,7 @@ type TempFn = () => void;
 type ExecuteFn = (timer: TimerNode) => void;
 
 interface TimerEntry {
-    handle: ReturnType<typeof setTimeout>;
+    handle: ClockHandle;
     repeat: boolean;
     /** Epoch ms when the timer was scheduled — start point for remainingTime. */
     start: number;
@@ -83,6 +84,10 @@ export class TimerEngine {
     private firingDepth = 0;
     setIdSequence(seq: ItemIdSequence): void { this.idSeq = seq; }
 
+    /** Every timeout is armed on `clock`, which keeps time in a worker so a
+     *  hidden tab doesn't throttle the timers (see workerClock). */
+    constructor(private readonly clock: Clock = workerClock) {}
+
     /** Number of live session-scoped temp timers (Mudlet `getProfileStats` temp
      *  count). Killed-but-unreaped timers are not live and don't count. */
     get tempCount(): number {
@@ -136,7 +141,7 @@ export class TimerEngine {
                     // replaced the entry with a freshly armed one.
                     const entry = this.temp.get(id);
                     if (entry) {
-                        clearTimeout(entry.handle);
+                        this.clock.clearTimeout(entry.handle);
                         entry.dead = true;
                     }
                 }
@@ -144,7 +149,7 @@ export class TimerEngine {
             }
         };
         const arm = (): void => {
-            const handle = setTimeout(fire, intervalMs);
+            const handle = this.clock.setTimeout(fire, intervalMs);
             this.temp.set(id, { handle, repeat, start: Date.now(), intervalMs, fire, arm });
         };
         arm();
@@ -166,7 +171,7 @@ export class TimerEngine {
         const entry = map.get(key);
         if (!entry || entry.dead || entry.disabled || !entry.arm) return;
         if (Date.now() < entry.start + entry.intervalMs) return;
-        clearTimeout(entry.handle);
+        this.clock.clearTimeout(entry.handle);
         entry.arm();
     }
 
@@ -197,12 +202,12 @@ export class TimerEngine {
             // Cancel the pending timeout and let `fire` do the bookkeeping — it
             // retires a one-shot and re-arms a repeat, so a repeating timer ends
             // up correctly scheduled for its next tick instead of double-firing.
-            clearTimeout(entry.handle);
+            this.clock.clearTimeout(entry.handle);
             due.push(entry.fire);
         }
         for (const entry of this.perm.values()) {
             if (now < entry.start + entry.intervalMs) continue;
-            clearTimeout(entry.handle);
+            this.clock.clearTimeout(entry.handle);
             // entry.fire retires a one-shot and re-arms a repeat itself.
             due.push(entry.fire);
         }
@@ -242,7 +247,7 @@ export class TimerEngine {
         const entry = this.temp.get(id);
         if (!entry || entry.dead) return false;
         if (!enabled) {
-            if (!entry.disabled) clearTimeout(entry.handle);
+            if (!entry.disabled) this.clock.clearTimeout(entry.handle);
             entry.disabled = true;
         } else if (entry.disabled) {
             // arm() replaces the entry, which drops the disabled flag.
@@ -257,7 +262,7 @@ export class TimerEngine {
         // achieved nothing and has to say so.
         if (!entry || entry.dead) return false;
         // Every temp timer is a setTimeout now, repeating ones included.
-        clearTimeout(entry.handle);
+        this.clock.clearTimeout(entry.handle);
         // Marked rather than dropped — see TimerEntry.dead. reapKilled() frees it.
         entry.dead = true;
         return true;
@@ -577,7 +582,7 @@ export class TimerEngine {
                 try { fire(); } finally { this.rearmIfOverdue(this.perm, timer.id); }
             };
             const arm = (): void => {
-                const handle = setTimeout(tick, intervalMs);
+                const handle = this.clock.setTimeout(tick, intervalMs);
                 this.perm.set(timer.id, { handle, repeat: true, start: Date.now(), intervalMs, fire: tick, arm });
             };
             arm();
@@ -589,7 +594,7 @@ export class TimerEngine {
                     this.permNameToId.delete(timer.name);
                 }
             };
-            const handle = setTimeout(() => { retire(); fire(); }, intervalMs);
+            const handle = this.clock.setTimeout(() => { retire(); fire(); }, intervalMs);
             this.perm.set(timer.id, {
                 handle, repeat: false, start, intervalMs,
                 fire: () => { retire(); fire(); },
@@ -600,7 +605,7 @@ export class TimerEngine {
     private killPermHandle(id: string): void {
         const entry = this.perm.get(id);
         if (!entry) return;
-        clearTimeout(entry.handle);
+        this.clock.clearTimeout(entry.handle);
         this.perm.delete(id);
         this.prevDesc.delete(id);
     }
@@ -650,7 +655,7 @@ export class TimerEngine {
     }
 
     private stopPerm(): void {
-        for (const { handle } of this.perm.values()) clearTimeout(handle);
+        for (const { handle } of this.perm.values()) this.clock.clearTimeout(handle);
         this.perm.clear();
         this.offsetChildren.clear();
         this.activePerm.clear();
@@ -661,10 +666,7 @@ export class TimerEngine {
     }
 
     destroy(): void {
-        for (const { handle, repeat } of this.temp.values()) {
-            if (repeat) clearInterval(handle as unknown as number);
-            else clearTimeout(handle);
-        }
+        for (const { handle } of this.temp.values()) this.clock.clearTimeout(handle);
         this.temp.clear();
         this.stopPerm();
     }
