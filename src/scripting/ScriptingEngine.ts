@@ -786,6 +786,16 @@ export class ScriptingEngine implements EngineHost {
             // Saved Lua globals go back into _G before any script runs, so script
             // bodies and sysLoadEvent handlers see their persisted state.
             this.restoreSavedVariables();
+            // Fonts do not survive a page load, so every installed package's are
+            // re-registered — desktop's `Host::refreshPackageFonts`
+            // (Host.cpp:3529), without which a package's font would work until
+            // the tab was closed and then silently stop. Before any script runs,
+            // so a script body or a sysLoadEvent handler that sets the package's
+            // font finds it in getAvailableFonts() (#438): each face is listed
+            // as its load starts. Default packages installed above are covered
+            // too; their notifyPackageInstalled below repeats it for nothing,
+            // since loadFontFromVfs is idempotent.
+            this.refreshInstalledPackageFonts();
             // The saved triggers are compiled only once PCRE is ready, below —
             // after the scripts have run. Reserve their firing order now so a
             // temp trigger a script creates at load time fires after them, as
@@ -907,14 +917,6 @@ export class ScriptingEngine implements EngineHost {
             // called for them — fire it now that their own scripts are loaded
             // (applyScriptsFromStore, above) and can see it.
             for (const name of freshlyInstalledPackages) this.notifyPackageInstalled(name);
-            // Fonts do not survive a page load, so every already-installed
-            // package's are re-registered here — desktop's
-            // `Host::refreshPackageFonts` (Host.cpp:3529), and the half without
-            // which a package's font would work until the tab was closed and
-            // then silently stop. Freshly-installed ones were done just above by
-            // notifyPackageInstalled; loadFontFromVfs is idempotent, so the
-            // overlap costs nothing.
-            this.refreshInstalledPackageFonts();
             this.api.flushOutput();
 
             // Capture the merged boot state (loaded file + freshly-installed default
@@ -2326,12 +2328,13 @@ export class ScriptingEngine implements EngineHost {
      * never handed to the browser, so nothing in the profile could use it and
      * nothing said why (issue #103).
      *
-     * Fire-and-forget: `FontFace.load()` is async and every caller of
-     * `notifyPackageInstalled` is not, and a font is not a reason to hold up an
-     * install that has otherwise succeeded — desktop's `loadFont` reports and
-     * carries on too. The consequence is that a package whose *own* install
-     * handler measures its font may run a frame early; the alternative is
-     * making every install path async for the rare package that ships one.
+     * The faces are in `document.fonts` — so `getAvailableFonts()` lists them
+     * and `setFont` takes them — before this returns, which is before the
+     * caller raises sysInstall/sysInstallPackage: a package that sets its own
+     * font in its install handler finds it there, as on desktop (#438). Only
+     * the parse finishes later (`FontFace.load()` is async), and a font is not
+     * a reason to hold up an install that has otherwise succeeded — desktop's
+     * `loadFont` reports and carries on too.
      *
      * Failures reach the error log rather than the console, because a font that
      * will not load is a defect in the package, which is exactly what the
@@ -2352,23 +2355,6 @@ export class ScriptingEngine implements EngineHost {
         });
     }
 
-    /**
-     * Register the fonts one just-installed package ships — desktop's
-     * `Host::installPackageFonts` (Host.cpp:3513), called from `installPackage`
-     * at :2802. Without it a package's font unpacked correctly and was then
-     * never handed to the browser, so nothing in the profile could use it and
-     * nothing said why (issue #103).
-     *
-     * Fire-and-forget: `FontFace.load()` is async and every caller of
-     * `notifyPackageInstalled` is not, and a font is not a reason to hold up an
-     * install that has otherwise succeeded — desktop's `loadFont` reports and
-     * carries on too. The consequence is that a package whose *own* install
-     * handler measures its font may run a frame early; the alternative is
-     * making every install path async for the rare package that ships one.
-     *
-     * Failures reach the error log rather than the console, because a font that
-     * will not load is a defect in the package, which is exactly what the
-     * Errors tab is for.
     /**
      * Raise sysUninstall / sysUninstallPackage. Call this BEFORE removing the
      * package's items from the store so the package's own handlers (and the

@@ -308,23 +308,52 @@ export async function loadFontFromUrl(family: string, url: string): Promise<void
 }
 
 const loadedVfsKeys = new Set<string>();
+/** Loads started and not yet settled, so a repeat call joins the first rather
+ *  than adding a second face for the same file. */
+const loadingVfsFonts = new Map<string, Promise<void>>();
 
 function vfsKey(family: string, vfs: ProfileVFS, path: string): string {
     return `${vfs.profilePath}::${path}::${family}`;
 }
 
-export async function loadFontFromVfs(family: string, path: string, vfs: ProfileVFS): Promise<void> {
+/**
+ * Register a font file from the profile VFS under `family`.
+ *
+ * The face goes into `document.fonts` before this returns — synchronously —
+ * and the returned promise settles once the browser has parsed it. That order
+ * is what lets a package use its own font in the events its install raises
+ * straight after (#438): `getAvailableFonts()` reads `document.fonts`, and
+ * desktop's font database has the family the moment `loadFont` returns, so a
+ * `setFont` in sysInstallPackage or sysLoadEvent must find it. Text already
+ * asking for the family re-renders in it once the face has loaded, as with any
+ * web font. A file that will not load is taken out again and the promise
+ * rejects.
+ */
+export function loadFontFromVfs(family: string, path: string, vfs: ProfileVFS): Promise<void> {
     const key = vfsKey(family, vfs, path);
-    if (loadedVfsKeys.has(key)) return;
-    const raw = vfs.readBinaryFile(path);
-    // Defensive copy: ZenFS may return a Buffer view with non-zero byteOffset.
-    const bytes = new Uint8Array(raw.byteLength);
-    bytes.set(raw);
-    const face = new FontFace(family, bytes);
-    await face.load();
-    document.fonts.add(face);
-    loadedVfsKeys.add(key);
-    bumpFontGeneration();
+    if (loadedVfsKeys.has(key)) return Promise.resolve();
+    const pending = loadingVfsFonts.get(key);
+    if (pending) return pending;
+    let face: FontFace;
+    try {
+        const raw = vfs.readBinaryFile(path);
+        // Defensive copy: ZenFS may return a Buffer view with non-zero byteOffset.
+        const bytes = new Uint8Array(raw.byteLength);
+        bytes.set(raw);
+        face = new FontFace(family, bytes);
+        document.fonts.add(face);
+    } catch (err) {
+        return Promise.reject(err);
+    }
+    const loading = face.load().then(() => {
+        loadedVfsKeys.add(key);
+        bumpFontGeneration();
+    }, (err: unknown) => {
+        document.fonts.delete(face);
+        throw err;
+    }).finally(() => loadingVfsFonts.delete(key));
+    loadingVfsFonts.set(key, loading);
+    return loading;
 }
 
 const OUTPUT_FONT_VAR = '--font-output';

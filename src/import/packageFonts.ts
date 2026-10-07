@@ -51,6 +51,9 @@ function fontPathsUnder(vfs: ProfileVFS, dir: string, out: string[] = []): strin
 /**
  * Register every font shipped inside one installed package.
  *
+ * Every font found is in `document.fonts` by the time this returns its promise
+ * (see `loadFontFromVfs`); the promise settles when they have all loaded.
+ *
  * Best-effort per file: a font that will not parse or will not load must not
  * stop the ones beside it, and must not fail the install that is calling this —
  * desktop's `loadFont` likewise reports and carries on. What it must not do is
@@ -71,13 +74,19 @@ export async function installPackageFonts(
     const dir = `${vfs.profilePath}/${manifest.name}`;
     if (!vfs.exists(dir)) return result;
 
+    // One outcome per font, in the order found. The loads are started here and
+    // awaited together below, never one at a time: each face is listed in
+    // document.fonts as its load starts, and every one has to be listed before
+    // the caller's install events are raised.
+    type Outcome = { family: string } | { warning: string };
+    const outcomes: Promise<Outcome>[] = [];
     for (const path of fontPathsUnder(vfs, dir)) {
         const shown = path.slice(vfs.profilePath.length + 1);
         let family: string | null;
         try {
             family = fontFamilyName(vfs.readBinaryFile(path));
         } catch (err) {
-            result.warnings.push(`could not read the font "${shown}": ${describe(err)}`);
+            outcomes.push(Promise.resolve({ warning: `could not read the font "${shown}": ${describe(err)}` }));
             continue;
         }
         if (!family) {
@@ -85,16 +94,20 @@ export async function installPackageFonts(
             // sfnt wrapper — but there is no name to register it under, and
             // guessing one from the file name would only produce a family
             // nothing asks for.
-            result.warnings.push(
-                `the font "${shown}" declares no family name, so it could not be registered`);
+            outcomes.push(Promise.resolve({
+                warning: `the font "${shown}" declares no family name, so it could not be registered`,
+            }));
             continue;
         }
-        try {
-            await loadFontFromVfs(family, path, vfs);
-            result.registered.push(family);
-        } catch (err) {
-            result.warnings.push(`the font "${shown}" (${family}) could not be loaded: ${describe(err)}`);
-        }
+        const named = family;
+        outcomes.push(loadFontFromVfs(named, path, vfs).then(
+            (): Outcome => ({ family: named }),
+            (err): Outcome => ({ warning: `the font "${shown}" (${named}) could not be loaded: ${describe(err)}` }),
+        ));
+    }
+    for (const outcome of await Promise.all(outcomes)) {
+        if ('family' in outcome) result.registered.push(outcome.family);
+        else result.warnings.push(outcome.warning);
     }
     return result;
 }
@@ -111,8 +124,10 @@ export async function refreshPackageFonts(
     vfs: ProfileVFS,
 ): Promise<PackageFontResult> {
     const all: PackageFontResult = { registered: [], warnings: [] };
-    for (const manifest of manifests) {
-        const one = await installPackageFonts(manifest, vfs);
+    // Every package's fonts are listed before the first await, for the same
+    // reason installPackageFonts starts its loads together: profile open
+    // raises sysLoadEvent straight after.
+    for (const one of await Promise.all(manifests.map(m => installPackageFonts(m, vfs)))) {
         all.registered.push(...one.registered);
         all.warnings.push(...one.warnings);
     }
