@@ -1900,6 +1900,19 @@ export class MapStore {
             delete room.customLinesStyle[key];
             delete room.customLinesArrow[key];
         };
+        // A point past the int range of room coordinates overflows the 2D
+        // map's arithmetic to infinity, so its whole line goes (TRoom::audit)
+        const inRange = (v: number) => v >= -2147483648 && v <= 2147483647;
+        const outOfRange = Object.keys(room.customLines)
+            .filter(key => !(room.customLines[key] ?? []).every(([x, y]) => inRange(x) && inRange(y)));
+        if (outOfRange.length > 0) {
+            if (repair) outOfRange.forEach(dropLine);
+            issues.push({
+                severity: 'info', roomId: id,
+                message: `In room with ID: ${id} found one or more custom lines with a point outside the range of`
+                    + ` room coordinates${repair ? ', which were removed' : ''}: ${outOfRange.join(', ')}.`,
+            });
+        }
         // The pools: what has not yet been matched to an exit. Whatever is
         // left once every exit has been looked at is keyed to nothing.
         const weightsPool = new Set(Object.keys(room.exitWeights));

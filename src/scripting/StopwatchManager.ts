@@ -67,6 +67,12 @@ export interface StopwatchSummary {
     elapsedTime: ElapsedTime;
 }
 
+/** A persistent stopwatch as a profile save holds it. */
+export type SavedStopwatch = { id: number; name: string } & (
+    | { running: true; effectiveStartEpochMs: number }
+    | { running: false; elapsedMs: number }
+);
+
 interface Stopwatch {
     id: number;
     name: string;          // '' = unnamed
@@ -222,6 +228,21 @@ export class StopwatchManager {
                 persistent: true,
             });
         }
+    }
+
+    /** The persistent watches as desktop's profile save writes them
+     *  (XMLexport's `<stopwatches>`): a running one by the moment it would have
+     *  started to reach its elapsed time, a stopped one by that time. */
+    savedForProfile(now = Date.now()): SavedStopwatch[] {
+        const saved: SavedStopwatch[] = [];
+        for (const w of [...this.watches.values()].sort((a, b) => a.id - b.id)) {
+            if (!w.persistent) continue;
+            const elapsed = this.elapsedMs(w);
+            saved.push(w.running
+                ? { id: w.id, name: w.name, running: true, effectiveStartEpochMs: now - elapsed }
+                : { id: w.id, name: w.name, running: false, elapsedMs: elapsed });
+        }
+        return saved;
     }
 
     /** Write the current set of persistent watches to the backing store. */

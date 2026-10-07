@@ -1050,13 +1050,17 @@ export const BLANK_TIMESTAMP = '------------ ';
  * Split `buf` into the lines a console of `width` columns stores it as, or
  * null when it needs no splitting. Mudlet's TBuffer::wrapLine: an indent as
  * wide as the window is dropped rather than wrapping the text into single
- * characters, the first line takes `indent` and the continuations
+ * characters, one wider than half the window is held to half, the first line takes `indent` and the continuations
  * `hangingIndent` (a line that is itself a continuation takes the latter
  * throughout), and every continuation is marked as one.
  */
 function wrapBuffer(buf: AnsiAwareBuffer, width: number, indent: number, hangingIndent: number): AnsiAwareBuffer[] | null {
-    const firstIndent = indent > 0 && indent < width ? Math.trunc(indent) : 0;
-    const hang = hangingIndent > 0 && hangingIndent < width ? Math.trunc(hangingIndent) : 0;
+    // Each wrapped line pads indent columns per (width - indent) of text, so an
+    // indent is held to half the width: near the width a long line would become
+    // one padded line per character
+    const half = Math.trunc(width / 2);
+    const firstIndent = indent > 0 && indent < width ? Math.min(Math.trunc(indent), half) : 0;
+    const hang = hangingIndent > 0 && hangingIndent < width ? Math.min(Math.trunc(hangingIndent), half) : 0;
     const pieces = wrapInfo(buf.text, !buf.continuation, width, firstIndent, hang);
     if (pieces.length === 0) return null;
 

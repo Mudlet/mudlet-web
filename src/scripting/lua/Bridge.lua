@@ -4878,33 +4878,35 @@ do
     -- A body that does not compile still makes the trigger (see
     -- __mudlet_to_fn), but TTrigger::setScript leaves it unable to fire or to
     -- report active, as tempAlias does — so the engine is told.
+    -- The third answer is whether the body is the empty script, which desktop
+    -- never calls: such a fire leaves `matches` as the last script left it.
     local function body(fn, who, argN)
         local compiled = __mudlet_to_fn(fn, who, argN)
-        return __mudlet_register_cb(compiled), __mudlet_uncompiled[compiled] == true
+        return __mudlet_register_cb(compiled), __mudlet_uncompiled[compiled] == true, fn == ''
     end
     local _sub = __mudlet_tempTrigger
     function tempTrigger(pattern, fn, expirationCount)
         pattern = __mudlet_check_string(pattern, "tempTrigger", 1, "pattern")
-        local cb, uncompiled = body(fn, "tempTrigger", 2)
-        return _sub(pattern, cb, expirationCount, uncompiled)
+        local cb, uncompiled, noScript = body(fn, "tempTrigger", 2)
+        return _sub(pattern, cb, expirationCount, uncompiled, noScript)
     end
     local _re = __mudlet_tempRegexTrigger
     function tempRegexTrigger(pattern, fn, expirationCount)
         pattern = __mudlet_check_string(pattern, "tempRegexTrigger", 1, "pattern")
-        local cb, uncompiled = body(fn, "tempRegexTrigger", 2)
-        return _re(pattern, cb, expirationCount, nil, uncompiled)
+        local cb, uncompiled, noScript = body(fn, "tempRegexTrigger", 2)
+        return _re(pattern, cb, expirationCount, nil, uncompiled, noScript)
     end
     local _ex = __mudlet_tempExactMatchTrigger
     function tempExactMatchTrigger(pattern, fn, expirationCount)
         pattern = __mudlet_check_string(pattern, "tempExactMatchTrigger", 1, "pattern")
-        local cb, uncompiled = body(fn, "tempExactMatchTrigger", 2)
-        return _ex(pattern, cb, expirationCount, uncompiled)
+        local cb, uncompiled, noScript = body(fn, "tempExactMatchTrigger", 2)
+        return _ex(pattern, cb, expirationCount, uncompiled, noScript)
     end
     local _bol = __mudlet_tempBeginOfLineTrigger
     function tempBeginOfLineTrigger(pattern, fn, expirationCount)
         pattern = __mudlet_check_string(pattern, "tempBeginOfLineTrigger", 1, "pattern")
-        local cb, uncompiled = body(fn, "tempBeginOfLineTrigger", 2)
-        return _bol(pattern, cb, expirationCount, uncompiled)
+        local cb, uncompiled, noScript = body(fn, "tempBeginOfLineTrigger", 2)
+        return _bol(pattern, cb, expirationCount, uncompiled, noScript)
     end
     -- tempPromptTrigger(fn[, expirationCount]) — fires whenever the server sends
     -- a prompt (no pattern). The callback is arg #1, so __mudlet_to_fn looks there.
@@ -7326,7 +7328,21 @@ do
         end
         local env = sandbox()
         setfenv(chunk, env)
-        local ok, runtimeError = pcall(chunk)
+        -- A manifest that never finishes would hang the page, so it runs on a
+        -- thread of its own under the instruction budget desktop gives it (a
+        -- real one is a few assignments). Once spent, every instruction
+        -- raises, so a pcall() in the manifest cannot swallow it.
+        local rawSethook = debug.getregistry()['mudlet.rawSethook']
+        local co = coroutine.create(chunk)
+        local function outOfTime()
+            rawSethook(co, outOfTime, '', 1)
+            error('it ran for too long and was stopped', 2)
+        end
+        rawSethook(co, outOfTime, '', 10000000)
+        local ok, runtimeError = coroutine.resume(co)
+        if ok and coroutine.status(co) ~= 'dead' then
+            ok, runtimeError = false, 'it yielded rather than finishing'
+        end
         if not ok then
             __mudlet_cfg_reason = tostring(runtimeError)
             return

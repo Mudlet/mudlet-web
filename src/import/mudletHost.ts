@@ -3,6 +3,7 @@ import { SERVER_WRAP_WIDTH_MIN, SERVER_WRAP_WIDTH_MAX } from '../mud/text/server
 import { MIN_CONSOLE_BUFFER_SIZE, MAX_CONSOLE_BUFFER_SIZE } from '../mud/text/Console';
 import { parseMudletXml, type MudletImportResult } from './mudletXmlImport';
 import { parseVariablePackageXml, type MudletVariablePackage } from './mudletVariables';
+import type { SavedStopwatch } from '../scripting/StopwatchManager';
 
 // Maps the `<HostPackage><Host>` block of a Mudlet profile XML onto Mudlet Web's
 // ProfileSettings. This is the settings half of a full Mudlet-profile import —
@@ -322,6 +323,33 @@ export function applyInstalledPackages(host: Element, names: string[]): void {
     for (const name of names) {
         const el = newHostEl(host, 'string');
         el.textContent = name;
+        list.appendChild(el);
+    }
+}
+
+/**
+ * Replace `<Host><stopwatches>` with the profile's persistent stopwatches,
+ * written as desktop's `XMLexport` writes them, so a save carries them as
+ * desktop's does rather than the copy the document was based on.
+ */
+export function applyStopwatches(host: Element, watches: SavedStopwatch[]): void {
+    let list = host.querySelector(':scope > stopwatches');
+    if (!list) {
+        list = newHostEl(host, 'stopwatches');
+        host.appendChild(list);
+    }
+    while (list.firstChild) list.removeChild(list.firstChild);
+    for (const watch of watches) {
+        const el = newHostEl(host, 'stopwatch');
+        el.setAttribute('id', String(watch.id));
+        if (watch.running) {
+            el.setAttribute('running', 'yes');
+            el.setAttribute('effectiveStartDateTimeEpochMSecs', String(Math.trunc(watch.effectiveStartEpochMs)));
+        } else {
+            el.setAttribute('running', 'no');
+            el.setAttribute('elapsedDateTimeMSecs', String(Math.trunc(watch.elapsedMs)));
+        }
+        el.setAttribute('name', watch.name);
         list.appendChild(el);
     }
 }

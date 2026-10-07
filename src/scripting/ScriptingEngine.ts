@@ -1175,7 +1175,7 @@ export class ScriptingEngine implements EngineHost {
         return buildLinkedWriteback(
             baseXml ?? this.hostBaseXml() ?? EMPTY_PROFILE_XML, trees,
             { hidden: vars?.hidden ?? [], variables: vars?.values ?? [] }, s.connectionProfile[id],
-            omitHostSettings, this.getPackageNames(),
+            omitHostSettings, this.getPackageNames(), this.api.stopwatches.savedForProfile(),
         );
     }
 
@@ -1561,7 +1561,7 @@ export class ScriptingEngine implements EngineHost {
             // Said here too, because this is a module the user asked for. The
             // syncs and reloads that follow go through reloadModuleFromVfs,
             // which reads no manifest and so cannot repeat it.
-            if (prepared.configProblem) this.announceLostManifest(prepared.manifest.name);
+            if (prepared.configProblem) this.announceLostManifest(prepared.manifest.name, prepared.configProblem);
             this.restorePackageVariables(prepared.data);
             // Refused rather than reinstalled, like a package — and for the
             // stronger reason: a module carries the user's own edits back out to
@@ -2453,7 +2453,7 @@ export class ScriptingEngine implements EngineHost {
             // is re-read on every profile save and on every reloadModule(), and
             // repeating it would be the same sentence over and over about a
             // manifest they were told about once already.
-            if (prepared.configProblem) this.announceLostManifest(prepared.manifest.name);
+            if (prepared.configProblem) this.announceLostManifest(prepared.manifest.name, prepared.configProblem);
             // A package whose XML will not read installs anyway and stays
             // listed — the same as a module whose XML will not load — so what
             // changes is that it is SAID. Silence left the player with a
@@ -3229,9 +3229,9 @@ export class ScriptingEngine implements EngineHost {
             + ' so it is installed but owns nothing.');
     }
 
-    private announceLostManifest(packageName: string): void {
+    private announceLostManifest(packageName: string, reason: string): void {
         this.api.postInfo(`The config.lua of "${packageName}" could not be read,`
-            + ' so it has been installed under the name of its file and describes itself with nothing.');
+            + ` so it has been installed under the name of its file and describes itself with nothing: ${reason}`);
     }
 
     toggleTimerByName(name: string, enabled: boolean): boolean {
@@ -5289,8 +5289,16 @@ export class ScriptingEngine implements EngineHost {
             // Echoed, separator-split and alias-expanded like every other item's
             // built-in command — TTrigger::execute takes both Host::send
             // defaults. Sent literally, with no %1…%9 capture substitution, as
-            // desktop does.
-            this.hostSend(trigger.command);
+            // desktop does. The fire's captures are already set, as
+            // TTrigger::match sets them before execute(), so what the command
+            // sets off (a sysDataSendRequest handler) can select them.
+            const fullMatchSpan = matchStart !== undefined && matchedText
+                ? { start: matchStart, length: matchedText.length }
+                : undefined;
+            const send = () => this.hostSend(trigger.command!);
+            const lua = this.runtimes.lua;
+            if (lua?.withCaptures) lua.withCaptures(matches, captureSpans, namedSpans, fullMatchSpan, send);
+            else send();
         }
 
         // Built-in highlight.

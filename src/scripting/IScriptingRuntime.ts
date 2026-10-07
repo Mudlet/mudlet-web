@@ -109,6 +109,17 @@ export interface IScriptingRuntime {
          *  it are undisturbed. */
         chunkName?: string,
     ): void;
+    /** Run `fn` with a fire's captures in place for selectCaptureGroup and the
+     *  like, leaving the script-facing `matches` table alone — what a trigger
+     *  whose command is sent, or which has no script, hands on (desktop's
+     *  setCaptureGroups without the call that builds `matches`). */
+    withCaptures?(
+        matches: (string | undefined)[],
+        captureSpans: CaptureSpan[] | undefined,
+        namedSpans: Record<string, CaptureSpan> | undefined,
+        fullMatchSpan: CaptureSpan | undefined,
+        fn: () => void,
+    ): void;
     destroy(): void;
     /** Bytes behind a path in the runtime's read-only bundled namespace, or null
      *  when it has none / the path is not one of them. Optional because it is a

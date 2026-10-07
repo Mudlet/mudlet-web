@@ -2084,6 +2084,7 @@ export class LuaRuntime implements IScriptingRuntime {
         const installTempTrigger = (
             pattern: string, cbId: number, kind: 'regex' | 'substring' | 'startOfLine' | 'exactMatch' | 'prompt',
             expirationCount: number | undefined, label: string, name?: string, uncompiled?: unknown,
+            noScript?: unknown,
         ) => {
             // Its body did not compile: made, numbered and reachable like any
             // other, but it never fires and isActive() says 0 (tempItemEnabled).
@@ -2117,6 +2118,13 @@ export class LuaRuntime implements IScriptingRuntime {
             unsub = this.api.triggers.addTemp(pattern, (matches, spans, namedGroups) => {
                 const entry = this.tempIds.get(id);
                 if (killed || entry?.enabled === false || entry?.uncompiled) return;
+                if (noScript === true) {
+                    // An empty script is never called, so the `matches` the
+                    // last script left stand (TTrigger::execute)
+                    fires++;
+                    if (max > 0 && fires >= max) kill();
+                    return;
+                }
                 const prevSpans = this.currentCaptureSpans;
                 const prevNamed = this.currentNamedSpans;
                 const prevMatches = this.currentMatches;
@@ -2149,15 +2157,15 @@ export class LuaRuntime implements IScriptingRuntime {
             this.tempIds.set(id, { kill, type: 'trigger', enabled: true, name, uncompiled: broken });
             return id;
         };
-        this.lua.global.set('__mudlet_tempTrigger', (pattern: string, cbId: number, expirationCount?: number, uncompiled?: unknown) =>
-            installTempTrigger(pattern, cbId, 'substring', expirationCount, 'tempTrigger', undefined, uncompiled));
-        this.lua.global.set('__mudlet_tempRegexTrigger', (pattern: string, cbId: number, expirationCount?: number, name?: unknown, uncompiled?: unknown) =>
+        this.lua.global.set('__mudlet_tempTrigger', (pattern: string, cbId: number, expirationCount?: number, uncompiled?: unknown, noScript?: unknown) =>
+            installTempTrigger(pattern, cbId, 'substring', expirationCount, 'tempTrigger', undefined, uncompiled, noScript));
+        this.lua.global.set('__mudlet_tempRegexTrigger', (pattern: string, cbId: number, expirationCount?: number, name?: unknown, uncompiled?: unknown, noScript?: unknown) =>
             installTempTrigger(pattern, cbId, 'regex', expirationCount, 'tempRegexTrigger',
-                typeof name === 'string' && name ? name : undefined, uncompiled));
-        this.lua.global.set('__mudlet_tempExactMatchTrigger', (pattern: string, cbId: number, expirationCount?: number, uncompiled?: unknown) =>
-            installTempTrigger(pattern, cbId, 'exactMatch', expirationCount, 'tempExactMatchTrigger', undefined, uncompiled));
-        this.lua.global.set('__mudlet_tempBeginOfLineTrigger', (pattern: string, cbId: number, expirationCount?: number, uncompiled?: unknown) =>
-            installTempTrigger(pattern, cbId, 'startOfLine', expirationCount, 'tempBeginOfLineTrigger', undefined, uncompiled));
+                typeof name === 'string' && name ? name : undefined, uncompiled, noScript));
+        this.lua.global.set('__mudlet_tempExactMatchTrigger', (pattern: string, cbId: number, expirationCount?: number, uncompiled?: unknown, noScript?: unknown) =>
+            installTempTrigger(pattern, cbId, 'exactMatch', expirationCount, 'tempExactMatchTrigger', undefined, uncompiled, noScript));
+        this.lua.global.set('__mudlet_tempBeginOfLineTrigger', (pattern: string, cbId: number, expirationCount?: number, uncompiled?: unknown, noScript?: unknown) =>
+            installTempTrigger(pattern, cbId, 'startOfLine', expirationCount, 'tempBeginOfLineTrigger', undefined, uncompiled, noScript));
         // tempPromptTrigger(fn[, expirationCount]) — fires on every line the
         // server flags as a prompt (GA/EOR). No pattern; the empty string is a
         // placeholder the 'prompt' kind ignores.
@@ -4018,6 +4026,31 @@ end`);
         const result = this.execInner(EDIT_VAR_LUA, 'edit-var');
         if (typeof result !== 'string') return 'the Lua runtime refused the edit';
         return result === '' ? null : result;
+    }
+
+    withCaptures(
+        matches: (string | undefined)[],
+        captureSpans: CaptureSpan[] | undefined,
+        namedSpans: Record<string, CaptureSpan> | undefined,
+        fullMatchSpan: CaptureSpan | undefined,
+        fn: () => void,
+    ): void {
+        const prevMatches = this.currentMatches;
+        const prevSpans = this.currentCaptureSpans;
+        const prevNamedSpans = this.currentNamedSpans;
+        const prevFullMatchSpan = this.currentFullMatchSpan;
+        this.currentMatches = matches;
+        this.currentCaptureSpans = captureSpans ?? [];
+        this.currentNamedSpans = namedSpans ?? {};
+        this.currentFullMatchSpan = fullMatchSpan ?? null;
+        try {
+            fn();
+        } finally {
+            this.currentMatches = prevMatches;
+            this.currentCaptureSpans = prevSpans;
+            this.currentNamedSpans = prevNamedSpans;
+            this.currentFullMatchSpan = prevFullMatchSpan;
+        }
     }
 
     runWithMatches(

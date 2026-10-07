@@ -1,7 +1,8 @@
 import type { ProfileSettings } from '../storage/schema';
 import { serializeMudletXml, type SerializeInput } from './mudletXmlExport';
 import { serializeVariablePackage, type MudletVariablePackage } from './mudletVariables';
-import { applyInstalledPackages, applyProfileSettingsToHost } from './mudletHost';
+import { applyInstalledPackages, applyProfileSettingsToHost, applyStopwatches } from './mudletHost';
+import type { SavedStopwatch } from '../scripting/StopwatchManager';
 
 // Link mode (phase 2): write the live Mudlet Web state back into a linked Mudlet
 // profile's XML *DOM-preservingly*. We parse the profile's current save, replace
@@ -57,6 +58,9 @@ export function buildLinkedWriteback(
      *  stands — right for an export whose base was already stamped, wrong for a
      *  save based on an older one, whose list predates any install since. */
     installedPackages?: string[],
+    /** The profile's persistent stopwatches, written into `<stopwatches>` as
+     *  desktop's save does. Left out, the base's own copy stands. */
+    stopwatches?: SavedStopwatch[],
 ): string {
     const doc = new DOMParser().parseFromString(baseXml, 'text/xml');
     const err = doc.getElementsByTagName('parsererror')[0];
@@ -68,6 +72,7 @@ export function buildLinkedWriteback(
     const host = doc.getElementsByTagName('Host')[0];
     if (host && settings) applyProfileSettingsToHost(host, settings);
     if (host && installedPackages) applyInstalledPackages(host, installedPackages);
+    if (host && stopwatches) applyStopwatches(host, stopwatches);
 
     // Drop the packages we own; HostPackage and unknown siblings stay.
     for (const child of Array.from(root.children)) {
