@@ -9,6 +9,7 @@ import { buildMudletProfileBundle, type MudletProfileBundle } from './mudletProf
 import { CONNECTION_SIDECAR_PATH, LEGACY_CONNECTION_SIDECAR_PATH, RETAINED_HOST_PATH, type ConnectionSidecar } from './mudletProfileExport';
 import type { MudConnection } from '../storage/schema';
 import { describeThrown } from '../utils/describeThrown';
+import { DEFAULT_HISTORY_SAVE_SIZE, historyStorageKey, saveHistory } from '../ui/commandHistory';
 
 // Apply a parsed Mudlet profile bundle (see mudletProfileImport.ts) as a NEW
 // native Mudlet Web profile: create the connection, provision its VFS (copy map +
@@ -72,6 +73,16 @@ export function bundleToConnectionRecord(bundle: MudletProfileBundle): Omit<MudC
         // profile that doesn't already carry them.
         mudletImported: true,
     };
+    // TLS goes through the proxy in `mud` mode, which is what desktop's
+    // "secure connection" amounts to here (see MudConnection.tls).
+    if (bundle.tls !== undefined) base.tls = bundle.tls;
+    const id = bundle.profile.connection;
+    if (id.sslIgnoreExpired) base.sslIgnoreExpired = true;
+    if (id.sslIgnoreSelfSigned) base.sslIgnoreSelfSigned = true;
+    if (id.sslIgnoreAll) base.sslIgnoreAll = true;
+    // Desktop sends this name two seconds after connecting; TextAutoLogin does
+    // the same with it, and the GMCP Char.Login path offers it as the account.
+    if (bundle.login) base.charLoginAccount = bundle.login;
     const raw = bundle.files[CONNECTION_SIDECAR_PATH] ?? bundle.files[LEGACY_CONNECTION_SIDECAR_PATH];
     if (!raw) return base;
     let side: ConnectionSidecar;
@@ -93,8 +104,26 @@ export function bundleToConnectionRecord(bundle: MudletProfileBundle): Omit<MudC
     if (out.mode === 'websocket') {
         if (!out.url && base.host) out.url = base.host;
         delete out.host;
+        // The ws(s):// scheme decides it there.
+        delete out.tls;
     }
     return out;
+}
+
+/**
+ * Seed a new profile's command-bar history from the bundle's
+ * `command_history_main`, so Up arrow recalls what it did on desktop. Capped at
+ * the profile's own `commandLineHistorySaveSize` when it has one, as every
+ * later save of that history is.
+ */
+export function seedCommandHistory(connectionId: string, bundle: MudletProfileBundle): void {
+    if (!bundle.commandHistory?.length) return;
+    const size = bundle.profile.settings.config?.commandLineHistorySaveSize;
+    saveHistory(
+        bundle.commandHistory,
+        historyStorageKey(connectionId),
+        typeof size === 'number' && Number.isFinite(size) ? size : DEFAULT_HISTORY_SAVE_SIZE,
+    );
 }
 
 /**
@@ -143,6 +172,7 @@ export async function importMudletProfile(bundle: MudletProfileBundle): Promise<
     } finally {
         vfs.unmount();
     }
+    seedCommandHistory(connectionId, bundle);
 
     if (bundle.mapBytes) {
         try {

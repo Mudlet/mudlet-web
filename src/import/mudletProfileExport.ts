@@ -3,6 +3,7 @@ import type { MudConnection } from '../storage/schema';
 import type { PersistedProfileData } from '../storage/profileVfsData';
 import { buildLinkedWriteback } from './mudletWriteback';
 import { applyHostIdentity, extractHostPackageXml, MUDLET_XML_PROLOG } from './mudletHost';
+import { savedServerEncoding } from '../mud/protocol/charset';
 
 // The inverse of mudletProfileImport: turn a Mudlet Web profile back into a *Mudlet
 // profile folder* — `current/<stamp>.xml`, `map/`, and the profile's loose VFS
@@ -198,6 +199,15 @@ export function buildProfileFolder(src: ProfileExportSource, stamp: string): Rec
     }
     out[`current/${stamp}.xml`] = strToU8(buildProfileXml(src.connection, src.data, src.hostBaseXml));
     out[CONNECTION_SIDECAR_PATH] = strToU8(JSON.stringify(buildConnectionSidecar(src.connection), null, 2));
+    // The connection details desktop reads from files of their own (see
+    // CONSUMED_PROFILE_FILES), written from the live settings — an import
+    // reads them back from here rather than from the save. Never the password.
+    if (src.connection.mode === 'mud' && src.connection.tls !== undefined) {
+        out.ssl_tsl = strToU8(src.connection.tls ? '2' : '0');
+    }
+    if (src.connection.charLoginAccount) out.login = strToU8(src.connection.charLoginAccount);
+    const encoding = src.data.profile?.serverEncoding;
+    if (encoding) out.encoding = strToU8(savedServerEncoding(encoding));
     if (src.mapBytes) out[`map/${stamp}map.dat`] = src.mapBytes;
     for (const log of src.logs ?? []) {
         out[`logs/${sanitizeFolderName(log.name, 'session')}.html`] = strToU8(log.html);

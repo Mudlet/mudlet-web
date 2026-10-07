@@ -533,6 +533,22 @@ function readConfigLua(
         return out;
     }
 
+    return parseConfigLuaText(text);
+}
+
+/**
+ * The pattern pass over a config.lua's text: every `key = <string literal>`
+ * assignment, mapped onto the manifest's own fields and kept verbatim (keys
+ * lower-cased) as `declaredInfo`, which is what getPackageInfo answers with.
+ * Not a Lua eval — see {@link readConfigLua} for when one is used instead.
+ *
+ * Shared with the Mudlet profile import, which registers the packages a
+ * profile already has from the config.lua files left in its folder: a
+ * manifest built there without `declaredInfo` reported no info at all.
+ */
+export function parseConfigLuaText(text: string): Partial<PackageManifest> {
+    const out: Partial<PackageManifest> = {};
+    const declared: Record<string, string> = {};
     const keyRe = /^[ \t]*(\w+)[ \t]*=[ \t]*/gm;
     let m: RegExpExecArray | null;
     while ((m = keyRe.exec(text)) !== null) {

@@ -106,7 +106,14 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
      *  folded-in module, and the file/map copy — so this is the one place that
      *  has to read them. */
     const provision = async (bundle: MudletProfileBundle) => {
-        await importMudletProfile(bundle);
+        const connectionId = await importMudletProfile(bundle);
+        // A password desktop kept in the profile folder goes where Mudlet Web
+        // keeps saved logins — the encrypted vault, setting it up or unlocking
+        // it first if need be — and never into the profile's files.
+        if (bundle.password) {
+            if (vaultSaver.canSave) vaultSaver.save(connectionId, bundle.password);
+            else bundle.warnings.push('The saved password was not imported: this browser has nowhere secure to keep it. Enter it again when you connect.');
+        }
         if (bundle.warnings.length > 0) {
             setImportWarnings(w => [...w, { profile: bundle.name, warnings: [...bundle.warnings] }]);
         }

@@ -77,25 +77,40 @@ Two things to know:
   which ones persist.
 - Installed packages, registered under the names Mudlet knew them by, so
   `getPackages()` and package managers like `mpkg` behave.
-- Your map — the newest file in `map/`. It is read into Mudlet Web's own map
+- Your map — the newest file in `map/`, by modification time, as desktop
+  picks it (a `.zip` keeps those times too). It is read into Mudlet Web's own map
   store rather than the profile's filesystem, so there is no `map/` folder under
   `getMudletHomeDir()` afterwards.
 - Profile settings: command separator, wrap width, borders, foreground /
   background / command / input colours, the full 16-colour ANSI palette, display
-  font family and size, and the protocol toggles.
+  font family and size, the protocol toggles, and the server data encoding.
+- Preferences: whether sent commands are echoed, how blank lines show, the
+  "fix unnecessary linebreaks" and "force line feed after prompt" fixes, "force
+  GA/EOR off", Unix line endings for commands, how many commands of history to
+  keep, the compact input line, F3 search, the caret-switching shortcut, and
+  control-character display.
+- The connection: the secure (TLS) connection setting, and the saved character
+  name, which is sent on its own after connecting as desktop does.
+- Your command-line history, so the Up arrow recalls what you typed on desktop.
 - Every other file in the profile folder, into the profile's own filesystem — so
   `io.open`, `lfs`, images, sounds and fonts keep working at the same paths.
-  `current/` and `map/` are the two exceptions, handled as above.
+  `current/` and `map/` are the two exceptions, handled as above, along with
+  the small files desktop keeps connection details in (`login`, `password`,
+  `ssl_tsl`, `encoding`), which are read into the profile's settings instead.
 
 ## What doesn't
 
-- **Passwords.** Desktop Mudlet keeps them in your operating system's keychain,
-  not in the profile, so there is nothing to copy. Enter them again on first
-  connect.
-- **Modules.** Mudlet syncs modules to XML files elsewhere on your disk; a browser
-  can't keep that link alive. Mudlet Web folds each module in as an ordinary
-  installed package. If it can't find a module's file in the folder you imported,
-  it asks whether to upload it or drop it.
+- **Passwords kept in your keychain.** Desktop Mudlet normally keeps passwords
+  in your operating system's keychain, not in the profile, so there is nothing
+  to copy — enter it again on first connect. A password desktop kept in the
+  profile folder instead *is* imported, into Mudlet Web's encrypted saved
+  logins (you're asked to set them up or unlock them if need be), never as a
+  plain file.
+- **Modules' files elsewhere on your disk.** Mudlet syncs modules to XML files
+  outside the profile; a browser can't keep that link alive. Mudlet Web keeps
+  each module a module, with its own copy of the file inside the profile. If it
+  can't find a module's file in the folder you imported, it asks whether to
+  upload it or drop it.
 - **Older saves.** Only the newest save in `current/` is read, and the rest are
   dropped rather than copied across. Desktop keeps them so you can roll back to
   one; Mudlet Web has no way to load an older save, and a profile's filesystem
