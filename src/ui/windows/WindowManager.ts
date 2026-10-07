@@ -1099,11 +1099,19 @@ export class WindowManager {
      * ResizeObserver tick, which never fired for the case the event exists for:
      * content growing inside an element does not resize that element, so a
      * console could overflow indefinitely without a single event.
+     *
+     * The counts come from `measure`, called only for a console that cannot
+     * scroll: counting rows reads the pane's computed style and height, which
+     * forces a layout of everything the console holds. Measured up front on
+     * every write, that made each line written to a chat window cost more the
+     * fuller it was — and a console that scrolls, the default, never uses it
+     * (mudlet-web#439).
      */
-    noteLineOverflow(id: string, lineCount: number, rows: number): void {
-        if (rows <= 0) return;
+    noteLineOverflow(id: string, measure: () => { lineCount: number; rows: number }): void {
         const scroll = this.scrollState.get(id);
         if (!scroll || scroll.scrollingEnabled) return;
+        const { lineCount, rows } = measure();
+        if (rows <= 0) return;
         const overflowLines = lineCount - rows;
         if (overflowLines <= 0) return;
         this.onRaiseEvent?.('sysWindowOverflowEvent', [id, overflowLines]);
@@ -2696,8 +2704,13 @@ export class WindowManager {
         if (!win || typeof document === 'undefined') return 0;
         // A panel that has not mounted yet has no input either.
         const viewport = this.viewports.get(id);
-        const shown = viewport?.querySelector<HTMLElement>(
-            `textarea.window-cmdline[data-mudlet-cmdline="${cssEscape(id)}"]`) ?? null;
+        // TextPanel puts the input last in the stack that is the viewport's
+        // first child. Looked up there rather than with querySelector, which
+        // walks every line the console holds before giving up when the window
+        // has no command line — the usual case.
+        const last = viewport?.firstElementChild?.lastElementChild;
+        const shown = last instanceof HTMLElement && last.matches(
+            `textarea.window-cmdline[data-mudlet-cmdline="${cssEscape(id)}"]`) ? last : null;
         if (win.cmdLineEnabled && !shown) return -this.cmdLineHeight(viewport);
         if (!win.cmdLineEnabled && shown) return shown.offsetHeight;
         return 0;

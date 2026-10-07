@@ -3485,6 +3485,17 @@ end`);
             content: string;
             pos: number;
             dirty: boolean;
+            /** The file position `content` starts at. An append handle does
+             *  not read the file it opens: `content` holds only what it has
+             *  written, behind the `base` bytes already in the file, until an
+             *  "a+" handle reads and {@link loadAppended} fills it in. 0 for
+             *  every other handle. */
+            base: number;
+            /** An append handle that has not read the file it was opened on. */
+            unread: boolean;
+            /** Append modes: where in `content` the bytes this handle wrote
+             *  begin — all close has to add to the file. */
+            appendFrom: number;
         }
 
         const handles = new Map<number, Handle>();
@@ -3513,6 +3524,20 @@ end`);
                 ? builtins.get(filename)!
                 : bytesToLatin1(vfs!.readBinaryFile(filename));
 
+        const isAppend = (h: Handle): boolean => h.mode === 'a' || h.mode === 'a+';
+        /** Put the file an "a+" handle was opened on in front of what it has
+         *  written, the first time it reads: appending never needs the old
+         *  bytes, and reading the whole file on every open made each line a
+         *  log appends cost more the longer the log was (mudlet-web#439). */
+        const loadAppended = (h: Handle): void => {
+            if (!h.unread) return;
+            h.unread = false;
+            const existing = vfs && vfs.exists(h.path) ? readAsLatin1(h.path) : '';
+            h.appendFrom = existing.length;
+            h.content = existing + h.content;
+            h.base = 0;
+        };
+
         this.lua.global.set('__vfs_err__', () => lastError);
         this.lua.global.set('__vfs_errno__', () => lastErrno);
         this.lua.global.set('__vfs_exists__', (path: string) =>
@@ -3525,6 +3550,7 @@ end`);
                 let content = '';
                 let resolvedPath = filename;
                 let dirty = false;
+                let base = 0;
 
                 if (builtins.has(filename)) {
                     if (m !== 'r') { setError(`cannot open '${filename}': read-only`); return null; }
@@ -3558,9 +3584,9 @@ end`);
                             return null;
                         }
                     }
-                    if (m === 'a' || m === 'a+') {
-                        if (vfs.exists(filename)) content = readAsLatin1(filename);
-                    }
+                    // An append handle starts behind what the file holds; it
+                    // only needs the size (see Handle.base).
+                    if (m === 'a' || m === 'a+') base = vfs.stat(filename)?.size ?? 0;
                     dirty = m === 'w' || m === 'w+';
                 } else {
                     setError(`${filename}: No such file or directory`, 2);
@@ -3574,8 +3600,11 @@ end`);
                     content,
                     // glibc starts "a" at the end, but "a+" at the start —
                     // reads come from there, only writes go to the end.
-                    pos: m === 'a' ? content.length : 0,
+                    pos: m === 'a' ? base : 0,
                     dirty,
+                    base,
+                    unread: m === 'a' || m === 'a+',
+                    appendFrom: 0,
                 });
                 return id;
             } catch (e) {
@@ -3588,7 +3617,7 @@ end`);
         // live only as long as the handle — the unnamed file tmpfile(3) makes.
         this.lua.global.set('__vfs_io_tmpfile__', (): number => {
             const id = nextId++;
-            handles.set(id, { path: '', mode: 'w+', content: '', pos: 0, dirty: false });
+            handles.set(id, { path: '', mode: 'w+', content: '', pos: 0, dirty: false, base: 0, unread: false, appendFrom: 0 });
             return id;
         });
 
@@ -3616,6 +3645,7 @@ end`);
             const h = handles.get(id);
             if (!h) { setError('invalid file handle'); return null; }
             if (h.mode === 'w' || h.mode === 'a') { setError('file is write-only'); return null; }
+            loadAppended(h);
 
             if (typeof fmt === 'number') {
                 // liolib's test_eof: "" while there is something left to read.
@@ -3663,7 +3693,12 @@ end`);
             const data = unarmor(armored);
             // Append modes write at the end whatever the position (O_APPEND),
             // and leave the position there.
-            if (h.mode === 'a' || h.mode === 'a+') h.pos = h.content.length;
+            if (isAppend(h)) {
+                h.content += data;
+                h.pos = h.base + h.content.length;
+                h.dirty = true;
+                return null;
+            }
             // A write past the end leaves a hole, which reads back as NULs.
             const before = h.pos > h.content.length
                 ? h.content + '\0'.repeat(h.pos - h.content.length)
@@ -3681,7 +3716,7 @@ end`);
             let newPos: number;
             if ((whence ?? 'cur') === 'set') newPos = o;
             else if ((whence ?? 'cur') === 'cur') newPos = h.pos + o;
-            else if (whence === 'end') newPos = h.content.length + o;
+            else if (whence === 'end') newPos = h.base + h.content.length + o;
             else { setError('invalid whence'); return null; }
             // fseek: before the start is EINVAL; past the end is allowed.
             if (newPos < 0) { setError('Invalid argument', 22); return null; }
@@ -3698,7 +3733,10 @@ end`);
                     // fopen() creates the file on desktop; here it first
                     // appears on close, which is when its directory hears of it.
                     const existed = vfs.exists(h.path);
-                    vfs.writeBinaryFile(h.path, latin1ToBytes(h.content));
+                    // An append handle adds what it wrote; it never held the
+                    // rest of the file to write back.
+                    if (isAppend(h)) vfs.appendBinaryFile(h.path, latin1ToBytes(h.content.substring(h.appendFrom)));
+                    else vfs.writeBinaryFile(h.path, latin1ToBytes(h.content));
                     this.notifyVfsPathChange({ path: h.path, kind: existed ? 'modify' : 'create' });
                 }
                 handles.delete(id);

@@ -288,6 +288,21 @@ export class ProfileVFS {
         this.afterWrite(abs, 'write');
     }
 
+    /**
+     * Add `data` to the end of a file, creating it when missing — what Lua's
+     * io.open(f, "a") writes through, so an append costs what is appended
+     * rather than a read and rewrite of everything the file already holds. The
+     * read barrier runs first so the bytes land after anything a database still
+     * has pending for that file.
+     */
+    appendBinaryFile(path: string, data: Uint8Array): void {
+        const abs = this.beforeRead(this.resolvePath(path));
+        ensureParentDir(abs);
+        appendFileSync(abs, data);
+        this.invalidate(abs);
+        this.afterWrite(abs, 'write');
+    }
+
     deleteFile(path: string): void {
         const abs = this.resolvePath(path);
         unlinkSync(abs);

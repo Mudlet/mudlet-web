@@ -7896,7 +7896,10 @@ export class ScriptingAPI {
         // the console is full (rather than overflowing by nothing) at the
         // moment getLineCount() + 1 reaches the row count.
         if (committed.length > 0) {
-            this.session.windows.noteLineOverflow(win, this.getLineCount(win) + 1, this.getRowCount(win));
+            this.session.windows.noteLineOverflow(win, () => ({
+                lineCount: this.getLineCount(win) + 1,
+                rows: this.getRowCount(win),
+            }));
         }
         // Also surface the in-flight partial (echo without a trailing \n) so
         // prompts like `echo(win, "Do: ")` actually appear — matches the

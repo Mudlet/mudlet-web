@@ -172,9 +172,17 @@ class StubVFS {
     return bytes;
   }
   writeBinaryFile(p: string, data: Uint8Array): void { this.files.set(this.resolvePath(p), data); }
-  stat(p: string): { type: 'file' | 'dir' } | null {
+  appendBinaryFile(p: string, data: Uint8Array): void {
+    const old = this.files.get(this.resolvePath(p)) ?? new Uint8Array(0);
+    const next = new Uint8Array(old.length + data.length);
+    next.set(old);
+    next.set(data, old.length);
+    this.files.set(this.resolvePath(p), next);
+  }
+  stat(p: string): { type: 'file' | 'dir'; size?: number } | null {
     const abs = this.resolvePath(p);
-    if (this.files.has(abs)) return { type: 'file' };
+    const file = this.files.get(abs);
+    if (file) return { type: 'file', size: file.length };
     return this.profilePath === abs || this.profilePath.startsWith(`${abs}/`) || abs === '/'
       ? { type: 'dir' } : null;
   }
