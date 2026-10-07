@@ -27,6 +27,7 @@ import { IndexedDB, WebAccess } from '@zenfs/dom';
 import { checkFolderPermission, loadFolderHandle } from './folderHandleStore';
 import { invalidateVfsPath } from './vfsBridge';
 import { FsError } from './fsErrors';
+import { commitSyncWritesImmediately } from './idbCommit';
 import { profileVfsDatabaseName } from '../../storage/profileStorage';
 import { whenIdbNamesMigrated } from '../../storage/storageMigration';
 
@@ -174,6 +175,8 @@ export class ProfileVFS {
         // fresh, empty filesystem alongside the real one.
         await whenIdbNamesMigrated();
         const fs = disableAtime(await resolveMountConfig({ backend: IndexedDB, storeName: profileVfsDatabaseName(connectionId) }) as Syncable);
+        // So a file written as the page closes (sysExitEvent) is kept — #438.
+        commitSyncWritesImmediately(fs);
         claimSlot();
         mount(profilePath, fs);
         ensureProfileDirs(profilePath);

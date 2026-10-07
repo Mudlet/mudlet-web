@@ -931,7 +931,7 @@ Reconciled against the authoritative [Mudlet Event Engine](https://wiki.mudlet.o
 | Event | Status | Notes |
 |---|---|---|
 | `sysLoadEvent` | ✅ | After the initial script load, with `true`; with `false` after `resetProfile()` |
-| `sysExitEvent` | ✅ | Fired once at `ScriptingEngine.destroy()` (connection switch/unmount), on `window` `beforeunload`, or by `closeMudlet()`/`closeProfile()` — whichever comes first. `closeMudlet()` raises it before disconnecting, so a handler can still send (as `TMainConsole::closeEvent`) |
+| `sysExitEvent` | ✅ | Fired once at `ScriptingEngine.destroy()` (connection switch/unmount), on `window` `pagehide` (not `beforeunload`, which a player can still cancel at the "Leave site?" prompt; re-armed if the page returns from the back/forward cache), or by `closeMudlet()`/`closeProfile()` — whichever comes first. `closeMudlet()` raises it before disconnecting, so a handler can still send (as `TMainConsole::closeEvent`) |
 | `sysConnectionEvent` | ✅ | On connect; Mudlet Web also fires native `connect` |
 | `sysDisconnectionEvent` | ✅ | On disconnect |
 | `sysProfileFocusChangeEvent` | ✅ | On `document.visibilitychange` — arg: isFocused |

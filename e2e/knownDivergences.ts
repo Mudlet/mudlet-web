@@ -454,6 +454,22 @@ export interface PlatformDivergence {
 
 export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
     {
+        api: 'files written in sysExitEvent on a profile linked to a local folder',
+        behaviour:
+            'Desktop: a file a sysExitEvent handler writes as Mudlet closes is on disk afterwards. Mudlet Web: '
+            + 'the same on an ordinary (IndexedDB) profile; on a profile linked to a folder on disk, a write made '
+            + 'as the tab closes or reloads can be lost. Writes made while playing reach the folder as before.',
+        reason:
+            'The folder link goes through the File System Access API, which has no synchronous write: every '
+            + 'write opens a writable stream and closes it over several turns of the event loop, and a page that '
+            + 'is closing gets none. IndexedDB can be told to finish on its own (the profile VFS commits each '
+            + 'write\'s transaction explicitly, so the database completes it after the page is gone), and that is '
+            + 'what closes the gap for the default storage; the File System Access API offers no equivalent. '
+            + 'Holding the tab open until the writes land would take a "Leave site?" prompt on every close. '
+            + 'Pinned for IndexedDB by tests/scripting/vfsUnloadCommit438.test.ts.',
+        issue: '#438',
+    },
+    {
         api: 'trigger and alias regex: PCRE2 10.34 in 16-bit mode',
         behaviour:
             'Desktop matches with PCRE2 10.39 over UTF-8; Mudlet Web with 10.34 over UTF-16. So: letters '

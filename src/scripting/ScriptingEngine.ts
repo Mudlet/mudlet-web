@@ -514,10 +514,21 @@ export class ScriptingEngine implements EngineHost {
     // (destroy) or on page unload, whichever comes first.
     private exitFired = false;
     // The map save runs after sysExitEvent so edits its handlers make are kept.
-    private readonly beforeUnload = () => {
+    // pagehide, not beforeunload: beforeunload comes before the "Leave site?"
+    // prompt a live connection raises (MudSession), so a player who chose to
+    // stay had already had their exit event — and never got another. pagehide
+    // fires only once the page is really going. The files its handlers write
+    // still reach IndexedDB: the profile VFS commits each sync write's
+    // transaction itself (commitSyncWritesImmediately).
+    private readonly onPageHide = () => {
         this.fireExit();
         this.flushProfileData();
         this.session.windows.flushMapSaveSync();
+    };
+    // A page put in the back/forward cache comes back alive, so its next real
+    // exit raises the event again.
+    private readonly onPageShow = (event: PageTransitionEvent) => {
+        if (event.persisted && !this.disposed) this.exitFired = false;
     };
 
     // Mudlet's permScript/permRegexTrigger/setScript return a numeric script id;
@@ -673,8 +684,9 @@ export class ScriptingEngine implements EngineHost {
         session.sounds.onMediaCaption = (info) => this.printClosedCaption(info);
         // Mudlet fires sysExitEvent as the profile shuts down. The engine is
         // torn down on connection switch/unmount (destroy), but a full page
-        // unload skips React cleanup — cover that with a beforeunload hook.
-        window.addEventListener('beforeunload', this.beforeUnload);
+        // unload skips React cleanup — cover that with a pagehide hook.
+        window.addEventListener('pagehide', this.onPageHide);
+        window.addEventListener('pageshow', this.onPageShow);
         this.scriptsLoaded = new Promise<void>(resolve => { this.resolveScriptsLoaded = resolve; });
         // The VFS is injected already-mounted; the engine builds its runtime over
         // it but never mounts/unmounts (App owns that lifecycle).
@@ -4921,7 +4933,8 @@ export class ScriptingEngine implements EngineHost {
         // subsystem is still fully live for phase 2.
         this.disposed = true;
         this.pendingConnectUrl = null;
-        window.removeEventListener('beforeunload', this.beforeUnload);
+        window.removeEventListener('pagehide', this.onPageHide);
+        window.removeEventListener('pageshow', this.onPageShow);
 
         // ── Phase 2: user code, against an intact engine ─────────────────────
         // sysExitEvent dispatches into Lua synchronously, so handlers run to

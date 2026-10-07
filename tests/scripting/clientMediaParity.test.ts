@@ -25,7 +25,7 @@ const { KeyEngine } = await import('../../src/mud/keybindings/KeyEngine');
 const { ScriptingEngine } = await import('../../src/scripting/ScriptingEngine');
 const { useAppStore } = await import('../../src/storage/appStore');
 
-// Enough DOM for the engine's constructor (beforeunload + visibilitychange).
+// Enough DOM for the engine's constructor (pagehide + visibilitychange).
 // Installed AFTER the imports above, never at import time: pcre2 picks its
 // node-vs-browser WASM loading during its own module init, and a `document`
 // visible then flips it to fetch mode and it dies. Same rule as
