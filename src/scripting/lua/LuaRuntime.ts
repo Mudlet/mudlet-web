@@ -3166,10 +3166,11 @@ end`);
     //     of \DDD escapes: one crossing per result, and pure ASCII on the wire.
     //
     // Persistence: a database's committed state is written back to its VFS
-    // path at the end of the task that wrote it, before anything reads that
-    // file (the VFS read barrier — a backup script copying Database_x.db right
-    // after db:add must get the row it just added, as it does from desktop's
-    // file), on saveProfile(), when the page unloads, and when its last
+    // path once its writes settle (coalesced — see SNAPSHOT_DELAY_MS in
+    // sqliteClient.ts), before anything reads that file (the VFS read barrier
+    // — a backup script copying Database_x.db right after db:add must get the
+    // row it just added, as it does from desktop's file), on saveProfile(),
+    // when the page hides or unloads, when this runtime goes, and when its last
     // connection closes. The other way round, a write to or removal of the
     // file through the VFS reaches the open connections (the write observer).
     private setupSqlBridge(): void {
@@ -3260,19 +3261,35 @@ end`);
             });
         }
 
-        // A write still waiting for the end of its task when the page goes.
+        // A write still waiting to be written out when the page goes. Hidden
+        // counts too: a backgrounded tab is the one a mobile browser or the OS
+        // kills without a pagehide, and its timers may not run before then.
         const onUnload = () => sql.flushAll();
+        const onHidden = () => {
+            if (document.visibilityState === 'hidden') sql.flushAll();
+        };
         if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
             window.addEventListener('pagehide', onUnload);
             window.addEventListener('beforeunload', onUnload);
         }
+        if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+            document.addEventListener('visibilitychange', onHidden);
+        }
 
         this.closeSqlConnections = () => {
+            // Everything still waiting goes out while this runtime's VFS is
+            // still there to take it — a database shared with another profile's
+            // connection is not torn down by the close below, and would
+            // otherwise sit on its timer past this profile's VFS unmounting.
+            sql.flushAll();
             for (const id of owned) sql.close(id);
             owned.clear();
             if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
                 window.removeEventListener('pagehide', onUnload);
                 window.removeEventListener('beforeunload', onUnload);
+            }
+            if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+                document.removeEventListener('visibilitychange', onHidden);
             }
             if (vfs) {
                 vfs.setReadBarrier?.(null);

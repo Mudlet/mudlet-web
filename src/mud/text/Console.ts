@@ -363,26 +363,31 @@ export class Console {
         // saved line index by exactly the amount every surviving index moved.
         // Evicting one line per appended line instead announced a stream of 1s
         // and left the buffer pinned to the limit.
-        let removed = 0;
-        while (this.lineTotal > this._maxLines && this.history.length > 0) {
-            // A batch at or over the limit trims only the overflow. Mudlet keeps
-            // `batch < limit` as an invariant of the one call that sets both
-            // (`TBuffer::setBufferSize`, TBuffer.cpp:407-409: a batch at or over
-            // the limit is knocked down to limit/10), so its shrinkBuffer can
-            // pop a flat batch without checking. Here the two can be set
-            // separately — by a script, by the profile preference, or by the
-            // defaults — so the invariant is enforced at the point of use
-            // instead. Without it a batch larger than the limit empties the
-            // buffer outright rather than trimming it: raising the default batch
-            // to 1,000 alongside the 10,000-line default meant any console
-            // dropped to a smaller limit lost everything on its next write.
-            const wanted = Math.max(1, this._batchDeleteSize);
-            const batch = Math.min(
-                wanted >= this._maxLines ? this.lineTotal - this._maxLines : wanted,
-                this.history.length);
-            for (let i = 0; i < batch; i++) this.history.shift()!.removeFromDom();
-            removed += batch;
-        }
+        //
+        // The whole trim is worked out up front and taken with one splice: a
+        // shift() per line was O(history) each, so a 20,000-line trim of a
+        // 100,000-line scrollback spent seconds moving the array (#443).
+        //
+        // A batch at or over the limit trims only the overflow. Mudlet keeps
+        // `batch < limit` as an invariant of the one call that sets both
+        // (`TBuffer::setBufferSize`, TBuffer.cpp:407-409: a batch at or over
+        // the limit is knocked down to limit/10), so its shrinkBuffer can
+        // pop a flat batch without checking. Here the two can be set
+        // separately — by a script, by the profile preference, or by the
+        // defaults — so the invariant is enforced at the point of use
+        // instead. Without it a batch larger than the limit empties the
+        // buffer outright rather than trimming it: raising the default batch
+        // to 1,000 alongside the 10,000-line default meant any console
+        // dropped to a smaller limit lost everything on its next write.
+        // A batch under the limit is dropped whole, as many times as it takes
+        // to get back under — the same count the old loop of flat batches
+        // reached.
+        const wanted = Math.max(1, this._batchDeleteSize);
+        const overflow = this.lineTotal - this._maxLines;
+        const removed = Math.min(
+            wanted >= this._maxLines ? overflow : Math.ceil(overflow / wanted) * wanted,
+            this.history.length);
+        if (removed > 0) AnsiAwareBuffer.removeAllFromDom(this.history.splice(0, removed));
         // The user cursor keeps the index it was given rather than following the
         // line it was parked on — the known limitation sysBufferShrinkEvent
         // exists to work around, and what Mudlet does.

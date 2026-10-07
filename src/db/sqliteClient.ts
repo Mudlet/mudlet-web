@@ -14,11 +14,12 @@
 //   - Cross-session persistence is the profile VFS. A store's committed state
 //     is exported (through a "keeper" handle that never holds a transaction, so
 //     the export can only see committed pages) to its VFS path by the caller's
-//     `persist` callback — at the end of the task that wrote it, on demand via
-//     flush(), and always when the last connection closes. Desktop's commit is
-//     on disk at once, so a page closed half a second after a db:add must not
-//     lose it. The in-memory file is then deleted; the next open reads the VFS
-//     file again.
+//     `persist` callback — once its writes settle (coalesced, see
+//     SNAPSHOT_DELAY_MS), on demand via flush(), and always when the last
+//     connection closes, after which the in-memory file is deleted and the
+//     next open reads the VFS file again. Desktop's commit is on disk at
+//     once, so a page closed half a second after a db:add must not lose it:
+//     the caller flushes when the page hides or unloads.
 //   - Connections open through a shim of the unix VFS that maps a database's
 //     real path (/profiles/<id>/Database_x.db) onto its in-memory file. sqlite
 //     sees the real names, so PRAGMA database_list reports them, and a database
@@ -79,10 +80,19 @@ export interface OpenOptions {
     persist?: (bytes: Uint8Array) => void;
 }
 
-/** How long a committed write waits to be written out: to the end of the
- *  task, so a loop of db:add costs one export, but no longer — the page can
- *  close at any moment after. */
-const SNAPSHOT_DELAY_MS = 0;
+/** How long a committed write waits to be written out once writes stop.
+ *  Writing out is a whole-database export plus a rewrite of the whole file, so
+ *  a script that writes a row per incoming line (a chat or loot logger) paid
+ *  that on every line — 50-280 ms per write on a 12-48 MB database (#443).
+ *  Writes now coalesce: each one pushes the export back by this much, up to
+ *  {@link SNAPSHOT_MAX_WAIT_MS} after the first. Nothing that reads the file
+ *  waits on it — the VFS read barrier flushes before any read of the file, and
+ *  the page hiding or unloading, saveProfile(), the last connection closing
+ *  and the runtime going (profile switch, closeMudlet) all flush at once. */
+export const SNAPSHOT_DELAY_MS = 1000;
+/** The longest a write stream may hold its database back from being written
+ *  out, so a crash mid-stream loses at most this much. */
+export const SNAPSHOT_MAX_WAIT_MS = 3000;
 /** Retry after an export found the file locked exclusively. */
 const SNAPSHOT_RETRY_MS = 500;
 const SQLITE_ROW = 100;
@@ -126,6 +136,8 @@ interface Store {
     dirty: boolean;
     persist: ((bytes: Uint8Array) => void) | null;
     timer: ReturnType<typeof setTimeout> | null;
+    /** When the write that started the pending export's wait came in. */
+    dirtySince: number;
     /** C strings of its mapped names (sqlite's unix VFS keeps the pointer). */
     cnames: Map<string, number>;
 }
@@ -340,7 +352,7 @@ export class SqliteClient {
         this.unlink(`${fsName}-journal`);
         if (preload && preload.byteLength > 0) this.s.capi.sqlite3_js_posix_create_file(fsName, preload);
         const store: Store = {
-            key, fsName, keeper: null, handles: new Set(), dirty: false, persist: null, timer: null, cnames: new Map(),
+            key, fsName, keeper: null, handles: new Set(), dirty: false, persist: null, timer: null, dirtySince: 0, cnames: new Map(),
         };
         this.stores.set(key, store);
         return store;
@@ -674,7 +686,7 @@ export class SqliteClient {
     }
 
     /** Note that `dbId` may have changed its database, or one it has attached;
-     *  they are written out at the end of the task, or sooner by flush(). */
+     *  they are written out once its writes settle, or sooner by flush(). */
     markDirty(dbId: number): void {
         const h = this.handles.get(dbId);
         if (!h) return;
@@ -682,14 +694,23 @@ export class SqliteClient {
         for (const store of h.attached) this.schedule(store);
     }
 
-    private schedule(store: Store, delay = SNAPSHOT_DELAY_MS): void {
+    /** Debounced: every write moves the export back to {@link SNAPSHOT_DELAY_MS}
+     *  from now, but never past {@link SNAPSHOT_MAX_WAIT_MS} from the first
+     *  write it is waiting for. A retry passes its own fixed delay. */
+    private schedule(store: Store, delay?: number): void {
         if (!store.persist) return;
+        const now = Date.now();
+        if (!store.dirty || !store.timer) store.dirtySince = now;
         store.dirty = true;
-        if (store.timer) return;
+        const wait = delay ?? Math.max(0, Math.min(SNAPSHOT_DELAY_MS, store.dirtySince + SNAPSHOT_MAX_WAIT_MS - now));
+        if (store.timer) {
+            if (delay !== undefined) return;
+            clearTimeout(store.timer);
+        }
         store.timer = setTimeout(() => {
             store.timer = null;
             this.flushStore(store);
-        }, delay);
+        }, wait);
     }
 
     /** Write `path`'s committed state out now if it has changed. Cheap when it

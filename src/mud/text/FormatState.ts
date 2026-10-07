@@ -1054,6 +1054,46 @@ export class AnsiAwareBuffer {
         this._lineElement = null;
     }
 
+    /**
+     * `removeFromDom()` for a whole eviction batch at once. A trim takes a run
+     * of lines off the head of a buffer, and their rows normally sit side by
+     * side at the top of one container — those go in a single Range deletion
+     * rather than one removeChild apiece, which on a 20,000-line trim was half
+     * a second of mutation bookkeeping alone (#443). Anything that is not one
+     * unbroken run of rows in one parent (rows spread over containers, a gap
+     * where some other element sits between two of them) falls back to the
+     * per-line removal, so nothing that is not one of these lines is touched.
+     */
+    static removeAllFromDom(buffers: readonly AnsiAwareBuffer[]): void {
+        const rows: HTMLElement[] = [];
+        for (const buf of buffers) {
+            const el = buf._lineElement ?? buf._renderContainer;
+            buf._renderContainer = null;
+            buf._lineElement = null;
+            // Two buffers can name the same row (a partial line redrawn in
+            // place hands its row to the buffer that replaced it).
+            if (el && el.parentElement && rows[rows.length - 1] !== el) rows.push(el);
+        }
+        if (rows.length === 0) return;
+        // nextSibling, not nextElementSibling: the range takes every node
+        // between its ends, so not even a stray text node may sit in the run.
+        let contiguous = true;
+        for (let i = 1; i < rows.length; i++) {
+            if (rows[i - 1].nextSibling !== rows[i]) {
+                contiguous = false;
+                break;
+            }
+        }
+        if (contiguous && rows.length > 1 && typeof document !== 'undefined' && document.createRange) {
+            const range = document.createRange();
+            range.setStartBefore(rows[0]);
+            range.setEndAfter(rows[rows.length - 1]);
+            range.deleteContents();
+            return;
+        }
+        for (const el of rows) el.parentElement?.removeChild(el);
+    }
+
     onRender(callback: (container: HTMLElement) => void): this {
         this._onRender = callback;
         return this;

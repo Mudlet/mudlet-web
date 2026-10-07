@@ -130,3 +130,100 @@ describe('AnsiAwareBuffer.removeFromDom', () => {
         expect(line.parentElement).toBeNull();
     });
 });
+
+// mudlet-web#443 item 1: a trim took its batch with one shift() per line — 20,000
+// shifts of a 100,000-line array, seconds of freeze — and one removeChild per
+// row. It is now one splice and, for rows that sit together, one DOM removal.
+describe('mudlet-web#443: a batch trim', () => {
+    it('drops the oldest batch in one go and reports its size', () => {
+        const con = new Console();
+        con.setMaxLines(100_000);
+        con.setBatchDeleteSize(20_000);
+        const shrinks: number[] = [];
+        con.onBufferShrink = n => { shrinks.push(n); };
+        for (let i = 0; i < 99_998; i++) con.appendLine(new AnsiAwareBuffer(`L${i}`));
+        expect(shrinks).toEqual([]);
+        const started = performance.now();
+        for (let i = 99_998; i < 100_010; i++) con.appendLine(new AnsiAwareBuffer(`L${i}`));
+        const elapsed = performance.now() - started;
+        expect(shrinks).toEqual([20_000]);
+        // Every surviving line moved up by exactly the batch.
+        const first = Number(con.getLines(0, 1)[0].slice(1));
+        expect(first).toBe(100_010 - (con.getLineCount() + 1));
+        expect(con.getLines(con.getLineCount(), con.getLineCount() + 1)).toEqual(['L100009']);
+        // Generous: the shift loop took seconds here; the splice takes well
+        // under a millisecond.
+        expect(elapsed).toBeLessThan(250);
+    });
+
+    it('takes the same lines the batch loop took when one batch is not enough', () => {
+        // A limit lowered under the history drops whole batches until it fits.
+        const con = new Console();
+        for (let i = 0; i < 50; i++) con.appendLine(new AnsiAwareBuffer(`L${i}`));
+        const shrinks: number[] = [];
+        con.onBufferShrink = n => { shrinks.push(n); };
+        con.setBatchDeleteSize(7);
+        con.setMaxLines(20);
+        // 50 lines over a limit of 20: five batches of 7 (35) bring it to 15.
+        expect(shrinks).toEqual([35]);
+        expect(con.getLines(0, 1)).toEqual(['L35']);
+        expect(con.getLineCount() + 1).toBe(15);
+    });
+
+    it('removes the evicted rows and nothing else from the scrollback', () => {
+        const { wrapper, sentinel, controls } = mountRenderer();
+        const con = new Console();
+        con.setMaxLines(30);
+        con.setBatchDeleteSize(10);
+        for (let i = 1; i <= 29; i++) echoLine(con, controls, `line ${i}\n`);
+        expect(rows(wrapper).length).toBe(29);
+
+        echoLine(con, controls, 'line 30\n');
+        const texts = rows(wrapper).map(r => r.querySelector('.output-msg-content')!.textContent);
+        expect(texts.length).toBe(con.getLineCount() + 1);
+        expect(texts[0]).toBe(con.getLines(0, 1)[0]);
+        expect(texts[texts.length - 1]).toBe('line 30');
+        expect(wrapper.lastElementChild).toBe(sentinel);
+    });
+
+    it('leaves alone an element that is not one of the evicted lines', () => {
+        const parent = document.createElement('div');
+        document.body.appendChild(parent);
+        const bufs: AnsiAwareBuffer[] = [];
+        const foreign = document.createElement('div');
+        for (let i = 0; i < 6; i++) {
+            if (i === 3) parent.appendChild(foreign);
+            const row = document.createElement('div');
+            const buf = new AnsiAwareBuffer(`r${i}`);
+            row.appendChild(buf.toDom());
+            buf.notifyRender(row);
+            parent.appendChild(row);
+            bufs.push(buf);
+        }
+        const kept = document.createElement('div');
+        parent.appendChild(kept);
+
+        AnsiAwareBuffer.removeAllFromDom(bufs);
+        expect(Array.from(parent.children)).toEqual([foreign, kept]);
+    });
+
+    it('takes a contiguous run of rows and stops at its last one', () => {
+        const parent = document.createElement('div');
+        document.body.appendChild(parent);
+        const bufs: AnsiAwareBuffer[] = [];
+        for (let i = 0; i < 6; i++) {
+            const row = document.createElement('div');
+            const buf = new AnsiAwareBuffer(`r${i}`);
+            row.appendChild(buf.toDom());
+            buf.notifyRender(row);
+            parent.appendChild(row);
+            bufs.push(buf);
+        }
+        const survivors = Array.from(parent.children).slice(4);
+        AnsiAwareBuffer.removeAllFromDom(bufs.slice(0, 4));
+        expect(Array.from(parent.children)).toEqual(survivors);
+        // A buffer already taken off is not taken again.
+        bufs[0].removeFromDom();
+        expect(Array.from(parent.children)).toEqual(survivors);
+    });
+});

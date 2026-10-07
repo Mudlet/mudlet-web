@@ -262,8 +262,21 @@ export function setupOutputRenderer(
 ): OutputRendererControls {
     /** Scroll to the newest line, unless this console is pinned to the top. */
     const scrollToTail = () => {
+        tailScrollQueued = false;
         if (followTail && !followTail()) return;
         outputWrapper.scrollTop = outputWrapper.scrollHeight;
+    };
+    // One tail scroll per frame, however many lines landed in it. Every line
+    // used to queue its own callback, and each one read scrollHeight — a burst
+    // of N lines was N scroll-geometry reads and N scroll writes in the same
+    // frame, all but the first wasted, against a scrollback that only grows
+    // (#443). The first callback of a frame lands on the tail of everything
+    // drawn before it, which is all that was ever asked for.
+    let tailScrollQueued = false;
+    const queueScrollToTail = () => {
+        if (tailScrollQueued) return;
+        tailScrollQueued = true;
+        requestAnimationFrame(scrollToTail);
     };
     let timestampsVisible = false;
 
@@ -428,7 +441,7 @@ export function setupOutputRenderer(
         cursorEl = target;
         deletedPrev = null;
         if (!isSplitView()) {
-            requestAnimationFrame(scrollToTail);
+            queueScrollToTail();
         }
         return true;
     }
@@ -475,7 +488,7 @@ export function setupOutputRenderer(
                 updateElementContent(partialLineEl, message);
                 if (partialStickyEl) updateElementContent(partialStickyEl, message, false);
                 if (!isSplitView()) {
-                    requestAnimationFrame(scrollToTail);
+                    queueScrollToTail();
                 }
             } else {
                 const wrapper = createMessageWrapper(message, 'script', timestampValue);
@@ -494,7 +507,7 @@ export function setupOutputRenderer(
                     }
                 } else {
                     suppressSplitView?.(250);
-                    requestAnimationFrame(scrollToTail);
+                    queueScrollToTail();
                 }
             }
             return;
@@ -514,7 +527,7 @@ export function setupOutputRenderer(
             partialStickyEl = null;
             if (!isSplitView()) {
                 suppressSplitView?.(250);
-                requestAnimationFrame(scrollToTail);
+                queueScrollToTail();
             }
             return;
         }
@@ -560,7 +573,7 @@ export function setupOutputRenderer(
             if (suppressSplitView) {
                 suppressSplitView(250);
             }
-            requestAnimationFrame(scrollToTail);
+            queueScrollToTail();
         }
     };
 

@@ -2141,6 +2141,29 @@ body.is-sorting {
     display: block;
 }
 
+/* Scrollback rows off screen skip style, layout and paint (#443). Every line
+   stays a live, flat child of the scroller — the cursor ops, eviction, search,
+   copy, caret mode and link navigation all index those children directly, so
+   the rows are not grouped into chunks or virtualised away — but with tens of
+   thousands of them, each output burst re-walked them all in PrePaint and
+   Paint. `auto` keeps a skipped row in the DOM, the accessibility tree,
+   find-in-page and the selection, and renders it again the moment it nears
+   the viewport or a selection reaches into it.
+
+   Placeholder height is one line until the row has been laid out once; `auto`
+   then remembers its real height, so a wrapped row keeps its size off screen.
+   Only rows drawn while scrolled up (split view) wait on the estimate.
+
+   Paint containment comes with it and clips a row to its own box, so the
+   clip edge is pushed out: a span's 2px padding and a tall glyph may still
+   reach into the row above or below as they always could. */
+.output-wrapper > .output-msg {
+    content-visibility: auto;
+    contain-intrinsic-block-size: auto 1.3em;
+    contain-intrinsic-block-size: auto 1lh;
+    overflow-clip-margin: 0.5em;
+}
+
 .output-msg-text {
     display: flex;
     align-items: baseline;

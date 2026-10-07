@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from
 import { configure, InMemory, mkdirSync, existsSync, readFileSync } from '@zenfs/core';
 import { createTestRuntime, type TestRuntime } from '../createTestRuntime';
 import { ProfileVFS } from '../../src/scripting/vfs/ProfileVFS';
-import { round337 } from '../../src/db/sqliteClient';
+import { round337, SNAPSHOT_DELAY_MS } from '../../src/db/sqliteClient';
 
 /** In-memory stand-in for ProfileVFS: what the io and sql bridges use, with
  *  the read barrier and write observer ProfileVFS runs. */
@@ -71,6 +71,8 @@ class StubVFS {
 
 const H = 'getMudletHomeDir()';
 const tick = () => new Promise(r => setTimeout(r, 5));
+/** Long enough for a write's coalesced export to go out on its own (#443). */
+const settle = () => new Promise(r => setTimeout(r, SNAPSHOT_DELAY_MS + 50));
 
 describe('issue #335: luasql and db:* match desktop', () => {
     let vfs: StubVFS;
@@ -150,7 +152,7 @@ describe('issue #335: luasql and db:* match desktop', () => {
         });
     });
 
-    describe('2. a commit reaches the profile by the end of its task', () => {
+    describe('2. a commit reaches the profile once its writes settle', () => {
         it('db:add and a raw insert are in the file, and the file flushed, before any close', async () => {
             env.run(`
                 local d = db:create("quick", {k={a=0}})
@@ -160,7 +162,7 @@ describe('issue #335: luasql and db:* match desktop', () => {
                 _G.keep = {d, c}
                 db:add(d.k, {a=100}); c:execute("insert into t values (7)")`);
             const flushesBefore = vfs.flushes;
-            await tick();
+            await settle();
             expect(vfs.flushes).toBeGreaterThan(flushesBefore);
             // Read the files as a page opened after a crash would: a second
             // profile holding copies of them, with nothing of the first open.
@@ -285,7 +287,7 @@ describe('issue #335: luasql and db:* match desktop', () => {
                 _G.keep = c
                 return tostring(r1) .. tostring(r2) .. tostring(r3)`))
                 .toBe('001');
-            await tick();
+            await settle();
             expect(vfs.files.has('/profiles/test/fresh.db')).toBe(true);
             expect(env.run(`return ${one(`${H}.."/fresh.db"`, 'select x from ft')}`)).toBe(42);
         });
