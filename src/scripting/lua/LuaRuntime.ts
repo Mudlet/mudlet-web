@@ -3603,7 +3603,17 @@ end`);
                     }
                     // An append handle starts behind what the file holds; it
                     // only needs the size (see Handle.base).
-                    if (m === 'a' || m === 'a+') base = vfs.stat(filename)?.size ?? 0;
+                    if (m === 'a' || m === 'a+') {
+                        const size = vfs.stat(filename)?.size;
+                        base = size ?? 0;
+                        // fopen(f, "a") creates a missing file then and there,
+                        // so `io.open(f, "a"):close()` is how scripts make sure
+                        // a file exists. Close only ever appends to it.
+                        if (size === undefined) {
+                            vfs.writeBinaryFile(resolvedPath, new Uint8Array(0));
+                            this.notifyVfsPathChange({ path: resolvedPath, kind: 'create' });
+                        }
+                    }
                     dirty = m === 'w' || m === 'w+';
                 } else {
                     setError(`${filename}: No such file or directory`, 2);

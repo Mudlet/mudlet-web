@@ -192,18 +192,20 @@ describe('VFS binary-safe Lua io', () => {
             expect(stored('pos.txt')).toBe('helloabc!');
         });
 
-        it('"a" creates a missing file, and leaves none when nothing was written', () => {
+        it('"a" creates a missing file on open, as fopen does, even when nothing is written', () => {
             const result = t.run(`
                 local home = getMudletHomeDir()
                 local f = assert(io.open(home .. '/new.txt', 'a'))
                 f:write('first')
                 f:close()
                 local g = assert(io.open(home .. '/untouched.txt', 'a'))
+                local whileOpen = io.open(home .. '/untouched.txt', 'r') ~= nil
                 g:close()
-                return io.open(home .. '/untouched.txt', 'r') == nil
+                return tostring(whileOpen) .. ',' .. tostring(io.open(home .. '/untouched.txt', 'r') ~= nil)
             `);
-            expect(result).toBe(true);
+            expect(result).toBe('true,true');
             expect(stored('new.txt')).toBe('first');
+            expect(stored('untouched.txt')).toBe('');
         });
 
         it('two "a" handles open at once both land', () => {

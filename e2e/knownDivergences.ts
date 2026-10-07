@@ -487,6 +487,41 @@ export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
         issue: '#361',
     },
     {
+        api: 'trigger and alias regex: match limit',
+        behaviour:
+            'Desktop compiles trigger and alias patterns with PCRE2\'s default match limit (10 000 000) and runs '
+            + 'them through the JIT. Mudlet Web caps them at 500 000 steps (ENGINE_MATCH_LIMIT in '
+            + 'src/mud/triggers/pcre/Pcre2.ts). A pattern that needs between the two to decide a line matches on '
+            + 'desktop and counts as no match here, silently on both clients (TTrigger::match_perl treats a match '
+            + 'error as no match). Ordinary patterns need a few tens of thousands of steps even on a 20 kB line, '
+            + 'so in practice only nested-quantifier patterns like ^(\\w+\\s?)+$ reach the limit, and those fail '
+            + 'on such lines on both clients anyway. Lua rex keeps the library default.',
+        reason:
+            'The wasm build has no JIT (sljit has no WebAssembly backend) and its interpreter takes about 50 ns '
+            + 'a step, so 10 000 000 steps froze the page for one to several seconds per line, for a pattern that '
+            + 'then failed anyway (#435). 500 000 gives up in tens of milliseconds. Matching the default would '
+            + 'bring the freeze back; running matching off the main thread would not shorten it, only hide it. '
+            + 'Pinned by tests/triggers/pcreLeadingDotPlus.test.ts.',
+        issue: '#435',
+    },
+    {
+        api: 'order of lines, GMCP, input and timers within one large network read',
+        behaviour:
+            'Desktop reads the socket in large chunks and processes each read in full '
+            + 'before typed input or a timer can run; GMCP and telnet negotiation in a read are handled before '
+            + 'its text lines. Mudlet Web processes a read of more than 32 lines in slices of 32 lines, handing '
+            + 'the page back to input and timers once a slice has run for 12 ms, and handles GMCP before the '
+            + 'lines of its own slice rather than of the whole read. Nothing is reordered: lines, prompts, GMCP '
+            + 'and sends keep their order, and a slice boundary is always between whole lines.',
+        reason:
+            'A browser tab is single-threaded, so processing a 5 000-line flood in one go blocked typing, '
+            + 'timers and rendering for seconds where desktop stays responsive (#435). Read boundaries already '
+            + 'differ from desktop\'s (the proxy and the WebSocket frame the stream their own way), so scripts '
+            + 'cannot depend on them on either client; slicing only adds more of them. Pinned by '
+            + 'tests/mud/connection/inboundSlices.test.ts.',
+        issue: '#435',
+    },
+    {
         api: 'postHTTP / putHTTP / deleteHTTP / customHTTP answered by a redirect',
         behaviour:
             'Desktop: a 301/302/303 is followed with a GET and finishes as sysGetHttpDone; a 307/308 repeats '
