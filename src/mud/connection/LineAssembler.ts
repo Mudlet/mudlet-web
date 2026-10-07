@@ -165,6 +165,13 @@ export class LineAssembler {
         this.undoServerWrapWidth = width;
     }
 
+    /** Nothing held back: no partial tail and no line waiting on a wrap
+     *  continuation, so no timer of ours has anything to fire on. MudClient
+     *  only pauses between slices of a large read at such a point. */
+    get idle(): boolean {
+        return this.pendingLineTail.length === 0 && this.serverWrapPending === null;
+    }
+
     /** Drop all held state (call on connect and after close). */
     reset(): void {
         this.pendingLineTail = "";

@@ -213,6 +213,51 @@ function bytesToLatin1(bytes: Uint8Array): string {
     return binary;
 }
 
+/** A read waiting in MudClient's inbound queue, at whichever stage it has
+ *  reached: as received, split into MCCP pieces (and the warnings between
+ *  them), or as text partly through the pipeline. */
+type InboundItem =
+    | { kind: 'read'; data: string; receivedAt?: number }
+    | { kind: 'notice'; notice: string }
+    | { kind: 'piece'; data: string; receivedAt?: number; original: string; split: boolean }
+    | { kind: 'text'; data: string; receivedAt?: number };
+
+/** Lines a slice of a large read hands the pipeline at a time. */
+const INBOUND_SLICE_LINES = 32;
+/** How long a slice runs before the event loop gets a turn. */
+const INBOUND_SLICE_BUDGET_MS = 12;
+
+/** Where the `n`th line of `data` ends (just past its `\n`), or its length. */
+function afterLines(data: string, n: number): number {
+    let at = 0;
+    for (let i = 0; i < n; i++) {
+        const nl = data.indexOf('\n', at);
+        if (nl === -1) return data.length;
+        at = nl + 1;
+    }
+    return at;
+}
+
+/** Run `fn` as a task of its own, after whatever input and timers are
+ *  waiting. A MessageChannel rather than setTimeout(0), which browsers
+ *  stretch to 4 ms once timeouts nest. */
+let yieldChannel: MessageChannel | null = null;
+const yieldQueue: Array<() => void> = [];
+function yieldToEventLoop(fn: () => void): void {
+    if (typeof MessageChannel === 'undefined') {
+        setTimeout(fn, 0);
+        return;
+    }
+    if (!yieldChannel) {
+        yieldChannel = new MessageChannel();
+        yieldChannel.port1.onmessage = () => { yieldQueue.shift()?.(); };
+        // Node keeps a listening port's process alive; this one must not.
+        (yieldChannel.port1 as { unref?: () => void }).unref?.();
+    }
+    yieldQueue.push(fn);
+    yieldChannel.port2.postMessage(null);
+}
+
 /**
  * The MUD-facing transport: telnet over a WebSocket (direct or via the
  * telnet→WebSocket proxy). Owns the socket lifecycle and the outbound send
@@ -509,6 +554,8 @@ export class MudClient {
         if (this.charModeTimer !== null) clearTimeout(this.charModeTimer);
         this.charModeTimer = setTimeout(() => {
             this.charModeTimer = null;
+            // An ECHO release the game already sent may still be queued.
+            this.drainInbound();
             this.checkCharacterModePattern();
         }, CHARACTER_MODE_DETECT_MS);
     }
@@ -609,6 +656,13 @@ export class MudClient {
     }
 
     connect(): void {
+        // What the last socket already delivered goes through first, as it
+        // would have before anything else could run on desktop. A trigger
+        // there that dialled already did what this call was asked to.
+        const before = this.socket;
+        this.drainInbound();
+        if (this.socket !== before) return;
+        this.dropQueuedReads();
         // A disconnect() still waiting on its output is reported first, as
         // cTelnet::connectIt's abort() of a closing socket does.
         if (this.pendingDisconnect !== null) this.finishDisconnect();
@@ -646,6 +700,7 @@ export class MudClient {
             // sends bytes directly; decoding base64 on every frame was the bulk
             // of its (and our) per-message CPU cost.
             this.socket.binaryType = "arraybuffer";
+            const socket = this.socket;
 
             this.socket.onmessage = (event: MessageEvent<ArrayBuffer | string>) => {
                 const receivedAt = performance.now();
@@ -667,7 +722,8 @@ export class MudClient {
                     this.markEstablished();
                     const decodedData = bytesToLatin1(new Uint8Array(event.data));
                     if (debugTelnetEnabled()) logTelnetNegotiation('raw', decodedData);
-                    this.ingest(decodedData, receivedAt);
+                    this.inbound.push({ kind: 'read', data: decodedData, receivedAt });
+                    this.pumpInbound();
                 } catch (error) {
                     console.error('Error processing incoming message:', error);
                 }
@@ -678,6 +734,11 @@ export class MudClient {
             };
 
             this.socket.onclose = (event: CloseEvent) => {
+                // Everything the game sent before it closed is handled first —
+                // and if a trigger there disconnected or redialled, this
+                // socket's close has been dealt with already.
+                this.drainInbound();
+                if (this.socket !== socket) return;
                 // Closing without a single confirmed byte, while TLS was asked
                 // for, is the other face of the same ambiguity the deadline
                 // covers — report it now rather than waiting it out.
@@ -828,6 +889,15 @@ export class MudClient {
     }
 
     disconnect(): void {
+        // Reads still queued are handled before the disconnect, as they would
+        // already have been on desktop. A trigger calling disconnect() runs
+        // inside a slice, and the rest of its read is handled afterwards — as
+        // the rest of a read always has been. If a trigger in the drain
+        // disconnected or redialled, that stands.
+        const before = this.socket;
+        this.drainInbound();
+        if (this.socket !== before) return;
+        this.dropQueuedReads();
         // A second disconnect() — or the teardown before a redial — while the
         // first is still waiting on its output reports that one now, as Qt's
         // abort() does to a socket in ClosingState.
@@ -875,7 +945,11 @@ export class MudClient {
         // `bufferedAmount` is exactly the browser's count of bytes queued but
         // not yet handed to the network, so it answers the same question.
         if (outputPending) {
-            this.pendingDisconnect = setTimeout(() => this.finishDisconnect(), 0);
+            this.pendingDisconnect = setTimeout(() => {
+                this.drainInbound();
+                // A redial from a trigger in the drain has reported it already.
+                if (this.pendingDisconnect !== null) this.finishDisconnect();
+            }, 0);
             return;
         }
         this.finishDisconnect();
@@ -1306,6 +1380,10 @@ export class MudClient {
         // That includes MCCP: desktop's loopbackTest() runs injected bytes
         // through the same decompression as a socket read, so a script can
         // switch a profile to a compressed stream and back.
+        // Queued socket reads arrived first, so they go first — unless this
+        // is a trigger in the middle of one, where the injected bytes are
+        // handled on the spot, as they always were.
+        this.drainInbound();
         this.ingest(data);
     }
 
@@ -1314,6 +1392,7 @@ export class MudClient {
      *  (cTelnet::slot_processReplayChunk) that knows nothing of MCCP, so
      *  unlike {@link feedTelnet} this skips it. */
     feedReplay(data: string): void {
+        this.drainInbound();
         this.processIncomingData(this.subnegRepair.process(data));
     }
 
@@ -1324,28 +1403,132 @@ export class MudClient {
      *  before what follows the end of the stream, so a trigger on the last
      *  line of one part never sees GMCP from the next (mudlet-web#384). The
      *  MCCP warnings desktop posts while inflating land between the pieces,
-     *  where it posts them. */
+     *  where it posts them. Synchronous: the whole read is through when this
+     *  returns. Socket reads go through {@link pumpInbound} instead. */
     private ingest(decodedData: string, receivedAt?: number): void {
-        const pieces = this.mccpHandler.processPieces(decodedData);
-        // A read that yields no text still goes through, as one empty piece.
-        if (!pieces.some(piece => typeof piece === 'string')) pieces.push('');
-        const split = pieces.length !== 1 || pieces[0] !== decodedData;
-        for (const piece of pieces) {
-            if (typeof piece !== 'string') {
-                this.eventBus.emit('client.warning', piece.notice);
+        this.runInbound([{ kind: 'read', data: decodedData, receivedAt }], false);
+    }
+
+    // ── Inbound queue ─────────────────────────────────────────────────────────
+    // A flood can arrive as one large read — thousands of lines once MCCP has
+    // inflated it — and every line runs every trigger, so handling a read in
+    // one go held the page (input, timers, painting) for seconds (#435).
+    // Socket reads are queued here instead and run in slices: a few dozen
+    // lines at a time, giving the event loop a turn once a slice has taken
+    // INBOUND_SLICE_BUDGET_MS. Nothing changes order — the queue is the one
+    // way in, so lines, prompts, GMCP and what triggers send stay exactly in
+    // stream order — and a pause only ever falls between whole lines, with no
+    // partial line, held wrap line or half a telnet sequence pending: a point
+    // a read could have ended at anyway, so what runs in a pause is only what
+    // could run between two reads. Anything that has to see the stream up to
+    // date (close, disconnect, connect, feedTelnet, a replay) drains the queue
+    // first. A read of no more than INBOUND_SLICE_LINES lines — any ordinary
+    // one — is still handled whole before onmessage returns.
+    private readonly inbound: InboundItem[] = [];
+    /** A slice is running: a drain from inside one (a trigger calling
+     *  disconnect(), say) leaves the rest of the read to the slices. */
+    private inboundRunning = false;
+    private inboundScheduled = false;
+
+    /** Run a slice of the queued socket reads, and book the next if any are
+     *  left. */
+    private pumpInbound(): void {
+        if (this.inboundRunning) return;
+        this.inboundRunning = true;
+        let done = true;
+        try {
+            done = this.runInbound(this.inbound, true);
+        } finally {
+            this.inboundRunning = false;
+        }
+        if (!done && !this.inboundScheduled) {
+            this.inboundScheduled = true;
+            yieldToEventLoop(() => {
+                this.inboundScheduled = false;
+                try {
+                    this.pumpInbound();
+                } catch (error) {
+                    console.error('Error processing incoming message:', error);
+                }
+            });
+        }
+    }
+
+    /** Run every queued socket read now, unless a slice is already running. */
+    private drainInbound(): void {
+        if (this.inboundRunning || this.inbound.length === 0) return;
+        this.inboundRunning = true;
+        try {
+            this.runInbound(this.inbound, false);
+        } finally {
+            this.inboundRunning = false;
+        }
+    }
+
+    /** Forget the queued reads not yet begun, when a trigger in a slice lets
+     *  go of the socket: their onmessage would have found its handler gone.
+     *  The rest of the read the trigger is in carries on, as it always has. */
+    private dropQueuedReads(): void {
+        for (let i = this.inbound.length - 1; i >= 0; i--) {
+            if (this.inbound[i].kind === 'read') this.inbound.splice(i, 1);
+        }
+    }
+
+    /** Take reads off the head of `queue` and through the pipeline. In a
+     *  `slice`, text goes in INBOUND_SLICE_LINES lines at a time, and this
+     *  returns false — the rest still queued — once the slice's time is up
+     *  and the stream is at a clean break. */
+    private runInbound(queue: InboundItem[], slice: boolean): boolean {
+        const started = slice ? performance.now() : 0;
+        while (queue.length > 0) {
+            const item = queue[0];
+            if (item.kind === 'read') {
+                queue.shift();
+                const pieces = this.mccpHandler.processPieces(item.data);
+                // A read that yields no text still goes through, as one empty piece.
+                if (!pieces.some(piece => typeof piece === 'string')) pieces.push('');
+                const split = pieces.length !== 1 || pieces[0] !== item.data;
+                queue.unshift(...pieces.map((piece): InboundItem => typeof piece === 'string'
+                    ? { kind: 'piece', data: piece, receivedAt: item.receivedAt, original: item.data, split }
+                    : { kind: 'notice', notice: piece.notice }));
                 continue;
             }
-            const data = this.subnegRepair.process(piece);
-            if (debugTelnetEnabled() && (split || data !== decodedData)) {
-                logTelnetNegotiation('post-mccp', data);
+            if (item.kind === 'notice') {
+                queue.shift();
+                this.eventBus.emit('client.warning', item.notice);
+                continue;
             }
-            if (receivedAt !== undefined) this.eventBus.emit('socket.incoming', data);
+            if (item.kind === 'piece') {
+                const data = this.subnegRepair.process(item.data);
+                if (debugTelnetEnabled() && (item.split || data !== item.original)) {
+                    logTelnetNegotiation('post-mccp', data);
+                }
+                if (item.receivedAt !== undefined) this.eventBus.emit('socket.incoming', data);
+                queue[0] = { kind: 'text', data, receivedAt: item.receivedAt };
+                continue;
+            }
+            let chunk = item.data;
+            const cut = slice ? afterLines(chunk, INBOUND_SLICE_LINES) : chunk.length;
+            if (cut < chunk.length) {
+                // Only the first slice of a piece stops the latency clock: a
+                // later one may come after a command the first one's triggers
+                // sent.
+                queue[0] = { kind: 'text', data: chunk.substring(cut) };
+                chunk = chunk.substring(0, cut);
+            } else {
+                queue.shift();
+            }
             try {
-                this.processIncomingData(data, undefined, receivedAt);
+                this.processIncomingData(chunk, undefined, item.receivedAt);
             } catch (processingError) {
                 console.error('Error during data processing:', processingError);
             }
+            if (slice && queue.length > 0 && this.pendingTelnet === '' && this.assembler.idle
+                && performance.now() - started >= INBOUND_SLICE_BUDGET_MS) {
+                return false;
+            }
         }
+        return true;
     }
 
     output(text?: string | AnsiAwareBuffer, type?: string, timestamp?: number): void {
