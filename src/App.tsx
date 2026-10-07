@@ -15,6 +15,7 @@ import { ensurePersistentStorage } from './storage/persistentStorage';
 import { useAppStore, type MudConnection } from './storage';
 import { GAME_LINK_PARAM, findGameByLink } from './mud/games/gameLinks';
 import { getBrand, isBrandedMode, brandConnectionData, matchBrandProfile, addBrandProfile } from './branding';
+import { setupIreDriverBugfix } from './import/defaultPackages';
 import { onSystemThemeChange, resolveTheme } from './utils/systemTheme';
 
 /**
@@ -91,6 +92,14 @@ export default function App() {
     const updateConnection = useAppStore(s => s.updateConnection);
     const removeConnection = useAppStore(s => s.removeConnection);
 
+    // A profile made from the connection form or the game list. Imports go
+    // through their own paths and keep the settings they bring.
+    const addNewConnection = (data: Omit<MudConnection, 'id'>): string => {
+        const id = addConnection(data);
+        setupIreDriverBugfix(id);
+        return id;
+    };
+
     const brand = getBrand();
 
     // Branded single-profile builds seed the managed profile on first launch
@@ -101,7 +110,7 @@ export default function App() {
         if (brand.profileMode === 'perLogin') return;
         const seed = brandConnectionData(brand);
         if (!seed || useAppStore.getState().connections.length > 0) return;
-        addBrandProfile(brand, seed, useAppStore.getState());
+        setupIreDriverBugfix(addBrandProfile(brand, seed, useAppStore.getState()));
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
@@ -331,7 +340,9 @@ export default function App() {
             patchConnection(existing.id, seed);
             return existing.id;
         }
-        return addBrandProfile(brand, seed, useAppStore.getState());
+        const id = addBrandProfile(brand, seed, useAppStore.getState());
+        setupIreDriverBugfix(id);
+        return id;
     };
     // Branded mode never shows profile creation/selection: the landing is a
     // login form — the brand's own Landing when provided, else the built-in
@@ -354,7 +365,7 @@ export default function App() {
                 connectingId={null}
                 onConnect={(conn) => openProfile(conn, true)}
                 onOpen={(conn) => openProfile(conn, conn.autoReconnect ?? false)}
-                onAdd={addConnection}
+                onAdd={addNewConnection}
                 onUpdate={updateConnection}
                 onDelete={removeConnection}
                 onOpenSettings={handleToggleSettings}

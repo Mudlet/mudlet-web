@@ -189,6 +189,39 @@ export const IRE_MAPPER_GAMES = [
     'imperian.com', 'starmourn.com', 'stickmud.com',
 ];
 
+/**
+ * Games whose new profiles start with "fix unnecessary linebreaks" on — verbatim
+ * from `Host::setupIreDriverBugfix`. The IRE mapper's list minus stickmud.com:
+ * IRE servers start every reply after a GA prompt with a stray newline, and other
+ * GA games (StickMUD included) don't.
+ */
+export const IRE_DRIVER_BUGFIX_GAMES = [
+    'achaea.com', 'lusternia.com', 'imperian.com', 'aetolia.com', 'starmourn.com',
+];
+
+/**
+ * Turn `fixUnnecessaryLinebreaks` on for a profile just created for an IRE game —
+ * Mudlet's `Host::setupIreDriverBugfix`, which `loadProfile` calls alongside
+ * `setupPreInstallPackages` when it sets up a brand-new profile.
+ *
+ * Called once, where a profile is created (the connection form, the game list,
+ * a brand's managed profile) — not on every open, so a player who turns the fix
+ * off keeps it off, and an existing profile is never changed under them. Like
+ * desktop it only ever turns the fix on, and it leaves an explicit value alone (a
+ * brand's `profileDefaults` may set one). Imported and linked Mudlet profiles
+ * bring their own setting and are skipped, as they are for the packages.
+ */
+export function setupIreDriverBugfix(connectionId: string): void {
+    const state = useAppStore.getState();
+    const conn = state.connections.find(c => c.id === connectionId);
+    if (!conn || conn.mudletImported || conn.mudletLinked) return;
+    const host = connectionHost(conn);
+    if (!host || !IRE_DRIVER_BUGFIX_GAMES.includes(host)) return;
+    const config = state.connectionProfile[connectionId]?.config;
+    if (config?.fixUnnecessaryLinebreaks !== undefined) return;
+    state.patchConnectionProfile(connectionId, { config: { ...config, fixUnnecessaryLinebreaks: true } });
+}
+
 /** Every bundled default, whatever the host — for tests and tooling. */
 export const ALL_DEFAULTS: DefaultPackage[] = [
     RUN_LUA_CODE, ECHO, ENABLE_ACCESSIBILITY, DELETE_OLD_PROFILES, MUDLET_MAPPER, GENERIC_MAPPER, MPKG, GUI_DROP, BASE_UI,

@@ -11,6 +11,8 @@ import {
     ownUiArrives,
     isNewProfile,
     gameLoader,
+    setupIreDriverBugfix,
+    IRE_DRIVER_BUGFIX_GAMES,
 } from '../../src/import/defaultPackages';
 import { installPackageFromBytes } from '../../src/import/packageInstaller';
 import { useAppStore } from '../../src/storage/appStore';
@@ -414,6 +416,69 @@ describe('default packages', () => {
                 expect(fetchSpy).not.toHaveBeenCalled();
             } finally {
                 vi.unstubAllGlobals();
+            }
+        });
+    });
+
+    describe('setupIreDriverBugfix', () => {
+        // Host::setupIreDriverBugfix: a new profile for an IRE game starts with
+        // "fix unnecessary linebreaks" on, or every reply after a GA prompt
+        // opens with a blank line (#437).
+        const add = (conn: Record<string, unknown>) => useAppStore.getState().addConnection({
+            name: 'ire', mode: 'mud', port: 23, ...conn,
+        } as never);
+        const fixFor = (id: string) => useAppStore.getState().connectionProfile[id]?.config?.fixUnnecessaryLinebreaks;
+
+        it('covers the five IRE games, not every IRE-mapper game', () => {
+            expect([...IRE_DRIVER_BUGFIX_GAMES].sort())
+                .toEqual(['achaea.com', 'aetolia.com', 'imperian.com', 'lusternia.com', 'starmourn.com']);
+            // StickMUD gets the IRE mapper but sends no stray newline.
+            expect(IRE_DRIVER_BUGFIX_GAMES).not.toContain('stickmud.com');
+        });
+
+        it('turns the fix on for a new IRE profile', () => {
+            for (const host of IRE_DRIVER_BUGFIX_GAMES) {
+                const id = add({ host });
+                setupIreDriverBugfix(id);
+                expect(fixFor(id), `host ${host}`).toBe(true);
+            }
+        });
+
+        it('matches the host case-insensitively, and from a websocket URL', () => {
+            const typed = add({ host: ' Achaea.COM ' });
+            setupIreDriverBugfix(typed);
+            expect(fixFor(typed)).toBe(true);
+            const ws = add({ mode: 'websocket', host: undefined, port: undefined, url: 'wss://aetolia.com/socket' });
+            setupIreDriverBugfix(ws);
+            expect(fixFor(ws)).toBe(true);
+        });
+
+        it('leaves every other game alone', () => {
+            for (const host of ['stickmud.com', 'elephant.org', 'www.achaea.com', '']) {
+                const id = add({ host });
+                setupIreDriverBugfix(id);
+                expect(fixFor(id), `host ${host}`).toBeUndefined();
+            }
+        });
+
+        it('keeps an explicit choice and the rest of the config', () => {
+            const off = add({ host: 'achaea.com' });
+            useAppStore.getState().patchConnectionProfile(off, { config: { fixUnnecessaryLinebreaks: false, logInHTML: true } });
+            setupIreDriverBugfix(off);
+            expect(fixFor(off)).toBe(false);
+
+            const other = add({ host: 'achaea.com' });
+            useAppStore.getState().patchConnectionProfile(other, { config: { logInHTML: true } });
+            setupIreDriverBugfix(other);
+            expect(useAppStore.getState().connectionProfile[other]?.config)
+                .toEqual({ logInHTML: true, fixUnnecessaryLinebreaks: true });
+        });
+
+        it('skips profiles imported or linked from Mudlet, which bring their own setting', () => {
+            for (const flag of ['mudletImported', 'mudletLinked'] as const) {
+                const id = add({ host: 'achaea.com', [flag]: true });
+                setupIreDriverBugfix(id);
+                expect(fixFor(id), flag).toBeUndefined();
             }
         });
     });
