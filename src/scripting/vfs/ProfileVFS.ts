@@ -79,6 +79,10 @@ function installPageListeners(): void {
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') flushAll();
         });
+        // A hidden tab can be frozen and then discarded without a pagehide;
+        // frozen, it runs no timer, so a tail appended while hidden would
+        // never be written out.
+        document.addEventListener('freeze', flushAll);
     }
 }
 
