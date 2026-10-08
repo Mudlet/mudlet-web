@@ -169,6 +169,75 @@ export function buildPackageManifests(
     });
 }
 
+/** Desktop's main command-line history file, beside the profile-data files. */
+export const DESKTOP_HISTORY_FILE = 'command_history_main';
+
+/** What a desktop profile's own files say about its connection — see
+ *  {@link readDesktopProfileFiles}. */
+export interface DesktopProfileFiles {
+    /** The `encoding` file, in the listed spelling. Undefined when there is no
+     *  file, or it names an encoding Mudlet Web cannot decode (then warned). */
+    serverEncoding?: string;
+    /** `ssl_tsl`, else the save's `mSslTsl` passed in. */
+    tls?: boolean;
+    login?: string;
+    password?: string;
+    /** `command_history_main`, newest first (see {@link parseCommandHistory}). */
+    commandHistory?: string[];
+    warnings: string[];
+}
+
+/**
+ * Read the files desktop keeps a profile's connection details in — the
+ * {@link CONSUMED_PROFILE_FILES}, serialised QStrings (see qtProfileData.ts),
+ * and the plain-text {@link DESKTOP_HISTORY_FILE}. `read` returns a file's
+ * bytes by its name at the profile root, or undefined when it is absent.
+ * Shared by the import and by a linked folder, which reads the same files in
+ * place. `saveTls` is the save's `<Host mSslTsl>`, the fallback for TLS.
+ */
+export function readDesktopProfileFiles(
+    read: (name: string) => Uint8Array | undefined,
+    saveTls?: boolean,
+): DesktopProfileFiles {
+    const text = (name: string) => {
+        const bytes = read(name);
+        return bytes === undefined ? undefined : decodeProfileData(bytes);
+    };
+    const warnings: string[] = [];
+    // Host's constructor reads `encoding` and hands it to cTelnet::setEncoding;
+    // the saves themselves don't carry it.
+    let serverEncoding: string | undefined;
+    const encodingName = text('encoding')?.trim();
+    if (encodingName) {
+        serverEncoding = canonicalServerEncoding(encodingName) ?? undefined;
+        if (!serverEncoding) warnings.push(`The server encoding "${encodingName}" is not one Mudlet Web can decode; the profile uses UTF-8.`);
+    }
+    // The connection dialog writes `ssl_tsl` the moment its checkbox changes and
+    // sets mSslTsl from it on connect, so it is newer than the save's attribute
+    // — when it holds a check state at all; anything else falls back to the save.
+    const tls = parseSslTsl(text('ssl_tsl')) ?? saveTls;
+    const login = text('login')?.trim() || undefined;
+    // Not trimmed: desktop sends the password exactly as the file holds it.
+    const password = text('password')?.replace(/\r?\n$/, '') || undefined;
+    const history = read(DESKTOP_HISTORY_FILE);
+    const commandHistory = history ? parseCommandHistory(strFromU8(history)) : undefined;
+    return {
+        ...(serverEncoding ? { serverEncoding } : {}),
+        ...(tls !== undefined ? { tls } : {}),
+        ...(login ? { login } : {}),
+        ...(password ? { password } : {}),
+        ...(commandHistory?.length ? { commandHistory } : {}),
+        warnings,
+    };
+}
+
+/** An `ssl_tsl` file's decoded text as on/off, or undefined when it holds no
+ *  check state (missing, empty, or not a number). */
+export function parseSslTsl(text: string | undefined): boolean | undefined {
+    const t = text?.trim();
+    return t && /^\d+$/.test(t) ? Number(t) === QT_CHECKED : undefined;
+}
+
 /** Build manifests from a profile-root files map (the import path). */
 function buildManifests(names: string[], files: Record<string, Uint8Array>): PackageManifest[] {
     const byLower = new Map(Object.keys(files).map(k => [k.toLowerCase(), k]));
@@ -286,31 +355,15 @@ export function buildMudletProfileBundle(
     const warnings = [...profile.automation.warnings];
 
     // The connection details desktop keeps in files of their own beside the save.
-    const consumed: Partial<Record<typeof CONSUMED_PROFILE_FILES[number], string>> = {};
-    for (const file of CONSUMED_PROFILE_FILES) {
-        if (others[file] === undefined) continue;
-        consumed[file] = decodeProfileData(others[file]);
-        delete others[file];
-    }
-    // Host's constructor reads `encoding` and hands it to cTelnet::setEncoding;
-    // the saves themselves don't carry it.
-    const encodingName = consumed.encoding?.trim();
-    if (encodingName) {
-        const encoding = canonicalServerEncoding(encodingName);
-        if (encoding) profile.settings.serverEncoding = encoding;
-        else warnings.push(`The server encoding "${encodingName}" is not one Mudlet Web can decode; the profile uses UTF-8.`);
-    }
-    // The connection dialog writes `ssl_tsl` the moment its checkbox changes and
-    // sets mSslTsl from it on connect, so it is newer than the save's attribute
-    // — when it holds a check state at all; anything else falls back to the save.
-    const sslText = consumed.ssl_tsl?.trim();
-    const sslState = sslText && /^\d+$/.test(sslText) ? Number(sslText) : undefined;
-    const tls = sslState !== undefined ? sslState === QT_CHECKED : profile.connection.tls;
-    const login = consumed.login?.trim() || undefined;
-    // Not trimmed: desktop sends the password exactly as the file holds it.
-    const password = consumed.password?.replace(/\r?\n$/, '') || undefined;
-    const historyFile = Object.keys(others).find(k => k.toLowerCase() === 'command_history_main');
-    const commandHistory = historyFile ? parseCommandHistory(strFromU8(others[historyFile])) : undefined;
+    const historyFile = Object.keys(others).find(k => k.toLowerCase() === DESKTOP_HISTORY_FILE);
+    const desktop = readDesktopProfileFiles(
+        name => (name === DESKTOP_HISTORY_FILE ? (historyFile ? others[historyFile] : undefined) : others[name]),
+        profile.connection.tls,
+    );
+    for (const file of CONSUMED_PROFILE_FILES) delete others[file];
+    if (desktop.serverEncoding) profile.settings.serverEncoding = desktop.serverEncoding;
+    warnings.push(...desktop.warnings);
+    const { tls, login, password, commandHistory } = desktop;
 
     return {
         name: profile.connection.name || folderName || fallbackName,

@@ -5,7 +5,7 @@ import { saveProfileData } from '../storage/profileVfsData';
 import { saveMap } from '../storage/mapStorage';
 import { saveFolderHandle } from '../scripting/vfs/folderHandleStore';
 import { parseMudletProfile } from './mudletHost';
-import { buildMudletProfileBundle, type MudletProfileBundle } from './mudletProfileImport';
+import { buildMudletProfileBundle, CONSUMED_PROFILE_FILES, DESKTOP_HISTORY_FILE, readDesktopProfileFiles, type MudletProfileBundle } from './mudletProfileImport';
 import { CONNECTION_SIDECAR_PATH, LEGACY_CONNECTION_SIDECAR_PATH, RETAINED_HOST_PATH, type ConnectionSidecar } from './mudletProfileExport';
 import type { MudConnection } from '../storage/schema';
 import { describeThrown } from '../utils/describeThrown';
@@ -249,23 +249,53 @@ async function newestFileIn(
     return newest;
 }
 
+/** A file at the root of a picked directory, or undefined when it has none. */
+async function readRootFileOf(dir: FileSystemDirectoryHandle, name: string): Promise<Uint8Array | undefined> {
+    try {
+        const file = await (await dir.getFileHandle(name)).getFile();
+        return new Uint8Array(await file.arrayBuffer());
+    } catch {
+        return undefined;
+    }
+}
+
+/** What {@link linkMudletFolder} made, and what it leaves to the caller. */
+export interface LinkedFolderResult {
+    connectionId: string;
+    /** Desktop's saved password (the folder's `password` file), for the
+     *  caller to hand to the credential vault. The folder's copy is left
+     *  where it is: desktop still reads it. */
+    password?: string;
+    /** What could not be carried over, for the import UI to show. */
+    warnings: string[];
+}
+
 /**
  * Link a Mudlet profile *directory* as a new Mudlet Web profile (Link mode): the
  * folder stays the source of truth — its `current/*.xml` is re-read on every
  * open — rather than being copied in. Reads the connection identity from the
- * newest save, registers the connection, persists the folder handle so the VFS
- * mounts it, and copies the current map. Returns the new connection id.
+ * newest save, and TLS and the character name from desktop's own files for
+ * them, as an import does (#450); registers the connection, persists the
+ * folder handle so the VFS mounts it, and copies the current map. The server
+ * encoding and command history are read when the profile opens
+ * (loadMudletLinkedProfile), every time, so desktop's later changes arrive too.
  */
-export async function linkMudletFolder(dir: FileSystemDirectoryHandle): Promise<string> {
+export async function linkMudletFolder(dir: FileSystemDirectoryHandle): Promise<LinkedFolderResult> {
     const xmlFile = await newestFileIn(dir, 'current', n => n.toLowerCase().endsWith('.xml'));
     if (!xmlFile) throw new Error('Not a Mudlet profile: no current/*.xml found in the selected folder');
     const profile = parseMudletProfile(await xmlFile.text());
+
+    const rootFiles: Record<string, Uint8Array | undefined> = {};
+    for (const name of [...CONSUMED_PROFILE_FILES, DESKTOP_HISTORY_FILE]) rootFiles[name] = await readRootFileOf(dir, name);
+    const desktop = readDesktopProfileFiles(name => rootFiles[name], profile.connection.tls);
 
     const connectionId = useAppStore.getState().addConnection({
         name: profile.connection.name || dir.name || 'Linked profile',
         mode: 'mud',
         host: profile.connection.host ?? '',
         port: profile.connection.port ?? 23,
+        ...(desktop.tls !== undefined ? { tls: desktop.tls } : {}),
+        ...(desktop.login ? { charLoginAccount: desktop.login } : {}),
         mudletLinked: true,
     });
 
@@ -282,5 +312,9 @@ export async function linkMudletFolder(dir: FileSystemDirectoryHandle): Promise<
         }
     }
 
-    return connectionId;
+    return {
+        connectionId,
+        ...(desktop.password ? { password: desktop.password } : {}),
+        warnings: desktop.warnings,
+    };
 }

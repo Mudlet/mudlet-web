@@ -139,7 +139,17 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
     const handleLinkFolder = () => {
         if (!dirPicker) return;
         setImportWarnings([]);
-        void runImport(async () => { await linkMudletFolder(await dirPicker.call(window)); });
+        void runImport(async () => {
+            const dir = await dirPicker.call(window);
+            const { connectionId, password, warnings } = await linkMudletFolder(dir);
+            // As an import does with it (see provision) — the folder's own copy
+            // stays put, since desktop still reads it.
+            if (password) {
+                if (vaultSaver.canSave) vaultSaver.save(connectionId, password);
+                else warnings.push('The saved password was not imported: this browser has nowhere secure to keep it. Enter it again when you connect.');
+            }
+            if (warnings.length > 0) setImportWarnings(w => [...w, { profile: dir.name, warnings: [...warnings] }]);
+        });
     };
 
     // A whole-origin backup taken from a previous Mudlet Web address, written by

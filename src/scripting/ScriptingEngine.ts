@@ -85,7 +85,7 @@ import type {MudletImportResult} from '../import/mudletXmlImport';
 import {clientGuiDeclinesBaseUi, clientGuiPackageName, downloadFromUrl, filenameFromUrl, isClientGuiRedelivery, parseClientGuiPayload, parseClientMapPayload} from '../import/remotePackageInstall';
 import {ensureDefaultPackages} from '../import/defaultPackages';
 import {serializeMudletXml, type SerializeInput} from '../import/mudletXmlExport';
-import {isMudletProfileVfs, readNewestParseableXml} from '../import/mudletLink';
+import {desktopProfileFileUpdates, isMudletProfileVfs, linkedConnectionFilesChanged, readNewestParseableXml} from '../import/mudletLink';
 import {buildLinkedWriteback, mudletTimestamp} from '../import/mudletWriteback';
 import {buildHostBaseXml, RETAINED_HOST_PATH, LEGACY_RETAINED_HOST_PATH} from '../import/mudletProfileExport';
 import {describeThrown} from '../utils/describeThrown';
@@ -854,8 +854,14 @@ export class ScriptingEngine implements EngineHost {
                     || state.connectionVariables[id]?.saveList !== prevState.connectionVariables[id]?.saveList
                     || state.connectionVariables[id]?.hidden   !== prevState.connectionVariables[id]?.hidden;
 
+                // A linked folder mirrors TLS and the character name in files of
+                // its own (writeBackDesktopProfileFiles); they live on the
+                // connection record, so its changes have to arm the save too.
+                const linkedFilesChanged = state.connections !== prevState.connections && linkedConnectionFilesChanged(
+                    state.connections.find(c => c.id === id), prevState.connections.find(c => c.id === id));
+
                 // Persist this profile's data to its VFS on any change.
-                if (automationChanged || uiChanged) this.scheduleProfileDataSave();
+                if (automationChanged || uiChanged || linkedFilesChanged) this.scheduleProfileDataSave();
 
                 // Sync-on-edit for modules: any tagged-node mutation schedules
                 // a debounced XML rewrite for affected modules.
@@ -1031,7 +1037,10 @@ export class ScriptingEngine implements EngineHost {
             // omits some fields), so writing it back corrupts the profile for Mudlet.
             // Link mode stays read-only until the serializer is fixed + verified
             // against real Mudlet output. See writeBackLinkedProfile.
-            if (LINKED_WRITEBACK_ENABLED && isMudletProfileVfs(vfs)) this.writeBackLinkedProfile(vfs);
+            if (LINKED_WRITEBACK_ENABLED && isMudletProfileVfs(vfs)) {
+                this.writeBackLinkedProfile(vfs);
+                this.writeBackDesktopProfileFiles(vfs);
+            }
             saveProfileData(vfs, this.connectionId);
             // writeFile only updates the RAM cache; both IDB- and folder-backed
             // mounts persist to the backend on flush(). Drain now so the write is
@@ -1160,6 +1169,30 @@ export class ScriptingEngine implements EngineHost {
             // the profile stays loadable in desktop, but this session's changes
             // are not on disk.
             console.warn('[ScriptingEngine] Mudlet write-back failed, profile not updated:', err);
+        }
+    }
+
+    /**
+     * Write this client's server encoding, TLS and character name back to a
+     * linked Mudlet folder's own files for them (`encoding`, `ssl_tsl`,
+     * `login`), in desktop's format, so desktop connects the same way. Only a
+     * linked folder — a Mudlet Web profile that called saveProfile() has a
+     * current/ too, but no desktop reading these (#259) — and only files whose
+     * value changed (desktopProfileFileUpdates). Never the password.
+     */
+    private writeBackDesktopProfileFiles(vfs: ProfileVFS): void {
+        const s = useAppStore.getState();
+        const conn = s.connections.find(c => c.id === this.connectionId);
+        if (!conn?.mudletLinked) return;
+        try {
+            const updates = desktopProfileFileUpdates(vfs, {
+                serverEncoding: s.connectionProfile[this.connectionId]?.serverEncoding,
+                tls: conn.mode === 'mud' ? conn.tls ?? false : undefined,
+                login: conn.charLoginAccount,
+            });
+            for (const [name, bytes] of Object.entries(updates)) vfs.writeBinaryFile(name, bytes);
+        } catch (err) {
+            console.warn('[ScriptingEngine] writing the linked folder\'s profile files failed:', err);
         }
     }
 
