@@ -1031,12 +1031,10 @@ export class ScriptingEngine implements EngineHost {
         }
         try {
             this.captureSavedVariables();
-            // Linked Mudlet profile write-back is DISABLED: serializeMudletXml does
-            // NOT yet produce Mudlet-loadable XML (it emits trigger/alias/etc. flags
-            // as child elements rather than the attributes Mudlet's parser reads, and
-            // omits some fields), so writing it back corrupts the profile for Mudlet.
-            // Link mode stays read-only until the serializer is fixed + verified
-            // against real Mudlet output. See writeBackLinkedProfile.
+            // A linked Mudlet folder gets this session's changes written back in
+            // desktop's own formats: the profile save (writeBackLinkedProfile) and
+            // the encoding/ssl_tsl/login files (writeBackDesktopProfileFiles).
+            // See LINKED_WRITEBACK_ENABLED.
             if (LINKED_WRITEBACK_ENABLED && isMudletProfileVfs(vfs)) {
                 this.writeBackLinkedProfile(vfs);
                 this.writeBackDesktopProfileFiles(vfs);

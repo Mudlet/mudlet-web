@@ -85,6 +85,28 @@ describe('opening a linked folder reads desktop\'s profile files', () => {
         expect(useAppStore.getState().connectionProfile[id]?.serverEncoding).toBe('WINDOWS-1250');
     });
 
+    it('lets an encoding file Mudlet Web cannot decode win too, so the sidecar\'s copy is not written back over it', () => {
+        const id = addLinked();
+        const vfs = folder({
+            [SAVE]: XML,
+            encoding: encodeProfileData('EBCDIC-NOPE'),
+            [PROFILE_DATA_PATH]: JSON.stringify({ profile: { serverEncoding: 'ISO 8859-1' } }),
+        });
+        loadMudletLinkedProfile(vfs, id, 'now');
+        const serverEncoding = useAppStore.getState().connectionProfile[id]?.serverEncoding;
+        expect(serverEncoding).toBeUndefined();
+        expect(desktopProfileFileUpdates(vfs, { serverEncoding })).toEqual({});
+    });
+
+    it('keeps the sidecar\'s encoding when there is no encoding file', () => {
+        const id = addLinked();
+        loadMudletLinkedProfile(folder({
+            [SAVE]: XML,
+            [PROFILE_DATA_PATH]: JSON.stringify({ profile: { serverEncoding: 'ISO 8859-1' } }),
+        }), id, 'now');
+        expect(useAppStore.getState().connectionProfile[id]?.serverEncoding).toBe('ISO 8859-1');
+    });
+
     it('falls back to the save\'s mSslTsl without an ssl_tsl file', () => {
         const id = addLinked();
         loadMudletLinkedProfile(folder({ [SAVE]: XML.replace('<Host>', '<Host mSslTsl="yes">') }), id, 'now');

@@ -1,6 +1,6 @@
 import { useAppStore } from '../storage/appStore';
 import { PROFILE_DATA_PATH, type PersistedProfileData } from '../storage/profileVfsData';
-import type { MudConnection, PackageManifest } from '../storage/schema';
+import type { MudConnection, PackageManifest, ProfileSettings } from '../storage/schema';
 import { parseMudletProfile } from './mudletHost';
 import {
     buildPackageManifests,
@@ -158,6 +158,15 @@ export function loadMudletLinkedProfile(vfs: LinkedVfsReader, connectionId: stri
     const desktop = readLinkedDesktopFiles(vfs, data.connection.tls);
     const packages = linkedPackageManifests(vfs, data.installedPackages, sidecar.packages ?? [], installedAt);
     const vars = data.variables.variables;
+    // The desktop `encoding` file over both the XML settings and the sidecar:
+    // desktop's Host reads it on every load, and this client writes its own
+    // change back to it (see desktopProfileFileUpdates), so the file is the
+    // current value. A file naming an encoding Mudlet Web cannot decode (or
+    // none) still wins — the profile reads as UTF-8 — rather than letting the
+    // sidecar's older choice stand and be written back over desktop's.
+    const profile: Partial<ProfileSettings> = { ...data.settings, ...(sidecar.profile ?? {}) };
+    if (desktop.serverEncoding) profile.serverEncoding = desktop.serverEncoding;
+    else if (readRootFile(vfs, 'encoding') !== undefined) delete profile.serverEncoding;
 
     useAppStore.getState().hydrateConnectionData(connectionId, {
         // Automation + settings + variables are authoritative from the XML.
@@ -170,15 +179,8 @@ export function loadMudletLinkedProfile(vfs: LinkedVfsReader, connectionId: stri
         packages,
         variables: { saveList: vars.map(v => v.name), values: vars, hidden: data.variables.hidden },
         // XML settings as the base; Mudlet Web-only profile fields (mapper, font source,
-        // mapViewStates, …) from the sidecar win where set.
-        // The desktop `encoding` file over both: desktop's Host reads it on
-        // every load, and this client writes its own change back to it (see
-        // desktopProfileFileUpdates), so the file is the current value.
-        profile: {
-            ...data.settings,
-            ...(sidecar.profile ?? {}),
-            ...(desktop.serverEncoding ? { serverEncoding: desktop.serverEncoding } : {}),
-        },
+        // mapViewStates, …) from the sidecar win where set; the encoding file over both.
+        profile,
         // Pure Mudlet Web-only UI/layout slices come entirely from the sidecar.
         windowHints: sidecar.windowHints,
         dockExtents: sidecar.dockExtents,
