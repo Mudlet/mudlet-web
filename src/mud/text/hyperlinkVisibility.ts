@@ -25,6 +25,7 @@
 
 import type { VisibilitySettings } from "./hyperlinkConfig";
 import type { AnsiAwareBuffer } from "./FormatState";
+import { detachRow } from "../../ui/output/outputRows";
 
 const OUTPUT_LINE_SELECTOR = ".output-msg";
 
@@ -47,7 +48,8 @@ const SKIP_KEY: Record<string, string> = {
 const armedLinks = new Set<HTMLElement>();
 
 function concealElement(el: HTMLElement, deleteLine: boolean): void {
-    if (deleteLine) (el.closest(OUTPUT_LINE_SELECTOR) ?? el).remove();
+    // With its scrollback block, once that is empty (outputRows.ts).
+    if (deleteLine) detachRow(el.closest(OUTPUT_LINE_SELECTOR) ?? el);
     else el.style.visibility = "hidden";
 }
 

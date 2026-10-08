@@ -1,3 +1,5 @@
+import { outputRows } from './outputRows';
+
 /**
  * Caret mode / reading cursor — keyboard-navigable review of the scrollback for
  * screen-reader users (Mudlet's caret mode, ported web-natively).
@@ -32,12 +34,11 @@ export function matchCaretToggle(e: KeyboardEvent, shortcut: CaretShortcut): boo
 }
 
 /** The rendered line elements under the main output wrapper, in order. Each
- *  logical line is one `div.output-msg`; the height:0 sticky sentinel and any
- *  other children are skipped (mirrors WindowManager.lineElements). */
+ *  logical line is one `div.output-msg`, inside a scrollback block
+ *  (outputRows.ts); the height:0 sticky sentinel and any other children are
+ *  skipped (mirrors WindowManager.lineElements). */
 export function outputLineElements(outputEl: HTMLElement): HTMLElement[] {
-    return Array.from(outputEl.children).filter(
-        (el): el is HTMLElement => el instanceof HTMLElement && el.classList.contains('output-msg'),
-    );
+    return outputRows(outputEl);
 }
 
 /**

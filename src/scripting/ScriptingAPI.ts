@@ -6799,8 +6799,10 @@ export class ScriptingAPI {
         const activeEl = document.activeElement;
         if (!activeEl) return false;
         if (!windowName || windowName === 'main') {
-            const input = document.querySelector('.command-input');
-            return !!input && (activeEl === input || (!!input && input.contains(activeEl)));
+            // Asked from the focused element up, not by finding the input:
+            // a document-wide querySelector walks every scrollback row ahead
+            // of the command line, and EMCO asks once per chat line (#457).
+            return activeEl.closest('.command-input') !== null;
         }
         const el = this.session.windows.getElement(windowName);
         return !!el && (activeEl === el || el.contains(activeEl));

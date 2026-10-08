@@ -19,6 +19,7 @@ import { OverlayLayerOrder } from '../layout/overlayLayerOrder';
 import { TIMESTAMP_GUTTER_COLUMNS } from '../../mud/connection/TelnetNegotiator';
 import { DEFAULT_CMD_LINE_HOST, SubCommandLine, type CmdLineHost } from '../cmdline/subCommandLine';
 import { cssEscape } from '../labels/qtCss';
+import { outputRows } from '../output/outputRows';
 
 interface ScriptWindowData extends ScriptWindowRenderData {
     pendingText: Array<string | AnsiAwareBuffer>;
@@ -2561,14 +2562,11 @@ export class WindowManager {
         el.classList.toggle('mudlet-no-scrolling', !s.scrollingEnabled);
     }
 
-    /** Direct line-element children of the wrapper (skips the sticky-output
-     *  sentinel, which sits at the end with height: 0). */
+    /** The wrapper's line elements, in order, through its scrollback blocks
+     *  (skips the sticky-output sentinel, which sits at the end with
+     *  height: 0). */
     private lineElements(el: HTMLElement): HTMLElement[] {
-        const out: HTMLElement[] = [];
-        for (const child of Array.from(el.children) as HTMLElement[]) {
-            if (child.classList.contains('output-msg')) out.push(child);
-        }
-        return out;
+        return outputRows(el);
     }
 
     /** Mudlet setBackgroundColor for a userwindow / miniconsole. */

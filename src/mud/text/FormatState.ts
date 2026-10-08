@@ -17,6 +17,7 @@ import {
     type UnderlineStyle,
 } from "./hyperlinkConfig";
 import { applyVisibility } from "./hyperlinkVisibility";
+import { detachRow, detachRows } from "../../ui/output/outputRows";
 import { appendCells, cellsToHtml, columnAfter } from "./cellRender";
 import { getControlCharacterMode } from "./controlCharacterMode";
 import { getExpectColorSpaceId } from "./colorSpaceId";
@@ -1049,7 +1050,8 @@ export class AnsiAwareBuffer {
         // the line element itself, which is both).
         const el = this._lineElement ?? this._renderContainer;
         if (!el) return;
-        el.parentElement?.removeChild(el);
+        // With the scrollback block it sat in, once that is empty (#457).
+        detachRow(el);
         this._renderContainer = null;
         this._lineElement = null;
     }
@@ -1057,11 +1059,10 @@ export class AnsiAwareBuffer {
     /**
      * `removeFromDom()` for a whole eviction batch at once. A trim takes a run
      * of lines off the head of a buffer, and their rows normally sit side by
-     * side at the top of one container — those go in a single Range deletion
-     * rather than one removeChild apiece, which on a 20,000-line trim was half
-     * a second of mutation bookkeeping alone (#443). Anything that is not one
-     * unbroken run of rows in one parent (rows spread over containers, a gap
-     * where some other element sits between two of them) falls back to the
+     * side at the top of the console — those go a block or a Range deletion
+     * at a time rather than one removeChild apiece, which on a 20,000-line
+     * trim was half a second of mutation bookkeeping alone (#443). Rows with
+     * a gap between them (some other element in the way) fall back to the
      * per-line removal, so nothing that is not one of these lines is touched.
      */
     static removeAllFromDom(buffers: readonly AnsiAwareBuffer[]): void {
@@ -1074,24 +1075,10 @@ export class AnsiAwareBuffer {
             // place hands its row to the buffer that replaced it).
             if (el && el.parentElement && rows[rows.length - 1] !== el) rows.push(el);
         }
-        if (rows.length === 0) return;
-        // nextSibling, not nextElementSibling: the range takes every node
-        // between its ends, so not even a stray text node may sit in the run.
-        let contiguous = true;
-        for (let i = 1; i < rows.length; i++) {
-            if (rows[i - 1].nextSibling !== rows[i]) {
-                contiguous = false;
-                break;
-            }
-        }
-        if (contiguous && rows.length > 1 && typeof document !== 'undefined' && document.createRange) {
-            const range = document.createRange();
-            range.setStartBefore(rows[0]);
-            range.setEndAfter(rows[rows.length - 1]);
-            range.deleteContents();
-            return;
-        }
-        for (const el of rows) el.parentElement?.removeChild(el);
+        // Rows are grouped into scrollback blocks (outputRows.ts): a block the
+        // trim empties goes whole, and each partial block's run goes as one
+        // Range deletion.
+        detachRows(rows);
     }
 
     onRender(callback: (container: HTMLElement) => void): this {

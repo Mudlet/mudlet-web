@@ -224,8 +224,38 @@ type InboundItem =
 
 /** Lines a slice of a large read hands the pipeline at a time. */
 const INBOUND_SLICE_LINES = 32;
-/** How long a slice runs before the event loop gets a turn. */
+/** How long a slice runs before the event loop gets a turn while the user
+ *  has input waiting (where the browser can tell — isInputPending). */
 const INBOUND_SLICE_BUDGET_MS = 12;
+/** How long a slice runs before the event loop gets a turn regardless: what
+ *  timers and input wait at most during a flood.
+ *
+ *  Not the 12 ms it was. Every turn the event loop gets is a chance for the
+ *  browser to render, and a frame costs layout and paint over the console
+ *  however few lines it adds, so a 2000-line burst yielding every 12 ms paid
+ *  for a frame roughly every slice — a long burst into a long scrollback took
+ *  five times as long as one handled whole (#457). 50 ms is the long-task
+ *  threshold: the page still answers within a frame or three, and a burst
+ *  pays for a quarter of the frames. */
+const INBOUND_READ_BUDGET_MS = 50;
+
+/** Chromium's `navigator.scheduling.isInputPending()`: true when a key press
+ *  or click is queued behind the running task. False wherever it is missing. */
+function inputPending(): boolean {
+    const scheduling = (globalThis.navigator as { scheduling?: { isInputPending?: () => boolean } } | undefined)?.scheduling;
+    try {
+        return scheduling?.isInputPending?.() === true;
+    } catch {
+        return false;
+    }
+}
+
+/** Whether a slice that has run `elapsed` ms should give the event loop its
+ *  turn. Exported for the tests. */
+export function inboundSliceDue(elapsed: number, hasInput: () => boolean = inputPending): boolean {
+    if (elapsed >= INBOUND_READ_BUDGET_MS) return true;
+    return elapsed >= INBOUND_SLICE_BUDGET_MS && hasInput();
+}
 
 /** Where the `n`th line of `data` ends (just past its `\n`), or its length. */
 function afterLines(data: string, n: number): number {
@@ -1415,13 +1445,14 @@ export class MudClient {
     // one go held the page (input, timers, painting) for seconds (#435).
     // Socket reads are queued here instead and run in slices: a few dozen
     // lines at a time, giving the event loop a turn once a slice has taken
-    // INBOUND_SLICE_BUDGET_MS. Nothing changes order — the queue is the one
-    // way in, so lines, prompts, GMCP and what triggers send stay exactly in
-    // stream order — and a pause only ever falls between whole lines, with no
-    // partial line, held wrap line or half a telnet sequence pending: a point
-    // a read could have ended at anyway, so what runs in a pause is only what
-    // could run between two reads. Anything that has to see the stream up to
-    // date (close, disconnect, connect, feedTelnet, a replay) drains the queue
+    // INBOUND_READ_BUDGET_MS (INBOUND_SLICE_BUDGET_MS with input waiting).
+    // Nothing changes order — the queue is the one way in, so lines,
+    // prompts, GMCP and what triggers send stay exactly in stream order —
+    // and a pause only ever falls between whole lines, with no partial line,
+    // held wrap line or half a telnet sequence pending: a point a read could
+    // have ended at anyway, so what runs in a pause is only what could run
+    // between two reads. Anything that has to see the stream up to date
+    // (close, disconnect, connect, feedTelnet, a replay) drains the queue
     // first. A read of no more than INBOUND_SLICE_LINES lines — any ordinary
     // one — is still handled whole before onmessage returns.
     private readonly inbound: InboundItem[] = [];
@@ -1524,7 +1555,7 @@ export class MudClient {
                 console.error('Error during data processing:', processingError);
             }
             if (slice && queue.length > 0 && this.pendingTelnet === '' && this.assembler.idle
-                && performance.now() - started >= INBOUND_SLICE_BUDGET_MS) {
+                && inboundSliceDue(performance.now() - started)) {
                 return false;
             }
         }

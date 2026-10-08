@@ -199,8 +199,10 @@ describe('a large read is handled in slices', () => {
 
     it('drops the reads after the one a listener disconnects in', async () => {
         const { client, sock, log, bus } = connected(15);
+        // Past the first slice (at most four 15 ms batches inside the 50 ms
+        // budget), so the late read below is queued before the disconnect.
         bus.on('flushLines', groups => {
-            if (groups.some(g => g.text.includes('line 40\n'))) client.disconnect();
+            if (groups.some(g => g.text.includes('line 200\n'))) client.disconnect();
         });
         const onmessage = sock.onmessage!;
         sock.deliver(lines(0, 300).map(l => `${l}\r\n`).join(''));
@@ -212,5 +214,24 @@ describe('a large read is handled in slices', () => {
         await settle(() => log.length >= 301);
         await nextTask();
         expect(log.filter(l => l !== 'disconnect')).toEqual(lines(0, 300));
+    });
+});
+
+// #457: every turn the event loop gets is a chance to render, and each frame
+// costs layout over the whole console, so a burst yielding every 12 ms paid
+// for a frame almost every slice. A slice now runs to 50 ms, and gives way
+// sooner only to input actually waiting.
+describe('how long a slice runs', () => {
+    it('runs to the read budget when nothing is waiting', async () => {
+        const { inboundSliceDue } = await import('../../../src/mud/connection/MudClient');
+        expect(inboundSliceDue(12, () => false)).toBe(false);
+        expect(inboundSliceDue(49, () => false)).toBe(false);
+        expect(inboundSliceDue(50, () => false)).toBe(true);
+    });
+
+    it('gives way after the short budget when input is waiting', async () => {
+        const { inboundSliceDue } = await import('../../../src/mud/connection/MudClient');
+        expect(inboundSliceDue(11, () => true)).toBe(false);
+        expect(inboundSliceDue(12, () => true)).toBe(true);
     });
 });

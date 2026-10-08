@@ -1,5 +1,8 @@
 import { AnsiAwareBuffer } from "../../mud/text/FormatState";
 import { installLinkNavigation } from "./linkNavigation";
+import {
+    appendRow, clearRows, detachRow, lastRow, lastRows, nextRow, previousRow, rowAt, rowCount, rowIndex,
+} from "./outputRows";
 
 // Buffers are stored keyed by their wrapper element. The WeakMap means the
 // AnsiAwareBuffer is garbage-collected automatically when its element is removed
@@ -15,22 +18,6 @@ export type MessageSource = {
     on(event: 'script.movecursorup', listener: () => void): () => void;
     on(event: 'script.movecursordown', listener: () => void): () => void;
 };
-
-/** Returns the 0-based index of `el` among the non-sentinel children of `parent`. */
-function elementIndex(parent: HTMLElement, el: Element, sentinel: HTMLElement): number {
-    const children = parent.children;
-    for (let i = 0; i < children.length; i++) {
-        if (children[i] === sentinel) break;
-        if (children[i] === el) return i;
-    }
-    return -1;
-}
-
-/** Line count: all children before the sentinel. */
-function lineCount(parent: HTMLElement, sentinel: HTMLElement): number {
-    const idx = Array.prototype.indexOf.call(parent.children, sentinel);
-    return idx >= 0 ? idx : parent.childElementCount;
-}
 
 export type CursorOps = {
     /** Plain text of the line at the current cursor position. */
@@ -282,17 +269,29 @@ export function setupOutputRenderer(
 
     // ── Trigger cursor ────────────────────────────────────────────────────────
     //
-    // `cursorEl`   — the element the cursor is currently pointing at.
-    //                null means "use sentinel.previousElementSibling" (the
-    //                latest rendered line), which is also the post-delete state.
-    // `deletedPrev`— saved previousElementSibling of the element that was just
-    //                deleted via deleteLine(). moveCursorUp() consumes this to
-    //                land on the correct next element.
+    // `cursorEl`   — the row the cursor is currently pointing at.
+    //                null means "the newest row", which is also the
+    //                post-delete state.
+    // `deletedPrev`— saved previous row of the one that was just deleted via
+    //                deleteLine(). moveCursorUp() consumes this to land on the
+    //                correct next row.
+    //
+    // Rows sit in scrollback blocks (outputRows.ts), so every step from row to
+    // row goes through those helpers rather than through siblings.
     let cursorEl: Element | null = null;
     let deletedPrev: Element | null = null;
 
     function resolveElement(): Element | null {
-        return cursorEl ?? sentinel.previousElementSibling;
+        return cursorEl ?? lastRow(outputWrapper);
+    }
+
+    function deleteCursorLine(): void {
+        const el = resolveElement();
+        if (!el || el === sentinel) return;
+        if (el === promptLineEl) promptLineEl = null;
+        deletedPrev = previousRow(el);
+        detachRow(el);
+        cursorEl = null;
     }
 
     const cursorOps: CursorOps = {
@@ -308,14 +307,7 @@ export function setupOutputRenderer(
             return elementBuffers.get(el) ?? null;
         },
 
-        deleteLine(): void {
-            const el = resolveElement();
-            if (!el || el === sentinel) return;
-            if (el === promptLineEl) promptLineEl = null;
-            deletedPrev = el.previousElementSibling === sentinel ? null : el.previousElementSibling;
-            outputWrapper.removeChild(el);
-            cursorEl = null;
-        },
+        deleteLine: deleteCursorLine,
 
         moveUp(): void {
             if (cursorEl === null) {
@@ -323,28 +315,26 @@ export function setupOutputRenderer(
                     cursorEl = deletedPrev;
                     deletedPrev = null;
                 } else {
-                    const latest = sentinel.previousElementSibling;
-                    cursorEl = latest?.previousElementSibling ?? null;
+                    const latest = lastRow(outputWrapper);
+                    cursorEl = latest ? previousRow(latest) : null;
                 }
             } else {
-                cursorEl = cursorEl.previousElementSibling;
+                cursorEl = previousRow(cursorEl);
             }
         },
 
         moveDown(): void {
             const current = resolveElement();
             if (!current || current === sentinel) return;
-            const next = current.nextElementSibling;
-            // Stop at sentinel — it marks the end of output.
-            cursorEl = (next && next !== sentinel) ? next : null;
+            // Past the newest row the cursor is back on the newest row.
+            cursorEl = nextRow(current);
             deletedPrev = null;
         },
 
         moveTo(line: number): void {
             // line is 1-indexed from the top of the buffer.
-            const idx = line - 1;
-            const el = outputWrapper.children[idx];
-            if (el && el !== sentinel) {
+            const el = rowAt(outputWrapper, line - 1);
+            if (el) {
                 cursorEl = el;
                 deletedPrev = null;
             }
@@ -353,22 +343,20 @@ export function setupOutputRenderer(
         getLineNumber(): number {
             const el = resolveElement();
             if (!el || el === sentinel) return 0;
-            const idx = elementIndex(outputWrapper, el, sentinel);
+            const idx = rowIndex(outputWrapper, el);
             return idx >= 0 ? idx + 1 : 0; // 1-indexed
         },
 
         getLineCount(): number {
-            return lineCount(outputWrapper, sentinel);
+            return rowCount(outputWrapper);
         },
 
         getLines(from: number, to: number): string[] {
             const result: string[] = [];
-            const children = outputWrapper.children;
-            const clampedTo = Math.min(to, lineCount(outputWrapper, sentinel));
-            for (let i = from - 1; i < clampedTo; i++) {
-                const el = children[i];
-                if (!el || el === sentinel) break;
+            let el: Element | null = rowAt(outputWrapper, from - 1);
+            for (let i = from; el && i <= to; i++) {
                 result.push(elementBuffers.get(el)?.text ?? '');
+                el = nextRow(el);
             }
             return result;
         },
@@ -492,7 +480,7 @@ export function setupOutputRenderer(
                 }
             } else {
                 const wrapper = createMessageWrapper(message, 'script', timestampValue);
-                outputWrapper.insertBefore(wrapper, sentinel);
+                appendRow(outputWrapper, wrapper, sentinel);
                 partialLineEl = wrapper;
                 cursorEl = wrapper;
                 deletedPrev = null;
@@ -540,7 +528,7 @@ export function setupOutputRenderer(
 
         const wrapper = createMessageWrapper(message, effectiveType, timestampValue);
 
-        outputWrapper.insertBefore(wrapper, sentinel);
+        appendRow(outputWrapper, wrapper, sentinel);
 
         // Reset the cursor to the freshly rendered line so trigger processing
         // that fires immediately after always starts at the right position.
@@ -585,11 +573,7 @@ export function setupOutputRenderer(
 
     function populateStickyArea() {
         clearStickyArea();
-        const children = Array.from(outputWrapper.children);
-        const sentinelIdx = children.indexOf(sentinel as Element);
-        const messages = sentinelIdx >= 0 ? children.slice(0, sentinelIdx) : children;
-        const lastN = messages.slice(-stickyLines);
-        for (const el of lastN) {
+        for (const el of lastRows(outputWrapper, stickyLines)) {
             stickyArea.appendChild(el.cloneNode(true));
         }
         applyTimestampVisibility();
@@ -600,14 +584,7 @@ export function setupOutputRenderer(
     if (source) {
         const unsubscribeMessage = source.on('message', handleMessage);
 
-        const unsubscribeDeleteLine = source.on('script.deleteline', () => {
-            const el = resolveElement();
-            if (!el || el === sentinel) return;
-            if (el === promptLineEl) promptLineEl = null;
-            deletedPrev = el.previousElementSibling === sentinel ? null : el.previousElementSibling;
-            outputWrapper.removeChild(el);
-            cursorEl = null;
-        });
+        const unsubscribeDeleteLine = source.on('script.deleteline', deleteCursorLine);
 
         const unsubscribeClearWindow    = source.on('script.clearwindow',    clearAll);
         const unsubscribeMoveCursorUp   = source.on('script.movecursorup',   cursorOps.moveUp);
@@ -628,11 +605,7 @@ export function setupOutputRenderer(
         partialStickyEl = null;
         promptLineEl = null;
         promptStickyEl = null;
-        while (outputWrapper.firstElementChild !== sentinel) {
-            if (outputWrapper.firstElementChild) {
-                outputWrapper.removeChild(outputWrapper.firstElementChild);
-            } else break;
-        }
+        clearRows(outputWrapper);
         cursorEl = null;
         deletedPrev = null;
     }
