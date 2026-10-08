@@ -1170,6 +1170,14 @@ export class ScriptingAPI {
         this.presence = new ProfilesPresence(connectionId, () => this.session.status === 'connected');
         // Another tab's closeProfile(<this profile>).
         this.presence.onCloseRequested = () => { this.closeMudlet(); };
+        // Another tab's setActiveProfile(<this profile>). No page can bring
+        // itself forward either, so ask for focus (honoured where the browser
+        // allows it) and flash the tab title until the user switches here —
+        // which is when sysProfileFocusChangeEvent fires, as on desktop.
+        this.presence.onAttentionRequested = () => {
+            try { window.focus(); } catch { /* not focusable here */ }
+            flashTitle();
+        };
         // Re-announce this tab's connected state to other tabs on connect/
         // disconnect (for their getProfiles). Deferred to a microtask so the
         // session's own status handler has run before we read session.status.
@@ -1539,21 +1547,64 @@ export class ScriptingAPI {
      *  Returns null on success, or the message for Mudlet's `nil, message`
      *  refusal: an unknown name, a profile already open (in this tab or any
      *  other — the loaded set is the same one getProfiles() reports), or a popup
-     *  the browser blocked. NOTE: `window.open` needs a user gesture, so this
-     *  works from a key/button/alias but a browser may block it from a trigger
-     *  (no Mudlet equivalent to that limitation). */
+     *  the browser blocked. `window.open` needs a user gesture and a browser
+     *  allows one new tab per gesture, so a trigger (no gesture) or the second
+     *  loadProfile in one alias is refused (mudlet-web#453). That can't be
+     *  lifted from a page, so a refusal leaves a link in the main console that
+     *  opens the profile on click — the click is the gesture the call lacked. */
     loadProfile(name: string): string | null {
         const target = name ?? '';
         const conn = useAppStore.getState().connections.find(c => c.name === target);
         if (!conn) return `loadProfile: profile '${target}' does not exist`;
-        if (conn.id === this.connectionId || this.presence.loadedIds().includes(conn.id)) {
-            return `loadProfile: profile '${target}' is already loaded`;
-        }
+        if (this.isProfileLoaded(conn.id)) return `loadProfile: profile '${target}' is already loaded`;
+        if (this.openProfileTab(conn.id)) return null;
+        this.echoOpenProfileLink(conn.id, target);
+        return `loadProfile: could not open profile '${target}', the browser blocked the new tab; `
+            + 'click the link in the main window to open it';
+    }
+
+    /** True when profile `id` is open in this tab or any other. */
+    private isProfileLoaded(id: string): boolean {
+        return id === this.connectionId || this.presence.loadedIds().includes(id);
+    }
+
+    /** Open profile `id` in a new tab and dial it. False when the browser
+     *  refused the tab. */
+    private openProfileTab(id: string): boolean {
         const url = new URL(window.location.href);
-        url.searchParams.set('profile', conn.id);
+        url.searchParams.set('profile', id);
         url.searchParams.set('connect', '1');
-        const w = window.open(url.toString(), '_blank');
-        return w ? null : `loadProfile: could not open profile '${target}', the browser blocked the new tab`;
+        return !!window.open(url.toString(), '_blank');
+    }
+
+    /** The fallback for a loadProfile the browser refused: a line of its own
+     *  in the main console carrying a link that opens the profile. A click on
+     *  it that finds the profile open by then (another link, the user) just
+     *  says so rather than opening a second tab the lock would park. */
+    private echoOpenProfileLink(id: string, name: string): void {
+        const hyperlink: FormatHyperlink = {
+            onClick: () => {
+                if (this.isProfileLoaded(id)) {
+                    this.echoInfoLine(`Profile '${name}' is already open.`);
+                } else if (!this.openProfileTab(id)) {
+                    this.echoInfoLine(`The browser blocked opening profile '${name}'; allow pop-ups for this site and try again.`);
+                }
+            },
+            title: `Open profile '${name}' in a new tab`,
+        };
+        const lead = this.echoOnMatchedLine || this.mainConsole.currentPartial.text.length > 0 ? '\n' : '';
+        this.echoMain(`${lead}The browser blocked opening profile '${name}' from a script. `);
+        this.echoMain(`Open profile ${name}`, this.standardLinkState('main', hyperlink));
+        this.echoMain('\n');
+        this.drainMain();
+    }
+
+    /** A plain line of client feedback in the main console, on a line of its
+     *  own. */
+    private echoInfoLine(text: string): void {
+        const lead = this.echoOnMatchedLine || this.mainConsole.currentPartial.text.length > 0 ? '\n' : '';
+        this.echoMain(`${lead}${text}\n`);
+        this.drainMain();
     }
 
     /** Mudlet `closeProfile(name)`. Closes the named open profile — this one,
@@ -1584,11 +1635,13 @@ export class ScriptingAPI {
      *  case-insensitively against the profiles, then against the bundled games
      *  (a game with no profile is "not loaded").
      *
-     *  Returns null on success or the refusal message. Each profile has a tab
-     *  of its own here, and a page can't bring another tab forward — browsers
-     *  only let the user switch tabs — so for a profile open elsewhere this
-     *  answers true, as desktop does, without the switch; for this tab's own
-     *  profile it asks for the window's focus. */
+     *  Returns null on success or the refusal message. For this tab's own
+     *  profile it asks for the window's focus and succeeds. Every other profile
+     *  has a tab of its own, and a page can't bring another tab forward —
+     *  browsers only let the user switch tabs — so that is refused rather than
+     *  reported as done (mudlet-web#453): the target tab is asked to flash its
+     *  title instead, and the message says so, so a script can tell the user
+     *  where to look. */
     setActiveProfile(name: string): string | null {
         const requested = name ?? '';
         if (requested === '') return 'setActiveProfile: profile name cannot be empty';
@@ -1598,13 +1651,14 @@ export class ScriptingAPI {
             .find(c => c.name.toLowerCase() === lower);
         const canonical = conn?.name ?? BUNDLED_GAMES.find(g => g.name.toLowerCase() === lower)?.name;
         if (canonical === undefined) return `setActiveProfile: profile '${requested}' does not exist`;
-        const loaded = conn !== undefined
-            && (conn.id === this.connectionId || this.presence.loadedIds().includes(conn.id));
-        if (!loaded) return `setActiveProfile: profile '${canonical}' is not loaded`;
+        if (!conn || !this.isProfileLoaded(conn.id)) return `setActiveProfile: profile '${canonical}' is not loaded`;
         if (conn.id === this.connectionId) {
             try { window.focus(); } catch { /* not focusable here */ }
+            return null;
         }
-        return null;
+        const flagged = this.presence.requestAttention(conn.id);
+        return `setActiveProfile: profile '${canonical}' is open in another browser tab, which a page cannot bring `
+            + (flagged ? 'to the front; that tab\'s title is flashing instead' : 'to the front');
     }
 
     /** Mudlet `getCommandSeparator()`. Returns the profile's command separator
