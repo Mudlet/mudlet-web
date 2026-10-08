@@ -4,7 +4,7 @@ import * as net from 'net';
 import * as tls from 'tls';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import { connectGame, GAME_KEEPALIVE_DELAY_MS } from '../../proxy/gameSocket';
+import { armGameKeepAlive, GAME_KEEPALIVE_DELAY_MS } from '../../proxy/gameSocket';
 
 /** Issue #454: a game host that dies without closing left the proxy's socket to
  *  it half-open for good, so the browser never saw a disconnect. Keepalive on
@@ -29,7 +29,9 @@ describe('proxy game socket keepalive (issue #454)', () => {
     ] as const)('arms keepalive on the %s game socket', async (_label, useTls, kind) => {
         const port = await listen();
         const setKeepAlive = vi.spyOn(net.Socket.prototype, 'setKeepAlive');
-        const socket = connectGame('127.0.0.1', port, useTls);
+        const socket = armGameKeepAlive(useTls
+            ? tls.connect({ host: '127.0.0.1', port })
+            : net.connect(port, '127.0.0.1'));
         // A TLS dial to a plain listener fails its handshake; that's fine here.
         socket.on('error', () => {});
         cleanup.push(() => socket.destroy());
@@ -43,10 +45,11 @@ describe('proxy game socket keepalive (issue #454)', () => {
         expect(GAME_KEEPALIVE_DELAY_MS).toBe(60_000);
     });
 
-    it('server.ts dials the game only through connectGame', () => {
+    it('server.ts arms keepalive on both of its game dials', () => {
         const source = readFileSync(resolve(__dirname, '../../proxy/server.ts'), 'utf8');
-        expect(source).not.toMatch(/\bnet\.connect\(/);
-        expect(source).not.toMatch(/\btls\.connect\(/);
-        expect(source.match(/connectGame\(/g)?.length).toBe(2);
+        expect(source.match(/\bnet\.connect\(/g)?.length).toBe(1);
+        expect(source.match(/\btls\.connect\(/g)?.length).toBe(1);
+        expect(source).toMatch(/armGameKeepAlive\(net\.connect\(/);
+        expect(source).toMatch(/armGameKeepAlive\(secure\)/);
     });
 });

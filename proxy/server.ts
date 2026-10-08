@@ -2,7 +2,7 @@ import * as http from 'http';
 import * as net from 'net';
 import * as tls from 'tls';
 import { WebSocketServer, WebSocket } from 'ws';
-import { connectGame } from './gameSocket';
+import { armGameKeepAlive } from './gameSocket';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 
@@ -293,8 +293,9 @@ wss.on('connection', (ws, req) => {
     let tcpConnected = false;
 
     if (tlsPrefs.enabled) {
+        const secure = tls.connect({ host, port, servername: host, rejectUnauthorized: false });
         // Keepalive on, as on the plain path below: see gameSocket.ts (issue #454).
-        const secure = connectGame(host, port, true) as tls.TLSSocket;
+        armGameKeepAlive(secure);
         secure.on('secureConnect', () => {
             tcpConnected = true;
             const cert = secure.getPeerCertificate();
@@ -328,7 +329,7 @@ wss.on('connection', (ws, req) => {
         });
         tcp = secure;
     } else {
-        tcp = connectGame(host, port, false);
+        tcp = armGameKeepAlive(net.connect(port, host));
         tcp.on('connect', () => {
             tcpConnected = true;
             console.log(`[proxy] Connected to ${host}:${port}`);

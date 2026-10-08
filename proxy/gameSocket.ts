@@ -1,5 +1,4 @@
 import * as net from 'net';
-import * as tls from 'tls';
 
 /** How long the game socket may sit idle before the kernel starts probing it.
  *  Node arms the probes themselves at 1 s apart, 10 of them (libuv's
@@ -17,13 +16,4 @@ export const GAME_KEEPALIVE_DELAY_MS = 60_000;
 export function armGameKeepAlive<T extends net.Socket>(socket: T): T {
     socket.setKeepAlive(true, GAME_KEEPALIVE_DELAY_MS);
     return socket;
-}
-
-/** Dial the game, plain or over TLS, with keepalive on either way. TLS
- *  verification is left to the caller (it inspects the cert itself), hence
- *  `rejectUnauthorized: false`. */
-export function connectGame(host: string, port: number, useTls: boolean): net.Socket {
-    return useTls
-        ? armGameKeepAlive(tls.connect({ host, port, servername: host, rejectUnauthorized: false }))
-        : armGameKeepAlive(net.connect(port, host));
 }
