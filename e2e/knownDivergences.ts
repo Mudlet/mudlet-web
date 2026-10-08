@@ -717,14 +717,46 @@ export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
         issue: '#276',
     },
     {
+        api: 'loadProfile(name)',
+        behaviour:
+            'Opens the profile in a new browser tab. Desktop opens every profile a script asks for; here the '
+            + 'browser allows one new tab per user gesture, so the second loadProfile() in one alias, and any '
+            + 'loadProfile() from a trigger, timer or event handler, answers nil plus "the browser blocked the new '
+            + 'tab". That refusal also leaves a line in the main console with an "Open profile <name>" link, '
+            + 'which opens the profile when clicked.',
+        reason:
+            'Each profile lives in its own browser tab, and a page may only open a tab while handling a click or '
+            + 'key press - once per gesture, and never from code the game\'s output started. No page can lift '
+            + 'that, so the link turns the refused call into one click instead of a silent failure.',
+        issue: '#453',
+    },
+    {
         api: 'setActiveProfile(name)',
         behaviour:
-            'For a profile open in another browser tab it answers true, as desktop does, but that tab is not '
-            + 'brought to the front. For this tab\'s own profile it asks for window focus.',
+            'For a profile open in another browser tab it answers false plus "is open in another browser tab, '
+            + 'which a page cannot bring to the front", where desktop switches to it and answers true; the other '
+            + 'tab flashes its title until the user switches to it, and sysProfileFocusChangeEvent fires when '
+            + 'they do. For this tab\'s own profile it asks for window focus and answers true.',
         reason:
             'Each profile lives in its own browser tab, and browsers only let the user switch tabs - a page '
-            + 'cannot focus another tab. The refusals (empty name, no such profile, not loaded) match.',
-        issue: '#276',
+            + 'cannot focus another tab. Answering true would tell a "jump to the profile that needs attention" '
+            + 'script it had worked when nothing moved. The refusals (empty name, no such profile, not loaded) '
+            + 'match.',
+        issue: '#453',
+    },
+    {
+        api: 'raiseGlobalEvent(name, ...)',
+        behaviour:
+            'Other profiles\' handlers run a task later, not during the call: desktop has run them all by the '
+            + 'time raiseGlobalEvent returns, so a profile that asks another for a value and reads the reply on '
+            + 'the next line sees it there, and sees the old value here. Have the reply raise an event of its '
+            + 'own and act on it in that handler.',
+        reason:
+            'Desktop\'s profiles share one process, and HostManager::postInterHostEvent calls raiseEvent on each '
+            + 'host in turn. Here each profile is a separate browser tab with its own Lua state, and the only way '
+            + 'between tabs is a BroadcastChannel message, which the receiving tab handles on a later task. One '
+            + 'tab cannot run another tab\'s Lua synchronously.',
+        issue: '#453',
     },
     {
         api: 'rex.config()',
