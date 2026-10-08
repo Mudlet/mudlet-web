@@ -173,6 +173,11 @@ export type OutputRendererControls = {
     clearStickyArea: () => void;
     push: (message: string | AnsiAwareBuffer, type?: string, timestamp?: number) => void;
     clear: () => void;
+    /** True while a tail scroll is queued for the next frame — lines have
+     *  landed that the view is about to follow. A scroll event seen in that
+     *  window measures the view against content it has not caught up with
+     *  yet, so it is not the reader scrolling away (#456). */
+    isTailScrollQueued: () => boolean;
 };
 
 const TIMESTAMP_CLASS = 'output-show-timestamps';
@@ -263,7 +268,15 @@ export function setupOutputRenderer(
     /** Scroll to the newest line, unless this console is pinned to the top. */
     const scrollToTail = () => {
         tailScrollQueued = false;
+        // The reader scrolled away between the queue and this frame: leave them.
+        if (isSplitView()) return;
         if (followTail && !followTail()) return;
+        // Arm the suppression when the scroll happens, not only when the line
+        // was added. After a big echo burst one frame of layout can outlast the
+        // window armed at append time, and the scroll event this write fires
+        // then read as the reader scrolling up and dropped the console into
+        // split view for good (#456).
+        suppressSplitView?.(250);
         outputWrapper.scrollTop = outputWrapper.scrollHeight;
     };
     // One tail scroll per frame, however many lines landed in it. Every line
@@ -658,5 +671,6 @@ export function setupOutputRenderer(
         clearStickyArea,
         push: handleMessage,
         clear: clearAll,
+        isTailScrollQueued: () => tailScrollQueued,
     };
 }
