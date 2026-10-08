@@ -77,6 +77,12 @@ export function useStickyOutput(
         if (!el || Date.now() < suppressUntilRef.current) return;
         const distFromBottom = Math.round(el.scrollHeight - el.scrollTop - el.clientHeight);
         const next = distFromBottom > splitViewThreshold;
+        // Lines landed after our last tail scroll and the next one is already
+        // queued: the gap is output the view has not caught up with, not the
+        // reader scrolling up. Unlike the time window this cannot expire before
+        // a long frame of layout ends (#456). Leaving split view still goes
+        // through, so scrolling back down is never held up.
+        if (next && rendererRef.current?.isTailScrollQueued()) return;
         if (next !== isSplitViewRef.current) {
             applySplitView(next);
         }
