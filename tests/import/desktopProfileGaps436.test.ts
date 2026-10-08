@@ -12,8 +12,11 @@
 //  6. Migrated packages had no `declaredInfo`, so getPackageInfo was empty
 //     (see tests/scripting/migratedPackageInfo436.test.ts for the engine half).
 //  7. `command_history_main` was copied but never loaded.
+//
+// Issue #455: the profile-data files in 2–4 are serialised QStrings, not text;
+// the fixtures below are the bytes desktop really writes.
 import { describe, it, expect, beforeEach } from 'vitest';
-import { zipSync, strToU8, strFromU8 } from 'fflate';
+import { zipSync, strToU8 } from 'fflate';
 import {
     buildMudletProfileBundle,
     extractMudletProfileZip,
@@ -41,10 +44,39 @@ function profileXml(hostAttrs = ''): string {
 
 const SAVE = 'Desk/current/2026-06-26#11-57-29.xml';
 
-function bundleWith(files: Record<string, string>, hostAttrs = '') {
+function bundleWith(files: Record<string, string | Uint8Array>, hostAttrs = '') {
     const tree: Record<string, Uint8Array> = { [SAVE]: strToU8(profileXml(hostAttrs)) };
-    for (const [k, v] of Object.entries(files)) tree[`Desk/${k}`] = strToU8(v);
+    for (const [k, v] of Object.entries(files)) tree[`Desk/${k}`] = typeof v === 'string' ? strToU8(v) : v;
     return buildMudletProfileBundle(tree);
+}
+
+/** Bytes from a hex dump, spaces ignored. */
+function hex(dump: string): Uint8Array {
+    const clean = dump.replace(/\s+/g, '');
+    return Uint8Array.from(clean.match(/../g)!, b => parseInt(b, 16));
+}
+
+/**
+ * The files exactly as desktop's `MudletApp::writeProfileData` leaves them — a
+ * QDataStream (Qt_5_12) `QString`: big-endian uint32 byte length, then
+ * UTF-16BE. Dumped from real desktop profiles (issue #455).
+ */
+const DESKTOP = {
+    encoding: hex('00000014 0049 0053 004f 0020 0038 0038 0035 0039 002d 0031'), // "ISO 8859-1"
+    sslChecked: hex('00000002 0032'), // "2" (Qt::Checked)
+    sslUnchecked: hex('00000002 0030'), // "0"
+    login: hex('00000008 0048 0065 0072 006f'), // "Hero"
+    password: hex('00000012 0073 0065 0063 0072 0065 0074 0031 0032 0033'), // "secret123"
+};
+
+/** Any string in that format, for the cases no real dump covers. */
+function qstring(text: string): Uint8Array {
+    const out = [0, 0, 0, text.length * 2];
+    for (let i = 0; i < text.length; i++) {
+        const c = text.charCodeAt(i);
+        out.push(c >> 8, c & 0xff);
+    }
+    return Uint8Array.from(out);
 }
 
 describe('1. a zip import picks the newest map by modification time', () => {
@@ -114,29 +146,44 @@ describe('1. a zip import picks the newest map by modification time', () => {
 
 describe('2. the server encoding', () => {
     it('is read from the profile\'s encoding file in Mudlet\'s spelling', () => {
-        const bundle = bundleWith({ encoding: 'ISO 8859-1' });
+        const bundle = bundleWith({ encoding: DESKTOP.encoding });
         expect(bundle.profile.settings.serverEncoding).toBe('ISO 8859-1');
         expect(bundleToConnectionData(bundle, 'now').profile.serverEncoding).toBe('ISO 8859-1');
         expect(bundle.files.encoding).toBeUndefined();
+        expect(bundle.warnings).toEqual([]);
     });
 
     it('is brought to the listed spelling from an alias', () => {
-        expect(bundleWith({ encoding: 'windows-1250\n' }).profile.settings.serverEncoding).toBe('WINDOWS-1250');
+        expect(bundleWith({ encoding: qstring('windows-1250') }).profile.settings.serverEncoding).toBe('WINDOWS-1250');
     });
 
     it('warns, and leaves UTF-8, for one Mudlet Web cannot decode', () => {
-        const bundle = bundleWith({ encoding: 'EBCDIC-NOPE' });
+        const bundle = bundleWith({ encoding: qstring('EBCDIC-NOPE') });
         expect(bundle.profile.settings.serverEncoding).toBeUndefined();
         expect(bundle.warnings.some(w => w.includes('EBCDIC-NOPE'))).toBe(true);
+    });
+
+    it('still reads a hand-written plain-text file', () => {
+        expect(bundleWith({ encoding: 'windows-1250\n' }).profile.settings.serverEncoding).toBe('WINDOWS-1250');
+    });
+
+    it('treats a null QString as no encoding', () => {
+        const bundle = bundleWith({ encoding: hex('ffffffff') });
+        expect(bundle.profile.settings.serverEncoding).toBeUndefined();
+        expect(bundle.warnings).toEqual([]);
     });
 });
 
 describe('3. TLS', () => {
     it('is on when the ssl_tsl file holds Qt::Checked', () => {
-        const bundle = bundleWith({ ssl_tsl: '2' });
+        const bundle = bundleWith({ ssl_tsl: DESKTOP.sslChecked });
         expect(bundle.tls).toBe(true);
         expect(bundleToConnectionRecord(bundle)).toMatchObject({ mode: 'mud', host: 'game.example', port: 4000, tls: true });
         expect(bundle.files.ssl_tsl).toBeUndefined();
+    });
+
+    it('is on alongside the newest save\'s own mSslTsl="yes"', () => {
+        expect(bundleWith({ ssl_tsl: DESKTOP.sslChecked }, 'mSslTsl="yes"').tls).toBe(true);
     });
 
     it('falls back to <Host mSslTsl> with no file, with the certificate exceptions', () => {
@@ -147,7 +194,16 @@ describe('3. TLS', () => {
     });
 
     it('lets the file, which the connection dialog keeps current, win over the save', () => {
-        expect(bundleWith({ ssl_tsl: '0' }, 'mSslTsl="yes"').tls).toBe(false);
+        expect(bundleWith({ ssl_tsl: DESKTOP.sslUnchecked }, 'mSslTsl="yes"').tls).toBe(false);
+    });
+
+    it('falls back to the save when the file holds no check state', () => {
+        expect(bundleWith({ ssl_tsl: hex('0000') }, 'mSslTsl="yes"').tls).toBe(true);
+        expect(bundleWith({ ssl_tsl: 'yes' }, 'mSslTsl="yes"').tls).toBe(true);
+    });
+
+    it('still reads a hand-written plain-text file', () => {
+        expect(bundleWith({ ssl_tsl: '2\n' }).tls).toBe(true);
     });
 
     it('stays unset when neither says', () => {
@@ -155,7 +211,7 @@ describe('3. TLS', () => {
     });
 
     it('is dropped for a websocket profile, whose URL scheme decides it', () => {
-        const bundle = bundleWith({ ssl_tsl: '2' });
+        const bundle = bundleWith({ ssl_tsl: DESKTOP.sslChecked });
         bundle.files[CONNECTION_SIDECAR_PATH] = strToU8(JSON.stringify({ mode: 'websocket', url: 'wss://game.example' }));
         expect(bundleToConnectionRecord(bundle).tls).toBeUndefined();
     });
@@ -163,17 +219,31 @@ describe('3. TLS', () => {
 
 describe('4. the saved login', () => {
     it('fills the account from the login file', () => {
-        const bundle = bundleWith({ login: 'Hero\n' });
+        const bundle = bundleWith({ login: DESKTOP.login });
         expect(bundle.login).toBe('Hero');
         expect(bundleToConnectionRecord(bundle).charLoginAccount).toBe('Hero');
         expect(bundle.files.login).toBeUndefined();
     });
 
     it('carries the password for the vault, never as a profile file', () => {
-        const bundle = bundleWith({ login: 'Hero', password: ' s3cret ' });
-        expect(bundle.password).toBe(' s3cret ');
+        const bundle = bundleWith({ login: DESKTOP.login, password: DESKTOP.password });
+        expect(bundle.password).toBe('secret123');
         expect(bundle.files.password).toBeUndefined();
-        expect(JSON.stringify(bundleToConnectionRecord(bundle))).not.toContain('s3cret');
+        expect(JSON.stringify(bundleToConnectionRecord(bundle))).not.toContain('secret123');
+    });
+
+    it('keeps the password exactly as saved, spaces and all', () => {
+        expect(bundleWith({ password: qstring(' s3cret ') }).password).toBe(' s3cret ');
+    });
+
+    it('decodes characters beyond Latin-1', () => {
+        expect(bundleWith({ login: qstring('Żółw') }).login).toBe('Żółw');
+    });
+
+    it('still reads hand-written plain-text files', () => {
+        const bundle = bundleWith({ login: 'Hero\n', password: ' s3cret ' });
+        expect(bundle.login).toBe('Hero');
+        expect(bundle.password).toBe(' s3cret ');
     });
 
     it('leaves both unset when the profile saved none', () => {
@@ -181,6 +251,12 @@ describe('4. the saved login', () => {
         expect(bundle.login).toBeUndefined();
         expect(bundle.password).toBeUndefined();
         expect(bundleToConnectionRecord(bundle).charLoginAccount).toBeUndefined();
+    });
+
+    it('leaves both unset for null QStrings', () => {
+        const bundle = bundleWith({ login: hex('ffffffff'), password: hex('ffffffff') });
+        expect(bundle.login).toBeUndefined();
+        expect(bundle.password).toBeUndefined();
     });
 });
 
@@ -312,9 +388,11 @@ describe('an export writes those profile files from the live settings', () => {
             data: { profile: { serverEncoding: 'ISO 8859-1' } } as never,
             files: { ssl_tsl: strToU8('0') },
         }, '2026-06-26#12-00-00');
-        expect(strFromU8(folder.ssl_tsl)).toBe('2');
-        expect(strFromU8(folder.login)).toBe('Hero');
-        expect(strFromU8(folder.encoding)).toBe('ISO 8859-1');
+        // Byte for byte what desktop writes, since its readProfileData reads
+        // nothing else (issue #455).
+        expect(folder.ssl_tsl).toEqual(DESKTOP.sslChecked);
+        expect(folder.login).toEqual(DESKTOP.login);
+        expect(folder.encoding).toEqual(DESKTOP.encoding);
         expect(folder.password).toBeUndefined();
 
         // …and they come back in on a re-import.

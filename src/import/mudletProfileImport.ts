@@ -5,6 +5,7 @@ import { parseMudletXml } from './mudletXmlImport';
 import { parseConfigLuaText } from './packageInstaller';
 import { canonicalServerEncoding } from '../mud/protocol/charset';
 import { MAX_HISTORY } from '../ui/commandHistory';
+import { decodeProfileData } from './qtProfileData';
 
 // Turn the raw files of a Mudlet profile — a directory the user picked, or a
 // .zip of one — into a structured bundle ready to provision a new Mudlet Web profile.
@@ -288,7 +289,7 @@ export function buildMudletProfileBundle(
     const consumed: Partial<Record<typeof CONSUMED_PROFILE_FILES[number], string>> = {};
     for (const file of CONSUMED_PROFILE_FILES) {
         if (others[file] === undefined) continue;
-        consumed[file] = strFromU8(others[file]);
+        consumed[file] = decodeProfileData(others[file]);
         delete others[file];
     }
     // Host's constructor reads `encoding` and hands it to cTelnet::setEncoding;
@@ -300,9 +301,11 @@ export function buildMudletProfileBundle(
         else warnings.push(`The server encoding "${encodingName}" is not one Mudlet Web can decode; the profile uses UTF-8.`);
     }
     // The connection dialog writes `ssl_tsl` the moment its checkbox changes and
-    // sets mSslTsl from it on connect, so it is newer than the save's attribute.
+    // sets mSslTsl from it on connect, so it is newer than the save's attribute
+    // — when it holds a check state at all; anything else falls back to the save.
     const sslText = consumed.ssl_tsl?.trim();
-    const tls = sslText ? Number(sslText) === QT_CHECKED : profile.connection.tls;
+    const sslState = sslText && /^\d+$/.test(sslText) ? Number(sslText) : undefined;
+    const tls = sslState !== undefined ? sslState === QT_CHECKED : profile.connection.tls;
     const login = consumed.login?.trim() || undefined;
     // Not trimmed: desktop sends the password exactly as the file holds it.
     const password = consumed.password?.replace(/\r?\n$/, '') || undefined;
