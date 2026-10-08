@@ -209,6 +209,21 @@ describe('raiseGlobalEvent timing (#453)', () => {
     }
   });
 
+  it('never delivers to the sending profile, as desktop\'s postInterHostEvent skips the sender', async () => {
+    const mine: string[] = [];
+    const theirs: string[] = [];
+    const main = new GlobalEventChannel((name) => mine.push(name), () => 'Main');
+    const alt = new GlobalEventChannel((name) => theirs.push(name), () => 'Alt');
+    try {
+      main.raise('ping', []);
+      await vi.waitFor(() => expect(theirs).toEqual(['ping']));
+      expect(mine).toEqual([]);
+    } finally {
+      main.close();
+      alt.close();
+    }
+  });
+
   it('every point of the issue is recorded as a known divergence', () => {
     const apis = PLATFORM_DIVERGENCES.filter(d => d.issue === '#453').map(d => d.api);
     expect(apis).toEqual(['loadProfile(name)', 'setActiveProfile(name)', 'raiseGlobalEvent(name, ...)']);
