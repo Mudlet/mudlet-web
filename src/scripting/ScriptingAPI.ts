@@ -1066,7 +1066,9 @@ export class ScriptingAPI {
 
     // While lineBuffer is active, echo/cecho output is held here and flushed
     // to the output *after* the triggering line (or batch) is rendered.
-    private echoDeferred: AnsiAwareBuffer[] = [];
+    // A command echoed by a trigger (send()) is queued here too, as its styled
+    // text, so it keeps its place among the trigger's echoes.
+    private echoDeferred: (AnsiAwareBuffer | { command: string })[] = [];
     private isDeferringEcho = false;
 
     /** Flip echo deferral, mirroring it onto the session so echoCommand knows
@@ -1075,7 +1077,12 @@ export class ScriptingAPI {
     private setDeferringEcho(on: boolean): void {
         this.isDeferringEcho = on;
         this.session.scriptEchoDeferred = on;
+        this.session.deferCommandEcho = on ? this.queueCommandEcho : null;
     }
+
+    private readonly queueCommandEcho = (styled: string): void => {
+        this.echoDeferred.push({ command: styled });
+    };
 
     // True between beginLine/endLine until the trigger's first echoed `\n`.
     // Mudlet's echo/cecho appends to the matched line at the output cursor (end
@@ -4375,7 +4382,15 @@ export class ScriptingAPI {
     flushDeferredEcho(): void {
         this.setDeferringEcho(false);
         for (const line of this.echoDeferred) {
-            this.session.events.emit('message', line, 'trigger-echo');
+            if (line instanceof AnsiAwareBuffer) {
+                this.session.events.emit('message', line, 'trigger-echo');
+            } else {
+                // Still an 'echo' — the log and OSC 8 expiry treat it as the
+                // command it is. It was stored on a line of its own (never
+                // onto a prompt), and the renderer reads that off the prompt's
+                // buffer, so it draws it on a row of its own too.
+                this.session.events.emit('message', line.command, 'echo', Date.now());
+            }
         }
         this.echoDeferred = [];
         const partial = this.mainConsole.completePartialLine();

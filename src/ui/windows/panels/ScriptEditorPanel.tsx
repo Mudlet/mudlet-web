@@ -1662,7 +1662,11 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         } else if (category === 'triggers') {
             id = addTrigger(connectionId, {
                 name: asGroup ? 'New Group' : 'New Trigger',
-                patterns: asGroup ? [] : [{ text: '', type: 'regex' }],
+                // Substring, as desktop's editor starts a pattern row
+                // (dlgTriggerEditor REGEX_SUBSTRING, index 0): `[OOC]` or
+                // `(glowing) sword` typed into a new trigger is literal text
+                // there, not a regex (mudlet-web#452).
+                patterns: asGroup ? [] : [{ text: '', type: 'substring' }],
                 language: 'lua',
                 code: '',
                 enabled: true,
@@ -1673,6 +1677,13 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                 multiline: false,
                 delta: 0,
                 isFilter: false,
+                // TTrigger's own defaults: colorizer off, with red on yellow
+                // ready, so ticking Highlight paints what its swatches show
+                // (TTrigger.h mFgColor{Qt::red}, mBgColor{Qt::yellow};
+                // mudlet-web#452). `colorize` must be explicit — a stored
+                // highlight alone reads as the switch being on.
+                colorize: false,
+                highlight: { fg: '#ff0000', bg: '#ffff00' },
             });
         } else if (category === 'timers') {
             id = addTimer(connectionId, {
@@ -2676,7 +2687,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                             title={editPatterns.length >= MAX_TRIGGER_PATTERNS
                                                 ? `Mudlet shows at most ${MAX_TRIGGER_PATTERNS} patterns per trigger`
                                                 : undefined}
-                                            onClick={() => { setEditPatterns([...editPatterns, { text: '', type: 'regex' }]); setDirty(true); }}
+                                            onClick={() => { setEditPatterns([...editPatterns, { text: '', type: 'substring' }]); setDirty(true); }}
                                         >+ Add pattern</button>
                                     </div>
                                 </div>
