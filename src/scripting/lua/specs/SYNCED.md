@@ -6,7 +6,7 @@ every failing spec is a genuine Mudlet Web↔Mudlet parity gap, and re-syncing i
 clean copy + diff.
 
 - Upstream: https://github.com/Mudlet/Mudlet/tree/development/src/mudlet-lua/tests
-- Synced from commit: `32c6c791412da3d0d85bf426e7330b3cb9e4a96f` (2026-10-08)
+- Synced from commit: `89ea3223a7063186fe6006596f82364dd780d52b` (2026-10-09)
 
 ## Files
 

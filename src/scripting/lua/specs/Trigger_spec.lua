@@ -1765,9 +1765,7 @@ describe("Trigger processing", function()
         -- between the two. Each measurement is the cheapest of five runs,
         -- because scheduling noise only ever adds, and the two lines take turns
         -- so a slow patch on the runner cannot cost one line all five of its
-        -- runs. One full collection first leaves the next cycle a whole live
-        -- heap away at Lua's default pause, more than these runs allocate, so it
-        -- stays off both lines.
+        -- runs.
         --
         -- Subtracting an unarmed baseline to leave only what the trigger adds
         -- is what this did first, and it could not be made to hold. On the
@@ -1787,6 +1785,11 @@ describe("Trigger processing", function()
                 -- divide by. Feeding until the run is clear of that floor and
                 -- dividing by the number of feeds keeps both measurements
                 -- per-feed and comparable.
+                --
+                -- a collection cycle landing in one line's runs and not the
+                -- other's skews the ratio by whatever it costs
+                collectgarbage()
+                collectgarbage("stop")
                 local feeds, taken = 0, 0
                 local started = os.clock()
                 repeat
@@ -1798,6 +1801,7 @@ describe("Trigger processing", function()
                 -- needs, so giving up past it leaves the short > 0 assertion
                 -- below to report the dead clock.
                 until taken >= 0.02 or feeds >= 100
+                collectgarbage("restart")
                 return taken / feeds
             end
             _G.TrigSpec = {captures = 0}
@@ -1805,10 +1809,12 @@ describe("Trigger processing", function()
                 [[_G.TrigSpec.captures = #matches]],
                 0, -1, -1, 0, 1, -1, -1, 0, 0, 0)
             assert.is_number(id)
-            finally(function() if type(id) == "number" and id > 0 then killTrigger("SpecComplexMatchAllCost") end end)
+            finally(function()
+                collectgarbage("restart")
+                if type(id) == "number" and id > 0 then killTrigger("SpecComplexMatchAllCost") end
+            end)
             local shortLine, longLine = string.rep("word ", shortReps), string.rep("word ", longReps)
             local short, long, shortCaptures, longCaptures
-            collectgarbage()
             for _ = 1, 5 do
                 short = math.min(short or math.huge, costOf(shortLine))
                 shortCaptures = _G.TrigSpec.captures
@@ -2530,6 +2536,54 @@ describe("Trigger processing", function()
             assert.are.equal(1, spec.fired, "the prompt trigger did not fire on the line ended by IAC GA")
             assert.are.equal(spec.linesBefore - 1, spec.linesAfter, "the trigger did not gag the line it matched")
             assert.is_true(spec.wasPrompt, "isPrompt() was false on a prompt line the trigger had just gagged")
+        end)
+
+        it("isPrompt stays true after a prompt trigger clears the main window", function()
+            _G.TrigSpec = {fired = 0}
+            liveTriggerId = tempPromptTrigger(function()
+                _G.TrigSpec.fired = _G.TrigSpec.fired + 1
+                clearWindow()
+                _G.TrigSpec.linesAfter = getLineCount()
+                _G.TrigSpec.wasPrompt = isPrompt()
+            end)
+            assert.is_true(liveTriggerId > 0, "the prompt trigger was not created")
+
+            echo("\nfirst\nsecond\n")
+            local ok, msg = feedTelnet("SpecPromptCleared> <T_IAC><T_GA>")
+            local spec = _G.TrigSpec
+            feedTelnet("\r\n")
+            deselect()
+
+            assert.is_true(ok, "start the suite with --offline, see the tests README - feedTelnet said: " .. tostring(msg))
+            assert.are.equal(1, spec.fired, "the prompt trigger did not fire on the line ended by IAC GA")
+            assert.are.equal(0, spec.linesAfter, "clearWindow() did not leave the one empty line")
+            assert.is_true(spec.wasPrompt, "isPrompt() was false on a prompt line the trigger had just cleared away")
+        end)
+
+        -- On line 0 the cursor sits on the one line a clear leaves whether or not
+        -- the prompt went, so only the engine cursor can tell the two apart.
+        it("isPrompt stays true after a prompt trigger on the first line clears the main window", function()
+            _G.TrigSpec = {fired = 0}
+            liveTriggerId = tempPromptTrigger(function()
+                _G.TrigSpec.fired = _G.TrigSpec.fired + 1
+                _G.TrigSpec.lineBefore = getLineNumber()
+                clearWindow()
+                _G.TrigSpec.linesAfter = getLineCount()
+                _G.TrigSpec.wasPrompt = isPrompt()
+            end)
+            assert.is_true(liveTriggerId > 0, "the prompt trigger was not created")
+
+            clearWindow()
+            local ok, msg = feedTelnet("SpecPromptClearedFirst> <T_IAC><T_GA>")
+            local spec = _G.TrigSpec
+            feedTelnet("\r\n")
+            deselect()
+
+            assert.is_true(ok, "start the suite with --offline, see the tests README - feedTelnet said: " .. tostring(msg))
+            assert.are.equal(1, spec.fired, "the prompt trigger did not fire on the line ended by IAC GA")
+            assert.are.equal(0, spec.lineBefore, "the prompt did not arrive on line 0, so this spec proves nothing")
+            assert.are.equal(0, spec.linesAfter, "clearWindow() did not leave the one empty line")
+            assert.is_true(spec.wasPrompt, "isPrompt() was false on a first-line prompt the trigger had just cleared away")
         end)
 
         it("isPrompt stays false after an ordinary trigger gags the line it matched", function()
