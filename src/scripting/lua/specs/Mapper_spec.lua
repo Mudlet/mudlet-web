@@ -2801,6 +2801,14 @@ describe("Tests mapper functions against a shared fixture", function()
     end)
   end)
 
+  describe("Tests the 3D map view setting", function()
+    -- Read only: showing the 3D view brings up a GL context, which the leak job
+    -- cannot have - see Other_spec's getConfig and setConfig round-trips
+    it("getConfig reports the 3D view hidden while the mapper shows its 2D map", function()
+      assert.is_false(getConfig("show3dMapView"))
+    end)
+  end)
+
   describe("Tests map zoom", function()
     it("setMapZoom is read back by getMapZoom for a given area", function()
       assert.is_true(setMapZoom(15, areaAlpha))
@@ -5206,6 +5214,24 @@ describe("Tests the profile colour set behind setCustomEnvColor", function()
       assert.are.same({id - 257, 100 + (id - 257), 200, 254}, after[id],
                       ("environment colour %d did not come back from the profile"):format(id))
     end
+  end)
+end)
+
+describe("Tests the app-wide mapper options in getConfig and setConfig", function()
+  setup(function()
+    openMapWidget()
+  end)
+
+  -- setConfig takes map options only while a mapper exists, so the generic
+  -- round-trip in Other_spec never reaches this one
+  it("round-trips showUpperLowerLevels", function()
+    local original = getConfig("showUpperLowerLevels")
+    finally(function() setConfig("showUpperLowerLevels", original) end)
+
+    assert.is_true(setConfig("showUpperLowerLevels", not original))
+    assert.are.equal(not original, getConfig("showUpperLowerLevels"))
+    assert.is_true(setConfig("showUpperLowerLevels", original))
+    assert.are.equal(original, getConfig("showUpperLowerLevels"))
   end)
 end)
 
