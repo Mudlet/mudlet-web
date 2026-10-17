@@ -155,7 +155,7 @@ describe("Tests that the cursor and line functions find their console by name", 
           local mainLines = getLineCount("main")
 
           assert.is_true(moveCursor(window, 0, 1))
-          assert.are.equal(0, select("#", deleteLine(window)))
+          assert.are.same({true}, {deleteLine(window)})
           assert.are.equal(1, getLineCount(window))
           assert.are.same({"first line", "third line"}, getLines(window, 0, 2))
           assert.are.equal(mainLines, getLineCount("main"))
@@ -193,6 +193,38 @@ describe("Tests that the cursor and line functions find their console by name", 
         assert.is_true(getRowCount(window) > rows)
         assert.are.equal(mainColumns, getColumnCount("main"))
         assert.are.equal(mainRows, getRowCount("main"))
+      end)
+    end)
+
+    describe("of a mini console with its split screen open", function()
+      local window = "specCursorByName split" .. suffix
+
+      setup(function()
+        assert.is_true(createMiniConsole(window, 0, 0, 300, 400))
+        enableScrolling(window)
+        for i = 1, 300 do
+          echo(window, "split line " .. i .. "\n")
+        end
+      end)
+
+      teardown(function()
+        deleteMiniConsole(window)
+      end)
+
+      -- the lower pane takes a quarter of the height, so counting it instead
+      -- of the upper one would answer well under half the rows
+      it("counts the rows above the split", function()
+        pumpEvents(100)
+        local fullRows = getRowCount(window)
+        scrollTo(window, 10)
+        pumpEvents(100)
+        local splitRows = getRowCount(window)
+        scrollTo(window)
+        pumpEvents(100)
+
+        assert.is_true(splitRows < fullRows, ("%d rows split, %d without"):format(splitRows, fullRows))
+        assert.is_true(splitRows > fullRows / 2, ("%d rows split, %d without"):format(splitRows, fullRows))
+        assert.are.equal(fullRows, getRowCount(window))
       end)
     end)
   end)
@@ -235,7 +267,7 @@ describe("Tests that the cursor and line functions find their console by name", 
         local last = getLastLineNumber("main")
 
         assert.is_true(moveCursor("main", 0, line))
-        assert.are.equal(0, select("#", deleteLine(name)))
+        assert.are.same({true}, {deleteLine(name)})
         assert.are.equal(last - 1, getLastLineNumber("main"))
         assert.is_nil(findRecentMainLine(doomed))
       end)
