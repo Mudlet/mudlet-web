@@ -58,6 +58,18 @@ const TORN_DOWN_REASON =
 export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
     Mapper: [
         {
+            name: 'Tests mapper functions against a shared fixture / Tests area image export / exportAreaImage reports a save that failed against that export alone',
+            reason:
+                'The spec makes a save fail by naming a file 300 characters long, which every desktop file system '
+                + 'refuses (NAME_MAX is 255 bytes on ext4, APFS and NTFS). The profile VFS is IndexedDB, which has '
+                + 'no such limit, so the name is simply stored and the save succeeds. What the spec guards — a '
+                + 'failed save reported against its own export and not its neighbour — is implemented: '
+                + 'exportAreaImage posts "Failed to save image to …" for the export whose write throws. Faking '
+                + 'NAME_MAX on every VFS write to manufacture the failure would refuse names a player\'s files '
+                + 'can legitimately have here, to imitate a limit of a disk this client does not write to. A '
+                + 'linked local folder does hit the real limit, and reports it the same way.',
+        },
+        {
             name: 'Tests saveMap and loadMap / Tests the saveMap argument contract / resolves a relative location against the profile directory',
             reason:
                 'The spec asserts saveMap("x.dat") lands in the profile directory AND that io.exists("x.dat") '
@@ -152,6 +164,17 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
     ],
     Miscallaneous: [
         {
+            name: 'Tests C++ functions in the Miscallaneous category / Tests the functionality of saveProfile / writes the application-wide settings to Mudlet.ini as well',
+            reason:
+                'Reads Mudlet.ini beside the profiles folder, above getMudletHomeDir(). Mudlet keeps its '
+                + 'application-wide settings in that file; Mudlet Web keeps settings in its app store (in '
+                + 'localStorage, outside any profile VFS) and writes no Mudlet.ini at all. Even a written one '
+                + 'could not be read here: a profile VFS is mounted AT its own directory and cannot see above it '
+                + '(the boundary the "leaves no file or folder of its own behind" entry rests on). What the spec '
+                + 'cares about — a setting such as showTabConnectionIndicators surviving a save — holds: '
+                + 'setConfig writes it straight to the store, which persists it without a save.',
+        },
+        {
             name: 'Tests C++ functions in the Miscallaneous category / Tests the functionality of getProfiles / lists a profile that is not loaded',
             reason:
                 'The spec mkdir()s a bare folder under the profiles directory and expects getProfiles() to list it. '
@@ -212,7 +235,29 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
                 + 'is gated on MUDLET_TEST_MODE rather than on the peer fixture, so it runs and fails instead.',
         },
     ],
+    Other: [
+        {
+            name: 'Tests Other.lua functions / Tests getConfig and setConfig round-trips / round-trips every boolean configuration option',
+            reason:
+                'Every boolean option round-trips except lazyCaptureGlobals, which setConfig refuses to set true. '
+                + 'That is the decision recorded under Trigger below: Mudlet Web always sets matches, multimatches '
+                + 'and line up front, which is Mudlet with lazyCaptureGlobals off, so getConfig answers false and '
+                + 'a true is refused rather than stored and then not honoured — a script reading the setting back '
+                + 'would otherwise be told about a deferral that never happens.',
+        },
+    ],
     Package: [
+        {
+            name: 'Tests exporting the profile to a file with saveProfile / says so on the console when the write fails after the call has answered',
+            reason:
+                'Desktop writes a profile save on a worker thread: saveProfile() answers first, and the spec moves '
+                + 'the target folder away before the write lands, then expects the console to report the late '
+                + 'failure. Here the XML is built and written before saveProfile() answers, so there is no window '
+                + 'between the answer and the write — the spec\'s own setup says so ("the write finished before '
+                + 'its folder was moved away") and stops. A failure here is reported synchronously instead, as '
+                + 'saveProfile\'s nil and message and the console line the neighbouring specs check. Making the '
+                + 'write late just to open that window would make every save slower to land for no gain.',
+        },
         {
             name: 'Tests installing an archive whose config.lua will not run / refuses a name that trims down to a step out of the profile',
             reason:
@@ -249,12 +294,38 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
             + 'offer reaches the downloader (an incomplete one does not), its notice is on the main console, '
             + 'and a raw telnet offer leaves the gmcp table alone. The failure notice Mudlet posts ("Package download failed from ...") '
             + 'is implemented and is asserted instead by tests/scripting/clientGuiNotices.test.ts.';
-        return [
+        // These serve the package themselves, from a file:// url inside the
+        // profile, and need the install to have finished when the offer
+        // returns. The file is read straight from the VFS, but the install
+        // still settles later: it registers the package only once the VFS
+        // flush has landed (ScriptingEngine.handleClientGuiInstall), so a page
+        // killed mid-install leaves "not installed" rather than a package on
+        // record with its files missing — the f2ce-tools failure that ordering
+        // was written for. That flush is IndexedDB, so it resolves through the
+        // event loop the busted run is sitting on, as the download above does.
+        const servedReason =
+            'Needs a Client.GUI install to have finished before the spec looks. Mudlet Web registers a '
+            + 'downloaded package only once its files are flushed to the profile VFS, so a page closed mid-install '
+            + 'leaves it not installed rather than recorded with its files missing (which is how f2ce-tools lost '
+            + 'its bundled databases). That flush is IndexedDB and settles through the browser\'s event loop, which '
+            + 'a synchronous busted run is sitting on top of — the same wall as the download entries beside these. '
+            + 'Registering before the flush to let a synchronous test see it would bring the half-install back.';
+        const served = [
+            'Tests the Client.GUI package offer / installs nothing from a Client.GUI download that came back empty',
+            'Tests the Client.GUI package offer / installs a Client.GUI package downloaded from a file URL',
+            'Tests the Client.GUI package offer / leaves an installed Client.GUI package alone when it is offered at the same version',
+            'Tests the Client.GUI package offer / forgets the recorded Client.GUI version once that package is uninstalled',
+            'Tests the Client.GUI package offer / upgrades a Client.GUI package after another one was installed',
+            'Tests the Client.GUI package offer / announces a Client.GUI package only once it is installed when a save was running',
+            'Tests the Client.GUI package offer / records the Client.GUI package that installed, not an offer made while it installed',
+            'Tests the Client.GUI package offer / records no version for a Client.GUI download that installed nothing',
+        ].map(name => ({ name, reason: servedReason }));
+        return [...served, ...[
             'Tests the Client.GUI package offer / acts on a Client.GUI offer sent as raw telnet rather than JSON (#7704)',
             'Tests the Client.GUI package offer / keeps a raw telnet Client.GUI out of the gmcp table (#7034)',
             'Tests the Client.GUI package offer / acts on a JSON Client.GUI offer whose version is a number',
             'Tests the Client.GUI package offer / ignores a Client.GUI offer that is missing its version or its URL',
-        ].map(name => ({ name, reason }));
+        ].map(name => ({ name, reason }))];
     })(),
     Trigger: (() => {
         // Mudlet leaves `matches`, `multimatches` and `line` out of the globals
