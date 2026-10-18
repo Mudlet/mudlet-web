@@ -47,6 +47,27 @@ describe('scanEscape', () => {
     expect(esc.kind).toBe('incomplete');
   });
 
+  it('takes an intermediate sequence up to its final byte, but reports no final', () => {
+    const s = `${ESC}[1;31 mX`;
+    const esc = scanEscape(s, 0);
+    expect(esc).toMatchObject({ kind: 'csi', end: 8 });
+    expect(esc.finalByte).toBeUndefined();
+    // parameter bytes after the intermediate belong to it too
+    expect(scanEscape(`${ESC}[38;5;-1mX`, 0)).toMatchObject({ kind: 'csi', end: 10 });
+    expect(scanEscape(`${ESC}[38;5;-1mX`, 0).finalByte).toBeUndefined();
+  });
+
+  it('leaves the byte that cuts a sequence short, and holds one that runs off the end', () => {
+    expect(scanEscape(`${ESC}[1 é`, 0)).toMatchObject({ kind: 'csi', end: 4 });
+    expect(scanEscape(`${ESC}[1 `, 0).kind).toBe('incomplete');
+  });
+
+  it('discards a sequence at the length cap, intermediates counted, keeping what cut it', () => {
+    const s = `${ESC}[${' '.repeat(4096)}\n`;
+    expect(scanEscape(s, 0)).toMatchObject({ kind: 'csi', end: s.length - 1 });
+    expect(scanEscape(`${ESC}[${' '.repeat(4096)}`, 0).kind).toBe('csi');
+  });
+
   it('classifies a short escape (charset designation)', () => {
     const s = `${ESC}(BX`;
     const esc = scanEscape(s, 0);
