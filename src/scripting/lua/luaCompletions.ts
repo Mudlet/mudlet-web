@@ -385,7 +385,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('resizeMapWidget',    '(width, height)',         'Resize the floating map widget'),
     fn('getMainWindowSize', '() → w, h',   'Main output area pixel size (live element box). Falls back to browser inner size if the main output is not mounted.'),
     fn('getMousePosition',  '() → x, y',   'Last-known cursor position in main-output-local pixels. Tracked passively via pointermove/mousedown — returns 0,0 before any pointer activity. Negative or out-of-range when the cursor is outside the main viewport.'),
-    fn('getUserWindowSize', '(name) → w, h', 'Userwindow / miniconsole pixel size. Reports the live rendered box when mounted, else the stored hint. A name with no window of its own reports the main window size.'),
+    fn('getUserWindowSize', '(name) → w, h', 'Userwindow pixel size. Reports the live rendered box when mounted, else the stored hint. "main" (or no name) is the main window; any other name that is not a user window answers nil and why.'),
     fn('hasFocus',          '([window]) → bool', 'True when the named console (or the main command bar when omitted) holds keyboard focus.'),
     fn('alert',             '([seconds])',   'Flash for attention. Browsers can\'t flash the taskbar, so mudlet flashes the document title for `seconds` (default 10). No-op while the tab is already focused.'),
     fn('setFontSize',       '([window,] size) → bool',  'Set the output font size (1..99). No window arg targets the main output (persists in settings); a window name targets a userwindow or miniconsole.'),

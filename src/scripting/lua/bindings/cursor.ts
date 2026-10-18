@@ -208,20 +208,35 @@ export function installCursorBindings({ lua, api }: BindingContext): void {
         return rgb ?? null;
     });
 
+    // What setLink/setPopup and insertLink/insertPopup check before they store
+    // a command (Bridge.lua's link writers): a selection with text under it,
+    // and a cursor that is somewhere text can go.
+    lua.global.set('__hasSelectedText', (win?: unknown) =>
+        api.hasSelectedText(typeof win === 'string' ? win : undefined));
+    lua.global.set('__cursorInText', (win?: unknown) =>
+        api.cursorInText(typeof win === 'string' ? win : undefined));
+
     // Mudlet getTextFormat([window]) → table of the display attributes at the
     // current selection's start, or (nil, errMsg) when there is no usable
     // selection. wasmoon's nested-table marshalling is unreliable, so JS
     // hands back a flat 0-indexed array of primitives and Bridge.lua rebuilds
     // the documented table (with 1-indexed foreground/background triples).
     // A miss comes back as desktop's message instead: an unknown window is
-    // "window 'x' not found", and no character under the cursor/selection is
-    // "current selection invalid in window 'x'" — x being the name as passed,
-    // so '' when it was left out (TLuaInterpreterUI.cpp).
+    // "window 'x' not found", a selection with no character under it is
+    // "current selection invalid in window 'x'", and a cursor with none under
+    // it (nothing selected) "no character under cursor or selection in window
+    // 'x'" — x being the name as passed, and 'main' for every name the main
+    // console goes by (TLuaInterpreterUI.cpp).
     lua.global.set('__getTextFormat', (win?: unknown) => {
         const name = typeof win === 'string' || typeof win === 'number' ? String(win) : undefined;
         if (name !== undefined && !api.hasConsole(name)) return `window '${name}' not found`;
         const f = api.getTextFormat(name);
-        if (!f) return `current selection invalid in window '${name ?? ''}'`;
+        if (!f) {
+            const shown = name === undefined || name === '' ? 'main' : name;
+            return api.hasSelection(name)
+                ? `current selection invalid in window '${shown}'`
+                : `no character under cursor or selection in window '${shown}'`;
+        }
         return [
             f.bold, f.italic, f.underline, f.strikeout, f.reverse,
             f.overline, f.concealed, f.alternateFont, f.blinking,

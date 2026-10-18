@@ -1,5 +1,9 @@
 import { isKeypadEvent } from '../../mud/keybindings/qtKeys';
 
+/** The height in px the split view's lower pane opens at, before the player
+ *  drags it. */
+export const DEFAULT_SPLIT_PANE_HEIGHT = 160;
+
 /**
  * Closing the split view — Mudlet's `TConsole::clearSplit`, which drops the
  * frozen upper pane and puts the console back on the tail. Mudlet reaches it

@@ -80,10 +80,10 @@ describe('mudlet-web#369 — scrolling drift', () => {
       expect(run('return select("#", scrollTo("mc369", 10))')).toBe(0);
     });
 
-    it('clearWindow and clearUserWindow return nothing', () => {
+    it('clearWindow and clearUserWindow return nothing, and refuse a window that is not there', () => {
       expect(run('return select("#", clearWindow("mc369"))')).toBe(0);
       expect(run('return select("#", clearUserWindow("mc369"))')).toBe(0);
-      expect(run('return select("#", clearWindow("nope369"))')).toBe(0);
+      expect(run('return select(2, clearWindow("nope369"))')).toBe('window "nope369" not found');
       expect(run('return select("#", clearWindow())')).toBe(0);
     });
   });

@@ -452,12 +452,10 @@ export class Console {
         this.history = [];
         this.pending = [];
         this.partial = new AnsiAwareBuffer();
-        // Only the main console's cursor goes back to following the output.
-        // Every other console's user cursor stays where a script put it, past
-        // the one line left as it may now be — TConsole::clear empties the
-        // buffer and leaves mUserCursor alone, so getLineNumber() still reads
-        // it and the next write lands on that one line all the same.
-        if (this.followsOutput) this.resetCursor();
+        // The main console's cursor goes back to following the output, and
+        // every other console's user cursor onto the one line left —
+        // TConsole::clear puts mUserCursor at its start.
+        this.resetCursor();
         this.consumeLeadingNewline = false;
         // Mudlet's clearWindow() leaves exactly ONE empty line, not none — the
         // current line every TBuffer keeps. deleteLine() on that line is what
@@ -545,6 +543,32 @@ export class Console {
         if (this.openLineSuspended && this.cursorIdx >= this.history.length) return null;
         if (this.onPartialLine) return this.partial;
         return this.history[this.cursor] ?? null;
+    }
+
+    /** Line `index` in Mudlet's numbering (the open line last), or null when
+     *  the index names no line. */
+    lineBuffer(index: number): AnsiAwareBuffer | null {
+        if (index < 0 || index >= this.lineTotal) return null;
+        return index < this.history.length ? this.history[index] : this.partial;
+    }
+
+    /** The Lua code of every scripted link or popup this console's lines hold. */
+    linkCommands(): string[] {
+        const commands: string[] = [];
+        for (const line of [...this.history, this.partial]) {
+            for (const segment of line.getSegments()) {
+                const lua = segment.state?.hyperlink?.luaCommands;
+                if (lua) commands.push(...lua);
+            }
+        }
+        return commands;
+    }
+
+    /** Whether `buf` is still one of this console's lines — the open one or a
+     *  complete one — rather than one a clear, a deletion or the scrollback
+     *  limit has taken away. */
+    holdsLine(buf: AnsiAwareBuffer): boolean {
+        return buf === this.partial || this.history[this.cursor] === buf || this.history.includes(buf);
     }
 
     /** The last complete line, whatever the cursor is on — where Mudlet's
@@ -801,7 +825,7 @@ export class Console {
         // that line yet still has Mudlet's "no current line" sentinel.
         // A console whose cursor was never moved sits on line 0 even before
         // anything is written into it — Mudlet's fresh miniconsole says 0.
-        // That is wherever the user cursor was left, which a clear does not move.
+        // That is wherever the user cursor was left.
         if (len === 0) {
             if (!this.followsOutput && this.hasOpenLine) return Math.max(0, this.cursorIdx);
             return this.partial.length > 0 ? 0 : -1;
@@ -834,6 +858,18 @@ export class Console {
     // well made every Lua-facing count one too high.
     getLineCount(): number  { return this.history.length - 1; }
 
+    /** Whether the cursor is somewhere text can be put: on a line the buffer
+     *  holds, at a column that is not negative. A column past the end of the
+     *  line counts — a write there pads up to it. Not after deleteLine() has
+     *  taken the line the cursor was on and left it past the last one, nor mid
+     *  trigger pass once the matched line is gone. */
+    cursorInText(): boolean {
+        if (this.cursorCol < 0) return false;
+        if (this.openLineSuspended && this.cursorIdx >= this.history.length) return false;
+        const line = this.getLineNumber();
+        return line >= 0 && line < this.lineTotal;
+    }
+
     /** Mudlet's TBuffer::getLastLineNumber() — the index of the last line, the
      *  open one included, and 0 for a buffer with no lines at all. Differs from
      *  getLineCount() + 1 only once deleteLine() has removed the open line. */
@@ -853,11 +889,12 @@ export class Console {
 
     /**
      * Mudlet `getLines(from, to)` — the lines from the 0-based index `from`
-     * up to, not including, `from + abs(to - from)` (TConsoleModel::lines).
+     * up to, not including, `to`; a reversed range reads downward from `from`
+     * (or the last line, when `from` is past it) to just above `to`.
      * Only lines the buffer actually holds are returned: an index before line
      * 0 or past the last line is dropped rather than padded, so the result can
-     * be shorter than asked for, and empty. A negative `from` still spends its
-     * share of the count — `getLines(-2, 3)` reads lines 0 to 2, not 0 to 4.
+     * be shorter than asked for, and empty — `getLines(-2, 3)` reads lines 0
+     * to 2, not 0 to 4.
      *
      * An empty table is the only way a script can tell an empty buffer from a
      * one-line one, because getLineCount() answers 0 for both — it reports the
@@ -865,8 +902,17 @@ export class Console {
      */
     getLines(from: number, to: number): string[] {
         const first = Math.trunc(from);
-        const end = Math.min(first + Math.abs(first - Math.trunc(to)), this.lineTotal);
+        const last = Math.trunc(to);
         const lines: string[] = [];
+        if (last < first) {
+            // A reversed range reads downward from its first line (or the last
+            // line there is), stopping before `to` — TBuffer::getLines.
+            for (let i = Math.min(first, this.lineTotal - 1); i > last && i >= 0; i--) {
+                lines.push(this.lineAt(i) ?? '');
+            }
+            return lines;
+        }
+        const end = Math.min(last, this.lineTotal);
         for (let i = Math.max(first, 0); i < end; i++) {
             lines.push(this.lineAt(i) ?? '');
         }
@@ -889,7 +935,7 @@ export class Console {
      * line entered the buffer, or {@link BLANK_TIMESTAMP} for a line wrapping
      * continued from the one above. `lineNumber` indexes the buffer as
      * getLineNumber() does, from 0 — Mudlet reads `timeBuffer.at(lineNumber)`
-     * but refuses 0 — and the open line after the last complete one counts,
+     * — and the open line after the last complete one counts,
      * having a time of its own. Omit it to read the current cursor line.
      * Returns null when the line is out of range or the buffer is empty.
      * Formatting into Mudlet's "hh:mm:ss.zzz" string happens one layer up, in
@@ -901,7 +947,7 @@ export class Console {
             line = this.history[this.cursor];
         } else {
             const idx = Math.trunc(lineNumber);
-            if (!(idx >= 1)) return null;
+            if (!(idx >= 0)) return null;
             line = idx === this.history.length && this.hasOpenLine ? this.partial : this.history[idx];
         }
         if (!line) return null;

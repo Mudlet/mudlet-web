@@ -436,6 +436,17 @@ export class MxpFrameManager {
         this.host.setFrameTabs(frame.name, pages, frame.activeTab);
     }
 
+    /** Whether `name` is a page of a tab strip that is showing another page —
+     *  a tab host's own console included, once a docked frame is in front. */
+    isBehindTab(name: string): boolean {
+        const frame = this.frames.get(name);
+        if (!frame) return false;
+        const host = frame.parent && frame.parent.tabs.includes(name) ? frame.parent
+                   : frame.tabs.includes(name) ? frame
+                   : null;
+        return !!host && host.activeTab !== name;
+    }
+
     /** Bring `name` to the front of whichever tab strip holds it, if any. */
     private selectTabFor(name: string): void {
         const frame = this.frames.get(name);
