@@ -2037,6 +2037,12 @@ export class WindowManager {
         this.notify();
     }
 
+    /** Whether `id` is an MXP frame's own console — false once a script has
+     *  deleted it, even if it then made a window of its own under the name. */
+    isMxpFrame(id: string): boolean {
+        return this.mxpFrameIds.has(id);
+    }
+
     /** Install (or replace) an MXP frame's tab strip. An empty `pages` list
      *  removes it. Pages other than the active one are hidden, which keeps their
      *  panel mounted — the content pool renders every open window regardless of

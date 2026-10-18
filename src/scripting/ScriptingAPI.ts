@@ -5430,7 +5430,14 @@ export class ScriptingAPI {
             this.session.windows.markAsMiniConsole(id);
             this.session.windows.markAsMxpFrame(id);
         },
-        destroyFrameConsole: (name) => this.session.windows.close(mxpWindowId(name)),
+        destroyFrameConsole: (name) => {
+            const id = mxpWindowId(name);
+            if (this.session.windows.isMxpFrame(id)) this.session.windows.close(id);
+        },
+        nameTakenByScript: (name) => {
+            const id = mxpWindowId(name);
+            return (this.session.windows.has(id) && !this.session.windows.isMxpFrame(id)) || this.buffers.has(id);
+        },
         showFrameConsole: (name) => { this.session.windows.show(mxpWindowId(name)); },
         raiseFrameConsole: (name) => this.session.windows.bringToFront(mxpWindowId(name)),
         setFrameScrolling: (name, enabled) => { this.session.windows.setScrollingEnabled(mxpWindowId(name), enabled); },
