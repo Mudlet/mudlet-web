@@ -101,7 +101,9 @@ function ButtonView({ button, engineRef, vfs, onClicked, inheritedStyle }: Butto
     // applied — pseudo-state selectors (`:hover`, `:pressed`) drop through.
     // A toolbar's sheet is set on the toolbar widget on desktop, and Qt
     // cascades its bare declarations onto the buttons; the button's own wins.
-    const own = button.styleSheet ? cssTextToStyle(button.styleSheet) : undefined;
+    // A button is a QPushButton on desktop (TFlipButton), so its own sheet's
+    // `QPushButton { … }` rules are its own declarations.
+    const own = button.styleSheet ? cssTextToStyle(button.styleSheet, 'QPushButton') : undefined;
     const sheet = inheritedStyle || own ? { ...inheritedStyle, ...own } : undefined;
 
     return (
