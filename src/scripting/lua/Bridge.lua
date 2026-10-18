@@ -8235,6 +8235,19 @@ do
     setRoomWeight      = roomGuard(setRoomWeight, "setRoomWeight")
     setRoomHidden      = roomGuard(setRoomHidden, "setRoomHidden")
     setRoomUserData    = roomGuard(setRoomUserData, "setRoomUserData")
+    -- A save writes the room's border under these keys and a load takes them
+    -- back out, so a script's own value would not survive; the missing room is
+    -- named first.
+    do
+        local guarded = setRoomUserData
+        function setRoomUserData(id, key, ...)
+            if roomExists(id) and (key == "room.ui_borderColor" or key == "room.ui_borderThickness") then
+                return nil, "key '" .. key .. "' is reserved for the room's border,"
+                    .. " use setRoomBorderColor() or setRoomBorderThickness()"
+            end
+            return guarded(id, key, ...)
+        end
+    end
     unsetRoomCharColor = roomGuard(unsetRoomCharColor, "unsetRoomCharColor")
     -- hasExitLock checks its direction before the room (#10670): a direction
     -- that is neither a number nor a string, or a number that is not one of the

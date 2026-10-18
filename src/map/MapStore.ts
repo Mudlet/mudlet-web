@@ -131,14 +131,32 @@ const AREA_ZOOM_KEY = 'system.fallback_map2DZoom';
 
 // The other fallback keys a v20 file carries for TRoom/TMapLabel fields the
 // format has no slot for (TMap::serialize / TRoom::restore / TMap::restore).
-// The symbol colour and the label keys are TAKEN on load, so scripts never
-// see them; the border keys are only READ (TRoom::restore uses `value`, not
-// `take`), so they stay visible as room user data, exactly as on desktop.
+// All of them are TAKEN on load, so scripts never see them, and the border
+// keys are refused by setRoomUserData, since a save would replace them.
 const SYMBOL_COLOR_FALLBACK_KEY = 'system.fallback_symbol_color';
-const BORDER_COLOR_KEY = 'room.ui_borderColor';
-const BORDER_THICKNESS_KEY = 'room.ui_borderThickness';
+export const BORDER_COLOR_KEY = 'room.ui_borderColor';
+export const BORDER_THICKNESS_KEY = 'room.ui_borderThickness';
 const labelFontKey = (labelId: number) => `system.labelFont_${labelId}`;
 const labelOutlineKey = (labelId: number) => `system.labelOutlineColor_${labelId}`;
+
+/**
+ * TArea::dropFileOnlyUserData: take out of an area's user data the keys a
+ * binary save keeps there — the zoom and its labels' fonts and outline
+ * colours — which mean nothing in the live map. Only the exact form a save
+ * writes counts as a label key, so "_007" or "_+5" stay a script's own.
+ */
+function dropFileOnlyUserData(userData: Record<string, string>): void {
+    const isLabelKey = (key: string, prefix: string) => {
+        if (!key.startsWith(prefix)) return false;
+        const suffix = key.slice(prefix.length);
+        return /^-?\d+$/.test(suffix) && String(Number(suffix)) === suffix && Math.abs(Number(suffix)) <= 0x7fffffff;
+    };
+    for (const key of Object.keys(userData)) {
+        if (key === AREA_ZOOM_KEY || isLabelKey(key, 'system.labelFont_') || isLabelKey(key, 'system.labelOutlineColor_')) {
+            delete userData[key];
+        }
+    }
+}
 // QFont::Normal under Qt 6 — the weight TMap::createMapLabel's
 // `QFont(fontName, fontSize)` reports, and so what desktop writes.
 const QFONT_NORMAL_WEIGHT = 400;
@@ -257,13 +275,24 @@ export function mudletJsonMapToMudletMap(src: unknown): MudletMap | null {
         if (!Number.isFinite(areaId)) continue;
 
         const area = makeArea();
-        area.userData = (rawArea.userData as Record<string, string>) ?? {};
+        area.userData = { ...((rawArea.userData as Record<string, string>) ?? {}) };
         // TArea::writeJsonArea writes the key only for an area in grid mode.
         area.gridMode = rawArea.gridMode === true;
         areas[areaId] = area;
         areaNames[areaId] = typeof rawArea.name === 'string' ? rawArea.name : '';
-        const areaLabels = labelsFromJson(rawArea.labels);
+        // TArea::readJsonArea: an export by an older Mudlet can carry the
+        // binary format's fallbacks in the user data. The zoom field wins over
+        // the fallback zoom; a label without an outline colour of its own takes
+        // the one kept for it; then whatever is left of those keys goes.
+        const fallbackZoom = area.userData[AREA_ZOOM_KEY];
+        const zoom = typeof rawArea.zoom2D === 'number' ? rawArea.zoom2D
+            : fallbackZoom ? Number(fallbackZoom) : undefined;
+        const areaLabels = labelsFromJson(rawArea.labels, area.userData);
         if (areaLabels.length > 0) labels[areaId] = areaLabels;
+        dropFileOnlyUserData(area.userData);
+        // Handed to the load the way a binary file carries it, which lifts it
+        // out of the user data again.
+        if (zoom !== undefined && Number.isFinite(zoom)) area.userData[AREA_ZOOM_KEY] = String(zoom);
 
         const zLevels = new Set<number>();
         for (const rawRoom of (Array.isArray(rawArea.rooms) ? rawArea.rooms : []) as Record<string, unknown>[]) {
@@ -287,7 +316,12 @@ export function mudletJsonMapToMudletMap(src: unknown): MudletMap | null {
                 room.weight = Math.max(1, asInt);
             }
             room.isLocked = !!rawRoom.locked;
-            room.userData = (rawRoom.userData as Record<string, string>) ?? {};
+            room.userData = { ...((rawRoom.userData as Record<string, string>) ?? {}) };
+            // TRoom::readJsonRoom: every exporter that wrote the binary border
+            // keys also wrote the "border" object, so keys with no object are
+            // left over from a border cleared after the save that wrote them.
+            delete room.userData[BORDER_COLOR_KEY];
+            delete room.userData[BORDER_THICKNESS_KEY];
 
             // The symbol object is the whole reason this converter exists —
             // take its text, and keep the colour via the store's side-table.
@@ -470,12 +504,20 @@ function jsonStringMap(raw: unknown): Record<string, string> {
 function readJsonColor(raw: unknown, fallbackAlpha = 255): MudletColor | undefined {
     if (!raw || typeof raw !== 'object') return undefined;
     const o = raw as Record<string, unknown>;
-    if (Array.isArray(o.color32RGBA)) {
-        const t = o.color32RGBA;
-        const a = Number(t[3]);
-        return { ...colorFromRgb24(t), alpha: Number.isFinite(a) ? a : 255 };
+    if (Array.isArray(o.color32RGBA) || Array.isArray(o.color24RGB)) {
+        // TMap::readJsonColor: three or four numbers, each rounded once it is
+        // known to be in range. A red, green or blue out of range makes no
+        // colour at all; an alpha out of range leaves it opaque, as QColor
+        // refuses the whole colour for one.
+        const hasAlpha = Array.isArray(o.color32RGBA);
+        const t = (hasAlpha ? o.color32RGBA : o.color24RGB) as unknown[];
+        if ((t.length !== 3 && t.length !== 4) || t.slice(0, 3).some(v => typeof v !== 'number')) return undefined;
+        const component = (v: unknown) => (typeof v === 'number' && v > -0.5 && v < 255.5 ? Math.round(v) : -1);
+        const [r, g, b] = [component(t[0]), component(t[1]), component(t[2])];
+        if (r < 0 || g < 0 || b < 0) return undefined;
+        const a = hasAlpha && t.length === 4 ? component(t[3]) : -1;
+        return { spec: 1, r, g, b, alpha: a >= 0 ? a : 255 };
     }
-    if (Array.isArray(o.color24RGB)) return colorFromRgb24(o.color24RGB);
     if ('r' in o || 'g' in o || 'b' in o) {
         return {
             spec: 1,
@@ -525,7 +567,7 @@ function labelImageFromJson(raw: unknown): string {
  * does not mention it for is scaled — Mudlet reads the key with a default of
  * true.
  */
-function labelsFromJson(raw: unknown): MudletLabel[] {
+function labelsFromJson(raw: unknown, areaUserData: Record<string, string>): MudletLabel[] {
     if (!Array.isArray(raw)) return [];
     const out: MudletLabel[] = [];
     for (const entry of raw as Record<string, unknown>[]) {
@@ -552,6 +594,11 @@ function labelsFromJson(raw: unknown): MudletLabel[] {
             const points = Number(font.pointSize);
             if (Number.isFinite(points) && points > 0) label.fontSize = points;
         }
+        // An older export wrote no outline colour; one after a binary save
+        // keeps the binary format's copy in the area's user data.
+        const outline = readJsonColor(entry.outlineColor);
+        if (outline) label.outlineColor = outline;
+        else restoreLabelOutline(label, areaUserData);
         out.push(label);
     }
     return out;
@@ -746,6 +793,12 @@ function restoreLabelFallbacks(label: MapLabel, userData: Record<string, string>
             label.fontItalic = Math.trunc(Number(parts[3])) !== 0;
         }
     }
+    restoreLabelOutline(label, userData);
+}
+
+/** TMap::restoreLabelOutlineColorFromUserData, on its own: the JSON import
+ *  reads it only for a label with no outline colour of its own. */
+function restoreLabelOutline(label: MapLabel, userData: Record<string, string>): void {
     const outlineKey = labelOutlineKey(label.id);
     if (outlineKey in userData) {
         const parts = String(userData[outlineKey]).split('|');
@@ -1180,7 +1233,7 @@ export class MapStore {
             // TMap::restore (v17-v20) takes the zoom fallback out of the
             // area's user data — scripts never see it — and keeps it only
             // when it is at or above the minimum zoom.
-            if (this.liftFileFallbacks && area.userData && AREA_ZOOM_KEY in area.userData) {
+            if (area.userData && AREA_ZOOM_KEY in area.userData) {
                 const zoom = Number(area.userData[AREA_ZOOM_KEY]);
                 delete area.userData[AREA_ZOOM_KEY];
                 if (Number.isFinite(zoom) && zoom >= MapStore.MIN_MAP_ZOOM) this.areaZooms.set(area, zoom);
@@ -1235,6 +1288,10 @@ export class MapStore {
             }
             this.labels.set(Number(k), normalized);
         }
+        // Whatever the labels did not take is for labels that no longer exist.
+        if (this.liftFileFallbacks) {
+            for (const area of this.areas.values()) if (area.userData) dropFileOnlyUserData(area.userData);
+        }
         for (const [k, c] of Object.entries(header.mCustomEnvColors ?? {})) {
             this.customEnvColors.set(Number(k), c);
         }
@@ -1274,12 +1331,15 @@ export class MapStore {
                 delete room.userData[SYMBOL_COLOR_FALLBACK_KEY];
                 if (c) this.roomCharColors.set(id, { spec: 1, alpha: c.a, r: c.r, g: c.g, b: c.b });
             }
-            // The border is read but left in place (`value`, not `take`).
+            // The border is taken out (TRoom::restore), so a script never sees
+            // the keys a save writes it under.
             const border = parseQColorName(room.userData[BORDER_COLOR_KEY]);
             if (border) this.roomBorderColors.set(id, border);
+            delete room.userData[BORDER_COLOR_KEY];
             if (BORDER_THICKNESS_KEY in room.userData) {
                 // QString::toInt: a whole decimal number or nothing.
                 const raw = String(room.userData[BORDER_THICKNESS_KEY]).trim();
+                delete room.userData[BORDER_THICKNESS_KEY];
                 const t = /^[+-]?\d+$/.test(raw) ? Number(raw) : 0;
                 if (t > 0 && t <= 10) this.roomBorderThicknesses.set(id, t);
             }
@@ -1396,9 +1456,17 @@ export class MapStore {
                 id: areaId,
                 name: this.areaNames.get(areaId) ?? '',
                 ...(this.areas.get(areaId)?.gridMode ? { gridMode: true } : {}),
+                // TArea::writeJsonArea writes the area's 2D zoom (mLast2DMapZoom).
+                zoom2D: this.areaZooms.get(this.areas.get(areaId)!) ?? MapStore.DEFAULT_MAP_ZOOM,
                 // TArea::writeJsonArea counts what it writes.
                 roomCount: rooms.length,
-                userData: this.areas.get(areaId)?.userData ?? {},
+                // TArea::writeJsonUserData: a binary save replaces a script's
+                // value under the file-only keys, so they are not written.
+                userData: (() => {
+                    const userData = { ...(this.areas.get(areaId)?.userData ?? {}) };
+                    dropFileOnlyUserData(userData);
+                    return userData;
+                })(),
                 labels: this.labelsToJson(areaId),
                 rooms,
             };
@@ -1465,6 +1533,7 @@ export class MapStore {
             };
             if (label.text) entry.text = label.text;
             if (label.pixMap) entry.image = labelImageToJson(label.pixMap);
+            if (label.outlineColor) entry.outlineColor = writeJsonColor(label.outlineColor);
             if (label.fontName) {
                 entry.font = { family: label.fontName, pointSize: label.fontSize ?? 0 };
             }
