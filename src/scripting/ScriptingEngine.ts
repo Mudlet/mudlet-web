@@ -1,3 +1,4 @@
+import { flushSync } from 'react-dom';
 import type {MudSession, ScriptLogSource, ScriptLogSourceKind} from '../mud/MudSession';
 import type { LogFormat } from '../logging/SessionLogger';
 import { MAP_WIDGET_ID } from '../ui/windows/types';
@@ -4423,10 +4424,23 @@ export class ScriptingEngine implements EngineHost {
         const buttons = store.connectionButtons[this.connectionId] ?? [];
         const targets = buttons.filter(b => b.name === name);
         if (targets.length === 0) return false;
-        for (const target of targets) {
-            store.updateButton(this.connectionId, target.id, { styleSheet: String(css ?? '') });
-        }
+        this.layOutButtonBarsNow(() => {
+            for (const target of targets) {
+                store.updateButton(this.connectionId, target.id, { styleSheet: String(css ?? '') });
+            }
+        });
         return true;
+    }
+
+    /**
+     * Apply a change to the button bars and lay it out before the script goes
+     * on. A bar along the top or bottom takes its room from the main console,
+     * which getMainWindowSize() and sysWindowResizeEvent report at once on
+     * desktop — and a script holds the event loop a deferred render waits for.
+     */
+    private layOutButtonBarsNow(update: () => void): void {
+        flushSync(update);
+        this.session.windows.primeMainResize();
     }
 
     /**
@@ -4479,9 +4493,11 @@ export class ScriptingEngine implements EngineHost {
                 ? `toolbar '${name}' is set to float, which showToolBar() and hideToolBar() do not move`
                 : `toolbar '${name}' not found`;
         }
-        for (const target of targets) {
-            store.updateButton(this.connectionId, target.id, { enabled: !!show });
-        }
+        this.layOutButtonBarsNow(() => {
+            for (const target of targets) {
+                store.updateButton(this.connectionId, target.id, { enabled: !!show });
+            }
+        });
         return null;
     }
 

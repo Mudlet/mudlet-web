@@ -656,8 +656,19 @@ export class WindowManager {
         this.mainViewportHostEl = element;
         // A remount arrives with the override still in force — re-apply it, or a
         // script's sizing would silently come undone by a layout switch.
-        if (element && this.mainViewportSize) {
+        if (element && this.mainViewportSize && !this.mainWindowFrameEl) {
             this.applyMainViewportSize(element, this.mainViewportSize.width, this.mainViewportSize.height);
+        }
+    }
+
+    /** The `.content-layout` column — button bars, docks, the console and the
+     *  command bar — which stands in for desktop's application window: what
+     *  setMainWindowSize sizes, the console taking what the rest leaves. */
+    private mainWindowFrameEl: HTMLElement | null = null;
+    registerMainWindowFrame(element: HTMLElement | null): void {
+        this.mainWindowFrameEl = element;
+        if (element && this.mainViewportSize) {
+            this.applyMainWindowFrameSize(element, this.mainViewportSize.width, this.mainViewportSize.height);
         }
     }
 
@@ -670,23 +681,34 @@ export class WindowManager {
         host.style.height = `${height}px`;
     }
 
+    private applyMainWindowFrameSize(frame: HTMLElement, width: number, height: number): void {
+        // `.content-layout` is `flex: 1` in its column; fixed on both axes
+        // instead, and the console inside it keeps its `flex: 1`.
+        frame.style.flex = '0 0 auto';
+        frame.style.width = `${width}px`;
+        frame.style.height = `${height}px`;
+    }
+
     /**
      * Mudlet `setMainWindowSize(width, height)`. Desktop resizes the application
      * window; a browser tab cannot resize itself — `window.resizeTo` is refused
-     * for anything the script did not open — so what is sized is the main
-     * viewport, which is what `getMainWindowSize` has always measured. The two
-     * therefore agree exactly, with none of the window chrome between them that
-     * desktop has to account for.
+     * for anything the script did not open — so what is sized is the column
+     * that stands in for that window ({@link registerMainWindowFrame}): the
+     * console in it is what `getMainWindowSize` measures, and the command bar
+     * and button bars take their room from it as they grow, as on desktop.
+     * Before that column has mounted, the console's own box is sized.
      *
      * Returns false only when there is no viewport to size (before mount).
      */
     setMainWindowSize(width: number, height: number): boolean {
         const host = this.mainViewportHostEl;
-        if (!host) return false;
+        const frame = this.mainWindowFrameEl;
+        if (!host && !frame) return false;
         const w = Math.max(0, Math.round(width));
         const h = Math.max(0, Math.round(height));
         this.mainViewportSize = { width: w, height: h };
-        this.applyMainViewportSize(host, w, h);
+        if (frame) this.applyMainWindowFrameSize(frame, w, h);
+        else if (host) this.applyMainViewportSize(host, w, h);
         // ResizeObserver would deliver this through the browser's event loop,
         // and a script that resizes and then measures is still sitting on top of
         // that loop — so it would read the old size and Geyser would not have

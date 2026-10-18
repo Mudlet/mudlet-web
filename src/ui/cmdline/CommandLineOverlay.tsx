@@ -53,9 +53,14 @@ function CommandLine({ c, manager, zIndex }: { c: CmdLineState; manager: Command
         selectAfterSeed.current = null;
     }, [c.valueSeq, c.value, requestSelection]);
 
-    // Probe for getCmdLine([name]) — reads live typed text.
+    // Probe for getCmdLine([name]) — reads live typed text, unless a script has
+    // seeded the line since and that seed has not reached the input yet (it is
+    // applied on a later render): then the seed is what the line holds.
     useEffect(() => {
-        return manager.registerValueProbe(c.name, () => valueRef.current);
+        return manager.registerValueProbe(c.name, () => {
+            const now = manager.get(c.name);
+            return now && now.valueSeq !== lastSeedSeq.current ? now.value : valueRef.current;
+        });
     }, [c.name, manager]);
 
     // Imperative control — selectCmdLineText highlights the input contents.
