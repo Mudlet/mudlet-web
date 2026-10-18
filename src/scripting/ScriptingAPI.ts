@@ -4800,13 +4800,15 @@ export class ScriptingAPI {
     isPrompt(windowName?: string): boolean {
         const con = this.getConsole(windowName);
         if (!con) return false;
-        if (!con.cursorPastEnd()) return con.cursorOnPrompt();
-        // A trigger that gagged the line it matched left the cursor past the end
-        // of the buffer, so there is no line left to carry the flag — and a
-        // prompt is always the last line while its triggers run, so this is the
-        // ordinary case rather than an edge one. Mudlet keeps the answer in the
-        // trigger pass's own state (TConsoleModel::mIsPromptLine); the stack
-        // mirrors it, one entry per line being processed.
+        // A clearWindow() leaves no stored line behind, only the empty one.
+        const cleared = con.getLineCount() < 0;
+        if (!con.cursorPastEnd() && !cleared) return con.cursorOnPrompt();
+        // A trigger that gagged or cleared away the line it matched left no
+        // line to carry the flag — and a prompt is always the last line while
+        // its triggers run, so this is the ordinary case rather than an edge
+        // one. Mudlet keeps the answer in the trigger pass's own state
+        // (TConsoleModel::mIsPromptLine); the stack mirrors it, one entry per
+        // line being processed.
         if (con === this.mainConsole && this.triggerLineDepth > 0) {
             return this.triggerLinePrompts[this.triggerLinePrompts.length - 1] ?? false;
         }
