@@ -4835,7 +4835,24 @@ export class ScriptingAPI {
         if (!con) return false;
         const isMain = !windowName || windowName === 'main';
         const [wrapAt, indent, hanging] = this.wrapSettings(windowName, con);
+        // The line a trigger pass is on, whose original colours are kept.
+        const passLine = isMain && this.inTriggerPass(con) ? con.getLineNumber() : -1;
+        const before = passLine >= 0 ? con.lineText(passLine) ?? '' : '';
         if (!con.wrapLine(lineNumber, wrapAt, indent, hanging)) return false;
+        const pad = ' '.repeat(indent);
+        const indented = indent > 0 && !before.startsWith(pad) && (con.lineText(passLine) ?? '').startsWith(pad);
+        if (passLine >= 0 && lineNumber === passLine && indented) {
+            // The indent shifts the line's first segment right, so the colours
+            // it arrived in shift with it; the indent takes the colour of the
+            // text it precedes.
+            const first = this.snapshotColorAt(0);
+            this.spliceLineColorSnapshot(0, 0, { ...first, text: pad });
+        } else if (passLine >= 0 && lineNumber < passLine) {
+            // Splitting a line above pushes the pass's line down, but the pass
+            // stays at its old line number, as desktop's does: what is there
+            // now is other text.
+            con.moveTo(passLine);
+        }
         if (isMain) this.drainMain();
         else this.drainWindowConsole(windowName!, con);
         return true;
