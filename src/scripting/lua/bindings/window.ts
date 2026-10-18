@@ -89,7 +89,7 @@ export function installWindowBindings({ lua, api, channel }: BindingContext): vo
     // Dispatches on first-arg type — Lua-style: numeric strings (e.g. from
     // a trigger capture) coerce to the size overload. Returns [w, h] from
     // JS; Bridge.lua unpacks to two values and shapes the miss case.
-    lua.global.set('__calcFontSize', (a: unknown, b?: unknown) => {
+    lua.global.set('__calcFontSize', (a: unknown, b?: unknown, columnWidth?: unknown) => {
         let arg: number | string;
         // No argument at all measures the main window — WINDOW_NAME's default.
         if (a === undefined || a === null) {
@@ -103,7 +103,7 @@ export function installWindowBindings({ lua, api, channel }: BindingContext): vo
             return null;
         }
         const fname = (typeof b === 'string' || typeof b === 'number') ? String(b) : undefined;
-        return api.calcFontSize(arg, fname);
+        return api.calcFontSize(arg, fname, columnWidth === true);
     });
 
     // ── Borders ───────────────────────────────────────────────────────────

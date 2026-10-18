@@ -69,6 +69,23 @@ export function installUserWindowBindings({
         if (api.isBuffer(window)) return 'buffer';
         return null;
     });
+    // backgroundColorRefusal (TLuaInterpreterUI.cpp): only consoles and labels
+    // have a background colour of their own; a scroll box, text edit or command
+    // line takes its from a stylesheet, and one name can be several of those,
+    // so each is named with the setter that does reach it. Null when the name
+    // is none of them.
+    lua.global.set('__backgroundColorRefusal', (name: unknown, reading: unknown) => {
+        if (typeof name !== 'string') return null;
+        const kinds: string[] = [];
+        const setters: string[] = [];
+        if (api.scrollBoxes.has(name)) { kinds.push('a scroll box'); setters.push('setProfileStyleSheet()'); }
+        if (api.textEdits.has(name)) { kinds.push('a text edit'); setters.push('setTextEditStyleSheet()'); }
+        if (api.cmdLines.has(name)) { kinds.push('a command line'); setters.push('setCmdLineStyleSheet()'); }
+        if (kinds.length === 0) return null;
+        return reading
+            ? `'${name}' is ${kinds.join(' and ')}, whose background color cannot be read back`
+            : `'${name}' is ${kinds.join(' and ')}, use ${setters.join(' or ')} to set its background`;
+    });
     // Mudlet `openUserWindow(name, [restoreLayout, autoDock, dockingArea]) → true`.
     // Always returns true once the window registry has the panel. The handle
     // returned by ScriptingWindowsAPI.open is kept internal — userscripts
@@ -82,6 +99,7 @@ export function installUserWindowBindings({
             ? (DOCKMAP[dockingArea.toLowerCase()] ?? 'right')
             : undefined;
         const existed = api.windows.has(window);
+        if (!existed) api.noteUserWindowOpened(window);
         api.windows.open(window, {
             autoDock,
             // Only a freshly-created window falls back to the right dock.
