@@ -1,8 +1,9 @@
 import { unzipSync, strFromU8 } from 'fflate';
 import { zipEntryComponents } from './zipEntries';
 import type { ProfileVFS } from '../scripting/vfs/ProfileVFS';
-import type { PackageKind, PackageManifest } from '../storage/schema';
+import type { PackageKind, PackageManifest, ProfileSettings } from '../storage/schema';
 import { parseMudletXml, type MudletImportResult } from './mudletXmlImport';
+import { parseMudletHost } from './mudletHost';
 
 export interface InstallResult {
     manifest: PackageManifest;
@@ -24,6 +25,22 @@ export interface InstallResult {
      * knows what is on disk.
      */
     occupiedFolder?: string;
+    /**
+     * The profile settings a package XML's `<HostPackage>` carries. Desktop's
+     * XMLimport reads a package's HostPackage into the profile as it reads a
+     * profile's own, so a package exported from a profile brings its settings.
+     */
+    hostSettings?: Partial<ProfileSettings>;
+}
+
+/** The settings the first `<Host>` among `documents` carries, if any. */
+function packageHostSettings(documents: string[]): Partial<ProfileSettings> | undefined {
+    for (const xml of documents) {
+        if (!xml.includes('<HostPackage')) continue;
+        const host = new DOMParser().parseFromString(xml, 'text/xml').getElementsByTagName('Host')[0];
+        if (host) return parseMudletHost(host);
+    }
+    return undefined;
 }
 
 /**
@@ -138,6 +155,20 @@ function assertPackageNameStaysInProfile(name: string, source: string): void {
     }
 }
 
+/**
+ * The profile folders that hold the profile's own data (Host.cpp's
+ * `theProfileKeepsItsOwnDataIn`) — its maps, logs, current save and downloaded
+ * media. A package folder is named after the package, so a package by one of
+ * these names would put itself in among the profile's own files, and an
+ * uninstall would take them with it. The VFS tells case apart, as desktop's
+ * Linux build does.
+ */
+const PROFILE_OWN_FOLDERS = new Set(['map', 'log', 'current', 'media']);
+
+export function profileKeepsItsOwnDataIn(name: string): boolean {
+    return PROFILE_OWN_FOLDERS.has(name);
+}
+
 function isXmlEntry(path: string): boolean {
     return /\.xml$/i.test(path);
 }
@@ -175,6 +206,12 @@ function mergeImportResults(results: MudletImportResult[]): MudletImportResult {
         if (r.parseError) errors.push(r.parseError);
     }
     if (errors.length > 0) merged.parseError = errors.join('; ');
+    // Nothing read only when no document gave anything: a stray unreadable
+    // file beside the package's own does not turn the package away, whichever
+    // of the two is read first.
+    if (results.every(r => r.nothingRead)) {
+        merged.nothingRead = results.some(r => r.nothingRead === 'newer') ? 'newer' : 'unreadable';
+    }
     return merged;
 }
 
@@ -335,6 +372,19 @@ export function preparePackageInstall(
             // record where it will actually be once the commit has run.
             if (sourceInsidePkgDir && sourcePath) sourcePath = pkgDir + sourcePath.slice(stagedDir.length);
         }
+        // An archive unpacks into the folder of its name, so one of the
+        // profile's own is refused — whether that folder is there yet or not:
+        // map, current and media are only made when first needed, and a
+        // package let in first would share the folder from then on. A bare XML
+        // has no folder, so any name is let in for it. Renaming the archive
+        // only helps when the name did not come from its config.lua.
+        if (profileKeepsItsOwnDataIn(packageName)) {
+            throw new Error(declared && !configProblem
+                ? `The config.lua of this package asks to be installed as "${packageName}",`
+                    + ' but the profile keeps its own files in the folder of that name.'
+                : `A package cannot be installed as "${packageName}", as the profile keeps its own files`
+                    + ' in the folder of that name. Please rename it and try again.');
+        }
     } else {
         xmlContent = [strFromU8(buf)];
         // Modules need an on-disk XML to reload from on profile open; plain XML
@@ -363,8 +413,10 @@ export function preparePackageInstall(
 
     const commit = (): void => {
         // Wipe any previous install of the same package (re-install is a clean
-        // slate). Reached only once the install is certain to go through.
-        if (!sourceInsidePkgDir && vfs.exists(pkgDir)) vfs.rmdir(pkgDir);
+        // slate). Reached only once the install is certain to go through — and
+        // never for one of the profile's own folders, which only a bare XML
+        // package can be named after, and whose files are the profile's.
+        if (!sourceInsidePkgDir && vfs.exists(pkgDir) && !profileKeepsItsOwnDataIn(packageName)) vfs.rmdir(pkgDir);
         else if (sourceInsidePkgDir && pkgDir !== stagedDir) {
             // A staged install that config.lua renamed: the contents are under
             // the filename's directory and belong under the declared one. The
@@ -408,7 +460,7 @@ export function preparePackageInstall(
         }
     };
 
-    return { manifest, data, configProblem, occupiedFolder, commit };
+    return { manifest, data, configProblem, occupiedFolder, hostSettings: packageHostSettings(xmlContent), commit };
 }
 
 /**
@@ -594,6 +646,9 @@ export async function uninstallPackageFiles(manifest: PackageManifest, vfs: Prof
     // ever removes them, and a later install of the same name then found a
     // folder for a module that was not installed.
     if (manifest.kind === 'module' && manifest.xmlVfsPath) return;
+    // A bare XML package may carry one of the profile's own folder names, and
+    // the folder of that name is the profile's data, not the package's.
+    if (profileKeepsItsOwnDataIn(manifest.name)) return;
     const pkgDir = `${vfs.profilePath}/${manifest.name}`;
     if (vfs.exists(pkgDir)) vfs.rmdir(pkgDir);
     await vfs.flush();

@@ -2427,17 +2427,17 @@ export class ScriptingAPI {
     getModulePriority(name: string): number { return this.host.getModulePriority(name); }
     getModules(): string[] { return this.host.getModuleNames(); }
     getModuleInfo(name: string): Record<string, unknown> | null { return this.host.getModuleInfoRecord(name); }
-    /** Mudlet `setModuleInfo(name, key, value)`. Stores a custom info field on a
-     *  module (visible via getModuleInfo). Always true. */
-    setModuleInfo(name: string, key: string, value: string): boolean { return this.host.setModuleInfo(name, key, value); }
+    /** Mudlet `setModuleInfo(name, key, value)`. Stores a custom info field on an
+     *  installed module (visible via getModuleInfo); the refusal, or null. */
+    setModuleInfo(name: string, key: string, value: string): string | null { return this.host.setModuleInfo(name, key, value); }
     getModulePath(name: string): string | null { return this.host.getModulePath(name); }
     /** Mudlet `getPackageInfo(name)`. Merged info table — the package manifest's
      *  standard fields overlaid with anything set via setPackageInfo. Empty when
      *  the package isn't installed and nothing was set. */
     getPackageInfo(name: string): Record<string, string> { return this.host.getPackageInfo(name); }
-    /** Mudlet `setPackageInfo(name, key, value)`. Stores a custom info field on a
-     *  package (visible via getPackageInfo). Always true. */
-    setPackageInfo(name: string, key: string, value: string): boolean { return this.host.setPackageInfo(name, key, value); }
+    /** Mudlet `setPackageInfo(name, key, value)`. Stores a custom info field on an
+     *  installed package (visible via getPackageInfo); the refusal, or null. */
+    setPackageInfo(name: string, key: string, value: string): string | null { return this.host.setPackageInfo(name, key, value); }
 
 
 
@@ -2612,8 +2612,9 @@ export class ScriptingAPI {
         return this.host.installPackageFromVfsPath(path);
     }
 
-    uninstallPackage(name: string): boolean {
-        return this.host.uninstallPackageByName(name);
+    /** Lua `uninstallPackage(name)`: the refusal, or null once it is gone. */
+    uninstallPackage(name: string): string | null {
+        return this.host.uninstallPackageFromScript(name);
     }
 
     enableScript(name: string): boolean {

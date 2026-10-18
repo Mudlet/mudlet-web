@@ -43,7 +43,7 @@ import xterm256 from '../../mud/text/xterm256';
 import {getAnsi16Palette, onAnsiPaletteChange} from '../../mud/text/colors';
 import {cechoFastPaletteLua} from '../../mud/text/colorParsers';
 import {HttpService} from '../http/HttpService';
-import {normalizeUserUrl, userUrlInvalidReason} from '../http/userUrl';
+import {normalizeUserUrl, userUrlRefusal} from '../http/userUrl';
 import {TtsManager} from '../../ui/tts/TtsManager';
 import {GlobalEventChannel} from '../GlobalEventChannel';
 import {type MudletVariable, normalizeVariableTree} from '../../import/mudletVariables';
@@ -364,8 +364,25 @@ function bytesToImageDataUrl(bytes: Uint8Array, path: string): string {
 // can't represent a table with both. `__mudlet_var_payload` is the descriptor
 // array (set from JS); iterated with pairs() so the 0-indexed table wasmoon makes
 // from a JS array doesn't matter.
+//
+// A number is read the way desktop reads it back, whichever C library wrote it:
+// trimmed and in any case, every spelling of NaN there is ("-nan", "nan(ind)",
+// msvcrt's "1.#IND"/"1.#QNAN"/"1.#SNAN") is NaN and "inf"/"1.#INF" infinity,
+// signed. Other text is 0, as QString::toDouble() gives — not a missing value.
+// A NaN key is dropped: Lua cannot index a table with one.
 const RESTORE_VARS_LUA = `
 local payload = __mudlet_var_payload
+local function savedNumber(text)
+  local s = tostring(text or ''):match('^%s*(.-)%s*$'):lower()
+  local sign, body = s:match('^([+-]?)(.*)$')
+  if body == 'inf' or body == 'infinity' or body == '1.#inf' then
+    return sign == '-' and -math.huge or math.huge
+  end
+  if body == 'nan' or body:match('^nan%(%w*%)$') or body == '1.#ind' or body == '1.#qnan' or body == '1.#snan' then
+    return 0 / 0
+  end
+  return tonumber(s) or 0
+end
 local function build(d)
   local vt = d.valueType
   if vt == 'table' then
@@ -374,16 +391,16 @@ local function build(d)
     if kids then
       for _, c in pairs(kids) do
         local key = c.name
-        if c.keyKind == 'number' then key = tonumber(key)
+        if c.keyKind == 'number' then key = savedNumber(key)
         elseif c.keyKind == 'boolean' then key = (key == 'true') end
-        if key ~= nil then t[key] = build(c) end
+        if key ~= nil and key == key then t[key] = build(c) end
       end
     end
     return t
   elseif vt == 'boolean' then
     return d.value == 'true'
   elseif vt == 'number' then
-    return tonumber(d.value)
+    return savedNumber(d.value)
   else
     return d.value
   end
@@ -402,8 +419,25 @@ __mudlet_var_payload = nil
 // breaks reference cycles (e.g. a table that points back at an ancestor, or _G
 // itself) — cleared after each branch so a DAG (same table in sibling slots) is
 // still fully captured.
+//
+// A number is written with as many digits as it takes to read back the same
+// double — the shortest of %.15g, %.16g and %.17g that does, so 0.1 stays 0.1
+// where tostring()'s %.14g lost 1/3's last digits — and -0, the infinities and
+// NaN in the spellings the reader above takes back: "nan" rather than glibc's
+// "-nan", which QString::toDouble() reads as 0.
 const CAPTURE_VARS_LUA = `
 local names = __mudlet_save_list
+local function savedText(n)
+  if n ~= n then return 'nan' end
+  if n == math.huge then return 'inf' end
+  if n == -math.huge then return '-inf' end
+  if n == 0 then return (1 / n < 0) and '-0' or '0' end
+  for _, digits in ipairs({15, 16, 17}) do
+    local s = string.format('%.' .. digits .. 'g', n)
+    if tonumber(s) == n then return s end
+  end
+  return string.format('%.17g', n)
+end
 local function capture(v, seen)
   local t = type(v)
   if t == 'table' then
@@ -415,7 +449,7 @@ local function capture(v, seen)
       if kt == 'string' or kt == 'number' or kt == 'boolean' then
         local child = capture(val, seen)
         if child then
-          child.name = tostring(k)
+          child.name = kt == 'number' and savedText(k) or tostring(k)
           child.keyKind = kt
           children[#children + 1] = child
         end
@@ -426,7 +460,7 @@ local function capture(v, seen)
   elseif t == 'boolean' then
     return { valueType = 'boolean', value = tostring(v) }
   elseif t == 'number' then
-    return { valueType = 'number', value = tostring(v) }
+    return { valueType = 'number', value = savedText(v) }
   elseif t == 'string' then
     return { valueType = 'string', value = v }
   else
@@ -2015,7 +2049,12 @@ export class LuaRuntime implements IScriptingRuntime {
                 }
             }
             const written = this.api.saveProfileXml(dir, name);
-            if (!written.ok) return [false, `saveProfile: ${written.err}`];
+            // Desktop's wording once the save has a file to name — empty while
+            // another save runs — and the bare reason for an argument it refused.
+            if (!written.ok) {
+                return [false, written.path === undefined ? written.err
+                    : `Couldn't save '${this.api.profileName}' to '${written.path}' because: ${written.err}`];
+            }
             vfs.flush().catch(err => {
                 const msg = err instanceof Error ? err.message : String(err);
                 console.warn('[saveProfile] vfs flush failed:', err);
@@ -2391,14 +2430,15 @@ export class LuaRuntime implements IScriptingRuntime {
         // success/error via sysXxxHttp* events. The JS bindings below just kick
         // off the background request; the (true, url) tuple is added by the
         // Bridge.lua wrappers that call these `__` primitives.
-        // Mudlet refuses a malformed url locally — QUrl::fromUserInput(...) then
-        // !isValid() — and returns (nil, "<fn>: url is invalid, reason: ...")
-        // without issuing a request. Report the reason here (a real parser lives
-        // on this side) and let the Bridge.lua wrappers shape the tuple. The
-        // scheme test mirrors fromUserInput's leniency: a bare "localhost/x" is
-        // a valid url that means http://localhost/x.
-        this.lua.global.set('__mudlet_url_invalid_reason', (url: unknown) =>
-            userUrlInvalidReason(String(url ?? '')) ?? false);
+        // Mudlet refuses a malformed url, or one that is not http or https (or a
+        // local file, for downloadFile), locally — and returns (nil, "url is
+        // invalid, reason: ...") without issuing a request. Report the reason
+        // here (a real parser lives on this side) and let the Bridge.lua
+        // wrappers shape the tuple. The scheme test mirrors fromUserInput's
+        // leniency: a bare "localhost/x" is a valid url that means
+        // http://localhost/x.
+        this.lua.global.set('__mudlet_url_invalid_reason', (url: unknown, allowLocalFile: unknown) =>
+            userUrlRefusal(String(url ?? ''), allowLocalFile === true) ?? false);
         // What the url means once fromUserInput has read it — the string the
         // request goes to and the one Mudlet hands back as the second return.
         this.lua.global.set('__mudlet_normalize_url', (url: unknown) => normalizeUserUrl(String(url ?? '')));

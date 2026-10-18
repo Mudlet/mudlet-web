@@ -2830,21 +2830,29 @@ function __mudlet_check_headers(headers, funcName, index)
         error(funcName .. ": bad argument #" .. index .. " type (headers as a table expected, got "
             .. type(headers) .. "!)", 3)
     end
+    -- The name is checked before its value, so a pair that is wrong on both
+    -- counts blames the name (TLuaInterpreter's header loop).
     for k, v in pairs(headers) do
-        if type(k) ~= 'string' or type(v) ~= 'string' then
+        if type(k) ~= 'string' then
             error(funcName .. ": bad argument #" .. index
-                .. " type (custom headers must be strings, got header: " .. type(k)
-                .. " (should be string) and value: " .. type(v) .. " (should be string))", 3)
+                .. " type (custom header names must be strings, got " .. type(k) .. ")", 3)
+        end
+        if type(v) ~= 'string' then
+            error(funcName .. ": bad argument #" .. index
+                .. " type (custom header \"" .. k .. "\" must have a string value, got " .. type(v) .. ")", 3)
         end
     end
 end
 
 -- Returns (nil, errMsg) when the url can't be used, else nil so the caller
--- proceeds. Runs after the type/header checks, matching Mudlet's order.
+-- proceeds. Runs after the type/header checks, matching Mudlet's order. The
+-- message names no function: Mudlet's warnArgumentValue returns the bare text,
+-- which installPackageFromUrl folds into a report of its own. downloadFile()
+-- alone may also copy a local file.
 function __mudlet_http_url_error(url, funcName)
-    local reason = __mudlet_url_invalid_reason(url)
+    local reason = __mudlet_url_invalid_reason(url, funcName == "downloadFile")
     if reason then
-        return funcName .. ": url is invalid, reason: " .. tostring(reason)
+        return "url is invalid, reason: " .. tostring(reason)
     end
     return nil
 end
@@ -3660,6 +3668,26 @@ function installModule(path)
     return installOutcome(__installModule(path))
 end
 
+-- Mudlet uninstallPackage(name), setPackageInfo(name, key, value) and
+-- setModuleInfo(name, key, value) → true, or (nil, reason) through
+-- warnArgumentValue. The JS side hands back the reason, or false once done.
+local function refusalOutcome(reason)
+    if reason then return nil, reason end
+    return true
+end
+
+function uninstallPackage(name)
+    return refusalOutcome(__uninstallPackage(name))
+end
+
+function setPackageInfo(name, key, value)
+    return refusalOutcome(__setPackageInfo(name, key, value))
+end
+
+function setModuleInfo(name, key, value)
+    return refusalOutcome(__setModuleInfo(name, key, value))
+end
+
 -- Mudlet getModules() — same shape as getPackages(), but lists modules only.
 function getModules()
     return rebuildJsArray(__getModules())
@@ -4095,12 +4123,23 @@ end
 -- suffix gains one — TLuaInterpreter::saveProfile appends it before Host ever
 -- sees the path. Synchronous failure returns (nil, errMsg); an async flush
 -- failure raises `sysSaveProfileError` instead, having no return left to use.
+-- Both arguments may be left out, so a wrong one is refused in desktop's words
+-- for an optional argument ("... as string is optional, got <type>!").
+local function saveProfileArgument(value, index, what)
+    local str = __mudlet_str(value)
+    if str == nil then
+        error("saveProfile: bad argument #" .. index .. " type (" .. what
+            .. " as string is optional, got " .. __mudlet_typename(value) .. "!)", 3)
+    end
+    return str
+end
+
 function saveProfile(location, saveName)
     if location ~= nil then
-        location = __mudlet_check_string(location, 'saveProfile', 1, 'location')
+        location = saveProfileArgument(location, 1, 'folder')
     end
     if saveName ~= nil then
-        saveName = __mudlet_check_string(saveName, 'saveProfile', 2, 'file name')
+        saveName = saveProfileArgument(saveName, 2, 'file name')
     end
     local r = __mudlet_saveProfile(location, saveName)
     if type(r) == 'table' then

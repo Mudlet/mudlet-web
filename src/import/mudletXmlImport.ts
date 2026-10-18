@@ -84,6 +84,22 @@ export interface MudletImportResult {
      * for.
      */
     parseError?: string;
+    /**
+     * Set alongside {@link parseError} when the fault left nothing at all read
+     * out of the document — no item and no variable — because it broke before
+     * the first one, was not XML at all, or came from a later Mudlet and was
+     * refused whole (`'newer'`). A package made only of such documents is
+     * refused rather than listed empty; one that read anything, or one read
+     * through without a fault, empty or not, is the package.
+     */
+    nothingRead?: 'unreadable' | 'newer';
+}
+
+/** Whether `result` holds anything read out of its document. */
+function readAnything(result: MudletImportResult): boolean {
+    return result.scripts.length + result.aliases.length + result.triggers.length
+        + result.timers.length + result.keys.length + result.buttons.length > 0
+        || (result.variables?.length ?? 0) > 0;
 }
 
 // Mudlet TAction.mLocation: 0=top, 1=bottom, 2=left, 3=right, 4=floating
@@ -419,12 +435,15 @@ export function parseMudletXml(xml: string, opts: ParseOptions = {}): MudletImpo
             const retry = new DOMParser().parseFromString(repaired, 'text/xml');
             if (!retry.getElementsByTagName('parsererror')[0]) {
                 const result = parseMudletXml(repaired, { ...opts, reportParseError: false });
-                return { ...result, warnings: [...result.warnings, reason], parseError: reason };
+                return {
+                    ...result, warnings: [...result.warnings, reason], parseError: reason,
+                    ...(readAnything(result) ? {} : { nothingRead: 'unreadable' as const }),
+                };
             }
         }
         return {
             scripts: [], aliases: [], triggers: [], timers: [], keys: [], buttons: [],
-            warnings: [reason], parseError: reason,
+            warnings: [reason], parseError: reason, nothingRead: 'unreadable',
         };
     }
 
@@ -447,7 +466,7 @@ export function parseMudletXml(xml: string, opts: ParseOptions = {}): MudletImpo
         const reason = `[ ALERT ] - Sorry, the file being read reports it has a version (${declared})`
             + ' it must have come from a later Mudlet version, and this one cannot read it,'
             + ' you need a newer Mudlet!';
-        return { ...result, warnings: [reason], parseError: reason };
+        return { ...result, warnings: [reason], parseError: reason, nothingRead: 'newer' };
     }
 
     parseScripts( pkgChildren('ScriptPackage',  'Script',  'ScriptGroup'),  null, result.scripts);

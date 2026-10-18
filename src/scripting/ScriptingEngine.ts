@@ -179,6 +179,21 @@ const ITEM_CHUNK_PREFIX = {
 } as const;
 type CodeItemKind = keyof typeof ITEM_CHUNK_PREFIX;
 
+/** A failed write's reason the way QFile::errorString() gives it — the C
+ *  library's own wording — rather than the file system's "ENOENT: ..., open
+ *  '<path>'", which repeats the path the caller already names. */
+function whyAFileCannotBeWritten(err: unknown): string {
+    const code = (err as { code?: unknown } | null)?.code;
+    switch (code) {
+        case 'ENOENT': return 'No such file or directory';
+        case 'ENOTDIR': return 'Not a directory';
+        case 'EISDIR': return 'Is a directory';
+        case 'EACCES': case 'EPERM': return 'Permission denied';
+        case 'ENOSPC': return 'No space left on device';
+        default: return describeThrown(err);
+    }
+}
+
 function itemChunkName(kind: CodeItemKind, name: string): string {
     return `${ITEM_CHUNK_PREFIX[kind]}: ${name}`;
 }
@@ -1234,7 +1249,7 @@ export class ScriptingEngine implements EngineHost {
      * keep updating the newest file rather than leaving a stale older one as the
      * save Mudlet would load.
      */
-    saveProfileXml(location?: string, saveName?: string): { ok: true; path: string } | { ok: false; err: string } {
+    saveProfileXml(location?: string, saveName?: string): { ok: true; path: string } | { ok: false; err: string; path?: string } {
         const vfs = this.vfs;
         if (!vfs) return { ok: false, err: 'no profile VFS available' };
         // A file name that names a place of its own would win the join below
@@ -1252,7 +1267,7 @@ export class ScriptingEngine implements EngineHost {
         // profile state — so the second is refused rather than queued, and
         // refused BEFORE it writes anything, or it would leave a file behind
         // that nothing finished.
-        if (this.profileSaveInFlight) return { ok: false, err: 'a save is already in progress' };
+        if (this.profileSaveInFlight) return { ok: false, err: 'a save is already in progress', path: '' };
         // A trailing slash would double up against the separator below.
         let dir = (location ?? '').trim();
         while (dir.endsWith('/')) dir = dir.slice(0, -1);
@@ -1263,7 +1278,17 @@ export class ScriptingEngine implements EngineHost {
         } else if (!name.toLowerCase().endsWith('.xml')) {
             name = `${name}.xml`;
         }
-        const path = `${dir || 'current'}/${name}`;
+        const folder = dir || 'current';
+        const path = `${folder}/${name}`;
+        // A plain save makes its folder when there is none yet
+        // (Host::saveProfile's mkpath); a save under a name of its own — the
+        // "save as" — writes only into one that is there (Host::saveProfileAs).
+        // Either way the file is opened before anything else is done, so a
+        // target that cannot be written is answered for here and then.
+        if (generated && !vfs.exists(folder)) {
+            try { vfs.mkdir(folder); } catch { /* answered just below */ }
+        }
+        if (!vfs.exists(folder)) return { ok: false, err: 'No such file or directory', path: vfs.resolvePath(path) };
         // The saved variables go out as they are in `_G` now, as desktop's
         // saveProfile writes them — not as the last debounced profile-data
         // flush captured them. profile.json is rewritten with them too, so a
@@ -1281,7 +1306,7 @@ export class ScriptingEngine implements EngineHost {
             // leaves the profile's settings out.
             vfs.writeFile(path, this.buildProfileXml(base?.xml, !generated));
         } catch (err) {
-            return { ok: false, err: describeThrown(err) };
+            return { ok: false, err: whyAFileCannotBeWritten(err), path: vfs.resolvePath(path) };
         }
         if (!dir && generated) this.mudletSaveName = name;
         return { ok: true, path: vfs.resolvePath(path) };
@@ -1509,24 +1534,39 @@ export class ScriptingEngine implements EngineHost {
         return base;
     }
 
-    /** Mudlet `setPackageInfo(name, key, value)`. Records a custom info field.
-     *  Always succeeds (matches Mudlet, which sets the map unconditionally). */
-    setPackageInfo(name: string, key: string, value: string): boolean {
-        if (!key) return false;
-        let ov = this.packageInfoOverrides.get(name);
-        if (!ov) { ov = new Map(); this.packageInfoOverrides.set(name, ov); }
-        ov.set(key, value);
-        return true;
+    /** Mudlet `setPackageInfo(name, key, value)`. Records a custom info field,
+     *  answering why it would not, or null once it has
+     *  (TLuaInterpreter::setPackageInfo). */
+    setPackageInfo(name: string, key: string, value: string): string | null {
+        return this.setInfoField('package', this.packageInfoOverrides, name, key, value);
     }
 
     /** Mudlet `setModuleInfo(name, key, value)`. Records a custom info field
-     *  surfaced by getModuleInfo. Always succeeds. */
-    setModuleInfo(name: string, key: string, value: string): boolean {
-        if (!key) return false;
-        let ov = this.moduleInfoOverrides.get(name);
-        if (!ov) { ov = new Map(); this.moduleInfoOverrides.set(name, ov); }
+     *  surfaced by getModuleInfo; see {@link setPackageInfo}. */
+    setModuleInfo(name: string, key: string, value: string): string | null {
+        return this.setInfoField('module', this.moduleInfoOverrides, name, key, value);
+    }
+
+    /**
+     * Only for something installed — one being read in counts, so its own
+     * scripts can still describe it. Filed for any other name, the details were
+     * there for whatever was installed under it later. And `mpackage` is the
+     * name it is installed under, so only that same name is accepted for it: a
+     * package without a config.lua has no details to start from.
+     */
+    private setInfoField(kind: 'package' | 'module', overrides: Map<string, Map<string, string>>,
+        name: string, key: string, value: string): string | null {
+        const manifest = this.findManifest(name);
+        const listed = this.installing.has(name)
+            || (manifest !== undefined && (manifest.kind === 'module') === (kind === 'module'));
+        if (!listed) return `${kind} '${name}' not found`;
+        if (key === 'mpackage' && value !== name) {
+            return `'mpackage' is the name ${kind} '${name}' is installed under and cannot be changed`;
+        }
+        let ov = overrides.get(name);
+        if (!ov) { ov = new Map(); overrides.set(name, ov); }
         ov.set(key, value);
-        return true;
+        return null;
     }
 
     /**
@@ -2464,6 +2504,18 @@ export class ScriptingEngine implements EngineHost {
             // matches something other than what its author wrote.
             for (const warning of prepared.data.warnings) this.api.postError(warning);
             this.restorePackageVariables(prepared.data);
+            // ...except a package nothing at all could be read out of: listed,
+            // it would be an empty package in the profile. Refused before
+            // anything is written, so it leaves neither its folder nor the
+            // details its config.lua filed. A file from a later Mudlet is
+            // refused in the words the console was just given.
+            const { nothingRead } = prepared.data;
+            if (nothingRead) {
+                const error = nothingRead === 'newer'
+                    ? prepared.data.parseError!
+                    : `the contents of package "${prepared.manifest.name}" could not be read`;
+                return { ok: false, error };
+            }
             // Refused, not replaced: a second install would silently discard
             // whatever the user had changed in the first, and a script looping
             // over a package list would do it repeatedly.
@@ -2500,11 +2552,17 @@ export class ScriptingEngine implements EngineHost {
             }
             prepared.commit();
             const { manifest, data } = prepared;
+            // Read into the profile as the profile's own HostPackage is.
+            if (prepared.hostSettings && Object.keys(prepared.hostSettings).length > 0) {
+                useAppStore.getState().patchConnectionProfile(this.connectionId, prepared.hostSettings);
+                if (prepared.hostSettings.outputBorders) this.session.windows.applyMainBorders();
+            }
             this.savePackageVariables(data);
             const problems = this.collectInstallProblems(manifest.name,
                 () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data);
             this.notifyPackageInstalled(manifest.name, path, problems);
             void vfs.flush();
+            this.saveAfterPackageChange();
             return { ok: true, error: problems };
         } catch (err) {
             const error = err instanceof Error ? err.message : String(err);
@@ -3060,6 +3118,21 @@ export class ScriptingEngine implements EngineHost {
     }
 
     /**
+     * Lua `uninstallPackage(name)`: why it would not, or null once it has
+     * (TLuaInterpreter::uninstallPackage). Whether the package is installed is
+     * asked first — retrying one that is not never works, so a running save is
+     * not the reason to give for it — and an installed one is refused only
+     * while a profile save is running. A save a handler starts once the
+     * uninstall is under way is no reason to abandon it.
+     */
+    uninstallPackageFromScript(packageName: string): string | null {
+        const manifest = this.findManifest(packageName);
+        if (!manifest || manifest.kind === 'module') return `package '${packageName}' is not installed`;
+        if (this.profileSaveInFlight) return 'a profile save is in progress, try again once it has finished';
+        return this.uninstallPackageByName(packageName) ? null : `package '${packageName}' cannot be uninstalled`;
+    }
+
+    /**
      * Uninstall a previously installed package by name. Raises sysUninstallPackage
      * before the store removal so the package's own handlers can still run.
      * Removes the on-disk package directory in the background.
@@ -3092,6 +3165,7 @@ export class ScriptingEngine implements EngineHost {
         // load script as well — where desktop starts again from config.lua.
         this.packageInfoOverrides.delete(packageName);
         useAppStore.getState().uninstallPackage(this.connectionId, packageName);
+        this.saveAfterPackageChange();
         if (this.vfs) {
             const vfs = this.vfs;
             void uninstallPackageFiles(manifest, vfs).catch(err => {
@@ -3222,6 +3296,40 @@ export class ScriptingEngine implements EngineHost {
                 if (!outcome.ok) this.api.postInfo(`Package install failed — ${outcome.error}`);
             }
         });
+    }
+
+    private saveAfterPackageChangePending = false;
+
+    /**
+     * The profile save a package install or uninstall is followed by, put off
+     * to the next pass of the event loop (Host's mDeferredSaveTimer) so a batch
+     * of installs is not queued behind one save each — and again until no save
+     * or install is running, as one started under an install would hold its
+     * scripts up. Asked for twice, it saves once.
+     *
+     * Nothing is waiting on an answer, so a save that cannot be written is said
+     * on the console (Host::saveProfileReportingFailure); one turned away
+     * because another is running names no file and is let be.
+     */
+    private saveAfterPackageChange(): void {
+        if (this.saveAfterPackageChangePending) return;
+        this.saveAfterPackageChangePending = true;
+        const attempt = (): void => {
+            if (this.profileSaveInFlight || this.installing.size > 0) {
+                this.timerEngine.addTemp(0.1, attempt);
+                return;
+            }
+            this.saveAfterPackageChangePending = false;
+            this.saveSyncedModules();
+            const written = this.saveProfileXml();
+            if (written.ok) {
+                this.markProfileSaveInFlight();
+                void this.vfs?.flush();
+            } else if (written.path) {
+                this.api.postError(`The profile could not be saved to "${written.path}": ${written.err}`);
+            }
+        };
+        this.timerEngine.addTemp(0, attempt);
     }
 
     /** Runs a package's config.lua the way Mudlet does — in an environment with
@@ -4450,7 +4558,8 @@ export class ScriptingEngine implements EngineHost {
         } catch (err) {
             this.failedScripts.add(script.id);
             this.scriptLoadErrors.set(script.id, err);
-            this.reportEntityError('script', script.id, script.name, err);
+            this.reportEntityError('script', script.id, script.name, err,
+                rt.syntaxError?.(script.code, script.name) != null);
         }
         // A body that failed, or one that compiles again after failing, turns
         // its own handlers and those of everything under it off or back on.
@@ -5243,7 +5352,7 @@ export class ScriptingEngine implements EngineHost {
             for (const item of list ?? []) {
                 if (item.isGroup || !item.code || item.language !== 'lua') continue;
                 const err = itemSyntaxError(rt, item.code, itemChunkName(kind, item.name));
-                if (err) problems.push(`${item.name}: ${err}`);
+                if (err) problems.push(`${item.name}: Lua syntax error: ${err}`);
             }
         }
         return problems.length > 0 ? problems.join('; ') : null;
@@ -5254,13 +5363,18 @@ export class ScriptingEngine implements EngineHost {
         id: string,
         name: string,
         err: unknown,
+        compileFailed = false,
     ): void {
         const prefix = formatErrorPrefix(kind, name);
         const msg = describeThrown(err, prefix);
         // A script that stops with an error while its package is installing
         // is reported to whoever asked for the install, too — see
-        // collectInstallProblems.
-        if (kind === 'script' && this.installProblems) this.installProblems.push(`${name}: ${msg}`);
+        // collectInstallProblems — saying, as desktop does, whether its body
+        // would not compile or raised as it ran.
+        if (kind === 'script' && this.installProblems) {
+            const what = compileFailed ? 'Lua syntax error' : 'Lua error';
+            this.installProblems.push(`${name}: ${what}: ${msg}`);
+        }
         const source: ScriptLogSource = { kind, id, name };
         const line = parseLuaErrorLine(msg);
         if (line !== undefined) source.line = line;
