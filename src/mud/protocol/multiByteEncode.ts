@@ -31,7 +31,7 @@
  * Output is a byte-string (one char per byte), as the socket layer expects.
  */
 
-export type MultiByteEncoding = 'gbk' | 'gb18030' | 'big5' | 'big5-hkscs' | 'euc-kr';
+export type MultiByteEncoding = 'gbk' | 'gb18030' | 'big5' | 'big5-hkscs' | 'euc-kr' | 'shift_jis' | 'euc-jp';
 
 const tables = new Map<MultiByteEncoding, Map<string, string> | null>();
 
@@ -127,6 +127,26 @@ function buildTable(encoding: MultiByteEncoding): Map<string, string> | null {
         case 'euc-kr':
             addSequences(table, 'euc-kr', pairs(0xa1, 0xfe, b => b >= 0xa1));
             break;
+        case 'shift_jis': {
+            // Half-width katakana are single bytes; the double-byte leads
+            // take trails 0x40–0xFC bar 0x7F.
+            const singles: string[] = [];
+            for (let b = 0xa1; b <= 0xdf; b++) singles.push(String.fromCharCode(b));
+            addSequences(table, 'shift_jis', singles);
+            const trail = (b: number) => b <= 0xfc && b !== 0x7f;
+            addSequences(table, 'shift_jis', [...pairs(0x81, 0x9f, trail), ...pairs(0xe0, 0xfc, trail)]);
+            break;
+        }
+        case 'euc-jp': {
+            // JIS X 0208 pairs, then half-width katakana after 0x8E. The
+            // three-byte JIS X 0212 form is read but, as in the WHATWG
+            // encoder, never written.
+            addSequences(table, 'euc-jp', pairs(0xa1, 0xfe, b => b >= 0xa1));
+            const kana: string[] = [];
+            for (let b = 0xa1; b <= 0xdf; b++) kana.push(String.fromCharCode(0x8e, b));
+            addSequences(table, 'euc-jp', kana);
+            break;
+        }
     }
     return table.size > 0 ? table : null;
 }

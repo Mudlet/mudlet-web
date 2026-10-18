@@ -24,6 +24,16 @@ describe('decodeMultiByte framing (TBuffer::process*Sequence)', () => {
     expect(decodeMultiByte(bytes(0x81, 0x30, 0x81, 0x0d), 'gb18030').text).toBe(`${R}0${R}\r`);
   });
 
+  it('frames Shift_JIS and EUC-JP as TBuffer::processJapaneseSequence does', () => {
+    // 日 is 93 FA in Shift_JIS and C6 FC in EUC-JP; ｱ is B1 / 8E B1
+    expect(decodeMultiByte(bytes(0x93, 0xfa, 0xb1), 'shift_jis').text).toBe('日ｱ');
+    expect(decodeMultiByte(bytes(0xc6, 0xfc, 0x8e, 0xb1), 'euc-jp').text).toBe('日ｱ');
+    // a byte that breaks the sequence starts the next one
+    expect(decodeMultiByte(bytes(0x93, 0x20), 'shift_jis').text).toBe(`${R} `);
+    expect(decodeMultiByte(`${bytes(0x93)}\x1b[32m${bytes(0xfa)}`, 'shift_jis').text).toBe('日\x1b[32m');
+    expect(decodeMultiByte(bytes(0xc6), 'euc-jp')).toEqual({ text: '', pending: bytes(0xc6) });
+  });
+
   it('decodes a character restyled between its bytes whole, the SGR after it', () => {
     expect(decodeMultiByte(`${bytes(0xd6)}\x1b[32m${bytes(0xd0)}X`, 'gbk').text).toBe('中\x1b[32mX');
     // any other sequence, or no trail, ends it at its lead

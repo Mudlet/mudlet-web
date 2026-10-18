@@ -1,7 +1,7 @@
 /**
  * Sequence framing for the East Asian multi-byte encodings.
  *
- * The browser can decode GBK, GB18030, Big5 and EUC-KR, and this module leans on
+ * The browser can decode GBK, GB18030, Big5, EUC-KR, Shift_JIS and EUC-JP, and this module leans on
  * it to do so — the character tables are enormous and there is no reason to
  * carry a second copy. What it does NOT borrow is the browser's error recovery,
  * because that differs from Mudlet's in ways a MUD player would see:
@@ -26,9 +26,9 @@
 
 /** The encodings this module frames. UTF-8 is multi-byte too but the browser's
  *  handling of it already matches, and it is far too hot a path to re-frame. */
-export type MultiByteLabel = 'gbk' | 'gb18030' | 'big5' | 'euc-kr';
+export type MultiByteLabel = 'gbk' | 'gb18030' | 'big5' | 'euc-kr' | 'shift_jis' | 'euc-jp';
 
-export const MULTI_BYTE_FRAMED: ReadonlySet<string> = new Set<MultiByteLabel>(['gbk', 'gb18030', 'big5', 'euc-kr']);
+export const MULTI_BYTE_FRAMED: ReadonlySet<string> = new Set<MultiByteLabel>(['gbk', 'gb18030', 'big5', 'euc-kr', 'shift_jis', 'euc-jp']);
 
 export function isMultiByteFramed(label: string): label is MultiByteLabel {
     return MULTI_BYTE_FRAMED.has(label);
@@ -105,6 +105,30 @@ function frameAt(bytes: Uint8Array, pos: number, label: MultiByteLabel): Frame |
     const remaining = bytes.length - pos;
     const invalidPair = (b2: number): Frame => ({ length: b2 < 0x80 ? 1 : 2, valid: false });
 
+    if (label === 'shift_jis' || label === 'euc-jp') {
+        // TBuffer::processJapaneseSequence: a lead decides how many bytes
+        // follow — EUC-JP's 0x8F three, its 0x8E (half-width katakana) and
+        // double-byte leads two, Shift_JIS's double-byte leads two — and a byte
+        // that breaks the sequence starts the next one. Any other byte stands
+        // alone, read by the decoder (Shift_JIS's half-width katakana).
+        if (b1 < 0x80) return { length: 1, valid: true };
+        let count = 1;
+        if (label === 'shift_jis') {
+            if (isDoubleByteLead(b1, label)) count = 2;
+        } else if (b1 === 0x8f) {
+            count = 3;
+        } else if (b1 === 0x8e || isDoubleByteLead(b1, label)) {
+            count = 2;
+        }
+        for (let offset = 1; offset < count; offset++) {
+            if (offset >= remaining) return null;
+            const trail = bytes[pos + offset];
+            const valid = label === 'euc-jp' && b1 === 0x8e ? trail >= 0xa1 && trail <= 0xdf : isDoubleByteTrail(trail, label);
+            if (!valid) return { length: offset, valid: false };
+        }
+        return { length: count, valid: true };
+    }
+
     if (label === 'euc-kr') {
         // Strictly below 0x7F: DEL itself is not ASCII here, it is rejected.
         if (b1 < 0x7f) return { length: 1, valid: true };
@@ -150,13 +174,16 @@ function frameAt(bytes: Uint8Array, pos: number, label: MultiByteLabel): Frame |
 /** TBuffer::doubleByteLead: a byte that may start a full-width character, and
  *  so may be held over a colour change until its trail byte arrives. */
 function isDoubleByteLead(b: number, label: MultiByteLabel): boolean {
-    return label === 'euc-kr' ? b >= 0xa1 && b <= 0xfe : b >= 0x81 && b <= 0xfe;
+    if (label === 'euc-kr' || label === 'euc-jp') return b >= 0xa1 && b <= 0xfe;
+    if (label === 'shift_jis') return (b >= 0x81 && b <= 0x9f) || (b >= 0xe0 && b <= 0xfc);
+    return b >= 0x81 && b <= 0xfe;
 }
 
 /** TBuffer::doubleByteTrail: the widest range of a character's second byte. */
 function isDoubleByteTrail(b: number, label: MultiByteLabel): boolean {
-    if (label === 'euc-kr') return b >= 0xa1 && b <= 0xfe;
+    if (label === 'euc-kr' || label === 'euc-jp') return b >= 0xa1 && b <= 0xfe;
     if (label === 'big5') return (b >= 0x40 && b <= 0x7e) || (b >= 0xa1 && b <= 0xfe);
+    if (label === 'shift_jis') return b >= 0x40 && b <= 0xfc && b !== 0x7f;
     return b >= 0x40 && b <= 0xfe && b !== 0x7f;
 }
 
@@ -231,7 +258,7 @@ export function decodeMultiByte(byteString: string, label: MultiByteLabel): Fram
         let length = frame.length;
         if (!frame.valid) {
             out += REPLACEMENT;
-        } else if (length === 1) {
+        } else if (length === 1 && b1 < 0x80) {
             out += String.fromCharCode(b1);
         } else {
             const decoded = decodeSequence(bytes.subarray(pos, pos + length));

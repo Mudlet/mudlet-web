@@ -69,6 +69,8 @@ export function normalizeCharsetName(raw: string): string | null {
     if (n === 'gb18030') return 'gb18030';
     if (n === 'big5' || n === 'big5-hkscs') return 'big5';
     if (n === 'euc-kr' || n === 'euckr') return 'euc-kr';
+    if (n === 'shift-jis' || n === 'sjis' || n === 'ms-kanji' || n === 'csshiftjis') return 'shift_jis';
+    if (n === 'euc-jp' || n === 'eucjp') return 'euc-jp';
     // Mudlet spells these with a space ("ISO 8859-2" — see TEncodingTable.cpp),
     // the wire and IANA with a dash, and both reach here.
     const iso = /^iso[- ]?8859-?(\d{1,2})$/.exec(n);
@@ -112,7 +114,7 @@ export const SUPPORTED_SERVER_ENCODINGS: readonly string[] = [
     'WINDOWS-1250', 'WINDOWS-1251', 'WINDOWS-1252', 'WINDOWS-1253', 'WINDOWS-1254',
     'WINDOWS-1255', 'WINDOWS-1256', 'WINDOWS-1257', 'WINDOWS-1258',
     // The multi-byte East Asian encodings, which the browser decodes for us.
-    'GBK', 'GB18030', 'BIG5', 'BIG5-HKSCS', 'EUC-KR',
+    'GBK', 'GB18030', 'BIG5', 'BIG5-HKSCS', 'EUC-KR', 'SHIFT_JIS', 'EUC-JP',
 ];
 
 /** Names Mudlet Web once listed and saved to profiles that Mudlet itself never
@@ -203,7 +205,7 @@ function reverseTable(label: string): Map<string, number> | null {
 
 /** Labels whose decoder reads more than one byte per character, so none of the
  *  single-byte table paths apply to them. */
-const MULTI_BYTE_LABELS = new Set(['utf-8', 'gbk', 'gb18030', 'big5', 'euc-kr']);
+const MULTI_BYTE_LABELS = new Set(['utf-8', 'gbk', 'gb18030', 'big5', 'euc-kr', 'shift_jis', 'euc-jp']);
 
 /** The multi-byte encoder for decoder `label`, or null when it is not one of
  *  those. Big5 and BIG5-HKSCS share a decoder but not an encoder — only the
