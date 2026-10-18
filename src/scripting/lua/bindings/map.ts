@@ -1325,8 +1325,10 @@ export function installMapBindings({
         // An unknown area is -1 whatever the image (TMap::createMapImageLabel
         // looks for the area first).
         if (!api.map.hasArea(area)) return -1;
-        let bytes: Uint8Array | null = null;
-        if (vfs && path !== '') {
+        // A /lua/ path (the spec corpus's image fixtures) is read-only builtin
+        // data, not a profile file — loadMap reads it the same way.
+        let bytes: Uint8Array | null = path !== '' ? readBuiltinBytes(path) : null;
+        if (!bytes && vfs && path !== '') {
             try { bytes = vfs.readBinaryFile(path); } catch { bytes = null; }
         }
         // Desktop refuses an image its QPixmap cannot load — missing, empty or

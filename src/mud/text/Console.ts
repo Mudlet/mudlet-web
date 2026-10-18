@@ -865,6 +865,10 @@ export class Console {
      *  trigger pass once the matched line is gone. */
     cursorInText(): boolean {
         if (this.cursorCol < 0) return false;
+        // With no line at all (deleteLine() emptied the buffer) there is no line
+        // to be outside of: desktop's insertLink falls through to appending,
+        // as insertText does.
+        if (this.lineTotal === 0) return true;
         if (this.openLineSuspended && this.cursorIdx >= this.history.length) return false;
         const line = this.getLineNumber();
         return line >= 0 && line < this.lineTotal;
