@@ -1,4 +1,5 @@
 import { unzipSync, strFromU8 } from 'fflate';
+import { zipEntryComponents } from './zipEntries';
 import type { ProfileVFS } from '../scripting/vfs/ProfileVFS';
 import type { PackageKind, PackageManifest } from '../storage/schema';
 import { parseMudletXml, type MudletImportResult } from './mudletXmlImport';
@@ -249,6 +250,12 @@ export function preparePackageInstall(
 
         try { entries = unzipSync(buf); }
         catch { throw new Error('could not unzip package'); }
+        // An entry whose name climbs out of the package's folder is refused with
+        // the whole archive, as mudlet::unzip refuses it, before anything is
+        // written — rather than unpacked wherever the name points.
+        if (Object.keys(entries).some(name => !zipEntryComponents(name))) {
+            throw new Error('could not unzip package');
+        }
         // Every .xml at the archive's root, as Host::installPackage imports them
         // (a QDir listing of the unpacked folder, sorted by name ignoring case).
         // Taking only the first left everything in the others silently missing.

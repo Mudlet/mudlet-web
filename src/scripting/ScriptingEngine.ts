@@ -3330,14 +3330,11 @@ export class ScriptingEngine implements EngineHost {
     /** The saved keybinding carrying this numeric id, or null. Lets getKeyCode
      *  answer for a permanent key by the id permKey handed back, not just by
      *  name — the key engine only indexes permanent keys by name. */
-    keyNodeByNumericId(numericId: number): { key: string; modifiers: string[] } | null {
+    savedKeyNode(idOrName: number | string): KeyNode | null {
         const list = useAppStore.getState().connectionKeybindings[this.connectionId] ?? [];
-        for (const node of list) {
-            if (this.uuidToNumericId.get(node.id) === numericId && node.key) {
-                return { key: node.key, modifiers: node.modifiers ?? [] };
-            }
-        }
-        return null;
+        return list.find(node => typeof idOrName === 'number'
+            ? this.uuidToNumericId.get(node.id) === idOrName
+            : node.name === idOrName) ?? null;
     }
 
     /** enable/disable a script-created temp trigger or alias by numeric id.
@@ -4575,6 +4572,10 @@ export class ScriptingEngine implements EngineHost {
         try {
             return this.processInputPass(text);
         } finally {
+            // At every depth, as AliasUnit's guard does: once the pass is over,
+            // `command` holds the last command expanded, not the value an alias
+            // script was handed back.
+            this.runtimes.lua?.settleCommandAfterAliasPass?.();
             if (--this.aliasDepth <= 1) this.aliasRunawayStopped = false;
             if (this.aliasDepth === 0) this.runtimes.lua?.reapKilledTempItems('alias');
         }
@@ -4591,7 +4592,9 @@ export class ScriptingEngine implements EngineHost {
         // Mirror the input into the Lua `command` global before alias matching,
         // matching Mudlet's AliasUnit::processDataStream. Persists between inputs
         // so the stock "Repeat Last Command" key (`send(command)`) works.
-        this.runtimes.lua?.setCommand(text);
+        const lua = this.runtimes.lua;
+        if (lua?.setExpandedCommand) lua.setExpandedCommand(text);
+        else lua?.setCommand(text);
         // Every alias the command matches fires, not just the first: Mudlet's
         // pass walks the whole unit and matches each active alias in turn, so a
         // command two aliases claim runs both of them. The command is consumed
@@ -5275,8 +5278,11 @@ export class ScriptingEngine implements EngineHost {
         }
         if (alias.code && alias.language === 'lua') {
             try {
-                this.runtimes.lua?.runWithMatches(alias.code, alias.name, matches, undefined, named,
+                const lua = this.runtimes.lua;
+                const run = () => lua?.runWithMatches(alias.code, alias.name, matches, undefined, named,
                     undefined, undefined, undefined, undefined, itemChunkName('alias', alias.name));
+                if (lua?.asAliasScript) lua.asAliasScript(run);
+                else run();
             } catch (err) {
                 this.reportEntityError('alias', alias.id, alias.name, err);
             }

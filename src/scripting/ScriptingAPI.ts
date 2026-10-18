@@ -4,7 +4,7 @@ import { splitSentCommands } from '../mud/commandSplit';
 import type { AliasEngine } from '../mud/aliases/AliasEngine';
 import type { TriggerEngine } from '../mud/triggers/TriggerEngine';
 import type { TimerEngine } from '../mud/timers/TimerEngine';
-import type { KeyEngine } from '../mud/keybindings/KeyEngine';
+import type { KeyEngine, KeyNode } from '../mud/keybindings/KeyEngine';
 import { classifyReservedKey, formatKeyCombo, reservedKeyNote } from '../mud/keybindings/browserReservedKeys';
 import { CLIENT_VERSION } from '../version';
 import { timeZoneAbbreviation, timeZoneLongName, timeZoneOffset } from '../utils/timeZone';
@@ -59,6 +59,7 @@ import { MapStore } from '../map/MapStore';
 import { type EngineHost, type TempComplexTriggerSpec, NULL_ENGINE_HOST } from './EngineHost';
 import { BUNDLED_GAMES, findBundledGame } from '../mud/games/bundledGames';
 import { TAB_COMPLETION_LINES, tabCompletionPool } from '../ui/tabCompletion';
+import { decodeProfileData, encodeProfileData } from '../import/qtProfileData';
 
 // Mudlet's TChar always carries baked-in fg/bg colors (the rendered pair), so
 // getFgColor/getBgColor never return "no color" for in-bounds positions. Mudlet Web
@@ -327,15 +328,6 @@ const MUDLET_ROOM_SIZE_SCALE = 10;
  *  order Mudlet's refusal lists them. */
 const AMBIGUOUS_WIDTH_MODES: readonly string[] = ['narrow', 'wide', 'auto'];
 
-/** The keys Mudlet's setConfig only handles inside its
- *  `if (host.mpMap && host.mpMap->mpMapper)` block — the 2D mapper widget's
- *  own settings. Until a mapper exists they are refused as unknown options. */
-const MAPPER_ONLY_CONFIG_KEYS: ReadonlySet<string> = new Set([
-    'mapRoomSize', 'mapExitSize', 'mapRoundRooms', 'showRoomIdsOnMap',
-    'showMapInfo', 'hideMapInfo', 'show3dMapView', 'mapShowRoomBorders',
-    'mapShowGrid', 'showUpperLowerLevels', 'mapInfoColor',
-]);
-
 /** Mudlet config keys persisted in the {@link ProfileSettings.config} bag rather
  *  than a dedicated structured field. Each entry gives the value type and the
  *  default `getConfig` returns before the key has been set, so first reads match
@@ -450,6 +442,25 @@ const NOT_AN_EXPERIMENT = Symbol('not-an-experiment');
 
 /** Where the enabled experiment names live in the profile's config bag. */
 const EXPERIMENTS_KEY = 'enabledExperiments';
+
+/** The profile file each IRC setting is kept in — desktop's TIrcClient
+ *  `*CfgItem` names, relative to the profile folder. */
+const IRC_PROFILE_FILES: Record<string, string> = {
+    ircHostName:   'irc_host',
+    ircHostPort:   'irc_port',
+    ircHostSecure: 'irc_secure',
+    ircNickName:   'irc_nick',
+    ircPassword:   'irc_password',
+    ircChannels:   'irc_channels',
+};
+
+/** A CR, an LF or a NUL, any of which would end or break an IRC command. */
+const ircLineBreak = (text: string): boolean => /[\r\n\0]/.test(text);
+
+/** TIrcClient::validIrcChannelName: an RFC 2811 prefix, and nothing that would
+ *  split the name in the space-joined store or the comma-joined JOIN. */
+const validIrcChannelName = (channel: string): boolean =>
+    /^[#&+!]/.test(channel) && !/[\s,]/.test(channel) && !ircLineBreak(channel);
 
 const CONFIG_KEY_ALIASES: Record<string, string> = {
     ircHost:   'ircHostName',
@@ -1800,6 +1811,7 @@ export class ScriptingAPI {
             case 'specialForceMXPProcessorOn':
                 return configBool(this.configBag().specialForceMXPProcessorOn ?? false);
         }
+        if (key in IRC_PROFILE_FILES) return this.readIrcConfig(key);
         const spec = CONFIG_PERSIST_ONLY[key];
         if (spec) {
             const stored = spec.sessionOnly ? this.sessionConfig.get(key) : this.configBag()[key];
@@ -1816,6 +1828,53 @@ export class ScriptingAPI {
             return stored;
         }
         return undefined;
+    }
+
+    /**
+     * An IRC setting as desktop's TIrcClient readers give it. Each lives in a
+     * profile file of its own, as a serialised QString (Host::readProfileData),
+     * so a profile linked from or exported to desktop carries it. A value the
+     * writers would refuse — one a profile saved before they did may still hold
+     * — reads as the default, or for channels is skipped. A profile that kept
+     * its settings in the config bag before they moved to files is read from
+     * there until something writes them again.
+     */
+    private readIrcConfig(key: string): unknown {
+        const spec = CONFIG_PERSIST_ONLY[key];
+        const bytes = this.host.readFileBytes(IRC_PROFILE_FILES[key]);
+        const legacy = this.configBag()[key];
+        const stored = bytes ? decodeProfileData(bytes) : legacy === undefined ? '' : String(legacy);
+        switch (key) {
+            case 'ircHostName':
+                return stored === '' || /\s/.test(stored) || ircLineBreak(stored) ? spec.default : stored;
+            case 'ircHostPort': {
+                const port = /^[+-]?\d+$/.test(stored.trim()) ? Number(stored.trim()) : NaN;
+                return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : spec.default;
+            }
+            case 'ircHostSecure':
+                return /true/i.test(stored);
+            case 'ircNickName':
+                return stored === '' ? spec.default : stored;
+            case 'ircChannels': {
+                const channels = stored.split(' ').filter(c => c !== '' && validIrcChannelName(c));
+                return channels.length ? channels.join(' ') : spec.default;
+            }
+            default:
+                return stored;
+        }
+    }
+
+    /** Store an IRC setting where {@link readIrcConfig} reads it, as desktop's
+     *  writeProfileData writes it. The value has been vetted already. With no
+     *  profile folder to write into it is kept in the config bag instead. */
+    private writeIrcConfig(key: string, value: unknown): boolean {
+        const text = key === 'ircHostPort' ? String(Math.trunc(Number(value)))
+            : key === 'ircHostSecure' ? (configBool(value) ? 'true' : 'false')
+            : String(value);
+        if (!this.host.writeFileBytes(IRC_PROFILE_FILES[key], encodeProfileData(text))) {
+            this.patchConfigBag(key, text);
+        }
+        return true;
     }
 
     /**
@@ -1893,11 +1952,6 @@ export class ScriptingAPI {
      */
     configKeyKind(rawKey: string): 'bool' | 'num' | 'str' | 'any' | 'readonly' | null {
         const key = CONFIG_KEY_ALIASES[rawKey] ?? rawKey;
-        // Mudlet only knows these while the 2D mapper exists
-        // (`host.mpMap->mpMapper`): before the map has been shown, setConfig
-        // refuses them as unknown keys whatever the value, so this is decided
-        // ahead of the type check.
-        if (MAPPER_ONLY_CONFIG_KEYS.has(key) && !this.session.windows.hasMapper()) return null;
         // An experiment takes a boolean, and one this build has never heard of
         // is still a KEY — its refusal has to name it, which it cannot do from
         // the generic "no such option" path. The two pseudo-keys are reads.
@@ -1943,8 +1997,8 @@ export class ScriptingAPI {
     /** Mudlet `setConfig(key, value)`. Returns true when the key is known and
      *  writable, false for unknown or read-only keys. */
     /**
-     * The room symbols the named font has no glyph for, quoted, or null when it
-     * can draw every one the map uses.
+     * The room symbols the named font has no glyph for, as desktop lists them,
+     * or null when it can draw every one the map uses.
      *
      * Measured rather than looked up, because a browser will not say what a
      * font contains: a character with no glyph is drawn as the font's notdef
@@ -1963,9 +2017,12 @@ export class ScriptingAPI {
         // U+10FFFD: unassigned, and unassignable — nothing can have a glyph for
         // it, so its width IS the notdef width for this font.
         const notdef = ctx.measureText('\u{10FFFD}').width;
-        const missing = symbols.filter(s => s && ctx.measureText(s).width === notdef);
+        const missing = [...new Set(symbols.filter(s => s && ctx.measureText(s).width === notdef))];
         if (missing.length === 0) return null;
-        return [...new Set(missing)].map(s => `"${s}"`).join(', ');
+        // As desktop lists them: space-separated, the first ten, then a count.
+        const listed = missing.slice(0, 10);
+        if (missing.length > 10) listed.push(`(and ${missing.length - 10} more)`);
+        return listed.join(' ');
     }
 
     /** Returns true, or a string when the option was taken and the caller
@@ -2044,11 +2101,8 @@ export class ScriptingAPI {
             case 'mapShowGrid':        this.setMapperField('gridEnabled', configBool(value)); return true;
             // Switch a registerMapInfo overlay on/off by label. Mudlet reports
             // success for any label — including one nothing has registered yet —
-            // so these never refuse. **Deviation:** Mudlet guards the whole
-            // branch on a live mapper widget and treats the key as unknown when
-            // there is none; Mudlet Web's MapStore is always present on the
-            // WindowManager, so the write lands whether or not a map panel is
-            // open (and is visible the moment one is).
+            // so these never refuse. Like every map key they need no mapper: the
+            // setting is kept, and a map panel opened later shows it.
             case 'showMapInfo': this.map.showMapInfo(String(value ?? '')); return true;
             case 'hideMapInfo': this.map.hideMapInfo(String(value ?? '')); return true;
             case 'mapInfoColor': {
@@ -2176,6 +2230,7 @@ export class ScriptingAPI {
             case 'logDirectory':
                 return false;
         }
+        if (key in IRC_PROFILE_FILES) return this.writeIrcConfig(key, value);
         const spec = CONFIG_PERSIST_ONLY[key];
         if (spec) {
             let v: unknown;
@@ -2239,8 +2294,8 @@ export class ScriptingAPI {
             if (key === 'mapSymbolFont') {
                 const undrawable = this.symbolsThisFontCannotDraw(String(v));
                 if (undrawable) {
-                    return `the font "${v}" has no glyph for ${undrawable}, which the map uses —`
-                        + ' those rooms will show the replacement character';
+                    return `font '${v}' has no glyph for these room symbols, which will show as the`
+                        + ` replacement character: ${undrawable}`;
                 }
             }
             return true;
@@ -2610,21 +2665,24 @@ export class ScriptingAPI {
 
     /** The saved keybinding carrying this numeric id, or null. Backs
      *  getKeyCode() for a permanent key referenced by the id permKey returned. */
-    keyNodeByNumericId(numericId: number): { key: string; modifiers: string[] } | null {
-        return this.host.keyNodeByNumericId(numericId);
+    savedKeyNode(idOrName: number | string): KeyNode | null {
+        return this.host.savedKeyNode(idOrName);
     }
 
     // A numeric argument names a script-created temp key, which lives in the key
     // engine rather than the saved tree; Mudlet's enableKey/disableKey toggle
-    // either kind.
+    // either kind. A temp key is also named after its id, so its id as a
+    // string reaches it too.
     enableKey(nameOrId: string | number): boolean {
-        if (typeof nameOrId === 'number') return this.keys.setTempEnabled(nameOrId, true);
-        return this.host.toggleKeyByName(nameOrId, true);
+        const tempId = typeof nameOrId === 'number' ? nameOrId : this.keys.tempIdNamed(nameOrId);
+        if (tempId !== null) return this.keys.setTempEnabled(tempId, true);
+        return this.host.toggleKeyByName(nameOrId as string, true);
     }
 
     disableKey(nameOrId: string | number): boolean {
-        if (typeof nameOrId === 'number') return this.keys.setTempEnabled(nameOrId, false);
-        return this.host.toggleKeyByName(nameOrId, false);
+        const tempId = typeof nameOrId === 'number' ? nameOrId : this.keys.tempIdNamed(nameOrId);
+        if (tempId !== null) return this.keys.setTempEnabled(tempId, false);
+        return this.host.toggleKeyByName(nameOrId as string, false);
     }
 
     /**
@@ -4467,6 +4525,9 @@ export class ScriptingAPI {
         // (MudClient drops every '\r' before parsing): a package fed
         // "line\r\n" must match `^line$` exactly as the game's own copy does.
         text = text.replace(/\r/g, '');
+        // A NUL is dropped and the text after it kept, as from the game: a Lua
+        // string can carry one, and what follows it is still the caller's.
+        text = text.replace(/\0/g, '');
         // An EOT (0x04) ends a line as '\n' does, in fed text as in the game's:
         // TBuffer::translateToPlainText commits on it whatever the source.
         text = text.replace(/\x04/g, '\n');

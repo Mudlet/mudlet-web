@@ -1,4 +1,4 @@
-import type { TriggerPattern } from '../storage/schema';
+import type { KeyNode, TriggerPattern } from '../storage/schema';
 import type { InstallOutcome } from './ScriptingAPI';
 
 /**
@@ -162,9 +162,11 @@ export interface EngineHost {
 
     // ── Automation tree: queries ─────────────────────────────────────────────
 
-    /** The saved keybinding carrying this numeric id, or null — getKeyCode
-     *  resolves a permanent key by the id permKey returned, not only by name. */
-    keyNodeByNumericId(numericId: number): { key: string; modifiers: string[] } | null;
+    /** The saved keybinding or key group carrying this numeric id or name, or
+     *  null — getKeyCode resolves a permanent key by the id permKey returned as
+     *  well as by name, and reaches the groups and switched-off keys the key
+     *  engine does not hold. */
+    savedKeyNode(idOrName: number | string): KeyNode | null;
 
     /** Mudlet's Host::setForceMXPProcessorOn — run the in-band MXP parser with
      *  no option-91 handshake. */
@@ -300,7 +302,7 @@ export const NULL_ENGINE_HOST: EngineHost = Object.freeze({
     toggleToolBarByName: (name: string) => `toolbar '${name}' not found`,
     setTriggerStayOpenByName: () => false,
 
-    keyNodeByNumericId: () => null,
+    savedKeyNode: () => null,
     setForceMxpProcessorOn: () => {},
     existsByName: () => 0,
     setTempItemEnabled: () => false,

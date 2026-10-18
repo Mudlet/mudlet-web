@@ -1,11 +1,16 @@
 import {Lua, LuaReturn, LuaType, LUA_GLOBALSINDEX, LUA_REGISTRYINDEX, LuaThread} from 'wasmoon-lua5.1';
+
+// lauxlib's sentinels: luaL_ref's answer for nil, and "no reference" (which
+// luaL_unref ignores).
+const LUA_REFNIL = -1;
+const LUA_NOREF = -2;
 // Self-host the Lua interpreter WASM as a build asset. Without this, wasmoon
 // fetches liblua5.1.wasm from unpkg.com at runtime (its hardcoded default) —
 // a third-party supply-chain + availability risk for the executable that runs
 // all Lua scripting. The `?url` import makes Vite copy it into the bundle and
 // hand back a base-aware same-origin URL we pass as `customWasmUri` below.
 import luaWasmUrl from 'wasmoon-lua5.1/dist/liblua5.1.wasm?url';
-import {unzipSync, strFromU8} from 'fflate';
+import {strFromU8} from 'fflate';
 import type {IScriptingRuntime, CaptureSpan, LuaGlobalEntry, ScriptHandlerEntry, VariableEdit} from '../IScriptingRuntime';
 import type {ScriptingAPI} from '../ScriptingAPI';
 import type {ProfileVFS} from '../vfs/ProfileVFS';
@@ -59,6 +64,7 @@ import {installUserWindowBindings} from './bindings/userWindows';
 import {MAPPER_WIDGET_ID} from '../../ui/windows/types';
 import {describeThrown} from '../../utils/describeThrown';
 import {installDesktopUtf8Read, installWellFormedPush} from './wellFormedStrings';
+import {readZipEntries, resolveLinkedDirectory, zipEntryComponents, zipExtractionProblem, type ZipEntry} from '../../import/zipEntries';
 
 // wasmoon doesn't re-export its opaque lua_State pointer type; derive it from
 // the public API so the raw lua_* bindings (see pushJsValue / registerRawGlobal)
@@ -734,7 +740,7 @@ export class LuaRuntime implements IScriptingRuntime {
     // One entry per level of nesting: the registry refs holding the dispatch
     // globals a script was given before it asked for an alias pass of its own.
     // See pushNestedDispatchState.
-    private nestedDispatchStates: (number | null)[][] = [];
+    private nestedDispatchStates: (number | null | undefined)[][] = [];
     // Span of the whole regex match (Mudlet's `selectCaptureGroup(1)` target).
     // Null when the matcher can't produce one (e.g. a perm substring trigger
     // doesn't report a position) — selectCaptureGroup(1) then falls back to
@@ -2061,7 +2067,7 @@ export class LuaRuntime implements IScriptingRuntime {
                 // feeds the same table setCaptureGroups does).
                 this.setMatches(Array.from(m), undefined, m.groups as Record<string, string> | undefined);
                 try {
-                    dispatchCb(cbId, 'tempAlias');
+                    this.asAliasScript(() => dispatchCb(cbId, 'tempAlias'));
                 } finally {
                     this.clearCaptureGlobals();
                 }
@@ -2239,10 +2245,13 @@ export class LuaRuntime implements IScriptingRuntime {
                 dispatchCb(cbId, 'tempKey');
             }, { keyCode: qtKey, modifier, uncompiled: uncompiled === true });
         });
-        this.lua.global.set('killKey', (idOrName: number | string) =>
-            typeof idOrName === 'string'
-                ? this.api.killByName('key', idOrName)
-                : this.api.keys.killKey(idOrName));
+        // A temporary key is named after its id, so a name that is one reaches it.
+        this.lua.global.set('killKey', (idOrName: number | string) => {
+            const tempId = typeof idOrName === 'string' ? this.api.keys.tempIdNamed(idOrName) : idOrName;
+            return tempId === null
+                ? this.api.killByName('key', idOrName as string)
+                : this.api.keys.killKey(tempId);
+        });
         // Mudlet getKeyCode(idOrName) → keyCode, modifiers (Qt::Key int + modifier
         // mask), or (nil, errorMessage) when no binding matches. A non-number,
         // non-string argument is a hard error (matches Mudlet's arg validation).
@@ -2253,9 +2262,11 @@ export class LuaRuntime implements IScriptingRuntime {
             }
             let info = this.api.keys.getKeyCode(arg);
             // A numeric id can also name a PERMANENT key (the id permKey
-            // returned); the key engine indexes those by name only.
-            if (!info && typeof arg === 'number') {
-                const node = this.api.keyNodeByNumericId(arg);
+            // returned), which the key engine indexes by name only — and it
+            // holds neither key groups nor switched-off keys, which still have
+            // a key code to answer with.
+            if (!info) {
+                const node = this.api.savedKeyNode(arg);
                 if (node) info = permKeyCode(node);
             }
             if (!info) {
@@ -3976,8 +3987,12 @@ end`);
         // unpacking — takes `zip` for granted and indexes it without a guard.
         // fflate is already here for package installs, so the archive side costs
         // nothing but the handle bookkeeping.
-        const archives = new Map<number, Record<string, Uint8Array>>();
+        // Entries are kept in archive order and read one at a time, the way
+        // libzip serves them: brimworks' stat(i)/open(i) walk by index, and one
+        // entry that will not read is reported without losing the rest.
+        const archives = new Map<number, ZipEntry[]>();
         let nextArchive = 1;
+        let readError = '';
 
         this.lua.global.set('__zip_open__', (path: string): number | null => {
             // Builtins first, and read as BYTES rather than re-encoded: a
@@ -3987,23 +4002,30 @@ end`);
             const bytes = this.readBuiltinBytes(path)
                 ?? (() => { try { return vfs?.readBinaryFile(path) ?? null; } catch { return null; } })();
             if (!bytes) return null;
-            let entries: Record<string, Uint8Array>;
-            try { entries = unzipSync(bytes); }
-            catch { return null; }
+            const entries = readZipEntries(bytes);
+            if (!entries) return null;
             const id = nextArchive++;
             archives.set(id, entries);
             return id;
         });
 
         this.lua.global.set('__zip_names__', (id: number): string[] =>
-            Object.keys(archives.get(Number(id)) ?? {}));
+            (archives.get(Number(id)) ?? []).map(e => e.name));
 
-        // Armored exactly as the io bindings are: an entry is bytes, and the
-        // wasmoon string bridge truncates at NUL and mangles 0x80-0xFF.
-        this.lua.global.set('__zip_read__', (id: number, name: string): string | null => {
-            const entry = archives.get(Number(id))?.[String(name)];
-            return entry === undefined ? null : armor(bytesToLatin1(entry));
+        this.lua.global.set('__zip_sizes__', (id: number): number[] =>
+            (archives.get(Number(id)) ?? []).map(e => e.size));
+
+        // The entry at a 1-based index, armored exactly as the io bindings are:
+        // an entry is bytes, and the wasmoon string bridge truncates at NUL and
+        // mangles 0x80-0xFF. Null when it cannot be read; __zip_error__ says why.
+        this.lua.global.set('__zip_read__', (id: number, index: number): string | null => {
+            const entry = archives.get(Number(id))?.[Number(index) - 1];
+            if (!entry) { readError = 'Invalid argument'; return null; }
+            try { return armor(bytesToLatin1(entry.read())); }
+            catch (e) { readError = e instanceof Error ? e.message : String(e); return null; }
         });
+
+        this.lua.global.set('__zip_error__', (): string => readError);
 
         this.lua.global.set('__zip_close__', (id: number): void => {
             archives.delete(Number(id));
@@ -4377,6 +4399,10 @@ end`);
         // Every Lua call is made before the entry goes onto the stack: an entry
         // that is not parked yet cannot be handed to the wrong caller by a pop.
         const refs = NESTED_DISPATCH_GLOBALS.map(name => {
+            // Only an alias script has its own `command` handed back. Anywhere
+            // else it keeps the last command expanded, which packages such as
+            // Repeater read afterwards (TLuaInterpreter::expandAlias).
+            if (name === 'command' && !this.runningAliasScript) return undefined;
             api.lua_pushstring(L, name);
             api.lua_rawget(L, LUA_GLOBALSINDEX);
             // luaL_ref answers LUA_REFNIL for a nil value, and reading that ref
@@ -4411,20 +4437,117 @@ end`);
         // would answer.
         NESTED_DISPATCH_GLOBALS.forEach((name, i) => {
             const ref = refs[i];
+            if (ref === undefined) return;
+            if (name === 'command') {
+                // What the nested pass left in `command` is kept for
+                // settleCommandAfterAliasPass — unless no pass ran and nothing
+                // set it since the last restore, as when expandAlias("") matches
+                // nothing, in which case the earlier one stands.
+                api.lua_pushstring(L, name);
+                api.lua_rawget(L, LUA_GLOBALSINDEX);
+                let keepEarlier = false;
+                if (this.passCommandRef !== LUA_NOREF) {
+                    api.lua_rawgeti(L, LUA_REGISTRYINDEX, this.restoredCommandRef);
+                    keepEarlier = api.lua_rawequal(L, -1, -2) !== 0;
+                    api.lua_pop(L, 1);
+                }
+                if (keepEarlier) api.lua_pop(L, 1);
+                else {
+                    api.luaL_unref(L, LUA_REGISTRYINDEX, this.passCommandRef);
+                    this.passCommandRef = api.luaL_ref(L, LUA_REGISTRYINDEX);
+                }
+            }
             api.lua_pushstring(L, name);
             if (ref === null) api.lua_pushnil(L);
             else api.lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
             api.lua_rawset(L, LUA_GLOBALSINDEX);
+            if (name === 'command') {
+                // The value just put back, for the same comparison next time; the
+                // ref moves here, so the release below must not free it.
+                api.luaL_unref(L, LUA_REGISTRYINDEX, this.restoredCommandRef);
+                this.restoredCommandRef = ref === null ? LUA_REFNIL : ref;
+                refs[i] = undefined;
+            }
         });
         api.lua_settop(L, top);
         this.releaseNestedDispatchState(refs);
     }
 
-    private releaseNestedDispatchState(refs: (number | null)[]): void {
+    private releaseNestedDispatchState(refs: (number | null | undefined)[]): void {
         const api = this.lua.global.luaApi;
         for (const ref of refs) {
-            if (ref !== null) api.luaL_unref(this.lua.global.address, LUA_REGISTRYINDEX, ref);
+            if (ref != null) api.luaL_unref(this.lua.global.address, LUA_REGISTRYINDEX, ref);
         }
+    }
+
+    /**
+     * While an alias pass runs, what `command` ends it holding unless a script
+     * changes it (the last command expanded), and the value the last restore of
+     * an alias script's own command put back. TLuaInterpreter::mPassCommand.
+     */
+    private passCommandRef = LUA_NOREF;
+    private restoredCommandRef = LUA_NOREF;
+
+    /** Whether the script running now is an alias's: expandAlias() hands
+     *  `command` back to that one only. TLuaInterpreter::mRunningAliasScript. */
+    private runningAliasScript = false;
+    /** Claimed by the next entry into Lua — see {@link asAliasScript}. */
+    private nextEntryIsAliasScript = false;
+
+    /** Run `fn`, whose entry into Lua is an alias's script — the role of
+     *  desktop's `ScriptCallerScope(*this, true)` around TAlias::execute.
+     *  Every other entry runs as a non-alias caller. */
+    asAliasScript<T>(fn: () => T): T {
+        this.nextEntryIsAliasScript = true;
+        try {
+            return fn();
+        } finally {
+            this.nextEntryIsAliasScript = false;
+        }
+    }
+
+    /**
+     * Start an alias pass for `command` (AliasUnit::processDataStream →
+     * TLuaInterpreter::setExpandedCommand): `command` holds it, and whatever an
+     * enclosing pass kept for {@link settleCommandAfterAliasPass} is out of date.
+     */
+    setExpandedCommand(command: string): void {
+        if (this.inert) return;
+        const api = this.lua.global.luaApi;
+        const L = this.lua.global.address;
+        api.luaL_unref(L, LUA_REGISTRYINDEX, this.passCommandRef);
+        api.luaL_unref(L, LUA_REGISTRYINDEX, this.restoredCommandRef);
+        this.passCommandRef = this.restoredCommandRef = LUA_NOREF;
+        this.setCommand(command);
+    }
+
+    /**
+     * End of an alias pass, at every depth. An alias script had its own
+     * `command` back while it ran, but what is read once the pass is over is the
+     * last command expanded — or whatever a script set it to, which survives.
+     * TLuaInterpreter::settleCommandAfterAliasPass.
+     */
+    settleCommandAfterAliasPass(): void {
+        const passRef = this.passCommandRef;
+        const restoredRef = this.restoredCommandRef;
+        this.passCommandRef = this.restoredCommandRef = LUA_NOREF;
+        if (this.inert || passRef === LUA_NOREF) return;
+        const api = this.lua.global.luaApi;
+        const L = this.lua.global.address;
+        const top = api.lua_gettop(L);
+        this.syncGlobalsFromRunning();
+        api.lua_pushstring(L, 'command');
+        api.lua_rawget(L, LUA_GLOBALSINDEX);
+        api.lua_rawgeti(L, LUA_REGISTRYINDEX, restoredRef);
+        const untouched = api.lua_rawequal(L, -1, -2) !== 0;
+        api.lua_settop(L, top);
+        if (untouched) {
+            api.lua_pushstring(L, 'command');
+            api.lua_rawgeti(L, LUA_REGISTRYINDEX, passRef);
+            api.lua_rawset(L, LUA_GLOBALSINDEX);
+        }
+        api.luaL_unref(L, LUA_REGISTRYINDEX, passRef);
+        api.luaL_unref(L, LUA_REGISTRYINDEX, restoredRef);
     }
 
     /** Push a 1-indexed Lua table of capture strings (`matches[1]` = whole match),
@@ -4656,9 +4779,15 @@ end`);
      *  table in place — in the main state and in the thread it returns to. */
     private resumeAsRunning<T>(t: LuaThread, resume: () => T): T {
         this.runningThreads.push(t);
+        // Every way into a script says whether it is an alias's, as desktop's
+        // ScriptCallerScope does: only asAliasScript() makes one.
+        const wasAliasScript = this.runningAliasScript;
+        this.runningAliasScript = this.nextEntryIsAliasScript;
+        this.nextEntryIsAliasScript = false;
         try {
             return resume();
         } finally {
+            this.runningAliasScript = wasAliasScript;
             this.runningThreads.pop();
             if (!this.inert) {
                 this.adoptGlobalsOf(t);
@@ -5264,7 +5393,7 @@ end`);
         // the disk, which here is nowhere a profile may write.
         if (vfs && destDir) {
             try {
-                if (vfs.stat(destDir)?.type !== 'dir') vfs.mkdir(destDir);
+                if (vfs.stat(resolveLinkedDirectory(vfs, destDir))?.type !== 'dir') vfs.mkdir(destDir);
             } catch (err) {
                 console.warn('[unzipAsync] could not create', destDir, err);
                 return "couldn't create output directory to put the extracted files into";
@@ -5305,20 +5434,31 @@ end`);
                 catch (err) { return fail(`read failed: ${err instanceof Error ? err.message : String(err)}`); }
             }
 
-            let entries: Record<string, Uint8Array>;
-            try { entries = unzipSync(buf); }
-            catch (err) { return fail(`unzip failed: ${err instanceof Error ? err.message : String(err)}`); }
+            const entries = readZipEntries(buf);
+            if (!entries) return fail('unzip failed: not a zip archive');
+            // Every entry is checked before the first is written, as desktop's
+            // mudlet::unzip does, so an archive that would reach outside destDir
+            // — by its names, or through a link already inside it — is refused
+            // whole rather than half unpacked.
+            const problem = zipExtractionProblem(vfs, destDir, entries.map(e => e.name));
+            if (problem) return fail(problem);
+            // The extract location itself may be reached through a link — that
+            // is where the caller asked for the files to go — so it is followed
+            // once, up front, and every entry is written under what it names.
+            const base = resolveLinkedDirectory(vfs, destDir.replace(/\/+$/, ''));
             try {
-                if (!vfs.exists(destDir)) vfs.mkdir(destDir);
-                for (const [name, data] of Object.entries(entries)) {
-                    if (name.endsWith('/')) {
-                        vfs.mkdir(`${destDir}/${name}`);
+                if (!vfs.exists(base)) vfs.mkdir(base);
+                for (const entry of entries) {
+                    const parts = zipEntryComponents(entry.name)!;
+                    if (parts.length === 0) continue;
+                    const dest = `${base}/${parts.join('/')}`;
+                    if (/[/\\]$/.test(entry.name)) {
+                        vfs.mkdir(dest);
                         continue;
                     }
-                    const dest = `${destDir}/${name}`;
-                    const parent = dest.substring(0, dest.lastIndexOf('/'));
-                    if (parent && !vfs.exists(parent)) vfs.mkdir(parent);
-                    if (TEXT_EXT.test(name)) vfs.writeFile(dest, strFromU8(data));
+                    if (parts.length > 1) vfs.mkdir(`${base}/${parts.slice(0, -1).join('/')}`);
+                    const data = entry.read();
+                    if (TEXT_EXT.test(dest)) vfs.writeFile(dest, strFromU8(data));
                     else                     vfs.writeBinaryFile(dest, data);
                 }
                 void vfs.flush();
