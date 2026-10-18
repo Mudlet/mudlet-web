@@ -1509,24 +1509,39 @@ export class ScriptingEngine implements EngineHost {
         return base;
     }
 
-    /** Mudlet `setPackageInfo(name, key, value)`. Records a custom info field.
-     *  Always succeeds (matches Mudlet, which sets the map unconditionally). */
-    setPackageInfo(name: string, key: string, value: string): boolean {
-        if (!key) return false;
-        let ov = this.packageInfoOverrides.get(name);
-        if (!ov) { ov = new Map(); this.packageInfoOverrides.set(name, ov); }
-        ov.set(key, value);
-        return true;
+    /** Mudlet `setPackageInfo(name, key, value)`. Records a custom info field,
+     *  answering why it would not, or null once it has
+     *  (TLuaInterpreter::setPackageInfo). */
+    setPackageInfo(name: string, key: string, value: string): string | null {
+        return this.setInfoField('package', this.packageInfoOverrides, name, key, value);
     }
 
     /** Mudlet `setModuleInfo(name, key, value)`. Records a custom info field
-     *  surfaced by getModuleInfo. Always succeeds. */
-    setModuleInfo(name: string, key: string, value: string): boolean {
-        if (!key) return false;
-        let ov = this.moduleInfoOverrides.get(name);
-        if (!ov) { ov = new Map(); this.moduleInfoOverrides.set(name, ov); }
+     *  surfaced by getModuleInfo; see {@link setPackageInfo}. */
+    setModuleInfo(name: string, key: string, value: string): string | null {
+        return this.setInfoField('module', this.moduleInfoOverrides, name, key, value);
+    }
+
+    /**
+     * Only for something installed — one being read in counts, so its own
+     * scripts can still describe it. Filed for any other name, the details were
+     * there for whatever was installed under it later. And `mpackage` is the
+     * name it is installed under, so only that same name is accepted for it: a
+     * package without a config.lua has no details to start from.
+     */
+    private setInfoField(kind: 'package' | 'module', overrides: Map<string, Map<string, string>>,
+        name: string, key: string, value: string): string | null {
+        const manifest = this.findManifest(name);
+        const listed = this.installing.has(name)
+            || (manifest !== undefined && (manifest.kind === 'module') === (kind === 'module'));
+        if (!listed) return `${kind} '${name}' not found`;
+        if (key === 'mpackage' && value !== name) {
+            return `'mpackage' is the name ${kind} '${name}' is installed under and cannot be changed`;
+        }
+        let ov = overrides.get(name);
+        if (!ov) { ov = new Map(); overrides.set(name, ov); }
         ov.set(key, value);
-        return true;
+        return null;
     }
 
     /**
@@ -3057,6 +3072,21 @@ export class ScriptingEngine implements EngineHost {
         } finally {
             this.mapDownloadRunning = false;
         }
+    }
+
+    /**
+     * Lua `uninstallPackage(name)`: why it would not, or null once it has
+     * (TLuaInterpreter::uninstallPackage). Whether the package is installed is
+     * asked first — retrying one that is not never works, so a running save is
+     * not the reason to give for it — and an installed one is refused only
+     * while a profile save is running. A save a handler starts once the
+     * uninstall is under way is no reason to abandon it.
+     */
+    uninstallPackageFromScript(packageName: string): string | null {
+        const manifest = this.findManifest(packageName);
+        if (!manifest || manifest.kind === 'module') return `package '${packageName}' is not installed`;
+        if (this.profileSaveInFlight) return 'a profile save is in progress, try again once it has finished';
+        return this.uninstallPackageByName(packageName) ? null : `package '${packageName}' cannot be uninstalled`;
     }
 
     /**

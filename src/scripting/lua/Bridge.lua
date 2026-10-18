@@ -3653,6 +3653,26 @@ function installModule(path)
     return installOutcome(__installModule(path))
 end
 
+-- Mudlet uninstallPackage(name), setPackageInfo(name, key, value) and
+-- setModuleInfo(name, key, value) → true, or (nil, reason) through
+-- warnArgumentValue. The JS side hands back the reason, or false once done.
+local function refusalOutcome(reason)
+    if reason then return nil, reason end
+    return true
+end
+
+function uninstallPackage(name)
+    return refusalOutcome(__uninstallPackage(name))
+end
+
+function setPackageInfo(name, key, value)
+    return refusalOutcome(__setPackageInfo(name, key, value))
+end
+
+function setModuleInfo(name, key, value)
+    return refusalOutcome(__setModuleInfo(name, key, value))
+end
+
 -- Mudlet getModules() — same shape as getPackages(), but lists modules only.
 function getModules()
     return rebuildJsArray(__getModules())

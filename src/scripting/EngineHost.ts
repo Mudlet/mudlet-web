@@ -93,9 +93,12 @@ export interface EngineHost {
 
     installPackageFromVfsPath(path: string): InstallOutcome;
     uninstallPackageByName(name: string): boolean;
+    /** Lua `uninstallPackage()`: the refusal, or null once it is uninstalled. */
+    uninstallPackageFromScript(name: string): string | null;
     getPackageNames(): string[];
     getPackageInfo(name: string): Record<string, string>;
-    setPackageInfo(name: string, key: string, value: string): boolean;
+    /** The refusal, or null once the field is set. */
+    setPackageInfo(name: string, key: string, value: string): string | null;
 
     // ── Modules ──────────────────────────────────────────────────────────────
 
@@ -118,7 +121,8 @@ export interface EngineHost {
     getModulePriority(name: string): number;
     getModuleNames(): string[];
     getModulePath(name: string): string | null;
-    setModuleInfo(name: string, key: string, value: string): boolean;
+    /** The refusal, or null once the field is set. */
+    setModuleInfo(name: string, key: string, value: string): string | null;
     /** Module manifest fields as a flat record, with any Lua-set overrides
      *  applied. Null when no module by that name is installed. */
     getModuleInfoRecord(name: string): Record<string, unknown> | null;
@@ -266,9 +270,10 @@ export const NULL_ENGINE_HOST: EngineHost = Object.freeze({
 
     installPackageFromVfsPath: () => ({ ok: false, error: 'no package installer available' }),
     uninstallPackageByName: () => false,
+    uninstallPackageFromScript: (name: string) => `package '${name}' is not installed`,
     getPackageNames: () => [],
     getPackageInfo: () => ({}),
-    setPackageInfo: () => false,
+    setPackageInfo: (name: string) => `package '${name}' not found`,
 
     installModuleFromPath: () => ({ ok: false, error: 'no module installer available' }),
     uninstallModuleByName: () => false,
@@ -283,7 +288,7 @@ export const NULL_ENGINE_HOST: EngineHost = Object.freeze({
     getModulePriority: () => 0,
     getModuleNames: () => [],
     getModulePath: () => null,
-    setModuleInfo: () => false,
+    setModuleInfo: (name: string) => `module '${name}' not found`,
     getModuleInfoRecord: () => null,
 
     rewriteCss: (css: string) => css,
