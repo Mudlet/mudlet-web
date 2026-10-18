@@ -204,6 +204,10 @@ export class TelnetNegotiator {
      *  telnet handshake, so the in-band signal is the reliable trigger. Reset on
      *  each connect(). */
     private mxpStarted = false;
+    /** cTelnet's `mMxpDetectionTail`: the last three bytes of the last read
+     *  scanned for a mode switch, so a switch the game's packets split is still
+     *  found once the rest arrives. A read that is not scanned clears it. */
+    private mxpDetectionTail = "";
     /** Rolling window of the last {@link KAVIR_NEGOTIATION_ORDER}`.length`
      *  options the server sent us a WILL/DO for, oldest first — Mudlet's
      *  `mNegotiationOrder`. Compared against the KaVir fingerprint after each
@@ -273,6 +277,7 @@ export class TelnetNegotiator {
         this.carry = "";
         this.ttypeStep = 0;
         this.mxpStarted = false;
+        this.mxpDetectionTail = "";
         this.nawsNegotiated = false;
         this.lastNaws = null;
         this.mspNegotiated = false;
@@ -465,8 +470,18 @@ export class TelnetNegotiator {
             i += 2;
         }
 
-        if (this.flags.mxpEnabled && this.flags.mxpInBandDetectionEnabled
-            && !this.mxpStarted && MXP_LINE_MODE_RE.test(buf)) {
+        if (!(this.flags.mxpEnabled && this.flags.mxpInBandDetectionEnabled && !this.mxpStarted)) {
+            // As in cTelnet::gotRest: the next scanned read must not be joined
+            // to one from before this one.
+            this.mxpDetectionTail = "";
+            return;
+        }
+        // ESC[#z is four bytes, so three carried over from the last read are
+        // enough to complete one (cTelnet::trackMXPElementDetection).
+        const found = MXP_LINE_MODE_RE.test(buf)
+            || (this.mxpDetectionTail !== "" && MXP_LINE_MODE_RE.test(this.mxpDetectionTail + buf.slice(0, 3)));
+        this.mxpDetectionTail = (this.mxpDetectionTail + buf).slice(-3);
+        if (found) {
             // No telnet handshake, but the server is emitting MXP line-mode
             // sequences (ESC[<n>z) — it's speaking MXP. Turn parsing on now,
             // before this frame's text is rendered, so the very lines carrying
@@ -475,6 +490,24 @@ export class TelnetNegotiator {
             // handshake replies because the server's inbound MXP channel isn't
             // confirmed.
             this.startMxp(false);
+        }
+    }
+
+    /**
+     * Run `post` — the showing of a read this negotiator has just scanned —
+     * without letting what it feeds in meanwhile disturb the read's detection
+     * tail. An escape this read leaves unfinished is joined to the NEXT read,
+     * not to what a trigger `feedTelnet()`s while this one is shown, so that
+     * must neither be joined to this read's tail nor replace it (cTelnet's
+     * postKeepingDetectionTail).
+     */
+    keepingMxpDetectionTail(post: () => void): void {
+        const tail = this.mxpDetectionTail;
+        this.mxpDetectionTail = "";
+        try {
+            post();
+        } finally {
+            this.mxpDetectionTail = tail;
         }
     }
 
