@@ -4559,7 +4559,8 @@ export class ScriptingAPI {
     getLineCount(windowName?: string): number {
         const con = this.getConsole(windowName);
         if (!con) return -1;
-        if (this.inTriggerPass(con)) return con.getLineCount() - this.triggerEchoLines;
+        // A clear in the pass leaves the one empty line, which is line 0.
+        if (this.inTriggerPass(con)) return Math.max(0, con.getLineCount() - this.triggerEchoLines);
         return con.lastLineNumber();
     }
 
@@ -5183,6 +5184,8 @@ export class ScriptingAPI {
             // getLineCount / the cursor reporting lines the player could no
             // longer see — Mudlet's clearWindow empties the buffer itself.
             this.mainConsole.clear();
+            // The lines the pass's echoes completed went with the rest.
+            this.triggerEchoLines = 0;
             this.session.events.emit('script.clearwindow');
             this.session.windows.clearSplit('main');
         } else if (this.buffers.has(name)) {
