@@ -1,7 +1,10 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from 'vitest';
 import zlib from 'node:zlib';
-import { MccpHandler, MCCP_MAX_INFLATED_PER_READ } from '../../../src/mud/protocol/mccp';
+import { MccpHandler } from '../../../src/mud/protocol/mccp';
+
+/** cTelnet's BUFFER_SIZE × scmMaxDecompressionRecursion: as deep as one drain goes. */
+const ONE_DRAIN = 8 * 100_000;
 
 const START = '\xFF\xFA\x56\xFF\xF0'; // IAC SB COMPRESS2 IAC SE
 const WILL = '\xFF\xFB\x56';          // IAC WILL COMPRESS2
@@ -190,23 +193,21 @@ describe('MCCP negotiation, broken streams and the per-read cap (Telnet_spec)', 
         expect(ended).toHaveBeenCalledTimes(1);
     });
 
-    it('refuses a stream that inflates past the cap in one read, dropping the rest of the read', () => {
+    it('shows all of a stream that inflates past the depth of one drain, and what follows it', () => {
         const sent: string[] = [];
         const m = handler(sent);
-        const bomb = latin1(zlib.deflateSync(Buffer.concat([Buffer.alloc(MCCP_MAX_INFLATED_PER_READ + 10), Buffer.from('TAIL\r\n')])));
-        const pieces = m.processPieces(START + bomb + 'dropped\r\n');
+        const bomb = latin1(zlib.deflateSync(Buffer.concat([Buffer.alloc(ONE_DRAIN + 10), Buffer.from('TAIL\r\n')])));
+        const pieces = m.processPieces(START + bomb + 'after\r\n');
         const text = pieces.filter((p): p is string => typeof p === 'string').join('');
-        expect(text.length).toBe(MCCP_MAX_INFLATED_PER_READ);
-        expect(text).not.toContain('TAIL');
-        expect(text).not.toContain('dropped');
-        expect(pieces[pieces.length - 1]).toEqual({ notice: expect.stringContaining('Too much compressed data to process at once') });
-        expect(sent).toEqual([DO, DONT]);
-        expect(m.processData('plain\r\n')).toBe('plain\r\n');
+        expect(text.length).toBe(ONE_DRAIN + 10 + 'TAIL\r\nafter\r\n'.length);
+        expect(text.endsWith('TAIL\r\nafter\r\n')).toBe(true);
+        expect(pieces.some(p => typeof p !== 'string')).toBe(false);
+        expect(sent).toEqual([DO]);
     });
 
-    it('lets a large stream through that inflates within the cap read by read', () => {
+    it('lets a large stream through read by read', () => {
         const m = handler();
-        const big = 'A'.repeat(MCCP_MAX_INFLATED_PER_READ - 100);
+        const big = 'A'.repeat(ONE_DRAIN - 100);
         const s = serverStream(big, big, big);
         let out = m.processData(START);
         for (const read of [...s.flushed, s.end]) out += m.processData(read);

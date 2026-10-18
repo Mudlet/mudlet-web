@@ -15,11 +15,6 @@ const MCCP1_WILL = "\xFF\xFB\x55";        // IAC WILL COMPRESS
 const MCCP1_WONT = "\xFF\xFC\x55";        // IAC WONT COMPRESS
 const MCCP1_START = "\xFF\xFA\x55\xFB\xF0"; // IAC SB COMPRESS WILL SE
 
-/** cTelnet's `BUFFER_SIZE` × `scmMaxDecompressionRecursion`: the most one read
- *  from the game may inflate to. Past it desktop drops the rest of the read
- *  and refuses the stream — the guard against a decompression bomb. */
-export const MCCP_MAX_INFLATED_PER_READ = 8 * 100_000;
-
 /** cTelnet's `scmMaxUninflatedInput`: how many bytes a stream that has not
  *  produced any output yet is remembered for, so they can be handed back as
  *  text if it turns out never to have been compressed at all. */
@@ -52,9 +47,6 @@ interface InflateInternal extends pako.Inflate {
     ended: boolean;
 }
 
-/** Thrown out of pako's onData to stop a read that inflates past the cap. */
-class InflateCapReached extends Error {}
-
 const enum Phase { Header, DictId, Body, Trailer }
 
 export class MccpHandler {
@@ -83,8 +75,6 @@ export class MccpHandler {
      *  the stream took while it had produced nothing, from earlier reads. */
     private uninflated: number[] = [];
     private uninflatedComplete = true;
-    /** What is still allowed to come out of the read being processed. */
-    private readBudget = MCCP_MAX_INFLATED_PER_READ;
     private readonly sendRaw: (data: string) => void;
     private readonly onStreamEnd: () => void;
     private _enabled = true;
@@ -135,7 +125,6 @@ export class MccpHandler {
     /** {@link processChunks} with desktop's MCCP warnings in their place
      *  among the texts. Empty pieces are dropped, so this can be empty. */
     processPieces(data: string): MccpPiece[] {
-        this.readBudget = MCCP_MAX_INFLATED_PER_READ;
         return this.pieces(data).filter(p => typeof p !== 'string' || p.length > 0);
     }
 
@@ -263,53 +252,40 @@ export class MccpHandler {
         let zerr = 0;
         let ended = false;
 
-        try {
-            // The zlib header: CMF and FLG, checked as zlib's inflate() does,
-            // then the DICTID a header asking for a preset dictionary carries
-            // — which MCCP never uses, so that is where zlib gives up.
-            while (pos < bytes.length && (this.phase === Phase.Header || this.phase === Phase.DictId)) {
-                this.header.push(bytes[pos++]);
-                if (this.phase === Phase.Header && this.header.length === 2) {
-                    const [cmf, flg] = this.header;
-                    if (((cmf << 8) | flg) % 31 !== 0 || (cmf & 0x0F) !== 8 || (cmf >> 4) + 8 > 15) {
-                        zerr = Z_DATA_ERROR;
-                        break;
-                    }
-                    this.phase = (flg & 0x20) ? Phase.DictId : Phase.Body;
-                } else if (this.phase === Phase.DictId && this.header.length === 6) {
-                    zerr = Z_NEED_DICT;
+        // The zlib header: CMF and FLG, checked as zlib's inflate() does,
+        // then the DICTID a header asking for a preset dictionary carries
+        // — which MCCP never uses, so that is where zlib gives up.
+        while (pos < bytes.length && (this.phase === Phase.Header || this.phase === Phase.DictId)) {
+            this.header.push(bytes[pos++]);
+            if (this.phase === Phase.Header && this.header.length === 2) {
+                const [cmf, flg] = this.header;
+                if (((cmf << 8) | flg) % 31 !== 0 || (cmf & 0x0F) !== 8 || (cmf >> 4) + 8 > 15) {
+                    zerr = Z_DATA_ERROR;
                     break;
                 }
+                this.phase = (flg & 0x20) ? Phase.DictId : Phase.Body;
+            } else if (this.phase === Phase.DictId && this.header.length === 6) {
+                zerr = Z_NEED_DICT;
+                break;
             }
+        }
 
-            if (!zerr && this.phase === Phase.Body && pos < bytes.length) {
-                const consumed = this.inflateBody(bytes.subarray(pos), output);
-                zerr = consumed.err;
-                pos += consumed.used;
-                if (!zerr && consumed.ended) this.phase = Phase.Trailer;
-            }
+        if (!zerr && this.phase === Phase.Body && pos < bytes.length) {
+            const consumed = this.inflateBody(bytes.subarray(pos), output);
+            zerr = consumed.err;
+            pos += consumed.used;
+            if (!zerr && consumed.ended) this.phase = Phase.Trailer;
+        }
 
-            if (!zerr && this.phase === Phase.Trailer) {
-                while (pos < bytes.length && this.trailer.length < 4) this.trailer.push(bytes[pos++]);
-                if (this.trailer.length === 4) {
-                    const [t0, t1, t2, t3] = this.trailer;
-                    const sent = ((t0 << 24) | (t1 << 16) | (t2 << 8) | t3) >>> 0;
-                    const adler = ((this.adlerB << 16) | this.adlerA) >>> 0;
-                    if (sent !== adler) zerr = Z_DATA_ERROR;
-                    else ended = true;
-                }
+        if (!zerr && this.phase === Phase.Trailer) {
+            while (pos < bytes.length && this.trailer.length < 4) this.trailer.push(bytes[pos++]);
+            if (this.trailer.length === 4) {
+                const [t0, t1, t2, t3] = this.trailer;
+                const sent = ((t0 << 24) | (t1 << 16) | (t2 << 8) | t3) >>> 0;
+                const adler = ((this.adlerB << 16) | this.adlerA) >>> 0;
+                if (sent !== adler) zerr = Z_DATA_ERROR;
+                else ended = true;
             }
-        } catch (e) {
-            if (!(e instanceof InflateCapReached)) throw e;
-            // More than desktop processes from one read: the rest of it is
-            // dropped, and zlib cannot pick a stream up again past a gap, so
-            // the stream is refused for the game to fall back to plain text.
-            this.refuseStream();
-            return [
-                bytesToString(output),
-                { notice: '[ WARN  ]  - Too much compressed data to process at once, some was lost - compression disabled.\n'
-                    + 'If the display looks garbled, please reconnect to the game.' },
-            ];
         }
 
         // Nothing has come out of the stream yet and every byte it took is
@@ -378,15 +354,15 @@ export class MccpHandler {
     private inflateBody(input: Uint8Array, output: Uint8Array[]): { used: number; ended: boolean; err: number } {
         const inflator = this.inflator!;
         const inf = inflator as unknown as InflateInternal;
+        // However much one read inflates to, all of it is kept: desktop drains
+        // what does not fit one pass in further passes (cTelnet::processSocketData
+        // defers it rather than dropping it), so nothing a stream sends is lost.
         const take = (chunk: Uint8Array): void => {
             if (chunk.length === 0) return;
-            const allowed = Math.min(chunk.length, this.readBudget);
-            const kept = chunk.slice(0, allowed);
-            this.readBudget -= allowed;
+            const kept = chunk.slice();
             this.totalOut += kept.length;
             this.updateAdler(kept);
             output.push(kept);
-            if (allowed < chunk.length) throw new InflateCapReached();
         };
 
         const origOnData = inflator.onData;
