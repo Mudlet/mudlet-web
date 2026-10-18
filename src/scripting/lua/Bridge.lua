@@ -8166,6 +8166,8 @@ do
     setCustomEnvColor = shaped(__setCustomEnvColor)
     setMapZoom        = shaped(__setMapZoom)
     removeMapMenu     = shaped(__removeMapMenu)
+    removeMapEvent    = shaped(__removeMapEvent)
+    deleteMapLabel    = shaped(__deleteMapLabel)
     setRoomIDbyHash   = shaped(__setRoomIDbyHash)
     hideMapMenuItem   = shaped(__hideMapMenuItem)
     showMapMenuItem   = shaped(__showMapMenuItem)

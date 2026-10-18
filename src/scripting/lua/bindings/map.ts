@@ -835,9 +835,11 @@ export function installMapBindings({
         );
         return true;
     });
-    lua.global.set('removeMapEvent', (uniqueName: unknown) => {
-        api.map.removeMapEvent(String(uniqueName ?? ''));
-        return true;
+    // Hands back desktop's refusal for a name never added, or null; Bridge.lua
+    // shapes that into true / (nil, errMsg).
+    lua.global.set('__removeMapEvent', (uniqueName: unknown) => {
+        const name = luaToString(uniqueName);
+        return api.map.removeMapEvent(name) ? null : `map event '${name}' does not exist`;
     });
     // Mudlet hide/showMapMenuItem(name): only desktop's built-in item names, so
     // a script's own map event is refused like any other unknown name. Hands
@@ -885,8 +887,9 @@ export function installMapBindings({
     lua.global.set('__removeMapMenu', (name: unknown) => {
         const menu = String(name ?? '');
         if (!menu) return 'the menu name cannot be empty';
-        api.map.removeMapMenu(menu);
-        return null;
+        // Refused only when there was nothing at all to remove: a parent that
+        // was never added can still have children filed under it.
+        return api.map.removeMapMenu(menu) ? null : `map menu '${menu}' does not exist`;
     });
     // Mudlet shape: { [menuName] = { ["parent"]=..., ["display name"]=... } }.
     // JS hands back an array of entries (0-indexed); Bridge.lua rebuilds the
@@ -1317,8 +1320,16 @@ export function installMapBindings({
         }
         return id;
     });
-    lua.global.set('deleteMapLabel', (areaId: unknown, labelId: unknown) =>
-        api.map.deleteMapLabel(int(areaId), int(labelId)));
+    // Mudlet deleteMapLabel(areaID, labelID) → true, or (nil, errMsg) naming
+    // what it could not find. Hands back that refusal or null; Bridge.lua
+    // shapes it.
+    lua.global.set('__deleteMapLabel', (areaId: unknown, labelId: unknown) => {
+        const area = int(areaId), label = int(labelId);
+        if (label < 0) return `labelID ${label} is invalid, it must be zero or greater`;
+        if (!api.map.hasArea(area)) return `areaID ${area} does not exist`;
+        if (!api.map.deleteMapLabel(area, label)) return `labelID ${label} does not exist in area with areaID ${area}`;
+        return null;
+    });
     // Mudlet auditAreas() — repair area/room membership consistency. Returns
     // a summary; Bridge.lua 1-indexes the orphanRooms/danglingRefs arrays.
     lua.global.set('__auditAreas', () => api.map.auditAreas());

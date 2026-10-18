@@ -4425,19 +4425,21 @@ export class MapStore {
         return true;
     }
 
+    /** True when anything went: the menu itself, or a submenu or event filed
+     *  under it (desktop sweeps those even for a parent never added). */
     removeMapMenu(name: string): boolean {
-        const had = this.mapMenus.delete(name);
+        let removed = this.mapMenus.delete(name);
         // Mudlet removes a menu *and its children* — cascade to any submenus
         // nested under it (recursively, so grandchildren go too), and to the
         // events filed under each removed menu, which desktop drops with it
         // rather than leaving behind pointing at a parent that is gone.
         for (const [childName, menu] of [...this.mapMenus]) {
-            if (menu.parent === name) this.removeMapMenu(childName);
+            if (menu.parent === name) { this.removeMapMenu(childName); removed = true; }
         }
         for (const [eventName, event] of [...this.mapEvents]) {
-            if (event.parent === name) this.mapEvents.delete(eventName);
+            if (event.parent === name) { this.mapEvents.delete(eventName); removed = true; }
         }
-        return had;
+        return removed;
     }
 
     getMapMenus(): MapMenuEntry[] {

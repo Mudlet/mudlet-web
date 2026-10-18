@@ -1231,7 +1231,9 @@ describe('map labels — createMapLabel / createMapImageLabel / deleteMapLabel',
     // delete
     expect(env.run(`return (deleteMapLabel(${a}, 0))`)).toBe(true);
     expect(env.run(`return next(getMapLabels(${a}))`)).toBe(null);
-    expect(env.run(`return (deleteMapLabel(${a}, 0))`)).toBe(false); // already gone
+    // already gone
+    expect(env.run(`return (deleteMapLabel(${a}, 0))`)).toBeNull();
+    expect(env.run(`return select(2, deleteMapLabel(${a}, 0))`)).toBe(`labelID 0 does not exist in area with areaID ${a}`);
   });
 
   // TLuaInterpreter::createMapLabel gates its optional tail on lua_gettop, and
