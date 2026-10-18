@@ -4717,7 +4717,8 @@ export class ScriptingEngine implements EngineHost {
     exportAreaImageToVfs(areaId: number, filePath: string, zLevel?: number | true): { path: string } | { error: string } {
         const vfs = this.vfs;
         if (!vfs) return { error: 'no profile filesystem mounted' };
-        if (!filePath) return { error: 'filePath is required' };
+        const problem = exportTargetProblem(vfs, filePath, zLevel === true);
+        if (problem) return { error: problem };
         if (zLevel === true) return this.exportEveryAreaLevelToVfs(areaId, filePath);
         const bytes = this.session.windows.exportAreaImage(areaId, zLevel);
         if (!bytes) return { error: `area ${areaId} could not be rendered (is the mapper open?)` };
@@ -6082,4 +6083,39 @@ function logMxpLine(raw: string, segments: BufferSegment[]): void {
     });
     // eslint-disable-next-line no-console
     console.debug(`[mudlet.mxp] raw=${JSON.stringify(raw)}\n${segs.join('\n')}`);
+}
+
+/** The image formats Qt's QImageWriter writes with its stock plugins — what
+ *  desktop's export accepts as a file suffix. */
+const EXPORT_IMAGE_FORMATS = new Set([
+    'bmp', 'cur', 'ico', 'jpeg', 'jpg', 'pbm', 'pgm', 'png', 'ppm', 'tif', 'tiff', 'wbmp', 'webp', 'xbm', 'xpm',
+]);
+
+/**
+ * T2DMap's exportTargetProblem: the image is saved after the call has answered,
+ * too late to report a failure, so the likely causes are checked first. A name
+ * template for every z level is never written itself, so only what its level
+ * files share is checked against it. Null when nothing is wrong.
+ */
+function exportTargetProblem(vfs: ProfileVFS, filePath: string, nameTemplate: boolean): string | null {
+    if (!filePath) return 'No file name given';
+    const abs = filePath.startsWith('/') ? filePath : `${vfs.profilePath}/${filePath}`;
+    const trimmed = abs.replace(/\/+$/, '') || '/';
+    const slash = abs.lastIndexOf('/');
+    const fileName = abs.slice(slash + 1);
+    const directory = abs.slice(0, slash).replace(/\/+$/, '') || '/';
+    const target = vfs.stat(trimmed);
+    if (target?.type === 'dir' && (!nameTemplate || fileName === '')) return `${trimmed} is a directory`;
+    const dir = vfs.stat(directory);
+    if (!dir) return `Directory ${directory} does not exist`;
+    if (dir.type !== 'dir') return `${directory} is not a directory`;
+    if (fileName === '') return 'No file name given';
+    if (!nameTemplate) {
+        if (target && !(target.mode & 0o200)) return `File ${abs} is not writable`;
+        if (!target && !(dir.mode & 0o200)) return `Directory ${directory} is not writable`;
+    }
+    const dot = fileName.lastIndexOf('.');
+    const format = dot > 0 ? fileName.slice(dot + 1).toLowerCase() : 'png';
+    if (!EXPORT_IMAGE_FORMATS.has(format)) return `Image format "${format}" is not supported`;
+    return null;
 }

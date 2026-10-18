@@ -1456,8 +1456,10 @@ export class MapStore {
                 id: areaId,
                 name: this.areaNames.get(areaId) ?? '',
                 ...(this.areas.get(areaId)?.gridMode ? { gridMode: true } : {}),
-                // TArea::writeJsonArea writes the area's 2D zoom (mLast2DMapZoom).
-                zoom2D: this.areaZooms.get(this.areas.get(areaId)!) ?? MapStore.DEFAULT_MAP_ZOOM,
+                // TArea::writeJsonArea writes the area's 2D zoom (mLast2DMapZoom)
+                // only when it is not the default.
+                ...((z => (z !== undefined && z !== MapStore.DEFAULT_MAP_ZOOM ? { zoom2D: z } : {}))(
+                    this.areaZooms.get(this.areas.get(areaId)!))),
                 // TArea::writeJsonArea counts what it writes.
                 roomCount: rooms.length,
                 // TArea::writeJsonUserData: a binary save replaces a script's
@@ -2220,7 +2222,8 @@ export class MapStore {
     private playerRoomHash(): Record<string, number> {
         const hash = { ...this.mRoomIdHash };
         if (this.profileName) {
-            if (this.playerRoomId != null && this.rooms.has(this.playerRoomId)) {
+            // 0 is what deleting the player's room leaves, and desktop saves it.
+            if (this.playerRoomId != null && (this.playerRoomId === 0 || this.rooms.has(this.playerRoomId))) {
                 hash[this.profileName] = this.playerRoomId;
             } else {
                 delete hash[this.profileName];
