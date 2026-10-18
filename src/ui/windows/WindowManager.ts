@@ -1977,7 +1977,6 @@ export class WindowManager {
         if (issues.length > 0) {
             const title = `Importing JSON map "${source}" at ${new Date().toISOString().replace('T', ' ').slice(0, 19)}`;
             this.lastMapReport = [title, ...issues.map(i => `[ ${i.severity === 'warn' ? 'WARN' : 'INFO'} ]  - ${i.message}`), ''].join('\n');
-            this.onSystemMessage?.(`[ INFO ]  - Problems were found with the map, see the "${title}" report in the profile's log/errors.txt.`);
         }
         this.reportMapIssues(issues);
         this.mapLoadCallback?.();

@@ -974,8 +974,10 @@ function exportAreaImage(areaID, filePath, zLevel)
     end
     local t = __mudlet_exportAreaImage(areaID, filePath, zLevel)
     if t and t[0] then return true, t[1] end
-    -- The export's own refusals are (false, why), as T2DMap::exportAreaToImage answers.
-    return false, (t and t[1]) or "exportAreaImage failed"
+    -- A target it cannot write is the export's own refusal, (false, why), as
+    -- T2DMap::exportAreaToImage answers; anything before it is (nil, why).
+    if t and t[2] then return false, t[1] end
+    return nil, (t and t[1]) or "exportAreaImage failed"
 end
 
 -- Mudlet getTimestamp([console_name], lineNumber) → "hh:mm:ss.zzz" string, or

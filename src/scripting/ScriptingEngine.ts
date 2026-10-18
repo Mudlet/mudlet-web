@@ -4714,11 +4714,14 @@ export class ScriptingEngine implements EngineHost {
      * failure). Mudlet requires the mapper open; Mudlet Web's renderer lives in the
      * map widget, so the same precondition applies.
      */
-    exportAreaImageToVfs(areaId: number, filePath: string, zLevel?: number | true): { path: string } | { error: string } {
+    exportAreaImageToVfs(areaId: number, filePath: string, zLevel?: number | true): { path: string } | { error: string; target?: boolean } {
         const vfs = this.vfs;
         if (!vfs) return { error: 'no profile filesystem mounted' };
+        // An unknown area is refused (nil) before the target is looked at; a
+        // target that cannot be written is the export's own refusal (false).
+        if (!this.session.windows.mapStore.hasArea(areaId)) return { error: `areaID ${areaId} not found` };
         const problem = exportTargetProblem(vfs, filePath, zLevel === true);
-        if (problem) return { error: problem };
+        if (problem) return { error: problem, target: true };
         if (zLevel === true) return this.exportEveryAreaLevelToVfs(areaId, filePath);
         const bytes = this.session.windows.exportAreaImage(areaId, zLevel);
         if (!bytes) return { error: `area ${areaId} could not be rendered (is the mapper open?)` };

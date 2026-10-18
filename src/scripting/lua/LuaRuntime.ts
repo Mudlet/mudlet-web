@@ -1875,7 +1875,7 @@ export class LuaRuntime implements IScriptingRuntime {
         // Mudlet `exportAreaImage(areaID, filePath [, zLevel])`: render the area
         // to a PNG in the profile VFS. Returns a 0-indexed [ok, pathOrErr] array
         // that Bridge.lua unpacks into Mudlet's (bool[, errMsg]) multi-return.
-        this.lua.global.set('__mudlet_exportAreaImage', (areaId: unknown, filePath: unknown, zLevel?: unknown): [boolean, string] => {
+        this.lua.global.set('__mudlet_exportAreaImage', (areaId: unknown, filePath: unknown, zLevel?: unknown): [boolean, string, boolean?] => {
             const aid = Number(areaId);
             if (!Number.isFinite(aid)) return [false, 'exportAreaImage: areaID must be a number'];
             // A BOOLEAN z level means "every z level", and only `true` can mean

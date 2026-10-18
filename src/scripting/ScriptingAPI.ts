@@ -688,7 +688,13 @@ class ScriptingWindowsAPI {
 
     /** The report the last loadJsonMap wrote for log/errors.txt, once (see WindowManager.takeMapReport). */
     takeMapReport(): string {
-        return this.session.windows.takeMapReport();
+        const report = this.session.windows.takeMapReport();
+        // The console names the report, whether or not it shows the details.
+        if (report) {
+            const title = report.slice(0, report.indexOf('\n'));
+            this.session.postMessageLine(`[ INFO ]  - Problems were found with the map, see the "${title}" report in the profile's log/errors.txt.`);
+        }
+        return report;
     }
 
     isVisible(id: string): boolean {
@@ -2532,9 +2538,9 @@ export class ScriptingAPI {
      *  `[false, errorMessage]` (e.g. the mapper isn't open, or the area is
      *  unknown). The 0-indexed array is unpacked into Mudlet's multi-return by
      *  Bridge.lua. */
-    exportAreaImage(areaId: number, filePath: string, zLevel?: number | true): [boolean, string] {
+    exportAreaImage(areaId: number, filePath: string, zLevel?: number | true): [boolean, string, boolean?] {
         const r = this.host.exportAreaImageToVfs(areaId, filePath, zLevel);
-        return 'path' in r ? [true, r.path] : [false, r.error];
+        return 'path' in r ? [true, r.path] : [false, r.error, !!r.target];
     }
 
 

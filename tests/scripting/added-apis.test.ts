@@ -1630,8 +1630,8 @@ describe('exportAreaImage — Lua binding', () => {
   beforeEach(async () => { env = await createTestRuntime(); });
   afterEach(() => env.dispose());
 
-  it('returns (false, errMsg) when no exporter/VFS is wired', () => {
-    expect(env.run('return (exportAreaImage(1, "area1.png"))')).toBe(false);
+  it('returns (nil, errMsg) when no exporter/VFS is wired', () => {
+    expect(env.run('return (exportAreaImage(1, "area1.png"))')).toBeNull();
     const msg = env.run('local _, m = exportAreaImage(1, "area1.png"); return m');
     expect(typeof msg).toBe('string');
     expect((msg as string).length).toBeGreaterThan(0);
