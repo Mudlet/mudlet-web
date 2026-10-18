@@ -5725,6 +5725,20 @@ do
         return result
     end
 
+    -- A link holds its function only while its text is shown, as desktop's
+    -- TLinkStore lets go of a link's registry reference with the text it was
+    -- on. `held` is __consoleLinkCommands' answer from before the text went:
+    -- each function no console still shows is let go of.
+    function __mudlet_release_links(held)
+        if held == '' then return end
+        local shown = {}
+        for command in __linkCommandsShown(held):gmatch('[^\n]+') do shown[command] = true end
+        for command in held:gmatch('[^\n]+') do
+            local id = not shown[command] and command:match('^__mudlet_call_link%((%d+)%)$')
+            if id then registry[key(tonumber(id))] = nil end
+        end
+    end
+
     -- A popup or link command is Lua code or a Lua function, as in Mudlet.
     function __mudlet_popup_cmd(c)
         if type(c) == 'function' then return __mudlet_link_ref(c) end
@@ -10634,7 +10648,10 @@ do
             local name = (...)
             local err = __mudlet_console_refusal(name)
             if err then return nil, err end
+            -- the functions of the links cleared away go with their text
+            local held = __consoleLinkCommands(__mudlet_console_key(name))
             if name ~= nil then raw(__mudlet_console_key(name)) else raw(...) end
+            __mudlet_release_links(held)
         end
     end
     clearWindow     = clearer(clearWindow)

@@ -545,6 +545,25 @@ export class Console {
         return this.history[this.cursor] ?? null;
     }
 
+    /** Line `index` in Mudlet's numbering (the open line last), or null when
+     *  the index names no line. */
+    lineBuffer(index: number): AnsiAwareBuffer | null {
+        if (index < 0 || index >= this.lineTotal) return null;
+        return index < this.history.length ? this.history[index] : this.partial;
+    }
+
+    /** The Lua code of every scripted link or popup this console's lines hold. */
+    linkCommands(): string[] {
+        const commands: string[] = [];
+        for (const line of [...this.history, this.partial]) {
+            for (const segment of line.getSegments()) {
+                const lua = segment.state?.hyperlink?.luaCommands;
+                if (lua) commands.push(...lua);
+            }
+        }
+        return commands;
+    }
+
     /** Whether `buf` is still one of this console's lines — the open one or a
      *  complete one — rather than one a clear, a deletion or the scrollback
      *  limit has taken away. */

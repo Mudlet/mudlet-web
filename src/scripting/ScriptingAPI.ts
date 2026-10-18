@@ -5547,6 +5547,24 @@ export class ScriptingAPI {
         return true;
     }
 
+    /** The Lua code of every scripted link the named console's lines hold, for
+     *  Bridge.lua to let go of the functions a clear takes off the screen. */
+    consoleLinkCommands(win?: string): string[] {
+        return this.getConsole(win)?.linkCommands() ?? [];
+    }
+
+    /** Of the link `commands` given, the ones some console still shows. */
+    linkCommandsShown(commands: string[]): string[] {
+        const wanted = new Set(commands);
+        const shown = new Set<string>();
+        for (const con of this.session.consoles.values()) {
+            for (const command of con.linkCommands()) {
+                if (wanted.has(command)) shown.add(command);
+            }
+        }
+        return [...shown];
+    }
+
     /** The Lua code of every scripted link in the clipboard, for Bridge.lua to
      *  hold a reference of the clipboard's own to each function a link calls,
      *  as TBuffer's copied TLinkStore does in desktop. */
@@ -8041,19 +8059,25 @@ export class ScriptingAPI {
 
     /** Selections are made on the cursor's line, and stay with that line. */
     private setSelection(win: string | undefined, start: number, length: number): void {
-        this.selections.set(this.selectionKey(win), { windowName: win, start, length, line: this.resolveBuffer(win) });
+        const con = this.getConsole(win);
+        this.selections.set(this.selectionKey(win), {
+            windowName: win, start, length, line: this.resolveBuffer(win), y: con?.getLineNumber() ?? -1,
+        });
     }
 
     /**
-     * The line a selection was made on, while its console still holds it; null
-     * once a clear (or the scrollback limit) has taken it away, which leaves
-     * the selection standing but no longer valid. A selection made with the
-     * cursor on no stored line — a console just cleared down to its one empty
-     * line — reads whatever line the cursor is on.
+     * The line a selection was made on, while its console still holds it —
+     * wherever the lines around it have moved it. Once a clear (or the
+     * scrollback limit) has taken that line away, the selection is desktop's
+     * P_begin/P_end again, a line number: whatever line now has that number,
+     * or null when none has, which leaves the selection standing but no longer
+     * valid.
      */
     private selectionBuffer(sel: Selection): AnsiAwareBuffer | null {
-        if (!sel.line) return this.resolveBuffer(sel.windowName);
-        return this.getConsole(sel.windowName)?.holdsLine(sel.line) ? sel.line : null;
+        const con = this.getConsole(sel.windowName);
+        if (!con) return null;
+        if (sel.line && con.holdsLine(sel.line)) return sel.line;
+        return con.lineBuffer(sel.y);
     }
 
     private clearSelection(win: string | undefined): void {
@@ -8104,6 +8128,8 @@ interface Selection {
     start: number;
     length: number;
     line: AnsiAwareBuffer | null;
+    /** The line's number when the selection was made. */
+    y: number;
 }
 
 /**

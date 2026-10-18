@@ -70,6 +70,12 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
     lua.global.set('cut', () => api.cut());
     // One string, as Bridge.lua only searches the code for the functions it calls.
     lua.global.set('__clipboardLinkCommands', () => api.clipboardLinkCommands().join('\n'));
+    // The link commands a console's lines hold, and which of a list of them
+    // any console still shows — newline-joined, for the same reason.
+    lua.global.set('__consoleLinkCommands', (name?: unknown) =>
+        api.consoleLinkCommands(typeof name === 'string' ? name : undefined).join('\n'));
+    lua.global.set('__linkCommandsShown', (commands: unknown) =>
+        api.linkCommandsShown(String(commands ?? '').split('\n').filter(Boolean)).join('\n'));
     // Mudlet `paste([window])`. Pastes the clipboard at the cursor (or
     // appends at the end when the cursor is on the last line).
     lua.global.set('paste', (name?: unknown) =>
