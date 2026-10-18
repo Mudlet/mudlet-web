@@ -4882,7 +4882,8 @@ export class ScriptingAPI {
 
         const size = this.session.windows.getSize(windowName!);
         if (!size || size.height <= 0) return 0;
-        const height = Math.max(0, size.height + this.session.windows.pendingCmdLineHeightDelta(windowName!));
+        const height = Math.max(0, size.height + this.session.windows.pendingCmdLineHeightDelta(windowName!)
+            - this.session.windows.openSplitPaneHeight(windowName!));
         return Math.floor(height / cellH);
     }
 
