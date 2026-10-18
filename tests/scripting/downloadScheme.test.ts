@@ -15,6 +15,11 @@ import { createTestRuntime, type TestRuntime } from '../createTestRuntime';
  * timers and never yields to a microtask, so the event has to arrive by a route
  * such a script can still see. That is exactly the media specs' shape, and it is
  * why the ordering is pinned here rather than left implicit.
+ *
+ * Lua's own downloadFile() never gets that far: like Mudlet it refuses anything
+ * but http, https and a local file before issuing a request, answering
+ * (nil, reason). What reaches the service that way is a media fetch, through
+ * the same primitive these tests call.
  */
 describe('downloadFile url scheme', () => {
     let t: TestRuntime;
@@ -27,7 +32,7 @@ describe('downloadFile url scheme', () => {
             __h = registerAnonymousEventHandler("sysDownloadError", function(_, message, path)
                 __seen[#__seen + 1] = tostring(message) .. "|" .. tostring(path)
             end)
-            downloadFile(${JSON.stringify(saveTo)}, ${JSON.stringify(url)})
+            __downloadFile(${JSON.stringify(saveTo)}, ${JSON.stringify(url)})
         `);
         // Stands in for the pump a blocked script would be running: the refusal
         // is queued as a due-now timer, so draining the queue delivers it.
@@ -42,6 +47,18 @@ describe('downloadFile url scheme', () => {
         expect(out).toContain('http');
         expect(out).toContain('ftp');
         expect(out).toContain('/profiles/test/media/x.wav');
+    });
+
+    it('has downloadFile() refuse it up front, with no request and no event', () => {
+        t.run(`
+            __seen = {}
+            __h = registerAnonymousEventHandler("sysDownloadError", function() __seen[#__seen + 1] = true end)
+        `);
+        expect(t.run('return select(2, downloadFile("/profiles/test/x.wav", "ftp://example.invalid/x.wav"))'))
+            .toBe("url is invalid, reason: unsupported scheme 'ftp', only http, https and file are allowed");
+        t.api.timers.pumpDue();
+        expect(t.run('return #__seen')).toBe(0);
+        t.run('killAnonymousEventHandler(__h)');
     });
 
     it('leaves the runtime usable', () => {

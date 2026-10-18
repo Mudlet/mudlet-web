@@ -38,7 +38,7 @@ import xterm256 from '../../mud/text/xterm256';
 import {getAnsi16Palette, onAnsiPaletteChange} from '../../mud/text/colors';
 import {cechoFastPaletteLua} from '../../mud/text/colorParsers';
 import {HttpService} from '../http/HttpService';
-import {normalizeUserUrl, userUrlInvalidReason} from '../http/userUrl';
+import {normalizeUserUrl, userUrlRefusal} from '../http/userUrl';
 import {TtsManager} from '../../ui/tts/TtsManager';
 import {GlobalEventChannel} from '../GlobalEventChannel';
 import {type MudletVariable, normalizeVariableTree} from '../../import/mudletVariables';
@@ -2373,14 +2373,15 @@ export class LuaRuntime implements IScriptingRuntime {
         // success/error via sysXxxHttp* events. The JS bindings below just kick
         // off the background request; the (true, url) tuple is added by the
         // Bridge.lua wrappers that call these `__` primitives.
-        // Mudlet refuses a malformed url locally — QUrl::fromUserInput(...) then
-        // !isValid() — and returns (nil, "<fn>: url is invalid, reason: ...")
-        // without issuing a request. Report the reason here (a real parser lives
-        // on this side) and let the Bridge.lua wrappers shape the tuple. The
-        // scheme test mirrors fromUserInput's leniency: a bare "localhost/x" is
-        // a valid url that means http://localhost/x.
-        this.lua.global.set('__mudlet_url_invalid_reason', (url: unknown) =>
-            userUrlInvalidReason(String(url ?? '')) ?? false);
+        // Mudlet refuses a malformed url, or one that is not http or https (or a
+        // local file, for downloadFile), locally — and returns (nil, "url is
+        // invalid, reason: ...") without issuing a request. Report the reason
+        // here (a real parser lives on this side) and let the Bridge.lua
+        // wrappers shape the tuple. The scheme test mirrors fromUserInput's
+        // leniency: a bare "localhost/x" is a valid url that means
+        // http://localhost/x.
+        this.lua.global.set('__mudlet_url_invalid_reason', (url: unknown, allowLocalFile: unknown) =>
+            userUrlRefusal(String(url ?? ''), allowLocalFile === true) ?? false);
         // What the url means once fromUserInput has read it — the string the
         // request goes to and the one Mudlet hands back as the second return.
         this.lua.global.set('__mudlet_normalize_url', (url: unknown) => normalizeUserUrl(String(url ?? '')));

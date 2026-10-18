@@ -2830,11 +2830,14 @@ function __mudlet_check_headers(headers, funcName, index)
 end
 
 -- Returns (nil, errMsg) when the url can't be used, else nil so the caller
--- proceeds. Runs after the type/header checks, matching Mudlet's order.
+-- proceeds. Runs after the type/header checks, matching Mudlet's order. The
+-- message names no function: Mudlet's warnArgumentValue returns the bare text,
+-- which installPackageFromUrl folds into a report of its own. downloadFile()
+-- alone may also copy a local file.
 function __mudlet_http_url_error(url, funcName)
-    local reason = __mudlet_url_invalid_reason(url)
+    local reason = __mudlet_url_invalid_reason(url, funcName == "downloadFile")
     if reason then
-        return funcName .. ": url is invalid, reason: " .. tostring(reason)
+        return "url is invalid, reason: " .. tostring(reason)
     end
     return nil
 end
