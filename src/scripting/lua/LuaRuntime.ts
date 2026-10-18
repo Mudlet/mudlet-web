@@ -205,7 +205,14 @@ const SPEC_TEXT_FIXTURES = BUSTED_ENABLED
     ? (import.meta.glob('./specs/fixtures/**/*.{xml,lua,json,txt}', { query: '?raw', import: 'default', eager: true }) as Record<string, string>)
     : {};
 const SPEC_BINARY_FIXTURES = BUSTED_ENABLED
-    ? (import.meta.glob('./specs/fixtures/**/*.{mpackage,zip}', { query: '?inline', import: 'default', eager: true }) as Record<string, string>)
+    ? (import.meta.glob('./specs/fixtures/**/*.{mpackage,zip,png,dat}', { query: '?inline', import: 'default', eager: true }) as Record<string, string>)
+    : {};
+// The packages desktop compiles into its binary, which specs install by their
+// Qt resource path (`:/packages/<dir>/<file>.mpackage`) — the tutorial and
+// MedBootstrap, which no profile here gets by default. Busted builds only: the
+// app bundles just the archives defaultPackages.ts installs.
+const QT_PACKAGE_ARCHIVES = BUSTED_ENABLED
+    ? (import.meta.glob('../../import/defaults/*/*.mpackage', { query: '?inline', import: 'default', eager: true }) as Record<string, string>)
     : {};
 
 // VFS spec paths the busted runner can target (e.g. /lua/specs/StringUtils_spec.lua).
@@ -2549,6 +2556,10 @@ export class LuaRuntime implements IScriptingRuntime {
         // byte), which is exactly what a binary read needs.
         for (const [p, uri] of Object.entries(SPEC_BINARY_FIXTURES)) {
             builtins.set(`/lua/specs/${p.slice('./specs/'.length)}`,
+                atob(uri.slice(uri.indexOf(',') + 1)));
+        }
+        for (const [p, uri] of Object.entries(QT_PACKAGE_ARCHIVES)) {
+            builtins.set(`:/packages/${p.slice('../../import/defaults/'.length)}`,
                 atob(uri.slice(uri.indexOf(',') + 1)));
         }
         // Kept so anything reading a /lua/ path from the JS side — the package
