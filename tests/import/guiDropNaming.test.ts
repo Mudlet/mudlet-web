@@ -47,6 +47,7 @@ describe('gui-drop container naming', () => {
     /** What ImageDrop would name the container for `imgName` (sans extension). */
     const nameFor = (imgName: string) => rt.run(`
         GUIDropImages = {}
+        GUIDropManager = { unrestored = {} }
         local imgName = ${JSON.stringify(imgName)}
         ${namingBlock()}
         return containername

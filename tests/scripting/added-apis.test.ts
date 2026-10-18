@@ -996,8 +996,9 @@ describe('lockExit / hasExitLock', () => {
 
   it('rejects an unknown direction or missing room', () => {
     env.run('addRoom(300)');
-    // Other.lua's own wrapper answers false for a name it does not know.
-    expect(env.run('return (lockExit(300, "sideways", true))')).toBe(false);
+    // Other.lua's own wrapper answers nil and a message for a name it does not know.
+    expect(env.run('return (lockExit(300, "sideways", true))')).toBeNull();
+    expect(env.run('return select(2, lockExit(300, "sideways", true))')).toBe('"sideways" is not a valid direction');
     expect(env.run('return (hasExitLock(300, "north"))')).toBe(false);
     expect(env.run('return select("#", lockExit(9999, "north", true))')).toBe(0);
     expect(env.run('return (hasExitLock(9999, "north"))')).toBeNull();

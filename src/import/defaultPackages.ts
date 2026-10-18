@@ -84,7 +84,7 @@ const MUDLET_MAPPER: DefaultPackage = {
  *  profiles that already have the old one — safe because the mapper keeps its
  *  state in `<profile>/map downloads/`, outside the package dir a reinstall wipes. */
 const GENERIC_MAPPER: DefaultPackage = {
-    name: 'generic_mapper', filename: 'generic_mapper.mpackage', url: genericMapperUrl, version: '2.1.12',
+    name: 'generic_mapper', filename: 'generic_mapper.mpackage', url: genericMapperUrl, version: '2.1.15',
 };
 
 /** Mudlet's starter interface: an adjustable dock with the map, tabbed chat and
@@ -94,7 +94,7 @@ const GENERIC_MAPPER: DefaultPackage = {
  *  pushes a GUI via `Client.GUI`. `version` is declared for the same reason the
  *  mapper's is: so a bumped archive reaches profiles that have the old one. */
 const BASE_UI: DefaultPackage = {
-    name: 'mudlet-base-ui', filename: 'mudlet-base-ui.mpackage', url: baseUiUrl, version: '1.7.5',
+    name: 'mudlet-base-ui', filename: 'mudlet-base-ui.mpackage', url: baseUiUrl, version: '1.7.7',
 };
 
 /** Drop an image file onto a console and it becomes a Geyser label inside an
@@ -104,7 +104,7 @@ const BASE_UI: DefaultPackage = {
  *  reason the mapper's is — and here it also carries the fixed archive to
  *  profiles still holding the versionless loose-XML install. */
 const GUI_DROP: DefaultPackage = {
-    name: 'gui-drop', filename: 'gui-drop.mpackage', url: guiDropUrl, version: '1.3',
+    name: 'gui-drop', filename: 'gui-drop.mpackage', url: guiDropUrl, version: '1.4',
 };
 
 /** Mudlet's package manager: `mpkg install/remove/search/show/list/update`
