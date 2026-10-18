@@ -686,6 +686,11 @@ class ScriptingWindowsAPI {
         return this.session.windows.hasMapper();
     }
 
+    /** The report the last loadJsonMap wrote for log/errors.txt, once (see WindowManager.takeMapReport). */
+    takeMapReport(): string {
+        return this.session.windows.takeMapReport();
+    }
+
     isVisible(id: string): boolean {
         return this.session.windows.isVisible(id);
     }
@@ -6621,7 +6626,7 @@ export class ScriptingAPI {
     /** Mudlet `loadJsonMap(path)` backbone — parse a JSON payload previously
      *  produced by saveJsonMap and reload the map. Returns false when the
      *  JSON is malformed or doesn't match the MudletMap shape. */
-    loadJsonMap(json: string): boolean { return this.session.windows.loadJsonMap(json); }
+    loadJsonMap(json: string, source?: string): boolean { return this.session.windows.loadJsonMap(json, source); }
 
     /** Mudlet `addSupportedTelnetOption(option)`. Forwarded to the session
      *  client so the next IAC WILL/DO from the server can be auto-accepted. */

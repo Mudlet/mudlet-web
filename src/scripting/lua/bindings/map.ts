@@ -387,7 +387,14 @@ export function installMapBindings({
         if (!Array.isArray(doc.areas) || doc.areas.length === 0) {
             return `loadJsonMap: no areas detected in file "${location}"`;
         }
-        if (!api.loadJsonMap(json)) return `loadJsonMap: could not read the map in file "${location}"`;
+        if (!api.loadJsonMap(json, location)) return `loadJsonMap: could not read the map in file "${location}"`;
+        const report = api.windows.takeMapReport();
+        if (report) {
+            try {
+                vfs.mkdir(`${vfs.profilePath}/log`);
+                vfs.appendFile(`${vfs.profilePath}/log/errors.txt`, report);
+            } catch { /* the console line still names it */ }
+        }
         // The map-level settings ride in the same document, and are applied
         // after the rooms so a failed load cannot leave the profile wearing an
         // imported map's appearance without its map.

@@ -258,7 +258,7 @@ function colorFromRgb24(rgb: unknown, alpha = 255): MudletColor {
  * applyJsonRoomBorders and applyJsonSymbolColors put them on the store once
  * the rooms exist.
  */
-export function mudletJsonMapToMudletMap(src: unknown): MudletMap | null {
+export function mudletJsonMapToMudletMap(src: unknown, droppedRoomWarnings: string[] = []): MudletMap | null {
     if (!src || typeof src !== 'object') return null;
     const doc = src as Record<string, unknown>;
     if (!Array.isArray(doc.areas)) return null;
@@ -301,8 +301,17 @@ export function mudletJsonMapToMudletMap(src: unknown): MudletMap | null {
         const zLevels = new Set<number>();
         for (const rawRoom of (Array.isArray(rawArea.rooms) ? rawArea.rooms : []) as Record<string, unknown>[]) {
             if (!rawRoom || typeof rawRoom !== 'object') continue;
-            const roomId = Number(rawRoom.id);
-            if (!Number.isFinite(roomId)) continue;
+            // TRoom::readJsonRoom reads the id with QJsonValue::toInt: a missing
+            // or non-integer one is 0, which the audit renumbers. A room whose
+            // id is taken is left out, and said so (TArea::readJsonArea).
+            const rawId = rawRoom.id;
+            const roomId = typeof rawId === 'number' && Number.isInteger(rawId) && Math.abs(rawId) <= 0x7fffffff ? rawId : 0;
+            if (roomId in rooms) {
+                droppedRoomWarnings.push(roomId !== 0 && rawId === roomId
+                    ? `The map file has more than one room with id ${roomId}, so the one in area ${areaId} has been left out.`
+                    : `The map file has more than one room without a valid id, so one in area ${areaId} has been left out.`);
+                continue;
+            }
 
             const room = makeRoom(areaId);
             room.name = typeof rawRoom.name === 'string' ? rawRoom.name : '';
@@ -1733,8 +1742,9 @@ export class MapStore {
         // Mudlet's own saveJsonMap output has no top-level `rooms` and keeps
         // them nested inside an `areas` array — convert that shape first, and
         // only then fall through to the binary-model shape toJsonString emits.
+        const droppedRoomWarnings: string[] = [];
         const source = (!map.rooms || Array.isArray(map.areas))
-            ? mudletJsonMapToMudletMap(parsed)
+            ? mudletJsonMapToMudletMap(parsed, droppedRoomWarnings)
             : (map.areas ? map as MudletMap : null);
         if (!source) return false;
         // The locks by command, read before the load hands the rooms to the
@@ -1753,6 +1763,8 @@ export class MapStore {
                 this.specialExitLocks.set(roomId, new Set([...commands].filter(c => Object.prototype.hasOwnProperty.call(kept, c))));
             }
             this.endBinaryLoad();
+            // Said ahead of what the audit found, as the reader says them first.
+            this.lastAuditIssues.unshift(...droppedRoomWarnings.map(message => ({ severity: 'warn' as const, message })));
         } catch { return false; }
         finally { this.liftFileFallbacks = true; }
         // Symbol colours live in a side-table (MudletRoom has no charColor
