@@ -1033,6 +1033,12 @@ export class ScriptingAPI {
      *  every other placement a package makes. */
     readonly addonCommands = new AddonCommandRegistry();
 
+    /** The package or module whose code the calling frame is, or '' for the
+     *  profile's own; see ScriptingEngine.packageOfCaller. */
+    packageOfCaller(source: string, isMain: boolean, calledFromMain: boolean): string {
+        return this.host.packageOfCaller(source, isMain, calledFromMain);
+    }
+
     /** A player clicked a command's button. Mudlet raises `sysCommandClicked`
      *  with the id as a NUMBER (mudlet.cpp:694-699), which is the id addCommand
      *  handed the package — that is what makes the id worth returning. */

@@ -1690,6 +1690,9 @@ export class ScriptingEngine implements EngineHost {
         // the same name starts from its own config.lua.
         this.moduleInfoOverrides.delete(moduleName);
         useAppStore.getState().uninstallPackage(this.connectionId, moduleName);
+        // Not on a reload, which keeps the module's Lua state and with it the
+        // ids of the commands it made.
+        this.api.addonCommands.removeOwnedBy(moduleName);
         if (this.vfs) {
             const vfs = this.vfs;
             void uninstallPackageFiles(pkg, vfs).catch(err => {
@@ -3117,6 +3120,62 @@ export class ScriptingEngine implements EngineHost {
         }
     }
 
+    /** The script whose body is running right now (Host's mRunningScript): its
+     *  chunk name and the package or module it came with ('' for the profile). */
+    private runningScript: { chunk: string; owner: string } | null = null;
+
+    /**
+     * Which package or module owns the code a Lua frame is running, '' for the
+     * profile's own — desktop's packageOfFrame, which addCommand asks so that a
+     * package's commands go with it.
+     *
+     * The running script's own body is its package's. Otherwise the chunk is
+     * whoever's items run under that chunk name, or whose folder the file lies
+     * in; when several do — a package script and a profile script may share a
+     * name — the running script's package still owns it if a main chunk of
+     * the same source calls this frame directly (a local function its body
+     * called), and anything else is the profile's: code a package merely runs
+     * for someone else is theirs.
+     */
+    packageOfCaller(source: string, isMain: boolean, calledFromMain: boolean): string {
+        const running = this.runningScript;
+        if (running && source === running.chunk && isMain) return running.owner;
+        const owners = this.ownersOfChunk(source);
+        if (owners.size === 1) return [...owners][0];
+        if (owners.size > 1 && running && source === running.chunk && owners.has(running.owner) && calledFromMain) {
+            return running.owner;
+        }
+        return '';
+    }
+
+    private ownersOfChunk(source: string): Set<string> {
+        const owners = new Set<string>();
+        const s = useAppStore.getState();
+        const id = this.connectionId;
+        const kinds: [string, readonly { isGroup?: boolean; name: string; packageName?: string }[]][] = [
+            ['Script', s.connectionScripts[id] ?? []],
+            [ITEM_CHUNK_PREFIX.trigger, s.connectionTriggers[id] ?? []],
+            [ITEM_CHUNK_PREFIX.alias, s.connectionAliases[id] ?? []],
+            [ITEM_CHUNK_PREFIX.timer, s.connectionTimers[id] ?? []],
+            [ITEM_CHUNK_PREFIX.key, s.connectionKeybindings[id] ?? []],
+            [ITEM_CHUNK_PREFIX.button, s.connectionButtons[id] ?? []],
+        ];
+        for (const [prefix, items] of kinds) {
+            for (const item of items) {
+                if (!item.isGroup && `${prefix}: ${item.name}` === source) owners.add(item.packageName ?? '');
+            }
+        }
+        // A file is its package's when it lies in the package's own folder.
+        const path = source.replace(/^@/, '');
+        const home = this.vfs?.profilePath;
+        if (home && path.startsWith(`${home}/`)) {
+            for (const name of this.getPackageNames().concat(this.getModuleNames())) {
+                if (path.startsWith(`${home}/${name}/`)) owners.add(name);
+            }
+        }
+        return owners;
+    }
+
     /**
      * Lua `uninstallPackage(name)`: why it would not, or null once it has
      * (TLuaInterpreter::uninstallPackage). Whether the package is installed is
@@ -3165,6 +3224,7 @@ export class ScriptingEngine implements EngineHost {
         // load script as well — where desktop starts again from config.lua.
         this.packageInfoOverrides.delete(packageName);
         useAppStore.getState().uninstallPackage(this.connectionId, packageName);
+        this.api.addonCommands.removeOwnedBy(packageName);
         this.saveAfterPackageChange();
         if (this.vfs) {
             const vfs = this.vfs;
@@ -4551,6 +4611,8 @@ export class ScriptingEngine implements EngineHost {
         this.scriptCompiledAt.set(script.id, ++this.scriptCompileSeq);
         this.compiledThisLoad?.add(script.id);
         const wasFailed = this.failedScripts.has(script.id);
+        const outerScript = this.runningScript;
+        this.runningScript = { chunk: `Script: ${script.name}`, owner: script.packageName ?? '' };
         try {
             rt.load(script.code, script.name);
             this.failedScripts.delete(script.id);
@@ -4560,6 +4622,8 @@ export class ScriptingEngine implements EngineHost {
             this.scriptLoadErrors.set(script.id, err);
             this.reportEntityError('script', script.id, script.name, err,
                 rt.syntaxError?.(script.code, script.name) != null);
+        } finally {
+            this.runningScript = outerScript;
         }
         // A body that failed, or one that compiles again after failing, turns
         // its own handlers and those of everything under it off or back on.
