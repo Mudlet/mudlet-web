@@ -1047,21 +1047,15 @@ export class TelnetNegotiator {
         }, extended);
     }
 
-    /** Latch MXP on for this session and notify listeners. Only the first call
-     *  emits `mxp.negotiated`, and a later subnegotiation; other later calls
-     *  (repeat WILL/DO, in-band detection on subsequent frames) are no-ops. `viaTelnet` distinguishes a
-     *  real option-91 handshake from in-band-only detection (see the event doc),
-     *  and `viaSubnegotiation` the bare `IAC SB MXP IAC SE` that starts the
-     *  processor locked until the server sends a mode of its own. */
+    /** Latch MXP on for this session and notify listeners: on every switch-on
+     *  from the game, and on the first in-band detection. `viaTelnet`
+     *  distinguishes a real option-91 switch-on from in-band-only detection (see
+     *  the event doc), and `viaSubnegotiation` a bare `IAC SB MXP IAC SE`. */
     private startMxp(viaTelnet: boolean, viaSubnegotiation = false): void {
-        if (this.mxpStarted) {
-            // Every `IAC SB MXP IAC SE` puts the processor back in locked mode,
-            // not just one that comes first: the usual order is WILL, then SB,
-            // and it is the SB that says nothing is markup until the game
-            // switches modes (cTelnet sets MXP_MODE_CODE_LOCK_LOCKED on each).
-            if (viaSubnegotiation) this.eventBus.emit('mxp.negotiated', viaTelnet, true);
-            return;
-        }
+        // Every switch-on from the game is reported, not just the first:
+        // cTelnet::switchMxpOn runs for each WILL, DO and bare subnegotiation,
+        // and decides there whether the game is starting MXP afresh.
+        if (this.mxpStarted && !viaTelnet) return;
         this.mxpStarted = true;
         this.eventBus.emit('mxp.negotiated', viaTelnet, viaSubnegotiation);
     }
