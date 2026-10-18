@@ -746,7 +746,10 @@ do
         local _znames = __zip_names__
         local _zread  = __zip_read__
         local _zclose = __zip_close__
+        local _zsizes = __zip_sizes__
+        local _zerror = __zip_error__
         __zip_open__, __zip_names__, __zip_read__, __zip_close__ = nil, nil, nil, nil
+        __zip_sizes__, __zip_error__ = nil, nil
 
         -- An entry is read whole and handed out in slices: the archive is
         -- already in memory, so a chunked read is a substring, and callers that
@@ -779,13 +782,46 @@ do
                 if id == nil then
                     return nil, "could not open zip archive '" .. tostring(path) .. "'"
                 end
-                local names = _znames(id)
+                -- 0-indexed as they cross from JS.
+                local names, sizes = _znames(id), _zsizes(id)
+                local count = 0
+                while names[count] ~= nil do count = count + 1 end
+                local function indexOf(which)
+                    if type(which) == "number" then
+                        return (which >= 1 and which <= count) and math.floor(which) or nil
+                    end
+                    for i = 0, count - 1 do
+                        if names[i] == tostring(which) then return i + 1 end
+                    end
+                    return nil
+                end
                 local archive
+                -- Both libraries' surface: Mudlet loads brimworks' lua-zip, which
+                -- walks entries with get_num_files()/stat(i) and opens one by
+                -- index or name, and falls back to Kepler's luazip, whose files()
+                -- gives filename and uncompressed_size. unzip() takes either.
                 archive = {
-                    open = function(self, name)
-                        local content = _zread(id, tostring(name))
+                    get_num_files = function(self) return count end,
+                    stat = function(self, which)
+                        local i = indexOf(which)
+                        if not i then return nil, "Invalid argument" end
+                        return { name = names[i - 1], size = sizes[i - 1], index = i }
+                    end,
+                    open = function(self, which)
+                        local i = indexOf(which)
+                        if not i then
+                            return nil, "no entry named '" .. tostring(which) .. "' in the archive"
+                        end
+                        local content = _zread(id, i)
+                        -- libzip only finds a bad entry (a CRC that does not match,
+                        -- data that will not inflate) while reading it, so lua-zip
+                        -- opens it and reports the error from read().
                         if content == nil then
-                            return nil, "no entry named '" .. tostring(name) .. "' in the archive"
+                            local reason = _zerror()
+                            return {
+                                read = function() return nil, reason end,
+                                close = function() return true end,
+                            }
                         end
                         return _make_entry(_unarmor(content))
                     end,
@@ -793,14 +829,12 @@ do
                         _zclose(id)
                         return true
                     end,
-                    -- The names, 0-indexed as they cross from JS.
                     files = function(self)
                         local i = 0
                         return function()
-                            local name = names[i]
+                            if i >= count then return nil end
                             i = i + 1
-                            if name == nil then return nil end
-                            return { filename = name }
+                            return { filename = names[i - 1], uncompressed_size = sizes[i - 1] }
                         end
                     end,
                 }

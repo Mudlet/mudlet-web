@@ -255,8 +255,17 @@ end`,
   end
 end`,
     },
+    // A trailing boolean is the "column width" flag, popped before the forms are
+    // told apart (so calcFontSize(true) reads no window name), and a nil after a
+    // window name is that flag left out; after a font size it is a missing font
+    // name, still refused.
     calcFontSize: {
-        custom: `function(n, a1, a2)
+        custom: `function(n, a1, a2, a3)
+  if n >= 1 and type(({ a1, a2, a3 })[n]) == 'boolean' then
+    n = n - 1
+  elseif n == 2 and type(a1) == 'string' and a2 == nil then
+    n = 1
+  end
   if n == 2 then
     if not isN(a1) then return M('calcFontSize', 1, 'font size', 'number', a1, n) end
     if not isS(a2) then return M('calcFontSize', 2, 'font name', 'string', a2, n) end

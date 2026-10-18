@@ -1,8 +1,9 @@
 import {
-    cssTextToParts, extractQtAlignment, extractQtScaledContents, extractQtWordWrap,
+    cssTextToParts, extractQtAlignment, extractQtScaledContents, extractQtWordWrap, extractQtText,
     patchStyleSheetBackgroundColor,
 } from './qtCss';
 import type { MoviePlayer } from './gifMovie';
+import { containsAnchorTag, linkStyledText, restyledText, type LinkStyleState } from './labelModel';
 import { OverlayLayerOrder } from '../layout/overlayLayerOrder';
 
 /** The point size of `.label`'s 12px (LabelOverlay.css) at the CSS 96 dpi. */
@@ -102,6 +103,10 @@ export interface LabelState {
      *  same reason (Qt won't style them either). Only populated while a visited
      *  color is set, as Mudlet does. */
     visitedLinks?: Set<string>;
+    /** What the last link-styling pass was given and made of it, so a styled
+     *  tag read back with getLabelText can be given back as it was written —
+     *  see labelModel.ts. */
+    linkText?: LinkStyleState;
     /** Click handler installed by setLabelClickCallback. The event table mirrors
      *  Mudlet's `mudlet.mouse_button` shape: `{button, x, y, alt, ctrl, shift, meta}`. */
     onClick?: (event: LabelMouseEvent) => void;
@@ -174,41 +179,6 @@ type LinkActivator = (href: string) => void;
 // emit as `left: NaN` and warn about. Coerce non-finite inputs to 0 so the
 // label still renders (matches Mudlet's int-cast behaviour) instead of
 // poisoning the inline style.
-/**
- * Mudlet's `TLabel::setText` link-styling pass: every `<a href=…>` in the text a
- * label is given gets an inline `style` carrying the colours `setLinkStyle`
- * asked for, because QTextDocument reads neither the widget stylesheet nor the
- * palette for link colours. The DOM does honour a stylesheet — LabelOverlay
- * injects one — but `getLabelText` answers with the styled text, so the pass has
- * to happen here as well as there.
- *
- * The pattern is Mudlet's, deliberately strict (lowercase tag, href first, no
- * spacing around `=`): that is the shape Mudlet's own HTML generation produces.
- * The separator is `\s+`, so an anchor whose attributes start on the next line
- * is styled like any other.
- */
-const ANCHOR_RE = /<a\s+href=(["'][^"']*["'])([^>]*)>/g;
-
-function styleAnchors(
-    html: string,
-    style: { color?: string; visitedColor?: string; underline: boolean } | undefined,
-    visited: Set<string> | undefined,
-): string {
-    if (!style || (!style.color && !style.visitedColor)) return html;
-    return html.replace(ANCHOR_RE, (whole, hrefPart: string, otherAttrs: string) => {
-        const url = hrefPart.slice(1, -1);
-        const decls: string[] = [];
-        if (visited?.has(url) && style.visitedColor) decls.push(`color: ${style.visitedColor};`);
-        else if (style.color) decls.push(`color: ${style.color};`);
-        if (!style.underline) decls.push('text-decoration: none;');
-        if (decls.length === 0) return whole;
-        // An anchor that already carries a style attribute has it REPLACED, not
-        // merged — Mudlet keeps the simple case simple and says so.
-        const rest = otherAttrs.replace(/style=(["'][^"']*["'])/g, '');
-        return `<a href=${hrefPart} style="${decls.join(' ')}"${rest}>`;
-    });
-}
-
 /** `html` with every `<…>` run dropped: from each `<` up to the next `>`, and
  *  text after a `<` that never closes kept as is. The same string the regex
  *  `/<[^>]*>/g` replace gave, as a scanner — only renderedText's no-DOM
@@ -570,9 +540,21 @@ export class LabelManager {
         // QLabel shows one content at a time — setText replaces a running
         // movie, so echo()/setLabelText after setMovie drops the animation.
         if (lbl.movie) { lbl.movie.stop(); lbl.hiddenMovie = lbl.movie; lbl.movie = undefined; }
-        lbl.html = styleAnchors(html, lbl.linkStyle, lbl.visitedLinks);
+        const styled = linkStyledText(html, lbl.linkStyle, lbl.visitedLinks, lbl.linkText, lbl.html);
+        lbl.html = styled.text;
+        lbl.linkText = styled.state;
         this.notify(lbl.parent);
         return true;
+    }
+
+    /** TLabel::reapplyLinkStyle: the links already shown are styled again from
+     *  the text the last pass was given, after the link style or the visited
+     *  links changed. A picture or movie took the text out, so there is none. */
+    private reapplyLinkStyle(lbl: LabelState): void {
+        if (!lbl.html || !lbl.linkText || !containsAnchorTag(lbl.html)) return;
+        const styled = restyledText(lbl.linkStyle, lbl.visitedLinks, lbl.linkText);
+        lbl.html = styled.text;
+        lbl.linkText = styled.state;
     }
 
     /** Mudlet setMovie — install (or replace) the label's GIF player. */
@@ -583,6 +565,8 @@ export class LabelManager {
         lbl.hiddenMovie?.stop();
         lbl.hiddenMovie = undefined;
         lbl.movie = player;
+        // QLabel shows one content at a time: setMovie takes the text away.
+        lbl.html = '';
         this.notify(lbl.parent);
         return true;
     }
@@ -651,6 +635,9 @@ export class LabelManager {
         const lbl = this.labels.get(name);
         if (!lbl) return false;
         lbl.backgroundImage = { url, ...(svg ? { svg } : {}), ...(size ?? {}) };
+        // A raster image goes in with QLabel::setPixmap, which empties the text;
+        // an SVG is a layer of its own and leaves the text alone.
+        if (!svg) lbl.html = '';
         this.notify(lbl.parent);
         return true;
     }
@@ -739,6 +726,10 @@ export class LabelManager {
         // ...as is qproperty-wordWrap, the opt-in to wrapping label text.
         const wrap = extractQtWordWrap(css);
         if (wrap !== undefined) lbl.wordWrap = wrap;
+        // ...and qproperty-text, which Qt hands straight to QLabel::setText
+        // as the style is applied — past TLabel's link-styling pass.
+        const text = extractQtText(css);
+        if (text !== undefined) lbl.html = text;
         this.notify(lbl.parent);
         return true;
     }
@@ -752,6 +743,7 @@ export class LabelManager {
             visitedColor: visitedColor || undefined,
             underline,
         };
+        this.reapplyLinkStyle(lbl);
         this.notify(lbl.parent);
         return true;
     }
@@ -773,8 +765,9 @@ export class LabelManager {
      */
     activateLink(name: string, href: string): void {
         const lbl = this.labels.get(name);
-        if (lbl?.linkStyle?.visitedColor && !lbl.visitedLinks?.has(href)) {
+        if (lbl?.linkStyle?.visitedColor) {
             (lbl.visitedLinks ??= new Set()).add(href);
+            this.reapplyLinkStyle(lbl);
             this.notify(lbl.parent);
         }
         this.linkActivator?.(href);
@@ -785,6 +778,19 @@ export class LabelManager {
         const lbl = this.labels.get(name);
         if (!lbl) return false;
         lbl.linkStyle = undefined;
+        // the styles written into the anchors would otherwise stay
+        this.reapplyLinkStyle(lbl);
+        this.notify(lbl.parent);
+        return true;
+    }
+
+    /** Mudlet `clearVisitedLinks(labelName)` — forget which links were clicked,
+     *  so they take the link colour again. */
+    clearVisitedLinks(name: string): boolean {
+        const lbl = this.labels.get(name);
+        if (!lbl) return false;
+        lbl.visitedLinks = undefined;
+        this.reapplyLinkStyle(lbl);
         this.notify(lbl.parent);
         return true;
     }

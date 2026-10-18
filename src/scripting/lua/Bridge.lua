@@ -1277,11 +1277,26 @@ end
 -- height (pixels) of an average character cell. JS returns a 2-element array
 -- (0-indexed under wasmoon) or nil for the miss case; re-shape into Mudlet's
 -- multi-return on success and (nil, errMsg) on failure.
-function calcFontSize(a, b)
-    local t = __calcFontSize(a, b)
+--
+-- A trailing boolean asks a window for the width it draws a column in rather
+-- than that of a "W"; it is taken off before the forms are told apart, so
+-- calcFontSize(true) measures the main window as calcFontSize() does. A nil
+-- after a window name is that flag left out (TLuaInterpreter::calcFontSize).
+function calcFontSize(...)
+    local n = select('#', ...)
+    local args = { ... }
+    local columnWidth = false
+    if n >= 1 and type(args[n]) == 'boolean' then
+        columnWidth = args[n]
+        args[n] = nil
+        n = n - 1
+    end
+    local a, b = args[1], args[2]
+    if n < 2 then b = nil end
+    local t = __calcFontSize(a, b, columnWidth)
     if t == nil then
         if type(a) == 'string' then
-            return nil, "calcFontSize: window \"" .. a .. "\" not found"
+            return nil, "window \"" .. a .. "\" not found"
         end
         return nil, "calcFontSize: bad argument #1 (number or window name expected)"
     end
@@ -1292,6 +1307,17 @@ end
 -- through getVerifiedNumber/getVerifiedString and raises, so a typo fails at the
 -- call instead of quietly writing a NaN border or the string "table".
 do
+    -- The range Profile Preferences offer a border in. The console takes
+    -- opposite borders off its own size, so desktop refuses anything past it
+    -- (NaN and infinities included) rather than overflow an int there, and
+    -- leaves the borders as they were.
+    local function borderOutOfRange(v, argument)
+        if v ~= v or v < -1000000 or v > 1000000 then
+            return ("border size %.14g (argument #%d) is out of range, it must be between -1000000 and 1000000")
+                :format(v, argument)
+        end
+    end
+
     local function requireNumber(fn, who)
         return function(v, ...)
             local num = __mudlet_num(v)
@@ -1299,13 +1325,31 @@ do
                 error(who .. ": bad argument #1 type (number expected, got "
                     .. type(v) .. "!)", 2)
             end
-            return fn(num, ...)
+            local err = borderOutOfRange(num, 1)
+            if err then return nil, err end
+            fn(num, ...)
+            return true
         end
     end
     setBorderTop    = requireNumber(setBorderTop,    "setBorderTop")
     setBorderBottom = requireNumber(setBorderBottom, "setBorderBottom")
     setBorderLeft   = requireNumber(setBorderLeft,   "setBorderLeft")
     setBorderRight  = requireNumber(setBorderRight,  "setBorderRight")
+
+    -- The argument types are checked first (argContracts), all of them, so a
+    -- size out of range never hides a type mistake after it.
+    local _rawSetBorderSizes = setBorderSizes
+    function setBorderSizes(...)
+        local n = select('#', ...)
+        local v = { ... }
+        for p = 1, math.min(n, 4) do
+            local num = __mudlet_num(v[p])
+            local err = num and borderOutOfRange(num, p)
+            if err then return nil, err end
+        end
+        _rawSetBorderSizes(...)
+        return true
+    end
 
     -- Numbers are accepted the way Mudlet's lua_isstring accepts them (Lua
     -- coerces), and nil keeps clearing the clipboard — Mudlet Web chose that so a
@@ -1685,6 +1729,8 @@ end
 function getBackgroundColor(windowName)
     local t = __getBackgroundColor(windowName)
     if t == nil then
+        local refusal = __backgroundColorRefusal(windowName, true)
+        if refusal then return nil, refusal end
         -- Mudlet's wording here differs from the generic not-found message used
         -- by the console family (single quotes, "does not exist"); UI_spec
         -- asserts it verbatim.
@@ -2582,29 +2628,42 @@ do
         end
     end
     setLabelToolTip   = labelGuard(setLabelToolTip,   "label name '%s' not found")
-    -- The shape must be a number by the time it gets here: GUIUtils.lua's
-    -- wrapper translates a name through mudlet.cursor, and a name that isn't in
-    -- there arrives as nil. Refusing it is the point — silently leaving the
-    -- cursor alone would hide the typo.
+    -- TLuaInterpreter::setLabelCursor. GUIUtils.lua's wrapper turns every name
+    -- in mudlet.cursor into its number, so a name still arriving here is one it
+    -- does not know — refused, but only once the label itself has been found,
+    -- the order a number out of range is refused in too. A numeric string is
+    -- that number, as Lua's own coercion reads it.
     do
-        local guarded = labelGuard(setLabelCursor, "label name '%s' not found")
+        local raw = setLabelCursor
         setLabelCursor = function(name, shape)
-            local num = __mudlet_int(shape)
-            if num == nil then
-                error("setLabelCursor: bad argument #2 type (cursor shape as number expected, got "
-                    .. type(shape) .. "!)", 2)
+            if type(name) ~= 'string' and type(name) ~= 'number' then
+                error("setLabelCursor: bad argument #1 type (label name as string expected, got "
+                    .. type(name) .. "!)", 2)
             end
-            -- The shapes the layer below actually knows: -1 (no cursor of its
-            -- own) up to Qt::LastCursor, which is every value in mudlet.cursor.
-            -- A number outside that is refused rather than passed down, where it
-            -- would be taken for a shape nobody asked for — and refusing it is
-            -- what stops "accepts anything" from making the companion test,
-            -- which walks the whole table, pass no matter what is in it.
+            local cursorIsName = type(shape) == 'string' and tonumber(shape) == nil
+            local num
+            if not cursorIsName then
+                num = __mudlet_int(shape)
+                if num == nil then
+                    error("setLabelCursor: bad argument #2 type (cursortype as number expected, got "
+                        .. type(shape) .. "!)", 2)
+                end
+            end
+            name = tostring(name)
+            if name == "" then return nil, "a label cannot have an empty string as its name" end
+            if __windowType(name) ~= 'label' then
+                return nil, "label name '" .. name .. "' not found"
+            end
+            if cursorIsName then
+                return nil, "cursor shape '" .. shape .. "' not found. see https://wiki.mudlet.org/w/CursorShapes"
+            end
+            -- The shapes the layer below knows: -1 (no cursor of its own) up to
+            -- Qt::LastCursor, which is every value in mudlet.cursor.
             if num < -1 or num > 21 then
-                return nil, "setLabelCursor: bad argument #2 value (cursor shape " .. num
-                    .. " is outside the range of shapes this client knows)"
+                return nil, "cursor shape '" .. num .. "' not found. see https://doc.qt.io/qt-5/qt.html#CursorShape-enum"
             end
-            return guarded(name, num)
+            raw(name, num)
+            return true
         end
     end
     setLinkStyle      = labelGuard(setLinkStyle,      "label '%s' not found")
@@ -2742,6 +2801,16 @@ function __mudlet_check_lua_code(value, funcName, index)
     return str
 end
 
+-- Why a timer's body does not compile, or nil. TTimer::compileScript compiles
+-- it as the body of a function of its own, under the chunk name "Timer: <name>",
+-- so what a plain chunk allows and a function does not - `...` - is refused,
+-- and the reason names the timer.
+function __mudlet_timer_compile_error(code, name)
+    local compiled, err = loadstring("function Timer() " .. code .. "\nend", "Timer: " .. name)
+    if compiled then return nil end
+    return tostring(err)
+end
+
 -- `present` is optional and only matters when the caller counted its own
 -- arguments: false makes an absent one report as "no value" the way
 -- luaL_typename does, rather than as the "nil" a named parameter degrades to.
@@ -2777,6 +2846,11 @@ function __mudlet_int(value)
     if num == nil then return nil end
     if num >= 0 then return math.floor(num) end
     return -math.floor(-num)
+end
+
+-- Whether a key code is one Qt has: 0 up to Qt::Key_unknown (0x01FFFFFF).
+function __mudlet_valid_key_code(keyCode)
+    return keyCode >= 0 and keyCode <= 0x01FFFFFF
 end
 
 -- lua_isnumber + lua_tonumber, behind getVerifiedDouble/getVerifiedFloat. Same
@@ -2905,21 +2979,29 @@ function __mudlet_check_headers(headers, funcName, index)
         error(funcName .. ": bad argument #" .. index .. " type (headers as a table expected, got "
             .. type(headers) .. "!)", 3)
     end
+    -- The name is checked before its value, so a pair that is wrong on both
+    -- counts blames the name (TLuaInterpreter's header loop).
     for k, v in pairs(headers) do
-        if type(k) ~= 'string' or type(v) ~= 'string' then
+        if type(k) ~= 'string' then
             error(funcName .. ": bad argument #" .. index
-                .. " type (custom headers must be strings, got header: " .. type(k)
-                .. " (should be string) and value: " .. type(v) .. " (should be string))", 3)
+                .. " type (custom header names must be strings, got " .. type(k) .. ")", 3)
+        end
+        if type(v) ~= 'string' then
+            error(funcName .. ": bad argument #" .. index
+                .. " type (custom header \"" .. k .. "\" must have a string value, got " .. type(v) .. ")", 3)
         end
     end
 end
 
 -- Returns (nil, errMsg) when the url can't be used, else nil so the caller
--- proceeds. Runs after the type/header checks, matching Mudlet's order.
+-- proceeds. Runs after the type/header checks, matching Mudlet's order. The
+-- message names no function: Mudlet's warnArgumentValue returns the bare text,
+-- which installPackageFromUrl folds into a report of its own. downloadFile()
+-- alone may also copy a local file.
 function __mudlet_http_url_error(url, funcName)
-    local reason = __mudlet_url_invalid_reason(url)
+    local reason = __mudlet_url_invalid_reason(url, funcName == "downloadFile")
     if reason then
-        return funcName .. ": url is invalid, reason: " .. tostring(reason)
+        return "url is invalid, reason: " .. tostring(reason)
     end
     return nil
 end
@@ -3735,6 +3817,26 @@ function installModule(path)
     return installOutcome(__installModule(path))
 end
 
+-- Mudlet uninstallPackage(name), setPackageInfo(name, key, value) and
+-- setModuleInfo(name, key, value) → true, or (nil, reason) through
+-- warnArgumentValue. The JS side hands back the reason, or false once done.
+local function refusalOutcome(reason)
+    if reason then return nil, reason end
+    return true
+end
+
+function uninstallPackage(name)
+    return refusalOutcome(__uninstallPackage(name))
+end
+
+function setPackageInfo(name, key, value)
+    return refusalOutcome(__setPackageInfo(name, key, value))
+end
+
+function setModuleInfo(name, key, value)
+    return refusalOutcome(__setModuleInfo(name, key, value))
+end
+
 -- Mudlet getModules() — same shape as getPackages(), but lists modules only.
 function getModules()
     return rebuildJsArray(__getModules())
@@ -4170,12 +4272,23 @@ end
 -- suffix gains one — TLuaInterpreter::saveProfile appends it before Host ever
 -- sees the path. Synchronous failure returns (nil, errMsg); an async flush
 -- failure raises `sysSaveProfileError` instead, having no return left to use.
+-- Both arguments may be left out, so a wrong one is refused in desktop's words
+-- for an optional argument ("... as string is optional, got <type>!").
+local function saveProfileArgument(value, index, what)
+    local str = __mudlet_str(value)
+    if str == nil then
+        error("saveProfile: bad argument #" .. index .. " type (" .. what
+            .. " as string is optional, got " .. __mudlet_typename(value) .. "!)", 3)
+    end
+    return str
+end
+
 function saveProfile(location, saveName)
     if location ~= nil then
-        location = __mudlet_check_string(location, 'saveProfile', 1, 'location')
+        location = saveProfileArgument(location, 1, 'folder')
     end
     if saveName ~= nil then
-        saveName = __mudlet_check_string(saveName, 'saveProfile', 2, 'file name')
+        saveName = saveProfileArgument(saveName, 2, 'file name')
     end
     local r = __mudlet_saveProfile(location, saveName)
     if type(r) == 'table' then
@@ -4787,7 +4900,13 @@ function raiseEvent(event, ...)
     -- Drop getMainWindowSize's cache on a script-raised resize too, as
     -- LuaRuntime.dispatchEventNow does for the one Mudlet Web raises itself.
     if event == 'sysWindowResizeEvent' then __mws_w, __mws_h = nil, nil end
-    __mudlet_dispatch(event, { ... }, argc)
+    -- The handlers run as event handlers, not as the alias that may have
+    -- raised the event, as desktop's callEventHandler scopes them: only an
+    -- alias script has expandAlias() hand its own `command` back.
+    local wasAliasScript = __mudlet_set_alias_script(false)
+    local ok, err = pcall(__mudlet_dispatch, event, { ... }, argc)
+    __mudlet_set_alias_script(wasAliasScript)
+    if not ok then error(err, 0) end
     return true
 end
 
@@ -4905,11 +5024,11 @@ do
         -- bad body it built at runtime. Every other bad argument still raises.
         local body = fn
         if type(fn) == 'string' then
-            local compiled, err = loadstring(fn)
-            if not compiled then
-                return -1, "tempTimer: failed to compile the code string: " .. tostring(err)
+            local err = __mudlet_timer_compile_error(fn, "tempTimer")
+            if err then
+                return -1, "tempTimer: failed to compile the code string: " .. err
             end
-            body = compiled
+            body = loadstring(fn)
         end
         return _raw(seconds, __mudlet_register_cb(__mudlet_to_fn(body, "tempTimer", 2)),
             repeating or false)
@@ -5041,6 +5160,12 @@ do
     end
     function tempKey(a, b, c)
         local src = _callerSource()
+        -- A numeric code has to be one Qt has, from 0 up to Key_unknown
+        local key = c == nil and a or b
+        local keyCode = type(key) == "number" and __mudlet_int(key) or nil
+        if keyCode and not __mudlet_valid_key_code(keyCode) then
+            return nil, keyCode .. " is not a key code"
+        end
         if c == nil then
             local cb, uncompiled = register(b, 2)
             return _raw(0, a, cb, src, uncompiled)
@@ -5216,6 +5341,10 @@ do
                 .. " than 86400, got " .. string.format("%f", delay) .. ")", 2)
         end
         code = __mudlet_check_lua_code(code, "permTimer", 4)
+        local compileErr = __mudlet_timer_compile_error(code, tostring(name or ""))
+        if compileErr then
+            error("permTimer: bad argument #4 (invalid Lua code: " .. compileErr .. ")", 2)
+        end
         return __mudlet_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), delay, code),
             "permTimer", "timer", parent)
@@ -5242,6 +5371,11 @@ do
         -- 5 once a modifier has consumed argument 3 — and compiles it there, so
         -- a non-chunk body is refused before the key is created.
         code = __mudlet_check_lua_code(code, "permKey", a5 == nil and 4 or 5)
+        -- A numeric code has to be one Qt has; -1 is how permGroup asks for a group
+        local keyCode = type(key) == "number" and __mudlet_int(key) or nil
+        if keyCode and keyCode ~= -1 and not __mudlet_valid_key_code(keyCode) then
+            error(string.format("permKey: bad argument #%d (%d is not a key code)", a5 == nil and 3 or 4, keyCode), 2)
+        end
         return __mudlet_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), modifier, key, code),
             "permKey", "key", parent)
@@ -5617,6 +5751,10 @@ do
         return nil
     end
 
+    -- The main command line hands what is typed to the alias engine, never to
+    -- an action, so naming it is its own refusal rather than "not found".
+    local MAIN_ACTION = "the main command line's action cannot be changed, use an alias to act on what is typed there"
+
     local _rawSetCmdLineAction = setCmdLineAction
     function setCmdLineAction(...)
         local n = select('#', ...)
@@ -5624,6 +5762,7 @@ do
         -- Only the two-argument form names a command line; the one-argument
         -- form is an action for the main bar and has no name to check.
         if n >= 2 or type(first) == 'string' then
+            if first == 'main' then return nil, MAIN_ACTION end
             local err = namedCmdLine("setCmdLineAction", first)
             if err then return nil, err end
         end
@@ -5632,6 +5771,7 @@ do
 
     local _rawResetCmdLineAction = resetCmdLineAction
     function resetCmdLineAction(cmdLineName)
+        if cmdLineName == 'main' then return nil, MAIN_ACTION end
         local err = namedCmdLine("resetCmdLineAction", cmdLineName)
         if err then return nil, err end
         return _rawResetCmdLineAction(cmdLineName)
@@ -7114,24 +7254,81 @@ do
     local _setConfig = setConfig
     local _getConfig = getConfig
 
+    -- Desktop's refusals are bare, as warnArgumentValue hands them back, and
+    -- Other.lua's table form puts the key in front of any that does not
+    -- already name it. Its own wording for each, which differs by function.
+    local emptyKey = { setConfig = "you must provide key", getConfig = "you must provide a key" }
     local function checkKey(key, funcName)
         if __mudlet_str(key) == nil then
             error(funcName .. ": bad argument #1 type (key as string expected, got "
                 .. type(key) .. "!)", 3)
         end
-        if key == '' then return funcName .. ": you must provide a key" end
+        if key == '' then return emptyKey[funcName] end
         return nil
     end
+
+    -- The shorter IRC key spellings Mudlet Web took first (ScriptingAPI's
+    -- CONFIG_KEY_ALIASES), so they are vetted as the keys they stand for.
+    local ircKeyAliases = {
+        ircHost = "ircHostName", ircPort = "ircHostPort", ircSecure = "ircHostSecure", ircNick = "ircNickName",
+    }
+
+    -- QString::number's default form, which desktop quotes a refused number in.
+    local function qtNumber(n)
+        return string.format("%.6g", n)
+    end
+
+    -- Numbers desktop reads with getVerifiedInt, truncated toward zero.
+    local function int(n)
+        n = tonumber(n)
+        return n < 0 and math.ceil(n) or math.floor(n)
+    end
+
+    -- Each bounded option's own refusal, with the value as desktop reads it.
+    -- The comparisons are inverted so that NaN — false against both bounds —
+    -- is refused with the infinities rather than slipping through.
+    local outOfRange = {
+        mapSymbolFontScaling = function(n)
+            if not (n >= 0.5 and n <= 2.0) then
+                return "mapSymbolFontScaling " .. qtNumber(n) .. " is out of range, it must be between 0.50 and 2.00"
+            end
+        end,
+        mapRoomSize = function(n)
+            n = int(n)
+            if not (n >= 1) then return "mapRoomSize must be at least 1, got " .. n end
+        end,
+        mapExitSize = function(n)
+            if not (n >= 1 and n < math.huge) then
+                return "mapExitSize must be a number of at least 1, got " .. qtNumber(n)
+            end
+        end,
+        undoServerWrapWidth = function(n)
+            n = int(n)
+            if not (n >= 20 and n <= 500) then
+                return "width " .. n .. " is outside of the supported range of 20 to 500"
+            end
+        end,
+        ircHostPort = function(n)
+            n = int(n)
+            if not (n >= 1 and n <= 65535) then
+                return "invalid port number " .. n .. " given, it must be in range 1 to 65535"
+            end
+        end,
+        commandLineHistorySaveSize = function(n)
+            n = int(n)
+            if not (n >= 0 and n <= 1000000) then
+                return "commandLineHistorySaveSize " .. n .. " is outside of the supported range of 0 to 1000000"
+            end
+        end,
+    }
 
     function setConfig(key, value)
         local keyErr = checkKey(key, "setConfig")
         if keyErr then return nil, keyErr end
         local kind = __mudlet_config_kind(key)
-        if kind == nil then
-            return nil, "setConfig: '" .. key .. "' isn't a valid configuration option"
-        end
-        if kind == 'readonly' then
-            return nil, "setConfig: '" .. key .. "' is a read-only configuration option"
+        -- getConfig()-only keys are as unknown to desktop's setConfig as any other
+        if kind == nil or kind == 'readonly' then
+            return nil, "'" .. key .. "' isn't a valid configuration option"
         end
         if kind == 'bool' and type(value) ~= 'boolean' then
             error("setConfig: bad argument #2 type (value as boolean expected, got "
@@ -7147,13 +7344,20 @@ do
         -- — which is false against both bounds, and would blank every room
         -- symbol if it got through — lands here with the infinities.
         if kind == 'num' then
-            local range = __mudlet_config_range(key)
             local n = tonumber(value)
+            local check = outOfRange[ircKeyAliases[key] or key]
+            local refusal = check and check(n)
+            if refusal then return nil, refusal end
+            local range = __mudlet_config_range(key)
             if range ~= nil and not (n >= range[0] and n <= range[1]) then
-                return nil, "setConfig: " .. tostring(value) .. " is out of range for '"
+                return nil, qtNumber(n) .. " is out of range for '"
                     .. key .. "' (" .. tostring(range[0]) .. " to " .. tostring(range[1]) .. ")"
             end
         end
+        -- TIrcClient's writers refuse a value its readers would replace or
+        -- skip, or that could not go on an IRC line, rather than store it.
+        local ircProblem = __mudlet_irc_config_problem(ircKeyAliases[key] or key, value)
+        if ircProblem then return nil, ircProblem end
         -- Mudlet reads every string option with getVerifiedString, which raises
         -- on a non-string; an out-of-range *string* is the (nil, errMsg) case
         -- below. Keys taking more than one type report kind 'any' and vet
@@ -7199,21 +7403,13 @@ do
             end
             value = string.format("%d,%d,%d,%d", channels[1], channels[2], channels[3], a)
         end
-        -- The exit size divides the exit pen's width, so it has to be a finite
-        -- number of at least 1: anything smaller blows the pen up, and NaN or
-        -- an infinity would reach the saved profile. Inverted like the range
-        -- check above so NaN lands here too.
-        if key == "mapExitSize" then
-            local n = tonumber(value)
-            if not (n >= 1 and n < math.huge) then
-                return nil, "setConfig: mapExitSize must be a finite number of at least 1, got "
-                    .. tostring(value)
-            end
-        end
         if key == "mapSymbolFont" and not tostring(value):find("%S") then
             return nil, "mapSymbolFont must not be empty"
         end
         local ok = _setConfig(key, value)
+        if ok == false and key == "mapSymbolFont" then
+            return nil, "font '" .. tostring(value) .. "' is not available"
+        end
         if ok == false then
             -- The accepted set rides along when the option has one. It is the
             -- only place a script author is told what the option takes — there
@@ -7700,11 +7896,10 @@ do
 
         getInfo = function()
             return {
-                -- The engine this build actually has, which is none. Mudlet
-                -- answers "Vosk"; claiming that here would be a lie about what
-                -- is installed, and is the one STT_spec assertion recorded as a
-                -- deliberate divergence (see e2e/knownDivergences.ts).
-                backend        = "none",
+                -- No engine is built, so no engine is named: desktop answers ""
+                -- until one is, and a package reads this to decide what it can
+                -- do, so it must not claim one this build does not have.
+                backend        = "",
                 available      = false,
                 initialized    = false,
                 listening      = false,
@@ -7854,15 +8049,22 @@ do
         local args = { ... }
         local n = select('#', ...)
         local hasWindow = type(args[1]) == 'string'
-        if hasWindow and args[1] ~= 'main' and __windowType(args[1]) == nil then
-            return nil, "window/label '" .. args[1] .. "' not found"
-        end
         local first = hasWindow and 2 or 1
         for i = first, n do
             local v = tonumber(args[i])
             local channel = CHANNELS[i - first + 1]
             if channel and v ~= nil and (v < 0 or v > 255) then
                 return nil, channel .. " value " .. tostring(args[i]) .. " needs to be between 0-255"
+            end
+        end
+        -- The colour is checked before the window is looked for, as desktop
+        -- does; then a widget that has no colour of its own says so.
+        if hasWindow and args[1] ~= 'main' then
+            local kind = __windowType(args[1])
+            if kind == nil or kind == 'scrollbox' or kind == 'textedit' or kind == 'commandline' then
+                local refusal = __backgroundColorRefusal(args[1], false)
+                if refusal then return nil, refusal end
+                if kind == nil then return nil, "window/label '" .. args[1] .. "' not found" end
             end
         end
         return _rawSetBackgroundColor(...)
@@ -9104,6 +9306,45 @@ do
         return escaped
     end
 
+    -- TIrcClient::validIrcChannelName: an RFC 2811 prefix, and nothing that
+    -- would split the name in the space-joined store or the comma-joined JOIN.
+    local function validChannelName(name)
+        return name:find("^[#&+!]") ~= nil and not hasSpace(name) and not breaksIrcLine(name)
+            and not name:find(",", 1, true)
+    end
+
+    -- Why TIrcClient's writer for `key` refuses `value`, or nil when it takes
+    -- it — or when `key` is not an IRC setting at all. A value its reader would
+    -- replace or skip is refused rather than reported as saved.
+    function __mudlet_irc_config_problem(key, value)
+        local text = __mudlet_str(value)
+        if key == "ircHostName" then
+            if text == "" then return "hostname must not be empty" end
+            if hasSpace(text) or breaksIrcLine(text) then
+                return 'hostname "' .. escapedForError(text) .. '" must not hold a space or a line break'
+            end
+        elseif key == "ircNickName" then
+            if text == "" then return "nick must not be empty" end
+            if hasSpace(text) or breaksIrcLine(text) then
+                return 'nick name "' .. escapedForError(text)
+                    .. '" must be a single word, without a line break or a null character'
+            end
+        elseif key == "ircPassword" then
+            if breaksIrcLine(text) then return "password must not contain a line break or a null character" end
+        elseif key == "ircChannels" then
+            local names = {}
+            for name in text:gmatch("[^ ]+") do names[#names + 1] = name end
+            if #names == 0 then return "no (valid) channel names provided" end
+            for _, name in ipairs(names) do
+                if not validChannelName(name) then
+                    return 'channel name "' .. escapedForError(name)
+                        .. '" must start with #, &, + or ! and hold no space or comma'
+                end
+            end
+        end
+        return nil
+    end
+
     -- dlgIRC::validateMsgArguments: what goes out is one command whose
     -- parameters are separated by spaces and ended by a CR LF, so either
     -- argument carrying one of those separators makes the server read more than
@@ -9245,6 +9486,8 @@ do
         -- it was given or none of it, and a password refused after the host and
         -- port had been written would leave the new server address paired with
         -- the old credential.
+        local hostProblem = __mudlet_irc_config_problem("ircHostName", hostName)
+        if hostProblem then return nil, "unable to save hostname, reason: " .. hostProblem end
         if passwordGiven then
             local ok, why = validateIrcPassword(password)
             if not ok then return nil, "unable to save password, reason: " .. why end
@@ -9256,7 +9499,7 @@ do
         return true
     end
 
-    -- A channel name starts with #, & or +, and can hold neither a space nor a
+    -- A channel name starts with #, &, + or !, and can hold neither a space nor a
     -- comma: the stored list is space-joined and the JOIN command comma-joined,
     -- so a name carrying either came back as two channels (upstream #9789).
     -- Anything unusable is dropped, and a list with nothing left is refused.
@@ -9267,9 +9510,7 @@ do
         end
         local kept = {}
         for _, name in pairs(channels) do
-            if type(name) == 'string' and name ~= ''
-                and (name:sub(1, 1) == '#' or name:sub(1, 1) == '&' or name:sub(1, 1) == '+')
-                and not name:find("[%s,]") then
+            if type(name) == 'string' and validChannelName(name) then
                 kept[#kept + 1] = name
             end
         end
@@ -9349,10 +9590,10 @@ end
 -- the way it found it has to be able to find out how it was.
 do
     function getCmdLineStyleSheet(cmdLineName)
-        if cmdLineName ~= nil and cmdLineName ~= 'main' then
-            if __windowType(cmdLineName) ~= 'commandline' then
-                return nil, "command-line name '" .. tostring(cmdLineName) .. "' not found"
-            end
+        -- Any command line found by name: a createCommandLine one, or a
+        -- console's own once enableCommandLine has given it one.
+        if __mudlet_cmdline_missing(cmdLineName) then
+            return nil, "command-line name '" .. tostring(cmdLineName) .. "' not found"
         end
         return __getCmdLineStyleSheet(cmdLineName)
     end

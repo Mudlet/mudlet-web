@@ -256,25 +256,6 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
             'Tests the Client.GUI package offer / ignores a Client.GUI offer that is missing its version or its URL',
         ].map(name => ({ name, reason }));
     })(),
-    STT: [
-        {
-            name: 'stt bridge / getInfo / names the engine it would use',
-            reason:
-                'The spec pins getInfo().backend to "Vosk", and its own comment says why that is the right test '
-                + 'THERE: "the contract worth holding is that the name is one this build actually has". mudlet has '
-                + 'none. Vosk is a native library Mudlet dlopen()s beside a language-model directory on disk, and '
-                + 'neither survives the move to a browser tab — half of stt.* exists to manage exactly those two '
-                + 'things (getLibraryPath, getPlatformKey, reloadLibrary, unloadLibrary). Answering "Vosk" to '
-                + 'satisfy this line would be the very thing the spec guards against: a build claiming an engine '
-                + 'it does not have. That is worse than a truthful "none", because backend is what a package reads '
-                + 'to decide what it can do. Everything else in STT_spec passes, because the spec is written to '
-                + 'run on a machine with no engine installed and mudlet is permanently in that state: available() '
-                + 'is false, mudlet.supports.stt is false, and every call refuses clearly — engine refusals also '
-                + 'announcing on sysSTTError, a script\'s own mistakes not (Bridge.lua). If speech recognition is '
-                + 'ever wired up here it will be the Web Speech API, so the honest name then is that — still not '
-                + '"Vosk".',
-        },
-    ],
     Trigger: (() => {
         // Mudlet leaves `matches`, `multimatches` and `line` out of the globals
         // table until a script reads them (Mudlet/Mudlet's lazyCaptureGlobals,

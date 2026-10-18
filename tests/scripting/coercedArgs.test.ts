@@ -152,7 +152,7 @@ describe('Mudlet argument coercion parity', () => {
       // createStopWatch dispatches on LUA_TBOOLEAN / LUA_TSTRING / LUA_TNIL, and
       // HTTP header tables are checked with lua_type(..) != LUA_TSTRING.
       expect(() => run('createStopWatch(42)')).toThrow(/name as string or autostart as boolean/);
-      expect(() => run('getHTTP("u", {[1]="v"})')).toThrow(/custom headers must be strings/);
+      expect(() => run('getHTTP("u", {[1]="v"})')).toThrow(/custom header names must be strings, got number/);
     });
   });
 });
