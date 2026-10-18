@@ -4120,6 +4120,7 @@ export class ScriptingAPI {
         // Which line the cursor was on before this one was appended, so a line
         // fed from inside a trigger can hand the outer pass its own line back.
         this.outerTriggerLines.push(this.triggerLineDepth > 0 ? this.mainConsole.getLineNumber() : -1);
+        if (this.triggerLineDepth === 0) this.passStartLastLine = this.mainConsole.lastLineNumber();
         this.mainConsole.appendLine(buffer);
         this.mainConsole.suspendOpenLine(true);
         this.inTriggerProcessing = true;
@@ -4392,6 +4393,11 @@ export class ScriptingAPI {
      *  processed rather than opening lines, so the line count leaves them out
      *  until the pass is over. See {@link getLineCount}. */
     private triggerEchoLines = 0;
+    /** The main console's last line when the outermost trigger pass began.
+     *  The view is not moved on until the pass is over (desktop finalises the
+     *  main console only at depth 0), so getScroll() reports no further than
+     *  this while it runs, however many lines a trigger feeds in meanwhile. */
+    private passStartLastLine = 0;
     /** Per nested line, the line the outer pass was on. See beginLine. */
     private outerTriggerLines: number[] = [];
 
@@ -4701,7 +4707,8 @@ export class ScriptingAPI {
      *  "am I at the bottom?" — and never a line past it. */
     getScroll(windowName?: string): number {
         const name = windowName || 'main';
-        const last = Math.max(0, this.getLastLineNumber(name));
+        let last = Math.max(0, this.getLastLineNumber(name));
+        if (name === 'main' && this.triggerLineDepth > 0) last = Math.min(last, this.passStartLastLine);
         // getScrollLine measures the DOM, and a console whose panel hasn't been
         // laid out measures as 0 — which would claim a 30-line buffer is
         // scrolled to the very top. Nothing has scrolled it, so it is at the
