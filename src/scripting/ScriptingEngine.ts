@@ -2557,6 +2557,7 @@ export class ScriptingEngine implements EngineHost {
                 () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data);
             this.notifyPackageInstalled(manifest.name, path, problems);
             void vfs.flush();
+            this.saveAfterPackageChange();
             return { ok: true, error: problems };
         } catch (err) {
             const error = err instanceof Error ? err.message : String(err);
@@ -3159,6 +3160,7 @@ export class ScriptingEngine implements EngineHost {
         // load script as well — where desktop starts again from config.lua.
         this.packageInfoOverrides.delete(packageName);
         useAppStore.getState().uninstallPackage(this.connectionId, packageName);
+        this.saveAfterPackageChange();
         if (this.vfs) {
             const vfs = this.vfs;
             void uninstallPackageFiles(manifest, vfs).catch(err => {
@@ -3289,6 +3291,40 @@ export class ScriptingEngine implements EngineHost {
                 if (!outcome.ok) this.api.postInfo(`Package install failed — ${outcome.error}`);
             }
         });
+    }
+
+    private saveAfterPackageChangePending = false;
+
+    /**
+     * The profile save a package install or uninstall is followed by, put off
+     * to the next pass of the event loop (Host's mDeferredSaveTimer) so a batch
+     * of installs is not queued behind one save each — and again until no save
+     * or install is running, as one started under an install would hold its
+     * scripts up. Asked for twice, it saves once.
+     *
+     * Nothing is waiting on an answer, so a save that cannot be written is said
+     * on the console (Host::saveProfileReportingFailure); one turned away
+     * because another is running names no file and is let be.
+     */
+    private saveAfterPackageChange(): void {
+        if (this.saveAfterPackageChangePending) return;
+        this.saveAfterPackageChangePending = true;
+        const attempt = (): void => {
+            if (this.profileSaveInFlight || this.installing.size > 0) {
+                this.timerEngine.addTemp(0.1, attempt);
+                return;
+            }
+            this.saveAfterPackageChangePending = false;
+            this.saveSyncedModules();
+            const written = this.saveProfileXml();
+            if (written.ok) {
+                this.markProfileSaveInFlight();
+                void this.vfs?.flush();
+            } else if (written.path) {
+                this.api.postError(`The profile could not be saved to "${written.path}": ${written.err}`);
+            }
+        };
+        this.timerEngine.addTemp(0, attempt);
     }
 
     /** Runs a package's config.lua the way Mudlet does — in an environment with
