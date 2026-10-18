@@ -1,6 +1,7 @@
 import type { BindingContext } from './context';
 import { parseXmlMapResult } from '../../../map/xmlMapImport';
 import { imageLabelPixmap } from '../../../map/labelPixmap';
+import { MapStore } from '../../../map/MapStore';
 
 /**
  * Mudlet's map API: the 2D view, room and area CRUD, exits, doors, custom
@@ -199,7 +200,12 @@ export function installMapBindings({
     // Room.Info.num is a number, so `getRoomIDbyHash(gmcp.Room.Info.num)` has
     // to find the room `setRoomIDbyHash(id, "777")` filed.
     lua.global.set('getRoomIDbyHash', (hash: unknown)           => api.getRoomIDbyHash(luaToString(hash)) ?? -1);
-    lua.global.set('setRoomIDbyHash', (id: unknown, hash: unknown)=> api.map.setRoomIDbyHash(int(id), luaToString(hash)));
+    // Mudlet setRoomIDbyHash(roomID, hash) → true, or (nil, errMsg) for a room
+    // that does not exist. Hands back that refusal or null; Bridge.lua shapes it.
+    lua.global.set('__setRoomIDbyHash', (id: unknown, hash: unknown) => {
+        const rid = int(id);
+        return api.map.setRoomIDbyHash(rid, luaToString(hash)) ? null : `number ${rid} is not a valid roomID`;
+    });
     // Mudlet getRoomHashByID: returns the hash string, or (false, errMsg) on
     // miss / when the room has no hash. JS hands back the string or null;
     // Bridge.lua unpacks the multi-return.
@@ -833,6 +839,21 @@ export function installMapBindings({
         api.map.removeMapEvent(String(uniqueName ?? ''));
         return true;
     });
+    // Mudlet hide/showMapMenuItem(name): only desktop's built-in item names, so
+    // a script's own map event is refused like any other unknown name. Hands
+    // back warnArgumentChoice's refusal, listing every name it would take, or
+    // null; Bridge.lua shapes that into true / (nil, errMsg).
+    const setMenuItemHidden = (name: unknown, hidden: boolean) => {
+        const itemName = luaToString(name);
+        if (api.map.setMenuItemHidden(itemName, hidden)) return null;
+        const quoted = MapStore.BUILTIN_MENU_ITEMS.map(n => `"${n}"`);
+        const last = quoted.pop();
+        return `item name must be ${quoted.join(', ')} or ${last}, got "${itemName}"`;
+    };
+    lua.global.set('__hideMapMenuItem', (name: unknown) => setMenuItemHidden(name, true));
+    lua.global.set('__showMapMenuItem', (name: unknown) => setMenuItemHidden(name, false));
+    // A 0-indexed array; Bridge.lua rebuilds it as a Lua list.
+    lua.global.set('__getHiddenMapMenuItems', () => api.map.getHiddenMenuItems());
     // Mudlet shape:
     //   { [uniqueName] = {
     //         ["event name"]   = "...",
@@ -962,7 +983,10 @@ export function installMapBindings({
         const sel = api.map.getMapSelection();
         return { rooms: sel.rooms, center: sel.center };
     });
-    lua.global.set('clearMapSelection', () => api.map.clearMapSelection());
+    lua.global.set('__clearMapSelection', () => {
+        if (!api.windows.hasMapper()) return 'no map present or loaded';
+        return api.map.clearMapSelection();
+    });
 
     // Mudlet unsetRoomCharColor(roomID) — drop a per-room char-colour
     // override so the renderer falls back to the default. Pairs with
@@ -1053,7 +1077,10 @@ export function installMapBindings({
         api.setMapRoomExitsColor(r, g, b));
     lua.global.set('__getMapRoomExitsColor', () => api.getMapRoomExitsColor());
     // Mudlet setDefaultAreaVisible(visible) — TMap::mShowDefaultArea.
-    lua.global.set('setDefaultAreaVisible', (visible: boolean) => api.setDefaultAreaVisible(visible));
+    // Desktop changes the default area's visibility only once a mapper shows the
+    // map (Host::mapOpen), answering false until then.
+    lua.global.set('setDefaultAreaVisible', (visible: boolean) =>
+        api.windows.hasMapper() ? api.setDefaultAreaVisible(visible) : false);
     // Mudlet setMapRoomSize(roomSize). The renderer reads this from
     // settings.roomSize (units = map cells; ~0.6 default).
     lua.global.set('setMapRoomSize', (size: unknown) => api.setMapRoomSize(Number(size)));

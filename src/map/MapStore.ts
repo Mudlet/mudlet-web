@@ -901,11 +901,6 @@ export class MapStore {
     private areas = new Map<number, MudletArea>();
     private areaNames = new Map<number, string>();
     private hashToRoom = new Map<string, number>();
-    /** Hashes set on an id no room has yet — desktop's roomIDToHash is keyed by
-     *  id alone, so `setRoomIDbyHash(id, h)` before `addRoom(id)` is kept and
-     *  the room picks it up when it is created. Also holds a loaded map's hash
-     *  entries whose room is not in the file. */
-    private orphanHashes = new Map<number, string>();
     private labels = new Map<number, MapLabel[]>();
     private envColors = new Map<number, number>();
     private nextRoomId = 1;
@@ -1086,7 +1081,6 @@ export class MapStore {
         this.areas.clear();
         this.areaNames.clear();
         this.hashToRoom.clear();
-        this.orphanHashes.clear();
         this.labels.clear();
         this.envColors.clear();
         this.customEnvColors.clear();
@@ -1151,7 +1145,6 @@ export class MapStore {
         this.areas.clear();
         this.areaNames.clear();
         this.hashToRoom.clear();
-        this.orphanHashes.clear();
         this.labels.clear();
         this.envColors.clear();
         this.customEnvColors.clear();
@@ -1307,18 +1300,19 @@ export class MapStore {
      * is worth.
      */
     endBinaryLoad(audit = true): void {
-        // Binary may carry hashes for rooms that haven't been parsed into
-        // `rooms` (legacy maps with orphan hash entries). Trust the explicit
-        // hash→id table as authoritative when it disagrees. Streamed rooms
-        // arrive with no `hash` field at all (it lives only in this index), so
-        // this is also where they get one — matching what readMapFromBuffer
-        // does eagerly.
+        // Trust the explicit hash→id table as authoritative when it disagrees.
+        // Streamed rooms arrive with no `hash` field at all (it lives only in
+        // this index), so this is also where they get one — matching what
+        // readMapFromBuffer does eagerly. A file from a build whose
+        // setRoomIDbyHash took any id and an empty hash can hold entries for a
+        // room that is not in it, or with no hash at all: TMap::audit drops
+        // both, so they are never indexed.
         for (const [hash, rawId] of Object.entries(this.pendingBinaryHashIndex)) {
             const id = asInt32(rawId);
-            this.hashToRoom.set(hash, id);
             const room = this.rooms.get(id);
-            if (room && !room.hash) room.hash = hash;
-            else if (!room) this.orphanHashes.set(id, hash);
+            if (!hash || !room) continue;
+            this.hashToRoom.set(hash, id);
+            if (!room.hash) room.hash = hash;
         }
         this.pendingBinaryHashIndex = {};
         // Mudlet restores the player room from mRoomIdHash[mProfileName] on load
@@ -2233,12 +2227,6 @@ export class MapStore {
         // orphaned from getAreaTable/getAreaRooms and written into the map file.
         const placedIn = known ? requested : -1;
         const room = makeRoom(placedIn);
-        // A hash set on this id before the room existed belongs to it now.
-        const earlyHash = this.orphanHashes.get(id);
-        if (earlyHash !== undefined) {
-            room.hash = earlyHash;
-            this.orphanHashes.delete(id);
-        }
         this.rooms.set(id, room);
         let area = this.areas.get(placedIn);
         if (!area) {
@@ -2643,34 +2631,35 @@ export class MapStore {
     getRoomIDbyHash(hash: string): number | undefined { return this.hashToRoom.get(hash); }
 
     /**
-     * Mudlet `setRoomIDbyHash(roomID, hash)`. Desktop keeps the pairing in its
-     * own two-way index (TRoomDB::hashToRoomID / roomIDToHash), not on the
-     * room, so it is stored whether or not the room exists yet: the common
-     * "set the hash, then addRoom" order works, and getRoomIDbyHash /
-     * getRoomHashByID answer for the id in the meantime.
+     * Mudlet `setRoomIDbyHash(roomID, hash)`: false for a room that does not
+     * exist (desktop refuses it, as it does the -1 or 0 a failed lookup gives).
+     * An empty hash clears the room's hash rather than binding "" to it.
      */
-    setRoomIDbyHash(id: number, hash: string): void {
-        if (!Number.isFinite(id)) return;
+    setRoomIDbyHash(id: number, hash: string): boolean {
         const room = this.rooms.get(id);
-        const oldHash = room ? room.hash : this.orphanHashes.get(id);
-        if (oldHash) this.hashToRoom.delete(oldHash);
-        // A hash names one room. Take it off the room that had it, or that
-        // room still reports it (getRoomHashByID) and, since a load rebuilds
-        // the index from the rooms, can win the hash back on the next loadMap.
-        const prev = this.hashToRoom.get(hash);
-        if (prev !== undefined && prev !== id) {
-            const old = this.rooms.get(prev);
-            if (old && old.hash === hash) delete old.hash;
-            if (this.orphanHashes.get(prev) === hash) this.orphanHashes.delete(prev);
+        if (!room) return false;
+        if (!room.hash && !hash) return true;
+        if (room.hash === hash && this.hashToRoom.get(hash) === id) return true;
+        if (room.hash) this.hashToRoom.delete(room.hash);
+        delete room.hash;
+        if (hash) {
+            // A hash names one room. Take it off the room that had it, or that
+            // room still reports it (getRoomHashByID) and, since a load rebuilds
+            // the index from the rooms, can win the hash back on the next loadMap.
+            const prev = this.hashToRoom.get(hash);
+            if (prev !== undefined && prev !== id) {
+                const old = this.rooms.get(prev);
+                if (old && old.hash === hash) delete old.hash;
+            }
+            room.hash = hash;
+            this.hashToRoom.set(hash, id);
         }
-        if (room) room.hash = hash;
-        else this.orphanHashes.set(id, hash);
-        this.hashToRoom.set(hash, id);
         this.notify();
+        return true;
     }
 
     getRoomHashByID(id: number): string | undefined {
-        return this.rooms.get(id)?.hash ?? this.orphanHashes.get(id);
+        return this.rooms.get(id)?.hash || undefined;
     }
 
     // ── Exits ─────────────────────────────────────────────────────────────────
@@ -4385,6 +4374,39 @@ export class MapStore {
 
     getMapEvents(): MapEventEntry[] {
         return [...this.mapEvents.values()];
+    }
+
+    // ── Hidden built-in context-menu items (Mudlet hideMapMenuItem) ───────────
+
+    /** The built-in context-menu items hideMapMenuItem() takes, by desktop's
+     *  names (TMap::builtInMenuItemNames). They are API, so never rename one —
+     *  most have no counterpart in this client's menu, but scripts still pass
+     *  them, and desktop accepts every one. */
+    static readonly BUILTIN_MENU_ITEMS: readonly string[] = [
+        'downloadMap', 'loadMap', 'createMap', 'createRoom', 'moveRoom', 'configureRoom',
+        'setExits', 'createExitLine', 'spreadRooms', 'shrinkRooms', 'deleteRoom',
+        'moveToPosition', 'moveToArea', 'configureAreas', 'createLabel', 'exportAreaImage',
+        'setPlayerLocation', 'switchMapMode',
+    ];
+
+    private hiddenMenuItems = new Set<string>();
+
+    /** Hide (or show again) a built-in item. False for a name that is not one. */
+    setMenuItemHidden(name: string, hidden: boolean): boolean {
+        if (!MapStore.BUILTIN_MENU_ITEMS.includes(name)) return false;
+        if (hidden) this.hiddenMenuItems.add(name);
+        else this.hiddenMenuItems.delete(name);
+        this.notify();
+        return true;
+    }
+
+    menuItemShown(name: string): boolean {
+        return !this.hiddenMenuItems.has(name);
+    }
+
+    /** The hidden items, sorted as desktop lists them. */
+    getHiddenMenuItems(): string[] {
+        return [...this.hiddenMenuItems].sort();
     }
 
     // ── Map context-menu submenus (Mudlet addMapMenu) ─────────────────────────

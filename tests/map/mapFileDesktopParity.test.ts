@@ -52,6 +52,8 @@ describe('map files match desktop (issue #334)', () => {
         const Ctor = ProfileVFS as unknown as new (id: string, fs: unknown, source: string) => ProfileVFS;
         t = await createTestRuntime({ vfs: new Ctor('map-parity', {}, 'idb') });
         t.run(`H = getMudletHomeDir()`);
+        // saveJsonMap/loadJsonMap need a mapper showing the map, as on desktop.
+        t.run('openMapWidget()');
     });
 
     afterAll(() => t.dispose());

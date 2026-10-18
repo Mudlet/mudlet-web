@@ -58,27 +58,15 @@ describe('setConfig / getConfig', () => {
         expect(h.run('return getConfig("autoClearInputLine")')).toBe(true);
     });
 
-    // Mudlet handles these inside `if (host.mpMap && host.mpMap->mpMapper)`, so
-    // until the map has been shown they are refused as unknown keys — whatever
-    // the value, with no type check first (#290).
-    it('refuses the mapper-widget keys as unknown until a mapper exists', () => {
+    // These live on the Host and a mapper made later picks them up, so desktop
+    // takes them before there is one (#290 had them refused until then).
+    it('takes the mapper-widget keys before a mapper exists', () => {
         expect(h.session.windows.hasMapper()).toBe(false);
-        for (const [key, value] of [
-            ['mapRoomSize', '5'], ['mapExitSize', '10'], ['mapRoundRooms', 'true'],
-            ['showRoomIdsOnMap', 'true'], ['mapShowRoomBorders', 'false'], ['mapShowGrid', 'true'],
-            ['showUpperLowerLevels', 'false'], ['show3dMapView', 'true'],
-            ['showMapInfo', '"x"'], ['hideMapInfo', '"x"'], ['mapInfoColor', '{1, 2, 3}'],
-            // the wrong type is not raised either: the key is unknown first
-            ['mapRoomSize', '"big"'],
-        ] as const) {
-            expect(h.run(`local ok, err = setConfig("${key}", ${value}) return tostring(ok) .. "|" .. tostring(err)`))
-                .toBe(`nil|setConfig: '${key}' isn't a valid configuration option`);
-        }
-        expect(useAppStore.getState().connectionProfile[CONN]?.mapper?.roomShape).toBeUndefined();
-        // getConfig still answers — Mudlet's reads need no mapper — with
-        // desktop's defaults for a profile that never set them.
-        expect(h.run('return getConfig("mapRoomSize")')).toBe(5);
-        expect(h.run('return getConfig("mapExitSize")')).toBe(10);
+        expect(h.run('return setConfig("mapRoundRooms", true)')).toBe(true);
+        expect(useAppStore.getState().connectionProfile[CONN]?.mapper?.roomShape).toBe('roundedRectangle');
+        expect(h.run('return setConfig("mapRoomSize", 7)')).toBe(true);
+        expect(h.run('return getConfig("mapRoomSize")')).toBe(7);
+        expect(h.session.windows.hasMapper()).toBe(false);
 
         // The map being shown makes the mapper, and it stays made.
         h.session.windows.registerMapControl('config-api-test', {

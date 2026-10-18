@@ -3224,6 +3224,21 @@ function getMapMenus(keyByUniqueName)
     return out
 end
 
+-- Mudlet getHiddenMapMenuItems() → the hidden built-in items, sorted. JS hands
+-- back a 0-indexed array.
+function getHiddenMapMenuItems()
+    local raw = __getHiddenMapMenuItems()
+    local out = {}
+    if type(raw) == 'table' then
+        local i = 0
+        while raw[i] ~= nil do
+            out[i + 1] = raw[i]
+            i = i + 1
+        end
+    end
+    return out
+end
+
 -- Mudlet setRoomBorderColor(id, r, g, b [, a]) / setRoomBorderThickness(id, t) →
 -- true, or (nil, errMsg) for a bad value or a missing room. The __* binding
 -- returns true on success or an error string.
@@ -6645,6 +6660,14 @@ function getMapSelection()
     return { rooms = rooms, center = center }
 end
 
+-- Mudlet clearMapSelection() → whether there was a selection to clear, or
+-- (nil, errMsg) before a mapper has been made.
+function clearMapSelection()
+    local r = __clearMapSelection()
+    if type(r) == 'string' then return nil, r end
+    return r
+end
+
 -- Mudlet killMapInfo / enableMapInfo / disableMapInfo. Each returns true on
 -- success or (false, errMsg) when the label isn't registered.
 function killMapInfo(label)
@@ -7365,6 +7388,8 @@ end
 -- Only the type check needs Lua; the reasons come from the binding, which is
 -- what knows whether the file was missing, unparseable, or not a map.
 function saveJsonMap(location)
+    -- Desktop needs a mapper showing the map (Host::mapOpen) before anything else.
+    if not __mudlet_mapper_open() then return nil, "no map present or loaded" end
     -- Left out altogether, it saves into the profile's map folder.
     if location ~= nil and __mudlet_str(location) == nil then
         error("saveJsonMap: bad argument #1 type (destination as string expected, got "
@@ -7376,6 +7401,7 @@ function saveJsonMap(location)
 end
 
 function loadJsonMap(location)
+    if not __mudlet_mapper_open() then return nil, "no map present or loaded" end
     if location ~= nil and __mudlet_str(location) == nil then
         error("loadJsonMap: bad argument #1 type (path as string expected, got "
             .. type(location) .. "!)", 2)
@@ -8140,6 +8166,41 @@ do
     setCustomEnvColor = shaped(__setCustomEnvColor)
     setMapZoom        = shaped(__setMapZoom)
     removeMapMenu     = shaped(__removeMapMenu)
+    setRoomIDbyHash   = shaped(__setRoomIDbyHash)
+    hideMapMenuItem   = shaped(__hideMapMenuItem)
+    showMapMenuItem   = shaped(__showMapMenuItem)
+
+    -- The readers and clearSpecialExits answer csmInvalidRoomID bare, with no
+    -- function name in front, as warnArgumentValue does.
+    local function invalidRoom(id)
+        local n = __mudlet_int(id)
+        return ("number %s is not a valid roomID"):format(n and string.format("%d", n) or tostring(id))
+    end
+    local function validRoomGuard(fn)
+        return function(id, ...)
+            if not roomExists(id) then return nil, invalidRoom(id) end
+            return fn(id, ...)
+        end
+    end
+    getRoomExits       = validRoomGuard(getRoomExits)
+    getRoomEnv         = validRoomGuard(getRoomEnv)
+    clearSpecialExits  = validRoomGuard(clearSpecialExits)
+    -- getRoomWeight/getRoomHidden read the player's room when given none.
+    local function playerRoomGuard(fn)
+        local guarded = validRoomGuard(fn)
+        return function(...)
+            if select('#', ...) == 0 then
+                local id = getPlayerRoom()
+                if not id or id <= 0 or not roomExists(id) then
+                    return nil, "no roomID provided and the player does not have a valid roomID set"
+                end
+                return guarded(id)
+            end
+            return guarded(...)
+        end
+    end
+    getRoomWeight      = playerRoomGuard(getRoomWeight)
+    getRoomHidden      = playerRoomGuard(getRoomHidden)
 
     setRoomEnv         = roomGuard(setRoomEnv, "setRoomEnv")
     setRoomWeight      = roomGuard(setRoomWeight, "setRoomWeight")
@@ -8153,7 +8214,7 @@ do
     -- left to Other.lua's wrapper, which maps the names and answers false for
     -- any other.
     do
-        local guarded = roomGuard(hasExitLock, "hasExitLock")
+        local guarded = validRoomGuard(hasExitLock)
         function hasExitLock(id, dir)
             local t = type(dir)
             if (t ~= 'number' and t ~= 'string')
@@ -8318,11 +8379,17 @@ do
         _rawSetExitStub(id, dir, set)
     end
 
-    -- lockExit returns nothing on desktop either, whatever happened. Wrapped
-    -- here, before Other.lua's direction-name wrapper captures it.
+    -- lockExit answers true once the room is found, whether or not the lock
+    -- changed, and csmInvalidRoomID bare for a missing room. Wrapped here,
+    -- before Other.lua's direction-name wrapper captures it.
     local _rawLockExit = lockExit
     function lockExit(id, dir, lock)
+        if not roomExists(id) then
+            local n = __mudlet_int(id)
+            return nil, ("number %s is not a valid roomID"):format(n and string.format("%d", n) or tostring(id))
+        end
         _rawLockExit(id, dir, lock)
+        return true
     end
 
     -- connectExitStub(fromID, direction) | (fromID, toID[, direction]) — the
@@ -8880,10 +8947,13 @@ do
 
     local _deleteRoom = deleteRoom
     function deleteRoom(id, ...)
-        -- getVerifiedInt raises first, and an id below one returns nothing
-        -- before the guard is reached
+        -- getVerifiedInt raises first; an id below one is refused before the
+        -- guard is reached, a missing room after it
         local n = __mudlet_int(id)
-        if n ~= nil and n > 0 and __mudlet_map_callback_busy() then return nil, MAP_IN_USE end
+        local invalid = n and ("number %d is not a valid roomID"):format(n)
+        if n ~= nil and n <= 0 then return nil, invalid end
+        if n ~= nil and __mudlet_map_callback_busy() then return nil, MAP_IN_USE end
+        if n ~= nil and not roomExists(n) then return nil, invalid end
         return _deleteRoom(id, ...)
     end
 

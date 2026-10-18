@@ -327,15 +327,6 @@ const MUDLET_ROOM_SIZE_SCALE = 10;
  *  order Mudlet's refusal lists them. */
 const AMBIGUOUS_WIDTH_MODES: readonly string[] = ['narrow', 'wide', 'auto'];
 
-/** The keys Mudlet's setConfig only handles inside its
- *  `if (host.mpMap && host.mpMap->mpMapper)` block — the 2D mapper widget's
- *  own settings. Until a mapper exists they are refused as unknown options. */
-const MAPPER_ONLY_CONFIG_KEYS: ReadonlySet<string> = new Set([
-    'mapRoomSize', 'mapExitSize', 'mapRoundRooms', 'showRoomIdsOnMap',
-    'showMapInfo', 'hideMapInfo', 'show3dMapView', 'mapShowRoomBorders',
-    'mapShowGrid', 'showUpperLowerLevels', 'mapInfoColor',
-]);
-
 /** Mudlet config keys persisted in the {@link ProfileSettings.config} bag rather
  *  than a dedicated structured field. Each entry gives the value type and the
  *  default `getConfig` returns before the key has been set, so first reads match
@@ -1893,11 +1884,6 @@ export class ScriptingAPI {
      */
     configKeyKind(rawKey: string): 'bool' | 'num' | 'str' | 'any' | 'readonly' | null {
         const key = CONFIG_KEY_ALIASES[rawKey] ?? rawKey;
-        // Mudlet only knows these while the 2D mapper exists
-        // (`host.mpMap->mpMapper`): before the map has been shown, setConfig
-        // refuses them as unknown keys whatever the value, so this is decided
-        // ahead of the type check.
-        if (MAPPER_ONLY_CONFIG_KEYS.has(key) && !this.session.windows.hasMapper()) return null;
         // An experiment takes a boolean, and one this build has never heard of
         // is still a KEY — its refusal has to name it, which it cannot do from
         // the generic "no such option" path. The two pseudo-keys are reads.

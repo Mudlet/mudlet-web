@@ -1362,7 +1362,7 @@ export class WindowManager {
 
     registerMapControl(id: string, ctrl: MapControl): void {
         this.mapControls.set(id, ctrl);
-        this.mapperCreated = true;
+        if (!MAP_VIEW_ID_RE.test(id)) this.mapperCreated = true;
     }
 
     /** Whether a mapper has been created this session — Mudlet's
@@ -3128,7 +3128,9 @@ export class WindowManager {
             this.touchOverlayWindows(existing);
             this.notify();
             if (existing.kind === 'map') {
-                this.mapperCreated = true;
+                // A map view (createMapView) is a second look at the map, not
+                // the mapper itself: desktop leaves mpMapper unmade for it.
+                if (!MAP_VIEW_ID_RE.test(id)) this.mapperCreated = true;
                 this.onMapOpen?.(id);
             }
             return this.makeHandle(id);
@@ -3228,7 +3230,7 @@ export class WindowManager {
         this.saveHint(id, win);
         this.notify();
         if (kind === 'map') {
-            this.mapperCreated = true;
+            if (!MAP_VIEW_ID_RE.test(id)) this.mapperCreated = true;
             this.onMapOpen?.(id);
         }
         return this.makeHandle(id);

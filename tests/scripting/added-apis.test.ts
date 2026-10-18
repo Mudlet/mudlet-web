@@ -473,7 +473,8 @@ describe('special exits — clearSpecialExits / lockSpecialExit / hasSpecialExit
     expect(env.run('return (next(getSpecialExitsSwap(1)))')).not.toBe(null);
     expect(env.run('return (clearSpecialExits(1))')).toBe(true);
     expect(env.run('return (next(getSpecialExitsSwap(1)))')).toBe(null);
-    expect(env.run('return (clearSpecialExits(999))')).toBe(false);
+    expect(env.run('return (clearSpecialExits(999))')).toBeNull();
+    expect(env.run('return select(2, clearSpecialExits(999))')).toBe('number 999 is not a valid roomID');
   });
 });
 
@@ -980,10 +981,10 @@ describe('lockExit / hasExitLock', () => {
   it('locks and unlocks a stock-direction exit by name', () => {
     env.run('addRoom(100); addRoom(101); setExit(100, 101, "north")');
     expect(env.run('return (hasExitLock(100, "north"))')).toBe(false);
-    // Desktop's lockExit pushes nothing back (#295).
-    expect(env.run('return select("#", lockExit(100, "north", true))')).toBe(0);
+    // Desktop's lockExit answers true once the room is found.
+    expect(env.run('return lockExit(100, "north", true)')).toBe(true);
     expect(env.run('return (hasExitLock(100, "north"))')).toBe(true);
-    expect(env.run('return select("#", lockExit(100, "north", false))')).toBe(0);
+    expect(env.run('return lockExit(100, "north", false)')).toBe(true);
     expect(env.run('return (hasExitLock(100, "north"))')).toBe(false);
   });
 
@@ -1000,8 +1001,10 @@ describe('lockExit / hasExitLock', () => {
     expect(env.run('return (lockExit(300, "sideways", true))')).toBeNull();
     expect(env.run('return select(2, lockExit(300, "sideways", true))')).toBe('"sideways" is not a valid direction');
     expect(env.run('return (hasExitLock(300, "north"))')).toBe(false);
-    expect(env.run('return select("#", lockExit(9999, "north", true))')).toBe(0);
+    expect(env.run('return (lockExit(9999, "north", true))')).toBeNull();
+    expect(env.run('return select(2, lockExit(9999, "north", true))')).toBe('number 9999 is not a valid roomID');
     expect(env.run('return (hasExitLock(9999, "north"))')).toBeNull();
+    expect(env.run('return select(2, hasExitLock(9999, "north"))')).toBe('number 9999 is not a valid roomID');
   });
 
   it('honoured by pathfinding (locked direction is routed around)', () => {
