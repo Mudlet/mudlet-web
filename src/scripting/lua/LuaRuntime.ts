@@ -1894,10 +1894,10 @@ export class LuaRuntime implements IScriptingRuntime {
                 z != null && Number.isFinite(z) ? Math.trunc(z) : undefined,
             );
         });
-        // Mudlet `clearVisitedLinks()`: forgets which clickable links have been
-        // visited (Mudlet greys visited echoLink targets). Mudlet Web tracks no
-        // visited-link state, so there is nothing to clear — a true no-op.
-        this.lua.global.set('clearVisitedLinks', () => {});
+        // Mudlet `clearVisitedLinks(labelName)`: forgets which of a label's
+        // links were clicked, so they take the link colour again.
+        this.lua.global.set('clearVisitedLinks', (name: unknown) =>
+            this.api.labels.clearVisitedLinks(String(name ?? '')));
         // Mudlet `connectToServer(host, port [, save])`: (re)connect through the
         // proxy; `save` persists host/port onto the active connection.
         // Argument validation and the invalid-port (nil, errMsg) return live in
@@ -2878,6 +2878,19 @@ __mudletFastColorEcho = nil`,
     // matches what's actually drawn) and only set where unset, so a runtime/theme
     // override survives. Must run after LuaGlobal.lua creates color_table.
     private setupAnsiColorTable(): void {
+        // The sixteen ANSI entries follow the palette actually in force — the
+        // profile's own colours, and whatever the server redefines with
+        // `ESC]P`/`ESC]R` — as desktop's do: Host calls
+        // updateAnsi16ColorsInTable when the profile loads and on every one of
+        // those changes, so `<ansi_red>` paints the colour the game's red does.
+        //
+        // Written first, then ansi_016 and up, which is the order desktop fills
+        // the table in. The order is observable: decho2cecho and friends pick
+        // the nearest name by walking color_table with pairs(), so between two
+        // names for one colour (`white` and `ansi_231`) the one that wins is
+        // whichever pairs() reaches first, and that follows insertion.
+        this.updateAnsi16ColorsInTable();
+        this.stopAnsiPaletteSync = onAnsiPaletteChange(() => this.updateAnsi16ColorsInTable());
         const triples = xterm256.map(hex => {
             const r = parseInt(hex.slice(1, 3), 16);
             const g = parseInt(hex.slice(3, 5), 16);
@@ -2895,13 +2908,6 @@ __mudletFastColorEcho = nil`,
 end`,
             'ansi-color-table',
         );
-        // The sixteen ANSI entries then follow the palette actually in force —
-        // the profile's own colours, and whatever the server redefines with
-        // `ESC]P`/`ESC]R` — as desktop's do: Host calls
-        // updateAnsi16ColorsInTable when the profile loads and on every one of
-        // those changes, so `<ansi_red>` paints the colour the game's red does.
-        this.updateAnsi16ColorsInTable();
-        this.stopAnsiPaletteSync = onAnsiPaletteChange(() => this.updateAnsi16ColorsInTable());
     }
 
     private static readonly ANSI16_NAMES = [

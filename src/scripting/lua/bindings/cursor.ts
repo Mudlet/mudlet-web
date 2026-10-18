@@ -163,8 +163,10 @@ export function installCursorBindings({ lua, api }: BindingContext): void {
             : api.moveCursor(undefined, Number(a), Number(b));
     });
     lua.global.set('selectString', (a: string, b: string | number, c?: number) => {
-        // selectString([window,] text, occurrence)
-        return c !== undefined ? api.selectString(b as string, c, a) : api.selectString(a, b as number);
+        // selectString([window,] text, occurrence). The text goes through
+        // lua_tostring on desktop, so a number is searched for as its digits.
+        const text = (v: unknown) => (typeof v === 'number' ? String(v) : v) as string;
+        return c !== undefined ? api.selectString(text(b), c, a) : api.selectString(text(a), b as number);
     });
     lua.global.set('selectSection', (a: unknown, b: unknown, c?: unknown) => {
         // selectSection([window,] from, length) → bool. Like moveCursor, the

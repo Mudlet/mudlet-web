@@ -13,6 +13,7 @@ import type { WindowHandle, WindowOpenOptions } from '../ui/windows/types';
 import { MAP_WIDGET_ID, MAPPER_WIDGET_ID, mapViewWindowId } from '../ui/windows/types';
 import type { LabelManager, LabelCreateOptions, LabelMouseEvent, LabelWheelEvent } from '../ui/labels/LabelManager';
 import { classifyLabelLink } from '../ui/labels/labelLinks';
+import { styleSheetWithoutBackgroundImage } from '../ui/labels/labelModel';
 import { AddonCommandRegistry } from '../ui/commands/addonCommands';
 import { decodeGif, decodeAnimatedImage, sniffDecodableImage, supportsImageDecoder, MoviePlayer } from '../ui/labels/gifMovie';
 import { isSvgCandidate, isSvgUrl, resolveSvgIntrinsicSize, svgIntrinsicSizeFromBytes } from '../ui/labels/backgroundImageSize';
@@ -602,7 +603,16 @@ function mxpWindowId(name: string): string {
     return name;
 }
 
-function measureMonospaceCell(family: string, size: number): [number, number] {
+/** What {@link measureMonospaceCell} takes a cell's width from: an "M", what
+ *  this client's own column arithmetic has always used; a "W", the width
+ *  TTextEdit draws a column in and `calcFontSize(window)` reports; or the
+ *  average advance over printable ASCII, standing in for
+ *  `QFontMetrics::averageCharWidth()` (canvas cannot read the font's own OS/2
+ *  average) — the same on a monospaced font, narrower than a "W" otherwise. */
+type CellSample = 'M' | 'W' | 'average';
+const PRINTABLE_ASCII = Array.from({ length: 0x7f - 0x20 }, (_, i) => String.fromCharCode(0x20 + i)).join('');
+
+function measureMonospaceCell(family: string, size: number, sample: CellSample = 'M'): [number, number] {
     const px = size * 4 / 3;
     const fallback: [number, number] = [px * 0.6, px * 1.2];
     if (typeof document === 'undefined') return fallback;
@@ -611,7 +621,7 @@ function measureMonospaceCell(family: string, size: number): [number, number] {
         measureCache.clear();
         measureCacheGeneration = generation;
     }
-    const cacheKey = `${family}|${size}`;
+    const cacheKey = `${family}|${size}|${sample}`;
     const hit = measureCache.get(cacheKey);
     if (hit) return hit;
     if (measureCtx === undefined) {
@@ -623,13 +633,16 @@ function measureMonospaceCell(family: string, size: number): [number, number] {
         ? `"${family.trim().replace(/[\\"]/g, '\\$&')}", ${DEFAULT_MONO_STACK}`
         : DEFAULT_MONO_STACK;
     ctx.font = `${px}px ${stack}`;
-    const m = ctx.measureText('M');
+    const m = ctx.measureText(sample === 'W' ? 'W' : 'M');
     const ascent = m.fontBoundingBoxAscent;
     const descent = m.fontBoundingBoxDescent;
     const height = (typeof ascent === 'number' && typeof descent === 'number')
         ? ascent + descent
         : px * 1.2;
-    const cell: [number, number] = [m.width, height];
+    const width = sample === 'average'
+        ? ctx.measureText(PRINTABLE_ASCII).width / PRINTABLE_ASCII.length
+        : m.width;
+    const cell: [number, number] = [width, height];
     measureCache.set(cacheKey, cell);
     return cell;
 }
@@ -931,6 +944,9 @@ class ScriptingLabelsAPI {
     }
     resetLinkStyle(name: string): boolean {
         return this.manager.resetLinkStyle(name);
+    }
+    clearVisitedLinks(name: string): boolean {
+        return this.manager.clearVisitedLinks(name);
     }
     getSizeHint(name: string): { width: number; height: number } | null {
         return this.manager.getSizeHint(name);
@@ -5266,6 +5282,7 @@ export class ScriptingAPI {
         if (!this.session.windows.isMiniConsole(name) && !this.session.windows.has(name)) return false;
         this.session.windows.close(name);
         this.windowCommandColors.delete(name);
+        this.forgetUserWindowStyleSheet(name);
         this.host.raiseEvent('sysMiniConsoleDeleted', [name]);
         return true;
     }
@@ -6252,15 +6269,34 @@ export class ScriptingAPI {
         // Remembered verbatim: the tag holds the *scoped* translation, and a
         // getter has to answer what the script wrote, not what Mudlet Web made of it.
         this.userWindowCss.set(name, css ?? '');
+        // Qt writes a qproperty through the widget's own setter, so a dock's
+        // `qproperty-windowTitle` is its title from then on.
+        const title = /qproperty-windowTitle\s*:\s*(["'])(.*?)\1/i.exec(css ?? '');
+        if (title) this.session.windows.setTitle(name, title[2]);
         return true;
     }
 
-    /** Mudlet `getUserWindowStyleSheet(name)` — the QSS as it was set. */
+    /** Mudlet `getUserWindowStyleSheet(name)` — the QSS as it was set: the
+     *  window's own, or else the profile's, which desktop sets on every dock. */
     getUserWindowStyleSheet(name: string): string {
-        return this.userWindowCss.get(name) ?? '';
+        return this.userWindowCss.get(name) ?? this.profileCss;
+    }
+
+    /** A user window was just made (not re-shown): it starts with the profile
+     *  stylesheet, not with whatever an earlier window of its name was given. */
+    noteUserWindowOpened(name: string): void {
+        this.forgetUserWindowStyleSheet(name);
+    }
+
+    /** Drop a user window's own stylesheet, and the `<style>` tag carrying it. */
+    private forgetUserWindowStyleSheet(name: string): void {
+        if (!this.userWindowCss.delete(name)) return;
+        document.getElementById(`mudlet-userwindow-stylesheet--${this.connectionId}--${name}`)?.remove();
     }
 
     private readonly userWindowCss = new Map<string, string>();
+    /** What setProfileStyleSheet was last given. */
+    private profileCss = '';
 
     /** Mudlet `getCmdLineStyleSheet([name])`. Same story as above: the command
      *  line's authored QSS, not the CSS the overlay ends up with. "main" is the
@@ -6281,6 +6317,12 @@ export class ScriptingAPI {
         this.cmdLineCss.set(name || 'main', css ?? '');
     }
 
+    /** Whether a command line's stylesheet has been recorded at all — born or
+     *  set — as opposed to recorded as "". */
+    hasCmdLineStyleSheet(name: string): boolean {
+        return this.cmdLineCss.has(name || 'main');
+    }
+
     private readonly cmdLineCss = new Map<string, string>();
 
     /**
@@ -6298,6 +6340,10 @@ export class ScriptingAPI {
     setProfileStyleSheet(css: string): boolean {
         const el = this.styleTag('profile', 'default', 'mudletProfileStylesheet', 'true');
         el.textContent = rewriteQtSelectors(css ?? '');
+        // Desktop sets the sheet on every dock widget, replacing what each user
+        // window had of its own; new ones are made with it.
+        this.profileCss = css ?? '';
+        for (const name of [...this.userWindowCss.keys()]) this.forgetUserWindowStyleSheet(name);
         return true;
     }
 
@@ -6644,14 +6690,15 @@ export class ScriptingAPI {
      * Mudlet `saveWindowLayout()` — capture the current layout (window hints
      * + dock area extents) into a per-connection snapshot in the persisted
      * app store. A later `loadWindowLayout()` re-applies the captured state.
-     * Returns true on success, false when no connectionId is bound.
+     * Returns true on success, false when no connectionId is bound or the
+     * layout file cannot be written — what desktop reports when it cannot open
+     * `windowLayout.dat`.
      */
     saveWindowLayout(): boolean {
         if (!this.connectionId) return false;
         const snapshot = this.session.windows.captureLayoutSnapshot();
         useAppStore.getState().saveLayoutSnapshot(this.connectionId, snapshot);
-        this.writeWindowLayoutFile(snapshot);
-        return true;
+        return this.writeWindowLayoutFile(snapshot);
     }
 
     /** Where Mudlet keeps the window layout: beside the profiles folder, not
@@ -6672,11 +6719,12 @@ export class ScriptingAPI {
      * Mudlet Web reads it, and those bytes describe Qt dock widgets that have no
      * counterpart here.
      */
-    private writeWindowLayoutFile(snapshot: unknown): void {
+    private writeWindowLayoutFile(snapshot: unknown): boolean {
         const path = this.windowLayoutPath();
-        if (!path) return;
+        // No VFS to mirror into: the store copy is the whole save.
+        if (!path) return true;
         const json = JSON.stringify({ version: 1, snapshot }, null, 0);
-        this.host.writeFileBytes(path, new TextEncoder().encode(json));
+        return this.host.writeFileBytes(path, new TextEncoder().encode(json));
     }
 
     /** The snapshot in `windowLayout.dat`, or null when there is no readable,
@@ -7207,7 +7255,14 @@ export class ScriptingAPI {
             return true;
         }
         if (this.session.labels.has(name)) {
-            return this.session.labels.resetBackgroundImage(name) ? true : `console '${name}' not found`;
+            if (!this.session.labels.resetBackgroundImage(name)) return `console '${name}' not found`;
+            // TLabel::resetBackgroundImage takes a background-image out of the
+            // label's own stylesheet too — what setTiledBackgroundImage puts
+            // there — and only the image, restyling the label with the rest.
+            const sheet = this.labels.getStyleSheet(name) ?? '';
+            const withoutImage = styleSheetWithoutBackgroundImage(sheet);
+            if (withoutImage !== sheet) this.labels.setStyleSheet(name, withoutImage);
+            return true;
         }
         return this.session.windows.resetBackgroundImage(name) ? true : `console '${name}' not found`;
     }
@@ -7550,7 +7605,9 @@ export class ScriptingAPI {
         const num = Number(n);
         if (!Number.isFinite(num)) return null;
         // getVerifiedInt drops the fraction rather than rounding: 194.8 is 194.
-        return Math.max(0, Math.trunc(num));
+        // Negative sizes are kept — Profile Preferences offer them — and the
+        // range is enforced in Bridge.lua, where the refusal is worded.
+        return Math.trunc(num) || 0;
     }
 
     /**
@@ -7620,6 +7677,11 @@ export class ScriptingAPI {
      *   • `calcFontSize("WindowName")` — measure the named window/miniconsole
      *     using its configured font+size. Use `"main"` for the main output.
      *
+     * The size forms answer the font's average character width, the window
+     * form the width of a "W" — what scripts have long compensated for by hand
+     * — unless `columnWidth` asks for the width a column is drawn in, which is
+     * the average again. All three agree on a monospaced font.
+     *
      * Returns `null` when the size is invalid or the named window doesn't
      * exist; the Lua wrapper turns that into Mudlet's `(nil, errMsg)` shape.
      *
@@ -7635,7 +7697,7 @@ export class ScriptingAPI {
      * computed and the size `getWindowGeometry` reports back silently disagree,
      * by an amount that depends on which fonts the machine happens to have.
      */
-    calcFontSize(arg: number | string, fontName?: string): [number, number] | null {
+    calcFontSize(arg: number | string, fontName?: string, columnWidth = false): [number, number] | null {
         const mainFamily = (): string =>
             selectProfileField(useAppStore.getState(), this.connectionId, 'outputFont')?.family ?? '';
         const mainSize = (): number =>
@@ -7643,8 +7705,10 @@ export class ScriptingAPI {
 
         let size: number;
         let family: string;
+        let sample: 'W' | 'average' = 'average';
         if (typeof arg === 'string') {
             if (arg === '') return null;
+            if (!columnWidth) sample = 'W';
             if (arg === 'main') {
                 size = mainSize();
                 family = mainFamily();
@@ -7658,7 +7722,7 @@ export class ScriptingAPI {
             if (!Number.isFinite(size) || size < 1) return null;
             family = fontName && String(fontName).trim() ? String(fontName) : mainFamily();
         }
-        const [width, height] = measureMonospaceCell(family, size);
+        const [width, height] = measureMonospaceCell(family, size, sample);
         // qRound, which is what QFontMetrics::averageCharWidth() applies to the
         // fractional advance — so the answer matches Mudlet's for a given font.
         return [Math.round(width), Math.round(height)];

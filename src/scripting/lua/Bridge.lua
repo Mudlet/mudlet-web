@@ -1241,11 +1241,26 @@ end
 -- height (pixels) of an average character cell. JS returns a 2-element array
 -- (0-indexed under wasmoon) or nil for the miss case; re-shape into Mudlet's
 -- multi-return on success and (nil, errMsg) on failure.
-function calcFontSize(a, b)
-    local t = __calcFontSize(a, b)
+--
+-- A trailing boolean asks a window for the width it draws a column in rather
+-- than that of a "W"; it is taken off before the forms are told apart, so
+-- calcFontSize(true) measures the main window as calcFontSize() does. A nil
+-- after a window name is that flag left out (TLuaInterpreter::calcFontSize).
+function calcFontSize(...)
+    local n = select('#', ...)
+    local args = { ... }
+    local columnWidth = false
+    if n >= 1 and type(args[n]) == 'boolean' then
+        columnWidth = args[n]
+        args[n] = nil
+        n = n - 1
+    end
+    local a, b = args[1], args[2]
+    if n < 2 then b = nil end
+    local t = __calcFontSize(a, b, columnWidth)
     if t == nil then
         if type(a) == 'string' then
-            return nil, "calcFontSize: window \"" .. a .. "\" not found"
+            return nil, "window \"" .. a .. "\" not found"
         end
         return nil, "calcFontSize: bad argument #1 (number or window name expected)"
     end
@@ -1256,6 +1271,17 @@ end
 -- through getVerifiedNumber/getVerifiedString and raises, so a typo fails at the
 -- call instead of quietly writing a NaN border or the string "table".
 do
+    -- The range Profile Preferences offer a border in. The console takes
+    -- opposite borders off its own size, so desktop refuses anything past it
+    -- (NaN and infinities included) rather than overflow an int there, and
+    -- leaves the borders as they were.
+    local function borderOutOfRange(v, argument)
+        if v ~= v or v < -1000000 or v > 1000000 then
+            return ("border size %.14g (argument #%d) is out of range, it must be between -1000000 and 1000000")
+                :format(v, argument)
+        end
+    end
+
     local function requireNumber(fn, who)
         return function(v, ...)
             local num = __mudlet_num(v)
@@ -1263,13 +1289,31 @@ do
                 error(who .. ": bad argument #1 type (number expected, got "
                     .. type(v) .. "!)", 2)
             end
-            return fn(num, ...)
+            local err = borderOutOfRange(num, 1)
+            if err then return nil, err end
+            fn(num, ...)
+            return true
         end
     end
     setBorderTop    = requireNumber(setBorderTop,    "setBorderTop")
     setBorderBottom = requireNumber(setBorderBottom, "setBorderBottom")
     setBorderLeft   = requireNumber(setBorderLeft,   "setBorderLeft")
     setBorderRight  = requireNumber(setBorderRight,  "setBorderRight")
+
+    -- The argument types are checked first (argContracts), all of them, so a
+    -- size out of range never hides a type mistake after it.
+    local _rawSetBorderSizes = setBorderSizes
+    function setBorderSizes(...)
+        local n = select('#', ...)
+        local v = { ... }
+        for p = 1, math.min(n, 4) do
+            local num = __mudlet_num(v[p])
+            local err = num and borderOutOfRange(num, p)
+            if err then return nil, err end
+        end
+        _rawSetBorderSizes(...)
+        return true
+    end
 
     -- Numbers are accepted the way Mudlet's lua_isstring accepts them (Lua
     -- coerces), and nil keeps clearing the clipboard — Mudlet Web chose that so a
@@ -1622,6 +1666,8 @@ end
 function getBackgroundColor(windowName)
     local t = __getBackgroundColor(windowName)
     if t == nil then
+        local refusal = __backgroundColorRefusal(windowName, true)
+        if refusal then return nil, refusal end
         -- Mudlet's wording here differs from the generic not-found message used
         -- by the console family (single quotes, "does not exist"); UI_spec
         -- asserts it verbatim.
@@ -2510,29 +2556,42 @@ do
         end
     end
     setLabelToolTip   = labelGuard(setLabelToolTip,   "label name '%s' not found")
-    -- The shape must be a number by the time it gets here: GUIUtils.lua's
-    -- wrapper translates a name through mudlet.cursor, and a name that isn't in
-    -- there arrives as nil. Refusing it is the point — silently leaving the
-    -- cursor alone would hide the typo.
+    -- TLuaInterpreter::setLabelCursor. GUIUtils.lua's wrapper turns every name
+    -- in mudlet.cursor into its number, so a name still arriving here is one it
+    -- does not know — refused, but only once the label itself has been found,
+    -- the order a number out of range is refused in too. A numeric string is
+    -- that number, as Lua's own coercion reads it.
     do
-        local guarded = labelGuard(setLabelCursor, "label name '%s' not found")
+        local raw = setLabelCursor
         setLabelCursor = function(name, shape)
-            local num = __mudlet_int(shape)
-            if num == nil then
-                error("setLabelCursor: bad argument #2 type (cursor shape as number expected, got "
-                    .. type(shape) .. "!)", 2)
+            if type(name) ~= 'string' and type(name) ~= 'number' then
+                error("setLabelCursor: bad argument #1 type (label name as string expected, got "
+                    .. type(name) .. "!)", 2)
             end
-            -- The shapes the layer below actually knows: -1 (no cursor of its
-            -- own) up to Qt::LastCursor, which is every value in mudlet.cursor.
-            -- A number outside that is refused rather than passed down, where it
-            -- would be taken for a shape nobody asked for — and refusing it is
-            -- what stops "accepts anything" from making the companion test,
-            -- which walks the whole table, pass no matter what is in it.
+            local cursorIsName = type(shape) == 'string' and tonumber(shape) == nil
+            local num
+            if not cursorIsName then
+                num = __mudlet_int(shape)
+                if num == nil then
+                    error("setLabelCursor: bad argument #2 type (cursortype as number expected, got "
+                        .. type(shape) .. "!)", 2)
+                end
+            end
+            name = tostring(name)
+            if name == "" then return nil, "a label cannot have an empty string as its name" end
+            if __windowType(name) ~= 'label' then
+                return nil, "label name '" .. name .. "' not found"
+            end
+            if cursorIsName then
+                return nil, "cursor shape '" .. shape .. "' not found. see https://wiki.mudlet.org/w/CursorShapes"
+            end
+            -- The shapes the layer below knows: -1 (no cursor of its own) up to
+            -- Qt::LastCursor, which is every value in mudlet.cursor.
             if num < -1 or num > 21 then
-                return nil, "setLabelCursor: bad argument #2 value (cursor shape " .. num
-                    .. " is outside the range of shapes this client knows)"
+                return nil, "cursor shape '" .. num .. "' not found. see https://doc.qt.io/qt-5/qt.html#CursorShape-enum"
             end
-            return guarded(name, num)
+            raw(name, num)
+            return true
         end
     end
     setLinkStyle      = labelGuard(setLinkStyle,      "label '%s' not found")
@@ -5527,6 +5586,10 @@ do
         return nil
     end
 
+    -- The main command line hands what is typed to the alias engine, never to
+    -- an action, so naming it is its own refusal rather than "not found".
+    local MAIN_ACTION = "the main command line's action cannot be changed, use an alias to act on what is typed there"
+
     local _rawSetCmdLineAction = setCmdLineAction
     function setCmdLineAction(...)
         local n = select('#', ...)
@@ -5534,6 +5597,7 @@ do
         -- Only the two-argument form names a command line; the one-argument
         -- form is an action for the main bar and has no name to check.
         if n >= 2 or type(first) == 'string' then
+            if first == 'main' then return nil, MAIN_ACTION end
             local err = namedCmdLine("setCmdLineAction", first)
             if err then return nil, err end
         end
@@ -5542,6 +5606,7 @@ do
 
     local _rawResetCmdLineAction = resetCmdLineAction
     function resetCmdLineAction(cmdLineName)
+        if cmdLineName == 'main' then return nil, MAIN_ACTION end
         local err = namedCmdLine("resetCmdLineAction", cmdLineName)
         if err then return nil, err end
         return _rawResetCmdLineAction(cmdLineName)
@@ -7728,15 +7793,22 @@ do
         local args = { ... }
         local n = select('#', ...)
         local hasWindow = type(args[1]) == 'string'
-        if hasWindow and args[1] ~= 'main' and __windowType(args[1]) == nil then
-            return nil, "window/label '" .. args[1] .. "' not found"
-        end
         local first = hasWindow and 2 or 1
         for i = first, n do
             local v = tonumber(args[i])
             local channel = CHANNELS[i - first + 1]
             if channel and v ~= nil and (v < 0 or v > 255) then
                 return nil, channel .. " value " .. tostring(args[i]) .. " needs to be between 0-255"
+            end
+        end
+        -- The colour is checked before the window is looked for, as desktop
+        -- does; then a widget that has no colour of its own says so.
+        if hasWindow and args[1] ~= 'main' then
+            local kind = __windowType(args[1])
+            if kind == nil or kind == 'scrollbox' or kind == 'textedit' or kind == 'commandline' then
+                local refusal = __backgroundColorRefusal(args[1], false)
+                if refusal then return nil, refusal end
+                if kind == nil then return nil, "window/label '" .. args[1] .. "' not found" end
             end
         end
         return _rawSetBackgroundColor(...)
@@ -9207,10 +9279,10 @@ end
 -- the way it found it has to be able to find out how it was.
 do
     function getCmdLineStyleSheet(cmdLineName)
-        if cmdLineName ~= nil and cmdLineName ~= 'main' then
-            if __windowType(cmdLineName) ~= 'commandline' then
-                return nil, "command-line name '" .. tostring(cmdLineName) .. "' not found"
-            end
+        -- Any command line found by name: a createCommandLine one, or a
+        -- console's own once enableCommandLine has given it one.
+        if __mudlet_cmdline_missing(cmdLineName) then
+            return nil, "command-line name '" .. tostring(cmdLineName) .. "' not found"
         end
         return __getCmdLineStyleSheet(cmdLineName)
     end
