@@ -2043,7 +2043,12 @@ export class LuaRuntime implements IScriptingRuntime {
                 }
             }
             const written = this.api.saveProfileXml(dir, name);
-            if (!written.ok) return [false, `saveProfile: ${written.err}`];
+            // Desktop's wording once the save has a file to name — empty while
+            // another save runs — and the bare reason for an argument it refused.
+            if (!written.ok) {
+                return [false, written.path === undefined ? written.err
+                    : `Couldn't save '${this.api.profileName}' to '${written.path}' because: ${written.err}`];
+            }
             vfs.flush().catch(err => {
                 const msg = err instanceof Error ? err.message : String(err);
                 console.warn('[saveProfile] vfs flush failed:', err);

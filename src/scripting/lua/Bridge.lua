@@ -4108,12 +4108,23 @@ end
 -- suffix gains one — TLuaInterpreter::saveProfile appends it before Host ever
 -- sees the path. Synchronous failure returns (nil, errMsg); an async flush
 -- failure raises `sysSaveProfileError` instead, having no return left to use.
+-- Both arguments may be left out, so a wrong one is refused in desktop's words
+-- for an optional argument ("... as string is optional, got <type>!").
+local function saveProfileArgument(value, index, what)
+    local str = __mudlet_str(value)
+    if str == nil then
+        error("saveProfile: bad argument #" .. index .. " type (" .. what
+            .. " as string is optional, got " .. __mudlet_typename(value) .. "!)", 3)
+    end
+    return str
+end
+
 function saveProfile(location, saveName)
     if location ~= nil then
-        location = __mudlet_check_string(location, 'saveProfile', 1, 'location')
+        location = saveProfileArgument(location, 1, 'folder')
     end
     if saveName ~= nil then
-        saveName = __mudlet_check_string(saveName, 'saveProfile', 2, 'file name')
+        saveName = saveProfileArgument(saveName, 2, 'file name')
     end
     local r = __mudlet_saveProfile(location, saveName)
     if type(r) == 'table' then

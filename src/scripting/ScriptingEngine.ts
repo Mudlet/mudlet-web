@@ -179,6 +179,21 @@ const ITEM_CHUNK_PREFIX = {
 } as const;
 type CodeItemKind = keyof typeof ITEM_CHUNK_PREFIX;
 
+/** A failed write's reason the way QFile::errorString() gives it — the C
+ *  library's own wording — rather than the file system's "ENOENT: ..., open
+ *  '<path>'", which repeats the path the caller already names. */
+function whyAFileCannotBeWritten(err: unknown): string {
+    const code = (err as { code?: unknown } | null)?.code;
+    switch (code) {
+        case 'ENOENT': return 'No such file or directory';
+        case 'ENOTDIR': return 'Not a directory';
+        case 'EISDIR': return 'Is a directory';
+        case 'EACCES': case 'EPERM': return 'Permission denied';
+        case 'ENOSPC': return 'No space left on device';
+        default: return describeThrown(err);
+    }
+}
+
 function itemChunkName(kind: CodeItemKind, name: string): string {
     return `${ITEM_CHUNK_PREFIX[kind]}: ${name}`;
 }
@@ -1234,7 +1249,7 @@ export class ScriptingEngine implements EngineHost {
      * keep updating the newest file rather than leaving a stale older one as the
      * save Mudlet would load.
      */
-    saveProfileXml(location?: string, saveName?: string): { ok: true; path: string } | { ok: false; err: string } {
+    saveProfileXml(location?: string, saveName?: string): { ok: true; path: string } | { ok: false; err: string; path?: string } {
         const vfs = this.vfs;
         if (!vfs) return { ok: false, err: 'no profile VFS available' };
         // A file name that names a place of its own would win the join below
@@ -1252,7 +1267,7 @@ export class ScriptingEngine implements EngineHost {
         // profile state — so the second is refused rather than queued, and
         // refused BEFORE it writes anything, or it would leave a file behind
         // that nothing finished.
-        if (this.profileSaveInFlight) return { ok: false, err: 'a save is already in progress' };
+        if (this.profileSaveInFlight) return { ok: false, err: 'a save is already in progress', path: '' };
         // A trailing slash would double up against the separator below.
         let dir = (location ?? '').trim();
         while (dir.endsWith('/')) dir = dir.slice(0, -1);
@@ -1263,7 +1278,17 @@ export class ScriptingEngine implements EngineHost {
         } else if (!name.toLowerCase().endsWith('.xml')) {
             name = `${name}.xml`;
         }
-        const path = `${dir || 'current'}/${name}`;
+        const folder = dir || 'current';
+        const path = `${folder}/${name}`;
+        // A plain save makes its folder when there is none yet
+        // (Host::saveProfile's mkpath); a save under a name of its own — the
+        // "save as" — writes only into one that is there (Host::saveProfileAs).
+        // Either way the file is opened before anything else is done, so a
+        // target that cannot be written is answered for here and then.
+        if (generated && !vfs.exists(folder)) {
+            try { vfs.mkdir(folder); } catch { /* answered just below */ }
+        }
+        if (!vfs.exists(folder)) return { ok: false, err: 'No such file or directory', path: vfs.resolvePath(path) };
         // The saved variables go out as they are in `_G` now, as desktop's
         // saveProfile writes them — not as the last debounced profile-data
         // flush captured them. profile.json is rewritten with them too, so a
@@ -1281,7 +1306,7 @@ export class ScriptingEngine implements EngineHost {
             // leaves the profile's settings out.
             vfs.writeFile(path, this.buildProfileXml(base?.xml, !generated));
         } catch (err) {
-            return { ok: false, err: describeThrown(err) };
+            return { ok: false, err: whyAFileCannotBeWritten(err), path: vfs.resolvePath(path) };
         }
         if (!dir && generated) this.mudletSaveName = name;
         return { ok: true, path: vfs.resolvePath(path) };

@@ -109,7 +109,8 @@ export interface EngineHost {
     saveSyncedModules(): void;
     /** Write the profile out as a Mudlet-format XML save, answering with the
      *  full path written. The XML half of `saveProfile([location [, saveName]])`. */
-    saveProfileXml(location?: string, saveName?: string): { ok: true; path: string } | { ok: false; err: string };
+    /** A refusal names the file it could not write, when it got that far. */
+    saveProfileXml(location?: string, saveName?: string): { ok: true; path: string } | { ok: false; err: string; path?: string };
 
     /** Put package installs off until the turn that started a profile save has
      *  ended; see ScriptingEngine.markProfileSaveInFlight. */
