@@ -174,8 +174,12 @@ function valueTypeInt(t: VarValueType): number {
 
 // Element text only needs &/</> escaped; quotes are legal in text content and
 // Mudlet leaves them raw there.
+// A carriage return goes as a character reference: written raw, an XML reader
+// turns it (and a CR LF) into a plain line feed, and the string comes back
+// without it.
 function escapeText(s: string): string {
-    return sanitizeControlChars(s).replace(/[&<>]/g, ch => (ch === '&' ? '&amp;' : ch === '<' ? '&lt;' : '&gt;'));
+    return sanitizeControlChars(s).replace(/[&<>\r]/g, ch => (
+        ch === '&' ? '&amp;' : ch === '<' ? '&lt;' : ch === '>' ? '&gt;' : '&#13;'));
 }
 
 // Mudlet sorts table entries by name (codepoint) on export; capture from _G via

@@ -40,6 +40,11 @@ export function bumpFontGeneration(): void {
 // in a profile stylesheet, and anything a package's CSS pulls in.
 if (typeof document !== 'undefined' && document.fonts?.addEventListener) {
     document.fonts.addEventListener('loadingdone', bumpFontGeneration);
+    // A bundled @font-face loads when something first draws in it, and nothing
+    // does by default in Bitstream Vera Sans — so a script's first
+    // calcFontSize or setFont on it would measure the fallback instead. Load it
+    // up front, as a desktop Mudlet has it registered from startup.
+    document.fonts.load?.(`16px 'Bitstream Vera Sans'`).catch(() => undefined);
 }
 
 /**
@@ -209,7 +214,7 @@ const UNIVERSAL_FONT_DEFAULTS: readonly string[] = [
     'monospace', 'serif', 'sans-serif',
     // Bundled with the app (App.css @font-face) — always available, unlike the
     // rest of this list which just guesses at what the host OS ships.
-    'Bitstream Vera Sans Mono', 'Ubuntu', 'Ubuntu Mono',
+    'Bitstream Vera Sans Mono', 'Bitstream Vera Sans', 'Ubuntu', 'Ubuntu Mono',
     'Consolas', 'Courier New', 'Menlo', 'Monaco', 'DejaVu Sans Mono', 'Cascadia Code',
     'Arial', 'Helvetica', 'Times New Roman', 'Georgia', 'Verdana', 'Tahoma',
 ];

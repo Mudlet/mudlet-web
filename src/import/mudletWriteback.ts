@@ -94,7 +94,11 @@ export function buildLinkedWriteback(
         root.appendChild(doc.importNode(varRoot, true));
     }
 
-    const xml = new XMLSerializer().serializeToString(doc);
+    // A carriage return in any text goes out as a character reference.
+    // XMLSerializer writes it raw, and an XML reader turns a raw one (and a CR
+    // LF) into a plain line feed, so a saved string or script came back without
+    // it. The base was read by a parser, so the markup itself has none.
+    const xml = new XMLSerializer().serializeToString(doc).replace(/\r/g, '&#13;');
     // The doctype does not survive a DOMParser/XMLSerializer round trip, and the
     // base document does not always carry one to begin with — but every Mudlet
     // save has it (XMLexport::writeXmlHeader appends a node_doctype), and a

@@ -4,7 +4,7 @@ import { splitSentCommands } from '../mud/commandSplit';
 import type { AliasEngine } from '../mud/aliases/AliasEngine';
 import type { TriggerEngine } from '../mud/triggers/TriggerEngine';
 import type { TimerEngine } from '../mud/timers/TimerEngine';
-import type { KeyEngine } from '../mud/keybindings/KeyEngine';
+import type { KeyEngine, KeyNode } from '../mud/keybindings/KeyEngine';
 import { classifyReservedKey, formatKeyCombo, reservedKeyNote } from '../mud/keybindings/browserReservedKeys';
 import { CLIENT_VERSION } from '../version';
 import { timeZoneAbbreviation, timeZoneLongName, timeZoneOffset } from '../utils/timeZone';
@@ -13,6 +13,7 @@ import type { WindowHandle, WindowOpenOptions } from '../ui/windows/types';
 import { MAP_WIDGET_ID, MAPPER_WIDGET_ID, mapViewWindowId } from '../ui/windows/types';
 import type { LabelManager, LabelCreateOptions, LabelMouseEvent, LabelWheelEvent } from '../ui/labels/LabelManager';
 import { classifyLabelLink } from '../ui/labels/labelLinks';
+import { styleSheetWithoutBackgroundImage } from '../ui/labels/labelModel';
 import { AddonCommandRegistry } from '../ui/commands/addonCommands';
 import { decodeGif, decodeAnimatedImage, sniffDecodableImage, supportsImageDecoder, MoviePlayer } from '../ui/labels/gifMovie';
 import { isSvgCandidate, isSvgUrl, resolveSvgIntrinsicSize, svgIntrinsicSizeFromBytes } from '../ui/labels/backgroundImageSize';
@@ -59,6 +60,7 @@ import { MapStore } from '../map/MapStore';
 import { type EngineHost, type TempComplexTriggerSpec, NULL_ENGINE_HOST } from './EngineHost';
 import { BUNDLED_GAMES, findBundledGame } from '../mud/games/bundledGames';
 import { TAB_COMPLETION_LINES, tabCompletionPool } from '../ui/tabCompletion';
+import { decodeProfileData, encodeProfileData } from '../import/qtProfileData';
 
 // Mudlet's TChar always carries baked-in fg/bg colors (the rendered pair), so
 // getFgColor/getBgColor never return "no color" for in-bounds positions. Mudlet Web
@@ -342,15 +344,6 @@ const MUDLET_ROOM_SIZE_SCALE = 10;
  *  order Mudlet's refusal lists them. */
 const AMBIGUOUS_WIDTH_MODES: readonly string[] = ['narrow', 'wide', 'auto'];
 
-/** The keys Mudlet's setConfig only handles inside its
- *  `if (host.mpMap && host.mpMap->mpMapper)` block — the 2D mapper widget's
- *  own settings. Until a mapper exists they are refused as unknown options. */
-const MAPPER_ONLY_CONFIG_KEYS: ReadonlySet<string> = new Set([
-    'mapRoomSize', 'mapExitSize', 'mapRoundRooms', 'showRoomIdsOnMap',
-    'showMapInfo', 'hideMapInfo', 'show3dMapView', 'mapShowRoomBorders',
-    'mapShowGrid', 'showUpperLowerLevels', 'mapInfoColor',
-]);
-
 /** Mudlet config keys persisted in the {@link ProfileSettings.config} bag rather
  *  than a dedicated structured field. Each entry gives the value type and the
  *  default `getConfig` returns before the key has been set, so first reads match
@@ -465,6 +458,25 @@ const NOT_AN_EXPERIMENT = Symbol('not-an-experiment');
 
 /** Where the enabled experiment names live in the profile's config bag. */
 const EXPERIMENTS_KEY = 'enabledExperiments';
+
+/** The profile file each IRC setting is kept in — desktop's TIrcClient
+ *  `*CfgItem` names, relative to the profile folder. */
+const IRC_PROFILE_FILES: Record<string, string> = {
+    ircHostName:   'irc_host',
+    ircHostPort:   'irc_port',
+    ircHostSecure: 'irc_secure',
+    ircNickName:   'irc_nick',
+    ircPassword:   'irc_password',
+    ircChannels:   'irc_channels',
+};
+
+/** A CR, an LF or a NUL, any of which would end or break an IRC command. */
+const ircLineBreak = (text: string): boolean => /[\r\n\0]/.test(text);
+
+/** TIrcClient::validIrcChannelName: an RFC 2811 prefix, and nothing that would
+ *  split the name in the space-joined store or the comma-joined JOIN. */
+const validIrcChannelName = (channel: string): boolean =>
+    /^[#&+!]/.test(channel) && !/[\s,]/.test(channel) && !ircLineBreak(channel);
 
 const CONFIG_KEY_ALIASES: Record<string, string> = {
     ircHost:   'ircHostName',
@@ -617,7 +629,16 @@ function mxpWindowId(name: string): string {
     return name;
 }
 
-function measureMonospaceCell(family: string, size: number): [number, number] {
+/** What {@link measureMonospaceCell} takes a cell's width from: an "M", what
+ *  this client's own column arithmetic has always used; a "W", the width
+ *  TTextEdit draws a column in and `calcFontSize(window)` reports; or the
+ *  average advance over printable ASCII, standing in for
+ *  `QFontMetrics::averageCharWidth()` (canvas cannot read the font's own OS/2
+ *  average) — the same on a monospaced font, narrower than a "W" otherwise. */
+type CellSample = 'M' | 'W' | 'average';
+const PRINTABLE_ASCII = Array.from({ length: 0x7f - 0x20 }, (_, i) => String.fromCharCode(0x20 + i)).join('');
+
+function measureMonospaceCell(family: string, size: number, sample: CellSample = 'M'): [number, number] {
     const px = size * 4 / 3;
     const fallback: [number, number] = [px * 0.6, px * 1.2];
     if (typeof document === 'undefined') return fallback;
@@ -626,7 +647,7 @@ function measureMonospaceCell(family: string, size: number): [number, number] {
         measureCache.clear();
         measureCacheGeneration = generation;
     }
-    const cacheKey = `${family}|${size}`;
+    const cacheKey = `${family}|${size}|${sample}`;
     const hit = measureCache.get(cacheKey);
     if (hit) return hit;
     if (measureCtx === undefined) {
@@ -638,13 +659,16 @@ function measureMonospaceCell(family: string, size: number): [number, number] {
         ? `"${family.trim().replace(/[\\"]/g, '\\$&')}", ${DEFAULT_MONO_STACK}`
         : DEFAULT_MONO_STACK;
     ctx.font = `${px}px ${stack}`;
-    const m = ctx.measureText('M');
+    const m = ctx.measureText(sample === 'W' ? 'W' : 'M');
     const ascent = m.fontBoundingBoxAscent;
     const descent = m.fontBoundingBoxDescent;
     const height = (typeof ascent === 'number' && typeof descent === 'number')
         ? ascent + descent
         : px * 1.2;
-    const cell: [number, number] = [m.width, height];
+    const width = sample === 'average'
+        ? ctx.measureText(PRINTABLE_ASCII).width / PRINTABLE_ASCII.length
+        : m.width;
+    const cell: [number, number] = [width, height];
     measureCache.set(cacheKey, cell);
     return cell;
 }
@@ -947,6 +971,9 @@ class ScriptingLabelsAPI {
     resetLinkStyle(name: string): boolean {
         return this.manager.resetLinkStyle(name);
     }
+    clearVisitedLinks(name: string): boolean {
+        return this.manager.clearVisitedLinks(name);
+    }
     getSizeHint(name: string): { width: number; height: number } | null {
         return this.manager.getSizeHint(name);
     }
@@ -1036,6 +1063,12 @@ export class ScriptingAPI {
     /** Mudlet's addon commands (addCommand and friends). Per profile, like
      *  every other placement a package makes. */
     readonly addonCommands = new AddonCommandRegistry();
+
+    /** The package or module whose code the calling frame is, or '' for the
+     *  profile's own; see ScriptingEngine.packageOfCaller. */
+    packageOfCaller(source: string, isMain: boolean, calledFromMain: boolean): string {
+        return this.host.packageOfCaller(source, isMain, calledFromMain);
+    }
 
     /** A player clicked a command's button. Mudlet raises `sysCommandClicked`
      *  with the id as a NUMBER (mudlet.cpp:694-699), which is the id addCommand
@@ -1815,6 +1848,7 @@ export class ScriptingAPI {
             case 'specialForceMXPProcessorOn':
                 return configBool(this.configBag().specialForceMXPProcessorOn ?? false);
         }
+        if (key in IRC_PROFILE_FILES) return this.readIrcConfig(key);
         const spec = CONFIG_PERSIST_ONLY[key];
         if (spec) {
             const stored = spec.sessionOnly ? this.sessionConfig.get(key) : this.configBag()[key];
@@ -1831,6 +1865,53 @@ export class ScriptingAPI {
             return stored;
         }
         return undefined;
+    }
+
+    /**
+     * An IRC setting as desktop's TIrcClient readers give it. Each lives in a
+     * profile file of its own, as a serialised QString (Host::readProfileData),
+     * so a profile linked from or exported to desktop carries it. A value the
+     * writers would refuse — one a profile saved before they did may still hold
+     * — reads as the default, or for channels is skipped. A profile that kept
+     * its settings in the config bag before they moved to files is read from
+     * there until something writes them again.
+     */
+    private readIrcConfig(key: string): unknown {
+        const spec = CONFIG_PERSIST_ONLY[key];
+        const bytes = this.host.readFileBytes(IRC_PROFILE_FILES[key]);
+        const legacy = this.configBag()[key];
+        const stored = bytes ? decodeProfileData(bytes) : legacy === undefined ? '' : String(legacy);
+        switch (key) {
+            case 'ircHostName':
+                return stored === '' || /\s/.test(stored) || ircLineBreak(stored) ? spec.default : stored;
+            case 'ircHostPort': {
+                const port = /^[+-]?\d+$/.test(stored.trim()) ? Number(stored.trim()) : NaN;
+                return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : spec.default;
+            }
+            case 'ircHostSecure':
+                return /true/i.test(stored);
+            case 'ircNickName':
+                return stored === '' ? spec.default : stored;
+            case 'ircChannels': {
+                const channels = stored.split(' ').filter(c => c !== '' && validIrcChannelName(c));
+                return channels.length ? channels.join(' ') : spec.default;
+            }
+            default:
+                return stored;
+        }
+    }
+
+    /** Store an IRC setting where {@link readIrcConfig} reads it, as desktop's
+     *  writeProfileData writes it. The value has been vetted already. With no
+     *  profile folder to write into it is kept in the config bag instead. */
+    private writeIrcConfig(key: string, value: unknown): boolean {
+        const text = key === 'ircHostPort' ? String(Math.trunc(Number(value)))
+            : key === 'ircHostSecure' ? (configBool(value) ? 'true' : 'false')
+            : String(value);
+        if (!this.host.writeFileBytes(IRC_PROFILE_FILES[key], encodeProfileData(text))) {
+            this.patchConfigBag(key, text);
+        }
+        return true;
     }
 
     /**
@@ -1908,11 +1989,6 @@ export class ScriptingAPI {
      */
     configKeyKind(rawKey: string): 'bool' | 'num' | 'str' | 'any' | 'readonly' | null {
         const key = CONFIG_KEY_ALIASES[rawKey] ?? rawKey;
-        // Mudlet only knows these while the 2D mapper exists
-        // (`host.mpMap->mpMapper`): before the map has been shown, setConfig
-        // refuses them as unknown keys whatever the value, so this is decided
-        // ahead of the type check.
-        if (MAPPER_ONLY_CONFIG_KEYS.has(key) && !this.session.windows.hasMapper()) return null;
         // An experiment takes a boolean, and one this build has never heard of
         // is still a KEY — its refusal has to name it, which it cannot do from
         // the generic "no such option" path. The two pseudo-keys are reads.
@@ -1958,8 +2034,8 @@ export class ScriptingAPI {
     /** Mudlet `setConfig(key, value)`. Returns true when the key is known and
      *  writable, false for unknown or read-only keys. */
     /**
-     * The room symbols the named font has no glyph for, quoted, or null when it
-     * can draw every one the map uses.
+     * The room symbols the named font has no glyph for, as desktop lists them,
+     * or null when it can draw every one the map uses.
      *
      * Measured rather than looked up, because a browser will not say what a
      * font contains: a character with no glyph is drawn as the font's notdef
@@ -1978,9 +2054,12 @@ export class ScriptingAPI {
         // U+10FFFD: unassigned, and unassignable — nothing can have a glyph for
         // it, so its width IS the notdef width for this font.
         const notdef = ctx.measureText('\u{10FFFD}').width;
-        const missing = symbols.filter(s => s && ctx.measureText(s).width === notdef);
+        const missing = [...new Set(symbols.filter(s => s && ctx.measureText(s).width === notdef))];
         if (missing.length === 0) return null;
-        return [...new Set(missing)].map(s => `"${s}"`).join(', ');
+        // As desktop lists them: space-separated, the first ten, then a count.
+        const listed = missing.slice(0, 10);
+        if (missing.length > 10) listed.push(`(and ${missing.length - 10} more)`);
+        return listed.join(' ');
     }
 
     /** Returns true, or a string when the option was taken and the caller
@@ -2059,11 +2138,8 @@ export class ScriptingAPI {
             case 'mapShowGrid':        this.setMapperField('gridEnabled', configBool(value)); return true;
             // Switch a registerMapInfo overlay on/off by label. Mudlet reports
             // success for any label — including one nothing has registered yet —
-            // so these never refuse. **Deviation:** Mudlet guards the whole
-            // branch on a live mapper widget and treats the key as unknown when
-            // there is none; Mudlet Web's MapStore is always present on the
-            // WindowManager, so the write lands whether or not a map panel is
-            // open (and is visible the moment one is).
+            // so these never refuse. Like every map key they need no mapper: the
+            // setting is kept, and a map panel opened later shows it.
             case 'showMapInfo': this.map.showMapInfo(String(value ?? '')); return true;
             case 'hideMapInfo': this.map.hideMapInfo(String(value ?? '')); return true;
             case 'mapInfoColor': {
@@ -2191,6 +2267,7 @@ export class ScriptingAPI {
             case 'logDirectory':
                 return false;
         }
+        if (key in IRC_PROFILE_FILES) return this.writeIrcConfig(key, value);
         const spec = CONFIG_PERSIST_ONLY[key];
         if (spec) {
             let v: unknown;
@@ -2254,8 +2331,8 @@ export class ScriptingAPI {
             if (key === 'mapSymbolFont') {
                 const undrawable = this.symbolsThisFontCannotDraw(String(v));
                 if (undrawable) {
-                    return `the font "${v}" has no glyph for ${undrawable}, which the map uses —`
-                        + ' those rooms will show the replacement character';
+                    return `font '${v}' has no glyph for these room symbols, which will show as the`
+                        + ` replacement character: ${undrawable}`;
                 }
             }
             return true;
@@ -2387,17 +2464,17 @@ export class ScriptingAPI {
     getModulePriority(name: string): number { return this.host.getModulePriority(name); }
     getModules(): string[] { return this.host.getModuleNames(); }
     getModuleInfo(name: string): Record<string, unknown> | null { return this.host.getModuleInfoRecord(name); }
-    /** Mudlet `setModuleInfo(name, key, value)`. Stores a custom info field on a
-     *  module (visible via getModuleInfo). Always true. */
-    setModuleInfo(name: string, key: string, value: string): boolean { return this.host.setModuleInfo(name, key, value); }
+    /** Mudlet `setModuleInfo(name, key, value)`. Stores a custom info field on an
+     *  installed module (visible via getModuleInfo); the refusal, or null. */
+    setModuleInfo(name: string, key: string, value: string): string | null { return this.host.setModuleInfo(name, key, value); }
     getModulePath(name: string): string | null { return this.host.getModulePath(name); }
     /** Mudlet `getPackageInfo(name)`. Merged info table — the package manifest's
      *  standard fields overlaid with anything set via setPackageInfo. Empty when
      *  the package isn't installed and nothing was set. */
     getPackageInfo(name: string): Record<string, string> { return this.host.getPackageInfo(name); }
-    /** Mudlet `setPackageInfo(name, key, value)`. Stores a custom info field on a
-     *  package (visible via getPackageInfo). Always true. */
-    setPackageInfo(name: string, key: string, value: string): boolean { return this.host.setPackageInfo(name, key, value); }
+    /** Mudlet `setPackageInfo(name, key, value)`. Stores a custom info field on an
+     *  installed package (visible via getPackageInfo); the refusal, or null. */
+    setPackageInfo(name: string, key: string, value: string): string | null { return this.host.setPackageInfo(name, key, value); }
 
 
 
@@ -2572,8 +2649,9 @@ export class ScriptingAPI {
         return this.host.installPackageFromVfsPath(path);
     }
 
-    uninstallPackage(name: string): boolean {
-        return this.host.uninstallPackageByName(name);
+    /** Lua `uninstallPackage(name)`: the refusal, or null once it is gone. */
+    uninstallPackage(name: string): string | null {
+        return this.host.uninstallPackageFromScript(name);
     }
 
     enableScript(name: string): boolean {
@@ -2625,21 +2703,24 @@ export class ScriptingAPI {
 
     /** The saved keybinding carrying this numeric id, or null. Backs
      *  getKeyCode() for a permanent key referenced by the id permKey returned. */
-    keyNodeByNumericId(numericId: number): { key: string; modifiers: string[] } | null {
-        return this.host.keyNodeByNumericId(numericId);
+    savedKeyNode(idOrName: number | string): KeyNode | null {
+        return this.host.savedKeyNode(idOrName);
     }
 
     // A numeric argument names a script-created temp key, which lives in the key
     // engine rather than the saved tree; Mudlet's enableKey/disableKey toggle
-    // either kind.
+    // either kind. A temp key is also named after its id, so its id as a
+    // string reaches it too.
     enableKey(nameOrId: string | number): boolean {
-        if (typeof nameOrId === 'number') return this.keys.setTempEnabled(nameOrId, true);
-        return this.host.toggleKeyByName(nameOrId, true);
+        const tempId = typeof nameOrId === 'number' ? nameOrId : this.keys.tempIdNamed(nameOrId);
+        if (tempId !== null) return this.keys.setTempEnabled(tempId, true);
+        return this.host.toggleKeyByName(nameOrId as string, true);
     }
 
     disableKey(nameOrId: string | number): boolean {
-        if (typeof nameOrId === 'number') return this.keys.setTempEnabled(nameOrId, false);
-        return this.host.toggleKeyByName(nameOrId, false);
+        const tempId = typeof nameOrId === 'number' ? nameOrId : this.keys.tempIdNamed(nameOrId);
+        if (tempId !== null) return this.keys.setTempEnabled(tempId, false);
+        return this.host.toggleKeyByName(nameOrId as string, false);
     }
 
     /**
@@ -4496,6 +4577,9 @@ export class ScriptingAPI {
         // (MudClient drops every '\r' before parsing): a package fed
         // "line\r\n" must match `^line$` exactly as the game's own copy does.
         text = text.replace(/\r/g, '');
+        // A NUL is dropped and the text after it kept, as from the game: a Lua
+        // string can carry one, and what follows it is still the caller's.
+        text = text.replace(/\0/g, '');
         // An EOT (0x04) ends a line as '\n' does, in fed text as in the game's:
         // TBuffer::translateToPlainText commits on it whatever the source.
         text = text.replace(/\x04/g, '\n');
@@ -5301,6 +5385,7 @@ export class ScriptingAPI {
         if (!this.session.windows.isMiniConsole(name) && !this.session.windows.has(name)) return false;
         this.session.windows.close(name);
         this.windowCommandColors.delete(name);
+        this.forgetUserWindowStyleSheet(name);
         this.host.raiseEvent('sysMiniConsoleDeleted', [name]);
         return true;
     }
@@ -6295,15 +6380,34 @@ export class ScriptingAPI {
         // Remembered verbatim: the tag holds the *scoped* translation, and a
         // getter has to answer what the script wrote, not what Mudlet Web made of it.
         this.userWindowCss.set(name, css ?? '');
+        // Qt writes a qproperty through the widget's own setter, so a dock's
+        // `qproperty-windowTitle` is its title from then on.
+        const title = /qproperty-windowTitle\s*:\s*(["'])(.*?)\1/i.exec(css ?? '');
+        if (title) this.session.windows.setTitle(name, title[2]);
         return true;
     }
 
-    /** Mudlet `getUserWindowStyleSheet(name)` — the QSS as it was set. */
+    /** Mudlet `getUserWindowStyleSheet(name)` — the QSS as it was set: the
+     *  window's own, or else the profile's, which desktop sets on every dock. */
     getUserWindowStyleSheet(name: string): string {
-        return this.userWindowCss.get(name) ?? '';
+        return this.userWindowCss.get(name) ?? this.profileCss;
+    }
+
+    /** A user window was just made (not re-shown): it starts with the profile
+     *  stylesheet, not with whatever an earlier window of its name was given. */
+    noteUserWindowOpened(name: string): void {
+        this.forgetUserWindowStyleSheet(name);
+    }
+
+    /** Drop a user window's own stylesheet, and the `<style>` tag carrying it. */
+    private forgetUserWindowStyleSheet(name: string): void {
+        if (!this.userWindowCss.delete(name)) return;
+        document.getElementById(`mudlet-userwindow-stylesheet--${this.connectionId}--${name}`)?.remove();
     }
 
     private readonly userWindowCss = new Map<string, string>();
+    /** What setProfileStyleSheet was last given. */
+    private profileCss = '';
 
     /** Mudlet `getCmdLineStyleSheet([name])`. Same story as above: the command
      *  line's authored QSS, not the CSS the overlay ends up with. "main" is the
@@ -6324,6 +6428,12 @@ export class ScriptingAPI {
         this.cmdLineCss.set(name || 'main', css ?? '');
     }
 
+    /** Whether a command line's stylesheet has been recorded at all — born or
+     *  set — as opposed to recorded as "". */
+    hasCmdLineStyleSheet(name: string): boolean {
+        return this.cmdLineCss.has(name || 'main');
+    }
+
     private readonly cmdLineCss = new Map<string, string>();
 
     /**
@@ -6341,6 +6451,10 @@ export class ScriptingAPI {
     setProfileStyleSheet(css: string): boolean {
         const el = this.styleTag('profile', 'default', 'mudletProfileStylesheet', 'true');
         el.textContent = rewriteQtSelectors(css ?? '');
+        // Desktop sets the sheet on every dock widget, replacing what each user
+        // window had of its own; new ones are made with it.
+        this.profileCss = css ?? '';
+        for (const name of [...this.userWindowCss.keys()]) this.forgetUserWindowStyleSheet(name);
         return true;
     }
 
@@ -6687,14 +6801,15 @@ export class ScriptingAPI {
      * Mudlet `saveWindowLayout()` — capture the current layout (window hints
      * + dock area extents) into a per-connection snapshot in the persisted
      * app store. A later `loadWindowLayout()` re-applies the captured state.
-     * Returns true on success, false when no connectionId is bound.
+     * Returns true on success, false when no connectionId is bound or the
+     * layout file cannot be written — what desktop reports when it cannot open
+     * `windowLayout.dat`.
      */
     saveWindowLayout(): boolean {
         if (!this.connectionId) return false;
         const snapshot = this.session.windows.captureLayoutSnapshot();
         useAppStore.getState().saveLayoutSnapshot(this.connectionId, snapshot);
-        this.writeWindowLayoutFile(snapshot);
-        return true;
+        return this.writeWindowLayoutFile(snapshot);
     }
 
     /** Where Mudlet keeps the window layout: beside the profiles folder, not
@@ -6715,11 +6830,12 @@ export class ScriptingAPI {
      * Mudlet Web reads it, and those bytes describe Qt dock widgets that have no
      * counterpart here.
      */
-    private writeWindowLayoutFile(snapshot: unknown): void {
+    private writeWindowLayoutFile(snapshot: unknown): boolean {
         const path = this.windowLayoutPath();
-        if (!path) return;
+        // No VFS to mirror into: the store copy is the whole save.
+        if (!path) return true;
         const json = JSON.stringify({ version: 1, snapshot }, null, 0);
-        this.host.writeFileBytes(path, new TextEncoder().encode(json));
+        return this.host.writeFileBytes(path, new TextEncoder().encode(json));
     }
 
     /** The snapshot in `windowLayout.dat`, or null when there is no readable,
@@ -7250,7 +7366,14 @@ export class ScriptingAPI {
             return true;
         }
         if (this.session.labels.has(name)) {
-            return this.session.labels.resetBackgroundImage(name) ? true : `console '${name}' not found`;
+            if (!this.session.labels.resetBackgroundImage(name)) return `console '${name}' not found`;
+            // TLabel::resetBackgroundImage takes a background-image out of the
+            // label's own stylesheet too — what setTiledBackgroundImage puts
+            // there — and only the image, restyling the label with the rest.
+            const sheet = this.labels.getStyleSheet(name) ?? '';
+            const withoutImage = styleSheetWithoutBackgroundImage(sheet);
+            if (withoutImage !== sheet) this.labels.setStyleSheet(name, withoutImage);
+            return true;
         }
         return this.session.windows.resetBackgroundImage(name) ? true : `console '${name}' not found`;
     }
@@ -7593,7 +7716,9 @@ export class ScriptingAPI {
         const num = Number(n);
         if (!Number.isFinite(num)) return null;
         // getVerifiedInt drops the fraction rather than rounding: 194.8 is 194.
-        return Math.max(0, Math.trunc(num));
+        // Negative sizes are kept — Profile Preferences offer them — and the
+        // range is enforced in Bridge.lua, where the refusal is worded.
+        return Math.trunc(num) || 0;
     }
 
     /**
@@ -7663,6 +7788,11 @@ export class ScriptingAPI {
      *   • `calcFontSize("WindowName")` — measure the named window/miniconsole
      *     using its configured font+size. Use `"main"` for the main output.
      *
+     * The size forms answer the font's average character width, the window
+     * form the width of a "W" — what scripts have long compensated for by hand
+     * — unless `columnWidth` asks for the width a column is drawn in, which is
+     * the average again. All three agree on a monospaced font.
+     *
      * Returns `null` when the size is invalid or the named window doesn't
      * exist; the Lua wrapper turns that into Mudlet's `(nil, errMsg)` shape.
      *
@@ -7678,7 +7808,7 @@ export class ScriptingAPI {
      * computed and the size `getWindowGeometry` reports back silently disagree,
      * by an amount that depends on which fonts the machine happens to have.
      */
-    calcFontSize(arg: number | string, fontName?: string): [number, number] | null {
+    calcFontSize(arg: number | string, fontName?: string, columnWidth = false): [number, number] | null {
         const mainFamily = (): string =>
             selectProfileField(useAppStore.getState(), this.connectionId, 'outputFont')?.family ?? '';
         const mainSize = (): number =>
@@ -7686,8 +7816,10 @@ export class ScriptingAPI {
 
         let size: number;
         let family: string;
+        let sample: 'W' | 'average' = 'average';
         if (typeof arg === 'string') {
             if (arg === '') return null;
+            if (!columnWidth) sample = 'W';
             if (arg === 'main') {
                 size = mainSize();
                 family = mainFamily();
@@ -7701,7 +7833,7 @@ export class ScriptingAPI {
             if (!Number.isFinite(size) || size < 1) return null;
             family = fontName && String(fontName).trim() ? String(fontName) : mainFamily();
         }
-        const [width, height] = measureMonospaceCell(family, size);
+        const [width, height] = measureMonospaceCell(family, size, sample);
         // qRound, which is what QFontMetrics::averageCharWidth() applies to the
         // fractional advance — so the answer matches Mudlet's for a given font.
         return [Math.round(width), Math.round(height)];

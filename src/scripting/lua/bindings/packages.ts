@@ -18,11 +18,10 @@ export function installPackageBindings({ lua, api }: BindingContext): void {
     // wrapper reshapes it into Mudlet's (ok, errorMessage) multi-return
     // (wasmoon JS calls can only push one Lua value).
     lua.global.set('__installPackage', (path: string) => api.installPackage(String(path ?? '')));
-    // Mudlet `uninstallPackage(name)` → true on success, nil when no package
-    // with that name is installed.
-    lua.global.set('uninstallPackage', (name: string) => {
-        return api.uninstallPackage(String(name ?? '')) ? true : null;
-    });
+    // Mudlet `uninstallPackage(name)` → true, or (nil, reason). One value
+    // crosses here — the reason, or false — and Bridge.lua shapes the pair.
+    lua.global.set('__uninstallPackage', (name: string) =>
+        api.uninstallPackage(String(name ?? '')) ?? false);
     // Mudlet getPackages() — list of installed package names. JS arrays land
     // in Lua 0-indexed via wasmoon, so a Bridge.lua wrapper rebuilds it to a
     // 1-indexed sequence.
@@ -104,16 +103,18 @@ export function installPackageBindings({ lua, api }: BindingContext): void {
     // `nil` when no module by that name exists.
     lua.global.set('__getModuleInfo', (name: unknown) =>
         api.getModuleInfo(String(name ?? '')));
-    // Mudlet setModuleInfo(name, key, value) → stores a custom info field.
-    lua.global.set('setModuleInfo', (name: unknown, key: unknown, value: unknown) =>
-        api.setModuleInfo(String(name ?? ''), String(key ?? ''), String(value ?? '')));
+    // Mudlet setModuleInfo(name, key, value) → stores a custom info field. The
+    // refusal or false crosses here; Bridge.lua shapes Mudlet's (nil, reason).
+    lua.global.set('__setModuleInfo', (name: unknown, key: unknown, value: unknown) =>
+        api.setModuleInfo(String(name ?? ''), String(key ?? ''), String(value ?? '')) ?? false);
     // Mudlet getPackageInfo(name [, key]). The Bridge.lua wrapper handles the
     // optional `key` projection; here we return the merged info table.
     lua.global.set('__getPackageInfo', (name: unknown) =>
         api.getPackageInfo(String(name ?? '')));
-    // Mudlet setPackageInfo(name, key, value) → stores a custom info field.
-    lua.global.set('setPackageInfo', (name: unknown, key: unknown, value: unknown) =>
-        api.setPackageInfo(String(name ?? ''), String(key ?? ''), String(value ?? '')));
+    // Mudlet setPackageInfo(name, key, value) → stores a custom info field; as
+    // setModuleInfo.
+    lua.global.set('__setPackageInfo', (name: unknown, key: unknown, value: unknown) =>
+        api.setPackageInfo(String(name ?? ''), String(key ?? ''), String(value ?? '')) ?? false);
     // Mudlet getModulePath(name) → absolute VFS path of the module's XML, or
     // nil. Like getModuleInfo, returns nil gracefully for an unknown module
     // (no requireModule raise) so probing scripts don't error.

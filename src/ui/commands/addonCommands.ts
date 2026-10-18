@@ -38,6 +38,8 @@ export interface AddonCommand {
      *  there is no second window for it to appear in. */
     pinned: boolean;
     pulse: { colour: string; altColour: string; intervalMs: number } | null;
+    /** The package or module whose code placed it, or '' for the profile's. */
+    owner: string;
 }
 
 /** A request as Bridge.lua hands it over, already type-checked there. */
@@ -48,6 +50,7 @@ export interface CommandRequest {
     menuPath?: string;
     shortcut?: string;
     surfaces?: CommandSurface;
+    owner?: string;
 }
 
 /**
@@ -226,6 +229,7 @@ export class AddonCommandRegistry {
             checked: false,
             pinned: false,
             pulse: null,
+            owner: request.owner ?? '',
         });
         this.notify();
         return id;
@@ -235,6 +239,18 @@ export class AddonCommandRegistry {
         if (!this.commands.delete(id)) return false;
         this.notify();
         return true;
+    }
+
+    /** Take away every command the package or module `owner`'s code placed —
+     *  once it is gone nothing knows their ids, and left behind they would
+     *  stay on screen and hold their shortcuts against its own reinstall. */
+    removeOwnedBy(owner: string): void {
+        if (!owner) return;
+        let removed = false;
+        for (const [id, command] of this.commands) {
+            if (command.owner === owner) { this.commands.delete(id); removed = true; }
+        }
+        if (removed) this.notify();
     }
 
     setEnabled(id: number, enabled: boolean): boolean {

@@ -1387,6 +1387,25 @@ export function extractQtWordWrap(css: string): boolean | undefined {
     return found;
 }
 
+/** The text a `qproperty-text: "…"` declaration gives a label, or undefined
+ *  when the sheet sets none. Qt writes a qproperty through the widget's own
+ *  setter — QLabel::setText — so the label's text is replaced there and then,
+ *  rather than styled at paint time. Last one wins, as in Qt. */
+export function extractQtText(css: string): string | undefined {
+    const blocks = css.indexOf('{') < 0
+        ? [css]
+        : splitRulesets(css)
+            .filter(r => r.selector.trim() === '' || /^QLabel$/i.test(r.selector.trim()))
+            .map(r => r.body);
+    let found: string | undefined;
+    for (const block of blocks) {
+        for (const { key, val } of parseQtDeclarations(block)) {
+            if (key === 'qproperty-text') found = val;
+        }
+    }
+    return found;
+}
+
 // Pull out base-level declarations from a stylesheet that may also have
 // selector rulesets. Used by cssTextToStyle for back-compat callers that don't
 // care about scoped state rules.
