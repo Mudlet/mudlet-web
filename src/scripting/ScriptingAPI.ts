@@ -24,7 +24,7 @@ import { userWindowQssToScopedCss, cssEscape, rewriteQtSelectors, patchStyleShee
 import type { LogFormat } from '../logging/SessionLogger';
 import { AnsiAwareBuffer, type FormatColor, type FormatStateSnapshot, type FormatHyperlink, type RgbColor } from '../mud/text/FormatState';
 import { classifyHyperlinkUri } from '../mud/text/ansiEscapes';
-import { extractQuery, type UnderlineStyle } from '../mud/text/hyperlinkConfig';
+import { extractQuery, type LinkStateStyle, type UnderlineStyle } from '../mud/text/hyperlinkConfig';
 import { OscLinkManager } from '../mud/text/oscLinkManager';
 import { pumpDelayedReveals } from '../mud/text/hyperlinkVisibility';
 import { historyStorageKey, loadHistory } from '../ui/commandHistory';
@@ -120,6 +120,21 @@ const COLOR_DEFAULT = -2;
  *  parse. NaN, so it equals nothing — itself included — and a pattern holding
  *  it matches nothing, as desktop's invalid QColor does. */
 const RGB_KEY_NONE: RgbKey = NaN;
+
+/**
+ * The OSC 8 link style a cell is drawn in, as TBuffer commits it onto the
+ * cell: the link's own style, and for a link the game marks as already
+ * selected its selected style over that — which then `replaces` the
+ * formatting the game wrapped the link in rather than adding to it. Undefined
+ * for a cell with no styled link.
+ */
+function linkStyleOf(state: FormatStateSnapshot | undefined): { style: LinkStateStyle; replaces: boolean } | undefined {
+    const config = state?.hyperlink?.config;
+    const base = config?.style;
+    if (!base) return undefined;
+    const selected = config.selection?.selected ? base.states?.selected : undefined;
+    return selected ? { style: { ...base, ...selected }, replaces: true } : { style: base, replaces: false };
+}
 
 function packRgb(r: number, g: number, b: number): RgbKey {
     return ((r & 0xff) << 16) | ((g & 0xff) << 8) | (b & 0xff);
@@ -3899,7 +3914,10 @@ export class ScriptingAPI {
         channel: 'foreground' | 'background',
     ): [number, number, number] {
         const state = buf.getStateAt(pos);
-        const color = channel === 'foreground' ? state?.foreground : state?.background;
+        const link = linkStyleOf(state);
+        const color = channel === 'foreground'
+            ? link?.style.foreground ?? (link?.replaces ? undefined : state?.foreground)
+            : link?.style.background ?? (link?.replaces ? undefined : state?.background);
         return formatColorToRgb(color) ?? this.defaultColorRgb(channel);
     }
 
@@ -3981,27 +3999,31 @@ export class ScriptingAPI {
         const foreground = this.readColorAt(buf, pos, 'foreground');
         const background = this.readColorAt(buf, pos, 'background');
         const state = buf.getStateAt(pos);
+        // A link's own style wins over the run's; a link drawn in its selected
+        // style has that in place of the formatting the game wrapped it in.
+        const link = linkStyleOf(state);
+        const linkStyle = link?.style;
+        const sgr = link?.replaces ? undefined : state;
         // A link's own styling adds an underline to the cell without clearing
         // the one SGR put there, so the cell can carry two at once and only what
         // the painter draws is the honest answer. Mudlet resolves it in
         // drawCustomDecorations' order — wavy, then dotted, then dashed, with
         // the plain underline drawn when none of the three is set.
-        const linkStyle = state?.hyperlink?.config?.style;
-        const underline = !!state?.underline || !!linkStyle?.underline;
-        const styles = [state?.underlineStyle, linkStyle?.underlineStyle];
+        const underline = !!sgr?.underline || !!linkStyle?.underline;
+        const styles = [sgr?.underlineStyle, linkStyle?.underlineStyle];
         const underlineStyle = !underline ? 'none'
             : styles.includes('wavy') ? 'wavy'
             : styles.includes('dotted') ? 'dotted'
             : styles.includes('dashed') ? 'dashed'
             : 'solid';
         return {
-            bold: !!state?.bold,
-            italic: !!state?.italic,
+            bold: !!(linkStyle?.bold ?? sgr?.bold),
+            italic: !!(linkStyle?.italic ?? sgr?.italic),
             underline,
             underlineStyle,
-            strikeout: !!state?.strikethrough,
+            strikeout: !!(linkStyle?.strikethrough ?? sgr?.strikethrough),
             reverse: !!state?.inverse,
-            overline: !!state?.overline,
+            overline: !!(linkStyle?.overline ?? sgr?.overline),
             concealed: !!state?.concealed,
             alternateFont: state?.alternateFont ?? 0,
             blinking: state?.rapidBlink ? 'fast' : state?.slowBlink ? 'slow' : 'none',
