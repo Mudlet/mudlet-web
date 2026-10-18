@@ -389,8 +389,10 @@ export function preparePackageInstall(
 
     const commit = (): void => {
         // Wipe any previous install of the same package (re-install is a clean
-        // slate). Reached only once the install is certain to go through.
-        if (!sourceInsidePkgDir && vfs.exists(pkgDir)) vfs.rmdir(pkgDir);
+        // slate). Reached only once the install is certain to go through — and
+        // never for one of the profile's own folders, which only a bare XML
+        // package can be named after, and whose files are the profile's.
+        if (!sourceInsidePkgDir && vfs.exists(pkgDir) && !profileKeepsItsOwnDataIn(packageName)) vfs.rmdir(pkgDir);
         else if (sourceInsidePkgDir && pkgDir !== stagedDir) {
             // A staged install that config.lua renamed: the contents are under
             // the filename's directory and belong under the declared one. The
