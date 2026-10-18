@@ -4353,10 +4353,11 @@ export class ScriptingAPI {
     /** Told when text is inserted into the line a trigger is matching, so the
      *  runtime can move the capture positions it recorded at match time —
      *  otherwise `selectCaptureGroup` after an `insertText` selects the text
-     *  that has since slid to where the capture used to be. */
-    private captureShiftHook: ((at: number, delta: number) => void) | null = null;
+     *  that has since slid to where the capture used to be. `replaced` is the
+     *  length a `replace` took out at `at`, absent for an insert. */
+    private captureShiftHook: ((at: number, delta: number, replaced?: number) => void) | null = null;
 
-    setCaptureShiftHook(fn: ((at: number, delta: number) => void) | null): void {
+    setCaptureShiftHook(fn: ((at: number, delta: number, replaced?: number) => void) | null): void {
         this.captureShiftHook = fn;
     }
 
@@ -5796,10 +5797,11 @@ export class ScriptingAPI {
         const state = keepColor ? undefined : this.outputConsole(targetWin).format.toSnapshot();
         buf.replace([sel.start, sel.start + sel.length], newText, state);
         if (this.inTriggerProcessing && this.getConsole(targetWin) === this.mainConsole) {
-            // TConsole::replace moves every capture from the start of the
-            // selection on by the change in length, so a later group is still
-            // found where its text now is
-            this.captureShiftHook?.(sel.start, newText.length - sel.length);
+            // TConsole::replace moves every capture after the start of the
+            // selection by the change in length, so a later group is still
+            // found where its text now is; the one that was the replaced text
+            // keeps its start and spans the replacement
+            this.captureShiftHook?.(sel.start, newText.length - sel.length, sel.length);
             // Same alignment the insert path needs: a replace that changes the
             // line's LENGTH moves every colour run after it. With keepColor the
             // replacement wears whatever the snapshot already had at that

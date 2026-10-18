@@ -749,13 +749,24 @@ export class LuaRuntime implements IScriptingRuntime {
      * `selectCaptureGroup` would otherwise select the text that has slid into
      * where the capture used to be. A capture that starts at or after the
      * insert moves whole; one the insert lands inside grows by it.
+     *
+     * For a `replace` of `replaced` characters at `at`
+     * (TLuaInterpreter::adjustCaptureGroupsForReplace) the capture that was
+     * exactly the replaced text keeps its start and takes the replacement's
+     * length, one starting after `at` moves, and the rest — an enclosing group
+     * that shares the start among them — stay as they were.
      */
-    shiftCaptureSpans(at: number, delta: number): void {
+    shiftCaptureSpans(at: number, delta: number, replaced?: number): void {
         if (!delta) return;
-        const shift = (span: CaptureSpan): void => {
-            if (span.start >= at) span.start += delta;
-            else if (at < span.start + span.length) span.length += delta;
-        };
+        const shift = replaced === undefined
+            ? (span: CaptureSpan): void => {
+                if (span.start >= at) span.start += delta;
+                else if (at < span.start + span.length) span.length += delta;
+            }
+            : (span: CaptureSpan): void => {
+                if (span.start === at && span.length === replaced) span.length += delta;
+                else if (span.start > at) span.start += delta;
+            };
         if (this.currentFullMatchSpan) shift(this.currentFullMatchSpan);
         for (const span of this.currentCaptureSpans) shift(span);
         for (const span of Object.values(this.currentNamedSpans)) shift(span);

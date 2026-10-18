@@ -2251,7 +2251,7 @@ export class ScriptingEngine implements EngineHost {
             this.triggerEngine.setRunawayReporter(text => this.api.postSystemMessage(text));
             // Capture positions are recorded at match time; text a trigger
             // inserts into its own line has to move them with it.
-            this.api.setCaptureShiftHook((at, delta) => rt.shiftCaptureSpans(at, delta));
+            this.api.setCaptureShiftHook((at, delta, replaced) => rt.shiftCaptureSpans(at, delta, replaced));
             // What the engine does to a trigger it stops as a runaway: a
             // temporary one is removed, a permanent one only switched off —
             // there being no removal API for one, and the player's own copy
