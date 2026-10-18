@@ -273,6 +273,10 @@ export function mudletJsonMapToMudletMap(src: unknown): MudletMap | null {
         if (!rawArea || typeof rawArea !== 'object') continue;
         const areaId = Number(rawArea.id);
         if (!Number.isFinite(areaId)) continue;
+        // An id listed twice: an entry with no name never replaces the area
+        // the file names, wherever in the file it comes.
+        const rawName = typeof rawArea.name === 'string' ? rawArea.name : '';
+        if (areaId in areas && (!rawName || areaNames[areaId])) continue;
 
         const area = makeArea();
         area.userData = { ...((rawArea.userData as Record<string, string>) ?? {}) };
@@ -1252,9 +1256,14 @@ export class MapStore {
         // and a name already taken is suffixed "_001", "_002", … — with any
         // existing three-digit suffix chopped off first, so a second pass over
         // an already-audited map does not stack them.
+        //
+        // The names a file gives are taken first and the empty ones named after
+        // them, so an area with no name never takes one a later area in the file
+        // has; the default area keeps its own name when it has none, unless
+        // another area has that.
         const takenNames = new Set<string>();
-        for (const [k, rawName] of Object.entries(header.areaNames ?? {})) {
-            let name = rawName || UNNAMED_AREA_NAME;
+        const claim = (id: number, wanted: string) => {
+            let name = wanted;
             if (takenNames.has(name)) {
                 if (/_\d{3}$/.test(name)) name = name.slice(0, -4);
                 let suffix = 0;
@@ -1265,7 +1274,14 @@ export class MapStore {
                 name = candidate;
             }
             takenNames.add(name);
-            this.areaNames.set(Number(k), name);
+            this.areaNames.set(id, name);
+        };
+        const entries = Object.entries(header.areaNames ?? {});
+        for (const [k, rawName] of entries) if (rawName) claim(Number(k), rawName);
+        for (const [k, rawName] of entries) {
+            if (rawName) continue;
+            const id = Number(k);
+            claim(id, id === -1 && !takenNames.has(DEFAULT_AREA_NAME) ? DEFAULT_AREA_NAME : UNNAMED_AREA_NAME);
         }
         for (const [k, labels] of Object.entries(header.labels ?? {})) {
             // Normalize pixmaps to base64 strings up-front. Heavy Buffer
