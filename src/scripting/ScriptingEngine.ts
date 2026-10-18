@@ -4495,7 +4495,8 @@ export class ScriptingEngine implements EngineHost {
         } catch (err) {
             this.failedScripts.add(script.id);
             this.scriptLoadErrors.set(script.id, err);
-            this.reportEntityError('script', script.id, script.name, err);
+            this.reportEntityError('script', script.id, script.name, err,
+                rt.syntaxError?.(script.code, script.name) != null);
         }
         // A body that failed, or one that compiles again after failing, turns
         // its own handlers and those of everything under it off or back on.
@@ -5282,7 +5283,7 @@ export class ScriptingEngine implements EngineHost {
             for (const item of list ?? []) {
                 if (item.isGroup || !item.code || item.language !== 'lua') continue;
                 const err = itemSyntaxError(rt, item.code, itemChunkName(kind, item.name));
-                if (err) problems.push(`${item.name}: ${err}`);
+                if (err) problems.push(`${item.name}: Lua syntax error: ${err}`);
             }
         }
         return problems.length > 0 ? problems.join('; ') : null;
@@ -5293,13 +5294,18 @@ export class ScriptingEngine implements EngineHost {
         id: string,
         name: string,
         err: unknown,
+        compileFailed = false,
     ): void {
         const prefix = formatErrorPrefix(kind, name);
         const msg = describeThrown(err, prefix);
         // A script that stops with an error while its package is installing
         // is reported to whoever asked for the install, too — see
-        // collectInstallProblems.
-        if (kind === 'script' && this.installProblems) this.installProblems.push(`${name}: ${msg}`);
+        // collectInstallProblems — saying, as desktop does, whether its body
+        // would not compile or raised as it ran.
+        if (kind === 'script' && this.installProblems) {
+            const what = compileFailed ? 'Lua syntax error' : 'Lua error';
+            this.installProblems.push(`${name}: ${what}: ${msg}`);
+        }
         const source: ScriptLogSource = { kind, id, name };
         const line = parseLuaErrorLine(msg);
         if (line !== undefined) source.line = line;
