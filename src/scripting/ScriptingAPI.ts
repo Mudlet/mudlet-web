@@ -136,6 +136,29 @@ function linkStyleOf(state: FormatStateSnapshot | undefined): { style: LinkState
     return selected ? { style: { ...base, ...selected }, replaces: true } : { style: base, replaces: false };
 }
 
+/**
+ * Fed `text` with each carriage return turned into the line commit TBuffer
+ * makes of it: a newline when the line it ends holds anything (`held` is the
+ * unterminated text an earlier feed left, which the line starts with), and
+ * nothing when it is empty. Escape sequences alone leave a line empty.
+ */
+function commitFedCarriageReturns(held: string, text: string): string {
+    let line = held.slice(held.lastIndexOf('\n') + 1);
+    let out = '';
+    for (const ch of text) {
+        if (ch === '\r') {
+            if (line.replace(/\x1b(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)?)/g, '') !== '') {
+                out += '\n';
+                line = '';
+            }
+            continue;
+        }
+        out += ch;
+        line = ch === '\n' ? '' : line + ch;
+    }
+    return out;
+}
+
 function packRgb(r: number, g: number, b: number): RgbKey {
     return ((r & 0xff) << 16) | ((g & 0xff) << 8) | (b & 0xff);
 }
@@ -4486,13 +4509,15 @@ export class ScriptingAPI {
 
     /** The feed itself, once {@link feedTriggers} has settled what the bytes say. */
     private feedTriggersText(text: string): boolean {
-        // Carriage returns never reach a line, as with text from the server
-        // (MudClient drops every '\r' before parsing): a package fed
-        // "line\r\n" must match `^line$` exactly as the game's own copy does.
-        text = text.replace(/\r/g, '');
         // An EOT (0x04) ends a line as '\n' does, in fed text as in the game's:
         // TBuffer::translateToPlainText commits on it whatever the source.
         text = text.replace(/\x04/g, '\n');
+        // Only cTelnet strips the game's carriage returns, so one handed to
+        // feedTriggers() reaches TBuffer, which commits the line on it — and
+        // commits nothing when the line is still empty (TBuffer::commitLine's
+        // "empty timer posting"), so "line\r\n" is the line and then an empty
+        // one, as on desktop. The decoder above already read it as itself.
+        if (text.includes('\r')) text = commitFedCarriageReturns(this.heldFeedText, text);
         // Trigger reloads are coalesced onto a microtask, which cannot run while
         // the calling Lua chunk is still on the stack. Mudlet applies perm* and
         // enable/disableTrigger immediately, so a script that creates or toggles
