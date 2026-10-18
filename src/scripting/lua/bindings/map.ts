@@ -1,6 +1,7 @@
 import type { BindingContext } from './context';
 import { parseXmlMapResult } from '../../../map/xmlMapImport';
 import { imageLabelPixmap } from '../../../map/labelPixmap';
+import { MapStore } from '../../../map/MapStore';
 
 /**
  * Mudlet's map API: the 2D view, room and area CRUD, exits, doors, custom
@@ -65,6 +66,15 @@ function luaToString(v: unknown): string {
     return '';
 }
 
+/** Whether `bytes` start like an image format Qt's QPixmap loads: PNG, JPEG,
+ *  GIF, BMP, WEBP or XPM. */
+function isReadableImage(bytes: Uint8Array): boolean {
+    const starts = (sig: string, at = 0) =>
+        bytes.length >= at + sig.length && [...sig].every((c, i) => bytes[at + i] === c.charCodeAt(0));
+    return starts('\x89PNG') || starts('\xff\xd8\xff') || starts('GIF8') || starts('BM')
+        || (starts('RIFF') && starts('WEBP', 8)) || starts('/* XPM */');
+}
+
 const MIN_MAP_FORMAT = 17;
 const MAX_MAP_FORMAT = 21;
 
@@ -72,6 +82,7 @@ export function installMapBindings({
     lua,
     api,
     vfs,
+    readBuiltinBytes,
     channel,
     emitEvent,
     unregisterCb,
@@ -199,7 +210,12 @@ export function installMapBindings({
     // Room.Info.num is a number, so `getRoomIDbyHash(gmcp.Room.Info.num)` has
     // to find the room `setRoomIDbyHash(id, "777")` filed.
     lua.global.set('getRoomIDbyHash', (hash: unknown)           => api.getRoomIDbyHash(luaToString(hash)) ?? -1);
-    lua.global.set('setRoomIDbyHash', (id: unknown, hash: unknown)=> api.map.setRoomIDbyHash(int(id), luaToString(hash)));
+    // Mudlet setRoomIDbyHash(roomID, hash) → true, or (nil, errMsg) for a room
+    // that does not exist. Hands back that refusal or null; Bridge.lua shapes it.
+    lua.global.set('__setRoomIDbyHash', (id: unknown, hash: unknown) => {
+        const rid = int(id);
+        return api.map.setRoomIDbyHash(rid, luaToString(hash)) ? null : `number ${rid} is not a valid roomID`;
+    });
     // Mudlet getRoomHashByID: returns the hash string, or (false, errMsg) on
     // miss / when the room has no hash. JS hands back the string or null;
     // Bridge.lua unpacks the multi-return.
@@ -248,9 +264,13 @@ export function installMapBindings({
                 }
                 return `loadMap: failure to import XML map file "${location}"`;
             }
-            let bytes: Uint8Array;
-            try { bytes = vfs.readBinaryFile(path); }
-            catch { return false; }
+            // The read-only /lua/ namespace first, where the busted corpus
+            // keeps its binary map fixtures; Lua's io sees both.
+            let bytes = readBuiltinBytes(location);
+            if (!bytes) {
+                try { bytes = vfs.readBinaryFile(path); }
+                catch { return false; }
+            }
             return api.loadMap(bytes, location);
         }
         // No path: the profile's most recent save, then whatever is already
@@ -367,7 +387,14 @@ export function installMapBindings({
         if (!Array.isArray(doc.areas) || doc.areas.length === 0) {
             return `loadJsonMap: no areas detected in file "${location}"`;
         }
-        if (!api.loadJsonMap(json)) return `loadJsonMap: could not read the map in file "${location}"`;
+        if (!api.loadJsonMap(json, location)) return `loadJsonMap: could not read the map in file "${location}"`;
+        const report = api.windows.takeMapReport();
+        if (report) {
+            try {
+                vfs.mkdir(`${vfs.profilePath}/log`);
+                vfs.appendFile(`${vfs.profilePath}/log/errors.txt`, report);
+            } catch { /* the console line still names it */ }
+        }
         // The map-level settings ride in the same document, and are applied
         // after the rooms so a failed load cannot leave the profile wearing an
         // imported map's appearance without its map.
@@ -829,10 +856,27 @@ export function installMapBindings({
         );
         return true;
     });
-    lua.global.set('removeMapEvent', (uniqueName: unknown) => {
-        api.map.removeMapEvent(String(uniqueName ?? ''));
-        return true;
+    // Hands back desktop's refusal for a name never added, or null; Bridge.lua
+    // shapes that into true / (nil, errMsg).
+    lua.global.set('__removeMapEvent', (uniqueName: unknown) => {
+        const name = luaToString(uniqueName);
+        return api.map.removeMapEvent(name) ? null : `map event '${name}' does not exist`;
     });
+    // Mudlet hide/showMapMenuItem(name): only desktop's built-in item names, so
+    // a script's own map event is refused like any other unknown name. Hands
+    // back warnArgumentChoice's refusal, listing every name it would take, or
+    // null; Bridge.lua shapes that into true / (nil, errMsg).
+    const setMenuItemHidden = (name: unknown, hidden: boolean) => {
+        const itemName = luaToString(name);
+        if (api.map.setMenuItemHidden(itemName, hidden)) return null;
+        const quoted = MapStore.BUILTIN_MENU_ITEMS.map(n => `"${n}"`);
+        const last = quoted.pop();
+        return `item name must be ${quoted.join(', ')} or ${last}, got "${itemName}"`;
+    };
+    lua.global.set('__hideMapMenuItem', (name: unknown) => setMenuItemHidden(name, true));
+    lua.global.set('__showMapMenuItem', (name: unknown) => setMenuItemHidden(name, false));
+    // A 0-indexed array; Bridge.lua rebuilds it as a Lua list.
+    lua.global.set('__getHiddenMapMenuItems', () => api.map.getHiddenMenuItems());
     // Mudlet shape:
     //   { [uniqueName] = {
     //         ["event name"]   = "...",
@@ -864,8 +908,9 @@ export function installMapBindings({
     lua.global.set('__removeMapMenu', (name: unknown) => {
         const menu = String(name ?? '');
         if (!menu) return 'the menu name cannot be empty';
-        api.map.removeMapMenu(menu);
-        return null;
+        // Refused only when there was nothing at all to remove: a parent that
+        // was never added can still have children filed under it.
+        return api.map.removeMapMenu(menu) ? null : `map menu '${menu}' does not exist`;
     });
     // Mudlet shape: { [menuName] = { ["parent"]=..., ["display name"]=... } }.
     // JS hands back an array of entries (0-indexed); Bridge.lua rebuilds the
@@ -962,7 +1007,10 @@ export function installMapBindings({
         const sel = api.map.getMapSelection();
         return { rooms: sel.rooms, center: sel.center };
     });
-    lua.global.set('clearMapSelection', () => api.map.clearMapSelection());
+    lua.global.set('__clearMapSelection', () => {
+        if (!api.windows.hasMapper()) return 'no map present or loaded';
+        return api.map.clearMapSelection();
+    });
 
     // Mudlet unsetRoomCharColor(roomID) — drop a per-room char-colour
     // override so the renderer falls back to the default. Pairs with
@@ -1053,7 +1101,10 @@ export function installMapBindings({
         api.setMapRoomExitsColor(r, g, b));
     lua.global.set('__getMapRoomExitsColor', () => api.getMapRoomExitsColor());
     // Mudlet setDefaultAreaVisible(visible) — TMap::mShowDefaultArea.
-    lua.global.set('setDefaultAreaVisible', (visible: boolean) => api.setDefaultAreaVisible(visible));
+    // Desktop changes the default area's visibility only once a mapper shows the
+    // map (Host::mapOpen), answering false until then.
+    lua.global.set('setDefaultAreaVisible', (visible: boolean) =>
+        api.windows.hasMapper() ? api.setDefaultAreaVisible(visible) : false);
     // Mudlet setMapRoomSize(roomSize). The renderer reads this from
     // settings.roomSize (units = map cells; ~0.6 default).
     lua.global.set('setMapRoomSize', (size: unknown) => api.setMapRoomSize(Number(size)));
@@ -1271,10 +1322,17 @@ export function installMapBindings({
         const path = String(imagePath ?? '');
         const width = Number(w) || 0;
         const height = Number(h) || 0;
+        // An unknown area is -1 whatever the image (TMap::createMapImageLabel
+        // looks for the area first).
+        if (!api.map.hasArea(area)) return -1;
         let bytes: Uint8Array | null = null;
         if (vfs && path !== '') {
             try { bytes = vfs.readBinaryFile(path); } catch { bytes = null; }
         }
+        // Desktop refuses an image its QPixmap cannot load — missing, empty or
+        // not an image at all. Decoding is asynchronous here, so the file's
+        // signature stands in for that test.
+        if (!bytes || !isReadableImage(bytes)) return `image file '${path}' could not be read`;
         const { pixmap, pending } = imageLabelPixmap(bytes, width, height, Number(zoom) || 0);
         const id = api.map.createMapImageLabel(
             area, pixmap,
@@ -1290,8 +1348,16 @@ export function installMapBindings({
         }
         return id;
     });
-    lua.global.set('deleteMapLabel', (areaId: unknown, labelId: unknown) =>
-        api.map.deleteMapLabel(int(areaId), int(labelId)));
+    // Mudlet deleteMapLabel(areaID, labelID) → true, or (nil, errMsg) naming
+    // what it could not find. Hands back that refusal or null; Bridge.lua
+    // shapes it.
+    lua.global.set('__deleteMapLabel', (areaId: unknown, labelId: unknown) => {
+        const area = int(areaId), label = int(labelId);
+        if (label < 0) return `labelID ${label} is invalid, it must be zero or greater`;
+        if (!api.map.hasArea(area)) return `areaID ${area} does not exist`;
+        if (!api.map.deleteMapLabel(area, label)) return `labelID ${label} does not exist in area with areaID ${area}`;
+        return null;
+    });
     // Mudlet auditAreas() — repair area/room membership consistency. Returns
     // a summary; Bridge.lua 1-indexes the orphanRooms/danglingRefs arrays.
     lua.global.set('__auditAreas', () => api.map.auditAreas());

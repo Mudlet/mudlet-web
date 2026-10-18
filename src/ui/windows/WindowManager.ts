@@ -4,7 +4,7 @@ import type { Console } from '../../mud/text/Console';
 import type { AnsiAwareBuffer } from '../../mud/text/FormatState';
 import type { DockSide, MxpTabPage, WindowHandle, WindowOpenOptions, ScriptWindowRenderData } from './types';
 import { MAP_VIEW_ID_RE, MAP_WIDGET_ID, mapViewWindowId, migrateClientWindowHints } from './types';
-import { MapStore } from '../../map/MapStore';
+import { MapStore, type MapIssue } from '../../map/MapStore';
 import { centerviewAreaChange } from './panels/mapAreaChange';
 import { parseXmlMap } from '../../map/xmlMapImport';
 import { exportAreaImage } from '../../map/mapImageExport';
@@ -1362,7 +1362,7 @@ export class WindowManager {
 
     registerMapControl(id: string, ctrl: MapControl): void {
         this.mapControls.set(id, ctrl);
-        this.mapperCreated = true;
+        if (!MAP_VIEW_ID_RE.test(id)) this.mapperCreated = true;
     }
 
     /** Whether a mapper has been created this session — Mudlet's
@@ -1614,10 +1614,10 @@ export class WindowManager {
      * map as Mudlet's TMap::audit does (MapStore.auditMap), so the report is
      * already collected; this only decides whether the player sees it.
      */
-    private reportMapIssues(): void {
+    private reportMapIssues(taken?: MapIssue[]): void {
         // Take the report either way: it is owed to this load, and leaving it in
         // the store would hand it to the next one instead.
-        const collected = this.mapStore.takeAuditIssues();
+        const collected = taken ?? this.mapStore.takeAuditIssues();
         if (!this._connectionId) return;
         if (!selectProfileField(useAppStore.getState(), this._connectionId, 'reportMapIssues')) return;
 
@@ -1967,11 +1967,29 @@ export class WindowManager {
      * open map panel to re-render. Returns false on parse failure or when the
      * JSON doesn't carry the expected MudletMap shape.
      */
-    loadJsonMap(json: string): boolean {
+    loadJsonMap(json: string, source = ''): boolean {
         if (!this.mapStore.loadFromJsonString(json)) return false;
-        this.reportMapIssues();
+        const issues = this.mapStore.takeAuditIssues();
+        // TMap::importJsonMapFile: what an import found goes to the profile's
+        // log/errors.txt under a title naming the file, and the console names
+        // that report whether or not it shows the details.
+        this.lastMapReport = '';
+        if (issues.length > 0) {
+            const title = `Importing JSON map "${source}" at ${new Date().toISOString().replace('T', ' ').slice(0, 19)}`;
+            this.lastMapReport = [title, ...issues.map(i => `[ ${i.severity === 'warn' ? 'WARN' : 'INFO'} ]  - ${i.message}`), ''].join('\n');
+        }
+        this.reportMapIssues(issues);
         this.mapLoadCallback?.();
         return true;
+    }
+
+    private lastMapReport = '';
+
+    /** The report the last loadJsonMap wrote for log/errors.txt, once. */
+    takeMapReport(): string {
+        const report = this.lastMapReport;
+        this.lastMapReport = '';
+        return report;
     }
 
     /**
@@ -3128,7 +3146,9 @@ export class WindowManager {
             this.touchOverlayWindows(existing);
             this.notify();
             if (existing.kind === 'map') {
-                this.mapperCreated = true;
+                // A map view (createMapView) is a second look at the map, not
+                // the mapper itself: desktop leaves mpMapper unmade for it.
+                if (!MAP_VIEW_ID_RE.test(id)) this.mapperCreated = true;
                 this.onMapOpen?.(id);
             }
             return this.makeHandle(id);
@@ -3228,7 +3248,7 @@ export class WindowManager {
         this.saveHint(id, win);
         this.notify();
         if (kind === 'map') {
-            this.mapperCreated = true;
+            if (!MAP_VIEW_ID_RE.test(id)) this.mapperCreated = true;
             this.onMapOpen?.(id);
         }
         return this.makeHandle(id);

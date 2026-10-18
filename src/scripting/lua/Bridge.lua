@@ -362,16 +362,16 @@ function setActiveProfile(name)
 end
 
 -- Mudlet setMapPerspective(r, theta, phi) / shiftMapPerspective(verticalAngle,
--- horizontalAngle, rotationAngle): aim the 3D map's camera. The map here is
--- the 2D one, and on desktop both calls do nothing while the 3D view isn't the
--- one showing, so after the same checks desktop makes (a map open first, then
--- the three numbers) there is nothing left to do.
+-- horizontalAngle, rotationAngle): aim the 3D map's camera. Desktop checks the
+-- three numbers, then that they are finite, then that a map is open, and then
+-- asks the view, which refuses unless the modern 3D view is the one showing.
+-- This client has only the 2D map, so that is as far as either gets: with the
+-- 3D view asked for (show3dMapView and the modern-mapper experiment) the
+-- refusal is desktop's for a view that could not start for want of an OpenGL
+-- 3.3 context — which is the truth of a browser here — and otherwise that the
+-- modern 3D view is not showing.
 do
-    local function perspective(fname, names, ...)
-        if not __mudlet_mapper_open() then
-            -- warnArgumentValue: the message alone, no function name.
-            return nil, "you haven't opened a map yet"
-        end
+    local function perspective(fname, names, finiteMessage, ...)
         for i = 1, 3 do
             local v = select(i, ...)
             if __mudlet_num(v) == nil then
@@ -379,12 +379,28 @@ do
                     .. " as number expected, got " .. type(v) .. "!)")
             end
         end
+        for i = 1, 3 do
+            local v = __mudlet_num((select(i, ...)))
+            if v ~= v or v == math.huge or v == -math.huge then
+                return nil, finiteMessage
+            end
+        end
+        if not __mudlet_mapper_open() then
+            -- warnArgumentValue: the message alone, no function name.
+            return nil, "you haven't opened a map yet"
+        end
+        if getConfig("show3dMapView") and getConfig("experiment.3dmap.modernmapper") then
+            return nil, "the modern 3D map view could not start: could not create an OpenGL 3.3 context"
+        end
+        return nil, "the modern 3D map view is not showing"
     end
     function setMapPerspective(...)
-        return perspective("setMapPerspective", { "r", "theta", "phi" }, ...)
+        return perspective("setMapPerspective", { "r", "theta", "phi" },
+            "r, theta and phi must be finite numbers", ...)
     end
     function shiftMapPerspective(...)
-        return perspective("shiftMapPerspective", { "verticalAngle", "horizontalAngle", "rotationAngle" }, ...)
+        return perspective("shiftMapPerspective", { "verticalAngle", "horizontalAngle", "rotationAngle" },
+            "the angles must be finite numbers", ...)
     end
 end
 
@@ -650,12 +666,6 @@ function addCustomLine(roomID, id_to, direction, style, color, arrow)
         end
         id_to = roomTo
     end
-    local r, g, b = 255, 0, 0
-    if type(color) == 'table' then
-        r = color[1] or color.r or r
-        g = color[2] or color.g or g
-        b = color[3] or color.b or b
-    end
     local target
     if type(id_to) == 'table' then
         -- A malformed coordinate list is a TYPE error and raises, naming the
@@ -744,6 +754,20 @@ function addCustomLine(roomID, id_to, direction, style, color, arrow)
     end
     if not knownStyle then
         return nil, __mudlet_must_be_one_of("line style", LINE_STYLES, styleName)
+    end
+    -- The colour is read from items 1 to 3 only, as desktop does: a table
+    -- keyed r/g/b, or one missing any of the three, is refused (bare, as
+    -- warnArgumentValue answers).
+    local r, g, b = 255, 0, 0
+    if type(color) == 'table' then
+        local COMPONENTS = { "red", "green", "blue" }
+        for i = 1, 3 do
+            if color[i] == nil then
+                return nil, "the color table in the fifth argument has no " .. COMPONENTS[i]
+                    .. " color component (item #" .. i .. ") but red, green and blue are all needed"
+            end
+        end
+        r, g, b = color[1], color[2], color[3]
     end
     local reason = __mudlet_addCustomLine(roomID, target, tostring(direction), tostring(style),
         r, g, b, arrow and true or false)
@@ -950,6 +974,9 @@ function exportAreaImage(areaID, filePath, zLevel)
     end
     local t = __mudlet_exportAreaImage(areaID, filePath, zLevel)
     if t and t[0] then return true, t[1] end
+    -- A target it cannot write is the export's own refusal, (false, why), as
+    -- T2DMap::exportAreaToImage answers; anything before it is (nil, why).
+    if t and t[2] then return false, t[1] end
     return nil, (t and t[1]) or "exportAreaImage failed"
 end
 
@@ -3306,6 +3333,21 @@ function getMapMenus(keyByUniqueName)
     return out
 end
 
+-- Mudlet getHiddenMapMenuItems() → the hidden built-in items, sorted. JS hands
+-- back a 0-indexed array.
+function getHiddenMapMenuItems()
+    local raw = __getHiddenMapMenuItems()
+    local out = {}
+    if type(raw) == 'table' then
+        local i = 0
+        while raw[i] ~= nil do
+            out[i + 1] = raw[i]
+            i = i + 1
+        end
+    end
+    return out
+end
+
 -- Mudlet setRoomBorderColor(id, r, g, b [, a]) / setRoomBorderThickness(id, t) →
 -- true, or (nil, errMsg) for a bad value or a missing room. The __* binding
 -- returns true on success or an error string.
@@ -3637,9 +3679,12 @@ end
 -- Mudlet createMapImageLabel(areaID, imagePathFileName, posx, posy, posz, width,
 -- height, zoom, showOnTop [, temporary]). The tenth argument is `temporary`
 -- (TLuaInterpreter::createMapImageLabel), not a scaling flag: an image label
--- always scales with the map. → new labelID, or -1 if the area is missing.
+-- always scales with the map. → new labelID, -1 if the area is missing, or
+-- (nil, errMsg) for an image that cannot be read.
 function createMapImageLabel(areaID, imagePath, posx, posy, posz, width, height, zoom, showOnTop, temporary)
-    return __createMapImageLabel(areaID, tostring(imagePath or ''), posx, posy, posz, width, height, zoom, showOnTop, temporary == true)
+    local r = __createMapImageLabel(areaID, tostring(imagePath or ''), posx, posy, posz, width, height, zoom, showOnTop, temporary == true)
+    if type(r) == 'string' then return nil, r end
+    return r
 end
 
 -- Mudlet addAreaName(name) → areaID on success, or (false, errMsg) on
@@ -6785,6 +6830,14 @@ function getMapSelection()
     return { rooms = rooms, center = center }
 end
 
+-- Mudlet clearMapSelection() → whether there was a selection to clear, or
+-- (nil, errMsg) before a mapper has been made.
+function clearMapSelection()
+    local r = __clearMapSelection()
+    if type(r) == 'string' then return nil, r end
+    return r
+end
+
 -- Mudlet killMapInfo / enableMapInfo / disableMapInfo. Each returns true on
 -- success or (false, errMsg) when the label isn't registered.
 function killMapInfo(label)
@@ -7561,6 +7614,8 @@ end
 -- Only the type check needs Lua; the reasons come from the binding, which is
 -- what knows whether the file was missing, unparseable, or not a map.
 function saveJsonMap(location)
+    -- Desktop needs a mapper showing the map (Host::mapOpen) before anything else.
+    if not __mudlet_mapper_open() then return nil, "no map present or loaded" end
     -- Left out altogether, it saves into the profile's map folder.
     if location ~= nil and __mudlet_str(location) == nil then
         error("saveJsonMap: bad argument #1 type (destination as string expected, got "
@@ -7572,6 +7627,7 @@ function saveJsonMap(location)
 end
 
 function loadJsonMap(location)
+    if not __mudlet_mapper_open() then return nil, "no map present or loaded" end
     if location ~= nil and __mudlet_str(location) == nil then
         error("loadJsonMap: bad argument #1 type (path as string expected, got "
             .. type(location) .. "!)", 2)
@@ -8367,11 +8423,61 @@ do
     setCustomEnvColor = shaped(__setCustomEnvColor)
     setMapZoom        = shaped(__setMapZoom)
     removeMapMenu     = shaped(__removeMapMenu)
+    removeMapEvent    = shaped(__removeMapEvent)
+    deleteMapLabel    = shaped(__deleteMapLabel)
+    setRoomIDbyHash   = shaped(__setRoomIDbyHash)
+    hideMapMenuItem   = shaped(__hideMapMenuItem)
+    showMapMenuItem   = shaped(__showMapMenuItem)
+
+    -- The readers and clearSpecialExits answer csmInvalidRoomID bare, with no
+    -- function name in front, as warnArgumentValue does.
+    local function invalidRoom(id)
+        local n = __mudlet_int(id)
+        return ("number %s is not a valid roomID"):format(n and string.format("%d", n) or tostring(id))
+    end
+    local function validRoomGuard(fn)
+        return function(id, ...)
+            if not roomExists(id) then return nil, invalidRoom(id) end
+            return fn(id, ...)
+        end
+    end
+    getRoomExits       = validRoomGuard(getRoomExits)
+    getRoomEnv         = validRoomGuard(getRoomEnv)
+    clearSpecialExits  = validRoomGuard(clearSpecialExits)
+    -- getRoomWeight/getRoomHidden read the player's room when given none.
+    local function playerRoomGuard(fn)
+        local guarded = validRoomGuard(fn)
+        return function(...)
+            if select('#', ...) == 0 then
+                local id = getPlayerRoom()
+                if not id or id <= 0 or not roomExists(id) then
+                    return nil, "no roomID provided and the player does not have a valid roomID set"
+                end
+                return guarded(id)
+            end
+            return guarded(...)
+        end
+    end
+    getRoomWeight      = playerRoomGuard(getRoomWeight)
+    getRoomHidden      = playerRoomGuard(getRoomHidden)
 
     setRoomEnv         = roomGuard(setRoomEnv, "setRoomEnv")
     setRoomWeight      = roomGuard(setRoomWeight, "setRoomWeight")
     setRoomHidden      = roomGuard(setRoomHidden, "setRoomHidden")
     setRoomUserData    = roomGuard(setRoomUserData, "setRoomUserData")
+    -- A save writes the room's border under these keys and a load takes them
+    -- back out, so a script's own value would not survive; the missing room is
+    -- named first.
+    do
+        local guarded = setRoomUserData
+        function setRoomUserData(id, key, ...)
+            if roomExists(id) and (key == "room.ui_borderColor" or key == "room.ui_borderThickness") then
+                return nil, "key '" .. key .. "' is reserved for the room's border,"
+                    .. " use setRoomBorderColor() or setRoomBorderThickness()"
+            end
+            return guarded(id, key, ...)
+        end
+    end
     unsetRoomCharColor = roomGuard(unsetRoomCharColor, "unsetRoomCharColor")
     -- hasExitLock checks its direction before the room (#10670): a direction
     -- that is neither a number nor a string, or a number that is not one of the
@@ -8380,7 +8486,7 @@ do
     -- left to Other.lua's wrapper, which maps the names and answers false for
     -- any other.
     do
-        local guarded = roomGuard(hasExitLock, "hasExitLock")
+        local guarded = validRoomGuard(hasExitLock)
         function hasExitLock(id, dir)
             local t = type(dir)
             if (t ~= 'number' and t ~= 'string')
@@ -8545,11 +8651,17 @@ do
         _rawSetExitStub(id, dir, set)
     end
 
-    -- lockExit returns nothing on desktop either, whatever happened. Wrapped
-    -- here, before Other.lua's direction-name wrapper captures it.
+    -- lockExit answers true once the room is found, whether or not the lock
+    -- changed, and csmInvalidRoomID bare for a missing room. Wrapped here,
+    -- before Other.lua's direction-name wrapper captures it.
     local _rawLockExit = lockExit
     function lockExit(id, dir, lock)
+        if not roomExists(id) then
+            local n = __mudlet_int(id)
+            return nil, ("number %s is not a valid roomID"):format(n and string.format("%d", n) or tostring(id))
+        end
         _rawLockExit(id, dir, lock)
+        return true
     end
 
     -- connectExitStub(fromID, direction) | (fromID, toID[, direction]) — the
@@ -8590,7 +8702,11 @@ do
             error("createMapper: bad argument #" .. (n + 1) .. " type (mapper"
                 .. " coordinates/dimensions as numbers expected, got nil!)", 2)
         end
-        return _rawCreateMapper(...)
+        -- Refused with false (not nil) and the reason, as desktop's
+        -- TMainConsole::createMapper answers.
+        local r = _rawCreateMapper(...)
+        if type(r) == 'string' then return false, r end
+        return r
     end
 end
 
@@ -9107,10 +9223,13 @@ do
 
     local _deleteRoom = deleteRoom
     function deleteRoom(id, ...)
-        -- getVerifiedInt raises first, and an id below one returns nothing
-        -- before the guard is reached
+        -- getVerifiedInt raises first; an id below one is refused before the
+        -- guard is reached, a missing room after it
         local n = __mudlet_int(id)
-        if n ~= nil and n > 0 and __mudlet_map_callback_busy() then return nil, MAP_IN_USE end
+        local invalid = n and ("number %d is not a valid roomID"):format(n)
+        if n ~= nil and n <= 0 then return nil, invalid end
+        if n ~= nil and __mudlet_map_callback_busy() then return nil, MAP_IN_USE end
+        if n ~= nil and not roomExists(n) then return nil, invalid end
         return _deleteRoom(id, ...)
     end
 

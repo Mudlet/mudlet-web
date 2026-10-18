@@ -250,7 +250,7 @@ export interface EngineHost {
         areaId: number,
         filePath: string,
         zLevel?: number | true,
-    ): { path: string } | { error: string };
+    ): { path: string } | { error: string; target?: boolean };
 }
 
 /**

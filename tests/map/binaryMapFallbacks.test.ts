@@ -83,7 +83,7 @@ describe('room border in a v20 file (#285 item 2)', () => {
         expect(back.getRoomBorderColor(108)).toEqual({ r: 16, g: 32, b: 48, a: 128 });
     });
 
-    it('reads a desktop file and leaves the keys visible, as TRoom::restore does', () => {
+    it('reads a desktop file and takes the keys out, as TRoom::restore does', () => {
         const { store } = seed();
         const map = store.toMudletMapForSave();
         map.rooms[101].userData = { 'room.ui_borderColor': '#ffff00ff', 'room.ui_borderThickness': '11' };
@@ -91,7 +91,8 @@ describe('room border in a v20 file (#285 item 2)', () => {
         expect(back.getRoomBorderColor(101)).toEqual({ r: 255, g: 0, b: 255, a: 255 });
         // Out of 1..10: ignored.
         expect(back.getRoomBorderThickness(101)).toBeNull();
-        expect(back.toMudletMap().rooms[101].userData['room.ui_borderColor']).toBe('#ffff00ff');
+        expect(back.toMudletMap().rooms[101].userData).not.toHaveProperty('room.ui_borderColor');
+        expect(back.toMudletMap().rooms[101].userData).not.toHaveProperty('room.ui_borderThickness');
     });
 
     it('drops the keys on save once the border is cleared', () => {
@@ -162,16 +163,19 @@ describe('area fallback keys in a v20 file (#285 item 3)', () => {
         expect(back.toMudletMapForSave().areas[a].userData['system.labelFont_0']).toBe('DejaVu Sans|14|400|0');
     });
 
-    it('leaves system.* keys alone in a Mudlet JSON map, whose reader does too', () => {
+    // TArea::readJsonArea: an export by an older Mudlet can carry the binary
+    // format's fallbacks, which the reader takes out; other system.* keys stay.
+    it('takes the binary fallbacks out of a Mudlet JSON map and leaves other system.* keys', () => {
         const json = JSON.stringify({
             formatVersion: 1,
-            areas: [{ id: 1, name: 'A', userData: { 'system.fallback_map2DZoom': '20' }, rooms: [
+            areas: [{ id: 1, name: 'A', userData: { 'system.fallback_map2DZoom': '27', 'system.mine': 'kept' }, rooms: [
                 { id: 1, coordinates: [0, 0, 0], userData: {} },
             ] }],
         });
         const store = new MapStore();
         expect(store.loadFromJsonString(json)).toBe(true);
-        expect(store.getAllAreaUserData(1)).toEqual({ 'system.fallback_map2DZoom': '20' });
+        expect(store.getAllAreaUserData(1)).toEqual({ 'system.mine': 'kept' });
+        expect(store.getAreaZoom(1)).toBe(27);
     });
 });
 

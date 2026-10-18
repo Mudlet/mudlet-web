@@ -1603,7 +1603,7 @@ export function MapPanel({ id, manager, connectionId, vfs = null }: MapPanelProp
                     y={contextMenu.y}
                     roomId={contextMenu.roomId}
                     items={contextMenu.items}
-                    builtinItems={contextMenu.hasRoom ? [
+                    builtinItems={contextMenu.hasRoom && manager.mapStore.menuItemShown('setPlayerLocation') ? [
                         {
                             label: 'Set player location',
                             onClick: () => {

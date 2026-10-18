@@ -719,6 +719,17 @@ class ScriptingWindowsAPI {
         return this.session.windows.hasMapper();
     }
 
+    /** The report the last loadJsonMap wrote for log/errors.txt, once (see WindowManager.takeMapReport). */
+    takeMapReport(): string {
+        const report = this.session.windows.takeMapReport();
+        // The console names the report, whether or not it shows the details.
+        if (report) {
+            const title = report.slice(0, report.indexOf('\n'));
+            this.session.postMessageLine(`[ INFO ]  - Problems were found with the map, see the "${title}" report in the profile's log/errors.txt.`);
+        }
+        return report;
+    }
+
     isVisible(id: string): boolean {
         return this.session.windows.isVisible(id);
     }
@@ -2618,9 +2629,9 @@ export class ScriptingAPI {
      *  `[false, errorMessage]` (e.g. the mapper isn't open, or the area is
      *  unknown). The 0-indexed array is unpacked into Mudlet's multi-return by
      *  Bridge.lua. */
-    exportAreaImage(areaId: number, filePath: string, zLevel?: number | true): [boolean, string] {
+    exportAreaImage(areaId: number, filePath: string, zLevel?: number | true): [boolean, string, boolean?] {
         const r = this.host.exportAreaImageToVfs(areaId, filePath, zLevel);
-        return 'path' in r ? [true, r.path] : [false, r.error];
+        return 'path' in r ? [true, r.path] : [false, r.error, !!r.target];
     }
 
 
@@ -5709,8 +5720,11 @@ export class ScriptingAPI {
      * MAPPER_WIDGET_ID) so a script or a MUD cannot name a window over them.
      * Both render the same MapStore and stay in sync. Returns true on success.
      */
-    createMapper(x: number, y: number, width: number, height: number, parent?: string): boolean {
+    createMapper(x: number, y: number, width: number, height: number, parent?: string): true | string {
         const wm = this.session.windows;
+        // Desktop has one mapper per profile: with the map widget made, an
+        // embedded one is refused (TMainConsole::createMapper).
+        if (wm.has(MAP_WIDGET_ID)) return 'cannot create mapper. Do you already use a map window?';
         const id = MAPPER_WIDGET_ID;
         if (!wm.has(id)) {
             wm.open(id, {
@@ -6746,7 +6760,7 @@ export class ScriptingAPI {
     /** Mudlet `loadJsonMap(path)` backbone — parse a JSON payload previously
      *  produced by saveJsonMap and reload the map. Returns false when the
      *  JSON is malformed or doesn't match the MudletMap shape. */
-    loadJsonMap(json: string): boolean { return this.session.windows.loadJsonMap(json); }
+    loadJsonMap(json: string, source?: string): boolean { return this.session.windows.loadJsonMap(json, source); }
 
     /** Mudlet `addSupportedTelnetOption(option)`. Forwarded to the session
      *  client so the next IAC WILL/DO from the server can be auto-accepted. */
