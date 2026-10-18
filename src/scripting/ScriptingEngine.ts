@@ -3166,11 +3166,16 @@ export class ScriptingEngine implements EngineHost {
             }
         }
         // A file is its package's when it lies in the package's own folder.
-        const path = source.replace(/^@/, '');
+        // The VFS shim names a file in the profile by its path within it.
         const home = this.vfs?.profilePath;
-        if (home && path.startsWith(`${home}/`)) {
-            for (const name of this.getPackageNames().concat(this.getModuleNames())) {
-                if (path.startsWith(`${home}/${name}/`)) owners.add(name);
+        if (home && source.startsWith('@')) {
+            const path = source.slice(1);
+            const inProfile = path.startsWith(`${home}/`) ? path.slice(home.length + 1)
+                : path.startsWith('/') ? null : path;
+            if (inProfile !== null) {
+                for (const name of this.getPackageNames().concat(this.getModuleNames())) {
+                    if (inProfile.startsWith(`${name}/`)) owners.add(name);
+                }
             }
         }
         return owners;
