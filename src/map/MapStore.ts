@@ -607,8 +607,9 @@ function labelsFromJson(raw: unknown, areaUserData: Record<string, string>): Mud
             const points = Number(font.pointSize);
             if (Number.isFinite(points) && points > 0) label.fontSize = points;
         }
-        // An older export wrote no outline colour; one after a binary save
-        // keeps the binary format's copy in the area's user data.
+        // The export writes no outline colour (TArea::writeJsonLabel), so a
+        // label takes the copy a binary save kept in the area's user data. A
+        // newer desktop writes the field, which is read when it is there.
         const outline = readJsonColor(entry.outlineColor);
         if (outline) label.outlineColor = outline;
         else restoreLabelOutline(label, areaUserData);
@@ -1560,7 +1561,6 @@ export class MapStore {
             };
             if (label.text) entry.text = label.text;
             if (label.pixMap) entry.image = labelImageToJson(label.pixMap);
-            if (label.outlineColor) entry.outlineColor = writeJsonColor(label.outlineColor);
             if (label.fontName) {
                 entry.font = { family: label.fontName, pointSize: label.fontSize ?? 0 };
             }
