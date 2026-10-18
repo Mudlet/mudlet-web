@@ -1610,14 +1610,18 @@ export class MudClient {
         // ASCII tail of any other — still goes through in one piece.
         let lastHighByte = sanitized.length - 1;
         while (lastHighByte >= 0 && sanitized.charCodeAt(lastHighByte) < 0x80) lastHighByte--;
-        let start = 0;
-        for (let nl = sanitized.indexOf('\n'); nl !== -1 && nl < lastHighByte; nl = sanitized.indexOf('\n', start)) {
-            this.decodeAndAssemble(sanitized.substring(start, nl + 1), false, ts);
+        // What a trigger feeds in while this run is shown is a read of its own,
+        // not the continuation of this one's MXP mode switch.
+        this.negotiator.keepingMxpDetectionTail(() => {
+            let start = 0;
+            for (let nl = sanitized.indexOf('\n'); nl !== -1 && nl < lastHighByte; nl = sanitized.indexOf('\n', start)) {
+                this.decodeAndAssemble(sanitized.substring(start, nl + 1), false, ts);
+                this.flushMessageBuffer();
+                start = nl + 1;
+            }
+            this.decodeAndAssemble(start === 0 ? sanitized : sanitized.substring(start), hasPrompt, ts);
             this.flushMessageBuffer();
-            start = nl + 1;
-        }
-        this.decodeAndAssemble(start === 0 ? sanitized : sanitized.substring(start), hasPrompt, ts);
-        this.flushMessageBuffer();
+        });
     }
 
     private decodeAndAssemble(sanitized: string, hasPrompt: boolean, ts: number): void {

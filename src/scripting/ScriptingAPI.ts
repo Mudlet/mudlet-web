@@ -25,7 +25,7 @@ import { userWindowQssToScopedCss, cssEscape, rewriteQtSelectors, patchStyleShee
 import type { LogFormat } from '../logging/SessionLogger';
 import { AnsiAwareBuffer, type FormatColor, type FormatStateSnapshot, type FormatHyperlink, type RgbColor } from '../mud/text/FormatState';
 import { classifyHyperlinkUri } from '../mud/text/ansiEscapes';
-import { extractQuery, type UnderlineStyle } from '../mud/text/hyperlinkConfig';
+import { extractQuery, type LinkStateStyle, type UnderlineStyle } from '../mud/text/hyperlinkConfig';
 import { OscLinkManager } from '../mud/text/oscLinkManager';
 import { pumpDelayedReveals } from '../mud/text/hyperlinkVisibility';
 import { historyStorageKey, loadHistory } from '../ui/commandHistory';
@@ -122,6 +122,21 @@ const COLOR_DEFAULT = -2;
  *  parse. NaN, so it equals nothing — itself included — and a pattern holding
  *  it matches nothing, as desktop's invalid QColor does. */
 const RGB_KEY_NONE: RgbKey = NaN;
+
+/**
+ * The OSC 8 link style a cell is drawn in, as TBuffer commits it onto the
+ * cell: the link's own style, and for a link the game marks as already
+ * selected its selected style over that — which then `replaces` the
+ * formatting the game wrapped the link in rather than adding to it. Undefined
+ * for a cell with no styled link.
+ */
+function linkStyleOf(state: FormatStateSnapshot | undefined): { style: LinkStateStyle; replaces: boolean } | undefined {
+    const config = state?.hyperlink?.config;
+    const base = config?.style;
+    if (!base) return undefined;
+    const selected = config.selection?.selected ? base.states?.selected : undefined;
+    return selected ? { style: { ...base, ...selected }, replaces: true } : { style: base, replaces: false };
+}
 
 function packRgb(r: number, g: number, b: number): RgbKey {
     return ((r & 0xff) << 16) | ((g & 0xff) << 8) | (b & 0xff);
@@ -3991,7 +4006,10 @@ export class ScriptingAPI {
         channel: 'foreground' | 'background',
     ): [number, number, number] {
         const state = buf.getStateAt(pos);
-        const color = channel === 'foreground' ? state?.foreground : state?.background;
+        const link = linkStyleOf(state);
+        const color = channel === 'foreground'
+            ? link?.style.foreground ?? (link?.replaces ? undefined : state?.foreground)
+            : link?.style.background ?? (link?.replaces ? undefined : state?.background);
         return formatColorToRgb(color) ?? this.defaultColorRgb(channel);
     }
 
@@ -4073,27 +4091,31 @@ export class ScriptingAPI {
         const foreground = this.readColorAt(buf, pos, 'foreground');
         const background = this.readColorAt(buf, pos, 'background');
         const state = buf.getStateAt(pos);
+        // A link's own style wins over the run's; a link drawn in its selected
+        // style has that in place of the formatting the game wrapped it in.
+        const link = linkStyleOf(state);
+        const linkStyle = link?.style;
+        const sgr = link?.replaces ? undefined : state;
         // A link's own styling adds an underline to the cell without clearing
         // the one SGR put there, so the cell can carry two at once and only what
         // the painter draws is the honest answer. Mudlet resolves it in
         // drawCustomDecorations' order — wavy, then dotted, then dashed, with
         // the plain underline drawn when none of the three is set.
-        const linkStyle = state?.hyperlink?.config?.style;
-        const underline = !!state?.underline || !!linkStyle?.underline;
-        const styles = [state?.underlineStyle, linkStyle?.underlineStyle];
+        const underline = !!sgr?.underline || !!linkStyle?.underline;
+        const styles = [sgr?.underlineStyle, linkStyle?.underlineStyle];
         const underlineStyle = !underline ? 'none'
             : styles.includes('wavy') ? 'wavy'
             : styles.includes('dotted') ? 'dotted'
             : styles.includes('dashed') ? 'dashed'
             : 'solid';
         return {
-            bold: !!state?.bold,
-            italic: !!state?.italic,
+            bold: !!(linkStyle?.bold ?? sgr?.bold),
+            italic: !!(linkStyle?.italic ?? sgr?.italic),
             underline,
             underlineStyle,
-            strikeout: !!state?.strikethrough,
+            strikeout: !!(linkStyle?.strikethrough ?? sgr?.strikethrough),
             reverse: !!state?.inverse,
-            overline: !!state?.overline,
+            overline: !!(linkStyle?.overline ?? sgr?.overline),
             concealed: !!state?.concealed,
             alternateFont: state?.alternateFont ?? 0,
             blinking: state?.rapidBlink ? 'fast' : state?.slowBlink ? 'slow' : 'none',
@@ -4167,6 +4189,7 @@ export class ScriptingAPI {
         // Which line the cursor was on before this one was appended, so a line
         // fed from inside a trigger can hand the outer pass its own line back.
         this.outerTriggerLines.push(this.triggerLineDepth > 0 ? this.mainConsole.getLineNumber() : -1);
+        if (this.triggerLineDepth === 0) this.passStartLastLine = this.mainConsole.lastLineNumber();
         this.mainConsole.appendLine(buffer);
         this.mainConsole.suspendOpenLine(true);
         this.inTriggerProcessing = true;
@@ -4439,16 +4462,22 @@ export class ScriptingAPI {
      *  processed rather than opening lines, so the line count leaves them out
      *  until the pass is over. See {@link getLineCount}. */
     private triggerEchoLines = 0;
+    /** The main console's last line when the outermost trigger pass began.
+     *  The view is not moved on until the pass is over (desktop finalises the
+     *  main console only at depth 0), so getScroll() reports no further than
+     *  this while it runs, however many lines a trigger feeds in meanwhile. */
+    private passStartLastLine = 0;
     /** Per nested line, the line the outer pass was on. See beginLine. */
     private outerTriggerLines: number[] = [];
 
     /** Told when text is inserted into the line a trigger is matching, so the
      *  runtime can move the capture positions it recorded at match time —
      *  otherwise `selectCaptureGroup` after an `insertText` selects the text
-     *  that has since slid to where the capture used to be. */
-    private captureShiftHook: ((at: number, delta: number) => void) | null = null;
+     *  that has since slid to where the capture used to be. `replaced` is the
+     *  length a `replace` took out at `at`, absent for an insert. */
+    private captureShiftHook: ((at: number, delta: number, replaced?: number) => void) | null = null;
 
-    setCaptureShiftHook(fn: ((at: number, delta: number) => void) | null): void {
+    setCaptureShiftHook(fn: ((at: number, delta: number, replaced?: number) => void) | null): void {
         this.captureShiftHook = fn;
     }
 
@@ -4653,7 +4682,8 @@ export class ScriptingAPI {
     getLineCount(windowName?: string): number {
         const con = this.getConsole(windowName);
         if (!con) return -1;
-        if (this.inTriggerPass(con)) return con.getLineCount() - this.triggerEchoLines;
+        // A clear in the pass leaves the one empty line, which is line 0.
+        if (this.inTriggerPass(con)) return Math.max(0, con.getLineCount() - this.triggerEchoLines);
         return con.lastLineNumber();
     }
 
@@ -4747,7 +4777,8 @@ export class ScriptingAPI {
      *  "am I at the bottom?" — and never a line past it. */
     getScroll(windowName?: string): number {
         const name = windowName || 'main';
-        const last = Math.max(0, this.getLastLineNumber(name));
+        let last = Math.max(0, this.getLastLineNumber(name));
+        if (name === 'main' && this.triggerLineDepth > 0) last = Math.min(last, this.passStartLastLine);
         // getScrollLine measures the DOM, and a console whose panel hasn't been
         // laid out measures as 0 — which would claim a 30-line buffer is
         // scrolled to the very top. Nothing has scrolled it, so it is at the
@@ -4871,13 +4902,15 @@ export class ScriptingAPI {
     isPrompt(windowName?: string): boolean {
         const con = this.getConsole(windowName);
         if (!con) return false;
-        if (!con.cursorPastEnd()) return con.cursorOnPrompt();
-        // A trigger that gagged the line it matched left the cursor past the end
-        // of the buffer, so there is no line left to carry the flag — and a
-        // prompt is always the last line while its triggers run, so this is the
-        // ordinary case rather than an edge one. Mudlet keeps the answer in the
-        // trigger pass's own state (TConsoleModel::mIsPromptLine); the stack
-        // mirrors it, one entry per line being processed.
+        // A clearWindow() leaves no stored line behind, only the empty one.
+        const cleared = con.getLineCount() < 0;
+        if (!con.cursorPastEnd() && !cleared) return con.cursorOnPrompt();
+        // A trigger that gagged or cleared away the line it matched left no
+        // line to carry the flag — and a prompt is always the last line while
+        // its triggers run, so this is the ordinary case rather than an edge
+        // one. Mudlet keeps the answer in the trigger pass's own state
+        // (TConsoleModel::mIsPromptLine); the stack mirrors it, one entry per
+        // line being processed.
         if (con === this.mainConsole && this.triggerLineDepth > 0) {
             return this.triggerLinePrompts[this.triggerLinePrompts.length - 1] ?? false;
         }
@@ -5277,6 +5310,8 @@ export class ScriptingAPI {
             // getLineCount / the cursor reporting lines the player could no
             // longer see — Mudlet's clearWindow empties the buffer itself.
             this.mainConsole.clear();
+            // The lines the pass's echoes completed went with the rest.
+            this.triggerEchoLines = 0;
             this.session.events.emit('script.clearwindow');
             this.session.windows.clearSplit('main');
         } else if (this.buffers.has(name)) {
@@ -5500,7 +5535,14 @@ export class ScriptingAPI {
             this.session.windows.markAsMiniConsole(id);
             this.session.windows.markAsMxpFrame(id);
         },
-        destroyFrameConsole: (name) => this.session.windows.close(mxpWindowId(name)),
+        destroyFrameConsole: (name) => {
+            const id = mxpWindowId(name);
+            if (this.session.windows.isMxpFrame(id)) this.session.windows.close(id);
+        },
+        nameTakenByScript: (name) => {
+            const id = mxpWindowId(name);
+            return (this.session.windows.has(id) && !this.session.windows.isMxpFrame(id)) || this.buffers.has(id);
+        },
         showFrameConsole: (name) => { this.session.windows.show(mxpWindowId(name)); },
         raiseFrameConsole: (name) => this.session.windows.bringToFront(mxpWindowId(name)),
         setFrameScrolling: (name, enabled) => { this.session.windows.setScrollingEnabled(mxpWindowId(name), enabled); },
@@ -5895,10 +5937,11 @@ export class ScriptingAPI {
         const state = keepColor ? undefined : this.outputConsole(targetWin).format.toSnapshot();
         buf.replace([sel.start, sel.start + sel.length], newText, state);
         if (this.inTriggerProcessing && this.getConsole(targetWin) === this.mainConsole) {
-            // TConsole::replace moves every capture from the start of the
-            // selection on by the change in length, so a later group is still
-            // found where its text now is
-            this.captureShiftHook?.(sel.start, newText.length - sel.length);
+            // TConsole::replace moves every capture after the start of the
+            // selection by the change in length, so a later group is still
+            // found where its text now is; the one that was the replaced text
+            // keeps its start and spans the replacement
+            this.captureShiftHook?.(sel.start, newText.length - sel.length, sel.length);
             // Same alignment the insert path needs: a replace that changes the
             // line's LENGTH moves every colour run after it. With keepColor the
             // replacement wears whatever the snapshot already had at that

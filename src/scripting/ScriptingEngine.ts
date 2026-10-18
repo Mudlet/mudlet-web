@@ -391,6 +391,12 @@ export class ScriptingEngine implements EngineHost {
      *  script can drive MXP markup through feedTriggers on a profile that never
      *  negotiated it. Does NOT enable the handshake replies. */
     forceMxpProcessorOn = false;
+    /** cTelnet's `enableMXP`: the game switched MXP on (WILL, DO or a bare
+     *  subnegotiation) or it was auto-enabled, and has not turned it off. */
+    private telnetMxpEnabled = false;
+    /** cTelnet's `mMxpAutoEnabled`: MXP is on because the auto-detect turned it
+     *  on, so the game switching it on properly starts it afresh in open mode. */
+    private mxpAutoEnabled = false;
     /** Mudlet's TMxpClient::mMxpEvents — element uses the parser has read but
      *  not yet published, drained at the end of processFlushBatch. */
     private readonly mxpEventQueue: {
@@ -2294,7 +2300,7 @@ export class ScriptingEngine implements EngineHost {
             this.triggerEngine.setRunawayReporter(text => this.api.postSystemMessage(text));
             // Capture positions are recorded at match time; text a trigger
             // inserts into its own line has to move them with it.
-            this.api.setCaptureShiftHook((at, delta) => rt.shiftCaptureSpans(at, delta));
+            this.api.setCaptureShiftHook((at, delta, replaced) => rt.shiftCaptureSpans(at, delta, replaced));
             // What the engine does to a trigger it stops as a runaway: a
             // temporary one is removed, a permanent one only switched off —
             // there being no removal API for one, and the player's own copy
@@ -3516,10 +3522,17 @@ export class ScriptingEngine implements EngineHost {
         return this.runtimes.lua?.setTempItemEnabled(id, enabled) ?? false;
     }
 
+    /** Host::setForceMXPProcessorOn and the slot its signal drives: forcing on a
+     *  processor that is off turns it on locked to secure mode (IRE-style games
+     *  use secure tags without sending mode switches), while one the game
+     *  already had on keeps its mode. Turning it off leaves the modes alone and
+     *  stops the processor unless the game has MXP on. */
     setForceMxpProcessorOn(on: boolean): void {
+        const wasEnabled = this.mxpActive || this.forceMxpProcessorOn;
         this.forceMxpProcessorOn = on;
-        // Mudlet locks secure mode alongside the flag — see lockSecureMode.
-        this.mxp.lockSecureMode(on);
+        this.mxp.setForceLock(on);
+        if (on && !wasEnabled) this.mxp.applyMode(6);
+        if (!on && !this.telnetMxpEnabled) this.mxpActive = false;
     }
 
     /** Mudlet `cTelnet::autoEnableMXPProcessor`. Runs when MXP started from an
@@ -3539,7 +3552,14 @@ export class ScriptingEngine implements EngineHost {
         // key before storing, and the write below sets it literally.
         const alreadyPrompted =
             useAppStore.getState().connectionProfile[this.connectionId]?.config?.promptForMXPProcessorOn === true;
+        if (alreadyPrompted && this.forceMxpProcessorOn) {
+            this.mxp.applyMode(6);
+            return;
+        }
+        this.telnetMxpEnabled = true;
+        this.mxpAutoEnabled = true;
         this.setForceMxpProcessorOn(true);
+        this.mxp.applyMode(6);
         if (alreadyPrompted) return;
         const bag = useAppStore.getState().connectionProfile[this.connectionId]?.config ?? {};
         useAppStore.getState().patchConnectionProfile(this.connectionId, {
@@ -6052,7 +6072,10 @@ export class ScriptingEngine implements EngineHost {
                 this.enabledProtocols.delete(protocol);
                 // Mudlet stops the MXP processor when the option goes away,
                 // unless the profile forces it on (cTelnet, TN_WONT/TN_DONT).
-                if (protocol === 'MXP' && !this.forceMxpProcessorOn) this.mxpActive = false;
+                if (protocol === 'MXP') {
+                    this.telnetMxpEnabled = false;
+                    if (!this.forceMxpProcessorOn) this.mxpActive = false;
+                }
                 this.raiseEvent('sysProtocolDisabled', [protocol]);
             }),
             // Mudlet `sysCharacterModeDetected` — the server requested SGA and
@@ -6092,6 +6115,11 @@ export class ScriptingEngine implements EngineHost {
                 // open tags/modes and wait for the new session's mxp.negotiated.
                 this.mxp.reset();
                 this.mxpActive = false;
+                this.telnetMxpEnabled = false;
+                this.mxpAutoEnabled = false;
+                // The processor is off until the preference below turns it back
+                // on, locked secure as Host's signal_connected slot does.
+                this.forceMxpProcessorOn = false;
                 // Frames belong to the session that declared them, so the new
                 // one starts from an unsplit main window (Mudlet resets its
                 // TMxpFrameManager on connect for the same reason).
@@ -6118,6 +6146,7 @@ export class ScriptingEngine implements EngineHost {
                 // sysDisconnectionEvent for it — no sysProtocolDisabled per
                 // protocol — so nothing more is announced.
                 if (this.enabledProtocols.has('MXP')) this.mxpActive = false;
+                this.telnetMxpEnabled = false;
                 this.enabledProtocols.clear();
             }),
             // Built-in Client.GUI handler — Mudlet semantics. One entry point
@@ -6184,16 +6213,22 @@ export class ScriptingEngine implements EngineHost {
             // MXP finished negotiating (telnet option 91). Flip on in-band markup
             // parsing and mirror the GMCP/MSDP/MSSP pair so scripts can hook
             // sysProtocolEnabled('MXP').
-            session.events.on('mxp.negotiated', (viaTelnet, viaSubnegotiation) => {
+            session.events.on('mxp.negotiated', (viaTelnet) => {
+                if (viaTelnet) {
+                    // cTelnet::switchMxpOn, for a WILL, a DO or a bare IAC SB MXP
+                    // IAC SE alike: each time the game switches MXP on it starts in
+                    // open mode, the spec's initial default, over whatever an
+                    // earlier game or the auto-enable left (Force MXP keeps its
+                    // secure default); a mode the game locks in after that holds
+                    // when it repeats the switch-on.
+                    if (!this.telnetMxpEnabled || this.mxpAutoEnabled) this.mxp.applyMode(5);
+                    this.telnetMxpEnabled = true;
+                    this.mxpAutoEnabled = false;
+                }
                 this.mxpActive = true;
                 // MXP inferred from in-band line modes rather than negotiated:
                 // Mudlet turns the processor on for good and says so.
                 if (!viaTelnet) this.autoEnableMxpProcessor();
-                // A bare IAC SB MXP IAC SE starts the processor in locked mode:
-                // the server has said nothing about what it will send, so nothing
-                // it sends is markup until it switches modes itself (cTelnet sets
-                // MXP_MODE_CODE_LOCK_LOCKED on that subnegotiation).
-                if (viaSubnegotiation) this.mxp.setLockedMode('locked');
             }),
             // Mudlet `setChannel102Table` — the zMUD out-of-band channel writes
             // its numbered variable into the Lua `channel102` table and raises

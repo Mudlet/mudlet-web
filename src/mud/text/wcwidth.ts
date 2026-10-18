@@ -61,7 +61,7 @@ export function isAmbiguousWidthWide(): boolean {
 
 /** The encodings whose games expect ambiguous-width characters drawn wide —
  *  the list Host::setWideAmbiguousEAsianGlyphs checks in "auto" mode. */
-const WIDE_AMBIGUOUS_ENCODINGS = new Set(['GBK', 'GB18030', 'BIG5', 'BIG5-HKSCS', 'EUC-KR']);
+const WIDE_AMBIGUOUS_ENCODINGS = new Set(['GBK', 'GB18030', 'BIG5', 'BIG5-HKSCS', 'EUC-KR', 'SHIFT_JIS', 'EUC-JP']);
 
 /** Whether ambiguous-width characters are drawn wide, given the profile's
  *  choice (`ambiguousWidthWide`: true/false, or undefined for Mudlet's "auto")

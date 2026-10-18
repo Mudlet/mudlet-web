@@ -362,28 +362,31 @@ describe('MxpParser — ESC[#z only switches mode for server data', () => {
   // ran into.
   it('a locally-fed lock cannot undo the forced secure mode', () => {
     const { parser } = makeParser();
-    parser.lockSecureMode(true);
+    parser.setForceLock(true);
+    parser.applyMode(6);
     parser.parseLine(`${ESC}[7z`, undefined, false);
     expect(parser.parseLine('<frame Status>', undefined, false).frames?.[0]?.name).toBe('Status');
   });
 
   // Even from the game, a lock to OPEN or LOCKED is acknowledged and ignored
-  // while the processor is forced on (TMxpProcessor::setMode's
-  // shouldLockModeToSecure) — and so is the locked start a bare SB asks for.
+  // while Force MXP is on and the default is secure (TMxpProcessor::setMode's
+  // shouldLockModeToSecure) — and so is the open start a switch-on asks for.
   it('keeps the forced secure lock against the game\'s ESC[7z and ESC[5z', () => {
     const { parser } = makeParser();
-    parser.lockSecureMode(true);
+    parser.setForceLock(true);
+    parser.applyMode(6);
     parser.parseLine(`${ESC}[7z`);
     expect(parser.parseLine('<frame Status>', undefined, false).frames?.[0]?.name).toBe('Status');
     parser.parseLine(`${ESC}[5z`);
-    parser.setLockedMode('locked');
+    parser.applyMode(5);
     expect(parser.parseLine('<frame Other>', undefined, false).frames?.[0]?.name).toBe('Other');
   });
 
   it('takes the game\'s lock once the processor is no longer forced', () => {
     const { parser } = makeParser();
-    parser.lockSecureMode(true);
-    parser.lockSecureMode(false);
+    parser.setForceLock(true);
+    parser.applyMode(6);
+    parser.setForceLock(false);
     parser.parseLine(`${ESC}[7z`);
     expect(parser.parseLine('<frame Status>', undefined, false).frames).toBeUndefined();
   });
