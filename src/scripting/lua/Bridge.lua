@@ -2815,11 +2815,16 @@ function __mudlet_check_headers(headers, funcName, index)
         error(funcName .. ": bad argument #" .. index .. " type (headers as a table expected, got "
             .. type(headers) .. "!)", 3)
     end
+    -- The name is checked before its value, so a pair that is wrong on both
+    -- counts blames the name (TLuaInterpreter's header loop).
     for k, v in pairs(headers) do
-        if type(k) ~= 'string' or type(v) ~= 'string' then
+        if type(k) ~= 'string' then
             error(funcName .. ": bad argument #" .. index
-                .. " type (custom headers must be strings, got header: " .. type(k)
-                .. " (should be string) and value: " .. type(v) .. " (should be string))", 3)
+                .. " type (custom header names must be strings, got " .. type(k) .. ")", 3)
+        end
+        if type(v) ~= 'string' then
+            error(funcName .. ": bad argument #" .. index
+                .. " type (custom header \"" .. k .. "\" must have a string value, got " .. type(v) .. ")", 3)
         end
     end
 end
