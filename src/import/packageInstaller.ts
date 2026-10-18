@@ -137,6 +137,20 @@ function assertPackageNameStaysInProfile(name: string, source: string): void {
     }
 }
 
+/**
+ * The profile folders that hold the profile's own data (Host.cpp's
+ * `theProfileKeepsItsOwnDataIn`) — its maps, logs, current save and downloaded
+ * media. A package folder is named after the package, so a package by one of
+ * these names would put itself in among the profile's own files, and an
+ * uninstall would take them with it. The VFS tells case apart, as desktop's
+ * Linux build does.
+ */
+const PROFILE_OWN_FOLDERS = new Set(['map', 'log', 'current', 'media']);
+
+export function profileKeepsItsOwnDataIn(name: string): boolean {
+    return PROFILE_OWN_FOLDERS.has(name);
+}
+
 function isXmlEntry(path: string): boolean {
     return /\.xml$/i.test(path);
 }
@@ -333,6 +347,19 @@ export function preparePackageInstall(
             // A staged source file moves with its directory; the manifest must
             // record where it will actually be once the commit has run.
             if (sourceInsidePkgDir && sourcePath) sourcePath = pkgDir + sourcePath.slice(stagedDir.length);
+        }
+        // An archive unpacks into the folder of its name, so one of the
+        // profile's own is refused — whether that folder is there yet or not:
+        // map, current and media are only made when first needed, and a
+        // package let in first would share the folder from then on. A bare XML
+        // has no folder, so any name is let in for it. Renaming the archive
+        // only helps when the name did not come from its config.lua.
+        if (profileKeepsItsOwnDataIn(packageName)) {
+            throw new Error(declared && !configProblem
+                ? `The config.lua of this package asks to be installed as "${packageName}",`
+                    + ' but the profile keeps its own files in the folder of that name.'
+                : `A package cannot be installed as "${packageName}", as the profile keeps its own files`
+                    + ' in the folder of that name. Please rename it and try again.');
         }
     } else {
         xmlContent = [strFromU8(buf)];
@@ -593,6 +620,9 @@ export async function uninstallPackageFiles(manifest: PackageManifest, vfs: Prof
     // ever removes them, and a later install of the same name then found a
     // folder for a module that was not installed.
     if (manifest.kind === 'module' && manifest.xmlVfsPath) return;
+    // A bare XML package may carry one of the profile's own folder names, and
+    // the folder of that name is the profile's data, not the package's.
+    if (profileKeepsItsOwnDataIn(manifest.name)) return;
     const pkgDir = `${vfs.profilePath}/${manifest.name}`;
     if (vfs.exists(pkgDir)) vfs.rmdir(pkgDir);
     await vfs.flush();
