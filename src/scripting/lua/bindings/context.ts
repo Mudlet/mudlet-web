@@ -76,6 +76,11 @@ export interface BindingContext {
      *  is safe here. */
     readonly vfs: ProfileVFS | null;
 
+    /** The bytes behind a path in the read-only `/lua/` namespace (the bundled
+     *  Lua, and in busted builds the spec corpus and its fixtures), or null
+     *  for any other path. See LuaRuntime.readBuiltinBytes. */
+    readBuiltinBytes(path: string): Uint8Array | null;
+
     /** Drop a Lua-side callback registration by id (the registry slot behind
      *  `__mudlet_register_cb`). Distinct from {@link releaseCb}, which goes
      *  through Lua; this is the direct JS-side removal. */

@@ -362,16 +362,16 @@ function setActiveProfile(name)
 end
 
 -- Mudlet setMapPerspective(r, theta, phi) / shiftMapPerspective(verticalAngle,
--- horizontalAngle, rotationAngle): aim the 3D map's camera. The map here is
--- the 2D one, and on desktop both calls do nothing while the 3D view isn't the
--- one showing, so after the same checks desktop makes (a map open first, then
--- the three numbers) there is nothing left to do.
+-- horizontalAngle, rotationAngle): aim the 3D map's camera. Desktop checks the
+-- three numbers, then that they are finite, then that a map is open, and then
+-- asks the view, which refuses unless the modern 3D view is the one showing.
+-- This client has only the 2D map, so that is as far as either gets: with the
+-- 3D view asked for (show3dMapView and the modern-mapper experiment) the
+-- refusal is desktop's for a view that could not start for want of an OpenGL
+-- 3.3 context — which is the truth of a browser here — and otherwise that the
+-- modern 3D view is not showing.
 do
-    local function perspective(fname, names, ...)
-        if not __mudlet_mapper_open() then
-            -- warnArgumentValue: the message alone, no function name.
-            return nil, "you haven't opened a map yet"
-        end
+    local function perspective(fname, names, finiteMessage, ...)
         for i = 1, 3 do
             local v = select(i, ...)
             if __mudlet_num(v) == nil then
@@ -379,12 +379,28 @@ do
                     .. " as number expected, got " .. type(v) .. "!)")
             end
         end
+        for i = 1, 3 do
+            local v = __mudlet_num((select(i, ...)))
+            if v ~= v or v == math.huge or v == -math.huge then
+                return nil, finiteMessage
+            end
+        end
+        if not __mudlet_mapper_open() then
+            -- warnArgumentValue: the message alone, no function name.
+            return nil, "you haven't opened a map yet"
+        end
+        if getConfig("show3dMapView") and getConfig("experiment.3dmap.modernmapper") then
+            return nil, "the modern 3D map view could not start: could not create an OpenGL 3.3 context"
+        end
+        return nil, "the modern 3D map view is not showing"
     end
     function setMapPerspective(...)
-        return perspective("setMapPerspective", { "r", "theta", "phi" }, ...)
+        return perspective("setMapPerspective", { "r", "theta", "phi" },
+            "r, theta and phi must be finite numbers", ...)
     end
     function shiftMapPerspective(...)
-        return perspective("shiftMapPerspective", { "verticalAngle", "horizontalAngle", "rotationAngle" }, ...)
+        return perspective("shiftMapPerspective", { "verticalAngle", "horizontalAngle", "rotationAngle" },
+            "the angles must be finite numbers", ...)
     end
 end
 
@@ -650,12 +666,6 @@ function addCustomLine(roomID, id_to, direction, style, color, arrow)
         end
         id_to = roomTo
     end
-    local r, g, b = 255, 0, 0
-    if type(color) == 'table' then
-        r = color[1] or color.r or r
-        g = color[2] or color.g or g
-        b = color[3] or color.b or b
-    end
     local target
     if type(id_to) == 'table' then
         -- A malformed coordinate list is a TYPE error and raises, naming the
@@ -744,6 +754,20 @@ function addCustomLine(roomID, id_to, direction, style, color, arrow)
     end
     if not knownStyle then
         return nil, __mudlet_must_be_one_of("line style", LINE_STYLES, styleName)
+    end
+    -- The colour is read from items 1 to 3 only, as desktop does: a table
+    -- keyed r/g/b, or one missing any of the three, is refused (bare, as
+    -- warnArgumentValue answers).
+    local r, g, b = 255, 0, 0
+    if type(color) == 'table' then
+        local COMPONENTS = { "red", "green", "blue" }
+        for i = 1, 3 do
+            if color[i] == nil then
+                return nil, "the color table in the fifth argument has no " .. COMPONENTS[i]
+                    .. " color component (item #" .. i .. ") but red, green and blue are all needed"
+            end
+        end
+        r, g, b = color[1], color[2], color[3]
     end
     local reason = __mudlet_addCustomLine(roomID, target, tostring(direction), tostring(style),
         r, g, b, arrow and true or false)
@@ -3570,9 +3594,12 @@ end
 -- Mudlet createMapImageLabel(areaID, imagePathFileName, posx, posy, posz, width,
 -- height, zoom, showOnTop [, temporary]). The tenth argument is `temporary`
 -- (TLuaInterpreter::createMapImageLabel), not a scaling flag: an image label
--- always scales with the map. → new labelID, or -1 if the area is missing.
+-- always scales with the map. → new labelID, -1 if the area is missing, or
+-- (nil, errMsg) for an image that cannot be read.
 function createMapImageLabel(areaID, imagePath, posx, posy, posz, width, height, zoom, showOnTop, temporary)
-    return __createMapImageLabel(areaID, tostring(imagePath or ''), posx, posy, posz, width, height, zoom, showOnTop, temporary == true)
+    local r = __createMapImageLabel(areaID, tostring(imagePath or ''), posx, posy, posz, width, height, zoom, showOnTop, temporary == true)
+    if type(r) == 'string' then return nil, r end
+    return r
 end
 
 -- Mudlet addAreaName(name) → areaID on success, or (false, errMsg) on
@@ -8432,7 +8459,11 @@ do
             error("createMapper: bad argument #" .. (n + 1) .. " type (mapper"
                 .. " coordinates/dimensions as numbers expected, got nil!)", 2)
         end
-        return _rawCreateMapper(...)
+        -- Refused with false (not nil) and the reason, as desktop's
+        -- TMainConsole::createMapper answers.
+        local r = _rawCreateMapper(...)
+        if type(r) == 'string' then return false, r end
+        return r
     end
 end
 

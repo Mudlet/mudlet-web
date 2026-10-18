@@ -5610,8 +5610,11 @@ export class ScriptingAPI {
      * MAPPER_WIDGET_ID) so a script or a MUD cannot name a window over them.
      * Both render the same MapStore and stay in sync. Returns true on success.
      */
-    createMapper(x: number, y: number, width: number, height: number, parent?: string): boolean {
+    createMapper(x: number, y: number, width: number, height: number, parent?: string): true | string {
         const wm = this.session.windows;
+        // Desktop has one mapper per profile: with the map widget made, an
+        // embedded one is refused (TMainConsole::createMapper).
+        if (wm.has(MAP_WIDGET_ID)) return 'cannot create mapper. Do you already use a map window?';
         const id = MAPPER_WIDGET_ID;
         if (!wm.has(id)) {
             wm.open(id, {

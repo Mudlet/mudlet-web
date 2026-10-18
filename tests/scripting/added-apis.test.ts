@@ -1288,15 +1288,16 @@ describe('map labels — createMapLabel / createMapImageLabel / deleteMapLabel',
       .toThrow('bad argument #14 type (showOnTop as boolean expected');
   });
 
-  // Desktop keeps the image, never the path (issue #334); with no profile
-  // filesystem there is no file to read, so it is the transparent pixmap
-  // desktop makes for a missing image.
-  it('createMapImageLabel never stores the path in Pixmap; both reject a missing area', () => {
+  // Desktop keeps the image, never the path (issue #334) — see
+  // tests/map/mapFileDesktopParity.test.ts. With no profile filesystem there
+  // is no file to read, which desktop refuses rather than make a blank label;
+  // an unknown area is -1 before the image is looked at.
+  it('createMapImageLabel refuses an image it cannot read; both reject a missing area', () => {
     const a = env.run('return (addAreaName("Img"))') as number;
-    const id = env.run(`return (createMapImageLabel(${a}, "pic.png", 0, 0, 0, 32, 32, 1, true))`);
-    expect(id).toBe(0);
-    expect(env.run(`return (getMapLabel(${a}, 0)).Pixmap`)).toMatch(/^iVBORw0KGgo/);
-    expect(env.run(`return (getMapLabel(${a}, 0)).Width`)).toBe(32);
+    expect(env.run(`return (createMapImageLabel(${a}, "pic.png", 0, 0, 0, 32, 32, 1, true))`)).toBeNull();
+    expect(env.run(`return select(2, createMapImageLabel(${a}, "pic.png", 0, 0, 0, 32, 32, 1, true))`))
+      .toBe("image file 'pic.png' could not be read");
+    expect(env.run(`return next(getMapLabels(${a}))`)).toBe(null);
     expect(env.run('return (createMapLabel(999, "x", 0,0,0, 0,0,0, 0,0,0, 1, 12, true, false))')).toBe(-1);
     expect(env.run('return (createMapImageLabel(999, "p", 0,0,0, 1,1, 1, true, true))')).toBe(-1);
   });

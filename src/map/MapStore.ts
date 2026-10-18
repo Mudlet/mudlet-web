@@ -1317,9 +1317,10 @@ export class MapStore {
         this.pendingBinaryHashIndex = {};
         // Mudlet restores the player room from mRoomIdHash[mProfileName] on load
         // (no fallback: a missing key means no position). Only accept an id that
-        // actually resolves to a loaded room.
+        // actually resolves to a loaded room — or 0, desktop's "in no room",
+        // which is kept as stored.
         const savedPlayer = this.profileName ? this.mRoomIdHash[this.profileName] : undefined;
-        this.playerRoomId = savedPlayer != null && this.rooms.has(savedPlayer) ? savedPlayer : null;
+        this.playerRoomId = savedPlayer != null && (savedPlayer === 0 || this.rooms.has(savedPlayer)) ? savedPlayer : null;
         // TMap::audit runs after every load, and repairs what it finds; its
         // report waits for whoever loaded the map (takeAuditIssues).
         this.lastAuditIssues = audit ? this.auditMap() : [];
@@ -1779,7 +1780,9 @@ export class MapStore {
                 });
             }
             for (const [id, room] of moved) this.rooms.set(id, room);
-            if (this.playerRoomId != null && roomRemap.has(this.playerRoomId)) {
+            // A player room of 0 is desktop's "no room" (what deleting the
+            // player's room leaves), not the room 0 being renumbered here.
+            if (this.playerRoomId != null && this.playerRoomId !== 0 && roomRemap.has(this.playerRoomId)) {
                 this.playerRoomId = roomRemap.get(this.playerRoomId)!;
             }
         }
@@ -1879,6 +1882,18 @@ export class MapStore {
     ): void {
         const exits = room as unknown as Record<string, number>;
         room.stubs = [...new Set(room.stubs ?? [])];
+        // Only a corrupt file can hold a stub whose direction is not one of the
+        // twelve (TRoom::audit); nothing else can handle one, nor can the JSON
+        // export name it.
+        const strayStubs = room.stubs.filter(d => !(Number.isInteger(d) && d >= 1 && d <= 12));
+        if (strayStubs.length > 0) {
+            if (repair) room.stubs = room.stubs.filter(d => !strayStubs.includes(d));
+            issues.push({
+                severity: 'info', roomId: id,
+                message: `In room with ID: ${id} found one or more surplus exit stub items`
+                    + `${repair ? ' that were removed' : ''}: ${strayStubs.join(', ')}.`,
+            });
+        }
         room.exitLocks = [...new Set(room.exitLocks ?? [])];
         room.doors ??= {};
         room.exitWeights ??= {};
@@ -4021,7 +4036,9 @@ export class MapStore {
                 seen.add(key);
             }
         }
-        return collisions;
+        // Ordered by z, then y, then x, as desktop lists them — not in the
+        // order the rooms joined the area.
+        return collisions.sort((a, b) => a[2] - b[2] || a[1] - b[1] || a[0] - b[0]);
     }
 
     /**

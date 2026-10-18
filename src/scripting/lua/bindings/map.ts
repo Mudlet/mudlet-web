@@ -66,6 +66,15 @@ function luaToString(v: unknown): string {
     return '';
 }
 
+/** Whether `bytes` start like an image format Qt's QPixmap loads: PNG, JPEG,
+ *  GIF, BMP, WEBP or XPM. */
+function isReadableImage(bytes: Uint8Array): boolean {
+    const starts = (sig: string, at = 0) =>
+        bytes.length >= at + sig.length && [...sig].every((c, i) => bytes[at + i] === c.charCodeAt(0));
+    return starts('\x89PNG') || starts('\xff\xd8\xff') || starts('GIF8') || starts('BM')
+        || (starts('RIFF') && starts('WEBP', 8)) || starts('/* XPM */');
+}
+
 const MIN_MAP_FORMAT = 17;
 const MAX_MAP_FORMAT = 21;
 
@@ -73,6 +82,7 @@ export function installMapBindings({
     lua,
     api,
     vfs,
+    readBuiltinBytes,
     channel,
     emitEvent,
     unregisterCb,
@@ -254,9 +264,13 @@ export function installMapBindings({
                 }
                 return `loadMap: failure to import XML map file "${location}"`;
             }
-            let bytes: Uint8Array;
-            try { bytes = vfs.readBinaryFile(path); }
-            catch { return false; }
+            // The read-only /lua/ namespace first, where the busted corpus
+            // keeps its binary map fixtures; Lua's io sees both.
+            let bytes = readBuiltinBytes(location);
+            if (!bytes) {
+                try { bytes = vfs.readBinaryFile(path); }
+                catch { return false; }
+            }
             return api.loadMap(bytes, location);
         }
         // No path: the profile's most recent save, then whatever is already
@@ -1301,10 +1315,17 @@ export function installMapBindings({
         const path = String(imagePath ?? '');
         const width = Number(w) || 0;
         const height = Number(h) || 0;
+        // An unknown area is -1 whatever the image (TMap::createMapImageLabel
+        // looks for the area first).
+        if (!api.map.hasArea(area)) return -1;
         let bytes: Uint8Array | null = null;
         if (vfs && path !== '') {
             try { bytes = vfs.readBinaryFile(path); } catch { bytes = null; }
         }
+        // Desktop refuses an image its QPixmap cannot load — missing, empty or
+        // not an image at all. Decoding is asynchronous here, so the file's
+        // signature stands in for that test.
+        if (!bytes || !isReadableImage(bytes)) return `image file '${path}' could not be read`;
         const { pixmap, pending } = imageLabelPixmap(bytes, width, height, Number(zoom) || 0);
         const id = api.map.createMapImageLabel(
             area, pixmap,

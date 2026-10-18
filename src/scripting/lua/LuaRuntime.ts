@@ -925,6 +925,7 @@ export class LuaRuntime implements IScriptingRuntime {
             popNestedDispatchState: (depth) => this.popNestedDispatchState(depth),
             buildingCaptureTables: () => this.buildingCaptureTables(),
             vfs: this.vfs,
+            readBuiltinBytes: (path) => this.readBuiltinBytes(path),
             overlayCmdLineActionCbIds: this.overlayCmdLineActionCbIds,
             windowCmdLineActionCbIds: this.windowCmdLineActionCbIds,
             unregisterCb: (cbId) => this.unregisterCb(cbId),
