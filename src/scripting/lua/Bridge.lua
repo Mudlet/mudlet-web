@@ -4857,9 +4857,10 @@ function raiseEvent(event, ...)
     if event == 'sysWindowResizeEvent' then __mws_w, __mws_h = nil, nil end
     -- The handlers run as event handlers, not as the alias that may have
     -- raised the event, as desktop's callEventHandler scopes them: only an
-    -- alias script has expandAlias() hand its own `command` back.
+    -- alias script has expandAlias() hand its own `command` back. The
+    -- yield-transparent pcall, so a handler can still park on invokeFileDialog.
     local wasAliasScript = __mudlet_set_alias_script(false)
-    local ok, err = pcall(__mudlet_dispatch, event, { ... }, argc)
+    local ok, err = __mudlet_pcall_co(__mudlet_dispatch, event, { ... }, argc)
     __mudlet_set_alias_script(wasAliasScript)
     if not ok then error(err, 0) end
     return true
