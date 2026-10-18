@@ -7089,7 +7089,7 @@ export class ScriptingAPI {
         // the console area. Borders carve insets out of this rectangle without
         // shrinking it — matches Mudlet so scripts that place labels with
         // `y = h - labelHeight` after setBorderBottom land in the carved zone.
-        const el = this.session.windows.getMainViewportElement()
+        const el = this.session.windows.getMainSizeElement()
                 ?? this.session.windows.getElement('main');
         if (el) {
             const rect = el.getBoundingClientRect();

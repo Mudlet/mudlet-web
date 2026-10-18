@@ -646,6 +646,19 @@ export class WindowManager {
         return this.mainViewportEl;
     }
 
+    /**
+     * The box the main window's size is read from: the `.main-viewport` host,
+     * which the console viewport spans (`inset: 0`) but which carries none of
+     * its padding. The borders are that padding, and desktop's borders are
+     * insets inside a console whose size they leave alone — measuring the
+     * padded viewport instead let a border wider than the console widen the
+     * "window" (setBorderRight(1000000) answered a window a million pixels
+     * wide), which every attached Adjustable.Container then took for a resize.
+     */
+    getMainSizeElement(): HTMLElement | null {
+        return this.mainViewportHostEl ?? this.mainViewportEl;
+    }
+
     /** The `.main-viewport` box the console viewport and the overlay root both
      *  span (`inset: 0`). It is the one element that can be given a size — the
      *  two inside it are absolutely positioned against it, so sizing either of
@@ -923,7 +936,15 @@ export class WindowManager {
         // resizeEvent resizes its text pane first, whose own resizeEvent
         // raises the grid event, and only then raises sysWindowResizeEvent.
         this.emitConsoleGridIfChanged(id, w, h, element);
-        this.emitWindowSize(id, w, h);
+        // The main window's size is its unpadded box's, as getMainWindowSize
+        // reads it (see getMainSizeElement).
+        const sizeEl = id === 'main' ? this.getMainSizeElement() : null;
+        if (sizeEl && sizeEl !== element) {
+            const box = sizeEl.getBoundingClientRect();
+            this.emitWindowSize(id, Math.round(box.width), Math.round(box.height));
+        } else {
+            this.emitWindowSize(id, w, h);
+        }
     }
 
     /** Raise sysWindowResizeEvent/sysUserWindowResizeEvent for `id` at w×h,
