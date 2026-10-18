@@ -333,7 +333,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('cut',             '()',            'Copy the main console\'s current selection into the clipboard and delete it from the line'),
     fn('paste',           '([window])',    'Paste the copied rich text at the cursor (or append at the end of the last line)'),
     fn('appendBuffer',    '([window])',    'Append the copied rich text (see copy) as a new line to a window or buffer'),
-    fn('clearVisitedLinks', '()',          'Forget which clickable links have been visited. mudlet tracks no visited-link state, so this is a no-op (kept for Mudlet script portability).'),
+    fn('clearVisitedLinks', '(labelName)', 'Forget which of a label\'s links have been clicked, so they take the link colour from setLinkStyle again.'),
     fn('clearWindow',     '([name])',      'Clear window contents'),
     fn('clearUserWindow', '([name])',      'Clear a user window\'s contents. Alias of clearWindow.'),
     fn('windowType',      '(name) → kind | nil, errMsg', 'What kind of widget a name refers to: "main", "label", "miniconsole", "userwindow", "commandline", "textedit", "scrollbox" or "buffer"; (nil, errMsg) when the name resolves to nothing.'),

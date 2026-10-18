@@ -226,11 +226,14 @@ export function OutputArea({ session, stickyLines = DEFAULT_STICKY_LINES, comman
     // MXP frames add their own insets on top, so a server that tiles frames
     // against the edges pushes the console out of their way instead of having
     // them paint over it.
+    // A negative border (Profile Preferences offer one, to push the text off the
+    // screen) has no padding to stand for, so it insets nothing.
+    const inset = (border: number | undefined, mxp: number) => Math.max(0, border ?? 0) + mxp || undefined;
     const contentStyle: React.CSSProperties = {
-        paddingTop: (borders?.top ?? 0) + mxpBorders.top || undefined,
-        paddingRight: (borders?.right ?? 0) + mxpBorders.right || undefined,
-        paddingBottom: (borders?.bottom ?? 0) + mxpBorders.bottom || undefined,
-        paddingLeft: (borders?.left ?? 0) + mxpBorders.left || undefined,
+        paddingTop: inset(borders?.top, mxpBorders.top),
+        paddingRight: inset(borders?.right, mxpBorders.right),
+        paddingBottom: inset(borders?.bottom, mxpBorders.bottom),
+        paddingLeft: inset(borders?.left, mxpBorders.left),
         background: borderColor
             ? `rgba(${borderColor.r}, ${borderColor.g}, ${borderColor.b}, ${borderColor.a / 255})`
             : undefined,

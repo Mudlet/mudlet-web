@@ -1934,10 +1934,10 @@ export class LuaRuntime implements IScriptingRuntime {
                 z != null && Number.isFinite(z) ? Math.trunc(z) : undefined,
             );
         });
-        // Mudlet `clearVisitedLinks()`: forgets which clickable links have been
-        // visited (Mudlet greys visited echoLink targets). Mudlet Web tracks no
-        // visited-link state, so there is nothing to clear — a true no-op.
-        this.lua.global.set('clearVisitedLinks', () => {});
+        // Mudlet `clearVisitedLinks(labelName)`: forgets which of a label's
+        // links were clicked, so they take the link colour again.
+        this.lua.global.set('clearVisitedLinks', (name: unknown) =>
+            this.api.labels.clearVisitedLinks(String(name ?? '')));
         // Mudlet `connectToServer(host, port [, save])`: (re)connect through the
         // proxy; `save` persists host/port onto the active connection.
         // Argument validation and the invalid-port (nil, errMsg) return live in
@@ -2650,10 +2650,10 @@ export class LuaRuntime implements IScriptingRuntime {
         // utfR(from, to) matches one UTF-8 character in a codepoint range. utfR
         // is built here out of byte ranges.
         this.execInternal(LPEG_REGISTER_LUA, 'lpeg-register');
+        this.setupAnsiColorTable();
         this.exec(LUAGLOBAL, 'LuaGlobal');
         this.installMudletLuaOverrides();
         this.installFastColorEcho();
-        this.setupAnsiColorTable();
         // Record the default namespace so the Variables view can hide built-ins.
         // Must run after the bundle but before any user global is added.
         this.exec(CAPTURE_BASELINE_LUA, 'baseline-globals');
@@ -2932,11 +2932,25 @@ __mudletFastColorEcho = nil`,
     // C++ does this; GUIUtils.lua only fills the *named* colours. ansi2decho,
     // closestColor and the colour-conversion helpers all read color_table
     // ["ansi_NNN"], so without these they produce wrong output. Sourced from
-    // Mudlet Web's own xterm256 palette (shared with the ANSI renderer, so the table
-    // matches what's actually drawn) and only set where unset, so a runtime/theme
-    // override survives. Must run after LuaGlobal.lua creates color_table.
+    // Mudlet Web's own xterm256 palette (shared with the ANSI renderer, so the
+    // table matches what's actually drawn).
+    //
+    // Run before LuaGlobal.lua, in desktop's order: the Host constructor fills a
+    // fresh color_table with the sixteen ANSI entries (updateAnsi16ColorsInTable)
+    // and then ansi_016 to ansi_255 (updateExtendedAnsiColorsInTable), and only
+    // after that does loadGlobal() let GUIUtils.lua add the named colours. The
+    // order is observable: closestColor — and so decho2cecho and friends — picks
+    // between equally near names by which one pairs() reaches first, and Lua
+    // 5.1's pairs() order follows the keys inserted and the order they went in.
     private setupAnsiColorTable(): void {
-        const triples = xterm256.map(hex => {
+        // The sixteen ANSI entries follow the palette actually in force — the
+        // profile's own colours, and whatever the server redefines with
+        // `ESC]P`/`ESC]R` — as desktop's do: Host calls
+        // updateAnsi16ColorsInTable when the profile loads and on every one of
+        // those changes, so `<ansi_red>` paints the colour the game's red does.
+        this.updateAnsi16ColorsInTable();
+        this.stopAnsiPaletteSync = onAnsiPaletteChange(() => this.updateAnsi16ColorsInTable());
+        const triples = xterm256.slice(16).map(hex => {
             const r = parseInt(hex.slice(1, 3), 16);
             const g = parseInt(hex.slice(3, 5), 16);
             const b = parseInt(hex.slice(5, 7), 16);
@@ -2946,20 +2960,12 @@ __mudletFastColorEcho = nil`,
             `do
   color_table = color_table or {}
   local p = {${triples}}
-  for i = 0, ${xterm256.length - 1} do
-    local k = string.format("ansi_%03d", i)
-    if not color_table[k] then color_table[k] = p[i + 1] end
+  for i = 16, ${xterm256.length - 1} do
+    color_table[string.format("ansi_%03d", i)] = p[i - 15]
   end
 end`,
             'ansi-color-table',
         );
-        // The sixteen ANSI entries then follow the palette actually in force —
-        // the profile's own colours, and whatever the server redefines with
-        // `ESC]P`/`ESC]R` — as desktop's do: Host calls
-        // updateAnsi16ColorsInTable when the profile loads and on every one of
-        // those changes, so `<ansi_red>` paints the colour the game's red does.
-        this.updateAnsi16ColorsInTable();
-        this.stopAnsiPaletteSync = onAnsiPaletteChange(() => this.updateAnsi16ColorsInTable());
     }
 
     private static readonly ANSI16_NAMES = [
