@@ -2479,6 +2479,18 @@ export class ScriptingEngine implements EngineHost {
             // matches something other than what its author wrote.
             for (const warning of prepared.data.warnings) this.api.postError(warning);
             this.restorePackageVariables(prepared.data);
+            // ...except a package nothing at all could be read out of: listed,
+            // it would be an empty package in the profile. Refused before
+            // anything is written, so it leaves neither its folder nor the
+            // details its config.lua filed. A file from a later Mudlet is
+            // refused in the words the console was just given.
+            const { nothingRead } = prepared.data;
+            if (nothingRead) {
+                const error = nothingRead === 'newer'
+                    ? prepared.data.parseError!
+                    : `the contents of package "${prepared.manifest.name}" could not be read`;
+                return { ok: false, error };
+            }
             // Refused, not replaced: a second install would silently discard
             // whatever the user had changed in the first, and a script looping
             // over a package list would do it repeatedly.

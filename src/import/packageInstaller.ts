@@ -174,6 +174,12 @@ function mergeImportResults(results: MudletImportResult[]): MudletImportResult {
         if (r.parseError) errors.push(r.parseError);
     }
     if (errors.length > 0) merged.parseError = errors.join('; ');
+    // Nothing read only when no document gave anything: a stray unreadable
+    // file beside the package's own does not turn the package away, whichever
+    // of the two is read first.
+    if (results.every(r => r.nothingRead)) {
+        merged.nothingRead = results.some(r => r.nothingRead === 'newer') ? 'newer' : 'unreadable';
+    }
     return merged;
 }
 
