@@ -455,7 +455,10 @@ export class SessionCodec {
             if (byteString.length === 0 && !(final && this.pendingBytes)) return '';
             const framed = decodeMultiByte(this.pendingBytes + byteString, this.framed);
             this.pendingBytes = final ? '' : framed.pending;
-            return final && framed.pending ? framed.text + '\uFFFD' : framed.text;
+            if (!final || !framed.pending) return framed.text;
+            // A lead byte held over a colour change keeps the change behind it.
+            const heldSgr = framed.pending[1] === '\x1b' ? framed.pending.slice(1) : '';
+            return framed.text + '\uFFFD' + heldSgr;
         }
         if (!this.decoder) {
             // UTF-8 the way desktop's TBuffer reads it: a malformed sequence is

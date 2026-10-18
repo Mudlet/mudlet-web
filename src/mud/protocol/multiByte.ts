@@ -6,12 +6,10 @@
  * carry a second copy. What it does NOT borrow is the browser's error recovery,
  * because that differs from Mudlet's in ways a MUD player would see:
  *
- *  - **How much a bad sequence eats.** The WHATWG decoders "prepend" the
- *    offending trail byte back onto the stream, so `C4 20 5A` under GBK renders
- *    as `<?> Z` — the space reappears as text. Mudlet consumes the whole pair
- *    and renders `<?>Z`. On a game that mixes encodings mid-line (which is why
- *    anyone hits this at all) the browser's version sprays stray punctuation
- *    through the output.
+ *  - **How much a bad sequence eats.** Both now put a trail byte that cannot
+ *    belong to the sequence back onto the stream (`C4 20 5A` under GBK renders
+ *    as `<?> Z`), but Mudlet consumes a trail that is merely out of range with
+ *    its lead, and frames GB18030's four-byte form its own way.
  *  - **Which bytes count as valid at all.** The two disagree on GBK 0x80, which
  *    WHATWG maps to a euro sign and Mudlet rejects, and on EUC-KR 0x7F, which
  *    WHATWG passes through as DEL and Mudlet rejects.
@@ -20,7 +18,7 @@
  * it is valid, using the ranges from `TBuffer::processGBSequence`,
  * `processBig5Sequence` and `processEUC_KRSequence`; a valid sequence is then
  * handed to the browser to map, and an invalid one becomes exactly one
- * replacement character however many bytes it spanned.
+ * replacement character however many bytes it consumed.
  *
  * Input and output are byte-strings (one char per byte), as everywhere else on
  * the inbound path.
@@ -96,10 +94,16 @@ function isGbTwoByte(b1: number, b2: number): boolean {
 /**
  * Frame the sequence starting at `pos`, or null when the input ends before the
  * sequence does (the caller carries those bytes into the next chunk).
+ *
+ * A byte below 0x80 cannot be a sequence's second byte: it is the game's own —
+ * its line ending, a colour code's ESC, the next letter — so a pair cut short
+ * by one loses only its lead byte and that byte is read afresh, as browsers do.
+ * A high byte that is merely out of range is consumed with its lead.
  */
 function frameAt(bytes: Uint8Array, pos: number, label: MultiByteLabel): Frame | null {
     const b1 = bytes[pos];
     const remaining = bytes.length - pos;
+    const invalidPair = (b2: number): Frame => ({ length: b2 < 0x80 ? 1 : 2, valid: false });
 
     if (label === 'euc-kr') {
         // Strictly below 0x7F: DEL itself is not ASCII here, it is rejected.
@@ -107,7 +111,7 @@ function frameAt(bytes: Uint8Array, pos: number, label: MultiByteLabel): Frame |
         if (b1 < 0xa1 || b1 === 0xff) return { length: 1, valid: false };
         if (remaining < 2) return null;
         const b2 = bytes[pos + 1];
-        return { length: 2, valid: !(b2 < 0xa1 || b2 === 0xff) };
+        return b2 < 0xa1 || b2 === 0xff ? invalidPair(b2) : { length: 2, valid: true };
     }
 
     if (label === 'big5') {
@@ -115,7 +119,7 @@ function frameAt(bytes: Uint8Array, pos: number, label: MultiByteLabel): Frame |
         if (b1 === 0x80 || b1 > 0xfe) return { length: 1, valid: false };
         if (remaining < 2) return null;
         const b2 = bytes[pos + 1];
-        return { length: 2, valid: !(b2 < 0x40 || (b2 > 0x7e && b2 < 0xa1) || b2 > 0xfe) };
+        return b2 < 0x40 || (b2 > 0x7e && b2 < 0xa1) || b2 > 0xfe ? invalidPair(b2) : { length: 2, valid: true };
     }
 
     // GBK and GB18030 share everything but the four-byte form.
@@ -126,32 +130,66 @@ function frameAt(bytes: Uint8Array, pos: number, label: MultiByteLabel): Frame |
 
     if (label === 'gb18030' && b1 >= 0x81 && b1 <= 0xfe && b2 >= 0x30 && b2 <= 0x39) {
         // A four-byte sequence, which is the one thing GB18030 has that GBK does
-        // not. The lead-byte range is narrower than the pair test that got us
-        // here, so a sequence can be framed as four bytes and still be invalid.
+        // not. A third or fourth byte that cannot belong to it ends it at its
+        // lead — the third as soon as it is seen, rather than being held for a
+        // fourth that cannot help — so the digit that made it look like one is
+        // shown.
+        if (remaining >= 3 && (bytes[pos + 2] < 0x81 || bytes[pos + 2] === 0xff)) return { length: 1, valid: false };
         if (remaining < 4) return null;
-        const b3 = bytes[pos + 2];
-        const b4 = bytes[pos + 3];
-        const leadOk = b1 <= 0x84 || (b1 >= 0x90 && b1 <= 0xe3);
-        return { length: 4, valid: leadOk && b3 >= 0x81 && b3 <= 0xfe && b4 >= 0x30 && b4 <= 0x39 };
+        if (bytes[pos + 3] < 0x30 || bytes[pos + 3] > 0x39) return { length: 1, valid: false };
+        // The lead-byte range is narrower than the pair test that got us here,
+        // so a sequence can be framed as four bytes and still be invalid.
+        return { length: 4, valid: b1 <= 0x84 || (b1 >= 0x90 && b1 <= 0xe3) };
     }
 
-    if (label === 'gbk') {
-        // In GBK the lead pair of a GB18030 four-byte sequence is not a
-        // character, and rejecting it as a pair (rather than letting it fall
-        // through to the area tests) is what keeps the trailing digit from
-        // being printed as text.
-        const looksFourByte = ((b1 >= 0x90 && b1 <= 0xe3) || (b1 >= 0xfd && b1 <= 0xfe))
-            && b2 >= 0x30 && b2 <= 0x39;
-        if (looksFourByte) return { length: 2, valid: false };
-    }
+    // In GBK the lead pair of a GB18030 four-byte sequence is no character either;
+    // its digit is below 0x80, so it is shown after the replacement mark.
+    return isGbTwoByte(b1, b2) ? { length: 2, valid: true } : invalidPair(b2);
+}
 
-    return { length: 2, valid: isGbTwoByte(b1, b2) };
+/** TBuffer::doubleByteLead: a byte that may start a full-width character, and
+ *  so may be held over a colour change until its trail byte arrives. */
+function isDoubleByteLead(b: number, label: MultiByteLabel): boolean {
+    return label === 'euc-kr' ? b >= 0xa1 && b <= 0xfe : b >= 0x81 && b <= 0xfe;
+}
+
+/** TBuffer::doubleByteTrail: the widest range of a character's second byte. */
+function isDoubleByteTrail(b: number, label: MultiByteLabel): boolean {
+    if (label === 'euc-kr') return b >= 0xa1 && b <= 0xfe;
+    if (label === 'big5') return (b >= 0x40 && b <= 0x7e) || (b >= 0xa1 && b <= 0xfe);
+    return b >= 0x40 && b <= 0xfe && b !== 0x7f;
+}
+
+/**
+ * Where the run of SGR sequences starting at `pos` ends — one or more
+ * `ESC [ <parameters> m` with no intermediate byte — or -1 when `pos` does not
+ * start one, or null when the input runs out inside one.
+ */
+function sgrRunEnd(bytes: Uint8Array, pos: number): number | null {
+    let j = pos;
+    while (j < bytes.length && bytes[j] === 0x1b) {
+        if (j + 1 >= bytes.length) return null;
+        if (bytes[j + 1] !== 0x5b) break;
+        let k = j + 2;
+        while (k < bytes.length && bytes[k] >= 0x30 && bytes[k] <= 0x3f) k++;
+        if (k >= bytes.length) return null;
+        if (bytes[k] !== 0x6d) break;
+        j = k + 1;
+    }
+    return j === pos ? -1 : j;
 }
 
 /**
  * Decode `byteString` under `label`, framing each sequence the way Mudlet does.
  * Any trailing incomplete sequence comes back as `pending` rather than being
  * decoded or dropped.
+ *
+ * Some games restyle the right half of a full-width character between its two
+ * bytes. Mudlet holds the lead byte over the SGR and decodes the pair whole
+ * once its trail arrives, the character keeping the colour it started in; so
+ * here the character comes out first and the SGR after it, which the line
+ * parser then reads the same way. Any other sequence, or a byte that cannot be
+ * the trail, ends the character as a replacement mark in front of it.
  */
 export function decodeMultiByte(byteString: string, label: MultiByteLabel): FramedDecode {
     const decoder = decoderFor(label);
@@ -160,23 +198,48 @@ export function decodeMultiByte(byteString: string, label: MultiByteLabel): Fram
     const bytes = new Uint8Array(byteString.length);
     for (let i = 0; i < byteString.length; i++) bytes[i] = byteString.charCodeAt(i) & 0xff;
 
+    // A sequence in range that the browser still cannot map comes back as a
+    // replacement character; Mudlet treats that as a rejection too.
+    const decodeSequence = (seq: Uint8Array): string | null => {
+        const decoded = decoder.decode(seq);
+        return decoded.length === 0 || decoded.includes(REPLACEMENT) ? null : decoded;
+    };
+
     let out = '';
     let pos = 0;
     while (pos < bytes.length) {
+        const b1 = bytes[pos];
+        if (bytes[pos + 1] === 0x1b && isDoubleByteLead(b1, label)) {
+            const sgrEnd = sgrRunEnd(bytes, pos + 1);
+            if (sgrEnd === null || sgrEnd >= bytes.length) return { text: out, pending: byteString.substring(pos) };
+            if (sgrEnd > 0 && isDoubleByteTrail(bytes[sgrEnd], label)) {
+                const pair = Uint8Array.of(b1, bytes[sgrEnd]);
+                const frame = frameAt(pair, 0, label);
+                out += (frame?.valid && frame.length === 2 && decodeSequence(pair)) || REPLACEMENT;
+                out += byteString.substring(pos + 1, sgrEnd);
+                pos = sgrEnd + 1;
+                continue;
+            }
+            // Not restyled by an SGR the character can be held across: its lead
+            // is lost and the sequence is read as ever.
+            out += REPLACEMENT;
+            pos += 1;
+            continue;
+        }
         const frame = frameAt(bytes, pos, label);
         if (!frame) return { text: out, pending: byteString.substring(pos) };
+        let length = frame.length;
         if (!frame.valid) {
             out += REPLACEMENT;
-        } else if (frame.length === 1) {
-            out += String.fromCharCode(bytes[pos]);
+        } else if (length === 1) {
+            out += String.fromCharCode(b1);
         } else {
-            const decoded = decoder.decode(bytes.subarray(pos, pos + frame.length));
-            // A sequence in range that the browser still cannot map comes back
-            // as a replacement character; Mudlet treats that as a rejection
-            // too, so the two agree on how many marks appear.
-            out += decoded.length === 0 ? REPLACEMENT : decoded;
+            const decoded = decodeSequence(bytes.subarray(pos, pos + length));
+            out += decoded ?? REPLACEMENT;
+            // An unmappable pair whose second byte is ASCII loses only its lead.
+            if (decoded === null && length === 2 && bytes[pos + 1] < 0x80) length = 1;
         }
-        pos += frame.length;
+        pos += length;
     }
     return { text: out, pending: '' };
 }
