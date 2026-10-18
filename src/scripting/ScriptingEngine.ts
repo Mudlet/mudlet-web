@@ -2552,6 +2552,11 @@ export class ScriptingEngine implements EngineHost {
             }
             prepared.commit();
             const { manifest, data } = prepared;
+            // Read into the profile as the profile's own HostPackage is.
+            if (prepared.hostSettings && Object.keys(prepared.hostSettings).length > 0) {
+                useAppStore.getState().patchConnectionProfile(this.connectionId, prepared.hostSettings);
+                if (prepared.hostSettings.outputBorders) this.session.windows.applyMainBorders();
+            }
             this.savePackageVariables(data);
             const problems = this.collectInstallProblems(manifest.name,
                 () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data);

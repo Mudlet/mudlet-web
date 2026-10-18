@@ -152,6 +152,9 @@ function parseFontSpec(spec: string): { family?: string; size?: number } {
  * present in the XML are set, so the result can be merged over existing/default
  * settings without clobbering anything Mudlet didn't specify.
  */
+/** The largest border, either way, Mudlet's border setters accept. */
+const BORDER_LIMIT = 1000000;
+
 export function parseMudletHost(host: Element): Partial<ProfileSettings> {
     const out: Partial<ProfileSettings> = {};
 
@@ -224,17 +227,20 @@ export function parseMudletHost(host: Element): Partial<ProfileSettings> {
     if (useMaxBuffer !== undefined) out.useMaxConsoleBufferSize = useMaxBuffer.trim() === 'yes';
 
     // ── borders ──────────────────────────────────────────────────────────
-    const top = Number(childText(host, 'borderTopHeight') ?? '');
-    const bottom = Number(childText(host, 'borderBottomHeight') ?? '');
-    const left = Number(childText(host, 'borderLeftWidth') ?? '');
-    const right = Number(childText(host, 'borderRightWidth') ?? '');
-    if ([top, bottom, left, right].some(n => Number.isFinite(n) && n > 0)) {
-        out.outputBorders = {
-            top: Number.isFinite(top) ? top : 0,
-            bottom: Number.isFinite(bottom) ? bottom : 0,
-            left: Number.isFinite(left) ? left : 0,
-            right: Number.isFinite(right) ? right : 0,
-        };
+    // Bounded to the range the setters accept, as XMLimport reads them: a save
+    // from an older build can hold one no setter takes any more, and the
+    // console takes opposite borders off its own size. A negative border is a
+    // border too, so any border given is read, not only a positive one.
+    const border = (tag: string): number | undefined => {
+        const n = Number(childText(host, tag) ?? '');
+        return Number.isFinite(n) ? Math.min(BORDER_LIMIT, Math.max(-BORDER_LIMIT, Math.trunc(n))) : undefined;
+    };
+    const top = border('borderTopHeight');
+    const bottom = border('borderBottomHeight');
+    const left = border('borderLeftWidth');
+    const right = border('borderRightWidth');
+    if ([top, bottom, left, right].some(n => n !== undefined && n !== 0)) {
+        out.outputBorders = { top: top ?? 0, bottom: bottom ?? 0, left: left ?? 0, right: right ?? 0 };
     }
 
     // ── font ─────────────────────────────────────────────────────────────

@@ -1,7 +1,8 @@
 import { unzipSync, strFromU8 } from 'fflate';
 import type { ProfileVFS } from '../scripting/vfs/ProfileVFS';
-import type { PackageKind, PackageManifest } from '../storage/schema';
+import type { PackageKind, PackageManifest, ProfileSettings } from '../storage/schema';
 import { parseMudletXml, type MudletImportResult } from './mudletXmlImport';
+import { parseMudletHost } from './mudletHost';
 
 export interface InstallResult {
     manifest: PackageManifest;
@@ -23,6 +24,22 @@ export interface InstallResult {
      * knows what is on disk.
      */
     occupiedFolder?: string;
+    /**
+     * The profile settings a package XML's `<HostPackage>` carries. Desktop's
+     * XMLimport reads a package's HostPackage into the profile as it reads a
+     * profile's own, so a package exported from a profile brings its settings.
+     */
+    hostSettings?: Partial<ProfileSettings>;
+}
+
+/** The settings the first `<Host>` among `documents` carries, if any. */
+function packageHostSettings(documents: string[]): Partial<ProfileSettings> | undefined {
+    for (const xml of documents) {
+        if (!xml.includes('<HostPackage')) continue;
+        const host = new DOMParser().parseFromString(xml, 'text/xml').getElementsByTagName('Host')[0];
+        if (host) return parseMudletHost(host);
+    }
+    return undefined;
 }
 
 /**
@@ -436,7 +453,7 @@ export function preparePackageInstall(
         }
     };
 
-    return { manifest, data, configProblem, occupiedFolder, commit };
+    return { manifest, data, configProblem, occupiedFolder, hostSettings: packageHostSettings(xmlContent), commit };
 }
 
 /**
