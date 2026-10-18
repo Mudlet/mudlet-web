@@ -3,7 +3,7 @@ import type { KeyNode } from '../../storage/schema';
 import { buildEffectivelyEnabledIds, inTreeOrder } from '../../storage/schema';
 import {
     bindingQtModifiers, domCodeToQtKey, isKeypadBinding, isPrintableQtKey, isQtKeypadEvent,
-    keypadEventQtKey, printableEventQtKey,
+    keypadEventQtKey, printableEventQtKey, QT_KEY_UNKNOWN,
 } from './qtKeys';
 
 export type { KeyNode };
@@ -89,9 +89,6 @@ interface TempKey {
     /** Place in the profile's one key list — see {@link KeyEngine.process}. */
     seq: number;
 }
-
-/** Qt::Key_unknown, the highest key code there is. */
-export const QT_KEY_UNKNOWN = 0x01ffffff;
 
 /** A permanent key's getKeyCode answer: the Qt::Key it was made with when
  *  known, else its code's, and the mask with the Keypad bit a Numpad* code

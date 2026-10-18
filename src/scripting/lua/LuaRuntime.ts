@@ -2057,6 +2057,13 @@ export class LuaRuntime implements IScriptingRuntime {
         });
 
         // ── Aliases ───────────────────────────────────────────────────────────
+        // For the script entries Lua makes itself (raiseEvent's handlers):
+        // sets whether the running script is an alias's, answering what it was.
+        this.lua.global.set('__mudlet_set_alias_script', (aliasScript: unknown): boolean => {
+            const was = this.runningAliasScript;
+            this.runningAliasScript = aliasScript === true;
+            return was;
+        });
         this.lua.global.set('__mudlet_tempAlias', (pattern: string, cbId: number, uncompiled?: boolean) => {
             const id = this.api.allocateItemId();
             const unsub = this.api.aliases.addTemp(pattern, (m: RegExpMatchArray) => {

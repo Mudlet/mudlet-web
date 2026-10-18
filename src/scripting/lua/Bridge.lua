@@ -4712,7 +4712,13 @@ function raiseEvent(event, ...)
     -- Drop getMainWindowSize's cache on a script-raised resize too, as
     -- LuaRuntime.dispatchEventNow does for the one Mudlet Web raises itself.
     if event == 'sysWindowResizeEvent' then __mws_w, __mws_h = nil, nil end
-    __mudlet_dispatch(event, { ... }, argc)
+    -- The handlers run as event handlers, not as the alias that may have
+    -- raised the event, as desktop's callEventHandler scopes them: only an
+    -- alias script has expandAlias() hand its own `command` back.
+    local wasAliasScript = __mudlet_set_alias_script(false)
+    local ok, err = pcall(__mudlet_dispatch, event, { ... }, argc)
+    __mudlet_set_alias_script(wasAliasScript)
+    if not ok then error(err, 0) end
     return true
 end
 

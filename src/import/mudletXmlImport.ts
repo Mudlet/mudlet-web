@@ -352,7 +352,10 @@ function parseKeys(els: Element[], parentId: string | null, out: KeyNode[], warn
         if (!group && !key && !unbound && !byChar) {
             warnings.push(`Key "${getRawText(el, 'name')}": unknown Qt key code ${qtKey} — keybinding imported with no key set`);
         }
-        out.push({ id, parentId, isGroup: group, name: getRawText(el, 'name'), enabled: isYes(el, 'isActive'), key, modifiers: qtModifiersToList(qtMod), ...(key || byChar ? { qtKey } : {}), code: getText(el, 'script'), language: 'lua', command: getRawText(el, 'command'), packageName: getText(el, 'packageName') || undefined });
+        // A code outside Qt's range — a group's -1, or a number no key has — is
+        // kept as Key_unknown, as desktop's TKey keeps it, so getKeyCode reads it.
+        const outOfRange = qtKey < 0 || qtKey > QT_KEY_UNKNOWN;
+        out.push({ id, parentId, isGroup: group, name: getRawText(el, 'name'), enabled: isYes(el, 'isActive'), key, modifiers: qtModifiersToList(qtMod), ...(key || byChar ? { qtKey } : outOfRange ? { qtKey: QT_KEY_UNKNOWN } : {}), code: getText(el, 'script'), language: 'lua', command: getRawText(el, 'command'), packageName: getText(el, 'packageName') || undefined });
         // Unconditional, as in desktop's readKeyGroup (XMLimport.cpp:1816).
         parseKeys(directChildren(el, 'Key', 'KeyGroup'), id, out, warnings);
     }
