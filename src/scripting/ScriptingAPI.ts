@@ -908,6 +908,13 @@ class ScriptingLabelsAPI {
     getFont(name: string): string | null {
         return this.manager.getFont(name);
     }
+    /** The label branch of the global setFontSize/getFontSize. */
+    setFontSize(name: string, size: number): boolean {
+        return this.manager.setFontSize(name, size);
+    }
+    getFontSize(name: string): number | null {
+        return this.manager.getFontSize(name);
+    }
     setStyleSheet(name: string, css: string): boolean {
         const rewrite = this.cssRewriter();
         const ok = this.manager.setStyleSheet(name, rewrite(css));
@@ -1108,8 +1115,10 @@ export class ScriptingAPI {
     /** One selection per console, keyed by window name ('main' for the main
      *  console), the way each desktop TConsole keeps its own P_begin/P_end:
      *  selecting or deselecting in one window leaves every other window's
-     *  selection standing. */
-    private readonly selections = new Map<string, { windowName: string | undefined; start: number; length: number }>();
+     *  selection standing. Each belongs to the line it was made on, as
+     *  desktop's P_begin/P_end name a line: moving the cursor leaves it there,
+     *  and deleting the line drops it. */
+    private readonly selections = new Map<string, Selection>();
 
     // Session-global rich-text clipboard — mirrors Mudlet's host-wide
     // mClipboard. `copy()` fills it from the current selection (formatting
@@ -3125,10 +3134,10 @@ export class ScriptingAPI {
     fastColorEcho(kind: string, win: string, str: string): boolean {
         if (win !== 'main' && this.labels.has(win)) return false;
         if (win === 'main' && this.echoOnMatchedLine) return false;
-        // A window that does not exist takes nothing: xEcho's every call on it
-        // — deselect, resetFormat, the pens, echo — misses in Mudlet, so the
-        // whole colour echo is a no-op rather than the birth of a window.
-        if (!this.consoleExists(win)) return true;
+        // A window that does not exist is left to xEcho, whose resetFormat(win)
+        // refuses it with (nil, 'window "<name>" not found') before anything is
+        // echoed — the answer desktop's colour echoes give for one.
+        if (!this.consoleExists(win)) return false;
         // The string is turned into ANSI below, so an ESC already in it would be
         // decoded as a sequence of its own. Mudlet keeps it as text (xEcho's
         // echo() never decodes escapes), which the per-segment Lua path does too.
@@ -3524,7 +3533,7 @@ export class ScriptingAPI {
     setPopup(cmds: string[], hints: string[], win?: string): boolean {
         const sel = this.selectionOf(win);
         if (!sel) return false;
-        const buf = this.resolveBuffer(sel.windowName);
+        const buf = this.selectionBuffer(sel);
         if (!buf) return false;
         const span = this.selectionSpan(sel, buf);
         if (span) buf.setHyperlink(span, this.buildPopupHyperlink(cmds, hints));
@@ -3767,19 +3776,17 @@ export class ScriptingAPI {
         if (!this.consoleExists(windowName)) return `window "${windowName}" not found`;
         const sel = this.selectionOf(windowName);
         if (!sel) return null;
-        // A console whose cursor is on no stored line — just cleared down to
-        // its one empty line — still has a line for the selection to be read
-        // from: an empty one.
-        const text = this.resolveBuffer(sel.windowName)?.text ?? '';
+        // The selection is read from the line it was made on, wherever the
+        // cursor is now. A clear takes that line away, and an edit can leave
+        // the selection past its end; Mudlet reports either as a refusal
+        // rather than silently answering with the empty string the slice would
+        // give, which a script cannot tell from a line that really is blank
+        // there. A selection that starts AT the end is still valid, and reads
+        // as "".
+        const buf = this.selectionBuffer(sel);
+        const text = buf?.text ?? '';
         const { start, length } = sel;
-        // The selection is columns on whatever line the cursor is on NOW, not on
-        // the line it was made on — so moving the cursor to a shorter line (or
-        // clearing the window) can strand it past the end. Mudlet reports that
-        // as a refusal rather than silently answering with the empty string the
-        // slice would give, which a script cannot tell from a line that really
-        // is blank there. A selection that starts AT the end is still valid,
-        // and reads as "".
-        if (text.length < start) return 'the selection is no longer valid';
+        if (!buf || text.length < start) return 'the selection is no longer valid';
         return { text: text.slice(start, start + length), start, length };
     }
 
@@ -3880,7 +3887,7 @@ export class ScriptingAPI {
         windowName: string | undefined,
     ): [number, number, number] | null {
         const selected = this.selectionOf(windowName);
-        const buf = this.resolveBuffer(windowName);
+        const buf = selected ? this.selectionBuffer(selected) : this.resolveBuffer(windowName);
         if (!buf) return null;
         const start = selected ? selected.start : 0;
         if (start < 0 || start >= buf.length) return null;
@@ -3964,7 +3971,7 @@ export class ScriptingAPI {
         let pos: number;
         const sel = this.selectionOf(windowName);
         if (sel) {
-            buf = this.resolveBuffer(sel.windowName);
+            buf = this.selectionBuffer(sel);
             pos = sel.start;
         } else {
             const con = this.getConsole(windowName);
@@ -4025,7 +4032,7 @@ export class ScriptingAPI {
     setLink(cmd: string, tooltip: string, win?: string): boolean {
         const sel = this.selectionOf(win);
         if (!sel) return false;
-        const buf = this.resolveBuffer(sel.windowName);
+        const buf = this.selectionBuffer(sel);
         if (!buf) return false;
         const hyperlink: FormatHyperlink = {
             onClick: () => { this.host.runLinkCode(cmd); },
@@ -4864,7 +4871,11 @@ export class ScriptingAPI {
             const cs = getComputedStyle(el);
             const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
             const pending = isMain ? 0 : this.session.windows.pendingCmdLineHeightDelta(windowName!);
-            const height = Math.max(0, el.clientHeight - pad + pending);
+            // With the split screen open the rows are the upper pane's, as
+            // desktop's TTextEdit counts them: the lower pane is laid over the
+            // bottom of the console.
+            const split = this.session.windows.openSplitPaneHeight(isMain ? 'main' : windowName!);
+            const height = Math.max(0, el.clientHeight - pad + pending - split);
             if (height > 0) return Math.floor(height / cellH);
         }
         if (isMain) return 0;
@@ -5042,9 +5053,11 @@ export class ScriptingAPI {
             const col = con.getCursorColumn();
             const at = Math.min(col, buf.text.length);
             const inserted = ' '.repeat(col - at) + text;
+            const line = con.getLineNumber();
             // Console.insertText splits on embedded '\n' into new history lines
             // (Mudlet #8945); for the single-line case it inserts in place.
             con.insertText(text, state);
+            if (text.includes('\n')) this.rewrapInserted(con, windowName, line);
             if (this.inTriggerProcessing && con === this.mainConsole && !text.includes('\n')) {
                 this.captureShiftHook?.(at, inserted.length);
                 // The colours have to move with the text for the same reason
@@ -5105,7 +5118,9 @@ export class ScriptingAPI {
             // text arrived carrying a literal newline inside one line and
             // getLineCount never moved.
             if (text.includes('\n')) {
+                const line = con.getLineNumber();
                 con.insertText(text, state);
+                this.rewrapInserted(con, windowName, line);
                 if (!this.inTriggerProcessing) con.getBuffer()?.rerender();
                 return;
             }
@@ -5114,6 +5129,19 @@ export class ScriptingAPI {
             return;
         }
         this.echoLink(text, cmd, tooltip, windowName, useCurrentFormat);
+    }
+
+    /**
+     * The wrapLine() TConsole::insertText and insertLink run after an insert
+     * that broke the line: what the newline left on each side of it is
+     * wrapped to the console's width, from the line the insert began on.
+     */
+    private rewrapInserted(con: Console, windowName: string | undefined, line: number): void {
+        if (line < 0) return;
+        const [wrapAt, indent, hanging] = this.wrapSettings(windowName, con);
+        if (!con.wrapLine(line, wrapAt, indent, hanging)) return;
+        if (con === this.mainConsole) this.drainMain();
+        else this.drainWindowConsole(windowName!, con);
     }
 
     /**
@@ -5138,11 +5166,17 @@ export class ScriptingAPI {
      * successful move.
      */
     moveCursor(windowName: string | undefined, x: number, y: number): boolean {
-        // Only the line is range-checked, as in TBuffer::moveCursor; a negative
-        // column is kept (see Console.moveTo).
+        // The line is range-checked, as in TBuffer::moveCursor; a negative
+        // column is kept (see Console.moveTo). A column past the end of the
+        // line is too, so long as one echo there may pad up to it: no further
+        // than an echo's own limit of a million characters, as a write there
+        // would otherwise pad the line until memory ran out.
         if (!Number.isFinite(x)) return false;
         if (!Number.isFinite(y) || y < 0) return false;
-        return this.getConsole(windowName)?.moveTo(y, x) ?? false;
+        const con = this.getConsole(windowName);
+        if (!con) return false;
+        if (x > (con.lineText(Math.trunc(y))?.length ?? 0) + MOVE_CURSOR_PAST_END_LIMIT) return false;
+        return con.moveTo(y, x);
     }
 
     moveCursorEnd(windowName?: string): void {
@@ -5498,7 +5532,7 @@ export class ScriptingAPI {
         if (windowName !== undefined && !this.consoleExists(windowName)) return false;
         const target = windowName ?? 'main';
         const sel = this.selectionOf(target);
-        const buf = sel ? this.resolveBuffer(sel.windowName) : null;
+        const buf = sel ? this.selectionBuffer(sel) : null;
         if (!sel || !buf) {
             this.clipboard = new AnsiAwareBuffer('');
             return true;
@@ -5533,7 +5567,7 @@ export class ScriptingAPI {
         const sel = this.selectionOf('main');
         if (!sel) return;
         this.copy('main');
-        const buf = this.resolveBuffer(sel.windowName);
+        const buf = this.selectionBuffer(sel);
         if (!buf) return;
         const start = Math.max(0, Math.min(sel.start, buf.length));
         const end = Math.max(start, Math.min(sel.start + sel.length, buf.length));
@@ -5668,8 +5702,17 @@ export class ScriptingAPI {
      */
     getWindowGeometry(name: string): { x: number; y: number; width: number; height: number } | null {
         if (name === 'main') return null;
-        const overlay = this.labels.get(name) ?? this.scrollBoxes.get(name)
-            ?? this.cmdLines.get(name) ?? this.textEdits.get(name);
+        const label = this.labels.get(name);
+        if (label) {
+            // A style sheet's min-width / min-height grows the label past the
+            // size it was given, as Qt's layout honours a QSS minimum.
+            const atLeast = (prop: string, size: number): number => {
+                const found = label.styleSheet?.match(new RegExp(`(?:^|[;\\s{])${prop}\\s*:\\s*(\\d+(?:\\.\\d+)?)\\s*(?:px)?\\s*(?:;|}|$)`, 'i'));
+                return found ? Math.max(size, Math.trunc(Number(found[1]))) : size;
+            };
+            return { x: label.x, y: label.y, width: atLeast('min-width', label.width), height: atLeast('min-height', label.height) };
+        }
+        const overlay = this.scrollBoxes.get(name) ?? this.cmdLines.get(name) ?? this.textEdits.get(name);
         if (overlay) {
             const { x, y, width, height } = overlay;
             return { x, y, width, height };
@@ -5692,6 +5735,10 @@ export class ScriptingAPI {
         const own = this.ownVisibility(name);
         if (own === null) return null;
         if (!own) return false;
+        // An MXP frame whose tab is not the one showing is hidden behind it.
+        // Only the frame itself: what is docked into a tab host lives in it,
+        // and is shown while the host's own page is not.
+        if (this.mxpFrames.isBehindTab(name)) return false;
         // Then every ancestor, bounded by the widget count so a corrupt parent
         // cycle can't spin here.
         const seen = new Set<string>([name]);
@@ -5704,10 +5751,11 @@ export class ScriptingAPI {
         return true;
     }
 
-    /** A widget's own visible flag, ignoring ancestors. Null when unknown. */
+    /** A widget's own visible flag, ignoring ancestors. Null when unknown. One
+     *  name worn by more than one overlay is the one windowType() names. */
     private ownVisibility(name: string): boolean | null {
-        const overlay = this.labels.get(name) ?? this.cmdLines.get(name)
-            ?? this.textEdits.get(name) ?? this.scrollBoxes.get(name);
+        const overlay = this.labels.get(name) ?? this.scrollBoxes.get(name)
+            ?? this.cmdLines.get(name) ?? this.textEdits.get(name);
         if (overlay) return overlay.visible;
         if (this.session.windows.has(name)) return this.session.windows.isVisible(name);
         const buf = this.buffers.get(name);
@@ -5717,8 +5765,8 @@ export class ScriptingAPI {
 
     /** The name a widget is nested under, or null once the chain reaches a root. */
     private parentOf(name: string): string | null {
-        const overlay = this.labels.get(name) ?? this.cmdLines.get(name)
-            ?? this.textEdits.get(name) ?? this.scrollBoxes.get(name);
+        const overlay = this.labels.get(name) ?? this.scrollBoxes.get(name)
+            ?? this.cmdLines.get(name) ?? this.textEdits.get(name);
         if (overlay) return overlay.parent || null;
         return this.session.windows.parentOf(name);
     }
@@ -5788,7 +5836,7 @@ export class ScriptingAPI {
         const sel = this.selectionOf(windowName);
         if (!sel) return;
         const targetWin = sel.windowName;
-        const buf = this.resolveBuffer(targetWin);
+        const buf = this.selectionBuffer(sel);
         if (!buf) return;
         // TBuffer::replaceInLine refuses a selection that no longer fits the
         // line rather than trimming it.
@@ -5843,6 +5891,9 @@ export class ScriptingAPI {
         // its next statement.
         if (this.inTriggerProcessing && buf) buf.markAsDeleted();
         con.deleteLine();
+        // A selection goes with the line it was made on.
+        const sel = this.selectionOf(windowName);
+        if (sel && buf && sel.line === buf) this.clearSelection(windowName);
     }
 
     // The three staging calls below reach the command bar through an event, so
@@ -5944,13 +5995,37 @@ export class ScriptingAPI {
         if (fn === null) this.cmdLineValue = null;
     }
 
-    /** Mirror a command-bar edit (user typing, history recall, submit-clear). */
+    /** Mirror a command-bar edit (user typing, history recall, submit-clear).
+     *  While the game asks for hidden input the bar is the hidden-input box,
+     *  whose text — a password — is no command line's to read. */
     setCmdLineValue(text: string): void {
+        if (this.hiddenInputCommand !== null) return;
         this.cmdLineValue = text;
     }
 
     getCmdLine(): string {
+        if (this.hiddenInputCommand !== null) return this.hiddenInputCommand;
         return this.cmdLineValue ?? this.cmdLineProvider?.() ?? '';
+    }
+
+    /**
+     * What the main command line holds while the game asks for hidden input
+     * (it has taken the ECHO option), or null when it is not asking. Desktop
+     * lays a separate hidden-input box over the command line for the password:
+     * the command line keeps what was in it — getCmdLine reads that — and what
+     * printCmdLine writes, or the player types, goes into the box, never to be
+     * read back. Mudlet Web draws the box in the command bar itself
+     * (ProfileSession puts the command aside and brings it back), so the
+     * command line is kept here for scripts.
+     */
+    private hiddenInputCommand: string | null = null;
+
+    beginHiddenInput(command: string): void {
+        this.hiddenInputCommand = command;
+    }
+
+    endHiddenInput(): void {
+        this.hiddenInputCommand = null;
     }
 
     // ── Command-line tab-completion suggestions and blacklist ─────────────────
@@ -7025,7 +7100,10 @@ export class ScriptingAPI {
             buf.fontSize = whole;
             return true;
         }
-        return this.withFontChangeEvent(win, () => this.session.windows.setFontSize(win, whole));
+        // A label is reached once no console answers to the name, as setFont
+        // reaches one.
+        return this.withFontChangeEvent(win, () => this.session.windows.setFontSize(win, whole))
+            || this.labels.setFontSize(win, whole);
     }
 
     /**
@@ -7071,8 +7149,23 @@ export class ScriptingAPI {
         if (!win || win === 'main') return selectProfileField(useAppStore.getState(), this.connectionId, 'fontSize');
         const buf = this.buffers.get(win);
         if (buf) return buf.fontSize ?? selectProfileField(useAppStore.getState(), this.connectionId, 'fontSize');
-        if (!this.session.windows.has(win)) return null;
-        return this.session.windows.getFontSize(win) ?? selectProfileField(useAppStore.getState(), this.connectionId, 'fontSize');
+        if (!this.session.windows.has(win)) return this.labels.getFontSize(win);
+        return this.userWindowStyleSheetFontSize(win)
+            ?? this.session.windows.getFontSize(win)
+            ?? selectProfileField(useAppStore.getState(), this.connectionId, 'fontSize');
+    }
+
+    /** The point size a user window's style sheet gives its text
+     *  (`TTextEdit { font-size: … }`), which is the font its console is drawn
+     *  in on desktop — and here, once the sheet is scoped onto the window. One
+     *  in pixels is read as points at the CSS 96 dpi. */
+    private userWindowStyleSheetFontSize(win: string): number | null {
+        const css = this.userWindowCss.get(win);
+        const found = css?.match(/TTextEdit[^{]*\{[^}]*?font-size\s*:\s*([\d.]+)\s*(pt|px)?/i);
+        if (!found) return null;
+        const value = Number(found[1]);
+        if (!Number.isFinite(value) || value <= 0) return null;
+        return found[2]?.toLowerCase() === 'pt' ? value : Math.round(value * 72 / 96);
     }
 
     /**
@@ -7919,12 +8012,47 @@ export class ScriptingAPI {
     }
 
     /** The named console's own selection (main when omitted), or null. */
-    private selectionOf(win: string | undefined): { windowName: string | undefined; start: number; length: number } | null {
+    private selectionOf(win: string | undefined): Selection | null {
         return this.selections.get(this.selectionKey(win)) ?? null;
     }
 
+    /** Whether the named console (main when omitted) has a selection, valid or
+     *  not. */
+    hasSelection(win?: string): boolean {
+        return this.selectionOf(win) !== null;
+    }
+
+    /** Whether the named console's selection covers any text — what setLink
+     *  and setPopup need, since a link on nothing would be one nobody could
+     *  click. */
+    hasSelectedText(win?: string): boolean {
+        const sel = this.selectionOf(win);
+        if (!sel) return false;
+        const buf = this.selectionBuffer(sel);
+        return !!buf && this.selectionSpan(sel, buf) !== null;
+    }
+
+    /** Whether the named console's cursor is where insertLink / insertPopup
+     *  can put text (see Console.cursorInText). */
+    cursorInText(win?: string): boolean {
+        return this.getConsole(win)?.cursorInText() ?? false;
+    }
+
+    /** Selections are made on the cursor's line, and stay with that line. */
     private setSelection(win: string | undefined, start: number, length: number): void {
-        this.selections.set(this.selectionKey(win), { windowName: win, start, length });
+        this.selections.set(this.selectionKey(win), { windowName: win, start, length, line: this.resolveBuffer(win) });
+    }
+
+    /**
+     * The line a selection was made on, while its console still holds it; null
+     * once a clear (or the scrollback limit) has taken it away, which leaves
+     * the selection standing but no longer valid. A selection made with the
+     * cursor on no stored line — a console just cleared down to its one empty
+     * line — reads whatever line the cursor is on.
+     */
+    private selectionBuffer(sel: Selection): AnsiAwareBuffer | null {
+        if (!sel.line) return this.resolveBuffer(sel.windowName);
+        return this.getConsole(sel.windowName)?.holdsLine(sel.line) ? sel.line : null;
     }
 
     private clearSelection(win: string | undefined): void {
@@ -7946,7 +8074,7 @@ export class ScriptingAPI {
     private applyStateToSelection(state: FormatStateSnapshot | null, win: string | undefined): void {
         const sel = this.selectionOf(win);
         if (!sel || !state) return;
-        const buf = this.resolveBuffer(sel.windowName);
+        const buf = this.selectionBuffer(sel);
         if (!buf) return;
         const span = this.selectionSpan(sel, buf);
         if (span) buf.applyFormat(span, state);
@@ -7963,6 +8091,18 @@ export class ScriptingAPI {
             }
         }
     }
+}
+
+/** How far past the end of its line moveCursor may put the cursor: the most
+ *  one echo writes, which is what padding up to the column would cost. */
+const MOVE_CURSOR_PAST_END_LIMIT = 1_000_000;
+
+/** A console's selection: columns on the line it was made on. */
+interface Selection {
+    windowName: string | undefined;
+    start: number;
+    length: number;
+    line: AnsiAwareBuffer | null;
 }
 
 /**

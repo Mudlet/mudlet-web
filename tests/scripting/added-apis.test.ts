@@ -124,10 +124,10 @@ describe('echoPopup / insertPopup / setPopup', () => {
 
   // Desktop's setPopup answers true for any console it finds, selection or
   // not (ConsoleLinksByName_spec); there is just nothing for it to attach to.
-  it('setPopup returns true with no selection and once a selection exists', () => {
+  it('setPopup refuses no selection and returns true once a selection exists', () => {
     env.run('createBuffer("tb"); cecho("tb", "<red>Hello<reset>\\n")');
-    expect(env.run('return (setPopup("tb", {"look"}, {"Look"}))')).toBe(true);
-    env.run('selectCurrentLine("tb")');
+    expect(env.run('return select(2, setPopup("tb", {"look"}, {"Look"}))')).toBe('no text is selected - cannot create popup');
+    env.run('moveCursor("tb", 0, 0); selectCurrentLine("tb")');
     expect(env.run('return (setPopup("tb", {"look"}, {"Look"}))')).toBe(true);
   });
 });
@@ -137,16 +137,18 @@ describe('wrapLine', () => {
   beforeEach(async () => { env = await createTestRuntime(); });
   afterEach(() => env.dispose());
 
-  // TLuaInterpreter::wrapLine returns 0 values, found line or not.
-  it('returns nothing, for an in-range line or not', () => {
+  // TLuaInterpreter::wrapLine answers true, found line or not, and refuses a
+  // window it cannot find.
+  it('answers true, for an in-range line or not', () => {
     env.run('createBuffer("tb"); cecho("tb", "Hello\\n")');
     // one line at index 0; getLineCount is the line *count* (Mudlet semantics),
     // so a single line reports 1 and the last index is getLineCount()-1.
     expect(env.run('return (getLineCount("tb"))')).toBe(1);
-    expect(env.run('return select("#", wrapLine("tb", 0))')).toBe(0);
-    expect(env.run('return select("#", wrapLine("tb", 5))')).toBe(0);
-    expect(env.run('return select("#", wrapLine("tb", -1))')).toBe(0);
-    expect(env.run('return select("#", wrapLine(0))')).toBe(0);
+    expect(env.run('return wrapLine("tb", 0)')).toBe(true);
+    expect(env.run('return wrapLine("tb", 5)')).toBe(true);
+    expect(env.run('return wrapLine("tb", -1)')).toBe(true);
+    expect(env.run('return wrapLine(0)')).toBe(true);
+    expect(env.run('return select(2, wrapLine("nope", 0))')).toBe('window "nope" not found');
   });
 
   // mudlet-web#364 item 3: TBuffer::wrapLine re-wraps from the given line to
@@ -157,7 +159,7 @@ describe('wrapLine', () => {
         echo("tb", l .. "\\n")
       end
       setWindowWrap("tb", 10)`);
-    expect(env.run('return select("#", wrapLine("tb", 1))')).toBe(0);
+    expect(env.run('return wrapLine("tb", 1)')).toBe(true);
     expect(String(env.run('return table.concat(getLines("tb", 0, getLineCount("tb")), "|")')).split('|')).toEqual([
       'line zero is long enough',
       'line one ', 'is also ', 'long',
@@ -894,9 +896,9 @@ describe('createCommandLine — overlay primitive + routing', () => {
   it('creates an overlay cmd line and registers it under the cmdLines manager', () => {
     expect(env.run('return (createCommandLine("c1", 10, 20, 200, 24))')).toBe(true);
     expect(env.session.cmdLines.has('c1')).toBe(true);
-    // Re-creating one under the same name is refused with nil and Mudlet's
-    // message (TMainConsole::createCommandLine), not a bare false.
-    expect(env.run('return (createCommandLine("c1", 0, 0, 100, 20))')).toBeNull();
+    // Re-creating one under the same name is refused with false and Mudlet's
+    // message (TMainConsole::createCommandLine).
+    expect(env.run('return (createCommandLine("c1", 0, 0, 100, 20))')).toBe(false);
     expect(env.run('return select(2, createCommandLine("c1", 0, 0, 100, 20))')).toBe("couldn't create commandLine");
   });
 

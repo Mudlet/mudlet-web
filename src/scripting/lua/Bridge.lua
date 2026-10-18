@@ -802,6 +802,28 @@ function __mudlet_console_missing(name)
     return 'window "' .. tostring(name) .. '" not found'
 end
 
+-- The newer refusal desktop's functions give (Host::findConsoleOrError): a name
+-- that some other kind of window wears is told apart from one nothing wears,
+-- as 'window "<name>" is of type "<kind>", which this function cannot use'.
+-- With `subOnly` the main console is no console either: "main" is refused as
+-- one of type "main", and an empty name as one nothing wears. nil when `name`
+-- finds a console the function can use.
+function __mudlet_console_refusal(name, subOnly)
+    if name == nil then return nil end
+    name = tostring(name)
+    if subOnly then
+        if name == '' then return 'window "" not found' end
+    elseif name == '' or name == 'main' then
+        return nil
+    end
+    local kind = __windowType(name)
+    if kind == nil then return 'window "' .. name .. '" not found' end
+    if (kind == 'main' and subOnly) or not __mudlet_CONSOLE_KINDS[kind] then
+        return 'window "' .. name .. '" is of type "' .. kind .. '", which this function cannot use'
+    end
+    return nil
+end
+
 -- The name to hand a binding for a console argument that was found: the main
 -- console's three spellings are all "main" to the JS side.
 function __mudlet_console_key(name)
@@ -957,6 +979,10 @@ end
 -- (nil, errMsg) for an out-of-range line / missing window. JS returns false on
 -- the miss case.
 function getTimestamp(a, b)
+    local line = tonumber(b or a)
+    if line ~= nil and line < 0 then
+        return nil, "getTimestamp: line number " .. tostring(b or a) .. " should not be negative"
+    end
     local v = __getTimestamp(a, b)
     if not v then
         -- Miscallaneous_spec pins the wording: an out-of-range line is reported
@@ -1135,11 +1161,12 @@ function getMousePosition()
     return t[0], t[1]
 end
 
--- Mudlet getUserWindowSize(name) → width, height. Always two numbers: a name
--- with no user window of its own reports the MAIN window's size, which is what
--- the dock-registry lookup in TMainConsole::getUserWindowSize falls back to.
+-- Mudlet getUserWindowSize(name) → width, height. None, "" or "main" is the
+-- main window; any other name has to be a user window, and one that is not is
+-- refused (TMainConsole::getUserWindowSize looks only in the dock registry).
 function getUserWindowSize(name)
     local t = __getUserWindowSize(name)
+    if t == nil then return nil, "user window name '" .. tostring(name) .. "' not found" end
     return t[0], t[1]
 end
 
@@ -1152,10 +1179,10 @@ function getRoomChar(id)
 end
 
 -- Mudlet setFontSize / getFontSize / setFont / getFont([window,] ...). Each
--- finds its console by name (__mudlet_console_missing); setFont and getFont
--- also reach a label, but only once no console answers to the name. The size or
--- family is checked before the window is even resolved, and each gets its own
--- message (TLuaInterpreterUI.cpp). The argument types are argContracts.ts's.
+-- finds its console by name (__mudlet_console_missing), and also reaches a
+-- label, but only once no console answers to the name. The size or family is
+-- checked before the window is even resolved, and each gets its own message
+-- (TLuaInterpreterUI.cpp). The argument types are argContracts.ts's.
 local function __mudlet_font_target(name, labelsToo)
     if __mudlet_is_console(name) then return nil end
     if labelsToo and __windowType(tostring(name)) == 'label' then return nil end
@@ -1170,14 +1197,18 @@ function setFontSize(...)
     if (tonumber(size) or 0) <= 0 then
         return nil, "size cannot be 0 or negative"
     end
-    local err = __mudlet_font_target(name, false)
+    -- the largest point size desktop will set
+    if tonumber(size) > 1000 then
+        return nil, "size " .. tostring(tonumber(size)) .. " is too large, it cannot be more than 1000"
+    end
+    local err = __mudlet_font_target(name, true)
     if err then return nil, err end
     if __setFontSize(__mudlet_console_key(name), tonumber(size)) then return true end
     return nil, 'window "' .. tostring(name or 'main') .. '" not found'
 end
 
 function getFontSize(name)
-    local err = __mudlet_font_target(name, false)
+    local err = __mudlet_font_target(name, true)
     if err then return nil, err end
     local v = __getFontSize(__mudlet_console_key(name))
     if v == nil then
@@ -1196,6 +1227,11 @@ function setFont(...)
     -- name the renderer can't resolve would otherwise be accepted and silently
     -- fall back to whatever the browser picks. Blank is no font at all.
     font = tostring(font)
+    -- Qt would take the family as far as a NUL and set that, a font nobody asked
+    -- for, so desktop refuses the whole name first.
+    if font:find("\0", 1, true) then
+        return nil, "font name must not contain a NUL character"
+    end
     if font:match("^%s*$") then
         return nil, "font must not be empty"
     end
@@ -1436,8 +1472,16 @@ do
             error('wrapLine: bad argument #1 type (window name as string expected, got '
                 .. __mudlet_typename(first, select('#', ...) > 0) .. '!)', 2)
         end
-        -- no values at all, as desktop returns 0 of them
-        _rawWrapLine(...)
+        -- a name that finds no console is refused, as the console functions'
+        -- lookup refuses one, and a wrap that could go ahead answers true
+        if type(first) == 'string' then
+            local err = __mudlet_console_missing(first)
+            if err then return nil, err end
+            _rawWrapLine(__mudlet_console_key(first), select(2, ...))
+        else
+            _rawWrapLine(...)
+        end
+        return true
     end
 
     setUserWindowTitle      = userWindowGuard(setUserWindowTitle,      "user window name '%s' not found",
@@ -1509,24 +1553,28 @@ do
 end
 
 -- These four all require a window name — a missing or non-string one is an
--- error, while a name that resolves to no widget is silently ignored.
+-- error.
 --
--- They differ in what they hand back: showWindow reports a boolean, but
--- moveWindow, resizeWindow and hideWindow return *nothing at all* — not even
--- nil, which `select("#", ...)` can tell apart and UI_spec checks.
+-- They differ in what they hand back: showWindow reports a boolean, false for
+-- a name it cannot show. moveWindow, resizeWindow and hideWindow answer true,
+-- and refuse a name no window wears, and the main console, which none of them
+-- can act on, with desktop's reasons.
 do
-    local function named(fn, who, void)
+    local function named(fn, who, checked)
         return function(rawName, ...)
             local name = __mudlet_str(rawName)
             if name == nil then
                 error(who .. ": bad argument #1 type (window name as string expected, got "
                     .. type(rawName) .. "!)", 2)
             end
-            if void then
-                fn(name, ...)
-                return
+            if not checked then return fn(name, ...) end
+            local kind = __windowType(name)
+            if kind == nil then return nil, 'window "' .. name .. '" not found' end
+            if kind == 'main' then
+                return nil, 'window "main" is of type "main", which this function cannot use'
             end
-            return fn(name, ...)
+            fn(name, ...)
+            return true
         end
     end
     moveWindow   = named(moveWindow,   "moveWindow",   true)
@@ -1535,19 +1583,35 @@ do
     showWindow   = named(showWindow,   "showWindow")
 end
 
+-- enableClickthrough / disableClickthrough(labelName) — true, or (nil, why)
+-- for a label that is not there.
+do
+    local function shaped(raw)
+        return function(name)
+            local result = raw(name)
+            if result == true then return true end
+            return nil, result
+        end
+    end
+    enableClickthrough  = shaped(enableClickthrough)
+    disableClickthrough = shaped(disableClickthrough)
+end
+
 -- Mudlet pasteWindow(windowName) — paste the last copy() into a *named*
--- sub-console. Same operation as paste(name), but the name is required, and it
--- only ever reaches a mini console, user window or buffer: the main console's
--- names, and a name no console wears, are let go without a word — desktop's
--- pasteWindow answers nothing at all, found or not.
+-- sub-console and answer true. Same operation as paste(name), but the name is
+-- required, and it only ever reaches a mini console, user window or buffer:
+-- "main" is refused as a window of type "main", an empty name as one nothing
+-- wears, and another kind of window by its kind.
 function pasteWindow(windowName)
     local name = __mudlet_str(windowName)
     if name == nil then
         error("pasteWindow: bad argument #1 type (window name as string expected, got "
             .. type(windowName) .. "!)", 2)
     end
-    if __mudlet_main_name(name) or __mudlet_console_missing(name) then return end
+    local err = __mudlet_console_refusal(name, true)
+    if err then return nil, err end
     __mudlet_paste(name)
+    return true
 end
 
 -- A command line found by name: none, "" or "main" is the main command bar,
@@ -1571,8 +1635,7 @@ function removeCommandLineMenuEvent(...)
     end
     if __removeCommandLineMenuEvent(a, b) then return true end
     local name = (n >= 2) and b or a
-    return false, "removeCommandLineMenuEvent: cannot remove '" .. tostring(name)
-        .. "', menu item does not exist"
+    return nil, "cannot remove '" .. tostring(name) .. "', menu item does not exist"
 end
 
 -- enable/disableCommandLine and the 3-argument addCommandLineMenuEvent all name
@@ -1813,14 +1876,19 @@ end
 -- Mudlet getFgColor([windowName]) / getBgColor([windowName]) → r, g, b of the
 -- character at the current selection's start position. Returns no values when
 -- there is no selection (so `r, g, b = getFgColor()` yields three nils, the
--- same shape Mudlet produces for out-of-bounds cursors).
+-- same shape Mudlet produces for out-of-bounds cursors). A window that is not
+-- there is refused as the console functions refuse one.
 function getFgColor(windowName)
+    local err = __mudlet_console_missing(windowName)
+    if err then return nil, err end
     local t = __getFgColor(windowName)
     if t == nil then return end
     return t[0], t[1], t[2]
 end
 
 function getBgColor(windowName)
+    local err = __mudlet_console_missing(windowName)
+    if err then return nil, err end
     local t = __getBgColor(windowName)
     if t == nil then return end
     return t[0], t[1], t[2]
@@ -2217,7 +2285,7 @@ function deleteMiniConsole(name)
     if name == '' then return false, "a miniconsole cannot have an empty string as its name" end
     __mudlet_forget_geometry(name)
     if __deleteMiniConsole(name) then return true end
-    return false, "miniconsole \"" .. tostring(name) .. "\" does not exist"
+    return false, "miniconsole name '" .. tostring(name) .. "' not found"
 end
 
 function deleteCommandLine(name)
@@ -2308,6 +2376,10 @@ do
         -- so it blocks the name just the same (mudlet-web#380).
         if kind == 'miniconsole' or kind == 'userwindow' or kind == 'buffer' then
             return false, "a miniconsole/userwindow with the name '" .. tostring(name)
+                .. "' already exists"
+        end
+        if kind == 'scrollbox' or kind == 'commandline' or kind == 'textedit' then
+            return false, "a scroll box, command line or text edit with the name '" .. tostring(name)
                 .. "' already exists"
         end
         __mudlet_forget_geometry(name)
@@ -2598,9 +2670,27 @@ do
     setTextEditReadOnly      = teSetter(__setTextEditReadOnly)
     setTextEditPlaceholder   = teSetter(__setTextEditPlaceholder)
     setTextEditStyleSheet    = teSetter(__setTextEditStyleSheet)
-    setTextEditFont          = teSetter(__setTextEditFont)
-    setTextEditFontSize      = teSetter(__setTextEditFontSize)
     setTextEditTabMovesFocus = teSetter(__setTextEditTabMovesFocus)
+
+    -- The font and its size are refused as setFont and setFontSize refuse them,
+    -- before the text edit is looked for.
+    local setFontRaw, setSizeRaw = teSetter(__setTextEditFont), teSetter(__setTextEditFontSize)
+    function setTextEditFont(name, font, ...)
+        if type(font) == 'string' and font:find("\0", 1, true) then
+            return nil, "font name must not contain a NUL character"
+        end
+        return setFontRaw(name, font, ...)
+    end
+    function setTextEditFontSize(name, size, ...)
+        local points = tonumber(size)
+        if points ~= nil then
+            if points <= 0 then return nil, "size cannot be 0 or negative" end
+            if points > 1000 then
+                return nil, "size " .. tostring(points) .. " is too large, it cannot be more than 1000"
+            end
+        end
+        return setSizeRaw(name, size, ...)
+    end
 end
 
 -- Mudlet HTTP APIs: every call dispatches a fire-and-forget background
@@ -5661,8 +5751,24 @@ do
         end
     end
 
+    -- What an insertLink / insertPopup (`what` is "link" or "popup") cannot be
+    -- put in, checked once the console is found and before any command is
+    -- stored: no text — which a leading NUL makes of any, as desktop's QString
+    -- ends there — or a cursor that is nowhere text can go.
+    local function insertRefusal(key, text, what)
+        if text == '' or text:sub(1, 1) == '\0' then return "text is empty - cannot create " .. what end
+        if not __cursorInText(key) then return "the cursor is outside the text - cannot create " .. what end
+        return nil
+    end
+
+    -- What a setLink / setPopup cannot be put on: a selection with no text.
+    local function selectionRefusal(key, what)
+        if not __hasSelectedText(key) then return "no text is selected - cannot create " .. what end
+        return nil
+    end
+
     -- echoLink / insertLink([window,] text, command, hint [, useCurrentFormat])
-    local function linkWriter(raw, who)
+    local function linkWriter(raw, who, inserts)
         return function(...)
             local n = select('#', ...)
             local hasWin, hasFmt = forms(n, (select(4, ...)))
@@ -5678,6 +5784,7 @@ do
             hint = __mudlet_check_string(hint, who, 3 + o, "hint", n >= 3 + o)
             checkFormat(who, fmt, 4 + o, hasFmt)
             local err = __mudlet_console_missing(win)
+                or (inserts and insertRefusal(__mudlet_console_key(win), text, "link"))
             if err then return nil, err end
             if hasWin then
                 raw(__mudlet_console_key(win), text, __mudlet_popup_cmd(cmd), hint, fmt == true)
@@ -5688,7 +5795,7 @@ do
         end
     end
     echoLink   = linkWriter(echoLink, "echoLink")
-    insertLink = linkWriter(insertLink, "insertLink")
+    insertLink = linkWriter(insertLink, "insertLink", true)
 
     -- setLink([window,] command, hint): a window is named when there are three.
     local _rawSetLink = setLink
@@ -5703,7 +5810,7 @@ do
                 .. __mudlet_typename(cmd, n >= 1 + o) .. "!)", 2)
         end
         hint = __mudlet_check_string(hint, "setLink", 2 + o, "tooltip", n >= 2 + o)
-        local err = __mudlet_console_missing(win)
+        local err = __mudlet_console_missing(win) or selectionRefusal(__mudlet_console_key(win), "link")
         if err then return nil, err end
         if o == 1 then
             _rawSetLink(__mudlet_console_key(win), __mudlet_popup_cmd(cmd), hint)
@@ -5762,7 +5869,7 @@ do
     end
 
     -- echoPopup / insertPopup([window,] text, {commands}, {hints} [, useCurrentFormat])
-    local function popupWriter(raw, who)
+    local function popupWriter(raw, who, inserts)
         return function(...)
             local n = select('#', ...)
             local hasWin, hasFmt = forms(n, (select(4, ...)))
@@ -5774,6 +5881,7 @@ do
             local nc, nh = checkPopupTables(who, cmds, hints, 2 + o, n)
             checkFormat(who, fmt, 4 + o, hasFmt)
             local err = __mudlet_console_missing(win) or sizeError(nc, nh)
+                or (inserts and insertRefusal(__mudlet_console_key(win), text, "popup"))
             if err then return nil, err end
             local cs, hs = flatten(cmds, hints)
             raw(__mudlet_console_key(win), text, cs, hs, fmt == true)
@@ -5781,7 +5889,7 @@ do
         end
     end
     echoPopup   = popupWriter(echoPopup, "echoPopup")
-    insertPopup = popupWriter(insertPopup, "insertPopup")
+    insertPopup = popupWriter(insertPopup, "insertPopup", true)
 
     -- setPopup([window,] {commands}, {hints}): a window is named when there
     -- are three.
@@ -5794,6 +5902,7 @@ do
         local cmds, hints = select(o + 1, ...)
         local nc, nh = checkPopupTables("setPopup", cmds, hints, 1 + o, n)
         local err = __mudlet_console_missing(win) or sizeError(nc, nh)
+            or selectionRefusal(__mudlet_console_key(win), "popup")
         if err then return nil, err end
         local cs, hs = flatten(cmds, hints)
         _rawSetPopup(__mudlet_console_key(win), cs, hs)
@@ -5816,8 +5925,8 @@ do
         return true
     end
 
-    -- replace([window,] text) — desktop's, which answers nothing. GUIUtils.lua
-    -- wraps it to add the keepcolor argument.
+    -- replace([window,] text) — desktop's, which answers true once the
+    -- selection is replaced. GUIUtils.lua wraps it to add the keepcolor argument.
     local _rawReplace = replace
     function replace(...)
         local n = select('#', ...)
@@ -5827,9 +5936,10 @@ do
             local err = __mudlet_console_missing(win)
             if err then return nil, err end
             _rawReplace(__mudlet_console_key(win), text)
-            return
+            return true
         end
         _rawReplace(__mudlet_check_string((...), "replace", 1, "with", n >= 1))
+        return true
     end
 end
 
@@ -5924,12 +6034,14 @@ end
 -- kept because packages written against it are still in circulation. It targets
 -- labels and miniconsoles alike, which is exactly what echo already does. The
 -- echo above rather than the global: desktop's is C and never calls a Lua
--- `echo` a script put in its place (mudlet-web#374). Unlike echo it hands
--- nothing back, as desktop's returns no values (mudlet-web#380).
+-- `echo` a script put in its place (mudlet-web#374). It answers true, and a
+-- name nothing carries is refused in the words of desktop's other window
+-- functions rather than echo's own.
 do
     local stockEcho = echo
     function echoUserWindow(windowName, text)
-        stockEcho(windowName, text)
+        if stockEcho(windowName, text) then return true end
+        return nil, 'window "' .. tostring(windowName) .. '" not found'
     end
 end
 
@@ -8372,9 +8484,10 @@ end
 -- main console instead painted the element over the game text under the name
 -- the caller passed second, while answering true (Host::parentWindowMissing).
 -- Only "main" (any case), a user window or a scroll box can hold an element;
--- an embedded map needs a user window. createScrollBox and createMiniConsole
--- refuse with false, createCommandLine / createTextEdit / createMapper with nil
--- — Mudlet's shapes, inconsistent as they are.
+-- an embedded map needs a user window. Every one of them refuses with false.
+--
+-- A label shares its name space with these: none of them takes a name a label
+-- already wears, as the label would go on answering to it.
 do
     local function isMain(parent)
         return parent == '' or parent:lower() == 'main'
@@ -8390,15 +8503,14 @@ do
     -- the empty one (checked before the parent, as TMainConsole does) and one
     -- already in use by another of its kind (after it, and reported when the
     -- binding answers false).
-    local function parentGuard(raw, argc, refusal, userWindowOnly, names)
+    local function parentGuard(raw, argc, userWindowOnly, names)
         return function(...)
             local parent = ...
-            if names then
-                local name = parent
-                if select('#', ...) >= argc then name = select(2, ...) end
-                if name == '' then return nil, names.empty end
-            end
-            if select('#', ...) >= argc and type(parent) == 'string' then
+            local parented = select('#', ...) >= argc
+            local name = parent
+            if parented then name = select(2, ...) end
+            if names and name == '' then return false, names.empty end
+            if parented and type(parent) == 'string' then
                 local missing
                 if userWindowOnly then
                     missing = not isMain(parent) and __windowType(parent) ~= 'userwindow'
@@ -8406,26 +8518,42 @@ do
                     missing = parentWindowMissing(parent)
                 end
                 if missing then
-                    return refusal, "window '" .. parent .. "' not found"
+                    return false, "window '" .. parent .. "' not found"
+                end
+            end
+            -- (an embedded map has no name of its own to collide)
+            if not userWindowOnly then
+                if type(name) == 'string' and name ~= '' and __windowType(name) == 'label' then
+                    return false, "label with the name '" .. name .. "' already exists"
                 end
             end
             if not names then return raw(...) end
             local r = raw(...)
-            if r == false then return nil, names.taken end
+            if r == false then return false, names.taken end
             return r
         end
     end
-    createScrollBox   = parentGuard(createScrollBox,   6, false)
-    createMiniConsole = parentGuard(createMiniConsole, 6, false)
-    createCommandLine = parentGuard(createCommandLine, 6, nil, false, {
+    createScrollBox   = parentGuard(createScrollBox,   6)
+    createMiniConsole = parentGuard(createMiniConsole, 6)
+    createCommandLine = parentGuard(createCommandLine, 6, false, {
         empty = "a commandLine cannot have an empty string as its name",
         taken = "couldn't create commandLine",
     })
-    createTextEdit    = parentGuard(createTextEdit,    6, nil, false, {
+    createTextEdit    = parentGuard(createTextEdit,    6, false, {
         empty = "a text edit cannot have an empty string as its name",
         taken = "couldn't create text edit",
     })
-    createMapper      = parentGuard(createMapper,      5, nil, true)
+    createMapper      = parentGuard(createMapper,      5, true)
+
+    -- createBuffer(name) answers nothing once the buffer is there, and is
+    -- refused a label's name as the console creators are.
+    local _rawCreateBuffer = createBuffer
+    function createBuffer(name, ...)
+        if type(name) == 'string' and name ~= '' and __windowType(name) == 'label' then
+            return false, "label with the name '" .. name .. "' already exists"
+        end
+        _rawCreateBuffer(name, ...)
+    end
 end
 
 -- ── Stopwatch argument contracts ───────────────────────────────────────────
@@ -10334,7 +10462,7 @@ do
     getColumnNumber = guard(getColumnNumber)
     getColumnCount  = guard(getColumnCount)
     getRowCount     = guard(getRowCount)
-    deleteLine      = guard(deleteLine, nil, 'none')
+    deleteLine      = guard(deleteLine, nil, 'true')
 
     -- These two have always answered something other than nil for a console
     -- they cannot find: -1 for the line, and — kept by desktop for bug
@@ -10382,7 +10510,7 @@ do
 
     -- setFgColor / setBgColor([window,] r, g, b [, alpha]). Each channel is
     -- 0-255, and one out of range is refused before the console is looked for,
-    -- naming the channel. setFgColor answers nothing, setBgColor true.
+    -- naming the channel. Both answer true.
     -- setFgColor names a window when there are more than three arguments,
     -- setBgColor when its first is a string that is not a number — the same
     -- forms argContracts.ts checks the types of.
@@ -10405,7 +10533,7 @@ do
             return __mudlet_console_answer(answer, raw(...))
         end
     end
-    setFgColor = colourSetter(setFgColor, 'none', function(n) return n > 3 end)
+    setFgColor = colourSetter(setFgColor, 'true', function(n) return n > 3 end)
     setBgColor = colourSetter(setBgColor, 'true', function(_, first)
         return type(first) == 'string' and tonumber(first) == nil
     end)
@@ -10436,16 +10564,20 @@ do
             return guarded(...)
         end
     end
-    -- The main console always scrolls, and naming it "main" is refused; an
-    -- empty name (or none) is let through to it, and changes nothing.
+    -- The main console always scrolls, and every name for it — "main", an
+    -- empty name or none — is refused. So is a buffer, which is never drawn
+    -- and so always left scrolling.
     local MAIN_SCROLLS = "scrolling cannot be enabled/disabled for the 'main' window"
     local function scrollingSetter(raw)
         return function(name)
             local err = __mudlet_console_missing(name)
             if err then return nil, err end
-            if name == 'main' then return nil, MAIN_SCROLLS end
-            if name == nil or tostring(name) == '' then return true end
-            return raw(tostring(name))
+            if name == nil or tostring(name) == '' or name == 'main' then return nil, MAIN_SCROLLS end
+            name = tostring(name)
+            if __windowType(name) == 'buffer' then
+                return nil, 'scrolling cannot be enabled/disabled for buffer "' .. name .. '"'
+            end
+            return raw(name)
         end
     end
     enableScrolling  = scrollingSetter(enableScrolling)
@@ -10492,14 +10624,17 @@ do
     setWindowWrapHangingIndent = indentSetter(setWindowWrapHangingIndent)
 
     -- ── Clearing ──
-    -- clearWindow / clearUserWindow return nothing at all, found or not:
+    -- clearWindow / clearUserWindow answer nothing at all when they clear:
     -- desktop leaves them silent so a `lua clearWindow()` typed at the command
-    -- line doesn't print a result onto the console it just cleared — and a
-    -- name that is no console clears nothing.
+    -- line doesn't print a result onto the console it just cleared. A name that
+    -- finds no console clears nothing and is refused, another kind of window
+    -- by its kind.
     local function clearer(raw)
-        local guarded = guard(raw, nil, 'none')
         return function(...)
-            guarded(...)
+            local name = (...)
+            local err = __mudlet_console_refusal(name)
+            if err then return nil, err end
+            if name ~= nil then raw(__mudlet_console_key(name)) else raw(...) end
         end
     end
     clearWindow     = clearer(clearWindow)

@@ -5,6 +5,9 @@ import {
 import type { MoviePlayer } from './gifMovie';
 import { OverlayLayerOrder } from '../layout/overlayLayerOrder';
 
+/** The point size of `.label`'s 12px (LabelOverlay.css) at the CSS 96 dpi. */
+const LABEL_DEFAULT_FONT_PT = 9;
+
 export interface LabelCreateOptions {
     /** Parent window id ('main' for main viewport). Defaults to 'main'. */
     parent?: string;
@@ -61,6 +64,9 @@ export interface LabelState {
      *  font database spells it (ScriptingAPI.resolveFontFamily), because
      *  Geyser.Label:setFont reads it straight back through getFont(). */
     fontFamily?: string;
+    /** Point size set via `setFontSize(labelName, size)` — the other half of
+     *  the widget font, kept and applied the same way as {@link fontFamily}. */
+    fontSize?: number;
     /** Sticky Qt `alignment` widget property, captured from a
      *  `qproperty-alignment` declaration in any setStyleSheet call. In Qt,
      *  qproperty-* declarations set the widget property permanently — a later
@@ -685,6 +691,36 @@ export class LabelManager {
         const lbl = this.labels.get(name);
         if (!lbl) return null;
         return lbl.fontFamily ?? '';
+    }
+
+    /** Mudlet `setFontSize(labelName, size)` on a label: the point size of its
+     *  widget font. */
+    setFontSize(name: string, size: number): boolean {
+        const lbl = this.labels.get(name);
+        if (!lbl) return false;
+        lbl.fontSize = size;
+        this.notify(lbl.parent);
+        return true;
+    }
+
+    /**
+     * The point size the label's text is drawn in, or null when there is no
+     * such label. A stylesheet `font-size` wins over the widget font, as QSS
+     * does in Qt; one in pixels is read as points at the CSS 96 dpi (QFont's
+     * pointSizeF for a pixel-sized font). With neither, the `.label` default
+     * of 12px.
+     */
+    getFontSize(name: string): number | null {
+        const lbl = this.labels.get(name);
+        if (!lbl) return null;
+        const found = lbl.styleSheet?.match(/(?:^|[;\s{])font-size\s*:\s*([\d.]+)\s*(pt|px)?/i);
+        if (found) {
+            const value = Number(found[1]);
+            if (Number.isFinite(value) && value > 0) {
+                return found[2]?.toLowerCase() === 'pt' ? value : Math.round(value * 72 / 96);
+            }
+        }
+        return lbl.fontSize ?? LABEL_DEFAULT_FONT_PT;
     }
 
     setStyleSheet(name: string, css: string): boolean {

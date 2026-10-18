@@ -38,7 +38,7 @@ export function installOutputBindings({ lua, api }: BindingContext): void {
     // The argument TYPES are settled in Bridge.lua, where a Lua table is still
     // a table — it reaches JS as an ordinary object, and a message built from
     // `typeof` here would name the wrong thing.
-    // Like desktop it answers nothing, whether or not there was a line to wrap.
+    // What it answers is settled in Bridge.lua's wrapper.
     lua.global.set('wrapLine', (a: unknown, b?: unknown) => {
         if (typeof a === 'string') api.wrapLine(Number(b), a);
         else api.wrapLine(Number(a));

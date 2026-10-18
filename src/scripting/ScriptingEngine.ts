@@ -4662,6 +4662,18 @@ export class ScriptingEngine implements EngineHost {
         return this.api.getCmdLine();
     }
 
+    /** The game took hidden input (ECHO): what the command bar holds is put
+     *  aside as the command line, and the bar becomes the hidden-input box
+     *  (see ScriptingAPI.beginHiddenInput). */
+    beginHiddenInput(command: string): void {
+        this.api.beginHiddenInput(command);
+    }
+
+    /** The prompt for hidden input ended. */
+    endHiddenInput(): void {
+        this.api.endHiddenInput();
+    }
+
     /** The commands packages placed with addCommand, for the bar that draws
      *  them. Narrower than handing out the whole API: the toolbar needs to read
      *  the list, hear when it changes, and report a click. */

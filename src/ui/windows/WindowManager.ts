@@ -961,7 +961,8 @@ export class WindowManager {
      * {@link pumpCreatedSizes}, whichever comes first. It carries the size
      * getUserWindowSize() gives at that moment, the mounted box or the stored
      * one, and the dedup in emitWindowSize keeps the observer's own first tick
-     * from repeating it.
+     * from repeating it. resizeWindow() queues one the same way, for the size
+     * a script just gave the window.
      */
     announceCreatedSize(id: string): void {
         this.createdSizesDue.add(id);
@@ -2441,6 +2442,16 @@ export class WindowManager {
             if (child.classList.contains('output-sticky')) return child.getBoundingClientRect().height;
         }
         return 0;
+    }
+
+    /** The height the split view's lower pane takes off `id`'s upper pane
+     *  while it is open — the console scrolled back, by hand or by script —
+     *  and 0 while the console follows its output. */
+    openSplitPaneHeight(id: string): number {
+        const el = this.elements.get(id);
+        if (!el) return 0;
+        if (!this.scriptScrollLine.has(id) && !this.scrolledBack.get(el)) return 0;
+        return this.splitPaneHeight(el);
     }
 
     /** Mudlet's scroll position for `id`'s wrapper, or null while it follows

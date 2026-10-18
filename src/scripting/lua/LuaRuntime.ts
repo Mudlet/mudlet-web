@@ -1334,12 +1334,16 @@ export class LuaRuntime implements IScriptingRuntime {
             (typeof name === 'string' ? this.api.labels.get(name)?.tooltip ?? '' : ''));
         // Runtime clickthrough toggle. Flips pointer-events live; the click
         // handler set via setLabelClickCallback stays installed either way.
-        this.lua.global.set('enableClickthrough', (name: unknown) => {
-            if (typeof name === 'string') this.api.labels.setClickThrough(name, true);
-        });
-        this.lua.global.set('disableClickthrough', (name: unknown) => {
-            if (typeof name === 'string') this.api.labels.setClickThrough(name, false);
-        });
+        // True once set, or the refusal for a label that is not there, which
+        // Bridge.lua makes desktop's (nil, message).
+        const clickthrough = (name: unknown, on: boolean): true | string => {
+            const label = String(name);
+            if (!this.api.labels.has(label)) return `label name '${label}' not found`;
+            this.api.labels.setClickThrough(label, on);
+            return true;
+        };
+        this.lua.global.set('enableClickthrough', (name: unknown) => clickthrough(name, true));
+        this.lua.global.set('disableClickthrough', (name: unknown) => clickthrough(name, false));
         // Mudlet raiseWindow(name) / lowerWindow(name) — works on labels and
         // userwindows. For labels, each call bumps z past every other raised
         // label (or below every other lowered one). For userwindows, the call
@@ -2859,7 +2863,7 @@ end`,
         elseif n >= 1 and type(a) == 'string' then
           win, str = 'main', a
         end
-        if str ~= nil and (kind ~= 'cecho' or paletteIntact(str)) and fast(kind, win, str) then return end
+        if str ~= nil and (kind ~= 'cecho' or paletteIntact(str)) and fast(kind, win, str) then return true end
       end
     end
     return orig_xEcho(style, func, ...)

@@ -132,8 +132,10 @@ describe('the soft answers desktop gives (#277)', () => {
     it('getTextFormat names the window it could not find, or the invalid selection', () => {
         expect(t.run('local f, e = getTextFormat("nope") return tostring(f) .. "|" .. e')).toBe("nil|window 'nope' not found");
         t.run('clearWindow()');
-        expect(t.run('local f, e = getTextFormat() return tostring(f) .. "|" .. e')).toBe("nil|current selection invalid in window ''");
-        expect(t.run('local f, e = getTextFormat("main") return tostring(f) .. "|" .. e')).toBe("nil|current selection invalid in window 'main'");
+        // nothing selected and nothing under the cursor; every name for main
+        // is named 'main'
+        expect(t.run('local f, e = getTextFormat() return tostring(f) .. "|" .. e')).toBe("nil|no character under cursor or selection in window 'main'");
+        expect(t.run('local f, e = getTextFormat("main") return tostring(f) .. "|" .. e')).toBe("nil|no character under cursor or selection in window 'main'");
         t.run('echo("format me\\n")');
         expect(t.run('return type((getTextFormat()))')).toBe('table');
     });

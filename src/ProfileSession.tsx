@@ -666,12 +666,16 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                 passwordStashRef.current = stash;
                 stashWasSelectedRef.current = selected;
                 typedDuringPasswordRef.current = false;
+                // Scripts go on reading the command line, which still holds
+                // what was in the bar; the bar is the hidden-input box now.
+                engineRef.current?.beginHiddenInput(text ?? '');
                 swap(partialPassword);
             } else {
                 // Cleared first whatever happens, so the password never survives
                 // the prompt; the command only comes back if the player did not
                 // start typing something of their own over it.
                 const restore = typedDuringPasswordRef.current ? '' : passwordStashRef.current;
+                engineRef.current?.endHiddenInput();
                 swap(restore);
                 // Selected again if it was selected when put aside, else the
                 // caret at its end. Requested rather than done here: the
