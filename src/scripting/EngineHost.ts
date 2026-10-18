@@ -93,6 +93,9 @@ export interface EngineHost {
 
     installPackageFromVfsPath(path: string): InstallOutcome;
     uninstallPackageByName(name: string): boolean;
+    /** Which package or module owns the code a Lua frame is running ('' for
+     *  the profile's own), from the frame's chunk source. */
+    packageOfCaller(source: string, isMain: boolean, calledFromMain: boolean): string;
     /** Lua `uninstallPackage()`: the refusal, or null once it is uninstalled. */
     uninstallPackageFromScript(name: string): string | null;
     getPackageNames(): string[];
@@ -273,6 +276,7 @@ export const NULL_ENGINE_HOST: EngineHost = Object.freeze({
 
     installPackageFromVfsPath: () => ({ ok: false, error: 'no package installer available' }),
     uninstallPackageByName: () => false,
+    packageOfCaller: () => '',
     uninstallPackageFromScript: (name: string) => `package '${name}' is not installed`,
     getPackageNames: () => [],
     getPackageInfo: () => ({}),

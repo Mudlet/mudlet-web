@@ -7653,7 +7653,32 @@ do
         return "menu"
     end
 
-    function addCommand(request)
+    -- The code that asked for the command, as desktop's addCommand reads it
+    -- (packageOfFrame): the nearest frame that is not C — Mudlet Web's own
+    -- chunks count as C, as they do for error positions — and whether a main
+    -- chunk of the same source calls it with nothing in between. A package's
+    -- local function is told from a profile script of the same name by that.
+    local function commandCaller()
+        local getinfo = __mudlet_stock_getinfo
+        local level, info = 2, nil
+        repeat
+            info = getinfo(level, "S")
+            level = level + 1
+        until info == nil or info.source ~= "=[C]"
+        if info == nil or info.what == "tail" then return nil, false, false end
+        local source, isMain, calledFromMain = info.source, info.what == "main", false
+        while true do
+            local outer = getinfo(level, "S")
+            if outer == nil or outer.source ~= source then break end
+            if outer.what == "main" then calledFromMain = true break end
+            level = level + 1
+        end
+        return source, isMain, calledFromMain
+    end
+
+    -- The Lua half of addCommand; the global itself is the C function in
+    -- bindings/commands.ts that hands its arguments on to this.
+    function __mudlet_addCommand(request)
         if type(request) ~= "table" then
             return nil, "addCommand needs a table, e.g. addCommand{name = 'Speech', menuPath = 'Speech'}"
         end
@@ -7669,7 +7694,7 @@ do
         if surfaceErr then return nil, surfaceErr end
 
         local result = __addCommand(fields.name, fields.icon, fields.tooltip,
-                                    fields.menuPath, fields.shortcut, surfaces)
+                                    fields.menuPath, fields.shortcut, surfaces, commandCaller())
         if type(result) == "string" then return nil, result end
         return result
     end
