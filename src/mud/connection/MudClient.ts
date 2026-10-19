@@ -33,6 +33,7 @@ import {
     SessionCodec,
     toByteString,
     stripTelnetSequences,
+    type TextAheadSlot,
     TELNET_GA,
     TTYPE_COMMAND_CODE,
 } from "../protocol";
@@ -1586,11 +1587,40 @@ export class MudClient {
         // unfinished one back for the next frame.
         this.negotiator.processFrame(processable);
         this.echoHandler.processData(processable);
-        let sanitized = stripTelnetSequences(processable, this.telnetOptionHandler).replace(/\r/g, '');
+        // A subnegotiation's handler — a CHARSET request, or a script's own
+        // for GMCP — can change the encoding mid-run. The text ahead of it was
+        // sent in the old encoding, so cTelnet::postHeldDataBeforeEncodingChange
+        // posts it before the change: the codec calls back here, and it is
+        // decoded and shown before the switch drops whatever it left held.
+        const textAhead: TextAheadSlot = { take: null };
+        let promptStartPosted = false;
+        // A trigger on the posted text may feed a run of its own.
+        const outerHook = this.codec.onBeforeEncodingChange;
+        this.codec.onBeforeEncodingChange = () => {
+            if (!textAhead.take) return;
+            let ahead = textAhead.take().replace(/\r/g, '');
+            if (ahead.length === 0) return;
+            // It may open a prompt, whose leading line feed the GA can then no
+            // longer see — so the fix-up is applied to it here instead, and
+            // not again at the GA.
+            const stripped = this.assembler.stripPostedPromptStart(ahead);
+            if (stripped !== null) {
+                ahead = stripped;
+                promptStartPosted = true;
+            }
+            this.decodeAndAssemble(ahead, false, ts);
+            this.flushMessageBuffer();
+        };
+        let sanitized: string;
+        try {
+            sanitized = stripTelnetSequences(processable, this.telnetOptionHandler, textAhead).replace(/\r/g, '');
+        } finally {
+            this.codec.onBeforeEncodingChange = outerHook;
+        }
         // `fixUnnecessaryLinebreaks` works on the whole run, before it is
         // decoded or split, because desktop decides it on the raw block at the
         // GA — a run with no marker after it is never touched.
-        if (hasPrompt) sanitized = this.assembler.stripPromptBlockNewline(sanitized);
+        if (hasPrompt && !promptStartPosted) sanitized = this.assembler.stripPromptBlockNewline(sanitized);
         if (hasPrompt && debugGaEnabled()) {
             const marker = processable.endsWith(TELNET_GA) ? 'GA' : 'EOR';
             // eslint-disable-next-line no-console

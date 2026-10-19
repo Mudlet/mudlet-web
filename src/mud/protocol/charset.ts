@@ -380,6 +380,14 @@ export class SessionCodec {
     private currentEncoding = 'utf-8';
     /** The encoder for outgoing text while a multi-byte encoding is in use. */
     private outgoingMultiByte: MultiByteEncoding | null = null;
+    /** What the next decode starts with: the replacement mark for a sequence
+     *  an encoding change cut short (see {@link trySetEncoding}). */
+    private owed = '';
+    /** Called just before the encoding actually changes, while the old one is
+     *  still in place — cTelnet's postHeldDataBeforeEncodingChange, which
+     *  posts the text ahead of the change in the same read under the encoding
+     *  it was sent in. */
+    onBeforeEncodingChange: (() => void) | null = null;
 
     /** The IANA name of the decoder currently applied to the inbound stream. */
     get encoding(): string {
@@ -392,16 +400,32 @@ export class SessionCodec {
         this.table = null;
         this.framed = null;
         this.pendingBytes = '';
+        this.owed = '';
         this.currentEncoding = 'utf-8';
         this.outgoingMultiByte = null;
     }
 
+    /** About to decode with `encoding`. When that is a change, the text ahead
+     *  of it is posted first, and the bytes of a sequence still waiting for
+     *  the rest of it are dropped for one replacement mark at the head of the
+     *  next text: they were sent in the old encoding and cannot be paired with
+     *  a byte read in the new one (TBuffer::translateToPlainText, on seeing
+     *  the encoding differ). A colour change held behind a lead byte is not
+     *  part of the character and is kept. */
+    private beforeSwitch(encoding: string): void {
+        // The same encoding again is no change: what it holds still pairs.
+        if (encoding === this.currentEncoding) return;
+        this.onBeforeEncodingChange?.();
+        const held = this.pendingBytes;
+        if (held) this.owed += '\uFFFD' + (held[1] === '\x1b' ? held.slice(1) : '');
+        this.pendingBytes = '';
+    }
+
     /** Swap the streaming decoder to a new encoding label (an IANA name the
-     *  TextDecoder constructor accepts: 'utf-8', 'iso-8859-2', ...). Any partial
-     *  multi-byte sequence buffered in the previous decoder is discarded —
-     *  fine because CHARSET typically negotiates before any real content
-     *  arrives. Returns false (leaving the current decoder untouched) when the
-     *  browser refuses the label. `name` is the encoding's own name where it
+     *  TextDecoder constructor accepts: 'utf-8', 'iso-8859-2', ...). A partial
+     *  multi-byte sequence buffered under the previous encoding becomes one
+     *  replacement mark (see {@link beforeSwitch}). Returns false (leaving the
+     *  current decoder untouched) when the browser refuses the label. `name` is the encoding's own name where it
      *  says more than the label does — BIG5-HKSCS, which decodes as big5 but
      *  encodes differently. */
     trySetEncoding(encoding: string, name: string = encoding): boolean {
@@ -409,9 +433,9 @@ export class SessionCodec {
         // TextDecoder: ASCII and the DOS code pages have no browser decoder to
         // ask for. Being single-byte, they also carry no state across frames,
         // so the streaming buffer simply does not apply to them.
-        this.pendingBytes = '';
         const table = singleByteDecodeTable(encoding);
         if (table) {
+            this.beforeSwitch(encoding);
             this.table = table;
             this.framed = null;
             this.currentEncoding = encoding;
@@ -419,6 +443,7 @@ export class SessionCodec {
             return true;
         }
         if (isMultiByteFramed(encoding)) {
+            this.beforeSwitch(encoding);
             this.framed = encoding;
             this.table = null;
             this.currentEncoding = encoding;
@@ -426,6 +451,7 @@ export class SessionCodec {
             return true;
         }
         if (encoding === 'utf-8') {
+            this.beforeSwitch(encoding);
             this.decoder = null;
             this.table = null;
             this.framed = null;
@@ -433,16 +459,19 @@ export class SessionCodec {
             this.currentEncoding = encoding;
             return true;
         }
+        let decoder: TextDecoder;
         try {
-            this.decoder = new TextDecoder(encoding, { fatal: false });
-            this.table = null;
-            this.framed = null;
-            this.outgoingMultiByte = null;
-            this.currentEncoding = encoding;
-            return true;
+            decoder = new TextDecoder(encoding, { fatal: false });
         } catch {
             return false;
         }
+        this.beforeSwitch(encoding);
+        this.decoder = decoder;
+        this.table = null;
+        this.framed = null;
+        this.outgoingMultiByte = null;
+        this.currentEncoding = encoding;
+        return true;
     }
 
     /** Converts a Latin-1 byte-string into decoded text under the current
@@ -452,6 +481,14 @@ export class SessionCodec {
      *  continue a sequence either, so a sequence the prompt cut short earns its
      *  replacement mark there and the next line starts afresh. */
     decode(byteString: string, final = false): string {
+        const text = this.decodeStream(byteString, final);
+        if (!this.owed || (byteString.length === 0 && !final)) return text;
+        const owed = this.owed;
+        this.owed = '';
+        return owed + text;
+    }
+
+    private decodeStream(byteString: string, final: boolean): string {
         if (this.table) return decodeWithTable(byteString, this.table);
         if (this.framed) {
             if (byteString.length === 0 && !(final && this.pendingBytes)) return '';
