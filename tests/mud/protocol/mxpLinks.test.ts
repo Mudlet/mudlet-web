@@ -174,9 +174,9 @@ describe('MxpParser — line modes (#258)', () => {
     expect(parser.parseLine(`${ESC}[1;2z<B>b</B><SEND href="x">N</SEND>`).plain).toBe('b<SEND href="x">N</SEND>');
   });
 
-  it('shows markup literally once a subnegotiation has locked the processor', () => {
+  it('shows markup literally once the game has locked the processor', () => {
     const { parser } = makeParser();
-    parser.setLockedMode('locked');
+    parser.parseLine(`${ESC}[7z`);
     expect(parser.parseLine('X01 <B>ba</B> &lt;').plain).toBe('X01 <B>ba</B> &lt;');
   });
 });

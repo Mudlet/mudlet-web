@@ -59,11 +59,11 @@ describe('Mudlet 4.21 API additions', () => {
       // had. Argument checking runs first and in Mudlet's order; the upstream
       // Spawn_spec pins the exact messages.
       expect(env.run('local ok, e = pcall(spawn, "ls") return e'))
-        .toBe('Need read function and process name as parameters.');
+        .toBe('spawn: need read function and process name as parameters.');
       expect(env.run('local ok, e = pcall(spawn, "ls", "arg") return e'))
-        .toBe('Need read function as first parameter.');
+        .toBe('spawn: need read function as first parameter.');
       expect(env.run('local ok, e = pcall(spawn, function() end, "ls") return e'))
-        .toContain("Failed to start process 'ls'");
+        .toContain("spawn: Failed to start process 'ls'");
     });
     // The dictionary API is only half a stub now: the *system* dictionary needs
     // Hunspell and stays unavailable, but the per-profile user dictionary is

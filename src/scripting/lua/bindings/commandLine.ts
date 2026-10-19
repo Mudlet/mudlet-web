@@ -91,7 +91,14 @@ export function installCommandLineBindings({ lua, api, emitEvent }: BindingConte
             api.cmdLines.enable(name);
             return api.cmdLines.show(name);
         }
-        return api.windows.enableCommandLine(name);
+        const enabled = api.windows.enableCommandLine(name);
+        // A console's command line is a TCommandLine like any other, born with
+        // its stylesheet when the console is; here it only exists from the first
+        // enable, so that is when it is given one.
+        if (enabled && !api.hasCmdLineStyleSheet(name)) {
+            api.noteCmdLineStyleSheet(name, api.bornCmdLineStyleSheet());
+        }
+        return enabled;
     });
     lua.global.set('disableCommandLine', (name?: unknown) => {
         if (typeof name !== 'string' || !name || name === 'main') return true;

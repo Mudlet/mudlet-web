@@ -747,6 +747,26 @@ function isUsableColorPattern(fg: number, bg: number): boolean {
     return isPaletteChannel(fg) && isPaletteChannel(bg);
 }
 
+/**
+ * Why a perl pattern will not compile, as PCRE2 words it — or null when it
+ * does, or while PCRE is still loading and nothing can be said. Compiled as
+ * the engines compile triggers and aliases, `(*UTF)(*UCP)` included.
+ */
+export function perlPatternError(pattern: string): string | null {
+    if (!PCRE.ready) return null;
+    let reason: string | null = null;
+    compilePcre(pattern, r => { reason = r; })?.destroy();
+    return reason;
+}
+
+/** What is wrong with a colour pattern, in TTrigger::setRegexCodeList's two
+ *  cases: it asks for no colour at all, or for one no palette has. */
+export function colorPatternProblem(text: string): 'noColors' | 'noMatch' | null {
+    const [fg, bg] = parseColorPattern(text);
+    if (fg === COLOR_IGNORED && bg === COLOR_IGNORED) return 'noColors';
+    return isUsableColorPattern(fg, bg) ? null : 'noMatch';
+}
+
 export class TriggerEngine {
     private readonly temp = new Map<number, TempEntry>();
     /** Key for this engine's own temp map — see PatternEngine.nextInternalId. */

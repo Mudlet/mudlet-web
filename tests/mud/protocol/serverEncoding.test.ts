@@ -31,11 +31,14 @@ describe('server encoding names', () => {
     });
 
     it('refuses one it cannot decode', () => {
-        // Shift JIS is in the browser's own set but not in Mudlet's list, so it
-        // is a name that reads plausibly and still has to be refused — the list
-        // is the contract, not whatever TextDecoder happens to accept.
-        expect(canonicalServerEncoding('SHIFT_JIS')).toBeNull();
+        // ISO-2022-JP is in the browser's own set but not in Mudlet's list, so
+        // it is a name that reads plausibly and still has to be refused — the
+        // list is the contract, not whatever TextDecoder happens to accept.
+        expect(canonicalServerEncoding('ISO-2022-JP')).toBeNull();
         expect(canonicalServerEncoding('')).toBeNull();
+        // Shift_JIS and EUC-JP joined Mudlet's list
+        expect(canonicalServerEncoding('SHIFT_JIS')).toBe('SHIFT_JIS');
+        expect(canonicalServerEncoding('euc-jp')).toBe('EUC-JP');
     });
 
     // BIG5 and BIG5-HKSCS share a decoder, so a canonicaliser that resolved

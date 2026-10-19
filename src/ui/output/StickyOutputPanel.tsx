@@ -11,10 +11,10 @@ import {
 import { TextAnalyzerModal } from './TextAnalyzerModal';
 import { useProfileField } from '../../storage';
 import { resolveSearchEngine } from '../../storage/schema';
-import { isClearSplitClick } from './clearSplit';
+import { isClearSplitClick, DEFAULT_SPLIT_PANE_HEIGHT } from './clearSplit';
 import { clickMadeSelection } from './selectionGesture';
 
-const DEFAULT_STICKY_HEIGHT = 160;
+const DEFAULT_STICKY_HEIGHT = DEFAULT_SPLIT_PANE_HEIGHT;
 const MIN_STICKY_HEIGHT = 40;
 
 interface StickyOutputPanelProps {

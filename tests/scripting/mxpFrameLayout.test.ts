@@ -26,6 +26,7 @@ function makeHost(area = { x: 0, y: 0, width: 1000, height: 600 }) {
         },
         openExternalFrame: (name, title, width, height) => { external.push({ name, title, width, height }); },
         destroyFrameConsole: (name) => { destroyed.push(name); placed.delete(name); },
+        nameTakenByScript: (name) => name.startsWith('script'),
         showFrameConsole: (name) => { shown.push(name); },
         raiseFrameConsole: (name) => { raised.push(name); },
         setFrameScrolling: (name, enabled) => { scrolling.set(name, enabled); },
@@ -42,6 +43,18 @@ describe('MxpFrameManager — edge tiling', () => {
     let h: ReturnType<typeof makeHost>;
     let mgr: MxpFrameManager;
     beforeEach(() => { h = makeHost(); mgr = new MxpFrameManager(h.host); });
+
+    it('refuses a name a script\'s own window holds', () => {
+        expect(mgr.createFrame('scriptMini', {})).toBe(false);
+        expect(h.placed.has('scriptMini')).toBe(false);
+    });
+
+    it('brings the first tab forward even when the host already nests a frame', () => {
+        mgr.createFrame('Host', { ALIGN: 'right', TITLE: 'Host' });
+        mgr.createFrame('Inner', { ALIGN: 'bottom' }, 'Host');
+        mgr.createFrame('Tab', { DOCK: 'Host', ALIGN: 'client', TITLE: 'Tab' });
+        expect(h.tabs.get('Host')?.active).toBe('Tab');
+    });
 
     it('defaults to a left-aligned quarter-width frame spanning the full height', () => {
         expect(mgr.createFrame('Status', { NAME: 'Status' })).toBe(true);

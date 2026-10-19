@@ -98,22 +98,12 @@ export interface HexColor {
 
 export type FormatColor = IndexedColor | RgbColor | HexColor
 
-/** What `38;5;n` names past the 256-colour table, where Mudlet's own reading
- *  of it (TBuffer::decodeSGR38/48) gives no colour at all: black. */
-const OUT_OF_RANGE_FOREGROUND: RgbColor = {space: "rgb", r: 0, g: 0, b: 0};
-
-/** The colour `38;5;n` / `48;5;n` picks, or undefined when there is none.
- *  Past 255 Mudlet keeps running its greyscale formula, `(n - 232) * 10 + 8`,
- *  so 256 is still a grey (248) and every index above it overflows a channel
- *  into an invalid colour. The table lookup alone gave `color: undefined`,
- *  which threw in the trigger engine and dropped the rest of the packet
- *  (mudlet-web#174). */
+/** The colour `38;5;n` / `48;5;n` picks, or undefined when there is none: as
+ *  xterm does, TBuffer::decodeSGR38/48 ignore an index past the end of the
+ *  256-colour palette, so it changes nothing rather than reading as black. */
 function xtermColor(index: number): FormatColor | undefined {
     const hex = colorCodes.xterm[index];
-    if (hex !== undefined) return {space: "hex", color: hex};
-    const grey = (index - 232) * 10 + 8;
-    if (index > 255 && grey <= 255) return {space: "rgb", r: grey, g: grey, b: grey};
-    return undefined;
+    return hex !== undefined ? {space: "hex", color: hex} : undefined;
 }
 
 /** One SGR parameter: a number, or its sub-parameters when it carried any
@@ -556,14 +546,14 @@ export class FormatState {
                         return typeof p === "number" && !Number.isNaN(p) ? p : undefined;
                     };
                     const present = (n: number): boolean => i + n < params.length;
-                    const mode = at(1);
-                    // A missing, unreadable or zero colour type abandons the
-                    // WHOLE sequence, arguments and all — anything after it was
-                    // meant to be read relative to a type we never got.
-                    if (mode === undefined || mode === 0) {
+                    // A missing colour type abandons the rest of the sequence;
+                    // an empty, zero or unreadable one is stepped over alone,
+                    // like any type that takes no arguments.
+                    if (!present(1)) {
                         i = params.length;
                         break;
                     }
+                    const mode = at(1);
                     // Two spellings of 24-bit colour. `38;2;r;g;b` is what
                     // almost every server sends; ITU T.416 actually puts a
                     // colour-space id first, `38;2;<id>;r;g;b`, and a few
@@ -577,22 +567,16 @@ export class FormatState {
                         // The index may be left off entirely, in which case it
                         // is a zero — the same as writing `38;5;0`.
                         const index = present(2) ? at(2) : 0;
-                        if (index !== undefined) {
+                        const color = index === undefined ? undefined : xtermColor(index);
+                        if (color) {
                             // decodeSGR38 and decodeSGR48 both clear
                             // mIsDefaultColor for an index below 16.
-                            if (index >= 0 && index < 16) this.ansiColored = true;
-                            const color = xtermColor(index);
+                            if (index! < 16) this.ansiColored = true;
                             // A colour chosen out of the 256-colour cube names
                             // itself exactly; there is no brighter twin to pick,
                             // so bold leaves it alone. Same for 24-bit below.
-                            // An index Mudlet cannot make a colour of leaves the
-                            // foreground black and the background default.
-                            if (isForeground) {
-                                const fg = color ?? OUT_OF_RANGE_FOREGROUND;
-                                this.setForeground(fg, fg);
-                            } else {
-                                this.background = color;
-                            }
+                            if (isForeground) this.setForeground(color, color);
+                            else this.background = color;
                         }
                         i += 2;
                     } else if (mode === 2) {
@@ -617,9 +601,12 @@ export class FormatState {
                         // 1, 2 and 3 in front of it are not bold, faint and
                         // italics.
                         i += (mode === 3 ? 4 : 5) + shift;
+                    } else {
+                        // Every other type (1, transparent, and anything
+                        // unassigned) takes no arguments, but the type itself is
+                        // stepped over, or `38;1` would read as bold.
+                        i += 1;
                     }
-                    // Every other type (1, transparent, and anything unassigned)
-                    // takes no arguments, so there is nothing to skip.
                     break;
                 }
                 default:
@@ -726,12 +713,13 @@ export class FormatState {
             if (isForeground) this.setForeground(color, color);
             else this.background = color;
         };
-        if (group[1] === 5 && group[2] !== undefined) {
-            if (group[2] >= 0 && group[2] < 16) this.ansiColored = true;
-            const color = xtermColor(group[2]);
-            if (color) put(color);
-            else if (isForeground) put(OUT_OF_RANGE_FOREGROUND);
-            else this.background = undefined;
+        if (group[1] === 5) {
+            // A left-off index is a zero, one past the palette changes nothing.
+            const index = group[2] ?? 0;
+            const color = xtermColor(index);
+            if (!color) return;
+            if (index < 16) this.ansiColored = true;
+            put(color);
         } else if (group[1] === 2) {
             put({space: "rgb", r: group[3] ?? 0, g: group[4] ?? 0, b: group[5] ?? 0});
         }

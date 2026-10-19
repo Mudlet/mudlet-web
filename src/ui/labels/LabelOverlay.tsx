@@ -259,6 +259,9 @@ function Label({ l, manager, zIndex }: { l: LabelState; manager: LabelManager; z
     if (l.fontFamily) {
         style.fontFamily = l.fontFamily;
     }
+    if (l.fontSize) {
+        style.fontSize = `${l.fontSize}pt`;
+    }
     if (inlineFromStylesheet) {
         Object.assign(style, inlineFromStylesheet);
     } else if (l.fillBackground) {

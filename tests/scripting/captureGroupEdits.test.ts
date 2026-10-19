@@ -15,7 +15,7 @@ describe('selectCaptureGroup on a line the trigger edited', () => {
     let env: TestRuntime;
     beforeEach(async () => {
         env = await createTestRuntime();
-        env.api.setCaptureShiftHook((at, delta) => env.rt.shiftCaptureSpans(at, delta));
+        env.api.setCaptureShiftHook((at, delta, replaced) => env.rt.shiftCaptureSpans(at, delta, replaced));
     });
     afterEach(() => env.dispose());
 
@@ -41,6 +41,12 @@ describe('selectCaptureGroup on a line the trigger edited', () => {
         expect(env.run('return LINE')).toBe(after);
         expect(env.run('return R3')).toBe(1);
         expect(env.run('return G3')).toBe('beta');
+    });
+
+    it.each([['x'], ['alphabetical']])('selects the replacement of the group replace() swapped for %s', (text) => {
+        fire(`selectCaptureGroup(2); replace("${text}"); R2 = selectCaptureGroup(2); G2 = getSelection(); deselect()`);
+        expect(env.run('return R2')).toBe(1);
+        expect(env.run('return G2')).toBe(text);
     });
 
     it('answers -1 for a group past the last and for group 0', () => {

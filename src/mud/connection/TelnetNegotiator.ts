@@ -18,7 +18,6 @@ import {
     TTYPE_SEND,
     type MnesVar,
 } from "../protocol";
-import { fromByteString } from "../protocol/byteString";
 import { CLIENT_NAME, CLIENT_VERSION, TERMINAL_TYPE } from "../../version";
 import type { MudClientEvents } from "../events";
 import { debugMspEnabled, debugTelnetEnabled } from "./telnetDebug";
@@ -204,6 +203,10 @@ export class TelnetNegotiator {
      *  telnet handshake, so the in-band signal is the reliable trigger. Reset on
      *  each connect(). */
     private mxpStarted = false;
+    /** cTelnet's `mMxpDetectionTail`: the last three bytes of the last read
+     *  scanned for a mode switch, so a switch the game's packets split is still
+     *  found once the rest arrives. A read that is not scanned clears it. */
+    private mxpDetectionTail = "";
     /** Rolling window of the last {@link KAVIR_NEGOTIATION_ORDER}`.length`
      *  options the server sent us a WILL/DO for, oldest first — Mudlet's
      *  `mNegotiationOrder`. Compared against the KaVir fingerprint after each
@@ -273,6 +276,7 @@ export class TelnetNegotiator {
         this.carry = "";
         this.ttypeStep = 0;
         this.mxpStarted = false;
+        this.mxpDetectionTail = "";
         this.nawsNegotiated = false;
         this.lastNaws = null;
         this.mspNegotiated = false;
@@ -465,8 +469,18 @@ export class TelnetNegotiator {
             i += 2;
         }
 
-        if (this.flags.mxpEnabled && this.flags.mxpInBandDetectionEnabled
-            && !this.mxpStarted && MXP_LINE_MODE_RE.test(buf)) {
+        if (!(this.flags.mxpEnabled && this.flags.mxpInBandDetectionEnabled && !this.mxpStarted)) {
+            // As in cTelnet::gotRest: the next scanned read must not be joined
+            // to one from before this one.
+            this.mxpDetectionTail = "";
+            return;
+        }
+        // ESC[#z is four bytes, so three carried over from the last read are
+        // enough to complete one (cTelnet::trackMXPElementDetection).
+        const found = MXP_LINE_MODE_RE.test(buf)
+            || (this.mxpDetectionTail !== "" && MXP_LINE_MODE_RE.test(this.mxpDetectionTail + buf.slice(0, 3)));
+        this.mxpDetectionTail = (this.mxpDetectionTail + buf).slice(-3);
+        if (found) {
             // No telnet handshake, but the server is emitting MXP line-mode
             // sequences (ESC[<n>z) — it's speaking MXP. Turn parsing on now,
             // before this frame's text is rendered, so the very lines carrying
@@ -475,6 +489,24 @@ export class TelnetNegotiator {
             // handshake replies because the server's inbound MXP channel isn't
             // confirmed.
             this.startMxp(false);
+        }
+    }
+
+    /**
+     * Run `post` — the showing of a read this negotiator has just scanned —
+     * without letting what it feeds in meanwhile disturb the read's detection
+     * tail. An escape this read leaves unfinished is joined to the NEXT read,
+     * not to what a trigger `feedTelnet()`s while this one is shown, so that
+     * must neither be joined to this read's tail nor replace it (cTelnet's
+     * postKeepingDetectionTail).
+     */
+    keepingMxpDetectionTail(post: () => void): void {
+        const tail = this.mxpDetectionTail;
+        this.mxpDetectionTail = "";
+        try {
+            post();
+        } finally {
+            this.mxpDetectionTail = tail;
         }
     }
 
@@ -904,16 +936,20 @@ export class TelnetNegotiator {
      *  options included — except GA and EOR, which end nearly every prompt,
      *  and the subnegotiations of the options in `SB_CONSUMED`.
      *  `type` is the command byte itself (251 WILL, 250 SB, …), `option` the
-     *  byte after it (0 for a two-byte command), and `message` the SB body
-     *  between the option byte and IAC SE, or for anything shorter than a
-     *  six-byte subnegotiation the whole command. Decoded as UTF-8, as Mudlet's
-     *  QString conversion does. */
+     *  byte after it (0 for a two-byte command). `message` is a byte-string:
+     *  desktop hands it to Lua as ARGUMENT_TYPE_BYTES, byte for byte and not
+     *  decoded, since an option it has no handler for can carry any binary
+     *  data. A subnegotiation's is its payload alone — without the
+     *  `IAC SB <option>` and `IAC SE` framing, a doubled IAC unescaped, and
+     *  empty for an empty one — and any other command's is the whole command. */
     private emitTelnetEvent(raw: string): void {
         const type = raw.charCodeAt(1);
         if (type === GA || type === EOR) return;
         const option = raw.length > 2 ? raw.charCodeAt(2) : 0;
-        const body = raw.length >= 6 ? raw.slice(3, -2) : raw;
-        this.eventBus.emit('telnet.event', type, option, fromByteString(body).text);
+        const message = type === SB
+            ? (raw.length >= 5 ? raw.slice(3, -2).replace(/\xff\xff/g, '\xff') : '')
+            : raw;
+        this.eventBus.emit('telnet.event', type, option, message);
     }
 
     /** Reply to a TERMINAL-TYPE / MTTS subnegotiation. `subneg` is the SB body
@@ -1014,21 +1050,15 @@ export class TelnetNegotiator {
         }, extended);
     }
 
-    /** Latch MXP on for this session and notify listeners. Only the first call
-     *  emits `mxp.negotiated`, and a later subnegotiation; other later calls
-     *  (repeat WILL/DO, in-band detection on subsequent frames) are no-ops. `viaTelnet` distinguishes a
-     *  real option-91 handshake from in-band-only detection (see the event doc),
-     *  and `viaSubnegotiation` the bare `IAC SB MXP IAC SE` that starts the
-     *  processor locked until the server sends a mode of its own. */
+    /** Latch MXP on for this session and notify listeners: on every switch-on
+     *  from the game, and on the first in-band detection. `viaTelnet`
+     *  distinguishes a real option-91 switch-on from in-band-only detection (see
+     *  the event doc), and `viaSubnegotiation` a bare `IAC SB MXP IAC SE`. */
     private startMxp(viaTelnet: boolean, viaSubnegotiation = false): void {
-        if (this.mxpStarted) {
-            // Every `IAC SB MXP IAC SE` puts the processor back in locked mode,
-            // not just one that comes first: the usual order is WILL, then SB,
-            // and it is the SB that says nothing is markup until the game
-            // switches modes (cTelnet sets MXP_MODE_CODE_LOCK_LOCKED on each).
-            if (viaSubnegotiation) this.eventBus.emit('mxp.negotiated', viaTelnet, true);
-            return;
-        }
+        // Every switch-on from the game is reported, not just the first:
+        // cTelnet::switchMxpOn runs for each WILL, DO and bare subnegotiation,
+        // and decides there whether the game is starting MXP afresh.
+        if (this.mxpStarted && !viaTelnet) return;
         this.mxpStarted = true;
         this.eventBus.emit('mxp.negotiated', viaTelnet, viaSubnegotiation);
     }

@@ -1,6 +1,6 @@
 import type { ProfileVFS } from '../vfs/ProfileVFS';
 import { githubRawUrl } from '../../utils/githubRawUrl';
-import { normalizeUserUrl } from './userUrl';
+import { fileUrlParts, normalizeUserUrl } from './userUrl';
 
 // Mudlet's HTTP API is fire-and-forget: each function returns immediately,
 // the actual request runs in the background, and completion/failure is
@@ -221,9 +221,9 @@ export class HttpService {
      */
     private copyLocalFile(saveTo: string, url: string): void {
         this.defer(() => {
-            let path: string;
-            try { path = decodeURIComponent(url.trim().replace(/^file:\/\//i, '')); }
-            catch { path = url.trim().replace(/^file:\/\//i, ''); }
+            // The url check let a localhost host through as naming this
+            // machine, so it is no part of the path.
+            const path = fileUrlParts(url)?.path ?? url.trim();
 
             const vfs = this.vfsGetter();
             if (!vfs) return this.emit('sysDownloadError', ['no profile VFS available', saveTo, url, EMPTY_RECORD()]);

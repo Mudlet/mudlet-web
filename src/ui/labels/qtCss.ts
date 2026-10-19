@@ -45,8 +45,11 @@ function memoize<V>(cache: Map<string, V>, key: string, make: () => V): V {
 }
 
 const STYLE_CACHE = new Map<string, React.CSSProperties>();
-export function cssTextToStyle(css: string): React.CSSProperties {
-    return memoize(STYLE_CACHE, css, () => declarationsToStyle(stripRulesetBraces(css)));
+/** A stylesheet's flat declarations as inline style, with those of a
+ *  `<widget> { … }` ruleset — a button's sheet is a QPushButton's, which
+ *  setButtonStyleSheet callers write as `QPushButton { … }`. */
+export function cssTextToStyle(css: string, widget = 'QLabel'): React.CSSProperties {
+    return memoize(STYLE_CACHE, `${widget}\u0000${css}`, () => declarationsToStyle(stripRulesetBraces(css, widget)));
 }
 
 // Parse a Qt-style stylesheet that mixes flat declarations and selector
@@ -1387,14 +1390,34 @@ export function extractQtWordWrap(css: string): boolean | undefined {
     return found;
 }
 
+/** The text a `qproperty-text: "…"` declaration gives a label, or undefined
+ *  when the sheet sets none. Qt writes a qproperty through the widget's own
+ *  setter — QLabel::setText — so the label's text is replaced there and then,
+ *  rather than styled at paint time. Last one wins, as in Qt. */
+export function extractQtText(css: string): string | undefined {
+    const blocks = css.indexOf('{') < 0
+        ? [css]
+        : splitRulesets(css)
+            .filter(r => r.selector.trim() === '' || /^QLabel$/i.test(r.selector.trim()))
+            .map(r => r.body);
+    let found: string | undefined;
+    for (const block of blocks) {
+        for (const { key, val } of parseQtDeclarations(block)) {
+            if (key === 'qproperty-text') found = val;
+        }
+    }
+    return found;
+}
+
 // Pull out base-level declarations from a stylesheet that may also have
-// selector rulesets. Used by cssTextToStyle for back-compat callers that don't
-// care about scoped state rules.
-function stripRulesetBraces(css: string): string {
+// selector rulesets, plus those of a ruleset naming `widget` (a Qt class name)
+// — the rules Qt applies to that widget itself. Used by cssTextToStyle for
+// back-compat callers that don't care about scoped state rules.
+function stripRulesetBraces(css: string, widget: string): string {
     if (css.indexOf('{') < 0) return css;
     const inline: string[] = [];
     for (const rule of splitRulesets(css)) {
-        if (rule.selector === '' || /^QLabel$/i.test(rule.selector.trim())) {
+        if (rule.selector === '' || rule.selector.trim().toLowerCase() === widget.toLowerCase()) {
             inline.push(rule.body);
         }
     }

@@ -229,6 +229,14 @@ export class TimerEngine {
         return this.temp.has(id);
     }
 
+    /** Whether a temporary timer with this id is present and not killed —
+     *  `exists(id, "timer")` and findItems(), which do not count a killed
+     *  item waiting for the cleanup to free it. */
+    hasLiveTemp(id: number): boolean {
+        const entry = this.temp.get(id);
+        return !!entry && !entry.dead;
+    }
+
     /** Whether a temporary timer is present *and* still running — `isActive(id,
      *  "timer")`. False for one killed since the last reap. */
     tempIsActive(id: number): boolean {

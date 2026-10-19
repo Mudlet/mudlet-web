@@ -136,6 +136,15 @@ export interface IScriptingRuntime {
      * stock "Repeat Last Command" key (`send(command)`).
      */
     setCommand(command: string): void;
+    /** Start an alias pass for `command`: {@link setCommand}, and drop what an
+     *  enclosing pass kept for {@link settleCommandAfterAliasPass}. */
+    setExpandedCommand?(command: string): void;
+    /** End of an alias pass, at every depth: `command` holds the last command
+     *  expanded unless a script set it (TLuaInterpreter::settleCommandAfterAliasPass). */
+    settleCommandAfterAliasPass?(): void;
+    /** Run `fn`, whose entry into the runtime is an alias's script — the only
+     *  caller expandAlias() hands its own `command` back to. */
+    asAliasScript?<T>(fn: () => T): T;
     /**
      * Evaluate a Lua-function trigger pattern. Side effects (raiseEvent, etc.)
      * always run; the trigger "matches" only when the body returns truthy.
@@ -155,6 +164,11 @@ export interface IScriptingRuntime {
      */
     dispatchSendRequest(text: string): boolean;
     /**
+     * One command's alias pass ended with an alias consuming it: spend a
+     * denyCurrentSend() raised there that no send spent (Host::send).
+     */
+    endAliasPass?(): void;
+    /**
      * Start a speedwalk between two rooms (Mudlet Host::startSpeedWalk): find
      * the path and hand it to the mapper package's `doSpeedWalk`. Driven by the
      * map's double-click-to-walk gesture via WindowManager.startSpeedWalk.
@@ -172,6 +186,9 @@ export interface IScriptingRuntime {
      * (unlike permanent items) don't live in the persisted store.
      */
     tempItemExists(id: number, type: string): boolean;
+    /** Killed temp items of `type` still waiting for the reap — counted by
+     *  getProfileStats, though exists() no longer sees them. */
+    deadTempItemCount(type: 'alias' | 'trigger'): number;
     /** A live temp item of `type` carrying this script-supplied name (Mudlet's
      *  tempComplexRegexTrigger is the one temp API that takes one), or null. */
     tempItemIdByName(name: string, type: string): number | null;

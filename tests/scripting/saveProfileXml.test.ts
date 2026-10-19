@@ -58,10 +58,12 @@ const PROFILE_ROOT = `/profiles/${CONN}`;
 /** A Map-backed VFS covering the handful of methods the save path touches. */
 function fakeVfs(seed: Record<string, string> = {}) {
     const files = new Map<string, string>(Object.entries(seed));
+    const dirs = new Set<string>();
     const vfs = {
         profilePath: PROFILE_ROOT,
         resolvePath: (p: string) => (p.startsWith('/') ? p : `${PROFILE_ROOT}/${p}`),
-        exists: (p: string) => files.has(p) || [...files.keys()].some(k => k.startsWith(`${p}/`)),
+        exists: (p: string) => files.has(p) || dirs.has(p) || [...files.keys()].some(k => k.startsWith(`${p}/`)),
+        mkdir: (p: string) => { dirs.add(p); },
         readFile: (p: string) => {
             const v = files.get(p);
             if (v === undefined) throw new Error(`ENOENT: ${p}`);
@@ -123,6 +125,7 @@ describe('saveProfile — the XML save it writes', () => {
 
     it('honours an explicit location and appends .xml to a name that lacks one', () => {
         const { vfs, files } = fakeVfs();
+        vfs.mkdir('backups');
 
         expect(makeEngine(vfs).saveProfileXml('backups', 'before-refactor').ok).toBe(true);
         expect(savesIn(files)).toEqual(['backups/before-refactor.xml']);
@@ -130,9 +133,22 @@ describe('saveProfile — the XML save it writes', () => {
 
     it('does not double up the suffix on a name that already has one', () => {
         const { vfs, files } = fakeVfs();
+        vfs.mkdir('backups');
 
         expect(makeEngine(vfs).saveProfileXml('backups/', 'snapshot.XML').ok).toBe(true);
         expect(savesIn(files)).toEqual(['backups/snapshot.XML']);
+    });
+
+    // Host::saveProfile makes the folder; Host::saveProfileAs — a save under a
+    // name of its own — writes only into one that is there.
+    it('makes a missing folder for a plain save, but refuses a save-as into one', () => {
+        const { vfs, files } = fakeVfs();
+        const engine = makeEngine(vfs);
+
+        const refused = engine.saveProfileXml('nowhere', 'copy');
+        expect(refused).toEqual({ ok: false, err: 'No such file or directory', path: `${PROFILE_ROOT}/nowhere/copy.xml` });
+        expect(engine.saveProfileXml('made-by-the-save').ok).toBe(true);
+        expect(savesIn(files).some(k => k.startsWith('made-by-the-save/'))).toBe(true);
     });
 
     it('writes the live automation tree into the save', () => {
@@ -165,6 +181,7 @@ describe('saveProfile — the XML save it writes', () => {
             pattern: '^hi$', command: 'say hello', code: '', language: 'lua',
         });
 
+        vfs.mkdir('out');
         expect(makeEngine(vfs).saveProfileXml('out', 'x').ok).toBe(true);
         const xml = files.get('out/x.xml') ?? '';
         expect(xml).toContain('greet');

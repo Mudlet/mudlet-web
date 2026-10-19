@@ -1,6 +1,11 @@
 import type { BindingContext } from './context';
 import { parseXmlMapResult } from '../../../map/xmlMapImport';
 import { imageLabelPixmap } from '../../../map/labelPixmap';
+import { MapStore } from '../../../map/MapStore';
+import {
+    ENVIRONMENT_KITS, ENVIRONMENT_KIT_USER_DATA_KEY, isEnvironmentKit, type EnvironmentKit,
+} from '../../../map/environmentKit';
+import { AREA_GRAPH_MAX_COORDINATE } from '../../../map/areaGraph';
 
 /**
  * Mudlet's map API: the 2D view, room and area CRUD, exits, doors, custom
@@ -65,6 +70,15 @@ function luaToString(v: unknown): string {
     return '';
 }
 
+/** Whether `bytes` start like an image format Qt's QPixmap loads: PNG, JPEG,
+ *  GIF, BMP, WEBP or XPM. */
+function isReadableImage(bytes: Uint8Array): boolean {
+    const starts = (sig: string, at = 0) =>
+        bytes.length >= at + sig.length && [...sig].every((c, i) => bytes[at + i] === c.charCodeAt(0));
+    return starts('\x89PNG') || starts('\xff\xd8\xff') || starts('GIF8') || starts('BM')
+        || (starts('RIFF') && starts('WEBP', 8)) || starts('/* XPM */');
+}
+
 const MIN_MAP_FORMAT = 17;
 const MAX_MAP_FORMAT = 21;
 
@@ -72,6 +86,7 @@ export function installMapBindings({
     lua,
     api,
     vfs,
+    readBuiltinBytes,
     channel,
     emitEvent,
     unregisterCb,
@@ -118,26 +133,33 @@ export function installMapBindings({
         return `${vfs.profilePath}/map/${stamp}${suffix}`;
     };
 
-    /** The most recently written map file in the profile's map folder, which is
-     *  what a `loadMap()` with no path restores. Picked by modification time,
-     *  not by name: a save that was told where to go lands here under a name of
-     *  the caller's choosing, and sorting those alphabetically against the
+    /** The map files in the profile's map folder, newest first — what a
+     *  `loadMap()` with no path tries, in order (TMap::restore lists `*.dat`
+     *  and `*.json` by QDir::Time). Picked by modification time, not by name:
+     *  a save that was told where to go lands here under a name of the
+     *  caller's choosing, and sorting those alphabetically against the
      *  timestamp names the no-path saves use picks the wrong file. */
-    const newestMapFile = (): string | null => {
-        if (!vfs) return null;
+    const mapFilesNewestFirst = (): string[] => {
+        if (!vfs) return [];
         const dir = `${vfs.profilePath}/map`;
         let names: string[];
-        try { names = vfs.readdir(dir).filter(n => n.toLowerCase().endsWith('.dat')); }
-        catch { return null; }
-        let newest: string | null = null;
-        let newestAt = -Infinity;
-        for (const name of names) {
-            const path = `${dir}/${name}`;
-            const at = vfs.stat(path)?.mtime?.getTime() ?? 0;
-            if (at >= newestAt) { newestAt = at; newest = path; }
-        }
-        return newest;
+        try { names = vfs.readdir(dir).filter(n => /\.(dat|json)$/i.test(n)); }
+        catch { return []; }
+        return names
+            .map(name => {
+                const path = `${dir}/${name}`;
+                const stat = vfs.stat(path);
+                return { path, file: stat?.type === 'file', at: stat?.mtime?.getTime() ?? 0 };
+            })
+            .filter(f => f.file)
+            .sort((a, b) => b.at - a.at)
+            .map(f => f.path);
     };
+
+    /** A JSON map import or export is running — TMap::mMapProgressStandalone.
+     *  An export gives the event loop a turn part way (see __saveJsonMap), and
+     *  another JSON read or write started from there is refused. */
+    let jsonMapOperationInProgress = false;
 
     // ── Map view ──────────────────────────────────────────────────────────
     // Returns a bool; the Bridge.lua `centerview` wrapper turns false into
@@ -199,7 +221,12 @@ export function installMapBindings({
     // Room.Info.num is a number, so `getRoomIDbyHash(gmcp.Room.Info.num)` has
     // to find the room `setRoomIDbyHash(id, "777")` filed.
     lua.global.set('getRoomIDbyHash', (hash: unknown)           => api.getRoomIDbyHash(luaToString(hash)) ?? -1);
-    lua.global.set('setRoomIDbyHash', (id: unknown, hash: unknown)=> api.map.setRoomIDbyHash(int(id), luaToString(hash)));
+    // Mudlet setRoomIDbyHash(roomID, hash) → true, or (nil, errMsg) for a room
+    // that does not exist. Hands back that refusal or null; Bridge.lua shapes it.
+    lua.global.set('__setRoomIDbyHash', (id: unknown, hash: unknown) => {
+        const rid = int(id);
+        return api.map.setRoomIDbyHash(rid, luaToString(hash)) ? null : `number ${rid} is not a valid roomID`;
+    });
     // Mudlet getRoomHashByID: returns the hash string, or (false, errMsg) on
     // miss / when the room has no hash. JS hands back the string or null;
     // Bridge.lua unpacks the multi-return.
@@ -248,20 +275,45 @@ export function installMapBindings({
                 }
                 return `loadMap: failure to import XML map file "${location}"`;
             }
-            let bytes: Uint8Array;
-            try { bytes = vfs.readBinaryFile(path); }
-            catch { return false; }
+            // The read-only /lua/ namespace first, where the busted corpus
+            // keeps its binary map fixtures; Lua's io sees both.
+            let bytes = readBuiltinBytes(location);
+            if (!bytes) {
+                try { bytes = vfs.readBinaryFile(path); }
+                catch { return false; }
+            }
             return api.loadMap(bytes, location);
         }
-        // No path: the profile's most recent save, then whatever is already
-        // stored. Mudlet reads the newest file out of the map folder, and a
-        // script that saved without naming a file expects to get that back.
-        const newest = vfs ? newestMapFile() : null;
-        if (newest) {
-            try { return api.loadMap(vfs!.readBinaryFile(newest), newest); }
-            catch { /* fall through to the stored bytes */ }
+        // No path: TMap::restore(""). The newest file is not always one that
+        // loads — it can have been cut short or damaged outside Mudlet, or
+        // written by a newer Mudlet — so the next newest that does is the one
+        // to fall back on, each older one announced on the main console.
+        const files = mapFilesNewestFirst();
+        // A profile whose map lives only in what Mudlet Web stored for it,
+        // with no file in its map folder, reloads that instead.
+        if (files.length === 0) return api.loadMap();
+        for (const [index, file] of files.entries()) {
+            if (index > 0) api.postSystemMessage(`[ INFO ]  - Trying the next newest map file instead:\n"${file}".`);
+            if (!/\.json$/i.test(file)) {
+                let bytes: Uint8Array | null = null;
+                try { bytes = vfs!.readBinaryFile(file); } catch { /* tried as unreadable */ }
+                if (bytes && api.loadMap(bytes, file)) return true;
+                continue;
+            }
+            // readJsonMapFile refuses to start while another JSON import or
+            // export is running; nothing is wrong with the file then, so an
+            // older one is no better, and none is tried.
+            const busy = jsonMapOperationInProgress;
+            const why = readJsonMapFile(file);
+            if (why === undefined) return true;
+            api.postSystemMessage(`[ ALERT ] - Failed to load a Mudlet JSON Map file, reason:\n${why}; the file is:\n"${file}".`);
+            if (busy) {
+                api.postSystemMessage('[ INFO ]  - No older map file will be tried instead.');
+                return false;
+            }
+            api.postSystemMessage('[ INFO ]  - Ignoring this map file.');
         }
-        return api.loadMap();
+        return false;
     });
 
     // Mudlet saveMap([location]). Serialises the current MapStore to the
@@ -331,12 +383,24 @@ export function installMapBindings({
         if (parent && !vfs.exists(parent)) {
             return `saveJsonMap: could not open file "${path}" for writing, "${parent}" is not a directory`;
         }
-        let json: string;
-        try { json = api.saveJsonMap(); }
-        catch (e) { return `saveJsonMap: could not serialise the map (${String(e)})`; }
-        try { vfs.writeFile(path, json); }
-        catch { return `saveJsonMap: could not open file "${path}" for writing`; }
-        return undefined;
+        if (jsonMapOperationInProgress) return 'saveJsonMap: import or export already in progress';
+        jsonMapOperationInProgress = true;
+        try {
+            let json: string;
+            try { json = api.saveJsonMap(); }
+            catch (e) { return `saveJsonMap: could not serialise the map (${String(e)})`; }
+            // Desktop's export keeps its progress dialog painted by running the
+            // event loop as it goes (TMap::writeJsonMapFile), so the timers that
+            // have come due run part way through it — and whatever they do, a
+            // map load among it, meets an export in progress. A browser cannot
+            // re-enter its own event loop; the due timers are what it can run.
+            api.timers.pumpDue();
+            try { vfs.writeFile(path, json); }
+            catch { return `saveJsonMap: could not open file "${path}" for writing`; }
+            return undefined;
+        } finally {
+            jsonMapOperationInProgress = false;
+        }
     });
     // Mudlet `loadJsonMap(path)` — read a JSON map previously produced by
     // saveJsonMap and replace the in-memory map. Returns false on missing file / bad JSON / wrong shape.
@@ -348,32 +412,49 @@ export function installMapBindings({
             return 'loadJsonMap: a non-empty path and file name is needed to read the map from';
         }
         if (!vfs) return 'loadJsonMap: no profile filesystem to read from';
+        const why = readJsonMapFile(location);
+        return why === undefined ? undefined : `loadJsonMap: ${why}`;
+    });
+    /** TMap::readJsonMapFile: read a JSON map into the store, answering
+     *  undefined, or why it did not — as its untranslated messages put it, the
+     *  file named. Desktop refuses to start one while another JSON import or
+     *  export is running, which is what jsonMapOperationInProgress tracks. */
+    function readJsonMapFile(location: string): string | undefined {
+        if (!vfs) return 'no profile filesystem to read from';
+        if (jsonMapOperationInProgress) return 'import or export already in progress';
         let json: string;
         try { json = vfs.readFile(location); }
-        catch { return `loadJsonMap: could not open file "${location}" for reading`; }
+        catch { return `could not open file "${location}" for reading`; }
         let parsed: unknown;
         try { parsed = JSON.parse(json); }
-        catch { return `loadJsonMap: could not parse file "${location}" as JSON`; }
+        catch { return `could not parse file "${location}" as JSON`; }
         const doc = (parsed ?? {}) as { formatVersion?: unknown; areas?: unknown };
         if (typeof doc.formatVersion !== 'number') {
-            return `loadJsonMap: no format version detected in file "${location}"`;
+            return `no format version detected in file "${location}"`;
         }
         // Quoted to three decimals as Mudlet prints it — the version is a
         // number there and the message shows it the way a version reads.
         if (doc.formatVersion !== 1) {
-            return `loadJsonMap: invalid format version "${doc.formatVersion.toFixed(3)}" detected`
+            return `invalid format version "${doc.formatVersion.toFixed(3)}" detected`
                 + ` in file "${location}"`;
         }
         if (!Array.isArray(doc.areas) || doc.areas.length === 0) {
-            return `loadJsonMap: no areas detected in file "${location}"`;
+            return `no areas detected in file "${location}"`;
         }
-        if (!api.loadJsonMap(json)) return `loadJsonMap: could not read the map in file "${location}"`;
+        if (!api.loadJsonMap(json, location)) return `could not read the map in file "${location}"`;
+        const report = api.windows.takeMapReport();
+        if (report) {
+            try {
+                vfs.mkdir(`${vfs.profilePath}/log`);
+                vfs.appendFile(`${vfs.profilePath}/log/errors.txt`, report);
+            } catch { /* the console line still names it */ }
+        }
         // The map-level settings ride in the same document, and are applied
         // after the rooms so a failed load cannot leave the profile wearing an
         // imported map's appearance without its map.
         api.applyJsonMapSettings(doc as Record<string, unknown>);
         return undefined;
-    });
+    }
 
     // ── Room CRUD ─────────────────────────────────────────────────────────
     // Mudlet `createRoomID([minimum])` — smallest unused room id at or above
@@ -582,6 +663,57 @@ export function installMapBindings({
     lua.global.set('clearMapUserData',     ()              => api.map.clearMapUserData());
     lua.global.set('clearMapUserDataItem', (k: unknown)    => api.map.clearMapUserDataItem(String(k ?? '')));
     lua.global.set('getAllMapUserData', () => api.map.getAllMapUserData());
+
+    // ── Area graph (desktop's TAreaGraph) ─────────────────────────────────
+    // getAreaGraph() → { areas = {[id] = {name, x, y, rooms, radius, pinned}},
+    // links = {{from, to, exits}, …} }. Both halves go over as arrays, which
+    // Bridge.lua re-keys: areas by id, links from 1.
+    lua.global.set('__getAreaGraph', () => {
+        const graph = api.map.getAreaGraph();
+        return {
+            areas: graph.areas.map(n => ({
+                id: n.areaId, name: n.name, x: n.position[0], y: n.position[1],
+                rooms: n.roomCount, radius: n.radius, pinned: n.pinned,
+            })),
+            links: graph.links.map(l => ({ from: l.fromArea, to: l.toArea, exits: l.exitCount })),
+        };
+    });
+    // setAreaGraphPosition(areaID, x, y) → true, or the refusal's message.
+    lua.global.set('__setAreaGraphPosition', (id: unknown, x: unknown, y: unknown) => {
+        const areaId = int(id);
+        const px = Number(x), py = Number(y);
+        // Inverted, so that NaN is refused with the infinities.
+        if (!(Math.abs(px) <= AREA_GRAPH_MAX_COORDINATE) || !(Math.abs(py) <= AREA_GRAPH_MAX_COORDINATE)) {
+            return `x and y must be numbers between -${AREA_GRAPH_MAX_COORDINATE.toFixed(0)} and ${AREA_GRAPH_MAX_COORDINATE.toFixed(0)}`;
+        }
+        if (!api.map.setAreaGraphPosition(areaId, px, py)) return `number ${areaId} is not a valid area id`;
+        return true;
+    });
+    lua.global.set('__resetAreaGraphLayout', (keepPinned: unknown) => {
+        api.map.resetAreaGraphLayout(keepPinned === true);
+        return true;
+    });
+
+    // ── Environment kits (the ground the 3D styles draw an environment as) ──
+    // getMapEnvironmentKit(envID) → kit, named. The pair goes over as an array
+    // for Bridge.lua to unpack.
+    lua.global.set('__getMapEnvironmentKit', (id: unknown) => api.map.getEnvironmentKit(int(id)));
+    // getMapEnvironmentKits() → { [envID] = kit }. Object keys cross as
+    // strings; Bridge.lua turns them back into the numbers desktop keys by.
+    lua.global.set('__getMapEnvironmentKits', () => Object.fromEntries(api.map.getEnvironmentKits()));
+    // setMapEnvironmentKit(envID [, kit]) → true, or the refusal's message.
+    // Desktop trims and lower-cases the name before matching it, and a nil or
+    // empty one clears.
+    lua.global.set('__setMapEnvironmentKit', (id: unknown, kitName: unknown) => {
+        const name = kitName == null ? '' : String(kitName).trim().toLowerCase();
+        if (name !== '' && !isEnvironmentKit(name)) {
+            return `kit name '${name}' is not one of: ${ENVIRONMENT_KITS.join(', ')}`;
+        }
+        if (!api.map.setEnvironmentKit(int(id), name === '' ? null : name as EnvironmentKit)) {
+            return `the map user data '${ENVIRONMENT_KIT_USER_DATA_KEY}' is not a JSON object, so is left alone; fix or remove it first`;
+        }
+        return true;
+    });
 
     // ── Exits ─────────────────────────────────────────────────────────────
     // Mudlet's setExit/setExitStub accept the direction either as the
@@ -829,10 +961,27 @@ export function installMapBindings({
         );
         return true;
     });
-    lua.global.set('removeMapEvent', (uniqueName: unknown) => {
-        api.map.removeMapEvent(String(uniqueName ?? ''));
-        return true;
+    // Hands back desktop's refusal for a name never added, or null; Bridge.lua
+    // shapes that into true / (nil, errMsg).
+    lua.global.set('__removeMapEvent', (uniqueName: unknown) => {
+        const name = luaToString(uniqueName);
+        return api.map.removeMapEvent(name) ? null : `map event '${name}' does not exist`;
     });
+    // Mudlet hide/showMapMenuItem(name): only desktop's built-in item names, so
+    // a script's own map event is refused like any other unknown name. Hands
+    // back warnArgumentChoice's refusal, listing every name it would take, or
+    // null; Bridge.lua shapes that into true / (nil, errMsg).
+    const setMenuItemHidden = (name: unknown, hidden: boolean) => {
+        const itemName = luaToString(name);
+        if (api.map.setMenuItemHidden(itemName, hidden)) return null;
+        const quoted = MapStore.BUILTIN_MENU_ITEMS.map(n => `"${n}"`);
+        const last = quoted.pop();
+        return `item name must be ${quoted.join(', ')} or ${last}, got "${itemName}"`;
+    };
+    lua.global.set('__hideMapMenuItem', (name: unknown) => setMenuItemHidden(name, true));
+    lua.global.set('__showMapMenuItem', (name: unknown) => setMenuItemHidden(name, false));
+    // A 0-indexed array; Bridge.lua rebuilds it as a Lua list.
+    lua.global.set('__getHiddenMapMenuItems', () => api.map.getHiddenMenuItems());
     // Mudlet shape:
     //   { [uniqueName] = {
     //         ["event name"]   = "...",
@@ -864,8 +1013,9 @@ export function installMapBindings({
     lua.global.set('__removeMapMenu', (name: unknown) => {
         const menu = String(name ?? '');
         if (!menu) return 'the menu name cannot be empty';
-        api.map.removeMapMenu(menu);
-        return null;
+        // Refused only when there was nothing at all to remove: a parent that
+        // was never added can still have children filed under it.
+        return api.map.removeMapMenu(menu) ? null : `map menu '${menu}' does not exist`;
     });
     // Mudlet shape: { [menuName] = { ["parent"]=..., ["display name"]=... } }.
     // JS hands back an array of entries (0-indexed); Bridge.lua rebuilds the
@@ -962,7 +1112,10 @@ export function installMapBindings({
         const sel = api.map.getMapSelection();
         return { rooms: sel.rooms, center: sel.center };
     });
-    lua.global.set('clearMapSelection', () => api.map.clearMapSelection());
+    lua.global.set('__clearMapSelection', () => {
+        if (!api.windows.hasMapper()) return 'no map present or loaded';
+        return api.map.clearMapSelection();
+    });
 
     // Mudlet unsetRoomCharColor(roomID) — drop a per-room char-colour
     // override so the renderer falls back to the default. Pairs with
@@ -1053,7 +1206,10 @@ export function installMapBindings({
         api.setMapRoomExitsColor(r, g, b));
     lua.global.set('__getMapRoomExitsColor', () => api.getMapRoomExitsColor());
     // Mudlet setDefaultAreaVisible(visible) — TMap::mShowDefaultArea.
-    lua.global.set('setDefaultAreaVisible', (visible: boolean) => api.setDefaultAreaVisible(visible));
+    // Desktop changes the default area's visibility only once a mapper shows the
+    // map (Host::mapOpen), answering false until then.
+    lua.global.set('setDefaultAreaVisible', (visible: boolean) =>
+        api.windows.hasMapper() ? api.setDefaultAreaVisible(visible) : false);
     // Mudlet setMapRoomSize(roomSize). The renderer reads this from
     // settings.roomSize (units = map cells; ~0.6 default).
     lua.global.set('setMapRoomSize', (size: unknown) => api.setMapRoomSize(Number(size)));
@@ -1271,10 +1427,19 @@ export function installMapBindings({
         const path = String(imagePath ?? '');
         const width = Number(w) || 0;
         const height = Number(h) || 0;
-        let bytes: Uint8Array | null = null;
-        if (vfs && path !== '') {
+        // An unknown area is -1 whatever the image (TMap::createMapImageLabel
+        // looks for the area first).
+        if (!api.map.hasArea(area)) return -1;
+        // A /lua/ path (the spec corpus's image fixtures) is read-only builtin
+        // data, not a profile file — loadMap reads it the same way.
+        let bytes: Uint8Array | null = path !== '' ? readBuiltinBytes(path) : null;
+        if (!bytes && vfs && path !== '') {
             try { bytes = vfs.readBinaryFile(path); } catch { bytes = null; }
         }
+        // Desktop refuses an image its QPixmap cannot load — missing, empty or
+        // not an image at all. Decoding is asynchronous here, so the file's
+        // signature stands in for that test.
+        if (!bytes || !isReadableImage(bytes)) return `image file '${path}' could not be read`;
         const { pixmap, pending } = imageLabelPixmap(bytes, width, height, Number(zoom) || 0);
         const id = api.map.createMapImageLabel(
             area, pixmap,
@@ -1290,8 +1455,16 @@ export function installMapBindings({
         }
         return id;
     });
-    lua.global.set('deleteMapLabel', (areaId: unknown, labelId: unknown) =>
-        api.map.deleteMapLabel(int(areaId), int(labelId)));
+    // Mudlet deleteMapLabel(areaID, labelID) → true, or (nil, errMsg) naming
+    // what it could not find. Hands back that refusal or null; Bridge.lua
+    // shapes it.
+    lua.global.set('__deleteMapLabel', (areaId: unknown, labelId: unknown) => {
+        const area = int(areaId), label = int(labelId);
+        if (label < 0) return `labelID ${label} is invalid, it must be zero or greater`;
+        if (!api.map.hasArea(area)) return `areaID ${area} does not exist`;
+        if (!api.map.deleteMapLabel(area, label)) return `labelID ${label} does not exist in area with areaID ${area}`;
+        return null;
+    });
     // Mudlet auditAreas() — repair area/room membership consistency. Returns
     // a summary; Bridge.lua 1-indexes the orphanRooms/danglingRefs arrays.
     lua.global.set('__auditAreas', () => api.map.auditAreas());

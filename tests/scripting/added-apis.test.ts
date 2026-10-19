@@ -124,10 +124,10 @@ describe('echoPopup / insertPopup / setPopup', () => {
 
   // Desktop's setPopup answers true for any console it finds, selection or
   // not (ConsoleLinksByName_spec); there is just nothing for it to attach to.
-  it('setPopup returns true with no selection and once a selection exists', () => {
+  it('setPopup refuses no selection and returns true once a selection exists', () => {
     env.run('createBuffer("tb"); cecho("tb", "<red>Hello<reset>\\n")');
-    expect(env.run('return (setPopup("tb", {"look"}, {"Look"}))')).toBe(true);
-    env.run('selectCurrentLine("tb")');
+    expect(env.run('return select(2, setPopup("tb", {"look"}, {"Look"}))')).toBe('no text is selected - cannot create popup');
+    env.run('moveCursor("tb", 0, 0); selectCurrentLine("tb")');
     expect(env.run('return (setPopup("tb", {"look"}, {"Look"}))')).toBe(true);
   });
 });
@@ -137,16 +137,18 @@ describe('wrapLine', () => {
   beforeEach(async () => { env = await createTestRuntime(); });
   afterEach(() => env.dispose());
 
-  // TLuaInterpreter::wrapLine returns 0 values, found line or not.
-  it('returns nothing, for an in-range line or not', () => {
+  // TLuaInterpreter::wrapLine answers true, found line or not, and refuses a
+  // window it cannot find.
+  it('answers true, for an in-range line or not', () => {
     env.run('createBuffer("tb"); cecho("tb", "Hello\\n")');
     // one line at index 0; getLineCount is the line *count* (Mudlet semantics),
     // so a single line reports 1 and the last index is getLineCount()-1.
     expect(env.run('return (getLineCount("tb"))')).toBe(1);
-    expect(env.run('return select("#", wrapLine("tb", 0))')).toBe(0);
-    expect(env.run('return select("#", wrapLine("tb", 5))')).toBe(0);
-    expect(env.run('return select("#", wrapLine("tb", -1))')).toBe(0);
-    expect(env.run('return select("#", wrapLine(0))')).toBe(0);
+    expect(env.run('return wrapLine("tb", 0)')).toBe(true);
+    expect(env.run('return wrapLine("tb", 5)')).toBe(true);
+    expect(env.run('return wrapLine("tb", -1)')).toBe(true);
+    expect(env.run('return wrapLine(0)')).toBe(true);
+    expect(env.run('return select(2, wrapLine("nope", 0))')).toBe('window "nope" not found');
   });
 
   // mudlet-web#364 item 3: TBuffer::wrapLine re-wraps from the given line to
@@ -157,7 +159,7 @@ describe('wrapLine', () => {
         echo("tb", l .. "\\n")
       end
       setWindowWrap("tb", 10)`);
-    expect(env.run('return select("#", wrapLine("tb", 1))')).toBe(0);
+    expect(env.run('return wrapLine("tb", 1)')).toBe(true);
     expect(String(env.run('return table.concat(getLines("tb", 0, getLineCount("tb")), "|")')).split('|')).toEqual([
       'line zero is long enough',
       'line one ', 'is also ', 'long',
@@ -473,7 +475,8 @@ describe('special exits — clearSpecialExits / lockSpecialExit / hasSpecialExit
     expect(env.run('return (next(getSpecialExitsSwap(1)))')).not.toBe(null);
     expect(env.run('return (clearSpecialExits(1))')).toBe(true);
     expect(env.run('return (next(getSpecialExitsSwap(1)))')).toBe(null);
-    expect(env.run('return (clearSpecialExits(999))')).toBe(false);
+    expect(env.run('return (clearSpecialExits(999))')).toBeNull();
+    expect(env.run('return select(2, clearSpecialExits(999))')).toBe('number 999 is not a valid roomID');
   });
 });
 
@@ -894,9 +897,9 @@ describe('createCommandLine — overlay primitive + routing', () => {
   it('creates an overlay cmd line and registers it under the cmdLines manager', () => {
     expect(env.run('return (createCommandLine("c1", 10, 20, 200, 24))')).toBe(true);
     expect(env.session.cmdLines.has('c1')).toBe(true);
-    // Re-creating one under the same name is refused with nil and Mudlet's
-    // message (TMainConsole::createCommandLine), not a bare false.
-    expect(env.run('return (createCommandLine("c1", 0, 0, 100, 20))')).toBeNull();
+    // Re-creating one under the same name is refused with false and Mudlet's
+    // message (TMainConsole::createCommandLine).
+    expect(env.run('return (createCommandLine("c1", 0, 0, 100, 20))')).toBe(false);
     expect(env.run('return select(2, createCommandLine("c1", 0, 0, 100, 20))')).toBe("couldn't create commandLine");
   });
 
@@ -980,10 +983,10 @@ describe('lockExit / hasExitLock', () => {
   it('locks and unlocks a stock-direction exit by name', () => {
     env.run('addRoom(100); addRoom(101); setExit(100, 101, "north")');
     expect(env.run('return (hasExitLock(100, "north"))')).toBe(false);
-    // Desktop's lockExit pushes nothing back (#295).
-    expect(env.run('return select("#", lockExit(100, "north", true))')).toBe(0);
+    // Desktop's lockExit answers true once the room is found.
+    expect(env.run('return lockExit(100, "north", true)')).toBe(true);
     expect(env.run('return (hasExitLock(100, "north"))')).toBe(true);
-    expect(env.run('return select("#", lockExit(100, "north", false))')).toBe(0);
+    expect(env.run('return lockExit(100, "north", false)')).toBe(true);
     expect(env.run('return (hasExitLock(100, "north"))')).toBe(false);
   });
 
@@ -996,11 +999,14 @@ describe('lockExit / hasExitLock', () => {
 
   it('rejects an unknown direction or missing room', () => {
     env.run('addRoom(300)');
-    // Other.lua's own wrapper answers false for a name it does not know.
-    expect(env.run('return (lockExit(300, "sideways", true))')).toBe(false);
+    // Other.lua's own wrapper answers nil and a message for a name it does not know.
+    expect(env.run('return (lockExit(300, "sideways", true))')).toBeNull();
+    expect(env.run('return select(2, lockExit(300, "sideways", true))')).toBe('"sideways" is not a valid direction');
     expect(env.run('return (hasExitLock(300, "north"))')).toBe(false);
-    expect(env.run('return select("#", lockExit(9999, "north", true))')).toBe(0);
+    expect(env.run('return (lockExit(9999, "north", true))')).toBeNull();
+    expect(env.run('return select(2, lockExit(9999, "north", true))')).toBe('number 9999 is not a valid roomID');
     expect(env.run('return (hasExitLock(9999, "north"))')).toBeNull();
+    expect(env.run('return select(2, hasExitLock(9999, "north"))')).toBe('number 9999 is not a valid roomID');
   });
 
   it('honoured by pathfinding (locked direction is routed around)', () => {
@@ -1227,7 +1233,9 @@ describe('map labels — createMapLabel / createMapImageLabel / deleteMapLabel',
     // delete
     expect(env.run(`return (deleteMapLabel(${a}, 0))`)).toBe(true);
     expect(env.run(`return next(getMapLabels(${a}))`)).toBe(null);
-    expect(env.run(`return (deleteMapLabel(${a}, 0))`)).toBe(false); // already gone
+    // already gone
+    expect(env.run(`return (deleteMapLabel(${a}, 0))`)).toBeNull();
+    expect(env.run(`return select(2, deleteMapLabel(${a}, 0))`)).toBe(`labelID 0 does not exist in area with areaID ${a}`);
   });
 
   // TLuaInterpreter::createMapLabel gates its optional tail on lua_gettop, and
@@ -1282,15 +1290,16 @@ describe('map labels — createMapLabel / createMapImageLabel / deleteMapLabel',
       .toThrow('bad argument #14 type (showOnTop as boolean expected');
   });
 
-  // Desktop keeps the image, never the path (issue #334); with no profile
-  // filesystem there is no file to read, so it is the transparent pixmap
-  // desktop makes for a missing image.
-  it('createMapImageLabel never stores the path in Pixmap; both reject a missing area', () => {
+  // Desktop keeps the image, never the path (issue #334) — see
+  // tests/map/mapFileDesktopParity.test.ts. With no profile filesystem there
+  // is no file to read, which desktop refuses rather than make a blank label;
+  // an unknown area is -1 before the image is looked at.
+  it('createMapImageLabel refuses an image it cannot read; both reject a missing area', () => {
     const a = env.run('return (addAreaName("Img"))') as number;
-    const id = env.run(`return (createMapImageLabel(${a}, "pic.png", 0, 0, 0, 32, 32, 1, true))`);
-    expect(id).toBe(0);
-    expect(env.run(`return (getMapLabel(${a}, 0)).Pixmap`)).toMatch(/^iVBORw0KGgo/);
-    expect(env.run(`return (getMapLabel(${a}, 0)).Width`)).toBe(32);
+    expect(env.run(`return (createMapImageLabel(${a}, "pic.png", 0, 0, 0, 32, 32, 1, true))`)).toBeNull();
+    expect(env.run(`return select(2, createMapImageLabel(${a}, "pic.png", 0, 0, 0, 32, 32, 1, true))`))
+      .toBe("image file 'pic.png' could not be read");
+    expect(env.run(`return next(getMapLabels(${a}))`)).toBe(null);
     expect(env.run('return (createMapLabel(999, "x", 0,0,0, 0,0,0, 0,0,0, 1, 12, true, false))')).toBe(-1);
     expect(env.run('return (createMapImageLabel(999, "p", 0,0,0, 1,1, 1, true, true))')).toBe(-1);
   });
@@ -1723,6 +1732,11 @@ describe('engine tempCount — live session-scoped temp items', () => {
     const id = e.addTemp('KeyA', [], () => {});
     expect(e.tempCount).toBe(1);
     e.killKey(id);
+    // Held until the reap, as desktop's KeyUnit holds a killed key until its
+    // deferred cleanup — counted, but no longer active.
+    expect(e.tempCount).toBe(1);
+    expect(e.tempActiveCount).toBe(0);
+    e.reapKilled();
     expect(e.tempCount).toBe(0);
   });
 });

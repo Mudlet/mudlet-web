@@ -326,9 +326,12 @@ export class MxpParser {
     private readonly expanding = new Set<string>();
     private entities = new Map<string, string>();
     private lineMode: LineMode = "open";
-    /** Mudlet's mMXP_DEFAULT — the mode a newline, an `ESC[3z` reset and the
-     *  end of a temp-secure tag return to. Null is OPEN, the initial default. */
+    /** Mudlet's mMXP_DEFAULT — the mode a newline returns to. Null is OPEN,
+     *  the initial default. */
     private lockedMode: MxpMode | null = null;
+    /** TMxpProcessor's mModeBeforeTempSecure: what an `ESC[4z` line goes back
+     *  to once its one tag is read. */
+    private modeBeforeTempSecure: LineMode = "open";
     private stack: OpenTag[] = [];
     /** Active MXP `<COLOR>`/`<FONT>` fg/bg overrides, innermost last. While
      *  non-empty, the top entry's colours are painted over whatever the ANSI
@@ -350,9 +353,9 @@ export class MxpParser {
     /** OSC 8 preset definitions seen this session (shared with the ANSI path
      *  when the engine supplies a registry). */
     private presets: HyperlinkPresetRegistry;
-    /** Set while the processor is forced on: the lock to secure mode it came
-     *  with then holds against a game's `ESC[5z`/`ESC[7z` (and the locked start
-     *  a bare `IAC SB MXP IAC SE` asks for) — Mudlet's shouldLockModeToSecure. */
+    /** Set while Force MXP is on: a secure default then holds against a lock
+     *  to OPEN or LOCKED, the game's `ESC[5z`/`ESC[7z` and the open start a
+     *  switch-on asks for included — Mudlet's shouldLockModeToSecure. */
     private forcedSecure = false;
 
     // --- the link store: Mudlet's TLinkStore, as far as MXP needs it ---
@@ -417,28 +420,21 @@ export class MxpParser {
     }
 
     /**
-     * Lock the parser to secure line mode (or release the lock). Mudlet does
-     * this whenever the MXP processor is forced on without an option-91
-     * handshake (ctelnet.cpp: MXP_MODE_CODE_LOCK_SECURE): such servers are
-     * IRE-style and never send mode switches, they just use secure tags — and
-     * without the lock every definition tag would be ignored as unsafe.
+     * Whether Force MXP is on — TMxpMudlet::shouldLockModeToSecure, read live.
+     * While it is, a secure default holds against any lock to OPEN or LOCKED,
+     * the game's `ESC[5z`/`7z` included. It changes no mode by itself: forcing
+     * the processor on is what locks it secure ({@link applyMode} with 6), and
+     * that secure default outlives the box being unticked.
      */
-    lockSecureMode(locked: boolean): void {
-        this.forcedSecure = locked;
-        this.setLockedMode(locked ? "secure" : null);
+    setForceLock(on: boolean): void {
+        this.forcedSecure = on;
     }
 
-    /** Set the mode every line falls back to — the `ESC[5z`/`6z`/`7z` lock,
-     *  reachable from outside because a bare `IAC SB MXP IAC SE` starts the
-     *  processor locked (cTelnet sets MXP_MODE_CODE_LOCK_LOCKED for it): such
-     *  a server has negotiated nothing, so until it sends a mode of its own
-     *  nothing it writes is markup. */
-    setLockedMode(mode: "open" | "secure" | "locked" | null): void {
-        // A forced processor keeps its secure lock, as it does against the
-        // game's own ESC[5z/7z (see applyLineMode).
-        if (this.forcedSecure && mode !== "secure" && mode !== null && this.lockedMode === "secure") return;
-        this.lockedMode = mode;
-        this.lineMode = mode ?? "open";
+    /** Apply mode code `n` (TMxpProcessor::setMode) from the client's side:
+     *  6 when the processor is forced on or auto-enabled, 5 each time the game
+     *  switches MXP on, which starts it in open mode. */
+    applyMode(n: number): void {
+        this.applyLineMode(n);
     }
 
     /** Whether a link is still there to click: false once an `<EXPIRE>` has
@@ -455,6 +451,7 @@ export class MxpParser {
         this.entities.clear();
         this.lineMode = "open";
         this.lockedMode = null;
+        this.modeBeforeTempSecure = "open";
         this.stack = [];
         this.mxpColorStack = [];
         this.pendingTag = "";
@@ -802,15 +799,18 @@ export class MxpParser {
             case 1: this.lineMode = "secure"; break;
             case 2: this.lineMode = "locked"; break;
             case 3:
-                // Reset: close everything and drop the styling, then fall back
-                // to the DEFAULT mode — which a lock (ESC[5z/6z/7z, or the
-                // locked start of a bare IAC SB MXP IAC SE) set and a reset
-                // keeps. Mudlet: `mMXP_MODE = mMXP_DEFAULT`; it is not OPEN.
+                // Reset: close everything and drop the styling, then open the
+                // line — open, not the default: a secure default would let this
+                // line use secure tags. The default applies again at the newline.
                 this.closeAllTags();
                 this.fmt.reset();
-                this.lineMode = this.lockedMode ?? "open";
+                this.lineMode = "open";
                 break;
-            case 4: this.lineMode = "tempSecure"; break;
+            case 4:
+                // The line's own mode comes back once the tag is read.
+                if (this.lineMode !== "tempSecure") this.modeBeforeTempSecure = this.lineMode;
+                this.lineMode = "tempSecure";
+                break;
             case 5: case 7:
                 // A forced processor holds its secure lock against a game
                 // that would unlock it (shouldLockModeToSecure).
@@ -847,11 +847,12 @@ export class MxpParser {
         const mode = this.effectiveMode();
         const secure = mode === "secure" || mode === "tempSecure";
         // Temp-secure (mode 4) lasts for one recognised tag, after which the
-        // DEFAULT mode is in force for the rest of the line — not whatever the
-        // line was in before (TMxpProcessor::processMxpInput). A name Mudlet
-        // does not know is rejected before that point and leaves it pending.
+        // line's own mode is in force again — not the default: an open line
+        // under a secure default would stay secure (TMxpProcessor::
+        // processMxpInput). A name Mudlet does not know is rejected before that
+        // point and leaves it pending.
         if (mode === "tempSecure" && this.isRecognisedTag(trimmed)) {
-            this.lineMode = this.lockedMode ?? "open";
+            this.lineMode = this.modeBeforeTempSecure;
         }
 
         if (trimmed.startsWith("!")) {

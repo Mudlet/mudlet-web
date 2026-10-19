@@ -193,4 +193,33 @@ describe('io/os/lfs error reporting (LuaFileSystem parity)', () => {
         vfs.rmdir(`${PROFILE}/deep`);
         expect(existsSync(`${PROFILE}/deep`)).toBe(false);
     });
+
+    // NAME_MAX: desktop's file systems refuse a name longer than 255 bytes, so
+    // one is refused here too — a profile must not hold a file desktop could
+    // neither create nor receive from a Mudlet export or a linked folder.
+    describe('a name longer than NAME_MAX', () => {
+        const long = 'n'.repeat(256);
+
+        it('is refused by io.open, lfs.mkdir and os.rename, and nothing is made', () => {
+            expect(all(`io.open(H .. '/${long}', 'w')`)).toEqual([null, `${PROFILE}/${long}: File name too long`, 36]);
+            expect(all(`lfs.mkdir(H .. '/${long}')`)).toEqual([null, 'File name too long', 36]);
+            t.run(`local f = io.open(H .. '/short.txt', 'w'); f:write('x'); f:close()`);
+            expect(all(`os.rename(H .. '/short.txt', H .. '/${long}')`)[1]).toContain('File name too long');
+            expect(existsSync(`${PROFILE}/${long}`)).toBe(false);
+            expect(existsSync(`${PROFILE}/short.txt`)).toBe(true);
+        });
+
+        it('is refused anywhere in the path, not only at its end', () => {
+            expect(() => vfs.writeBinaryFile(`${PROFILE}/${long}/inner.txt`, new Uint8Array([1])))
+                .toThrow(/ENAMETOOLONG/);
+            expect(existsSync(`${PROFILE}/${long}`)).toBe(false);
+        });
+
+        it('counts bytes, not characters, and allows exactly 255', () => {
+            vfs.writeFile(`${PROFILE}/${'n'.repeat(255)}`, 'x');
+            expect(existsSync(`${PROFILE}/${'n'.repeat(255)}`)).toBe(true);
+            vfs.writeFile(`${PROFILE}/${'€'.repeat(85)}`, 'x'); // 255 bytes
+            expect(() => vfs.writeFile(`${PROFILE}/${'€'.repeat(86)}`, 'x')).toThrow(/ENAMETOOLONG/);
+        });
+    });
 });
