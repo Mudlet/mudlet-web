@@ -5,7 +5,7 @@ import { MAP_WIDGET_ID } from '../ui/windows/types';
 import { qtKeyToDomCode, qtModifiersToList } from '../mud/keybindings/qtKeys';
 import { splitSentCommands } from '../mud/commandSplit';
 import type {AliasEngine, AliasNode} from '../mud/aliases/AliasEngine';
-import {TriggerEngine, highlightColor, highlightTargets, type TriggerNode} from '../mud/triggers/TriggerEngine';
+import {TriggerEngine, colorPatternProblem, highlightColor, highlightTargets, perlPatternError, type TriggerNode} from '../mud/triggers/TriggerEngine';
 import type {TimerEngine} from '../mud/timers/TimerEngine';
 import type {KeyEngine, KeyNode} from '../mud/keybindings/KeyEngine';
 import {findReservedKeybindings, reservedKeyNote} from '../mud/keybindings/browserReservedKeys';
@@ -209,6 +209,14 @@ function itemChunkName(kind: CodeItemKind, name: string): string {
  */
 function itemSyntaxError(rt: IScriptingRuntime | null | undefined, code: string, chunkName: string): string | null {
     return rt?.syntaxError?.(`function __mudlet_item() ${code}\nend`, chunkName) ?? null;
+}
+
+/** TAlias::compileRegex's complaint about a pattern PCRE rejects, as plain
+ *  text, or null when it compiles. An empty pattern is not compiled at all. */
+function aliasPatternError(pattern: string | undefined): string | null {
+    if (!pattern) return null;
+    const reason = perlPatternError(pattern);
+    return reason === null ? null : `Error: in "Pattern:", faulty regular expression, reason: "${reason}".`;
 }
 
 /** What the compile check needs of an item — see ScriptingEngine.cannotCompile. */
@@ -1372,27 +1380,73 @@ export class ScriptingEngine implements EngineHost {
     }
 
     /**
-     * Re-read a module's XML from disk and replace its tagged nodes in the store.
-     * Pairs with the "Reload from file" UI action.
+     * Mudlet `reloadModule(name)` — Host::reloadModule, for a script and for
+     * the editor's "Reload from file" alike. Answers like an install does:
+     * `{ ok: true, error }` with whatever in the module does not work, or
+     * `{ ok: false, error }` with why it was not reloaded.
+     *
+     * Two things are checked before anything else, so the module's items are
+     * untouched by either: that it is installed at all, and that the file it
+     * was installed from can still be read — the reload takes the module
+     * apart before reading that file back in, and a file that has gone would
+     * leave it listed with nothing in it. Only then is a reload asked for
+     * during a profile save put off until the save is over; the true answered
+     * now is all the caller hears, so how the reload went afterwards is said on
+     * the console.
      */
-    reloadModuleFromFile(moduleName: string): boolean {
+    reloadModuleFromFile(moduleName: string): InstallOutcome {
+        const pkg = this.findManifest(moduleName);
+        if (!pkg || pkg.kind !== 'module') return { ok: false, error: "module doesn't exist" };
+        const file = this.getModulePath(moduleName) ?? '';
+        if (!this.moduleFileReadable(file)) return { ok: false, error: `module file '${file}' cannot be read` };
+        if (this.profileSaveInFlight) {
+            this.postponedReloads.push(moduleName);
+            return { ok: true, error: null };
+        }
+        return this.reloadModuleNow(moduleName);
+    }
+
+    /** Whether the file a module was installed from is a file that reads —
+     *  QFileInfo's isFile() && isReadable() — in the profile or under the
+     *  read-only /lua/ namespace. */
+    private moduleFileReadable(file: string): boolean {
+        if (!file) return false;
+        if (this.runtimes.lua?.readBuiltinBytes?.(file)) return true;
+        return this.vfs?.stat(file)?.type === 'file';
+    }
+
+    /** Reloads put off by a profile save, carried out once it is over. */
+    private readonly postponedReloads: string[] = [];
+
+    /** The end of a profile save: the reloads it held up are carried out now,
+     *  and only the console is left to tell how they went. */
+    private runPostponedReloads(): void {
+        while (this.postponedReloads.length > 0 && !this.profileSaveInFlight) {
+            const name = this.postponedReloads.shift()!;
+            const outcome = this.reloadModuleFromFile(name);
+            if (!outcome.ok) {
+                this.api.postWarning(`Module "${name}" could not be reloaded: ${outcome.error}`);
+            } else if (outcome.error) {
+                this.api.postWarning(`Module "${name}" was reloaded, but parts of it are not working: ${outcome.error}`);
+            }
+        }
+    }
+
+    private reloadModuleNow(moduleName: string): InstallOutcome {
         const vfs = this.vfs;
-        if (!vfs) {
-            this.api.printError('[module] no profile VFS available');
-            return false;
-        }
+        if (!vfs) return { ok: false, error: 'no profile VFS available' };
         const id = this.connectionId;
-        const pkg = (useAppStore.getState().connectionPackages[id] ?? []).find(p => p.name === moduleName);
-        if (!pkg || pkg.kind !== 'module') {
-            this.api.printError(`[module] not a module: ${moduleName}`);
-            return false;
-        }
+        const pkg = this.findManifest(moduleName);
+        if (!pkg || pkg.kind !== 'module') return { ok: false, error: "module doesn't exist" };
         // A module's own install-time script asking for it to be reloaded —
         // by the name its config.lua gave it, which the install could not have
         // known to refuse by the file's — would import the file again on top
         // of the copy still being read in, a second set of every item per
         // round. Refused while it is installing (or already reloading).
-        if (this.installing.has(moduleName)) return false;
+        if (this.installing.has(moduleName)) {
+            return { ok: false, error: `module "${moduleName}" is still being installed` };
+        }
+        const file = this.getModulePath(moduleName) ?? moduleXmlAbsolutePath(pkg, vfs) ?? '';
         // Host::reloadModule is a sync uninstall followed by a sync install
         // (uninstallPackage / installPackage with ModuleSync), so a reload says
         // what those say: sysUninstall and sysSyncUninstallModule while the old
@@ -1402,33 +1456,41 @@ export class ScriptingEngine implements EngineHost {
         // reload at all.
         this.raiseEvent('sysUninstall', [moduleName]);
         this.raiseEvent('sysSyncUninstallModule', [moduleName]);
+        let data: MudletImportResult;
         try {
-            const data = reloadModuleFromVfs(pkg, vfs, this.readPackageConfig);
-            // Desktop re-reads module info only from an archive's config.lua,
-            // which replaces whatever a script had set on it. A plain XML module
-            // has no config.lua to re-read, so what setModuleInfo put there
-            // stays — dropping it on every reload lost fields desktop keeps.
-            if (pkg.sourcePath && /\.(mpackage|zip)$/i.test(pkg.sourcePath)) {
-                this.moduleInfoOverrides.delete(moduleName);
-            }
-            this.noteModuleLoaded(moduleName, data);
-            const problems = this.collectInstallProblems(moduleName,
-                () => useAppStore.getState().installPackage(id, pkg, data), data);
-            // A reload is Mudlet's module sync, so it says so the way a sync
-            // does — on the event, with whatever in the module does not work,
-            // and never on the console, where it would come back on every
-            // reload. The file is the one the module was installed from (the
-            // .mpackage for an archive, as desktop records it and getModulePath
-            // reports), not the XML unpacked out of it.
-            this.notifyInstalled(moduleName, problems);
-            const file = this.getModulePath(moduleName) ?? moduleXmlAbsolutePath(pkg, vfs) ?? '';
-            this.raiseEvent('sysSyncInstallModule', problems ? [moduleName, file, problems] : [moduleName, file]);
-            return true;
+            data = reloadModuleFromVfs(pkg, vfs, this.readPackageConfig);
         } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            this.api.printError(`[module] reload failed for "${moduleName}": ${msg}`);
-            return false;
+            // The uninstall half has already run on desktop by the time the
+            // install half fails, so the module stays listed with nothing in
+            // it — and the reason says so.
+            const reason = err instanceof Error ? err.message : String(err);
+            useAppStore.getState().installPackage(id, pkg, {
+                scripts: [], aliases: [], triggers: [], timers: [], keys: [], buttons: [], warnings: [],
+            });
+            return { ok: false, error: `${reason}, so the module is now empty` };
         }
+        // Desktop re-reads module info only from an archive's config.lua,
+        // which replaces whatever a script had set on it. A plain XML module
+        // has no config.lua to re-read, so what setModuleInfo put there
+        // stays — dropping it on every reload lost fields desktop keeps.
+        if (pkg.sourcePath && /\.(mpackage|zip)$/i.test(pkg.sourcePath)) {
+            this.moduleInfoOverrides.delete(moduleName);
+        }
+        this.noteModuleLoaded(moduleName, data);
+        const problems = this.collectInstallProblems(moduleName,
+            () => useAppStore.getState().installPackage(id, pkg, data), data);
+        // A reload is Mudlet's module sync, so it says so the way a sync
+        // does — on the event, with whatever in the module does not work,
+        // and never on the console, where it would come back on every
+        // reload. The file is the one the module was installed from (the
+        // .mpackage for an archive, as desktop records it and getModulePath
+        // reports), not the XML unpacked out of it.
+        this.notifyInstalled(moduleName, problems);
+        this.raiseEvent('sysSyncInstallModule', problems ? [moduleName, file, problems] : [moduleName, file]);
+        // Whatever was read before the XML broke is the module now, but it did
+        // not load (Host::mModulesLoadedOk), and the caller is told so.
+        if (data.parseError) return { ok: false, error: `module '${moduleName}' could not be loaded from '${file}'` };
+        return { ok: true, error: problems };
     }
 
     /** Toggle a module's sync flag. Updates the manifest in the store. */
@@ -1648,7 +1710,7 @@ export class ScriptingEngine implements EngineHost {
             this.noteModuleLoaded(manifest.name, data);
             // A module whose XML will not read is installed and stays listed,
             // and desktop says it could not be loaded.
-            if (data.parseError) this.announceUnreadableContents(manifest.name, 'module');
+            if (data.parseError) this.announceUnreadableContents(manifest.name, data, 'module');
             const problems = this.collectInstallProblems(manifest.name,
                 () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data);
             // Host::installPackage raises the generic sysInstall and exactly one
@@ -2503,7 +2565,11 @@ export class ScriptingEngine implements EngineHost {
             // listed — the same as a module whose XML will not load — so what
             // changes is that it is SAID. Silence left the player with a
             // package that is listed, owns nothing, and gives no reason.
-            if (prepared.data.parseError) this.announceUnreadableContents(prepared.manifest.name);
+            // Not for one nothing could be read out of: that is refused below,
+            // and the refusal is the whole of what is said.
+            if (prepared.data.parseError && !prepared.data.nothingRead) {
+                this.announceUnreadableContents(prepared.manifest.name, prepared.data);
+            }
             // Everything the reader could not make sense of but carried on past
             // — a pattern type from a later Mudlet, a key code nothing maps to.
             // The package installs either way; these say what it will not do,
@@ -3353,7 +3419,9 @@ export class ScriptingEngine implements EngineHost {
         // the write it just started. Tying it to the VFS flush instead — the
         // durability step — is unbounded, and held installs for good.
         this.timerEngine.addTemp(0, () => {
-            if (generation === this.profileSaveGeneration) this.profileSaveInFlight = false;
+            if (generation !== this.profileSaveGeneration) return;
+            this.profileSaveInFlight = false;
+            this.runPostponedReloads();
         });
     }
 
@@ -3370,6 +3438,9 @@ export class ScriptingEngine implements EngineHost {
         if (!this.profileSaveInFlight) return;
         this.profileSaveInFlight = false;
         this.profileSaveGeneration++;
+        // The save's own completions are delivered by the wait, and the
+        // reloads it held up are among them (Host::profileSaveFinished).
+        this.runPostponedReloads();
     }
 
     private saveAfterPackageChangePending = false;
@@ -3418,16 +3489,26 @@ export class ScriptingEngine implements EngineHost {
         return source => lua.readPackageConfig!(source);
     }
 
+    /** Said when a package's XML would not read, once per file that broke,
+     *  with the reader's reason — Host::installPackage's "Failed to load
+     *  package/module" warning. Only modules were ever asked whether their
+     *  contents loaded, so a package installed to silence. */
+    private announceUnreadableContents(
+        packageName: string,
+        data: Pick<MudletImportResult, 'loadErrors' | 'parseError'>,
+        kind: 'package' | 'module' = 'package',
+    ): void {
+        // A load error is "<package>[/<file>]: <reason>"; the warning gives the reason alone.
+        const reasons = data.loadErrors?.length
+            ? data.loadErrors.map(e => e.slice(e.indexOf(': ') + 2))
+            : [data.parseError ?? ''];
+        for (const reason of reasons) this.api.postWarning(`Failed to load ${kind} "${packageName}": ${reason}`);
+    }
+
     /** What a lost manifest costs, said once, where the player will see it: the
      *  package installed under the archive's own name and filed no details, so a
      *  name-based uninstall, a repository update and anything depending on it
      *  all stop matching with nothing to go on. */
-    /** Said when a package's XML would not read. Only modules were ever asked
-     *  whether their contents loaded, so a package installed to silence. */
-    private announceUnreadableContents(packageName: string, kind: 'package' | 'module' = 'package'): void {
-        this.api.postInfo(`Failed to load ${kind} "${packageName}" — its contents could not be read,`
-            + ' so it is installed but owns nothing.');
-    }
 
     private announceLostManifest(packageName: string, reason: string): void {
         this.api.postInfo(`The config.lua of "${packageName}" could not be read,`
@@ -5450,7 +5531,7 @@ export class ScriptingEngine implements EngineHost {
     private collectInstallProblems(
         name: string,
         commit: () => void,
-        items: Pick<MudletImportResult, 'triggers' | 'timers' | 'aliases' | 'buttons' | 'keys'>,
+        items: Pick<MudletImportResult, 'triggers' | 'timers' | 'aliases' | 'buttons' | 'keys' | 'loadErrors'>,
     ): string | null {
         const outer = this.installProblems;
         const problems: string[] = [];
@@ -5465,20 +5546,62 @@ export class ScriptingEngine implements EngineHost {
         this.carryOutHeldRemovals();
         // Every kind whose Lua is compiled as it is read, in the order
         // XMLimport reads their packages — each unit names the items it could
-        // not compile (XMLimport::mItemsWithErrors).
+        // not compile (XMLimport::mItemsWithErrors), in document order: a
+        // group ahead of what is in it, and an item's script ahead of its
+        // patterns. A group's script is compiled like any other item's.
         const rt = this.runtimes.lua;
-        const kinds: [CodeItemKind, readonly { isGroup?: boolean; code?: string; language?: string; name: string }[]][] = [
+        const kinds: [CodeItemKind, readonly { code?: string; language?: string; name: string }[]][] = [
             ['trigger', items.triggers], ['timer', items.timers], ['alias', items.aliases],
             ['button', items.buttons], ['key', items.keys],
         ];
         for (const [kind, list] of kinds) {
             for (const item of list ?? []) {
-                if (item.isGroup || !item.code || item.language !== 'lua') continue;
-                const err = itemSyntaxError(rt, item.code, itemChunkName(kind, item.name));
-                if (err) problems.push(`${item.name}: Lua syntax error: ${err}`);
+                if (item.code && item.language === 'lua') {
+                    const err = itemSyntaxError(rt, item.code, itemChunkName(kind, item.name));
+                    if (err) problems.push(`${item.name}: Lua syntax error: ${err}`);
+                }
+                const patternError = kind === 'trigger' ? this.triggerPatternErrors(item as TriggerNode)
+                    : kind === 'alias' ? aliasPatternError((item as AliasNode).pattern)
+                        : null;
+                if (patternError) problems.push(`${item.name}: ${patternError}`);
             }
         }
+        // Then each file that could not be read whole, named by the package
+        // (and the file, for an archive): the install's loadErrors, which go
+        // to the caller and the install events behind the items' errors.
+        problems.push(...(items.loadErrors ?? []));
         return problems.length > 0 ? problems.join('; ') : null;
+    }
+
+    /**
+     * Why a trigger's patterns do not all compile, in the plain text
+     * XMLimport hands back for TTrigger::setRegexCodeList's error: one
+     * sentence per pattern that failed, numbered by its place in the list, or
+     * null when they all compile (a trigger with no patterns is kept for its
+     * script and is not broken).
+     */
+    private triggerPatternErrors(trigger: TriggerNode): string | null {
+        const errors: string[] = [];
+        (trigger.patterns ?? []).forEach((p, i) => {
+            if (!p.text && p.type !== 'prompt') return;
+            const item = i + 1;
+            if (p.type === 'regex') {
+                const reason = perlPatternError(p.text);
+                if (reason !== null) errors.push(`Error: in item ${item}, perl regex "${p.text}" failed to compile, reason: "${reason}".`);
+            } else if (p.type === 'luaFunction') {
+                const fn = `trigger${this.uuidToNumericId.get(trigger.id) ?? 0}condition${i}`;
+                const reason = this.runtimes.lua?.syntaxError?.(`function ${fn}() ${p.text}\nend`, fn) ?? null;
+                if (reason !== null) errors.push(`Error: in item ${item}, lua function "${p.text}" failed to compile, reason: "${reason}".`);
+            } else if (p.type === 'colorTrigger') {
+                const problem = colorPatternProblem(p.text);
+                if (problem === 'noColors') {
+                    errors.push(`Error: in item ${item}, no colors to match were set - at least one of the foreground or background must not be ignored.`);
+                } else if (problem === 'noMatch') {
+                    errors.push(`Error: in item ${item}, color pattern "${p.text}" names no color that can be matched.`);
+                }
+            }
+        });
+        return errors.length > 0 ? errors.join(' ') : null;
     }
 
     private reportEntityError(

@@ -215,6 +215,18 @@ function mergeImportResults(results: MudletImportResult[]): MudletImportResult {
     return merged;
 }
 
+/** "<package>[/<file>]: <error>" for each document that could not be read
+ *  whole, as Host::installPackage lists them for the caller and the install
+ *  events. An empty label is a bare XML, named by the package alone. */
+function loadErrorsOf(packageName: string, results: readonly MudletImportResult[], labels: readonly string[]): string[] {
+    const out: string[] = [];
+    results.forEach((r, i) => {
+        if (!r.xmlError) return;
+        out.push(`${labels[i] ? `${packageName}/${labels[i]}` : packageName}: ${r.xmlError}`);
+    });
+    return out;
+}
+
 const TEXT_EXT = /\.(xml|lua|txt|json|md|css|html|htm|js|csv|ini|cfg|conf|yml|yaml)$/i;
 function isTextEntry(path: string): boolean {
     return TEXT_EXT.test(path);
@@ -267,6 +279,10 @@ export function preparePackageInstall(
     /** One document per XML the package is read from — an archive may hold
      *  several, each imported in turn. */
     let xmlContent: string[];
+    /** What each of {@link xmlContent} is called in a load error: the
+     *  package and the file for an archive's, the package alone for a bare
+     *  XML (Host::installPackage's two loadErrors forms). */
+    let xmlLabels: string[];
     let xmlRelPath: string | undefined;
     let manifestExtras: Partial<PackageManifest> & { configProblem?: string } = {};
     /** Set when config.lua gave up nothing; see InstallResult.configProblem. */
@@ -303,6 +319,7 @@ export function preparePackageInstall(
         // install is a different complaint from one that would not unpack.
         if (xmlEntries.length === 0) throw new Error(`no package found in ${filename}`);
         xmlContent = xmlEntries.map(e => strFromU8(entries![e]));
+        xmlLabels = xmlEntries.map(e => e.substring(e.lastIndexOf('/') + 1));
         xmlRelPath = xmlEntries[0];
 
         manifestExtras = readConfigLua(entries, opts.readConfig);
@@ -387,6 +404,7 @@ export function preparePackageInstall(
         }
     } else {
         xmlContent = [strFromU8(buf)];
+        xmlLabels = [''];
         // Modules need an on-disk XML to reload from on profile open; plain XML
         // packages keep nothing on disk.
         if (kind === 'module') xmlRelPath = filename;
@@ -394,8 +412,9 @@ export function preparePackageInstall(
 
     // Parsed here, not after the files land: an XML that will not parse is
     // refused with the profile untouched rather than unpacked and then rejected.
-    const data = mergeImportResults(
-        xmlContent.map(xml => parseMudletXml(xml, { packageName, reportParseError: true })));
+    const results = xmlContent.map(xml => parseMudletXml(xml, { packageName, reportParseError: true }));
+    const data = mergeImportResults(results);
+    data.loadErrors = loadErrorsOf(packageName, results, xmlLabels);
 
     const manifest: PackageManifest = {
         ...manifestExtras,
@@ -682,23 +701,30 @@ export function reloadModuleFromVfs(
     const source = manifest.sourcePath;
     if (source && archiveExtension.test(source) && vfs.exists(source)) {
         const buf = vfs.readBinaryFile(source);
-        if (looksLikeZip(buf)) {
-            const filename = source.substring(source.lastIndexOf('/') + 1);
-            const prepared = preparePackageInstall(filename, buf, vfs, {
-                kind: 'module', sourcePath: source, readConfig,
-            });
-            // The rename lands on the folder the module already has, which is
-            // why a sync's uninstall leaves that folder alone: this is the write
-            // it was left standing for.
-            prepared.commit();
-            return prepared.data;
-        }
+        // An archive that no longer unzips is a failed reload, as on desktop
+        // (Host::reloadModule installs the file again and is refused), not a
+        // cue to read back the XML the last install left behind - that put
+        // back what the module already held and called it reloaded.
+        if (!looksLikeZip(buf)) throw new Error('could not unzip package');
+        const filename = source.substring(source.lastIndexOf('/') + 1);
+        const prepared = preparePackageInstall(filename, buf, vfs, {
+            kind: 'module', sourcePath: source, readConfig,
+        });
+        // The rename lands on the folder the module already has, which is
+        // why a sync's uninstall leaves that folder alone: this is the write
+        // it was left standing for.
+        prepared.commit();
+        return prepared.data;
     }
     const path = moduleXmlAbsolutePath(manifest, vfs);
     if (!path) throw new Error(`Module "${manifest.name}" has no xmlPath; cannot reload from disk`);
     if (!vfs.exists(path)) throw new Error(`Module "${manifest.name}" XML not found at ${path}`);
     const xmlContent = vfs.readFile(path);
-    return parseMudletXml(xmlContent, { packageName: manifest.name });
+    // Read as an install reads it: what comes before a break is kept, and the
+    // break is reported rather than thrown (Host::reloadModule is an install).
+    const data = parseMudletXml(xmlContent, { packageName: manifest.name, reportParseError: true });
+    data.loadErrors = loadErrorsOf(manifest.name, [data], ['']);
+    return data;
 }
 
 /**
@@ -747,6 +773,7 @@ export function prepareModuleInstallFromVfsPath(
     const xmlContent = strFromU8(buf);
     const packageName = packageNameFromFile(filename);
     const data = parseMudletXml(xmlContent, { packageName, reportParseError: true });
+    data.loadErrors = loadErrorsOf(packageName, [data], ['']);
 
     const manifest: PackageManifest = {
         name: packageName,

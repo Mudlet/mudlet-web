@@ -1020,11 +1020,12 @@ function getTimestamp(a, b)
     return v
 end
 
--- Mudlet reloadModule(name) answers with nothing whatsoever, installed or not.
--- The bare call is what drops wasmoon's nil: `return __reloadModule(name)` would
--- forward it as a value.
+-- Mudlet reloadModule(name) → true (plus what in the module does not work), or
+-- nil and why it was not reloaded (TLuaInterpreter::reloadModule's
+-- warnArgumentValue / pushInstallSucceeded). installOutcome is defined further
+-- down, so it is looked up when called.
 function reloadModule(name)
-    __reloadModule(name)
+    return __mudlet_install_outcome(__reloadModule(name))
 end
 
 -- Mudlet getModulePath(name) / getModulePriority(name) → the value, or
@@ -3859,6 +3860,8 @@ local function installOutcome(r)
     if r then return true end
     return nil
 end
+
+__mudlet_install_outcome = installOutcome
 
 function installPackage(path)
     return installOutcome(__installPackage(path))

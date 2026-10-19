@@ -2509,7 +2509,7 @@ export class ScriptingAPI {
     saveProfileXml(location?: string, saveName?: string) {
         return this.host.saveProfileXml(location, saveName);
     }
-    reloadModule(name: string): boolean { return this.host.reloadModuleFromFile(name); }
+    reloadModule(name: string): InstallOutcome { return this.host.reloadModuleFromFile(name); }
     enableModuleSync(name: string): void { this.host.setModuleSync(name, true); }
     disableModuleSync(name: string): void { this.host.setModuleSync(name, false); }
     getModuleSync(name: string): boolean { return this.host.getModuleSync(name); }
@@ -8119,15 +8119,24 @@ export class ScriptingAPI {
      * warnIfUnencodable gives: a line the player can read has to be a line
      * getLines() and the cursor APIs can see.
      */
-    /** Held installs wait on the save's flush; see ScriptingEngine. */
-    markProfileSaveInFlight(): void {
-        this.host.markProfileSaveInFlight();
-    }
-
     postInfo(text: string): void {
         const notice = `\x1b[36m[ INFO ]\x1b[0m  - ${text}`;
         this.mainConsole.appendLine(new AnsiAwareBuffer(notice));
         this.session.events.emit('message', notice, 'script', Date.now());
+    }
+
+    /** Mudlet's `Host::postMessage` for the `[ WARN ]` kind, written the same
+     *  way as {@link postInfo}. */
+    postWarning(text: string): void {
+        const notice = `\x1b[33m[ WARN ]\x1b[0m  - ${text}`;
+        this.mainConsole.appendLine(new AnsiAwareBuffer(notice));
+        this.session.events.emit('message', notice, 'script', Date.now());
+    }
+
+    /** A profile save counts as running until the next pass of the event
+     *  loop; see ScriptingEngine.markProfileSaveInFlight. */
+    markProfileSaveInFlight(): void {
+        this.host.markProfileSaveInFlight();
     }
 
     /** Mudlet's `Host::postMessage` for the `[ ERROR ]` kind: unlike printError
