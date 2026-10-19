@@ -18,7 +18,6 @@ import {
     TTYPE_SEND,
     type MnesVar,
 } from "../protocol";
-import { fromByteString } from "../protocol/byteString";
 import { CLIENT_NAME, CLIENT_VERSION, TERMINAL_TYPE } from "../../version";
 import type { MudClientEvents } from "../events";
 import { debugMspEnabled, debugTelnetEnabled } from "./telnetDebug";
@@ -937,16 +936,20 @@ export class TelnetNegotiator {
      *  options included — except GA and EOR, which end nearly every prompt,
      *  and the subnegotiations of the options in `SB_CONSUMED`.
      *  `type` is the command byte itself (251 WILL, 250 SB, …), `option` the
-     *  byte after it (0 for a two-byte command), and `message` the SB body
-     *  between the option byte and IAC SE, or for anything shorter than a
-     *  six-byte subnegotiation the whole command. Decoded as UTF-8, as Mudlet's
-     *  QString conversion does. */
+     *  byte after it (0 for a two-byte command). `message` is a byte-string:
+     *  desktop hands it to Lua as ARGUMENT_TYPE_BYTES, byte for byte and not
+     *  decoded, since an option it has no handler for can carry any binary
+     *  data. A subnegotiation's is its payload alone — without the
+     *  `IAC SB <option>` and `IAC SE` framing, a doubled IAC unescaped, and
+     *  empty for an empty one — and any other command's is the whole command. */
     private emitTelnetEvent(raw: string): void {
         const type = raw.charCodeAt(1);
         if (type === GA || type === EOR) return;
         const option = raw.length > 2 ? raw.charCodeAt(2) : 0;
-        const body = raw.length >= 6 ? raw.slice(3, -2) : raw;
-        this.eventBus.emit('telnet.event', type, option, fromByteString(body).text);
+        const message = type === SB
+            ? (raw.length >= 5 ? raw.slice(3, -2).replace(/\xff\xff/g, '\xff') : '')
+            : raw;
+        this.eventBus.emit('telnet.event', type, option, message);
     }
 
     /** Reply to a TERMINAL-TYPE / MTTS subnegotiation. `subneg` is the SB body

@@ -4928,6 +4928,15 @@ function __mudlet_dispatch_event()
             argc = #args
         end
     end
+    -- Arguments raised as bytes (LuaBytes) arrive armored; their positions
+    -- come as a comma list.
+    local bytesAt = __mudlet_evt_bytes
+    if bytesAt then
+        for i in tostring(bytesAt):gmatch('%d+') do
+            i = tonumber(i)
+            args[i] = __mudlet_unarmor(args[i])
+        end
+    end
     __mudlet_dispatch(event, args, argc)
 end
 

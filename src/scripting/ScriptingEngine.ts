@@ -75,6 +75,7 @@ function inheritedPackage(items: readonly BaseTreeNode[], parentId: string | nul
     return packageName ? { packageName } : {};
 }
 import {LuaRuntime} from './lua/LuaRuntime';
+import {LuaBytes} from './lua/byteArmor';
 import type {IScriptingRuntime, LuaGlobalEntry, ScriptHandlerEntry, VariableEdit} from './IScriptingRuntime';
 import {ProfileVFS} from './vfs/ProfileVFS';
 import {rewriteVfsUrlsInCss} from './vfs/cssRewrite';
@@ -6069,9 +6070,10 @@ export class ScriptingEngine implements EngineHost {
                 else if (type !== 'error') this.visibility.onOutput();
             }),
             // Mudlet `sysTelnetEvent(type, option, message)` — fired by
-            // MudClient for every telnet IAC command but GA/EOR.
+            // MudClient for every telnet IAC command but GA/EOR. The message
+            // goes over as bytes (desktop's ARGUMENT_TYPE_BYTES), not text.
             session.events.on('telnet.event', (type, option, message) => {
-                this.raiseEvent('sysTelnetEvent', [type, option, message]);
+                this.raiseEvent('sysTelnetEvent', [type, option, new LuaBytes(message)]);
             }),
             // Mudlet `sysEchoAnomalyDetected` — raised once when the echo
             // handler trips its 5-toggles-in-5s safeguard and refuses ECHO

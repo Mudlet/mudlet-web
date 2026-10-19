@@ -18,7 +18,7 @@ import {describeFsError} from '../vfs/fsErrors';
 import UTF8 from './utf8.lua?raw';
 import {findLuaPattern, findLuaPatternBytes, luaClassMatches} from './utf8Patterns';
 import {utf8CaseMap} from './utf8CaseMap';
-import {armor, unarmor} from './byteArmor';
+import {armor, LuaBytes, unarmor} from './byteArmor';
 import VFS_LUA from './VFS.lua?raw';
 import LUAGLOBAL from './LuaGlobal.lua?raw';
 import BRIDGE_LUA from './Bridge.lua?raw';
@@ -5326,6 +5326,17 @@ end`);
             this.lua.global.set('__mws_w', null);
             this.lua.global.set('__mws_h', null);
         }
+        // A LuaBytes argument crosses armored, its position listed for
+        // __mudlet_dispatch_event to unarmor (see byteArmor.ts).
+        let bytesAt: string | null = null;
+        if (args.some(a => a instanceof LuaBytes)) {
+            args = args.map((a, i) => {
+                if (!(a instanceof LuaBytes)) return a;
+                bytesAt = (bytesAt === null ? '' : bytesAt + ',') + (i + 1);
+                return armor(a.bytes);
+            });
+        }
+        this.lua.global.set('__mudlet_evt_bytes', bytesAt);
         this.lua.global.set('__mudlet_evt_args', args);
         // Explicit count: a nil/false-carrying payload (raiseEvent("x", nil,
         // false, "y")) lands in Lua as a table with holes, and neither `#` nor a
