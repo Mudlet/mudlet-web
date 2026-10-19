@@ -4825,6 +4825,11 @@ export class ScriptingEngine implements EngineHost {
 
     /** Nesting depth of {@link processInput} — see the note there. */
     private aliasDepth = 0;
+
+    /** Part of {@link EngineHost}. */
+    inAliasPass(): boolean {
+        return this.aliasDepth > 0;
+    }
     /** Set when a chain hits {@link MAX_ALIAS_DEPTH}, until it unwinds to the outermost pass. */
     private aliasRunawayStopped = false;
     /** AliasUnit::scmMaxProcessingDepth. */

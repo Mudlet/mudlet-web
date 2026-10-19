@@ -52,6 +52,9 @@ export interface EngineHost {
      *  through the API's error channel rather than thrown. */
     runLinkCode(code: string): void;
 
+    /** Whether an alias pass is running (AliasUnit's processing depth). */
+    inAliasPass?(): boolean;
+
     /** Push text through the full alias pipeline, sending it to the MUD if no
      *  alias consumes it. Backs Mudlet's `expandAlias`. */
     expandAlias(text: string, echo: boolean): void;

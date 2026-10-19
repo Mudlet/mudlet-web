@@ -972,7 +972,7 @@ export class LuaRuntime implements IScriptingRuntime {
             dispatchCb,
             releaseCb,
             emitEvent: (name, args) => this.emitEvent(name, args),
-            pushNestedDispatchState: () => this.pushNestedDispatchState(),
+            pushNestedDispatchState: (parkCommand) => this.pushNestedDispatchState(parkCommand),
             popNestedDispatchState: (depth) => this.popNestedDispatchState(depth),
             buildingCaptureTables: () => this.buildingCaptureTables(),
             vfs: this.vfs,
@@ -4476,8 +4476,11 @@ end`);
      * The JS mirror of the same state (`currentMatches` and the capture spans
      * `selectCaptureGroup` reads) needs nothing here: every dispatch entry
      * point already saves and restores it around the script it runs.
+     *
+     * `command` is parked only for an alias script by default; feedTriggers
+     * never parks it (see the binding).
      */
-    pushNestedDispatchState(): number {
+    pushNestedDispatchState(parkCommand: boolean = this.runningAliasScript): number {
         if (this.inert) return -1;
         const api = this.lua.global.luaApi;
         const L = this.lua.global.address;
@@ -4489,7 +4492,7 @@ end`);
             // Only an alias script has its own `command` handed back. Anywhere
             // else it keeps the last command expanded, which packages such as
             // Repeater read afterwards (TLuaInterpreter::expandAlias).
-            if (name === 'command' && !this.runningAliasScript) return undefined;
+            if (name === 'command' && !parkCommand) return undefined;
             api.lua_pushstring(L, name);
             api.lua_rawget(L, LUA_GLOBALSINDEX);
             // luaL_ref answers LUA_REFNIL for a nil value, and reading that ref

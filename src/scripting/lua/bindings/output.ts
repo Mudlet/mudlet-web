@@ -9,7 +9,7 @@ import { unarmor } from '../byteArmor';
  * Colour channels are validated through the shared 0..255 coercion; Mudlet
  * silently no-ops on an out-of-range channel rather than raising.
  */
-export function installOutputBindings({ lua, api }: BindingContext): void {
+export function installOutputBindings({ lua, api, pushNestedDispatchState, popNestedDispatchState }: BindingContext): void {
     // ── Output / format ───────────────────────────────────────────────────
     lua.global.set('fg',          (name: string)  => api.fg(name));
     lua.global.set('bg',          (name: string)  => api.bg(name));
@@ -29,8 +29,21 @@ export function installOutputBindings({ lua, api }: BindingContext): void {
     // carries bytes already in the game's encoding, which are not UTF-8 and
     // would not survive the wasmoon crossing as text. See byteArmor.ts.
     // Returns the refusal message, or nil when the text was fed.
-    lua.global.set('feedTriggers', (data: string, utf8Encoded?: unknown) =>
-        api.feedTriggers(unarmor(String(data ?? '')), utf8Encoded !== false));
+    //
+    // During a trigger or alias pass this runs a whole trigger pass inside the
+    // calling script, whose fires replace `matches` and `multimatches`, so the
+    // caller's are parked and handed back — the very tables, so what it wrote
+    // into them survives (TLuaInterpreter::feedTriggers, upstream #10796).
+    // Not `command`: a fed trigger may expand a command, and the caller reads
+    // that back as the last command sent.
+    lua.global.set('feedTriggers', (data: string, utf8Encoded?: unknown) => {
+        const depth = api.inItemPass() ? pushNestedDispatchState(false) : -1;
+        try {
+            return api.feedTriggers(unarmor(String(data ?? '')), utf8Encoded !== false);
+        } finally {
+            if (depth >= 0) popNestedDispatchState(depth);
+        }
+    });
     lua.global.set('deleteLine',  (win?: string)  => api.deleteLine(win));
     // Mudlet `wrapLine([window,] lineNumber)`. Re-displays a line, re-wrapping
     // it and interpreting embedded \n. Overloaded: a string first arg is the

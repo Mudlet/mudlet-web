@@ -4592,6 +4592,12 @@ export class ScriptingAPI {
      * Returns null when the text was fed, or the refusal message; the binding
      * shapes that into Mudlet's `true` / `(nil, errMsg)`.
      */
+    /** Whether a trigger or alias pass is running — the passes whose capture
+     *  globals a nested feedTriggers() has to hand back. */
+    inItemPass(): boolean {
+        return this.triggerLineDepth > 0 || this.host.inAliasPass?.() === true;
+    }
+
     feedTriggers(data: string, utf8Encoded = true): string | null {
         // A self-feeding trigger nests one line pass per re-match, and the
         // wasm stack is what runs out. Mudlet stops at TriggerUnit's
