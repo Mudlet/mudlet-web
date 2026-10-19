@@ -6047,20 +6047,24 @@ do
             error(who .. ": bad argument #" .. (first + 1) .. " type (hints as table expected, got "
                 .. __mudlet_typename(hints, n >= first + 1) .. "!)", 3)
         end
+        -- A bad item is named by where the table walk met it, and the table by
+        -- its position (TLuaInterpreter::checkCommandsOrFunctionsTable and
+        -- checkHintsTable); the xEcho popups renumber the position when the
+        -- script left the window out.
         local nc, nh = 0, 0
-        for _, c in ipairs(cmds) do
-            if not isCommand(c) then
-                error(who .. ": bad argument #" .. first .. " type (commands/functions as table of strings"
-                    .. " and functions expected, got a " .. type(c) .. " in it!)", 3)
-            end
+        for _, c in pairs(cmds) do
             nc = nc + 1
-        end
-        for _, h in ipairs(hints) do
-            if __mudlet_str(h) == nil then
-                error(who .. ": bad argument #" .. (first + 1) .. " type (hints as table of strings expected,"
-                    .. " got a " .. type(h) .. " in it!)", 3)
+            if not isCommand(c) then
+                error(who .. ": bad item #" .. nc .. " in table argument #" .. first
+                    .. " in type (command as string or function expected, got " .. type(c) .. "!)", 3)
             end
+        end
+        for _, h in pairs(hints) do
             nh = nh + 1
+            if __mudlet_str(h) == nil then
+                error(who .. ": bad item #" .. nh .. " in table argument #" .. (first + 1)
+                    .. " in type (hint as string expected, got " .. type(h) .. "!)", 3)
+            end
         end
         return nc, nh
     end
@@ -10203,15 +10207,20 @@ do
         return nil, started
     end
 
+    -- loadRawFile is desktop's older name for the same code, which refuses
+    -- under whichever name it was called by.
     local _rawLoadReplay = loadReplay
-    function loadReplay(fileName)
-        fileName = __mudlet_check_string(fileName, "loadReplay", 1, "replay file name")
-        if fileName == "" then
-            return nil, "a blank string is not a valid replay file name"
+    local function replayLoader(funcName)
+        return function(fileName)
+            fileName = __mudlet_check_string(fileName, funcName, 1, "replay file name")
+            if fileName == "" then
+                return nil, "a blank string is not a valid replay file name"
+            end
+            return _rawLoadReplay(fileName)
         end
-        return _rawLoadReplay(fileName)
     end
-    loadRawFile = loadReplay
+    loadReplay = replayLoader("loadReplay")
+    loadRawFile = replayLoader("loadRawFile")
 
     local _rawSetProfileIcon = setProfileIcon
     function setProfileIcon(path)

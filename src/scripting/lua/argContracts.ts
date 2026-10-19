@@ -95,15 +95,14 @@ const LINE_BUFFER = 'mini console, user window or buffer name {may be omitted fo
 
 // The colour setters that take an optional leading window name: desktop decides
 // it is a name when #1 is a STRING by lua_type (setBackgroundColor and the two
-// command-line colour setters), and reports a bad #1 under setBackgroundColor's
-// name for all three — a copy-paste in desktop, kept so the text matches.
+// command-line colour setters), and each reports a bad #1 under its own name.
 const backgroundColorFamily = (fn: string) => `function(n, a1, a2, a3, a4, a5)
   local o = 0
   if type(a1) == 'string' then
     if not isN(a2) then return M('${fn}', 2, 'red value 0-255', 'number', a2, n) end
     o = 1
   elseif not isN(a1) then
-    return MF('setBackgroundColor: bad argument #%d type (window name as string, or red value 0-255 as number expected, got %s!)', 1, a1, n)
+    return MF('${fn}: bad argument #%d type (window name as string, or red value 0-255 as number expected, got %s!)', 1, a1, n)
   end
   local g, bl, al
   if o == 1 then g, bl, al = a3, a4, a5 else g, bl, al = a2, a3, a4 end
@@ -210,7 +209,21 @@ end`,
     getFont: WINDOW_ONLY,
     setFontSize: { win: 1, args: [i('size')] },
     setWindowWrap: { win: 1, args: [i('wrapAt')] },
-    setMiniConsoleFontSize: { cname: 'setFontSize', win: 1, args: [i('size')] },
+    // setFontSize's own code, under its own name, but it reads a window name
+    // first whenever it is not handed exactly one argument, so with nothing
+    // at all the size it misses is #2 (TLuaInterpreter::setMiniConsoleFontSize).
+    setMiniConsoleFontSize: {
+        custom: `function(n, a1, a2)
+  local o = 0
+  if n ~= 1 then
+    if a1 ~= nil and not isS(a1) then return MW('setMiniConsoleFontSize', 1, 'window', a1, n) end
+    o = 1
+  end
+  local v = a1
+  if o == 1 then v = a2 end
+  if not isN(v) then return M('setMiniConsoleFontSize', 1 + o, 'size', 'number', v, n) end
+end`,
+    },
     getFontSize: WINDOW_ONLY,
     getWindowWrap: WINDOW_ONLY,
     setWindowWrapIndent: { args: [w(), i('wrapTo')] },

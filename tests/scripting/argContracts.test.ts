@@ -20,9 +20,6 @@ function raised(t: TestRuntime, chunk: string): string | null {
 /** Desktop names the C++ function, which is not always the Lua one. */
 const MESSAGE_NAME: Record<string, string> = {
     clearWindow: 'clearUserWindow',
-    setMiniConsoleFontSize: 'setFontSize',
-    setCommandBackgroundColor: 'setBackgroundColor',
-    setCommandForegroundColor: 'setBackgroundColor',
 };
 
 /** A table is a valid first argument for these — to the C function, or to the
