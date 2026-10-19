@@ -632,6 +632,8 @@ function labelsFromJson(raw: unknown, areaUserData: Record<string, string>): Mud
             label.fontName = font.family;
             const points = Number(font.pointSize);
             if (Number.isFinite(points) && points > 0) label.fontSize = points;
+            if (typeof font.weight === 'number' && Number.isFinite(font.weight)) label.fontWeight = Math.trunc(font.weight);
+            if (font.italic === true) label.fontItalic = true;
         }
         // The export writes no outline colour (TArea::writeJsonLabel), so a
         // label takes the copy a binary save kept in the area's user data. A
@@ -1347,6 +1349,10 @@ export class MapStore {
         for (const [k, c] of Object.entries(header.mCustomEnvColors ?? {})) {
             this.customEnvColors.set(Number(k), c);
         }
+        // 257-272 are the profile's sixteen map colours, not the file's: both
+        // of desktop's loaders call restore16ColorSet once the file's colours
+        // are in, putting the profile's back over whatever the file held.
+        this.restore16ColorSet();
         for (const [k, v] of Object.entries(header.envColors ?? {})) {
             this.envColors.set(Number(k), v);
         }
@@ -1515,11 +1521,12 @@ export class MapStore {
                 // TArea::writeJsonArea counts what it writes.
                 roomCount: rooms.length,
                 // TArea::writeJsonUserData: a binary save replaces a script's
-                // value under the file-only keys, so they are not written.
-                userData: (() => {
+                // value under the file-only keys, so they are not written; and
+                // an area with none left gets no userData member at all.
+                ...(() => {
                     const userData = { ...(this.areas.get(areaId)?.userData ?? {}) };
                     dropFileOnlyUserData(userData);
-                    return userData;
+                    return Object.keys(userData).length > 0 ? { userData } : {};
                 })(),
                 labels: this.labelsToJson(areaId),
                 rooms,
@@ -1558,7 +1565,11 @@ export class MapStore {
             // reads the same as it always did.
             ...(Object.keys(this.mapUserData).length > 0 ? { userData: { ...this.mapUserData } } : {}),
         };
-        return JSON.stringify(doc);
+        // Laid out as TMap::writeJsonMapFile writes it (QJsonDocument::Indented:
+        // four spaces, `"key": value`), so a file read or edited by hand —
+        // a player's text editor, or a script searching it — finds what it
+        // would in desktop's export.
+        return JSON.stringify(doc, null, 4);
     }
 
     /**
@@ -1587,8 +1598,17 @@ export class MapStore {
             };
             if (label.text) entry.text = label.text;
             if (label.pixMap) entry.image = labelImageToJson(label.pixMap);
+            // TArea::writeJsonLabel writes every label's outline colour — black,
+            // TMapLabel's default, for one that never had one — and a font only
+            // for a label with a family, whole: weight and slant with the size.
+            entry.outlineColor = writeJsonColor(label.outlineColor ?? { r: 0, g: 0, b: 0, alpha: 255 });
             if (label.fontName) {
-                entry.font = { family: label.fontName, pointSize: label.fontSize ?? 0 };
+                entry.font = {
+                    family: label.fontName,
+                    pointSize: label.fontSize ?? 0,
+                    weight: label.fontWeight ?? QFONT_NORMAL_WEIGHT,
+                    italic: !!label.fontItalic,
+                };
             }
             out.push(entry);
         }
