@@ -5129,6 +5129,9 @@ end
 do
     local _raw = __mudlet_tempAlias
     function tempAlias(pattern, fn)
+        -- The pattern goes through checkStringArg: a table raises rather than
+        -- becoming an alias on its tostring() that nothing could ever match.
+        pattern = __mudlet_check_string(pattern, "tempAlias", 1, "regex-type pattern", true)
         -- An uncompilable script still makes an alias, one that never fires
         local compiled = __mudlet_to_fn(fn, "tempAlias", 2)
         return _raw(pattern, __mudlet_register_cb(compiled), __mudlet_uncompiled[compiled] == true)
@@ -5282,6 +5285,9 @@ do
         -- outright — nothing is added in either case. The engine runs the
         -- body, once, as it creates the script, and hands back what it raised
         -- (a non-string error object already described, as desktop does).
+        -- checkStringArg on the name and parent first: a table raises.
+        name = __mudlet_check_string(name, "permScript", 1, "script name", true)
+        parent = __mudlet_check_string(parent, "permScript", 2, "script parent name", true)
         code = __mudlet_check_lua_code(code, "permScript", 3)
         local id = __mudlet_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), code),
@@ -5375,6 +5381,8 @@ do
         -- reportInvalidLuaCodeParam, so a missing or wrongly-typed pattern — and
         -- a body that will not compile — raises instead of being tostring()-ed
         -- into an alias that could never match (or a body of "999").
+        name = __mudlet_check_string(name, "permAlias", 1, "alias name", true)
+        parent = __mudlet_check_string(parent, "permAlias", 2, "alias group/parent", true)
         regex = __mudlet_check_string(regex, "permAlias", 3, "regex")
         code = __mudlet_check_lua_code(code, "permAlias", 4)
         return __mudlet_perm_result(
@@ -5391,7 +5399,10 @@ do
         -- Mudlet reads the interval with getVerifiedDouble and runs the body
         -- through reportInvalidLuaCodeParam before creating anything, so a
         -- missing interval or a body that won't compile raises rather than
-        -- leaving a dead timer in the tree.
+        -- leaving a dead timer in the tree. The name and parent come before
+        -- all of it, through checkStringArg.
+        name = __mudlet_check_string(name, "permTimer", 1, "timer name", true)
+        parent = __mudlet_check_string(parent, "permTimer", 2, "timer parent name", true)
         local delaySeconds = __mudlet_num(delay)
         if delaySeconds == nil then
             error("permTimer: bad argument #3 type (time in seconds as number expected, got "
@@ -5423,6 +5434,8 @@ end
 do
     local _raw = __mudlet_permKey
     function permKey(name, parent, a3, a4, a5)
+        name = __mudlet_check_string(name, "permKey", 1, "key name", true)
+        parent = __mudlet_check_string(parent, "permKey", 2, "key parent group", true)
         local modifier, key, code
         if a5 == nil then
             modifier, key, code = -1, a3, a4
@@ -8200,8 +8213,10 @@ do
     isActive = itemLookupGuard(isActive, "isActive")
     exists   = itemLookupGuard(exists, "exists")
 
-    -- Expiry counts: nil means "never expires"; anything non-numeric is a type
-    -- error, and a count below one could never fire so it is refused outright.
+    -- Expiry counts: nil means "never expires"; anything non-numeric raises, and
+    -- a count below one could never fire so it is refused with (nil, message)
+    -- before anything is built. The wording is TLuaInterpreterMudletObjects's,
+    -- a "value" error rather than a "type" one.
     -- `pos` is the argument position the expiry occupies for that function.
     -- Returns (errMsg, coercedValue): the caller substitutes the converted
     -- count back into the argument list so a "3" reaches the engine as 3.
@@ -8209,11 +8224,11 @@ do
         if value == nil then return nil, nil end
         local count = __mudlet_int(value)
         if count == nil then
-            error(funcName .. ": bad argument #" .. pos .. " type (expiration count as number"
-                .. " is optional, got " .. type(value) .. "!)", 3)
+            error(funcName .. ": bad argument #" .. pos .. " value (trigger expiration count must be"
+                .. " nil or a number, got " .. type(value) .. "!)", 3)
         end
         if count < 1 then
-            return funcName .. ": expiration count must be greater than zero, got " .. tostring(value)
+            return funcName .. ": trigger expiration count must be nil or greater than zero, got " .. tostring(count)
         end
         return nil, count
     end
@@ -8280,8 +8295,13 @@ do
     -- patterns list" (TLuaInterpreterMudletObjects.cpp:1199-1331). Carried
     -- through verbatim rather than tidied into one phrase, since the message is
     -- what a script author matches on.
+    --
+    -- Before any of that the name and parent are read with checkStringArg, so
+    -- a table for either raises rather than being tostring()-ed into the tree.
     local function permPatternGuard(fn, funcName, what)
         return function(name, parent, patterns, code)
+            name = __mudlet_check_string(name, funcName, 1, "trigger name", true)
+            parent = __mudlet_check_string(parent, funcName, 2, "trigger parent", true)
             if type(patterns) ~= 'table' then
                 error(funcName .. ": bad argument #3 type (" .. what .. " as table expected, got "
                     .. type(patterns) .. "!)", 2)
@@ -8299,6 +8319,8 @@ do
     do
         local _raw = permPromptTrigger
         permPromptTrigger = function(name, parent, code)
+            name = __mudlet_check_string(name, "permPromptTrigger", 1, "trigger name", true)
+            parent = __mudlet_check_string(parent, "permPromptTrigger", 2, "parent trigger name", true)
             return _raw(name, parent, __mudlet_check_lua_code(code, "permPromptTrigger", 3))
         end
     end
@@ -8332,11 +8354,17 @@ do
     -- set", which is how Mudlet tells them apart). Refusing those made the
     -- highlight and sound arguments unreachable — the code that reads them
     -- tests for a string, and no call carrying one ever got this far.
-    local COMPLEX_TRIGGER_FLAGS = {[4] = true, [7] = true, [8] = true, [12] = true, [13] = true, [14] = true}
+    local COMPLEX_TRIGGER_FLAGS = {[4] = true, [7] = true, [8] = true, [12] = true, [13] = true}
     local _rawTempComplexRegexTrigger = tempComplexRegexTrigger
+    --
+    -- The name and the pattern go through checkStringArg first, and the expiry
+    -- (#14) is refused like every other creator's — all before anything is
+    -- built, so a refusal does not use up a trigger ID.
     tempComplexRegexTrigger = function(...)
         local n = select('#', ...)
         local args = {...}
+        __mudlet_check_string(args[1], "tempComplexRegexTrigger", 1, "trigger name create or add to", n >= 1)
+        __mudlet_check_string(args[2], "tempComplexRegexTrigger", 2, "regex pattern to match", n >= 2)
         for i = 4, n do
             local v = args[i]
             if v ~= nil and COMPLEX_TRIGGER_FLAGS[i] then
@@ -8347,6 +8375,11 @@ do
                 end
                 args[i] = num
             end
+        end
+        if args[14] ~= nil then
+            local err, count = __mudlet_check_expiry(args[14], "tempComplexRegexTrigger", 14)
+            if err then return nil, err end
+            args[14] = count
         end
         return _rawTempComplexRegexTrigger(unpack(args, 1, n))
     end
@@ -9009,8 +9042,18 @@ do
     getStopWatchBrokenDownTime = watchGuard(getStopWatchBrokenDownTime, "getStopWatchBrokenDownTime", ID_OR_NAME)
     deleteStopWatch            = watchGuard(deleteStopWatch, "deleteStopWatch",
         "stopwatchID as number or stopwatch name as string expected")
-    setStopWatchName           = watchGuard(setStopWatchName, "setStopWatchName",
-        "stopwatchID as number or current name as string expected")
+    -- setStopWatchName also reads the new name with checkStringArg, before
+    -- any watch is looked up, so a table raises rather than being tostring()-ed.
+    do
+        local guarded = watchGuard(setStopWatchName, "setStopWatchName",
+            "stopwatchID as number or current name as string expected")
+        setStopWatchName = function(...)
+            local subject, newName = ...
+            checkSubject(subject, "setStopWatchName", "stopwatchID as number or current name as string expected")
+            __mudlet_check_string(newName, "setStopWatchName", 2, "stopwatch new name", select('#', ...) >= 2)
+            return guarded(...)
+        end
+    end
 
     -- createStopWatch([name] | [autostart] [, autostart]) — the first argument is
     -- optional, but anything other than a name, an autostart flag or nil is a
@@ -9067,6 +9110,12 @@ do
     function expandAlias(...)
         local text = ...
         text = __mudlet_check_string(text, "expandAlias", 1, "text to parse", select('#', ...) >= 1)
+        -- A nil echo is the same as none, but anything else has to be a
+        -- boolean (getVerifiedBool): "yes" or 1 raises rather than echoing.
+        local echo = select(2, ...)
+        if echo ~= nil and type(echo) ~= 'boolean' then
+            error("expandAlias: bad argument #2 type (echo as boolean is optional, got " .. type(echo) .. "!)", 2)
+        end
         return _rawExpandAlias(text, select(2, ...))
     end
 end
