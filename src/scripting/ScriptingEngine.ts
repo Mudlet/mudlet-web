@@ -2717,6 +2717,16 @@ export class ScriptingEngine implements EngineHost {
             if (debug) console.debug(`${logPrefix} empty filename "${file}"`);
             return null;
         }
+        // `_profile/` and `_absolute/` hold the copies a script's own
+        // playSoundFile makes of files outside media/; a game's file there
+        // would be played in place of the script's (case-insensitively, as
+        // the folder is one on macOS and Windows). TMedia refuses both MSP and
+        // GMCP names in them — to play and to download alike.
+        const firstFolder = cleanSegments.length > 1 ? cleanSegments[0].toLowerCase() : '';
+        if (firstFolder === '_profile' || firstFolder === '_absolute') {
+            if (debug) console.debug(`${logPrefix} rejecting "${file}": a folder kept for scripts' copies`);
+            return null;
+        }
         const cleanFile = cleanSegments.join('/');
         const vfsPath = `media/${cleanFile}`;
         const absPath = `${vfs.profilePath}/${vfsPath}`;
@@ -2743,6 +2753,15 @@ export class ScriptingEngine implements EngineHost {
             downloadUrl = new URL(cleanFile, base).toString();
         } catch {
             if (debug) console.debug(`${logPrefix} invalid base URL "${baseUrl}"`);
+            return null;
+        }
+        // Media is fetched from the network only (TMedia::downloadFile): any
+        // other scheme is refused, and told the way a failed download is, so
+        // a script waiting on the media learns the request is over.
+        if (!/^https?:$/i.test(new URL(downloadUrl).protocol)) {
+            if (debug) console.debug(`${logPrefix} refusing non-HTTP(S) media URL ${downloadUrl}`);
+            this.raiseEvent('sysDownloadError',
+                [`Media can only be downloaded from an http:// or https:// URL, not "${downloadUrl}"`, absPath]);
             return null;
         }
         // TMedia::slot_writeFile reports every media download to scripts:
