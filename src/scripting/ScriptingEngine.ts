@@ -9,8 +9,9 @@ import {TriggerEngine, highlightColor, highlightTargets, type TriggerNode} from 
 import type {TimerEngine} from '../mud/timers/TimerEngine';
 import type {KeyEngine, KeyNode} from '../mud/keybindings/KeyEngine';
 import {findReservedKeybindings, reservedKeyNote} from '../mud/keybindings/browserReservedKeys';
-import type {ButtonNode, ScriptNode, TimerNode} from '../storage/schema';
+import type {ButtonNode, ProfileSettings, ScriptNode, TimerNode} from '../storage/schema';
 import {buildEffectivelyEnabledIds, isColorizing, isEffectivelyEnabled} from '../storage/schema';
+import {MAIN_CONSOLE_BUFFER_SIZE} from '../mud/text/Console';
 import {useAppStore, connectionUrl, selectProfileField} from '../storage';
 import {isPackageRemovable} from '../branding';
 import {saveProfileData} from '../storage/profileVfsData';
@@ -1209,9 +1210,19 @@ export class ScriptingEngine implements EngineHost {
             buttons: s.connectionButtons[id] ?? [],
         };
         const vars = s.connectionVariables[id];
+        // Desktop's XMLexport writes the main console's buffer settings on every
+        // save, defaults included (Host::mConsoleBufferSize and
+        // mUseMaxConsoleBufferSize), so a profile that never changed them still
+        // carries them.
+        const profile = s.connectionProfile[id];
+        const settings: Partial<ProfileSettings> = {
+            ...profile,
+            consoleBufferSize: profile?.consoleBufferSize ?? MAIN_CONSOLE_BUFFER_SIZE,
+            useMaxConsoleBufferSize: profile?.useMaxConsoleBufferSize ?? false,
+        };
         return buildLinkedWriteback(
             baseXml ?? this.hostBaseXml() ?? EMPTY_PROFILE_XML, trees,
-            { hidden: vars?.hidden ?? [], variables: vars?.values ?? [] }, s.connectionProfile[id],
+            { hidden: vars?.hidden ?? [], variables: vars?.values ?? [] }, settings,
             omitHostSettings, this.getPackageNames(), this.api.stopwatches.savedForProfile(),
         );
     }
