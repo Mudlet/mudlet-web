@@ -3892,7 +3892,9 @@ export class ScriptingEngine implements EngineHost {
             };
         };
 
-        const tempTriggers = this.triggerEngine.tempCount;
+        // A killed temporary trigger is still in the unit's tree until the
+        // line's deferred cleanup, as a killed alias is (see below).
+        const tempTriggers = this.triggerEngine.tempCount + (this.runtimes.lua?.deadTempItemCount?.('trigger') ?? 0);
         let patternsTotal = tempTriggers;
         let patternsActive = tempTriggers;
         for (const t of triggers) {
@@ -3903,12 +3905,12 @@ export class ScriptingEngine implements EngineHost {
         }
 
         return {
-            triggers: { ...tally(triggers, tempTriggers), patterns: { total: patternsTotal, active: patternsActive } },
+            triggers: { ...tally(triggers, tempTriggers, undefined, this.triggerEngine.tempCount), patterns: { total: patternsTotal, active: patternsActive } },
             // A killed temporary alias or key is still in its unit's tree until
             // the deferred cleanup, which is what desktop's assembleReport
             // walks: it counts in the totals, though no longer as active.
             aliases: (() => {
-                const dead = this.runtimes.lua?.deadTempItemCount('alias') ?? 0;
+                const dead = this.runtimes.lua?.deadTempItemCount?.('alias') ?? 0;
                 return tally(aliases, this.aliasEngine.tempCount + dead, undefined, this.aliasEngine.tempCount);
             })(),
             // Mudlet counts a timer by the same state isActive reports.
