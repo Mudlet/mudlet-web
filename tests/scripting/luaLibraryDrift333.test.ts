@@ -165,6 +165,7 @@ class StubVFS {
   profilePath = '/profiles/test';
   files = new Map<string, Uint8Array>();
   resolvePath(p: string): string { return p.startsWith('/') ? p : `${this.profilePath}/${p}`; }
+  nameTooLong(): boolean { return false; }
   exists(p: string): boolean { return this.files.has(this.resolvePath(p)); }
   readBinaryFile(p: string): Uint8Array {
     const bytes = this.files.get(this.resolvePath(p));

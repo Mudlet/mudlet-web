@@ -3672,6 +3672,12 @@ end`);
                         }
                         content = readAsLatin1(filename);
                     } else {
+                        // fopen() refuses a name no desktop file system could
+                        // hold; the write itself would only fail at close.
+                        if (vfs.nameTooLong(filename)) {
+                            setError(`${filename}: File name too long`, 36);
+                            return null;
+                        }
                         // Creating a file never creates its directory: stock
                         // Lua's fopen fails, and Mudlet scripts (table.save
                         // included, which goes through io.open) rely on that

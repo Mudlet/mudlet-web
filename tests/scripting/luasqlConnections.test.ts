@@ -18,6 +18,7 @@ class StubVFS {
     setReadBarrier(b: ((abs: string) => void) | null): void { this.barrier = b; }
     private read(abs: string): string { this.barrier?.(abs); return abs; }
     resolvePath(p: string): string { return p.startsWith('/') ? p : `${this.profilePath}/${p}`; }
+    nameTooLong(): boolean { return false; }
     exists(p: string): boolean { const a = this.resolvePath(p); return this.files.has(a) || this.dirs.has(a); }
     readBinaryFile(p: string): Uint8Array {
         const bytes = this.files.get(this.read(this.resolvePath(p)));

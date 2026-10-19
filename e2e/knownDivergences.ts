@@ -58,18 +58,6 @@ const TORN_DOWN_REASON =
 export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
     Mapper: [
         {
-            name: 'Tests mapper functions against a shared fixture / Tests area image export / exportAreaImage reports a save that failed against that export alone',
-            reason:
-                'The spec makes a save fail by naming a file 300 characters long, which every desktop file system '
-                + 'refuses (NAME_MAX is 255 bytes on ext4, APFS and NTFS). The profile VFS is IndexedDB, which has '
-                + 'no such limit, so the name is simply stored and the save succeeds. What the spec guards — a '
-                + 'failed save reported against its own export and not its neighbour — is implemented: '
-                + 'exportAreaImage posts "Failed to save image to …" for the export whose write throws. Faking '
-                + 'NAME_MAX on every VFS write to manufacture the failure would refuse names a player\'s files '
-                + 'can legitimately have here, to imitate a limit of a disk this client does not write to. A '
-                + 'linked local folder does hit the real limit, and reports it the same way.',
-        },
-        {
             name: 'Tests saveMap and loadMap / Tests the saveMap argument contract / resolves a relative location against the profile directory',
             reason:
                 'The spec asserts saveMap("x.dat") lands in the profile directory AND that io.exists("x.dat") '

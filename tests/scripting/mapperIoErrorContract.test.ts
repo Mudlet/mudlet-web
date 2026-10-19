@@ -80,6 +80,7 @@ class DirStubVFS {
     files = new Map<string, Uint8Array>();
     dirs = new Set<string>(['/', '/profiles', '/profiles/test']);
     resolvePath(p: string): string { return p.startsWith('/') ? p : `${this.profilePath}/${p}`; }
+    nameTooLong(): boolean { return false; }
     exists(p: string): boolean { const a = this.resolvePath(p); return this.files.has(a) || this.dirs.has(a); }
     stat(p: string): { type: 'file' | 'dir' } | null {
         const a = this.resolvePath(p);

@@ -225,6 +225,12 @@ export class ProfileVFS {
         return normalizePath(abs);
     }
 
+    /** Whether a component of `path` is longer than NAME_MAX — for a caller
+     *  that must refuse such a name before it writes (io.open, as fopen does). */
+    nameTooLong(path: string): boolean {
+        try { checkNameLength(this.resolvePath(path)); return false; } catch { return true; }
+    }
+
     exists(path: string): boolean {
         try { return existsSync(this.resolvePath(path)); } catch { return false; }
     }
@@ -251,6 +257,7 @@ export class ProfileVFS {
 
     writeFile(path: string, content: string): void {
         const abs = this.resolvePath(path);
+        checkNameLength(abs);
         ensureParentDir(abs);
         this.clearForOverwrite(abs);
         writeFileSync(abs, content, 'utf8');
@@ -262,6 +269,7 @@ export class ProfileVFS {
      *  throwing as open(2) would otherwise — what a download's QFile does. */
     writeBinaryFile(path: string, data: Uint8Array, { createParents = true }: { createParents?: boolean } = {}): void {
         const abs = this.resolvePath(path);
+        checkNameLength(abs);
         if (createParents) ensureParentDir(abs);
         this.clearForOverwrite(abs);
         writeFileSync(abs, data);
@@ -284,6 +292,7 @@ export class ProfileVFS {
 
     appendFile(path: string, content: string): void {
         const abs = this.resolvePath(path);
+        checkNameLength(abs);
         ensureParentDir(abs);
         appendFileSync(abs, content, 'utf8');
         this.invalidate(abs);
@@ -299,6 +308,7 @@ export class ProfileVFS {
      */
     appendBinaryFile(path: string, data: Uint8Array): void {
         const abs = this.beforeRead(this.resolvePath(path));
+        checkNameLength(abs);
         ensureParentDir(abs);
         appendFileSync(abs, data);
         this.invalidate(abs);
@@ -324,6 +334,7 @@ export class ProfileVFS {
     rename(oldPath: string, newPath: string, { posix = false }: { posix?: boolean } = {}): void {
         const absOld = this.beforeRead(this.resolvePath(oldPath));
         const absNew = this.resolvePath(newPath);
+        checkNameLength(absNew);
         if (posix) {
             this.checkPosixPath(oldPath, 'EBUSY');
             this.checkPosixPath(newPath, 'EBUSY');
@@ -365,6 +376,7 @@ export class ProfileVFS {
      */
     mkdir(path: string, { recursive = true }: { recursive?: boolean } = {}): void {
         const abs = this.resolvePath(path);
+        checkNameLength(abs);
         if (recursive) {
             mkdirSync(abs, { recursive: true });
             return;
@@ -528,6 +540,7 @@ export class ProfileVFS {
      *  must exist. Throws the filesystem's error (EEXIST, ENOENT, ENOTSUP …). */
     link(target: string, path: string, symbolic: boolean): void {
         const abs = this.resolvePath(path);
+        checkNameLength(abs);
         let present = false;
         try { lstatSync(abs); present = true; } catch { /* free */ }
         if (present) throw new FsError('EEXIST', abs);
@@ -629,6 +642,28 @@ function ensureProfileDirs(profilePath: string): void {
         if (!existsSync(log)) mkdirSync(log);
     } catch (err) {
         console.warn('[ProfileVFS] could not create the log directory:', err);
+    }
+}
+
+/** NAME_MAX: the most bytes one path component may take on the file systems
+ *  desktop writes to (ext4, APFS, NTFS all stop at 255). */
+const NAME_MAX = 255;
+const utf8 = new TextEncoder();
+
+/**
+ * Refuse a path with a component longer than NAME_MAX, as open(2) and mkdir(2)
+ * do (ENAMETOOLONG). IndexedDB has no such limit, so without this a profile
+ * could hold a file desktop can neither create nor receive — one a Mudlet
+ * export or a linked folder would then fail on. Checked on everything that
+ * creates a name; reads need no check, since no such name can exist.
+ */
+function checkNameLength(absPath: string): void {
+    for (const part of absPath.split('/')) {
+        // A UTF-16 unit is at most 3 bytes of UTF-8, so only a name that long
+        // can be over the limit; the rest skip the encode.
+        if (part.length * 3 > NAME_MAX && utf8.encode(part).length > NAME_MAX) {
+            throw new FsError('ENAMETOOLONG', absPath);
+        }
     }
 }
 
