@@ -213,7 +213,15 @@ describe('package/module parity with desktop (mudlet-web#328)', () => {
             expect(engine.installModuleFromPath(FILE).ok).toBe(true);
             events = [];
 
-            expect(engine.reloadModuleFromFile('r10m')).toEqual({ ok: true, error: null });
+            vi.useFakeTimers();
+            try {
+                expect(engine.reloadModuleFromFile('r10m')).toEqual({ ok: true, error: null });
+                // sysInstall and the detailed event go out on the next pass of the
+                // event loop, as Host::installPackage's zero-timer sends them.
+                vi.runAllTimers();
+            } finally {
+                vi.useRealTimers();
+            }
             expect(events).toEqual([
                 ['sysUninstall', ['r10m']],
                 ['sysSyncUninstallModule', ['r10m']],
@@ -231,7 +239,13 @@ describe('package/module parity with desktop (mudlet-web#328)', () => {
             expect(engine.installModuleFromPath(FILE).ok).toBe(true);
             events = [];
 
-            expect(engine.reloadModuleFromFile('r10mzcfg')).toEqual({ ok: true, error: null });
+            vi.useFakeTimers();
+            try {
+                expect(engine.reloadModuleFromFile('r10mzcfg')).toEqual({ ok: true, error: null });
+                vi.runAllTimers();
+            } finally {
+                vi.useRealTimers();
+            }
             expect(engine.getModulePath('r10mzcfg')).toBe(FILE);
             expect(events.at(-1)).toEqual(['sysSyncInstallModule', ['r10mzcfg', FILE]]);
             expect(events.map(e => e[0])).not.toContain('sysReadModuleEvent');
